@@ -63,10 +63,7 @@ pub struct Toasts {
 
 impl Default for Toasts {
     fn default() -> Self {
-        Self {
-            entries: Vec::new(),
-            next_id: FIRST_TOAST_ID,
-        }
+        Self { entries: Vec::new(), next_id: FIRST_TOAST_ID }
     }
 }
 
@@ -153,15 +150,10 @@ impl Toasts {
         // along with the toasts themselves -- otherwise every toast ever
         // pushed leaves a permanently-done (but never-removed) `Anim` in
         // `Anims`'s map for the life of the process.
-        for t in self
-            .entries
-            .iter()
-            .filter(|t| now >= t.expires_at.expect("stamped above"))
-        {
+        for t in self.entries.iter().filter(|t| now >= t.expires_at.expect("stamped above")) {
             anims.clear(AnimKey::ToastFade(t.id));
         }
-        self.entries
-            .retain(|t| now < t.expires_at.expect("stamped above"));
+        self.entries.retain(|t| now < t.expires_at.expect("stamped above"));
         was_visible
     }
 
@@ -187,10 +179,7 @@ impl Toasts {
     /// [`Self::messages`], for callers that care *how* something was
     /// reported and not just what it said.
     pub fn entries(&self) -> Vec<(&str, &ToastKind)> {
-        self.entries
-            .iter()
-            .map(|t| (t.message.as_str(), &t.kind))
-            .collect()
+        self.entries.iter().map(|t| (t.message.as_str(), &t.kind)).collect()
     }
 
     /// Paints every visible toast as a floating filled `theme.panel` rect
@@ -247,11 +236,8 @@ impl Toasts {
             // fading yet", matching the real app (where `App::update`
             // always stamps it before the first draw).
             let fading = toast.expires_at.is_some_and(|e| now + TOAST_FADE_DUR >= e);
-            let x_offset = if fading {
-                0
-            } else {
-                ((1.0 - t).clamp(0.0, 1.0) * width as f32).round() as u16
-            };
+            let x_offset =
+                if fading { 0 } else { ((1.0 - t).clamp(0.0, 1.0) * width as f32).round() as u16 };
             let fade_toward_page = (1.0 - t).clamp(0.0, 1.0);
 
             let area = Rect::new(rest_x.saturating_add(x_offset), y, width, TOAST_HEIGHT);
@@ -278,15 +264,7 @@ impl Toasts {
                 }
             }
             let text_y = area.y + area.height / 2;
-            text(
-                buf,
-                area.x + 2,
-                text_y,
-                &toast.message,
-                text_c,
-                panel_c,
-                false,
-            );
+            text(buf, area.x + 2, text_y, &toast.message, text_c, panel_c, false);
             y += TOAST_HEIGHT;
         }
     }
@@ -325,10 +303,7 @@ mod tests {
         t.push(msg, ToastKind::Error);
         t.on_tick(&mut anims, base);
         t.on_tick(&mut anims, base + TOAST_LIFETIME);
-        assert!(
-            !t.is_empty(),
-            "a long message must outlive the base lifetime"
-        );
+        assert!(!t.is_empty(), "a long message must outlive the base lifetime");
         t.on_tick(&mut anims, base + Duration::from_secs(9));
         assert!(t.is_empty(), "but not forever");
     }
@@ -344,22 +319,13 @@ mod tests {
         t.push("Saved", ToastKind::Success);
         let now = Instant::now();
         assert!(
-            anims
-                .value(AnimKey::ToastFade(FIRST_TOAST_ID), now)
-                .is_none(),
+            anims.value(AnimKey::ToastFade(FIRST_TOAST_ID), now).is_none(),
             "start_pending_anims hasn't run yet in this bare-Toasts test"
         );
         anims.snap(AnimKey::ToastFade(FIRST_TOAST_ID), 0.0);
-        anims.retarget(
-            AnimKey::ToastFade(FIRST_TOAST_ID),
-            1.0,
-            Duration::from_millis(100),
-            now,
-        );
+        anims.retarget(AnimKey::ToastFade(FIRST_TOAST_ID), 1.0, Duration::from_millis(100), now);
         assert!(
-            anims
-                .value(AnimKey::ToastFade(FIRST_TOAST_ID), now)
-                .is_some(),
+            anims.value(AnimKey::ToastFade(FIRST_TOAST_ID), now).is_some(),
             "the anim entry exists before expiry"
         );
 
@@ -367,9 +333,7 @@ mod tests {
         t.on_tick(&mut anims, now + TOAST_LIFETIME);
         assert!(t.is_empty(), "the toast has expired");
         assert!(
-            anims
-                .value(AnimKey::ToastFade(FIRST_TOAST_ID), now)
-                .is_none(),
+            anims.value(AnimKey::ToastFade(FIRST_TOAST_ID), now).is_none(),
             "the expired toast's anim entry must be cleared, not just left done"
         );
     }
@@ -380,10 +344,7 @@ mod tests {
         let mut t = Toasts::default();
         let base = Instant::now();
         t.push("bye", ToastKind::Info);
-        assert!(
-            t.on_tick(&mut anims, base),
-            "still visible right after stamping"
-        );
+        assert!(t.on_tick(&mut anims, base), "still visible right after stamping");
         assert!(
             t.on_tick(&mut anims, base + TOAST_LIFETIME - Duration::from_millis(1)),
             "still visible one millisecond before expiry"
@@ -435,11 +396,7 @@ mod tests {
 
         t.on_tick(&mut anims, fade_start - Duration::from_millis(1));
         let before = anims.value(AnimKey::ToastFade(FIRST_TOAST_ID), fade_start);
-        assert_eq!(
-            before,
-            Some(1.0),
-            "still fully settled just before the fade window"
-        );
+        assert_eq!(before, Some(1.0), "still fully settled just before the fade window");
 
         t.on_tick(&mut anims, fade_start);
         let just_after = anims.value_or(
@@ -474,9 +431,7 @@ mod tests {
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let anims = Anims::new(true);
-        terminal
-            .draw(|f| t.draw(f, f.area(), &theme, &anims, Instant::now()))
-            .unwrap();
+        terminal.draw(|f| t.draw(f, f.area(), &theme, &anims, Instant::now())).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("Copied"));
     }
@@ -492,16 +447,13 @@ mod tests {
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let anims = Anims::new(true);
-        terminal
-            .draw(|f| t.draw(f, f.area(), &theme, &anims, Instant::now()))
-            .unwrap();
+        terminal.draw(|f| t.draw(f, f.area(), &theme, &anims, Instant::now())).unwrap();
         let buf = terminal.backend().buffer();
         let row_of = |needle: &str| {
             (0..buf.area.height)
                 .find(|y| {
-                    let row: String = (0..buf.area.width)
-                        .map(|x| buf[(x, *y)].symbol().to_string())
-                        .collect();
+                    let row: String =
+                        (0..buf.area.width).map(|x| buf[(x, *y)].symbol().to_string()).collect();
                     row.contains(needle)
                 })
                 .unwrap_or_else(|| panic!("{needle:?} not on screen"))
@@ -523,9 +475,7 @@ mod tests {
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let anims = Anims::new(true);
-        terminal
-            .draw(|f| t.draw(f, f.area(), &theme, &anims, Instant::now()))
-            .unwrap();
+        terminal.draw(|f| t.draw(f, f.area(), &theme, &anims, Instant::now())).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         // Verify that the toast was rendered with the double-width message
         assert!(content.contains("已"), "CJK character should be rendered");
@@ -541,9 +491,7 @@ mod tests {
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let anims = Anims::new(true);
-        terminal
-            .draw(|f| t.draw(f, f.area(), &theme, &anims, Instant::now()))
-            .unwrap();
+        terminal.draw(|f| t.draw(f, f.area(), &theme, &anims, Instant::now())).unwrap();
         let buf = terminal.backend().buffer();
 
         // The bar column is the toast area's left edge; find it by scanning

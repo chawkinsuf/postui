@@ -202,9 +202,7 @@ fn find_last(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || haystack.len() < needle.len() {
         return None;
     }
-    (0..=haystack.len() - needle.len())
-        .rev()
-        .find(|&i| &haystack[i..i + needle.len()] == needle)
+    (0..=haystack.len() - needle.len()).rev().find(|&i| &haystack[i..i + needle.len()] == needle)
 }
 
 /// Pure parser for the byte stream a terminal sends back in response to our
@@ -371,16 +369,11 @@ mod tests {
         // to and including the fence must be consumed (those bytes would
         // otherwise be typed at the shell); what follows is left for it.
         let (mut reader, mut writer) = std::io::pipe().unwrap();
-        writer
-            .write_all(b"\x1b[<35;57;31M\x1b[<35;58;28M\x1b[?62;22c")
-            .unwrap();
+        writer.write_all(b"\x1b[<35;57;31M\x1b[<35;58;28M\x1b[?62;22c").unwrap();
         let mut out = Vec::new();
 
-        let drained = drain_until_da1_fence(
-            &mut out,
-            &mut reader,
-            Instant::now() + Duration::from_secs(2),
-        );
+        let drained =
+            drain_until_da1_fence(&mut out, &mut reader, Instant::now() + Duration::from_secs(2));
 
         assert_eq!(out, b"\x1b[c", "the fence query is what gets written");
         assert_eq!(drained, b"\x1b[<35;57;31M\x1b[<35;58;28M\x1b[?62;22c");

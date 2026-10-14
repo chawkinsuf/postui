@@ -96,10 +96,7 @@ pub fn compute_layout(
     let expanded = {
         let editor_chrome = editor::CHROME_HEIGHT.min(cols[2].height);
         let response_chrome = crate::components::response::HEADER_STRIP_HEIGHT;
-        let content = cols[2]
-            .height
-            .saturating_sub(editor_chrome)
-            .saturating_sub(response_chrome);
+        let content = cols[2].height.saturating_sub(editor_chrome).saturating_sub(response_chrome);
         let editor_h =
             editor_chrome + (content as f32 * editor_share.clamp(0.0, 1.0)).round() as u16;
         let editor_h = editor_h.min(cols[2].height);
@@ -118,10 +115,7 @@ pub fn compute_layout(
     } else {
         let collapsed = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(editor::COLLAPSED_HEIGHT),
-                Constraint::Min(0),
-            ])
+            .constraints([Constraint::Length(editor::COLLAPSED_HEIGHT), Constraint::Min(0)])
             .split(cols[2]);
         if t >= 1.0 {
             (collapsed[0], collapsed[1])
@@ -131,12 +125,8 @@ pub fn compute_layout(
                 .round() as u16;
             let response_h = cols[2].height.saturating_sub(editor_h);
             let editor_rect = Rect::new(cols[2].x, cols[2].y, cols[2].width, editor_h);
-            let response_rect = Rect::new(
-                cols[2].x,
-                cols[2].y.saturating_add(editor_h),
-                cols[2].width,
-                response_h,
-            );
+            let response_rect =
+                Rect::new(cols[2].x, cols[2].y.saturating_add(editor_h), cols[2].width, response_h);
             (editor_rect, response_rect)
         }
     };
@@ -153,12 +143,7 @@ pub fn compute_layout(
         let editor_h = cols[2].height.saturating_sub(response_h);
         (
             Rect::new(cols[2].x, cols[2].y, cols[2].width, editor_h),
-            Rect::new(
-                cols[2].x,
-                cols[2].y.saturating_add(editor_h),
-                cols[2].width,
-                response_h,
-            ),
+            Rect::new(cols[2].x, cols[2].y.saturating_add(editor_h), cols[2].width, response_h),
         )
     };
     AppLayout {
@@ -185,10 +170,7 @@ mod tests {
             p = p.next();
             seen.push(p);
         }
-        assert_eq!(
-            seen,
-            vec![PaneId::Sidebar, PaneId::Editor, PaneId::Response]
-        );
+        assert_eq!(seen, vec![PaneId::Sidebar, PaneId::Editor, PaneId::Response]);
         assert_eq!(p.next(), start);
         assert_eq!(start.prev(), PaneId::Response);
     }
@@ -351,10 +333,7 @@ mod tests {
             let editor_min = compute_layout(area, 1.0, 0.0, share);
             assert_eq!(editor_min.editor.height, editor::COLLAPSED_HEIGHT);
             let response_min = compute_layout(area, 0.0, 1.0, share);
-            assert_eq!(
-                response_min.response.height,
-                crate::components::response::COLLAPSED_HEIGHT
-            );
+            assert_eq!(response_min.response.height, crate::components::response::COLLAPSED_HEIGHT);
         }
     }
 
@@ -381,10 +360,7 @@ mod tests {
     fn response_collapse_takes_precedence_over_editor_collapse() {
         let area = Rect::new(0, 0, 120, 40);
         let both = compute_layout(area, 1.0, 1.0, 0.5);
-        assert_eq!(
-            both.response.height,
-            crate::components::response::COLLAPSED_HEIGHT
-        );
+        assert_eq!(both.response.height, crate::components::response::COLLAPSED_HEIGHT);
         assert_eq!(
             both.editor.height + both.response.height,
             compute_layout(area, 0.0, 0.0, 0.5).editor.height

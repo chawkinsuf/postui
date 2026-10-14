@@ -164,7 +164,11 @@ fn compile_atoms(source: &str) -> Result<Pattern, PatternError> {
         let c = src[i];
         let at_end = i + 1 == src.len();
         let before_alt = src.get(i + 1) == Some(&'\\') && matches!(src.get(i + 2), Some('|' | ')'));
-        let zero_width = |b: bool, e: bool, run: &mut Option<(bool, bool)>, boundaries: &mut bool, prev: &mut Prev| {
+        let zero_width = |b: bool,
+                          e: bool,
+                          run: &mut Option<(bool, bool)>,
+                          boundaries: &mut bool,
+                          prev: &mut Prev| {
             let (ob, oe) = run.unwrap_or((false, false));
             *run = Some((ob || b, oe || e));
             *boundaries = true;
@@ -185,12 +189,16 @@ fn compile_atoms(source: &str) -> Result<Pattern, PatternError> {
                 match n {
                     '<' => zero_width(true, false, &mut run, &mut boundaries, &mut prev),
                     '>' => zero_width(false, true, &mut run, &mut boundaries, &mut prev),
-                    '+' | '=' | '?' | '{' if prev == Prev::NoMulti => return Err(PatternError::Vim(MULTI_FOLLOWS_MULTI.into())),
+                    '+' | '=' | '?' | '{' if prev == Prev::NoMulti => {
+                        return Err(PatternError::Vim(MULTI_FOLLOWS_MULTI.into()));
+                    }
                     '+' | '=' | '?' | '{' if prev == Prev::Start => {
                         return Err(PatternError::Vim(format!("(NFA regexp) Misplaced {n}")));
                     }
                     // After `^` or `\<` Vim takes a multi; the subset does not.
-                    '+' | '=' | '?' | '{' if prev != Prev::Atom => return Err(format!("\\{n}").into()),
+                    '+' | '=' | '?' | '{' if prev != Prev::Atom => {
+                        return Err(format!("\\{n}").into());
+                    }
                     '+' => {
                         out.push('+');
                         prev = Prev::NoMulti;
@@ -204,8 +212,10 @@ fn compile_atoms(source: &str) -> Result<Pattern, PatternError> {
                         prev = Prev::NoMulti;
                     }
                     '{' => {
-                        let close =
-                            src[i..].iter().position(|&c| c == '}').ok_or(PatternError::Vim(BRACE_SYNTAX.into()))?;
+                        let close = src[i..]
+                            .iter()
+                            .position(|&c| c == '}')
+                            .ok_or(PatternError::Vim(BRACE_SYNTAX.into()))?;
                         let mut body: String = src[i..i + close].iter().collect();
                         if body.ends_with('\\') {
                             body.pop();
@@ -213,7 +223,9 @@ fn compile_atoms(source: &str) -> Result<Pattern, PatternError> {
                         if body.starts_with('-') {
                             return Err("\\{-".into());
                         }
-                        if !body.chars().all(|c| c.is_ascii_digit() || c == ',') || body.matches(',').count() > 1 {
+                        if !body.chars().all(|c| c.is_ascii_digit() || c == ',')
+                            || body.matches(',').count() > 1
+                        {
                             return Err(PatternError::Vim(BRACE_SYNTAX.into()));
                         }
                         // Vim's `read_limits()` swaps a backwards range:
@@ -255,9 +267,16 @@ fn compile_atoms(source: &str) -> Result<Pattern, PatternError> {
                     'D' => atom(&mut out, &format!("[^0-9{NOT_SENTINEL}]"), &mut prev),
                     'w' => atom(&mut out, "[0-9A-Za-z_]", &mut prev),
                     'W' => atom(&mut out, &format!("[^0-9A-Za-z_{NOT_SENTINEL}]"), &mut prev),
-                    '/' | '.' | '*' | '[' | ']' | '^' | '$' | '~' | '\\' => atom(&mut out, &regex::escape(&n.to_string()), &mut prev),
+                    '/' | '.' | '*' | '[' | ']' | '^' | '$' | '~' | '\\' => {
+                        atom(&mut out, &regex::escape(&n.to_string()), &mut prev)
+                    }
                     // `\zs`, `\ze`, `\z(`: the atom is the two letters.
-                    'z' => return Err(src[i - 2..(i + 1).min(src.len())].iter().collect::<String>().into()),
+                    'z' => {
+                        return Err(src[i - 2..(i + 1).min(src.len())]
+                            .iter()
+                            .collect::<String>()
+                            .into());
+                    }
                     // Vim's `peekchr()`: a char with no `META_flags` entry
                     // and no abbreviation is itself (`\q` is `q`).
                     other if !META.contains(other) && !ABBR.contains(other) => {
@@ -344,7 +363,9 @@ fn collection(src: &[char]) -> Result<(String, usize), String> {
                 // A line break: multi-line patterns are out of the subset.
                 'n' => return Err("\\n".into()),
                 // A char code (`\d123`, `\o40`, `\x20`, `€`) is out.
-                'd' | 'o' | 'x' | 'u' | 'U' if src.get(i).is_some_and(|c| c.is_ascii_hexdigit()) => {
+                'd' | 'o' | 'x' | 'u' | 'U'
+                    if src.get(i).is_some_and(|c| c.is_ascii_hexdigit()) =>
+                {
                     return Err(format!("\\{n}"));
                 }
                 // Before any other char the backslash is itself a member
@@ -358,7 +379,11 @@ fn collection(src: &[char]) -> Result<(String, usize), String> {
             // A char index, never a byte offset: the class name may be any text.
             let end = src[i..].windows(2).position(|w| w == [':', ']']).ok_or("[:")?;
             return Err(src[i..i + end + 2].iter().collect());
-        } else if c == '[' && matches!(src.get(i + 1), Some('=' | '.')) && src.get(i + 3) == src.get(i + 1) && src.get(i + 4) == Some(&']') {
+        } else if c == '['
+            && matches!(src.get(i + 1), Some('=' | '.'))
+            && src.get(i + 3) == src.get(i + 1)
+            && src.get(i + 4) == Some(&']')
+        {
             // An equivalence class `[=x=]` or a collating element `[.x.]`
             // (one char, as `skip_anyof()` reads them) is out of the subset.
             return Err(src[i..i + 5].iter().collect());
@@ -383,10 +408,21 @@ fn collection(src: &[char]) -> Result<(String, usize), String> {
     }
     for (lo, hi) in ranges {
         let (lo, hi) = (text_char(lo), text_char(hi));
-        set.push_str(&format!("{}-{}", regex::escape(&lo.to_string()), regex::escape(&hi.to_string())));
+        set.push_str(&format!(
+            "{}-{}",
+            regex::escape(&lo.to_string()),
+            regex::escape(&hi.to_string())
+        ));
     }
     // Either way the class never takes a sentinel.
-    Ok((if negate { format!("[^{NOT_SENTINEL}{set}]") } else { format!("[[{set}]--[{NOT_SENTINEL}]]") }, i))
+    Ok((
+        if negate {
+            format!("[^{NOT_SENTINEL}{set}]")
+        } else {
+            format!("[[{set}]--[{NOT_SENTINEL}]]")
+        },
+        i,
+    ))
 }
 
 /// A text char as the haystack holds it: the four private-use chars
@@ -490,7 +526,13 @@ impl Pattern {
 /// once costs two scans, not 9,999 (the cycle has wrapped by then). Each
 /// line's chain is found once per call, so `9999n` along one long line
 /// with no repeat reads that line once, not once per step.
-pub(crate) fn search<B: TextBuf>(buf: &B, from: Pos, dir: Dir, count: usize, pat: &Pattern) -> Option<(Pos, bool)> {
+pub(crate) fn search<B: TextBuf>(
+    buf: &B,
+    from: Pos,
+    dir: Dir,
+    count: usize,
+    pat: &Pattern,
+) -> Option<(Pos, bool)> {
     let lines = buf.line_count();
     let total = count.max(1);
     let mut pos = from;
@@ -537,12 +579,17 @@ pub(crate) fn search<B: TextBuf>(buf: &B, from: Pos, dir: Dir, count: usize, pat
             }
             Dir::Backward => {
                 let mut first = start.col > 0;
-                let mut row = if start.col == 0 { start.row as isize - 1 } else { start.row as isize };
+                let mut row =
+                    if start.col == 0 { start.row as isize - 1 } else { start.row as isize };
                 for loop_ in 0..2 {
                     while row >= 0 {
                         let r = row as usize;
                         let chain = chain_of(&mut chains, buf, pat, r);
-                        let before = if first { chain.partition_point(|&(s, _)| s < start.col) } else { chain.len() };
+                        let before = if first {
+                            chain.partition_point(|&(s, _)| s < start.col)
+                        } else {
+                            chain.len()
+                        };
                         if let Some(&(s, _)) = before.checked_sub(1).map(|i| &chain[i]) {
                             found = Some(Pos::new(r, s));
                             break;
@@ -575,7 +622,12 @@ pub(crate) fn search<B: TextBuf>(buf: &B, from: Pos, dir: Dir, count: usize, pat
 /// `row`'s chain, found the first time a [`search`] call asks. Its starts
 /// only grow (the line's end counted one column back included), so the
 /// callers binary-search it.
-fn chain_of<'a, B: TextBuf>(chains: &'a mut HashMap<usize, Vec<(usize, usize)>>, buf: &B, pat: &Pattern, row: usize) -> &'a [(usize, usize)] {
+fn chain_of<'a, B: TextBuf>(
+    chains: &'a mut HashMap<usize, Vec<(usize, usize)>>,
+    buf: &B,
+    pat: &Pattern,
+    row: usize,
+) -> &'a [(usize, usize)] {
     chains.entry(row).or_insert_with(|| pat.chain(&buf.line(row)))
 }
 
@@ -606,7 +658,9 @@ pub(crate) fn find_ident(line: &[char], col: usize) -> Option<(usize, usize)> {
             // 3. The end: the same class (pass 0), or any non-blank (pass 1).
             let k = class(line[i]);
             let mut end = i;
-            while end < line.len() && (if pass == 0 { class(line[end]) == k } else { class(line[end]) != 0 }) {
+            while end < line.len()
+                && (if pass == 0 { class(line[end]) == k } else { class(line[end]) != 0 })
+            {
                 end += 1;
             }
             return Some((i, end));
@@ -619,7 +673,11 @@ pub(crate) fn find_ident(line: &[char], col: usize) -> Option<(usize, usize)> {
 /// with `/ . * ~ [ ^ $ \` escaped (`#` also `?`), `\<` before it when its
 /// first char is a word char and `\>` after it when its last one is.
 pub(crate) fn ident_pattern(line: &[char], start: usize, end: usize, backward: bool) -> String {
-    let special: &[char] = if backward { &['/', '?', '.', '*', '~', '[', '^', '$', '\\'] } else { &['/', '.', '*', '~', '[', '^', '$', '\\'] };
+    let special: &[char] = if backward {
+        &['/', '?', '.', '*', '~', '[', '^', '$', '\\']
+    } else {
+        &['/', '.', '*', '~', '[', '^', '$', '\\']
+    };
     let mut pat = String::new();
     if class(line[start]) >= 2 {
         pat.push_str("\\<");
@@ -696,8 +754,25 @@ fn skip_regexp(src: &[char], dir: Dir, stop: bool) -> (String, usize) {
 /// closes the collection, or `src.len()` when none does.
 fn skip_anyof(src: &[char], mut p: usize) -> usize {
     const CLASSES: [&str; 19] = [
-        "alnum", "alpha", "blank", "cntrl", "digit", "graph", "lower", "print", "punct", "space", "upper", "xdigit", "tab",
-        "return", "backspace", "escape", "ident", "keyword", "fname",
+        "alnum",
+        "alpha",
+        "blank",
+        "cntrl",
+        "digit",
+        "graph",
+        "lower",
+        "print",
+        "punct",
+        "space",
+        "upper",
+        "xdigit",
+        "tab",
+        "return",
+        "backspace",
+        "escape",
+        "ident",
+        "keyword",
+        "fname",
     ];
     if src.get(p) == Some(&'^') {
         p += 1;
@@ -712,7 +787,9 @@ fn skip_anyof(src: &[char], mut p: usize) -> usize {
             if p < src.len() && src[p] != ']' {
                 p += 1;
             }
-        } else if c == '\\' && src.get(p + 1).is_some_and(|n| "]^-n\\".contains(*n) || "nrtebdoxuU".contains(*n)) {
+        } else if c == '\\'
+            && src.get(p + 1).is_some_and(|n| "]^-n\\".contains(*n) || "nrtebdoxuU".contains(*n))
+        {
             p += 2;
         } else if c == '[' {
             // `[:name:]` with a known name, `[=x=]`, `[.x.]`: one item.
@@ -903,20 +980,47 @@ mod tests {
             assert_eq!(chain(pat, line), want, "{pat:?} on {line:?}");
         }
         for (pat, atom) in [
-            ("\\v foo", "\\v"), ("\\zsfoo", "\\zs"), ("\\bfoo", "\\b"), ("\\e", "\\e"), ("\\t", "\\t"),
-            ("a\\nb", "\\n"), ("\\_s", "\\_"), ("\\a", "\\a"), ("\\%d", "\\%"), ("\\V.", "\\V"), ("\\c", "\\c"),
-            ("\\u", "\\u"), ("b[[:upper:]]r", "[:upper:]"), ("^\\+b", "\\+"), ("a\\{-1,}b", "\\{-"), ("\\<*", "*"),
-            ("\\1", "\\1"), ("[[:日本:]", "[:日本:]"), ("x[[:é:]]", "[:é:]"), ("b[\\n]r", "\\n"), ("[\\d65]", "\\d"),
-            ("[\\x41]", "\\x"), ("[[=a=]]x", "[=a=]"), ("[[.a.]]x", "[.a.]"), ("[b[=日=]]", "[=日=]"),
+            ("\\v foo", "\\v"),
+            ("\\zsfoo", "\\zs"),
+            ("\\bfoo", "\\b"),
+            ("\\e", "\\e"),
+            ("\\t", "\\t"),
+            ("a\\nb", "\\n"),
+            ("\\_s", "\\_"),
+            ("\\a", "\\a"),
+            ("\\%d", "\\%"),
+            ("\\V.", "\\V"),
+            ("\\c", "\\c"),
+            ("\\u", "\\u"),
+            ("b[[:upper:]]r", "[:upper:]"),
+            ("^\\+b", "\\+"),
+            ("a\\{-1,}b", "\\{-"),
+            ("\\<*", "*"),
+            ("\\1", "\\1"),
+            ("[[:日本:]", "[:日本:]"),
+            ("x[[:é:]]", "[:é:]"),
+            ("b[\\n]r", "\\n"),
+            ("[\\d65]", "\\d"),
+            ("[\\x41]", "\\x"),
+            ("[[=a=]]x", "[=a=]"),
+            ("[[.a.]]x", "[.a.]"),
+            ("[b[=日=]]", "[=日=]"),
         ] {
             assert_eq!(compile(pat).err(), Some(not_supported_note(atom)), "{pat:?}");
         }
         // Patterns Vim refuses too say Vim's message (probed with
         // `search()`, numbers dropped).
         for (pat, msg) in [
-            ("~", NO_PREVIOUS_SUBSTITUTE), ("b\\)", UNMATCHED_CLOSE), ("\\(b", UNMATCHED_OPEN),
-            ("\\{2}b", "(NFA regexp) Misplaced {"), ("\\+b", "(NFA regexp) Misplaced +"), ("\\?", "(NFA regexp) Misplaced ?"),
-            ("b**r", MULTI_FOLLOWS_MULTI), ("a*\\+", MULTI_FOLLOWS_MULTI), ("o\\{", BRACE_SYNTAX), ("a\\{x}", BRACE_SYNTAX),
+            ("~", NO_PREVIOUS_SUBSTITUTE),
+            ("b\\)", UNMATCHED_CLOSE),
+            ("\\(b", UNMATCHED_OPEN),
+            ("\\{2}b", "(NFA regexp) Misplaced {"),
+            ("\\+b", "(NFA regexp) Misplaced +"),
+            ("\\?", "(NFA regexp) Misplaced ?"),
+            ("b**r", MULTI_FOLLOWS_MULTI),
+            ("a*\\+", MULTI_FOLLOWS_MULTI),
+            ("o\\{", BRACE_SYNTAX),
+            ("a\\{x}", BRACE_SYNTAX),
         ] {
             assert_eq!(compile(pat).err().as_deref(), Some(msg), "{pat:?}");
         }

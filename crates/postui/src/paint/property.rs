@@ -75,11 +75,7 @@ pub const HOVER_WASH: f32 = 0.2;
 /// AI" while the Variables pane's is "Value in <env>", whose width
 /// depends on the environment's display name.
 pub fn label_column(labels: &[&str]) -> u16 {
-    let widest = labels
-        .iter()
-        .map(|l| l.chars().count() as u16)
-        .max()
-        .unwrap_or(0);
+    let widest = labels.iter().map(|l| l.chars().count() as u16).max().unwrap_or(0);
     widest.saturating_add(2).clamp(LABEL_W_MIN, LABEL_W_MAX)
 }
 
@@ -135,11 +131,7 @@ impl PropertyRow<'_> {
             theme.page
         };
         fill(buf, area, bg);
-        let label_fg = if self.disabled {
-            theme.text_disabled
-        } else {
-            theme.text
-        };
+        let label_fg = if self.disabled { theme.text_disabled } else { theme.text };
         text(buf, area.x, area.y, self.label, label_fg, bg, false);
 
         // Trailing pills first, right-to-left from the row's right edge:
@@ -154,18 +146,8 @@ impl PropertyRow<'_> {
                 break;
             }
             right -= w;
-            let rect = Rect {
-                x: right,
-                y: area.y,
-                width: w,
-                height: 1,
-            };
-            Pill {
-                label: t.label,
-                kind: t.kind,
-                state: t.state,
-            }
-            .paint(buf, rect, theme);
+            let rect = Rect { x: right, y: area.y, width: w, height: 1 };
+            Pill { label: t.label, kind: t.kind, state: t.state }.paint(buf, rect, theme);
             hits.register(rect, t.hit.clone());
             right = right.saturating_sub(1);
         }
@@ -175,15 +157,7 @@ impl PropertyRow<'_> {
         // past the row's right edge, and a control painted from there
         // lands outside the row entirely.
         let x = (area.x + self.label_w).min(right);
-        ControlSlot {
-            rect: Rect {
-                x,
-                y: area.y,
-                width: right.saturating_sub(x),
-                height: 1,
-            },
-            bg,
-        }
+        ControlSlot { rect: Rect { x, y: area.y, width: right.saturating_sub(x), height: 1 }, bg }
     }
 }
 
@@ -262,10 +236,7 @@ impl Toggle {
     /// that registers a click target past the row's right edge.
     pub fn paint(&self, buf: &mut Buffer, area: Rect, theme: &Theme) -> Rect {
         let (face, _) = control_face(theme, ButtonKind::Secondary, self.state);
-        let rect = Rect {
-            width: area.width.min(TOGGLE_W),
-            ..area
-        };
+        let rect = Rect { width: area.width.min(TOGGLE_W), ..area };
         fill(buf, rect, face);
         // The glyph sits one column in, so a face narrower than two
         // columns has nowhere to put it: painting anyway would land it
@@ -273,11 +244,7 @@ impl Toggle {
         if rect.width < 2 {
             return rect;
         }
-        let glyph = if self.on {
-            crate::glyph::CHECKBOX
-        } else {
-            crate::glyph::CHECKBOX_OFF
-        };
+        let glyph = if self.on { crate::glyph::CHECKBOX } else { crate::glyph::CHECKBOX_OFF };
         let fg = match self.state {
             ControlState::Disabled => theme.text_disabled,
             _ if self.on => theme.accent,
@@ -360,15 +327,9 @@ mod tests {
         })
         .unwrap();
         let washed = buf_cell(&term, 40, 0).bg;
-        assert_eq!(
-            washed,
-            crate::theme::mix(theme.page, theme.control, HOVER_WASH)
-        );
+        assert_eq!(washed, crate::theme::mix(theme.page, theme.control, HOVER_WASH));
         assert_ne!(washed, theme.page, "the wash is visible");
-        assert!(
-            lum(washed) < lum(theme.selection),
-            "and quieter than the band it replaces"
-        );
+        assert!(lum(washed) < lum(theme.selection), "and quieter than the band it replaces");
     }
 
     /// The cursor is the control lifting its own fill, so Focused must
@@ -396,11 +357,11 @@ mod tests {
         let theme = Theme::dark();
         let mut term = Terminal::new(TestBackend::new(20, 1)).unwrap();
         term.draw(|f| {
-            Well {
-                content: ratatui::text::Line::raw("abc"),
-                state: ControlState::Normal,
-            }
-            .paint(f.buffer_mut(), Rect::new(2, 0, 10, 1), &theme);
+            Well { content: ratatui::text::Line::raw("abc"), state: ControlState::Normal }.paint(
+                f.buffer_mut(),
+                Rect::new(2, 0, 10, 1),
+                &theme,
+            );
         })
         .unwrap();
         assert_eq!(buf_cell(&term, 2, 0).symbol(), " ", "left pad");
@@ -437,9 +398,7 @@ mod tests {
         })
         .unwrap();
         let slot = slot.unwrap();
-        let pill = hits
-            .rect_of(&Hit::VmRevealToggle)
-            .expect("the row registers it");
+        let pill = hits.rect_of(&Hit::VmRevealToggle).expect("the row registers it");
         assert_eq!(pill.width, pill_min_width("reveal"));
         assert_eq!(pill.x + pill.width, 60, "flush with the row's right edge");
         assert!(
@@ -471,20 +430,16 @@ mod tests {
         let theme = Theme::dark();
         let mut term = Terminal::new(TestBackend::new(20, 1)).unwrap();
         term.draw(|f| {
-            Well {
-                content: ratatui::text::Line::raw("abc"),
-                state: ControlState::Disabled,
-            }
-            .paint(f.buffer_mut(), Rect::new(0, 0, 10, 1), &theme);
+            Well { content: ratatui::text::Line::raw("abc"), state: ControlState::Disabled }.paint(
+                f.buffer_mut(),
+                Rect::new(0, 0, 10, 1),
+                &theme,
+            );
         })
         .unwrap();
         assert_eq!(
             buf_cell(&term, 1, 0).fg,
-            crate::theme::mix(
-                theme.control,
-                theme.text_muted,
-                crate::paint::DISABLED_LABEL_MIX
-            )
+            crate::theme::mix(theme.control, theme.text_muted, crate::paint::DISABLED_LABEL_MIX)
         );
     }
 
@@ -519,11 +474,11 @@ mod tests {
                     state: ControlState::Normal,
                 }
                 .paint(f.buffer_mut(), slot.rect, &theme);
-                let r = Toggle {
-                    on: true,
-                    state: ControlState::Normal,
-                }
-                .paint(f.buffer_mut(), slot.rect, &theme);
+                let r = Toggle { on: true, state: ControlState::Normal }.paint(
+                    f.buffer_mut(),
+                    slot.rect,
+                    &theme,
+                );
                 hits.register(r, Hit::VmSecretToggle);
                 toggle_rect = Some(r);
             })
@@ -555,26 +510,20 @@ mod tests {
     #[test]
     fn a_toggle_paints_one_cell_of_glyph_on_a_three_cell_face() {
         let theme = Theme::dark();
-        for (on, want) in [
-            (true, crate::glyph::CHECKBOX),
-            (false, crate::glyph::CHECKBOX_OFF),
-        ] {
+        for (on, want) in [(true, crate::glyph::CHECKBOX), (false, crate::glyph::CHECKBOX_OFF)] {
             let mut term = Terminal::new(TestBackend::new(10, 1)).unwrap();
             term.draw(|f| {
-                Toggle {
-                    on,
-                    state: ControlState::Normal,
-                }
-                .paint(f.buffer_mut(), Rect::new(0, 0, TOGGLE_W, 1), &theme);
+                Toggle { on, state: ControlState::Normal }.paint(
+                    f.buffer_mut(),
+                    Rect::new(0, 0, TOGGLE_W, 1),
+                    &theme,
+                );
             })
             .unwrap();
             assert_eq!(buf_cell(&term, 1, 0).symbol(), want);
             assert_eq!(buf_cell(&term, 0, 0).bg, theme.control);
             assert_eq!(buf_cell(&term, 2, 0).bg, theme.control);
-            assert_eq!(
-                buf_cell(&term, 1, 0).fg,
-                if on { theme.accent } else { theme.text_muted }
-            );
+            assert_eq!(buf_cell(&term, 1, 0).fg, if on { theme.accent } else { theme.text_muted });
         }
     }
 }

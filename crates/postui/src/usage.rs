@@ -31,10 +31,8 @@ impl UsageStore {
             Ok(v) => v,
             Err(e) => return (store, Some(e.to_string())),
         };
-        let Some(usage) = value
-            .get("palette")
-            .and_then(|v| v.get("usage"))
-            .and_then(|v| v.as_table())
+        let Some(usage) =
+            value.get("palette").and_then(|v| v.get("usage")).and_then(|v| v.as_table())
         else {
             return (store, None);
         };
@@ -65,14 +63,10 @@ impl UsageStore {
             let mut entry = toml_edit::InlineTable::new();
             entry.insert("count", (*count as i64).into());
             entry.insert("last_used", (*last_used).into());
-            usage_table.insert(
-                id,
-                toml_edit::Item::Value(toml_edit::Value::InlineTable(entry)),
-            );
+            usage_table.insert(id, toml_edit::Item::Value(toml_edit::Value::InlineTable(entry)));
         }
-        let palette = doc
-            .entry("palette")
-            .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+        let palette =
+            doc.entry("palette").or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
         if palette.as_table_mut().is_none() {
             // Not a table: nothing of ours can live under it, replace it.
             *palette = toml_edit::Item::Table(toml_edit::Table::new());
@@ -92,11 +86,7 @@ impl UsageStore {
         entry.0 += 1;
         entry.1 = now_secs;
 
-        if self
-            .entries
-            .values()
-            .any(|(count, _)| *count >= HALVING_THRESHOLD)
-        {
+        if self.entries.values().any(|(count, _)| *count >= HALVING_THRESHOLD) {
             for (count, _) in self.entries.values_mut() {
                 *count /= 2;
             }
@@ -117,10 +107,7 @@ impl UsageStore {
 /// The current time as unix seconds, `0` if the system clock is somehow
 /// before the epoch.
 pub fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 #[cfg(test)]

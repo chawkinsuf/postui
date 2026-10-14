@@ -121,7 +121,9 @@ pub enum Action {
     /// outside the app is written over without the drift dialog, as Vim's
     /// `!` writes. A never-saved request asks for a name; a write that
     /// fails does not quit.
-    ForceWrite { quit: bool },
+    ForceWrite {
+        quit: bool,
+    },
     /// Vim's window verbs: `:q` (neither), `:q!` and `ZQ` (`force`),
     /// `:wq`, `:x` and `ZZ` (`write`), `:wq!` and `:x!` (both). On the main
     /// screen they quit, as `GatedQuit`, `ForceQuit`, `WriteQuit` and
@@ -133,7 +135,10 @@ pub enum Action {
     /// Manage surface (`Surfaces::MANAGE`): a dialog over Manage quits, as
     /// one over the main screen does. The `a` forms (`:qa`, `:wqa`) are the
     /// quit actions everywhere.
-    CloseWindow { write: bool, force: bool },
+    CloseWindow {
+        write: bool,
+        force: bool,
+    },
     Tick,
     Render,
     FocusNext,
@@ -225,7 +230,9 @@ pub enum Action {
     /// closes first, but only when there is a tab to go to: a refused key
     /// leaves the field open (the user's decision, plan M4a), and so does a
     /// close the field itself refuses (plan M5a Deviation 16).
-    GoTab { to: TabTo },
+    GoTab {
+        to: TabTo,
+    },
     CycleMethod,
     FocusUrl,
     /// Toggles `App::table_collapsed` (params/headers table body vs. tab
@@ -265,7 +272,10 @@ pub enum Action {
     DeleteTableRow(usize),
     /// `{N}dd` on a table: rows `start..start+count` (clamped) as one
     /// editor undo step (piece 4 spec §5.3).
-    DeleteTableRows { start: usize, count: usize },
+    DeleteTableRows {
+        start: usize,
+        count: usize,
+    },
     /// The row context menu's "Duplicate row" (Task 17, spec §5): copies row
     /// `i` of the active params/headers/vars table to `<key>-copy` (then
     /// `-copy-2`, …, same collision rule as `DuplicateRequest`/`DuplicateVar`)
@@ -281,10 +291,17 @@ pub enum Action {
     /// slot), below it or `above` it, `count` times as one undo step.
     /// Gated on unsaved edits, once for the whole count: the first copy
     /// opens.
-    PutRequest { anchor: Option<String>, above: bool, count: usize },
+    PutRequest {
+        anchor: Option<String>,
+        above: bool,
+        count: usize,
+    },
     /// `p` / `P` on a table: insert `count` copies of the yanked row from
     /// `at` down, as one editor change.
-    PutTableRow { at: usize, count: usize },
+    PutTableRow {
+        at: usize,
+        count: usize,
+    },
     /// Open the method-selector dropdown, anchored below the method badge.
     OpenMethodDropdown,
     /// Set the editor's method directly (the dropdown's row action).
@@ -340,7 +357,9 @@ pub enum Action {
     /// None`, the space root) and a folder's "Import curl here…" (spec
     /// curl §4.1): reads and parses the clipboard, then runs the dirty
     /// gate once, before the first name prompt.
-    ImportCurl { folder: Option<String> },
+    ImportCurl {
+        folder: Option<String>,
+    },
     /// Past the dirty gate: opens the first command's name prompt, after
     /// throwing the editor's unsaved work away when the gate's answer was
     /// Discard (`discard`).
@@ -386,7 +405,12 @@ pub enum Action {
     /// (below, or above with `above`) and a missing order array is seeded,
     /// even when `a` is the source itself. A put makes `count` copies in
     /// one undo step; a plain Duplicate's is 1.
-    ForceDuplicateRequest { slug: String, anchor: Option<String>, above: bool, count: usize },
+    ForceDuplicateRequest {
+        slug: String,
+        anchor: Option<String>,
+        above: bool,
+        count: usize,
+    },
     /// The scratch gate's save path: opens the Save-as name prompt with the
     /// deferred action to run once the save succeeds.
     PromptSaveScratch(Box<Action>),
@@ -751,7 +775,9 @@ pub enum Action {
     /// dispatchable form of the `Find` button / `/` key, so the footer's
     /// Response-pane search chip and the palette can reach it too. Vim's
     /// `?` opens it `backward` (plan M5a Deviation 10).
-    OpenResponseSearch { backward: bool },
+    OpenResponseSearch {
+        backward: bool,
+    },
     /// A vim search key on the response (plan M5a Task 5).
     ResponseFind(ResponseFind),
     /// The response search's next (`1`) or previous (`-1`) match from the
@@ -770,14 +796,22 @@ pub enum Action {
     /// `zo` `zc` `za` `zR` `zM` on the response's tree view (piece 4 spec
     /// §5.7): `count` levels, as Vim's counted fold keys. Nothing on Raw or
     /// Headers.
-    TreeFold { op: FoldOp, count: usize },
+    TreeFold {
+        op: FoldOp,
+        count: usize,
+    },
     /// Vim's `zo` `zc` `za` `zR` `zM` on the sidebar's folders (key list §6
     /// `L.fold`; plan M5b Deviation 9): `count` levels, as on the response.
-    SidebarFold { op: FoldOp, count: usize },
+    SidebarFold {
+        op: FoldOp,
+        count: usize,
+    },
     /// `.` (key list §6 `L.dot`, spec §5.12; plan M5b Deviations 2 and 5):
     /// the last list change again, where it runs, with this count in place
     /// of its own when one was typed.
-    RepeatChange { count: Option<usize> },
+    RepeatChange {
+        count: Option<usize>,
+    },
     /// A vim cursor or window key on the response (piece 4 spec §5.7; plan
     /// M5a Task 3).
     ResponseMove(ResponseMotion),
@@ -1293,12 +1327,17 @@ pub enum Verb {
     /// `m`: move (a request to a space; a space's requests to another).
     Move,
     /// `dd` / `d`; `{N}dd` deletes N rows where that is one undo step.
-    Delete { count: usize },
+    Delete {
+        count: usize,
+    },
     /// `yy` / `y`: into the row register (the grid: its option stash).
     Yank,
     /// `p` / `P`: a copy of the register below, or `above`, the cursor;
     /// `{N}p` puts N copies as one undo step, as vim's `3p` does.
-    Put { above: bool, count: usize },
+    Put {
+        above: bool,
+        count: usize,
+    },
     /// The options grid's Edit… prompt.
     EditValue,
     Promote,

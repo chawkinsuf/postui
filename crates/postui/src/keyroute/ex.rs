@@ -215,7 +215,9 @@ pub fn resolve(query: &str, scope: &Scope) -> Resolved {
     // The command word is the leading letters, so `:set nu` and `:s/a/b/`
     // are refused as `:set` and `:s` are (Review Focus 2).
     let word = query.split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or("");
-    if UNSUPPORTED.contains(&word) || query.starts_with(|c: char| c.is_ascii_digit() || "%.$'<!".contains(c)) {
+    if UNSUPPORTED.contains(&word)
+        || query.starts_with(|c: char| c.is_ascii_digit() || "%.$'<!".contains(c))
+    {
         return Resolved::Refused(format!("Not supported: :{query}"));
     }
     if let Some((head, _)) = query.split_once(char::is_whitespace) {
@@ -263,7 +265,17 @@ mod tests {
     use crate::keyroute::Surface;
 
     fn sidebar() -> Scope {
-        Scope { surface: Surface::Sidebar, verbs: vec![Verb::Add, Verb::Rename, Verb::Move, Verb::Delete { count: 1 }, Verb::Yank, Verb::Put { above: false, count: 1 }] }
+        Scope {
+            surface: Surface::Sidebar,
+            verbs: vec![
+                Verb::Add,
+                Verb::Rename,
+                Verb::Move,
+                Verb::Delete { count: 1 },
+                Verb::Yank,
+                Verb::Put { above: false, count: 1 },
+            ],
+        }
     }
 
     fn pinned(q: &str, scope: &Scope) -> ExRow {
@@ -278,25 +290,51 @@ mod tests {
     fn the_file_verbs_resolve_everywhere() {
         let close = Action::CloseField;
         for q in ["w", "write", "up", "update", "wa"] {
-            assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::SaveRequest], "{q}");
+            assert_eq!(
+                pinned(q, &sidebar()).actions,
+                vec![close.clone(), Action::SaveRequest],
+                "{q}"
+            );
         }
         let window = |write, force| vec![close.clone(), Action::CloseWindow { write, force }];
         assert_eq!(pinned("q", &sidebar()).actions, window(false, false));
-        assert_eq!(pinned("q!", &sidebar()).actions, vec![Action::CloseWindow { write: false, force: true }], "no close: it abandons the field");
+        assert_eq!(
+            pinned("q!", &sidebar()).actions,
+            vec![Action::CloseWindow { write: false, force: true }],
+            "no close: it abandons the field"
+        );
         for q in ["wq", "x", "xit", "exit"] {
             assert_eq!(pinned(q, &sidebar()).actions, window(true, false), "{q}");
         }
         for q in ["qa", "qall", "quitall"] {
-            assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::GatedQuit], "{q}");
+            assert_eq!(
+                pinned(q, &sidebar()).actions,
+                vec![close.clone(), Action::GatedQuit],
+                "{q}"
+            );
         }
-        assert_eq!(pinned("qa!", &sidebar()).actions, vec![Action::ForceQuit], "no close: it abandons the field");
+        assert_eq!(
+            pinned("qa!", &sidebar()).actions,
+            vec![Action::ForceQuit],
+            "no close: it abandons the field"
+        );
         for q in ["wqa", "wqall", "xa", "xall"] {
-            assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::WriteQuit], "{q}");
+            assert_eq!(
+                pinned(q, &sidebar()).actions,
+                vec![close.clone(), Action::WriteQuit],
+                "{q}"
+            );
         }
         assert_eq!(pinned("e", &sidebar()).actions, vec![close.clone(), Action::ReloadFromDisk]);
-        assert_eq!(pinned("e!", &sidebar()).actions, vec![close.clone(), Action::DiscardChanges, Action::ReloadFromDisk]);
+        assert_eq!(
+            pinned("e!", &sidebar()).actions,
+            vec![close.clone(), Action::DiscardChanges, Action::ReloadFromDisk]
+        );
         assert_eq!(pinned("noh", &sidebar()).actions, vec![close.clone(), Action::NoHlSearch]);
-        assert_eq!(pinned("split", &Scope { surface: Surface::Body, verbs: vec![] }).actions, vec![close, Action::CycleSplit]);
+        assert_eq!(
+            pinned("split", &Scope { surface: Surface::Body, verbs: vec![] }).actions,
+            vec![close, Action::CycleSplit]
+        );
         assert_eq!(pinned("w", &sidebar()).name, "write", "the pinned row shows the full name");
     }
 
@@ -305,13 +343,25 @@ mod tests {
     fn the_bang_write_verbs_resolve() {
         let close = Action::CloseField;
         for q in ["w!", "write!", "up!", "update!", "wa!"] {
-            assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::ForceWrite { quit: false }], "{q}");
+            assert_eq!(
+                pinned(q, &sidebar()).actions,
+                vec![close.clone(), Action::ForceWrite { quit: false }],
+                "{q}"
+            );
         }
         for q in ["wq!", "x!", "xit!", "exit!"] {
-            assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::CloseWindow { write: true, force: true }], "{q}");
+            assert_eq!(
+                pinned(q, &sidebar()).actions,
+                vec![close.clone(), Action::CloseWindow { write: true, force: true }],
+                "{q}"
+            );
         }
         for q in ["wqa!", "wqall!", "xa!", "xall!"] {
-            assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::ForceWrite { quit: true }], "{q}");
+            assert_eq!(
+                pinned(q, &sidebar()).actions,
+                vec![close.clone(), Action::ForceWrite { quit: true }],
+                "{q}"
+            );
         }
         assert_eq!(pinned("wr", &sidebar()).name, "write", "a prefix still reaches the plain verb");
         assert_eq!(pinned("upd", &sidebar()).name, "write");
@@ -321,12 +371,18 @@ mod tests {
     /// do there; the `a` forms and the main screen keep "Quit".
     #[test]
     fn a_window_verb_on_manage_says_it_closes_manage() {
-        let manage = Scope { surface: Surface::ManageList(crate::components::manage::ManageTab::Spaces), verbs: vec![] };
+        let manage = Scope {
+            surface: Surface::ManageList(crate::components::manage::ManageTab::Spaces),
+            verbs: vec![],
+        };
         for q in ["q", "q!", "wq", "x", "wq!"] {
             assert_eq!(pinned(q, &manage).caption, "Close Manage", "{q}");
         }
         assert_eq!(pinned("qa", &manage).caption, "Quit");
-        assert_eq!(pinned("q", &Scope { surface: Surface::Settings, verbs: vec![] }).caption, "Close Manage");
+        assert_eq!(
+            pinned("q", &Scope { surface: Surface::Settings, verbs: vec![] }).caption,
+            "Close Manage"
+        );
         assert_eq!(pinned("q", &sidebar()).caption, "Quit");
     }
 
@@ -350,10 +406,18 @@ mod tests {
     fn the_curl_verbs_resolve_by_name_and_prefix() {
         let close = Action::CloseField;
         for q in ["import", "impo", "imp"] {
-            assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::ImportCurl { folder: None }], "{q}");
+            assert_eq!(
+                pinned(q, &sidebar()).actions,
+                vec![close.clone(), Action::ImportCurl { folder: None }],
+                "{q}"
+            );
         }
         for q in ["copycurl", "copyc"] {
-            assert_eq!(pinned(q, &sidebar()).actions, vec![close.clone(), Action::CopyAsCurl(None)], "{q}");
+            assert_eq!(
+                pinned(q, &sidebar()).actions,
+                vec![close.clone(), Action::CopyAsCurl(None)],
+                "{q}"
+            );
         }
         assert_eq!(pinned("import", &sidebar()).caption, "Import curl from clipboard");
     }
@@ -362,7 +426,9 @@ mod tests {
     /// still meets `:clear`, as before they joined the table.
     #[test]
     fn vims_short_commands_do_not_reach_the_curl_verbs() {
-        assert!(matches!(resolve("c", &sidebar()), Resolved::Refused(t) if t == "Nothing to :clear here"));
+        assert!(
+            matches!(resolve("c", &sidebar()), Resolved::Refused(t) if t == "Nothing to :clear here")
+        );
         for q in ["co", "cop", "copy", "i", "im"] {
             assert!(matches!(resolve(q, &sidebar()), Resolved::Nothing), "{q}");
         }
@@ -374,12 +440,47 @@ mod tests {
     /// refused, and `:s` never pins send.
     #[test]
     fn unsupported_spellings_and_ranges_are_refused() {
-        for q in ["s", "substitute", "g", "global", "v", "vglobal", "se", "set", "sor", "sort", "norm", "normal", "r", "read", "!", "%s/a/b/", "5", "1,3d", ".w", "$", "'a", "<,'>d"] {
-            assert!(matches!(resolve(q, &sidebar()), Resolved::Refused(t) if t == format!("Not supported: :{q}")), "{q}");
+        for q in [
+            "s",
+            "substitute",
+            "g",
+            "global",
+            "v",
+            "vglobal",
+            "se",
+            "set",
+            "sor",
+            "sort",
+            "norm",
+            "normal",
+            "r",
+            "read",
+            "!",
+            "%s/a/b/",
+            "5",
+            "1,3d",
+            ".w",
+            "$",
+            "'a",
+            "<,'>d",
+        ] {
+            assert!(
+                matches!(resolve(q, &sidebar()), Resolved::Refused(t) if t == format!("Not supported: :{q}")),
+                "{q}"
+            );
         }
-        assert_eq!(pinned("sec", &Scope { surface: Surface::VarForm, verbs: vec![Verb::Secret] }).name, "secret");
-        assert_eq!(pinned("gr", &Scope { surface: Surface::VarList, verbs: vec![Verb::AddAlt] }).name, "group");
-        assert_eq!(pinned("va", &Scope { surface: Surface::VarGrid, verbs: vec![Verb::EditValue] }).name, "value");
+        assert_eq!(
+            pinned("sec", &Scope { surface: Surface::VarForm, verbs: vec![Verb::Secret] }).name,
+            "secret"
+        );
+        assert_eq!(
+            pinned("gr", &Scope { surface: Surface::VarList, verbs: vec![Verb::AddAlt] }).name,
+            "group"
+        );
+        assert_eq!(
+            pinned("va", &Scope { surface: Surface::VarGrid, verbs: vec![Verb::EditValue] }).name,
+            "value"
+        );
     }
 
     /// Vim's `:u` is undo, so it never reaches `:up` by prefix and saves
@@ -387,7 +488,10 @@ mod tests {
     #[test]
     fn undo_and_redo_are_refused_not_prefixed() {
         for q in ["u", "undo", "red", "redo"] {
-            assert!(matches!(resolve(q, &sidebar()), Resolved::Refused(t) if t == format!("Not supported: :{q}")), "{q}");
+            assert!(
+                matches!(resolve(q, &sidebar()), Resolved::Refused(t) if t == format!("Not supported: :{q}")),
+                "{q}"
+            );
         }
         assert_eq!(pinned("up", &sidebar()).name, "write", ":up is still update");
     }
@@ -400,11 +504,26 @@ mod tests {
         for q in ["w ", " w", " w  "] {
             assert_eq!(pinned(q, &sidebar()).name, "write", "{q:?}");
         }
-        for (q, shown) in [("w file", "w file"), ("e foo.json ", "e foo.json"), ("wr x", "wr x"), ("delete 3", "delete 3"), ("q!  now", "q!  now")] {
-            assert!(matches!(resolve(q, &sidebar()), Resolved::Refused(t) if t == format!("Not supported: :{shown}")), "{q:?}");
+        for (q, shown) in [
+            ("w file", "w file"),
+            ("e foo.json ", "e foo.json"),
+            ("wr x", "wr x"),
+            ("delete 3", "delete 3"),
+            ("q!  now", "q!  now"),
+        ] {
+            assert!(
+                matches!(resolve(q, &sidebar()), Resolved::Refused(t) if t == format!("Not supported: :{shown}")),
+                "{q:?}"
+            );
         }
-        assert!(matches!(resolve("fields x", &sidebar()), Resolved::Refused(t) if t == "Not supported: :fields x"), "a verb from elsewhere too");
-        assert!(matches!(resolve("ab cd", &sidebar()), Resolved::Nothing), "no verb: the fuzzy rows");
+        assert!(
+            matches!(resolve("fields x", &sidebar()), Resolved::Refused(t) if t == "Not supported: :fields x"),
+            "a verb from elsewhere too"
+        );
+        assert!(
+            matches!(resolve("ab cd", &sidebar()), Resolved::Nothing),
+            "no verb: the fuzzy rows"
+        );
         assert!(matches!(resolve("   ", &sidebar()), Resolved::Nothing));
     }
 
@@ -412,13 +531,43 @@ mod tests {
     /// text; one that means nothing anywhere resolves to nothing.
     #[test]
     fn a_verb_that_does_not_run_here_is_refused() {
-        assert!(matches!(resolve("fields", &sidebar()), Resolved::Refused(t) if t == "Nothing to :fields here"));
-        assert!(matches!(resolve("fi", &sidebar()), Resolved::Refused(t) if t == "Nothing to :fields here"), "by prefix too");
+        assert!(
+            matches!(resolve("fields", &sidebar()), Resolved::Refused(t) if t == "Nothing to :fields here")
+        );
+        assert!(
+            matches!(resolve("fi", &sidebar()), Resolved::Refused(t) if t == "Nothing to :fields here"),
+            "by prefix too"
+        );
         assert!(matches!(resolve("zzzz", &sidebar()), Resolved::Nothing));
         assert!(matches!(resolve("", &sidebar()), Resolved::Nothing));
-        let list = Scope { surface: Surface::VarList, verbs: vec![Verb::Add, Verb::AddAlt, Verb::Rename, Verb::Delete { count: 1 }, Verb::Secret, Verb::Fields] };
-        assert_eq!(pinned("fields", &list).actions, vec![Action::CloseField, Action::OnSelection(Verb::Fields)]);
-        assert_eq!(pinned("tls", &Scope { surface: Surface::ManageList(crate::components::manage::ManageTab::Environments), verbs: vec![Verb::Tls] }).actions, vec![Action::CloseField, Action::OnSelection(Verb::Tls)]);
+        let list = Scope {
+            surface: Surface::VarList,
+            verbs: vec![
+                Verb::Add,
+                Verb::AddAlt,
+                Verb::Rename,
+                Verb::Delete { count: 1 },
+                Verb::Secret,
+                Verb::Fields,
+            ],
+        };
+        assert_eq!(
+            pinned("fields", &list).actions,
+            vec![Action::CloseField, Action::OnSelection(Verb::Fields)]
+        );
+        assert_eq!(
+            pinned(
+                "tls",
+                &Scope {
+                    surface: Surface::ManageList(
+                        crate::components::manage::ManageTab::Environments
+                    ),
+                    verbs: vec![Verb::Tls]
+                }
+            )
+            .actions,
+            vec![Action::CloseField, Action::OnSelection(Verb::Tls)]
+        );
     }
 
     /// Spec §4.6: the ex table spells keycaps (`:w save`) with the
@@ -427,9 +576,16 @@ mod tests {
     #[test]
     fn spellings_and_reach() {
         assert_eq!(spelling(&Action::SaveRequest).as_deref(), Some(":w"));
-        assert_eq!(spelling(&Action::CloseWindow { write: false, force: false }).as_deref(), Some(":q"));
+        assert_eq!(
+            spelling(&Action::CloseWindow { write: false, force: false }).as_deref(),
+            Some(":q")
+        );
         assert_eq!(spelling(&Action::GatedQuit).as_deref(), Some(":qa"));
-        assert_eq!(spelling(&Action::Quit), None, "the quit chip spells `:q` itself (`spell::Key::Quit`)");
+        assert_eq!(
+            spelling(&Action::Quit),
+            None,
+            "the quit chip spells `:q` itself (`spell::Key::Quit`)"
+        );
         assert_eq!(spelling(&Action::CycleSplit).as_deref(), Some(":split"));
         assert_eq!(spelling(&Action::CycleSplitBack).as_deref(), Some(":splitback"));
         assert_eq!(spelling(&Action::Send).as_deref(), Some(":send"));

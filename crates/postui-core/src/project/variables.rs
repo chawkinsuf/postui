@@ -24,31 +24,49 @@ impl Project {
 
     /// The app's multi-step variable cascades run under one label so
     /// undo reverses the whole cascade.
-    pub fn cascade<T>(&mut self, label: &str, f: impl FnOnce(&mut Project) -> Result<T, Error>) -> Result<T, Error> {
+    pub fn cascade<T>(
+        &mut self,
+        label: &str,
+        f: impl FnOnce(&mut Project) -> Result<T, Error>,
+    ) -> Result<T, Error> {
         self.transaction(label, EntryMeta::default(), f)
     }
 
-    pub fn edit_variables(&mut self, f: impl FnOnce(&str) -> Result<String, EditError>) -> Result<(), Error> {
+    pub fn edit_variables(
+        &mut self,
+        f: impl FnOnce(&str) -> Result<String, EditError>,
+    ) -> Result<(), Error> {
         let path = rel(VARIABLES_TOML)?;
         let text = self.disk.read(&path)?.unwrap_or_default();
         let new_text = f(&text).map_err(|e| Error::Edit(e.to_string()))?;
-        let new_model = varmodel::parse_variables(&new_text).map_err(|e| Error::Edit(e.to_string()))?;
+        let new_model =
+            varmodel::parse_variables(&new_text).map_err(|e| Error::Edit(e.to_string()))?;
         if self.active_env.is_some() {
-            varmodel::validate_env(&new_model, &self.env_data).map_err(|e| Error::Edit(e.to_string()))?;
+            varmodel::validate_env(&new_model, &self.env_data)
+                .map_err(|e| Error::Edit(e.to_string()))?;
         }
-        self.transaction("edit variables", EntryMeta::default(), |p| p.fs_write_text(&path, Some(&new_text)))?;
+        self.transaction("edit variables", EntryMeta::default(), |p| {
+            p.fs_write_text(&path, Some(&new_text))
+        })?;
         self.model = new_model;
         self.refresh_resolved();
         Ok(())
     }
 
-    pub fn edit_env(&mut self, env: &str, f: impl FnOnce(&str) -> Result<String, EditError>) -> Result<(), Error> {
+    pub fn edit_env(
+        &mut self,
+        env: &str,
+        f: impl FnOnce(&str) -> Result<String, EditError>,
+    ) -> Result<(), Error> {
         let path = env_rel(env)?;
         let text = self.disk.read(&path)?.unwrap_or_default();
         let new_text = f(&text).map_err(|e| Error::Edit(e.to_string()))?;
-        let new_env = varmodel::parse_environment(&new_text).map_err(|e| Error::Edit(e.to_string()))?;
+        let new_env =
+            varmodel::parse_environment(&new_text).map_err(|e| Error::Edit(e.to_string()))?;
         varmodel::validate_env(&self.model, &new_env).map_err(|e| Error::Edit(e.to_string()))?;
-        self.transaction("edit environment", EntryMeta::default(), |p| p.fs_write_text(&path, Some(&new_text)))?;
+        self.transaction("edit environment", EntryMeta::default(), |p| {
+            p.fs_write_text(&path, Some(&new_text))
+        })?;
         self.refresh_environments();
         if self.active_env.as_deref() == Some(env) {
             self.env_data = new_env;
@@ -66,13 +84,15 @@ impl Project {
         let vars_path = rel(VARIABLES_TOML)?;
         let vars_text = self.disk.read(&vars_path)?.unwrap_or_default();
         let new_vars_text = vf(&vars_text).map_err(|e| Error::Edit(e.to_string()))?;
-        let new_model = varmodel::parse_variables(&new_vars_text).map_err(|e| Error::Edit(e.to_string()))?;
+        let new_model =
+            varmodel::parse_variables(&new_vars_text).map_err(|e| Error::Edit(e.to_string()))?;
         let mut envs: Vec<(String, RelPath, String, EnvData)> = Vec::new();
         for env in self.environments.clone() {
             let path = env_rel(&env)?;
             let text = self.disk.read(&path)?.unwrap_or_default();
             let new_text = ef(&text).map_err(|e| Error::Edit(e.to_string()))?;
-            let data = varmodel::parse_environment(&new_text).map_err(|e| Error::Edit(e.to_string()))?;
+            let data =
+                varmodel::parse_environment(&new_text).map_err(|e| Error::Edit(e.to_string()))?;
             varmodel::validate_env(&new_model, &data).map_err(|e| Error::Edit(e.to_string()))?;
             envs.push((env, path, new_text, data));
         }
@@ -122,7 +142,11 @@ mod tests {
     #[test]
     fn edit_variables_applies_the_edit_keeps_comments_and_re_resolves() {
         let (dir, _p) = fixture();
-        std::fs::write(dir.path().join("variables.toml"), "# keep me\n[host]\ndefault = \"localhost\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "# keep me\n[host]\ndefault = \"localhost\"\n",
+        )
+        .unwrap();
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         p.edit_variables(|doc| varedit::upsert_var(doc, "port", None, Some("8080"))).unwrap();
         let text = read(&dir, "variables.toml").unwrap();
@@ -142,8 +166,16 @@ mod tests {
     #[test]
     fn a_refused_edit_leaves_the_file_and_the_model_alone() {
         let (dir, _p) = fixture();
-        std::fs::write(dir.path().join("variables.toml"), "[selectors.region]\nfields = [\"host\"]\n").unwrap();
-        std::fs::write(dir.path().join("environments/dev.toml"), "[options.region.east]\nhost = \"e\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[selectors.region]\nfields = [\"host\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("environments/dev.toml"),
+            "[options.region.east]\nhost = \"e\"\n",
+        )
+        .unwrap();
         let before = read(&dir, "variables.toml").unwrap();
         let (mut p2, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         let r = p2.edit_variables(|doc| varedit::rename_selector(doc, "region", "zone"));
@@ -166,9 +198,21 @@ mod tests {
     #[test]
     fn edit_variables_and_envs_is_all_or_nothing_and_one_entry() {
         let (dir, _p) = fixture();
-        std::fs::write(dir.path().join("variables.toml"), "[selectors.region]\nfields = [\"host\"]\n").unwrap();
-        std::fs::write(dir.path().join("environments/dev.toml"), "[options.region.east]\nhost = \"e\"\n").unwrap();
-        std::fs::write(dir.path().join("environments/qa.toml"), "[options.region.west]\nhost = \"w\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[selectors.region]\nfields = [\"host\"]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("environments/dev.toml"),
+            "[options.region.east]\nhost = \"e\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("environments/qa.toml"),
+            "[options.region.west]\nhost = \"w\"\n",
+        )
+        .unwrap();
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         p.edit_variables_and_envs(
             |doc| varedit::rename_selector(doc, "region", "zone"),
@@ -265,11 +309,7 @@ mod tests {
     #[test]
     fn the_readers_take_shared_self_and_record_no_stamps() {
         fn read_everything(p: &Project) -> (Vec<String>, String, String) {
-            (
-                p.scan_usage("host"),
-                p.variables_text().unwrap(),
-                p.env_text("dev").unwrap(),
-            )
+            (p.scan_usage("host"), p.variables_text().unwrap(), p.env_text("dev").unwrap())
         }
         let (dir, mut p) = fixture();
         let (used, vars, env) = read_everything(&p);
@@ -278,7 +318,11 @@ mod tests {
         assert!(env.contains("dev.local"), "{env}");
         // A scan of `variables.toml` must not count as `poll` having seen
         // the outside edit that landed before it.
-        std::fs::write(dir.path().join("variables.toml"), "[host]\ndefault = \"changed\"\n[extra]\n").unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[host]\ndefault = \"changed\"\n[extra]\n",
+        )
+        .unwrap();
         let _ = read_everything(&p);
         p.invalidate_stamps();
         assert!(p.poll().0);

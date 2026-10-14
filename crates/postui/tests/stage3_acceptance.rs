@@ -82,21 +82,11 @@ fn write_alpha(root: &Path, server_uri: &str) {
 /// exercises the "restore from local state" path.
 fn write_beta(root: &Path) {
     std::fs::write(root.join("project.toml"), "name = \"beta\"\n").unwrap();
-    fixtures::save_request(
-        root,
-        "main/pong",
-        &dummy_request("https://example.test/pong"),
-    )
-    .unwrap();
+    fixtures::save_request(root, "main/pong", &dummy_request("https://example.test/pong")).unwrap();
     // A second request, not the one seeded as "open": switching to it while
     // beta is active (see the flow below) is what makes the final
     // persisted-state assertion discriminating rather than trivially true.
-    fixtures::save_request(
-        root,
-        "main/ping",
-        &dummy_request("https://example.test/ping"),
-    )
-    .unwrap();
+    fixtures::save_request(root, "main/ping", &dummy_request("https://example.test/ping")).unwrap();
     fixtures::save_local_state(
         root,
         &LocalState {
@@ -184,15 +174,9 @@ async fn stage3_acceptance_flow() {
     // its first env — so drop into it explicitly.)
     app.update(Action::SwitchEnv(None));
     app.update(Action::Send);
-    assert!(
-        app.session.in_flight.is_empty(),
-        "unresolved variables must not send anything"
-    );
+    assert!(app.session.in_flight.is_empty(), "unresolved variables must not send anything");
     let frame = render(&mut app);
-    assert!(
-        frame.contains("unresolved"),
-        "unresolved-variable toast shown: {frame}"
-    );
+    assert!(frame.contains("unresolved"), "unresolved-variable toast shown: {frame}");
 
     // --- qa environment: header renders, send resolves against it ----
     app.update(Action::SwitchEnv(Some("qa".into())));
@@ -204,10 +188,7 @@ async fn stage3_acceptance_flow() {
 
     app.update(Action::Send);
     let generation = app.session.send_generation;
-    assert!(
-        !app.session.in_flight.is_empty(),
-        "qa resolves: request goes out"
-    );
+    assert!(!app.session.in_flight.is_empty(), "qa resolves: request goes out");
     drain_until(&mut rx, &mut app, generation).await;
     let frame = render(&mut app);
     assert!(frame.contains("200"), "qa response is Ready: {frame}");
@@ -221,10 +202,7 @@ async fn stage3_acceptance_flow() {
     drain_until(&mut rx, &mut app, generation).await;
     let frame = render(&mut app);
     assert!(frame.contains("200"), "prod response is Ready: {frame}");
-    assert!(
-        frame.contains("prod"),
-        "prod response body visible: {frame}"
-    );
+    assert!(frame.contains("prod"), "prod response body visible: {frame}");
 
     // --- sidebar: collapse/expand `users`, free-scroll survives draw -
     assert!(matches!(
@@ -233,13 +211,7 @@ async fn stage3_acceptance_flow() {
     ));
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)); // move selection up to the folder row
     app.handle_key(enter()); // collapse
-    assert!(matches!(
-        app.sidebar.rows.as_slice(),
-        [Row::Folder {
-            expanded: false,
-            ..
-        }]
-    ));
+    assert!(matches!(app.sidebar.rows.as_slice(), [Row::Folder { expanded: false, .. }]));
     app.handle_key(enter()); // expand again
     assert!(matches!(
         app.sidebar.rows.as_slice(),
@@ -249,17 +221,11 @@ async fn stage3_acceptance_flow() {
     app.update(Action::ScrollPane(PaneId::Sidebar, 5));
     let scroll_before = app.sidebar.scroll;
     render(&mut app);
-    assert_eq!(
-        app.sidebar.scroll, scroll_before,
-        "wheel scroll must not snap back after a draw"
-    );
+    assert_eq!(app.sidebar.scroll, scroll_before, "wheel scroll must not snap back after a draw");
 
     // --- alt+z cycles projects (real binding): alpha -> beta -> alpha
     app.handle_key(alt('z'));
-    assert!(
-        app.modals.is_empty(),
-        "editor is clean: no dirty-gate prompt"
-    );
+    assert!(app.modals.is_empty(), "editor is clean: no dirty-gate prompt");
     assert_eq!(app.proj().root(), beta_dir.path().to_path_buf());
     assert_eq!(
         app.editor.slug.as_deref(),
@@ -283,11 +249,7 @@ async fn stage3_acceptance_flow() {
         Some("main/users/list"),
         "alpha's open request is restored"
     );
-    assert_eq!(
-        app.proj().active_env(),
-        Some("prod"),
-        "alpha's active environment is restored"
-    );
+    assert_eq!(app.proj().active_env(), Some("prod"), "alpha's active environment is restored");
     assert!(
         app.proj().local().expanded.contains("main/users"),
         "alpha's sidebar expansion is restored"
@@ -304,11 +266,7 @@ async fn stage3_acceptance_flow() {
         "typing {{{{ opens the variable picker"
     );
     app.handle_key(enter()); // first option: declared order is base, then tok
-    assert_eq!(
-        app.editor.url.text(),
-        "{{base}}",
-        "picked variable inserted at the cursor"
-    );
+    assert_eq!(app.editor.url.text(), "{{base}}", "picked variable inserted at the cursor");
 
     // --- quit path: the persist Quit does, then check both projects' state
     app.update(Action::ForceQuit);

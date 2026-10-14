@@ -34,11 +34,8 @@ pub fn to_curl(req: &PreparedRequest) -> String {
         // `Name:` with only blanks after it tells curl to drop the header;
         // `Name;` is curl's spelling of an empty value, and HTTP trims a
         // blank one to empty anyway.
-        let header = if value.trim().is_empty() {
-            format!("{name};")
-        } else {
-            format!("{name}: {value}")
-        };
+        let header =
+            if value.trim().is_empty() { format!("{name};") } else { format!("{name}: {value}") };
         lines.push(format!("-H {}", quote(&header)));
     }
     if let Some(body) = &req.body {
@@ -58,7 +55,11 @@ fn quote(s: &str) -> String {
 /// "includes secret values" note on the copy toast reports (spec §5.4).
 /// The URL and headers carry a masked twin to compare against; the body
 /// has none, so its `{{…}}` tokens are checked by name.
-pub fn includes_secrets(req: &HttpRequest, ctx: &PrepareContext, prepared: &PreparedRequest) -> bool {
+pub fn includes_secrets(
+    req: &HttpRequest,
+    ctx: &PrepareContext,
+    prepared: &PreparedRequest,
+) -> bool {
     if prepared.url != prepared.display_url || prepared.headers != prepared.display_headers {
         return true;
     }
@@ -79,7 +80,12 @@ mod tests {
     use crate::prepare::{PrepareContext, PreparedRequest, prepare};
     use crate::varmodel::VarMeta;
 
-    fn prepared(method: Method, url: &str, headers: &[(&str, &str)], body: Option<&str>) -> PreparedRequest {
+    fn prepared(
+        method: Method,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: Option<&str>,
+    ) -> PreparedRequest {
         let headers: Vec<(String, String)> =
             headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         PreparedRequest {
@@ -95,7 +101,10 @@ mod tests {
 
     #[test]
     fn a_get_is_bare() {
-        assert_eq!(to_curl(&prepared(Method::Get, "https://x/a?b=1", &[], None)), "curl 'https://x/a?b=1'");
+        assert_eq!(
+            to_curl(&prepared(Method::Get, "https://x/a?b=1", &[], None)),
+            "curl 'https://x/a?b=1'"
+        );
     }
 
     #[test]
@@ -114,7 +123,10 @@ mod tests {
 
     #[test]
     fn head_is_the_head_flag_never_x_head() {
-        assert_eq!(to_curl(&prepared(Method::Head, "https://x", &[], None)), "curl --head 'https://x'");
+        assert_eq!(
+            to_curl(&prepared(Method::Head, "https://x", &[], None)),
+            "curl --head 'https://x'"
+        );
     }
 
     #[test]
@@ -183,7 +195,9 @@ mod tests {
 
     #[test]
     fn a_secret_in_a_header_or_url_is_reported() {
-        assert!(secret_check("url = \"https://x\"\n[headers]\nAuthorization = \"Bearer {{token}}\"\n"));
+        assert!(secret_check(
+            "url = \"https://x\"\n[headers]\nAuthorization = \"Bearer {{token}}\"\n"
+        ));
         assert!(secret_check("url = \"https://x/{{token}}\"\n"));
         assert!(!secret_check("url = \"https://x/{{plain}}\"\n[headers]\nX = \"{{plain}}\"\n"));
     }

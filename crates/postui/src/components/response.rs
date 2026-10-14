@@ -9,7 +9,6 @@ use crate::theme::Theme;
 use crate::vim::engine::SearchMemory;
 use postui_core::jq::complete::{self, Candidate, Context, Kind};
 use postui_core::jq::{JqDocument, JqError};
-use std::sync::Arc;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
@@ -17,6 +16,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Bodies up to this size are parsed on the UI thread, where the parse is
@@ -125,8 +125,24 @@ impl SearchState {
         Self::with(LineInput::new(&query), false, query, syntax, backward)
     }
 
-    fn with(input: LineInput, active: bool, query: String, syntax: SearchSyntax, backward: bool) -> Self {
-        Self { input, active, query, syntax, backward, matches: Vec::new(), current: 0, error: None, before: None }
+    fn with(
+        input: LineInput,
+        active: bool,
+        query: String,
+        syntax: SearchSyntax,
+        backward: bool,
+    ) -> Self {
+        Self {
+            input,
+            active,
+            query,
+            syntax,
+            backward,
+            matches: Vec::new(),
+            current: 0,
+            error: None,
+            before: None,
+        }
     }
 
     /// Fills `matches` (and `error`) for `query` over `corpus`, from the
@@ -187,10 +203,7 @@ pub struct JqMenu {
 impl JqMenu {
     /// The chips, with the selected one flagged.
     pub fn chips(&self) -> impl Iterator<Item = (&str, bool)> {
-        self.labels
-            .iter()
-            .enumerate()
-            .map(move |(i, l)| (l.as_str(), i == self.index))
+        self.labels.iter().enumerate().map(move |(i, l)| (l.as_str(), i == self.index))
     }
 
     pub fn index(&self) -> usize {
@@ -233,11 +246,7 @@ impl JqCompletion {
         if n == 0 {
             return;
         }
-        self.index = if forward {
-            (self.index + 1) % n
-        } else {
-            (self.index + n - 1) % n
-        };
+        self.index = if forward { (self.index + 1) % n } else { (self.index + n - 1) % n };
     }
 
     /// With nothing else on offer at the caret, offers the closing
@@ -379,12 +388,7 @@ impl JqBar {
     /// The chip text for the completion's candidates as they stand: the
     /// whole token each (partial + ghost, or the rewritten token).
     fn candidate_labels(&self) -> Vec<String> {
-        let partial = self
-            .completion
-            .ctx
-            .as_ref()
-            .map(|c| c.partial.as_str())
-            .unwrap_or("");
+        let partial = self.completion.ctx.as_ref().map(|c| c.partial.as_str()).unwrap_or("");
         self.completion
             .candidates
             .iter()
@@ -415,12 +419,7 @@ impl JqBar {
         if !self.offering() || self.completion.closer {
             return None;
         }
-        Some(
-            self.candidate_labels()
-                .into_iter()
-                .map(|l| (l, false))
-                .collect(),
-        )
+        Some(self.candidate_labels().into_iter().map(|l| (l, false)).collect())
     }
 
     /// Writes `cand` into `input` as accepting it does: the token is
@@ -455,12 +454,7 @@ impl JqBar {
             return;
         }
         self.menu_scroll.set(0);
-        self.menu = Some(JqMenu {
-            base,
-            items,
-            labels,
-            index,
-        });
+        self.menu = Some(JqMenu { base, items, labels, index });
     }
 
     /// The jq-aware word-delete target for ctrl/alt+backspace: inside a
@@ -502,21 +496,14 @@ impl JqBar {
                 inside = !inside;
             }
         }
-        let start = (0..end)
-            .rev()
-            .find(|&i| !quoted[i] && is_boundary(chars[i]))
-            .map_or(0, |i| i + 1);
+        let start =
+            (0..end).rev().find(|&i| !quoted[i] && is_boundary(chars[i])).map_or(0, |i| i + 1);
         let is_dot = |i: usize| !quoted[i] && chars[i] == '.';
         if !(start..end).any(is_dot) {
             return None;
         }
         let e = if is_dot(end - 1) { end - 1 } else { end };
-        Some(
-            (start..e)
-                .rev()
-                .find(|&i| is_dot(i))
-                .map_or(start, |i| i + 1),
-        )
+        Some((start..e).rev().find(|&i| is_dot(i)).map_or(start, |i| i + 1))
     }
 
     /// Leaves the entered row with nothing picked: the bar text goes back
@@ -538,11 +525,7 @@ impl JqBar {
             return;
         };
         let n = menu.items.len();
-        menu.index = if forward {
-            (menu.index + 1) % n
-        } else {
-            (menu.index + n - 1) % n
-        };
+        menu.index = if forward { (menu.index + 1) % n } else { (menu.index + n - 1) % n };
         let mut input = LineInput::new(&menu.base);
         Self::apply_candidate(&mut input, &menu.items[menu.index]);
         self.input = input;
@@ -588,11 +571,7 @@ fn all_null(outputs: &[String]) -> bool {
     // output of `.` on a multi-megabyte body is the whole body, and a full
     // parse of it here ran on the UI thread on every keystroke.
     let [only] = outputs else { return false };
-    let Some(inner) = only
-        .trim()
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-    else {
+    let Some(inner) = only.trim().strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
         return false;
     };
     !inner.trim().is_empty() && inner.split(',').all(|item| item.trim() == "null")
@@ -799,16 +778,9 @@ pub enum HeaderRow {
 const SENT_DIVIDER: &str = "\u{2500}\u{2500} sent ";
 
 /// `name: value` rows with the values aligned past the widest name.
-fn aligned_header_lines<'a>(
-    rows: impl Iterator<Item = (&'a str, &'a str)> + Clone,
-) -> Vec<String> {
-    let width = rows
-        .clone()
-        .map(|(k, _)| k.chars().count())
-        .max()
-        .unwrap_or(0);
-    rows.map(|(k, v)| format!("{:<width$} {v}", format!("{k}:"), width = width + 1))
-        .collect()
+fn aligned_header_lines<'a>(rows: impl Iterator<Item = (&'a str, &'a str)> + Clone) -> Vec<String> {
+    let width = rows.clone().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
+    rows.map(|(k, v)| format!("{:<width$} {v}", format!("{k}:"), width = width + 1)).collect()
 }
 
 impl ReadyView {
@@ -821,11 +793,7 @@ impl ReadyView {
         // isn't JSON after all. A big body that plainly isn't JSON leads
         // with Raw at once, no spinner to sit through.
         let parsing = data.body.len() > SYNC_PRETTY_BYTES;
-        let tree = if parsing {
-            None
-        } else {
-            JsonTree::parse(&data.body)
-        };
+        let tree = if parsing { None } else { JsonTree::parse(&data.body) };
         let looks_json = data.body.trim_start().starts_with(['{', '[']);
         let mode = if tree.is_some() || (parsing && looks_json) {
             ViewMode::Pretty
@@ -849,9 +817,7 @@ impl ReadyView {
             header_rows.push(HeaderRow::Note);
         }
         header_lines.extend(aligned_header_lines(
-            data.sent_headers
-                .iter()
-                .map(|h| (h.name.as_str(), h.display.as_str())),
+            data.sent_headers.iter().map(|h| (h.name.as_str(), h.display.as_str())),
         ));
         header_rows.extend((0..data.sent_headers.len()).map(HeaderRow::Sent));
         let mut view = Self {
@@ -936,11 +902,7 @@ impl ReadyView {
     }
 
     fn active_tree_mut(&mut self) -> Option<&mut JsonTree> {
-        if self.jq_tree.is_some() {
-            self.jq_tree.as_mut()
-        } else {
-            self.tree.as_mut()
-        }
+        if self.jq_tree.is_some() { self.jq_tree.as_mut() } else { self.tree.as_mut() }
     }
 
     /// Vim's box keeps the search it replaces for its Esc; a box opened
@@ -1009,12 +971,7 @@ impl ReadyView {
             ViewMode::Pretty => self.active_tree().map_or(0, JsonTree::visible_width),
             ViewMode::Raw => self.raw_lines.iter().map(|l| l.width()).max().unwrap_or(0),
             // + 3 for the ` 󰆏 ` copy pill appended to each rendered row.
-            ViewMode::Headers => self
-                .header_lines
-                .iter()
-                .map(|l| l.width() + 3)
-                .max()
-                .unwrap_or(0),
+            ViewMode::Headers => self.header_lines.iter().map(|l| l.width() + 3).max().unwrap_or(0),
         };
         self.content_width = Some((key.0, key.1, key.2, w));
         w
@@ -1024,9 +981,7 @@ impl ReadyView {
     /// the widest visible line's end never scrolls past the right edge.
     fn scroll_h(&mut self, delta: i32) {
         let max = self.content_width().saturating_sub(self.width.max(1)) as i32;
-        self.h_scroll = (self.h_scroll as i32)
-            .saturating_add(delta)
-            .clamp(0, max.max(0)) as usize;
+        self.h_scroll = (self.h_scroll as i32).saturating_add(delta).clamp(0, max.max(0)) as usize;
     }
 
     /// The body viewport's width as of the last draw, in columns.
@@ -1044,8 +999,7 @@ impl ReadyView {
     /// for a measure, for the key router's repeat cap.
     pub fn measured_width(&self) -> Option<usize> {
         let key = (self.mode, self.visible_len(), self.tree_epoch);
-        self.content_width
-            .and_then(|(mode, len, run, w)| ((mode, len, run) == key).then_some(w))
+        self.content_width.and_then(|(mode, len, run, w)| ((mode, len, run) == key).then_some(w))
     }
 
     /// The cached widest-visible-line measure without recomputing — 0 until
@@ -1060,7 +1014,9 @@ impl ReadyView {
     fn search_corpus(&self) -> std::borrow::Cow<'_, [String]> {
         use std::borrow::Cow;
         match self.mode {
-            ViewMode::Pretty => Cow::Owned(self.active_tree().map(|t| t.full_text_lines()).unwrap_or_default()),
+            ViewMode::Pretty => {
+                Cow::Owned(self.active_tree().map(|t| t.full_text_lines()).unwrap_or_default())
+            }
             ViewMode::Raw => Cow::Borrowed(&self.raw_lines[..]),
             ViewMode::Headers => Cow::Borrowed(&self.header_lines),
         }
@@ -1115,7 +1071,9 @@ impl ReadyView {
     /// which a closed fold may hide (Deviation 8); elsewhere, the cursor.
     pub fn real_line(&self) -> Option<usize> {
         match self.mode {
-            ViewMode::Pretty => self.fold_line.or_else(|| self.active_tree()?.full_index_of_visible(self.cursor)),
+            ViewMode::Pretty => {
+                self.fold_line.or_else(|| self.active_tree()?.full_index_of_visible(self.cursor))
+            }
             _ => (self.cursor < self.visible_len()).then_some(self.cursor),
         }
     }
@@ -1345,9 +1303,26 @@ impl ReadyView {
     #[allow(clippy::type_complexity)]
     fn motion_mark(
         &self,
-    ) -> (usize, usize, usize, Option<usize>, Option<(usize, usize)>, Option<((usize, usize), (usize, usize))>, Option<usize>, usize)
-    {
-        (self.cursor, self.scroll, self.h_scroll, self.fold_line, self.at_col, self.sel, self.line_anchor, self.visible_len())
+    ) -> (
+        usize,
+        usize,
+        usize,
+        Option<usize>,
+        Option<(usize, usize)>,
+        Option<((usize, usize), (usize, usize))>,
+        Option<usize>,
+        usize,
+    ) {
+        (
+            self.cursor,
+            self.scroll,
+            self.h_scroll,
+            self.fold_line,
+            self.at_col,
+            self.sel,
+            self.line_anchor,
+            self.visible_len(),
+        )
     }
 
     /// A vim motion or window command (plan M5a Task 3), as Vim 9.1 runs
@@ -1413,7 +1388,11 @@ impl ReadyView {
             ResponseMotion::Col(c) => self.col_move(c),
             ResponseMotion::HalfPage { down, count } => {
                 let shown = self.shown_cursor();
-                let from = if shown == self.cursor { self.real_line().unwrap_or(0) } else { self.row_to_line(shown) };
+                let from = if shown == self.cursor {
+                    self.real_line().unwrap_or(0)
+                } else {
+                    self.row_to_line(shown)
+                };
                 let lines = self.buffer_line_count();
                 // `nv_halfpage()`: on the first or last line it beeps before
                 // `'scroll'` is set. It asks of the cursor's line, which a
@@ -1537,7 +1516,8 @@ impl ReadyView {
         let Some(line) = self.real_line() else { return };
         let len = self.buffer_line(line).map_or(0, |t| t.chars().count());
         let col = self.cur_col();
-        let step = |n: usize| i32::try_from(n).unwrap_or(i32::MAX).saturating_mul(H_SCROLL_STEP.into());
+        let step =
+            |n: usize| i32::try_from(n).unwrap_or(i32::MAX).saturating_mul(H_SCROLL_STEP.into());
         // A move that fails (`h` on column 0, `l` on the last char) opens
         // nothing, as Vim's `nv_left()` and `nv_right()`; `0` and `$` always
         // do. The folds open before the column is set, so the wanted column
@@ -1758,9 +1738,12 @@ impl ReadyView {
             ((from + n - steps % n) % n, start.is_none() || steps > from)
         } else {
             let at_end = |m: &(usize, usize, usize)| {
-                m.1 > 0 && m.1 == m.2 && self.buffer_line(m.0).is_some_and(|t| t.chars().count() == m.1)
+                m.1 > 0
+                    && m.1 == m.2
+                    && self.buffer_line(m.0).is_some_and(|t| t.chars().count() == m.1)
             };
-            let after = matches.partition_point(|m| (m.0, if at_end(m) { m.1 - 1 } else { m.1 }) <= (line, col));
+            let after = matches
+                .partition_point(|m| (m.0, if at_end(m) { m.1 - 1 } else { m.1 }) <= (line, col));
             let start = (after < n).then_some(after);
             let from = start.unwrap_or(0);
             ((from + steps) % n, start.is_none() || from + steps >= n)
@@ -1812,7 +1795,9 @@ impl ReadyView {
         }
         self.note = match self.recompute_matches() {
             Some(note) => Some(note),
-            None if query.is_empty() => vim.then(|| crate::vim::engine::NO_PREVIOUS_PATTERN.to_string()),
+            None if query.is_empty() => {
+                vim.then(|| crate::vim::engine::NO_PREVIOUS_PATTERN.to_string())
+            }
             None => self.land_match(backward, 1),
         };
     }
@@ -1830,7 +1815,9 @@ impl ReadyView {
     /// cursor's column, else the non-blank string there, searched as a Vim
     /// pattern whatever the profile. Whether a search ran.
     fn star(&mut self, backward: bool, count: usize, memory: &mut SearchMemory) -> bool {
-        use crate::vim::engine::{Dir, NO_STRING_UNDER_CURSOR, as_stored, find_ident, ident_pattern};
+        use crate::vim::engine::{
+            Dir, NO_STRING_UNDER_CURSOR, as_stored, find_ident, ident_pattern,
+        };
         let (line, col) = self.search_pos();
         let Some(text) = self.buffer_line(line) else {
             return false;
@@ -1856,10 +1843,7 @@ impl ReadyView {
 
     /// Char ranges of every match on `line`, plus the current one.
     fn match_ranges(&self, line: usize) -> LineMatches {
-        let none = LineMatches {
-            ranges: Vec::new(),
-            current: None,
-        };
+        let none = LineMatches { ranges: Vec::new(), current: None };
         let Some(search) = &self.search else {
             return none;
         };
@@ -2007,9 +1991,9 @@ impl ReadyView {
             self.motion(m);
             return;
         }
-        let anchor = self
-            .line_anchor
-            .unwrap_or_else(|| self.row_to_line(self.sel_anchor.map_or(self.cursor, |(l, _)| l).min(len - 1)));
+        let anchor = self.line_anchor.unwrap_or_else(|| {
+            self.row_to_line(self.sel_anchor.map_or(self.cursor, |(l, _)| l).min(len - 1))
+        });
         self.motion(m);
         if self.visible_len() > 0 {
             self.select_lines_from(anchor);
@@ -2075,7 +2059,10 @@ impl ReadyView {
         }
         let (lo, hi) = match anchor {
             Some(a) => (a.min(self.cursor), a.max(self.cursor)),
-            None => (self.cursor, self.cursor.saturating_add(count.unwrap_or(1).max(1) - 1).min(len - 1)),
+            None => (
+                self.cursor,
+                self.cursor.saturating_add(count.unwrap_or(1).max(1) - 1).min(len - 1),
+            ),
         };
         let lines = (lo..=hi).flat_map(|row| self.buffer_lines_of(row)).collect();
         match self.line_anchor {
@@ -2313,10 +2300,8 @@ impl Response {
         // forget it here or `refresh_jq_completion` would never re-issue
         // it. The sequence counter is kept so that stale fetch can't
         // collide with a fresh one's `seq` (as in `shed_derived`).
-        self.jq.completion = JqCompletion {
-            seq: self.jq.completion.seq,
-            ..JqCompletion::default()
-        };
+        self.jq.completion =
+            JqCompletion { seq: self.jq.completion.seq, ..JqCompletion::default() };
     }
 
     /// Delivers the result of a background pretty-print started for
@@ -2372,9 +2357,7 @@ impl Response {
     /// started for `generation` — how [`crate::session::Session`] finds the
     /// slot a finished parse belongs to.
     pub fn awaits_tree(&self, generation: u64) -> bool {
-        self.view
-            .as_ref()
-            .is_some_and(|v| v.awaits_tree(generation))
+        self.view.as_ref().is_some_and(|v| v.awaits_tree(generation))
     }
 
     pub fn view(&self) -> Option<&ReadyView> {
@@ -2537,11 +2520,7 @@ impl Response {
     /// keystroke into the bar does. `false` when there was nothing to step.
     pub fn field_undo(&mut self, redo: bool) -> bool {
         if self.jq.focused {
-            let stepped = if redo {
-                self.jq.input.redo()
-            } else {
-                self.jq.input.undo()
-            };
+            let stepped = if redo { self.jq.input.redo() } else { self.jq.input.undo() };
             if stepped {
                 self.jq.edited = true;
             }
@@ -2575,11 +2554,7 @@ impl Response {
     /// immutable twin, for `App::field_open` and the footer.
     pub fn field_open(&self) -> bool {
         self.jq.focused
-            || self
-                .view
-                .as_ref()
-                .and_then(|v| v.search.as_ref())
-                .is_some_and(|s| s.active)
+            || self.view.as_ref().and_then(|v| v.search.as_ref()).is_some_and(|s| s.active)
     }
 
     /// Focuses (or blurs) the jq bar. Returns whether it took: focusing
@@ -2657,10 +2632,8 @@ impl Response {
         self.jq.pending = None;
         // Keep the sequence counter so a stale in-flight pool fetch can't
         // collide with a fresh fetch's `seq` after a shed.
-        self.jq.completion = JqCompletion {
-            seq: self.jq.completion.seq,
-            ..JqCompletion::default()
-        };
+        self.jq.completion =
+            JqCompletion { seq: self.jq.completion.seq, ..JqCompletion::default() };
     }
 
     /// The parse a shed response needs now that it is back on screen: its
@@ -3082,11 +3055,7 @@ impl Response {
                         view.jq_tree_code = None;
                         self.jq.error = None;
                         self.jq.stale = true;
-                        self.jq.note = Some(if outputs.is_empty() {
-                            "no output"
-                        } else {
-                            "null"
-                        });
+                        self.jq.note = Some(if outputs.is_empty() { "no output" } else { "null" });
                         view.clear_sel();
                         view.clamp_cursor();
                         view.follow_cursor();
@@ -3107,9 +3076,8 @@ impl Response {
                         view.recompute_matches();
                     }
                     None => {
-                        self.jq.error = Some(JqError::Runtime {
-                            message: "filter output is not JSON".into(),
-                        });
+                        self.jq.error =
+                            Some(JqError::Runtime { message: "filter output is not JSON".into() });
                         self.jq.stale = true;
                         self.jq.note = None;
                     }
@@ -3314,10 +3282,9 @@ impl Response {
             view.note = Some(crate::vim::engine::NO_PREVIOUS_PATTERN.into());
             return false;
         };
-        let shown = view
-            .search
-            .as_ref()
-            .is_some_and(|s| s.syntax == SearchSyntax::Vim && s.query == query && s.backward == backward);
+        let shown = view.search.as_ref().is_some_and(|s| {
+            s.syntax == SearchSyntax::Vim && s.query == query && s.backward == backward
+        });
         if !shown {
             view.restore_search(query.clone(), backward);
         }
@@ -3349,7 +3316,9 @@ impl Response {
         };
         let Some(view) = self.view.as_mut() else { return };
         let keep = view.search.as_ref().is_some_and(|s| {
-            s.active || s.syntax == SearchSyntax::Literal || (s.query == query && s.backward == backward)
+            s.active
+                || s.syntax == SearchSyntax::Literal
+                || (s.query == query && s.backward == backward)
         });
         if !keep {
             view.restore_search(query.to_string(), backward);
@@ -3378,7 +3347,10 @@ impl Response {
     pub fn copyable_header_row(&self) -> Option<usize> {
         let view = self.view.as_ref()?;
         (view.mode == ViewMode::Headers
-            && matches!(view.header_row(view.cursor), Some(HeaderRow::Received(_) | HeaderRow::Sent(_))))
+            && matches!(
+                view.header_row(view.cursor),
+                Some(HeaderRow::Received(_) | HeaderRow::Sent(_))
+            ))
         .then_some(view.cursor)
     }
 
@@ -3397,7 +3369,8 @@ impl Response {
         // closed fold's summary is not its line's text: column 0 there.
         if !toggle && let Some((_, col)) = view.sel_anchor.filter(|(l, _)| *l == cursor) {
             let folded = view.real_line().is_some_and(|l| view.in_closed_fold(l));
-            let len = view.real_line().and_then(|l| view.buffer_line(l)).map_or(0, |t| t.chars().count());
+            let len =
+                view.real_line().and_then(|l| view.buffer_line(l)).map_or(0, |t| t.chars().count());
             view.set_col(if folded { 0 } else { col.min(len.saturating_sub(1)) });
         }
         if toggle
@@ -3557,9 +3530,8 @@ impl Response {
         // landing on a row start take its first char.
         if head.1 == 0 && head.0 > anchor.0 {
             let row = head.0 - 1;
-            let last = view
-                .display_line_text(row)
-                .map_or(0, |t| t.chars().count().saturating_sub(1));
+            let last =
+                view.display_line_text(row).map_or(0, |t| t.chars().count().saturating_sub(1));
             view.sel = Some((anchor, (row, last)));
             return true;
         }
@@ -3687,9 +3659,7 @@ impl Response {
                 // `segment_delete_target`. A live selection, or a plain
                 // word, is the input's business as usual.
                 KeyCode::Backspace
-                    if ev
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    if ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
                     self.jq_segment_backspace();
                 }
@@ -3826,7 +3796,9 @@ impl Response {
             // Arrows' search and its highlight go, as on main. Vim's Esc in
             // Normal leaves them: `:noh` is what hides the highlight, in
             // every window, as Vim's does.
-            KeyCode::Esc if view.search.as_ref().is_some_and(|s| s.syntax == SearchSyntax::Literal) => {
+            KeyCode::Esc
+                if view.search.as_ref().is_some_and(|s| s.syntax == SearchSyntax::Literal) =>
+            {
                 view.search = None;
                 Some(Action::Render)
             }
@@ -3904,9 +3876,7 @@ impl Response {
             // those are text editing, not navigation.
             ResponseState::Ready(_)
                 if self.jq.focused
-                    || !ev
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    || !ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                     || (ev.modifiers == KeyModifiers::CONTROL
                         && matches!(
                             ev.code,
@@ -3964,10 +3934,7 @@ impl Component for Response {
                 // the right — so the pane reads as a pane with a header
                 // before the first send too. Hidden, that strip is the
                 // whole pane.
-                let strip = Rect {
-                    height: inner.height.min(COLLAPSED_HEIGHT),
-                    ..inner
-                };
+                let strip = Rect { height: inner.height.min(COLLAPSED_HEIGHT), ..inner };
                 draw_pending_strip(frame.buffer_mut(), hits, strip, other, self.split, ctx);
                 if self.collapsed || inner.height <= COLLAPSED_HEIGHT {
                     return;
@@ -4005,10 +3972,9 @@ impl Component for Response {
                         }
                         lines
                     }
-                    ResponseState::Failed(err) => vec![
-                        Line::raw(""),
-                        Line::styled(err.clone(), Style::default().fg(t.error)),
-                    ],
+                    ResponseState::Failed(err) => {
+                        vec![Line::raw(""), Line::styled(err.clone(), Style::default().fg(t.error))]
+                    }
                     ResponseState::Cancelled => {
                         vec![Line::raw(""), Line::styled("Request cancelled", muted)]
                     }
@@ -4075,11 +4041,7 @@ impl Component for Response {
         let content_w = view.content_width();
         let mut h_bar = None;
         if content_w > body_area.width as usize && body_area.height > 1 {
-            h_bar = Some(Rect {
-                y: body_area.y + body_area.height - 1,
-                height: 1,
-                ..body_area
-            });
+            h_bar = Some(Rect { y: body_area.y + body_area.height - 1, height: 1, ..body_area });
             body_area.height -= 1;
         }
 
@@ -4094,11 +4056,7 @@ impl Component for Response {
             viewport: view.height,
         };
         if spec.overflows() && body_area.width > 1 {
-            let column = Rect {
-                x: body_area.x + body_area.width - 1,
-                width: 1,
-                ..body_area
-            };
+            let column = Rect { x: body_area.x + body_area.width - 1, width: 1, ..body_area };
             body_area.width -= 1;
             if let Some(bar) = h_bar.as_mut() {
                 bar.width -= 1;
@@ -4109,9 +4067,7 @@ impl Component for Response {
         view.last_area = Some(body_area);
         // The visible set may have shrunk (a collapse, a view switch) since
         // the offset was set; never leave the viewport past the content.
-        view.h_scroll = view
-            .h_scroll
-            .min(content_w.saturating_sub(view.width.max(1)));
+        view.h_scroll = view.h_scroll.min(content_w.saturating_sub(view.width.max(1)));
 
         if let Some(bar) = h_bar {
             draw_h_indicator(frame, hits, bar, view.h_scroll, content_w, ctx);
@@ -4166,19 +4122,13 @@ fn draw_pending_strip(
         ResponseState::InFlight { started } => {
             let e = started.elapsed();
             let frame_i = (e.subsec_millis() / 100) as usize % SPINNER.len();
-            (
-                format!("{} sending\u{2026} {}", SPINNER[frame_i], human_elapsed(e)),
-                t.text_muted,
-            )
+            (format!("{} sending\u{2026} {}", SPINNER[frame_i], human_elapsed(e)), t.text_muted)
         }
         ResponseState::Failed(_) => ("failed".to_string(), t.error),
         ResponseState::Cancelled => ("cancelled".to_string(), t.text_muted),
         ResponseState::Ready(_) => unreachable!("the ready pane paints its own header"),
     };
-    let chip = crate::paint::Chip {
-        label: &label,
-        color,
-    };
+    let chip = crate::paint::Chip { label: &label, color };
     // On a strip too tight for both, the pill wins: it is the control.
     if area.x + chip.width() < pill_x {
         chip.paint(buf, area.x, area.y, t.panel, t);
@@ -4198,9 +4148,7 @@ fn draw_step_pill(
     split: crate::split::SplitState,
     ctx: &DrawCtx,
 ) -> u16 {
-    let x = area
-        .right()
-        .saturating_sub(crate::paint::STEP_CONTROL_WIDTH + 1);
+    let x = area.right().saturating_sub(crate::paint::STEP_CONTROL_WIDTH + 1);
     if x <= area.x || area.height == 0 {
         return area.right();
     }
@@ -4208,11 +4156,8 @@ fn draw_step_pill(
         Some(crate::hit::Hit::SplitStep(d)) => Some(*d),
         _ => None,
     };
-    let rects = crate::paint::StepControl {
-        state: split,
-        hovered,
-    }
-    .paint(buf, x, area.y, ctx.theme);
+    let rects =
+        crate::paint::StepControl { state: split, hovered }.paint(buf, x, area.y, ctx.theme);
     for (rect, delta) in rects {
         hits.register(rect, crate::hit::Hit::SplitStep(delta));
     }
@@ -4248,19 +4193,13 @@ fn draw_header_strip(
     // Row 0 (left): the status chip, e.g. " 200 ", then timing + size,
     // plain muted text (not clickable, so no control fill — chip fill
     // means clickability), then content type.
-    let chip_w = crate::paint::Chip {
-        label: &data.status.to_string(),
-        color: t.status_color(data.status),
-    }
-    .paint(buf, area.x, area.y, t.panel, t);
+    let chip_w =
+        crate::paint::Chip { label: &data.status.to_string(), color: t.status_color(data.status) }
+            .paint(buf, area.x, area.y, t.panel, t);
 
     let mut x = area.x + chip_w + 1;
     // One combined timing figure — ttfb → total — rather than two chips.
-    let timing = format!(
-        "{} → {}",
-        human_elapsed(data.ttfb),
-        human_elapsed(data.elapsed)
-    );
+    let timing = format!("{} → {}", human_elapsed(data.ttfb), human_elapsed(data.elapsed));
     for label in [timing, human_size(data.size)] {
         let s = format!(" {label} ");
         let w = s.chars().count() as u16;
@@ -4323,10 +4262,8 @@ fn draw_header_strip(
     };
     let tabstrip_area = Rect::new(tabs_x, row1_y, tabs_width, 2);
     let spans = crate::paint::TabStrip::spans(&tabs);
-    let (static_left, static_width) = spans
-        .get(active)
-        .map(|(x, w)| (*x as f32, *w as f32))
-        .unwrap_or((0.0, 0.0));
+    let (static_left, static_width) =
+        spans.get(active).map(|(x, w)| (*x as f32, *w as f32)).unwrap_or((0.0, 0.0));
     // Independently animated left/right edges (Task 10): each key falls
     // back to this tab's own static edge when untracked, so the very first
     // draw of the strip snaps straight there with no slide-in from zero —
@@ -4399,10 +4336,7 @@ pub fn response_tab_defs(
 /// `tabs`, mirroring its own padded-block-width + 1-column-gap layout so
 /// callers can right-align the strip without painting it first.
 fn tabstrip_width(tabs: &[(String, Option<(&'static str, ratatui::style::Color)>)]) -> u16 {
-    crate::paint::TabStrip::spans(tabs)
-        .last()
-        .map(|(x, w)| x + w)
-        .unwrap_or(0)
+    crate::paint::TabStrip::spans(tabs).last().map(|(x, w)| x + w).unwrap_or(0)
 }
 
 /// The icon actions in the header strip: search, open the view in
@@ -4415,14 +4349,8 @@ fn tabstrip_width(tabs: &[(String, Option<(&'static str, ratatui::style::Color)>
 /// emoji font's fixed colours — so all four sit level, at one size.
 /// All of them act on the *active tab's* text, following it like search.
 const HEADER_ACTIONS: [(&str, crate::hit::Hit); 5] = [
-    (
-        crate::glyph::SEARCH_PILL,
-        crate::hit::Hit::ResponseSearchButton,
-    ),
-    (
-        crate::glyph::PENCIL_PILL,
-        crate::hit::Hit::ResponseEditorButton,
-    ),
+    (crate::glyph::SEARCH_PILL, crate::hit::Hit::ResponseSearchButton),
+    (crate::glyph::PENCIL_PILL, crate::hit::Hit::ResponseEditorButton),
     (crate::glyph::SAVE_PILL, crate::hit::Hit::SaveBodyButton),
     (crate::glyph::COPY_PILL, crate::hit::Hit::CopyBodyButton),
     (crate::glyph::FILTER_PILL, crate::hit::Hit::ResponseJqButton),
@@ -4475,11 +4403,7 @@ fn draw_header_actions(
 
 fn human_elapsed(d: Duration) -> String {
     let ms = d.as_millis();
-    if ms < 1000 {
-        format!("{ms} ms")
-    } else {
-        format!("{:.1} s", d.as_secs_f64())
-    }
+    if ms < 1000 { format!("{ms} ms") } else { format!("{:.1} s", d.as_secs_f64()) }
 }
 
 fn human_size(bytes: usize) -> String {
@@ -4535,19 +4459,13 @@ fn body_lines(
         let hits = if highlightable {
             view.match_ranges(full).shifted(char_start)
         } else {
-            LineMatches {
-                ranges: Vec::new(),
-                current: None,
-            }
+            LineMatches { ranges: Vec::new(), current: None }
         };
         let mut line = highlighted(pieces, &hits);
         // Selection bg on top of search styling, before the h-crop (its
         // char columns are pre-crop coordinates, shifted into the window).
         if let Some((from, to)) = view.sel_range_on_line(i) {
-            let (from, to) = (
-                from.saturating_sub(char_start),
-                to.saturating_sub(char_start),
-            );
+            let (from, to) = (from.saturating_sub(char_start), to.saturating_sub(char_start));
             if to > from {
                 line = apply_col_bg(line, from, to, t.selection);
             }
@@ -4594,10 +4512,7 @@ fn body_lines(
 
                 let y = area.y.saturating_add((i - start) as u16);
                 if y < area.y.saturating_add(area.height) {
-                    hits.register(
-                        Rect::new(area.x, y, area.width, 1),
-                        crate::hit::Hit::JsonRow(i),
-                    );
+                    hits.register(Rect::new(area.x, y, area.width, 1), crate::hit::Hit::JsonRow(i));
                     // The arrow occupies the row's first two unscrolled
                     // columns; once the view is scrolled right it is off
                     // screen, and a hit would land on unrelated content.
@@ -4620,13 +4535,7 @@ fn body_lines(
                 let from = mark_for(view.raw_marks.get(&i).map(Vec::as_slice), view.h_scroll);
                 let (char_start, crop, slice) =
                     viewport_window(&view.raw_lines[i], view.h_scroll, width, from);
-                push(
-                    i,
-                    i,
-                    vec![(slice.to_string(), text)],
-                    true,
-                    (char_start, crop),
-                );
+                push(i, i, vec![(slice.to_string(), text)], true, (char_start, crop));
             }
         }
         ViewMode::Headers => {
@@ -4635,9 +4544,8 @@ fn body_lines(
                 let row = view.header_row(i).unwrap_or(HeaderRow::Note);
                 match row {
                     HeaderRow::Divider => {
-                        let rule = "\u{2500}".repeat(
-                            (area.width as usize).saturating_sub(line.chars().count()),
-                        );
+                        let rule = "\u{2500}"
+                            .repeat((area.width as usize).saturating_sub(line.chars().count()));
                         push(i, i, vec![(format!("{line}{rule}"), dim)], true, (0, view.h_scroll));
                         continue;
                     }
@@ -4649,11 +4557,7 @@ fn body_lines(
                 }
                 // A sent row reads dim, like the editor's computed rows: the
                 // record of the send, not the answer.
-                let text = if matches!(row, HeaderRow::Sent(_)) {
-                    dim
-                } else {
-                    text
-                };
+                let text = if matches!(row, HeaderRow::Sent(_)) { dim } else { text };
                 let (name, value) = line.split_once(':').unwrap_or((line.as_str(), ""));
                 let name_piece = format!("{name}:");
                 // One plain cell between the value and the pill, so the
@@ -4713,12 +4617,8 @@ fn draw_h_indicator(
     if bar.width == 0 {
         return;
     }
-    let spec = ScrollbarSpec {
-        pane: PaneId::Response,
-        offset,
-        content,
-        viewport: bar.width as usize,
-    };
+    let spec =
+        ScrollbarSpec { pane: PaneId::Response, offset, content, viewport: bar.width as usize };
     let (left, width) = crate::hit::thumb_geometry(&spec, bar.width);
     let mut spans = Vec::new();
     let track = Style::default().fg(t.text_muted);
@@ -4733,10 +4633,7 @@ fn draw_h_indicator(
     };
     spans.push(Span::styled("─".repeat(left as usize), track));
     spans.push(Span::styled("█".repeat(width as usize), thumb));
-    spans.push(Span::styled(
-        "─".repeat(bar.width.saturating_sub(left + width) as usize),
-        track,
-    ));
+    spans.push(Span::styled("─".repeat(bar.width.saturating_sub(left + width) as usize), track));
     frame.render_widget(Paragraph::new(Line::from(spans)), bar);
 
     // Page segments first so the thumb wins where they would overlap,
@@ -4753,22 +4650,11 @@ fn draw_h_indicator(
     let after_w = bar.width.saturating_sub(left + width);
     if after_w > 0 {
         hits.register(
-            Rect {
-                x: after_x,
-                width: after_w,
-                ..bar
-            },
+            Rect { x: after_x, width: after_w, ..bar },
             crate::hit::Hit::HScrollTrack(PaneId::Response, page),
         );
     }
-    hits.register(
-        Rect {
-            x: bar.x + left,
-            width,
-            ..bar
-        },
-        thumb_hit,
-    );
+    hits.register(Rect { x: bar.x + left, width, ..bar }, thumb_hit);
 }
 
 /// Repaints the chars in the half-open column range `[from, to)` of `line`
@@ -4790,20 +4676,11 @@ fn apply_col_bg(line: Line<'static>, from: usize, to: usize, bg: Color) -> Line<
         let a = from.saturating_sub(s0).min(chars.len());
         let b = to.saturating_sub(s0).min(chars.len());
         if a > 0 {
-            spans.push(Span::styled(
-                chars[..a].iter().collect::<String>(),
-                span.style,
-            ));
+            spans.push(Span::styled(chars[..a].iter().collect::<String>(), span.style));
         }
-        spans.push(Span::styled(
-            chars[a..b].iter().collect::<String>(),
-            span.style.bg(bg),
-        ));
+        spans.push(Span::styled(chars[a..b].iter().collect::<String>(), span.style.bg(bg)));
         if b < chars.len() {
-            spans.push(Span::styled(
-                chars[b..].iter().collect::<String>(),
-                span.style,
-            ));
+            spans.push(Span::styled(chars[b..].iter().collect::<String>(), span.style));
         }
     }
     Line::from(spans).style(style)
@@ -4841,10 +4718,7 @@ fn col_marks(text: &str) -> Vec<ColMark> {
 /// column `skip`, or the last one when `skip` runs past the index. `None`
 /// for a line with no index (short, or never scrolled).
 fn mark_for(marks: Option<&[ColMark]>, skip: usize) -> ColMark {
-    marks
-        .and_then(|m| m.get(skip / COL_MARK_STEP).or(m.last()))
-        .copied()
-        .unwrap_or((0, 0, 0))
+    marks.and_then(|m| m.get(skip / COL_MARK_STEP).or(m.last())).copied().unwrap_or((0, 0, 0))
 }
 
 /// The part of `text` that can reach a viewport `width` columns wide once
@@ -4947,10 +4821,7 @@ fn token_color(kind: TokenKind, t: &Theme) -> Color {
 fn highlighted(pieces: Vec<(String, Style)>, hits: &LineMatches) -> Line<'static> {
     if hits.ranges.is_empty() {
         return Line::from(
-            pieces
-                .into_iter()
-                .map(|(s, st)| Span::styled(s, st))
-                .collect::<Vec<_>>(),
+            pieces.into_iter().map(|(s, st)| Span::styled(s, st)).collect::<Vec<_>>(),
         );
     }
     let hit = |at: usize| -> (bool, bool) {
@@ -5007,11 +4878,7 @@ fn draw_jq_bar(
     const AI: &str = crate::glyph::CREATION_PILL;
     let ai_w = AI.chars().count() as u16;
     let text_w = area.width.saturating_sub(ai_w + 1);
-    let row = Rect {
-        height: 1,
-        width: text_w,
-        ..area
-    };
+    let row = Rect { height: 1, width: text_w, ..area };
     let chip_color = if bar.stale { t.text_muted } else { t.accent };
     // A background run past its grace period takes over the `jq` chip —
     // the spinner sits right beside the text being typed, where the wait
@@ -5020,11 +4887,8 @@ fn draw_jq_bar(
     // the leading space keeps the glyph off the pane edge.
     let spinning = bar.running_long(ctx.now);
     let chip = if spinning {
-        let frame_i = (ctx
-            .now
-            .saturating_duration_since(bar.pending_since)
-            .as_millis()
-            / 100) as usize
+        let frame_i = (ctx.now.saturating_duration_since(bar.pending_since).as_millis() / 100)
+            as usize
             % SPINNER.len();
         format!(" {} ", SPINNER[frame_i])
     } else {
@@ -5032,8 +4896,8 @@ fn draw_jq_bar(
     };
     let mut spans = vec![Span::styled(chip, Style::default().fg(chip_color))];
     if let Some(started) = bar.ai_asking {
-        let frame_i = (ctx.now.saturating_duration_since(started).as_millis() / 100) as usize
-            % SPINNER.len();
+        let frame_i =
+            (ctx.now.saturating_duration_since(started).as_millis() / 100) as usize % SPINNER.len();
         spans.push(Span::styled(
             format!("{} asking…", SPINNER[frame_i]),
             Style::default().fg(t.text_muted),
@@ -5087,11 +4951,7 @@ fn draw_jq_bar(
     if let Some(chips) = bar.menu_row()
         && area.height >= 2
     {
-        let menu_row = Rect {
-            y: area.y + 1,
-            height: 1,
-            ..area
-        };
+        let menu_row = Rect { y: area.y + 1, height: 1, ..area };
         let scroll = draw_jq_menu(frame, menu_row, &chips, bar.menu_scroll.get(), t);
         bar.menu_scroll.set(scroll);
         return caret;
@@ -5099,11 +4959,7 @@ fn draw_jq_bar(
     // A filter with nothing to show reads as an error to the user — the
     // tree they're looking at isn't its output — so it's drawn like one.
     if bar.note.is_some() && bar.error.is_none() && area.height >= 2 {
-        let note_row = Rect {
-            y: area.y + 1,
-            height: 1,
-            ..area
-        };
+        let note_row = Rect { y: area.y + 1, height: 1, ..area };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "   invalid filter",
@@ -5115,22 +4971,14 @@ fn draw_jq_bar(
     if let Some(err) = &bar.error
         && area.height >= 2
     {
-        let err_row = Rect {
-            y: area.y + 1,
-            height: 1,
-            ..area
-        };
+        let err_row = Rect { y: area.y + 1, height: 1, ..area };
         // An unfinished filter (an unclosed bracket, a trailing pipe) is
         // what every filter looks like while it is being typed: with the
         // caret at its end it is a note in the muted colour, not an
         // error. Once the caret moves back into the text or the bar is
         // left, the filter as it stands is what runs, and it is broken.
         let typing = bar.focused && bar.caret_at_end();
-        let color = if err.incomplete() && typing {
-            t.text_muted
-        } else {
-            t.error
-        };
+        let color = if err.incomplete() && typing { t.text_muted } else { t.error };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 format!("   {}", err.message()),
@@ -5161,11 +5009,8 @@ fn draw_jq_bar(
                 let len = text[start_byte..end_byte].chars().count().max(1) as u16;
                 let x0 = row.x + 3 + start; // after "jq "
                 for x in x0..(x0 + len).min(row.right()) {
-                    frame.buffer_mut()[(x, row.y)].set_style(
-                        Style::default()
-                            .add_modifier(Modifier::UNDERLINED)
-                            .fg(t.error),
-                    );
+                    frame.buffer_mut()[(x, row.y)]
+                        .set_style(Style::default().add_modifier(Modifier::UNDERLINED).fg(t.error));
                 }
             }
         }
@@ -5257,10 +5102,7 @@ fn draw_search_footer(
     let text_w = area.width.saturating_sub(buttons_w + 1);
     frame.render_widget(
         Paragraph::new(search_footer(view, t, text_w)),
-        Rect {
-            width: text_w,
-            ..area
-        },
+        Rect { width: text_w, ..area },
     );
 
     if area.width <= buttons_w {
@@ -5291,10 +5133,7 @@ fn search_footer(view: &ReadyView, t: &Theme, width: u16) -> Line<'static> {
         spans.extend(search.input.draw_line_windowed(true, t, input_width).spans);
         return Line::from(spans);
     }
-    spans.push(Span::styled(
-        search.query.clone(),
-        Style::default().fg(t.text),
-    ));
+    spans.push(Span::styled(search.query.clone(), Style::default().fg(t.text)));
     let muted = Style::default().fg(t.text_muted);
     if search.matches.is_empty() {
         spans.push(Span::styled("  no matches", muted));
@@ -5444,9 +5283,7 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| resp.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| resp.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         format!("{:?}", terminal.backend().buffer())
     }
 
@@ -5465,9 +5302,7 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| resp.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| resp.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let area = resp.view().unwrap().last_area.expect("area recorded");
         (area, terminal.backend().buffer().clone())
     }
@@ -5640,13 +5475,20 @@ mod tests {
             r.view.as_mut().unwrap().cursor = 50;
             r.handle_key(shift_down);
             r.handle_key(shift_down);
-            assert_eq!(r.selected_text().as_deref(), Some("50\n51\n52"), "{jump:?}: the selection to drop");
+            assert_eq!(
+                r.selected_text().as_deref(),
+                Some("50\n51\n52"),
+                "{jump:?}: the selection to drop"
+            );
             r.handle_key(jump);
             assert_eq!(r.selected_text(), None, "{jump:?}: the jump drops it");
             let cursor = r.view().unwrap().cursor;
             r.handle_key(shift_down);
             let sel = r.view().unwrap().sel.expect("shift+down selects again");
-            assert_eq!(sel.0.0, cursor, "{jump:?}: the new selection starts at the cursor the jump left");
+            assert_eq!(
+                sel.0.0, cursor,
+                "{jump:?}: the new selection starts at the cursor the jump left"
+            );
         }
     }
 
@@ -5661,14 +5503,21 @@ mod tests {
         let select = |r: &mut Pane| {
             r.handle_key(shift_down);
             r.handle_key(shift_down);
-            assert_eq!(r.selected_text().as_deref(), Some("line 0\nline 1\nline 2"), "the selection to drop");
+            assert_eq!(
+                r.selected_text().as_deref(),
+                Some("line 0\nline 1\nline 2"),
+                "the selection to drop"
+            );
         };
         let selects_from_cursor = |r: &mut Pane, what: &str| {
             assert_eq!(r.selected_text(), None, "{what}: the jump drops it");
             let cursor = r.view().unwrap().cursor;
             r.handle_key(shift_down);
             let sel = r.view().unwrap().sel.expect("shift+down selects again");
-            assert_eq!(sel.0.0, cursor, "{what}: the new selection starts at the cursor the jump left");
+            assert_eq!(
+                sel.0.0, cursor,
+                "{what}: the new selection starts at the cursor the jump left"
+            );
         };
         // Enter commits the query and jumps to the first match.
         let mut r = ready(&body);
@@ -5749,7 +5598,11 @@ mod tests {
         assert_eq!(r.lines(LinesOp::Yank { count: Some(3) }), Some(lines_of(5..=7)), "V6");
         let mut r = thirty();
         r.view.as_mut().unwrap().cursor = 24;
-        assert_eq!(r.lines(LinesOp::Yank { count: Some(99) }), Some(lines_of(25..=30)), "V13: clamped");
+        assert_eq!(
+            r.lines(LinesOp::Yank { count: Some(99) }),
+            Some(lines_of(25..=30)),
+            "V13: clamped"
+        );
         // Vim's `{N}yy` on the last line beeps (probed: `3yy` there leaves
         // `@"` alone); `yy` and `1yy` yank it.
         let mut r = thirty();
@@ -5759,7 +5612,11 @@ mod tests {
         assert_eq!(r.lines(LinesOp::Yank { count: Some(1) }), Some(lines_of(30..=30)));
         assert_eq!(r.lines(LinesOp::Yank { count: None }), Some(lines_of(30..=30)));
         r.view.as_mut().unwrap().cursor = 28;
-        assert_eq!(r.lines(LinesOp::Yank { count: Some(3) }), Some(lines_of(29..=30)), "one line up: clamped");
+        assert_eq!(
+            r.lines(LinesOp::Yank { count: Some(3) }),
+            Some(lines_of(29..=30)),
+            "one line up: clamped"
+        );
         let mut r = thirty();
         r.view.as_mut().unwrap().cursor = 4;
         r.lines(LinesOp::Start);
@@ -5866,12 +5723,20 @@ mod tests {
         assert!(r.open_search(SearchSyntax::Vim, false));
         r.handle_key(ch('5'));
         r.handle_key(key(KeyCode::Enter));
-        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (4, Some((4, 5))), "/5 lands");
+        assert_eq!(
+            (r.view().unwrap().cursor, r.view().unwrap().at_col),
+            (4, Some((4, 5))),
+            "/5 lands"
+        );
         r.lines(LinesOp::Start);
         r.lines(LinesOp::Yank { count: None });
         assert_eq!(r.view().unwrap().at_col, Some((4, 0)), "R6a: V y puts the column at 0");
         assert!(r.find_next(false, 1));
-        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (4, Some((4, 5))), "R6d: n finds the same match");
+        assert_eq!(
+            (r.view().unwrap().cursor, r.view().unwrap().at_col),
+            (4, Some((4, 5))),
+            "R6d: n finds the same match"
+        );
         for v_line in [false, true] {
             let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
             render(&mut r);
@@ -5926,7 +5791,11 @@ mod tests {
             assert!(!r.line_selection(), "a drag is a character selection");
             r.handle_key(KeyEvent::new(key, KeyModifiers::SHIFT));
             assert!(r.line_selection(), "{key:?}: now a line selection");
-            assert_eq!(r.selected_text().as_deref(), Some(want), "{key:?}: from the drag's line 4 to the cursor");
+            assert_eq!(
+                r.selected_text().as_deref(),
+                Some(want),
+                "{key:?}: from the drag's line 4 to the cursor"
+            );
         }
     }
 
@@ -5951,7 +5820,10 @@ mod tests {
             r.view.as_mut().unwrap().scroll = 40;
             r.extend(m);
             let v = r.view().unwrap();
-            assert!(v.cursor >= v.scroll && v.cursor < v.scroll + 23, "{m:?}: the cursor is in the view");
+            assert!(
+                v.cursor >= v.scroll && v.cursor < v.scroll + 23,
+                "{m:?}: the cursor is in the view"
+            );
             assert_ne!(v.cursor, 5, "{m:?}: the cursor moved");
             let sel = v.sel.expect("still a selection");
             assert!(r.line_selection(), "{m:?}");
@@ -5997,14 +5869,11 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let out = format!("{:?}", terminal.backend().buffer());
         assert!(out.contains("\u{F03EB}"), "editor icon: {out}");
         assert!(
-            hits.rect_of(&crate::hit::Hit::ResponseEditorButton)
-                .is_some(),
+            hits.rect_of(&crate::hit::Hit::ResponseEditorButton).is_some(),
             "the 󰏫 icon registers its hit"
         );
     }
@@ -6023,11 +5892,7 @@ mod tests {
         );
 
         r.set_view_mode(ViewMode::Raw);
-        assert_eq!(
-            r.view().unwrap().view_text(),
-            r#"{"a":1}"#,
-            "Raw tab yields the verbatim body"
-        );
+        assert_eq!(r.view().unwrap().view_text(), r#"{"a":1}"#, "Raw tab yields the verbatim body");
 
         r.set_view_mode(ViewMode::Headers);
         let headers = r.view().unwrap().view_text();
@@ -6085,7 +5950,8 @@ mod tests {
         r.set_view_mode(ViewMode::Headers);
         render(&mut r);
         assert_eq!(r.handle_key(ch('c')), None);
-        let row = (0..20).find(|&i| matches!(r.view().unwrap().header_row(i), Some(HeaderRow::Received(_))));
+        let row = (0..20)
+            .find(|&i| matches!(r.view().unwrap().header_row(i), Some(HeaderRow::Received(_))));
         let row = row.expect("the fixture has a received header");
         r.view.as_mut().unwrap().cursor = row;
         assert_eq!(r.copyable_header_row(), Some(row));
@@ -6152,9 +6018,7 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let buf = terminal.backend().buffer();
         // The status chip is the first thing painted, at the header strip's
         // top-left corner (just inside the pane's 1-col padding; panes carry
@@ -6187,17 +6051,12 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let buf = terminal.backend().buffer();
         // Row 0, just past the status chip (` 200 ` from x=1), lands in the
         // gap before the elapsed figure.
         let cell = buf.cell((6, 0)).expect("elapsed chip cell");
-        assert_eq!(
-            cell.bg, theme.panel,
-            "timing chip must not be control-filled: {cell:?}"
-        );
+        assert_eq!(cell.bg, theme.panel, "timing chip must not be control-filled: {cell:?}");
         // Find the "ms" text and confirm it's muted, not on control fill.
         let mut found = false;
         for x in 0..60u16 {
@@ -6230,9 +6089,7 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let buf = terminal.backend().buffer();
         // Rows 0..3 (panes carry no border of their own) are the strip.
         // Column 45 is blank on row 0 (past the status/timing/size/content
@@ -6277,9 +6134,7 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let buf = terminal.backend().buffer();
 
         // Locate the header row by its text, then collect the hover pill:
@@ -6316,21 +6171,13 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let rect = hits
             .rect_of(&crate::hit::Hit::ResponseTab(ViewMode::Headers))
             .expect("Headers tab hit registered");
         assert_eq!(rect.y, 1, "tabs live on the strip's middle row");
-        assert!(
-            hits.rect_of(&crate::hit::Hit::ResponseTab(ViewMode::Raw))
-                .is_some()
-        );
-        assert!(
-            hits.rect_of(&crate::hit::Hit::ResponseTab(ViewMode::Pretty))
-                .is_some()
-        );
+        assert!(hits.rect_of(&crate::hit::Hit::ResponseTab(ViewMode::Raw)).is_some());
+        assert!(hits.rect_of(&crate::hit::Hit::ResponseTab(ViewMode::Pretty)).is_some());
     }
 
     #[test]
@@ -6341,16 +6188,10 @@ mod tests {
         cycle(&mut r);
         let out = render(&mut r);
         assert!(out.contains("{\"a\": 1,"), "raw is verbatim: {out}");
-        assert!(
-            out.contains("     \"b\": 2}"),
-            "raw keeps original spacing: {out}"
-        );
+        assert!(out.contains("     \"b\": 2}"), "raw keeps original spacing: {out}");
         cycle(&mut r); // Raw -> Headers
         cycle(&mut r); // Headers -> Pretty
-        assert!(
-            render(&mut r).contains("  \"a\": 1,"),
-            "cycles back to pretty"
-        );
+        assert!(render(&mut r).contains("  \"a\": 1,"), "cycles back to pretty");
     }
 
     #[test]
@@ -6369,11 +6210,7 @@ mod tests {
         let v = r.view().unwrap();
         assert!(v.parsing, "the parse was handed off, not run inline");
         assert!(v.tree.is_none(), "no tree until it lands");
-        assert_eq!(
-            v.mode,
-            ViewMode::Pretty,
-            "the Tree tab leads, as it will once the parse lands"
-        );
+        assert_eq!(v.mode, ViewMode::Pretty, "the Tree tab leads, as it will once the parse lands");
         let out = render(&mut r);
         assert!(out.contains("parsing"), "…showing the wait: {out}");
         assert!(out.contains("Raw"), "the raw body is a tab away: {out}");
@@ -6384,10 +6221,7 @@ mod tests {
         let body = format!("<html>{}</html>", "x".repeat(SYNC_PRETTY_BYTES));
         let r = ready(&body);
         let v = r.view().unwrap();
-        assert!(
-            v.parsing,
-            "the parse still runs (the body might yet be JSON)"
-        );
+        assert!(v.parsing, "the parse still runs (the body might yet be JSON)");
         assert_eq!(v.mode, ViewMode::Raw, "no spinner to sit through");
     }
 
@@ -6402,10 +6236,7 @@ mod tests {
         );
         let out = render(&mut r);
         assert!(out.contains("parsing"), "the wait is named: {out}");
-        assert!(
-            SPINNER.iter().any(|g| out.contains(*g)),
-            "a spinner glyph: {out}"
-        );
+        assert!(SPINNER.iter().any(|g| out.contains(*g)), "a spinner glyph: {out}");
     }
 
     #[test]
@@ -6413,10 +6244,7 @@ mod tests {
         let body = big_json();
         let mut r = ready_gen(&body, 7);
         let tree = JsonTree::parse(&body).unwrap();
-        assert!(
-            r.attach_tree(7, Some(tree)),
-            "delivered to the waiting view"
-        );
+        assert!(r.attach_tree(7, Some(tree)), "delivered to the waiting view");
         let v = r.view().unwrap();
         assert!(!v.parsing && v.tree.is_some());
         r.set_view_mode(ViewMode::Pretty);
@@ -6462,10 +6290,7 @@ mod tests {
         let out = render(&mut r);
         assert!(out.contains("content-type: application/json"), "{out}");
         cycle(&mut r); // Headers -> Pretty
-        assert!(
-            render(&mut r).contains("\"a\""),
-            "t cycles back to the body view"
-        );
+        assert!(render(&mut r).contains("\"a\""), "t cycles back to the body view");
     }
 
     #[test]
@@ -6501,48 +6326,29 @@ mod tests {
 
     #[test]
     fn scroll_clamps_and_is_independent_of_the_cursor() {
-        let body = format!(
-            "[{}]",
-            (0..50).map(|i| i.to_string()).collect::<Vec<_>>().join(",")
-        );
+        let body = format!("[{}]", (0..50).map(|i| i.to_string()).collect::<Vec<_>>().join(","));
         let mut r = ready(&body);
         render_sized(&mut r, 40, 10); // teaches the view its viewport height
         r.handle_scroll(-5);
         assert_eq!(r.view().unwrap().scroll, 0, "clamped at the top");
-        assert_eq!(
-            r.view().unwrap().cursor,
-            0,
-            "scrolling does not move the cursor"
-        );
+        assert_eq!(r.view().unwrap().cursor, 0, "scrolling does not move the cursor");
         r.handle_scroll(500);
         let v = r.view().unwrap();
-        assert!(
-            v.scroll > 0 && v.scroll < 52,
-            "clamped inside the document: {}",
-            v.scroll
-        );
+        assert!(v.scroll > 0 && v.scroll < 52, "clamped inside the document: {}", v.scroll);
         assert_eq!(v.cursor, 0);
     }
 
     #[test]
     fn scrolling_moves_the_rendered_window() {
-        let body = format!(
-            "[{}]",
-            (0..50)
-                .map(|i| format!("\"e{i}\""))
-                .collect::<Vec<_>>()
-                .join(",")
-        );
+        let body =
+            format!("[{}]", (0..50).map(|i| format!("\"e{i}\"")).collect::<Vec<_>>().join(","));
         let mut r = ready(&body);
         let top = render_sized(&mut r, 40, 10);
         assert!(top.contains("\"e0\""));
         assert!(!top.contains("\"e40\""), "the tail is off screen: {top}");
         r.handle_scroll(40);
         let down = render_sized(&mut r, 40, 10);
-        assert!(
-            down.contains("\"e40\""),
-            "scrolling reveals later lines: {down}"
-        );
+        assert!(down.contains("\"e40\""), "scrolling reveals later lines: {down}");
         assert!(!down.contains("\"e0\""), "and hides earlier ones: {down}");
     }
 
@@ -6577,9 +6383,7 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| resp.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| resp.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         hits
     }
 
@@ -6658,12 +6462,20 @@ mod tests {
         let mut r = ready("line 1\nline 2\nline 3\nline 4\nline 5");
         r.view.as_mut().unwrap().height = 23;
         r.motion(M::Page { down: true, count: 1 });
-        assert_eq!((r.view().unwrap().scroll, r.view().unwrap().cursor), (4, 4), "X2: the last line on top");
+        assert_eq!(
+            (r.view().unwrap().scroll, r.view().unwrap().cursor),
+            (4, 4),
+            "X2: the last line on top"
+        );
         let mut r = ready("line 1\nline 2\nline 3\nline 4\nline 5");
         r.view.as_mut().unwrap().height = 23;
         r.view.as_mut().unwrap().cursor = 2;
         r.motion(M::Page { down: false, count: 1 });
-        assert_eq!((r.view().unwrap().scroll, r.view().unwrap().cursor), (0, 2), "X3: ctrl+b at the top beeps");
+        assert_eq!(
+            (r.view().unwrap().scroll, r.view().unwrap().cursor),
+            (0, 2),
+            "X3: ctrl+b at the top beeps"
+        );
         // A big body still parsing has no tree yet: an empty Pretty view.
         let mut r = ready_gen(&big_json(), 1);
         assert_eq!(r.view().unwrap().visible_len(), 0);
@@ -6684,10 +6496,7 @@ mod tests {
     #[test]
     fn a_window_key_that_beeps_keeps_the_selection() {
         use crate::action::ResponseMotion as M;
-        let beeps = [
-            M::Page { down: false, count: 1 },
-            M::HalfPage { down: false, count: None },
-        ];
+        let beeps = [M::Page { down: false, count: 1 }, M::HalfPage { down: false, count: None }];
         for m in beeps {
             let mut r = hundred_at(0, 0);
             r.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
@@ -6709,7 +6518,11 @@ mod tests {
         r.motion(M::Page { down: true, count: 1 });
         r.motion(M::HalfPage { down: true, count: None });
         let v = r.view().unwrap();
-        assert_eq!((v.scroll, v.cursor, v.sel), before, "ctrl+f and ctrl+d at the end change nothing");
+        assert_eq!(
+            (v.scroll, v.cursor, v.sel),
+            before,
+            "ctrl+f and ctrl+d at the end change nothing"
+        );
         // A page key that does move ends the selection.
         let mut r = hundred_at(0, 0);
         r.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
@@ -6838,7 +6651,11 @@ mod tests {
         assert_eq!(r.view().unwrap().cursor, 2, "F3: back on its line");
         r.fold(FoldOp::Close, 1);
         r.motion(crate::action::ResponseMotion::Lines(1));
-        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (2, Some(4)), "F4: j leaves the fold");
+        assert_eq!(
+            (r.view().unwrap().cursor, r.view().unwrap().real_line()),
+            (2, Some(4)),
+            "F4: j leaves the fold"
+        );
         let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
         render(&mut r);
         r.view.as_mut().unwrap().cursor = 2;
@@ -6867,7 +6684,11 @@ mod tests {
         r.click_row(2, false);
         assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (2, Some(4)));
         assert!(!r.fold(FoldOp::Open, 1), "nothing closed holds the clicked line");
-        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (2, Some(4)), "not back on the old hidden line");
+        assert_eq!(
+            (r.view().unwrap().cursor, r.view().unwrap().real_line()),
+            (2, Some(4)),
+            "not back on the old hidden line"
+        );
     }
 
     /// Final review I1 (probes G1–G8, Vim 9.1.697): on a folded tree,
@@ -6922,7 +6743,11 @@ mod tests {
             r.view.as_mut().unwrap().cursor = 2;
             r.fold(FoldOp::CloseAll, 1);
             r.motion(m);
-            assert_eq!((r.view().unwrap().cursor, r.view().unwrap().real_line()), (0, Some(0)), "{m:?}");
+            assert_eq!(
+                (r.view().unwrap().cursor, r.view().unwrap().real_line()),
+                (0, Some(0)),
+                "{m:?}"
+            );
         }
     }
 
@@ -6932,19 +6757,34 @@ mod tests {
     #[test]
     fn a_page_key_that_beeps_keeps_the_search_column() {
         use crate::action::ResponseMotion as M;
-        let body = (0..100).map(|i| if i == 50 { "a x x".to_string() } else { format!("line {i}") }).collect::<Vec<_>>().join("\n");
+        let body = (0..100)
+            .map(|i| if i == 50 { "a x x".to_string() } else { format!("line {i}") })
+            .collect::<Vec<_>>()
+            .join("\n");
         let mut r = ready(&body);
         r.view.as_mut().unwrap().height = 23;
         assert!(r.open_search(SearchSyntax::Vim, false));
         r.handle_key(ch('x'));
         r.handle_key(key(KeyCode::Enter));
-        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (50, Some((50, 2))), "/x lands");
+        assert_eq!(
+            (r.view().unwrap().cursor, r.view().unwrap().at_col),
+            (50, Some((50, 2))),
+            "/x lands"
+        );
         r.set_scroll(0);
         r.motion(M::Page { down: false, count: 1 });
         let v = r.view().unwrap();
-        assert_eq!((v.scroll, v.cursor, v.at_col), (0, 50, Some((50, 2))), "ctrl+b at the top beeps");
+        assert_eq!(
+            (v.scroll, v.cursor, v.at_col),
+            (0, 50, Some((50, 2))),
+            "ctrl+b at the top beeps"
+        );
         assert!(r.find_next(false, 1));
-        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (50, Some((50, 4))), "n finds the next match");
+        assert_eq!(
+            (r.view().unwrap().cursor, r.view().unwrap().at_col),
+            (50, Some((50, 4))),
+            "n finds the next match"
+        );
     }
 
     /// Final review T5 m4 (probes J1–J3, Vim 9.1.697): a `j` or `k` that
@@ -6959,21 +6799,41 @@ mod tests {
         assert!(r.open_search(SearchSyntax::Vim, false));
         r.handle_key(ch('x'));
         r.handle_key(key(KeyCode::Enter));
-        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (2, Some((2, 2))), "J2: /x lands");
+        assert_eq!(
+            (r.view().unwrap().cursor, r.view().unwrap().at_col),
+            (2, Some((2, 2))),
+            "J2: /x lands"
+        );
         r.motion(M::Lines(1));
-        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (2, Some((2, 2))), "J2: j beeps");
+        assert_eq!(
+            (r.view().unwrap().cursor, r.view().unwrap().at_col),
+            (2, Some((2, 2))),
+            "J2: j beeps"
+        );
         assert!(r.find_next(false, 1));
-        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (2, Some((2, 4))), "J1: n finds the next match");
+        assert_eq!(
+            (r.view().unwrap().cursor, r.view().unwrap().at_col),
+            (2, Some((2, 4))),
+            "J1: n finds the next match"
+        );
         let mut r = ready("c x x\nb\nx");
         r.view.as_mut().unwrap().height = 23;
         r.view.as_mut().unwrap().cursor = 1;
         assert!(r.open_search(SearchSyntax::Vim, true));
         r.handle_key(ch('x'));
         r.handle_key(key(KeyCode::Enter));
-        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (0, Some((0, 4))), "?x lands");
+        assert_eq!(
+            (r.view().unwrap().cursor, r.view().unwrap().at_col),
+            (0, Some((0, 4))),
+            "?x lands"
+        );
         r.motion(M::Lines(-1));
         assert!(r.find_next(false, 1));
-        assert_eq!((r.view().unwrap().cursor, r.view().unwrap().at_col), (0, Some((0, 2))), "J3: n goes on backward");
+        assert_eq!(
+            (r.view().unwrap().cursor, r.view().unwrap().at_col),
+            (0, Some((0, 2))),
+            "J3: n goes on backward"
+        );
     }
 
     #[test]
@@ -6994,7 +6854,11 @@ mod tests {
         assert_eq!(a.view().unwrap().cursor, b.view().unwrap().cursor);
         assert_eq!((b.view().unwrap().scroll, b.view().unwrap().cursor), (21, 21), "P1");
         b.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
-        assert_eq!((b.view().unwrap().scroll, b.view().unwrap().cursor), (10, 10), "half a page back");
+        assert_eq!(
+            (b.view().unwrap().scroll, b.view().unwrap().cursor),
+            (10, 10),
+            "half a page back"
+        );
         b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
         assert_eq!((b.view().unwrap().scroll, b.view().unwrap().cursor), (21, 21));
         a.handle_key(key(KeyCode::PageUp));
@@ -7016,10 +6880,7 @@ mod tests {
 
     #[test]
     fn ctrl_home_and_ctrl_end_jump_to_document_top_and_bottom() {
-        let body = (0..100)
-            .map(|i| format!("line {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let body = (0..100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let mut r = ready(&body);
         render(&mut r);
         r.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
@@ -7048,14 +6909,8 @@ mod tests {
         );
         let page = |d: i16| crate::hit::Hit::HScrollTrack(PaneId::Response, d);
         let viewport = r.view().unwrap().width() as i16;
-        assert!(
-            hits.rect_of(&page(-viewport)).is_some(),
-            "clicking left of the thumb pages left"
-        );
-        assert!(
-            hits.rect_of(&page(viewport)).is_some(),
-            "clicking right of the thumb pages right"
-        );
+        assert!(hits.rect_of(&page(-viewport)).is_some(), "clicking left of the thumb pages left");
+        assert!(hits.rect_of(&page(viewport)).is_some(), "clicking right of the thumb pages right");
     }
 
     #[test]
@@ -7072,10 +6927,7 @@ mod tests {
             v.h_scroll
         );
         let h = v.h_scroll;
-        assert!(
-            !r.set_scroll_h(h),
-            "a no-op move reports no change"
-        );
+        assert!(!r.set_scroll_h(h), "a no-op move reports no change");
     }
 
     #[test]
@@ -7085,10 +6937,7 @@ mod tests {
         assert!(!before.contains("TAIL"), "clipped at 60 cols: {before}");
         r.handle_scroll_h(500);
         let after = render(&mut r);
-        assert!(
-            after.contains("TAIL"),
-            "scrolled to the line's end: {after}"
-        );
+        assert!(after.contains("TAIL"), "scrolled to the line's end: {after}");
         r.handle_scroll_h(-1000);
         assert_eq!(r.view().unwrap().h_scroll, 0, "clamped at the left edge");
     }
@@ -7158,9 +7007,7 @@ mod tests {
         let draw = |r: &mut Response| {
             let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
             let mut hits = crate::hit::HitMap::default();
-            terminal
-                .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
-                .unwrap();
+            terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
             hits
         };
         let hits = draw(&mut r);
@@ -7197,10 +7044,7 @@ mod tests {
         }
         // While the input is active, other response keys are suspended.
         assert_eq!(r.view().unwrap().cursor, 0);
-        assert!(
-            render(&mut r).contains("/zz"),
-            "the query echoes in the footer"
-        );
+        assert!(render(&mut r).contains("/zz"), "the query echoes in the footer");
         r.handle_key(key(KeyCode::Enter));
         let out = render(&mut r);
         assert!(out.contains("1/2"), "match counter: {out}");
@@ -7234,10 +7078,7 @@ mod tests {
         assert_eq!(search.query, "zz");
         assert_eq!(search.matches.len(), 2);
         let out = render(&mut r);
-        assert!(
-            out.contains("1/2"),
-            "on the first match, not the second: {out}"
-        );
+        assert!(out.contains("1/2"), "on the first match, not the second: {out}");
 
         // A second click steps, as `n` does.
         assert!(r.step_search(1));
@@ -7252,10 +7093,7 @@ mod tests {
             assert_eq!(r.handle_key(ch(c)), Some(Action::Render));
         }
         assert_eq!(r.view().unwrap().cursor, 0, "navigation keys are suspended");
-        assert_eq!(
-            r.view().unwrap().search.as_ref().unwrap().input.text(),
-            "jjG"
-        );
+        assert_eq!(r.view().unwrap().search.as_ref().unwrap().input.text(), "jjG");
     }
 
     #[test]
@@ -7270,10 +7108,7 @@ mod tests {
         }
         r.handle_key(key(KeyCode::Enter));
         let out = render(&mut r);
-        assert!(
-            out.contains("needle"),
-            "jumping expands the ancestors: {out}"
-        );
+        assert!(out.contains("needle"), "jumping expands the ancestors: {out}");
         assert!(out.contains("1/1"));
     }
 
@@ -7326,8 +7161,17 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "{", r#"  "user-id": 5,"#, r#"  "user_id": 6,"#, r#"  "Name": "alice","#, r#"  "name": "bob","#,
-                r#"  "items": ["#, "    1,", "    2", "  ],", r#"  "id": "x1""#, "}",
+                "{",
+                r#"  "user-id": 5,"#,
+                r#"  "user_id": 6,"#,
+                r#"  "Name": "alice","#,
+                r#"  "name": "bob","#,
+                r#"  "items": ["#,
+                "    1,",
+                "    2",
+                "  ],",
+                r#"  "id": "x1""#,
+                "}",
             ],
             "the probe's lines, less its blank line 9"
         );
@@ -7350,7 +7194,11 @@ mod tests {
         assert_eq!(r.take_note().as_deref(), Some("search hit TOP, continuing at BOTTOM"));
         let mut r = at(3);
         r.find_word(false, 1);
-        assert_eq!(landed(&r), (3, Some((3, 3)), r"\<Name\>".into()), "S5: case matters, so it wraps to itself");
+        assert_eq!(
+            landed(&r),
+            (3, Some((3, 3)), r"\<Name\>".into()),
+            "S5: case matters, so it wraps to itself"
+        );
         let mut r = at(6);
         r.find_word(false, 1);
         assert_eq!(landed(&r), (6, Some((6, 4)), r"\<1\>".into()), "S11");
@@ -7416,15 +7264,27 @@ mod tests {
         r.open_search(SearchSyntax::Vim, false);
         typed(&mut r, "^a.c$");
         let s = r.view().unwrap().search.as_ref().unwrap();
-        assert_eq!(s.matches.iter().map(|m| m.0).collect::<Vec<_>>(), [0, 1, 2], "vim: a pattern, anchored");
+        assert_eq!(
+            s.matches.iter().map(|m| m.0).collect::<Vec<_>>(),
+            [0, 1, 2],
+            "vim: a pattern, anchored"
+        );
         let mut r = ready("a.c\nabc\na.c");
         r.open_search(SearchSyntax::Literal, false);
         typed(&mut r, "a.c");
-        assert_eq!(r.view().unwrap().search.as_ref().unwrap().matches.len(), 2, "arrows: plain text");
+        assert_eq!(
+            r.view().unwrap().search.as_ref().unwrap().matches.len(),
+            2,
+            "arrows: plain text"
+        );
         let mut r = ready("abc");
         r.open_search(SearchSyntax::Literal, false);
         typed(&mut r, "ABC");
-        assert_eq!(r.take_note().as_deref(), Some("Pattern not found: ABC"), "arrows matches case too");
+        assert_eq!(
+            r.take_note().as_deref(),
+            Some("Pattern not found: ABC"),
+            "arrows matches case too"
+        );
         let mut r = ready("abc\nxyz\nabc");
         r.view.as_mut().unwrap().cursor = 1;
         r.open_search(SearchSyntax::Vim, false);
@@ -7451,7 +7311,11 @@ mod tests {
         assert_eq!(landed(&r).1, Some((2, 3)), "3N: back three, wrapping");
         let mut r = ready(PROBE_JSON);
         assert!(!r.find_next(false, 1));
-        assert_eq!(r.take_note().as_deref(), Some("No previous regular expression"), "no search yet");
+        assert_eq!(
+            r.take_note().as_deref(),
+            Some("No previous regular expression"),
+            "no search yet"
+        );
     }
 
     /// Amendment A5.3 (probes E2–E5, E7): a match that starts on its line's
@@ -7515,7 +7379,11 @@ mod tests {
         typed(&mut r, "x");
         r.open_search(Literal, false);
         typed(&mut r, "");
-        assert_eq!((cursor(&r), landed(&r)), (2, (2, None, String::new())), "arrows: nothing, as on main");
+        assert_eq!(
+            (cursor(&r), landed(&r)),
+            (2, (2, None, String::new())),
+            "arrows: nothing, as on main"
+        );
         assert_eq!(r.take_note(), None);
         // Arrows: Esc on an empty box runs nothing; on a typed one it runs
         // it (main's field rule).
@@ -7525,7 +7393,11 @@ mod tests {
         r.take_note();
         r.open_search(Literal, false);
         r.handle_key(key(KeyCode::Esc));
-        assert_eq!(landed(&r), (2, None, String::new()), "arrows: Esc on an empty box runs nothing");
+        assert_eq!(
+            landed(&r),
+            (2, None, String::new()),
+            "arrows: Esc on an empty box runs nothing"
+        );
         assert_eq!(r.take_note(), None);
         assert!(!r.view().unwrap().search.as_ref().unwrap().active, "arrows: the box closed");
         r.open_search(Literal, false);
@@ -7544,7 +7416,11 @@ mod tests {
                 r.handle_key(ch(c));
             }
             r.handle_key(key(KeyCode::Esc));
-            assert_eq!(landed(&r), (2, Some((2, 0)), "x".into()), "vim: Esc on {text:?} puts the search back");
+            assert_eq!(
+                landed(&r),
+                (2, Some((2, 0)), "x".into()),
+                "vim: Esc on {text:?} puts the search back"
+            );
             assert_eq!(r.take_note(), None, "{text:?}");
             assert!(!r.view().unwrap().search.as_ref().unwrap().active, "{text:?}: the box closed");
         }
@@ -7607,7 +7483,11 @@ mod tests {
         typed(&mut r, "y");
         r.set_state(ResponseState::Ready(Box::new(data("a\ny\nb\ny"))), 1);
         assert!(r.find_next(false, 1));
-        assert_eq!(landed(&r), (3, Some((3, 0)), "y".into()), "`n` follows the `?`: backward, wrapping");
+        assert_eq!(
+            landed(&r),
+            (3, Some((3, 0)), "y".into()),
+            "`n` follows the `?`: backward, wrapping"
+        );
     }
 
     /// Plan M5b Deviation 20: the app's one last pattern is lent to the
@@ -7625,7 +7505,11 @@ mod tests {
         r.memory.set("y".into(), true);
         r.follow_last_pattern();
         let s = r.view().unwrap().search.as_ref().unwrap();
-        assert_eq!((s.query.as_str(), s.backward, s.matches.len()), ("y", true, 1), "the highlight shows y");
+        assert_eq!(
+            (s.query.as_str(), s.backward, s.matches.len()),
+            ("y", true, 1),
+            "the highlight shows y"
+        );
         r.open_search(SearchSyntax::Vim, false);
         r.handle_key(ch('x'));
         r.memory.set("x".into(), false);
@@ -7634,7 +7518,11 @@ mod tests {
         assert!(s.active && s.input.text() == "x", "the box being typed in stays");
         r.handle_key(key(KeyCode::Esc));
         r.handle_key(key(KeyCode::Esc));
-        assert_eq!(r.view().unwrap().search.as_ref().map(|s| s.query.as_str()), Some("y"), "vim's Esc leaves the search");
+        assert_eq!(
+            r.view().unwrap().search.as_ref().map(|s| s.query.as_str()),
+            Some("y"),
+            "vim's Esc leaves the search"
+        );
         r.memory.set("y".into(), true);
         r.no_hlsearch();
         r.follow_last_pattern();
@@ -7646,7 +7534,11 @@ mod tests {
         let mut r = ready("x\ny\nx");
         r.memory.set("x".into(), false);
         r.follow_last_pattern();
-        assert_eq!(r.view().unwrap().search.as_ref().map(|s| s.matches.len()), Some(2), "a new view shows it too");
+        assert_eq!(
+            r.view().unwrap().search.as_ref().map(|s| s.matches.len()),
+            Some(2),
+            "a new view shows it too"
+        );
     }
 
     /// A route that runs vim's `n` while the box is still being typed in
@@ -7755,7 +7647,8 @@ mod tests {
             assert!(r.fold(FoldOp::Close, 1));
             r
         };
-        let closed = |r: &Response, line: usize| r.view().unwrap().active_tree().unwrap().closed_fold(line);
+        let closed =
+            |r: &Response, line: usize| r.view().unwrap().active_tree().unwrap().closed_fold(line);
         let searched = |mut r: Pane, syntax, backward, text: &str| {
             r.open_search(syntax, backward);
             typed(&mut r, text);
@@ -7773,11 +7666,19 @@ mod tests {
         let mut r = folded(ARR, 2);
         assert_eq!(r.view().unwrap().cursor, 1);
         assert!(r.find_word(false, 1));
-        assert_eq!(landed(&r), (2, Some((5, 3)), r"\<b\>".into()), "R3: the word from the hidden line, found past the fold");
+        assert_eq!(
+            landed(&r),
+            (2, Some((5, 3)), r"\<b\>".into()),
+            "R3: the word from the hidden line, found past the fold"
+        );
         assert_eq!(closed(&r, 2), Some((1, 4)));
         let mut r = folded(ARR2, 4);
         assert!(r.find_word(true, 1));
-        assert_eq!(landed(&r), (1, Some((1, 3)), r"\<b\>".into()), "R4: # from the fold's opening line");
+        assert_eq!(
+            landed(&r),
+            (1, Some((1, 3)), r"\<b\>".into()),
+            "R4: # from the fold's opening line"
+        );
         let r = searched(folded(ARR, 1), SearchSyntax::Vim, false, "b");
         assert_eq!(landed(&r).1, Some((5, 3)), "R7: on the fold's own collapsed row");
         let mut r = searched(ready(ARR), SearchSyntax::Vim, false, "b");
@@ -7807,17 +7708,9 @@ mod tests {
     #[test]
     fn in_flight_shows_a_spinner_and_the_cancel_hint() {
         let mut r = Response::default();
-        r.set_state(
-            ResponseState::InFlight {
-                started: Instant::now(),
-            },
-            0,
-        );
+        r.set_state(ResponseState::InFlight { started: Instant::now() }, 0);
         let out = render(&mut r);
-        assert!(
-            SPINNER.iter().any(|g| out.contains(*g)),
-            "a spinner glyph: {out}"
-        );
+        assert!(SPINNER.iter().any(|g| out.contains(*g)), "a spinner glyph: {out}");
         assert!(out.contains("esc to cancel"), "{out}");
     }
 
@@ -7835,17 +7728,9 @@ mod tests {
         let out = render(&mut r);
         assert!(out.contains("taking a while"), "{out}");
 
-        r.set_state(
-            ResponseState::InFlight {
-                started: Instant::now(),
-            },
-            0,
-        );
+        r.set_state(ResponseState::InFlight { started: Instant::now() }, 0);
         let out = render(&mut r);
-        assert!(
-            !out.contains("taking a while"),
-            "no warning early on: {out}"
-        );
+        assert!(!out.contains("taking a while"), "no warning early on: {out}");
     }
 
     #[test]
@@ -7862,18 +7747,9 @@ mod tests {
     #[test]
     fn keys_do_nothing_outside_the_ready_state() {
         let mut r = Pane::default();
-        assert_eq!(
-            r.handle_key(ch('j')),
-            None,
-            "an empty pane ignores navigation"
-        );
+        assert_eq!(r.handle_key(ch('j')), None, "an empty pane ignores navigation");
         assert_eq!(r.handle_key(ch('/')), None);
-        r.set_state(
-            ResponseState::InFlight {
-                started: Instant::now(),
-            },
-            0,
-        );
+        r.set_state(ResponseState::InFlight { started: Instant::now() }, 0);
         assert_eq!(r.handle_key(key(KeyCode::Esc)), Some(Action::CancelSend));
         assert_eq!(r.handle_key(ch('j')), None);
     }
@@ -7927,9 +7803,7 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| resp.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| resp.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         (format!("{:?}", terminal.backend().buffer()), hits)
     }
 
@@ -7950,20 +7824,13 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let buf = terminal.backend().buffer();
-        let row0: String = (0..60u16)
-            .map(|x| buf.cell((x, 0)).unwrap().symbol())
-            .collect();
+        let row0: String = (0..60u16).map(|x| buf.cell((x, 0)).unwrap().symbol()).collect();
         assert!(row0.contains("200"), "status chip on row 0: {row0}");
         assert!(row0.contains("342 ms"), "elapsed on row 0: {row0}");
         assert!(row0.contains("8 B"), "size on row 0: {row0}");
-        assert!(
-            row0.contains("application/json"),
-            "content type on row 0: {row0}"
-        );
+        assert!(row0.contains("application/json"), "content type on row 0: {row0}");
     }
 
     /// The header actions are icons — search, copy body, save to file —
@@ -7977,19 +7844,10 @@ mod tests {
         assert!(out.contains("\u{F018F}"), "copy icon: {out}");
         assert!(out.contains("\u{F0193}"), "save icon: {out}");
         assert!(!out.contains("Copy body"), "no text label at rest: {out}");
-        assert!(
-            !out.contains("Save to file"),
-            "no text label at rest: {out}"
-        );
-        let search = hits
-            .rect_of(&crate::hit::Hit::ResponseSearchButton)
-            .expect("search hit");
-        let copy = hits
-            .rect_of(&crate::hit::Hit::CopyBodyButton)
-            .expect("copy hit");
-        let save = hits
-            .rect_of(&crate::hit::Hit::SaveBodyButton)
-            .expect("save hit");
+        assert!(!out.contains("Save to file"), "no text label at rest: {out}");
+        let search = hits.rect_of(&crate::hit::Hit::ResponseSearchButton).expect("search hit");
+        let copy = hits.rect_of(&crate::hit::Hit::CopyBodyButton).expect("copy hit");
+        let save = hits.rect_of(&crate::hit::Hit::SaveBodyButton).expect("save hit");
         for (name, rect) in [("search", search), ("copy", copy), ("save", save)] {
             assert_eq!(rect.y, 2, "{name} sits on the underline row: {rect:?}");
         }
@@ -7997,10 +7855,7 @@ mod tests {
             search.x < save.x && save.x < copy.x,
             "search / save / copy, left to right — copy keeps the right edge"
         );
-        assert!(
-            copy.x + copy.width < 22,
-            "icons are left-aligned, not flushed right: {copy:?}"
-        );
+        assert!(copy.x + copy.width < 22, "icons are left-aligned, not flushed right: {copy:?}");
     }
 
     /// The pane no longer paints split buttons of its own — the column's
@@ -8020,10 +7875,7 @@ mod tests {
     /// strip — the centered empty-state message is gone.
     #[test]
     fn collapsed_empty_state_is_just_the_strip() {
-        let mut r = Response {
-            collapsed: true,
-            ..Default::default()
-        };
+        let mut r = Response { collapsed: true, ..Default::default() };
         let out = render_sized(&mut r, 60, 1);
         assert!(!out.contains("Send a request"), "{out}");
     }
@@ -8033,12 +7885,7 @@ mod tests {
     #[test]
     fn collapsed_in_flight_shows_a_state_hint() {
         let mut r = Response::default();
-        r.set_state(
-            ResponseState::InFlight {
-                started: Instant::now(),
-            },
-            0,
-        );
+        r.set_state(ResponseState::InFlight { started: Instant::now() }, 0);
         r.collapsed = true;
         let out = render_sized(&mut r, 60, 1);
         assert!(out.contains("sending"), "{out}");
@@ -8070,11 +7917,7 @@ mod tests {
                 // Right-aligned: the trailing cap sits one cell in from the
                 // pane's inner right edge (the 60-wide pane insets one
                 // column each side).
-                assert_eq!(
-                    down.x + down.width + 1,
-                    60 - 2,
-                    "{name} collapsed={collapsed}"
-                );
+                assert_eq!(down.x + down.width + 1, 60 - 2, "{name} collapsed={collapsed}");
             }
         }
     }
@@ -8086,10 +7929,7 @@ mod tests {
         let theme = Theme::dark();
         let mut r = ready(r#"{"a": 1}"#);
         r.collapsed = true;
-        r.split = crate::split::SplitState {
-            response_minimized: true,
-            ..Default::default()
-        };
+        r.split = crate::split::SplitState { response_minimized: true, ..Default::default() };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
         let ctx = DrawCtx {
@@ -8101,9 +7941,7 @@ mod tests {
             anims: test_anims(),
             now: std::time::Instant::now(),
         };
-        terminal
-            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let down = hits.rect_of(&crate::hit::Hit::SplitStep(-1)).unwrap();
         let buf = terminal.backend().buffer();
         assert_eq!(buf[(down.x + 1, 0)].symbol(), "\u{25BC}");
@@ -8133,9 +7971,7 @@ mod tests {
             anims: test_anims(),
             now: std::time::Instant::now(),
         };
-        terminal
-            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let buf = terminal.backend().buffer();
         let up = hits.rect_of(&crate::hit::Hit::SplitStep(1)).unwrap();
         let cap_x = up.x - 1;
@@ -8143,16 +7979,8 @@ mod tests {
         // The cell before the cap is a gap, and the URL ends in an
         // ellipsis just before it — it never runs under the pill.
         assert_eq!(buf[(cap_x - 1, 0)].symbol(), " ", "gap before the pill");
-        assert_eq!(
-            buf[(cap_x - 2, 0)].symbol(),
-            "\u{2026}",
-            "URL ends in an ellipsis"
-        );
-        assert_eq!(
-            buf[(cap_x - 3, 0)].symbol(),
-            "x",
-            "URL text runs right up to it"
-        );
+        assert_eq!(buf[(cap_x - 2, 0)].symbol(), "\u{2026}", "URL ends in an ellipsis");
+        assert_eq!(buf[(cap_x - 3, 0)].symbol(), "x", "URL text runs right up to it");
     }
 
     /// Before a response lands the pane still reads as a pane with a
@@ -8165,18 +7993,8 @@ mod tests {
         let theme = Theme::dark();
         let cases: Vec<(&str, ResponseState, &str, ratatui::style::Color)> = vec![
             ("empty", ResponseState::Empty, "\u{2014}", theme.text_muted),
-            (
-                "failed",
-                ResponseState::Failed("boom".into()),
-                "failed",
-                theme.error,
-            ),
-            (
-                "cancelled",
-                ResponseState::Cancelled,
-                "cancelled",
-                theme.text_muted,
-            ),
+            ("failed", ResponseState::Failed("boom".into()), "failed", theme.error),
+            ("cancelled", ResponseState::Cancelled, "cancelled", theme.text_muted),
         ];
         for (name, state, word, color) in cases {
             let mut r = Response::default();
@@ -8192,22 +8010,12 @@ mod tests {
                 anims: test_anims(),
                 now: std::time::Instant::now(),
             };
-            terminal
-                .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
-                .unwrap();
+            terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
             let buf = terminal.backend().buffer();
             // The strip spans the inner width on the panel tone (a cell
             // clear of both the chip and the pill).
-            assert_eq!(
-                buf[(30, 0)].bg,
-                theme.panel,
-                "{name}: row 0 is a panel strip"
-            );
-            assert_eq!(
-                buf[(30, 1)].bg,
-                theme.page,
-                "{name}: the body stays page-toned"
-            );
+            assert_eq!(buf[(30, 0)].bg, theme.panel, "{name}: row 0 is a panel strip");
+            assert_eq!(buf[(30, 1)].bg, theme.page, "{name}: the body stays page-toned");
             // The chip sits where the ready header's status chip sits:
             // inner x (1), label from x + 1.
             let label: String = (2..2 + word.chars().count() as u16)
@@ -8217,11 +8025,7 @@ mod tests {
             // The chip's fill is the state tone tinted onto the strip,
             // exactly as the ready status chip is (its text picks a
             // contrasting tone from that fill).
-            assert_eq!(
-                buf[(2, 0)].bg,
-                theme.tint(color, theme.panel),
-                "{name}: chip fill"
-            );
+            assert_eq!(buf[(2, 0)].bg, theme.tint(color, theme.panel), "{name}: chip fill");
             assert!(
                 hits.rect_of(&crate::hit::Hit::SplitStep(1)).is_some(),
                 "{name}: pill still on row 0"
@@ -8238,12 +8042,7 @@ mod tests {
     #[test]
     fn pending_in_flight_chip_shows_the_spinner() {
         let mut r = Response::default();
-        r.set_state(
-            ResponseState::InFlight {
-                started: std::time::Instant::now(),
-            },
-            0,
-        );
+        r.set_state(ResponseState::InFlight { started: std::time::Instant::now() }, 0);
         let theme = Theme::dark();
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
@@ -8256,9 +8055,7 @@ mod tests {
             anims: test_anims(),
             now: std::time::Instant::now(),
         };
-        terminal
-            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let buf = terminal.backend().buffer();
         let row0: String = (0..60).map(|x| buf[(x, 0)].symbol().to_string()).collect();
         assert!(row0.contains("sending"), "{row0}");
@@ -8274,14 +8071,10 @@ mod tests {
         r.collapsed = true;
         let hits = render_hits(&mut r);
         assert!(
-            hits.rect_of(&crate::hit::Hit::ResponseTab(ViewMode::Raw))
-                .is_none(),
+            hits.rect_of(&crate::hit::Hit::ResponseTab(ViewMode::Raw)).is_none(),
             "tabs are gone while hidden"
         );
-        assert!(
-            hits.rect_of(&crate::hit::Hit::ResponseSearchButton)
-                .is_none()
-        );
+        assert!(hits.rect_of(&crate::hit::Hit::ResponseSearchButton).is_none());
         assert!(hits.rect_of(&crate::hit::Hit::SaveBodyButton).is_none());
         assert!(hits.rect_of(&crate::hit::Hit::CopyBodyButton).is_none());
     }
@@ -8370,11 +8163,7 @@ mod tests {
         let mut r = ready("<html>hi</html>");
         assert_eq!(r.view().unwrap().mode, ViewMode::Raw, "non-JSON is raw");
         r.set_view_mode(ViewMode::Pretty);
-        assert_eq!(
-            r.view().unwrap().mode,
-            ViewMode::Raw,
-            "there is no tree to switch to"
-        );
+        assert_eq!(r.view().unwrap().mode, ViewMode::Raw, "there is no tree to switch to");
     }
 
     #[test]
@@ -8402,11 +8191,7 @@ mod tests {
         r.handle_key(last());
         assert_eq!(r.view().unwrap().cursor, 3, "last pretty line");
         cycle(&mut r);
-        assert_eq!(
-            r.view().unwrap().cursor,
-            0,
-            "switching views restarts at the top"
-        );
+        assert_eq!(r.view().unwrap().cursor, 0, "switching views restarts at the top");
         r.handle_key(last());
         assert_eq!(r.view().unwrap().cursor, 1, "last raw line");
         r.set_state(ResponseState::Ready(Box::new(data(r#"{"z": 1}"#))), 0);
@@ -8414,10 +8199,7 @@ mod tests {
         assert_eq!(v.cursor, 0);
         assert_eq!(v.scroll, 0);
         assert!(v.search.is_none());
-        assert!(
-            render(&mut r).contains("\"z\""),
-            "back to pretty for the new body"
-        );
+        assert!(render(&mut r).contains("\"z\""), "back to pretty for the new body");
     }
 
     const ITEMS: &str =
@@ -8427,8 +8209,7 @@ mod tests {
     fn applying_a_filter_swaps_the_filtered_tree_into_the_pretty_view() {
         let mut r = ready(ITEMS);
         assert!(
-            r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES)
-                .is_none(),
+            r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES).is_none(),
             "small bodies run inline"
         );
         let view = r.view().unwrap();
@@ -8449,10 +8230,7 @@ mod tests {
         r.set_jq_focus(true);
         r.jq_bar_mut().input = LineInput::new(text);
         r.apply_jq(text, SYNC_PRETTY_BYTES);
-        assert!(
-            r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none(),
-            "small bodies fetch inline"
-        );
+        assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none(), "small bodies fetch inline");
     }
 
     #[test]
@@ -8466,11 +8244,7 @@ mod tests {
         type_jq(&mut r, ".data.items[] | .s");
         assert_eq!(r.jq_ghost(), Some("tatus"));
         type_jq(&mut r, ".data.items[] | select(.st");
-        assert_eq!(
-            r.jq_ghost(),
-            Some("atus"),
-            "inside select the dot is the item"
-        );
+        assert_eq!(r.jq_ghost(), Some("atus"), "inside select the dot is the item");
         type_jq(&mut r, ".data.items[] | .zz");
         assert_eq!(r.jq_ghost(), None);
     }
@@ -8546,10 +8320,7 @@ mod tests {
         let mut r = ready(ITEMS);
         r.set_jq_tab(JqTab::Menu);
         type_jq(&mut r, ".data.items | map({s");
-        assert_eq!(
-            r.jq_bar().menu_row(),
-            Some(vec![("status".to_string(), false)])
-        );
+        assert_eq!(r.jq_bar().menu_row(), Some(vec![("status".to_string(), false)]));
         bar_key(&mut r, key(KeyCode::Tab));
         assert_eq!(r.jq_text(), ".data.items | map({status");
     }
@@ -8583,7 +8354,11 @@ mod tests {
         type_jq(&mut r, ".data.items | map({s: .status");
         assert_eq!(r.jq_ghost(), Some("}"));
         bar_key(&mut r, key(KeyCode::Right));
-        assert_eq!(r.jq_text(), ".data.items | map({s: .status}", "Right accepts a closer ghost in menu mode");
+        assert_eq!(
+            r.jq_text(),
+            ".data.items | map({s: .status}",
+            "Right accepts a closer ghost in menu mode"
+        );
         r.refresh_jq_completion(SYNC_PRETTY_BYTES);
         assert_eq!(r.jq_ghost(), Some(")"));
         bar_key(&mut r, key(KeyCode::End));
@@ -8596,10 +8371,7 @@ mod tests {
         r.set_jq_tab(JqTab::Menu);
         type_jq(&mut r, ".data.items[] | .st");
         assert_eq!(r.jq_ghost(), None, "a guess is never pushed as a ghost");
-        assert_eq!(
-            r.jq_bar().menu_row(),
-            Some(vec![("status".to_string(), false)])
-        );
+        assert_eq!(r.jq_bar().menu_row(), Some(vec![("status".to_string(), false)]));
         bar_key(&mut r, key(KeyCode::Right));
         assert_eq!(r.jq_text(), ".data.items[] | .st", "Right is a plain caret move on a chip row");
     }
@@ -8628,9 +8400,7 @@ mod tests {
         assert!(r.set_jq_focus(true));
         r.jq_bar_mut().input = LineInput::new("map(.a");
         r.apply_jq("map(.a", 0);
-        let req = r
-            .refresh_jq_completion(0)
-            .expect("big body: keys come from the pool");
+        let req = r.refresh_jq_completion(0).expect("big body: keys come from the pool");
         assert_eq!(r.jq_ghost(), None, "nothing offered until the keys land");
         let landed =
             r.attach_jq_completion(7, req.seq, req.input_expr.clone(), vec!["a".into()], None);
@@ -8719,10 +8489,7 @@ mod tests {
         let mut r = ready_gen(body, generation);
         // These tests read the ghost, which only cycle mode draws.
         r.set_jq_tab(JqTab::Cycle);
-        r.attach_tree(
-            generation,
-            crate::components::json_tree::JsonTree::parse(body),
-        );
+        r.attach_tree(generation, crate::components::json_tree::JsonTree::parse(body));
         r.set_jq_focus(true);
         r.jq_bar_mut().input = LineInput::new(text);
         let req = r.apply_jq(text, SYNC_PRETTY_BYTES).expect("background run");
@@ -8734,10 +8501,7 @@ mod tests {
 
     /// A big body over the sync limit whose root keys are `first` and `n`.
     fn big_body(first: &str) -> String {
-        format!(
-            r#"{{"{first}": "{}", "n": 7}}"#,
-            "x".repeat(SYNC_PRETTY_BYTES)
-        )
+        format!(r#"{{"{first}": "{}", "n": 7}}"#, "x".repeat(SYNC_PRETTY_BYTES))
     }
 
     #[test]
@@ -8746,15 +8510,9 @@ mod tests {
         r.set_jq_tab(JqTab::Cycle);
         type_jq(&mut r, ".");
         assert_eq!(r.jq_ghost(), Some("data"));
-        r.set_state(
-            ResponseState::Ready(Box::new(data(r#"{"other":{"x":1}}"#))),
-            1,
-        );
+        r.set_state(ResponseState::Ready(Box::new(data(r#"{"other":{"x":1}}"#))), 1);
         r.set_jq_focus(true);
-        assert!(
-            r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none(),
-            "small bodies fetch inline"
-        );
+        assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none(), "small bodies fetch inline");
         assert_eq!(
             r.jq_ghost(),
             Some("other"),
@@ -8834,13 +8592,7 @@ mod tests {
         ));
         assert_eq!(r.jq_ghost(), None, "a superseded fetch shows nothing");
         assert!(
-            r.attach_jq_completion(
-                3,
-                creq.seq,
-                ".".into(),
-                vec!["pad".into(), "n".into()],
-                None
-            ),
+            r.attach_jq_completion(3, creq.seq, ".".into(), vec!["pad".into(), "n".into()], None),
             "the fetch that is still wanted lands"
         );
         assert_eq!(r.jq_ghost(), Some("pad"), "not the superseded keys");
@@ -8857,13 +8609,7 @@ mod tests {
         r.jq_bar_mut().input.set_cursor(0);
         assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none());
         assert!(
-            !r.attach_jq_completion(
-                3,
-                creq.seq,
-                ".".into(),
-                vec!["pad".into(), "n".into()],
-                None
-            ),
+            !r.attach_jq_completion(3, creq.seq, ".".into(), vec!["pad".into(), "n".into()], None),
             "nothing is offered at the caret, so the ghost does not change"
         );
         assert_eq!(r.jq_ghost(), None);
@@ -8916,11 +8662,7 @@ mod tests {
         bar_key(&mut r, key(KeyCode::Tab));
         assert_eq!(r.jq_ghost(), Some("status"));
         bar_key(&mut r, ch('i'));
-        assert_eq!(
-            r.jq_ghost(),
-            Some("d"),
-            "a new partial starts at the first candidate"
-        );
+        assert_eq!(r.jq_ghost(), Some("d"), "a new partial starts at the first candidate");
         bar_key(&mut r, key(KeyCode::End));
         assert_eq!(r.jq_text(), ".data.items[] | .id");
     }
@@ -8934,18 +8676,11 @@ mod tests {
         assert_eq!(r.jq_ghost(), None, "menu mode has no ghost");
         assert_eq!(
             r.jq_bar().menu_row(),
-            Some(vec![
-                ("id".to_string(), false),
-                ("status".to_string(), false)
-            ]),
+            Some(vec![("id".to_string(), false), ("status".to_string(), false)]),
             "the row is on show while typing, nothing selected"
         );
         bar_key(&mut r, key(KeyCode::Tab));
-        assert_eq!(
-            r.jq_text(),
-            ".data.items[] | .id",
-            "the first candidate lands"
-        );
+        assert_eq!(r.jq_text(), ".data.items[] | .id", "the first candidate lands");
         assert!(r.jq_menu_open(), "…and the row is entered");
         let chips = |r: &Response| {
             r.jq_bar()
@@ -8961,21 +8696,13 @@ mod tests {
             "chips carry the whole token, not the ghost"
         );
         bar_key(&mut r, key(KeyCode::Tab));
-        assert_eq!(
-            r.jq_text(),
-            ".data.items[] | .status",
-            "rebuilt from the base"
-        );
+        assert_eq!(r.jq_text(), ".data.items[] | .status", "rebuilt from the base");
         assert_eq!(r.view().unwrap().view_text(), "\"active\"\n\"off\"");
         assert!(chips(&r)[1].1);
         bar_key(&mut r, key(KeyCode::Tab));
         assert_eq!(r.jq_text(), ".data.items[] | .id", "wraps");
         bar_key(&mut r, shift(KeyCode::BackTab));
-        assert_eq!(
-            r.jq_text(),
-            ".data.items[] | .status",
-            "shift+tab goes back"
-        );
+        assert_eq!(r.jq_text(), ".data.items[] | .status", "shift+tab goes back");
         // Any other key keeps the selection, closes the row, and is typed.
         bar_key(&mut r, ch(' '));
         assert!(!r.jq_menu_open());
@@ -9023,10 +8750,7 @@ mod tests {
         r.set_jq_tab(JqTab::Menu);
         type_jq(&mut r, ".data.items[] | .");
         bar_key(&mut r, ch('s'));
-        assert_eq!(
-            r.jq_bar().menu_row(),
-            Some(vec![("status".to_string(), false)])
-        );
+        assert_eq!(r.jq_bar().menu_row(), Some(vec![("status".to_string(), false)]));
         bar_key(&mut r, ch('x'));
         assert_eq!(r.jq_bar().menu_row(), None, "nothing matches");
         bar_key(&mut r, key(KeyCode::Backspace));
@@ -9109,26 +8833,16 @@ mod tests {
         let mut r = ready(ITEMS);
         type_jq(&mut r, ".data.items | length");
         bar_key(&mut r, KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
-        assert_eq!(
-            r.jq_bar().input.cursor(),
-            14,
-            "word-left lands before `length`"
-        );
+        assert_eq!(r.jq_bar().input.cursor(), 14, "word-left lands before `length`");
         bar_key(&mut r, KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
         assert_eq!(r.jq_bar().input.cursor(), 12, "then before `|`");
         bar_key(&mut r, KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
         assert_eq!(r.jq_bar().input.cursor(), 13);
-        bar_key(
-            &mut r,
-            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
-        );
+        bar_key(&mut r, KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
         assert_eq!(r.jq_bar().input.selection(), Some((0, 20)), "select-all");
         // Unfocused, the pane keeps handing combos to the keymap.
         r.set_jq_focus(false);
-        assert_eq!(
-            r.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL)),
-            None
-        );
+        assert_eq!(r.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL)), None);
     }
 
     #[test]
@@ -9168,10 +8882,7 @@ mod tests {
         r.jq_bar_mut().input.set_cursor(22); // after `.items`
         bar_key(&mut r, KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT));
         assert_eq!(r.jq_text(), "map(select(.data.))");
-        bar_key(
-            &mut r,
-            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
-        );
+        bar_key(&mut r, KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
         assert_eq!(r.jq_text(), "map(select(.))", "`(` cuts the token");
         // A builtin is a plain word: the input's own rule, whole word.
         type_jq(&mut r, ".data.items | length");
@@ -9223,10 +8934,7 @@ mod tests {
         let mut r = ready(ITEMS);
         type_jq(&mut r, ".data.items");
         r.jq_bar_mut().input.select_all();
-        bar_key(
-            &mut r,
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL),
-        );
+        bar_key(&mut r, KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL));
         assert_eq!(r.jq_text(), "");
     }
 
@@ -9292,14 +9000,8 @@ mod tests {
         bar_key(&mut r, shift(KeyCode::BackTab));
         assert_eq!(r.jq_text(), ".bravo");
         let text = render_sized(&mut r, 24, 20);
-        let row = text
-            .lines()
-            .find(|l| l.contains(" bravo "))
-            .unwrap_or_else(|| panic!("{text}"));
-        assert!(
-            row.contains(" charlie "),
-            "the row did not move for a chip still in view: {row}"
-        );
+        let row = text.lines().find(|l| l.contains(" bravo ")).unwrap_or_else(|| panic!("{text}"));
+        assert!(row.contains(" charlie "), "the row did not move for a chip still in view: {row}");
         assert!(!row.contains(" alpha "), "{row}");
         bar_key(&mut r, shift(KeyCode::BackTab));
         assert_eq!(r.jq_text(), ".alpha");
@@ -9318,11 +9020,7 @@ mod tests {
         bar_key(&mut r, key(KeyCode::Tab));
         assert_eq!(r.jq_text(), ".alpha");
         let text = render_sized(&mut r, 24, 20);
-        assert!(
-            text.lines()
-                .any(|l| l.contains(" alpha ") && l.contains(" bravo ")),
-            "{text}"
-        );
+        assert!(text.lines().any(|l| l.contains(" alpha ") && l.contains(" bravo ")), "{text}");
         // The selected chip is filled with the selection color.
         let (_, buf) = render_buf(&mut r);
         let theme = Theme::dark();
@@ -9345,11 +9043,7 @@ mod tests {
         bar_key(&mut r, key(KeyCode::Right));
         assert_eq!(r.jq_text(), ".\"my key\"");
         assert_eq!(r.view().unwrap().view_text(), "1");
-        assert_eq!(
-            r.jq_bar().input.cursor(),
-            9,
-            "caret after the closing quote"
-        );
+        assert_eq!(r.jq_bar().input.cursor(), 9, "caret after the closing quote");
     }
 
     #[test]
@@ -9360,10 +9054,7 @@ mod tests {
         assert_eq!(r.jq_ghost(), Some("ect("));
         bar_key(&mut r, key(KeyCode::Right));
         assert_eq!(r.jq_text(), ".data.items[] | select(");
-        assert!(
-            r.jq_bar().error.is_some(),
-            "an unfinished filter is an error, as when typed"
-        );
+        assert!(r.jq_bar().error.is_some(), "an unfinished filter is an error, as when typed");
     }
 
     #[test]
@@ -9376,16 +9067,9 @@ mod tests {
         assert_eq!(r.jq_text(), ".data.zz");
         r.jq_bar_mut().input.set_cursor(2);
         bar_key(&mut r, key(KeyCode::Right));
-        assert_eq!(
-            r.jq_bar().input.cursor(),
-            3,
-            "Right moves the caret mid-text"
-        );
+        assert_eq!(r.jq_bar().input.cursor(), 3, "Right moves the caret mid-text");
         bar_key(&mut r, shift(KeyCode::Right));
-        assert!(
-            r.jq_bar().input.selection().is_some(),
-            "shift+Right still selects"
-        );
+        assert!(r.jq_bar().input.selection().is_some(), "shift+Right still selects");
     }
 
     /// Every keystroke in the bar is a new jq run, but most of them leave
@@ -9456,11 +9140,7 @@ mod tests {
     fn multiple_outputs_render_as_separate_documents_and_are_counted() {
         let mut r = ready(ITEMS);
         r.apply_jq(".data.items[] | .id", SYNC_PRETTY_BYTES);
-        assert_eq!(
-            r.view().unwrap().view_text(),
-            "1\n2",
-            "one after another, as jq prints"
-        );
+        assert_eq!(r.view().unwrap().view_text(), "1\n2", "one after another, as jq prints");
         assert_eq!(r.jq_output_count(), 2);
     }
 
@@ -9484,9 +9164,7 @@ mod tests {
     #[test]
     fn a_superseded_runs_parsed_document_is_still_adopted() {
         let mut r = ready(ITEMS);
-        let req1 = r
-            .apply_jq(".data.items | length", 0)
-            .expect("over the sync limit → background");
+        let req1 = r.apply_jq(".data.items | length", 0).expect("over the sync limit → background");
         assert!(req1.doc.is_none() && req1.body.is_some());
         let _req2 = r.apply_jq(".data.items[0].id", 0).unwrap();
         let doc = JqDocument::parse(ITEMS).unwrap();
@@ -9498,9 +9176,7 @@ mod tests {
             ),
             "superseded run is still dropped as a result"
         );
-        let req3 = r
-            .apply_jq(".data.items[1].id", 0)
-            .expect("still over the sync limit");
+        let req3 = r.apply_jq(".data.items[1].id", 0).expect("still over the sync limit");
         assert!(req3.doc.is_some(), "the superseded run's doc was adopted");
         assert!(req3.body.is_none(), "no need to re-parse the body");
     }
@@ -9564,9 +9240,7 @@ mod tests {
     #[test]
     fn big_bodies_hand_the_run_to_the_caller_and_accept_only_the_latest_result() {
         let mut r = ready(ITEMS);
-        let req = r
-            .apply_jq(".data.items | length", 0)
-            .expect("over the sync limit → background");
+        let req = r.apply_jq(".data.items | length", 0).expect("over the sync limit → background");
         assert_eq!(req.code, ".data.items | length");
         assert!(r.jq_bar().pending.is_some());
         let req2 = r.apply_jq(".data.items[0].id", 0).unwrap();
@@ -9615,11 +9289,7 @@ mod tests {
                 .find(|row| row.contains(".data"))
                 .expect("the jq bar row");
             let spins = SPINNER.iter().any(|g| bar_row.contains(*g));
-            assert_ne!(
-                spins,
-                bar_row.contains("jq "),
-                "spinner and chip swap: {bar_row}"
-            );
+            assert_ne!(spins, bar_row.contains("jq "), "spinner and chip swap: {bar_row}");
             // A char column, not a byte offset: the braille glyph is 3 bytes.
             let col = bar_row.find(".data").map(|b| bar_row[..b].chars().count());
             (spins, col)
@@ -9645,10 +9315,7 @@ mod tests {
 
     #[test]
     fn a_parsed_body_stays_behind_the_spinner_until_a_switched_on_filter_lands() {
-        let big = format!(
-            r#"{{"pad": "{}", "data": {{"n": 1}}}}"#,
-            "x".repeat(SYNC_PRETTY_BYTES)
-        );
+        let big = format!(r#"{{"pad": "{}", "data": {{"n": 1}}}}"#, "x".repeat(SYNC_PRETTY_BYTES));
         let mut r = ready_gen(&big, 1);
         r.set_view_mode(ViewMode::Pretty);
         r.open_jq();
@@ -9660,10 +9327,7 @@ mod tests {
             "the full tree is held back, the wait is named: {out}"
         );
         let req = r.apply_jq(".data", 0).expect("background run");
-        assert!(
-            render(&mut r).contains("filtering"),
-            "still held while the run is out"
-        );
+        assert!(render(&mut r).contains("filtering"), "still held while the run is out");
         assert!(r.attach_jq_result(
             req.generation,
             req.run,
@@ -9679,19 +9343,14 @@ mod tests {
         r.attach_jq_result(
             req.generation,
             req.run,
-            Err(JqError::Runtime {
-                message: "boom".into(),
-            }),
+            Err(JqError::Runtime { message: "boom".into() }),
         );
         assert!(!r.view().unwrap().awaiting_filter);
         // And a body parsed with the filter switched off shows at once.
         let mut r = ready_gen(&big, 2);
         r.set_view_mode(ViewMode::Pretty);
         assert!(r.attach_tree(2, JsonTree::parse(&big)));
-        assert!(
-            render(&mut r).contains("\"pad\""),
-            "no filter: the tree shows"
-        );
+        assert!(render(&mut r).contains("\"pad\""), "no filter: the tree shows");
     }
 
     #[test]
@@ -9699,10 +9358,7 @@ mod tests {
         let mut r = ready(ITEMS);
         r.apply_jq(".data", SYNC_PRETTY_BYTES);
         let before = r.view().unwrap().view_text();
-        assert!(
-            r.apply_jq(".data", 0).is_none(),
-            "already applied: no background run either"
-        );
+        assert!(r.apply_jq(".data", 0).is_none(), "already applied: no background run either");
         assert_eq!(r.view().unwrap().view_text(), before);
     }
 
@@ -9777,10 +9433,7 @@ mod tests {
         r.take_jq_edited();
         r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(r.jq_text(), ".a");
-        assert!(
-            r.jq_enabled(),
-            "opening it was the user's doing; it stays on"
-        );
+        assert!(r.jq_enabled(), "opening it was the user's doing; it stays on");
         assert!(r.jq_open() && !r.jq_focused());
         assert!(!r.take_jq_edited(), "nothing to revert");
     }
@@ -9826,10 +9479,7 @@ mod tests {
     fn a_focused_bar_swallows_plain_keys_and_enter_blurs() {
         let mut r = ready(ITEMS);
         r.set_jq_focus(true);
-        assert!(
-            r.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))
-                .is_some()
-        );
+        assert!(r.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE)).is_some());
         assert_eq!(r.jq_text(), "j", "j typed, not cursor-down");
         r.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(!r.jq_focused());
@@ -9850,10 +9500,7 @@ mod tests {
         assert!(!r.jq_available());
         assert!(!r.set_jq_focus(true));
         assert!(r.apply_jq(".a", SYNC_PRETTY_BYTES).is_none());
-        assert!(
-            r.jq_bar().error.is_none(),
-            "nothing runs on a non-JSON body"
-        );
+        assert!(r.jq_bar().error.is_none(), "nothing runs on a non-JSON body");
     }
 
     #[test]
@@ -9904,14 +9551,8 @@ mod tests {
         // Plain ASCII: skip 3 columns of a 10-char line, show 4.
         let (start, residual, slice) = viewport_window("abcdefghij", 3, 4, (0, 0, 0));
         assert_eq!((start, residual), (3, 0));
-        assert!(
-            slice.starts_with("defg"),
-            "window begins at col 3: {slice:?}"
-        );
-        assert!(
-            slice.len() < 10,
-            "the window is a slice, not the whole line: {slice:?}"
-        );
+        assert!(slice.starts_with("defg"), "window begins at col 3: {slice:?}");
+        assert!(slice.len() < 10, "the window is a slice, not the whole line: {slice:?}");
         // A wide char straddling the crop: the window starts on it and
         // owes `crop_cols` the column it already covered.
         let (start, residual, slice) = viewport_window("a日本b", 2, 4, (0, 0, 0));
@@ -9946,15 +9587,7 @@ mod tests {
                 "mark {k} covers its column: {col}"
             );
         }
-        for skip in [
-            0,
-            1,
-            3,
-            COL_MARK_STEP - 1,
-            COL_MARK_STEP,
-            2 * COL_MARK_STEP + 5,
-            4000,
-        ] {
+        for skip in [0, 1, 3, COL_MARK_STEP - 1, COL_MARK_STEP, 2 * COL_MARK_STEP + 5, 4000] {
             let from = mark_for(Some(&marks), skip);
             assert_eq!(
                 viewport_window(&text, skip, 7, from),
@@ -9975,10 +9608,7 @@ mod tests {
     fn a_long_raw_line_gets_its_column_index_on_the_first_sideways_frame() {
         let mut r = ready(&format!("{}TAIL", "x".repeat(COL_MARK_STEP * 3)));
         render(&mut r);
-        assert!(
-            r.view().unwrap().raw_marks.is_empty(),
-            "no index while unscrolled"
-        );
+        assert!(r.view().unwrap().raw_marks.is_empty(), "no index while unscrolled");
         r.handle_scroll_h(COL_MARK_STEP as i16 * 2);
         let out = render(&mut r);
         let marks = &r.view().unwrap().raw_marks;
@@ -10000,12 +9630,8 @@ mod tests {
         r.handle_key(key(KeyCode::Enter));
         r.view.as_mut().unwrap().h_scroll = 295;
         let (area, buf) = render_buf(&mut r);
-        let reversed = |x: u16| {
-            buf.cell((x, area.y))
-                .unwrap()
-                .modifier
-                .contains(Modifier::REVERSED)
-        };
+        let reversed =
+            |x: u16| buf.cell((x, area.y)).unwrap().modifier.contains(Modifier::REVERSED);
         assert!(!reversed(area.x + 4), "col 299 is an x, not highlighted");
         assert!(reversed(area.x + 5), "col 300 starts the match");
         assert!(reversed(area.x + 10), "col 305 ends the match");
@@ -10048,10 +9674,7 @@ mod tests {
         let w = buf.area.width;
         let row = (0..buf.area.height)
             .find(|&y| {
-                (0..w)
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect::<String>()
-                    .contains(".data.items")
+                (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>().contains(".data.items")
             })
             .expect("bar row");
         let line: String = (0..w).map(|x| buf[(x, row)].symbol()).collect();
@@ -10068,11 +9691,7 @@ mod tests {
         );
         let theme = Theme::dark();
         assert_eq!(buf[(ghost_x, row)].fg, theme.text_muted);
-        assert_eq!(
-            buf[(ghost_x - 3, row)].fg,
-            theme.text,
-            "typed text keeps its color"
-        );
+        assert_eq!(buf[(ghost_x - 3, row)].fg, theme.text, "typed text keeps its color");
     }
 
     /// The bar's second row for a filter, and the colour it is drawn in:
@@ -10081,12 +9700,7 @@ mod tests {
         let (_, buf) = render_buf(r);
         let w = buf.area.width;
         let row = (0..buf.area.height)
-            .find(|&y| {
-                (0..w)
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect::<String>()
-                    .contains(needle)
-            })
+            .find(|&y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>().contains(needle))
             .unwrap_or_else(|| panic!("no row holds {needle:?}"));
         let line: String = (0..w).map(|x| buf[(x, row)].symbol()).collect();
         let x = line.find(needle).unwrap() as u16;
@@ -10106,10 +9720,7 @@ mod tests {
         let w = buf.area.width;
         let row = (0..buf.area.height)
             .find(|&y| {
-                (0..w)
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect::<String>()
-                    .contains("sort_by(.id")
+                (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>().contains("sort_by(.id")
             })
             .expect("bar row");
         assert!(
@@ -10149,10 +9760,7 @@ mod tests {
         let mut r = ready(ITEMS);
         type_jq(&mut r, ".data");
         render_buf(&mut r);
-        assert!(
-            r.jq_caret_cell().is_some(),
-            "focused: the cursor has a cell"
-        );
+        assert!(r.jq_caret_cell().is_some(), "focused: the cursor has a cell");
         r.set_jq_focus(false);
         render_buf(&mut r);
         assert_eq!(r.jq_caret_cell(), None, "blurred: the cursor stays hidden");
@@ -10173,9 +9781,6 @@ mod tests {
             .lines()
             .find(|l| l.contains(".data.ite"))
             .unwrap_or_else(|| panic!("bar row not found: {text}"));
-        assert!(
-            !bar_line.contains("items"),
-            "clipped: {bar_line} (full buffer: {text})"
-        );
+        assert!(!bar_line.contains("items"), "clipped: {bar_line} (full buffer: {text})");
     }
 }

@@ -52,7 +52,9 @@ fn dot_repeats_the_last_list_change() {
 fn a_new_count_replaces_the_old() {
     let mut app = vim(Fixture::TableThreeHeaders);
     for (k, v) in [("d", "4"), ("e", "5"), ("f", "6"), ("g", "7"), ("h", "8")] {
-        app.editor.headers.insert(k.into(), postui_core::model::Entry { value: v.into(), enabled: true });
+        app.editor
+            .headers
+            .insert(k.into(), postui_core::model::Entry { value: v.into(), enabled: true });
     }
     app.editor.table.selected = Some(0);
     app.capture_undo();
@@ -108,7 +110,11 @@ fn a_change_elsewhere_makes_dot_stale() {
     assert_eq!(app.editor.headers.len(), 2, "the cell's edit was the last change");
     let mut app = vim(Fixture::TableThreeHeaders);
     feed(&mut app, "ddix<Esc>:w<CR>.");
-    assert_eq!(app.editor.headers.len(), 2, "the cell closed with the line: its edit may be the last change");
+    assert_eq!(
+        app.editor.headers.len(),
+        2,
+        "the cell closed with the line: its edit may be the last change"
+    );
     // The body never closes, but its engine session holds the Insert's
     // edit until a palette command flushes it (`:e!` discards through
     // `flush_field_session`): that edit is the last change too.
@@ -121,7 +127,11 @@ fn a_change_elsewhere_makes_dot_stale() {
     // Persisted, so `:e!`'s reload keeps the profile (no keymap question).
     super::key_matrix_tests::use_persisted_profile(&mut app, KeyProfile::Vim);
     app.focus = PaneId::Sidebar;
-    app.sidebar.selected = app.sidebar.rows.iter().position(|r| matches!(r, Row::Request { slug, .. } if slug == "main/alpha"));
+    app.sidebar.selected = app
+        .sidebar
+        .rows
+        .iter()
+        .position(|r| matches!(r, Row::Request { slug, .. } if slug == "main/alpha"));
     draw(&mut app);
     feed(&mut app, "dd");
     assert_eq!(requests(&app), ["main/beta", "main/matrix"]);
@@ -131,7 +141,11 @@ fn a_change_elsewhere_makes_dot_stale() {
     assert!(app.field_gate(), "the body's session holds the edit");
     feed(&mut app, ":e!<CR><C-w>h");
     assert_eq!(app.surface(), crate::keyroute::Surface::Sidebar);
-    assert!(app.toasts.messages().contains(&"Changes discarded — u undoes"), "the `:e!` ran: {:?}", app.toasts.messages());
+    assert!(
+        app.toasts.messages().contains(&"Changes discarded — u undoes"),
+        "the `:e!` ran: {:?}",
+        app.toasts.messages()
+    );
     feed(&mut app, ".");
     assert_eq!(requests(&app), ["main/beta", "main/matrix"], "the body's edit was the last change");
 }
@@ -156,7 +170,11 @@ fn dot_runs_where_the_change_runs() {
     assert_eq!(envs(&app), ["dev"], "back on the list, it deletes");
     let mut app = vim(Fixture::TableThreeHeaders);
     feed(&mut app, "dd<C-w>h.");
-    assert!(requests(&app).is_empty(), "the table's `dd`, repeated on the sidebar: {:?}", requests(&app));
+    assert!(
+        requests(&app).is_empty(),
+        "the table's `dd`, repeated on the sidebar: {:?}",
+        requests(&app)
+    );
     assert!(app.modals.is_empty(), "delete never confirms");
 }
 
@@ -173,7 +191,11 @@ fn each_repeat_is_its_own_undo_step() {
 /// cursor, open request and field, and undoes only the `.`'s step.
 #[test]
 fn undo_after_dot_restores_exactly() {
-    for (fixture, keys) in [(Fixture::SidebarThree, "dd"), (Fixture::SidebarThree, "yyp"), (Fixture::TableThreeHeaders, "yyP")] {
+    for (fixture, keys) in [
+        (Fixture::SidebarThree, "dd"),
+        (Fixture::SidebarThree, "yyp"),
+        (Fixture::TableThreeHeaders, "yyP"),
+    ] {
         let mut app = vim(fixture);
         feed(&mut app, keys);
         let before = snapshot(&app);
@@ -181,6 +203,10 @@ fn undo_after_dot_restores_exactly() {
         assert_ne!(snapshot(&app), before, "{fixture:?} {keys}.: the `.` changed something");
         feed(&mut app, "u");
         let after = snapshot(&app);
-        assert!(after == before, "{fixture:?} {keys}.u did not restore exactly:\n{}", snapshot_diff(&before, &after));
+        assert!(
+            after == before,
+            "{fixture:?} {keys}.u did not restore exactly:\n{}",
+            snapshot_diff(&before, &after)
+        );
     }
 }

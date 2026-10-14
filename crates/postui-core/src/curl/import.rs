@@ -84,10 +84,7 @@ impl std::error::Error for CurlError {}
 /// paste (spec R6): nothing is half-imported.
 pub fn parse(text: &str) -> Result<CurlBatch, CurlError> {
     let commands = shell::split(text).map_err(|e| match e {
-        ShellError::CmdStyle => CurlError {
-            command: None,
-            kind: CurlErrorKind::CmdStyle,
-        },
+        ShellError::CmdStyle => CurlError { command: None, kind: CurlErrorKind::CmdStyle },
         // A broken quote swallows whatever follows, so the commands
         // before it plus itself are all that is known to exist.
         ShellError::Unclosed { command } => CurlError {
@@ -96,11 +93,7 @@ pub fn parse(text: &str) -> Result<CurlBatch, CurlError> {
         },
     })?;
     let many = commands.len() > 1;
-    let mut batch = CurlBatch {
-        commands: Vec::new(),
-        skipped_lines: 0,
-        values_dropped: false,
-    };
+    let mut batch = CurlBatch { commands: Vec::new(), skipped_lines: 0, values_dropped: false };
     // What each shell variable the paste assigned holds so far (spec R7):
     // its literal text, or `None` when it was anything else.
     let mut env: IndexMap<String, Option<String>> = IndexMap::new();
@@ -121,16 +114,11 @@ pub fn parse(text: &str) -> Result<CurlBatch, CurlError> {
             .map(|w| format!("{}=\u{2026}", w.split_once('=').map_or(w.as_str(), |(n, _)| n)))
             .collect();
         cmd.marks.drain(..lead);
-        let mut import = parse_command(cmd).map_err(|kind| CurlError {
-            command: many.then_some(i + 1),
-            kind,
-        })?;
+        let mut import = parse_command(cmd)
+            .map_err(|kind| CurlError { command: many.then_some(i + 1), kind })?;
         import.ignored.splice(0..0, leading);
-        import.variables = import
-            .converted
-            .iter()
-            .map(|n| (n.clone(), env.get(n).cloned().flatten()))
-            .collect();
+        import.variables =
+            import.converted.iter().map(|n| (n.clone(), env.get(n).cloned().flatten())).collect();
         batch.commands.push(import);
     }
     // A skipped line might change any value (`if`, `source`, `[ … ] &&`),
@@ -141,10 +129,7 @@ pub fn parse(text: &str) -> Result<CurlBatch, CurlError> {
         }
     }
     if batch.commands.is_empty() {
-        return Err(CurlError {
-            command: None,
-            kind: CurlErrorKind::NotCurl,
-        });
+        return Err(CurlError { command: None, kind: CurlErrorKind::NotCurl });
     }
     Ok(batch)
 }
@@ -324,7 +309,9 @@ impl Flags {
             }
             ("form" | "form-string", Some(v)) => self.drop_body(display, v, Method::Post),
             ("upload-file", Some(v)) => self.drop_body(display, v, Method::Put),
-            ("data" | "data-ascii" | "data-binary" | "data-raw", Some(v)) => self.push_data(&v, "&"),
+            ("data" | "data-ascii" | "data-binary" | "data-raw", Some(v)) => {
+                self.push_data(&v, "&")
+            }
             ("json", Some(v)) => {
                 self.push_data(&v, "");
                 self.json = true;
@@ -424,14 +411,7 @@ fn percent_encode(s: &str) -> String {
 }
 
 fn parse_command(cmd: ShellCommand) -> Result<CurlImport, CurlErrorKind> {
-    let ShellCommand {
-        words,
-        tail,
-        converted,
-        substitutions,
-        marks: _,
-        alone: _,
-    } = cmd;
+    let ShellCommand { words, tail, converted, substitutions, marks: _, alone: _ } = cmd;
     let mut flags = Flags::default();
     let mut words = words.into_iter().skip(1);
     let mut options_done = false;
@@ -448,11 +428,9 @@ fn parse_command(cmd: ShellCommand) -> Result<CurlImport, CurlErrorKind> {
             let display = format!("--{name}");
             let value = match inline {
                 Some(v) => Some(v),
-                None if takes_value(&name) => Some(
-                    words
-                        .next()
-                        .ok_or_else(|| CurlErrorKind::MissingValue(display.clone()))?,
-                ),
+                None if takes_value(&name) => {
+                    Some(words.next().ok_or_else(|| CurlErrorKind::MissingValue(display.clone()))?)
+                }
                 None => None,
             };
             flags.apply(&display, &name, value);
@@ -469,9 +447,7 @@ fn parse_command(cmd: ShellCommand) -> Result<CurlImport, CurlErrorKind> {
                 if takes_value(long) {
                     let attached: String = letters[i..].iter().collect();
                     let value = if attached.is_empty() {
-                        words
-                            .next()
-                            .ok_or_else(|| CurlErrorKind::MissingValue(display.clone()))?
+                        words.next().ok_or_else(|| CurlErrorKind::MissingValue(display.clone()))?
                     } else {
                         attached
                     };
@@ -525,11 +501,8 @@ fn build(
     let url = urls.pop().ok_or(CurlErrorKind::NoUrl)?;
     ignored.extend(urls);
     // curl assumes http:// for a bare host (spec plan P3).
-    let mut url = if has_scheme(&url) || url.starts_with("{{") {
-        url
-    } else {
-        format!("http://{url}")
-    };
+    let mut url =
+        if has_scheme(&url) || url.starts_with("{{") { url } else { format!("http://{url}") };
 
     let mut body_text = None;
     if let Some(joined) = data {
@@ -555,13 +528,15 @@ fn build(
         Method::Get
     };
     let method = match method_flag {
-        Some((display, m)) => match Method::ALL.iter().find(|x| x.as_str().eq_ignore_ascii_case(&m)) {
-            Some(x) => *x,
-            None => {
-                ignored.push(format!("{display} {m}"));
-                fallback
+        Some((display, m)) => {
+            match Method::ALL.iter().find(|x| x.as_str().eq_ignore_ascii_case(&m)) {
+                Some(x) => *x,
+                None => {
+                    ignored.push(format!("{display} {m}"));
+                    fallback
+                }
             }
-        },
+        }
         None => fallback,
     };
     if body_text.is_some() && !method.sends_body() {
@@ -614,18 +589,13 @@ fn build(
             || headers.iter().any(|(k, e)| k.contains(text) || e.value.contains(text))
             || body_text.as_ref().is_some_and(|b| b.contains(text))
     };
-    let converted: Vec<String> = converted
-        .into_iter()
-        .filter(|n| in_request(&format!("{{{{{n}}}}}")))
-        .collect();
+    let converted: Vec<String> =
+        converted.into_iter().filter(|n| in_request(&format!("{{{{{n}}}}}"))).collect();
     let substitute_body = body_text
         .as_ref()
         .is_some_and(|b| converted.iter().any(|n| b.contains(&format!("{{{{{n}}}}}"))));
     ignored.extend(
-        substitutions
-            .into_iter()
-            .filter(|s| in_request(s))
-            .map(|s| format!("{s} kept as text")),
+        substitutions.into_iter().filter(|s| in_request(s)).map(|s| format!("{s} kept as text")),
     );
     ignored.extend(tail);
 
@@ -742,7 +712,9 @@ mod tests {
 
     #[test]
     fn firefox_and_safari_samples_import() {
-        let f = one("curl 'https://x/api' -X POST -H 'User-Agent: Mozilla/5.0' -H 'Accept: */*' --data-raw '{\"a\":1}'");
+        let f = one(
+            "curl 'https://x/api' -X POST -H 'User-Agent: Mozilla/5.0' -H 'Accept: */*' --data-raw '{\"a\":1}'",
+        );
         assert_eq!(f.request.method, Method::Post);
         assert_eq!(header(&f, "User-Agent"), Some("Mozilla/5.0"));
         assert_eq!(body(&f), Some(r#"{"a":1}"#));
@@ -753,7 +725,9 @@ mod tests {
 
     #[test]
     fn a_readme_one_liner_imports() {
-        let c = one(r#"curl -X PUT "https://x/items/1" -H "Content-Type: application/json" -d '{"done": true}'"#);
+        let c = one(
+            r#"curl -X PUT "https://x/items/1" -H "Content-Type: application/json" -d '{"done": true}'"#,
+        );
         assert_eq!(c.request.method, Method::Put);
         assert_eq!(body(&c), Some(r#"{"done": true}"#));
         assert_eq!(header(&c, "Content-Type"), Some("application/json"));
@@ -878,7 +852,9 @@ mod tests {
 
     #[test]
     fn data_urlencode_forms() {
-        let c = one("curl --data-urlencode 'q=a b&c' --data-urlencode '=x y' --data-urlencode plain --data-urlencode 'f@file' https://x");
+        let c = one(
+            "curl --data-urlencode 'q=a b&c' --data-urlencode '=x y' --data-urlencode plain --data-urlencode 'f@file' https://x",
+        );
         assert_eq!(body(&c), Some("q=a%20b%26c&x%20y&plain"));
         assert_eq!(c.ignored, ["--data-urlencode f@file"]);
     }
@@ -905,7 +881,10 @@ mod tests {
     #[test]
     fn get_flag_data_goes_before_the_fragment() {
         assert_eq!(one("curl -G -d a=1 'https://x/p#top'").request.url, "https://x/p?a=1#top");
-        assert_eq!(one("curl -G -d a=1 'https://x/p?b=2#t?c'").request.url, "https://x/p?b=2&a=1#t?c");
+        assert_eq!(
+            one("curl -G -d a=1 'https://x/p?b=2#t?c'").request.url,
+            "https://x/p?b=2&a=1#t?c"
+        );
     }
 
     #[test]
@@ -920,7 +899,10 @@ mod tests {
 
     #[test]
     fn user_becomes_basic_auth_unless_authorization_is_given() {
-        assert_eq!(header(&one("curl -u alice:secret https://x"), "Authorization"), Some("Basic YWxpY2U6c2VjcmV0"));
+        assert_eq!(
+            header(&one("curl -u alice:secret https://x"), "Authorization"),
+            Some("Basic YWxpY2U6c2VjcmV0")
+        );
         let c = one("curl -u alice:secret -H 'Authorization: Bearer t' https://x");
         assert_eq!(header(&c, "Authorization"), Some("Bearer t"));
     }
@@ -969,7 +951,10 @@ mod tests {
 
     #[test]
     fn credentials_in_the_url_never_reach_the_name() {
-        assert_eq!(one("curl https://admin:s3cret@api.example.com").suggested_name, "GET api.example.com");
+        assert_eq!(
+            one("curl https://admin:s3cret@api.example.com").suggested_name,
+            "GET api.example.com"
+        );
         assert_eq!(one("curl https://u:p@h:8080/").suggested_name, "GET h:8080");
         assert_eq!(one("curl https://u:p@h/items").suggested_name, "GET items");
     }
@@ -1090,13 +1075,23 @@ mod tests {
             "curl -H \"X: $A $B $C $D $E $F $G $H $I\" https://x",
         ))
         .unwrap();
-        assert!(vars(&b.commands[0]).iter().all(|(_, v)| v.is_none()), "{:?}", vars(&b.commands[0]));
+        assert!(
+            vars(&b.commands[0]).iter().all(|(_, v)| v.is_none()),
+            "{:?}",
+            vars(&b.commands[0])
+        );
         assert_eq!(b.skipped_lines, 0, "still an assignment");
         // The same text quoted is what it says.
         let q = parse("export A='$T/x' B='${X:-y}' C='~/k' D='{a,b}' E=$'a\\tb'\ncurl -H \"X: $A $B $C $D $E\" https://x").unwrap();
         assert_eq!(
             vars(&q.commands[0]),
-            [("A", Some("$T/x")), ("B", Some("${X:-y}")), ("C", Some("~/k")), ("D", Some("{a,b}")), ("E", Some("a\tb"))]
+            [
+                ("A", Some("$T/x")),
+                ("B", Some("${X:-y}")),
+                ("C", Some("~/k")),
+                ("D", Some("{a,b}")),
+                ("E", Some("a\tb"))
+            ]
         );
     }
 
@@ -1129,7 +1124,8 @@ mod tests {
             ("[ -n \"$CI\" ] &&\n  export T=ci", 2),
             ("echo |\n  export T=ci", 1),
         ] {
-            let b = parse(&format!("export T=dev U=1\n{line}\ncurl -H \"A: $T $U\" https://x")).unwrap();
+            let b = parse(&format!("export T=dev U=1\n{line}\ncurl -H \"A: $T $U\" https://x"))
+                .unwrap();
             assert_eq!(vars(&b.commands[0]), [("T", None), ("U", None)], "{line}");
             assert_eq!(b.skipped_lines, skipped, "{line}");
             assert!(b.values_dropped, "{line}");
@@ -1180,7 +1176,10 @@ mod tests {
         assert_eq!(err("").kind, CurlErrorKind::NotCurl);
         assert_eq!(err("curl ^\"https://x^\" ^\n -k").kind, CurlErrorKind::CmdStyle);
         let e = err("curl https://x/a\ncurl -H");
-        assert_eq!((e.command, e.kind.clone()), (Some(2), CurlErrorKind::MissingValue("-H".into())));
+        assert_eq!(
+            (e.command, e.kind.clone()),
+            (Some(2), CurlErrorKind::MissingValue("-H".into()))
+        );
         assert_eq!(e.to_string(), "command 2: -H needs a value");
         assert_eq!(err("curl a\ncurl 'b").to_string(), "command 2: unclosed quote");
         assert_eq!(err("hello").to_string(), "clipboard doesn't hold a curl command");

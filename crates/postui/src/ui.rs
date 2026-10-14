@@ -43,17 +43,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let response_t = app.anims.value_or(
         crate::anim::AnimKey::ResponseCollapse,
         now,
-        if app.session.response.collapsed {
-            1.0
-        } else {
-            0.0
-        },
+        if app.session.response.collapsed { 1.0 } else { 0.0 },
     );
-    let ratio_t = app.anims.value_or(
-        crate::anim::AnimKey::SplitRatio,
-        now,
-        app.split_ratio.editor_share(),
-    );
+    let ratio_t =
+        app.anims.value_or(crate::anim::AnimKey::SplitRatio, now, app.split_ratio.editor_share());
     let layout = compute_layout(frame.area(), collapse_t, response_t, ratio_t);
     let focus = app.focus;
     let screen = app.screen;
@@ -123,14 +116,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             let modal_open = app.modals.top().is_some();
             // Destructured so each component can be borrowed mutably
             // alongside the shared theme reference its DrawCtx holds.
-            let App {
-                theme,
-                sidebar,
-                editor,
-                session,
-                anims,
-                ..
-            } = app;
+            let App { theme, sidebar, editor, session, anims, .. } = app;
             let response = &mut session.response;
             let ctx = |pane: PaneId| DrawCtx {
                 theme,
@@ -181,12 +167,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             // sits on the active tab's static span.
             let underline = {
                 use crate::anim::{AnimKey, StripId};
-                let left = app
-                    .anims
-                    .value(AnimKey::TabUnderline(StripId::ManageTabs), now);
-                let right = app
-                    .anims
-                    .value(AnimKey::TabUnderlineWidth(StripId::ManageTabs), now);
+                let left = app.anims.value(AnimKey::TabUnderline(StripId::ManageTabs), now);
+                let right = app.anims.value(AnimKey::TabUnderlineWidth(StripId::ManageTabs), now);
                 left.zip(right).map(|(l, r)| (l, r - l))
             };
             crate::components::manage::draw_manage_bar(
@@ -200,18 +182,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             );
             match app.manage.tab {
                 crate::components::manage::ManageTab::Variables => {
-                    let open_request = app
-                        .editor
-                        .slug
-                        .is_some()
-                        .then(|| app.editor.current_request());
-                    let App {
-                        theme,
-                        varmanager,
-                        project,
-                        hovered,
-                        ..
-                    } = app;
+                    let open_request =
+                        app.editor.slug.is_some().then(|| app.editor.current_request());
+                    let App { theme, varmanager, project, hovered, .. } = app;
                     match project.as_ref() {
                         Some(p) => varmanager.draw(
                             frame,
@@ -243,13 +216,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 }
                 tab => {
                     let requests = app.sidebar.space_requests();
-                    let App {
-                        theme,
-                        manage,
-                        project,
-                        hovered,
-                        ..
-                    } = app;
+                    let App { theme, manage, project, hovered, .. } = app;
                     match project.as_ref() {
                         Some(p) => manage.list.draw(
                             frame,
@@ -363,14 +330,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // the backdrop it is commenting on. They stack bottom-right, and the
     // footer is carved out of their rect so its chips stay readable.
     let toast_area = ratatui::layout::Rect {
-        height: frame
-            .area()
-            .height
-            .saturating_sub(crate::components::footer::FOOTER_HEIGHT),
+        height: frame.area().height.saturating_sub(crate::components::footer::FOOTER_HEIGHT),
         ..frame.area()
     };
-    app.toasts
-        .draw(frame, toast_area, &app.theme, &app.anims, now);
+    app.toasts.draw(frame, toast_area, &app.theme, &app.anims, now);
     app.hits = hits;
 
     // The variable tooltip is painted last of all, over every pane — after
@@ -460,30 +423,17 @@ fn draw_var_tooltip(
     let mut value_lines: Vec<String> = match &info.value {
         Some(value) => wrap_cells(value, TOOLTIP_MAX_TEXT_W)
             .into_iter()
-            .map(|row| {
-                if masked {
-                    "\u{25cf}".repeat(row.width().max(1))
-                } else {
-                    row
-                }
-            })
+            .map(|row| if masked { "\u{25cf}".repeat(row.width().max(1)) } else { row })
             .collect(),
         None => Vec::new(),
     };
     let source = info.source.label();
-    let description = info
-        .description
-        .as_ref()
-        .map(|d| ellipsize(d, TOOLTIP_MAX_TEXT_W));
+    let description = info.description.as_ref().map(|d| ellipsize(d, TOOLTIP_MAX_TEXT_W));
     // The icon pills: three cells each (` 󰆏 `) so the hover fill
     // surrounds the glyph.
     let mut pills: Vec<(&str, Hit)> = Vec::new();
     if info.secret && info.value.is_some() {
-        let eye = if revealed {
-            crate::glyph::EYE_OFF_PILL
-        } else {
-            crate::glyph::EYE_PILL
-        };
+        let eye = if revealed { crate::glyph::EYE_OFF_PILL } else { crate::glyph::EYE_PILL };
         pills.push((eye, Hit::TipReveal(tip.name.clone())));
     }
     if info.value.is_some() {
@@ -521,16 +471,9 @@ fn draw_var_tooltip(
         return;
     }
     let below = tip.anchor.bottom();
-    let y = if below + height <= screen.bottom() {
-        below
-    } else {
-        tip.anchor.y.saturating_sub(height)
-    };
-    let x = tip
-        .anchor
-        .x
-        .min(screen.right().saturating_sub(width + 1))
-        .max(screen.x);
+    let y =
+        if below + height <= screen.bottom() { below } else { tip.anchor.y.saturating_sub(height) };
+    let x = tip.anchor.x.min(screen.right().saturating_sub(width + 1)).max(screen.x);
     let area = Rect::new(x, y, width, height);
     let buf = frame.buffer_mut();
     crate::paint::floating_panel(buf, area, screen, theme);
@@ -688,15 +631,7 @@ fn draw_manage_without_a_project(
     const MSG: &str = "no project is open \u{2014} open or create one first";
     let x = body.x + body.width.saturating_sub(MSG.chars().count() as u16) / 2;
     let y = body.y + body.height / 3;
-    text(
-        frame.buffer_mut(),
-        x,
-        y,
-        MSG,
-        theme.text_muted,
-        theme.page,
-        false,
-    );
+    text(frame.buffer_mut(), x, y, MSG, theme.text_muted, theme.page, false);
 }
 
 /// The header bar's save and discard keycaps (plan M4b Deviation 20),
@@ -821,7 +756,9 @@ impl PaneChipArgs {
                 } else if response.jq_ghost_is_closer() {
                     JqBarState::Closer
                 } else if response.jq_ghost().is_some() || response.jq_menu_offered() {
-                    JqBarState::Completing { cycle: response.jq_tab() == crate::config::JqTab::Cycle }
+                    JqBarState::Completing {
+                        cycle: response.jq_tab() == crate::config::JqTab::Cycle,
+                    }
                 } else {
                     JqBarState::Focused
                 }
@@ -877,11 +814,7 @@ pub(crate) fn manage_tab_chips(app: &App) -> Vec<FooterChip> {
             .map(|(k, l, a)| (k, l.to_string(), a))
             .collect();
     }
-    let open_request = app
-        .editor
-        .slug
-        .is_some()
-        .then(|| app.editor.current_request());
+    let open_request = app.editor.slug.is_some().then(|| app.editor.current_request());
     app.project()
         .map(|p| app.varmanager.footer_chips(p, open_request.as_ref()))
         .unwrap_or_default()
@@ -970,10 +903,7 @@ mod tests {
             assert!(content.contains(label), "missing {label:?}");
         }
         assert!(content.contains("move"), "the row chips are advertised");
-        assert!(
-            !content.contains("rename"),
-            "the list tabs' chips must not leak in: {content}"
-        );
+        assert!(!content.contains("rename"), "the list tabs' chips must not leak in: {content}");
     }
 
     /// Panes carry no border or title of their own anymore: no `│` pane
@@ -1004,15 +934,8 @@ mod tests {
         assert_eq!(layout.gutter.width, 1);
         for y in layout.gutter.y..layout.gutter.y + layout.gutter.height {
             let cell = buf[(layout.gutter.x, y)].clone();
-            assert_eq!(
-                cell.symbol(),
-                " ",
-                "no `│` glyph at the gutter column: {cell:?}"
-            );
-            assert_eq!(
-                cell.bg, app.theme.page,
-                "gutter cell is a flat page fill: {cell:?}"
-            );
+            assert_eq!(cell.symbol(), " ", "no `│` glyph at the gutter column: {cell:?}");
+            assert_eq!(cell.bg, app.theme.page, "gutter cell is a flat page fill: {cell:?}");
         }
     }
 }

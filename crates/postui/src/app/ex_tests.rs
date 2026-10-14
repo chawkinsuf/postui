@@ -69,7 +69,8 @@ fn enter_on_the_pinned_row_runs_it() {
 fn bang_writes_over_a_file_changed_outside() {
     let outside = |app: &App| {
         let slug = app.editor.slug.clone().expect("the fixture's request is saved");
-        let theirs = postui_core::model::HttpRequest::from_toml_str(r#"url = "https://x/outside""#).unwrap();
+        let theirs =
+            postui_core::model::HttpRequest::from_toml_str(r#"url = "https://x/outside""#).unwrap();
         postui_core::fixtures::save_request(app.proj().root(), &slug, &theirs).unwrap();
     };
     let on_disk = |app: &App| {
@@ -111,7 +112,8 @@ fn bang_holds_an_un_held_request_again() {
     feed(&mut app, ":w!<CR>");
     assert!(!app.editor.is_dirty(), "written");
     assert!(app.proj().held_request(&slug).is_some(), "held again");
-    let theirs = postui_core::model::HttpRequest::from_toml_str(r#"url = "https://x/outside""#).unwrap();
+    let theirs =
+        postui_core::model::HttpRequest::from_toml_str(r#"url = "https://x/outside""#).unwrap();
     postui_core::fixtures::save_request(app.proj().root(), &slug, &theirs).unwrap();
     feed(&mut app, ":w<CR>");
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the drift dialog");
@@ -119,11 +121,18 @@ fn bang_holds_an_un_held_request_again() {
     let mut app = vim(Fixture::TableThreeHeaders);
     let slug = app.editor.slug.clone().unwrap();
     app.proj_mut().close_request(&slug);
-    std::fs::write(postui_core::storage::request_path(app.proj().root(), &slug), "url = \"unclosed\n").unwrap();
+    std::fs::write(
+        postui_core::storage::request_path(app.proj().root(), &slug),
+        "url = \"unclosed\n",
+    )
+    .unwrap();
     feed(&mut app, ":w!<CR>");
     assert!(app.modals.is_empty(), "no dialog");
     assert!(!app.editor.is_dirty(), "written over");
-    assert!(postui_core::fixtures::load_request(app.proj().root(), &slug).is_ok(), "the app's content is on disk");
+    assert!(
+        postui_core::fixtures::load_request(app.proj().root(), &slug).is_ok(),
+        "the app's content is on disk"
+    );
 }
 
 /// Plan M5b Deviation 18: on a clean request `:x!` quits without writing
@@ -133,7 +142,8 @@ fn bang_holds_an_un_held_request_again() {
 fn bang_on_a_clean_or_never_saved_request() {
     let mut app = vim(Fixture::SidebarThreeBetaOpen);
     let slug = app.editor.slug.clone().expect("the fixture's request is saved");
-    let theirs = postui_core::model::HttpRequest::from_toml_str(r#"url = "https://x/outside""#).unwrap();
+    let theirs =
+        postui_core::model::HttpRequest::from_toml_str(r#"url = "https://x/outside""#).unwrap();
     postui_core::fixtures::save_request(app.proj().root(), &slug, &theirs).unwrap();
     feed(&mut app, ":x!<CR>");
     assert!(app.should_quit, "a clean request quits at once");
@@ -162,9 +172,16 @@ fn colon_q_over_a_dialog_meets_the_dirty_gate() {
     assert!(!app.should_quit, "the gate, not a quit");
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the dirty gate's confirm");
     feed(&mut app, "<Esc>");
-    assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "cancelling the gate goes back to Save as");
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Prompt { .. })),
+        "cancelling the gate goes back to Save as"
+    );
     assert!(!app.should_quit);
-    assert_eq!(app.mode_indicator(), Some("INSERT"), "its field back in Insert, as under any dialog that closes");
+    assert_eq!(
+        app.mode_indicator(),
+        Some("INSERT"),
+        "its field back in Insert, as under any dialog that closes"
+    );
     feed(&mut app, "<Esc>:q!<CR>");
     assert!(app.should_quit, ":q! still leaves at once");
     let mut app = vim(Fixture::DirtyScratch);
@@ -191,7 +208,11 @@ fn a_refused_close_runs_no_verb() {
         let mut app = super::global_tests::refused_settings_field();
         feed(&mut app, q);
         assert!(app.modals.is_empty(), "{q}: {:?}", app.modals.top().map(std::mem::discriminant));
-        assert_eq!(app.settings.editing, Some(crate::components::settings::SettingsField::Osc52Limit), "{q}: the field stays open");
+        assert_eq!(
+            app.settings.editing,
+            Some(crate::components::settings::SettingsField::Osc52Limit),
+            "{q}: the field stays open"
+        );
         assert!(app.editor.is_dirty(), "{q}: nothing saved");
         assert!(!app.should_quit, "{q}");
     }
@@ -205,7 +226,10 @@ fn esc_on_the_line_returns_to_the_parked_field() {
     let text = app.editor.url.text().to_string();
     feed(&mut app, ":ab");
     // The line has the caret (`Live(Palette)`); the URL field waits under it.
-    assert!(matches!(app.field_caret(), crate::keyroute::FieldCaret::Live(crate::keyroute::FieldId::Palette)));
+    assert!(matches!(
+        app.field_caret(),
+        crate::keyroute::FieldCaret::Live(crate::keyroute::FieldId::Palette)
+    ));
     assert_eq!(app.screen_field(), Some(crate::keyroute::FieldId::Url));
     feed(&mut app, "<Esc>");
     assert!(app.modals.is_empty());
@@ -254,7 +278,11 @@ fn the_add_verbs_open_in_insert_from_the_line_as_from_the_row() {
         let mut by_line = vim(f);
         feed(&mut by_line, line);
         assert!(by_line.field_caret().is_live(), "{f:?} {line}: {:?}", by_line.field_caret());
-        assert_eq!(by_line.field_caret(), by_row.field_caret(), "{f:?}: {line} opens what {row} opens");
+        assert_eq!(
+            by_line.field_caret(),
+            by_row.field_caret(),
+            "{f:?}: {line} opens what {row} opens"
+        );
         assert_eq!(by_line.mode_indicator(), Some("INSERT"), "{f:?} {line}");
         assert_eq!(by_row.mode_indicator(), Some("INSERT"), "{f:?} {row}");
     }
@@ -392,7 +420,12 @@ fn click(app: &mut App, hit: crate::hit::Hit) {
     use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     draw(app);
     let r = app.hits.rect_of(&hit).unwrap_or_else(|| panic!("no {hit:?}"));
-    app.handle_mouse(MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column: r.x + 1, row: r.y, modifiers: KeyModifiers::NONE });
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: r.x + 1,
+        row: r.y,
+        modifiers: KeyModifiers::NONE,
+    });
 }
 
 fn click_chip(app: &mut App, action: Action) {
@@ -419,14 +452,25 @@ fn the_palette_quit_row_meets_the_dirty_gate_over_a_dialog() {
 /// verb opens what it makes in Insert, as Enter on it does.
 #[test]
 fn a_clicked_add_verb_opens_in_insert_as_enter_does() {
-    for (f, line) in [(Fixture::TableThreeHeaders, ":new"), (Fixture::VarGrid, ":new"), (Fixture::VarListGroup, ":group")] {
+    for (f, line) in [
+        (Fixture::TableThreeHeaders, ":new"),
+        (Fixture::VarGrid, ":new"),
+        (Fixture::VarListGroup, ":group"),
+    ] {
         let mut by_enter = vim(f);
         feed(&mut by_enter, &format!("{line}<CR>"));
         let mut by_click = vim(f);
         feed(&mut by_click, line);
         click(&mut by_click, crate::hit::Hit::PaletteRow(0));
-        assert!(by_click.modals.top().is_none_or(|m| !matches!(m, Modal::Palette(_))), "{f:?}: the line closed");
-        assert_eq!(by_click.field_caret(), by_enter.field_caret(), "{f:?}: {line} opens the same field clicked");
+        assert!(
+            by_click.modals.top().is_none_or(|m| !matches!(m, Modal::Palette(_))),
+            "{f:?}: the line closed"
+        );
+        assert_eq!(
+            by_click.field_caret(),
+            by_enter.field_caret(),
+            "{f:?}: {line} opens the same field clicked"
+        );
         assert_eq!(by_click.mode_indicator(), Some("INSERT"), "{f:?} {line}");
     }
 }
@@ -440,7 +484,10 @@ fn the_quit_chip_runs_what_it_spells() {
     feed(&mut app, ":w<CR>");
     assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "Save as");
     draw(&mut app);
-    assert!(app.hits.rect_of(&crate::hit::Hit::FooterChip(Action::Quit)).is_some(), "typing in the dialog: `^C`, the emergency exit");
+    assert!(
+        app.hits.rect_of(&crate::hit::Hit::FooterChip(Action::Quit)).is_some(),
+        "typing in the dialog: `^C`, the emergency exit"
+    );
     feed(&mut app, "<Esc>");
     click_chip(&mut app, Action::CloseWindow { write: false, force: false });
     assert!(!app.should_quit, "the gate, not a quit");
@@ -461,10 +508,14 @@ fn on_manage_the_quit_chip_is_qa() {
     app.anims.finish_all();
     let mut terminal = Terminal::new(TestBackend::new(160, 48)).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
-    let r = app.hits.rect_of(&crate::hit::Hit::FooterChip(Action::GatedQuit)).expect("the quit chip runs :qa");
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::FooterChip(Action::GatedQuit))
+        .expect("the quit chip runs :qa");
     let buf = terminal.backend().buffer();
     let y = r.y + r.height / 2;
-    let text: String = (r.x..r.x + r.width).map(|x| buf.cell((x, y)).unwrap().symbol().to_string()).collect();
+    let text: String =
+        (r.x..r.x + r.width).map(|x| buf.cell((x, y)).unwrap().symbol().to_string()).collect();
     assert!(text.contains(":qa"), "{text:?}");
     click_chip(&mut app, Action::GatedQuit);
     assert!(app.should_quit);
@@ -532,6 +583,9 @@ fn quitting_writes_the_history() {
     app.config = crate::config::Config::at(dir.path().to_path_buf());
     feed(&mut app, ":noh<CR>:q<CR>");
     assert!(app.should_quit);
-    let (_, loaded, _) = crate::config::Config::load_from(crate::config::Config::at(dir.path().to_path_buf()), false);
+    let (_, loaded, _) = crate::config::Config::load_from(
+        crate::config::Config::at(dir.path().to_path_buf()),
+        false,
+    );
     assert_eq!(loaded.cmdline.lines(), ["noh", "q"]);
 }

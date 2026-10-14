@@ -35,7 +35,9 @@ impl Key {
         let bare = ev.modifiers.is_empty();
         match ev.code {
             KeyCode::Char('[') if ev.modifiers == KeyModifiers::CONTROL => Key::Esc,
-            KeyCode::Char(c) if ev.modifiers == KeyModifiers::CONTROL => Key::Ctrl(c.to_ascii_lowercase()),
+            KeyCode::Char(c) if ev.modifiers == KeyModifiers::CONTROL => {
+                Key::Ctrl(c.to_ascii_lowercase())
+            }
             KeyCode::Char(c) if plain => Key::Char(c),
             KeyCode::Esc if bare => Key::Esc,
             KeyCode::Enter if bare => Key::Enter,
@@ -63,7 +65,9 @@ pub(crate) enum Op {
     /// `g~` `gu` `gU`
     Case(CaseOp),
     /// `>` `<`
-    Shift { right: bool },
+    Shift {
+        right: bool,
+    },
 }
 
 /// What Visual `~` `u` `U` do to the selection.
@@ -132,18 +136,30 @@ pub(crate) enum Motion {
     FirstLine,
     /// `G`
     LastLine,
-    WordFwd { big: bool },
-    WordBack { big: bool },
-    WordEnd { big: bool },
+    WordFwd {
+        big: bool,
+    },
+    WordBack {
+        big: bool,
+    },
+    WordEnd {
+        big: bool,
+    },
     Find(FindKind, char),
     /// `;` (`reverse: false`) and `,`
-    RepeatFind { reverse: bool },
+    RepeatFind {
+        reverse: bool,
+    },
     /// `%`
     MatchPair,
     /// `ge` `gE`
-    WordEndBack { big: bool },
+    WordEndBack {
+        big: bool,
+    },
     /// `}` (`forward`) and `{`
-    Paragraph { forward: bool },
+    Paragraph {
+        forward: bool,
+    },
     /// `+` and `<CR>`: down to the first non-blank
     DownFirstNonBlank,
     /// `-`: up to the first non-blank
@@ -151,16 +167,24 @@ pub(crate) enum Motion {
     /// `H` `M` `L`: linewise, by the window
     ScreenLine(Screen),
     /// `n` (`reverse` false) and `N`
-    SearchNext { reverse: bool },
+    SearchNext {
+        reverse: bool,
+    },
     /// `*` (`backward` false) and `#`
-    Ident { backward: bool },
+    Ident {
+        backward: bool,
+    },
     /// The prompt's Enter (and its `.`): the last pattern in `dir`.
-    Search { dir: Dir },
+    Search {
+        dir: Dir,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Object {
-    Word { big: bool },
+    Word {
+        big: bool,
+    },
     /// The quote char: `"`, `'` or `` ` ``.
     Quote(char),
     /// The opening char: `(`, `[` or `{`.
@@ -173,7 +197,10 @@ pub(crate) enum Object {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Reach {
     Motion(Motion),
-    Object { obj: Object, inner: bool },
+    Object {
+        obj: Object,
+        inner: bool,
+    },
     /// The doubled operator (`dd`, `cc`, `yy`) and its shorthands.
     Line,
 }
@@ -221,42 +248,87 @@ pub(crate) enum VisualOp {
     YankLines,
     Change,
     ChangeLines,
-    Put { before: bool },
+    Put {
+        before: bool,
+    },
     Replace(char),
     Join,
     /// `~` `u` `U`.
     Case(CaseOp),
-    Shift { right: bool },
+    Shift {
+        right: bool,
+    },
 }
 
 /// A complete command. Counts are 0 when none was typed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Cmd {
-    Move { motion: Motion, count: usize },
+    Move {
+        motion: Motion,
+        count: usize,
+    },
     /// `count` is the two counts combined (`2d3w` is 6), as Vim stores it.
-    Operate { op: Op, reach: Reach, count: usize, reg: Option<char> },
-    Put { before: bool, count: usize, reg: Option<char> },
-    Replace { ch: char, count: usize },
-    Join { count: usize },
+    Operate {
+        op: Op,
+        reach: Reach,
+        count: usize,
+        reg: Option<char>,
+    },
+    Put {
+        before: bool,
+        count: usize,
+        reg: Option<char>,
+    },
+    Replace {
+        ch: char,
+        count: usize,
+    },
+    Join {
+        count: usize,
+    },
     /// `~` (`notildeop`): toggle the case of `count` chars.
-    Tilde { count: usize },
+    Tilde {
+        count: usize,
+    },
     /// `ctrl+a` (`add`) / `ctrl+x` with a count.
-    AddSub { add: bool, count: usize },
+    AddSub {
+        add: bool,
+        count: usize,
+    },
     /// `gi`: Insert where Insert last ended.
-    Gi { count: usize },
+    Gi {
+        count: usize,
+    },
     /// `gv`: reselect the last Visual area.
     Gv,
-    Insert { how: InsertHow, count: usize },
+    Insert {
+        how: InsertHow,
+        count: usize,
+    },
     /// A scroll chord with its count (a half page's new size, or pages).
-    Scroll { how: Scroll, count: usize },
+    Scroll {
+        how: Scroll,
+        count: usize,
+    },
     /// `zt` `zz` `zb`; `count` is a line number (0: none)
-    ScrollCursor { place: Screen, count: usize },
+    ScrollCursor {
+        place: Screen,
+        count: usize,
+    },
     Repeat(usize),
     VisualStart(Shape),
     VisualSwap,
     VisualExit,
-    VisualObject { obj: Object, inner: bool, count: usize },
-    VisualOp { op: VisualOp, count: usize, reg: Option<char> },
+    VisualObject {
+        obj: Object,
+        inner: bool,
+        count: usize,
+    },
+    VisualOp {
+        op: VisualOp,
+        count: usize,
+        reg: Option<char>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -274,9 +346,16 @@ pub(crate) enum Step {
     /// `u` or `ctrl+r` (`count` 0 when none was typed). Not a [`Cmd`]: `.`
     /// never repeats it, and an empty history declines it, handing back
     /// `declined` (the count and keys a `Decline` would carry).
-    Undo { redo: bool, count: usize, declined: (Option<usize>, Vec<KeyEvent>) },
+    Undo {
+        redo: bool,
+        count: usize,
+        declined: (Option<usize>, Vec<KeyEvent>),
+    },
     /// Not the engine's key (spec §4.3).
-    Decline { count: Option<usize>, keys: Vec<KeyEvent> },
+    Decline {
+        count: Option<usize>,
+        keys: Vec<KeyEvent>,
+    },
     /// Consumed with no effect, maybe with a footer note.
     Inert(Option<Note>),
     /// `/` or `?`: the prompt opens; the pending command waits for it.
@@ -287,7 +366,9 @@ pub(crate) enum Step {
 enum Prefix {
     G,
     Register,
-    Object { inner: bool },
+    Object {
+        inner: bool,
+    },
     Find(FindKind),
     Replace,
     Z,
@@ -429,7 +510,11 @@ fn object_of(key: Key) -> Option<Object> {
 
 impl Pending {
     pub(crate) fn is_empty(&self) -> bool {
-        self.reg.is_none() && self.count1 == 0 && self.op.is_none() && self.count2 == 0 && self.prefix.is_none()
+        self.reg.is_none()
+            && self.count1 == 0
+            && self.op.is_none()
+            && self.count2 == 0
+            && self.prefix.is_none()
     }
 
     pub(crate) fn clear(&mut self) {
@@ -539,7 +624,9 @@ impl Pending {
             // failed motion (consumed), in its Normal it was declined above.
             Key::Ctrl(c) if self.op.is_some() && scroll(c).is_some() => self.inert(None),
             Key::Ctrl(c) if scroll(c).is_some() && !cx.multiline => self.inert(None),
-            Key::Ctrl(c) if let Some(how) = scroll(c) => self.cmd(|count, _| Cmd::Scroll { how, count }),
+            Key::Ctrl(c) if let Some(how) = scroll(c) => {
+                self.cmd(|count, _| Cmd::Scroll { how, count })
+            }
             Key::Ctrl(_) if cx.visual || self.op.is_some() => self.decline_alone(ev),
             Key::Ctrl('r') => self.undo(true, ev),
             Key::Ctrl(c) => self.cmd(|count, _| Cmd::AddSub { add: c == 'a', count }),
@@ -564,7 +651,9 @@ impl Pending {
     /// Completes whatever waits for a motion: an operator, or a bare move.
     fn motion_done(&mut self, motion: Motion) -> Step {
         match self.op {
-            Some(op) => self.cmd(|count, reg| Cmd::Operate { op, reach: Reach::Motion(motion), count, reg }),
+            Some(op) => {
+                self.cmd(|count, reg| Cmd::Operate { op, reach: Reach::Motion(motion), count, reg })
+            }
             None => self.cmd(|count, _| Cmd::Move { motion, count }),
         }
     }
@@ -689,7 +778,9 @@ impl Pending {
         }
         let Key::Char(ch) = key else { return self.inert(None) };
         match ch {
-            _ if doubles(op, ch) => self.cmd(|count, reg| Cmd::Operate { op, reach: Reach::Line, count, reg }),
+            _ if doubles(op, ch) => {
+                self.cmd(|count, reg| Cmd::Operate { op, reach: Reach::Line, count, reg })
+            }
             'i' | 'a' => self.arm(ev, Prefix::Object { inner: ch == 'i' }),
             'f' | 't' | 'F' | 'T' => self.arm(ev, Prefix::Find(find_kind(ch))),
             'g' => self.arm(ev, Prefix::G),
@@ -756,21 +847,31 @@ impl Pending {
                 Key::Char('J') => self.inert(Some("gJ not supported".to_string())),
                 Key::Char(c @ ('~' | 'u' | 'U')) => match self.op {
                     // `g~g~` `gugu` `gUgU`: the doubled form spelled out.
-                    Some(op) if doubles(op, c) => self.cmd(|count, reg| Cmd::Operate { op, reach: Reach::Line, count, reg }),
+                    Some(op) if doubles(op, c) => {
+                        self.cmd(|count, reg| Cmd::Operate { op, reach: Reach::Line, count, reg })
+                    }
                     // Another operator while one is pending cancels both
                     // (Vim's `checkclearop()`).
                     Some(_) => self.inert(None),
-                    None if cx.visual => self.cmd(|count, reg| Cmd::VisualOp { op: VisualOp::Case(case_of(c)), count, reg }),
+                    None if cx.visual => self.cmd(|count, reg| Cmd::VisualOp {
+                        op: VisualOp::Case(case_of(c)),
+                        count,
+                        reg,
+                    }),
                     None => {
                         self.keys.push(ev);
                         self.op = Some(Op::Case(case_of(c)));
                         Step::More
                     }
                 },
-                Key::Char('i') if self.op.is_none() && !cx.visual => self.cmd(|count, _| Cmd::Gi { count }),
+                Key::Char('i') if self.op.is_none() && !cx.visual => {
+                    self.cmd(|count, _| Cmd::Gi { count })
+                }
                 Key::Char('v') if self.op.is_none() => self.cmd(|_, _| Cmd::Gv),
                 Key::Esc => self.inert(None),
-                Key::Char(c @ ('*' | '#' | 'n' | 'N')) => self.inert(Some(format!("g{c} not supported"))),
+                Key::Char(c @ ('*' | '#' | 'n' | 'N')) => {
+                    self.inert(Some(format!("g{c} not supported")))
+                }
                 _ if self.op.is_none() && !cx.visual => self.decline(ev),
                 _ => self.inert(None),
             },
@@ -781,7 +882,12 @@ impl Pending {
             },
             Prefix::Object { inner } => match object_of(key) {
                 Some(obj) => match self.op {
-                    Some(op) => self.cmd(|count, reg| Cmd::Operate { op, reach: Reach::Object { obj, inner }, count, reg }),
+                    Some(op) => self.cmd(|count, reg| Cmd::Operate {
+                        op,
+                        reach: Reach::Object { obj, inner },
+                        count,
+                        reg,
+                    }),
                     None => self.cmd(|count, _| Cmd::VisualObject { obj, inner, count }),
                 },
                 None => self.inert(None),
@@ -822,7 +928,8 @@ impl Pending {
             Prefix::ZCount(n) => match key {
                 Key::Char(c @ '0'..='9') => {
                     self.keys.push(ev);
-                    self.prefix = Some(Prefix::ZCount(accumulate_count(n, c.to_digit(10).expect("a digit"))));
+                    self.prefix =
+                        Some(Prefix::ZCount(accumulate_count(n, c.to_digit(10).expect("a digit"))));
                     Step::More
                 }
                 Key::Delete => {
@@ -845,7 +952,10 @@ mod tests {
     use super::*;
 
     fn ev(c: char) -> KeyEvent {
-        KeyEvent::new(KeyCode::Char(c), if c.is_uppercase() { KeyModifiers::SHIFT } else { KeyModifiers::NONE })
+        KeyEvent::new(
+            KeyCode::Char(c),
+            if c.is_uppercase() { KeyModifiers::SHIFT } else { KeyModifiers::NONE },
+        )
     }
 
     const NORMAL: ParseCx = ParseCx { visual: false, multiline: true, restart: false };
@@ -873,18 +983,43 @@ mod tests {
         use Motion::*;
         let op = |op, reach, count| Cmd::Operate { op, reach, count, reg: None };
         assert_eq!(cmd("d3w", NORMAL), op(Op::Delete, Reach::Motion(WordFwd { big: false }), 3));
-        assert_eq!(cmd("2d3w", NORMAL), op(Op::Delete, Reach::Motion(WordFwd { big: false }), 6), "counts multiply");
+        assert_eq!(
+            cmd("2d3w", NORMAL),
+            op(Op::Delete, Reach::Motion(WordFwd { big: false }), 6),
+            "counts multiply"
+        );
         assert_eq!(cmd("dd", NORMAL), op(Op::Delete, Reach::Line, 0));
         assert_eq!(cmd("3yy", NORMAL), op(Op::Yank, Reach::Line, 3));
         assert_eq!(cmd("cW", NORMAL), op(Op::Change, Reach::Motion(WordFwd { big: true }), 0));
         assert_eq!(cmd("dgg", NORMAL), op(Op::Delete, Reach::Motion(FirstLine), 0));
-        assert_eq!(cmd("d2fa", NORMAL), op(Op::Delete, Reach::Motion(Find(FindKind::Find, 'a')), 2));
-        assert_eq!(cmd("dT,", NORMAL), op(Op::Delete, Reach::Motion(Find(FindKind::TillBack, ',')), 0));
-        assert_eq!(cmd("d;", NORMAL), op(Op::Delete, Reach::Motion(RepeatFind { reverse: false }), 0));
-        assert_eq!(cmd("di{", NORMAL), op(Op::Delete, Reach::Object { obj: Object::Block('{'), inner: true }, 0));
-        assert_eq!(cmd("ca\"", NORMAL), op(Op::Change, Reach::Object { obj: Object::Quote('"'), inner: false }, 0));
-        assert_eq!(cmd("y2ab", NORMAL), op(Op::Yank, Reach::Object { obj: Object::Block('('), inner: false }, 2));
-        assert_eq!(cmd("diW", NORMAL), op(Op::Delete, Reach::Object { obj: Object::Word { big: true }, inner: true }, 0));
+        assert_eq!(
+            cmd("d2fa", NORMAL),
+            op(Op::Delete, Reach::Motion(Find(FindKind::Find, 'a')), 2)
+        );
+        assert_eq!(
+            cmd("dT,", NORMAL),
+            op(Op::Delete, Reach::Motion(Find(FindKind::TillBack, ',')), 0)
+        );
+        assert_eq!(
+            cmd("d;", NORMAL),
+            op(Op::Delete, Reach::Motion(RepeatFind { reverse: false }), 0)
+        );
+        assert_eq!(
+            cmd("di{", NORMAL),
+            op(Op::Delete, Reach::Object { obj: Object::Block('{'), inner: true }, 0)
+        );
+        assert_eq!(
+            cmd("ca\"", NORMAL),
+            op(Op::Change, Reach::Object { obj: Object::Quote('"'), inner: false }, 0)
+        );
+        assert_eq!(
+            cmd("y2ab", NORMAL),
+            op(Op::Yank, Reach::Object { obj: Object::Block('('), inner: false }, 2)
+        );
+        assert_eq!(
+            cmd("diW", NORMAL),
+            op(Op::Delete, Reach::Object { obj: Object::Word { big: true }, inner: true }, 0)
+        );
         assert_eq!(cmd("3x", NORMAL), op(Op::Delete, Reach::Motion(Right), 3));
         assert_eq!(cmd("X", NORMAL), op(Op::Delete, Reach::Motion(Left), 0));
         assert_eq!(cmd("D", NORMAL), op(Op::Delete, Reach::Motion(LineEnd), 0));
@@ -915,11 +1050,18 @@ mod tests {
         );
         assert_eq!(
             feed(&mut Pending::default(), "\"\"2u", NORMAL),
-            Step::Undo { redo: false, count: 2, declined: (Some(2), vec![ev('"'), ev('"'), ev('u')]) },
+            Step::Undo {
+                redo: false,
+                count: 2,
+                declined: (Some(2), vec![ev('"'), ev('"'), ev('u')])
+            },
             "a plain key hands back the register prefix too"
         );
         let mut p = Pending::default();
-        assert_eq!(p.feed(ctrl_r, NORMAL), Step::Undo { redo: true, count: 0, declined: (None, vec![ctrl_r]) });
+        assert_eq!(
+            p.feed(ctrl_r, NORMAL),
+            Step::Undo { redo: true, count: 0, declined: (None, vec![ctrl_r]) }
+        );
         feed(&mut p, "\"\"2", NORMAL);
         assert_eq!(
             p.feed(ctrl_r, NORMAL),
@@ -932,7 +1074,12 @@ mod tests {
     #[test]
     fn delete_key_is_x_but_drops_a_typed_count_digit() {
         let del = KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE);
-        let x = Cmd::Operate { op: Op::Delete, reach: Reach::Motion(Motion::Right), count: 0, reg: None };
+        let x = Cmd::Operate {
+            op: Op::Delete,
+            reach: Reach::Motion(Motion::Right),
+            count: 0,
+            reg: None,
+        };
         assert_eq!(Pending::default().feed(del, NORMAL), Step::Cmd(x));
         let mut p = Pending::default();
         feed(&mut p, "34", NORMAL);
@@ -955,19 +1102,36 @@ mod tests {
         assert_eq!(cmd("Y", VISUAL), vop(VisualOp::YankLines, 0));
         assert_eq!(cmd("s", VISUAL), vop(VisualOp::Change, 0));
         assert_eq!(cmd("R", VISUAL), vop(VisualOp::ChangeLines, 0));
-        assert_eq!(cmd("u", VISUAL), vop(VisualOp::Case(CaseOp::Lower), 0), "u in Visual lowercases, it does not undo");
+        assert_eq!(
+            cmd("u", VISUAL),
+            vop(VisualOp::Case(CaseOp::Lower), 0),
+            "u in Visual lowercases, it does not undo"
+        );
         assert_eq!(cmd("~", VISUAL), vop(VisualOp::Case(CaseOp::Toggle), 0));
         assert_eq!(cmd("U", VISUAL), vop(VisualOp::Case(CaseOp::Upper), 0));
         assert_eq!(cmd("3>", VISUAL), vop(VisualOp::Shift { right: true }, 3));
         assert_eq!(cmd("rX", VISUAL), vop(VisualOp::Replace('X'), 0));
         assert_eq!(cmd("P", VISUAL), vop(VisualOp::Put { before: true }, 0));
         assert_eq!(cmd("o", VISUAL), Cmd::VisualSwap);
-        assert_eq!(cmd("2i(", VISUAL), Cmd::VisualObject { obj: Object::Block('('), inner: true, count: 2 });
+        assert_eq!(
+            cmd("2i(", VISUAL),
+            Cmd::VisualObject { obj: Object::Block('('), inner: true, count: 2 }
+        );
         assert_eq!(cmd("$", VISUAL), Cmd::Move { motion: Motion::LineEnd, count: 0 });
         let mut p = Pending::default();
-        assert!(matches!(p.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), VISUAL), Step::Cmd(Cmd::VisualExit)));
+        assert!(matches!(
+            p.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), VISUAL),
+            Step::Cmd(Cmd::VisualExit)
+        ));
         assert!(
-            matches!(feed(&mut Pending::default(), "j", ParseCx { visual: true, multiline: false, restart: false }), Step::Cmd(Cmd::Move { .. })),
+            matches!(
+                feed(
+                    &mut Pending::default(),
+                    "j",
+                    ParseCx { visual: true, multiline: false, restart: false }
+                ),
+                Step::Cmd(Cmd::Move { .. })
+            ),
             "a one-line buffer consumes Visual j as a failed motion"
         );
     }
@@ -993,7 +1157,10 @@ mod tests {
         for c in [':', 'Z', 'q', '@', 'm', '\'', '`'] {
             assert!(matches!(Pending::default().feed(ev(c), NORMAL), Step::Decline { .. }), "{c}");
         }
-        assert!(matches!(feed(&mut Pending::default(), "j", NORMAL), Step::Cmd(_)), "the body keeps j");
+        assert!(
+            matches!(feed(&mut Pending::default(), "j", NORMAL), Step::Cmd(_)),
+            "the body keeps j"
+        );
     }
 
     #[test]
@@ -1008,7 +1175,10 @@ mod tests {
         assert_eq!(p.feed(ctrl_o, NORMAL), Step::Decline { count: Some(3), keys: vec![ctrl_o] });
         let mut p = Pending::default();
         feed(&mut p, "f", NORMAL);
-        assert!(matches!(p.feed(ctrl_c, NORMAL), Step::Decline { .. }), "never read as the find's target");
+        assert!(
+            matches!(p.feed(ctrl_c, NORMAL), Step::Decline { .. }),
+            "never read as the find's target"
+        );
         assert!(p.is_empty());
     }
 
@@ -1025,10 +1195,17 @@ mod tests {
         let mut p = Pending::default();
         assert_eq!(note(feed(&mut p, "\"a", NORMAL)), "register \"a not supported");
         assert!(p.is_empty(), "nothing is armed after an unsupported register");
-        assert!(matches!(feed(&mut p, "dx", NORMAL), Step::Inert(None)), "an operator with a bad argument cancels");
+        assert!(
+            matches!(feed(&mut p, "dx", NORMAL), Step::Inert(None)),
+            "an operator with a bad argument cancels"
+        );
         assert!(p.is_empty());
         feed(&mut p, "g", NORMAL);
-        assert_eq!(p.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), NORMAL), Step::Inert(None), "g<Esc> cancels");
+        assert_eq!(
+            p.feed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), NORMAL),
+            Step::Inert(None),
+            "g<Esc> cancels"
+        );
         assert!(p.is_empty());
     }
 
@@ -1041,11 +1218,19 @@ mod tests {
         assert_eq!((p.echo().as_str(), p.count1(), p.count2()), ("2d3", 2, 3));
         assert_eq!(
             p.search_done(Dir::Forward),
-            Step::Cmd(Cmd::Operate { op: Op::Delete, reach: Reach::Motion(Motion::Search { dir: Dir::Forward }), count: 6, reg: None })
+            Step::Cmd(Cmd::Operate {
+                op: Op::Delete,
+                reach: Reach::Motion(Motion::Search { dir: Dir::Forward }),
+                count: 6,
+                reg: None
+            })
         );
         assert!(p.is_empty());
         assert_eq!(feed(&mut p, "?", VISUAL), Step::Search(Dir::Backward));
-        assert_eq!(p.search_done(Dir::Backward), Step::Cmd(Cmd::Move { motion: Motion::Search { dir: Dir::Backward }, count: 0 }));
+        assert_eq!(
+            p.search_done(Dir::Backward),
+            Step::Cmd(Cmd::Move { motion: Motion::Search { dir: Dir::Backward }, count: 0 })
+        );
     }
 
     #[test]
@@ -1087,14 +1272,19 @@ mod tests {
     fn case_operators_parse() {
         use Motion::*;
         let op = |op, reach, count| Cmd::Operate { op, reach, count, reg: None };
-        let (t, l, u) = (Op::Case(CaseOp::Toggle), Op::Case(CaseOp::Lower), Op::Case(CaseOp::Upper));
+        let (t, l, u) =
+            (Op::Case(CaseOp::Toggle), Op::Case(CaseOp::Lower), Op::Case(CaseOp::Upper));
         assert_eq!(cmd("g~w", NORMAL), op(t, Reach::Motion(WordFwd { big: false }), 0));
         assert_eq!(cmd("g~~", NORMAL), op(t, Reach::Line, 0));
         assert_eq!(cmd("g~g~", NORMAL), op(t, Reach::Line, 0));
         assert_eq!(cmd("guu", NORMAL), op(l, Reach::Line, 0));
         assert_eq!(cmd("gugu", NORMAL), op(l, Reach::Line, 0));
         assert_eq!(cmd("gUU", NORMAL), op(u, Reach::Line, 0));
-        assert_eq!(cmd("gugg", NORMAL), op(l, Reach::Motion(FirstLine), 0), "gg is a motion after gu");
+        assert_eq!(
+            cmd("gugg", NORMAL),
+            op(l, Reach::Motion(FirstLine), 0),
+            "gg is a motion after gu"
+        );
         assert_eq!(cmd("2g~~", NORMAL), op(t, Reach::Line, 2));
         assert_eq!(cmd("g~2~", NORMAL), op(t, Reach::Line, 2));
         assert_eq!(cmd("3~", NORMAL), Cmd::Tilde { count: 3 });
@@ -1113,7 +1303,10 @@ mod tests {
         assert_eq!(cmd("3<<", NORMAL), op(l, Reach::Line, 3));
         assert_eq!(cmd(">j", NORMAL), op(r, Reach::Motion(Down), 0));
         assert_eq!(cmd("2>3j", NORMAL), op(r, Reach::Motion(Down), 6));
-        assert!(matches!(feed(&mut Pending::default(), "><", NORMAL), Step::Inert(None)), "another operator cancels");
+        assert!(
+            matches!(feed(&mut Pending::default(), "><", NORMAL), Step::Inert(None)),
+            "another operator cancels"
+        );
     }
 
     #[test]
@@ -1126,11 +1319,22 @@ mod tests {
         assert_eq!(cmd("2{", NORMAL), mv(Paragraph { forward: false }, 2));
         assert_eq!(cmd("+", NORMAL), mv(DownFirstNonBlank, 0));
         assert_eq!(cmd("-", NORMAL), mv(UpFirstNonBlank, 0));
-        assert_eq!(Pending::default().feed(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), NORMAL), Step::Cmd(mv(DownFirstNonBlank, 0)));
-        assert!(matches!(Pending::default().feed(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), ONE_LINE), Step::Decline { .. }));
+        assert_eq!(
+            Pending::default().feed(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), NORMAL),
+            Step::Cmd(mv(DownFirstNonBlank, 0))
+        );
+        assert!(matches!(
+            Pending::default().feed(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), ONE_LINE),
+            Step::Decline { .. }
+        ));
         assert_eq!(
             cmd("dge", NORMAL),
-            Cmd::Operate { op: Op::Delete, reach: Reach::Motion(WordEndBack { big: false }), count: 0, reg: None }
+            Cmd::Operate {
+                op: Op::Delete,
+                reach: Reach::Motion(WordEndBack { big: false }),
+                count: 0,
+                reg: None
+            }
         );
         assert_eq!(cmd("ge", VISUAL), mv(WordEndBack { big: false }, 0));
     }
@@ -1138,9 +1342,18 @@ mod tests {
     #[test]
     fn paragraph_objects_parse() {
         let par = |inner| Reach::Object { obj: Object::Paragraph, inner };
-        assert_eq!(cmd("dip", NORMAL), Cmd::Operate { op: Op::Delete, reach: par(true), count: 0, reg: None });
-        assert_eq!(cmd("y2ap", NORMAL), Cmd::Operate { op: Op::Yank, reach: par(false), count: 2, reg: None });
-        assert_eq!(cmd("ap", VISUAL), Cmd::VisualObject { obj: Object::Paragraph, inner: false, count: 0 });
+        assert_eq!(
+            cmd("dip", NORMAL),
+            Cmd::Operate { op: Op::Delete, reach: par(true), count: 0, reg: None }
+        );
+        assert_eq!(
+            cmd("y2ap", NORMAL),
+            Cmd::Operate { op: Op::Yank, reach: par(false), count: 2, reg: None }
+        );
+        assert_eq!(
+            cmd("ap", VISUAL),
+            Cmd::VisualObject { obj: Object::Paragraph, inner: false, count: 0 }
+        );
     }
 
     /// Review focus 5: terminals spell printable keys differently.
@@ -1161,11 +1374,17 @@ mod tests {
     #[test]
     fn ctrl_a_and_ctrl_x_are_the_engines_own_in_normal_only() {
         let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
-        assert_eq!(Pending::default().feed(ctrl('a'), NORMAL), Step::Cmd(Cmd::AddSub { add: true, count: 0 }));
+        assert_eq!(
+            Pending::default().feed(ctrl('a'), NORMAL),
+            Step::Cmd(Cmd::AddSub { add: true, count: 0 })
+        );
         let mut p = Pending::default();
         feed(&mut p, "12", NORMAL);
         assert_eq!(p.feed(ctrl('x'), NORMAL), Step::Cmd(Cmd::AddSub { add: false, count: 12 }));
-        assert_eq!(Pending::default().feed(ctrl('a'), VISUAL), Step::Decline { count: None, keys: vec![ctrl('a')] });
+        assert_eq!(
+            Pending::default().feed(ctrl('a'), VISUAL),
+            Step::Decline { count: None, keys: vec![ctrl('a')] }
+        );
         let mut p = Pending::default();
         feed(&mut p, "d", NORMAL);
         assert_eq!(p.feed(ctrl('a'), NORMAL), Step::Decline { count: None, keys: vec![ctrl('a')] });

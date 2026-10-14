@@ -132,21 +132,13 @@ pub enum ModelError {
     #[error(
         "\"{field}\" is a field of both selector \"{first}\" and selector \"{second}\"; a field can only belong to one selector"
     )]
-    FieldInMultipleSelectors {
-        field: String,
-        first: String,
-        second: String,
-    },
+    FieldInMultipleSelectors { field: String, first: String, second: String },
     #[error("[options.{0}] must be a table (e.g. [options.{0}.\"option name\"])")]
     OptionsNotTable(String),
     #[error("[options.{selector}.\"{option}\"] must be a table of field values")]
     OptionNotTable { selector: String, option: String },
     #[error("[options.{selector}.\"{option}\"] field \"{field}\" must be a string")]
-    OptionFieldNotString {
-        selector: String,
-        option: String,
-        field: String,
-    },
+    OptionFieldNotString { selector: String, option: String, field: String },
     #[error(
         "[options.{0}] does not match a declared selector; declare [selectors.{0}] in variables.toml or fix the typo"
     )]
@@ -154,19 +146,11 @@ pub enum ModelError {
     #[error(
         "[options.{selector}.\"{option}\"] is missing field \"{field}\"; every option must supply all of the selector's fields"
     )]
-    OptionMissingField {
-        selector: String,
-        option: String,
-        field: String,
-    },
+    OptionMissingField { selector: String, option: String, field: String },
     #[error(
         "[options.{selector}.\"{option}\"] sets \"{field}\", which is not a field of selector \"{selector}\"; fix the typo or add \"{field}\" to the selector's fields"
     )]
-    OptionUnknownField {
-        selector: String,
-        option: String,
-        field: String,
-    },
+    OptionUnknownField { selector: String, option: String, field: String },
     #[error("[options.{selector}] has an option with an empty name; give every option a name")]
     OptionEmptyName { selector: String },
     #[error(
@@ -229,9 +213,7 @@ fn as_table<'a>(
     value: &'a toml::Value,
     table_path: &str,
 ) -> Result<&'a toml::map::Map<String, toml::Value>, ModelError> {
-    value
-        .as_table()
-        .ok_or_else(|| ModelError::NotATable(table_path.to_string()))
+    value.as_table().ok_or_else(|| ModelError::NotATable(table_path.to_string()))
 }
 
 fn get_string(
@@ -241,13 +223,10 @@ fn get_string(
 ) -> Result<Option<String>, ModelError> {
     match table.get(field) {
         None => Ok(None),
-        Some(v) => v
-            .as_str()
-            .map(|s| Some(s.to_string()))
-            .ok_or_else(|| ModelError::NotAString {
-                table: table_path.to_string(),
-                field: field.to_string(),
-            }),
+        Some(v) => v.as_str().map(|s| Some(s.to_string())).ok_or_else(|| ModelError::NotAString {
+            table: table_path.to_string(),
+            field: field.to_string(),
+        }),
     }
 }
 
@@ -290,11 +269,7 @@ fn parse_var_decl(value: &toml::Value, var_name: &str) -> Result<VarDecl, ModelE
     if secret && default.is_some() {
         return Err(ModelError::SecretWithDefault(var_name.to_string()));
     }
-    Ok(VarDecl {
-        description,
-        default,
-        secret,
-    })
+    Ok(VarDecl { description, default, secret })
 }
 
 fn parse_selector_decl(
@@ -308,32 +283,22 @@ fn parse_selector_decl(
     let shared = get_bool(table, "shared", &table_path)?;
     let fields_value = table
         .get("fields")
-        .ok_or_else(|| ModelError::MissingFields {
-            selector: selector_name.to_string(),
-        })?;
+        .ok_or_else(|| ModelError::MissingFields { selector: selector_name.to_string() })?;
     let fields_array = fields_value
         .as_array()
-        .ok_or_else(|| ModelError::FieldsNotArray {
-            selector: selector_name.to_string(),
-        })?;
+        .ok_or_else(|| ModelError::FieldsNotArray { selector: selector_name.to_string() })?;
     let mut fields = Vec::new();
     for f in fields_array {
-        let name = f.as_str().ok_or_else(|| ModelError::FieldsNotArray {
-            selector: selector_name.to_string(),
-        })?;
+        let name = f
+            .as_str()
+            .ok_or_else(|| ModelError::FieldsNotArray { selector: selector_name.to_string() })?;
         check_name(name)?;
         fields.push(name.to_string());
     }
     if fields.is_empty() {
-        return Err(ModelError::EmptyFields {
-            selector: selector_name.to_string(),
-        });
+        return Err(ModelError::EmptyFields { selector: selector_name.to_string() });
     }
-    Ok(SelectorDecl {
-        description,
-        fields,
-        shared,
-    })
+    Ok(SelectorDecl { description, fields, shared })
 }
 
 pub fn parse_variables(s: &str) -> Result<VarModel, ModelError> {
@@ -419,11 +384,7 @@ pub fn parse_variables(s: &str) -> Result<VarModel, ModelError> {
         }
     }
 
-    Ok(VarModel {
-        vars,
-        selectors,
-        options,
-    })
+    Ok(VarModel { vars, selectors, options })
 }
 
 // ---------------------------------------------------------------------
@@ -442,23 +403,18 @@ fn parse_option(
     let mut description = None;
     let mut values = IndexMap::new();
     for (field, field_value) in table {
-        let s = field_value
-            .as_str()
-            .ok_or_else(|| ModelError::OptionFieldNotString {
-                selector: selector.to_string(),
-                option: option.to_string(),
-                field: field.clone(),
-            })?;
+        let s = field_value.as_str().ok_or_else(|| ModelError::OptionFieldNotString {
+            selector: selector.to_string(),
+            option: option.to_string(),
+            field: field.clone(),
+        })?;
         if field == OPTION_DESCRIPTION {
             description = Some(s.to_string());
             continue;
         }
         values.insert(field.clone(), s.to_string());
     }
-    Ok(OptionDecl {
-        description,
-        values,
-    })
+    Ok(OptionDecl { description, values })
 }
 
 /// One selector's `[options.<selector>.*]` tables — the same shape in
@@ -470,21 +426,15 @@ fn parse_selector_options(
     let mut per_selector = IndexMap::new();
     for (option_name, option_value) in selector_table {
         if option_name.is_empty() {
-            return Err(ModelError::OptionEmptyName {
-                selector: selector.to_string(),
-            });
+            return Err(ModelError::OptionEmptyName { selector: selector.to_string() });
         }
         // `description` inside a selector's options table is an
         // option's own description, never an option name.
         if option_name == OPTION_DESCRIPTION {
-            return Err(ModelError::OptionNameReserved {
-                selector: selector.to_string(),
-            });
+            return Err(ModelError::OptionNameReserved { selector: selector.to_string() });
         }
-        per_selector.insert(
-            option_name.clone(),
-            parse_option(option_value, selector, option_name)?,
-        );
+        per_selector
+            .insert(option_name.clone(), parse_option(option_value, selector, option_name)?);
     }
     Ok(per_selector)
 }
@@ -506,10 +456,7 @@ pub fn parse_environment(s: &str) -> Result<EnvData, ModelError> {
                 let selector_table = selector_value
                     .as_table()
                     .ok_or_else(|| ModelError::OptionsNotTable(selector.clone()))?;
-                options.insert(
-                    selector.clone(),
-                    parse_selector_options(selector, selector_table)?,
-                );
+                options.insert(selector.clone(), parse_selector_options(selector, selector_table)?);
             }
             continue;
         }
@@ -672,11 +619,7 @@ pub fn resolve_env(
     for (selector_name, selector_decl) in &model.selectors {
         // A shared selector's options live in the model itself; everyone
         // else's in the environment.
-        let options_home = if selector_decl.shared {
-            &model.options
-        } else {
-            &env.options
-        };
+        let options_home = if selector_decl.shared { &model.options } else { &env.options };
         let selected = selections.get(selector_name).and_then(|name| {
             options_home
                 .get(selector_name)
@@ -708,11 +651,8 @@ pub fn resolve_env(
         }
     }
 
-    let declared_fields: std::collections::HashSet<&str> = model
-        .selectors
-        .values()
-        .flat_map(|g| g.fields.iter().map(String::as_str))
-        .collect();
+    let declared_fields: std::collections::HashSet<&str> =
+        model.selectors.values().flat_map(|g| g.fields.iter().map(String::as_str)).collect();
     for (name, value) in &env.values {
         if model.vars.contains_key(name) || declared_fields.contains(name.as_str()) {
             continue;
@@ -749,15 +689,9 @@ fields = ["user_id", "customer_id"]
         )
         .unwrap();
         assert_eq!(m.selectors["user"].fields, ["user_id", "customer_id"]);
-        assert_eq!(
-            m.selectors["user"].description.as_deref(),
-            Some("Linked user/customer pair")
-        );
+        assert_eq!(m.selectors["user"].description.as_deref(), Some("Linked user/customer pair"));
         assert!(m.vars["api_key"].secret);
-        assert_eq!(
-            m.vars["base_url"].default.as_deref(),
-            Some("http://localhost:8080")
-        );
+        assert_eq!(m.vars["base_url"].default.as_deref(), Some("http://localhost:8080"));
         assert_eq!(m.vars["base_url"].description.as_deref(), Some("API root"));
         assert!(!m.vars["base_url"].secret);
     }
@@ -783,10 +717,7 @@ date_format = "DD/MM"
         .unwrap();
         assert!(m.selectors["locale"].shared);
         assert_eq!(m.options["locale"]["english"].values["lang"], "en");
-        assert_eq!(
-            m.options["locale"]["french"].description.as_deref(),
-            Some("the fancy one")
-        );
+        assert_eq!(m.options["locale"]["french"].description.as_deref(), Some("the fancy one"));
     }
 
     #[test]
@@ -812,8 +743,7 @@ date_format = "DD/MM"
     fn variables_options_for_an_undeclared_selector_are_rejected() {
         let err = parse_variables("[options.ghost.a]\nx = \"1\"\n").unwrap_err();
         assert!(
-            err.to_string()
-                .contains("[options.ghost] does not match a declared selector"),
+            err.to_string().contains("[options.ghost] does not match a declared selector"),
             "{err}"
         );
     }
@@ -825,8 +755,7 @@ date_format = "DD/MM"
         )
         .unwrap_err();
         assert!(
-            err.to_string()
-                .contains("[options.locale.\"en\"] is missing field \"fmt\""),
+            err.to_string().contains("[options.locale.\"en\"] is missing field \"fmt\""),
             "{err}"
         );
     }
@@ -838,8 +767,7 @@ date_format = "DD/MM"
         )
         .unwrap_err();
         assert!(
-            err.to_string()
-                .contains("sets \"nope\", which is not a field of selector \"locale\""),
+            err.to_string().contains("sets \"nope\", which is not a field of selector \"locale\""),
             "{err}"
         );
     }
@@ -862,19 +790,13 @@ date_format = "DD/MM"
     #[test]
     fn variable_named_entries_is_rejected_as_reserved() {
         let err = parse_variables("[entries]\ndefault = \"x\"\n").unwrap_err();
-        assert!(
-            err.to_string().contains("\"entries\" is a reserved name"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("\"entries\" is a reserved name"), "{err}");
     }
 
     #[test]
     fn variable_named_options_is_rejected_as_reserved() {
         let err = parse_variables("[options]\ndefault = \"x\"\n").unwrap_err();
-        assert!(
-            err.to_string().contains("\"options\" is a reserved name"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("\"options\" is a reserved name"), "{err}");
     }
 
     #[test]
@@ -882,10 +804,7 @@ date_format = "DD/MM"
         // `groups` was the stage-7 selector container; it stays reserved so
         // stale files fail loudly rather than reading as a variable.
         let err = parse_variables("[groups]\ndefault = \"x\"\n").unwrap_err();
-        assert!(
-            err.to_string().contains("\"groups\" is a reserved name"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("\"groups\" is a reserved name"), "{err}");
     }
 
     #[test]
@@ -893,10 +812,7 @@ date_format = "DD/MM"
         // A stage-7 file's `[groups.user]` declaration parses as a table
         // named "groups" — reserved, so it errors instead of loading wrong.
         let err = parse_variables("[groups.user]\nfields = [\"user_id\"]\n").unwrap_err();
-        assert!(
-            err.to_string().contains("\"groups\" is a reserved name"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("\"groups\" is a reserved name"), "{err}");
     }
 
     #[test]
@@ -905,10 +821,7 @@ date_format = "DD/MM"
         // under it (as if declaring a variable named "selectors") is
         // rejected.
         let err = parse_variables("[selectors]\ndefault = \"x\"\n").unwrap_err();
-        assert!(
-            err.to_string().contains("\"selectors\" is a reserved name"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("\"selectors\" is a reserved name"), "{err}");
     }
 
     #[test]
@@ -930,8 +843,7 @@ fields = ["user_id"]
         )
         .unwrap_err();
         assert!(
-            err.to_string()
-                .contains("\"user\" is declared as both a variable and a selector"),
+            err.to_string().contains("\"user\" is declared as both a variable and a selector"),
             "{err}"
         );
     }
@@ -967,11 +879,7 @@ fields = ["user_id"]
 "#,
         )
         .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("which is also declared as a variable"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("which is also declared as a variable"), "{err}");
     }
 
     #[test]
@@ -1003,8 +911,7 @@ fields = ["token"]
     fn selector_without_fields_is_rejected() {
         let err = parse_variables("[selectors.user]\ndescription = \"x\"\n").unwrap_err();
         assert!(
-            err.to_string()
-                .contains("[selectors.user] is missing required field \"fields\""),
+            err.to_string().contains("[selectors.user] is missing required field \"fields\""),
             "{err}"
         );
     }
@@ -1012,25 +919,19 @@ fields = ["token"]
     #[test]
     fn selector_with_empty_fields_is_rejected() {
         let err = parse_variables("[selectors.user]\nfields = []\n").unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("[selectors.user] has an empty field list"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("[selectors.user] has an empty field list"), "{err}");
     }
 
     #[test]
     fn selector_fields_must_be_an_array_of_strings() {
         let err = parse_variables("[selectors.user]\nfields = \"user_id\"\n").unwrap_err();
         assert!(
-            err.to_string()
-                .contains("field \"fields\" must be an array of variable names"),
+            err.to_string().contains("field \"fields\" must be an array of variable names"),
             "{err}"
         );
         let err = parse_variables("[selectors.user]\nfields = [1]\n").unwrap_err();
         assert!(
-            err.to_string()
-                .contains("field \"fields\" must be an array of variable names"),
+            err.to_string().contains("field \"fields\" must be an array of variable names"),
             "{err}"
         );
     }
@@ -1038,26 +939,17 @@ fields = ["token"]
     #[test]
     fn secret_with_default_is_rejected() {
         let err = parse_variables("[api_key]\nsecret = true\ndefault = \"oops\"\n").unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("is secret = true and also sets a default"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("is secret = true and also sets a default"), "{err}");
     }
 
     #[test]
     fn unknown_declaration_field_is_rejected() {
         let err = parse_variables("[base_url]\nvalue = \"x\"\n").unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("[base_url] has unknown field \"value\""),
-            "{err}"
-        );
+        assert!(err.to_string().contains("[base_url] has unknown field \"value\""), "{err}");
         let err =
             parse_variables("[selectors.user]\nfields = [\"a\"]\nmembers = []\n").unwrap_err();
         assert!(
-            err.to_string()
-                .contains("[selectors.user] has unknown field \"members\""),
+            err.to_string().contains("[selectors.user] has unknown field \"members\""),
             "{err}"
         );
     }
@@ -1087,14 +979,9 @@ customer_id = "cust-91"
         .unwrap();
         assert_eq!(e.values["base_url"], "https://stg.example.com");
         assert_eq!(e.options["user"]["user 2"].values["customer_id"], "cust-91");
-        assert_eq!(
-            e.options["user"]["user 2"].description.as_deref(),
-            Some("the premium one")
-        );
+        assert_eq!(e.options["user"]["user 2"].description.as_deref(), Some("the premium one"));
         assert!(
-            !e.options["user"]["user 2"]
-                .values
-                .contains_key("description"),
+            !e.options["user"]["user 2"].values.contains_key("description"),
             "an option's description is not one of its fields"
         );
         validate_env(&m, &e).unwrap();
@@ -1105,10 +992,7 @@ customer_id = "cust-91"
         assert_eq!(r.values["user_id"], "1002");
         assert_eq!(
             r.meta["customer_id"],
-            VarMeta::SelectorMember {
-                selector: "user".into(),
-                selected: "user 2".into()
-            }
+            VarMeta::SelectorMember { selector: "user".into(), selected: "user 2".into() }
         );
     }
 
@@ -1143,8 +1027,7 @@ customer_id = "cust-91"
         let e = parse_environment("[options.ghost.\"a\"]\nx = \"1\"\n").unwrap();
         let err = validate_env(&m, &e).unwrap_err();
         assert!(
-            err.to_string()
-                .contains("[options.ghost] does not match a declared selector"),
+            err.to_string().contains("[options.ghost] does not match a declared selector"),
             "{err}"
         );
     }
@@ -1156,8 +1039,7 @@ customer_id = "cust-91"
         let e = parse_environment("[options.user.\"user 1\"]\nuser_id = \"1\"\n").unwrap();
         let err = validate_env(&m, &e).unwrap_err();
         assert!(
-            err.to_string()
-                .contains("[options.user.\"user 1\"] is missing field \"customer_id\""),
+            err.to_string().contains("[options.user.\"user 1\"] is missing field \"customer_id\""),
             "{err}"
         );
     }
@@ -1190,8 +1072,7 @@ customer_id = "cust-91"
     fn option_must_be_a_table() {
         let err = parse_environment("[options.user]\n\"user 1\" = \"nope\"\n").unwrap_err();
         assert!(
-            err.to_string()
-                .contains("[options.user.\"user 1\"] must be a table of field values"),
+            err.to_string().contains("[options.user.\"user 1\"] must be a table of field values"),
             "{err}"
         );
     }
@@ -1199,18 +1080,14 @@ customer_id = "cust-91"
     #[test]
     fn options_selector_must_be_a_table() {
         let err = parse_environment("[options]\nuser = \"nope\"\n").unwrap_err();
-        assert!(
-            err.to_string().contains("[options.user] must be a table"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("[options.user] must be a table"), "{err}");
     }
 
     #[test]
     fn empty_option_name_is_rejected() {
         let err = parse_environment("[options.user.\"\"]\nuser_id = \"1\"\n").unwrap_err();
         assert!(
-            err.to_string()
-                .contains("[options.user] has an option with an empty name"),
+            err.to_string().contains("[options.user] has an option with an empty name"),
             "{err}"
         );
     }
@@ -1221,8 +1098,7 @@ customer_id = "cust-91"
         // so it can't double as an option name.
         let err = parse_environment("[options.user.description]\nuser_id = \"1\"\n").unwrap_err();
         assert!(
-            err.to_string()
-                .contains("[options.user] has an option named \"description\""),
+            err.to_string().contains("[options.user] has an option named \"description\""),
             "{err}"
         );
     }
@@ -1232,10 +1108,7 @@ customer_id = "cust-91"
         let m = parse_variables("[selectors.user]\nfields = [\"user_id\"]\n").unwrap();
         let e = parse_environment("user = \"x\"\n").unwrap();
         let err = validate_env(&m, &e).unwrap_err();
-        assert!(
-            err.to_string().contains("which is a selector name"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("which is a selector name"), "{err}");
     }
 
     #[test]
@@ -1243,11 +1116,7 @@ customer_id = "cust-91"
         let m = parse_variables("[selectors.user]\nfields = [\"user_id\"]\n").unwrap();
         let e = parse_environment("user_id = \"x\"\n").unwrap();
         let err = validate_env(&m, &e).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("which is a field of selector \"user\""),
-            "{err}"
-        );
+        assert!(err.to_string().contains("which is a field of selector \"user\""), "{err}");
     }
 
     #[test]
@@ -1279,12 +1148,7 @@ customer_id = "cust-91"
 
     #[test]
     fn no_selection_leaves_every_field_needing_one() {
-        let r = resolve_env(
-            &user_model(),
-            &user_env(),
-            &Selections::new(),
-            &SecretValues::new(),
-        );
+        let r = resolve_env(&user_model(), &user_env(), &Selections::new(), &SecretValues::new());
         assert_eq!(r.meta["user_id"], VarMeta::NeedsSelection);
         assert_eq!(r.meta["customer_id"], VarMeta::NeedsSelection);
         assert!(r.values.is_empty());
@@ -1313,12 +1177,7 @@ customer_id = "cust-91"
     #[test]
     fn missing_secret_is_reported_and_omitted_from_values() {
         let m = parse_variables("[api_key]\nsecret = true\n").unwrap();
-        let r = resolve_env(
-            &m,
-            &EnvData::default(),
-            &Selections::new(),
-            &SecretValues::new(),
-        );
+        let r = resolve_env(&m, &EnvData::default(), &Selections::new(), &SecretValues::new());
         assert_eq!(r.meta["api_key"], VarMeta::MissingSecret);
         assert!(r.values.get("api_key").is_none());
     }
@@ -1326,12 +1185,7 @@ customer_id = "cust-91"
     #[test]
     fn env_value_beats_declaration_default_which_is_the_fallback() {
         let m = parse_variables("[base_url]\ndefault = \"http://localhost\"\n").unwrap();
-        let r = resolve_env(
-            &m,
-            &EnvData::default(),
-            &Selections::new(),
-            &SecretValues::new(),
-        );
+        let r = resolve_env(&m, &EnvData::default(), &Selections::new(), &SecretValues::new());
         assert_eq!(r.values["base_url"], "http://localhost");
         assert_eq!(r.meta["base_url"], VarMeta::Simple);
 
@@ -1365,10 +1219,7 @@ customer_id = "cust-91"
         assert_eq!(r.values["lang"], "fr");
         assert_eq!(
             r.meta["lang"],
-            VarMeta::SelectorMember {
-                selector: "locale".into(),
-                selected: "fr".into()
-            }
+            VarMeta::SelectorMember { selector: "locale".into(), selected: "fr".into() }
         );
     }
 
@@ -1378,12 +1229,7 @@ customer_id = "cust-91"
             "[selectors.locale]\nshared = true\nfields = [\"lang\"]\n\n[options.locale.en]\nlang = \"en\"\n",
         )
         .unwrap();
-        let r = resolve_env(
-            &m,
-            &EnvData::default(),
-            &Selections::new(),
-            &SecretValues::new(),
-        );
+        let r = resolve_env(&m, &EnvData::default(), &Selections::new(), &SecretValues::new());
         assert_eq!(r.meta["lang"], VarMeta::NeedsSelection);
         assert!(r.values.get("lang").is_none());
     }
@@ -1402,10 +1248,7 @@ customer_id = "cust-91"
         assert_eq!(r.values["tier"], "g-1");
         assert_eq!(
             r.meta["tier"],
-            VarMeta::SelectorMember {
-                selector: "tier".into(),
-                selected: "gold".into()
-            }
+            VarMeta::SelectorMember { selector: "tier".into(), selected: "gold".into() }
         );
     }
 }

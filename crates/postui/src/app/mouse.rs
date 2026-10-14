@@ -62,10 +62,7 @@ impl App {
         // The control under the pointer, `{{token}}` overlays aside (they
         // have their own hover track, `hovered_token`). Resolved once here
         // for both the tooltip hold and the motion arm's hover styling.
-        let under = self
-            .hits
-            .hit_at_ignoring_var_tokens(m.column, m.row)
-            .cloned();
+        let under = self.hits.hit_at_ignoring_var_tokens(m.column, m.row).cloned();
         // The tooltip hold: the pointer on the last-drawn tip's panel or a
         // pill holds that tip, so it survives a click on its pills and
         // drops on the first event landing elsewhere. (The tip hits in
@@ -140,12 +137,9 @@ impl App {
                     match self.manage_items(tab).iter().position(|n| *n == pressed) {
                         None => self.manage_press = None,
                         Some(i) if self.manage.list.row_at_y(m.row) != i => {
-                            let Self {
-                                project, manage, ..
-                            } = self;
-                            let began = project
-                                .as_ref()
-                                .is_some_and(|p| manage.list.begin_drag(i, tab, p));
+                            let Self { project, manage, .. } = self;
+                            let began =
+                                project.as_ref().is_some_and(|p| manage.list.begin_drag(i, tab, p));
                             if began {
                                 self.hovered = None;
                                 return self.manage_drag_to(m.column, m.row)
@@ -194,10 +188,8 @@ impl App {
                 // hover styling, and leaving one must drop the tooltip on
                 // the very next motion event.
                 let hit = under;
-                let token = self
-                    .hits
-                    .var_token_at(m.column, m.row)
-                    .map(|(name, _)| name.to_string());
+                let token =
+                    self.hits.var_token_at(m.column, m.row).map(|(name, _)| name.to_string());
                 // The pointer's exact position (recorded above) is not part
                 // of "changed": the tooltip is anchored at the token's own
                 // drawn rect, so moving within one token changes nothing.
@@ -234,10 +226,7 @@ impl App {
                 // click on the text it sits in (caret placement, cell
                 // edit), never a dialog — the tooltip's edit pill is the
                 // route to the variable itself.
-                let hit = self
-                    .hits
-                    .hit_at_ignoring_var_tokens(m.column, m.row)
-                    .cloned();
+                let hit = self.hits.hit_at_ignoring_var_tokens(m.column, m.row).cloned();
                 let hit = self.cancel_stale_drags(hit);
                 // A click anywhere but the jq bar itself is Enter for a
                 // focused bar: the filter is already applied (every edit
@@ -297,7 +286,12 @@ impl App {
                 // Variable Manager from underneath the showcase, with no way
                 // back short of quitting.
                 if self.screen == Screen::Testbed
-                    && !matches!(hit, Hit::FooterChip(Action::Quit | Action::GatedQuit | Action::CloseWindow { .. }))
+                    && !matches!(
+                        hit,
+                        Hit::FooterChip(
+                            Action::Quit | Action::GatedQuit | Action::CloseWindow { .. }
+                        )
+                    )
                 {
                     return false;
                 }
@@ -314,11 +308,7 @@ impl App {
                 // starts a fresh count as a single, rather than pairing
                 // with the second click and double-firing (e.g. a fast
                 // triple-click toggling a folder twice, net reverting it).
-                self.last_click = if clicks == 2 {
-                    None
-                } else {
-                    Some((hit.clone(), now))
-                };
+                self.last_click = if clicks == 2 { None } else { Some((hit.clone(), now)) };
                 let was_content =
                     self.editor.sub_focus == crate::components::editor::SubFocus::Content;
                 let changed = self.on_hit(hit, clicks, m) | jq_blurred;
@@ -522,11 +512,7 @@ impl App {
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 if !self.modals.is_empty() {
-                    let d = if m.kind == MouseEventKind::ScrollUp {
-                        -3
-                    } else {
-                        3
-                    };
+                    let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
                     return self.modals.scroll_top(d);
                 }
                 if matches!(self.hits.hit_at(m.column, m.row), Some(Hit::BodyEditor))
@@ -535,11 +521,7 @@ impl App {
                     return self.update(Action::Render);
                 }
                 if self.screen == Screen::Manage {
-                    let d = if m.kind == MouseEventKind::ScrollUp {
-                        -3
-                    } else {
-                        3
-                    };
+                    let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
                     if self.manage.tab == ManageTab::Variables {
                         self.varmanager.handle_scroll_at(m.column, m.row, d);
                     } else {
@@ -548,11 +530,7 @@ impl App {
                     return self.update(Action::Render);
                 }
                 if let Some(pane) = self.hits.pane_at(m.column, m.row) {
-                    let d = if m.kind == MouseEventKind::ScrollUp {
-                        -3
-                    } else {
-                        3
-                    };
+                    let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
                     return self.update(Action::ScrollPane(pane, d));
                 }
                 false
@@ -616,11 +594,7 @@ impl App {
             };
             self.finish_manage_drag(false);
             if let Some(name) = painted {
-                hit = self
-                    .manage_items(tab)
-                    .iter()
-                    .position(|n| *n == name)
-                    .map(Hit::ManageRow);
+                hit = self.manage_items(tab).iter().position(|n| *n == name).map(Hit::ManageRow);
             }
         }
         self.sidebar_press = None;
@@ -710,10 +684,7 @@ impl App {
             return false;
         };
         let hit = self.hits.hit_at_ignoring_var_tokens(x, y).cloned();
-        let token = self
-            .hits
-            .var_token_at(x, y)
-            .map(|(name, _)| name.to_string());
+        let token = self.hits.var_token_at(x, y).map(|(name, _)| name.to_string());
         let hit_changed = hit != self.hovered;
         let changed = hit_changed || token != self.hovered_token;
         self.hovered = hit;
@@ -784,10 +755,7 @@ impl App {
         let Some(spec) = self.scrollbar_spec(pane) else {
             return false;
         };
-        let top = row
-            .saturating_sub(track.y)
-            .saturating_sub(drag.grab_offset)
-            .min(track.height);
+        let top = row.saturating_sub(track.y).saturating_sub(drag.grab_offset).min(track.height);
         let offset = crate::hit::offset_for_thumb_top(&spec, track.height, top);
         if offset == spec.offset {
             return false;
@@ -846,10 +814,7 @@ impl App {
         }) else {
             return false;
         };
-        let left = column
-            .saturating_sub(track.x)
-            .saturating_sub(drag.grab_offset)
-            .min(track.width);
+        let left = column.saturating_sub(track.x).saturating_sub(drag.grab_offset).min(track.width);
         let offset = crate::hit::offset_for_thumb_top(&spec, track.width, left);
         if offset == spec.offset {
             return false;
@@ -918,10 +883,7 @@ impl App {
         let Some(edit) = self.editor.table.editing.as_mut() else {
             return false;
         };
-        let hit = Hit::TableCell {
-            row: edit.row,
-            col: edit.col.index(),
-        };
+        let hit = Hit::TableCell { row: edit.row, col: edit.col.index() };
         let Some(area) = self.hits.rect_of(&hit) else {
             return false;
         };
@@ -982,10 +944,7 @@ impl App {
         let Some(edit) = self.varmanager.grid.editing.as_mut() else {
             return false;
         };
-        let hit = Hit::VmEntryCell {
-            row: edit.row,
-            col: edit.col,
-        };
+        let hit = Hit::VmEntryCell { row: edit.row, col: edit.col };
         let Some(area) = self.hits.rect_of(&hit) else {
             return false;
         };
@@ -1026,11 +985,9 @@ impl App {
             // The clicked row is the one that just committed — its key may
             // have changed under us, so take the row the commit resolved to
             // (a discarded ghost row resolves to nothing to act on).
-            Some(r) if r == i => self
-                .editor
-                .table
-                .selected
-                .filter(|s| *s < self.editor.table_len()),
+            Some(r) if r == i => {
+                self.editor.table.selected.filter(|s| *s < self.editor.table_len())
+            }
             // Another row committed; that commit may have collapsed rows,
             // so re-resolve by the key `i` named before it ran.
             Some(_) => match key {
@@ -1336,8 +1293,7 @@ impl App {
                 {
                     let inner_w = area.width.saturating_sub(WELL_PAD * 2).max(1);
                     let col = usize::from(m.column.saturating_sub(area.x + WELL_PAD));
-                    self.settings
-                        .click_caret(col, inner_w, already_editing, clicks == 2);
+                    self.settings.click_caret(col, inner_w, already_editing, clicks == 2);
                     self.text_drag = Some(TextDrag::Settings);
                 }
                 self.update(Action::Render)
@@ -1367,9 +1323,8 @@ impl App {
                     return true;
                 }
                 self.settings.focused = true;
-                if let Some(i) = SettingsTab::rows()
-                    .iter()
-                    .position(|r| *r == SettingsRow::File(file))
+                if let Some(i) =
+                    SettingsTab::rows().iter().position(|r| *r == SettingsRow::File(file))
                 {
                     self.settings.set_cursor(i);
                 }
@@ -1418,17 +1373,11 @@ impl App {
                     // A press on a request row also arms a possible row
                     // drag; the click itself still opens the request (the
                     // drag only starts once the pointer leaves the row).
-                    Some(Row::Request {
-                        slug, broken: None, ..
-                    }) => {
+                    Some(Row::Request { slug, broken: None, .. }) => {
                         self.sidebar_press = Some((i, slug.clone()));
                         self.update(Action::OpenRequest(slug))
                     }
-                    Some(Row::Request {
-                        slug,
-                        broken: Some(_),
-                        ..
-                    }) => {
+                    Some(Row::Request { slug, broken: Some(_), .. }) => {
                         self.sidebar_press = Some((i, slug.clone()));
                         self.update(Action::ShowRequestError(slug))
                     }
@@ -1449,9 +1398,7 @@ impl App {
                 // bound `editor_tab_N` numbers still land on
                 // Params/Headers/Body); convert.
                 self.update(Action::FocusPane(PaneId::Editor));
-                self.update(Action::EditorTabSelect(
-                    EditorTab::from_draw_position(i).index(),
-                ))
+                self.update(Action::EditorTabSelect(EditorTab::from_draw_position(i).index()))
             }
             Hit::SendButton => {
                 self.update(Action::FocusPane(PaneId::Editor));
@@ -1496,13 +1443,7 @@ impl App {
                 // chrome (the pad lines its expansion added): clicking it
                 // is inert, so the second click of a double click can't
                 // cancel the edit the first one started.
-                if self
-                    .editor
-                    .table
-                    .editing
-                    .as_ref()
-                    .is_some_and(|e| e.row == i)
-                {
+                if self.editor.table.editing.as_ref().is_some_and(|e| e.row == i) {
                     return self.update(Action::Render);
                 }
                 let Some(i) = self.resolve_table_row_across_commit(i) else {
@@ -1951,11 +1892,8 @@ impl App {
                 else {
                     return false;
                 };
-                let res = ModalResult {
-                    actions: actions.clone(),
-                    close: true,
-                    ..Default::default()
-                };
+                let res =
+                    ModalResult { actions: actions.clone(), close: true, ..Default::default() };
                 self.apply_modal_result(res)
             }
             Hit::ResponseTab(mode) => {
@@ -1969,20 +1907,16 @@ impl App {
                 if self.response_click_selection(clicks, m) {
                     self.text_drag = Some(TextDrag::Response);
                 }
-                self.update(Action::JsonRowClicked {
-                    row: i,
-                    toggle: false,
-                })
+                self.update(Action::JsonRowClicked { row: i, toggle: false })
             }
             Hit::JsonArrow(i) => {
                 self.update(Action::FocusPane(PaneId::Response));
-                self.update(Action::JsonRowClicked {
-                    row: i,
-                    toggle: true,
-                })
+                self.update(Action::JsonRowClicked { row: i, toggle: true })
             }
             // As `/` does: the profile's syntax, forward (amendment A5.2).
-            Hit::ResponseSearchButton => self.update(Action::OpenResponseSearch { backward: false }),
+            Hit::ResponseSearchButton => {
+                self.update(Action::OpenResponseSearch { backward: false })
+            }
             Hit::ResponseSearchNext => self.step_response_search(1),
             Hit::ResponseSearchPrev => self.step_response_search(-1),
             Hit::CopyUrl => {
@@ -2081,10 +2015,8 @@ impl App {
                 let Some(value) = self.editor.vars.describe(&name).value else {
                     return false;
                 };
-                let already = self
-                    .tip_revealed
-                    .as_ref()
-                    .is_some_and(|(n, v)| *n == name && *v == value);
+                let already =
+                    self.tip_revealed.as_ref().is_some_and(|(n, v)| *n == name && *v == value);
                 self.tip_revealed = (!already).then_some((name, value));
                 true
             }
@@ -2120,21 +2052,13 @@ impl App {
             // and this must not clobber that with the newly clicked field
             // — the click is absorbed and the original edit stays live.
             Hit::VmFormField(field) => {
-                let already_editing = self
-                    .varmanager
-                    .form
-                    .editing
-                    .as_ref()
-                    .is_some_and(|e| e.field == field);
+                let already_editing =
+                    self.varmanager.form.editing.as_ref().is_some_and(|e| e.field == field);
                 if !already_editing {
                     if self.varmanager.form.editing.is_some() {
                         return self.update(Action::Render);
                     }
-                    let Self {
-                        project,
-                        varmanager,
-                        ..
-                    } = self;
+                    let Self { project, varmanager, .. } = self;
                     if let Some(p) = project {
                         varmanager.start_field_edit(p, field);
                     }
@@ -2146,12 +2070,8 @@ impl App {
                 // clicked column, anchor a possible drag sweep, word
                 // select on double click.
                 if let Some(area) = self.hits.rect_of(&Hit::VmFormField(field))
-                    && let Some(edit) = self
-                        .varmanager
-                        .form
-                        .editing
-                        .as_mut()
-                        .filter(|e| e.field == field)
+                    && let Some(edit) =
+                        self.varmanager.form.editing.as_mut().filter(|e| e.field == field)
                 {
                     use crate::paint::WELL_PAD;
                     let input = &mut edit.input;
@@ -2226,18 +2146,13 @@ impl App {
                 };
                 let (Some(env), Some(option)) = (
                     self.active_env().map(str::to_string),
-                    self.project()
-                        .and_then(|p| self.varmanager.entry_at(p, row)),
+                    self.project().and_then(|p| self.varmanager.entry_at(p, row)),
                 ) else {
                     return false;
                 };
                 self.varmanager.grid.cursor = (row, 0);
                 self.varmanager.focus = VmFocus::Grid;
-                self.update(Action::VarEdit(VarEditOp::SelectOption {
-                    env,
-                    selector,
-                    option,
-                }))
+                self.update(Action::VarEdit(VarEditOp::SelectOption { env, selector, option }))
             }
             Hit::VmEntryCopy(row) => {
                 // The click takes the grid the way the trash beside it
@@ -2258,11 +2173,7 @@ impl App {
                 else {
                     return false;
                 };
-                self.update(Action::VarStruct(VarStructOp::PasteOption {
-                    env,
-                    selector,
-                    count: 1,
-                }))
+                self.update(Action::VarStruct(VarStructOp::PasteOption { env, selector, count: 1 }))
             }
             Hit::VmEntryDelete(row) => {
                 let crate::components::varmanager::VmDetail::Group(selector) =
@@ -2272,18 +2183,13 @@ impl App {
                 };
                 let (Some(env), Some(name)) = (
                     self.active_env().map(str::to_string),
-                    self.project()
-                        .and_then(|p| self.varmanager.entry_at(p, row)),
+                    self.project().and_then(|p| self.varmanager.entry_at(p, row)),
                 ) else {
                     return false;
                 };
                 self.varmanager.grid.cursor = (row, 0);
                 self.varmanager.focus = VmFocus::Grid;
-                self.update(Action::DeleteEntry {
-                    env,
-                    selector,
-                    name,
-                })
+                self.update(Action::DeleteEntry { env, selector, name })
             }
             Hit::VmNewOption => {
                 self.update(Action::StartNewOptionEdit);
@@ -2338,11 +2244,8 @@ impl App {
                 else {
                     return false;
                 };
-                let open_request = self
-                    .editor
-                    .slug
-                    .is_some()
-                    .then(|| self.editor.current_request());
+                let open_request =
+                    self.editor.slug.is_some().then(|| self.editor.current_request());
                 let Some((_, action)) = self.project().and_then(|p| {
                     crate::components::varmanager::promote_action(p, open_request.as_ref(), &name)
                 }) else {

@@ -38,15 +38,15 @@ mod visual;
 pub use buf::{BodyBuf, BodyVisual, GuiSel, OneLineBuf, Paint, Pos, TextBuf};
 pub use register::{RegKind, Register, Registers};
 pub use search::Dir;
-/// The window code the response viewer shares with the body (plan M5a
-/// Deviation 14).
-pub(crate) use view::{Rows, View};
 /// The search the response viewer shares with the body, its notes included
 /// (plan M5a Deviation 3, amendments A5.1 and A5.3).
 pub(crate) use search::{
-    NO_PREVIOUS_PATTERN, NO_STRING_UNDER_CURSOR, as_stored, compile, find_ident, ident_pattern, not_found_note,
-    wrap_note,
+    NO_PREVIOUS_PATTERN, NO_STRING_UNDER_CURSOR, as_stored, compile, find_ident, ident_pattern,
+    not_found_note, wrap_note,
 };
+/// The window code the response viewer shares with the body (plan M5a
+/// Deviation 14).
+pub(crate) use view::{Rows, View};
 
 use insert::{InsertKey, RegPending};
 use keys::{Cmd, Motion, Op, ParseCx, Pending, Reach, Step, VisualOp};
@@ -69,7 +69,9 @@ pub enum Mode {
     Replace,
     /// Insert `ctrl+o`: one Normal command, then the session resumes
     /// (Vim's `niI`; `replace` is `niR`).
-    InsertNormal { replace: bool },
+    InsertNormal {
+        replace: bool,
+    },
     Visual(Shape),
     /// The `/` or `?` prompt is open (plan 3c); the mode underneath waits.
     Search(Dir),
@@ -460,7 +462,13 @@ impl Engine {
     }
 
     /// One key while the prompt is open (Deviation 16).
-    fn search_key<B: TextBuf>(&mut self, ev: KeyEvent, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) -> Outcome {
+    fn search_key<B: TextBuf>(
+        &mut self,
+        ev: KeyEvent,
+        buf: &mut B,
+        st: &mut BufState,
+        ctx: &ViewCtx,
+    ) -> Outcome {
         use keys::Key;
         let p = self.search.as_mut().expect("the prompt is open");
         match Key::of(&ev) {
@@ -521,7 +529,11 @@ impl Engine {
         self.type_search(LastSearch { text: search::as_stored(&pat, p.dir), dir: p.dir });
         if !offset.is_empty() {
             self.pending.clear();
-            return Outcome::Consumed { changed: false, note: Some(Note::Message("search offsets not supported".into())), request: None };
+            return Outcome::Consumed {
+                changed: false,
+                note: Some(Note::Message("search offsets not supported".into())),
+                request: None,
+            };
         }
         match self.pending.search_done(p.dir) {
             Step::Cmd(cmd) => self.run(cmd, buf, st, ctx),
@@ -546,7 +558,11 @@ impl Engine {
 
     /// The prompt for the footer or the body's bottom row (spec §3.14).
     pub fn search_line(&self) -> Option<SearchLine> {
-        self.search.as_ref().map(|p| SearchLine { dir: p.dir, text: p.text.iter().collect(), cursor: p.cursor })
+        self.search.as_ref().map(|p| SearchLine {
+            dir: p.dir,
+            text: p.text.iter().collect(),
+            cursor: p.cursor,
+        })
     }
 
     /// The pattern the renderer paints: the prompt's text while it is open
@@ -564,7 +580,11 @@ impl Engine {
 
     /// Every match of the live pattern on `rows`, `(start, end)` exclusive,
     /// one row each, for the search highlight (Deviation 18).
-    pub fn search_matches<B: TextBuf>(&self, buf: &B, rows: std::ops::Range<usize>) -> Vec<(Pos, Pos)> {
+    pub fn search_matches<B: TextBuf>(
+        &self,
+        buf: &B,
+        rows: std::ops::Range<usize>,
+    ) -> Vec<(Pos, Pos)> {
         let Some(text) = self.live_pattern() else { return Vec::new() };
         let Ok(pat) = self.compiled(&text) else { return Vec::new() };
         let mut out = Vec::new();
@@ -584,7 +604,11 @@ impl Engine {
         let pat = self.compiled(&text).ok()?;
         let count = keys::combine_counts(self.pending.count1(), self.pending.count2());
         let (at, _) = search::search(buf, buf.cursor(), p.dir, count, &pat)?;
-        let end = pat.chain(&buf.line(at.row)).into_iter().find(|&(s, _)| s == at.col).map_or(at.col, |(_, e)| e);
+        let end = pat
+            .chain(&buf.line(at.row))
+            .into_iter()
+            .find(|&(s, _)| s == at.col)
+            .map_or(at.col, |(_, e)| e);
         Some((at, Pos::new(at.row, end)))
     }
 
@@ -817,7 +841,11 @@ impl Engine {
     /// they no longer fit the changed text. `t` must be the live buffer
     /// (the one with the caret), since the engine's mode is that buffer's.
     /// Returns whether the text changed.
-    pub fn external_edit<B: TextBuf>(&mut self, t: Target<'_, B>, f: impl FnOnce(&mut Splicer<'_, B>)) -> bool {
+    pub fn external_edit<B: TextBuf>(
+        &mut self,
+        t: Target<'_, B>,
+        f: impl FnOnce(&mut Splicer<'_, B>),
+    ) -> bool {
         let Target { buf, state } = t;
         self.clear_pending();
         self.note = None;
@@ -887,7 +915,9 @@ impl Engine {
                     Step::More => Outcome::consumed(),
                     Step::Inert(note) => Outcome::Consumed { changed: false, note, request: None },
                     Step::Decline { count, keys } => Outcome::Declined { count, keys },
-                    Step::Undo { redo, count, declined } => self.exec_undo(count, redo, declined, buf, state),
+                    Step::Undo { redo, count, declined } => {
+                        self.exec_undo(count, redo, declined, buf, state)
+                    }
                     Step::Cmd(cmd) => self.run(cmd, buf, state, ctx),
                     // The pending command waits for the prompt's Enter.
                     Step::Search(dir) => {
@@ -924,9 +954,11 @@ impl Engine {
         let changed = self.finish_key(before, was_insert, buf, state, ctx);
         let (left_note, left_request) = (self.note.take(), self.request.take());
         match out {
-            Outcome::Consumed { note, request, .. } => {
-                Outcome::Consumed { changed, note: note.or(left_note), request: request.or(left_request) }
-            }
+            Outcome::Consumed { note, request, .. } => Outcome::Consumed {
+                changed,
+                note: note.or(left_note),
+                request: request.or(left_request),
+            },
             declined => declined,
         }
     }
@@ -962,7 +994,13 @@ impl Engine {
     }
 
     /// Runs one complete command.
-    fn run<B: TextBuf>(&mut self, cmd: Cmd, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) -> Outcome {
+    fn run<B: TextBuf>(
+        &mut self,
+        cmd: Cmd,
+        buf: &mut B,
+        st: &mut BufState,
+        ctx: &ViewCtx,
+    ) -> Outcome {
         // What `.` repeats (spec §3.12): a change that ran, even when the
         // text ends up the same (`x` on an empty line, `rX` on an X), as
         // Vim's `prep_redo()` runs once the command is under way. A change
@@ -1041,7 +1079,11 @@ impl Engine {
                 Outcome::consumed()
             }
             Cmd::Repeat(count) => self.exec_repeat(count, buf, st, ctx),
-            Cmd::VisualStart(_) | Cmd::VisualSwap | Cmd::VisualExit | Cmd::VisualObject { .. } | Cmd::VisualOp { .. } => {
+            Cmd::VisualStart(_)
+            | Cmd::VisualSwap
+            | Cmd::VisualExit
+            | Cmd::VisualObject { .. }
+            | Cmd::VisualOp { .. } => {
                 if let Cmd::VisualOp { op, reg, .. } = cmd
                     && !matches!(op, VisualOp::Yank | VisualOp::YankLines)
                     && !(matches!(op, VisualOp::Put { .. }) && reg == Some('+'))
@@ -1068,7 +1110,9 @@ impl Engine {
         }
         let visual = if matches!(cmd, Cmd::VisualOp { .. }) { self.last_visual_size } else { None };
         let search = match cmd {
-            Cmd::Operate { reach: Reach::Motion(Motion::Search { .. }), .. } => self.typed_search.clone(),
+            Cmd::Operate { reach: Reach::Motion(Motion::Search { .. }), .. } => {
+                self.typed_search.clone()
+            }
             _ => None,
         };
         self.dot_prev = self.dot.take();
@@ -1077,12 +1121,21 @@ impl Engine {
 
     /// `.` with an optional new count (spec §3.12, Vim's `start_redo()`):
     /// one undo step, since `handle` commits once after it.
-    fn exec_repeat<B: TextBuf>(&mut self, count: usize, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) -> Outcome {
+    fn exec_repeat<B: TextBuf>(
+        &mut self,
+        count: usize,
+        buf: &mut B,
+        st: &mut BufState,
+        ctx: &ViewCtx,
+    ) -> Outcome {
         // Inside `ctrl+o` the insert itself is the newest record; Vim's
         // `start_redo(old_redo)` runs the one before it, unless a cursor key
         // split the insert and nothing was typed since (then the newest).
-        let old = matches!(self.mode, Mode::InsertNormal { .. }) && self.restart.is_some_and(|r| r.old_redo);
-        let Some(dot) = (if old { self.dot_prev.clone() } else { self.dot.clone() }) else { return Outcome::consumed() };
+        let old = matches!(self.mode, Mode::InsertNormal { .. })
+            && self.restart.is_some_and(|r| r.old_redo);
+        let Some(dot) = (if old { self.dot_prev.clone() } else { self.dot.clone() }) else {
+            return Outcome::consumed();
+        };
         // Vim's redo buffer holds the typed pattern (`cpoptions` has no
         // `r`): `d/foo<CR>.` searches `foo` again and makes it the last
         // pattern. An empty prompt's `.` uses the last pattern of its moment.
@@ -1105,7 +1158,12 @@ impl Engine {
                     // into the black hole.
                     VisualOp::Put { before } => {
                         let reg = if before { Some('_') } else { None };
-                        self.run(Cmd::VisualOp { op: VisualOp::Delete, count: own, reg }, buf, st, ctx)
+                        self.run(
+                            Cmd::VisualOp { op: VisualOp::Delete, count: own, reg },
+                            buf,
+                            st,
+                            ctx,
+                        )
                     }
                     _ => self.run(dot.cmd, buf, st, ctx),
                 }
@@ -1118,7 +1176,9 @@ impl Engine {
                 self.remember(Cmd::Replace { ch: '\t', count }, None);
                 Outcome::consumed()
             }
-            (_, cmd) => self.run(if count > 0 { with_count(cmd, count) } else { cmd }, buf, st, ctx),
+            (_, cmd) => {
+                self.run(if count > 0 { with_count(cmd, count) } else { cmd }, buf, st, ctx)
+            }
         };
         if let Some(keys) = dot.insert
             && self.in_insert()
@@ -1149,7 +1209,13 @@ impl Engine {
         let caret = buf.cursor();
         // Vim's `w_virtcol`, with the tab rule of the mode the `.` was
         // typed in.
-        let virtcol = match motion::updated_want(buf, caret, motion::WantUpdate::Here, motion::Want::default(), self.tab_rule(st, caret)) {
+        let virtcol = match motion::updated_want(
+            buf,
+            caret,
+            motion::WantUpdate::Here,
+            motion::Want::default(),
+            self.tab_rule(st, caret),
+        ) {
             motion::Want::Col(v) => v,
             motion::Want::End => unreachable!("WantUpdate::Here always gives a column"),
         };

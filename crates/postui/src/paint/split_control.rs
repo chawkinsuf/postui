@@ -68,11 +68,7 @@ impl SplitControl {
         // The end caps: control fill, so the staircase sits on a visible
         // button face and the whole strip reads as one control.
         crate::paint::fill(buf, Rect::new(x, y, 1, 1), theme.control);
-        crate::paint::fill(
-            buf,
-            Rect::new(x + SPLIT_CONTROL_WIDTH - 1, y, 1, 1),
-            theme.control,
-        );
+        crate::paint::fill(buf, Rect::new(x + SPLIT_CONTROL_WIDTH - 1, y, 1, 1), theme.control);
         // Half-cell eaves above and below: the pill face bleeds half a
         // character past its row with half-block glyphs over whatever the
         // neighbor rows already painted, so the control gets some vertical
@@ -149,11 +145,7 @@ impl StepControl {
     /// chip's rect with the delta it steps by, for hit registration.
     pub fn paint(&self, buf: &mut Buffer, x: u16, y: u16, theme: &Theme) -> [(Rect, i8); 2] {
         crate::paint::fill(buf, Rect::new(x, y, 1, 1), theme.control);
-        crate::paint::fill(
-            buf,
-            Rect::new(x + STEP_CONTROL_WIDTH - 1, y, 1, 1),
-            theme.control,
-        );
+        crate::paint::fill(buf, Rect::new(x + STEP_CONTROL_WIDTH - 1, y, 1, 1), theme.control);
         let current = self.state.stop();
         let resting_mass = crate::theme::mix(theme.text_disabled, theme.text_muted, 0.5);
         let mut i = 0u16;
@@ -197,10 +189,7 @@ mod tests {
 
     #[test]
     fn chips_are_contiguous_two_cell_buttons_in_stop_order() {
-        let (_, rects) = paint(SplitControl {
-            state: SplitState::default(),
-            hovered: None,
-        });
+        let (_, rects) = paint(SplitControl { state: SplitState::default(), hovered: None });
         assert_eq!(rects.map(|(_, s)| s), SplitStop::ALL);
         for (i, (rect, _)) in rects.iter().enumerate() {
             assert_eq!(rect.width, SPLIT_SEGMENT_WIDTH);
@@ -211,24 +200,15 @@ mod tests {
         // Both end caps carry the control fill, framing the staircase as
         // one button face.
         let theme = Theme::dark();
-        let (term, _) = paint(SplitControl {
-            state: SplitState::default(),
-            hovered: None,
-        });
+        let (term, _) = paint(SplitControl { state: SplitState::default(), hovered: None });
         assert_eq!(cell(&term, 2, 0).bg, theme.control);
-        assert_eq!(
-            cell(&term, 2 + SPLIT_CONTROL_WIDTH - 1, 0).bg,
-            theme.control
-        );
+        assert_eq!(cell(&term, 2 + SPLIT_CONTROL_WIDTH - 1, 0).bg, theme.control);
     }
 
     #[test]
     fn resting_chips_paint_muted_two_tone_pictures_across_both_cells() {
         let theme = Theme::dark();
-        let (term, rects) = paint(SplitControl {
-            state: SplitState::default(),
-            hovered: None,
-        });
+        let (term, rects) = paint(SplitControl { state: SplitState::default(), hovered: None });
         for (rect, stop) in rects {
             if stop == SplitStop::Even {
                 continue; // the lit chip, checked separately below
@@ -273,10 +253,7 @@ mod tests {
     fn the_minimized_endpoints_light_their_chip_too() {
         let theme = Theme::dark();
         let (term, rects) = paint(SplitControl {
-            state: SplitState {
-                editor_minimized: true,
-                ..Default::default()
-            },
+            state: SplitState { editor_minimized: true, ..Default::default() },
             hovered: None,
         });
         // ResponseFull's ▇: the response's selection-tint mass under a
@@ -299,10 +276,8 @@ mod tests {
 
         // Hovering the lit chip changes nothing — its picture already
         // glows accent, and there is no face behind it to lift.
-        let (term, rects) = paint(SplitControl {
-            state: SplitState::default(),
-            hovered: Some(SplitStop::Even),
-        });
+        let (term, rects) =
+            paint(SplitControl { state: SplitState::default(), hovered: Some(SplitStop::Even) });
         let chip = rects[2].0;
         assert_eq!(cell(&term, chip.x, 0).bg, theme.accent);
         assert_eq!(cell(&term, chip.x, 0).fg, theme.selection);
@@ -333,10 +308,7 @@ mod tests {
     #[test]
     fn step_control_is_two_arrow_chips_between_control_fill_caps() {
         let theme = Theme::dark();
-        let (term, rects) = paint_step(StepControl {
-            state: SplitState::default(),
-            hovered: None,
-        });
+        let (term, rects) = paint_step(StepControl { state: SplitState::default(), hovered: None });
         assert_eq!(rects.map(|(_, d)| d), [1, -1], "▲ (response grows) then ▼");
         for (i, (rect, _)) in rects.iter().enumerate() {
             assert_eq!(rect.width, STEP_SEGMENT_WIDTH);
@@ -355,11 +327,7 @@ mod tests {
         let down = cell(&term, rects[1].0.x + 1, 1);
         assert_eq!(down.symbol(), "\u{25BC}");
         assert_eq!(down.fg, mass);
-        assert_eq!(
-            cell(&term, rects[0].0.x, 1).bg,
-            theme.control,
-            "chip padding is the face"
-        );
+        assert_eq!(cell(&term, rects[0].0.x, 1).bg, theme.control, "chip padding is the face");
         for dx in 0..STEP_CONTROL_WIDTH {
             assert_eq!(cell(&term, 2 + dx, 0).symbol(), " ", "no upper eave");
             assert_eq!(cell(&term, 2 + dx, 2).symbol(), " ", "no lower eave");
@@ -369,20 +337,14 @@ mod tests {
     #[test]
     fn step_control_hover_lifts_the_whole_chip() {
         let theme = Theme::dark();
-        let (term, rects) = paint_step(StepControl {
-            state: SplitState::default(),
-            hovered: Some(-1),
-        });
+        let (term, rects) =
+            paint_step(StepControl { state: SplitState::default(), hovered: Some(-1) });
         let down = rects[1].0;
         for dx in 0..STEP_SEGMENT_WIDTH {
             assert_eq!(cell(&term, down.x + dx, 1).bg, theme.control_hover);
         }
         assert_eq!(cell(&term, down.x + 1, 1).fg, theme.text_muted);
-        assert_eq!(
-            cell(&term, rects[0].0.x, 1).bg,
-            theme.control,
-            "the other chip rests"
-        );
+        assert_eq!(cell(&term, rects[0].0.x, 1).bg, theme.control, "the other chip rests");
     }
 
     #[test]
@@ -390,10 +352,7 @@ mod tests {
         let theme = Theme::dark();
         // Response-full: ▲ has nowhere to go, and hovering it lifts nothing.
         let (term, rects) = paint_step(StepControl {
-            state: SplitState {
-                editor_minimized: true,
-                ..Default::default()
-            },
+            state: SplitState { editor_minimized: true, ..Default::default() },
             hovered: Some(1),
         });
         let up = rects[0].0;
@@ -403,10 +362,7 @@ mod tests {
         assert_eq!(cell(&term, rects[1].0.x + 1, 1).fg, mass, "▼ still live");
         // Editor-full: the mirror.
         let (term, rects) = paint_step(StepControl {
-            state: SplitState {
-                response_minimized: true,
-                ..Default::default()
-            },
+            state: SplitState { response_minimized: true, ..Default::default() },
             hovered: None,
         });
         assert_eq!(cell(&term, rects[1].0.x + 1, 1).fg, theme.text_disabled);

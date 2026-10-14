@@ -41,11 +41,7 @@ use ratatui::text::Line;
 pub enum VarEditOp {
     /// A simple (non-secret) variable's flat value in
     /// `env` — `varedit::set_env_value` via `ctx.edit_env`.
-    SetEnvValue {
-        env: String,
-        name: String,
-        value: String,
-    },
+    SetEnvValue { env: String, name: String, value: String },
     /// A variable's shared `default` in `variables.toml` —
     /// `varedit::upsert_var` via `ctx.edit_variables`.
     SetDefault { name: String, value: String },
@@ -53,22 +49,12 @@ pub enum VarEditOp {
     SetDescription { owner: String, value: String },
     /// A secret variable's value in `env` — `ctx.set_secret`, which writes
     /// `.local/secrets.toml` (never `variables.toml`/the env file).
-    SetSecretValue {
-        env: String,
-        name: String,
-        value: String,
-    },
+    SetSecretValue { env: String, name: String, value: String },
     /// One field of one option: the edit lands in `env`'s
     /// `[options.<selector>.<option>]` table (`varedit::upsert_option`), the
     /// only place an option's values live (spec §3.1). Every selector grid
     /// cell but the name column commits through this.
-    SetOptionValue {
-        env: String,
-        selector: String,
-        option: String,
-        field: String,
-        value: String,
-    },
+    SetOptionValue { env: String, selector: String, option: String, field: String, value: String },
     /// One option's `description` in `env`'s file — `Some` writes it,
     /// `None` removes the stored key (the description column's emptied-cell
     /// commit; `upsert_option`'s own `None` deliberately preserves one).
@@ -86,11 +72,7 @@ pub enum VarEditOp {
     /// (the selector grid's radio column; also the var picker's confirm and
     /// the ✓ action). Picking an option is what makes every one of the
     /// selector's fields resolve, together, to that record's values.
-    SelectOption {
-        env: String,
-        selector: String,
-        option: String,
-    },
+    SelectOption { env: String, selector: String, option: String },
 }
 
 impl VarEditOp {
@@ -122,19 +104,12 @@ impl VarEditOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VarStructOp {
     /// A bare new variable declaration (`+ Variable` / `n`).
-    NewVar {
-        name: String,
-        description: Option<String>,
-    },
+    NewVar { name: String, description: Option<String> },
     /// A new selector and its field list (`+ Group` / `a`). Create-or-update:
     /// `varedit::upsert_selector` is the same verb either way. `shared`
     /// makes it a shared selector — options in variables.toml, identical
     /// in every environment.
-    NewSelector {
-        name: String,
-        fields: Vec<String>,
-        shared: bool,
-    },
+    NewSelector { name: String, fields: Vec<String>, shared: bool },
     /// Rename a variable or a selector. A selector renames in both halves at
     /// once (`varedit::rename_selector` + `rename_selector_options` per
     /// environment): an environment's `[options.<old>]` table names a
@@ -148,15 +123,9 @@ pub enum VarStructOp {
     /// Flip a variable's `secret` flag (spec §3's two transitions).
     ToggleSecret { name: String },
     /// Replace a selector's field list.
-    SetFields {
-        selector: String,
-        fields: Vec<String>,
-    },
+    SetFields { selector: String, fields: Vec<String> },
     /// Promote a request-scoped variable to the project (spec §4).
-    Promote {
-        name: String,
-        target: postui_core::varedit::PromoteTarget,
-    },
+    Promote { name: String, target: postui_core::varedit::PromoteTarget },
     /// A new option of `selector` in `env` (`varedit::upsert_option`).
     NewOption {
         env: String,
@@ -166,30 +135,17 @@ pub enum VarStructOp {
         values: IndexMap<String, String>,
     },
     /// Rename one option of `selector` within `env`.
-    RenameOption {
-        env: String,
-        selector: String,
-        from: String,
-        to: String,
-    },
+    RenameOption { env: String, selector: String, from: String, to: String },
     /// Delete one option of `selector` from `env`, clearing any selection that
     /// named it.
-    DeleteOption {
-        env: String,
-        selector: String,
-        name: String,
-    },
+    DeleteOption { env: String, selector: String, name: String },
     /// Land the copied row ([`VarManager::stash`]) in `env` under a name
     /// that is free there — its own, else `"<name> copy"`, then
     /// `"<name> copy-2"`, … Refused when nothing is copied, or when what
     /// is copied came from a different selector; pasting into the
     /// environment the row came from duplicates it. `count` rows land as
     /// one undo step (`{N}p` on the grid), each under the next free name.
-    PasteOption {
-        env: String,
-        selector: String,
-        count: usize,
-    },
+    PasteOption { env: String, selector: String, count: usize },
 }
 
 impl VarStructOp {
@@ -350,11 +306,7 @@ fn field_seed_text(ctx: &Project, name: &str, field: VmField) -> String {
         VmField::EnvValue => match ctx.active_env() {
             Some(env) => {
                 if decl.is_some_and(|d| d.secret) {
-                    ctx.secrets()
-                        .get(env)
-                        .and_then(|m| m.get(name))
-                        .cloned()
-                        .unwrap_or_default()
+                    ctx.secrets().get(env).and_then(|m| m.get(name)).cloned().unwrap_or_default()
                 } else {
                     ctx.env_data().values.get(name).cloned().unwrap_or_default()
                 }
@@ -372,21 +324,10 @@ fn field_seed_text(ctx: &Project, name: &str, field: VmField) -> String {
 /// declaration default instead — the same field a secret can't have, so
 /// that edit fails and toasts rather than silently landing somewhere
 /// unexpected (spec's general write-failure rule: the text stays put).
-pub fn var_edit_op_for(
-    ctx: &Project,
-    name: &str,
-    field: VmField,
-    value: String,
-) -> VarEditOp {
+pub fn var_edit_op_for(ctx: &Project, name: &str, field: VmField, value: String) -> VarEditOp {
     match field {
-        VmField::Description => VarEditOp::SetDescription {
-            owner: name.to_string(),
-            value,
-        },
-        VmField::Default => VarEditOp::SetDefault {
-            name: name.to_string(),
-            value,
-        },
+        VmField::Description => VarEditOp::SetDescription { owner: name.to_string(), value },
+        VmField::Default => VarEditOp::SetDefault { name: name.to_string(), value },
         VmField::EnvValue => match ctx.active_env() {
             Some(env) => {
                 let secret = ctx.variables().vars.get(name).is_some_and(|d| d.secret);
@@ -397,17 +338,10 @@ pub fn var_edit_op_for(
                         value,
                     }
                 } else {
-                    VarEditOp::SetEnvValue {
-                        env: env.to_string(),
-                        name: name.to_string(),
-                        value,
-                    }
+                    VarEditOp::SetEnvValue { env: env.to_string(), name: name.to_string(), value }
                 }
             }
-            None => VarEditOp::SetDefault {
-                name: name.to_string(),
-                value,
-            },
+            None => VarEditOp::SetDefault { name: name.to_string(), value },
         },
     }
 }
@@ -431,12 +365,7 @@ pub fn promote_action(
     }
     let req = open_request?;
     if req.variables.contains_key(name) {
-        Some((
-            "Promote",
-            Action::PromptPromoteVar {
-                name: name.to_string(),
-            },
-        ))
+        Some(("Promote", Action::PromptPromoteVar { name: name.to_string() }))
     } else {
         None
     }
@@ -606,11 +535,7 @@ struct GridCols {
 }
 
 fn grid_columns(x0: u16, width: u16, ncols: usize) -> GridCols {
-    let mut cols = GridCols {
-        radio_x: x0,
-        x: Vec::new(),
-        w: Vec::new(),
-    };
+    let mut cols = GridCols { radio_x: x0, x: Vec::new(), w: Vec::new() };
     let right = x0 + width;
     let avail = width.saturating_sub(RADIO_W);
     let n = ncols.max(1) as u16;
@@ -681,20 +606,12 @@ fn grid_cell_text(ctx: &Project, selector: &str, row: usize, col: usize) -> Stri
     if col == fields.len() + 1 {
         return description.clone().unwrap_or_default();
     }
-    fields
-        .get(col - 1)
-        .and_then(|f| values.get(f))
-        .cloned()
-        .unwrap_or_default()
+    fields.get(col - 1).and_then(|f| values.get(f)).cloned().unwrap_or_default()
 }
 
 /// `selector`'s declared field list (empty for an undeclared name).
 fn group_fields(ctx: &Project, selector: &str) -> Vec<String> {
-    ctx.variables()
-        .selectors
-        .get(selector)
-        .map(|g| g.fields.clone())
-        .unwrap_or_default()
+    ctx.variables().selectors.get(selector).map(|g| g.fields.clone()).unwrap_or_default()
 }
 
 /// The left list's rows: the VARIABLES section (every declared variable
@@ -789,7 +706,8 @@ impl VarManager {
     fn detail_focus(&self, ctx: &Project) -> Option<VmFocus> {
         match &self.detail {
             VmDetail::Group(g)
-                if ctx.variables().selectors.contains_key(g) && (ctx.active_env().is_some() || is_shared(ctx, g)) =>
+                if ctx.variables().selectors.contains_key(g)
+                    && (ctx.active_env().is_some() || is_shared(ctx, g)) =>
             {
                 Some(VmFocus::Grid)
             }
@@ -802,7 +720,8 @@ impl VarManager {
     /// `<C-w>h` (piece 4 spec §5.8). Whether it moved; never while an edit
     /// is live.
     pub(crate) fn leave_detail(&mut self) -> bool {
-        if self.form.editing.is_some() || self.grid.editing.is_some() || self.focus == VmFocus::List {
+        if self.form.editing.is_some() || self.grid.editing.is_some() || self.focus == VmFocus::List
+        {
             return false;
         }
         self.focus = VmFocus::List;
@@ -859,11 +778,7 @@ impl VarManager {
         // the form's field cursor, not back in the left list.
         self.focus = VmFocus::Form;
         self.form_cursor = FormStop::Field(field);
-        self.form.editing = Some(FormEdit {
-            field,
-            input: LineInput::new(&seed),
-            original: seed,
-        });
+        self.form.editing = Some(FormEdit { field, input: LineInput::new(&seed), original: seed });
     }
 
     /// Click option point for a grid cell (`Hit::VmEntryCell`): seeds
@@ -887,12 +802,7 @@ impl VarManager {
         // in the left list.
         self.focus = VmFocus::Grid;
         self.grid.cursor = (row, col);
-        self.grid.editing = Some(GridEdit {
-            row,
-            col,
-            input: LineInput::new(&original),
-            original,
-        });
+        self.grid.editing = Some(GridEdit { row, col, input: LineInput::new(&original), original });
     }
 
     /// Drops the form's and the grid's live edits, keeping nothing: vim's
@@ -907,9 +817,7 @@ impl VarManager {
         let VmDetail::Group(selector) = &self.detail else {
             return None;
         };
-        entry_rows(ctx, selector)
-            .get(row)
-            .map(|(n, _, _)| n.clone())
+        entry_rows(ctx, selector).get(row).map(|(n, _, _)| n.clone())
     }
 
     /// Whether a paste into `selector` has something to land. A copied row
@@ -930,12 +838,7 @@ impl VarManager {
         };
         let selector = selector.clone();
         let (name, description, values) = entry_rows(ctx, &selector).into_iter().nth(row)?;
-        Some(StashedOption {
-            selector,
-            name,
-            description,
-            values,
-        })
+        Some(StashedOption { selector, name, description, values })
     }
 
     /// The footer's context chips while the Variable Manager is on screen
@@ -1093,10 +996,7 @@ impl VarManager {
             return None;
         };
         let fields = self.form_stops(ctx, &name);
-        let at = fields
-            .iter()
-            .position(|f| *f == self.form_cursor)
-            .unwrap_or(0);
+        let at = fields.iter().position(|f| *f == self.form_cursor).unwrap_or(0);
         self.form_cursor = fields[at];
         // Vim's motion letters reach these arms as the named keys: the
         // router replays them (piece 4 spec §4.5). A named key acts bare
@@ -1205,7 +1105,8 @@ impl VarManager {
         if self.left_rows.get(from).is_some_and(VmRow::is_stop) {
             return Some(from);
         }
-        let above = (0..from.min(self.left_rows.len())).rev().find(|i| self.left_rows[*i].is_stop());
+        let above =
+            (0..from.min(self.left_rows.len())).rev().find(|i| self.left_rows[*i].is_stop());
         above.or_else(|| (from..self.left_rows.len()).find(|i| self.left_rows[*i].is_stop()))
     }
 
@@ -1510,7 +1411,12 @@ impl VarManager {
     /// option under its cursor; on the form, the open variable. The
     /// router's rows and the footer chips
     /// both read it, so a key and its chip cannot drift.
-    pub fn verb_action(&self, ctx: &Project, open_request: Option<&HttpRequest>, verb: Verb) -> Option<Action> {
+    pub fn verb_action(
+        &self,
+        ctx: &Project,
+        open_request: Option<&HttpRequest>,
+        verb: Verb,
+    ) -> Option<Action> {
         match (self.focus, &self.detail) {
             (VmFocus::List, _) => self.list_verb(ctx, verb),
             (VmFocus::Grid, VmDetail::Group(selector)) => self.grid_verb(ctx, selector, verb),
@@ -1530,7 +1436,9 @@ impl VarManager {
                 .filter(|n| ctx.variables().vars.contains_key(n))
                 .map(|name| Action::ToggleSecretVar { name }),
             Verb::Fields => match self.selected_row() {
-                Some(VmRow::Group(selector)) => Some(Action::PromptGroupFields { selector: selector.clone() }),
+                Some(VmRow::Group(selector)) => {
+                    Some(Action::PromptGroupFields { selector: selector.clone() })
+                }
                 _ => None,
             },
             _ => None,
@@ -1550,9 +1458,10 @@ impl VarManager {
             }),
             Verb::EditValue => {
                 let (_, option) = target?;
-                let decl = postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), selector)?
-                    .get(&option)?
-                    .clone();
+                let decl =
+                    postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), selector)?
+                        .get(&option)?
+                        .clone();
                 Some(Action::OpenEditOptionPrompt {
                     owner: selector.to_string(),
                     key: option,
@@ -1561,23 +1470,36 @@ impl VarManager {
                 })
             }
             Verb::Yank => target.map(|_| Action::CopyOption { row }),
-            Verb::Put { count, .. } => op_env(ctx, selector)
-                .filter(|_| self.can_paste(selector))
-                .map(|env| Action::VarStruct(VarStructOp::PasteOption { env, selector: selector.to_string(), count })),
+            Verb::Put { count, .. } => {
+                op_env(ctx, selector).filter(|_| self.can_paste(selector)).map(|env| {
+                    Action::VarStruct(VarStructOp::PasteOption {
+                        env,
+                        selector: selector.to_string(),
+                        count,
+                    })
+                })
+            }
             Verb::Fields => Some(Action::PromptGroupFields { selector: selector.to_string() }),
             _ => None,
         }
     }
 
-    fn form_verb(&self, ctx: &Project, open_request: Option<&HttpRequest>, name: &str, verb: Verb) -> Option<Action> {
+    fn form_verb(
+        &self,
+        ctx: &Project,
+        open_request: Option<&HttpRequest>,
+        name: &str,
+        verb: Verb,
+    ) -> Option<Action> {
         let declared = ctx.variables().vars.get(name);
         match verb {
             Verb::Secret => declared.map(|_| Action::ToggleSecretVar { name: name.to_string() }),
-            Verb::ClearValue => (self.form_cursor == FormStop::Field(VmField::EnvValue) && env_stores(ctx, name))
-                .then(|| Action::RemoveVarValue {
-                    name: name.to_string(),
-                    destination: crate::action::ExtractDestination::ActiveEnv,
-                }),
+            Verb::ClearValue => (self.form_cursor == FormStop::Field(VmField::EnvValue)
+                && env_stores(ctx, name))
+            .then(|| Action::RemoveVarValue {
+                name: name.to_string(),
+                destination: crate::action::ExtractDestination::ActiveEnv,
+            }),
             Verb::Promote => promote_action(ctx, open_request, name).map(|(_, a)| a),
             Verb::Reveal => declared.is_some_and(|d| d.secret).then_some(Action::ToggleVarReveal),
             _ => None,
@@ -1592,10 +1514,7 @@ impl VarManager {
         let name = row.name()?.to_string();
         let (rename, duplicate) = match row {
             VmRow::Var(_) => (
-                MenuItem::new(
-                    "Rename\u{2026}",
-                    Action::PromptRenameVar { from: name.clone() },
-                ),
+                MenuItem::new("Rename\u{2026}", Action::PromptRenameVar { from: name.clone() }),
                 MenuItem::new("Duplicate", Action::DuplicateVar { name: name.clone() }),
             ),
             // Duplicate is shown disabled rather than hidden, so the menu
@@ -1605,18 +1524,11 @@ impl VarManager {
             // duplicate a selector *into* until fields can be renamed as part
             // of the copy.
             _ => (
-                MenuItem::new(
-                    "Rename\u{2026}",
-                    Action::PromptRenameVar { from: name.clone() },
-                ),
+                MenuItem::new("Rename\u{2026}", Action::PromptRenameVar { from: name.clone() }),
                 MenuItem::disabled("Duplicate"),
             ),
         };
-        Some(vec![
-            rename,
-            duplicate,
-            MenuItem::new("Delete", Action::DeleteVar { name }),
-        ])
+        Some(vec![rename, duplicate, MenuItem::new("Delete", Action::DeleteVar { name })])
     }
 
     /// The right-click menu for option row `i` of the open selector (spec
@@ -1664,14 +1576,7 @@ impl VarManager {
             // No ellipsis: rename is the inline name-cell edit, not a
             // dialog.
             MenuItem::new("Rename", Action::StartOptionNameEdit { row: i }),
-            MenuItem::new(
-                "Delete",
-                Action::DeleteEntry {
-                    env,
-                    selector,
-                    name,
-                },
-            ),
+            MenuItem::new("Delete", Action::DeleteEntry { env, selector, name }),
         ])
     }
 
@@ -1758,15 +1663,8 @@ impl VarManager {
             return;
         }
 
-        let left = Rect {
-            width: LEFT_W.min(area.width),
-            ..area
-        };
-        let right = Rect {
-            x: area.x + left.width,
-            width: area.width - left.width,
-            ..area
-        };
+        let left = Rect { width: LEFT_W.min(area.width), ..area };
+        let right = Rect { x: area.x + left.width, width: area.width - left.width, ..area };
         self.draw_left(frame, left, theme, ctx, hits, hovered);
         self.grid_area = Rect::default();
         self.grid_visible = 0;
@@ -1808,11 +1706,7 @@ impl VarManager {
             return;
         }
         let state_of = |hit: &Hit| {
-            if hovered == Some(hit) {
-                ControlState::Hover
-            } else {
-                ControlState::Normal
-            }
+            if hovered == Some(hit) { ControlState::Hover } else { ControlState::Normal }
         };
         let x0 = right.x + 2;
         let inner_w = right.width.saturating_sub(4).max(1);
@@ -1854,12 +1748,7 @@ impl VarManager {
             for (lbl, kind, hit, gap) in [
                 ("+ Option", ButtonKind::Primary, Hit::VmNewOption, 1),
                 ("Paste", ButtonKind::Secondary, Hit::VmPasteOption, 1),
-                (
-                    "Edit fields",
-                    ButtonKind::Secondary,
-                    Hit::VmEditFields,
-                    GROUP_GAP,
-                ),
+                ("Edit fields", ButtonKind::Secondary, Hit::VmEditFields, GROUP_GAP),
                 ("Rename", ButtonKind::Secondary, Hit::VmRename, 1),
                 ("Delete", ButtonKind::Secondary, Hit::VmDelete, 1),
             ] {
@@ -1868,27 +1757,13 @@ impl VarManager {
                     break;
                 }
                 bx -= w + gap;
-                let rect = Rect {
-                    x: bx,
-                    y: y - 1,
-                    width: w,
-                    height: TALL_PILL_H,
-                };
+                let rect = Rect { x: bx, y: y - 1, width: w, height: TALL_PILL_H };
                 // Paste stands there greyed with nothing copied — the one
                 // control that says the pair exists before it is used —
                 // and takes no clicks and no hover while it does.
                 let disabled = hit == Hit::VmPasteOption && !can_paste;
-                let state = if disabled {
-                    ControlState::Disabled
-                } else {
-                    state_of(&hit)
-                };
-                let painted = Button {
-                    label: lbl,
-                    kind,
-                    state,
-                }
-                .paint(buf, rect, theme);
+                let state = if disabled { ControlState::Disabled } else { state_of(&hit) };
+                let painted = Button { label: lbl, kind, state }.paint(buf, rect, theme);
                 if !disabled {
                     hits.register(painted, hit);
                 }
@@ -1988,11 +1863,7 @@ impl VarManager {
         // Keep whatever the keyboard is on (the cell under edit, else the
         // cursor) in view, then clamp — the wheel places the viewport
         // freely, but never past the last row.
-        let focus_row = self
-            .grid
-            .editing
-            .as_ref()
-            .map_or(self.grid.cursor.0, |e| e.row);
+        let focus_row = self.grid.editing.as_ref().map_or(self.grid.cursor.0, |e| e.row);
         if visible > 0 {
             if focus_row < self.grid.scroll {
                 self.grid.scroll = focus_row;
@@ -2018,11 +1889,7 @@ impl VarManager {
             // the keyboard — a lift the arrows aren't driving would lie
             // about where keys land (Task 8's rule for its own row cursor).
             let cursor_row = cursor.is_some_and(|(r, _)| r == i);
-            let bg = if hovered_row || cursor_row {
-                theme.control_hover
-            } else {
-                theme.control
-            };
+            let bg = if hovered_row || cursor_row { theme.control_hover } else { theme.control };
             fill(buf, Rect::new(x0, ry, inner_w, 1), bg);
 
             if !ghost {
@@ -2031,10 +1898,7 @@ impl VarManager {
                 let glyph = if on { GLYPH_RADIO_ON } else { GLYPH_RADIO_OFF };
                 let fg = if on { theme.accent } else { theme.text_muted };
                 text(buf, cols.radio_x, ry, glyph, fg, bg, false);
-                hits.register(
-                    Rect::new(cols.radio_x, ry, RADIO_W, 1),
-                    Hit::VmEntryRadio(i),
-                );
+                hits.register(Rect::new(cols.radio_x, ry, RADIO_W, 1), Hit::VmEntryRadio(i));
             }
 
             for col in 0..cols.x.len() {
@@ -2044,19 +1908,12 @@ impl VarManager {
                 // `Enter` would edit — is visible, not just its row. One
                 // more hover-step up, the same direction focus lifts a
                 // `TextField` (never darker: pressed reads as a click).
-                let bg = if cursor == Some((i, col)) {
-                    crate::theme::lift_color(bg, 0.06)
-                } else {
-                    bg
-                };
+                let bg =
+                    if cursor == Some((i, col)) { crate::theme::lift_color(bg, 0.06) } else { bg };
                 if cursor == Some((i, col)) {
                     fill(buf, Rect::new(cx, ry, cw, 1), bg);
                 }
-                let editing = self
-                    .grid
-                    .editing
-                    .as_ref()
-                    .filter(|e| e.row == i && e.col == col);
+                let editing = self.grid.editing.as_ref().filter(|e| e.row == i && e.col == col);
                 if let Some(edit) = editing {
                     let line = edit.input.draw_line_windowed(true, theme, cw);
                     fill(buf, Rect::new(cx, ry, cw, 1), theme.control_hover);
@@ -2180,11 +2037,7 @@ impl VarManager {
         }
         let secret = ctx.variables().vars.get(name).is_some_and(|d| d.secret);
         let state_of = |hit: &Hit| {
-            if hovered == Some(hit) {
-                ControlState::Hover
-            } else {
-                ControlState::Normal
-            }
+            if hovered == Some(hit) { ControlState::Hover } else { ControlState::Normal }
         };
 
         let x0 = right.x + 2;
@@ -2205,11 +2058,7 @@ impl VarManager {
         // The block spans the blank row above the title and the blank
         // row below it, so nothing under it moves.
         if y + 2 <= bottom {
-            let label = if secret {
-                format!("{name}  {GLYPH_LOCK}")
-            } else {
-                name.to_string()
-            };
+            let label = if secret { format!("{name}  {GLYPH_LOCK}") } else { name.to_string() };
             text(buf, x0, y, &label, theme.text, theme.page, true);
             let mut bx = right.x + right.width;
             for (lbl, hit) in [("Delete", Hit::VmDelete), ("Rename", Hit::VmRename)] {
@@ -2218,18 +2067,10 @@ impl VarManager {
                     break;
                 }
                 bx -= w + 1;
-                let rect = Rect {
-                    x: bx,
-                    y: y - 1,
-                    width: w,
-                    height: TALL_PILL_H,
-                };
-                let painted = Button {
-                    label: lbl,
-                    kind: ButtonKind::Secondary,
-                    state: state_of(&hit),
-                }
-                .paint(buf, rect, theme);
+                let rect = Rect { x: bx, y: y - 1, width: w, height: TALL_PILL_H };
+                let painted =
+                    Button { label: lbl, kind: ButtonKind::Secondary, state: state_of(&hit) }
+                        .paint(buf, rect, theme);
                 hits.register(painted, hit);
             }
             y += 2;
@@ -2368,19 +2209,10 @@ impl VarManager {
             && y < bottom
         {
             let w = pill_min_width(label).min(row_w);
-            let rect = Rect {
-                x: x0,
-                y,
-                width: w,
-                height: 1,
-            };
+            let rect = Rect { x: x0, y, width: w, height: 1 };
             let hit = Hit::VmPromoteBtn;
-            Pill {
-                label,
-                kind: ButtonKind::Secondary,
-                state: state_of(&hit),
-            }
-            .paint(buf, rect, theme);
+            Pill { label, kind: ButtonKind::Secondary, state: state_of(&hit) }
+                .paint(buf, rect, theme);
             hits.register(rect, hit);
             y += 2;
         }
@@ -2519,11 +2351,7 @@ impl VarManager {
         {
             let buf = frame.buffer_mut();
             let state_of = |hit: &Hit| {
-                if hovered == Some(hit) {
-                    ControlState::Hover
-                } else {
-                    ControlState::Normal
-                }
+                if hovered == Some(hit) { ControlState::Hover } else { ControlState::Normal }
             };
             let mut bx = left.x + 1;
             // `left.y`, not `left.y + 1`: the block straddles its label
@@ -2541,18 +2369,8 @@ impl VarManager {
                 if bx + w > right_edge {
                     break;
                 }
-                let rect = Rect {
-                    x: bx,
-                    y: by,
-                    width: w,
-                    height: TALL_PILL_H,
-                };
-                let painted = Button {
-                    label,
-                    kind,
-                    state: state_of(&hit),
-                }
-                .paint(buf, rect, theme);
+                let rect = Rect { x: bx, y: by, width: w, height: TALL_PILL_H };
+                let painted = Button { label, kind, state: state_of(&hit) }.paint(buf, rect, theme);
                 hits.register(painted, hit);
                 bx += w + 1;
             }
@@ -2581,11 +2399,7 @@ impl VarManager {
         }
 
         if let Some(spec) = self.scrollbar_spec().filter(ScrollbarSpec::overflows) {
-            let column = Rect {
-                x: left.x + left.width - 1,
-                width: 1,
-                ..list
-            };
+            let column = Rect { x: left.x + left.width - 1, width: 1, ..list };
             crate::hit::draw_scrollbar(frame, hits, column, &spec, hovered, false, theme);
         }
 
@@ -2620,11 +2434,15 @@ impl VarManager {
             let hover_t = 1.0;
             let row_bg = ListRow::resolve_fill(theme, highlight, theme.panel, hover_t);
             if row.is_stop() {
-                ListRow {
-                    highlight,
-                    zebra: None,
-                }
-                .paint(buf, y, list.x, list.width, theme.panel, hover_t, theme);
+                ListRow { highlight, zebra: None }.paint(
+                    buf,
+                    y,
+                    list.x,
+                    list.width,
+                    theme.panel,
+                    hover_t,
+                    theme,
+                );
             }
             paint_left_row(buf, ctx, row, y, list, row_bg, theme);
 
@@ -2675,15 +2493,7 @@ fn paint_left_row(
             if is_unresolved(ctx, name) {
                 label_w = label_w.saturating_sub(2);
             }
-            text(
-                buf,
-                x,
-                y,
-                super::chooser::clip(name, label_w),
-                theme.text,
-                bg,
-                false,
-            );
+            text(buf, x, y, super::chooser::clip(name, label_w), theme.text, bg, false);
             let mut badge_x = list.x + list.width;
             if is_unresolved(ctx, name) {
                 badge_x = badge_x.saturating_sub(2);
@@ -2702,20 +2512,8 @@ fn paint_left_row(
             // name, plus the variables' unresolved dot when nothing (or
             // something stale) is selected here.
             let unresolved = active_selection(ctx, name).is_none();
-            let label_w = if unresolved {
-                width.saturating_sub(2)
-            } else {
-                width
-            };
-            text(
-                buf,
-                x,
-                y,
-                super::chooser::clip(name, label_w),
-                theme.text,
-                bg,
-                false,
-            );
+            let label_w = if unresolved { width.saturating_sub(2) } else { width };
+            text(buf, x, y, super::chooser::clip(name, label_w), theme.text, bg, false);
             if unresolved {
                 let badge_x = (list.x + list.width).saturating_sub(2);
                 text(buf, badge_x, y, GLYPH_UNRESOLVED, theme.error, bg, false);
@@ -2735,10 +2533,7 @@ fn draw_detail_placeholder(frame: &mut Frame, right: Rect, theme: &Theme) {
         buf,
         right.x + 2,
         right.y + 1,
-        super::chooser::clip(
-            "select a variable or selector",
-            right.width.saturating_sub(3),
-        ),
+        super::chooser::clip("select a variable or selector", right.width.saturating_sub(3)),
         theme.text_muted,
         theme.page,
         false,
@@ -2834,9 +2629,7 @@ fields = ["user_id", "customer_id"]
         // beside a fixture-length selector name.
         let mut terminal = Terminal::new(TestBackend::new(116, 24)).unwrap();
         let mut hits = HitMap::default();
-        terminal
-            .draw(|f| vm.draw(f, f.area(), &theme, ctx, None, &mut hits, None))
-            .unwrap();
+        terminal.draw(|f| vm.draw(f, f.area(), &theme, ctx, None, &mut hits, None)).unwrap();
         (terminal.backend().buffer().clone(), hits)
     }
 
@@ -2978,11 +2771,8 @@ fields = ["user_id", "customer_id"]
         let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
         render(&mut vm, &ctx);
-        let group_row = vm
-            .left_rows
-            .iter()
-            .position(|r| r == &VmRow::Group("creds".into()))
-            .unwrap();
+        let group_row =
+            vm.left_rows.iter().position(|r| r == &VmRow::Group("creds".into())).unwrap();
 
         vm.select_row(group_row);
         assert_eq!(vm.detail, VmDetail::Group("creds".into()));
@@ -3012,7 +2802,8 @@ fields = ["user_id", "customer_id"]
         let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
         render(&mut vm, &ctx);
-        let at = |vm: &VarManager, want: &VmRow| vm.left_rows.iter().position(|r| r == want).unwrap();
+        let at =
+            |vm: &VarManager, want: &VmRow| vm.left_rows.iter().position(|r| r == want).unwrap();
         let creds = VmRow::Group("creds".into());
         vm.select_row(at(&vm, &creds));
         assert_eq!(
@@ -3020,16 +2811,16 @@ fields = ["user_id", "customer_id"]
             Some(Action::PromptGroupFields { selector: "creds".into() }),
             "on its own row a selector's fields are one key away"
         );
-        for (open, header) in [
-            (VmRow::Var("base_url".into()), VmRow::SectionVars),
-            (creds, VmRow::SectionGroups),
-        ] {
+        for (open, header) in
+            [(VmRow::Var("base_url".into()), VmRow::SectionVars), (creds, VmRow::SectionGroups)]
+        {
             vm.select_row(at(&vm, &open));
             vm.select_row(at(&vm, &header));
             for verb in [Verb::Delete { count: 1 }, Verb::Rename, Verb::Secret, Verb::Fields] {
                 assert_eq!(vm.verb_action(&ctx, None, verb), None, "{verb:?} with {open:?} open");
             }
-            let labels: Vec<_> = vm.footer_chips(&ctx, None).into_iter().map(|(_, l, _)| l).collect();
+            let labels: Vec<_> =
+                vm.footer_chips(&ctx, None).into_iter().map(|(_, l, _)| l).collect();
             assert_eq!(labels, ["new variable", "new selector", "back"], "{open:?} open");
         }
     }
@@ -3040,10 +2831,7 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         let (_, hits) = render(&mut vm, &ctx);
         for i in 0..vm.left_rows.len() {
-            assert!(
-                hits.rect_of(&Hit::VmLeftRow(i)).is_some(),
-                "row {i} has no hit"
-            );
+            assert!(hits.rect_of(&Hit::VmLeftRow(i)).is_some(), "row {i} has no hit");
         }
     }
 
@@ -3087,21 +2875,14 @@ fields = ["user_id", "customer_id"]
             assert_eq!(vm.left_cursor, cursor, "{letter:?} moved the cursor");
             assert_eq!(vm.focus, VmFocus::List, "{letter:?} left the list");
         }
-        let pairs = [
-            (ctrl('f'), key(KeyCode::PageDown)),
-            (ctrl('b'), key(KeyCode::PageUp)),
-        ];
+        let pairs = [(ctrl('f'), key(KeyCode::PageDown)), (ctrl('b'), key(KeyCode::PageUp))];
         for (alias, canonical) in pairs {
             let (mut a, mut b) = (VarManager::default(), VarManager::default());
             render(&mut a, &ctx);
             render(&mut b, &ctx);
             a.select_row(2);
             b.select_row(2);
-            assert_eq!(
-                a.handle_key(alias, &ctx),
-                b.handle_key(canonical, &ctx),
-                "{alias:?}"
-            );
+            assert_eq!(a.handle_key(alias, &ctx), b.handle_key(canonical, &ctx), "{alias:?}");
             assert_eq!(a.left_cursor, b.left_cursor, "{alias:?}");
             assert_eq!(a.focus, b.focus, "{alias:?}");
         }
@@ -3112,14 +2893,8 @@ fields = ["user_id", "customer_id"]
         let (_dir, ctx) = fixture_with_shared_selector();
         let mut vm = VarManager::default();
         render(&mut vm, &ctx);
-        assert_eq!(
-            vm.verb_action(&ctx, None, Verb::AddAlt),
-            Some(Action::PromptNewSelector)
-        );
-        assert_ne!(
-            vm.handle_key(key(KeyCode::Char('g')), &ctx),
-            Some(Action::PromptNewSelector)
-        );
+        assert_eq!(vm.verb_action(&ctx, None, Verb::AddAlt), Some(Action::PromptNewSelector));
+        assert_ne!(vm.handle_key(key(KeyCode::Char('g')), &ctx), Some(Action::PromptNewSelector));
     }
 
     #[test]
@@ -3201,15 +2976,11 @@ fields = ["user_id", "customer_id"]
         assert_eq!(vm.form_cursor, FormStop::Secret);
         assert_eq!(
             vm.handle_key(key(KeyCode::Enter), &ctx),
-            Some(Action::ToggleSecretVar {
-                name: "base_url".into()
-            })
+            Some(Action::ToggleSecretVar { name: "base_url".into() })
         );
         assert_eq!(
             vm.handle_key(key(KeyCode::Char(' ')), &ctx),
-            Some(Action::ToggleSecretVar {
-                name: "base_url".into()
-            })
+            Some(Action::ToggleSecretVar { name: "base_url".into() })
         );
         assert!(vm.form.editing.is_none(), "a toggle has no text to edit");
         vm.handle_key(key(KeyCode::Down), &ctx);
@@ -3220,10 +2991,7 @@ fields = ["user_id", "customer_id"]
         assert!(
             chips.iter().any(|(k, l, a)| *k == "enter"
                 && *l == "toggle secret"
-                && *a
-                    == Some(Action::ToggleSecretVar {
-                        name: "base_url".into()
-                    })),
+                && *a == Some(Action::ToggleSecretVar { name: "base_url".into() })),
             "{chips:?}"
         );
     }
@@ -3275,17 +3043,17 @@ fields = ["user_id", "customer_id"]
         let rect = hits.rect_of(&Hit::VmSecretToggle).expect("toggle painted");
         let painted = buf.cell((rect.x, rect.y)).unwrap().bg;
         let mut scratch = Buffer::empty(Rect::new(0, 0, 20, 1));
-        Toggle {
-            on: false,
-            state: ControlState::Focused,
-        }
-        .paint(&mut scratch, Rect::new(0, 0, 20, 1), &theme);
+        Toggle { on: false, state: ControlState::Focused }.paint(
+            &mut scratch,
+            Rect::new(0, 0, 20, 1),
+            &theme,
+        );
         let focused = scratch.cell((0, 0)).unwrap().bg;
-        Toggle {
-            on: false,
-            state: ControlState::Normal,
-        }
-        .paint(&mut scratch, Rect::new(0, 0, 20, 1), &theme);
+        Toggle { on: false, state: ControlState::Normal }.paint(
+            &mut scratch,
+            Rect::new(0, 0, 20, 1),
+            &theme,
+        );
         let normal = scratch.cell((0, 0)).unwrap().bg;
         assert_ne!(focused, normal, "the theme distinguishes focus");
         assert_eq!(painted, focused);
@@ -3310,10 +3078,7 @@ fields = ["user_id", "customer_id"]
         let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
         let (content, _) = render(&mut vm, &ctx);
-        assert!(
-            content.contains("select a variable or selector"),
-            "{content}"
-        );
+        assert!(content.contains("select a variable or selector"), "{content}");
     }
 
     #[test]
@@ -3322,68 +3087,44 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         render(&mut vm, &ctx);
 
-        assert_eq!(
-            vm.verb_action(&ctx, None, Verb::Add),
-            Some(Action::PromptNewVar)
-        );
-        assert_eq!(
-            vm.verb_action(&ctx, None, Verb::AddAlt),
-            Some(Action::PromptNewSelector)
-        );
+        assert_eq!(vm.verb_action(&ctx, None, Verb::Add), Some(Action::PromptNewVar));
+        assert_eq!(vm.verb_action(&ctx, None, Verb::AddAlt), Some(Action::PromptNewSelector));
 
         vm.select_row(1); // base_url
         assert_eq!(
             vm.verb_action(&ctx, None, Verb::Rename),
-            Some(Action::PromptRenameVar {
-                from: "base_url".into()
-            })
+            Some(Action::PromptRenameVar { from: "base_url".into() })
         );
         assert_eq!(
             vm.handle_key(key(KeyCode::F(2)), &ctx),
-            Some(Action::PromptRenameVar {
-                from: "base_url".into()
-            })
+            Some(Action::PromptRenameVar { from: "base_url".into() })
         );
         assert_eq!(
             vm.verb_action(&ctx, None, Verb::Delete { count: 1 }),
-            Some(Action::DeleteVar {
-                name: "base_url".into()
-            })
+            Some(Action::DeleteVar { name: "base_url".into() })
         );
         assert_eq!(
             vm.handle_key(key(KeyCode::Delete), &ctx),
-            Some(Action::DeleteVar {
-                name: "base_url".into()
-            })
+            Some(Action::DeleteVar { name: "base_url".into() })
         );
         assert_eq!(
             vm.verb_action(&ctx, None, Verb::Secret),
-            Some(Action::ToggleSecretVar {
-                name: "base_url".into()
-            })
+            Some(Action::ToggleSecretVar { name: "base_url".into() })
         );
 
         let group_row = vm.left_rows.len() - 1;
         vm.select_row(group_row);
         assert_eq!(
             vm.verb_action(&ctx, None, Verb::Delete { count: 1 }),
-            Some(Action::DeleteVar {
-                name: "creds".into()
-            }),
+            Some(Action::DeleteVar { name: "creds".into() }),
             "delete works on a selector row"
         );
         assert_eq!(
             vm.verb_action(&ctx, None, Verb::Rename),
-            Some(Action::PromptRenameVar {
-                from: "creds".into()
-            }),
+            Some(Action::PromptRenameVar { from: "creds".into() }),
             "a selector renames through the same prompt a variable does"
         );
-        assert_eq!(
-            vm.verb_action(&ctx, None, Verb::Secret),
-            None,
-            "a selector has no secret flag"
-        );
+        assert_eq!(vm.verb_action(&ctx, None, Verb::Secret), None, "a selector has no secret flag");
     }
 
     /// Spec §4.5: the verbs are the router's rows; each focus stop keeps
@@ -3432,21 +3173,14 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         render(&mut vm, &ctx);
         vm.select_row(1);
-        vm.grid.editing = Some(GridEdit {
-            row: 0,
-            col: 0,
-            input: LineInput::new(""),
-            original: String::new(),
-        });
+        vm.grid.editing =
+            Some(GridEdit { row: 0, col: 0, input: LineInput::new(""), original: String::new() });
 
         // The yield now lives in `handle_key`'s live-edit guard: without
         // the edit, F2 and Delete answer on the selected row.
         assert_eq!(vm.handle_key(key(KeyCode::F(2)), &ctx), None);
         assert_eq!(vm.handle_key(key(KeyCode::Delete), &ctx), None);
-        assert_eq!(
-            vm.handle_key(key(KeyCode::Esc), &ctx),
-            Some(Action::CloseScreen)
-        );
+        assert_eq!(vm.handle_key(key(KeyCode::Esc), &ctx), Some(Action::CloseScreen));
         vm.handle_key(key(KeyCode::Down), &ctx);
         assert_eq!(vm.detail, VmDetail::Var("api_key".into()));
     }
@@ -3460,45 +3194,21 @@ fields = ["user_id", "customer_id"]
         let items = vm.context_menu(1).expect("variable menu");
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert_eq!(labels, vec!["Rename\u{2026}", "Duplicate", "Delete"]);
-        assert_eq!(
-            items[0].action,
-            Some(Action::PromptRenameVar {
-                from: "base_url".into()
-            })
-        );
-        assert_eq!(
-            items[1].action,
-            Some(Action::DuplicateVar {
-                name: "base_url".into()
-            })
-        );
-        assert_eq!(
-            items[2].action,
-            Some(Action::DeleteVar {
-                name: "base_url".into()
-            })
-        );
+        assert_eq!(items[0].action, Some(Action::PromptRenameVar { from: "base_url".into() }));
+        assert_eq!(items[1].action, Some(Action::DuplicateVar { name: "base_url".into() }));
+        assert_eq!(items[2].action, Some(Action::DeleteVar { name: "base_url".into() }));
 
-        let selector = vm
-            .context_menu(vm.left_rows.len() - 1)
-            .expect("selector menu");
+        let selector = vm.context_menu(vm.left_rows.len() - 1).expect("selector menu");
         assert_eq!(
             selector[0].action,
-            Some(Action::PromptRenameVar {
-                from: "creds".into()
-            }),
+            Some(Action::PromptRenameVar { from: "creds".into() }),
             "a selector's rename is live"
         );
         assert_eq!(
             selector[1].action, None,
             "so is duplicate: a field can only belong to one selector"
         );
-        assert_eq!(
-            selector[2].action,
-            Some(Action::DeleteVar {
-                name: "creds".into()
-            })
-        );
+        assert_eq!(selector[2].action, Some(Action::DeleteVar { name: "creds".into() }));
 
         assert!(vm.context_menu(0).is_none(), "no menu on a section header");
     }
@@ -3545,7 +3255,11 @@ fields = ["user_id", "customer_id"]
         let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
         vm.sync(&ctx);
         assert_eq!(vm.left_cursor, cursor, "the cursor does not move");
-        assert_eq!(vm.detail, VmDetail::Var("gamma".into()), "the pane opens the row now under the cursor");
+        assert_eq!(
+            vm.detail,
+            VmDetail::Var("gamma".into()),
+            "the pane opens the row now under the cursor"
+        );
 
         vm.select_row(row_of(&vm, "gamma"));
         std::fs::write(dir.path().join("variables.toml"), "[alpha]\ndefault = \"1\"\n").unwrap();
@@ -3590,10 +3304,7 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         let (content, hits) = render(&mut vm, &ctx);
         assert!(content.contains('\u{2588}'), "thumb glyph drawn: {content}");
-        assert!(
-            hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar))
-                .is_some()
-        );
+        assert!(hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar)).is_some());
 
         vm.handle_scroll(5);
         assert_eq!(vm.left_scroll, 5);
@@ -3629,11 +3340,7 @@ fields = ["user_id", "customer_id"]
 
     fn select_var(vm: &mut VarManager, ctx: &Project, name: &str) {
         render(vm, ctx); // populates left_rows
-        let i = vm
-            .left_rows
-            .iter()
-            .position(|r| r == &VmRow::Var(name.into()))
-            .unwrap();
+        let i = vm.left_rows.iter().position(|r| r == &VmRow::Var(name.into())).unwrap();
         vm.select_row(i);
     }
 
@@ -3651,10 +3358,7 @@ fields = ["user_id", "customer_id"]
         assert!(content.contains("Value in qa"), "{content}");
         assert!(hits.rect_of(&Hit::VmRename).is_some());
         assert!(hits.rect_of(&Hit::VmDelete).is_some());
-        assert!(
-            hits.rect_of(&Hit::VmFormField(VmField::Description))
-                .is_some()
-        );
+        assert!(hits.rect_of(&Hit::VmFormField(VmField::Description)).is_some());
         assert!(hits.rect_of(&Hit::VmFormField(VmField::Default)).is_some());
         assert!(hits.rect_of(&Hit::VmFormField(VmField::EnvValue)).is_some());
         assert!(content.contains("used by:"), "{content}");
@@ -3737,20 +3441,12 @@ fields = ["user_id", "customer_id"]
         });
 
         // Re-selecting the same row must not disturb an in-progress edit.
-        let same = vm
-            .left_rows
-            .iter()
-            .position(|r| r == &VmRow::Var("base_url".into()))
-            .unwrap();
+        let same = vm.left_rows.iter().position(|r| r == &VmRow::Var("base_url".into())).unwrap();
         vm.select_row(same);
         assert!(vm.form.editing.is_some(), "same-row reselect kept the edit");
         assert!(vm.form.revealed, "same-row reselect kept reveal");
 
-        let other = vm
-            .left_rows
-            .iter()
-            .position(|r| r == &VmRow::Var("api_key".into()))
-            .unwrap();
+        let other = vm.left_rows.iter().position(|r| r == &VmRow::Var("api_key".into())).unwrap();
         vm.select_row(other);
         assert!(vm.form.editing.is_none(), "a new selection drops the edit");
         assert!(!vm.form.revealed, "a new selection resets reveal");
@@ -3759,42 +3455,25 @@ fields = ["user_id", "customer_id"]
     #[test]
     fn field_seed_text_reads_description_default_and_the_stored_env_value() {
         let (_dir, mut ctx) = fixture();
-        assert_eq!(
-            field_seed_text(&ctx, "base_url", VmField::Description),
-            "API root"
-        );
-        assert_eq!(
-            field_seed_text(&ctx, "base_url", VmField::Default),
-            "http://localhost:8080"
-        );
+        assert_eq!(field_seed_text(&ctx, "base_url", VmField::Description), "API root");
+        assert_eq!(field_seed_text(&ctx, "base_url", VmField::Default), "http://localhost:8080");
         // qa stores nothing for base_url: the env-value field must read
         // empty (rendered "(not set)"), never fall back to the default —
         // showing the default here made it look like an env value existed.
         assert_eq!(field_seed_text(&ctx, "base_url", VmField::EnvValue), "");
-        ctx.edit_env("qa", |doc| {
-            Ok(format!("base_url = \"https://qa.example.com\"\n{doc}"))
-        })
-        .unwrap();
-        assert_eq!(
-            field_seed_text(&ctx, "base_url", VmField::EnvValue),
-            "https://qa.example.com"
-        );
+        ctx.edit_env("qa", |doc| Ok(format!("base_url = \"https://qa.example.com\"\n{doc}")))
+            .unwrap();
+        assert_eq!(field_seed_text(&ctx, "base_url", VmField::EnvValue), "https://qa.example.com");
 
         // A secret's stored value lives in the secrets store, not env_data.
         assert_eq!(field_seed_text(&ctx, "api_key", VmField::EnvValue), "");
         ctx.set_secret_for("qa", "api_key", "s3cret".into()).unwrap();
-        assert_eq!(
-            field_seed_text(&ctx, "api_key", VmField::EnvValue),
-            "s3cret"
-        );
+        assert_eq!(field_seed_text(&ctx, "api_key", VmField::EnvValue), "s3cret");
 
         // No active environment: the field edits the declaration default
         // (var_edit_op_for's fallback), so it seeds from it.
         ctx.set_active_env(None);
-        assert_eq!(
-            field_seed_text(&ctx, "base_url", VmField::EnvValue),
-            "http://localhost:8080"
-        );
+        assert_eq!(field_seed_text(&ctx, "base_url", VmField::EnvValue), "http://localhost:8080");
     }
 
     #[test]
@@ -3802,25 +3481,15 @@ fields = ["user_id", "customer_id"]
         let (_dir, mut ctx) = fixture();
         assert_eq!(
             var_edit_op_for(&ctx, "base_url", VmField::Description, "new desc".into()),
-            VarEditOp::SetDescription {
-                owner: "base_url".into(),
-                value: "new desc".into()
-            }
+            VarEditOp::SetDescription { owner: "base_url".into(), value: "new desc".into() }
         );
         assert_eq!(
             var_edit_op_for(&ctx, "base_url", VmField::Default, "x".into()),
-            VarEditOp::SetDefault {
-                name: "base_url".into(),
-                value: "x".into()
-            }
+            VarEditOp::SetDefault { name: "base_url".into(), value: "x".into() }
         );
         assert_eq!(
             var_edit_op_for(&ctx, "base_url", VmField::EnvValue, "y".into()),
-            VarEditOp::SetEnvValue {
-                env: "qa".into(),
-                name: "base_url".into(),
-                value: "y".into()
-            }
+            VarEditOp::SetEnvValue { env: "qa".into(), name: "base_url".into(), value: "y".into() }
         );
         assert_eq!(
             var_edit_op_for(&ctx, "api_key", VmField::EnvValue, "z".into()),
@@ -3835,10 +3504,7 @@ fields = ["user_id", "customer_id"]
         ctx.set_active_env(None);
         assert_eq!(
             var_edit_op_for(&ctx, "base_url", VmField::EnvValue, "w".into()),
-            VarEditOp::SetDefault {
-                name: "base_url".into(),
-                value: "w".into()
-            },
+            VarEditOp::SetDefault { name: "base_url".into(), value: "w".into() },
             "no active environment: the value field targets the declaration default"
         );
     }
@@ -3992,10 +3658,7 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "locale");
         let (content, hits) = render(&mut vm, &ctx);
-        assert!(
-            content.contains(SHARED_BADGE),
-            "shared is invisible without a badge: {content}"
-        );
+        assert!(content.contains(SHARED_BADGE), "shared is invisible without a badge: {content}");
         // The badge sits in its own row, so the title row's buttons — the
         // primary one included — are all still there.
         assert!(hits.rect_of(&Hit::VmNewOption).is_some(), "{content}");
@@ -4051,10 +3714,7 @@ fields = ["user_id", "customer_id"]
         // gate), and the grid-focus option verbs act from there.
         vm.handle_key(key(KeyCode::Tab), &ctx);
         assert_eq!(vm.focus, VmFocus::Grid);
-        assert_eq!(
-            vm.verb_action(&ctx, None, Verb::Yank),
-            Some(Action::CopyOption { row: 0 })
-        );
+        assert_eq!(vm.verb_action(&ctx, None, Verb::Yank), Some(Action::CopyOption { row: 0 }));
         assert_eq!(
             vm.verb_action(&ctx, None, Verb::Delete { count: 1 }),
             Some(Action::DeleteEntry {
@@ -4069,12 +3729,11 @@ fields = ["user_id", "customer_id"]
         );
         // The footer's grid chips stay armed too — their actions carry the
         // same empty env the ops above do.
-        let chips =
-            crate::keyroute::spell::spelled_on(crate::keyroute::Surface::VarGrid, vm.footer_chips(&ctx, None));
-        let copy = chips
-            .iter()
-            .find(|(k, _, _)| *k == "c")
-            .expect("copy chip is advertised");
+        let chips = crate::keyroute::spell::spelled_on(
+            crate::keyroute::Surface::VarGrid,
+            vm.footer_chips(&ctx, None),
+        );
+        let copy = chips.iter().find(|(k, _, _)| *k == "c").expect("copy chip is advertised");
         assert!(copy.2.is_some(), "copy chip armed without an environment");
     }
 
@@ -4086,15 +3745,9 @@ fields = ["user_id", "customer_id"]
         let (_, hits) = render(&mut vm, &ctx);
 
         for row in 0..2 {
-            assert!(
-                hits.rect_of(&Hit::VmEntryCopy(row)).is_some(),
-                "row {row} has no copy button"
-            );
+            assert!(hits.rect_of(&Hit::VmEntryCopy(row)).is_some(), "row {row} has no copy button");
         }
-        assert!(
-            hits.rect_of(&Hit::VmEntryCopy(2)).is_none(),
-            "the ghost row has nothing to copy"
-        );
+        assert!(hits.rect_of(&Hit::VmEntryCopy(2)).is_none(), "the ghost row has nothing to copy");
         // The copy button sits immediately left of the row's trash, and
         // never on top of it.
         let copy = hits.rect_of(&Hit::VmEntryCopy(0)).unwrap();
@@ -4126,11 +3779,7 @@ fields = ["user_id", "customer_id"]
 
     fn select_group(vm: &mut VarManager, ctx: &Project, name: &str) {
         render(vm, ctx); // populates left_rows
-        let i = vm
-            .left_rows
-            .iter()
-            .position(|r| r == &VmRow::Group(name.into()))
-            .unwrap();
+        let i = vm.left_rows.iter().position(|r| r == &VmRow::Group(name.into())).unwrap();
         vm.select_row(i);
     }
 
@@ -4156,10 +3805,7 @@ fields = ["user_id", "customer_id"]
         );
 
         for row in 0..2 {
-            assert!(
-                hits.rect_of(&Hit::VmEntryRadio(row)).is_some(),
-                "row {row} has no radio"
-            );
+            assert!(hits.rect_of(&Hit::VmEntryRadio(row)).is_some(), "row {row} has no radio");
             for col in 0..3 {
                 assert!(
                     hits.rect_of(&Hit::VmEntryCell { row, col }).is_some(),
@@ -4169,16 +3815,8 @@ fields = ["user_id", "customer_id"]
         }
         // The ghost row's own name cell is clickable — that is the "start a
         // new option" gesture.
-        assert!(
-            hits.rect_of(&Hit::VmEntryCell { row: 2, col: 0 }).is_some(),
-            "ghost row cell"
-        );
-        for hit in [
-            Hit::VmNewOption,
-            Hit::VmEditFields,
-            Hit::VmRename,
-            Hit::VmDelete,
-        ] {
+        assert!(hits.rect_of(&Hit::VmEntryCell { row: 2, col: 0 }).is_some(), "ghost row cell");
+        for hit in [Hit::VmNewOption, Hit::VmEditFields, Hit::VmRename, Hit::VmDelete] {
             assert!(hits.rect_of(&hit).is_some(), "{hit:?} has no button");
         }
     }
@@ -4230,20 +3868,12 @@ fields = ["user_id", "customer_id"]
         // option-level ones. A narrow pane drops from the left, so the
         // rare verbs go first and `+ Option` — the primary — holds the
         // right edge, with `Paste` beside its own family.
-        let xs: Vec<u16> = [
-            Hit::VmDelete,
-            Hit::VmRename,
-            Hit::VmEditFields,
-            Hit::VmPasteOption,
-            Hit::VmNewOption,
-        ]
-        .iter()
-        .map(|h| hits.rect_of(h).unwrap_or_else(|| panic!("{h:?} has no button")).x)
-        .collect();
-        assert!(
-            xs.windows(2).all(|w| w[0] < w[1]),
-            "buttons out of order: {xs:?}"
-        );
+        let xs: Vec<u16> =
+            [Hit::VmDelete, Hit::VmRename, Hit::VmEditFields, Hit::VmPasteOption, Hit::VmNewOption]
+                .iter()
+                .map(|h| hits.rect_of(h).unwrap_or_else(|| panic!("{h:?} has no button")).x)
+                .collect();
+        assert!(xs.windows(2).all(|w| w[0] < w[1]), "buttons out of order: {xs:?}");
         // Delete no longer anchors the row, and nothing sits between the
         // primary and the pane's right edge.
         let primary = hits.rect_of(&Hit::VmNewOption).unwrap();
@@ -4261,10 +3891,7 @@ fields = ["user_id", "customer_id"]
         };
         let within = gap_between(Hit::VmRename, Hit::VmEditFields);
         let between = gap_between(Hit::VmEditFields, Hit::VmPasteOption);
-        assert!(
-            between > within,
-            "the families run together: {between} vs {within}"
-        );
+        assert!(between > within, "the families run together: {between} vs {within}");
     }
 
     #[test]
@@ -4273,10 +3900,7 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
         let (content, _) = render(&mut vm, &ctx);
-        assert!(
-            content.contains(GLYPH_RADIO_ON),
-            "alice is selected: {content}"
-        );
+        assert!(content.contains(GLYPH_RADIO_ON), "alice is selected: {content}");
         assert!(content.contains(GLYPH_RADIO_OFF), "bob is not: {content}");
 
         // With nothing selected every radio is empty — the only filled
@@ -4294,10 +3918,7 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
         let (content, hits) = render(&mut vm, &ctx);
-        assert!(
-            content.contains("options live in environments"),
-            "{content}"
-        );
+        assert!(content.contains("options live in environments"), "{content}");
         assert!(
             hits.rect_of(&Hit::VmEntryCell { row: 0, col: 0 }).is_none(),
             "no grid without an environment"
@@ -4326,16 +3947,11 @@ fields = ["user_id", "customer_id"]
         // The Fields verb opens the field-list editor.
         assert_eq!(
             vm.verb_action(&ctx, None, Verb::Fields),
-            Some(Action::PromptGroupFields {
-                selector: "creds".into()
-            })
+            Some(Action::PromptGroupFields { selector: "creds".into() })
         );
         // On the grid, Add is the new-option edit (the router's `a`/`o`).
         vm.focus = VmFocus::Grid;
-        assert_eq!(
-            vm.verb_action(&ctx, None, Verb::Add),
-            Some(Action::StartNewOptionEdit)
-        );
+        assert_eq!(vm.verb_action(&ctx, None, Verb::Add), Some(Action::StartNewOptionEdit));
         vm.focus = VmFocus::List;
         // A new option starts in the ghost row, in place.
         vm.start_cell_edit(&ctx, 2, 0);
@@ -4418,17 +4034,13 @@ fields = ["user_id", "customer_id"]
         let chips = crate::keyroute::spell::spelled(vm.footer_chips(&ctx, None));
         assert_eq!(chips.len(), 2, "{chips:?}");
         assert!(
-            chips
-                .iter()
-                .any(|(k, l, a)| *k == "enter" && *l == "save" && a.is_none()),
+            chips.iter().any(|(k, l, a)| *k == "enter" && *l == "save" && a.is_none()),
             "{chips:?}"
         );
         assert!(
             chips
                 .iter()
-                .any(|(k, l, a)| *k == "esc"
-                    && *l == "done"
-                    && *a == Some(Action::CloseField)),
+                .any(|(k, l, a)| *k == "esc" && *l == "done" && *a == Some(Action::CloseField)),
             "{chips:?}"
         );
     }
@@ -4438,11 +4050,7 @@ fields = ["user_id", "customer_id"]
         let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
         render(&mut vm, &ctx);
-        let i = vm
-            .left_rows
-            .iter()
-            .position(|r| r == &VmRow::Var("base_url".into()))
-            .unwrap();
+        let i = vm.left_rows.iter().position(|r| r == &VmRow::Var("base_url".into())).unwrap();
         vm.select_row(i);
         vm.focus = VmFocus::Form;
         vm.start_field_edit(&ctx, VmField::Description);
@@ -4471,11 +4079,7 @@ fields = ["user_id", "customer_id"]
         assert_eq!(vm.handle_key(key(KeyCode::Char('q')), &ctx), None);
         vm.grid.editing = None;
         // Form focus.
-        let i = vm
-            .left_rows
-            .iter()
-            .position(|r| r == &VmRow::Var("base_url".into()))
-            .unwrap();
+        let i = vm.left_rows.iter().position(|r| r == &VmRow::Var("base_url".into())).unwrap();
         vm.select_row(i);
         vm.focus = VmFocus::Form;
         assert_eq!(vm.handle_key(key(KeyCode::Char('q')), &ctx), None);
@@ -4501,22 +4105,18 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
         vm.focus = VmFocus::Grid;
-        let chips =
-            crate::keyroute::spell::spelled_on(crate::keyroute::Surface::VarGrid, vm.footer_chips(&ctx, None));
-        let edit = chips
-            .iter()
-            .find(|(k, _, _)| *k == "e")
-            .expect("e chip present");
+        let chips = crate::keyroute::spell::spelled_on(
+            crate::keyroute::Surface::VarGrid,
+            vm.footer_chips(&ctx, None),
+        );
+        let edit = chips.iter().find(|(k, _, _)| *k == "e").expect("e chip present");
         assert_eq!(edit.1, "edit");
         assert!(matches!(
             &edit.2,
             Some(Action::OpenEditOptionPrompt { owner, key, description, .. })
                 if owner == "creds" && key == "alice" && description.as_deref() == Some("the admin")
         ));
-        let copy = chips
-            .iter()
-            .find(|(k, _, _)| *k == "c")
-            .expect("c chip present");
+        let copy = chips.iter().find(|(k, _, _)| *k == "c").expect("c chip present");
         assert_eq!(copy.1, "copy");
         assert_eq!(copy.2, Some(Action::CopyOption { row: 0 }));
         // With nothing copied there is nothing to paste, so the chip
@@ -4529,12 +4129,12 @@ fields = ["user_id", "customer_id"]
             description: None,
             values: IndexMap::new(),
         });
-        let chips =
-            crate::keyroute::spell::spelled_on(crate::keyroute::Surface::VarGrid, vm.footer_chips(&ctx, None));
-        let paste = chips
-            .iter()
-            .find(|(k, _, _)| *k == "v")
-            .expect("v chip present once a row is copied");
+        let chips = crate::keyroute::spell::spelled_on(
+            crate::keyroute::Surface::VarGrid,
+            vm.footer_chips(&ctx, None),
+        );
+        let paste =
+            chips.iter().find(|(k, _, _)| *k == "v").expect("v chip present once a row is copied");
         assert_eq!(paste.1, "paste");
         assert!(matches!(
             &paste.2,
@@ -4546,8 +4146,10 @@ fields = ["user_id", "customer_id"]
         // drop (a dead chip advertises a key that would do nothing). Paste
         // stays: it lands a row wherever the cursor is.
         vm.grid.cursor.0 = 2;
-        let chips =
-            crate::keyroute::spell::spelled_on(crate::keyroute::Surface::VarGrid, vm.footer_chips(&ctx, None));
+        let chips = crate::keyroute::spell::spelled_on(
+            crate::keyroute::Surface::VarGrid,
+            vm.footer_chips(&ctx, None),
+        );
         assert!(!chips.iter().any(|(k, _, _)| *k == "e"), "{chips:?}");
         assert!(!chips.iter().any(|(k, _, _)| *k == "c"), "{chips:?}");
         assert!(chips.iter().any(|(k, _, _)| *k == "v"), "{chips:?}");
@@ -4595,10 +4197,7 @@ fields = ["user_id", "customer_id"]
         select_group(&mut vm, &ctx, "creds");
         vm.focus = VmFocus::Grid;
         vm.grid.cursor.0 = 1;
-        assert_eq!(
-            vm.verb_action(&ctx, None, Verb::Yank),
-            Some(Action::CopyOption { row: 1 })
-        );
+        assert_eq!(vm.verb_action(&ctx, None, Verb::Yank), Some(Action::CopyOption { row: 1 }));
         // Put is inert until something is copied — nothing dispatches a
         // paste core would refuse.
         assert_eq!(vm.verb_action(&ctx, None, Verb::Put { above: false, count: 1 }), None);
@@ -4621,17 +4220,13 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
         vm.focus = VmFocus::Grid;
-        let chips =
-            crate::keyroute::spell::spelled_on(crate::keyroute::Surface::VarGrid, vm.footer_chips(&ctx, None));
-        let rename = chips
-            .iter()
-            .find(|(k, _, _)| *k == "r")
-            .expect("r chip present");
+        let chips = crate::keyroute::spell::spelled_on(
+            crate::keyroute::Surface::VarGrid,
+            vm.footer_chips(&ctx, None),
+        );
+        let rename = chips.iter().find(|(k, _, _)| *k == "r").expect("r chip present");
         assert_eq!(rename.1, "rename");
-        assert!(matches!(
-            &rename.2,
-            Some(Action::StartOptionNameEdit { row: 0 })
-        ));
+        assert!(matches!(&rename.2, Some(Action::StartOptionNameEdit { row: 0 })));
 
         assert_eq!(
             vm.verb_action(&ctx, None, Verb::Rename),
@@ -4641,8 +4236,10 @@ fields = ["user_id", "customer_id"]
 
         // The ghost row has no name to rename: no chip, and no verb.
         vm.grid.cursor.0 = 2;
-        let chips =
-            crate::keyroute::spell::spelled_on(crate::keyroute::Surface::VarGrid, vm.footer_chips(&ctx, None));
+        let chips = crate::keyroute::spell::spelled_on(
+            crate::keyroute::Surface::VarGrid,
+            vm.footer_chips(&ctx, None),
+        );
         assert!(!chips.iter().any(|(k, _, _)| *k == "r"), "{chips:?}");
         assert_eq!(vm.verb_action(&ctx, None, Verb::Rename), None);
     }
@@ -4668,20 +4265,8 @@ fields = ["user_id", "customer_id"]
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         // "Rename" carries no ellipsis: it starts the inline name-cell
         // edit rather than opening a dialog.
-        assert_eq!(
-            labels,
-            vec![
-                "Edit\u{2026}",
-                "Copy option",
-                "Paste option",
-                "Rename",
-                "Delete"
-            ]
-        );
-        let Some(Action::OpenEditOptionPrompt {
-            owner, key, values, ..
-        }) = &items[0].action
-        else {
+        assert_eq!(labels, vec!["Edit\u{2026}", "Copy option", "Paste option", "Rename", "Delete"]);
+        let Some(Action::OpenEditOptionPrompt { owner, key, values, .. }) = &items[0].action else {
             panic!("Edit… opens the option edit prompt: {:?}", items[0].action)
         };
         assert_eq!((owner.as_str(), key.as_str()), ("creds", "bob"));
@@ -4691,10 +4276,7 @@ fields = ["user_id", "customer_id"]
         // Paste keeps its place in the menu with nothing copied, disabled.
         assert_eq!(items[2].label, "Paste option");
         assert_eq!(items[2].action, None);
-        assert_eq!(
-            items[3].action,
-            Some(Action::StartOptionNameEdit { row: 1 })
-        );
+        assert_eq!(items[3].action, Some(Action::StartOptionNameEdit { row: 1 }));
         assert_eq!(
             items[4].action,
             Some(Action::DeleteEntry {

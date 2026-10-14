@@ -95,7 +95,8 @@ impl CurlImportRun {
         }
         let converted = unique(self.created.iter().flat_map(|c| &c.converted));
         if !converted.is_empty() {
-            let list: Vec<String> = converted.iter().map(|n| format!("${n} \u{2192} {{{{{n}}}}}")).collect();
+            let list: Vec<String> =
+                converted.iter().map(|n| format!("${n} \u{2192} {{{{{n}}}}}")).collect();
             parts.push(format!("converted {}", list.join(", ")));
         }
         let secrets = || self.created.iter().flat_map(|c| &c.secrets);
@@ -271,7 +272,9 @@ mod tests {
             ))
         );
         r.created.push(b);
-        assert!(r.summary().unwrap().0.ends_with("; kept the existing T, K, not the paste's value"));
+        assert!(
+            r.summary().unwrap().0.ends_with("; kept the existing T, K, not the paste's value")
+        );
     }
 
     #[test]
@@ -303,7 +306,8 @@ mod tests {
         assert_eq!(
             r.summary(),
             Some((
-                "converted $entries \u{2192} {{entries}}; did not save entries (a reserved name)".into(),
+                "converted $entries \u{2192} {{entries}}; did not save entries (a reserved name)"
+                    .into(),
                 ToastKind::Warning
             ))
         );

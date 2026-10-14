@@ -77,10 +77,7 @@ impl Project {
 
     pub fn selections_for(&self, env: &str) -> &IndexMap<String, String> {
         static EMPTY: std::sync::OnceLock<IndexMap<String, String>> = std::sync::OnceLock::new();
-        self.local
-            .selections
-            .get(env)
-            .unwrap_or_else(|| EMPTY.get_or_init(IndexMap::new))
+        self.local.selections.get(env).unwrap_or_else(|| EMPTY.get_or_init(IndexMap::new))
     }
 
     pub fn set_selection(&mut self, name: &str, key: &str) {
@@ -93,9 +90,7 @@ impl Project {
     /// when the active environment is affected.
     pub fn set_selection_for(&mut self, env: &str, name: &str, key: &str) {
         if self.model.selectors.get(name).is_some_and(|d| d.shared) {
-            self.local
-                .shared_selections
-                .insert(name.to_string(), key.to_string());
+            self.local.shared_selections.insert(name.to_string(), key.to_string());
             let _ = self.persist_local();
             self.refresh_resolved();
             return;
@@ -113,12 +108,8 @@ impl Project {
 
     pub fn clear_selection_for(&mut self, env: &str, name: &str) {
         let removed_shared = self.local.shared_selections.shift_remove(name).is_some();
-        let removed_env = self
-            .local
-            .selections
-            .get_mut(env)
-            .and_then(|sel| sel.shift_remove(name))
-            .is_some();
+        let removed_env =
+            self.local.selections.get_mut(env).and_then(|sel| sel.shift_remove(name)).is_some();
         if !removed_shared && !removed_env {
             return;
         }
@@ -133,9 +124,7 @@ impl Project {
     pub(crate) fn forget_space_local(&mut self, name: &str) {
         self.local.space_open.shift_remove(name);
         let prefix = format!("{name}/");
-        self.local
-            .expanded
-            .retain(|p| !p.starts_with(&prefix) && p != name);
+        self.local.expanded.retain(|p| !p.starts_with(&prefix) && p != name);
     }
 
     /// Re-keys local memory after a space rename. Memory only.
@@ -245,10 +234,7 @@ mod tests {
         p.set_active_env(Some("qa".into()));
         p.set_selection("locale", "fr");
         assert_eq!(p.resolved().values.get("lang").map(String::as_str), Some("fr"));
-        assert_eq!(
-            p.local().shared_selections.get("locale").map(String::as_str),
-            Some("fr")
-        );
+        assert_eq!(p.local().shared_selections.get("locale").map(String::as_str), Some("fr"));
 
         // Cleared from `qa`, but the pick was never `qa`'s: the global
         // table empties and the field stops resolving everywhere.
@@ -267,8 +253,16 @@ mod tests {
             "[selectors.region]\nfields = [\"host\"]\n",
         )
         .unwrap();
-        std::fs::write(dir.path().join("environments/qa.toml"), "[options.region.west]\nhost = \"w\"\n").unwrap();
-        std::fs::write(dir.path().join("environments/dev.toml"), "[options.region.east]\nhost = \"e\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("environments/qa.toml"),
+            "[options.region.west]\nhost = \"w\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("environments/dev.toml"),
+            "[options.region.east]\nhost = \"e\"\n",
+        )
+        .unwrap();
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         p.set_selection_for("qa", "region", "west");
         assert!(p.resolved().values.get("host").is_none());

@@ -150,7 +150,9 @@ impl App {
         let tab = self.manage.tab;
         let Self { project, varmanager, manage, .. } = self;
         match (tab, to_detail) {
-            (ManageTab::Variables, true) => project.as_ref().is_some_and(|p| varmanager.enter_detail(p)),
+            (ManageTab::Variables, true) => {
+                project.as_ref().is_some_and(|p| varmanager.enter_detail(p))
+            }
             (ManageTab::Variables, false) => varmanager.leave_detail(),
             (_, true) => project.as_ref().is_some_and(|p| manage.list.enter_detail(tab, p)),
             (_, false) => {
@@ -192,7 +194,11 @@ impl App {
     fn editor_tab_strip(&self) -> (Vec<Option<Action>>, usize) {
         (
             (0..EditorTab::COUNT)
-                .map(|i| self.editor.tab_enabled(EditorTab::from_draw_position(i)).then_some(Action::EditorTabSelect(i)))
+                .map(|i| {
+                    self.editor
+                        .tab_enabled(EditorTab::from_draw_position(i))
+                        .then_some(Action::EditorTabSelect(i))
+                })
                 .collect(),
             self.editor.active_tab.draw_position(),
         )
@@ -217,7 +223,10 @@ impl App {
 }
 
 /// Where a tab key goes on a strip (see [`App::tab_target`]).
-pub(super) fn strip_target((strip, showing): (Vec<Option<Action>>, usize), to: TabTo) -> Option<Action> {
+pub(super) fn strip_target(
+    (strip, showing): (Vec<Option<Action>>, usize),
+    to: TabTo,
+) -> Option<Action> {
     let target = match to {
         TabTo::Nth(n) => n.checked_sub(1).filter(|i| strip.get(*i).is_some_and(Option::is_some))?,
         TabTo::By(delta) => {
@@ -233,7 +242,8 @@ pub(super) fn strip_target((strip, showing): (Vec<Option<Action>>, usize), to: T
                 Err(i) if delta > 0 => i as i64 - 1,
                 Err(i) => i as i64,
             };
-            enabled[(at + delta.rem_euclid(enabled.len() as i64)).rem_euclid(enabled.len() as i64) as usize]
+            enabled[(at + delta.rem_euclid(enabled.len() as i64)).rem_euclid(enabled.len() as i64)
+                as usize]
         }
     };
     if target == showing {

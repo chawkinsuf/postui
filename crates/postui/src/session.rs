@@ -199,12 +199,8 @@ impl Session {
         }
         self.send_generation += 1;
         let generation = self.send_generation;
-        self.response_for(slug).set_state(
-            ResponseState::InFlight {
-                started: Instant::now(),
-            },
-            generation,
-        );
+        self.response_for(slug)
+            .set_state(ResponseState::InFlight { started: Instant::now() }, generation);
         generation
     }
 
@@ -222,8 +218,7 @@ impl Session {
         // `deliver` only accepts generations it can still find here.
         self.send_generation += 1;
         let generation = self.send_generation;
-        self.response_for(&inflight.slug)
-            .set_state(ResponseState::Cancelled, generation);
+        self.response_for(&inflight.slug).set_state(ResponseState::Cancelled, generation);
         true
     }
 
@@ -243,11 +238,7 @@ impl Session {
         // A result is current exactly while its send is still tracked:
         // cancel and same-request supersession both remove the entry, so
         // a raced or stale result finds nothing and is dropped.
-        let Some(i) = self
-            .in_flight
-            .iter()
-            .position(|f| f.generation == generation)
-        else {
+        let Some(i) = self.in_flight.iter().position(|f| f.generation == generation) else {
             return false;
         };
         let slug = self.in_flight.remove(i).slug;
@@ -341,35 +332,23 @@ mod tests {
     fn big_responses_beyond_the_last_few_shed_their_trees_and_reparse_on_return() {
         use crate::components::json_tree::JsonTree;
         use crate::components::response::SYNC_PRETTY_BYTES;
-        let big = |n: usize| {
-            format!(
-                r#"{{"pad": "{}", "n": {n}}}"#,
-                "x".repeat(SYNC_PRETTY_BYTES)
-            )
-        };
+        let big = |n: usize| format!(r#"{{"pad": "{}", "n": {n}}}"#, "x".repeat(SYNC_PRETTY_BYTES));
         let mut s = Session::default();
         // A small response and KEEP_WARM + 1 big ones, each parsed.
         open(&mut s, "small");
-        s.response
-            .set_state(ResponseState::Ready(data("{\"n\": 0}")), 0);
+        s.response.set_state(ResponseState::Ready(data("{\"n\": 0}")), 0);
         for i in 1..=KEEP_WARM + 1 {
             open(&mut s, &format!("big{i}"));
             let body = big(i);
-            s.response
-                .set_state(ResponseState::Ready(data(&body)), i as u64);
+            s.response.set_state(ResponseState::Ready(data(&body)), i as u64);
             assert!(s.response.attach_tree(i as u64, JsonTree::parse(&body)));
         }
         open(&mut s, "elsewhere");
         let has_tree = |s: &Session, slug: &str| {
-            s.cache[&Some(slug.to_string())]
-                .view()
-                .is_some_and(|v| v.tree.is_some())
+            s.cache[&Some(slug.to_string())].view().is_some_and(|v| v.tree.is_some())
         };
         assert!(has_tree(&s, "small"), "a small response is never shed");
-        assert!(
-            !has_tree(&s, "big1"),
-            "the oldest big one past KEEP_WARM sheds its tree"
-        );
+        assert!(!has_tree(&s, "big1"), "the oldest big one past KEEP_WARM sheds its tree");
         for i in 2..=KEEP_WARM + 1 {
             assert!(has_tree(&s, &format!("big{i}")), "big{i} stays warm");
         }
@@ -390,26 +369,21 @@ mod tests {
         assert_eq!((generation, body.len()), (1, big(1).len()));
         assert_eq!(s.response.take_reparse(), None, "handed out once");
         assert!(s.response.attach_tree(generation, JsonTree::parse(&body)));
-        assert!(
-            s.response.view().unwrap().tree.is_some(),
-            "the tree is back"
-        );
+        assert!(s.response.view().unwrap().tree.is_some(), "the tree is back");
     }
 
     #[test]
     fn switching_open_request_swaps_to_cached_or_empty_response() {
         let mut s = Session::default();
         open(&mut s, "a");
-        s.response
-            .set_state(ResponseState::Ready(data("from a")), 0);
+        s.response.set_state(ResponseState::Ready(data("from a")), 0);
 
         open(&mut s, "b");
         assert!(
             matches!(s.response.state(), ResponseState::Empty),
             "a request never sent shows an empty response, not a's leftovers"
         );
-        s.response
-            .set_state(ResponseState::Ready(data("from b")), 0);
+        s.response.set_state(ResponseState::Ready(data("from b")), 0);
 
         open(&mut s, "a");
         assert_eq!(body_of(&s.response), Some("from a"));
@@ -421,8 +395,7 @@ mod tests {
     fn collapsed_is_a_layout_preference_that_sticks_across_request_switches() {
         let mut s = Session::default();
         open(&mut s, "a");
-        s.response
-            .set_state(ResponseState::Ready(data("from a")), 0);
+        s.response.set_state(ResponseState::Ready(data("from a")), 0);
         s.response.collapsed = true;
 
         open(&mut s, "b");
@@ -440,8 +413,7 @@ mod tests {
     fn jq_tab_is_a_config_setting_that_sticks_across_request_switches() {
         let mut s = Session::default();
         open(&mut s, "a");
-        s.response
-            .set_state(ResponseState::Ready(data("from a")), 0);
+        s.response.set_state(ResponseState::Ready(data("from a")), 0);
         s.response.set_jq_tab(crate::config::JqTab::Cycle);
 
         open(&mut s, "b");
@@ -512,10 +484,7 @@ mod tests {
         open(&mut s, "b");
         let second = s.begin_send(&Some("b".into()));
         s.in_flight.push(in_flight(second, "b").await);
-        assert!(
-            s.is_in_flight(&Some("a".into())),
-            "b's send leaves a's running"
-        );
+        assert!(s.is_in_flight(&Some("a".into())), "b's send leaves a's running");
         assert!(s.is_in_flight(&Some("b".into())));
 
         assert!(s.arrived(first, data("from a")), "a's result still lands");
@@ -609,14 +578,8 @@ mod tests {
 
         // The user moves on while the parse is still running.
         open(&mut s, "b");
-        assert!(
-            s.tree_arrived(generation, Some(tree)),
-            "the parse finds a's cached slot"
-        );
-        assert!(
-            !s.tree_arrived(generation, None),
-            "and nothing is left waiting for it"
-        );
+        assert!(s.tree_arrived(generation, Some(tree)), "the parse finds a's cached slot");
+        assert!(!s.tree_arrived(generation, None), "and nothing is left waiting for it");
 
         open(&mut s, "a");
         let view = s.response.view().unwrap();
@@ -628,8 +591,7 @@ mod tests {
     fn reset_forgets_cached_responses() {
         let mut s = Session::default();
         open(&mut s, "a");
-        s.response
-            .set_state(ResponseState::Ready(data("old project")), 0);
+        s.response.set_state(ResponseState::Ready(data("old project")), 0);
         open(&mut s, "b");
 
         s.reset();

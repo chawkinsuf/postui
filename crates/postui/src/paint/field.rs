@@ -88,11 +88,11 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(20, 5)).unwrap();
         term.draw(|f| {
             crate::paint::fill(f.buffer_mut(), Rect::new(0, 0, 20, 5), theme.page);
-            TextField {
-                content: Line::from("hello"),
-                state,
-            }
-            .paint(f.buffer_mut(), Rect::new(0, 1, 20, FIELD_HEIGHT), theme);
+            TextField { content: Line::from("hello"), state }.paint(
+                f.buffer_mut(),
+                Rect::new(0, 1, 20, FIELD_HEIGHT),
+                theme,
+            );
         })
         .unwrap();
         term
@@ -124,11 +124,7 @@ mod tests {
         let buf = term.backend().buffer();
         let lifted = crate::theme::lift_color(theme.control, 0.12);
         assert_eq!(buf.cell((FIELD_PAD, 2)).unwrap().bg, lifted);
-        assert_eq!(
-            buf.cell((0, 1)).unwrap().fg,
-            lifted,
-            "the cap follows the lifted fill"
-        );
+        assert_eq!(buf.cell((0, 1)).unwrap().fg, lifted, "the cap follows the lifted fill");
         // Nothing outside the block changed: no ring.
         assert_eq!(buf.cell((0, 0)).unwrap().bg, theme.page);
         assert_eq!(buf.cell((0, 4)).unwrap().bg, theme.page);
@@ -146,13 +142,7 @@ mod tests {
         ] {
             let term = draw(state, &theme);
             for y in 1..4 {
-                let s = term
-                    .backend()
-                    .buffer()
-                    .cell((0, y))
-                    .unwrap()
-                    .symbol()
-                    .to_string();
+                let s = term.backend().buffer().cell((0, y)).unwrap().symbol().to_string();
                 assert!(
                     s != "\u{2594}" && s != "\u{2581}",
                     "{state:?} row {y} painted a bevel ({s:?})"
@@ -168,11 +158,7 @@ mod tests {
         let cell = term.backend().buffer().cell((FIELD_PAD, 2)).unwrap();
         assert_eq!(
             cell.fg,
-            crate::theme::mix(
-                theme.control,
-                theme.text_muted,
-                crate::paint::DISABLED_LABEL_MIX
-            )
+            crate::theme::mix(theme.control, theme.text_muted, crate::paint::DISABLED_LABEL_MIX)
         );
     }
 

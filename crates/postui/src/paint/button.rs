@@ -81,12 +81,11 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(20, 5)).unwrap();
         term.draw(|f| {
             crate::paint::fill(f.buffer_mut(), Rect::new(0, 0, 20, 5), theme.page);
-            Button {
-                label: "Send",
-                kind,
-                state,
-            }
-            .paint(f.buffer_mut(), Rect::new(0, 1, 20, 3), theme);
+            Button { label: "Send", kind, state }.paint(
+                f.buffer_mut(),
+                Rect::new(0, 1, 20, 3),
+                theme,
+            );
         })
         .unwrap();
         term
@@ -144,10 +143,7 @@ mod tests {
         for kind in [ButtonKind::Primary, ButtonKind::Secondary] {
             let hover = control_face(&theme, kind, ControlState::Hover).0;
             let focused = control_face(&theme, kind, ControlState::Focused).0;
-            assert!(
-                l(focused) > l(hover),
-                "{kind:?}: Focused must read brighter than Hover"
-            );
+            assert!(l(focused) > l(hover), "{kind:?}: Focused must read brighter than Hover");
         }
     }
 
@@ -159,11 +155,7 @@ mod tests {
         assert_eq!(mid.bg, theme.control, "disabled drops to the neutral face");
         assert_eq!(
             mid.fg,
-            crate::theme::mix(
-                theme.control,
-                theme.text_muted,
-                crate::paint::DISABLED_LABEL_MIX
-            )
+            crate::theme::mix(theme.control, theme.text_muted, crate::paint::DISABLED_LABEL_MIX)
         );
     }
 
@@ -174,12 +166,8 @@ mod tests {
         term.draw(|f| {
             // A button in a list column sits on `panel`, not `page`.
             crate::paint::fill(f.buffer_mut(), Rect::new(0, 0, 20, 5), theme.panel);
-            Button {
-                label: "Send",
-                kind: ButtonKind::Secondary,
-                state: ControlState::Normal,
-            }
-            .paint(f.buffer_mut(), Rect::new(0, 1, 20, 3), &theme);
+            Button { label: "Send", kind: ButtonKind::Secondary, state: ControlState::Normal }
+                .paint(f.buffer_mut(), Rect::new(0, 1, 20, 3), &theme);
         })
         .unwrap();
         assert_eq!(
@@ -202,12 +190,8 @@ mod tests {
         term.draw(|f| {
             crate::paint::fill(f.buffer_mut(), Rect::new(0, 0, 20, 5), theme.page);
             painted = Some(
-                Button {
-                    label: "Delete",
-                    kind: ButtonKind::Secondary,
-                    state: ControlState::Hover,
-                }
-                .paint(f.buffer_mut(), area, &theme),
+                Button { label: "Delete", kind: ButtonKind::Secondary, state: ControlState::Hover }
+                    .paint(f.buffer_mut(), area, &theme),
             );
         })
         .unwrap();
@@ -226,12 +210,8 @@ mod tests {
         term.draw(|f| {
             crate::paint::fill(f.buffer_mut(), Rect::new(0, 0, 20, 5), theme.page);
             painted = Some(
-                Button {
-                    label: "Delete",
-                    kind: ButtonKind::Secondary,
-                    state: ControlState::Hover,
-                }
-                .paint(f.buffer_mut(), area, &theme),
+                Button { label: "Delete", kind: ButtonKind::Secondary, state: ControlState::Hover }
+                    .paint(f.buffer_mut(), area, &theme),
             );
         })
         .unwrap();
@@ -247,12 +227,8 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(20, 5)).unwrap();
         term.draw(|f| {
             crate::paint::fill(f.buffer_mut(), Rect::new(0, 0, 20, 5), theme.page);
-            Button {
-                label: "Rename",
-                kind: ButtonKind::Secondary,
-                state: ControlState::Normal,
-            }
-            .paint(f.buffer_mut(), area, &theme);
+            Button { label: "Rename", kind: ButtonKind::Secondary, state: ControlState::Normal }
+                .paint(f.buffer_mut(), area, &theme);
         })
         .unwrap();
         let face = control_face(&theme, ButtonKind::Secondary, ControlState::Normal).0;
@@ -261,11 +237,7 @@ mod tests {
             assert_eq!(top.symbol(), CAP_TOP, "top cap at x={x}");
             assert_eq!(top.fg, face);
             assert_eq!(top.bg, theme.page);
-            assert_eq!(
-                buf_cell(&term, x, area.y + 1).bg,
-                face,
-                "label row at x={x}"
-            );
+            assert_eq!(buf_cell(&term, x, area.y + 1).bg, face, "label row at x={x}");
             let bottom = buf_cell(&term, x, area.y + 2);
             assert_eq!(bottom.symbol(), CAP_BOTTOM, "bottom cap at x={x}");
             assert_eq!(bottom.fg, theme.page);

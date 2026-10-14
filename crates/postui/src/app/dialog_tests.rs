@@ -148,7 +148,10 @@ fn j_in_a_prompts_normal_aims_the_buttons() {
 fn on_toggle(app: &App) -> bool {
     matches!(
         app.modals.top(),
-        Some(Modal::Prompt { kind: crate::components::modal::PromptKind::NewSelector { on_toggle: true, .. }, .. })
+        Some(Modal::Prompt {
+            kind: crate::components::modal::PromptKind::NewSelector { on_toggle: true, .. },
+            ..
+        })
     )
 }
 
@@ -332,7 +335,11 @@ fn a_popped_prompt_leaves_the_form_under_it_alone() {
     app.update(Action::CancelTopModal);
     app.vim_catch_up();
     assert!(matches!(app.modals.top(), Some(Modal::MultiPrompt { .. })));
-    assert_eq!(app.modals.text_input_mut(0).map(|i| i.cursor()), caret, "the form's field kept its caret");
+    assert_eq!(
+        app.modals.text_input_mut(0).map(|i| i.cursor()),
+        caret,
+        "the form's field kept its caret"
+    );
     assert_eq!(app.vim.modal_glue.session(), FieldSession::None);
     assert_eq!(app.vim.modal_session, None);
 }
@@ -532,7 +539,11 @@ fn the_jq_bars_tab_completes_a_quoted_key_in_vim() {
     assert_eq!(app.session.response.jq_text(), ".\"my key\"");
     assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Jq));
     feed(&mut app, "z");
-    assert_eq!(app.session.response.jq_text(), ".\"my key\"z", "the engine types on after the rewrite");
+    assert_eq!(
+        app.session.response.jq_text(),
+        ".\"my key\"z",
+        "the engine types on after the rewrite"
+    );
 }
 
 /// Arrows parity (Task 4 review): any key the engine takes leaves the jq
@@ -553,7 +564,11 @@ fn a_move_leaves_the_jq_menu_row_keeping_the_candidate() {
         assert!(!app.session.response.jq_menu_open(), "{profile:?}: the move left the row");
         feed(&mut app, "<Esc>");
         assert!(!app.session.response.jq_focused(), "{profile:?}: Esc left the bar");
-        assert_eq!(app.session.response.jq_text(), ".\"my key\"", "{profile:?}: keeping the candidate");
+        assert_eq!(
+            app.session.response.jq_text(),
+            ".\"my key\"",
+            "{profile:?}: keeping the candidate"
+        );
     }
 }
 
@@ -584,7 +599,9 @@ fn a_click_from_the_jq_bar_into_the_url_does_not_carry_insert_only() {
     assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Jq));
     let area = app.editor.last_url_text_area.expect("the URL line was drawn");
     app.handle_mouse(ratatui::crossterm::event::MouseEvent {
-        kind: ratatui::crossterm::event::MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
+        kind: ratatui::crossterm::event::MouseEventKind::Down(
+            ratatui::crossterm::event::MouseButton::Left,
+        ),
         column: area.x,
         row: area.y,
         modifiers: KeyModifiers::NONE,
@@ -671,9 +688,11 @@ fn ctrl_r_reveals_the_secret_prompt_in_both_profiles() {
 fn ctrl_shift_r_reveals_the_secret_prompt_in_arrows() {
     let mut arrows = arrows_app(Fixture::SidebarThree);
     secret_prompt(&mut arrows);
-    arrows.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::CONTROL | KeyModifiers::SHIFT));
+    arrows
+        .handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::CONTROL | KeyModifiers::SHIFT));
     assert!(revealed(&arrows));
-    arrows.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL | KeyModifiers::SHIFT));
+    arrows
+        .handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL | KeyModifiers::SHIFT));
     assert!(matches!(arrows.modals.top(), Some(Modal::Prompt { revealed: false, .. })));
 }
 

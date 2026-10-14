@@ -165,7 +165,12 @@ impl View {
     /// Vim's `scroll_cursor_bot()`: put the caret's line at the bottom,
     /// scrolling at least `min_scroll`; `set_topbot` (`zb`) first sets the
     /// window so the caret's line is its last row.
-    pub(crate) fn scroll_cursor_bot<R: Rows>(self, buf: &mut R, min_scroll: usize, set_topbot: bool) {
+    pub(crate) fn scroll_cursor_bot<R: Rows>(
+        self,
+        buf: &mut R,
+        min_scroll: usize,
+        set_topbot: bool,
+    ) {
         let lines = buf.lines();
         let cur = buf.cur_row();
         if set_topbot {
@@ -186,7 +191,9 @@ impl View {
         while loff > 0 {
             // Vim: `(((scrolled <= 0 || scrolled >= min_scroll) && extra >= so)
             // || boff + 1 > line_count) && loff <= botline`, with `so = 0`.
-            if ((scrolled <= 0 || scrolled >= min_scroll as isize) || boff + 1 >= lines) && loff <= bot {
+            if ((scrolled <= 0 || scrolled >= min_scroll as isize) || boff + 1 >= lines)
+                && loff <= bot
+            {
                 break;
             }
             loff -= 1;
@@ -244,7 +251,12 @@ impl View {
     /// Vim's `scroll_cursor_halfway()`: the caret's line in the middle.
     /// `atend` counts `~` rows past the end as used (`zz`); `prefer_above`
     /// adds a line above before one below.
-    pub(crate) fn scroll_cursor_halfway<R: Rows>(self, buf: &mut R, atend: bool, prefer_above: bool) {
+    pub(crate) fn scroll_cursor_halfway<R: Rows>(
+        self,
+        buf: &mut R,
+        atend: bool,
+        prefer_above: bool,
+    ) {
         let lines = buf.lines();
         let cur = buf.cur_row();
         let (mut above, mut below, mut used) = (0usize, 0usize, 1usize);
@@ -253,7 +265,11 @@ impl View {
         while topline > 0 {
             let mut done = false;
             for round in 1..=2 {
-                let add_below = if prefer_above { round == 2 && below < above } else { round == 1 && below <= above };
+                let add_below = if prefer_above {
+                    round == 2 && below < above
+                } else {
+                    round == 1 && below <= above
+                };
                 if add_below {
                     if boff + 1 < lines {
                         boff += 1;
@@ -270,7 +286,11 @@ impl View {
                         }
                     }
                 }
-                let add_above = if prefer_above { round == 1 && below >= above } else { round == 1 && below > above };
+                let add_above = if prefer_above {
+                    round == 1 && below >= above
+                } else {
+                    round == 1 && below > above
+                };
                 if add_above {
                     loff -= 1;
                     if loff < 0 {
@@ -347,7 +367,13 @@ impl View {
     /// at the height) and move the caret as many; when the text's end (or
     /// start) is reached the caret moves the rest. Ends with
     /// `cursor_correct()`; the caller lands on the first non-blank.
-    pub(crate) fn halfpage<R: Rows>(self, buf: &mut R, down: bool, count: usize, scroll: &mut Option<usize>) {
+    pub(crate) fn halfpage<R: Rows>(
+        self,
+        buf: &mut R,
+        down: bool,
+        count: usize,
+        scroll: &mut Option<usize>,
+    ) {
         if count > 0 {
             *scroll = Some(count.min(self.height));
         }
@@ -476,7 +502,14 @@ impl Engine {
     /// `ctrl+d ctrl+u ctrl+f ctrl+b` (Vim's `nv_halfpage()` and
     /// `nv_page()`). A one-line field never gets here in Normal (declined)
     /// and treats them as failed motions in Visual: nothing happens.
-    pub(super) fn exec_scroll<B: TextBuf>(&mut self, how: Scroll, count: usize, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) {
+    pub(super) fn exec_scroll<B: TextBuf>(
+        &mut self,
+        how: Scroll,
+        count: usize,
+        buf: &mut B,
+        st: &mut BufState,
+        ctx: &ViewCtx,
+    ) {
         let Some(view) = View::of::<B>(ctx) else { return };
         let before = buf.cursor();
         let ok = match how {
@@ -515,7 +548,14 @@ impl Engine {
     /// `$3zzj` still reaches the end of the line below).
     /// Without a window the line still changes and only the placement has
     /// nothing to do (Deviation 12).
-    pub(super) fn exec_scroll_cursor<B: TextBuf>(&mut self, place: Screen, count: usize, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) {
+    pub(super) fn exec_scroll_cursor<B: TextBuf>(
+        &mut self,
+        place: Screen,
+        count: usize,
+        buf: &mut B,
+        st: &mut BufState,
+        ctx: &ViewCtx,
+    ) {
         if count > 0 {
             let row = (count - 1).min(buf.line_count() - 1);
             let before = buf.cursor();

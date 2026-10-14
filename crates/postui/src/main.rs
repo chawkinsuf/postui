@@ -120,12 +120,8 @@ fn enable_mouse_and_wrap_panic_hook() {
     // ctrl+shift+V on Linux) arrive as one `Event::Paste` instead of a
     // flood of synthetic keypresses — without it, any newline in the
     // pasted text acts as a real Enter (committing cells, firing modals).
-    let _ = execute!(
-        std::io::stdout(),
-        EnableMouseCapture,
-        EnableFocusChange,
-        EnableBracketedPaste
-    );
+    let _ =
+        execute!(std::io::stdout(), EnableMouseCapture, EnableFocusChange, EnableBracketedPaste);
     // The terminal cursor is hidden everywhere but the focused jq filter
     // bar (`ui::draw`), where it stands in for the painted caret so the
     // completion ghost can trail a thin bar. Shaped once here — the shape
@@ -135,10 +131,7 @@ fn enable_mouse_and_wrap_panic_hook() {
     // keyboard protocol; without it Ctrl+Y is the redo binding that works.
     // The tier pushed lives in `keys::app_enhancement_flags` (shared with
     // `--keydump` so the diagnostic reproduces the app's input conditions).
-    if matches!(
-        ratatui::crossterm::terminal::supports_keyboard_enhancement(),
-        Ok(true)
-    ) {
+    if matches!(ratatui::crossterm::terminal::supports_keyboard_enhancement(), Ok(true)) {
         let _ = execute!(
             std::io::stdout(),
             PushKeyboardEnhancementFlags(postui::keys::app_enhancement_flags())
@@ -193,16 +186,11 @@ async fn run(
     // Same probe `enable_mouse_and_wrap_panic_hook` keys the enhancement
     // push off: where the terminal can report Shift+Enter, advertise it as
     // the send key; elsewhere the footer keeps showing ^R.
-    app.shift_enter_send = matches!(
-        ratatui::crossterm::terminal::supports_keyboard_enhancement(),
-        Ok(true)
-    );
+    app.shift_enter_send =
+        matches!(ratatui::crossterm::terminal::supports_keyboard_enhancement(), Ok(true));
     let mut events = EventStream::new();
 
-    app.update(Action::ShowToast(
-        "Welcome to postui".into(),
-        ToastKind::Info,
-    ));
+    app.update(Action::ShowToast("Welcome to postui".into(), ToastKind::Info));
     if debug_ai {
         let toast = match postui::ai::debug_log_path() {
             Some(path) => {
@@ -210,10 +198,9 @@ async fn run(
                 app.ai_log = Some(path);
                 toast
             }
-            None => (
-                "--debug-ai: no state directory for this platform".to_string(),
-                ToastKind::Error,
-            ),
+            None => {
+                ("--debug-ai: no state directory for this platform".to_string(), ToastKind::Error)
+            }
         };
         app.update(Action::ShowToast(toast.0, toast.1));
     }
@@ -436,11 +423,7 @@ fn spawn_editor(
     path: &std::path::Path,
 ) -> anyhow::Result<bool> {
     let command = std::env::var("EDITOR").unwrap_or_default();
-    let command = if command.trim().is_empty() {
-        "vi".to_string()
-    } else {
-        command
-    };
+    let command = if command.trim().is_empty() { "vi".to_string() } else { command };
     // `$EDITOR` conventionally may carry flags (e.g. `code -w`).
     let mut parts = command.split_whitespace();
     let program = parts.next().unwrap_or("vi").to_string();
@@ -457,10 +440,7 @@ fn spawn_editor(
     drain_pending_input();
     ratatui::restore();
 
-    let status = std::process::Command::new(&program)
-        .args(&args)
-        .arg(path)
-        .status();
+    let status = std::process::Command::new(&program).args(&args).arg(path).status();
 
     *terminal = ratatui::init();
     enable_mouse_and_wrap_panic_hook();
@@ -469,10 +449,7 @@ fn spawn_editor(
     match status {
         Ok(s) if s.success() => Ok(true),
         Ok(s) => {
-            app.update(Action::ShowToast(
-                format!("{program} exited with {s}"),
-                ToastKind::Error,
-            ));
+            app.update(Action::ShowToast(format!("{program} exited with {s}"), ToastKind::Error));
             Ok(false)
         }
         Err(e) => {

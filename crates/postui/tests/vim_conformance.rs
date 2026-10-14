@@ -12,8 +12,8 @@ use edtui::{EditorState, Lines};
 use postui::components::line_input::LineInput;
 use postui::vim::engine::settings::SETTINGS_LINE;
 use postui::vim::engine::{
-    BodyBuf, BufState, Engine, Mode, OneLineBuf, Outcome, Pos, RegKind, Register, Seat, Shape, Start, Target,
-    TextBuf, ViewCtx,
+    BodyBuf, BufState, Engine, Mode, OneLineBuf, Outcome, Pos, RegKind, Register, Seat, Shape,
+    Start, Target, TextBuf, ViewCtx,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
@@ -70,12 +70,18 @@ struct Case {
 /// computed ids and their groups' status.
 fn load(text: &str) -> (Header, Vec<Case>) {
     let mut lines = text.lines();
-    let header = serde_json::from_str::<HeaderLine>(lines.next().expect("a header line")).expect("the header").header;
+    let header = serde_json::from_str::<HeaderLine>(lines.next().expect("a header line"))
+        .expect("the header")
+        .header;
     let cases = lines
         .map(|l| {
             let mut case: Case = serde_json::from_str(l).expect("a golden row");
-            case.id = format!("{}/{}@{}:{}/{}", case.group, case.text, case.cursor[0], case.cursor[1], case.keys);
-            case.status = header.groups.get(&case.group).map_or("ship", |g| g.status.as_str()).to_string();
+            case.id = format!(
+                "{}/{}@{}:{}/{}",
+                case.group, case.text, case.cursor[0], case.cursor[1], case.keys
+            );
+            case.status =
+                header.groups.get(&case.group).map_or("ship", |g| g.status.as_str()).to_string();
             case
         })
         .collect();
@@ -267,7 +273,13 @@ fn count_echo(echo: &str) -> &str {
     }
 }
 
-fn drive<B: TextBuf>(engine: &mut Engine, buf: &mut B, state: &mut BufState, case: &Case, ctx: &ViewCtx) -> Run {
+fn drive<B: TextBuf>(
+    engine: &mut Engine,
+    buf: &mut B,
+    state: &mut BufState,
+    case: &Case,
+    ctx: &ViewCtx,
+) -> Run {
     engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut *buf, state: &mut *state });
     for token in tokens(&case.keys) {
         // Spec §6.5: the one-line run's first rule (a one-line result) is
@@ -301,7 +313,11 @@ fn drive<B: TextBuf>(engine: &mut Engine, buf: &mut B, state: &mut BufState, cas
         // `yyf,<C-r>pcwY<Esc>dd<Esc>`), so the put skips the run outright.
         // The register is the one the pending prefix names (`"0p`).
         let echo = engine.echo();
-        let named = if echo.starts_with("\"0") { engine.registers().zero() } else { engine.registers().unnamed() };
+        let named = if echo.starts_with("\"0") {
+            engine.registers().zero()
+        } else {
+            engine.registers().unnamed()
+        };
         if !B::MULTILINE
             && engine.mode() == Mode::Normal
             && matches!(token.as_str(), "p" | "P")
@@ -326,8 +342,10 @@ fn drive<B: TextBuf>(engine: &mut Engine, buf: &mut B, state: &mut BufState, cas
         {
             return Run::Skipped;
         }
-        let inserting = matches!(engine.mode(), Mode::Insert | Mode::Replace | Mode::InsertNormal { .. });
-        let out = engine.handle(key_event(&token), Target { buf: &mut *buf, state: &mut *state }, ctx);
+        let inserting =
+            matches!(engine.mode(), Mode::Insert | Mode::Replace | Mode::InsertNormal { .. });
+        let out =
+            engine.handle(key_event(&token), Target { buf: &mut *buf, state: &mut *state }, ctx);
         // A one-line field hands Insert keys it doesn't own (Tab, Up,
         // Down) to the app, where Vim gives them an effect (spec §6.5).
         if inserting && !B::MULTILINE && matches!(out, Outcome::Declined { .. }) {
@@ -335,7 +353,10 @@ fn drive<B: TextBuf>(engine: &mut Engine, buf: &mut B, state: &mut BufState, cas
         }
     }
     if engine.pending() {
-        return Run::Broken(format!("ends half-typed (echo {:?}): move it to an S test", engine.echo()));
+        return Run::Broken(format!(
+            "ends half-typed (echo {:?}): move it to an S test",
+            engine.echo()
+        ));
     }
     let caret = buf.cursor();
     let reg = engine.registers().unnamed();
@@ -393,12 +414,32 @@ fn agrees(a: &Actual, e: &Expect) -> bool {
 }
 
 fn diff(case: &Case, buf: Buf, input: &[String], e: &Expect, a: &Actual) -> String {
-    let said = if case.errmsg.is_empty() { String::new() } else { format!("\n    vim said {:?}", case.errmsg) };
+    let said = if case.errmsg.is_empty() {
+        String::new()
+    } else {
+        format!("\n    vim said {:?}", case.errmsg)
+    };
     format!(
         "{} [{}] keys {:?}\n    input  {:?} @{:?}\n    vim    {:?} @{:?} {} visual {:?} reg {:?}/{} top {:?}\n    engine {:?} @{:?} {} visual {:?} reg {:?}/{} top {:?}{said}",
-        case.id, buf_name(buf), case.keys, input, case.cursor,
-        e.lines.as_ref().expect("resolved"), e.cursor, e.mode, e.visual, e.reg, e.regtype, e.top,
-        a.lines, a.cursor, a.mode, a.visual, a.reg, a.regtype, a.top,
+        case.id,
+        buf_name(buf),
+        case.keys,
+        input,
+        case.cursor,
+        e.lines.as_ref().expect("resolved"),
+        e.cursor,
+        e.mode,
+        e.visual,
+        e.reg,
+        e.regtype,
+        e.top,
+        a.lines,
+        a.cursor,
+        a.mode,
+        a.visual,
+        a.reg,
+        a.regtype,
+        a.top,
     )
 }
 
@@ -462,7 +503,10 @@ impl Report {
             pass += t.pass;
             fail += t.fail;
             let flag = if t.fail > 0 { "  FAIL" } else { "" };
-            println!("  {group:<32} {:>5}/{:<4} {:>5}/{:<4} {:>4}{flag}", t.pass, t.fail, t.later_pass, t.later_fail, t.skipped);
+            println!(
+                "  {group:<32} {:>5}/{:<4} {:>5}/{:<4} {:>4}{flag}",
+                t.pass, t.fail, t.later_pass, t.later_fail, t.skipped
+            );
             if t.later_pass > 0 && t.later_fail == 0 && t.fail == 0 && t.pass == 0 {
                 println!("    ^ every 'later' run passes: switch this group to status = \"ship\"");
             }
@@ -500,18 +544,26 @@ fn check(
                 continue;
             }
             let tally = report.tallies.entry(case.group.clone()).or_default();
-            let div = divs.iter().position(|d| glob(&d.id, &case.id) && (d.buffer == "both" || d.buffer == buf_name(buf)));
+            let div = divs.iter().position(|d| {
+                glob(&d.id, &case.id) && (d.buffer == "both" || d.buffer == buf_name(buf))
+            });
             if let Some(i) = div {
                 used[i] = true;
             }
             if div.is_some_and(|i| divs[i].skip) {
                 // A skip may exist because the engine panics, so catch that.
                 // Still run it: a skip the engine no longer needs is stale.
-                let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_case(case, input, buf, rows)));
+                let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_case(case, input, buf, rows)
+                }));
                 if let Ok(Run::Done(actual)) = run
                     && agrees(&actual, &expected(case, input, None))
                 {
-                    report.stale.push(format!("{} [{}]: the engine now matches Vim; delete the skip", case.id, buf_name(buf)));
+                    report.stale.push(format!(
+                        "{} [{}]: the engine now matches Vim; delete the skip",
+                        case.id,
+                        buf_name(buf)
+                    ));
                 }
                 tally.skipped += 1;
                 continue;
@@ -530,7 +582,11 @@ fn check(
                 Run::Done(actual) => {
                     let ok = agrees(&actual, &expect);
                     if div.is_some() && agrees(&actual, &expected(case, input, None)) {
-                        report.stale.push(format!("{} [{}]: the engine now matches Vim; delete the divergence", case.id, buf_name(buf)));
+                        report.stale.push(format!(
+                            "{} [{}]: the engine now matches Vim; delete the divergence",
+                            case.id,
+                            buf_name(buf)
+                        ));
                     }
                     if !ok && case.status == "ship" {
                         report.diffs.push(diff(case, buf, input, &expect, &actual));
@@ -578,7 +634,8 @@ fn the_engine_matches_vim() {
         );
     }
     let filter = std::env::var("VIM_CASES").ok();
-    let mut report = check(&cases, &header.texts, header.winheight, &divs.divergence, filter.as_deref());
+    let mut report =
+        check(&cases, &header.texts, header.winheight, &divs.divergence, filter.as_deref());
     if let Ok(path) = std::env::var("VIM_FUZZ") {
         let text = std::fs::read_to_string(&path).expect("the VIM_FUZZ file");
         let (fh, fuzz) = load(&text);
@@ -621,7 +678,10 @@ fn a_divergence_is_stale_when_the_engine_matches_vim() {
         for div in [divergence(false, Some(real_patch.clone())), divergence(true, None)] {
             let skip = div.skip;
             let report = check(&cases, &header.texts, header.winheight, &[div], None);
-            assert!(!report.stale.is_empty(), "{status} skip={skip}: engine matches Vim, so it is stale");
+            assert!(
+                !report.stale.is_empty(),
+                "{status} skip={skip}: engine matches Vim, so it is stale"
+            );
             assert!(report.failed() > 0, "{status} skip={skip}: a stale entry fails the test");
         }
     }

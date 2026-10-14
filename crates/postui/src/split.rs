@@ -60,9 +60,7 @@ impl SplitStop {
     /// instead of jumping the column to the far end.
     pub fn step(self, delta: i8) -> Option<SplitStop> {
         let i = SplitStop::ALL.iter().position(|s| *s == self).unwrap() as i32;
-        SplitStop::ALL
-            .get(usize::try_from(i + i32::from(delta)).ok()?)
-            .copied()
+        SplitStop::ALL.get(usize::try_from(i + i32::from(delta)).ok()?).copied()
     }
 }
 
@@ -174,23 +172,11 @@ mod tests {
     /// Shorthand: a settled state from the editor's share in percent.
     fn at(editor_pct: u8) -> SplitState {
         match editor_pct {
-            100 => SplitState {
-                response_minimized: true,
-                ..Default::default()
-            },
-            0 => SplitState {
-                editor_minimized: true,
-                ..Default::default()
-            },
-            75 => SplitState {
-                ratio: SplitRatio::EditorBig,
-                ..Default::default()
-            },
+            100 => SplitState { response_minimized: true, ..Default::default() },
+            0 => SplitState { editor_minimized: true, ..Default::default() },
+            75 => SplitState { ratio: SplitRatio::EditorBig, ..Default::default() },
             50 => SplitState::default(),
-            25 => SplitState {
-                ratio: SplitRatio::ResponseBig,
-                ..Default::default()
-            },
+            25 => SplitState { ratio: SplitRatio::ResponseBig, ..Default::default() },
             _ => unreachable!(),
         }
     }
@@ -291,11 +277,7 @@ mod tests {
     fn tokens_round_trip_every_settled_state_and_reject_junk() {
         for pct in [0, 25, 50, 75, 100] {
             let s = at(pct);
-            assert_eq!(
-                SplitState::from_token(s.to_token()),
-                Some(s),
-                "state at editor {pct}%"
-            );
+            assert_eq!(SplitState::from_token(s.to_token()), Some(s), "state at editor {pct}%");
         }
         assert_eq!(at(100).to_token(), "editor-full");
         assert_eq!(at(50).to_token(), "even");

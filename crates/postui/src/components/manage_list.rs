@@ -201,12 +201,7 @@ impl ManageList {
             return false;
         };
         let order = items.to_vec();
-        self.drag = Some(ListDrag {
-            tab,
-            name,
-            original: order.clone(),
-            working: order,
-        });
+        self.drag = Some(ListDrag { tab, name, original: order.clone(), working: order });
         self.cursor = i;
         true
     }
@@ -284,14 +279,8 @@ impl ManageList {
     /// reorder action, for alt+↑/↓ and the row menu's Move up/down.
     fn move_action(tab: ManageTab, name: &str, delta: i32) -> Action {
         match tab {
-            ManageTab::Spaces => Action::MoveSpace {
-                name: name.to_string(),
-                delta,
-            },
-            _ => Action::MoveEnv {
-                name: name.to_string(),
-                delta,
-            },
+            ManageTab::Spaces => Action::MoveSpace { name: name.to_string(), delta },
+            _ => Action::MoveEnv { name: name.to_string(), delta },
         }
     }
 
@@ -317,7 +306,9 @@ impl ManageList {
             Verb::Rename => Some(Self::rename_action(tab, selected?)),
             Verb::Delete { .. } => Some(Self::delete_action(tab, selected?)),
             Verb::Move if tab == ManageTab::Spaces => Some(Self::move_all_action(selected?)),
-            Verb::Tls if tab == ManageTab::Environments => Some(Self::cycle_tls_action(ctx, selected?)),
+            Verb::Tls if tab == ManageTab::Environments => {
+                Some(Self::cycle_tls_action(ctx, selected?))
+            }
             _ => None,
         }
     }
@@ -334,10 +325,7 @@ impl ManageList {
         use crate::components::modal::MenuItem;
         let items = Self::items(tab, ctx);
         let name = items.get(i)?.as_str();
-        let mut menu = vec![MenuItem::new(
-            "Rename\u{2026}",
-            Self::rename_action(tab, name),
-        )];
+        let mut menu = vec![MenuItem::new("Rename\u{2026}", Self::rename_action(tab, name))];
         // The edge rows keep their move item, disabled, so the menu holds
         // its shape from row to row.
         let mv = |label: &str, delta: i32, can: bool| {
@@ -350,10 +338,7 @@ impl ManageList {
         menu.push(mv("Move up", -1, i > 0));
         menu.push(mv("Move down", 1, i + 1 < items.len()));
         if tab == ManageTab::Spaces {
-            menu.push(MenuItem::new(
-                "Move all requests\u{2026}",
-                Self::move_all_action(name),
-            ));
+            menu.push(MenuItem::new("Move all requests\u{2026}", Self::move_all_action(name)));
         }
         menu.push(MenuItem::new("Delete", Self::delete_action(tab, name)));
         Some(menu)
@@ -362,11 +347,9 @@ impl ManageList {
     /// The title buttons `tab`'s pane shows, left to right.
     fn buttons(tab: ManageTab) -> &'static [DetailButton] {
         match tab {
-            ManageTab::Spaces => &[
-                DetailButton::MoveAll,
-                DetailButton::Rename,
-                DetailButton::Delete,
-            ],
+            ManageTab::Spaces => {
+                &[DetailButton::MoveAll, DetailButton::Rename, DetailButton::Delete]
+            }
             _ => &[DetailButton::Rename, DetailButton::Delete],
         }
     }
@@ -466,10 +449,7 @@ impl ManageList {
             AimedControl::Button(DetailButton::MoveAll) => Self::move_all_action(name),
             AimedControl::Button(DetailButton::Rename) => Self::rename_action(tab, name),
             AimedControl::Button(DetailButton::Delete) => Self::delete_action(tab, name),
-            AimedControl::Tls(policy) => Action::SetEnvTls {
-                env: name.to_string(),
-                policy,
-            },
+            AimedControl::Tls(policy) => Action::SetEnvTls { env: name.to_string(), policy },
         })
     }
 
@@ -490,10 +470,7 @@ impl ManageList {
         let plain = ev.modifiers.is_empty();
         let ctrl = ev.modifiers == KeyModifiers::CONTROL;
         let rows = Self::detail_rows(tab);
-        let at = rows
-            .iter()
-            .position(|r| *r == self.detail_row)
-            .unwrap_or(0);
+        let at = rows.iter().position(|r| *r == self.detail_row).unwrap_or(0);
         // A row change lands on the row's first painted control (the
         // Settings tab's rule): the columns of unrelated rows don't
         // correspond, so carrying one across would aim at random.
@@ -549,12 +526,7 @@ impl ManageList {
     /// The list's own keys. `q` is the keymap's: arrows reaches Quit through
     /// the screen whitelist, vim's `q` is the router's macro prefix (plan
     /// M4b Deviation 18).
-    pub fn handle_key(
-        &mut self,
-        ev: KeyEvent,
-        tab: ManageTab,
-        ctx: &Project,
-    ) -> Option<Action> {
+    pub fn handle_key(&mut self, ev: KeyEvent, tab: ManageTab, ctx: &Project) -> Option<Action> {
         let len = Self::items(tab, ctx).len();
         // Each navigation arm takes exactly the chord it names: a bare named
         // key, alt+↑/↓ (move the row), ctrl+Home/End (first/last row) or
@@ -622,9 +594,7 @@ impl ManageList {
                 self.step(-self.page(), len);
                 None
             }
-            KeyCode::Delete if plain => {
-                Some(Self::delete_action(tab, self.selected(tab, ctx)?))
-            }
+            KeyCode::Delete if plain => Some(Self::delete_action(tab, self.selected(tab, ctx)?)),
             // `u` / `:` (undo, palette) are deliberately not named: an
             // unclaimed plain key reaches the router's whitelist from the
             // keymap (`App::unclaimed_screen_key`), so `keys.toml` governs
@@ -722,19 +692,10 @@ impl ManageList {
         if self.cursor >= items.len() {
             self.cursor = items.len().saturating_sub(1);
         }
-        let left = Rect {
-            width: LEFT_W.min(body.width),
-            ..body
-        };
-        let right = Rect {
-            x: body.x + left.width,
-            width: body.width - left.width,
-            ..body
-        };
+        let left = Rect { width: LEFT_W.min(body.width), ..body };
+        let right = Rect { x: body.x + left.width, width: body.width - left.width, ..body };
         self.draw_left(frame, left, theme, tab, ctx, &items, hits, hovered);
-        self.draw_right(
-            frame, right, theme, tab, ctx, &items, requests, hits, hovered,
-        );
+        self.draw_right(frame, right, theme, tab, ctx, &items, requests, hits, hovered);
     }
 
     /// The Environments tab's `TLS` row: a label and three segments,
@@ -760,14 +721,9 @@ impl ManageList {
             return;
         }
         let current = env_tls(ctx.meta(), name);
-        let slot = PropertyRow {
-            label: "TLS",
-            label_w,
-            hovered: false,
-            disabled: false,
-            trailing: &[],
-        }
-        .paint(buf, hits, Rect::new(x0, y, row_w, 1), theme);
+        let slot =
+            PropertyRow { label: "TLS", label_w, hovered: false, disabled: false, trailing: &[] }
+                .paint(buf, hits, Rect::new(x0, y, row_w, 1), theme);
         let mut x = slot.rect.x;
         for (col, (seg, policy)) in TLS_SEGMENTS.into_iter().enumerate() {
             let w = pill_min_width(seg);
@@ -777,18 +733,10 @@ impl ManageList {
                 break;
             }
             let hit = Hit::ManageEnvTls(policy);
-            let rect = Rect {
-                x,
-                width: w,
-                ..slot.rect
-            };
+            let rect = Rect { x, width: w, ..slot.rect };
             Pill {
                 label: seg,
-                kind: if policy == current {
-                    ButtonKind::Primary
-                } else {
-                    ButtonKind::Secondary
-                },
+                kind: if policy == current { ButtonKind::Primary } else { ButtonKind::Secondary },
                 state: if self.focus == ListFocus::Detail
                     && self.detail_row == DetailRow::Tls
                     && self.detail_col == col
@@ -829,12 +777,7 @@ impl ManageList {
         // so starting a row down would put the label on `left.y + 2`
         // while the detail pane beside it puts its title-row buttons'
         // labels on `right.y + 1`.
-        let button = Rect {
-            x: left.x + 1,
-            y: left.y,
-            width: left.width - 2,
-            height: TALL_PILL_H,
-        };
+        let button = Rect { x: left.x + 1, y: left.y, width: left.width - 2, height: TALL_PILL_H };
         let state = if hovered == Some(&Hit::ManageNew) {
             ControlState::Hover
         } else {
@@ -843,12 +786,8 @@ impl ManageList {
         // A full-size `Button`, the same one the dialogs use. Its caps
         // take the list column's `panel` straight from the buffer, so
         // sitting off the page needs no special handling here.
-        let painted = Button {
-            label: "+ New",
-            kind: ButtonKind::Primary,
-            state,
-        }
-        .paint(buf, button, theme);
+        let painted =
+            Button { label: "+ New", kind: ButtonKind::Primary, state }.paint(buf, button, theme);
         hits.register(painted, Hit::ManageNew);
 
         let list = Rect {
@@ -868,22 +807,14 @@ impl ManageList {
             }
             self.ensure_visible = false;
         }
-        self.scroll = self
-            .scroll
-            .min(items.len().saturating_sub(self.visible_rows));
-        for (row, i) in (self.scroll..items.len())
-            .enumerate()
-            .take(self.visible_rows)
-        {
+        self.scroll = self.scroll.min(items.len().saturating_sub(self.visible_rows));
+        for (row, i) in (self.scroll..items.len()).enumerate().take(self.visible_rows) {
             let y = list.y + row as u16;
             // The dragged row keeps the selected fill while it travels
             // (the cursor rides with it, so this only matters if the two
             // ever part company). Tab-gated exactly like `items` above:
             // only the drag's own tab lists the names it holds.
-            let dragged = self
-                .drag
-                .as_ref()
-                .is_some_and(|d| d.tab == tab && d.name == items[i]);
+            let dragged = self.drag.as_ref().is_some_and(|d| d.tab == tab && d.name == items[i]);
             let highlight = if dragged || i == self.cursor {
                 RowHighlight::Selected
             } else if hovered == Some(&Hit::ManageRow(i)) {
@@ -891,11 +822,15 @@ impl ManageList {
             } else {
                 RowHighlight::None
             };
-            ListRow {
-                highlight,
-                zebra: None,
-            }
-            .paint(buf, y, list.x, list.width, theme.panel, 1.0, theme);
+            ListRow { highlight, zebra: None }.paint(
+                buf,
+                y,
+                list.x,
+                list.width,
+                theme.panel,
+                1.0,
+                theme,
+            );
             let bg = ListRow::resolve_fill(theme, highlight, theme.panel, 1.0);
             // A row being dragged paints its grip glyph in the row's
             // first cell, which the label never uses — nothing shifts.
@@ -918,15 +853,7 @@ impl ManageList {
                 bg,
                 i == self.cursor,
             );
-            hits.register(
-                Rect {
-                    x: list.x,
-                    y,
-                    width: list.width,
-                    height: 1,
-                },
-                Hit::ManageRow(i),
-            );
+            hits.register(Rect { x: list.x, y, width: list.width, height: 1 }, Hit::ManageRow(i));
         }
     }
 
@@ -954,15 +881,7 @@ impl ManageList {
                 _ => "Select an environment",
             };
             if right.width > 2 && right.height > 1 {
-                text(
-                    buf,
-                    right.x + 2,
-                    right.y + 1,
-                    hint,
-                    theme.text_muted,
-                    theme.page,
-                    false,
-                );
+                text(buf, right.x + 2, right.y + 1, hint, theme.text_muted, theme.page, false);
             }
             return;
         };
@@ -1005,12 +924,7 @@ impl ManageList {
                     break;
                 }
                 bx -= w + 1;
-                let rect = Rect {
-                    x: bx,
-                    y: y - 1,
-                    width: w,
-                    height: TALL_PILL_H,
-                };
+                let rect = Rect { x: bx, y: y - 1, width: w, height: TALL_PILL_H };
                 let state = if self.focus == ListFocus::Detail
                     && self.detail_row == DetailRow::Buttons
                     && self.detail_col == col
@@ -1021,12 +935,8 @@ impl ManageList {
                 } else {
                     ControlState::Normal
                 };
-                let painted = Button {
-                    label,
-                    kind: ButtonKind::Secondary,
-                    state,
-                }
-                .paint(buf, rect, theme);
+                let painted =
+                    Button { label, kind: ButtonKind::Secondary, state }.paint(buf, rect, theme);
                 hits.register(painted, hit);
                 self.painted_buttons += 1;
             }
@@ -1059,11 +969,7 @@ impl ManageList {
                 // The first name shares the label's row; the rest stack
                 // under it in the same column.
                 let room = (bottom - y) as usize;
-                let shown = if names.len() > room {
-                    room.saturating_sub(1)
-                } else {
-                    names.len()
-                };
+                let shown = if names.len() > room { room.saturating_sub(1) } else { names.len() };
                 for n in &names[..shown] {
                     text(
                         buf,
@@ -1141,19 +1047,12 @@ mod tests {
             key(KeyCode::Char('l')),
             KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
         ] {
-            let mut l = ManageList {
-                cursor: 1,
-                visible_rows: 2,
-                ..Default::default()
-            };
+            let mut l = ManageList { cursor: 1, visible_rows: 2, ..Default::default() };
             assert_eq!(l.handle_key(letter, ManageTab::Spaces, &ctx), None, "{letter:?}");
             assert_eq!(l.cursor, 1, "{letter:?} moved the cursor");
             assert_eq!(l.focus, ListFocus::List, "{letter:?} entered the pane");
         }
-        let pairs = [
-            (ctrl('f'), key(KeyCode::PageDown)),
-            (ctrl('b'), key(KeyCode::PageUp)),
-        ];
+        let pairs = [(ctrl('f'), key(KeyCode::PageDown)), (ctrl('b'), key(KeyCode::PageUp))];
         for (alias, canonical) in pairs {
             let (mut a, mut b) = (ManageList::default(), ManageList::default());
             a.cursor = 1;
@@ -1165,10 +1064,7 @@ mod tests {
             assert_eq!(ra, rb, "{alias:?}");
             assert_eq!(a.cursor, b.cursor, "{alias:?}");
         }
-        let mut l = ManageList {
-            visible_rows: 2,
-            ..Default::default()
-        };
+        let mut l = ManageList { visible_rows: 2, ..Default::default() };
         l.handle_key(ctrl('f'), ManageTab::Spaces, &ctx);
         assert_eq!(l.cursor, 2, "three spaces: clamped to the last");
         l.handle_key(ctrl('b'), ManageTab::Spaces, &ctx);
@@ -1334,10 +1230,7 @@ mod tests {
         l.handle_key(key(KeyCode::Right), ManageTab::Environments, &ctx);
         assert_eq!(
             l.handle_key(key(KeyCode::Enter), ManageTab::Environments, &ctx),
-            Some(Action::SetEnvTls {
-                env: env.clone(),
-                policy: Some(TlsPolicy::Verify)
-            })
+            Some(Action::SetEnvTls { env: env.clone(), policy: Some(TlsPolicy::Verify) })
         );
         // The Spaces pane: Move all, Rename, Delete from the left.
         let mut s = ManageList::default();
@@ -1454,7 +1347,8 @@ mod tests {
         let buf = terminal.backend().buffer();
         let (focused, _) =
             crate::paint::control_face(&theme, ButtonKind::Primary, ControlState::Focused);
-        let (normal, _) = crate::paint::control_face(&theme, ButtonKind::Primary, ControlState::Normal);
+        let (normal, _) =
+            crate::paint::control_face(&theme, ButtonKind::Primary, ControlState::Normal);
         assert_ne!(focused, normal, "the theme distinguishes focus");
         assert_eq!(buf.cell((seg.x + 1, seg.y)).unwrap().bg, focused);
     }
@@ -1494,22 +1388,13 @@ mod tests {
         assert_eq!(d.working, ["main", "auth", "billing"]);
 
         assert!(l.drag_to_row(2));
-        assert_eq!(
-            l.drag.as_ref().unwrap().working,
-            ["auth", "billing", "main"]
-        );
+        assert_eq!(l.drag.as_ref().unwrap().working, ["auth", "billing", "main"]);
         assert_eq!(l.cursor, 2, "the cursor follows the dragged row");
         assert!(!l.drag_to_row(2), "no change reports false");
         assert!(l.drag_to_row(0));
-        assert_eq!(
-            l.drag.as_ref().unwrap().working,
-            ["main", "auth", "billing"]
-        );
+        assert_eq!(l.drag.as_ref().unwrap().working, ["main", "auth", "billing"]);
         assert!(l.drag_to_row(9), "past the end clamps to the last slot");
-        assert_eq!(
-            l.drag.as_ref().unwrap().working,
-            ["auth", "billing", "main"]
-        );
+        assert_eq!(l.drag.as_ref().unwrap().working, ["auth", "billing", "main"]);
         assert_eq!(l.cursor, 2);
     }
 
@@ -1540,27 +1425,15 @@ mod tests {
         let requests = BTreeMap::new();
         terminal
             .draw(|f| {
-                l.draw(
-                    f,
-                    f.area(),
-                    &theme,
-                    ManageTab::Spaces,
-                    &ctx,
-                    &requests,
-                    &mut hits,
-                    None,
-                )
+                l.draw(f, f.area(), &theme, ManageTab::Spaces, &ctx, &requests, &mut hits, None)
             })
             .unwrap();
 
         let dragged = hits.rect_of(&Hit::ManageRow(1)).expect("dragged row hit");
         let other = hits.rect_of(&Hit::ManageRow(0)).expect("other row hit");
         let buf = terminal.backend().buffer();
-        let line = |r: Rect| {
-            (r.x..r.x + r.width)
-                .map(|x| buf[(x, r.y)].symbol())
-                .collect::<String>()
-        };
+        let line =
+            |r: Rect| (r.x..r.x + r.width).map(|x| buf[(x, r.y)].symbol()).collect::<String>();
         assert!(
             line(other).contains("auth"),
             "the working order is what is drawn: {}",
@@ -1578,10 +1451,7 @@ mod tests {
             "other rows never show the grip glyph"
         );
         assert_eq!(l.row_at_y(dragged.y), 1, "row_at_y maps the drawn rows");
-        assert!(l.list_rect().contains(ratatui::layout::Position {
-            x: dragged.x,
-            y: dragged.y
-        }));
+        assert!(l.list_rect().contains(ratatui::layout::Position { x: dragged.x, y: dragged.y }));
     }
 
     /// The env detail pane is properties of one environment, so no band
@@ -1665,11 +1535,7 @@ mod tests {
             assert_eq!(top.symbol(), crate::paint::cap::CAP_TOP, "top cap x={x}");
             assert_eq!(top.bg, theme.panel, "top cap surface at x={x}");
             let bottom = buf.cell((x, btn.y + 2)).unwrap();
-            assert_eq!(
-                bottom.symbol(),
-                crate::paint::cap::CAP_BOTTOM,
-                "bottom cap x={x}"
-            );
+            assert_eq!(bottom.symbol(), crate::paint::cap::CAP_BOTTOM, "bottom cap x={x}");
             assert_eq!(bottom.fg, theme.panel, "bottom cap surface at x={x}");
         }
     }
@@ -1707,9 +1573,7 @@ mod tests {
 
         let row = |y: u16| {
             let buf = term.backend().buffer();
-            (LEFT_W..120)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
+            (LEFT_W..120).map(|x| buf[(x, y)].symbol()).collect::<String>()
         };
         // The label row: `Requests` at the pane's inset, the first name
         // beside it in the label column — not a row below it.
@@ -1720,16 +1584,10 @@ mod tests {
         let list_x = x0 + label_column(&["File", "TLS", "Requests"]);
         let at = |x: u16, y: u16, len: usize| {
             let buf = term.backend().buffer();
-            (x..x + len as u16)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
+            (x..x + len as u16).map(|x| buf[(x, y)].symbol()).collect::<String>()
         };
         assert_eq!(at(x0, label_y, 8), "Requests");
-        assert_eq!(
-            at(list_x, label_y, 4),
-            "req0",
-            "the first name shares the row"
-        );
+        assert_eq!(at(list_x, label_y, 4), "req0", "the first name shares the row");
         // The rest stack under it, aligned to the same column, and the
         // `+ n more` line takes the pane's very last row: every row the
         // pane had is used, none dropped to an off-by-one.
@@ -1771,19 +1629,13 @@ mod tests {
         .unwrap();
 
         let buf = term.backend().buffer();
-        let row = |y: u16| {
-            (LEFT_W..120)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
-        };
+        let row = |y: u16| (LEFT_W..120).map(|x| buf[(x, y)].symbol()).collect::<String>();
         let label_y = (0..10)
             .find(|y| row(*y).trim_start().starts_with("Requests"))
             .expect("the Requests label row survives an empty space");
         let list_x = LEFT_W + 2 + label_column(&["File", "TLS", "Requests"]);
         let cell = |x: u16, len: usize| {
-            (x..x + len as u16)
-                .map(|x| buf[(x, label_y)].symbol())
-                .collect::<String>()
+            (x..x + len as u16).map(|x| buf[(x, label_y)].symbol()).collect::<String>()
         };
         assert_eq!(cell(list_x, 6), "(none)");
         for y in 0..10 {

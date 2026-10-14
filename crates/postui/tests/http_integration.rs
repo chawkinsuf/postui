@@ -18,9 +18,7 @@ fn req_to(url: String) -> HttpRequest {
         params: Default::default(),
         headers: Default::default(),
         variables: Default::default(),
-        body: Some(Body::Json {
-            text: "{\"a\":1}".into(),
-        }),
+        body: Some(Body::Json { text: "{\"a\":1}".into() }),
     }
 }
 
@@ -33,11 +31,8 @@ async fn sends_json_with_auto_content_type_and_reads_response() {
         .respond_with(ResponseTemplate::new(201).set_body_string("{\"ok\":true}"))
         .mount(&server)
         .await;
-    let (prepared, _) = prepare(
-        &req_to(format!("{}/x", server.uri())),
-        &PrepareContext::default(),
-    )
-    .unwrap();
+    let (prepared, _) =
+        prepare(&req_to(format!("{}/x", server.uri())), &PrepareContext::default()).unwrap();
     let data = http::send(&http::client(), &prepared).await.unwrap();
     assert_eq!(data.status, 201);
     assert_eq!(data.body, "{\"ok\":true}");
@@ -55,19 +50,10 @@ async fn merged_query_params_reach_the_server() {
     let mut r = req_to(format!("{}/x?id=1", server.uri()));
     r.method = Method::Get;
     r.body = None;
-    r.params.insert(
-        "id".into(),
-        Entry {
-            value: "2".into(),
-            enabled: true,
-        },
-    );
+    r.params.insert("id".into(), Entry { value: "2".into(), enabled: true });
     let (prepared, warns) = prepare(&r, &PrepareContext::default()).unwrap();
     assert_eq!(warns.len(), 1);
-    assert_eq!(
-        http::send(&http::client(), &prepared).await.unwrap().status,
-        200
-    );
+    assert_eq!(http::send(&http::client(), &prepared).await.unwrap().status, 200);
 }
 
 #[tokio::test]
@@ -78,11 +64,8 @@ async fn non_2xx_is_a_response_not_an_error() {
         .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
         .mount(&server)
         .await;
-    let (prepared, _) = prepare(
-        &req_to(format!("{}/x", server.uri())),
-        &PrepareContext::default(),
-    )
-    .unwrap();
+    let (prepared, _) =
+        prepare(&req_to(format!("{}/x", server.uri())), &PrepareContext::default()).unwrap();
     let data = http::send(&http::client(), &prepared).await.unwrap();
     assert_eq!(data.status, 500);
     assert_eq!(data.body, "boom");
@@ -96,11 +79,8 @@ async fn timeout_produces_err() {
         .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(2)))
         .mount(&server)
         .await;
-    let (prepared, _) = prepare(
-        &req_to(format!("{}/x", server.uri())),
-        &PrepareContext::default(),
-    )
-    .unwrap();
+    let (prepared, _) =
+        prepare(&req_to(format!("{}/x", server.uri())), &PrepareContext::default()).unwrap();
     let client = http::client_with_timeout(Duration::from_millis(200));
     let started = std::time::Instant::now();
     let result = http::send(&client, &prepared).await;
@@ -178,10 +158,7 @@ async fn a_multi_megabyte_json_body_is_pretty_printed_in_the_background() {
 
     drain_until_settled(&mut app, &mut rx).await;
     let view = app.session.response.view().expect("a ready response");
-    assert!(
-        view.parsing && view.tree.is_none(),
-        "a body this big is not parsed on the UI thread"
-    );
+    assert!(view.parsing && view.tree.is_none(), "a body this big is not parsed on the UI thread");
     assert_eq!(
         view.mode,
         ViewMode::Pretty,
@@ -206,11 +183,7 @@ async fn a_multi_megabyte_json_body_is_pretty_printed_in_the_background() {
     assert!(view.tree.is_some(), "and it produced a tree");
     app.update(Action::ResponseViewMode(ViewMode::Pretty));
     let view = app.session.response.view().unwrap();
-    assert_eq!(
-        view.mode,
-        ViewMode::Pretty,
-        "the Tree view is now available"
-    );
+    assert_eq!(view.mode, ViewMode::Pretty, "the Tree view is now available");
     assert!(view.visible_len() > 1, "and it has the parsed lines");
 }
 
@@ -234,10 +207,7 @@ async fn connection_refused_yields_readable_error() {
     )
     .unwrap();
     let err = http::send(&http::client(), &prepared).await.unwrap_err();
-    assert!(
-        !err.is_empty() && !err.contains("Error {"),
-        "human string, not Debug dump: {err}"
-    );
+    assert!(!err.is_empty() && !err.contains("Error {"), "human string, not Debug dump: {err}");
 }
 
 async fn drain_until_settled(
@@ -281,11 +251,8 @@ async fn send_substitutes_vars_and_applies_default_headers() {
         "name = \"svc\"\n[default_headers]\naccept = \"application/json\"\nauthorization = \"Bearer {{tok}}\"\n",
     )
     .unwrap();
-    std::fs::write(
-        dir.path().join("variables.toml"),
-        "[base]\n[tok]\n[uid]\ndefault = \"7\"\n",
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("variables.toml"), "[base]\n[tok]\n[uid]\ndefault = \"7\"\n")
+        .unwrap();
     std::fs::write(
         dir.path().join("environments/qa.toml"),
         format!("base = \"{}\"\ntok = \"tok-qa\"\n", server.uri()),
@@ -337,23 +304,14 @@ async fn disabled_request_header_row_suppresses_a_default_header() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = postui::app::App::with_root(tx, dir.path().to_path_buf());
     app.editor.url = postui::components::line_input::LineInput::new(&format!("{}/x", server.uri()));
-    app.editor.headers.insert(
-        "accept".into(),
-        Entry {
-            value: "ignored".into(),
-            enabled: false,
-        },
-    );
+    app.editor.headers.insert("accept".into(), Entry { value: "ignored".into(), enabled: false });
     app.update(Action::ForceSend);
     assert!(!app.session.in_flight.is_empty());
 
     drain_until_settled(&mut app, &mut rx).await;
     match app.session.response.state() {
         postui::components::response::ResponseState::Ready(data) => {
-            assert_eq!(
-                data.status, 200,
-                "default `accept` header must be suppressed"
-            );
+            assert_eq!(data.status, 200, "default `accept` header must be suppressed");
         }
         _ => panic!("expected a ready response"),
     }

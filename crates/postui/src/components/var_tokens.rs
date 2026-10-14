@@ -181,10 +181,9 @@ impl VarView {
         let source = match self.resolved.meta.get(name) {
             Some(VarMeta::MissingSecret) => TokenSource::MissingSecret,
             Some(VarMeta::NeedsSelection) => TokenSource::NeedsSelection,
-            Some(VarMeta::SelectorMember { selector, selected }) => TokenSource::Selector {
-                selector: selector.clone(),
-                selected: selected.clone(),
-            },
+            Some(VarMeta::SelectorMember { selector, selected }) => {
+                TokenSource::Selector { selector: selector.clone(), selected: selected.clone() }
+            }
             // A secret's value only ever comes from `.local/secrets.toml`,
             // which is per-environment.
             Some(VarMeta::Secret) => self.env_source(),
@@ -224,11 +223,7 @@ impl VarView {
 /// The color a token's braces and name are tinted: the accent when it
 /// resolves, `theme.error` when sending it would leave it verbatim.
 pub fn token_color(theme: &Theme, info: &TokenInfo) -> Color {
-    if info.resolved() {
-        theme.accent
-    } else {
-        theme.error
-    }
+    if info.resolved() { theme.accent } else { theme.error }
 }
 
 /// Tints every well-formed `{{token}}` in `text` and registers a
@@ -253,14 +248,9 @@ pub fn paint_var_tokens(
         return;
     }
     for token in postui_core::vars::find_tokens(text) {
-        let before: usize = text[..token.start]
-            .chars()
-            .map(|c| c.width().unwrap_or(0))
-            .sum();
-        let width: usize = text[token.start..token.end]
-            .chars()
-            .map(|c| c.width().unwrap_or(0))
-            .sum();
+        let before: usize = text[..token.start].chars().map(|c| c.width().unwrap_or(0)).sum();
+        let width: usize =
+            text[token.start..token.end].chars().map(|c| c.width().unwrap_or(0)).sum();
         let start = text_origin_col as usize + before;
         let end = (start + width).min(row.right() as usize);
         let start = start.max(row.x as usize);
@@ -303,9 +293,7 @@ mod tests {
 
     fn view() -> VarView {
         let mut resolved = Resolved::default();
-        resolved
-            .values
-            .insert("base_url".into(), "http://x".to_string());
+        resolved.values.insert("base_url".into(), "http://x".to_string());
         resolved.meta.insert("base_url".into(), VarMeta::Simple);
         resolved.values.insert("api_key".into(), "sk-live".into());
         resolved.meta.insert("api_key".into(), VarMeta::Secret);
@@ -324,20 +312,14 @@ mod tests {
     fn describe_carries_the_declared_description() {
         let mut v = view();
         v.descriptions.insert("base_url".into(), "API root".into());
-        assert_eq!(
-            v.describe("base_url").description.as_deref(),
-            Some("API root")
-        );
+        assert_eq!(v.describe("base_url").description.as_deref(), Some("API root"));
         assert_eq!(v.describe("user").description, None);
     }
 
     #[test]
     fn describe_reports_value_and_scope_per_precedence() {
         let mut v = view();
-        assert_eq!(
-            v.describe("base_url").source,
-            TokenSource::Env("qa".to_string())
-        );
+        assert_eq!(v.describe("base_url").source, TokenSource::Env("qa".to_string()));
         assert_eq!(v.describe("base_url").value.as_deref(), Some("http://x"));
         assert_eq!(v.describe("user").source, TokenSource::NeedsSelection);
         assert!(!v.describe("user").resolved());
@@ -370,10 +352,7 @@ mod tests {
         v.resolved.values.insert("uid".into(), "1001".into());
         v.resolved.meta.insert(
             "uid".into(),
-            VarMeta::SelectorMember {
-                selector: "user".into(),
-                selected: "user 2".into(),
-            },
+            VarMeta::SelectorMember { selector: "user".into(), selected: "user 2".into() },
         );
         assert_eq!(v.describe("uid").source.label(), "option = user 2");
     }
@@ -385,15 +364,7 @@ mod tests {
         let mut hits = HitMap::default();
         let text = "{{base_url}}/{{user}}";
         crate::paint::text(&mut buf, 0, 0, text, theme.text, theme.page, false);
-        paint_var_tokens(
-            &mut buf,
-            Rect::new(0, 0, 20, 1),
-            text,
-            0,
-            &view(),
-            &theme,
-            &mut hits,
-        );
+        paint_var_tokens(&mut buf, Rect::new(0, 0, 20, 1), text, 0, &view(), &theme, &mut hits);
 
         assert_eq!(buf[(0, 0)].fg, theme.accent, "resolved token");
         assert_eq!(buf[(12, 0)].fg, theme.text, "the literal `/` is untouched");

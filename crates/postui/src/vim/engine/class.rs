@@ -39,11 +39,27 @@ mod tests {
     #[test]
     fn classes_match_vim_at_the_spec_edges() {
         for (c, k) in [
-            (' ', 0), ('\t', 0), ('\u{a0}', 0), ('\u{3000}', 0),
-            ('a', 2), ('Z', 2), ('0', 2), ('_', 2), ('µ', 2),
-            ('.', 1), ('"', 1), ('{', 1), ('—', 1),
-            ('é', 2), ('ö', 2), ('×', 2), ('÷', 2),
-            ('日', 0x4e00), ('ひ', 0x3040), ('カ', 0x30a0), ('한', 0xac00),
+            (' ', 0),
+            ('\t', 0),
+            ('\u{a0}', 0),
+            ('\u{3000}', 0),
+            ('a', 2),
+            ('Z', 2),
+            ('0', 2),
+            ('_', 2),
+            ('µ', 2),
+            ('.', 1),
+            ('"', 1),
+            ('{', 1),
+            ('—', 1),
+            ('é', 2),
+            ('ö', 2),
+            ('×', 2),
+            ('÷', 2),
+            ('日', 0x4e00),
+            ('ひ', 0x3040),
+            ('カ', 0x30a0),
+            ('한', 0xac00),
             ('😀', 3),
         ] {
             assert_eq!(class(c), k, "class of {c:?}");
@@ -63,7 +79,10 @@ mod tests {
         assert_eq!(TABLE[0].0, 0);
         for pair in TABLE.windows(2) {
             let ((_, last, _), (first, _, _)) = (pair[0], pair[1]);
-            assert!(first == last + 1 || (last == 0xd7ff && first == 0xe000), "gap after {last:#x}");
+            assert!(
+                first == last + 1 || (last == 0xd7ff && first == 0xe000),
+                "gap after {last:#x}"
+            );
         }
         assert_eq!(TABLE.last().unwrap().1, 0x10ffff);
     }

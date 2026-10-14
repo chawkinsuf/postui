@@ -48,17 +48,9 @@ pub enum JqError {
     /// `incomplete` means the parser ran off the end of the input — the
     /// filter is unfinished rather than wrong, so there is no span: no
     /// character typed so far is to blame.
-    Syntax {
-        message: String,
-        span: Option<Range<usize>>,
-        incomplete: bool,
-    },
+    Syntax { message: String, span: Option<Range<usize>>, incomplete: bool },
     /// `nosuchfn/1` — name and arity, with the call's span when known.
-    Unknown {
-        name: String,
-        arity: usize,
-        span: Option<Range<usize>>,
-    },
+    Unknown { name: String, arity: usize, span: Option<Range<usize>> },
     /// A runtime error from jaq (`cannot index number with "foo"`), a body
     /// that is not JSON, or output past the cap.
     Runtime { message: String },
@@ -96,9 +88,7 @@ impl JqDocument {
     pub fn parse(body: &str) -> Result<Self, JqError> {
         jaq_json::read::parse_single(body.as_bytes())
             .map(|v| JqDocument(Arc::new(v)))
-            .map_err(|e| JqError::Runtime {
-                message: format!("not JSON: {e}"),
-            })
+            .map_err(|e| JqError::Runtime { message: format!("not JSON: {e}") })
     }
 }
 
@@ -115,15 +105,11 @@ fn span_of(code: &str, token: &str) -> Option<Range<usize>> {
 }
 
 fn defs() -> impl Iterator<Item = jaq_core::load::parse::Def<&'static str>> {
-    jaq_core::defs()
-        .chain(jaq_std::defs())
-        .chain(jaq_json::defs())
+    jaq_core::defs().chain(jaq_std::defs()).chain(jaq_json::defs())
 }
 
 fn funs() -> impl Iterator<Item = jaq_core::native::Fun<Data>> {
-    jaq_core::funs::<Data>()
-        .chain(jaq_std::funs())
-        .chain(jaq_json::funs())
+    jaq_core::funs::<Data>().chain(jaq_std::funs()).chain(jaq_json::funs())
 }
 
 /// Compiles `code` against a fresh arena and hands the compiled filter to
@@ -197,19 +183,11 @@ fn load_error(code: &str, errs: jaq_core::load::Errors<&str, ()>) -> JqError {
             }
             Error::Io(v) => {
                 let msg = v.into_iter().next().map(|(_, e)| e).unwrap_or_default();
-                return JqError::Syntax {
-                    message: msg,
-                    span: None,
-                    incomplete: false,
-                };
+                return JqError::Syntax { message: msg, span: None, incomplete: false };
             }
         }
     }
-    JqError::Syntax {
-        message: "invalid filter".into(),
-        span: None,
-        incomplete: false,
-    }
+    JqError::Syntax { message: "invalid filter".into(), span: None, incomplete: false }
 }
 
 /// Builds a `Syntax` error for an unexpected token. jaq points at the
@@ -219,11 +197,7 @@ fn load_error(code: &str, errs: jaq_core::load::Errors<&str, ()>) -> JqError {
 /// missing, blames no character, and is marked `incomplete`.
 fn unexpected<S: std::fmt::Debug>(code: &str, expect: &S, tok: &str) -> JqError {
     if tok.is_empty() {
-        return JqError::Syntax {
-            message: incomplete_text(expect),
-            span: None,
-            incomplete: true,
-        };
+        return JqError::Syntax { message: incomplete_text(expect), span: None, incomplete: true };
     }
     JqError::Syntax {
         message: format!("unexpected `{tok}` — expected {}", expect_text(expect)),
@@ -243,10 +217,7 @@ fn expect_text<S: std::fmt::Debug>(expect: &S) -> String {
 /// (`.a |`, `if .a then`). Anything else keeps jaq's own name.
 fn incomplete_text<S: std::fmt::Debug>(expect: &S) -> String {
     let debug = format!("{expect:?}");
-    if let Some(opener) = debug
-        .strip_prefix("Delim(\"")
-        .and_then(|s| s.strip_suffix("\")"))
-    {
+    if let Some(opener) = debug.strip_prefix("Delim(\"").and_then(|s| s.strip_suffix("\")")) {
         // The escaped quote is `\"` in Debug; unescape it.
         return format!("unclosed {}", opener.replace("\\\"", "\""));
     }
@@ -262,11 +233,9 @@ fn compile_error(code: &str, errs: jaq_core::compile::Errors<&str, ()>) -> JqErr
         if let Some((name, kind)) = undefined.into_iter().next() {
             let span = span_of(code, name);
             return match kind {
-                Undefined::Filter(arity) => JqError::Unknown {
-                    name: name.to_string(),
-                    arity,
-                    span,
-                },
+                Undefined::Filter(arity) => {
+                    JqError::Unknown { name: name.to_string(), arity, span }
+                }
                 other => JqError::Syntax {
                     message: format!("undefined {}: `{name}`", other.as_str()),
                     span,
@@ -275,11 +244,7 @@ fn compile_error(code: &str, errs: jaq_core::compile::Errors<&str, ()>) -> JqErr
             };
         }
     }
-    JqError::Syntax {
-        message: "invalid filter".into(),
-        span: None,
-        incomplete: false,
-    }
+    JqError::Syntax { message: "invalid filter".into(), span: None, incomplete: false }
 }
 
 #[cfg(test)]
@@ -296,11 +261,8 @@ mod tests {
     fn a_filter_runs_and_returns_compact_json_outputs() {
         let out = run(".data.items | length", &doc()).unwrap();
         assert_eq!(out, vec!["2"]);
-        let out = run(
-            r#".data.items | map(select(.status == "active")) | map(.name)"#,
-            &doc(),
-        )
-        .unwrap();
+        let out =
+            run(r#".data.items | map(select(.status == "active")) | map(.name)"#, &doc()).unwrap();
         assert_eq!(out, vec![r#"["a"]"#]);
     }
 
@@ -313,10 +275,7 @@ mod tests {
     #[test]
     fn a_syntax_error_names_the_offending_token_with_its_span() {
         let err = check(".foo )").unwrap_err();
-        let JqError::Syntax {
-            span, incomplete, ..
-        } = &err
-        else {
+        let JqError::Syntax { span, incomplete, .. } = &err else {
             panic!("expected a syntax error, got {err:?}");
         };
         assert!(!incomplete, "a stray token is a real error");

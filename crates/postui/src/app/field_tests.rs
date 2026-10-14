@@ -73,7 +73,9 @@ fn esc_on_a_closed_url_line_method_or_table_stays_put() {
 /// and the line opens in Insert.
 #[test]
 fn cc_s_and_c_change_the_closed_url_line() {
-    for (keys, want, register) in [("cc", "Z", "ab cd\n"), ("S", "Z", "ab cd\n"), ("C", "aZ", "b cd")] {
+    for (keys, want, register) in
+        [("cc", "Z", "ab cd\n"), ("S", "Z", "ab cd\n"), ("C", "aZ", "b cd")]
+    {
         let mut app = url_line("ab cd");
         app.editor.url.set_cursor(1);
         feed(&mut app, keys);
@@ -130,7 +132,11 @@ fn insert_types_and_esc_steps_back_to_normal_then_closes() {
     feed(&mut app, "<CR>Acd");
     assert_eq!(url(&app), ("abcd", 4));
     feed(&mut app, "<Esc>");
-    assert_eq!((app.mode_indicator(), url(&app).1), (Some("NORMAL"), 3), "Esc steps the caret back");
+    assert_eq!(
+        (app.mode_indicator(), url(&app).1),
+        (Some("NORMAL"), 3),
+        "Esc steps the caret back"
+    );
     assert!(app.field_caret().is_live(), "the first Esc only leaves Insert");
     feed(&mut app, "<Esc>");
     assert!(!app.field_caret().is_live());
@@ -198,7 +204,10 @@ fn tab_carries_insert_to_the_next_cell() {
     assert_eq!(app.mode_indicator(), Some("INSERT"), "an add verb opens in Insert");
     feed(&mut app, "X-A<Tab>");
     assert_eq!(app.mode_indicator(), Some("INSERT"), "the mode carries");
-    assert!(matches!(app.vim.glue.session(), FieldSession::Live(FieldId::TableCell { col: 1, .. })));
+    assert!(matches!(
+        app.vim.glue.session(),
+        FieldSession::Live(FieldId::TableCell { col: 1, .. })
+    ));
     feed(&mut app, "1<Esc><Esc>");
     assert_eq!(header(&app, "X-A").as_deref(), Some("1"));
 }
@@ -234,14 +243,21 @@ fn a_palette_over_an_open_field_parks_it() {
 fn a_settings_field_opens_in_insert_with_i() {
     use crate::components::settings::{SettingsField, SettingsRow, SettingsTab};
     let mut app = vim(Fixture::Settings);
-    let row = SettingsTab::rows().iter().position(|r| *r == SettingsRow::Setting(SettingsField::AiCmd)).unwrap();
+    let row = SettingsTab::rows()
+        .iter()
+        .position(|r| *r == SettingsRow::Setting(SettingsField::AiCmd))
+        .unwrap();
     app.settings.set_cursor(row);
     feed(&mut app, "i");
     assert!(matches!(app.vim.glue.session(), FieldSession::Live(FieldId::Settings(_))));
     assert_eq!(app.mode_indicator(), Some("INSERT"));
     let seed = app.settings.field_text().to_string();
     feed(&mut app, "zz");
-    assert_eq!(app.settings.field_text(), format!("{seed}zz"), "typing appends: arrows' select-all is gone");
+    assert_eq!(
+        app.settings.field_text(),
+        format!("{seed}zz"),
+        "typing appends: arrows' select-all is gone"
+    );
 }
 
 #[test]
@@ -268,7 +284,8 @@ fn a_click_opens_the_url_in_normal_where_clicked() {
     use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     let mut app = url_line("https://x.test/ab");
     let area = app.editor.last_url_text_area.expect("the URL line is drawn");
-    let at = |kind| MouseEvent { kind, column: area.x + 3, row: area.y, modifiers: KeyModifiers::NONE };
+    let at =
+        |kind| MouseEvent { kind, column: area.x + 3, row: area.y, modifiers: KeyModifiers::NONE };
     app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left)));
     app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left)));
     assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Url));
@@ -369,7 +386,12 @@ fn a_right_button_drag_does_not_sync_the_session() {
     feed(&mut app, "<CR>x");
     assert!(app.vim.glue.can_undo(EngineKind::Line));
     app.editor.url = LineInput::new("wxyz");
-    let hover = MouseEvent { kind: MouseEventKind::Drag(MouseButton::Right), column: 0, row: 0, modifiers: KeyModifiers::NONE };
+    let hover = MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Right),
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    };
     app.handle_mouse(hover);
     assert!(app.vim.glue.can_undo(EngineKind::Line), "no sync ran, so no rebase");
     feed(&mut app, "0");
@@ -383,7 +405,12 @@ fn a_press_drag_over_the_closed_url_selects() {
     use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     let mut app = url_line("https://x.test/ab");
     let area = app.editor.last_url_text_area.expect("the URL line is drawn");
-    let at = |kind, col| MouseEvent { kind, column: area.x + col, row: area.y, modifiers: KeyModifiers::NONE };
+    let at = |kind, col| MouseEvent {
+        kind,
+        column: area.x + col,
+        row: area.y,
+        modifiers: KeyModifiers::NONE,
+    };
     app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left), 2));
     draw(&mut app);
     app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), 8));
@@ -402,7 +429,9 @@ fn a_press_drag_into_the_body_from_another_pane_selects() {
     assert_eq!(app.vim.glue.session(), FieldSession::None);
     let area = app.editor.last_body_area.expect("the body is drawn");
     let y = area.y + 1;
-    let x = (area.x..area.right()).find(|&x| buf[(x, y)].symbol() == "\"").expect("row 1 shows `\"a\"`");
+    let x = (area.x..area.right())
+        .find(|&x| buf[(x, y)].symbol() == "\"")
+        .expect("row 1 shows `\"a\"`");
     let at = |kind, x| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE };
     app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left), x));
     assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body));
@@ -581,7 +610,11 @@ fn a_palette_undo_over_an_edited_body_steps_the_engine() {
     assert_eq!(app.vim.glue.session(), FieldSession::None);
     feed(&mut app, "u");
     let after = snapshot(&app);
-    assert!(after.same_but_field(&before), "undo did not restore exactly:\n{}", snapshot_diff(&before, &after));
+    assert!(
+        after.same_but_field(&before),
+        "undo did not restore exactly:\n{}",
+        snapshot_diff(&before, &after)
+    );
 }
 
 /// Final review M-1: a declined trailing ctrl+r is the app's Redo only when
@@ -704,7 +737,11 @@ fn an_engine_note_is_an_info_toast() {
     feed(&mut app, "<CR>");
     app.toasts = Default::default();
     feed(&mut app, "U");
-    assert!(app.toasts.messages().iter().any(|m| m.contains("not supported")), "{:?}", app.toasts.messages());
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains("not supported")),
+        "{:?}",
+        app.toasts.messages()
+    );
 }
 
 const BODY: &str = "{\n  \"a\": 1\n}";
@@ -828,7 +865,10 @@ fn a_fresh_scratch_does_not_inherit_the_bodys_history() {
     assert!(app.vim.glue.can_redo(EngineKind::Body));
     feed(&mut app, "<Esc>");
     assert_eq!(app.vim.glue.session(), FieldSession::None, "the body closed");
-    app.land(Landing { open: Some(crate::undo::Open::Scratch { buffer: None }), ..Landing::default() });
+    app.land(Landing {
+        open: Some(crate::undo::Open::Scratch { buffer: None }),
+        ..Landing::default()
+    });
     on_body(&mut app);
     feed(&mut app, "0");
     assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body));
@@ -957,7 +997,11 @@ fn renaming_the_open_requests_space_keeps_the_bodys_history() {
     let slug = app.editor.slug.clone().expect("the fixture's request is saved");
     let (space, _) = slug.split_once('/').expect("a request lives in a space");
     app.update(Action::RenameSpace { from: space.into(), to: "renamed".into() });
-    assert!(app.toasts.messages().iter().any(|m| m.contains("Renamed space")), "{:?}", app.toasts.messages());
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains("Renamed space")),
+        "{:?}",
+        app.toasts.messages()
+    );
     assert_ne!(app.editor.slug.as_deref(), Some(slug.as_str()), "the editor follows the new slug");
     let steps = app.history.undo_len();
     feed(&mut app, "u");
@@ -1024,9 +1068,16 @@ fn a_carry_out_of_the_body_leaves_the_real_body() {
     let at = |kind| MouseEvent { kind, column: area.x, row: area.y, modifiers: KeyModifiers::NONE };
     app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left)));
     app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left)));
-    assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Url), "the click carried the session");
+    assert_eq!(
+        app.vim.glue.session(),
+        FieldSession::Live(FieldId::Url),
+        "the click carried the session"
+    );
     let text = body(&app);
-    assert!(!text.split('\n').any(|l| !l.is_empty() && l.trim().is_empty()), "a whitespace-only line is left: {text:?}");
+    assert!(
+        !text.split('\n').any(|l| !l.is_empty() && l.trim().is_empty()),
+        "a whitespace-only line is left: {text:?}"
+    );
     feed(&mut app, "<Esc><Esc>j");
     assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Body), "back in by keyboard");
     feed(&mut app, "u");
@@ -1114,7 +1165,12 @@ fn a_paste_over_a_mouse_selection_replaces_it() {
     let mut app = url_line("https://x.test/ab");
     feed(&mut app, "<CR>");
     let area = app.editor.last_url_text_area.expect("the URL line is drawn");
-    let at = |kind, col| MouseEvent { kind, column: area.x + col, row: area.y, modifiers: KeyModifiers::NONE };
+    let at = |kind, col| MouseEvent {
+        kind,
+        column: area.x + col,
+        row: area.y,
+        modifiers: KeyModifiers::NONE,
+    };
     app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left), 2));
     app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), 8));
     app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left), 8));
@@ -1182,13 +1238,21 @@ fn ctrl_c_copies_a_mouse_selection_in_an_open_url() {
     let (mut app, _dir, out) = with_clipboard_file(url_line("https://x.test/ab"));
     feed(&mut app, "<CR>");
     let area = app.editor.last_url_text_area.expect("the URL line is drawn");
-    let at = |kind, col| MouseEvent { kind, column: area.x + col, row: area.y, modifiers: KeyModifiers::NONE };
+    let at = |kind, col| MouseEvent {
+        kind,
+        column: area.x + col,
+        row: area.y,
+        modifiers: KeyModifiers::NONE,
+    };
     app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left), 2));
     app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), 8));
     app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left), 8));
     assert_eq!(app.mode_indicator(), Some("VISUAL"));
     ctrl_c(&mut app);
-    assert!(!app.should_quit && app.modals.is_empty(), "copy, not quit or its unsaved-changes gate");
+    assert!(
+        !app.should_quit && app.modals.is_empty(),
+        "copy, not quit or its unsaved-changes gate"
+    );
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "tps://");
 }
 
@@ -1270,7 +1334,10 @@ fn row_text(buf: &ratatui::buffer::Buffer, area: ratatui::layout::Rect, y: u16) 
 
 /// The modifiers of each cell on the body's first row that shows `c`.
 fn cells_of(buf: &ratatui::buffer::Buffer, area: ratatui::layout::Rect, c: &str) -> Vec<Modifier> {
-    (area.x..area.right()).filter(|&x| buf[(x, area.y)].symbol() == c).map(|x| buf[(x, area.y)].modifier).collect()
+    (area.x..area.right())
+        .filter(|&x| buf[(x, area.y)].symbol() == c)
+        .map(|x| buf[(x, area.y)].modifier)
+        .collect()
 }
 
 /// Spec §5.6: the prompt is drawn on the body pane's bottom row.
@@ -1300,7 +1367,8 @@ fn the_search_prompt_row_has_no_token_hits() {
     draw(&mut app);
     let area = app.editor.last_body_area.unwrap();
     let bottom = area.bottom() - 1;
-    let on_bottom = |app: &App| app.hits.rects_of(&Hit::VarToken("v".into())).iter().any(|r| r.y == bottom);
+    let on_bottom =
+        |app: &App| app.hits.rects_of(&Hit::VarToken("v".into())).iter().any(|r| r.y == bottom);
     assert!(on_bottom(&app), "the token is drawn on the bottom row");
     feed(&mut app, "/x");
     assert!(app.editor.body_search.prompt.is_some());
@@ -1322,7 +1390,10 @@ fn search_matches_paint_and_the_landing_one_is_bold() {
     feed(&mut app, "<CR>");
     let buf = draw_buffer(&mut app);
     let fs = cells_of(&buf, area, "f");
-    assert!(fs.iter().all(|m| m.contains(Modifier::REVERSED)), "the highlight stays after the search");
+    assert!(
+        fs.iter().all(|m| m.contains(Modifier::REVERSED)),
+        "the highlight stays after the search"
+    );
     assert!(fs.iter().all(|m| !m.contains(Modifier::BOLD)), "no prompt, no landing match");
 }
 
@@ -1358,7 +1429,10 @@ fn renaming_the_open_request_keeps_the_search_highlight() {
     let buf = draw_buffer(&mut app);
     let area = app.editor.last_body_area.unwrap();
     // The `o`: the caret's own cell on the `f` is REVERSED regardless.
-    assert!(cells_of(&buf, area, "o")[0].contains(Modifier::REVERSED), "the highlight survives the rename");
+    assert!(
+        cells_of(&buf, area, "o")[0].contains(Modifier::REVERSED),
+        "the highlight survives the rename"
+    );
 }
 
 /// Amendment A8-2: a match below the viewport is computed for the frame a
@@ -1378,5 +1452,8 @@ fn a_far_search_paints_its_matches_in_the_frame_it_scrolls() {
         .expect("the match scrolled into view");
     // The second letter: the caret's own cell is REVERSED regardless.
     let x = (area.x..area.right()).find(|&x| buf[(x, hit)].symbol() == "e").unwrap();
-    assert!(buf[(x, hit)].modifier.contains(Modifier::REVERSED), "painted in the frame that scrolled");
+    assert!(
+        buf[(x, hit)].modifier.contains(Modifier::REVERSED),
+        "painted in the frame that scrolled"
+    );
 }

@@ -98,7 +98,13 @@ pub(super) fn begin(start: &Start) -> App {
         start.profile,
         app.field_caret()
     );
-    assert!(stranded(&app).is_empty(), "{} {:?}: the setup strands {:?}", start.name, start.profile, stranded(&app));
+    assert!(
+        stranded(&app).is_empty(),
+        "{} {:?}: the setup strands {:?}",
+        start.name,
+        start.profile,
+        stranded(&app)
+    );
     app
 }
 
@@ -114,9 +120,29 @@ pub(super) enum Input {
 pub(super) fn inputs(profile: KeyProfile) -> Vec<Input> {
     let mut out: Vec<Input> = match profile {
         KeyProfile::Vim => [
-            "gt", "gT", "1gt", "2gt", "3gt", "4gt", "5gt", "9gt", "3gT", "12gT", "<C-w>h", "<C-w>j", "<C-w>k",
-            "<C-w>l", "<C-w>w", "<C-w>W", "<C-w>p", "<C-w><Left>", "<C-w><Down>", "<C-w><Up>",
-            "<C-w><Right>", "<C-w><C-w>", "<C-w>x",
+            "gt",
+            "gT",
+            "1gt",
+            "2gt",
+            "3gt",
+            "4gt",
+            "5gt",
+            "9gt",
+            "3gT",
+            "12gT",
+            "<C-w>h",
+            "<C-w>j",
+            "<C-w>k",
+            "<C-w>l",
+            "<C-w>w",
+            "<C-w>W",
+            "<C-w>p",
+            "<C-w><Left>",
+            "<C-w><Down>",
+            "<C-w><Up>",
+            "<C-w><Right>",
+            "<C-w><C-w>",
+            "<C-w>x",
         ]
         .into_iter()
         .map(Input::Keys)
@@ -240,7 +266,12 @@ fn window_and_tab_keys_move_whole_or_not_at_all() {
         }
     }
     assert!(ran > 400, "the generator shrank: {ran} cases");
-    assert!(failures.is_empty(), "{} of {ran} case(s) failed:\n{}", failures.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} of {ran} case(s) failed:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }
 
 /// Plan Decision 2: `screen_field` owns which screen field has the caret,
@@ -252,10 +283,18 @@ fn field_open_and_the_open_text_field_agree_with_screen_field() {
     let agree = |app: &mut App, at: &str| {
         assert!(app.modals.is_empty(), "{at}: no start opens a modal");
         let id = app.screen_field();
-        assert_eq!(app.field_open(), id.is_some_and(|id| id != FieldId::Body), "{at}: field_open vs {id:?}");
+        assert_eq!(
+            app.field_open(),
+            id.is_some_and(|id| id != FieldId::Body),
+            "{at}: field_open vs {id:?}"
+        );
         // Every screen field but the body is a `LineInput`.
         let has_input = id.is_some_and(|id| id != FieldId::Body);
-        assert_eq!(app.open_text_field_mut().is_some(), has_input, "{at}: open_text_field_mut vs {id:?}");
+        assert_eq!(
+            app.open_text_field_mut().is_some(),
+            has_input,
+            "{at}: open_text_field_mut vs {id:?}"
+        );
     };
     for start in starts() {
         let mut app = begin(&start);
@@ -331,7 +370,9 @@ fn an_unbound_chord_on_a_list_does_nothing() {
     for start in starts().into_iter().filter(|s| !s.live) {
         for code in codes {
             for m in mods {
-                if named.contains(&(code, m)) || (on_the_response(&start) && response_named.contains(&(code, m))) {
+                if named.contains(&(code, m))
+                    || (on_the_response(&start) && response_named.contains(&(code, m)))
+                {
                     continue;
                 }
                 let ev = KeyEvent::new(code, m);
@@ -345,7 +386,10 @@ fn an_unbound_chord_on_a_list_does_nothing() {
                 draw(&mut app);
                 let after = (observed(&app), app.project().is_some().then(|| snapshot(&app)));
                 if after != before {
-                    failures.push(format!("{} {:?} {m:?}+{code:?}:\n  before {}\n  after  {}", start.name, start.profile, before.0, after.0));
+                    failures.push(format!(
+                        "{} {:?} {m:?}+{code:?}:\n  before {}\n  after  {}",
+                        start.name, start.profile, before.0, after.0
+                    ));
                 }
             }
         }
@@ -378,29 +422,61 @@ fn vim_gives_up_ctrl_s_and_the_split_chords_without_a_leak() {
         for ev in chords {
             ran += 1;
             let mut app = begin(&start);
-            assert!(app.keymap.lookup(&crate::keys::KeyCombo::from_event(&ev)).is_none(), "{}: vim binds {ev:?}", start.name);
-            let before = (observed(&app), app.project().is_some().then(|| snapshot(&app)), app.split_state().stop());
+            assert!(
+                app.keymap.lookup(&crate::keys::KeyCombo::from_event(&ev)).is_none(),
+                "{}: vim binds {ev:?}",
+                start.name
+            );
+            let before = (
+                observed(&app),
+                app.project().is_some().then(|| snapshot(&app)),
+                app.split_state().stop(),
+            );
             app.handle_key(ev);
             app.capture_undo();
             draw(&mut app);
-            let after = (observed(&app), app.project().is_some().then(|| snapshot(&app)), app.split_state().stop());
+            let after = (
+                observed(&app),
+                app.project().is_some().then(|| snapshot(&app)),
+                app.split_state().stop(),
+            );
             if after != before {
-                failures.push(format!("{} {:?}:\n  before {}\n  after  {}", start.name, ev, before.0, after.0));
+                failures.push(format!(
+                    "{} {:?}:\n  before {}\n  after  {}",
+                    start.name, ev, before.0, after.0
+                ));
             }
         }
     }
     assert!(ran >= 40, "the generator shrank: {ran}");
-    assert!(failures.is_empty(), "{} chord(s) acted in vim:\n{}", failures.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} chord(s) acted in vim:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
     let arrows = crate::keys::Keymap::default_bindings_for(KeyProfile::Arrows);
-    assert_eq!(arrows.lookup(&crate::keys::KeyCombo::from_event(&chords[0])), Some(Action::SaveRequest));
-    assert_eq!(arrows.lookup(&crate::keys::KeyCombo::from_event(&chords[1])), Some(Action::CycleSplit));
+    assert_eq!(
+        arrows.lookup(&crate::keys::KeyCombo::from_event(&chords[0])),
+        Some(Action::SaveRequest)
+    );
+    assert_eq!(
+        arrows.lookup(&crate::keys::KeyCombo::from_event(&chords[1])),
+        Some(Action::CycleSplit)
+    );
 }
 
 /// Review Focus 3: the router replays vim's motion letters as bare named
 /// keys, so the guard leaves them working.
 #[test]
 fn vim_motions_still_move_the_sidebar_after_the_guard() {
-    let start = Start { name: "sidebar", fixture: Fixture::SidebarThree, profile: KeyProfile::Vim, setup: Setup::Keys(""), live: false };
+    let start = Start {
+        name: "sidebar",
+        fixture: Fixture::SidebarThree,
+        profile: KeyProfile::Vim,
+        setup: Setup::Keys(""),
+        live: false,
+    };
     let mut app = begin(&start);
     feed(&mut app, "G");
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"));
@@ -435,7 +511,10 @@ fn ctrl_home_and_end_are_home_and_end_on_every_list() {
                 moved.push((start.name, start.profile));
             }
             if chord != bare {
-                failures.push(format!("{} {:?} ctrl+{code:?}:\n  bare  {bare}\n  chord {chord}", start.name, start.profile));
+                failures.push(format!(
+                    "{} {:?} ctrl+{code:?}:\n  bare  {bare}\n  chord {chord}",
+                    start.name, start.profile
+                ));
             }
         }
     }
@@ -474,15 +553,29 @@ fn ctrl_home_and_end_are_home_and_end_on_every_list() {
 #[test]
 fn cmd_up_and_down_jump_to_the_sidebars_first_and_last_row() {
     for profile in [KeyProfile::Vim, KeyProfile::Arrows] {
-        let start = Start { name: "sidebar", fixture: Fixture::SidebarThree, profile, setup: Setup::Keys(""), live: false };
+        let start = Start {
+            name: "sidebar",
+            fixture: Fixture::SidebarThree,
+            profile,
+            setup: Setup::Keys(""),
+            live: false,
+        };
         let mut app = begin(&start);
         app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::SUPER));
         draw(&mut app);
-        assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"), "{profile:?}: cmd+↑");
+        assert_eq!(
+            app.sidebar.selected_slug().as_deref(),
+            Some("main/alpha"),
+            "{profile:?}: cmd+↑"
+        );
         let mut app = begin(&start);
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SUPER));
         draw(&mut app);
-        assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"), "{profile:?}: cmd+↓");
+        assert_eq!(
+            app.sidebar.selected_slug().as_deref(),
+            Some("main/gamma"),
+            "{profile:?}: cmd+↓"
+        );
     }
 }
 
@@ -496,7 +589,12 @@ fn cmd_up_and_down_jump_to_the_sidebars_first_and_last_row() {
 #[test]
 fn paging_chords_survive_the_guard() {
     use Fixture::*;
-    let pages = |f: Fixture| matches!(f, SidebarThree | TableThreeHeaders | ResponseWide | ManageEnvs | ManageSpaces | VarList);
+    let pages = |f: Fixture| {
+        matches!(
+            f,
+            SidebarThree | TableThreeHeaders | ResponseWide | ManageEnvs | ManageSpaces | VarList
+        )
+    };
     let cursor = |app: &App, f: Fixture| match f {
         SidebarThree => app.sidebar.selected,
         TableThreeHeaders => app.editor.table.selected,
@@ -513,7 +611,8 @@ fn paging_chords_survive_the_guard() {
             // The edge: the response's bare Home/End scroll sideways, so
             // its document jumps are the chords.
             let edge = if down { KeyCode::Home } else { KeyCode::End };
-            let mods = if on_the_response(&start) { KeyModifiers::CONTROL } else { KeyModifiers::NONE };
+            let mods =
+                if on_the_response(&start) { KeyModifiers::CONTROL } else { KeyModifiers::NONE };
             app.handle_key(KeyEvent::new(edge, mods));
             draw(&mut app);
             let at = cursor(&app, start.fixture).expect("a row is selected");

@@ -99,10 +99,16 @@ pub enum Surface {
 pub enum FieldId {
     Url,
     /// `col` 0 is the name cell, 1 the value cell.
-    TableCell { row: usize, col: usize },
+    TableCell {
+        row: usize,
+        col: usize,
+    },
     Body,
     VmForm(VmField),
-    VmGrid { row: usize, col: usize },
+    VmGrid {
+        row: usize,
+        col: usize,
+    },
     Settings(SettingsField),
     /// A form modal's field, by `ModalStack::caret_field`'s index.
     ModalInput(usize),

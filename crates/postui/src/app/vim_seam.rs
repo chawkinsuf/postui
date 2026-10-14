@@ -7,8 +7,8 @@ use super::router::Ran;
 use super::*;
 use crate::config::KeyProfile;
 use crate::keyroute::engine_glue::{
-    self, AppRequest, Edge, FieldBuf, FieldSession, Glue, Mode, Note, OpenAs, OpenSeat, Outcome, Pos, Settled, Shape,
-    Start, ViewCtx,
+    self, AppRequest, Edge, FieldBuf, FieldSession, Glue, Mode, Note, OpenAs, OpenSeat, Outcome,
+    Pos, Settled, Shape, Start, ViewCtx,
 };
 use crate::keyroute::notation::Tok;
 use crate::keyroute::table::{self, Intent, Match};
@@ -84,7 +84,9 @@ enum DotPending {
 pub(crate) enum Cause {
     /// The start of an event: catch up with what changed since the last.
     Before,
-    Key { routed: bool },
+    Key {
+        routed: bool,
+    },
     /// A mouse button event, and how the engine settles after it.
     Mouse(Option<Settled>),
 }
@@ -108,19 +110,36 @@ impl App {
     /// dialog engine and the top dialog's input (plan M3b Deviation 1).
     pub(crate) fn session_parts(&mut self, id: FieldId) -> (&mut Glue, Option<FieldBuf<'_>>) {
         match id {
-            FieldId::Body => {
-                (&mut self.vim.glue, Some(FieldBuf::Body(&mut self.editor.body, &mut self.editor.body_visual)))
+            FieldId::Body => (
+                &mut self.vim.glue,
+                Some(FieldBuf::Body(&mut self.editor.body, &mut self.editor.body_visual)),
+            ),
+            FieldId::ModalInput(i) => {
+                (&mut self.vim.modal_glue, self.modals.text_input_mut(i).map(FieldBuf::Line))
             }
-            FieldId::ModalInput(i) => (&mut self.vim.modal_glue, self.modals.text_input_mut(i).map(FieldBuf::Line)),
-            FieldId::Palette | FieldId::ChooserFilter | FieldId::VarPickerFilter | FieldId::FilePicker => {
+            FieldId::Palette
+            | FieldId::ChooserFilter
+            | FieldId::VarPickerFilter
+            | FieldId::FilePicker => {
                 (&mut self.vim.modal_glue, self.modals.query_input_mut().map(FieldBuf::Line))
             }
-            FieldId::Jq => (&mut self.vim.glue, Some(FieldBuf::Line(&mut self.session.response.jq_bar_mut().input))),
-            FieldId::Search => (&mut self.vim.glue, self.session.response.search_input_mut().map(FieldBuf::Line)),
+            FieldId::Jq => (
+                &mut self.vim.glue,
+                Some(FieldBuf::Line(&mut self.session.response.jq_bar_mut().input)),
+            ),
+            FieldId::Search => {
+                (&mut self.vim.glue, self.session.response.search_input_mut().map(FieldBuf::Line))
+            }
             _ => (
                 &mut self.vim.glue,
-                line_buf(id, &mut self.editor.url, &mut self.editor.table, &mut self.varmanager, &mut self.settings)
-                    .map(FieldBuf::Line),
+                line_buf(
+                    id,
+                    &mut self.editor.url,
+                    &mut self.editor.table,
+                    &mut self.varmanager,
+                    &mut self.settings,
+                )
+                .map(FieldBuf::Line),
             ),
         }
     }
@@ -129,8 +148,14 @@ impl App {
     /// body (amendment C3).
     fn body_and(&mut self, to: FieldId) -> (&mut Glue, FieldBuf<'_>, Option<FieldBuf<'_>>) {
         let body = FieldBuf::Body(&mut self.editor.body, &mut self.editor.body_visual);
-        let to = line_buf(to, &mut self.editor.url, &mut self.editor.table, &mut self.varmanager, &mut self.settings)
-            .map(FieldBuf::Line);
+        let to = line_buf(
+            to,
+            &mut self.editor.url,
+            &mut self.editor.table,
+            &mut self.varmanager,
+            &mut self.settings,
+        )
+        .map(FieldBuf::Line);
         (&mut self.vim.glue, body, to)
     }
 
@@ -326,7 +351,9 @@ impl App {
             }
         }
         self.vim.modal_session = now;
-        self.vim.modal_glue.set_session(now.map_or(FieldSession::None, |(_, id)| FieldSession::Live(id)));
+        self.vim
+            .modal_glue
+            .set_session(now.map_or(FieldSession::None, |(_, id)| FieldSession::Live(id)));
         let how = match cause {
             Cause::Mouse(how) => how,
             Cause::Key { routed: true } if was == now => Some(Settled::Key),
@@ -451,7 +478,8 @@ impl App {
             Some(FieldBuf::Line(input)) => input.set_visual(None),
             Some(FieldBuf::Body(state, visual)) => {
                 *visual = None;
-                state.mode = if modeless { edtui::EditorMode::Insert } else { edtui::EditorMode::Normal };
+                state.mode =
+                    if modeless { edtui::EditorMode::Insert } else { edtui::EditorMode::Normal };
             }
             None => {}
         }
@@ -486,7 +514,6 @@ impl App {
     pub(crate) fn glue_of(&self, id: FieldId) -> &Glue {
         if id.is_modal() { &self.vim.modal_glue } else { &self.vim.glue }
     }
-
 
     /// What the engine needs to know about the view (piece 3 §4.1): the
     /// body's rows as last drawn.
@@ -557,7 +584,9 @@ impl App {
                 KeyCode::Tab | KeyCode::BackTab => {
                     !ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                 }
-                KeyCode::Right | KeyCode::End => plain && self.session.response.jq_accepts_completion(),
+                KeyCode::Right | KeyCode::End => {
+                    plain && self.session.response.jq_accepts_completion()
+                }
                 _ => false,
             },
             // The ex line's Backspace on an empty query closes it (spec
@@ -583,7 +612,9 @@ impl App {
                 self.modals.query_changed();
                 self.sync_theme_preview();
             }
-            FieldId::Palette | FieldId::VarPickerFilter | FieldId::FilePicker => self.modals.query_changed(),
+            FieldId::Palette | FieldId::VarPickerFilter | FieldId::FilePicker => {
+                self.modals.query_changed()
+            }
             _ => {}
         }
     }
@@ -685,7 +716,10 @@ impl App {
         if !matches!(id, FieldId::Url | FieldId::TableCell { .. } | FieldId::Body) {
             return false;
         }
-        let typing = matches!(self.vim.glue.mode(), Mode::Insert | Mode::Replace | Mode::InsertNormal { .. });
+        let typing = matches!(
+            self.vim.glue.mode(),
+            Mode::Insert | Mode::Replace | Mode::InsertNormal { .. }
+        );
         let (glue, buf) = self.session_parts(id);
         let Some(mut buf) = buf else { return false };
         let edit = if typing {
@@ -753,11 +787,13 @@ impl App {
     /// it does on main (`Editor::handle_key`).
     fn after_typed(&mut self, id: FieldId, ev: KeyEvent) {
         let typing = matches!(self.glue_of(id).mode(), Mode::Insert | Mode::Replace);
-        if ev.code != KeyCode::Char('{') || !typing || !matches!(id, FieldId::Url | FieldId::TableCell { .. }) {
+        if ev.code != KeyCode::Char('{')
+            || !typing
+            || !matches!(id, FieldId::Url | FieldId::TableCell { .. })
+        {
             return;
         }
-        let braces =
-            matches!(self.session_parts(id).1, Some(FieldBuf::Line(input)) if input.ends_with_at_cursor("{{"));
+        let braces = matches!(self.session_parts(id).1, Some(FieldBuf::Line(input)) if input.ends_with_at_cursor("{{"));
         if braces {
             self.update(Action::OpenVarPicker { completing: true });
         }
@@ -765,22 +801,33 @@ impl App {
 
     /// A key the engine handed back (plan M3a Deviation 6). `idle`: the
     /// engine was in idle Normal before the key (`Glue::undo_ready`).
-    fn route_declined(&mut self, id: FieldId, count: Option<usize>, keys: Vec<KeyEvent>, idle: bool) -> Ran {
+    fn route_declined(
+        &mut self,
+        id: FieldId,
+        count: Option<usize>,
+        keys: Vec<KeyEvent>,
+        idle: bool,
+    ) -> Ran {
         let n = count.unwrap_or(1);
         // The field had nothing to step: the app history's turn (spec §3.7).
         // Only from idle Normal: in Visual, or with an operator pending, the
         // engine hands `u` or ctrl+r back as a key it has no use for, and
         // Vim does nothing (final review M-1).
         match keys.last().and_then(Tok::of) {
-            Some(Tok::Char('u')) if idle => return self.run_steps(vec![Step::Action(Action::Undo); n]),
-            Some(Tok::Ctrl('r')) if idle => return self.run_steps(vec![Step::Action(Action::Redo); n]),
+            Some(Tok::Char('u')) if idle => {
+                return self.run_steps(vec![Step::Action(Action::Undo); n]);
+            }
+            Some(Tok::Ctrl('r')) if idle => {
+                return self.run_steps(vec![Step::Action(Action::Redo); n]);
+            }
             _ => {}
         }
         let cap = self.repeat_cap(self.surface());
         // A field row the engine handed back whole (M4's `gt`).
         let toks: Option<Vec<Tok>> = keys.iter().map(Tok::of).collect();
         if let Some(toks) = toks
-            && let Match::Complete(b) = table::lookup_class(&toks, KeyProfile::Vim, table::field_class(id, self.surface()))
+            && let Match::Complete(b) =
+                table::lookup_class(&toks, KeyProfile::Vim, table::field_class(id, self.surface()))
         {
             return match b.intent {
                 Intent::Swallow => Ran::default(),
@@ -794,7 +841,10 @@ impl App {
             }
             // As a count before a named key does off a field (spec §3.4
             // step 4): only the moves repeat.
-            let repeat = matches!(ev.code, KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown);
+            let repeat = matches!(
+                ev.code,
+                KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown
+            );
             let times = if repeat { n.min(cap) } else { 1 };
             for _ in 0..times {
                 ran = ran.and(self.route_forwarded(id, ev));
@@ -819,7 +869,8 @@ impl App {
         if id != FieldId::Body || (ev.code == KeyCode::Esc && ev.modifiers.is_empty()) {
             return Ran::routed(self.handle_key_routed(ev));
         }
-        let indent = (ev.code == KeyCode::Tab && ev.modifiers.is_empty()) || ev.code == KeyCode::BackTab;
+        let indent =
+            (ev.code == KeyCode::Tab && ev.modifiers.is_empty()) || ev.code == KeyCode::BackTab;
         match self.keymap.lookup(&KeyCombo::from_event(&ev)) {
             Some(a) if !indent => Ran::routed(self.update(a)),
             _ => Ran::default(),
@@ -893,11 +944,16 @@ impl App {
     /// session (spec §3.1). Of the drags only the left button's sweeps a
     /// selection: some terminals (Ghostty) report hover as `Drag(Right)`,
     /// and each sync reads the whole body (final review T4).
-    pub(super) fn vim_mouse_start(&mut self, m: &ratatui::crossterm::event::MouseEvent) -> MouseEdge {
+    pub(super) fn vim_mouse_start(
+        &mut self,
+        m: &ratatui::crossterm::event::MouseEvent,
+    ) -> MouseEdge {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
         let button = matches!(
             m.kind,
-            MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(MouseButton::Left)
+            MouseEventKind::Down(_)
+                | MouseEventKind::Up(_)
+                | MouseEventKind::Drag(MouseButton::Left)
         );
         if !button {
             return MouseEdge(None);
@@ -909,7 +965,9 @@ impl App {
         MouseEdge(Some(match m.kind {
             MouseEventKind::Down(MouseButton::Left) => Some(Settled::Click),
             MouseEventKind::Drag(MouseButton::Left) => Some(Settled::Sweep),
-            MouseEventKind::Up(MouseButton::Left) => Some(if sweeping { Settled::Release } else { Settled::Click }),
+            MouseEventKind::Up(MouseButton::Left) => {
+                Some(if sweeping { Settled::Release } else { Settled::Click })
+            }
             _ => None,
         }))
     }
@@ -963,7 +1021,10 @@ impl App {
     /// shares (plan M5b Deviation 20).
     pub(crate) fn with_response_search<R>(
         &mut self,
-        f: impl FnOnce(&mut crate::components::response::Response, &mut crate::vim::engine::SearchMemory) -> R,
+        f: impl FnOnce(
+            &mut crate::components::response::Response,
+            &mut crate::vim::engine::SearchMemory,
+        ) -> R,
     ) -> R {
         f(&mut self.session.response, &mut self.vim.search_memory)
     }
@@ -1027,7 +1088,10 @@ impl App {
     /// How the footer spells keys for the live engine field: its idle
     /// Normal's field class, else typing. `None` when no vim field has the
     /// caret.
-    pub(crate) fn vim_field_spell(&self, surface: crate::keyroute::Surface) -> Option<crate::keyroute::FieldSpell> {
+    pub(crate) fn vim_field_spell(
+        &self,
+        surface: crate::keyroute::Surface,
+    ) -> Option<crate::keyroute::FieldSpell> {
         use crate::keyroute::FieldSpell;
         let id = self.live_engine_field()?;
         let glue = self.glue_of(id);
@@ -1061,9 +1125,13 @@ impl App {
             // A screen field whose session has not synced yet (opened with
             // no event) shows the screen engine's mode, as before M3b: the
             // sync opens it in Normal.
-            (None, FieldCaret::Live(id)) if !id.is_modal() && !id.insert_only() => mode_word(self.vim.glue.mode()),
+            (None, FieldCaret::Live(id)) if !id.is_modal() && !id.insert_only() => {
+                mode_word(self.vim.glue.mode())
+            }
             (None, FieldCaret::Live(_)) => "INSERT",
-            (None, _) if matches!(self.surface(), crate::keyroute::Surface::ResponseLines(_)) => "V-LINE",
+            (None, _) if matches!(self.surface(), crate::keyroute::Surface::ResponseLines(_)) => {
+                "V-LINE"
+            }
             (None, _) => "NORMAL",
         })
     }
@@ -1072,11 +1140,7 @@ impl App {
     pub fn vim_status(&self) -> Option<String> {
         let mode = self.mode_indicator()?;
         let echo = self.key_echo();
-        Some(if echo.is_empty() {
-            mode.to_string()
-        } else {
-            format!("{mode}  {echo}")
-        })
+        Some(if echo.is_empty() { mode.to_string() } else { format!("{mode}  {echo}") })
     }
 
     /// The next field an add verb opens opens in Insert (spec §5.6).
@@ -1112,7 +1176,10 @@ impl App {
     /// holds edits the line's command may flush: that edit may be the last
     /// change (plan M5b Deviation 6).
     pub(crate) fn vim_palette_ran(&mut self, popped: Option<&Modal>, before: u64) {
-        if matches!(popped, Some(Modal::Palette(_))) && !self.screen_field_open() && !self.field_gate() {
+        if matches!(popped, Some(Modal::Palette(_)))
+            && !self.screen_field_open()
+            && !self.field_gate()
+        {
             self.vim.dot_pending = DotPending::Kept { before };
         }
     }
@@ -1138,7 +1205,9 @@ impl App {
         let now = self.history.changes();
         let vim = &mut self.vim;
         match std::mem::take(&mut vim.dot_pending) {
-            DotPending::Made { change, before } if now != before => vim.dot = Some(Dot { change, at: now }),
+            DotPending::Made { change, before } if now != before => {
+                vim.dot = Some(Dot { change, at: now })
+            }
             DotPending::Kept { before } => {
                 if let Some(dot) = vim.dot.as_mut()
                     && dot.at == before
@@ -1235,18 +1304,27 @@ impl App {
                         self.vim.glue.yank_lines(&lines);
                         // Vim's `'report'` (2): three lines or more say so.
                         if n >= 3 {
-                            self.update(Action::ShowToast(format!("{n} lines yanked"), ToastKind::Info));
+                            self.update(Action::ShowToast(
+                                format!("{n} lines yanked"),
+                                ToastKind::Info,
+                            ));
                         }
                         true
                     }
-                    None => had != self.session.response.line_selection() || op == crate::action::LinesOp::Swap,
+                    None => {
+                        had != self.session.response.line_selection()
+                            || op == crate::action::LinesOp::Swap
+                    }
                 }
             }
             Action::RepeatChange { count } => {
                 let Some(dot) = self.vim.dot else { return false };
-                let change = crate::keyroute::Change { count: count.or(dot.change.count), ..dot.change };
+                let change =
+                    crate::keyroute::Change { count: count.or(dot.change.count), ..dot.change };
                 let surface = self.surface();
-                let Some(steps) = crate::keyroute::replay(change, surface, self.repeat_cap(surface)) else {
+                let Some(steps) =
+                    crate::keyroute::replay(change, surface, self.repeat_cap(surface))
+                else {
                     return false;
                 };
                 let before = self.history.changes();
@@ -1259,8 +1337,16 @@ impl App {
             Action::SidebarFold { op, count } => {
                 use crate::components::sidebar::FoldChange;
                 let real = self.sidebar.fold_cursor();
-                match self.sidebar.fold_change(op, count, real.as_ref(), &self.expanded(), &self.active_space()) {
-                    FoldChange::NoFold => self.update(Action::ShowToast(table::NO_FOLD.into(), ToastKind::Info)),
+                match self.sidebar.fold_change(
+                    op,
+                    count,
+                    real.as_ref(),
+                    &self.expanded(),
+                    &self.active_space(),
+                ) {
+                    FoldChange::NoFold => {
+                        self.update(Action::ShowToast(table::NO_FOLD.into(), ToastKind::Info))
+                    }
                     FoldChange::Same => false,
                     FoldChange::Expanded(set) => {
                         if let Some(p) = self.project_mut() {

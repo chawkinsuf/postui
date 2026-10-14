@@ -91,19 +91,13 @@ pub fn env_tls(meta: &ProjectMeta, slug: &str) -> Option<TlsPolicy> {
 
 /// The name a space shows as: its `[space.<slug>] name`, else the slug.
 pub fn space_display(meta: &ProjectMeta, slug: &str) -> String {
-    meta.space
-        .get(slug)
-        .and_then(|s| s.name.clone())
-        .unwrap_or_else(|| slug.to_string())
+    meta.space.get(slug).and_then(|s| s.name.clone()).unwrap_or_else(|| slug.to_string())
 }
 
 /// The name an environment shows as: its `[environment.<slug>] name`,
 /// else the slug.
 pub fn env_display(meta: &ProjectMeta, slug: &str) -> String {
-    meta.environment
-        .get(slug)
-        .and_then(|s| s.name.clone())
-        .unwrap_or_else(|| slug.to_string())
+    meta.environment.get(slug).and_then(|s| s.name.clone()).unwrap_or_else(|| slug.to_string())
 }
 
 /// Which of the two settings tables an op edits.
@@ -134,17 +128,19 @@ pub(crate) fn set_item_name(doc: &mut toml_edit::DocumentMut, kind: Kind, slug: 
 }
 
 /// `[<kind>.<slug>] <key> = <value>`, keeping the table's other keys.
-pub(crate) fn set_item_key(doc: &mut toml_edit::DocumentMut, kind: Kind, slug: &str, key: &str, value: &str) {
-    let table = doc
-        .entry(kind.table())
-        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+pub(crate) fn set_item_key(
+    doc: &mut toml_edit::DocumentMut,
+    kind: Kind,
+    slug: &str,
+    key: &str,
+    value: &str,
+) {
+    let table = doc.entry(kind.table()).or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
     if let Some(t) = table.as_table_mut() {
         // A bare `[space]` line with nothing but sub-tables under it would
         // be noise, so the parent stays implicit.
         t.set_implicit(true);
-        let item = t
-            .entry(slug)
-            .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+        let item = t.entry(slug).or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
         if let Some(it) = item.as_table_mut() {
             it[key] = toml_edit::value(value);
         }
@@ -333,11 +329,7 @@ pub struct ListChange {
 
 /// The displayed (valid-name) entries of a written list, in order.
 pub(crate) fn displayed_spaces(spaces: &[String]) -> Vec<String> {
-    spaces
-        .iter()
-        .filter(|n| valid_space_name(n))
-        .cloned()
-        .collect()
+    spaces.iter().filter(|n| valid_space_name(n)).cloned().collect()
 }
 
 /// `root/environments/<name>.toml`.
@@ -360,12 +352,7 @@ mod tests {
         let mut st = LocalState {
             space: Some("auth".into()),
             open_request: Some("auth/login".into()),
-            expanded: vec![
-                "auth".into(),
-                "auth/deep".into(),
-                "authx/no".into(),
-                "main/a".into(),
-            ],
+            expanded: vec!["auth".into(), "auth/deep".into(), "authx/no".into(), "main/a".into()],
             space_open: [("auth", "auth/login"), ("main", "main/a")]
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -375,18 +362,9 @@ mod tests {
         st.rename_space("auth", "accounts");
         assert_eq!(st.space.as_deref(), Some("accounts"));
         assert_eq!(st.open_request.as_deref(), Some("accounts/login"));
-        assert_eq!(
-            st.expanded,
-            ["accounts", "accounts/deep", "authx/no", "main/a"]
-        );
-        assert_eq!(
-            st.space_open.get("accounts").map(String::as_str),
-            Some("accounts/login")
-        );
+        assert_eq!(st.expanded, ["accounts", "accounts/deep", "authx/no", "main/a"]);
+        assert_eq!(st.space_open.get("accounts").map(String::as_str), Some("accounts/login"));
         assert!(!st.space_open.contains_key("auth"));
-        assert_eq!(
-            st.space_open.get("main").map(String::as_str),
-            Some("main/a")
-        );
+        assert_eq!(st.space_open.get("main").map(String::as_str), Some("main/a"));
     }
 }

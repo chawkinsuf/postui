@@ -53,20 +53,10 @@ impl ProjectsRegistry {
         };
 
         if let Some(known) = projects.get("known").and_then(|v| v.as_array()) {
-            registry.known = known
-                .iter()
-                .filter_map(|v| v.as_str())
-                .map(expand_tilde)
-                .collect();
+            registry.known = known.iter().filter_map(|v| v.as_str()).map(expand_tilde).collect();
         }
-        registry.root = projects
-            .get("root")
-            .and_then(|v| v.as_str())
-            .map(expand_tilde);
-        registry.last = projects
-            .get("last")
-            .and_then(|v| v.as_str())
-            .map(expand_tilde);
+        registry.root = projects.get("root").and_then(|v| v.as_str()).map(expand_tilde);
+        registry.last = projects.get("last").and_then(|v| v.as_str()).map(expand_tilde);
 
         registry
     }
@@ -243,9 +233,7 @@ impl KeyProfile {
 
     /// The profile a `keymap` value names, or `None` for anything else.
     pub fn from_spelling(s: &str) -> Option<Self> {
-        [KeyProfile::Arrows, KeyProfile::Vim]
-            .into_iter()
-            .find(|p| p.spelling() == s)
+        [KeyProfile::Arrows, KeyProfile::Vim].into_iter().find(|p| p.spelling() == s)
     }
 }
 
@@ -330,10 +318,7 @@ impl UiSettings {
             Ok(value) => Self::from_value(&value),
             Err(e) => (
                 UiSettings::default(),
-                vec![format!(
-                    "{}; using default settings",
-                    config_parse_error(&e)
-                )],
+                vec![format!("{}; using default settings", config_parse_error(&e))],
             ),
         }
     }
@@ -612,9 +597,7 @@ impl Config {
     /// written over afterwards (see [`Self::edit`]).
     pub fn load(macos: bool) -> (Config, Loaded, Vec<String>) {
         Self::load_from(
-            Config {
-                disk: postui_core::config_dir().map(postui_core::disk::Disk::new),
-            },
+            Config { disk: postui_core::config_dir().map(postui_core::disk::Disk::new) },
             macos,
         )
     }
@@ -653,9 +636,8 @@ impl Config {
         if ui.keymap == Some(KeyProfile::Vim) {
             warnings.extend(keymap.vim_shadow_warnings());
         }
-        let themes = read
-            .themes
-            .unwrap_or_else(|_| crate::theme::ThemeRegistry::from_files(Vec::new()).0);
+        let themes =
+            read.themes.unwrap_or_else(|_| crate::theme::ThemeRegistry::from_files(Vec::new()).0);
 
         // `ui.toml` is the app's own state file rather than a config file
         // the user edits, so it is read here and *not* by `read_all` —
@@ -672,7 +654,9 @@ impl Config {
                 warnings.extend(warning.map(|w| format!("{UI_TOML}: {w}")));
                 (usage, cmdline)
             }
-            Ok(None) => (crate::usage::UsageStore::default(), crate::cmdline::CmdlineHistory::default()),
+            Ok(None) => {
+                (crate::usage::UsageStore::default(), crate::cmdline::CmdlineHistory::default())
+            }
             Err(e) => {
                 warnings.push(e);
                 // The file may be fine on disk; a quit save must not replace it.
@@ -680,19 +664,7 @@ impl Config {
             }
         };
 
-        (
-            cfg,
-            Loaded {
-                registry,
-                ui,
-                keymap,
-                themes,
-                usage,
-                cmdline,
-                config_error,
-            },
-            warnings,
-        )
+        (cfg, Loaded { registry, ui, keymap, themes, usage, cmdline, config_error }, warnings)
     }
 
     /// A `Config` with no files behind it: every save a silent `Ok(())`,
@@ -705,9 +677,7 @@ impl Config {
     /// tempdir-backed) disk behind reload.
     #[cfg(test)]
     pub(crate) fn at(dir: PathBuf) -> Config {
-        Config {
-            disk: Some(postui_core::disk::Disk::new(dir)),
-        }
+        Config { disk: Some(postui_core::disk::Disk::new(dir)) }
     }
 
     /// The single reader of the user-editable config files: `config.toml`
@@ -762,15 +732,7 @@ impl Config {
             Err(e) => Err(e),
         };
 
-        (
-            ReadAll {
-                config,
-                keymap,
-                profile,
-                themes,
-            },
-            warnings,
-        )
+        (ReadAll { config, keymap, profile, themes }, warnings)
     }
 
     /// Re-reads the user-editable XDG config files — `config.toml`,
@@ -826,15 +788,7 @@ impl Config {
         // `read_all`; here it just means "keep the registry you have".
         let themes = read.themes.ok();
 
-        (
-            Reloaded {
-                config,
-                config_error,
-                keymap,
-                themes,
-            },
-            warnings,
-        )
+        (Reloaded { config, config_error, keymap, themes }, warnings)
     }
 
     /// The file's text: `Ok(None)` when it (or the whole config dir)
@@ -864,17 +818,13 @@ impl Config {
             return Ok(());
         };
         let rel = postui_core::disk::RelPath::new(name).map_err(|e| e.to_string())?;
-        let existing = disk
-            .read(&rel)
-            .map_err(|e| e.to_string())?
-            .unwrap_or_default();
+        let existing = disk.read(&rel).map_err(|e| e.to_string())?.unwrap_or_default();
         let mut doc: toml_edit::DocumentMut =
             existing.parse().map_err(|e: toml_edit::TomlError| {
                 format!("{name} has a syntax error and was left unchanged: {e}")
             })?;
         f(&mut doc);
-        disk.write(&rel, &doc.to_string())
-            .map_err(|e| e.to_string())
+        disk.write(&rel, &doc.to_string()).map_err(|e| e.to_string())
     }
 
     /// Persists the `[projects]` table of `config.toml`.
@@ -974,7 +924,10 @@ impl Config {
 
     /// Persists the `:` line's history to `ui.toml` (plan M5b Deviation 16).
     /// A `[history]` that did not read at startup is left as it is.
-    pub fn save_cmdline_history(&mut self, history: &crate::cmdline::CmdlineHistory) -> Result<(), String> {
+    pub fn save_cmdline_history(
+        &mut self,
+        history: &crate::cmdline::CmdlineHistory,
+    ) -> Result<(), String> {
         if !history.writable() {
             return Ok(());
         }
@@ -1003,20 +956,15 @@ impl Config {
                     return (None, warnings);
                 }
             };
-            for entry in entries
-                .into_iter()
-                .filter(|e| !e.is_dir && e.name.ends_with(".toml"))
-            {
+            for entry in entries.into_iter().filter(|e| !e.is_dir && e.name.ends_with(".toml")) {
                 let Ok(rel) = dir.join(&entry.name) else {
                     continue;
                 };
                 match disk.read(&rel) {
                     Ok(Some(text)) => files.push((entry.name, text)),
                     Ok(None) => {}
-                    Err(e) => warnings.push(format!(
-                        "theme file {}: unreadable: {e}; skipped",
-                        entry.name
-                    )),
+                    Err(e) => warnings
+                        .push(format!("theme file {}: unreadable: {e}; skipped", entry.name)),
                 }
             }
         }
@@ -1132,7 +1080,8 @@ mod tests {
     #[test]
     fn the_cmdline_history_round_trips_through_ui_toml() {
         let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("ui.toml"), "[history]\ncmdline = [\"w\", \"send\"]\n").unwrap();
+        std::fs::write(dir.path().join("ui.toml"), "[history]\ncmdline = [\"w\", \"send\"]\n")
+            .unwrap();
         let disk = || Config { disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())) };
         let (mut cfg, loaded, warnings) = Config::load_from(disk(), false);
         assert!(!warnings.iter().any(|w| w.contains("ui.toml")), "{warnings:?}");
@@ -1155,12 +1104,19 @@ mod tests {
         let text = "[history]\ncmdline = 5\n";
         std::fs::write(dir.path().join("ui.toml"), text).unwrap();
         let (mut cfg, loaded, warnings) = Config::load_from(disk(), false);
-        assert!(warnings.iter().any(|w| w.contains("command-line history will not be saved")), "{warnings:?}");
+        assert!(
+            warnings.iter().any(|w| w.contains("command-line history will not be saved")),
+            "{warnings:?}"
+        );
         assert!(loaded.cmdline.lines().is_empty());
         let mut history = loaded.cmdline;
         history.add("w");
         cfg.save_cmdline_history(&history).unwrap();
-        assert_eq!(std::fs::read_to_string(dir.path().join("ui.toml")).unwrap(), text, "byte for byte");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("ui.toml")).unwrap(),
+            text,
+            "byte for byte"
+        );
         std::fs::write(dir.path().join("ui.toml"), "not = [toml").unwrap();
         let (_, _, warnings) = Config::load_from(disk(), false);
         assert!(warnings.iter().any(|w| w.contains("command-line history")), "{warnings:?}");
@@ -1201,14 +1157,9 @@ mod tests {
         assert!(warnings[0].contains("could not parse"), "{warnings:?}");
         let (s, warnings) = UiSettings::parse(broken);
         assert_eq!(s, UiSettings::default());
-        assert!(
-            warnings.iter().any(|w| w.contains("could not parse")),
-            "{warnings:?}"
-        );
+        assert!(warnings.iter().any(|w| w.contains("could not parse")), "{warnings:?}");
 
-        let mut cfg = Config {
-            disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())),
-        };
+        let mut cfg = Config { disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())) };
         let mut r = r;
         r.register(PathBuf::from("/tmp/b"));
         assert!(cfg.save_registry(&r).is_err(), "the registry save refuses");
@@ -1228,17 +1179,10 @@ mod tests {
     fn config_edit_refuses_a_file_that_does_not_parse_and_leaves_it_alone() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("ui.toml"), "not = [toml").unwrap();
-        let mut cfg = Config {
-            disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())),
-        };
-        let err = cfg
-            .save_usage(&crate::usage::UsageStore::default())
-            .unwrap_err();
+        let mut cfg = Config { disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())) };
+        let err = cfg.save_usage(&crate::usage::UsageStore::default()).unwrap_err();
         assert!(err.contains("ui.toml has a syntax error"), "{err}");
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("ui.toml")).unwrap(),
-            "not = [toml"
-        );
+        assert_eq!(std::fs::read_to_string(dir.path().join("ui.toml")).unwrap(), "not = [toml");
     }
 
     /// Every save on a `Config` with no config dir behind it is a silent
@@ -1253,10 +1197,7 @@ mod tests {
         let (themes, warnings) = cfg.reload_themes();
         assert!(warnings.is_empty());
         assert_eq!(
-            themes
-                .expect("no config dir is not a listing failure")
-                .entries()
-                .len(),
+            themes.expect("no config dir is not a listing failure").entries().len(),
             9,
             "the built-ins"
         );
@@ -1279,9 +1220,7 @@ mod tests {
         std::fs::write(themes.join("notes.txt"), "not a theme").unwrap();
         std::fs::create_dir_all(themes.join("sub.toml")).unwrap();
 
-        let mut cfg = Config {
-            disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())),
-        };
+        let mut cfg = Config { disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())) };
         let (registry, warnings) = cfg.reload_themes();
         assert!(warnings.is_empty(), "{warnings:?}");
         let registry = registry.expect("the directory listed");
@@ -1306,9 +1245,7 @@ mod tests {
         std::fs::write(&locked, THEME_TOML).unwrap();
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-        let mut cfg = Config {
-            disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())),
-        };
+        let mut cfg = Config { disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())) };
         let (registry, warnings) = cfg.reload_themes();
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
         let registry = registry.expect("one unreadable file is not a listing failure");
@@ -1336,9 +1273,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let p = dir.path().join("config.toml");
         std::fs::write(&p, "theme = \"dark\"\n").unwrap();
-        let mut cfg = Config {
-            disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())),
-        };
+        let mut cfg = Config { disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())) };
         let (mut r, _) = ProjectsRegistry::parse(&std::fs::read_to_string(&p).unwrap());
         r.register(PathBuf::from("/tmp/a"));
         r.register(PathBuf::from("/tmp/b"));
@@ -1347,15 +1282,9 @@ mod tests {
         cfg.save_registry(&r).unwrap();
 
         let text = std::fs::read_to_string(&p).unwrap();
-        assert!(
-            text.contains("theme = \"dark\""),
-            "unrelated key preserved: {text}"
-        );
+        assert!(text.contains("theme = \"dark\""), "unrelated key preserved: {text}");
         let (r2, _) = ProjectsRegistry::parse(&text);
-        assert_eq!(
-            r2.known,
-            vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]
-        );
+        assert_eq!(r2.known, vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]);
         assert_eq!(r2.last, Some(PathBuf::from("/tmp/a")));
         assert_eq!(r2.root, Some(PathBuf::from("/tmp/root")));
     }
@@ -1363,10 +1292,7 @@ mod tests {
     #[test]
     fn next_after_cycles_and_wraps() {
         let (mut r, _) = ProjectsRegistry::parse("");
-        assert!(
-            r.next_after(&PathBuf::from("/tmp/a")).is_none(),
-            "fewer than two projects"
-        );
+        assert!(r.next_after(&PathBuf::from("/tmp/a")).is_none(), "fewer than two projects");
         let a = tempdir().unwrap();
         let b = tempdir().unwrap();
         let c = tempdir().unwrap();
@@ -1374,11 +1300,7 @@ mod tests {
         r.register(b.path().to_path_buf());
         r.register(c.path().to_path_buf());
         assert_eq!(r.next_after(b.path()), Some(c.path().to_path_buf()));
-        assert_eq!(
-            r.next_after(c.path()),
-            Some(a.path().to_path_buf()),
-            "wraps"
-        );
+        assert_eq!(r.next_after(c.path()), Some(a.path().to_path_buf()), "wraps");
         assert_eq!(
             r.next_after(&PathBuf::from("/elsewhere")),
             Some(a.path().to_path_buf()),
@@ -1436,10 +1358,7 @@ mod tests {
         let (s, warnings) = UiSettings::parse("not valid toml [[[");
         assert_eq!(s, UiSettings::default());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(
-            warnings[0].contains("using default settings"),
-            "{warnings:?}"
-        );
+        assert!(warnings[0].contains("using default settings"), "{warnings:?}");
     }
 
     #[test]
@@ -1457,9 +1376,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let p = dir.path().join("config.toml");
         std::fs::write(&p, "clipboard_cmd = \"xclip\"\n\n[projects]\nknown = []\n").unwrap();
-        let mut cfg = Config {
-            disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())),
-        };
+        let mut cfg = Config { disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())) };
         cfg.save_ui_theme("catppuccin-mocha").unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(text.contains("theme = \"catppuccin-mocha\""), "{text}");
@@ -1468,19 +1385,13 @@ mod tests {
         assert_eq!(UiSettings::parse(&text).0.theme, "catppuccin-mocha");
         cfg.save_ui_theme("dark").unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
-        assert_eq!(
-            UiSettings::parse(&text).0.theme,
-            "dark",
-            "overwrites an existing key"
-        );
+        assert_eq!(UiSettings::parse(&text).0.theme, "dark", "overwrites an existing key");
     }
 
     #[test]
     fn save_ui_theme_creates_a_missing_file() {
         let dir = tempdir().unwrap();
-        let mut cfg = Config {
-            disk: Some(postui_core::disk::Disk::new(dir.path().join("sub"))),
-        };
+        let mut cfg = Config { disk: Some(postui_core::disk::Disk::new(dir.path().join("sub"))) };
         cfg.save_ui_theme("light").unwrap();
         let text = std::fs::read_to_string(dir.path().join("sub").join("config.toml")).unwrap();
         assert_eq!(UiSettings::parse(&text).0.theme, "light");
@@ -1502,11 +1413,7 @@ mod tests {
 
         let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
         let (settings, _) = UiSettings::parse(&text);
-        assert_eq!(
-            settings,
-            UiSettings::default(),
-            "preferences are back to default"
-        );
+        assert_eq!(settings, UiSettings::default(), "preferences are back to default");
         assert!(settings.animations, "removed, so the default applies");
         assert!(!settings.ai_confirmed, "consent returns; that is correct");
 
@@ -1538,8 +1445,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
-        cfg.write_validated(CONFIG_TOML, "animations = true\n")
-            .unwrap();
+        cfg.write_validated(CONFIG_TOML, "animations = true\n").unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.path().join("config.toml")).unwrap(),
             "animations = true\n"
@@ -1549,10 +1455,7 @@ mod tests {
     #[test]
     fn write_validated_without_a_config_dir_is_a_silent_ok() {
         let mut cfg = Config::none();
-        assert!(
-            cfg.write_validated(CONFIG_TOML, "animations = true\n")
-                .is_ok()
-        );
+        assert!(cfg.write_validated(CONFIG_TOML, "animations = true\n").is_ok());
     }
 
     /// The seed documents every setting without setting any of them: an
@@ -1609,10 +1512,7 @@ mod tests {
         let (s, warnings) = UiSettings::parse("jq_tab = \"accept\"\n");
         assert_eq!(s.jq_tab, JqTab::Menu, "the older name still works");
         assert!(warnings.is_empty());
-        assert_eq!(
-            UiSettings::parse("jq_tab = \"menu\"\n").0.jq_tab,
-            JqTab::Menu
-        );
+        assert_eq!(UiSettings::parse("jq_tab = \"menu\"\n").0.jq_tab, JqTab::Menu);
         let (s, warnings) = UiSettings::parse("jq_tab = \"popup\"\n");
         assert_eq!(s.jq_tab, JqTab::Menu, "a bad value falls back");
         assert_eq!(warnings.len(), 1);
@@ -1624,9 +1524,7 @@ mod tests {
         let (settings, warnings) = UiSettings::parse("animations = \"yes\"\n");
         assert!(settings.animations, "falls back to the default");
         assert!(
-            warnings
-                .iter()
-                .any(|w| w.contains("animations") && w.contains("boolean")),
+            warnings.iter().any(|w| w.contains("animations") && w.contains("boolean")),
             "the fallback must name the key and the expected type: {warnings:?}"
         );
     }
@@ -1696,16 +1594,11 @@ osc52_limit = 1024
         let dir = tempdir().unwrap();
         let p = dir.path().join("config.toml");
         std::fs::write(&p, "theme = \"x\"\n\n[projects]\nknown = []\n").unwrap();
-        let mut cfg = Config {
-            disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())),
-        };
+        let mut cfg = Config { disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())) };
         cfg.save_ui_flag("ai_confirmed", true).unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(text.contains("ai_confirmed = true"), "{text}");
-        assert!(
-            text.contains("theme = \"x\"") && text.contains("[projects]"),
-            "{text}"
-        );
+        assert!(text.contains("theme = \"x\"") && text.contains("[projects]"), "{text}");
         assert!(UiSettings::parse(&text).0.ai_confirmed);
     }
 
@@ -1865,47 +1758,26 @@ osc52_limit = 1024
     fn parse_cli_normal_path_and_none() {
         assert_eq!(
             cli(&["/abs/x"]),
-            CliParse::Root {
-                root: Some(PathBuf::from("/abs/x")),
-                debug_ai: false
-            }
+            CliParse::Root { root: Some(PathBuf::from("/abs/x")), debug_ai: false }
         );
-        assert_eq!(
-            cli(&[]),
-            CliParse::Root {
-                root: None,
-                debug_ai: false
-            }
-        );
+        assert_eq!(cli(&[]), CliParse::Root { root: None, debug_ai: false });
         // One directory at most.
         assert_eq!(cli(&["/abs/x", "/abs/y"]), CliParse::Usage);
     }
 
     #[test]
     fn parse_cli_debug_ai_goes_either_side_of_the_directory() {
-        let with_root = CliParse::Root {
-            root: Some(PathBuf::from("/abs/x")),
-            debug_ai: true,
-        };
+        let with_root = CliParse::Root { root: Some(PathBuf::from("/abs/x")), debug_ai: true };
         assert_eq!(cli(&["--debug-ai", "/abs/x"]), with_root);
         assert_eq!(cli(&["/abs/x", "--debug-ai"]), with_root);
-        assert_eq!(
-            cli(&["--debug-ai"]),
-            CliParse::Root {
-                root: None,
-                debug_ai: true
-            }
-        );
+        assert_eq!(cli(&["--debug-ai"]), CliParse::Root { root: None, debug_ai: true });
         // Once, like the directory.
         assert_eq!(cli(&["--debug-ai", "--debug-ai"]), CliParse::Usage);
     }
 
     #[test]
     fn tilde_expansion() {
-        let home = directories::BaseDirs::new()
-            .unwrap()
-            .home_dir()
-            .to_path_buf();
+        let home = directories::BaseDirs::new().unwrap().home_dir().to_path_buf();
         assert_eq!(expand_tilde("~/x/y"), home.join("x/y"));
         assert_eq!(expand_tilde("~"), home);
         assert_eq!(expand_tilde("/abs/x"), PathBuf::from("/abs/x"));
@@ -1922,7 +1794,8 @@ osc52_limit = 1024
         .unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
+        let (reloaded, warnings) =
+            cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(reloaded.config.as_ref().unwrap().1.theme, "x");
@@ -1942,7 +1815,8 @@ osc52_limit = 1024
         .unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
+        let (reloaded, warnings) =
+            cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         assert!(reloaded.config.is_none());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
@@ -1953,20 +1827,15 @@ osc52_limit = 1024
     #[test]
     fn reload_surfaces_a_ui_settings_warning_from_otherwise_valid_toml() {
         let dir = tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("config.toml"),
-            "theme = \"x\"\njq_tab = \"bogus\"\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("config.toml"), "theme = \"x\"\njq_tab = \"bogus\"\n")
+            .unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
+        let (reloaded, warnings) =
+            cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         assert!(reloaded.config.is_some(), "valid TOML still parses");
-        assert!(
-            warnings.iter().any(|w| w.contains("jq_tab")),
-            "{warnings:?}"
-        );
+        assert!(warnings.iter().any(|w| w.contains("jq_tab")), "{warnings:?}");
     }
 
     #[test]
@@ -1974,12 +1843,10 @@ osc52_limit = 1024
         let dir = tempdir().unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
+        let (reloaded, warnings) =
+            cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
-        assert_eq!(
-            reloaded.config,
-            Some((ProjectsRegistry::default(), UiSettings::default()))
-        );
+        assert_eq!(reloaded.config, Some((ProjectsRegistry::default(), UiSettings::default())));
         assert!(warnings.is_empty(), "{warnings:?}");
     }
 
@@ -1989,14 +1856,12 @@ osc52_limit = 1024
         std::fs::write(dir.path().join("keys.toml"), "save = \"alt+shift+s\"\n").unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, _warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
+        let (reloaded, _warnings) =
+            cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         let keymap = reloaded.keymap.expect("good keys.toml parses");
         let combo = crate::keys::KeyCombo::parse("alt+shift+s").unwrap();
-        assert_eq!(
-            keymap.lookup(&combo),
-            Some(crate::action::Action::SaveRequest)
-        );
+        assert_eq!(keymap.lookup(&combo), Some(crate::action::Action::SaveRequest));
     }
 
     #[test]
@@ -2005,13 +1870,12 @@ osc52_limit = 1024
         std::fs::write(dir.path().join("keys.toml"), "save = \"not-a-combo\"\n").unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
+        let (reloaded, warnings) =
+            cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         assert!(reloaded.keymap.is_none());
         assert!(
-            warnings
-                .iter()
-                .any(|w| w.contains("keys.toml") && w.contains("keeping")),
+            warnings.iter().any(|w| w.contains("keys.toml") && w.contains("keeping")),
             "{warnings:?}"
         );
     }
@@ -2024,7 +1888,8 @@ osc52_limit = 1024
         std::fs::write(themes.join("good.toml"), THEME_TOML).unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, _warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
+        let (reloaded, _warnings) =
+            cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         let themes = reloaded.themes.expect("the directory listed");
         let customs: Vec<&str> = themes
@@ -2058,14 +1923,8 @@ osc52_limit = 1024
         assert_eq!(loaded.ui, UiSettings::default());
         assert_eq!(loaded.registry, ProjectsRegistry::default());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(
-            warnings[0].starts_with("could not parse config.toml: "),
-            "{warnings:?}"
-        );
-        assert!(
-            warnings[0].ends_with("; using default settings"),
-            "{warnings:?}"
-        );
+        assert!(warnings[0].starts_with("could not parse config.toml: "), "{warnings:?}");
+        assert!(warnings[0].ends_with("; using default settings"), "{warnings:?}");
     }
 
     /// An unreadable config.toml gets the same treatment as an unparsable
@@ -2091,10 +1950,7 @@ osc52_limit = 1024
         assert_eq!(loaded.ui, UiSettings::default());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("config.toml"), "{warnings:?}");
-        assert!(
-            warnings[0].ends_with("; using default settings"),
-            "{warnings:?}"
-        );
+        assert!(warnings[0].ends_with("; using default settings"), "{warnings:?}");
     }
 
     #[test]
@@ -2104,10 +1960,7 @@ osc52_limit = 1024
         let (_cfg, loaded, warnings) =
             Config::load_from(Config::at(dir.path().to_path_buf()), false);
 
-        assert!(
-            warnings.is_empty(),
-            "a missing file is not a problem: {warnings:?}"
-        );
+        assert!(warnings.is_empty(), "a missing file is not a problem: {warnings:?}");
         assert_eq!(loaded.ui, UiSettings::default());
         assert_eq!(loaded.registry, ProjectsRegistry::default());
         assert_eq!(loaded.keymap, crate::keys::Keymap::default_bindings());
@@ -2123,10 +1976,7 @@ osc52_limit = 1024
 
         assert_eq!(loaded.keymap, crate::keys::Keymap::default_bindings());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(
-            warnings[0].starts_with("keys.toml ignored, using default keys: "),
-            "{warnings:?}"
-        );
+        assert!(warnings[0].starts_with("keys.toml ignored, using default keys: "), "{warnings:?}");
     }
 
     /// The caret-conflict lines are advice about what a keys.toml costs
@@ -2169,17 +2019,15 @@ osc52_limit = 1024
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
+        let (reloaded, warnings) =
+            cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         if reloaded.config.is_some() {
             // Running as root: nothing is unreadable. Not a failure.
             return;
         }
-        assert!(
-            warnings.iter().any(|w| w.contains("config.toml")),
-            "{warnings:?}"
-        );
+        assert!(warnings.iter().any(|w| w.contains("config.toml")), "{warnings:?}");
     }
 
     #[cfg(unix)]
@@ -2192,17 +2040,15 @@ osc52_limit = 1024
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
+        let (reloaded, warnings) =
+            cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         if reloaded.keymap.is_some() {
             // Running as root: nothing is unreadable. Not a failure.
             return;
         }
-        assert!(
-            warnings.iter().any(|w| w.contains("keys.toml")),
-            "{warnings:?}"
-        );
+        assert!(warnings.iter().any(|w| w.contains("keys.toml")), "{warnings:?}");
     }
 
     /// A `themes/` that cannot be listed is not an empty `themes/`: the
@@ -2219,30 +2065,26 @@ osc52_limit = 1024
         std::fs::set_permissions(&themes, std::fs::Permissions::from_mode(0o000)).unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
+        let (reloaded, warnings) =
+            cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         std::fs::set_permissions(&themes, std::fs::Permissions::from_mode(0o755)).unwrap();
         if reloaded.themes.is_some() {
             // Running as root: nothing is unlistable. Not a failure.
             return;
         }
-        assert!(
-            warnings.iter().any(|w| w.contains("themes/")),
-            "{warnings:?}"
-        );
+        assert!(warnings.iter().any(|w| w.contains("themes/")), "{warnings:?}");
     }
 
     #[test]
     fn reload_on_config_none_is_all_defaults_no_warnings() {
         let mut cfg = Config::none();
 
-        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
+        let (reloaded, warnings) =
+            cfg.reload(false, &crate::keys::Keymap::default_bindings(), KeyProfile::Arrows);
 
         assert!(warnings.is_empty(), "{warnings:?}");
-        assert_eq!(
-            reloaded.config,
-            Some((ProjectsRegistry::default(), UiSettings::default()))
-        );
+        assert_eq!(reloaded.config, Some((ProjectsRegistry::default(), UiSettings::default())));
         assert!(reloaded.keymap.is_some());
     }
 

@@ -51,7 +51,9 @@ impl InsertKey {
     fn for_buffer<B: TextBuf>(self) -> Option<Self> {
         match self {
             InsertKey::Enter | InsertKey::Tab if !B::MULTILINE => None,
-            InsertKey::Paste(text) if B::MULTILINE => Some(InsertKey::Paste(text.replace("\r\n", "\n").replace('\r', "\n"))),
+            InsertKey::Paste(text) if B::MULTILINE => {
+                Some(InsertKey::Paste(text.replace("\r\n", "\n").replace('\r', "\n")))
+            }
             InsertKey::Paste(text) => Some(InsertKey::Paste(flatten_paste(&text))),
             key => Some(key),
         }
@@ -232,7 +234,13 @@ impl Engine {
 
     /// `i a I A o O` (spec §3.8, Vim's `nv_edit()` and `n_opencmd()`).
     /// `o`/`O` do nothing in a one-line field.
-    pub(super) fn exec_insert<B: TextBuf>(&mut self, how: InsertHow, count: usize, buf: &mut B, st: &mut BufState) {
+    pub(super) fn exec_insert<B: TextBuf>(
+        &mut self,
+        how: InsertHow,
+        count: usize,
+        buf: &mut B,
+        st: &mut BufState,
+    ) {
         let caret = buf.cursor();
         let len = buf.line_len(caret.row);
         let mut ai_row = None;
@@ -251,11 +259,21 @@ impl Engine {
                 let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
                 let at = if how == InsertHow::OpenBelow {
                     let opened = MarkMove::InsertLines { at: caret.row + 1, count: 1 };
-                    ed.splice_moving(Pos::new(caret.row, len), Pos::new(caret.row, len), &format!("\n{indent}"), opened);
+                    ed.splice_moving(
+                        Pos::new(caret.row, len),
+                        Pos::new(caret.row, len),
+                        &format!("\n{indent}"),
+                        opened,
+                    );
                     Pos::new(caret.row + 1, indent.len())
                 } else {
                     let opened = MarkMove::InsertLines { at: caret.row, count: 1 };
-                    ed.splice_moving(Pos::new(caret.row, 0), Pos::new(caret.row, 0), &format!("{indent}\n"), opened);
+                    ed.splice_moving(
+                        Pos::new(caret.row, 0),
+                        Pos::new(caret.row, 0),
+                        &format!("{indent}\n"),
+                        opened,
+                    );
                     Pos::new(caret.row, indent.len())
                 };
                 ai_row = Some(at.row);
@@ -284,7 +302,12 @@ impl Engine {
 
     /// One key in Insert (the Insert key table, spec §4.3). A key the
     /// engine does not take is declined as typed.
-    pub(super) fn insert_key<B: TextBuf>(&mut self, ev: KeyEvent, buf: &mut B, st: &mut BufState) -> Outcome {
+    pub(super) fn insert_key<B: TextBuf>(
+        &mut self,
+        ev: KeyEvent,
+        buf: &mut B,
+        st: &mut BufState,
+    ) -> Outcome {
         // Vim's `lastc` is every key of the Insert loop: one taken here
         // without `insert_input` (`ctrl+r`, its register name, a cursor
         // key) leaves no `0` or `^` before the next `ctrl+d`. A register's
@@ -342,8 +365,18 @@ impl Engine {
     /// name), a foreign chord goes to the app (the half-typed `ctrl+r` is
     /// dropped), and any other key is swallowed, as Vim swallows it (plan
     /// 3b Deviation 5).
-    fn insert_register<B: TextBuf>(&mut self, how: RegPending, ev: KeyEvent, buf: &mut B, st: &mut BufState) -> Outcome {
-        let note = |text: String| Outcome::Consumed { changed: false, note: Some(Note::Unsupported(text)), request: None };
+    fn insert_register<B: TextBuf>(
+        &mut self,
+        how: RegPending,
+        ev: KeyEvent,
+        buf: &mut B,
+        st: &mut BufState,
+    ) -> Outcome {
+        let note = |text: String| Outcome::Consumed {
+            changed: false,
+            note: Some(Note::Unsupported(text)),
+            request: None,
+        };
         match (how, Key::of(&ev)) {
             (RegPending::Unsupported(c), _) => note(format!("ctrl+r ctrl+{c} not supported")),
             (RegPending::Typed, Key::Ctrl('r')) => {
@@ -376,7 +409,13 @@ impl Engine {
     /// char, each of which would rebuild the line. A one-line field takes the text
     /// flattened, as `p` puts it (key list §5): with no line break or Tab
     /// left, it is one run.
-    fn insert_register_text<B: TextBuf>(&mut self, name: char, literal: bool, buf: &mut B, st: &mut BufState) {
+    fn insert_register_text<B: TextBuf>(
+        &mut self,
+        name: char,
+        literal: bool,
+        buf: &mut B,
+        st: &mut BufState,
+    ) {
         let reg = self.regs.read(Some(name)).clone();
         if !B::MULTILINE {
             let text = match reg.kind {
@@ -425,7 +464,12 @@ impl Engine {
     /// Replays an Insert session's recorded keys for `.`, as if typed in
     /// this buffer (see [`InsertKey::for_buffer`]): a key the buffer would
     /// decline is dropped and the replay goes on.
-    pub(super) fn replay_insert<B: TextBuf>(&mut self, keys: Vec<InsertKey>, buf: &mut B, st: &mut BufState) {
+    pub(super) fn replay_insert<B: TextBuf>(
+        &mut self,
+        keys: Vec<InsertKey>,
+        buf: &mut B,
+        st: &mut BufState,
+    ) {
         for key in keys.into_iter().filter_map(InsertKey::for_buffer::<B>) {
             self.insert_input(key, buf, st);
         }
@@ -434,7 +478,12 @@ impl Engine {
     /// One recorded Insert key: typed now, or replayed by `.`. Every one of
     /// them resets the wanted column (Vim's Insert loop sets
     /// `w_set_curswant` until a cursor key is used).
-    pub(super) fn insert_input<B: TextBuf>(&mut self, key: InsertKey, buf: &mut B, st: &mut BufState) {
+    pub(super) fn insert_input<B: TextBuf>(
+        &mut self,
+        key: InsertKey,
+        buf: &mut B,
+        st: &mut BufState,
+    ) {
         st.forget_want();
         // `ins_bs()` runs `stop_arrow()` only once it knows it can delete.
         if !matches!(key, InsertKey::Backspace | InsertKey::CtrlW | InsertKey::CtrlU) {
@@ -443,7 +492,9 @@ impl Engine {
         }
         // Vim's `lastc` for the next key: a typed run counts as its last char.
         let last_key = match &key {
-            InsertKey::Paste(text) => text.chars().last().map_or(InsertKey::Paste(String::new()), InsertKey::Char),
+            InsertKey::Paste(text) => {
+                text.chars().last().map_or(InsertKey::Paste(String::new()), InsertKey::Char)
+            }
             other => other.clone(),
         };
         match key {
@@ -468,7 +519,10 @@ impl Engine {
                     Ed { buf: &mut *buf, hist: &mut st.history }.splice(caret, caret, &rest);
                     buf.set_cursor(Pos::new(caret.row, caret.col + width - 1));
                     let s = self.session();
-                    s.replace.as_mut().expect("a Replace session").extend(std::iter::repeat_n(None, width - 1));
+                    s.replace
+                        .as_mut()
+                        .expect("a Replace session")
+                        .extend(std::iter::repeat_n(None, width - 1));
                     s.typed.push(InsertKey::Tab);
                     s.ai_row = None;
                 } else {
@@ -500,7 +554,8 @@ impl Engine {
             return false;
         }
         let Some(sel) = buf.gui_selection() else { return false };
-        let (lo, hi) = if sel.anchor <= sel.head { (sel.anchor, sel.head) } else { (sel.head, sel.anchor) };
+        let (lo, hi) =
+            if sel.anchor <= sel.head { (sel.anchor, sel.head) } else { (sel.head, sel.anchor) };
         let end = Pos::new(hi.row, (hi.col + 1).min(buf.line_len(hi.row)));
         buf.clear_gui_selection();
         Ed { buf: &mut *buf, hist: &mut st.history }.splice(lo, end, "");
@@ -508,7 +563,13 @@ impl Engine {
         true
     }
 
-    fn type_text<B: TextBuf>(&mut self, text: &str, record: InsertKey, buf: &mut B, st: &mut BufState) {
+    fn type_text<B: TextBuf>(
+        &mut self,
+        text: &str,
+        record: InsertKey,
+        buf: &mut B,
+        st: &mut BufState,
+    ) {
         self.replace_gui_selection(buf, st);
         if self.session().replace.is_some() {
             // Replace: each line of the text overwrites from the caret
@@ -521,7 +582,11 @@ impl Engine {
             for seg in text.split('\n') {
                 if !first {
                     let caret = buf.cursor();
-                    self.session().replace.as_mut().expect("a Replace session").extend([None, None]);
+                    self.session()
+                        .replace
+                        .as_mut()
+                        .expect("a Replace session")
+                        .extend([None, None]);
                     Ed { buf: &mut *buf, hist: &mut st.history }.splice(caret, caret, "\n");
                     buf.set_cursor(Pos::new(caret.row + 1, 0));
                 }
@@ -649,7 +714,11 @@ impl Engine {
             stack.extend(line[caret.col..rest].iter().map(|&c| Some(c)));
             stack.extend(std::iter::repeat_n(None, indent.len()));
         }
-        Ed { buf: &mut *buf, hist: &mut st.history }.splice(Pos::new(caret.row, cut), Pos::new(caret.row, rest), &format!("\n{indent}"));
+        Ed { buf: &mut *buf, hist: &mut st.history }.splice(
+            Pos::new(caret.row, cut),
+            Pos::new(caret.row, rest),
+            &format!("\n{indent}"),
+        );
         let at = Pos::new(caret.row + 1, indent.len());
         buf.set_cursor(at);
         let s = self.session();
@@ -690,7 +759,11 @@ impl Engine {
                 let top = stack.pop();
                 if caret.row <= start.row {
                     if caret.row == start.row {
-                        Ed { buf: &mut *buf, hist: &mut st.history }.save_rows(caret, caret.row - 1, caret.row);
+                        Ed { buf: &mut *buf, hist: &mut st.history }.save_rows(
+                            caret,
+                            caret.row - 1,
+                            caret.row,
+                        );
                     }
                 } else {
                     Ed { buf: &mut *buf, hist: &mut st.history }.splice_lines_joined(to, caret);
@@ -743,7 +816,9 @@ impl Engine {
                 if mode == Erase::Word && !in_word && !is_space(cc) {
                     in_word = true;
                     word_kind = is_word(cc);
-                } else if in_word && (is_space(cc) || is_word(cc) != word_kind || prev_cclass != cclass) {
+                } else if in_word
+                    && (is_space(cc) || is_word(cc) != word_kind || prev_cclass != cclass)
+                {
                     col += 1;
                     break;
                 }
@@ -816,7 +891,12 @@ impl Engine {
     /// where the caret goes when it stays on `at`'s line: one further right
     /// when it rests on a last char ("put cursor back on the NUL"). `None`
     /// when there was no autoindent.
-    fn strip_autoindent<B: TextBuf>(&mut self, at: Pos, buf: &mut B, st: &mut BufState) -> Option<Pos> {
+    fn strip_autoindent<B: TextBuf>(
+        &mut self,
+        at: Pos,
+        buf: &mut B,
+        st: &mut BufState,
+    ) -> Option<Pos> {
         if self.insert.as_ref().is_none_or(|s| s.ai_row != Some(at.row)) {
             return None;
         }
@@ -858,7 +938,9 @@ impl Engine {
             Key::Home => Pos::new(c.row, 0),
             Key::End => Pos::new(c.row, len),
             Key::Up if c.row > 0 => Pos::new(c.row - 1, col_for(&buf.line(c.row - 1), want, true)),
-            Key::Down if c.row < last => Pos::new(c.row + 1, col_for(&buf.line(c.row + 1), want, true)),
+            Key::Down if c.row < last => {
+                Pos::new(c.row + 1, col_for(&buf.line(c.row + 1), want, true))
+            }
             _ => return,
         };
         self.split_insert(c, to, buf, st);
@@ -879,7 +961,13 @@ impl Engine {
     /// line (`stop_insert()`; `cpoptions` has no `I`), the undo step and the
     /// `.` record end there, and typing at `to` starts a fresh `1i` record.
     /// The caller moves the caret.
-    pub(super) fn split_insert<B: TextBuf>(&mut self, from: Pos, to: Pos, buf: &mut B, st: &mut BufState) {
+    pub(super) fn split_insert<B: TextBuf>(
+        &mut self,
+        from: Pos,
+        to: Pos,
+        buf: &mut B,
+        st: &mut BufState,
+    ) {
         if to.row != from.row {
             self.strip_autoindent(from, buf, st);
         }
@@ -938,7 +1026,12 @@ impl Engine {
     /// the autoindent moved it, the wanted column stays after the indent
     /// (`o<Esc>k` aims for the indent's width). Esc repeats a counted insert
     /// first (`repeat_insert`).
-    pub(super) fn end_insert<B: TextBuf>(&mut self, buf: &mut B, st: &mut BufState, step_back: bool) {
+    pub(super) fn end_insert<B: TextBuf>(
+        &mut self,
+        buf: &mut B,
+        st: &mut BufState,
+        step_back: bool,
+    ) {
         // Esc first repeats a counted insert (Vim's `ins_esc()`); `leave`
         // never does (Vim's `:stopinsert` drops the count).
         if step_back {
@@ -987,9 +1080,7 @@ impl Engine {
         let mut caret = buf.cursor();
         let at_eol = caret.col >= buf.line_len(caret.row);
         let want = self.want_at(buf, st, caret);
-        if !arrow_used
-            && let Some(at) = self.strip_autoindent(caret, buf, st)
-        {
+        if !arrow_used && let Some(at) = self.strip_autoindent(caret, buf, st) {
             caret = at;
         }
         st.history.marks.insert = Some(caret);
@@ -1057,7 +1148,14 @@ impl Engine {
 
     /// The change operator (spec §3.6, Vim's `op_change()`): the text goes
     /// to the register and a session opens at the range start.
-    pub(super) fn change<B: TextBuf>(&mut self, r: Range, reg: Option<char>, origin: Cmd, buf: &mut B, st: &mut BufState) {
+    pub(super) fn change<B: TextBuf>(
+        &mut self,
+        r: Range,
+        reg: Option<char>,
+        origin: Cmd,
+        buf: &mut B,
+        st: &mut BufState,
+    ) {
         self.reg_delete(reg, yank_of(buf, r));
         self.change_text(r, origin, buf, st);
     }
@@ -1067,7 +1165,13 @@ impl Engine {
     /// Esc removes if nothing follows. When nothing is deleted (an empty
     /// region, or a buffer with no lines), Vim still saves the line, so `u`
     /// undoes the step.
-    pub(super) fn change_text<B: TextBuf>(&mut self, r: Range, origin: Cmd, buf: &mut B, st: &mut BufState) {
+    pub(super) fn change_text<B: TextBuf>(
+        &mut self,
+        r: Range,
+        origin: Cmd,
+        buf: &mut B,
+        st: &mut BufState,
+    ) {
         let emptied = st.history.emptied(&*buf);
         let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
         // Vim's first `u_save` runs with the caret on the range start,
@@ -1093,7 +1197,12 @@ impl Engine {
         } else if r.kind == RKind::Line && r.end.row > r.start.row {
             // Vim's `op_change()` deletes the lines after the first
             // (`del_lines()`), then empties the first after its indent.
-            ed.splice_moving(from, to, "", MarkMove::DeleteLines { first: r.start.row + 1, last: r.end.row });
+            ed.splice_moving(
+                from,
+                to,
+                "",
+                MarkMove::DeleteLines { first: r.start.row + 1, last: r.end.row },
+            );
         } else {
             ed.splice(from, to, "");
         }

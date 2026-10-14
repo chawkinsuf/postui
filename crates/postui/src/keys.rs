@@ -22,11 +22,7 @@ pub fn app_enhancement_flags() -> KeyboardEnhancementFlags {
 /// themselves stay spelled `alt+b` everywhere else (`KeyCombo::parse`,
 /// keys.toml overrides, chip data tuples, tests' key synthesis).
 pub fn alt_label() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "opt"
-    } else {
-        "alt"
-    }
+    if cfg!(target_os = "macos") { "opt" } else { "alt" }
 }
 
 /// The keys that open a *selected* field into an editable one, on every
@@ -141,10 +137,7 @@ impl KeyCombo {
             }
             _ => (ev.code, ev.modifiers),
         };
-        Self {
-            code,
-            modifiers: mods,
-        }
+        Self { code, modifiers: mods }
     }
 }
 
@@ -204,11 +197,7 @@ pub fn fold_text_nav_bytes(ev: KeyEvent, macos: bool) -> KeyEvent {
             KeyEvent::new(KeyCode::End, KeyModifiers::NONE)
         }
         KeyCode::Char(c @ ('b' | 'B' | 'f' | 'F')) if ev.modifiers.contains(KeyModifiers::ALT) => {
-            let arrow = if c.eq_ignore_ascii_case(&'b') {
-                KeyCode::Left
-            } else {
-                KeyCode::Right
-            };
+            let arrow = if c.eq_ignore_ascii_case(&'b') { KeyCode::Left } else { KeyCode::Right };
             let mut mods = KeyModifiers::CONTROL;
             if c.is_ascii_uppercase() || ev.modifiers.contains(KeyModifiers::SHIFT) {
                 mods |= KeyModifiers::SHIFT;
@@ -270,10 +259,7 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ("toggle_body_vars", Action::ToggleBodyVars),
         ("toggle_insecure", Action::ToggleInsecure),
         ("theme_choose", Action::OpenThemeChooser),
-        (
-            "copy_url",
-            Action::CopyToClipboard(crate::action::CopyTarget::Url),
-        ),
+        ("copy_url", Action::CopyToClipboard(crate::action::CopyTarget::Url)),
         ("open_body_editor", Action::OpenBodyInEditor),
         ("save", Action::SaveRequest),
         ("reload", Action::ReloadFromDisk),
@@ -347,9 +333,10 @@ impl Keymap {
     pub fn default_bindings_for(profile: crate::config::KeyProfile) -> Self {
         let mut map = Self::default_bindings();
         if profile == crate::config::KeyProfile::Vim {
-            for combo in ["q", "ctrl+r", "alt+a", "alt+left", "alt+right", "ctrl+s", "alt+w", "shift+alt+w"] {
-                map.bindings
-                    .remove(&KeyCombo::parse(combo).expect("a valid default combo"));
+            for combo in
+                ["q", "ctrl+r", "alt+a", "alt+left", "alt+right", "ctrl+s", "alt+w", "shift+alt+w"]
+            {
+                map.bindings.remove(&KeyCombo::parse(combo).expect("a valid default combo"));
             }
         }
         map
@@ -410,10 +397,7 @@ impl Keymap {
             ("alt+s", Action::ToggleBodyVars),
             ("alt+i", Action::ToggleInsecure),
             ("alt+t", Action::OpenThemeChooser),
-            (
-                "alt+y",
-                Action::CopyToClipboard(crate::action::CopyTarget::Url),
-            ),
+            ("alt+y", Action::CopyToClipboard(crate::action::CopyTarget::Url)),
             ("ctrl+s", Action::SaveRequest),
             ("alt+shift+r", Action::ReloadFromDisk),
             ("alt+d", Action::DiscardChanges),
@@ -436,10 +420,7 @@ impl Keymap {
             ("alt+q", Action::OpenJqBar),
             ("alt+shift+q", Action::ToggleJqBar),
         ];
-        let mut map = Self {
-            bindings: HashMap::new(),
-            overrides: Vec::new(),
-        };
+        let mut map = Self { bindings: HashMap::new(), overrides: Vec::new() };
         for (s, a) in defaults {
             // Combos in this table are compile-time constants; parse cannot fail.
             if let Some(c) = KeyCombo::parse(s) {
@@ -554,11 +535,7 @@ impl Keymap {
     /// friends are component behavior there, and an override shadowing
     /// them is an ordinary, deliberate rebind.
     pub fn caret_warnings(&self, macos: bool) -> Vec<String> {
-        if macos {
-            self.caret_conflicts()
-        } else {
-            Vec::new()
-        }
+        if macos { self.caret_conflicts() } else { Vec::new() }
     }
 
     /// The `keys.toml` bindings of a bare char that some vim row starts
@@ -639,15 +616,9 @@ impl Keymap {
         // the hint to the alias. Prefer a modified combo (a chord) over a
         // bare key first, and only then take the minimum, so the footer
         // hint keeps advertising the chord.
-        let modified: Vec<&&KeyCombo> = combos
-            .iter()
-            .filter(|c| !c.modifiers.is_empty())
-            .collect();
-        let pool: Vec<&KeyCombo> = if modified.is_empty() {
-            combos
-        } else {
-            modified.into_iter().copied().collect()
-        };
+        let modified: Vec<&&KeyCombo> = combos.iter().filter(|c| !c.modifiers.is_empty()).collect();
+        let pool: Vec<&KeyCombo> =
+            if modified.is_empty() { combos } else { modified.into_iter().copied().collect() };
         pool.into_iter().map(format_combo).min()
     }
 
@@ -785,11 +756,7 @@ pub fn keys_seed(map: &Keymap) -> String {
         if combos.is_empty() {
             continue;
         }
-        let list = combos
-            .iter()
-            .map(|c| format!("{c:?}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let list = combos.iter().map(|c| format!("{c:?}")).collect::<Vec<_>>().join(", ");
         out.push_str(&format!("# {name} = [{list}]\n"));
     }
     out
@@ -861,15 +828,9 @@ mod tests {
         let ev = n(KeyCode::Right, KeyModifiers::SUPER | KeyModifiers::SHIFT);
         assert_eq!((ev.code, ev.modifiers), (KeyCode::End, KeyModifiers::SHIFT));
         let ev = n(KeyCode::Up, KeyModifiers::SUPER);
-        assert_eq!(
-            (ev.code, ev.modifiers),
-            (KeyCode::Home, KeyModifiers::CONTROL)
-        );
+        assert_eq!((ev.code, ev.modifiers), (KeyCode::Home, KeyModifiers::CONTROL));
         let ev = n(KeyCode::Down, KeyModifiers::SUPER);
-        assert_eq!(
-            (ev.code, ev.modifiers),
-            (KeyCode::End, KeyModifiers::CONTROL)
-        );
+        assert_eq!((ev.code, ev.modifiers), (KeyCode::End, KeyModifiers::CONTROL));
         // Untouched: plain arrows.
         let ev = n(KeyCode::Left, KeyModifiers::NONE);
         assert_eq!((ev.code, ev.modifiers), (KeyCode::Left, KeyModifiers::NONE));
@@ -884,10 +845,7 @@ mod tests {
             let ev = f(KeyCode::Char('e'), KeyModifiers::CONTROL, macos);
             assert_eq!((ev.code, ev.modifiers), (KeyCode::End, KeyModifiers::NONE));
             let ev = f(KeyCode::Char('b'), KeyModifiers::ALT, macos);
-            assert_eq!(
-                (ev.code, ev.modifiers),
-                (KeyCode::Left, KeyModifiers::CONTROL)
-            );
+            assert_eq!((ev.code, ev.modifiers), (KeyCode::Left, KeyModifiers::CONTROL));
             let ev = f(KeyCode::Char('F'), KeyModifiers::ALT, macos);
             assert_eq!(
                 (ev.code, ev.modifiers),
@@ -895,17 +853,10 @@ mod tests {
                 "the pre-shifted letter selects the hop"
             );
             // Select-all's chord passes through unfolded everywhere.
-            let ev = f(
-                KeyCode::Char('a'),
-                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-                macos,
-            );
+            let ev = f(KeyCode::Char('a'), KeyModifiers::CONTROL | KeyModifiers::SHIFT, macos);
             assert_eq!(
                 (ev.code, ev.modifiers),
-                (
-                    KeyCode::Char('a'),
-                    KeyModifiers::CONTROL | KeyModifiers::SHIFT
-                )
+                (KeyCode::Char('a'), KeyModifiers::CONTROL | KeyModifiers::SHIFT)
             );
         }
         // Only ^A splits: it's cmd+left's byte on macOS, select-all's key
@@ -913,10 +864,7 @@ mod tests {
         let ev = f(KeyCode::Char('a'), KeyModifiers::CONTROL, true);
         assert_eq!((ev.code, ev.modifiers), (KeyCode::Home, KeyModifiers::NONE));
         let ev = f(KeyCode::Char('a'), KeyModifiers::CONTROL, false);
-        assert_eq!(
-            (ev.code, ev.modifiers),
-            (KeyCode::Char('a'), KeyModifiers::CONTROL)
-        );
+        assert_eq!((ev.code, ev.modifiers), (KeyCode::Char('a'), KeyModifiers::CONTROL));
     }
 
     #[test]
@@ -924,49 +872,25 @@ mod tests {
         let n = |code, mods| normalize_super_keys(KeyEvent::new(code, mods));
         // cmd+a means select-all: the ctrl+shift+a spelling, pre-shifted.
         let ev = n(KeyCode::Char('a'), KeyModifiers::SUPER);
-        assert_eq!(
-            (ev.code, ev.modifiers),
-            (KeyCode::Char('A'), KeyModifiers::CONTROL)
-        );
+        assert_eq!((ev.code, ev.modifiers), (KeyCode::Char('A'), KeyModifiers::CONTROL));
         let ev = n(KeyCode::Char('z'), KeyModifiers::SUPER);
-        assert_eq!(
-            (ev.code, ev.modifiers),
-            (KeyCode::Char('z'), KeyModifiers::CONTROL)
-        );
+        assert_eq!((ev.code, ev.modifiers), (KeyCode::Char('z'), KeyModifiers::CONTROL));
         // cmd+shift+z redo, in both reported spellings.
-        let ev = n(
-            KeyCode::Char('z'),
-            KeyModifiers::SUPER | KeyModifiers::SHIFT,
-        );
+        let ev = n(KeyCode::Char('z'), KeyModifiers::SUPER | KeyModifiers::SHIFT);
         assert_eq!(
             (ev.code, ev.modifiers),
-            (
-                KeyCode::Char('z'),
-                KeyModifiers::CONTROL | KeyModifiers::SHIFT
-            )
+            (KeyCode::Char('z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT)
         );
         let ev = n(KeyCode::Char('Z'), KeyModifiers::SUPER);
-        assert_eq!(
-            (ev.code, ev.modifiers),
-            (KeyCode::Char('Z'), KeyModifiers::CONTROL)
-        );
+        assert_eq!((ev.code, ev.modifiers), (KeyCode::Char('Z'), KeyModifiers::CONTROL));
         let ev = n(KeyCode::Char('s'), KeyModifiers::SUPER);
-        assert_eq!(
-            (ev.code, ev.modifiers),
-            (KeyCode::Char('s'), KeyModifiers::CONTROL)
-        );
+        assert_eq!((ev.code, ev.modifiers), (KeyCode::Char('s'), KeyModifiers::CONTROL));
         let ev = n(KeyCode::Char('v'), KeyModifiers::SUPER);
-        assert_eq!(
-            (ev.code, ev.modifiers),
-            (KeyCode::Char('v'), KeyModifiers::CONTROL)
-        );
+        assert_eq!((ev.code, ev.modifiers), (KeyCode::Char('v'), KeyModifiers::CONTROL));
         // cmd+c is NOT folded — App::handle_key intercepts it copy-only,
         // and folding to ctrl+c would make a reflexive cmd+c quit.
         let ev = n(KeyCode::Char('c'), KeyModifiers::SUPER);
-        assert_eq!(
-            (ev.code, ev.modifiers),
-            (KeyCode::Char('c'), KeyModifiers::SUPER)
-        );
+        assert_eq!((ev.code, ev.modifiers), (KeyCode::Char('c'), KeyModifiers::SUPER));
     }
 
     #[test]
@@ -1018,20 +942,9 @@ mod tests {
         assert_eq!(get("alt+w"), Some(Action::CycleSplit));
         assert_eq!(get("shift+alt+w"), Some(Action::CycleSplitBack));
         assert_eq!(get("alt+d"), Some(Action::DiscardChanges));
-        assert_eq!(
-            get("alt+b"),
-            None,
-            "alt+b is reserved for word-left (ESC b)"
-        );
-        assert_eq!(
-            get("alt+f"),
-            None,
-            "alt+f is reserved for word-right (ESC f)"
-        );
-        assert_eq!(
-            get("alt+y"),
-            Some(Action::CopyToClipboard(crate::action::CopyTarget::Url))
-        );
+        assert_eq!(get("alt+b"), None, "alt+b is reserved for word-left (ESC b)");
+        assert_eq!(get("alt+f"), None, "alt+f is reserved for word-right (ESC f)");
+        assert_eq!(get("alt+y"), Some(Action::CopyToClipboard(crate::action::CopyTarget::Url)));
         assert_eq!(get("alt+e"), Some(Action::OpenBodyInEditor));
         assert_eq!(
             get("ctrl+e"),
@@ -1146,10 +1059,7 @@ mod tests {
     #[test]
     fn caret_conflicts_report_shadowed_mac_gestures() {
         let m = Keymap::default_bindings();
-        assert!(
-            m.caret_conflicts().is_empty(),
-            "defaults never claim a caret-motion key"
-        );
+        assert!(m.caret_conflicts().is_empty(), "defaults never claim a caret-motion key");
         let mut m = Keymap::default_bindings();
         m.apply_overrides(
             r#"
@@ -1161,15 +1071,11 @@ mod tests {
         let warnings = m.caret_conflicts();
         assert_eq!(warnings.len(), 2, "{warnings:?}");
         assert!(
-            warnings
-                .iter()
-                .any(|w| w.contains("ctrl+a") && w.contains("cmd+left")),
+            warnings.iter().any(|w| w.contains("ctrl+a") && w.contains("cmd+left")),
             "{warnings:?}"
         );
         assert!(
-            warnings
-                .iter()
-                .any(|w| w.contains("alt+f") && w.contains("option+right")),
+            warnings.iter().any(|w| w.contains("alt+f") && w.contains("option+right")),
             "{warnings:?}"
         );
     }
@@ -1190,10 +1096,7 @@ mod tests {
     fn method_choose_is_rebindable() {
         let mut m = Keymap::default_bindings();
         m.apply_overrides(r#"method_choose = "ctrl+g""#).unwrap();
-        assert_eq!(
-            m.lookup(&KeyCombo::parse("ctrl+g").unwrap()),
-            Some(Action::OpenMethodDropdown)
-        );
+        assert_eq!(m.lookup(&KeyCombo::parse("ctrl+g").unwrap()), Some(Action::OpenMethodDropdown));
     }
 
     #[test]
@@ -1234,16 +1137,8 @@ mod tests {
         let get = |s: &str| m.lookup(&KeyCombo::parse(s).unwrap());
         assert_eq!(get("q"), Some(Action::Quit), "default quit binding intact");
         assert_eq!(get("ctrl+c"), Some(Action::Quit), "ctrl+c still quit");
-        assert_eq!(
-            get("ctrl+p"),
-            Some(Action::OpenPalette),
-            "default palette binding intact"
-        );
-        assert_eq!(
-            get("ctrl+q"),
-            None,
-            "earlier valid rebind must not have been applied"
-        );
+        assert_eq!(get("ctrl+p"), Some(Action::OpenPalette), "default palette binding intact");
+        assert_eq!(get("ctrl+q"), None, "earlier valid rebind must not have been applied");
     }
 
     #[test]
@@ -1272,14 +1167,8 @@ mod tests {
     fn from_event_uppercases_before_stripping_shift_for_kitty_protocol() {
         // Under DISAMBIGUATE_ESCAPE_CODES, crossterm can report the base
         // char with SHIFT|CONTROL rather than the pre-shifted char.
-        let ev = KeyEvent::new(
-            KeyCode::Char('z'),
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-        );
-        assert_eq!(
-            KeyCombo::from_event(&ev),
-            KeyCombo::parse("ctrl+shift+z").unwrap()
-        );
+        let ev = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        assert_eq!(KeyCombo::from_event(&ev), KeyCombo::parse("ctrl+shift+z").unwrap());
     }
 
     #[test]
@@ -1298,10 +1187,7 @@ mod tests {
     #[test]
     fn combo_for_finds_a_freshly_bound_combo() {
         let mut m = Keymap::default_bindings();
-        m.bind(
-            KeyCombo::parse("f9").unwrap(),
-            Action::OpenManage { tab: None },
-        );
+        m.bind(KeyCombo::parse("f9").unwrap(), Action::OpenManage { tab: None });
         // f9 is a second combo alongside the default alt+r; both resolve.
         let combo = m.combo_for("manage_open").unwrap();
         assert!(combo == "f9" || combo == "alt+r", "got {combo:?}");
@@ -1342,10 +1228,7 @@ mod tests {
                 found_multi = true;
             }
         }
-        assert!(
-            found_multi,
-            "the default map has aliased actions; combos_for must expose them"
-        );
+        assert!(found_multi, "the default map has aliased actions; combos_for must expose them");
     }
 
     #[test]
@@ -1362,32 +1245,16 @@ mod tests {
 
     #[test]
     fn combos_for_an_unknown_action_is_empty() {
-        assert!(
-            Keymap::default_bindings()
-                .combos_for("no_such_action")
-                .is_empty()
-        );
+        assert!(Keymap::default_bindings().combos_for("no_such_action").is_empty());
     }
 
     #[test]
     fn format_combo_renders_shifted_and_named_keys() {
         assert_eq!(format_combo(&KeyCombo::parse("ctrl+p").unwrap()), "^P");
-        assert_eq!(
-            format_combo(&KeyCombo::parse("ctrl+shift+z").unwrap()),
-            "shift+^Z"
-        );
-        assert_eq!(
-            format_combo(&KeyCombo::parse("ctrl+enter").unwrap()),
-            "^Enter"
-        );
-        assert_eq!(
-            format_combo(&KeyCombo::parse("alt+shift+m").unwrap()),
-            "alt+shift+m"
-        );
-        assert_eq!(
-            format_combo(&KeyCombo::parse("shift+tab").unwrap()),
-            "shift+tab"
-        );
+        assert_eq!(format_combo(&KeyCombo::parse("ctrl+shift+z").unwrap()), "shift+^Z");
+        assert_eq!(format_combo(&KeyCombo::parse("ctrl+enter").unwrap()), "^Enter");
+        assert_eq!(format_combo(&KeyCombo::parse("alt+shift+m").unwrap()), "alt+shift+m");
+        assert_eq!(format_combo(&KeyCombo::parse("shift+tab").unwrap()), "shift+tab");
         assert_eq!(format_combo(&KeyCombo::parse("f4").unwrap()), "f4");
         assert_eq!(format_combo(&KeyCombo::parse("esc").unwrap()), "esc");
     }
@@ -1429,10 +1296,7 @@ mod tests {
         let seed = keys_seed(&defaults);
         for line in seed.lines() {
             let line = line.trim();
-            assert!(
-                line.is_empty() || line.starts_with('#'),
-                "seed line is live: {line:?}"
-            );
+            assert!(line.is_empty() || line.starts_with('#'), "seed line is live: {line:?}");
         }
         let applied = Keymap::try_from_overrides(&seed).unwrap();
         for (name, _) in named_actions() {
@@ -1447,10 +1311,7 @@ mod tests {
         assert!(opens_field(&key(KeyCode::Char(' '), KeyModifiers::NONE)));
         assert!(!opens_field(&key(KeyCode::Char('i'), KeyModifiers::NONE)));
         assert!(!opens_field(&key(KeyCode::Char('I'), KeyModifiers::SHIFT)));
-        assert!(!opens_field(&key(
-            KeyCode::Char('i'),
-            KeyModifiers::CONTROL
-        )));
+        assert!(!opens_field(&key(KeyCode::Char('i'), KeyModifiers::CONTROL)));
         assert!(!opens_field(&key(KeyCode::Char('j'), KeyModifiers::NONE)));
         assert!(!opens_field(&key(KeyCode::Esc, KeyModifiers::NONE)));
     }
@@ -1473,11 +1334,12 @@ mod tests {
         assert_eq!(get(Vim, "alt+right"), None, "gt steps the tabs in vim (plan M4a)");
         assert_eq!(get(Vim, "alt+left"), None);
         assert_eq!(get(Arrows, "alt+right"), Some(Action::CycleTabs(1)));
-        for combo in [
-            "ctrl+c", "ctrl+v", "ctrl+o", "ctrl+p", "ctrl+z", "alt+t",
-            "ctrl+1",
-        ] {
-            assert_eq!(get(Vim, combo), get(Arrows, combo), "{combo} is shared until its vim key lands");
+        for combo in ["ctrl+c", "ctrl+v", "ctrl+o", "ctrl+p", "ctrl+z", "alt+t", "ctrl+1"] {
+            assert_eq!(
+                get(Vim, combo),
+                get(Arrows, combo),
+                "{combo} is shared until its vim key lands"
+            );
         }
         for combo in ["ctrl+s", "alt+w", "shift+alt+w"] {
             assert_eq!(get(Vim, combo), None, "{combo}: an ex verb in vim (plan M4b)");
@@ -1488,7 +1350,8 @@ mod tests {
 
     #[test]
     fn overrides_layer_on_the_profile_they_are_given() {
-        let vim = Keymap::try_from_overrides_for(crate::config::KeyProfile::Vim, "save = \"f2\"\n").unwrap();
+        let vim = Keymap::try_from_overrides_for(crate::config::KeyProfile::Vim, "save = \"f2\"\n")
+            .unwrap();
         assert_eq!(vim.lookup(&KeyCombo::parse("f2").unwrap()), Some(Action::SaveRequest));
         assert_eq!(vim.lookup(&KeyCombo::parse("q").unwrap()), None);
     }
@@ -1498,7 +1361,10 @@ mod tests {
         let mut map = Keymap::default_bindings_for(crate::config::KeyProfile::Vim);
         assert!(map.vim_shadow_warnings().is_empty(), "the vim defaults bind no bare char");
         map.apply_overrides("save = [\"ctrl+s\", \"G\"]\nquit = [\"ctrl+c\", \"x\"]\n").unwrap();
-        assert_eq!(map.vim_shadow_warnings(), vec!["keys.toml binds `G`, which shadows vim's `G`".to_string()]);
+        assert_eq!(
+            map.vim_shadow_warnings(),
+            vec!["keys.toml binds `G`, which shadows vim's `G`".to_string()]
+        );
     }
 
     /// A digit `1`–`9` is a count wherever a `keys.toml` letter can fire in
@@ -1507,12 +1373,14 @@ mod tests {
     #[test]
     fn vim_shadow_warnings_name_a_bound_count_digit() {
         let mut map = Keymap::default_bindings_for(crate::config::KeyProfile::Vim);
-        map.apply_overrides("space_3 = [\"ctrl+3\", \"3\"]\nspace_1 = [\"ctrl+1\", \"0\"]\n").unwrap();
+        map.apply_overrides("space_3 = [\"ctrl+3\", \"3\"]\nspace_1 = [\"ctrl+1\", \"0\"]\n")
+            .unwrap();
         assert_eq!(
             map.vim_shadow_warnings(),
             vec![
                 "keys.toml binds `0`, which shadows vim's `0`".to_string(),
-                "keys.toml binds `3`, which vim reads as a count, so the binding never runs".to_string(),
+                "keys.toml binds `3`, which vim reads as a count, so the binding never runs"
+                    .to_string(),
             ]
         );
     }

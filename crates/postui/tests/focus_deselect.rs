@@ -43,10 +43,7 @@ fn left_down(x: u16, y: u16) -> MouseEvent {
 /// sends a left-button Down at its center.
 fn click(app: &mut App, hit: Hit) {
     render(app);
-    let r = app
-        .hits
-        .rect_of(&hit)
-        .unwrap_or_else(|| panic!("no rect registered for {hit:?}"));
+    let r = app.hits.rect_of(&hit).unwrap_or_else(|| panic!("no rect registered for {hit:?}"));
     app.handle_mouse(left_down(r.x + r.width / 2, r.y + r.height / 2));
 }
 
@@ -63,23 +60,11 @@ fn enter_closes_the_open_url_input_to_selected() {
     // Enter closes the field with the text kept, landing on the URL line
     // selected — not blurred; Esc from *there* is the transition that
     // blurs (spec 2026-09-16).
-    assert_eq!(
-        app.editor.sub_focus,
-        SubFocus::Url,
-        "Enter closes to selected, not blurred"
-    );
+    assert_eq!(app.editor.sub_focus, SubFocus::Url, "Enter closes to selected, not blurred");
     assert!(!app.editor.url_open(), "the caret leaves");
-    assert_eq!(
-        app.editor.url.text(),
-        "https://x",
-        "Enter commits, not edits"
-    );
+    assert_eq!(app.editor.url.text(), "https://x", "Enter commits, not edits");
     app.handle_key(key(KeyCode::Esc));
-    assert_eq!(
-        app.editor.sub_focus,
-        SubFocus::None,
-        "Esc from the now-selected line blurs it"
-    );
+    assert_eq!(app.editor.sub_focus, SubFocus::None, "Esc from the now-selected line blurs it");
 }
 
 #[test]
@@ -95,11 +80,7 @@ fn esc_closes_the_open_url_input_to_selected() {
     );
     assert!(!app.editor.url_open());
     app.handle_key(key(KeyCode::Esc));
-    assert_eq!(
-        app.editor.sub_focus,
-        SubFocus::None,
-        "a second Esc, from selected, blurs"
-    );
+    assert_eq!(app.editor.sub_focus, SubFocus::None, "a second Esc, from selected, blurs");
 }
 
 #[test]
@@ -145,11 +126,7 @@ fn typing_while_blurred_reaches_no_input() {
     type_text(&mut app, "abc");
     app.handle_key(key(KeyCode::Enter));
     type_text(&mut app, "xyz");
-    assert_eq!(
-        app.editor.url.text(),
-        "abc",
-        "keys after blur don't land in the URL input"
-    );
+    assert_eq!(app.editor.url.text(), "abc", "keys after blur don't land in the URL input");
 }
 
 // --- focus visibility ----------------------------------------------------
@@ -164,10 +141,8 @@ fn has_lifted_url_fill(term: &Terminal<TestBackend>, app: &App, pane: PaneId) ->
         PaneId::Editor => layout.editor,
         PaneId::Response => layout.response,
     };
-    let lifted = postui::theme::lift_color(
-        app.theme.control,
-        postui::components::editor::URL_FOCUS_LIFT,
-    );
+    let lifted =
+        postui::theme::lift_color(app.theme.control, postui::components::editor::URL_FOCUS_LIFT);
     let buf = term.backend().buffer();
     for y in r.y..r.y + r.height {
         for x in r.x..r.x + r.width {

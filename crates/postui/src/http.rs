@@ -73,11 +73,7 @@ impl SentHeader {
         if !rows.iter().any(|r| r.name == "host") {
             let (host, display) = (authority(&req.url), authority(&req.display_url));
             if !host.is_empty() {
-                rows.push(SentHeader {
-                    name: "host".to_string(),
-                    value: host,
-                    display,
-                });
+                rows.push(SentHeader { name: "host".to_string(), value: host, display });
             }
         }
         if let Some(body) = &req.body
@@ -95,10 +91,7 @@ impl SentHeader {
 /// `xn--…` — so its host segment is taken verbatim instead.
 fn authority(url: &str) -> String {
     let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
-    let segment = after_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default();
+    let segment = after_scheme.split(['/', '?', '#']).next().unwrap_or_default();
     if segment.contains(postui_core::prepare::SECRET_MASK) {
         return segment.to_string();
     }
@@ -155,11 +148,7 @@ impl Clients {
 
     /// Picks the client `req` should be sent on.
     pub fn for_request(&self, req: &PreparedRequest) -> &reqwest::Client {
-        if req.insecure {
-            &self.insecure
-        } else {
-            &self.verifying
-        }
+        if req.insecure { &self.insecure } else { &self.verifying }
     }
 }
 
@@ -170,10 +159,7 @@ pub fn client_with_timeout(timeout: Duration) -> reqwest::Client {
     // here (no custom certs/proxies) that's practically unreachable. Fall
     // back to the plain default client rather than panicking if it ever
     // does.
-    reqwest::Client::builder()
-        .timeout(timeout)
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+    reqwest::Client::builder().timeout(timeout).build().unwrap_or_else(|_| reqwest::Client::new())
 }
 
 /// Sends `req` and shapes the result (or the error chain) for the UI.
@@ -253,12 +239,7 @@ fn error_chain(err: &reqwest::Error, req: &PreparedRequest) -> String {
         parts.push(e.to_string());
         source = e.source();
     }
-    mask_error_text(
-        &parts.join(": "),
-        err.url().map(|u| u.as_str()),
-        &req.url,
-        &req.display_url,
-    )
+    mask_error_text(&parts.join(": "), err.url().map(|u| u.as_str()), &req.url, &req.display_url)
 }
 
 /// The masking behind [`error_chain`], on the joined chain text: `wire_url`
@@ -323,10 +304,7 @@ mod tests {
         let joined = format!("error sending request for url ({wire}): boom ({wire})");
         let out = mask_error_text(&joined, Some(wire), sent, display);
         assert!(!out.contains("sk-REAL"), "{out}");
-        assert_eq!(
-            out,
-            format!("error sending request: boom ({display}) for url ({display})")
-        );
+        assert_eq!(out, format!("error sending request: boom ({display}) for url ({display})"));
     }
 
     #[test]
@@ -377,11 +355,8 @@ mod tests {
             ("X-One".into(), "1".into()),
         ])
         .unwrap();
-        let accepts: Vec<&str> = map
-            .get_all("accept")
-            .iter()
-            .map(|v| v.to_str().unwrap())
-            .collect();
+        let accepts: Vec<&str> =
+            map.get_all("accept").iter().map(|v| v.to_str().unwrap()).collect();
         assert_eq!(accepts, ["a", "b"], "neither case-variant is dropped");
         assert_eq!(map.len(), 3);
         assert!(header_map(&[("bad name".into(), "x".into())]).is_err());
@@ -398,9 +373,7 @@ mod tests {
             body: None,
             insecure: false,
         };
-        let err = send(&client(), &req)
-            .await
-            .expect_err("nothing listens on port 1");
+        let err = send(&client(), &req).await.expect_err("nothing listens on port 1");
         assert!(!err.contains("sk-live-REAL"), "{err}");
         assert!(err.contains("key=•••••"), "{err}");
     }
@@ -415,9 +388,7 @@ mod tests {
             let (mut stream, _) = listener.accept().unwrap();
             let mut buf = [0u8; 1024];
             let _ = stream.read(&mut buf);
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n")
-                .unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n").unwrap();
             stream.flush().unwrap();
             std::thread::sleep(Duration::from_millis(150));
             stream.write_all(b"ok").unwrap();
@@ -459,9 +430,7 @@ mod tests {
                 let (mut sock, _) = listener.accept().await.unwrap();
                 let mut buf = vec![0u8; 4096];
                 let n = sock.read(&mut buf).await.unwrap();
-                sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
-                    .await
-                    .unwrap();
+                sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n").await.unwrap();
                 String::from_utf8_lossy(&buf[..n]).to_string()
             });
             let req = PreparedRequest {
@@ -489,11 +458,8 @@ mod tests {
                 })
                 .collect();
             assert!(wire.len() >= 3, "the probe saw the client's own rows: {raw}");
-            let sent: Vec<(String, String)> = data
-                .sent_headers
-                .iter()
-                .map(|h| (h.name.clone(), h.value.clone()))
-                .collect();
+            let sent: Vec<(String, String)> =
+                data.sent_headers.iter().map(|h| (h.name.clone(), h.value.clone())).collect();
             assert_eq!(sent, wire, "the snapshot is what went on the wire:\n{raw}");
             for h in &data.sent_headers {
                 assert_eq!(h.display, h.value, "no secrets here, so display = value");
@@ -539,27 +505,16 @@ mod tests {
             ..Default::default()
         };
         req.method = Method::Post;
-        req.body = Some(Body::Json {
-            text: "{\"k\": \"{{api_key}}\"}".into(),
-        });
+        req.body = Some(Body::Json { text: "{\"k\": \"{{api_key}}\"}".into() });
         req.substitute_body = true;
         req.headers.insert(
             "Authorization".into(),
-            Entry {
-                value: "Bearer {{api_key}}".into(),
-                enabled: true,
-            },
+            Entry { value: "Bearer {{api_key}}".into(), enabled: true },
         );
         let mut ctx = PrepareContext::default();
         ctx.vars.insert("host".into(), "api.example.com".into());
         ctx.vars.insert("api_key".into(), "s3cret".into());
-        ctx.default_headers.insert(
-            "X-Trace".into(),
-            Entry {
-                value: "on".into(),
-                enabled: true,
-            },
-        );
+        ctx.default_headers.insert("X-Trace".into(), Entry { value: "on".into(), enabled: true });
 
         let auto: Vec<(String, String)> = computed_headers(&req, &ctx, false)
             .into_iter()
@@ -567,10 +522,8 @@ mod tests {
             .map(|r| (r.name.to_ascii_lowercase(), r.value))
             .collect();
         let (prepared, _) = prepare(&req, &ctx).unwrap();
-        let sent: Vec<(String, String)> = SentHeader::wire(&prepared)
-            .into_iter()
-            .map(|h| (h.name, h.value))
-            .collect();
+        let sent: Vec<(String, String)> =
+            SentHeader::wire(&prepared).into_iter().map(|h| (h.name, h.value)).collect();
         assert_eq!(auto, sent);
     }
 }

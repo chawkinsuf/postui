@@ -38,9 +38,11 @@ impl Project {
     fn preflight(&self, ops: &[Op]) -> Result<(), Error> {
         // The user never sees the machinery, only the cause: something
         // changed the file after the op that is being replayed.
-        let conflict =
-            |path: &RelPath, what: &str| Error::Conflict(format!("{path} {what} (changed outside the app)"));
-        let mut overlay: std::collections::HashMap<RelPath, bool> = std::collections::HashMap::new();
+        let conflict = |path: &RelPath, what: &str| {
+            Error::Conflict(format!("{path} {what} (changed outside the app)"))
+        };
+        let mut overlay: std::collections::HashMap<RelPath, bool> =
+            std::collections::HashMap::new();
         let exists = |overlay: &std::collections::HashMap<RelPath, bool>, p: &RelPath| {
             overlay.get(p).copied().unwrap_or_else(|| self.disk.exists(p))
         };
@@ -85,7 +87,10 @@ impl Project {
                 Op::Text { path, before, after } => {
                     let expect_present = after.is_some();
                     if expect_present != exists(&overlay, path) {
-                        return Err(conflict(path, if expect_present { "no longer exists" } else { "already exists" }));
+                        return Err(conflict(
+                            path,
+                            if expect_present { "no longer exists" } else { "already exists" },
+                        ));
                     }
                     overlay.insert(path.clone(), before.is_some());
                 }
@@ -193,13 +198,11 @@ impl Project {
                 .meta
                 .moves
                 .iter()
-                .map(|(old, new)| {
-                    if redo {
-                        (old.clone(), new.clone())
-                    } else {
-                        (new.clone(), old.clone())
-                    }
-                })
+                .map(
+                    |(old, new)| {
+                        if redo { (old.clone(), new.clone()) } else { (new.clone(), old.clone()) }
+                    },
+                )
                 .collect();
             self.rekey_held_after_own_op(&moves, &clean_before);
             warnings.extend(self.apply_meta_active_env(&entry.meta, redo));
@@ -272,7 +275,10 @@ mod tests {
         assert_eq!(u.meta.moves, vec![("main/ping".to_string(), "main/pong".to_string())]);
         assert!(dir.path().join("requests/main/ping.toml").is_file());
         assert!(!dir.path().join("requests/main/pong.toml").exists());
-        assert!(read(&dir, "requests/main/ping.toml").unwrap().contains("name = \"Ping\""), "the name rewrite is undone too");
+        assert!(
+            read(&dir, "requests/main/ping.toml").unwrap().contains("name = \"Ping\""),
+            "the name rewrite is undone too"
+        );
         assert!(slugs(&p).contains(&"main/ping".to_string()));
         let r = p.redo().unwrap().unwrap();
         assert!(r.redo);
@@ -310,7 +316,11 @@ mod tests {
     #[test]
     fn undo_of_a_delete_restores_from_trash_and_the_order_list() {
         let (dir, _p) = fixture();
-        std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\", \"auth\"]\n[space.main]\norder = [\"ping\"]\n").unwrap();
+        std::fs::write(
+            dir.path().join("project.toml"),
+            "spaces = [\"main\", \"auth\"]\n[space.main]\norder = [\"ping\"]\n",
+        )
+        .unwrap();
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         p.delete_request("main/ping").unwrap();
         assert!(crate::order::space_order(p.meta(), "main").is_empty());
@@ -324,7 +334,11 @@ mod tests {
     #[test]
     fn undo_of_a_create_trashes_it_and_redo_brings_it_back() {
         let (dir, mut p) = fixture();
-        p.create_request("main/New", crate::model::HttpRequest::from_toml_str("method = \"GET\"\nurl = \"u\"\n").unwrap()).unwrap();
+        p.create_request(
+            "main/New",
+            crate::model::HttpRequest::from_toml_str("method = \"GET\"\nurl = \"u\"\n").unwrap(),
+        )
+        .unwrap();
         p.undo().unwrap();
         assert!(!dir.path().join("requests/main/new.toml").exists());
         assert!(dir.path().join(".local/trash/1/requests/main/new.toml").is_file());
@@ -336,7 +350,11 @@ mod tests {
     fn undo_of_move_all_restores_every_pair_and_stores_no_bodies() {
         let (dir, mut p) = fixture();
         for i in 0..20 {
-            std::fs::write(dir.path().join(format!("requests/main/r{i}.toml")), "method = \"GET\"\nurl = \"u\"\n").unwrap();
+            std::fs::write(
+                dir.path().join(format!("requests/main/r{i}.toml")),
+                "method = \"GET\"\nurl = \"u\"\n",
+            )
+            .unwrap();
         }
         p.relist();
         p.move_all_requests("main", "auth").unwrap();
@@ -350,9 +368,16 @@ mod tests {
     fn a_conflict_refuses_the_whole_entry_and_drops_it() {
         let (dir, mut p) = fixture();
         p.rename_request("main/ping", "main/Pong").unwrap();
-        std::fs::write(dir.path().join("requests/main/ping.toml"), "method = \"GET\"\nurl = \"hand made\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("requests/main/ping.toml"),
+            "method = \"GET\"\nurl = \"hand made\"\n",
+        )
+        .unwrap();
         let err = p.undo().unwrap_err();
-        assert!(matches!(err, Error::Conflict(ref m) if m.contains("requests/main/ping.toml")), "{err}");
+        assert!(
+            matches!(err, Error::Conflict(ref m) if m.contains("requests/main/ping.toml")),
+            "{err}"
+        );
         assert!(dir.path().join("requests/main/pong.toml").is_file(), "nothing moved");
         assert!(read(&dir, "requests/main/ping.toml").unwrap().contains("hand made"));
         assert!(p.undo().unwrap().is_none(), "the entry was dropped");
@@ -436,7 +461,10 @@ mod tests {
         assert_eq!(u.meta.active_env, Some((Some("dev".into()), Some("qa".into()))));
         assert!(dir.path().join("environments/dev.toml").is_file());
         assert_eq!(p.environments(), ["dev", "qa"]);
-        assert_eq!(p.secrets().get("dev").and_then(|m| m.get("token")).map(String::as_str), Some("x"));
+        assert_eq!(
+            p.secrets().get("dev").and_then(|m| m.get("token")).map(String::as_str),
+            Some("x")
+        );
         assert_eq!(p.env_name("dev"), "Dev");
         assert_eq!(p.active_env(), Some("dev"));
     }
@@ -473,7 +501,10 @@ mod tests {
             dir.path().join("requests/newdir").is_dir(),
             "the first-applied inverse (trashing newdir) was rolled back"
         );
-        assert!(dir.path().join("requests/main/pong.toml").is_file(), "the rename was never touched");
+        assert!(
+            dir.path().join("requests/main/pong.toml").is_file(),
+            "the rename was never touched"
+        );
         assert!(p.can_undo());
         assert_eq!(p.journal_len(), 1);
         assert!(!p.can_redo());

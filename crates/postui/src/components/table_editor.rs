@@ -61,10 +61,7 @@ pub struct TableOutcome {
 
 impl TableOutcome {
     fn consumed() -> Self {
-        Self {
-            consumed: true,
-            ..Self::default()
-        }
+        Self { consumed: true, ..Self::default() }
     }
 
     fn not_consumed() -> Self {
@@ -72,11 +69,7 @@ impl TableOutcome {
     }
 
     fn maybe_warn(warning: Option<String>) -> Self {
-        Self {
-            consumed: true,
-            warning,
-            ..Self::default()
-        }
+        Self { consumed: true, warning, ..Self::default() }
     }
 }
 
@@ -111,14 +104,8 @@ pub(crate) struct Columns {
 pub(crate) fn columns(x0: u16, width: u16) -> Columns {
     let pad = TOGGLE_W.min(width);
     let remaining = width.saturating_sub(pad);
-    let name_w = (remaining / 3)
-        .max(4)
-        .min(remaining.saturating_sub(2).max(4));
-    Columns {
-        name_x: x0 + pad,
-        divider_x: x0 + pad + name_w,
-        value_x: x0 + pad + name_w + 1,
-    }
+    let name_w = (remaining / 3).max(4).min(remaining.saturating_sub(2).max(4));
+    Columns { name_x: x0 + pad, divider_x: x0 + pad + name_w, value_x: x0 + pad + name_w + 1 }
 }
 
 /// `1 (header) + rows + 1 (ghost row) + 1 (closing edge)`. `rows` is
@@ -205,11 +192,7 @@ impl TableEditorState {
         };
         self.selected = Some(row);
         self.col = col;
-        self.editing = Some(CellEdit {
-            row,
-            col,
-            input: LineInput::new(&text),
-        });
+        self.editing = Some(CellEdit { row, col, input: LineInput::new(&text) });
     }
 
     /// Leaves editing with the cursor parked on `row`.
@@ -229,11 +212,7 @@ impl TableEditorState {
         map: &mut IndexMap<String, Entry>,
     ) -> TableOutcome {
         let row = row.min(map.len());
-        if self
-            .editing
-            .as_ref()
-            .is_some_and(|e| e.row == row && e.col == col)
-        {
+        if self.editing.as_ref().is_some_and(|e| e.row == row && e.col == col) {
             return TableOutcome::consumed();
         }
         let warning = self.commit(map).warning;
@@ -285,13 +264,7 @@ impl TableEditorState {
                         Some(format!("'{typed}' already exists — editing that row")),
                     );
                 }
-                map.insert(
-                    typed,
-                    Entry {
-                        value: pending.unwrap_or_default(),
-                        enabled: true,
-                    },
-                );
+                map.insert(typed, Entry { value: pending.unwrap_or_default(), enabled: true });
                 (Some(map.len() - 1), None)
             }
             Col::Value => {
@@ -318,26 +291,17 @@ impl TableEditorState {
             return (Some(idx), None);
         }
         if new_key.trim().is_empty() {
-            return (
-                Some(idx),
-                Some(format!("a row needs a name — kept '{orig}'")),
-            );
+            return (Some(idx), Some(format!("a row needs a name — kept '{orig}'")));
         }
         if let Some(other_idx) = map.get_index_of(&new_key) {
             map.shift_remove_index(idx);
-            let adjusted = if other_idx > idx {
-                other_idx - 1
-            } else {
-                other_idx
-            };
+            let adjusted = if other_idx > idx { other_idx - 1 } else { other_idx };
             if let Some((_, e)) = map.get_index_mut(adjusted) {
                 e.value = entry.value;
             }
             return (
                 Some(adjusted),
-                Some(format!(
-                    "duplicate key '{new_key}' replaced the existing value"
-                )),
+                Some(format!("duplicate key '{new_key}' replaced the existing value")),
             );
         }
         map.shift_remove_index(idx);
@@ -372,7 +336,12 @@ impl TableEditorState {
     /// reached the end, on the new last row, as Vim's `dd` does, in both
     /// profiles (the user, 2026-10-11). Only an emptied table lands on the
     /// add row. Returns how many rows went.
-    pub fn delete_rows(&mut self, map: &mut IndexMap<String, Entry>, start: usize, n: usize) -> usize {
+    pub fn delete_rows(
+        &mut self,
+        map: &mut IndexMap<String, Entry>,
+        start: usize,
+        n: usize,
+    ) -> usize {
         if start >= map.len() || n == 0 {
             return 0;
         }
@@ -510,11 +479,7 @@ impl TableEditorState {
                 if self.ghost_selected(map) || self.selected.is_none_or(|s| s >= map.len()) {
                     return TableOutcome::not_consumed();
                 }
-                TableOutcome {
-                    consumed: true,
-                    warning: None,
-                    request_delete: self.selected,
-                }
+                TableOutcome { consumed: true, warning: None, request_delete: self.selected }
             }
             _ => TableOutcome::not_consumed(),
         }
@@ -553,11 +518,7 @@ impl TableEditorState {
             KeyCode::Up | KeyCode::Down => {
                 let (row, warning) = self.commit_cell(map, &edit);
                 let here = row.unwrap_or(edit.row).min(map.len());
-                let target = if ev.code == KeyCode::Up {
-                    here.saturating_sub(1)
-                } else {
-                    here + 1
-                };
+                let target = if ev.code == KeyCode::Up { here.saturating_sub(1) } else { here + 1 };
                 self.exit_editing(target, map);
                 TableOutcome::maybe_warn(warning)
             }
@@ -567,11 +528,7 @@ impl TableEditorState {
             _ => {
                 let consumed = edit.input.handle_key(ev);
                 self.editing = Some(edit);
-                if consumed {
-                    TableOutcome::consumed()
-                } else {
-                    TableOutcome::not_consumed()
-                }
+                if consumed { TableOutcome::consumed() } else { TableOutcome::not_consumed() }
             }
         }
     }
@@ -644,34 +601,10 @@ impl TableEditorState {
         if y < bottom {
             let cols = columns(area.x, area.width);
             fill(buf, Rect::new(area.x, y, area.width, 1), theme.panel);
-            text(
-                buf,
-                cols.name_x,
-                y,
-                "NAME",
-                theme.text_muted,
-                theme.panel,
-                true,
-            );
-            text(
-                buf,
-                cols.value_x,
-                y,
-                "VALUE",
-                theme.text_muted,
-                theme.panel,
-                true,
-            );
+            text(buf, cols.name_x, y, "NAME", theme.text_muted, theme.panel, true);
+            text(buf, cols.value_x, y, "VALUE", theme.text_muted, theme.panel, true);
             if cols.divider_x < area.right() {
-                text(
-                    buf,
-                    cols.divider_x,
-                    y,
-                    "\u{258F}",
-                    theme.edge_dark,
-                    theme.panel,
-                    false,
-                );
+                text(buf, cols.divider_x, y, "\u{258F}", theme.edge_dark, theme.panel, false);
             }
             y += 1;
         }
@@ -681,23 +614,8 @@ impl TableEditorState {
             if y >= bottom {
                 break;
             }
-            let hint = shadow
-                .and_then(|s| s.get(k))
-                .map(|s| format!("overrides {s}"));
-            self.draw_row(
-                buf,
-                hits,
-                area,
-                y,
-                i,
-                k,
-                e,
-                ctx,
-                hint.as_deref(),
-                vars,
-                true,
-                None,
-            );
+            let hint = shadow.and_then(|s| s.get(k)).map(|s| format!("overrides {s}"));
+            self.draw_row(buf, hits, area, y, i, k, e, ctx, hint.as_deref(), vars, true, None);
             y += 1;
         }
 
@@ -715,9 +633,7 @@ impl TableEditorState {
                 enabled: true,
             };
             let label = (!ghost_editing).then_some(add_label);
-            self.draw_row(
-                buf, hits, area, y, map_len, "", &entry, ctx, None, vars, false, label,
-            );
+            self.draw_row(buf, hits, area, y, map_len, "", &entry, ctx, None, vars, false, label);
             y += 1;
         }
 
@@ -761,16 +677,10 @@ impl TableEditorState {
     ) {
         let hit = Hit::TableCheckbox(i);
         Self::clear_strike(buf, x, y, TOGGLE_W);
-        let (glyph, state_fg) = if enabled {
-            (" \u{25CF} ", theme.success)
-        } else {
-            (" \u{25CB} ", theme.text_muted)
-        };
-        let (fg, bg) = if hovered == Some(&hit) {
-            (theme.on_accent, theme.accent)
-        } else {
-            (state_fg, bg)
-        };
+        let (glyph, state_fg) =
+            if enabled { (" \u{25CF} ", theme.success) } else { (" \u{25CB} ", theme.text_muted) };
+        let (fg, bg) =
+            if hovered == Some(&hit) { (theme.on_accent, theme.accent) } else { (state_fg, bg) };
         text(buf, x, y, glyph, fg, bg, false);
         hits.register(Rect::new(x, y, TOGGLE_W, 1), hit);
     }
@@ -832,19 +742,13 @@ impl TableEditorState {
         if name_w > 0 {
             hits.register(
                 Rect::new(name_x, y, name_w, 1),
-                Hit::TableCell {
-                    row,
-                    col: Col::Key.index(),
-                },
+                Hit::TableCell { row, col: Col::Key.index() },
             );
         }
         if value_w > 0 {
             hits.register(
                 Rect::new(value_x, y, value_w, 1),
-                Hit::TableCell {
-                    row,
-                    col: Col::Value.index(),
-                },
+                Hit::TableCell { row, col: Col::Value.index() },
             );
         }
     }
@@ -883,22 +787,15 @@ impl TableEditorState {
         // land here. A pointer resting on the row lights it either way.
         let cursor = self.selected == Some(i) || editing_col.is_some();
         let lit = hovered_row(ctx) == Some(i) || (cursor && ctx.focused);
-        let bg = if lit {
-            theme.control_hover
-        } else {
-            theme.control
-        };
+        let bg = if lit { theme.control_hover } else { theme.control };
         fill(buf, Rect::new(area.x, y, area.width, 1), bg);
 
         // The actions crowd the value's right end, so the value — plain
         // text or live input — stops short of them instead of running
         // underneath. The ghost row has no actions, so it keeps the width.
         let show_actions = real && (lit || cursor) && area.width >= 10;
-        let value_right = if show_actions {
-            area.right().saturating_sub(ACTIONS_W)
-        } else {
-            area.right()
-        };
+        let value_right =
+            if show_actions { area.right().saturating_sub(ACTIONS_W) } else { area.right() };
         let value_w = value_right.saturating_sub(cols.value_x);
         let name_w = cols.divider_x.saturating_sub(cols.name_x);
         let fg = match (real, entry.enabled, lit) {
@@ -912,14 +809,10 @@ impl TableEditorState {
         // would open reads at a glance, not just its row. Keyboard only:
         // an unfocused pane has no cursor to show, and an open cell
         // paints its own lift.
-        let cursor_cell = (self.selected == Some(i) && ctx.focused && editing_col.is_none())
-            .then_some(self.col);
+        let cursor_cell =
+            (self.selected == Some(i) && ctx.focused && editing_col.is_none()).then_some(self.col);
         let cell_bg = |col: Col| {
-            if cursor_cell == Some(col) {
-                crate::theme::lift_color(bg, 0.06)
-            } else {
-                bg
-            }
+            if cursor_cell == Some(col) { crate::theme::lift_color(bg, 0.06) } else { bg }
         };
         let (name_bg, value_bg) = (cell_bg(Col::Key), cell_bg(Col::Value));
         match cursor_cell {
@@ -950,15 +843,7 @@ impl TableEditorState {
                 let hint_x = cols.value_x + used + 3;
                 let room = value_right.saturating_sub(hint_x);
                 if room > 0 {
-                    text(
-                        buf,
-                        hint_x,
-                        y,
-                        clip(hint, room),
-                        theme.text_muted,
-                        value_bg,
-                        false,
-                    );
+                    text(buf, hint_x, y, clip(hint, room), theme.text_muted, value_bg, false);
                 }
             }
         }
@@ -979,15 +864,7 @@ impl TableEditorState {
         }
 
         if cols.divider_x < area.right() {
-            text(
-                buf,
-                cols.divider_x,
-                y,
-                "\u{258F}",
-                theme.edge_dark,
-                bg,
-                false,
-            );
+            text(buf, cols.divider_x, y, "\u{258F}", theme.edge_dark, bg, false);
         }
 
         hits.register(Rect::new(area.x, y, area.width, 1), Hit::TableRow(i));
@@ -1027,17 +904,7 @@ impl TableEditorState {
         // are revealed by hover or the cursor. Both paint (and register)
         // last so they win over the cells underneath.
         if real && area.width >= TOGGLE_W {
-            Self::draw_row_toggle(
-                buf,
-                hits,
-                area.x,
-                y,
-                i,
-                entry.enabled,
-                bg,
-                ctx.hovered,
-                theme,
-            );
+            Self::draw_row_toggle(buf, hits, area.x, y, i, entry.enabled, bg, ctx.hovered, theme);
         }
         if show_actions {
             Self::draw_row_actions(buf, hits, area.right(), y, i, bg, ctx.hovered, theme);
@@ -1085,26 +952,10 @@ fn paint_cell_tokens(
 ) {
     let (name_x, name_w, value_x, value_w) = cols_span(cols, value_right);
     if name_w > 0 {
-        paint_var_tokens(
-            buf,
-            Rect::new(name_x, y, name_w, 1),
-            key,
-            name_x,
-            vars,
-            theme,
-            hits,
-        );
+        paint_var_tokens(buf, Rect::new(name_x, y, name_w, 1), key, name_x, vars, theme, hits);
     }
     if value_w > 0 {
-        paint_var_tokens(
-            buf,
-            Rect::new(value_x, y, value_w, 1),
-            value,
-            value_x,
-            vars,
-            theme,
-            hits,
-        );
+        paint_var_tokens(buf, Rect::new(value_x, y, value_w, 1), value, value_x, vars, theme, hits);
     }
 }
 
@@ -1161,13 +1012,7 @@ mod tests {
     fn map_of(pairs: &[(&str, &str)]) -> IndexMap<String, Entry> {
         let mut map = IndexMap::new();
         for (k, v) in pairs {
-            map.insert(
-                (*k).to_string(),
-                Entry {
-                    value: (*v).to_string(),
-                    enabled: true,
-                },
-            );
+            map.insert((*k).to_string(), Entry { value: (*v).to_string(), enabled: true });
         }
         map
     }
@@ -1191,19 +1036,13 @@ mod tests {
             key(KeyCode::Char('l')),
         ] {
             let mut map = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
-            let mut t = TableEditorState {
-                selected: Some(1),
-                ..TableEditorState::default()
-            };
+            let mut t = TableEditorState { selected: Some(1), ..TableEditorState::default() };
             let outcome = t.handle_key(letter, &mut map);
             assert!(!outcome.consumed, "{letter:?}");
             assert_eq!(t.selected, Some(1), "{letter:?} moved the cursor");
             assert!(t.editing.is_none(), "{letter:?} opened a cell");
         }
-        let pairs = [
-            (ctrl('f'), key(KeyCode::PageDown)),
-            (ctrl('b'), key(KeyCode::PageUp)),
-        ];
+        let pairs = [(ctrl('f'), key(KeyCode::PageDown)), (ctrl('b'), key(KeyCode::PageUp))];
         for (alias, canonical) in pairs {
             let mut ma = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
             let mut mb = ma.clone();
@@ -1232,10 +1071,7 @@ mod tests {
     #[test]
     fn left_and_right_move_the_cursor_between_name_and_value_and_clamp() {
         let mut map = map_of(&[("a", "1"), ("b", "2")]);
-        let mut t = TableEditorState {
-            selected: Some(0),
-            ..TableEditorState::default()
-        };
+        let mut t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
         assert_eq!(t.col, Col::Key, "the cursor starts on the name cell");
         assert!(t.handle_key(key(KeyCode::Left), &mut map).consumed);
         assert_eq!(t.col, Col::Key, "← on the name cell stays put");
@@ -1252,16 +1088,12 @@ mod tests {
     /// router's, see `page_chords_are_strict_synonyms_and_the_vim_letters…`).
     #[test]
     fn left_and_right_move_the_cell_cursor() {
-        for (code, from, to) in [
-            (KeyCode::Right, Col::Key, Col::Value),
-            (KeyCode::Left, Col::Value, Col::Key),
-        ] {
+        for (code, from, to) in
+            [(KeyCode::Right, Col::Key, Col::Value), (KeyCode::Left, Col::Value, Col::Key)]
+        {
             let mut map = map_of(&[("a", "1")]);
-            let mut t = TableEditorState {
-                selected: Some(0),
-                col: from,
-                ..TableEditorState::default()
-            };
+            let mut t =
+                TableEditorState { selected: Some(0), col: from, ..TableEditorState::default() };
             let out = t.handle_key(key(code), &mut map);
             assert!(out.consumed, "{code:?}");
             assert_eq!(t.col, to, "{code:?}");
@@ -1296,11 +1128,8 @@ mod tests {
     #[test]
     fn enter_opens_the_cell_under_the_cursor() {
         let mut map = map_of(&[("a", "1")]);
-        let mut t = TableEditorState {
-            selected: Some(0),
-            col: Col::Value,
-            ..TableEditorState::default()
-        };
+        let mut t =
+            TableEditorState { selected: Some(0), col: Col::Value, ..TableEditorState::default() };
         t.handle_key(key(KeyCode::Enter), &mut map);
         let edit = t.editing.as_ref().expect("a cell is open");
         assert_eq!((edit.row, edit.col), (0, Col::Value));
@@ -1361,10 +1190,7 @@ mod tests {
     /// A reset drops the column along with the row.
     #[test]
     fn reset_returns_the_cursor_to_the_name_column() {
-        let mut t = TableEditorState {
-            col: Col::Value,
-            ..TableEditorState::default()
-        };
+        let mut t = TableEditorState { col: Col::Value, ..TableEditorState::default() };
         t.reset();
         assert_eq!(t.col, Col::Key);
     }
@@ -1379,26 +1205,17 @@ mod tests {
         let map = map_of(&[("page", "2")]);
         let lifted = crate::theme::lift_color(theme.control_hover, 0.06);
         for (col, other) in [(Col::Key, Col::Value), (Col::Value, Col::Key)] {
-            let t = TableEditorState {
-                selected: Some(0),
-                col,
-                ..TableEditorState::default()
-            };
+            let t = TableEditorState { selected: Some(0), col, ..TableEditorState::default() };
             let ctx = ctx(&theme, None);
             let mut hits = HitMap::default();
             let terminal = draw_to(&t, &map, &ctx, &mut hits);
             let buf = terminal.backend().buffer();
             let cell = |c: Col| {
-                hits.rect_of(&Hit::TableCell { row: 0, col: c.index() })
-                    .expect("cell registered")
+                hits.rect_of(&Hit::TableCell { row: 0, col: c.index() }).expect("cell registered")
             };
             let here = cell(col);
             let there = cell(other);
-            assert_eq!(
-                buf.cell((here.x, here.y)).unwrap().bg,
-                lifted,
-                "{col:?} lifts"
-            );
+            assert_eq!(buf.cell((here.x, here.y)).unwrap().bg, lifted, "{col:?} lifts");
             assert_eq!(
                 buf.cell((there.x, there.y)).unwrap().bg,
                 theme.control_hover,
@@ -1414,15 +1231,9 @@ mod tests {
         let theme = Theme::dark();
         let map = map_of(&[("page", "2")]);
         let lifted = crate::theme::lift_color(theme.control_hover, 0.06);
-        let t = TableEditorState {
-            selected: Some(0),
-            col: Col::Value,
-            ..TableEditorState::default()
-        };
-        let unfocused = DrawCtx {
-            focused: false,
-            ..ctx(&theme, None)
-        };
+        let t =
+            TableEditorState { selected: Some(0), col: Col::Value, ..TableEditorState::default() };
+        let unfocused = DrawCtx { focused: false, ..ctx(&theme, None) };
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &unfocused, &mut hits);
         let cell = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
@@ -1495,9 +1306,7 @@ mod tests {
         let ctx = ctx(&theme, None);
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &ctx, &mut hits);
-        let row = hits
-            .rect_of(&Hit::TableRow(1))
-            .expect("the ghost row is registered");
+        let row = hits.rect_of(&Hit::TableRow(1)).expect("the ghost row is registered");
         let buf = terminal.backend().buffer();
         assert_eq!(
             buf.cell((row.x, row.y)).unwrap().bg,
@@ -1505,10 +1314,7 @@ mod tests {
             "the cursor row lifts its own fill"
         );
         let content = format!("{:?}", terminal.backend().buffer());
-        assert!(
-            content.contains("+ Add"),
-            "the add label survives: {content}"
-        );
+        assert!(content.contains("+ Add"), "the add label survives: {content}");
     }
 
     // --- click entry point ------------------------------------------------
@@ -1566,10 +1372,7 @@ mod tests {
         assert!(out.consumed);
         assert!(t.editing.is_none());
         assert_eq!(map["page"].value, "234");
-        assert!(
-            !t.commit(&mut map).consumed,
-            "committing with no edit in progress is a no-op"
-        );
+        assert!(!t.commit(&mut map).consumed, "committing with no edit in progress is a no-op");
     }
 
     #[test]
@@ -1595,13 +1398,7 @@ mod tests {
         type_str(&mut t, &mut map, "page");
         assert!(map.is_empty(), "nothing inserted until the commit");
         t.commit(&mut map);
-        assert_eq!(
-            map["page"],
-            Entry {
-                value: String::new(),
-                enabled: true
-            }
-        );
+        assert_eq!(map["page"], Entry { value: String::new(), enabled: true });
     }
 
     #[test]
@@ -1753,10 +1550,7 @@ mod tests {
     #[test]
     fn enter_committing_an_edit_keeps_the_row_selected() {
         let mut map = map_of(&[("a", "1")]);
-        let mut t = TableEditorState {
-            selected: Some(0),
-            ..TableEditorState::default()
-        };
+        let mut t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
         t.handle_key(key(KeyCode::Enter), &mut map); // begin editing the key
         t.handle_key(key(KeyCode::Enter), &mut map); // commit, like Esc
         assert!(t.editing.is_none());
@@ -1766,10 +1560,7 @@ mod tests {
     #[test]
     fn enter_in_an_open_cell_commits_and_keeps_the_row_selected() {
         let mut map = map_of(&[("a", "1")]);
-        let mut t = TableEditorState {
-            selected: Some(0),
-            ..TableEditorState::default()
-        };
+        let mut t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
         t.begin_edit_selected(&map);
         t.handle_key(key(KeyCode::Char('x')), &mut map);
         let outcome = t.handle_key(key(KeyCode::Enter), &mut map);
@@ -1815,16 +1606,9 @@ mod tests {
 
         // The ghost row has nothing to toggle or delete.
         let mut map = map_of(&[("a", "1")]);
-        let mut t = TableEditorState {
-            selected: Some(1),
-            ..TableEditorState::default()
-        };
+        let mut t = TableEditorState { selected: Some(1), ..TableEditorState::default() };
         assert!(!t.handle_key(key(KeyCode::Char(' ')), &mut map).consumed);
-        assert_eq!(
-            t.handle_key(key(KeyCode::Delete), &mut map)
-                .request_delete,
-            None
-        );
+        assert_eq!(t.handle_key(key(KeyCode::Delete), &mut map).request_delete, None);
         assert!(map["a"].enabled);
     }
 
@@ -1928,13 +1712,7 @@ mod tests {
         let out = t.handle_key(key(KeyCode::Enter), &mut map);
         assert!(out.consumed);
         assert!(t.editing.is_none());
-        assert_eq!(
-            map["page"],
-            Entry {
-                value: "2".into(),
-                enabled: true
-            }
-        );
+        assert_eq!(map["page"], Entry { value: "2".into(), enabled: true });
         assert_eq!(t.selected, Some(0), "Enter keeps the row selected, like Esc");
     }
 
@@ -2092,18 +1870,7 @@ mod tests {
     ) -> Terminal<TestBackend> {
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
         terminal
-            .draw(|f| {
-                t.draw(
-                    f,
-                    f.area(),
-                    map,
-                    ctx,
-                    "+ Add param",
-                    hits,
-                    None,
-                    &VarView::default(),
-                )
-            })
+            .draw(|f| t.draw(f, f.area(), map, ctx, "+ Add param", hits, None, &VarView::default()))
             .unwrap();
         terminal
     }
@@ -2132,14 +1899,8 @@ mod tests {
         assert_eq!(gk.y, row.y + 1);
         assert_eq!(gv.y, gk.y);
         // Clicks resolve to the cell, not the row underneath it.
-        assert_eq!(
-            hits.hit_at(k.x, k.y),
-            Some(&Hit::TableCell { row: 0, col: 0 })
-        );
-        assert_eq!(
-            hits.hit_at(gv.x, gv.y),
-            Some(&Hit::TableCell { row: 1, col: 1 })
-        );
+        assert_eq!(hits.hit_at(k.x, k.y), Some(&Hit::TableCell { row: 0, col: 0 }));
+        assert_eq!(hits.hit_at(gv.x, gv.y), Some(&Hit::TableCell { row: 1, col: 1 }));
     }
 
     #[test]
@@ -2152,11 +1913,7 @@ mod tests {
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &ctx(&theme, None), &mut hits);
         let row1 = hits.rect_of(&Hit::TableRow(1)).unwrap();
-        assert_eq!(
-            row1,
-            Rect::new(0, 2, 40, 1),
-            "the edited row stays where and what it was"
-        );
+        assert_eq!(row1, Rect::new(0, 2, 40, 1), "the edited row stays where and what it was");
         assert_eq!(
             hits.rect_of(&Hit::TableRow(2)).unwrap().y,
             row1.y + 1,
@@ -2206,20 +1963,14 @@ mod tests {
         let t = TableEditorState::default();
         let mut hits = HitMap::default();
         draw_to(&t, &map, &ctx(&theme, None), &mut hits);
-        assert!(
-            hits.rect_of(&Hit::TableCopy(0)).is_none(),
-            "no actions on an unhovered row"
-        );
+        assert!(hits.rect_of(&Hit::TableCopy(0)).is_none(), "no actions on an unhovered row");
         assert!(hits.rect_of(&Hit::TableDelete(0)).is_none());
 
         let hovered = Hit::TableRow(0);
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &ctx(&theme, Some(&hovered)), &mut hits);
         let content = format!("{:?}", terminal.backend().buffer());
-        assert!(
-            content.contains("\u{F01B4}"),
-            "the delete button is a trash can: {content}"
-        );
+        assert!(content.contains("\u{F01B4}"), "the delete button is a trash can: {content}");
         let copy = hits.rect_of(&Hit::TableCopy(0)).expect("copy hit");
         let trash = hits.rect_of(&Hit::TableDelete(0)).expect("delete hit");
         assert!(
@@ -2227,10 +1978,7 @@ mod tests {
             "buttons get comfortable click targets: {copy:?} {trash:?}"
         );
         assert!(copy.x < trash.x, "copy left of trash");
-        assert!(
-            hits.rect_of(&Hit::TableDelete(1)).is_none(),
-            "only the hovered row shows actions"
-        );
+        assert!(hits.rect_of(&Hit::TableDelete(1)).is_none(), "only the hovered row shows actions");
     }
 
     #[test]
@@ -2287,10 +2035,7 @@ mod tests {
         let y = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap().y;
         for x in area.right()..40 {
             assert!(
-                !buf.cell((x, y))
-                    .unwrap()
-                    .modifier
-                    .contains(Modifier::CROSSED_OUT),
+                !buf.cell((x, y)).unwrap().modifier.contains(Modifier::CROSSED_OUT),
                 "the strike ran past the table's own area, at column {x}"
             );
         }
@@ -2304,29 +2049,14 @@ mod tests {
         let theme = Theme::dark();
         let map = map_of(&[("a", "1"), ("b", "2")]);
         let mut resting = HitMap::default();
-        draw_to(
-            &TableEditorState::default(),
-            &map,
-            &ctx(&theme, None),
-            &mut resting,
-        );
-        let before: Vec<_> = (0..3)
-            .map(|i| resting.rect_of(&Hit::TableRow(i)).unwrap())
-            .collect();
+        draw_to(&TableEditorState::default(), &map, &ctx(&theme, None), &mut resting);
+        let before: Vec<_> = (0..3).map(|i| resting.rect_of(&Hit::TableRow(i)).unwrap()).collect();
 
-        let t = TableEditorState {
-            selected: Some(0),
-            ..TableEditorState::default()
-        };
+        let t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
         let mut hits = HitMap::default();
         draw_to(&t, &map, &ctx(&theme, None), &mut hits);
-        let after: Vec<_> = (0..3)
-            .map(|i| hits.rect_of(&Hit::TableRow(i)).unwrap())
-            .collect();
-        assert_eq!(
-            after[0].height, 1,
-            "the selected row edits in place: still one line"
-        );
+        let after: Vec<_> = (0..3).map(|i| hits.rect_of(&Hit::TableRow(i)).unwrap()).collect();
+        assert_eq!(after[0].height, 1, "the selected row edits in place: still one line");
         assert_eq!(before, after, "nothing moved when the row was selected");
     }
 
@@ -2336,19 +2066,13 @@ mod tests {
     fn selecting_the_ghost_row_keeps_it_one_line() {
         let theme = Theme::dark();
         let map = map_of(&[("a", "1")]);
-        let t = TableEditorState {
-            selected: Some(1),
-            ..TableEditorState::default()
-        };
+        let t = TableEditorState { selected: Some(1), ..TableEditorState::default() };
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &ctx(&theme, None), &mut hits);
         let ghost = hits.rect_of(&Hit::TableRow(1)).unwrap();
         assert_eq!(ghost.height, 1, "the ghost row stays one line");
         let content = format!("{:?}", terminal.backend().buffer());
-        assert!(
-            content.contains("+ Add param"),
-            "and keeps its add label: {content}"
-        );
+        assert!(content.contains("+ Add param"), "and keeps its add label: {content}");
     }
 
     /// A cell edit draws its input on the row's own line, right where the
@@ -2378,16 +2102,12 @@ mod tests {
         let mut hits = HitMap::default();
         draw_to(&t, &map, &ctx(&theme, None), &mut hits);
         let row = hits.rect_of(&Hit::TableRow(0)).unwrap();
-        let toggle = hits
-            .rect_of(&Hit::TableCheckbox(0))
-            .expect("the toggle is up on an untouched row");
+        let toggle =
+            hits.rect_of(&Hit::TableCheckbox(0)).expect("the toggle is up on an untouched row");
         assert_eq!(toggle.x, row.x, "flush with the row's left edge");
         assert_eq!(toggle.y, row.y, "on the row's own line");
         let key = hits.rect_of(&Hit::TableCell { row: 0, col: 0 }).unwrap();
-        assert!(
-            toggle.right() <= key.x,
-            "the toggle sits before the key text: {toggle:?} {key:?}"
-        );
+        assert!(toggle.right() <= key.x, "the toggle sits before the key text: {toggle:?} {key:?}");
     }
 
     /// The row's context buttons are copy then delete, at the right edge,
@@ -2396,27 +2116,16 @@ mod tests {
     fn the_active_rows_buttons_offer_copy_before_the_trash() {
         let theme = Theme::dark();
         let map = map_of(&[("a", "1")]);
-        let t = TableEditorState {
-            selected: Some(0),
-            ..TableEditorState::default()
-        };
+        let t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &ctx(&theme, None), &mut hits);
-        let copy = hits
-            .rect_of(&Hit::TableCopy(0))
-            .expect("the active row offers copy");
+        let copy = hits.rect_of(&Hit::TableCopy(0)).expect("the active row offers copy");
         let trash = hits.rect_of(&Hit::TableDelete(0)).unwrap();
-        assert!(
-            copy.right() <= trash.x,
-            "copy left of trash: {copy:?} {trash:?}"
-        );
+        assert!(copy.right() <= trash.x, "copy left of trash: {copy:?} {trash:?}");
         let value = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
         assert!(value.x < copy.x, "the buttons sit past the value cell");
         let content = format!("{:?}", terminal.backend().buffer());
-        assert!(
-            content.contains(crate::glyph::COPY),
-            "the copy glyph is painted: {content}"
-        );
+        assert!(content.contains(crate::glyph::COPY), "the copy glyph is painted: {content}");
     }
 
     /// A compact row reveals copy along with its trash on hover.
@@ -2428,30 +2137,21 @@ mod tests {
         let hovered = Hit::TableRow(0);
         let mut hits = HitMap::default();
         draw_to(&t, &map, &ctx(&theme, Some(&hovered)), &mut hits);
-        assert!(
-            hits.rect_of(&Hit::TableCopy(0)).is_some(),
-            "hover reveals copy"
-        );
+        assert!(hits.rect_of(&Hit::TableCopy(0)).is_some(), "hover reveals copy");
     }
 
     #[test]
     fn the_expanded_row_shows_toggle_and_trash_without_hover() {
         let theme = Theme::dark();
         let map = map_of(&[("a", "1")]);
-        let t = TableEditorState {
-            selected: Some(0),
-            ..TableEditorState::default()
-        };
+        let t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &ctx(&theme, None), &mut hits);
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(hits.rect_of(&Hit::TableCheckbox(0)).is_some());
         assert!(hits.rect_of(&Hit::TableDelete(0)).is_some());
         assert!(content.contains("\u{F01B4}"), "trash, not 󰅖: {content}");
-        assert!(
-            !content.contains('\u{F0156}'),
-            "the old 󰅖 delete glyph is gone: {content}"
-        );
+        assert!(!content.contains('\u{F0156}'), "the old 󰅖 delete glyph is gone: {content}");
         assert!(
             !content.contains('\u{2713}') && !content.contains('\u{2717}'),
             "no left check column anywhere: {content}"
@@ -2462,23 +2162,14 @@ mod tests {
     fn a_live_cell_edit_keeps_the_buttons_visible() {
         let theme = Theme::dark();
         let mut map = map_of(&[("a", "1")]);
-        let mut t = TableEditorState {
-            selected: Some(0),
-            ..TableEditorState::default()
-        };
+        let mut t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
         t.click_cell(0, Col::Value, &mut map);
         let mut hits = HitMap::default();
         draw_to(&t, &map, &ctx(&theme, None), &mut hits);
-        let toggle = hits
-            .rect_of(&Hit::TableCheckbox(0))
-            .expect("toggle stays up during a value edit");
-        let trash = hits
-            .rect_of(&Hit::TableDelete(0))
-            .expect("trash stays up during a value edit");
-        assert!(
-            toggle.x < trash.x,
-            "toggle left of trash: {toggle:?} {trash:?}"
-        );
+        let toggle =
+            hits.rect_of(&Hit::TableCheckbox(0)).expect("toggle stays up during a value edit");
+        let trash = hits.rect_of(&Hit::TableDelete(0)).expect("trash stays up during a value edit");
+        assert!(toggle.x < trash.x, "toggle left of trash: {toggle:?} {trash:?}");
     }
 
     #[test]
@@ -2517,10 +2208,7 @@ mod tests {
 
         // Selected data row: the cursor lift is the only thing the cursor
         // paints, so an unfocused pane shows the resting fill.
-        let t = TableEditorState {
-            selected: Some(0),
-            ..TableEditorState::default()
-        };
+        let t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &unfocused, &mut hits);
         let buf = terminal.backend().buffer();
@@ -2537,10 +2225,7 @@ mod tests {
         );
 
         // Ghost-row cursor: same rule — resting fill, muted add label.
-        let t = TableEditorState {
-            selected: Some(map.len()),
-            ..TableEditorState::default()
-        };
+        let t = TableEditorState { selected: Some(map.len()), ..TableEditorState::default() };
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &unfocused, &mut hits);
         let buf = terminal.backend().buffer();
@@ -2556,10 +2241,7 @@ mod tests {
     fn the_selected_row_carries_its_actions_without_growing() {
         let theme = Theme::dark();
         let map = map_of(&[("page", "2")]);
-        let t = TableEditorState {
-            selected: Some(0),
-            ..TableEditorState::default()
-        };
+        let t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
         let mut hits = HitMap::default();
         draw_to(&t, &map, &ctx(&theme, None), &mut hits);
         assert_eq!(hits.rect_of(&Hit::TableRow(0)).unwrap().height, 1);

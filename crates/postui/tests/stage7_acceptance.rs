@@ -47,10 +47,7 @@ fn right_down(x: u16, y: u16) -> MouseEvent {
 /// left edge + 2 columns, top row, which is inside every row-shaped hit.
 fn press(app: &mut App, hit: Hit, make: fn(u16, u16) -> MouseEvent) -> ratatui::layout::Rect {
     render(app);
-    let r = app
-        .hits
-        .rect_of(&hit)
-        .unwrap_or_else(|| panic!("no rect registered for {hit:?}"));
+    let r = app.hits.rect_of(&hit).unwrap_or_else(|| panic!("no rect registered for {hit:?}"));
     app.handle_mouse(make(r.x + 2, r.y));
     r
 }
@@ -81,15 +78,9 @@ fn seed(app: &mut App, slugs: &[&str]) {
 /// Opens every folder in the tree, so `Row::Request` rows for nested slugs
 /// exist (folders start collapsed).
 fn expand_all(app: &mut App) {
-    while let Some(i) = app.sidebar.rows.iter().position(|r| {
-        matches!(
-            r,
-            Row::Folder {
-                expanded: false,
-                ..
-            }
-        )
-    }) {
+    while let Some(i) =
+        app.sidebar.rows.iter().position(|r| matches!(r, Row::Folder { expanded: false, .. }))
+    {
         app.sidebar.selected = Some(i);
         app.update(Action::ToggleSelectedFolder);
     }
@@ -99,12 +90,7 @@ fn expand_all(app: &mut App) {
 /// Writes a request file that cannot parse, so the sidebar lists it as a
 /// broken row.
 fn seed_broken(app: &mut App, slug: &str) {
-    let path = app
-        .proj()
-        .root()
-        .join("requests")
-        .join("main")
-        .join(format!("{slug}.toml"));
+    let path = app.proj().root().join("requests").join("main").join(format!("{slug}.toml"));
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, "this is = = not toml\n").unwrap();
     app.update(Action::RefreshSidebar);
@@ -138,22 +124,11 @@ fn right_click_sidebar_row_opens_menu_and_duplicate_creates_copy() {
     assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))));
     assert_eq!(
         menu_labels(&app),
-        vec![
-            "Open",
-            "Duplicate",
-            "Copy as curl",
-            "Move up",
-            "Move down",
-            "Rename…",
-            "Delete"
-        ],
+        vec!["Open", "Duplicate", "Copy as curl", "Move up", "Move down", "Rename…", "Delete"],
     );
 
     press(&mut app, Hit::DropdownRow(1), left_down);
-    assert!(postui_core::fixtures::request_exists(
-        app.proj().root(),
-        "main/users/list-copy"
-    ));
+    assert!(postui_core::fixtures::request_exists(app.proj().root(), "main/users/list-copy"));
     assert_eq!(app.editor.slug.as_deref(), Some("main/users/list-copy"));
     assert!(app.modals.top().is_none(), "the menu closed on activation");
 }
@@ -168,10 +143,7 @@ fn right_click_on_empty_space_opens_no_menu() {
     render(&mut app);
     let r = app.hits.rect_of(&Hit::Pane(PaneId::Response)).unwrap();
     app.handle_mouse(right_down(r.x + 2, r.y + r.height - 2));
-    assert!(
-        app.modals.top().is_none(),
-        "no context menu for the response pane background"
-    );
+    assert!(app.modals.top().is_none(), "no context menu for the response pane background");
 }
 
 #[test]
@@ -183,9 +155,7 @@ fn disabled_menu_item_click_runs_nothing_and_leaves_the_menu_open() {
     press(&mut app, Hit::SidebarRow(row), right_down);
     let labels = menu_labels(&app);
     assert_eq!(labels.first().map(String::as_str), Some("Open"));
-    let Some(Modal::Dropdown(state)) = app.modals.top() else {
-        unreachable!()
-    };
+    let Some(Modal::Dropdown(state)) = app.modals.top() else { unreachable!() };
     assert!(
         state.items[0].action.is_none(),
         "a broken request cannot be opened, so Open is disabled"
@@ -231,17 +201,12 @@ fn click_away_closes_the_menu_without_activating_what_is_under_it() {
     let menu = app.hits.rect_of(&Hit::ModalBody).unwrap();
     let under = (1..14)
         .find(|i| {
-            app.hits
-                .rect_of(&Hit::SidebarRow(*i))
-                .is_some_and(|r| r.y >= menu.y + menu.height)
+            app.hits.rect_of(&Hit::SidebarRow(*i)).is_some_and(|r| r.y >= menu.y + menu.height)
         })
         .expect("a sidebar row below the menu");
     press(&mut app, Hit::SidebarRow(under), left_down);
     assert!(app.modals.top().is_none(), "click-away closed the menu");
-    assert_eq!(
-        app.editor.slug, None,
-        "and was swallowed — the row under it did not open"
-    );
+    assert_eq!(app.editor.slug, None, "and was swallowed — the row under it did not open");
 }
 
 #[test]
@@ -266,10 +231,7 @@ fn context_menu_is_keyboard_navigable() {
     // Open, Duplicate — one Down lands on Duplicate.
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(postui_core::fixtures::request_exists(
-        app.proj().root(),
-        "main/users/list-copy"
-    ));
+    assert!(postui_core::fixtures::request_exists(app.proj().root(), "main/users/list-copy"));
 }
 
 // --- folder rows ---------------------------------------------------------
@@ -302,21 +264,13 @@ fn expanded_folder_row_offers_collapse() {
     let mut app = App::new_for_test();
     seed(&mut app, &["users/list"]);
     expand_all(&mut app);
-    let folder = app
-        .sidebar
-        .rows
-        .iter()
-        .position(|r| matches!(r, Row::Folder { .. }))
-        .unwrap();
+    let folder = app.sidebar.rows.iter().position(|r| matches!(r, Row::Folder { .. })).unwrap();
 
     press(&mut app, Hit::SidebarRow(folder), right_down);
     assert_eq!(menu_labels(&app), vec!["New request here…", "Import curl here…", "Collapse"]);
     press(&mut app, Hit::DropdownRow(2), left_down);
     assert!(
-        app.sidebar
-            .rows
-            .iter()
-            .all(|r| !matches!(r, Row::Request { .. })),
+        app.sidebar.rows.iter().all(|r| !matches!(r, Row::Request { .. })),
         "the folder collapsed, hiding its request"
     );
 }
@@ -344,19 +298,13 @@ fn duplicate_request_action_acts_on_the_selected_row() {
     expand_all(&mut app);
     app.sidebar.selected = Some(row_index_of(&app, "users/list"));
     app.update(Action::DuplicateRequest);
-    assert!(postui_core::fixtures::request_exists(
-        app.proj().root(),
-        "main/users/list-copy"
-    ));
+    assert!(postui_core::fixtures::request_exists(app.proj().root(), "main/users/list-copy"));
     assert_eq!(app.editor.slug.as_deref(), Some("main/users/list-copy"));
 
     // A second duplicate of the original does not collide.
     app.sidebar.selected = Some(row_index_of(&app, "users/list"));
     app.update(Action::DuplicateRequest);
-    assert!(postui_core::fixtures::request_exists(
-        app.proj().root(),
-        "main/users/list-copy-2"
-    ));
+    assert!(postui_core::fixtures::request_exists(app.proj().root(), "main/users/list-copy-2"));
 }
 
 // --- shared helpers for the goal-by-goal scenarios below -----------------
@@ -367,10 +315,7 @@ fn duplicate_request_action_acts_on_the_selected_row() {
 /// menu tests want; here the centre is what a user hits.
 fn click(app: &mut App, hit: Hit) {
     render(app);
-    let r = app
-        .hits
-        .rect_of(&hit)
-        .unwrap_or_else(|| panic!("no rect registered for {hit:?}"));
+    let r = app.hits.rect_of(&hit).unwrap_or_else(|| panic!("no rect registered for {hit:?}"));
     app.handle_mouse(left_down(r.x + r.width / 2, r.y + r.height / 2));
 }
 
@@ -384,10 +329,7 @@ fn app_in_project(files: &[(&str, &str)]) -> TestApp {
     postui_core::fixtures::init_project(dir.path(), Some("svc")).unwrap();
     // A scenario that brings its own environments stands in for a project
     // whose author replaced the stock `default`; keep only theirs.
-    if files
-        .iter()
-        .any(|(name, _)| name.starts_with("environments/"))
-    {
+    if files.iter().any(|(name, _)| name.starts_with("environments/")) {
         std::fs::remove_file(dir.path().join("environments/default.toml")).unwrap();
     }
     for (name, body) in files {
@@ -462,10 +404,7 @@ fn a_request_is_opened_edited_and_saved_with_nothing_but_clicks() {
     // save... (Discard can drop on a narrow bar — this 120-col frame with
     // a long temp project name is one — but Save survives longest.)
     let frame = render(&mut app);
-    assert!(
-        frame.contains(" Save "),
-        "a dirty request surfaces the app bar's save group"
-    );
+    assert!(frame.contains(" Save "), "a dirty request surfaces the app bar's save group");
 
     // ...and clicking it writes the file.
     click(&mut app, Hit::FooterChip(Action::SaveRequest));
@@ -513,10 +452,7 @@ fn the_headers_tab_shows_defaults_auto_content_type_and_host_resolved() {
     // Written before the project opens: the computed section must show what
     // the project's own config contributes, not just the request's rows.
     let (mut app, _dir, _rx) = app_in_project(&[
-        (
-            "project.toml",
-            "name = \"svc\"\n[default_headers]\nx-team = \"{{team}}\"\n",
-        ),
+        ("project.toml", "name = \"svc\"\n[default_headers]\nx-team = \"{{team}}\"\n"),
         ("variables.toml", "[team]\ndefault = \"payments\"\n"),
     ]);
 
@@ -529,10 +465,7 @@ fn the_headers_tab_shows_defaults_auto_content_type_and_host_resolved() {
 
     let frame = render(&mut app);
     for want in ["x-team", "payments", "Content-Type", "application/json"] {
-        assert!(
-            frame.contains(want),
-            "the Headers tab shows {want}: {frame}"
-        );
+        assert!(frame.contains(want), "the Headers tab shows {want}: {frame}");
     }
     assert!(
         frame.contains("Host: api.example.test"),
@@ -548,9 +481,7 @@ fn hovering_a_url_token_pops_its_value_and_scope() {
     app.proj_mut()
         .edit_variables(|_| Ok("[base_url]\ndefault = \"http://fallback\"\n".to_string()))
         .unwrap();
-    app.proj_mut()
-        .edit_env("qa", |_| Ok("base_url = \"http://qa.test\"\n".to_string()))
-        .unwrap();
+    app.proj_mut().edit_env("qa", |_| Ok("base_url = \"http://qa.test\"\n".to_string())).unwrap();
     app.proj_mut().set_active_env(Some("qa".into()));
     app.editor.url = postui::components::line_input::LineInput::new("{{base_url}}/x");
     app.update(Action::Render);
@@ -568,10 +499,7 @@ fn hovering_a_url_token_pops_its_value_and_scope() {
     });
 
     let frame = render(&mut app);
-    assert!(
-        frame.contains("http://qa.test"),
-        "the tooltip names the value: {frame}"
-    );
+    assert!(frame.contains("http://qa.test"), "the tooltip names the value: {frame}");
     assert!(frame.contains("env = qa"), "and its scope: {frame}");
 }
 
@@ -624,10 +552,7 @@ fn legacy_files() -> Vec<(&'static str, &'static str)> {
              [groups.user]\nmembers = [\"user_id\", \"customer_id\"]\n\
              [groups.user.options.alice]\nuser_id = \"1001\"\ncustomer_id = \"c-77\"\n",
         ),
-        (
-            "environments/qa.toml",
-            "[options.tier.gold]\nvalue = \"g-qa\"\n",
-        ),
+        ("environments/qa.toml", "[options.tier.gold]\nvalue = \"g-qa\"\n"),
     ]
 }
 
@@ -672,10 +597,7 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     click(&mut app, Hit::VmNewSelector);
     type_text(&mut app, "region");
     submit_prompt(&mut app);
-    assert!(
-        app.modals.is_empty(),
-        "creating a selector opens nothing else"
-    );
+    assert!(app.modals.is_empty(), "creating a selector opens nothing else");
     assert_eq!(
         app.proj().variables().selectors["region"].fields,
         ["region"],
@@ -743,14 +665,8 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
         modifiers: KeyModifiers::NONE,
     });
     let frame = render(&mut app);
-    assert!(
-        frame.contains("us-east-1"),
-        "the request shows the selected entry's value: {frame}"
-    );
-    assert!(
-        frame.contains("option = us"),
-        "...and names the entry it came from: {frame}"
-    );
+    assert!(frame.contains("us-east-1"), "the request shows the selected entry's value: {frame}");
+    assert!(frame.contains("option = us"), "...and names the entry it came from: {frame}");
 }
 
 /// Index of the Manager left-list row declaring `name`.
@@ -817,10 +733,7 @@ async fn a_three_megabyte_json_body_spins_on_the_tree_tab_and_shows_it_when_it_p
     // The Tree tab, immediately, spinning — no cap, no forced-Raw gate.
     let view = app.session.response.view().expect("a response");
     assert_eq!(view.mode, ViewMode::Pretty);
-    assert!(
-        view.parsing && view.tree.is_none(),
-        "the parse is off-thread"
-    );
+    assert!(view.parsing && view.tree.is_none(), "the parse is off-thread");
     let frame = render(&mut app);
     assert!(
         !frame.to_lowercase().contains("too large"),

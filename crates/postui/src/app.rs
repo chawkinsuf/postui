@@ -103,14 +103,8 @@ fn name_taken(model: &postui_core::varmodel::VarModel, n: &str) -> bool {
 fn option_name_seed(text: &str) -> String {
     let text = text.trim();
     let name_like = text.chars().count() <= 24
-        && text
-            .chars()
-            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '));
-    if name_like {
-        text.to_string()
-    } else {
-        String::new()
-    }
+        && text.chars().all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '));
+    if name_like { text.to_string() } else { String::new() }
 }
 
 /// Which full-frame screen is showing. `ui::draw` and `App::handle_key`
@@ -543,21 +537,13 @@ fn resolve_startup(
     }
     let stale_last = match &registry.last {
         Some(root) if root.is_dir() => {
-            return Some((
-                root.clone(),
-                StartupDisposition::OpenAsIs { register: false },
-                None,
-            ));
+            return Some((root.clone(), StartupDisposition::OpenAsIs { register: false }, None));
         }
         Some(root) => Some(root.clone()),
         None => None,
     };
     if let Some(root) = registry.known.iter().find(|p| p.is_dir()).cloned() {
-        return Some((
-            root,
-            StartupDisposition::OpenAsIs { register: false },
-            stale_last,
-        ));
+        return Some((root, StartupDisposition::OpenAsIs { register: false }, stale_last));
     }
     if let Some(root) = default_dir {
         let disposition = if Project::is_project(&root) {
@@ -574,11 +560,7 @@ fn resolve_startup(
 /// names the set currently shown; the swap glyph says it flips (Tab, or
 /// a click — the footer's `tab` chip names the key).
 fn theme_picker_toggle_label(dark: bool) -> String {
-    if dark {
-        "⇄ dark".into()
-    } else {
-        "⇄ light".into()
-    }
+    if dark { "⇄ dark".into() } else { "⇄ light".into() }
 }
 
 impl App {
@@ -617,11 +599,9 @@ impl App {
 
         let testbed = std::env::var_os("POSTUI_TESTBED").is_some();
 
-        let Some((root, disposition, stale_last)) = resolve_startup(
-            &registry,
-            cli_root,
-            postui_core::storage::default_project_dir(),
-        ) else {
+        let Some((root, disposition, stale_last)) =
+            resolve_startup(&registry, cli_root, postui_core::storage::default_project_dir())
+        else {
             let mut app = Self::bare(tx, PathBuf::new());
             app.registry = registry;
             app.config = config;
@@ -663,10 +643,7 @@ impl App {
 
         if let Some(missing) = stale_last {
             app.toasts.push(
-                format!(
-                    "last project {} no longer exists; skipped",
-                    missing.display()
-                ),
+                format!("last project {} no longer exists; skipped", missing.display()),
                 ToastKind::Warning,
             );
         }
@@ -863,12 +840,10 @@ impl App {
     /// switch never silently drops what the user is typing with.
     fn keymap_for_profile(&mut self) -> crate::keys::Keymap {
         let profile = self.profile();
-        let read = self
-            .read_config_file(crate::config::KEYS_TOML)
-            .and_then(|text| match text {
-                Some(text) => crate::keys::Keymap::try_from_overrides_for(profile, &text).map(Some),
-                None => Ok(None),
-            });
+        let read = self.read_config_file(crate::config::KEYS_TOML).and_then(|text| match text {
+            Some(text) => crate::keys::Keymap::try_from_overrides_for(profile, &text).map(Some),
+            None => Ok(None),
+        });
         match read {
             Ok(Some(keymap)) => keymap,
             Ok(None) => crate::keys::Keymap::default_bindings_for(profile),
@@ -958,10 +933,7 @@ impl App {
     /// couldn't be (a config that doesn't parse is refused, not replaced).
     fn save_registry(&mut self) {
         if let Err(e) = self.config.save_registry(&self.registry) {
-            self.toasts.push(
-                format!("could not save project list: {e}"),
-                ToastKind::Error,
-            );
+            self.toasts.push(format!("could not save project list: {e}"), ToastKind::Error);
         }
     }
 
@@ -980,9 +952,7 @@ impl App {
                     self.toasts.push(w, ToastKind::Warning);
                 }
             }
-            Err(e) => self
-                .toasts
-                .push(format!("could not open project: {e}"), ToastKind::Error),
+            Err(e) => self.toasts.push(format!("could not open project: {e}"), ToastKind::Error),
         }
         self.registry.register(root);
         self.save_registry();
@@ -1023,8 +993,7 @@ impl App {
                 }
             }
             Some(Err(e)) => {
-                app.toasts
-                    .push(format!("could not open project: {e}"), ToastKind::Error);
+                app.toasts.push(format!("could not open project: {e}"), ToastKind::Error);
             }
             None => {}
         }
@@ -1053,13 +1022,7 @@ impl App {
         // notes and count the rest rather than overflowing it silently
         // (every note is repeated in the toast once the migration runs).
         const SHOWN: usize = 4;
-        lines.extend(
-            outcome
-                .notes
-                .iter()
-                .take(SHOWN)
-                .map(|n| format!("\u{2022} {n}")),
-        );
+        lines.extend(outcome.notes.iter().take(SHOWN).map(|n| format!("\u{2022} {n}")));
         if let Some(rest) = outcome.notes.len().checked_sub(SHOWN).filter(|n| *n > 0) {
             lines.push(format!("\u{2022} \u{2026} and {rest} more"));
         }
@@ -1136,9 +1099,7 @@ impl App {
                     .resolve("terminal", &self.terminal_colors)
                     .expect("terminal is always registered");
                 self.theme_name = "terminal".to_string();
-                Some(format!(
-                    "theme {name:?} is no longer available; using terminal"
-                ))
+                Some(format!("theme {name:?} is no longer available; using terminal"))
             }
         }
     }
@@ -1190,11 +1151,7 @@ impl App {
         // The light/dark switch only exists for the highlighted theme when
         // it has a counterpart: hide its label otherwise (Terminal, lone
         // customs), so the picker never advertises a dead control.
-        let label = if self
-            .themes
-            .get(&id)
-            .is_some_and(|e| e.counterpart.is_some())
-        {
+        let label = if self.themes.get(&id).is_some_and(|e| e.counterpart.is_some()) {
             theme_picker_toggle_label(self.theme_picker_dark)
         } else {
             String::new()
@@ -1220,10 +1177,9 @@ impl App {
             Hit::TableCheckbox(i) | Hit::FooterChip(Action::ToggleTableRow(i)) => {
                 self.editor.table_row_enabled(*i)
             }
-            Hit::SidebarFolderArrow(i) => matches!(
-                self.sidebar.rows.get(*i),
-                Some(Row::Folder { expanded: true, .. })
-            ),
+            Hit::SidebarFolderArrow(i) => {
+                matches!(self.sidebar.rows.get(*i), Some(Row::Folder { expanded: true, .. }))
+            }
             Hit::AutoHeaderReveal => self.editor.computed.revealed,
             // The response toolbar acts on the tab that is up: copy,
             // save, the external editor and search all run over
@@ -1239,10 +1195,9 @@ impl App {
                 .is_some_and(|v| v.mode == crate::components::response::ViewMode::Headers),
             Hit::TipReveal(name) => self.tip_revealed.as_ref().is_some_and(|(n, _)| n == name),
             Hit::VmRevealToggle => self.varmanager.form.revealed,
-            Hit::ModalRevealToggle => matches!(
-                self.modals.top(),
-                Some(Modal::Prompt { revealed: true, .. })
-            ),
+            Hit::ModalRevealToggle => {
+                matches!(self.modals.top(), Some(Modal::Prompt { revealed: true, .. }))
+            }
             Hit::VmSecretToggle => match (&self.varmanager.detail, self.project()) {
                 (VmDetail::Var(name), Some(p)) => {
                     p.variables().vars.get(name).is_some_and(|d| d.secret)
@@ -1291,27 +1246,16 @@ impl App {
         match self.resolved().meta.get(name) {
             Some(VarMeta::SelectorMember { .. }) => TipEditVerb::Option,
             Some(VarMeta::NeedsSelection) => {
-                let in_a_selector = self
-                    .variables()
-                    .selectors
-                    .values()
-                    .any(|s| s.fields.iter().any(|f| f == name));
-                if in_a_selector {
-                    TipEditVerb::Option
-                } else {
-                    TipEditVerb::Define
-                }
+                let in_a_selector =
+                    self.variables().selectors.values().any(|s| s.fields.iter().any(|f| f == name));
+                if in_a_selector { TipEditVerb::Option } else { TipEditVerb::Define }
             }
             Some(VarMeta::Secret) | Some(VarMeta::MissingSecret) => TipEditVerb::Secret,
             Some(VarMeta::Simple) => TipEditVerb::Value,
             None => {
                 let has_value = self.editor.variables.contains_key(name)
                     || self.resolved().values.contains_key(name);
-                if has_value {
-                    TipEditVerb::Value
-                } else {
-                    TipEditVerb::Define
-                }
+                if has_value { TipEditVerb::Value } else { TipEditVerb::Define }
             }
         }
     }
@@ -1351,36 +1295,31 @@ impl App {
     /// the empty context's root was — never the process's cwd, which is
     /// what [`Self::refuse_without_project`] guards).
     pub(crate) fn root(&self) -> &std::path::Path {
-        self.project()
-            .map_or_else(|| std::path::Path::new(""), |p| p.root())
+        self.project().map_or_else(|| std::path::Path::new(""), |p| p.root())
     }
 
     pub(crate) fn meta(&self) -> &postui_core::project::ProjectMeta {
         static EMPTY: std::sync::OnceLock<postui_core::project::ProjectMeta> =
             std::sync::OnceLock::new();
-        self.project()
-            .map_or_else(|| EMPTY.get_or_init(Default::default), |p| p.meta())
+        self.project().map_or_else(|| EMPTY.get_or_init(Default::default), |p| p.meta())
     }
 
     pub(crate) fn variables(&self) -> &postui_core::varmodel::VarModel {
         static EMPTY: std::sync::OnceLock<postui_core::varmodel::VarModel> =
             std::sync::OnceLock::new();
-        self.project()
-            .map_or_else(|| EMPTY.get_or_init(Default::default), |p| p.variables())
+        self.project().map_or_else(|| EMPTY.get_or_init(Default::default), |p| p.variables())
     }
 
     pub(crate) fn env_data(&self) -> &postui_core::varmodel::EnvData {
         static EMPTY: std::sync::OnceLock<postui_core::varmodel::EnvData> =
             std::sync::OnceLock::new();
-        self.project()
-            .map_or_else(|| EMPTY.get_or_init(Default::default), |p| p.env_data())
+        self.project().map_or_else(|| EMPTY.get_or_init(Default::default), |p| p.env_data())
     }
 
     pub(crate) fn resolved(&self) -> &postui_core::varmodel::Resolved {
         static EMPTY: std::sync::OnceLock<postui_core::varmodel::Resolved> =
             std::sync::OnceLock::new();
-        self.project()
-            .map_or_else(|| EMPTY.get_or_init(Default::default), |p| p.resolved())
+        self.project().map_or_else(|| EMPTY.get_or_init(Default::default), |p| p.resolved())
     }
 
     pub(crate) fn secrets(
@@ -1389,8 +1328,7 @@ impl App {
         static EMPTY: std::sync::OnceLock<
             indexmap::IndexMap<String, indexmap::IndexMap<String, String>>,
         > = std::sync::OnceLock::new();
-        self.project()
-            .map_or_else(|| EMPTY.get_or_init(Default::default), |p| p.secrets())
+        self.project().map_or_else(|| EMPTY.get_or_init(Default::default), |p| p.secrets())
     }
 
     pub(crate) fn environments(&self) -> &[String] {
@@ -1414,9 +1352,7 @@ impl App {
     }
 
     pub(crate) fn expanded(&self) -> std::collections::BTreeSet<String> {
-        self.project()
-            .map(|p| p.local().expanded.clone())
-            .unwrap_or_default()
+        self.project().map(|p| p.local().expanded.clone()).unwrap_or_default()
     }
 
     /// The active environment's slug, or `"no env"`. A key, not a label:
@@ -1432,10 +1368,8 @@ impl App {
         causes: &std::collections::BTreeMap<String, postui_core::prepare::UnresolvedCause>,
     ) -> String {
         let label = self.env_label();
-        let mut msg = format!(
-            "{} ({label})",
-            postui_core::prepare::PrepareError::Unresolved(causes.clone())
-        );
+        let mut msg =
+            format!("{} ({label})", postui_core::prepare::PrepareError::Unresolved(causes.clone()));
         // Name the first (alphabetically — `causes` is a `BTreeMap`)
         // variable that just needs a pick, not a fix, so `alt+v` is a
         // visible next step rather than a dead end.
@@ -1461,14 +1395,12 @@ impl App {
     /// The name environment `slug` shows as (`[environment.<slug>] name`
     /// in project.toml, else the slug).
     pub(crate) fn env_name(&self, slug: &str) -> String {
-        self.project()
-            .map_or_else(|| slug.to_string(), |p| p.env_name(slug))
+        self.project().map_or_else(|| slug.to_string(), |p| p.env_name(slug))
     }
 
     /// The name space `slug` shows as (`[space.<slug>] name`, else the slug).
     pub(crate) fn space_name(&self, slug: &str) -> String {
-        self.project()
-            .map_or_else(|| slug.to_string(), |p| p.space_name(slug))
+        self.project().map_or_else(|| slug.to_string(), |p| p.space_name(slug))
     }
 
     pub(crate) fn env_tls(&self) -> Option<postui_core::project::TlsPolicy> {
@@ -1485,19 +1417,15 @@ impl App {
     pub(crate) fn selections_for(&self, env: &str) -> &indexmap::IndexMap<String, String> {
         static EMPTY: std::sync::OnceLock<indexmap::IndexMap<String, String>> =
             std::sync::OnceLock::new();
-        self.project().map_or_else(
-            || EMPTY.get_or_init(Default::default),
-            |p| p.selections_for(env),
-        )
+        self.project()
+            .map_or_else(|| EMPTY.get_or_init(Default::default), |p| p.selections_for(env))
     }
 
     pub(crate) fn shared_selections(&self) -> &indexmap::IndexMap<String, String> {
         static EMPTY: std::sync::OnceLock<indexmap::IndexMap<String, String>> =
             std::sync::OnceLock::new();
-        self.project().map_or_else(
-            || EMPTY.get_or_init(Default::default),
-            |p| &p.local().shared_selections,
-        )
+        self.project()
+            .map_or_else(|| EMPTY.get_or_init(Default::default), |p| &p.local().shared_selections)
     }
 
     // ----- local-state and variable writes -----
@@ -1558,9 +1486,7 @@ impl App {
 
     /// The Manage screen's items for `tab` — empty with no project open.
     pub(crate) fn manage_items(&self, tab: crate::components::manage::ManageTab) -> &[String] {
-        self.project().map_or(&[], |p| {
-            crate::components::manage_list::ManageList::items(tab, p)
-        })
+        self.project().map_or(&[], |p| crate::components::manage_list::ManageList::items(tab, p))
     }
 
     /// The name the Manage screen's `tab` list has selected.
@@ -1568,30 +1494,20 @@ impl App {
         &self,
         tab: crate::components::manage::ManageTab,
     ) -> Option<String> {
-        self.project()
-            .and_then(|p| self.manage.list_for(tab).selected(tab, p))
-            .map(str::to_string)
+        self.project().and_then(|p| self.manage.list_for(tab).selected(tab, p)).map(str::to_string)
     }
 
     /// Re-reads the Variable Manager's caches from the project. A no-op
     /// with no project open — there is nothing to show.
     fn sync_varmanager(&mut self) {
-        let Self {
-            project,
-            varmanager,
-            ..
-        } = self;
+        let Self { project, varmanager, .. } = self;
         if let Some(p) = project {
             varmanager.sync(p);
         }
     }
 
     fn vm_start_cell_edit(&mut self, row: usize, col: usize) {
-        let Self {
-            project,
-            varmanager,
-            ..
-        } = self;
+        let Self { project, varmanager, .. } = self;
         if let Some(p) = project {
             varmanager.start_cell_edit(p, row, col);
         }
@@ -1614,9 +1530,7 @@ impl App {
 
     /// Moves the Manage screen's list cursor onto `name` in the open tab.
     fn manage_select_name(&mut self, name: &str) {
-        let Self {
-            project, manage, ..
-        } = self;
+        let Self { project, manage, .. } = self;
         if let Some(p) = project {
             let tab = manage.tab;
             manage.list_for_mut(tab).select_name(tab, p, name);
@@ -1671,10 +1585,7 @@ impl App {
         if self.project.is_some() {
             return false;
         }
-        self.toasts.push(
-            "no project is open — open or create one first",
-            ToastKind::Error,
-        );
+        self.toasts.push("no project is open — open or create one first", ToastKind::Error);
         self.last_action_failed = true;
         true
     }
@@ -1877,8 +1788,7 @@ pub struct AiTask {
 
 impl AiTask {
     fn cancel(self) {
-        self.cancelled
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
         self.handle.abort();
     }
 }
@@ -1887,10 +1797,7 @@ impl AiTask {
 /// main loop (`AiLogFailed`) when the write fails.
 fn append_log_or_report(path: &std::path::Path, text: &str, tx: &UnboundedSender<Action>) {
     if let Err(e) = crate::hostfs::append_log(path, text) {
-        let _ = tx.send(Action::AiLogFailed {
-            path: path.to_path_buf(),
-            error: e.to_string(),
-        });
+        let _ = tx.send(Action::AiLogFailed { path: path.to_path_buf(), error: e.to_string() });
     }
 }
 
@@ -1915,19 +1822,13 @@ pub(crate) fn jq_worker(
                 (d.clone(), Some(d))
             }
             (None, None) => {
-                return Err(postui_core::jq::JqError::Runtime {
-                    message: "no document".into(),
-                });
+                return Err(postui_core::jq::JqError::Runtime { message: "no document".into() });
             }
         };
         jq_run(&code, &doc)
             .map(|out| crate::components::response::JqRunOutput::from_outputs(fresh, out))
     })();
-    Action::JqRunFinished {
-        generation,
-        run,
-        result,
-    }
+    Action::JqRunFinished { generation, run, result }
 }
 
 /// The blocking-pool half of a completion key fetch. Free-standing for
@@ -1951,13 +1852,7 @@ pub(crate) fn jq_complete_worker(
         .as_ref()
         .map(|d| postui_core::jq::complete::keys_at(&input_expr, d))
         .unwrap_or_default();
-    Action::JqCompleteFinished {
-        generation,
-        seq,
-        input_expr,
-        keys,
-        doc: fresh,
-    }
+    Action::JqCompleteFinished { generation, seq, input_expr, keys, doc: fresh }
 }
 
 impl App {
@@ -2003,25 +1898,17 @@ impl App {
         }
         // A switched-off filter is applied as no filter: the text stays in
         // the bar (closed), the tree shows the full body.
-        let code = if self.editor.jq_enabled {
-            self.editor.jq.clone()
-        } else {
-            String::new()
-        };
+        let code = if self.editor.jq_enabled { self.editor.jq.clone() } else { String::new() };
         // Every run and key fetch goes to the blocking pool (see
         // `JQ_SYNC_BYTES`): a filter's cost is unbounded whatever the
         // body's size, and the UI thread must stay free to take the Esc.
-        if let Some(req) = self
-            .session
-            .response
-            .apply_jq(&code, crate::components::response::JQ_SYNC_BYTES)
+        if let Some(req) =
+            self.session.response.apply_jq(&code, crate::components::response::JQ_SYNC_BYTES)
         {
             self.spawn_jq_run(req);
         }
-        if let Some(req) = self
-            .session
-            .response
-            .refresh_jq_completion(crate::components::response::JQ_SYNC_BYTES)
+        if let Some(req) =
+            self.session.response.refresh_jq_completion(crate::components::response::JQ_SYNC_BYTES)
         {
             self.spawn_jq_complete(req);
         }
@@ -2035,22 +1922,14 @@ impl App {
         use crate::components::json_tree::JsonTree;
         if tokio::runtime::Handle::try_current().is_err() {
             let tree = JsonTree::parse(&body);
-            self.dispatch(Action::PrettyParsed {
-                generation,
-                tree: tree.map(Box::new),
-            });
+            self.dispatch(Action::PrettyParsed { generation, tree: tree.map(Box::new) });
             return;
         }
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let tree = tokio::task::spawn_blocking(move || JsonTree::parse(&body))
-                .await
-                .ok()
-                .flatten();
-            let _ = tx.send(Action::PrettyParsed {
-                generation,
-                tree: tree.map(Box::new),
-            });
+            let tree =
+                tokio::task::spawn_blocking(move || JsonTree::parse(&body)).await.ok().flatten();
+            let _ = tx.send(Action::PrettyParsed { generation, tree: tree.map(Box::new) });
         });
     }
 
@@ -2123,12 +2002,8 @@ impl App {
         // threading that bookkeeping through each arm individually.
         self.sidebar.open_slug = self.editor.slug.clone();
         self.sidebar.open_dirty = self.editor.is_dirty();
-        self.sidebar.in_flight = self
-            .session
-            .in_flight
-            .iter()
-            .filter_map(|f| f.slug.clone())
-            .collect();
+        self.sidebar.in_flight =
+            self.session.in_flight.iter().filter_map(|f| f.slug.clone()).collect();
         self.editor.inherited_headers = self.meta().default_headers.clone();
         self.editor.shadowed = self.compute_shadowed();
         // The token-highlighting/tooltip snapshot, kept in lockstep with the
@@ -2164,11 +2039,7 @@ impl App {
         // project switch) its reply has nowhere to land, so the request
         // ends with it. The bar's "asking…" is a display copy.
         let on_screen = self.session.response.view().map(|v| v.generation);
-        if self
-            .ai_task
-            .as_ref()
-            .is_some_and(|t| Some(t.generation) != on_screen)
-        {
+        if self.ai_task.as_ref().is_some_and(|t| Some(t.generation) != on_screen) {
             self.cancel_ai();
         }
         self.session.response.jq_bar_mut().ai_asking = self.ai_task.as_ref().map(|t| t.started);
@@ -2311,8 +2182,7 @@ impl App {
         self.split_ratio_target = target;
         let now = Instant::now();
         if self.anims.value(AnimKey::SplitRatio, now).is_none() {
-            self.anims
-                .snap(AnimKey::SplitRatio, previous.editor_share());
+            self.anims.snap(AnimKey::SplitRatio, previous.editor_share());
         }
         self.anims.retarget(
             AnimKey::SplitRatio,
@@ -2409,18 +2279,12 @@ impl App {
         if self.tip_held
             && let Some(held) = &self.drawn_tip
         {
-            return self
-                .hits
-                .var_token_drawn_at(held.anchor, &held.name)
-                .then(|| held.clone());
+            return self.hits.var_token_drawn_at(held.anchor, &held.name).then(|| held.clone());
         }
         if let Some((x, y)) = self.pointer
             && let Some((name, anchor)) = self.hits.var_token_at(x, y)
         {
-            return Some(TokenTip {
-                name: name.to_string(),
-                anchor,
-            });
+            return Some(TokenTip { name: name.to_string(), anchor });
         }
         if !self.caret_tip_shown {
             return None;
@@ -2485,7 +2349,8 @@ impl App {
         // segment delete) edits its own line, and the rebase that follows
         // starts the engine's count over, so either keeps the gate shut.
         let jq = self.focus == PaneId::Response
-            && (self.vim_edited(FieldId::Jq).unwrap_or(false) || self.session.response.jq_field_edited());
+            && (self.vim_edited(FieldId::Jq).unwrap_or(false)
+                || self.session.response.jq_field_edited());
         url || body || jq
     }
 
@@ -2525,9 +2390,7 @@ impl App {
                             before: Box::new(prev.clone()),
                             after: Box::new(current.clone()),
                         },
-                        context: crate::undo::Context {
-                            slug: current_slug.clone(),
-                        },
+                        context: crate::undo::Context { slug: current_slug.clone() },
                     };
                     let coalesce = !std::mem::take(&mut self.no_coalesce) && !closing;
                     self.history.record_maybe_coalesce(step, coalesce);
@@ -2577,7 +2440,13 @@ impl App {
             FieldId::Jq | FieldId::Search => self.session.response.open_text_field_mut(),
             // A modal's fields are handled above; the body is no line, and
             // `line_buf` names neither.
-            id => line_buf(id, &mut self.editor.url, &mut self.editor.table, &mut self.varmanager, &mut self.settings),
+            id => line_buf(
+                id,
+                &mut self.editor.url,
+                &mut self.editor.table,
+                &mut self.varmanager,
+                &mut self.settings,
+            ),
         }
     }
 
@@ -2702,11 +2571,7 @@ impl App {
             self.capture_undo();
         }
         loop {
-            let popped = if redo {
-                self.history.pop_redo()
-            } else {
-                self.history.pop_undo()
-            };
+            let popped = if redo { self.history.pop_redo() } else { self.history.pop_undo() };
             let Some(step) = popped else {
                 let nothing = if redo { "Nothing to redo" } else { "Nothing to undo" };
                 self.toasts.push(nothing, ToastKind::Info);
@@ -2754,10 +2619,8 @@ impl App {
                 }
                 if let (slug, Some(saved)) = (self.editor.slug.clone(), self.editor.saved.clone()) {
                     self.reseed_editor(slug, saved);
-                    self.toasts.push(
-                        format!("Changes discarded{}", self.undo_hint()),
-                        ToastKind::Info,
-                    );
+                    self.toasts
+                        .push(format!("Changes discarded{}", self.undo_hint()), ToastKind::Info);
                 }
                 true
             }
@@ -2795,8 +2658,7 @@ impl App {
                 true
             }
             Action::ConfigEditInvalid { file, path, error } => {
-                self.modals
-                    .push(Modal::ConfigEditInvalid { file, path, error });
+                self.modals.push(Modal::ConfigEditInvalid { file, path, error });
                 true
             }
             Action::ConfigEditDiscard { path } => {
@@ -2890,11 +2752,7 @@ impl App {
                 self.push_modal(Modal::Confirm {
                     title,
                     body,
-                    choices: vec![(
-                        'r',
-                        "Reset".into(),
-                        vec![Action::ForceResetConfigFile(file)],
-                    )],
+                    choices: vec![('r', "Reset".into(), vec![Action::ForceResetConfigFile(file)])],
                 });
                 true
             }
@@ -2939,9 +2797,7 @@ impl App {
                         let after = self.read_config_file(name).ok().flatten().unwrap_or_default();
                         self.history.record_no_coalesce(crate::undo::Step {
                             kind: crate::undo::StepKind::ConfigFile { file, before, after },
-                            context: crate::undo::Context {
-                                slug: None,
-                            },
+                            context: crate::undo::Context { slug: None },
                         });
                         self.update(Action::ReloadFromDisk)
                     }
@@ -2985,13 +2841,7 @@ impl App {
                 let default = crate::config::UiSettings::default();
                 let after = value.clone();
                 let redraw = self.apply_ui_write(saved, move |ui| match key {
-                    "ai_cmd" => {
-                        ui.ai_cmd = if value.is_empty() {
-                            default.ai_cmd
-                        } else {
-                            value
-                        }
-                    }
+                    "ai_cmd" => ui.ai_cmd = if value.is_empty() { default.ai_cmd } else { value },
                     "clipboard_cmd" => ui.clipboard_cmd = (!value.is_empty()).then_some(value),
                     "jq_tab" => {
                         ui.jq_tab = if value == "menu" {
@@ -3213,9 +3063,9 @@ impl App {
                 let syntax = crate::components::response::SearchSyntax::of(self.profile());
                 self.session.response.open_search(syntax, backward) || focused
             }
-            Action::StepResponseSearch(delta) => {
-                self.with_response_search(|response, memory| response.step_search(delta.into(), memory))
-            }
+            Action::StepResponseSearch(delta) => self.with_response_search(|response, memory| {
+                response.step_search(delta.into(), memory)
+            }),
             Action::CopyResponseHeader => match self.session.response.copyable_header_row() {
                 Some(row) => self.update(Action::CopyToClipboard(CopyTarget::ResponseHeader(row))),
                 None => false,
@@ -3232,8 +3082,7 @@ impl App {
             }
             Action::CopyToClipboard(target) => {
                 let Some((text, success_msg)) = self.resolve_copy(&target) else {
-                    self.toasts
-                        .push("nothing to copy — send a request first", ToastKind::Warning);
+                    self.toasts.push("nothing to copy — send a request first", ToastKind::Warning);
                     return true;
                 };
                 self.copy_text_with_toast(&text, success_msg);
@@ -3241,8 +3090,7 @@ impl App {
             }
             Action::PromptSaveBody => {
                 let ResponseState::Ready(data) = self.session.response.state() else {
-                    self.toasts
-                        .push("nothing to copy — send a request first", ToastKind::Warning);
+                    self.toasts.push("nothing to copy — send a request first", ToastKind::Warning);
                     return true;
                 };
                 let slug = self
@@ -3251,11 +3099,7 @@ impl App {
                     .clone()
                     .unwrap_or_else(|| "response".to_string())
                     .replace('/', "-");
-                let ext = if data
-                    .content_type
-                    .as_deref()
-                    .is_some_and(|c| c.contains("json"))
-                {
+                let ext = if data.content_type.as_deref().is_some_and(|c| c.contains("json")) {
                     "json"
                 } else {
                     "txt"
@@ -3281,12 +3125,8 @@ impl App {
                         // question stacks on it, so `n` returns to the
                         // picker, and `y` closes the picker before writing.
                         let picker_open = matches!(self.modals.top(), Some(Modal::FilePicker(_)));
-                        let close_picker = || {
-                            picker_open
-                                .then_some(Action::Close)
-                                .into_iter()
-                                .collect::<Vec<_>>()
-                        };
+                        let close_picker =
+                            || picker_open.then_some(Action::Close).into_iter().collect::<Vec<_>>();
                         if path.is_file() {
                             let name = path
                                 .file_name()
@@ -3309,16 +3149,12 @@ impl App {
                         }
                         self.apply(write)
                     }
-                    PickerTarget::OpenProject => self.apply(Action::OpenProjectByPath(
-                        path.to_string_lossy().into_owned(),
-                    )),
+                    PickerTarget::OpenProject => {
+                        self.apply(Action::OpenProjectByPath(path.to_string_lossy().into_owned()))
+                    }
                     PickerTarget::NewProjectDir => {
-                        let Some(Modal::NewProject {
-                            name,
-                            path: field,
-                            on_path,
-                            prefilled,
-                        }) = self.modals.top_mut()
+                        let Some(Modal::NewProject { name, path: field, on_path, prefilled }) =
+                            self.modals.top_mut()
                         else {
                             return false;
                         };
@@ -3342,20 +3178,18 @@ impl App {
                 let expanded = crate::config::expand_tilde(&path);
                 let result = crate::hostfs::write_user_file(&expanded, data.body.as_bytes());
                 match result {
-                    Ok(()) => self.toasts.push(
-                        format!("Saved body to {}", expanded.display()),
-                        ToastKind::Success,
-                    ),
-                    Err(e) => self
+                    Ok(()) => self
                         .toasts
-                        .push(format!("could not save body: {e}"), ToastKind::Error),
+                        .push(format!("Saved body to {}", expanded.display()), ToastKind::Success),
+                    Err(e) => {
+                        self.toasts.push(format!("could not save body: {e}"), ToastKind::Error)
+                    }
                 }
                 true
             }
             Action::PromptSaveView => {
                 let ResponseState::Ready(data) = self.session.response.state() else {
-                    self.toasts
-                        .push("nothing to copy — send a request first", ToastKind::Warning);
+                    self.toasts.push("nothing to copy — send a request first", ToastKind::Warning);
                     return true;
                 };
                 let slug = self
@@ -3372,10 +3206,7 @@ impl App {
                     .view()
                     .is_some_and(|v| v.mode == crate::components::response::ViewMode::Headers);
                 let ext = if !on_headers
-                    && data
-                        .content_type
-                        .as_deref()
-                        .is_some_and(|c| c.contains("json"))
+                    && data.content_type.as_deref().is_some_and(|c| c.contains("json"))
                 {
                     "json"
                 } else {
@@ -3395,13 +3226,10 @@ impl App {
                 let expanded = crate::config::expand_tilde(&path);
                 let result = crate::hostfs::write_user_file(&expanded, text.as_bytes());
                 match result {
-                    Ok(()) => self.toasts.push(
-                        format!("Saved to {}", expanded.display()),
-                        ToastKind::Success,
-                    ),
-                    Err(e) => self
+                    Ok(()) => self
                         .toasts
-                        .push(format!("could not save: {e}"), ToastKind::Error),
+                        .push(format!("Saved to {}", expanded.display()), ToastKind::Success),
+                    Err(e) => self.toasts.push(format!("could not save: {e}"), ToastKind::Error),
                 }
                 true
             }
@@ -3545,13 +3373,10 @@ impl App {
                         ToastKind::Warning,
                     );
                 } else if self.editor.insecure {
-                    self.toasts.push(
-                        "TLS verification disabled for this request",
-                        ToastKind::Warning,
-                    );
-                } else {
                     self.toasts
-                        .push("TLS verification enabled", ToastKind::Info);
+                        .push("TLS verification disabled for this request", ToastKind::Warning);
+                } else {
+                    self.toasts.push("TLS verification enabled", ToastKind::Info);
                 }
                 true
             }
@@ -3570,8 +3395,7 @@ impl App {
                 // Unlike the body editor there may be nothing to show yet
                 // (the palette can fire this any time), so gate here.
                 if self.session.response.view().is_none() {
-                    self.toasts
-                        .push("nothing to open — send a request first", ToastKind::Warning);
+                    self.toasts.push("nothing to open — send a request first", ToastKind::Warning);
                     return true;
                 }
                 self.no_coalesce = true;
@@ -3618,14 +3442,11 @@ impl App {
                         self.reseed_editor(Some(slug.clone()), req);
                         self.mark_saved_after_write();
                         self.refresh_sidebar();
-                        self.toasts.push(
-                            format!("Reloaded {slug}{}", self.undo_hint()),
-                            ToastKind::Info,
-                        );
+                        self.toasts
+                            .push(format!("Reloaded {slug}{}", self.undo_hint()), ToastKind::Info);
                     }
                     Err(e) => {
-                        self.toasts
-                            .push(format!("could not reload {slug}: {e}"), ToastKind::Error);
+                        self.toasts.push(format!("could not reload {slug}: {e}"), ToastKind::Error);
                         self.last_action_failed = true;
                     }
                 }
@@ -3637,18 +3458,13 @@ impl App {
                     .rows
                     .iter()
                     .find_map(|r| match r {
-                        Row::Request {
-                            slug: s,
-                            broken: Some(b),
-                            ..
-                        } if *s == slug => Some(b.clone()),
+                        Row::Request { slug: s, broken: Some(b), .. } if *s == slug => {
+                            Some(b.clone())
+                        }
                         _ => None,
                     })
                     .unwrap_or_else(|| "unknown error".to_string());
-                self.push_modal(Modal::Message {
-                    title: format!("{slug}: parse error"),
-                    body,
-                });
+                self.push_modal(Modal::Message { title: format!("{slug}: parse error"), body });
                 true
             }
             Action::RefreshSidebar => {
@@ -3681,14 +3497,9 @@ impl App {
                 }
                 // The prompt speaks folders *inside* the space, so the
                 // space segment never shows up in the prefill.
-                let folder = folder
-                    .strip_prefix(&format!("{}/", self.active_space()))
-                    .unwrap_or("");
-                let prefill = if folder.is_empty() {
-                    String::new()
-                } else {
-                    format!("{folder}/")
-                };
+                let folder =
+                    folder.strip_prefix(&format!("{}/", self.active_space())).unwrap_or("");
+                let prefill = if folder.is_empty() { String::new() } else { format!("{folder}/") };
                 self.push_modal(Modal::Prompt {
                     title: "New request".into(),
                     input: crate::components::line_input::LineInput::new(&prefill),
@@ -3703,7 +3514,8 @@ impl App {
                 };
                 // The copy opens, so unsaved edits are gated first — before
                 // anything is written (spec §4.3: the gate runs before the op).
-                let force = Action::ForceDuplicateRequest { slug, anchor: None, above: false, count: 1 };
+                let force =
+                    Action::ForceDuplicateRequest { slug, anchor: None, above: false, count: 1 };
                 if self.editor_holds_unsaved() {
                     self.dirty_gate("duplicate", force);
                     true
@@ -3729,13 +3541,19 @@ impl App {
                         // at once.
                         let first = copies.first().cloned().unwrap_or_default();
                         self.land(Landing {
-                            open: Some(crate::undo::Open::Request { slug: first.clone(), buffer: None }),
+                            open: Some(crate::undo::Open::Request {
+                                slug: first.clone(),
+                                buffer: None,
+                            }),
                             ..Landing::default()
                         });
                         let display = self.request_display(&first);
                         let (toast, label) = match copies.len() {
                             1 => (format!("Duplicated to {display}"), display),
-                            n => (format!("Duplicated to {display} and {} more", n - 1), format!("{n} requests")),
+                            n => (
+                                format!("Duplicated to {display} and {} more", n - 1),
+                                format!("{n} requests"),
+                            ),
                         };
                         self.toasts.push(toast, ToastKind::Success);
                         self.record_project_step(t, crate::undo::StepLabel::create(label));
@@ -3765,17 +3583,14 @@ impl App {
                     // the space segment stripped — the name the user edits
                     // is relative to the space they're in.
                     let folder = match slug.rsplit_once('/') {
-                        Some((folder, _)) => folder
-                            .strip_prefix(&format!("{}/", self.active_space()))
-                            .unwrap_or(""),
+                        Some((folder, _)) => {
+                            folder.strip_prefix(&format!("{}/", self.active_space())).unwrap_or("")
+                        }
                         None => "",
                     };
                     let display = self.request_display(&slug);
-                    let prefill = if folder.is_empty() {
-                        display
-                    } else {
-                        format!("{folder}/{display}")
-                    };
+                    let prefill =
+                        if folder.is_empty() { display } else { format!("{folder}/{display}") };
                     self.push_modal(Modal::Prompt {
                         title: "Rename request".into(),
                         input: crate::components::line_input::LineInput::new(&prefill),
@@ -3840,8 +3655,10 @@ impl App {
                 let gone = self.editor.table.delete_rows(map, start, count);
                 if gone > 0 {
                     let noun = if gone == 1 { "row" } else { "rows" };
-                    self.toasts
-                        .push(format!("Deleted {gone} {noun}{}", self.undo_hint()), ToastKind::Info);
+                    self.toasts.push(
+                        format!("Deleted {gone} {noun}{}", self.undo_hint()),
+                        ToastKind::Info,
+                    );
                 }
                 true
             }
@@ -3895,8 +3712,10 @@ impl App {
                 // refused, the register kept for a put back home.
                 if postui_core::storage::space_of(&src) != Some(self.active_space().as_str()) {
                     let display = self.request_display(&src);
-                    self.toasts
-                        .push(format!("{display} was yanked from another space"), ToastKind::Warning);
+                    self.toasts.push(
+                        format!("{display} was yanked from another space"),
+                        ToastKind::Warning,
+                    );
                     self.last_action_failed = true;
                     return true;
                 }
@@ -3983,14 +3802,12 @@ impl App {
             }
             Action::MoveRequestToSpace { slug, space } => {
                 if space == self.active_space() {
-                    self.toasts
-                        .push(format!("already in {space}"), ToastKind::Warning);
+                    self.toasts.push(format!("already in {space}"), ToastKind::Warning);
                     self.last_action_failed = true;
                     return true;
                 }
                 if !self.spaces().contains(&space) {
-                    self.toasts
-                        .push(format!("no space named {space:?}"), ToastKind::Warning);
+                    self.toasts.push(format!("no space named {space:?}"), ToastKind::Warning);
                     self.last_action_failed = true;
                     return true;
                 }
@@ -4048,8 +3865,7 @@ impl App {
                     }
                     Err(e) => {
                         self.op_in_flight = false;
-                        self.toasts
-                            .push(format!("could not move {slug}: {e}"), ToastKind::Error);
+                        self.toasts.push(format!("could not move {slug}: {e}"), ToastKind::Error);
                         self.last_action_failed = true;
                     }
                 }
@@ -4131,8 +3947,7 @@ impl App {
                         self.last_action_failed = true;
                     }
                     Err(Error::BadName(_)) => {
-                        self.toasts
-                            .push("request name cannot be empty", ToastKind::Error);
+                        self.toasts.push("request name cannot be empty", ToastKind::Error);
                         self.last_action_failed = true;
                     }
                     Err(e) => {
@@ -4178,8 +3993,7 @@ impl App {
                     }
                     Err(e) => {
                         self.op_in_flight = false;
-                        self.toasts
-                            .push(format!("could not delete {slug}: {e}"), ToastKind::Error);
+                        self.toasts.push(format!("could not delete {slug}: {e}"), ToastKind::Error);
                     }
                 }
                 true
@@ -4207,7 +4021,10 @@ impl App {
                             cursor: from_row.map(CursorAim::Neighbour),
                             ..Landing::default()
                         });
-                        self.record_project_step(t, crate::undo::StepLabel::delete(format!("{n} {noun}")));
+                        self.record_project_step(
+                            t,
+                            crate::undo::StepLabel::delete(format!("{n} {noun}")),
+                        );
                     }
                     Err(e) => {
                         self.op_in_flight = false;
@@ -4269,8 +4086,7 @@ impl App {
                 // that goes out, not something to discard.
                 self.commit_table_edit();
                 if self.editor.url.text().trim().is_empty() {
-                    self.toasts
-                        .push("cannot send: URL is empty", ToastKind::Error);
+                    self.toasts.push("cannot send: URL is empty", ToastKind::Error);
                     return true;
                 }
                 let body = self.editor.body_text();
@@ -4295,8 +4111,7 @@ impl App {
                 }
                 self.apply(Action::ReloadProjectFiles);
                 if self.editor.url.text().trim().is_empty() {
-                    self.toasts
-                        .push("cannot send: URL is empty", ToastKind::Error);
+                    self.toasts.push("cannot send: URL is empty", ToastKind::Error);
                     return true;
                 }
                 let (prepared, warnings) = match postui_core::prepare::prepare(
@@ -4348,10 +4163,8 @@ impl App {
                 let task = tokio::spawn(async move {
                     match crate::http::send(&client, &prepared).await {
                         Ok(data) => {
-                            let _ = tx.send(Action::ResponseArrived {
-                                generation,
-                                data: Box::new(data),
-                            });
+                            let _ = tx
+                                .send(Action::ResponseArrived { generation, data: Box::new(data) });
                         }
                         Err(error) => {
                             let _ = tx.send(Action::RequestFailed { generation, error });
@@ -4391,7 +4204,8 @@ impl App {
                 if !self.field_open() {
                     return false;
                 }
-                let changed = self.handle_key_routed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                let changed =
+                    self.handle_key_routed(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
                 // The screen's own field, whatever the refusal put on top.
                 if self.screen_field_open() {
                     self.last_action_failed = true;
@@ -4428,10 +4242,8 @@ impl App {
                         self.apply(Action::ForceSend)
                     }
                     Err(e) => {
-                        self.toasts.push(
-                            format!("could not save secret {name}: {e}"),
-                            ToastKind::Error,
-                        );
+                        self.toasts
+                            .push(format!("could not save secret {name}: {e}"), ToastKind::Error);
                         true
                     }
                 }
@@ -4505,10 +4317,8 @@ impl App {
                         }
                     }
                     Err(e) => {
-                        self.toasts.push(
-                            format!("could not create project here: {e}"),
-                            ToastKind::Error,
-                        );
+                        self.toasts
+                            .push(format!("could not create project here: {e}"), ToastKind::Error);
                     }
                 }
                 true
@@ -4635,16 +4445,14 @@ impl App {
                 self.set_theme_by_name(&name);
                 self.ui_settings.theme = self.theme_name.clone();
                 if let Err(e) = self.config.save_ui_theme(&self.theme_name) {
-                    self.toasts
-                        .push(format!("could not save theme: {e}"), ToastKind::Error);
+                    self.toasts.push(format!("could not save theme: {e}"), ToastKind::Error);
                 }
                 true
             }
             Action::CycleProject(delta) => {
                 match self.registry.neighbor(self.root(), delta) {
                     None => {
-                        self.toasts
-                            .push("only one project registered", ToastKind::Warning);
+                        self.toasts.push("only one project registered", ToastKind::Warning);
                     }
                     Some(target) => {
                         self.apply(Action::SwitchProject(target));
@@ -4716,8 +4524,7 @@ impl App {
                 match self.project.as_mut().map(|p| p.ensure_spaces()) {
                     Some(Ok(())) => self.refresh_sidebar(),
                     Some(Err(e)) => {
-                        self.toasts
-                            .push(format!("could not open project: {e}"), ToastKind::Error);
+                        self.toasts.push(format!("could not open project: {e}"), ToastKind::Error);
                     }
                     None => {}
                 }
@@ -4739,8 +4546,7 @@ impl App {
                 });
                 self.registry.register(target);
                 self.save_registry();
-                self.toasts
-                    .push(format!("Switched to {name}"), ToastKind::Success);
+                self.toasts.push(format!("Switched to {name}"), ToastKind::Success);
                 true
             }
             Action::PromptOpenProjectPath => {
@@ -4819,8 +4625,7 @@ impl App {
             }
             Action::CreateProject { name, path } => {
                 if path.trim().is_empty() {
-                    self.toasts
-                        .push("project path is empty — enter a path", ToastKind::Error);
+                    self.toasts.push("project path is empty — enter a path", ToastKind::Error);
                     return true;
                 }
                 let path = crate::config::expand_tilde(&path);
@@ -4922,9 +4727,11 @@ impl App {
                             self.sync_varmanager();
                         }
                         let label = self.env_label_display();
-                        self.toasts
-                            .push(format!("env: {label}"), ToastKind::Success);
-                        self.select_list_row(crate::components::manage::ManageTab::Environments, &slug);
+                        self.toasts.push(format!("env: {label}"), ToastKind::Success);
+                        self.select_list_row(
+                            crate::components::manage::ManageTab::Environments,
+                            &slug,
+                        );
                         let step_label = crate::undo::StepLabel::environment(&self.env_name(&slug));
                         self.record_project_step(t, step_label);
                     }
@@ -4936,10 +4743,8 @@ impl App {
                         self.last_action_failed = true;
                     }
                     Err(e) => {
-                        self.toasts.push(
-                            format!("cannot create environment: {e}"),
-                            ToastKind::Warning,
-                        );
+                        self.toasts
+                            .push(format!("cannot create environment: {e}"), ToastKind::Warning);
                         self.last_action_failed = true;
                     }
                 }
@@ -4983,8 +4788,7 @@ impl App {
                     self.sync_varmanager();
                 }
                 let label = self.env_label_display();
-                self.toasts
-                    .push(format!("env: {label}"), ToastKind::Success);
+                self.toasts.push(format!("env: {label}"), ToastKind::Success);
                 true
             }
             Action::ApplyMigration => {
@@ -5009,9 +4813,9 @@ impl App {
                         };
                         self.toasts.push(summary, ToastKind::Success);
                     }
-                    Err(msg) => self
-                        .toasts
-                        .push(format!("could not migrate: {msg}"), ToastKind::Error),
+                    Err(msg) => {
+                        self.toasts.push(format!("could not migrate: {msg}"), ToastKind::Error)
+                    }
                 }
                 true
             }
@@ -5073,24 +4877,12 @@ impl App {
                 self.session.response.set_jq_text_with_cursor(&text, cursor);
                 true
             }
-            Action::JqRunFinished {
-                generation,
-                run,
-                result,
-            } => self
-                .session
-                .response
-                .attach_jq_result(generation, run, result),
-            Action::JqCompleteFinished {
-                generation,
-                seq,
-                input_expr,
-                keys,
-                doc,
-            } => self
-                .session
-                .response
-                .attach_jq_completion(generation, seq, input_expr, keys, doc),
+            Action::JqRunFinished { generation, run, result } => {
+                self.session.response.attach_jq_result(generation, run, result)
+            }
+            Action::JqCompleteFinished { generation, seq, input_expr, keys, doc } => {
+                self.session.response.attach_jq_completion(generation, seq, input_expr, keys, doc)
+            }
             Action::CopyJqPath(path) => {
                 self.copy_text_with_toast(&path, "Copied path".to_string());
                 true
@@ -5108,8 +4900,7 @@ impl App {
                 // (it may yet turn out not to be JSON): refuse here, before
                 // a sentence is typed that would be thrown away.
                 if self.session.response.view().is_some_and(|v| v.parsing) {
-                    self.toasts
-                        .push("The response is still being parsed", ToastKind::Info);
+                    self.toasts.push("The response is still being parsed", ToastKind::Info);
                     return true;
                 }
                 if !crate::ai::program_available(&self.ui_settings.ai_cmd) {
@@ -5155,8 +4946,7 @@ impl App {
             Action::SetAiConfirmed => {
                 self.ui_settings.ai_confirmed = true;
                 if let Err(e) = self.config.save_ui_flag("ai_confirmed", true) {
-                    self.toasts
-                        .push(format!("could not save config: {e}"), ToastKind::Warning);
+                    self.toasts.push(format!("could not save config: {e}"), ToastKind::Warning);
                 }
                 true
             }
@@ -5173,8 +4963,7 @@ impl App {
                 // `OpenJqDescribe` refused this already; the view can have
                 // changed under the confirm dialog since.
                 if view.parsing {
-                    self.toasts
-                        .push("The response is still being parsed", ToastKind::Info);
+                    self.toasts.push("The response is still being parsed", ToastKind::Info);
                     return true;
                 }
                 // No ambient runtime happens only in a plain `#[test]` that
@@ -5213,8 +5002,12 @@ impl App {
                         }
                         let when = std::time::SystemTime::now();
                         let shape = match &doc {
-                            Some(doc) => Some(postui_core::jq::shape::shape_of(doc, Default::default())),
-                            None => postui_core::jq::shape::shape(&lines.join("\n"), Default::default()),
+                            Some(doc) => {
+                                Some(postui_core::jq::shape::shape_of(doc, Default::default()))
+                            }
+                            None => {
+                                postui_core::jq::shape::shape(&lines.join("\n"), Default::default())
+                            }
                         };
                         let Some(shape) = shape else {
                             if let Some(path) = log {
@@ -5289,14 +5082,12 @@ impl App {
                 match result.map(|reply| postui_core::jq::ai::extract_filter(&reply)) {
                     Ok(Some(filter)) => {
                         let cursor = filter.chars().count();
-                        self.session
-                            .response
-                            .set_jq_text_with_cursor(&filter, cursor);
+                        self.session.response.set_jq_text_with_cursor(&filter, cursor);
                         self.session.response.set_jq_focus(true);
                     }
-                    Ok(None) => self
-                        .toasts
-                        .push("The AI command returned nothing", ToastKind::Warning),
+                    Ok(None) => {
+                        self.toasts.push("The AI command returned nothing", ToastKind::Warning)
+                    }
                     Err(e) => self.toasts.push(e, ToastKind::Error),
                 }
                 true
@@ -5436,10 +5227,8 @@ impl App {
                 // is always re-resolved, because `themes` was rescanned
                 // and a custom file may have appeared or vanished.
                 let from_config = ui.is_some();
-                let wanted = ui
-                    .as_ref()
-                    .map(|u| u.theme.clone())
-                    .unwrap_or_else(|| self.theme_name.clone());
+                let wanted =
+                    ui.as_ref().map(|u| u.theme.clone()).unwrap_or_else(|| self.theme_name.clone());
                 let theme_warning = self.set_theme_by_name(&wanted).map(|gone| {
                     if from_config {
                         // The name came out of the config.toml just read,
@@ -5532,9 +5321,8 @@ impl App {
                 if !completing
                     && let Some((text, cursor)) =
                         self.focused_field_text().map(|(t, c)| (t.to_string(), c))
-                    && let Some((name, selector)) = self
-                        .project()
-                        .and_then(|p| Self::selection_picker_target(p, &text, cursor))
+                    && let Some((name, selector)) =
+                        self.project().and_then(|p| Self::selection_picker_target(p, &text, cursor))
                 {
                     return self.open_select_picker(name, selector);
                 }
@@ -5574,11 +5362,7 @@ impl App {
                         self.push_modal(Modal::Prompt {
                             title: format!("Secret {{{{{name}}}}}"),
                             input: LineInput::new(&current),
-                            kind: PromptKind::SecretValue {
-                                name,
-                                env,
-                                then_send: false,
-                            },
+                            kind: PromptKind::SecretValue { name, env, then_send: false },
                             revealed: false,
                         });
                         return true;
@@ -5597,11 +5381,7 @@ impl App {
                     self.open_insert_var_picker(false, Some(&name))
                 }
             }
-            Action::ConfirmEditVarValue {
-                name,
-                value,
-                destination,
-            } => {
+            Action::ConfirmEditVarValue { name, value, destination } => {
                 use crate::action::ExtractDestination;
                 let op = match destination {
                     ExtractDestination::Request => VarEditOp::SetRequestVar { name, value },
@@ -5631,8 +5411,7 @@ impl App {
                     }
                     ExtractDestination::ActiveEnv => {
                         let Some(env) = self.active_env().map(str::to_string) else {
-                            self.toasts
-                                .push("no active environment", ToastKind::Warning);
+                            self.toasts.push("no active environment", ToastKind::Warning);
                             self.last_action_failed = true;
                             return true;
                         };
@@ -5647,7 +5426,10 @@ impl App {
                                     // Core journals the secrets write, so
                                     // the removal is one undo step like
                                     // every other variable write.
-                                    self.record_project_step(t, crate::undo::StepLabel::variable(&name));
+                                    self.record_project_step(
+                                        t,
+                                        crate::undo::StepLabel::variable(&name),
+                                    );
                                     self.toasts.push(
                                         format!("removed {name}'s value for env {env}"),
                                         ToastKind::Success,
@@ -5663,7 +5445,10 @@ impl App {
                         let t = self.begin_op();
                         match self.edit_env(&env, |doc| varedit::set_env_value(doc, &name, None)) {
                             Ok(()) => {
-                                self.record_project_step(t, crate::undo::StepLabel::variable(&name));
+                                self.record_project_step(
+                                    t,
+                                    crate::undo::StepLabel::variable(&name),
+                                );
                                 self.toasts.push(
                                     format!("removed {name} from env {env}"),
                                     ToastKind::Success,
@@ -5679,7 +5464,10 @@ impl App {
                         let t = self.begin_op();
                         match self.edit_variables(|doc| varedit::clear_default(doc, &name)) {
                             Ok(()) => {
-                                self.record_project_step(t, crate::undo::StepLabel::variable(&name));
+                                self.record_project_step(
+                                    t,
+                                    crate::undo::StepLabel::variable(&name),
+                                );
                                 self.toasts
                                     .push(format!("removed {name}'s default"), ToastKind::Success);
                             }
@@ -5692,10 +5480,7 @@ impl App {
                 }
                 true
             }
-            Action::OpenNewVariablePrompt {
-                prefill,
-                completing,
-            } => {
+            Action::OpenNewVariablePrompt { prefill, completing } => {
                 self.push_modal(Modal::Prompt {
                     title: "New variable".into(),
                     input: LineInput::new(&prefill),
@@ -5730,10 +5515,8 @@ impl App {
                     self.editor.body_insert_str(&text);
                     self.turn_on_body_vars();
                 } else {
-                    self.toasts.push(
-                        "nowhere to insert — focus a text field first",
-                        ToastKind::Warning,
-                    );
+                    self.toasts
+                        .push("nowhere to insert — focus a text field first", ToastKind::Warning);
                 }
                 true
             }
@@ -5743,8 +5526,7 @@ impl App {
                         self.paste_text(&text);
                     }
                     Err(e) => {
-                        self.toasts
-                            .push(format!("clipboard read failed: {e}"), ToastKind::Warning);
+                        self.toasts.push(format!("clipboard read failed: {e}"), ToastKind::Warning);
                     }
                 }
                 true
@@ -5791,8 +5573,7 @@ impl App {
                     // the active tab: a glide from wherever the strip
                     // last was would read as a switch that never happened.
                     self.anims.clear(AnimKey::TabUnderline(StripId::ManageTabs));
-                    self.anims
-                        .clear(AnimKey::TabUnderlineWidth(StripId::ManageTabs));
+                    self.anims.clear(AnimKey::TabUnderlineWidth(StripId::ManageTabs));
                 } else if prev != target {
                     self.retarget_manage_tab_underline(prev);
                 }
@@ -5857,10 +5638,7 @@ impl App {
                 self.push_modal(Modal::Prompt {
                     title: "New selector".into(),
                     input: LineInput::new(""),
-                    kind: PromptKind::NewSelector {
-                        shared: false,
-                        on_toggle: false,
-                    },
+                    kind: PromptKind::NewSelector { shared: false, on_toggle: false },
                     revealed: false,
                 });
                 true
@@ -5891,24 +5669,17 @@ impl App {
                 }
                 let mut fields = current;
                 fields.push(field);
-                self.apply(Action::VarStruct(VarStructOp::SetFields {
-                    selector,
-                    fields,
-                }));
+                self.apply(Action::VarStruct(VarStructOp::SetFields { selector, fields }));
                 true
             }
             Action::RemoveSelectorField { selector, field } => {
                 // Env files first: variables.toml's validation runs against
                 // the active env, whose options must no longer carry the
                 // field by the time the selector's field list changes.
-                let Some(fields) = self
-                    .variables()
-                    .selectors
-                    .get(&selector)
-                    .map(|g| g.fields.clone())
+                let Some(fields) =
+                    self.variables().selectors.get(&selector).map(|g| g.fields.clone())
                 else {
-                    self.toasts
-                        .push(format!("no selector \"{selector}\""), ToastKind::Error);
+                    self.toasts.push(format!("no selector \"{selector}\""), ToastKind::Error);
                     return true;
                 };
                 let remaining: Vec<String> = fields.into_iter().filter(|f| f != &field).collect();
@@ -5968,10 +5739,7 @@ impl App {
                 // those requests (references keep the old name until
                 // someone edits them), but the user should still know the
                 // name isn't as free-standing as it looks.
-                let usage = self
-                    .project()
-                    .map(|p| p.scan_usage(&from))
-                    .unwrap_or_default();
+                let usage = self.project().map(|p| p.scan_usage(&from)).unwrap_or_default();
                 // The caveat is a note, not a heading: the title stays the
                 // one line it always was, and the prompt sets this below
                 // the field (see the `Modal::Prompt` painter).
@@ -6003,13 +5771,8 @@ impl App {
                 true
             }
             Action::DeleteVar { name } => {
-                let usage = self
-                    .project()
-                    .map(|p| p.scan_usage(&name))
-                    .unwrap_or_default();
-                self.apply(Action::VarStruct(VarStructOp::Delete {
-                    name: name.clone(),
-                }));
+                let usage = self.project().map(|p| p.scan_usage(&name)).unwrap_or_default();
+                self.apply(Action::VarStruct(VarStructOp::Delete { name: name.clone() }));
                 // The struct arm toasts the delete itself; the deleted
                 // declaration leaving dangling references is worth its own
                 // warning on top.
@@ -6092,13 +5855,9 @@ impl App {
                 // missing entry is a no-op, not news).
                 let existed = match &op {
                     VarStructOp::Delete { name } => self.variables().vars.contains_key(name),
-                    VarStructOp::DeleteOption {
-                        env,
-                        selector,
-                        name,
-                    } => self
-                        .options_of_for(env, selector)
-                        .is_some_and(|o| o.contains_key(name)),
+                    VarStructOp::DeleteOption { env, selector, name } => {
+                        self.options_of_for(env, selector).is_some_and(|o| o.contains_key(name))
+                    }
                     _ => false,
                 };
                 // Read before the op: an option delete's env display, and
@@ -6174,9 +5933,7 @@ impl App {
                     .get(&selector)
                     .map(|g| g.fields.clone())
                     .unwrap_or_default();
-                self.push_modal(Modal::FieldsEditor(FieldsEditorState::new(
-                    selector, &current,
-                )));
+                self.push_modal(Modal::FieldsEditor(FieldsEditorState::new(selector, &current)));
                 true
             }
             Action::ApplyGroupFields { selector, slots } => {
@@ -6198,32 +5955,19 @@ impl App {
                 self.vm_start_cell_edit(row, 0);
                 true
             }
-            Action::DeleteEntry {
-                env,
-                selector,
-                name,
-            } => {
-                self.apply(Action::VarStruct(VarStructOp::DeleteOption {
-                    env,
-                    selector,
-                    name,
-                }));
+            Action::DeleteEntry { env, selector, name } => {
+                self.apply(Action::VarStruct(VarStructOp::DeleteOption { env, selector, name }));
                 true
             }
             Action::CopyOption { row } => {
                 // A copy writes nothing — no file, no undo entry — so the
                 // toast and the paste control arming are the whole of the
                 // feedback that it happened.
-                let copied = self
-                    .project()
-                    .and_then(|p| self.varmanager.option_row(p, row));
+                let copied = self.project().and_then(|p| self.varmanager.option_row(p, row));
                 let Some(copied) = copied else {
                     return false;
                 };
-                self.toasts.push(
-                    format!("Copied option \"{}\"", copied.name),
-                    ToastKind::Info,
-                );
+                self.toasts.push(format!("Copied option \"{}\"", copied.name), ToastKind::Info);
                 self.varmanager.stash = Some(copied);
                 true
             }
@@ -6236,10 +5980,8 @@ impl App {
                 // A shared selector's options need no environment; anyone
                 // else's have nowhere to live without one.
                 if self.active_env().is_none() && !self.selector_is_shared(&selector) {
-                    self.toasts.push(
-                        crate::components::varmanager::NO_ENV_HINT,
-                        ToastKind::Warning,
-                    );
+                    self.toasts
+                        .push(crate::components::varmanager::NO_ENV_HINT, ToastKind::Warning);
                     return true;
                 }
                 // The ghost row *is* the new-option affordance: put the
@@ -6268,11 +6010,7 @@ impl App {
                     .unwrap_or_default();
                 let mut fields = vec![PromptField::text("key", "Name", "")];
                 for field in &selector_fields {
-                    let label = if selector_fields.len() == 1 {
-                        "Value"
-                    } else {
-                        field.as_str()
-                    };
+                    let label = if selector_fields.len() == 1 { "Value" } else { field.as_str() };
                     fields.push(PromptField::text(
                         &format!("{NEW_OPTION_FIELD}{field}"),
                         label,
@@ -6287,12 +6025,7 @@ impl App {
                 });
                 true
             }
-            Action::OpenEditOptionPrompt {
-                owner,
-                key,
-                description,
-                values,
-            } => {
+            Action::OpenEditOptionPrompt { owner, key, description, values } => {
                 use crate::components::modal::PromptField;
                 let mut fields: Vec<PromptField> = values
                     .iter()
@@ -6314,15 +6047,9 @@ impl App {
                 });
                 true
             }
-            Action::ConfirmNewOptionInline {
-                owner,
-                key,
-                values,
-                description,
-            } => {
+            Action::ConfirmNewOptionInline { owner, key, values, description } => {
                 if key.is_empty() {
-                    self.toasts
-                        .push("option name can't be empty", ToastKind::Error);
+                    self.toasts.push("option name can't be empty", ToastKind::Error);
                     self.last_action_failed = true;
                     return true;
                 }
@@ -6398,12 +6125,7 @@ impl App {
                 }
                 true
             }
-            Action::ConfirmEditOption {
-                owner,
-                key,
-                values,
-                description,
-            } => {
+            Action::ConfirmEditOption { owner, key, values, description } => {
                 // An option belongs to exactly one environment, so the
                 // edit always lands in the active env's file.
                 let Some(env) = self.active_env().map(str::to_string) else {
@@ -6434,8 +6156,7 @@ impl App {
                 match result {
                     Ok(()) => {
                         self.record_project_step(t, crate::undo::StepLabel::variable(&owner));
-                        self.toasts
-                            .push(format!("{key} updated"), ToastKind::Success);
+                        self.toasts.push(format!("{key} updated"), ToastKind::Success);
                     }
                     Err(msg) => self.toasts.push(msg, ToastKind::Error),
                 }
@@ -6464,11 +6185,9 @@ impl App {
             Action::ConfirmExtractVariable { name, destination } => {
                 self.confirm_extract(name, destination, ExtractSource::FocusedField)
             }
-            Action::ConfirmExtractSelection {
-                name,
-                destination,
-                surface,
-            } => self.confirm_extract(name, destination, ExtractSource::Selection(surface)),
+            Action::ConfirmExtractSelection { name, destination, surface } => {
+                self.confirm_extract(name, destination, ExtractSource::Selection(surface))
+            }
             Action::ExtractSelection(surface) => {
                 if self.selection_extract_text(surface).is_none() {
                     return true;
@@ -6501,12 +6220,9 @@ impl App {
                 }
                 true
             }
-            Action::ConfirmExtractToSelector {
-                name,
-                option,
-                shared,
-                source,
-            } => self.confirm_extract_to_selector(name, option, shared, source),
+            Action::ConfirmExtractToSelector { name, option, shared, source } => {
+                self.confirm_extract_to_selector(name, option, shared, source)
+            }
             Action::SwitchSpace(name) => {
                 if name == self.active_space() {
                     return true;
@@ -6520,8 +6236,7 @@ impl App {
             }
             Action::ForceSwitchSpace(name) => {
                 if !self.spaces().contains(&name) {
-                    self.toasts
-                        .push(format!("no space named {name:?}"), ToastKind::Warning);
+                    self.toasts.push(format!("no space named {name:?}"), ToastKind::Warning);
                     return true;
                 }
                 // What the space was last left on, when that request still
@@ -6555,10 +6270,7 @@ impl App {
                 if spaces.is_empty() {
                     return true;
                 }
-                let idx = spaces
-                    .iter()
-                    .position(|s| *s == self.active_space())
-                    .unwrap_or(0) as i32;
+                let idx = spaces.iter().position(|s| *s == self.active_space()).unwrap_or(0) as i32;
                 let next = (idx + delta).rem_euclid(spaces.len() as i32) as usize;
                 let name = spaces[next].clone();
                 self.apply(Action::SwitchSpace(name))
@@ -6580,9 +6292,7 @@ impl App {
                 items.push(MenuItem::new("new space…", Action::OpenNewSpacePrompt));
                 items.push(MenuItem::new(
                     "manage spaces…",
-                    Action::OpenManage {
-                        tab: Some(crate::components::manage::ManageTab::Spaces),
-                    },
+                    Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Spaces) },
                 ));
                 let current = self.spaces().iter().position(|s| *s == self.active_space());
                 let anchor = self
@@ -6600,11 +6310,9 @@ impl App {
             Action::PromptMoveRequestToSpace(slug) => {
                 use crate::components::chooser::ChooserState;
                 let own = postui_core::storage::space_of(&slug).map(str::to_string);
-                let items =
-                    self.other_space_items(own.as_deref(), |space| Action::MoveRequestToSpace {
-                        slug: slug.clone(),
-                        space,
-                    });
+                let items = self.other_space_items(own.as_deref(), |space| {
+                    Action::MoveRequestToSpace { slug: slug.clone(), space }
+                });
                 if items.is_empty() {
                     // A warning, not an Info note: the user pressed a key
                     // the footer advertises and nothing happened, so this
@@ -6634,10 +6342,7 @@ impl App {
                     );
                     return true;
                 }
-                self.push_modal(Modal::Chooser(ChooserState::new(
-                    "Move all requests to",
-                    items,
-                )));
+                self.push_modal(Modal::Chooser(ChooserState::new("Move all requests to", items)));
                 true
             }
             Action::OpenNewSpacePrompt => {
@@ -6671,12 +6376,14 @@ impl App {
                         // the request it moves. The Spaces list's cursor
                         // lands on the new row (live or parked).
                         self.select_list_row(crate::components::manage::ManageTab::Spaces, &slug);
-                        self.record_project_step(t, crate::undo::StepLabel::space(&self.space_name(&slug)));
+                        self.record_project_step(
+                            t,
+                            crate::undo::StepLabel::space(&self.space_name(&slug)),
+                        );
                         true
                     }
                     Err(e) => {
-                        self.toasts
-                            .push(format!("cannot create space: {e}"), ToastKind::Warning);
+                        self.toasts.push(format!("cannot create space: {e}"), ToastKind::Warning);
                         self.last_action_failed = true;
                         true
                     }
@@ -6710,13 +6417,14 @@ impl App {
                             format!("Renamed environment to {}", self.env_name(&to)),
                             ToastKind::Success,
                         );
-                        self.record_project_step(t, crate::undo::StepLabel::environment(&self.env_name(&to)));
+                        self.record_project_step(
+                            t,
+                            crate::undo::StepLabel::environment(&self.env_name(&to)),
+                        );
                     }
                     Err(e) => {
-                        self.toasts.push(
-                            format!("cannot rename environment: {e}"),
-                            ToastKind::Warning,
-                        );
+                        self.toasts
+                            .push(format!("cannot rename environment: {e}"), ToastKind::Warning);
                         self.last_action_failed = true;
                     }
                 }
@@ -6729,7 +6437,10 @@ impl App {
                 };
                 match p.set_env_tls(&env, policy) {
                     Ok(()) => {
-                        self.record_project_step(t, crate::undo::StepLabel::environment(&self.env_name(&env)));
+                        self.record_project_step(
+                            t,
+                            crate::undo::StepLabel::environment(&self.env_name(&env)),
+                        );
                         let name = self.env_name(&env);
                         let msg = match policy {
                             Some(postui_core::project::TlsPolicy::Verify) => {
@@ -6847,11 +6558,13 @@ impl App {
                             self.sync_varmanager();
                             self.manage_select_name(&to);
                         }
-                        self.record_project_step(t, crate::undo::StepLabel::space(&self.space_name(&to)));
+                        self.record_project_step(
+                            t,
+                            crate::undo::StepLabel::space(&self.space_name(&to)),
+                        );
                     }
                     Err(e) => {
-                        self.toasts
-                            .push(format!("cannot rename space: {e}"), ToastKind::Warning);
+                        self.toasts.push(format!("cannot rename space: {e}"), ToastKind::Warning);
                         self.last_action_failed = true;
                     }
                 }
@@ -6864,8 +6577,7 @@ impl App {
             }
             Action::ForceDeleteSpace(name) => {
                 if self.spaces().len() <= 1 {
-                    self.toasts
-                        .push("cannot delete the last space", ToastKind::Warning);
+                    self.toasts.push("cannot delete the last space", ToastKind::Warning);
                     return true;
                 }
                 // The delete goes first, so the entry records local state
@@ -6904,8 +6616,7 @@ impl App {
                         self.record_project_step(t, crate::undo::StepLabel::delete_space(&display));
                     }
                     Err(e) => {
-                        self.toasts
-                            .push(format!("cannot delete space: {e}"), ToastKind::Error);
+                        self.toasts.push(format!("cannot delete space: {e}"), ToastKind::Error);
                         self.last_action_failed = true;
                     }
                 }
@@ -6929,12 +6640,14 @@ impl App {
                         // the whole burst stays one undo step.
                         self.record_project_step(
                             t,
-                            crate::undo::StepLabel::reorder(format!("space {}", self.space_name(&name))),
+                            crate::undo::StepLabel::reorder(format!(
+                                "space {}",
+                                self.space_name(&name)
+                            )),
                         );
                     }
                     Err(e) => {
-                        self.toasts
-                            .push(format!("cannot move space: {e}"), ToastKind::Warning);
+                        self.toasts.push(format!("cannot move space: {e}"), ToastKind::Warning);
                     }
                 }
                 true
@@ -6958,7 +6671,10 @@ impl App {
                         // the whole burst stays one undo step.
                         self.record_project_step(
                             t,
-                            crate::undo::StepLabel::reorder(format!("environment {}", self.env_name(&name))),
+                            crate::undo::StepLabel::reorder(format!(
+                                "environment {}",
+                                self.env_name(&name)
+                            )),
                         );
                     }
                     Err(e) => {
@@ -7012,8 +6728,7 @@ impl App {
                         );
                     }
                     Err(e) => {
-                        self.toasts
-                            .push(format!("cannot move request: {e}"), ToastKind::Warning);
+                        self.toasts.push(format!("cannot move request: {e}"), ToastKind::Warning);
                     }
                 }
                 true
@@ -7026,14 +6741,12 @@ impl App {
             }
             Action::MoveAllRequests { from, to } => {
                 if from == to {
-                    self.toasts
-                        .push(format!("already in {to}"), ToastKind::Warning);
+                    self.toasts.push(format!("already in {to}"), ToastKind::Warning);
                     self.last_action_failed = true;
                     return true;
                 }
                 if !self.spaces().contains(&to) {
-                    self.toasts
-                        .push(format!("no space named {to:?}"), ToastKind::Warning);
+                    self.toasts.push(format!("no space named {to:?}"), ToastKind::Warning);
                     self.last_action_failed = true;
                     return true;
                 }
@@ -7041,12 +6754,9 @@ impl App {
                 // reloads the editor from disk — so unsaved edits to a
                 // request living in `from` are gated exactly like a space
                 // switch.
-                let open_here = self
-                    .editor
-                    .slug
-                    .as_deref()
-                    .and_then(postui_core::storage::space_of)
-                    == Some(from.as_str());
+                let open_here =
+                    self.editor.slug.as_deref().and_then(postui_core::storage::space_of)
+                        == Some(from.as_str());
                 if open_here && self.editor_holds_unsaved() {
                     self.dirty_gate("move", Action::ForceMoveAllRequests { from, to });
                 } else {
@@ -7065,16 +6775,13 @@ impl App {
                 let (moved, left_behind) = match p.move_all_requests(&from, &to) {
                     Ok(result) => result,
                     Err(e) => {
-                        self.toasts
-                            .push(format!("could not move requests: {e}"), ToastKind::Error);
+                        self.toasts.push(format!("could not move requests: {e}"), ToastKind::Error);
                         self.last_action_failed = true;
                         return true;
                     }
                 };
-                self.toasts.push(
-                    format!("Moved {} request(s) to {to}", moved.len()),
-                    ToastKind::Success,
-                );
+                self.toasts
+                    .push(format!("Moved {} request(s) to {to}", moved.len()), ToastKind::Success);
                 for w in left_behind {
                     self.toasts.push(w, ToastKind::Warning);
                 }
@@ -7131,11 +6838,7 @@ impl App {
         text: &str,
         cursor: usize,
     ) -> Option<(String, String)> {
-        let byte_off = text
-            .char_indices()
-            .nth(cursor)
-            .map(|(b, _)| b)
-            .unwrap_or(text.len());
+        let byte_off = text.char_indices().nth(cursor).map(|(b, _)| b).unwrap_or(text.len());
         let token = postui_core::vars::find_tokens(text)
             .into_iter()
             .find(|t| byte_off >= t.start && byte_off <= t.end)?;
@@ -7166,10 +6869,7 @@ impl App {
             && self.editor.active_tab == EditorTab::Body
             && self.editor.sub_focus == SubFocus::Content
         {
-            self.toasts.push(
-                "extract isn't available in the body yet",
-                ToastKind::Warning,
-            );
+            self.toasts.push("extract isn't available in the body yet", ToastKind::Warning);
             return None;
         }
         if self.focus == PaneId::Editor
@@ -7178,19 +6878,14 @@ impl App {
             && let Some(row) = self.editor.table.selected
             && row < self.editor.table_len()
         {
-            self.editor
-                .click_table_cell(row, crate::components::table_editor::Col::Value);
+            self.editor.click_table_cell(row, crate::components::table_editor::Col::Value);
         }
         let Some(text) = self.focused_field_text().map(|(t, _)| t.to_string()) else {
-            self.toasts
-                .push("focus a text field first", ToastKind::Warning);
+            self.toasts.push("focus a text field first", ToastKind::Warning);
             return None;
         };
         if text.trim().is_empty() {
-            self.toasts.push(
-                "nothing to extract \u{2014} the field is empty",
-                ToastKind::Warning,
-            );
+            self.toasts.push("nothing to extract \u{2014} the field is empty", ToastKind::Warning);
             return None;
         }
         Some(text)
@@ -7200,15 +6895,12 @@ impl App {
     /// that nothing (or only whitespace) is selected there.
     fn selection_extract_text(&mut self, surface: crate::action::TextSurface) -> Option<String> {
         let Some(text) = self.selection_text_of(surface) else {
-            self.toasts
-                .push("select some text first", ToastKind::Warning);
+            self.toasts.push("select some text first", ToastKind::Warning);
             return None;
         };
         if text.trim().is_empty() {
-            self.toasts.push(
-                "nothing to extract \u{2014} the selection is blank",
-                ToastKind::Warning,
-            );
+            self.toasts
+                .push("nothing to extract \u{2014} the selection is blank", ToastKind::Warning);
             return None;
         }
         Some(text)
@@ -7245,23 +6937,18 @@ impl App {
         source: ExtractSource,
     ) -> bool {
         if !postui_core::vars::is_valid_var_name(&name) {
-            self.toasts.push(
-                format!("\"{name}\" is not a valid selector name"),
-                ToastKind::Error,
-            );
+            self.toasts.push(format!("\"{name}\" is not a valid selector name"), ToastKind::Error);
             self.last_action_failed = true;
             return true;
         }
         if name_taken(self.variables(), &name) {
-            self.toasts
-                .push(format!("\"{name}\" already exists"), ToastKind::Error);
+            self.toasts.push(format!("\"{name}\" already exists"), ToastKind::Error);
             self.last_action_failed = true;
             return true;
         }
         let option = option.trim().to_string();
         if option.is_empty() {
-            self.toasts
-                .push("give the option a name", ToastKind::Warning);
+            self.toasts.push("give the option a name", ToastKind::Warning);
             self.last_action_failed = true;
             return true;
         }
@@ -7284,8 +6971,7 @@ impl App {
             Some(env) => env,
             None if shared => String::new(),
             None => {
-                self.toasts
-                    .push("no active environment", ToastKind::Warning);
+                self.toasts.push("no active environment", ToastKind::Warning);
                 return true;
             }
         };
@@ -7293,11 +6979,7 @@ impl App {
         // both under one journal entry, so one undo peels the whole
         // extraction (and a failed second half rolls the first back).
         use postui_core::project::VarEdit as E;
-        let declare = E::NewSelector {
-            name: name.clone(),
-            fields: vec![name.clone()],
-            shared,
-        };
+        let declare = E::NewSelector { name: name.clone(), fields: vec![name.clone()], shared };
         let mut values = indexmap::IndexMap::new();
         values.insert(name.clone(), text.clone());
         let add_option = E::NewOption {
@@ -7327,22 +7009,27 @@ impl App {
                 // step's `after` would hold the token edit, and undoing it
                 // (once the token step is undone and the file saved) would
                 // reload the request over the unsaved original.
-                self.record_project_step(t, self.open_request_label(crate::undo::StepLabel::variable(&name)));
+                self.record_project_step(
+                    t,
+                    self.open_request_label(crate::undo::StepLabel::variable(&name)),
+                );
                 match source {
                     ExtractSource::FocusedField => self.replace_focused_field_with_token(&name),
                     ExtractSource::Selection(surface) => {
                         self.replace_selection_with_token(surface, &name);
                     }
                 }
-                self.toasts
-                    .push(format!("extracted to {{{{{name}}}}}"), ToastKind::Success);
+                self.toasts.push(format!("extracted to {{{{{name}}}}}"), ToastKind::Success);
             }
             Err(msg) => {
                 // A failed option write rolls the declaration back with
                 // it, so there is nothing to undo — but the Manager still
                 // re-reads, as it did when the half-write stood.
                 self.sync_varmanager();
-                self.record_project_step(t, self.open_request_label(crate::undo::StepLabel::variable(&name)));
+                self.record_project_step(
+                    t,
+                    self.open_request_label(crate::undo::StepLabel::variable(&name)),
+                );
                 self.toasts.push(msg, ToastKind::Error);
                 self.last_action_failed = true;
             }
@@ -7363,10 +7050,7 @@ impl App {
         source: ExtractSource,
     ) -> bool {
         if !postui_core::vars::is_valid_var_name(&name) {
-            self.toasts.push(
-                format!("\"{name}\" is not a valid variable name"),
-                ToastKind::Error,
-            );
+            self.toasts.push(format!("\"{name}\" is not a valid variable name"), ToastKind::Error);
             self.last_action_failed = true;
             return true;
         }
@@ -7403,8 +7087,7 @@ impl App {
             }
             ExtractDestination::ActiveEnv => {
                 let Some(env) = self.active_env().map(str::to_string) else {
-                    self.toasts
-                        .push("no active environment", ToastKind::Warning);
+                    self.toasts.push("no active environment", ToastKind::Warning);
                     return true;
                 };
                 // Same namespace-collision guard as `ProjectDefault`
@@ -7419,8 +7102,7 @@ impl App {
                 // instead of a write attempt against a doc that
                 // `validate_env` would then reject.
                 if self.variables().selectors.contains_key(&name) {
-                    self.toasts
-                        .push(format!("\"{name}\" already exists"), ToastKind::Error);
+                    self.toasts.push(format!("\"{name}\" already exists"), ToastKind::Error);
                     self.last_action_failed = true;
                     return true;
                 }
@@ -7485,10 +7167,7 @@ impl App {
                 }
                 self.editor.variables.insert(
                     name.clone(),
-                    postui_core::model::Entry {
-                        value: text.clone(),
-                        enabled: true,
-                    },
+                    postui_core::model::Entry { value: text.clone(), enabled: true },
                 );
                 Ok(())
             }
@@ -7508,7 +7187,10 @@ impl App {
                 // destination journals nothing: its save below is not an
                 // undo step.
                 if let Some(t) = t {
-                    self.record_project_step(t, self.open_request_label(crate::undo::StepLabel::variable(&name)));
+                    self.record_project_step(
+                        t,
+                        self.open_request_label(crate::undo::StepLabel::variable(&name)),
+                    );
                 }
                 match source {
                     ExtractSource::FocusedField => self.replace_focused_field_with_token(&name),
@@ -7554,8 +7236,7 @@ impl App {
                         return true;
                     }
                 }
-                self.toasts
-                    .push(format!("extracted to {{{{{name}}}}}"), ToastKind::Success);
+                self.toasts.push(format!("extracted to {{{{{name}}}}}"), ToastKind::Success);
             }
             Err(msg) => self.toasts.push(msg, ToastKind::Error),
         }
@@ -7624,14 +7305,10 @@ impl App {
                 self.editor.table.handle_key(enter, &mut self.editor.params);
             }
             EditorTab::Headers => {
-                self.editor
-                    .table
-                    .handle_key(enter, &mut self.editor.headers);
+                self.editor.table.handle_key(enter, &mut self.editor.headers);
             }
             EditorTab::Vars => {
-                self.editor
-                    .table
-                    .handle_key(enter, &mut self.editor.variables);
+                self.editor.table.handle_key(enter, &mut self.editor.variables);
             }
             EditorTab::Body => {}
         }
@@ -7666,12 +7343,8 @@ impl App {
     fn open_edit_value_popup(&mut self, name: &str) -> bool {
         use crate::components::modal::{Modal, PromptField, PromptKind};
 
-        let request_value = self
-            .editor
-            .variables
-            .get(name)
-            .filter(|e| e.enabled)
-            .map(|e| e.value.clone());
+        let request_value =
+            self.editor.variables.get(name).filter(|e| e.enabled).map(|e| e.value.clone());
         let env_value = self.env_data().values.get(name).cloned();
         let has_env = self.active_env().is_some();
 
@@ -7692,11 +7365,7 @@ impl App {
         // What each destination currently stores (`None` = nothing), so
         // cycling the scope can reseed the value field, and the Remove
         // button knows whether there is anything to delete there.
-        let default_value = self
-            .variables()
-            .vars
-            .get(name)
-            .and_then(|d| d.default.clone());
+        let default_value = self.variables().vars.get(name).and_then(|d| d.default.clone());
         let mut scope_values = vec![
             ("Project default".to_string(), default_value),
             ("This request".to_string(), request_value.clone()),
@@ -7770,11 +7439,8 @@ impl App {
     /// (spec §5's general write-failure rule), and a secret's value never
     /// appears in the toast.
     pub(crate) fn commit_var_form(&mut self) {
-        let Some(crate::components::varmanager::FormEdit {
-            field,
-            input,
-            original,
-        }) = self.varmanager.form.editing.take()
+        let Some(crate::components::varmanager::FormEdit { field, input, original }) =
+            self.varmanager.form.editing.take()
         else {
             return;
         };
@@ -7788,10 +7454,7 @@ impl App {
         if value == original {
             return;
         }
-        let Some(op) = self
-            .project()
-            .map(|p| var_edit_op_for(p, &name, field, value))
-        else {
+        let Some(op) = self.project().map(|p| var_edit_op_for(p, &name, field, value)) else {
             return;
         };
         // This commit never routes through `self.apply` — it's called
@@ -7815,48 +7478,35 @@ impl App {
     fn apply_var_edit(&mut self, op: &VarEditOp) -> Result<(), String> {
         use postui_core::project::VarEdit as E;
         let edit = match op {
-            VarEditOp::SetEnvValue { env, name, value } => E::SetEnvValue {
-                env: env.clone(),
-                name: name.clone(),
-                value: value.clone(),
-            },
-            VarEditOp::SetDefault { name, value } => E::SetDefault {
-                name: name.clone(),
-                value: value.clone(),
-            },
-            VarEditOp::SetDescription { owner, value } => E::SetDescription {
-                owner: owner.clone(),
-                value: value.clone(),
-            },
-            VarEditOp::SetSecretValue { env, name, value } => E::SetSecretValue {
-                env: env.clone(),
-                name: name.clone(),
-                value: value.clone(),
-            },
-            VarEditOp::SetOptionValue {
-                env,
-                selector,
-                option,
-                field,
-                value,
-            } => E::SetOptionValue {
-                env: env.clone(),
-                selector: selector.clone(),
-                option: option.clone(),
-                field: field.clone(),
-                value: value.clone(),
-            },
-            VarEditOp::SetOptionDescription {
-                env,
-                selector,
-                option,
-                description,
-            } => E::SetOptionDescription {
-                env: env.clone(),
-                selector: selector.clone(),
-                option: option.clone(),
-                description: description.clone(),
-            },
+            VarEditOp::SetEnvValue { env, name, value } => {
+                E::SetEnvValue { env: env.clone(), name: name.clone(), value: value.clone() }
+            }
+            VarEditOp::SetDefault { name, value } => {
+                E::SetDefault { name: name.clone(), value: value.clone() }
+            }
+            VarEditOp::SetDescription { owner, value } => {
+                E::SetDescription { owner: owner.clone(), value: value.clone() }
+            }
+            VarEditOp::SetSecretValue { env, name, value } => {
+                E::SetSecretValue { env: env.clone(), name: name.clone(), value: value.clone() }
+            }
+            VarEditOp::SetOptionValue { env, selector, option, field, value } => {
+                E::SetOptionValue {
+                    env: env.clone(),
+                    selector: selector.clone(),
+                    option: option.clone(),
+                    field: field.clone(),
+                    value: value.clone(),
+                }
+            }
+            VarEditOp::SetOptionDescription { env, selector, option, description } => {
+                E::SetOptionDescription {
+                    env: env.clone(),
+                    selector: selector.clone(),
+                    option: option.clone(),
+                    description: description.clone(),
+                }
+            }
             VarEditOp::SetRequestVar { name, value } => {
                 // Editor-only: the open request's `[variables]` option
                 // rides the editor's own dirty/save path, so nothing is
@@ -7866,20 +7516,13 @@ impl App {
                     None => {
                         self.editor.variables.insert(
                             name.clone(),
-                            postui_core::model::Entry {
-                                value: value.clone(),
-                                enabled: true,
-                            },
+                            postui_core::model::Entry { value: value.clone(), enabled: true },
                         );
                     }
                 }
                 return Ok(());
             }
-            VarEditOp::SelectOption {
-                env,
-                selector,
-                option,
-            } => {
+            VarEditOp::SelectOption { env, selector, option } => {
                 // A selection is local state, not a document: not
                 // journaled, so it records no undo step (as today).
                 self.set_selection_for(env, selector, option);
@@ -7980,29 +7623,18 @@ impl App {
     fn apply_var_struct(&mut self, op: &VarStructOp) -> Result<(), String> {
         use postui_core::project::VarEdit as E;
         let edit = match op {
-            VarStructOp::NewVar { name, description } => E::NewVar {
-                name: name.clone(),
-                description: description.clone(),
-            },
-            VarStructOp::NewSelector {
-                name,
-                fields,
-                shared,
-            } => E::NewSelector {
-                name: name.clone(),
-                fields: fields.clone(),
-                shared: *shared,
-            },
-            VarStructOp::Rename { from, to } => E::Rename {
-                from: from.clone(),
-                to: to.clone(),
-            },
+            VarStructOp::NewVar { name, description } => {
+                E::NewVar { name: name.clone(), description: description.clone() }
+            }
+            VarStructOp::NewSelector { name, fields, shared } => {
+                E::NewSelector { name: name.clone(), fields: fields.clone(), shared: *shared }
+            }
+            VarStructOp::Rename { from, to } => E::Rename { from: from.clone(), to: to.clone() },
             VarStructOp::Delete { name } => E::Delete { name: name.clone() },
             VarStructOp::ToggleSecret { name } => E::ToggleSecret { name: name.clone() },
-            VarStructOp::SetFields { selector, fields } => E::SetFields {
-                selector: selector.clone(),
-                fields: fields.clone(),
-            },
+            VarStructOp::SetFields { selector, fields } => {
+                E::SetFields { selector: selector.clone(), fields: fields.clone() }
+            }
             VarStructOp::Promote { name, target } => {
                 // The value being promoted lives in the open request's
                 // buffer, which core never sees: read it here, and refuse
@@ -8013,45 +7645,24 @@ impl App {
                     .get(name)
                     .map(|o| o.value.clone())
                     .ok_or_else(|| format!("\"{name}\" is not a request-scope variable"))?;
-                E::Promote {
-                    name: name.clone(),
-                    request_value: value,
-                    target: *target,
-                }
+                E::Promote { name: name.clone(), request_value: value, target: *target }
             }
-            VarStructOp::NewOption {
-                env,
-                selector,
-                name,
-                description,
-                values,
-            } => E::NewOption {
+            VarStructOp::NewOption { env, selector, name, description, values } => E::NewOption {
                 env: env.clone(),
                 selector: selector.clone(),
                 name: name.clone(),
                 description: description.clone(),
                 values: values.clone(),
             },
-            VarStructOp::RenameOption {
-                env,
-                selector,
-                from,
-                to,
-            } => E::RenameOption {
+            VarStructOp::RenameOption { env, selector, from, to } => E::RenameOption {
                 env: env.clone(),
                 selector: selector.clone(),
                 from: from.clone(),
                 to: to.clone(),
             },
-            VarStructOp::DeleteOption {
-                env,
-                selector,
-                name,
-            } => E::DeleteOption {
-                env: env.clone(),
-                selector: selector.clone(),
-                name: name.clone(),
-            },
+            VarStructOp::DeleteOption { env, selector, name } => {
+                E::DeleteOption { env: env.clone(), selector: selector.clone(), name: name.clone() }
+            }
             VarStructOp::PasteOption { env, selector, .. } => {
                 // The copied row lives in the Manager, which core never
                 // sees, so it is read here — and refused here too, in the
@@ -8078,14 +7689,9 @@ impl App {
         // whole op is refused, touching neither file.
         if let VarStructOp::Promote { .. } = op
             && let Some(slug) = self.editor.slug.clone()
-            && self
-                .project()
-                .and_then(|p| p.held_request_drift(&slug))
-                .is_some()
+            && self.project().and_then(|p| p.held_request_drift(&slug)).is_some()
         {
-            return Err(format!(
-                "{slug} changed outside the app — save or reload it first"
-            ));
+            return Err(format!("{slug} changed outside the app — save or reload it first"));
         }
         // A counted paste (`{N}p` on the grid) lands its rows as one undo
         // step; each paste finds the names before it taken and steps aside.
@@ -8139,16 +7745,10 @@ impl App {
         use postui_core::varedit;
         use postui_core::vars::is_valid_var_name;
 
-        let Some(current) = self
-            .variables()
-            .selectors
-            .get(&selector)
-            .map(|g| g.fields.clone())
+        let Some(current) = self.variables().selectors.get(&selector).map(|g| g.fields.clone())
         else {
-            self.toasts.push(
-                format!("\"{selector}\" is not a declared selector"),
-                ToastKind::Error,
-            );
+            self.toasts
+                .push(format!("\"{selector}\" is not a declared selector"), ToastKind::Error);
             self.last_action_failed = true;
             return;
         };
@@ -8185,10 +7785,7 @@ impl App {
 
         for name in additions.iter().chain(renames.iter().map(|(_, t)| t)) {
             if !is_valid_var_name(name) {
-                self.toasts.push(
-                    format!("\"{name}\" is not a valid field name"),
-                    ToastKind::Error,
-                );
+                self.toasts.push(format!("\"{name}\" is not a valid field name"), ToastKind::Error);
                 self.last_action_failed = true;
                 return;
             }
@@ -8212,8 +7809,7 @@ impl App {
         }
         let mut seen = std::collections::HashSet::new();
         if let Some(dup) = fields.iter().find(|f| !seen.insert((*f).clone())) {
-            self.toasts
-                .push(format!("\"{dup}\" is listed twice"), ToastKind::Error);
+            self.toasts.push(format!("\"{dup}\" is listed twice"), ToastKind::Error);
             self.last_action_failed = true;
             return;
         }
@@ -8223,10 +7819,8 @@ impl App {
         // array); one that doesn't exist as a declaration only lives in
         // that array, which the closing `upsert_selector` rewrites wholesale
         // either way.
-        let declared: Vec<bool> = renames
-            .iter()
-            .map(|(from, _)| self.variables().vars.contains_key(from))
-            .collect();
+        let declared: Vec<bool> =
+            renames.iter().map(|(from, _)| self.variables().vars.contains_key(from)).collect();
         let declaration_half = |doc: &str| {
             let mut out = doc.to_string();
             for ((from, to), declared) in renames.iter().zip(&declared) {
@@ -8310,12 +7904,8 @@ impl App {
             postui_core::varmodel::options_of(self.variables(), self.env_data(), &selector)
                 .map(|e| e.keys().cloned().collect())
                 .unwrap_or_default();
-        let fields = self
-            .variables()
-            .selectors
-            .get(&selector)
-            .map(|g| g.fields.clone())
-            .unwrap_or_default();
+        let fields =
+            self.variables().selectors.get(&selector).map(|g| g.fields.clone()).unwrap_or_default();
         let ghost = edit.row >= options.len();
         // Read before `selector` moves into the op below.
         let label = crate::undo::StepLabel::variable(&selector);
@@ -8410,11 +8000,8 @@ impl App {
             copy = format!("{name}-copy-{n}");
             n += 1;
         }
-        let selector = self
-            .variables()
-            .selectors
-            .get(name)
-            .map(|g| (g.fields.clone(), g.description.clone()));
+        let selector =
+            self.variables().selectors.get(name).map(|g| (g.fields.clone(), g.description.clone()));
         let variable = self
             .variables()
             .vars
@@ -8448,10 +8035,7 @@ impl App {
     /// Whether `selector` is a shared selector — its options (and its one
     /// global selection) live in `variables.toml`, not per environment.
     fn selector_is_shared(&self, selector: &str) -> bool {
-        self.variables()
-            .selectors
-            .get(selector)
-            .is_some_and(|d| d.shared)
+        self.variables().selectors.get(selector).is_some_and(|d| d.shared)
     }
 
     /// `selector`'s options as they currently stand, from wherever they
@@ -8475,9 +8059,7 @@ impl App {
         if self.active_env() == Some(env) {
             return self.env_data().clone();
         }
-        self.project_mut()
-            .and_then(|p| p.load_environment(env).ok())
-            .unwrap_or_default()
+        self.project_mut().and_then(|p| p.load_environment(env).ok()).unwrap_or_default()
     }
 
     /// The interactive save (`Action::SaveRequest`, and
@@ -8514,8 +8096,7 @@ impl App {
         match self.save_open_request() {
             Ok(()) => {
                 let slug = self.editor.slug.as_deref().unwrap_or_default();
-                self.toasts
-                    .push(format!("Saved {slug}"), ToastKind::Success);
+                self.toasts.push(format!("Saved {slug}"), ToastKind::Success);
                 true
             }
             Err(e) => {
@@ -8552,24 +8133,16 @@ impl App {
         // only the first of those is permission to write. An un-held slug
         // is re-seeded from disk first (`open_request` stamps honestly),
         // so the check below is always answering the first question.
-        if self
-            .project()
-            .is_some_and(|p| p.held_request(&slug).is_none())
-            && let Some(Err(e)) = self
-                .project_mut()
-                .map(|p| p.open_request(&slug).map(|_| ()))
+        if self.project().is_some_and(|p| p.held_request(&slug).is_none())
+            && let Some(Err(e)) = self.project_mut().map(|p| p.open_request(&slug).map(|_| ()))
             && !force
         {
-            self.toasts
-                .push(format!("could not read {slug}: {e}"), ToastKind::Error);
+            self.toasts.push(format!("could not read {slug}: {e}"), ToastKind::Error);
             self.last_action_failed = true;
             return true;
         }
-        let drift = if force {
-            None
-        } else {
-            self.project().and_then(|p| p.held_request_drift(&slug))
-        };
+        let drift =
+            if force { None } else { self.project().and_then(|p| p.held_request_drift(&slug)) };
         let Some(drift) = drift else {
             if self.force_save_request()
                 && let Some(then) = then
@@ -8593,18 +8166,10 @@ impl App {
         overwrite.extend(then);
         let mut choices = vec![('o', "Overwrite with my edits".to_string(), overwrite)];
         if drift == HeldDrift::Changed {
-            choices.push((
-                'r',
-                "Reload from disk".to_string(),
-                vec![Action::ReloadOpenRequest],
-            ));
+            choices.push(('r', "Reload from disk".to_string(), vec![Action::ReloadOpenRequest]));
         }
         choices.push(('c', "Cancel".to_string(), vec![]));
-        self.push_modal(Modal::Confirm {
-            title,
-            body,
-            choices,
-        });
+        self.push_modal(Modal::Confirm { title, body, choices });
         self.last_action_failed = true;
         true
     }
@@ -8628,11 +8193,7 @@ impl App {
     /// The only path still reaching here unchecked is a never-saved
     /// scratch editor, which has no file to have drifted.
     fn save_open_request(&mut self) -> Result<(), String> {
-        let slug = self
-            .editor
-            .slug
-            .clone()
-            .ok_or_else(|| "no request is open".to_string())?;
+        let slug = self.editor.slug.clone().ok_or_else(|| "no request is open".to_string())?;
         let req = self.editor.current_request();
         self.project_mut()
             .ok_or_else(|| "no project is open".to_string())?
@@ -8658,19 +8219,13 @@ impl App {
 
     /// The id of the entry `Project::undo` would replay next.
     fn journal_top(&self) -> Option<postui_core::journal::EntryId> {
-        self.project()
-            .and_then(|p| p.last_entry())
-            .map(|(id, _)| id)
+        self.project().and_then(|p| p.last_entry()).map(|(id, _)| id)
     }
 
     /// Whether `id` is the entry `p` would replay next in `redo`'s
     /// direction.
     fn entry_on_top(&self, p: &Project, id: postui_core::journal::EntryId, redo: bool) -> bool {
-        let top = if redo {
-            p.next_redo()
-        } else {
-            p.last_entry().map(|(id, _)| id)
-        };
+        let top = if redo { p.next_redo() } else { p.last_entry().map(|(id, _)| id) };
         top == Some(id)
     }
 
@@ -8694,11 +8249,7 @@ impl App {
             return false;
         };
         let Some(p) = self.project() else { return true };
-        let top = if redo {
-            p.next_redo()
-        } else {
-            p.last_entry().map(|(id, _)| id)
-        };
+        let top = if redo { p.next_redo() } else { p.last_entry().map(|(id, _)| id) };
         top != Some(*id)
     }
 
@@ -8748,8 +8299,7 @@ impl App {
     /// was last left on, as a switch does.
     fn follow_active_space(&mut self) {
         let space = self.active_space();
-        self.toasts
-            .push(format!("space: {}", self.space_name(&space)), ToastKind::Success);
+        self.toasts.push(format!("space: {}", self.space_name(&space)), ToastKind::Success);
         let target = self
             .project()
             .and_then(|p| p.space_open_for(&space))
@@ -8759,7 +8309,11 @@ impl App {
             Some(slug) => crate::undo::Open::Request { slug, buffer: None },
             None => crate::undo::Open::Scratch { buffer: None },
         };
-        self.land(Landing { open: Some(open), cursor: Some(CursorAim::OnOpen), ..Landing::default() });
+        self.land(Landing {
+            open: Some(open),
+            cursor: Some(CursorAim::OnOpen),
+            ..Landing::default()
+        });
     }
 
     /// Re-reads the project directory and rebuilds the sidebar tree,
@@ -8771,8 +8325,7 @@ impl App {
     fn refresh_sidebar(&mut self) {
         let Some(p) = self.project.as_mut() else {
             // No project: nothing to list, and nothing to warn about.
-            self.sidebar
-                .refresh(Vec::new(), "", &std::collections::BTreeSet::new(), &[]);
+            self.sidebar.refresh(Vec::new(), "", &std::collections::BTreeSet::new(), &[]);
             self.snap_sidebar_travel();
             return;
         };
@@ -8818,15 +8371,13 @@ impl App {
         // user — see `project::write_list`), so it warns once per change
         // through its own channel rather than on every refresh.
         if spaces_warning.is_some() && spaces_warning != self.last_spaces_warning {
-            self.toasts
-                .push(spaces_warning.clone().unwrap(), ToastKind::Warning);
+            self.toasts.push(spaces_warning.clone().unwrap(), ToastKind::Warning);
         }
         self.last_spaces_warning = spaces_warning;
         // And the same again for `project.toml`'s `environments`.
         if environments_warning.is_some() && environments_warning != self.last_environments_warning
         {
-            self.toasts
-                .push(environments_warning.clone().unwrap(), ToastKind::Warning);
+            self.toasts.push(environments_warning.clone().unwrap(), ToastKind::Warning);
         }
         self.last_environments_warning = environments_warning;
         self.sidebar.refresh(listing, &space, &expanded, &order);
@@ -8846,8 +8397,7 @@ impl App {
     /// it used to be and `draw`'s crossfade paints a ghost band there.
     fn snap_sidebar_travel(&mut self) {
         if let Some(i) = self.sidebar.open_row() {
-            self.anims
-                .snap(AnimKey::ListTravel(ListId::Sidebar), i as f32);
+            self.anims.snap(AnimKey::ListTravel(ListId::Sidebar), i as f32);
         }
     }
 
@@ -8930,9 +8480,7 @@ impl App {
             };
             match written {
                 Ok(_) => reordered = Some(t),
-                Err(e) => self
-                    .toasts
-                    .push(format!("cannot reorder: {e}"), ToastKind::Warning),
+                Err(e) => self.toasts.push(format!("cannot reorder: {e}"), ToastKind::Warning),
             }
         }
         // The drag is already taken, so the landing's own drag cancel (it
@@ -8941,7 +8489,10 @@ impl App {
             .then(|| CursorAim::On(RowKey::Request(drag.slug.clone())));
         self.land(Landing { cursor, ..Landing::default() });
         if let Some(t) = reordered {
-            self.record_project_step(t, crate::undo::StepLabel::reorder(self.request_display(&drag.slug)));
+            self.record_project_step(
+                t,
+                crate::undo::StepLabel::reorder(self.request_display(&drag.slug)),
+            );
         }
         true
     }
@@ -9001,18 +8552,22 @@ impl App {
             let (written, label) = match drag.tab {
                 ManageTab::Spaces => (
                     p.set_space_order(&drag.working),
-                    crate::undo::StepLabel::reorder(format!("space {}", self.space_name(&drag.name))),
+                    crate::undo::StepLabel::reorder(format!(
+                        "space {}",
+                        self.space_name(&drag.name)
+                    )),
                 ),
                 _ => (
                     p.set_environment_order(&drag.working),
-                    crate::undo::StepLabel::reorder(format!("environment {}", self.env_name(&drag.name))),
+                    crate::undo::StepLabel::reorder(format!(
+                        "environment {}",
+                        self.env_name(&drag.name)
+                    )),
                 ),
             };
             match written {
                 Ok(_) => reordered = Some((t, label)),
-                Err(e) => self
-                    .toasts
-                    .push(format!("cannot reorder: {e}"), ToastKind::Warning),
+                Err(e) => self.toasts.push(format!("cannot reorder: {e}"), ToastKind::Warning),
             }
         }
         // The list cursor follows the item that was dragged, wherever it
@@ -9111,12 +8666,8 @@ impl App {
                 (TextSurface::TableCell, true)
             }
             Hit::VmFormField(field) => {
-                let editing_this = self
-                    .varmanager
-                    .form
-                    .editing
-                    .as_ref()
-                    .is_some_and(|e| &e.field == field);
+                let editing_this =
+                    self.varmanager.form.editing.as_ref().is_some_and(|e| &e.field == field);
                 if !editing_this {
                     return None;
                 }
@@ -9170,10 +8721,7 @@ impl App {
             TextSurface::VmField | TextSurface::VmCell | TextSurface::Jq | TextSurface::Settings
         ) {
             items.push(if has_selection {
-                MenuItem::new(
-                    "Extract to variable\u{2026}",
-                    Action::ExtractSelection(surface),
-                )
+                MenuItem::new("Extract to variable\u{2026}", Action::ExtractSelection(surface))
             } else {
                 MenuItem::disabled("Extract to variable\u{2026}")
             });
@@ -9242,17 +8790,11 @@ impl App {
                 if !keys.is_empty() {
                     items.push(gated(
                         "Pluck field\u{2026}",
-                        Action::JqPluckPrompt {
-                            path: path.clone(),
-                            keys: keys.clone(),
-                        },
+                        Action::JqPluckPrompt { path: path.clone(), keys: keys.clone() },
                     ));
                     items.push(gated(
                         "Where field\u{2026}",
-                        Action::JqWherePrompt {
-                            path: path.clone(),
-                            keys,
-                        },
+                        Action::JqWherePrompt { path: path.clone(), keys },
                     ));
                 }
             }
@@ -9286,10 +8828,7 @@ impl App {
         }
         let program = crate::ai::program_name(&self.ui_settings.ai_cmd);
         if crate::ai::program_available(&self.ui_settings.ai_cmd) {
-            items.push(MenuItem::new(
-                "Describe a filter\u{2026}",
-                Action::OpenJqDescribe,
-            ));
+            items.push(MenuItem::new("Describe a filter\u{2026}", Action::OpenJqDescribe));
         } else {
             items.push(MenuItem::disabled(format!(
                 "Describe a filter\u{2026}  ({program} not found)"
@@ -9362,9 +8901,7 @@ impl App {
             )]
         };
         Some(match row {
-            Row::Request {
-                slug, broken: None, ..
-            } => {
+            Row::Request { slug, broken: None, .. } => {
                 let moves = move_rows(slug);
                 let (first, last) = row_index
                     .and_then(|i| self.sidebar.group_bounds(i).map(|b| (b.0 == i, b.1 == i)))
@@ -9378,10 +8915,7 @@ impl App {
                     } else {
                         MenuItem::new(
                             "Move up",
-                            Action::MoveRequest {
-                                slug: slug.clone(),
-                                delta: -1,
-                            },
+                            Action::MoveRequest { slug: slug.clone(), delta: -1 },
                         )
                     },
                     if last {
@@ -9389,10 +8923,7 @@ impl App {
                     } else {
                         MenuItem::new(
                             "Move down",
-                            Action::MoveRequest {
-                                slug: slug.clone(),
-                                delta: 1,
-                            },
+                            Action::MoveRequest { slug: slug.clone(), delta: 1 },
                         )
                     },
                     MenuItem::new("Rename…", Action::PromptRenameRequest),
@@ -9404,11 +8935,7 @@ impl App {
             // A request whose file doesn't parse can't be loaded into the
             // editor, so "Open" is shown disabled rather than hidden — the
             // menu keeps its shape and the reason is one row away.
-            Row::Request {
-                slug,
-                broken: Some(_),
-                ..
-            } => {
+            Row::Request { slug, broken: Some(_), .. } => {
                 let moves = move_rows(slug);
                 let mut items = vec![
                     MenuItem::disabled("Open"),
@@ -9421,10 +8948,7 @@ impl App {
                 items
             }
             Row::Folder { path, expanded, .. } => vec![
-                MenuItem::new(
-                    "New request here…",
-                    Action::PromptNewRequestIn(path.clone()),
-                ),
+                MenuItem::new("New request here…", Action::PromptNewRequestIn(path.clone())),
                 MenuItem::new(
                     "Import curl here\u{2026}",
                     Action::ImportCurl { folder: Some(path.clone()) },
@@ -9540,7 +9064,13 @@ impl App {
     /// row menu's Duplicate and the register's put share, so naming,
     /// clamping and the cursor never drift. A wholesale row change is
     /// never coalesced into the keys around it.
-    fn insert_row_copy(&mut self, tab: EditorTab, key: &str, entry: postui_core::model::Entry, at: usize) {
+    fn insert_row_copy(
+        &mut self,
+        tab: EditorTab,
+        key: &str,
+        entry: postui_core::model::Entry,
+        at: usize,
+    ) {
         self.no_coalesce = true;
         let Some(map) = self.editor.table_map_mut(tab) else {
             return;
@@ -9627,14 +9157,12 @@ impl App {
                 CreateOutcome::Refused
             }
             Err(Error::BadName(_)) => {
-                self.toasts
-                    .push("request name cannot be empty", ToastKind::Error);
+                self.toasts.push("request name cannot be empty", ToastKind::Error);
                 self.last_action_failed = true;
                 CreateOutcome::Refused
             }
             Err(e) => {
-                self.toasts
-                    .push(format!("could not save {name}: {e}"), ToastKind::Error);
+                self.toasts.push(format!("could not save {name}: {e}"), ToastKind::Error);
                 self.last_action_failed = true;
                 CreateOutcome::Refused
             }
@@ -9662,8 +9190,7 @@ impl App {
                 true
             }
             Err(e) => {
-                self.toasts
-                    .push(e.to_string(), crate::components::toast::ToastKind::Error);
+                self.toasts.push(e.to_string(), crate::components::toast::ToastKind::Error);
                 true
             }
         }
@@ -9771,10 +9298,8 @@ impl App {
                 );
             }
             crate::clipboard::CopyResult::Failed(_) => {
-                self.toasts.push(
-                    "Clipboard unavailable — try Shift+drag to select",
-                    ToastKind::Error,
-                );
+                self.toasts
+                    .push("Clipboard unavailable — try Shift+drag to select", ToastKind::Error);
             }
         }
     }
@@ -9970,8 +9495,7 @@ impl App {
     pub(crate) fn begin_hover_fade(&mut self) {
         let now = Instant::now();
         self.anims.snap(AnimKey::Hover, 0.0);
-        self.anims
-            .retarget(AnimKey::Hover, 1.0, self.ui_settings.anim_ms.hover, now);
+        self.anims.retarget(AnimKey::Hover, 1.0, self.ui_settings.anim_ms.hover, now);
         // The URL well runs its own fade off the same call. Its hover is a
         // containment question — the pointer is "on the well" while it is
         // on the lock or the copy chip inside it — so restarting on every
@@ -9981,12 +9505,7 @@ impl App {
         let inside = self.url_well_hovered_now();
         if inside && !self.url_well_hovered {
             self.anims.snap(AnimKey::UrlWellHover, 0.0);
-            self.anims.retarget(
-                AnimKey::UrlWellHover,
-                1.0,
-                self.ui_settings.anim_ms.hover,
-                now,
-            );
+            self.anims.retarget(AnimKey::UrlWellHover, 1.0, self.ui_settings.anim_ms.hover, now);
         }
         self.url_well_hovered = inside;
     }
@@ -10011,8 +9530,7 @@ impl App {
     pub(crate) fn begin_focus_fade(&mut self) {
         let now = Instant::now();
         self.anims.snap(AnimKey::FocusFade, 0.0);
-        self.anims
-            .retarget(AnimKey::FocusFade, 1.0, self.ui_settings.anim_ms.focus, now);
+        self.anims.retarget(AnimKey::FocusFade, 1.0, self.ui_settings.anim_ms.focus, now);
     }
 
     /// Pushes `modal` onto the modal stack, driving `AnimKey::ModalOpen`
@@ -10195,11 +9713,7 @@ impl App {
         }
         let cur = self.anims.value_or(key, now, pole0);
         if self.anims.is_static(key) {
-            let target = if (cur - pole0).abs() <= (cur - pole1).abs() {
-                pole1
-            } else {
-                pole0
-            };
+            let target = if (cur - pole0).abs() <= (cur - pole1).abs() { pole1 } else { pole0 };
             self.anims.retarget(key, target, move_dur, now);
         } else {
             self.anims.retarget(key, cur, dwell_dur, now);
@@ -10395,9 +9909,7 @@ impl App {
         // handled. That is the "never mid-key" guarantee — no copy, no
         // handshake, just ordering.
         let global = self.keymap.lookup(&combo);
-        let modified = ev
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let modified = ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
 
         // 1. A modified quit combo is the escape hatch: it pre-empts
         // everything — except that when a text selection is live anywhere,
@@ -10468,9 +9980,7 @@ impl App {
         // swapped by an action, never mid-lookup, so this is the same
         // "one read per key" the first lookup is.
         let global = self.keymap.lookup(&combo);
-        let modified = ev
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let modified = ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
 
         // 1b. A bound paste combo digs past the layers below: modals and
         // non-Main screens capture all remaining input, but ctrl+v means
@@ -10508,10 +10018,7 @@ impl App {
         // instead, same as today.
         if global == Some(Action::Send)
             && ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
-            && self
-                .modals
-                .top()
-                .is_some_and(crate::components::modal::Modal::is_form)
+            && self.modals.top().is_some_and(crate::components::modal::Modal::is_form)
         {
             if self.modals.field_open() {
                 self.modals.close_top_field();
@@ -10534,10 +10041,7 @@ impl App {
             if modified
                 && global == Some(Action::OpenThemeChooser)
                 && self.theme_preview.is_some()
-                && matches!(
-                    self.modals.top(),
-                    Some(crate::components::modal::Modal::Chooser(_))
-                )
+                && matches!(self.modals.top(), Some(crate::components::modal::Modal::Chooser(_)))
             {
                 return self.update(Action::Close);
             }
@@ -10646,11 +10150,7 @@ impl App {
                 return self.handle_grid_key(ev);
             }
             let action = {
-                let Self {
-                    project,
-                    varmanager,
-                    ..
-                } = self;
+                let Self { project, varmanager, .. } = self;
                 project.as_ref().and_then(|p| varmanager.handle_key(ev, p))
             };
             if let Some(a) = action {
@@ -10756,25 +10256,21 @@ impl App {
         Some(match ev.code {
             KeyCode::Esc => self.update(Action::CloseScreen),
             KeyCode::Up if plain => {
-                self.settings
-                    .move_cursor(-1, self.ui_settings_are_editable());
+                self.settings.move_cursor(-1, self.ui_settings_are_editable());
                 true
             }
             KeyCode::Down if plain => {
-                self.settings
-                    .move_cursor(1, self.ui_settings_are_editable());
+                self.settings.move_cursor(1, self.ui_settings_are_editable());
                 true
             }
             // ctrl+Home/End are a second spelling of Home/End, and what
             // macOS's cmd+↑/↓ fold to (`keys::normalize_super_keys`).
             KeyCode::Home if plain || ctrl => {
-                self.settings
-                    .move_cursor(i32::MIN / 2, self.ui_settings_are_editable());
+                self.settings.move_cursor(i32::MIN / 2, self.ui_settings_are_editable());
                 true
             }
             KeyCode::End if plain || ctrl => {
-                self.settings
-                    .move_cursor(i32::MAX / 2, self.ui_settings_are_editable());
+                self.settings.move_cursor(i32::MAX / 2, self.ui_settings_are_editable());
                 true
             }
             // Only a Files row has two buttons to choose between; on a
@@ -10850,10 +10346,7 @@ impl App {
                         SettingsField::AiConfirmed => !ticked,
                         _ => ticked,
                     };
-                    return self.update(Action::SetUiFlag {
-                        key: field.key(),
-                        value,
-                    });
+                    return self.update(Action::SetUiFlag { key: field.key(), value });
                 }
                 let seed = field.text_value(&self.ui_settings).unwrap_or_default();
                 self.settings.begin_edit(field, &seed);
@@ -10876,10 +10369,7 @@ impl App {
             return match parse_osc52_limit(&text) {
                 Ok(value) => {
                     self.settings.end_edit();
-                    self.update(Action::SetUiInt {
-                        key: field.key(),
-                        value,
-                    })
+                    self.update(Action::SetUiInt { key: field.key(), value })
                 }
                 Err(why) => {
                     self.toasts.push(
@@ -10891,10 +10381,7 @@ impl App {
             };
         }
         self.settings.end_edit();
-        self.update(Action::SetUiString {
-            key: field.key(),
-            value: text,
-        })
+        self.update(Action::SetUiString { key: field.key(), value: text })
     }
 
     /// [`Self::commit_settings_edit`] for a click that is about to land
@@ -10955,12 +10442,10 @@ impl App {
         match key {
             "ai_cmd" => self.ui_settings.ai_cmd.clone(),
             "clipboard_cmd" => self.ui_settings.clipboard_cmd.clone().unwrap_or_default(),
-            "jq_tab" => crate::components::settings::jq_tab_spelling(self.ui_settings.jq_tab)
-                .to_string(),
-            "keymap" => self
-                .ui_settings
-                .keymap
-                .map_or(String::new(), |p| p.spelling().to_string()),
+            "jq_tab" => {
+                crate::components::settings::jq_tab_spelling(self.ui_settings.jq_tab).to_string()
+            }
+            "keymap" => self.ui_settings.keymap.map_or(String::new(), |p| p.spelling().to_string()),
             other => {
                 debug_assert!(false, "no string setting named {other:?}");
                 String::new()
@@ -10992,9 +10477,7 @@ impl App {
         }
         self.history.record_no_coalesce(crate::undo::Step {
             kind: crate::undo::StepKind::Config { key, before, after },
-            context: crate::undo::Context {
-                slug: None,
-            },
+            context: crate::undo::Context { slug: None },
         });
     }
 
@@ -11047,12 +10530,7 @@ impl App {
     /// exactly where it is; a ghost-row commit that already walked the edit
     /// on into the new option's first field is likewise left alone.
     fn step_grid_edit(&mut self, dir: i32) {
-        let at = self
-            .varmanager
-            .grid
-            .editing
-            .as_ref()
-            .map(|e| (e.row, e.col));
+        let at = self.varmanager.grid.editing.as_ref().map(|e| (e.row, e.col));
         self.commit_grid_edit();
         let Some((row, col)) = at else { return };
         if self.varmanager.grid.editing.is_some() {
@@ -11061,11 +10539,7 @@ impl App {
         let VmDetail::Group(selector) = self.varmanager.detail.clone() else {
             return;
         };
-        let ncols = 1 + self
-            .variables()
-            .selectors
-            .get(&selector)
-            .map_or(0, |g| g.fields.len());
+        let ncols = 1 + self.variables().selectors.get(&selector).map_or(0, |g| g.fields.len());
         let last_row =
             postui_core::varmodel::options_of(self.variables(), self.env_data(), &selector)
                 .map_or(0, indexmap::IndexMap::len);
@@ -11103,7 +10577,9 @@ impl App {
                 }
                 action
             }
-            PaneId::Response => self.with_response_search(|response, memory| response.handle_key(ev, memory)),
+            PaneId::Response => {
+                self.with_response_search(|response, memory| response.handle_key(ev, memory))
+            }
         }
     }
 
@@ -11144,8 +10620,7 @@ impl App {
         // The band crossfades rather than slides: record the row it fades
         // out from (see `Sidebar::band_fade_from`).
         self.sidebar.band_fade_from = prev;
-        self.anims
-            .retarget(key, cur as f32, self.ui_settings.anim_ms.list_travel, now);
+        self.anims.retarget(key, cur as f32, self.ui_settings.anim_ms.list_travel, now);
     }
 
     /// Re-derives the active editor tab from the user's preferred tab and
@@ -11202,10 +10677,8 @@ impl App {
             return;
         };
         let dur = self.ui_settings.anim_ms.tab_slide;
-        self.anims
-            .retarget_with(left_key, *x as f32, dur, now, Easing::InOutCubic);
-        self.anims
-            .retarget_with(right_key, (*x + *w) as f32, dur, now, Easing::InOutCubic);
+        self.anims.retarget_with(left_key, *x as f32, dur, now, Easing::InOutCubic);
+        self.anims.retarget_with(right_key, (*x + *w) as f32, dur, now, Easing::InOutCubic);
     }
 
     /// Keeps the editor tab underline pinned to the ACTIVE tab's current
@@ -11241,10 +10714,8 @@ impl App {
         }
         let now = Instant::now();
         let dur = self.ui_settings.anim_ms.tab_slide;
-        self.anims
-            .retarget_with(left_key, left, dur, now, Easing::InOutCubic);
-        self.anims
-            .retarget_with(right_key, right, dur, now, Easing::InOutCubic);
+        self.anims.retarget_with(left_key, left, dur, now, Easing::InOutCubic);
+        self.anims.retarget_with(right_key, right, dur, now, Easing::InOutCubic);
     }
 
     /// The "move to space" choosers' rows: every space but `except`, in
@@ -11286,10 +10757,8 @@ impl App {
             return;
         };
         let dur = self.ui_settings.anim_ms.tab_slide;
-        self.anims
-            .retarget_with(left_key, *x as f32, dur, now, Easing::InOutCubic);
-        self.anims
-            .retarget_with(right_key, (*x + *w) as f32, dur, now, Easing::InOutCubic);
+        self.anims.retarget_with(left_key, *x as f32, dur, now, Easing::InOutCubic);
+        self.anims.retarget_with(right_key, (*x + *w) as f32, dur, now, Easing::InOutCubic);
     }
 
     /// Like [`Self::retarget_editor_tab_underline`], but for
@@ -11309,10 +10778,8 @@ impl App {
     /// retarget the glide; a stale tracked value would otherwise leave the
     /// underline under the previous response's tab.
     fn reset_response_tab_underline(&mut self) {
-        self.anims
-            .clear(AnimKey::TabUnderline(StripId::ResponseTabs));
-        self.anims
-            .clear(AnimKey::TabUnderlineWidth(StripId::ResponseTabs));
+        self.anims.clear(AnimKey::TabUnderline(StripId::ResponseTabs));
+        self.anims.clear(AnimKey::TabUnderlineWidth(StripId::ResponseTabs));
     }
 
     fn retarget_response_tab_underline(&mut self, prev_mode: Option<ViewMode>) {
@@ -11330,9 +10797,8 @@ impl App {
         let left_key = AnimKey::TabUnderline(StripId::ResponseTabs);
         let right_key = AnimKey::TabUnderlineWidth(StripId::ResponseTabs);
         if self.anims.value(left_key, now).is_none() {
-            let prev_idx = prev_mode
-                .and_then(|m| modes.iter().position(|mm| *mm == m))
-                .unwrap_or(active_idx);
+            let prev_idx =
+                prev_mode.and_then(|m| modes.iter().position(|mm| *mm == m)).unwrap_or(active_idx);
             if let Some((x, w)) = spans.get(prev_idx) {
                 self.anims.snap(left_key, *x as f32);
                 self.anims.snap(right_key, (*x + *w) as f32);
@@ -11342,10 +10808,8 @@ impl App {
             return;
         };
         let dur = self.ui_settings.anim_ms.tab_slide;
-        self.anims
-            .retarget_with(left_key, *x as f32, dur, now, Easing::InOutCubic);
-        self.anims
-            .retarget_with(right_key, (*x + *w) as f32, dur, now, Easing::InOutCubic);
+        self.anims.retarget_with(left_key, *x as f32, dur, now, Easing::InOutCubic);
+        self.anims.retarget_with(right_key, (*x + *w) as f32, dur, now, Easing::InOutCubic);
     }
 
     /// Sets `sidebar.selected` (the keyboard cursor / menu target) to row
@@ -11494,10 +10958,7 @@ impl App {
         self.capture_undo(); // re-seed the shadow for the newly opened request
         let display = self.request_display(target_slug);
         self.toasts.push(
-            format!(
-                "{} {noun} in {display}",
-                if redo { "Redid" } else { "Undid" }
-            ),
+            format!("{} {noun} in {display}", if redo { "Redid" } else { "Undid" }),
             ToastKind::Info,
         );
         true
@@ -11515,19 +10976,13 @@ impl App {
     fn apply_undo_step(&mut self, step: crate::undo::Step, redo: bool) -> bool {
         use crate::undo::StepKind;
         match &step.kind {
-            StepKind::EditorDelta {
-                slug,
-                before,
-                after,
-            } => {
+            StepKind::EditorDelta { slug, before, after } => {
                 if *slug != self.editor.slug {
                     let Some(target_slug) = slug.clone() else {
                         // A scratch request has no slug to reopen; once it's
                         // been replaced its steps are unusable.
-                        self.toasts.push(
-                            "cannot undo: that unsaved request is gone",
-                            ToastKind::Error,
-                        );
+                        self.toasts
+                            .push("cannot undo: that unsaved request is gone", ToastKind::Error);
                         return false;
                     };
                     if !self.jump_to_request_for_undo(&target_slug, redo, &step, "edit") {
@@ -11535,11 +10990,7 @@ impl App {
                     }
                     // fall through to the normal same-request apply below
                 }
-                let target = if redo {
-                    (**after).clone()
-                } else {
-                    (**before).clone()
-                };
+                let target = if redo { (**after).clone() } else { (**before).clone() };
                 // Focus and the caret stay where they are (the snapshot
                 // swap re-places the editor's own caret against the new
                 // fields) — undo never moves focus, as on the Manage screen.
@@ -11567,11 +11018,7 @@ impl App {
                 let Some(p) = self.project.as_mut() else {
                     return false;
                 };
-                let expected = if redo {
-                    p.next_redo()
-                } else {
-                    p.last_entry().map(|(id, _)| id)
-                };
+                let expected = if redo { p.next_redo() } else { p.last_entry().map(|(id, _)| id) };
                 if expected != Some(*id) {
                     // Stale: the caller drops it and carries on to the
                     // step beneath. (`Action::Undo`/`Redo` check this
@@ -11583,7 +11030,14 @@ impl App {
                 let reorder = matches!(label.verb, crate::undo::Verb::Reorder);
                 match result {
                     Ok(Some(u)) => {
-                        self.after_replay(&u, before, after, reorder, &space_before, env_before.as_deref());
+                        self.after_replay(
+                            &u,
+                            before,
+                            after,
+                            reorder,
+                            &space_before,
+                            env_before.as_deref(),
+                        );
                         // `marked_entry` tracks the journal's top as the
                         // app last saw it: a replay moved it, so re-read.
                         self.sync_marked_entry();
@@ -11612,9 +11066,7 @@ impl App {
                         // for good. So the marker follows its entry: kept
                         // for the retry, dropped when the entry is gone
                         // (today's "the failed step is dropped").
-                        let kept = self
-                            .project()
-                            .is_some_and(|p| self.entry_on_top(p, *id, redo));
+                        let kept = self.project().is_some_and(|p| self.entry_on_top(p, *id, redo));
                         self.sync_marked_entry();
                         if kept {
                             if redo {
@@ -11680,8 +11132,7 @@ impl App {
                         let label = crate::components::settings::SettingsField::from_key(key)
                             .map(crate::components::settings::SettingsField::label)
                             .unwrap_or(key);
-                        self.toasts
-                            .push(format!("{verb} change to {label}"), ToastKind::Info);
+                        self.toasts.push(format!("{verb} change to {label}"), ToastKind::Info);
                         if redo {
                             self.history.push_undo_no_coalesce(step.clone());
                         } else {
@@ -11690,18 +11141,13 @@ impl App {
                         true
                     }
                     Err(e) => {
-                        self.toasts
-                            .push(format!("could not undo: {e}"), ToastKind::Error);
+                        self.toasts.push(format!("could not undo: {e}"), ToastKind::Error);
                         false
                     }
                 }
             }
             StepKind::ConfigFile { file, before, after } => {
-                let bytes = if redo {
-                    after.clone()
-                } else {
-                    before.clone().unwrap_or_default()
-                };
+                let bytes = if redo { after.clone() } else { before.clone().unwrap_or_default() };
                 let name = match file {
                     crate::action::ConfigFile::Config => crate::config::CONFIG_TOML,
                     crate::action::ConfigFile::Keys => crate::config::KEYS_TOML,
@@ -11715,10 +11161,8 @@ impl App {
                     Ok(()) => {
                         self.update(Action::ReloadFromDisk);
                         let verb = if redo { "Redid" } else { "Undid" };
-                        self.toasts.push(
-                            format!("{verb} reset of {}", file.name()),
-                            ToastKind::Info,
-                        );
+                        self.toasts
+                            .push(format!("{verb} reset of {}", file.name()), ToastKind::Info);
                         if redo {
                             self.history.push_undo_no_coalesce(step.clone());
                         } else {
@@ -11727,8 +11171,7 @@ impl App {
                         true
                     }
                     Err(e) => {
-                        self.toasts
-                            .push(format!("could not undo: {e}"), ToastKind::Error);
+                        self.toasts.push(format!("could not undo: {e}"), ToastKind::Error);
                         false
                     }
                 }
@@ -11802,31 +11245,31 @@ fn line_buf<'a>(
 }
 
 mod curl_flow;
-mod landing;
-mod mouse;
-mod router;
-mod vim_seam;
-mod panes;
-mod verbs;
 #[cfg(test)]
 mod curl_tests;
 #[cfg(test)]
 mod dialog_tests;
 #[cfg(test)]
-mod pane_tests;
-#[cfg(test)]
-mod key_invariant_tests;
-#[cfg(test)]
-mod field_tests;
-#[cfg(test)]
-mod key_matrix_tests;
-#[cfg(test)]
-mod global_tests;
+mod dot_tests;
 #[cfg(test)]
 mod ex_tests;
 #[cfg(test)]
-mod dot_tests;
+mod field_tests;
+#[cfg(test)]
+mod global_tests;
+#[cfg(test)]
+mod key_invariant_tests;
+#[cfg(test)]
+mod key_matrix_tests;
+mod landing;
+mod mouse;
+#[cfg(test)]
+mod pane_tests;
+mod panes;
 #[cfg(test)]
 mod response_conformance_tests;
+mod router;
 #[cfg(test)]
 mod tests;
+mod verbs;
+mod vim_seam;

@@ -24,11 +24,7 @@ pub enum Register {
     /// A Params/Headers/Vars row. The tab is part of the register so a
     /// header can't be put into the params table: the three tables look
     /// alike (`String` → `Entry`) but mean different things on the wire.
-    Row {
-        tab: EditorTab,
-        key: String,
-        entry: postui_core::model::Entry,
-    },
+    Row { tab: EditorTab, key: String, entry: postui_core::model::Entry },
 }
 
 impl Register {
@@ -69,7 +65,8 @@ mod tests {
     #[test]
     fn a_row_carries_the_tab_it_came_from() {
         let entry = postui_core::model::Entry { value: "1".into(), enabled: true };
-        let header = Register::Row { tab: EditorTab::Headers, key: "X".into(), entry: entry.clone() };
+        let header =
+            Register::Row { tab: EditorTab::Headers, key: "X".into(), entry: entry.clone() };
         let param = Register::Row { tab: EditorTab::Params, key: "X".into(), entry };
         assert_ne!(header, param);
     }

@@ -46,10 +46,7 @@ fn left_down(x: u16, y: u16) -> MouseEvent {
 
 fn click(app: &mut App, hit: Hit) {
     render(app);
-    let r = app
-        .hits
-        .rect_of(&hit)
-        .unwrap_or_else(|| panic!("no rect registered for {hit:?}"));
+    let r = app.hits.rect_of(&hit).unwrap_or_else(|| panic!("no rect registered for {hit:?}"));
     app.handle_mouse(left_down(r.x + r.width / 2, r.y + r.height / 2));
 }
 
@@ -93,11 +90,7 @@ fn stage8_landmarks_render_walk() {
     let buf = render(&mut app);
     let method = app.hits.rect_of(&Hit::MethodSelector).unwrap();
     let cap = buf.cell((method.x, method.y)).unwrap();
-    assert_eq!(
-        cap.symbol(),
-        "▂",
-        "address bar top row carries its quarter-row cap: {cap:?}"
-    );
+    assert_eq!(cap.symbol(), "▂", "address bar top row carries its quarter-row cap: {cap:?}");
     assert_eq!(
         cap.bg, app.theme.page,
         "the rest of the cap row is the page the bar floats on: {cap:?}"
@@ -108,11 +101,7 @@ fn stage8_landmarks_render_walk() {
     let active_tab = app.hits.rect_of(&Hit::EditorTab(0)).unwrap(); // Params, the default
     let other_tab = app.hits.rect_of(&Hit::EditorTab(1)).unwrap(); // Headers
     let under_active = buf.cell((active_tab.x + 1, active_tab.y + 1)).unwrap();
-    assert_eq!(
-        under_active.symbol(),
-        "━",
-        "underline family: {under_active:?}"
-    );
+    assert_eq!(under_active.symbol(), "━", "underline family: {under_active:?}");
     assert_eq!(
         under_active.fg, t_accent,
         "the active tab's segment is accent-colored, not the hairline: {under_active:?}"
@@ -135,8 +124,7 @@ fn stage8_landmarks_render_walk() {
     let bg1 = buf.cell((row1.x + 1, row1.y)).unwrap().bg;
     let bg2 = buf.cell((row2.x + 1, row2.y)).unwrap().bg;
     assert_eq!(
-        bg0,
-        app.theme.control_hover,
+        bg0, app.theme.control_hover,
         "row 0 carries the startup cursor (R6: the cursor is always on a row)"
     );
     assert_eq!(bg1, t_panel, "row 1 matches — no zebra stripe");
@@ -209,11 +197,7 @@ fn animations_disabled_renders_identically_at_rest() {
     };
     let a = render(&mut animated);
     let b = render(&mut still);
-    assert_eq!(
-        rows(&a),
-        rows(&b),
-        "animations=false must not change the at-rest frame"
-    );
+    assert_eq!(rows(&a), rows(&b), "animations=false must not change the at-rest frame");
 
     // At-rest equality alone doesn't prove the kill switch actually kills
     // motion -- `render`'s own `finish_all()` settles the animated side
@@ -261,12 +245,7 @@ fn disabled_labels_are_dimmed_by_the_control_mix_formula() {
 
     let mut term = Terminal::new(TestBackend::new(20, 3)).unwrap();
     term.draw(|f| {
-        Button {
-            label: "Send",
-            kind: ButtonKind::Secondary,
-            state: ControlState::Disabled,
-        }
-        .paint(
+        Button { label: "Send", kind: ButtonKind::Secondary, state: ControlState::Disabled }.paint(
             f.buffer_mut(),
             ratatui::layout::Rect::new(0, 0, 20, 3),
             &theme,
@@ -279,11 +258,7 @@ fn disabled_labels_are_dimmed_by_the_control_mix_formula() {
     let mut term2 = Terminal::new(TestBackend::new(20, 3)).unwrap();
     term2
         .draw(|f| {
-            TextField {
-                content: Line::raw("x"),
-                state: ControlState::Disabled,
-            }
-            .paint(
+            TextField { content: Line::raw("x"), state: ControlState::Disabled }.paint(
                 f.buffer_mut(),
                 ratatui::layout::Rect::new(0, 0, 20, 3),
                 &theme,
@@ -308,10 +283,6 @@ fn animation_ms_table_parses() {
 
     let (s, warnings) = UiSettings::parse("[animation_ms]\ntab_slide = 400\n");
     assert_eq!(s.anim_ms.tab_slide, Duration::from_millis(400));
-    assert_eq!(
-        s.anim_ms.hover,
-        Duration::from_millis(70),
-        "unset keys still default"
-    );
+    assert_eq!(s.anim_ms.hover, Duration::from_millis(70), "unset keys still default");
     assert!(warnings.is_empty());
 }

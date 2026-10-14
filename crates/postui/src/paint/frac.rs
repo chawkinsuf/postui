@@ -50,12 +50,8 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
     // If y0_frac == 0.0, row y0_int is fully covered; otherwise start from y0_int + 1
     let start_full = if y0_frac > 0.0 { y0_int + 1 } else { y0_int };
     if start_full < y1_int {
-        let full_rect = Rect::new(
-            x0,
-            start_full,
-            x1.saturating_sub(x0),
-            y1_int.saturating_sub(start_full),
-        );
+        let full_rect =
+            Rect::new(x0, start_full, x1.saturating_sub(x0), y1_int.saturating_sub(start_full));
         super::fill(buf, full_rect, fill);
     }
 
@@ -142,10 +138,7 @@ mod tests {
             } else {
                 ORDER.iter().position(|g| **g == *sym).unwrap_or(8)
             };
-            assert!(
-                order >= prev_glyph_order,
-                "coverage never shrinks: {sym} at step {step}"
-            );
+            assert!(order >= prev_glyph_order, "coverage never shrinks: {sym} at step {step}");
             prev_glyph_order = order;
         }
     }

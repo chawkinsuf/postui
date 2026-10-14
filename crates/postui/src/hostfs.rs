@@ -72,10 +72,7 @@ fn platform_attributes(_meta: &std::fs::Metadata) -> u32 {
 /// A kept temp file holding `text`, for `$EDITOR`.
 pub fn editor_tempfile(prefix: &str, suffix: &str, text: &str) -> anyhow::Result<PathBuf> {
     use std::io::Write;
-    let file = tempfile::Builder::new()
-        .prefix(prefix)
-        .suffix(suffix)
-        .tempfile()?;
+    let file = tempfile::Builder::new().prefix(prefix).suffix(suffix).tempfile()?;
     let (mut handle, path) = file.keep()?;
     handle.write_all(text.as_bytes())?;
     handle.flush()?;
@@ -98,10 +95,7 @@ pub fn append_log(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
     file.write_all(text.as_bytes())
 }
 

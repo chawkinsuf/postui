@@ -113,11 +113,7 @@ const HOVER_LIFT: f32 = 0.03;
 /// its page and cancels the hover rather than strengthening it. Mirrors the
 /// `step` that `Theme::generate` builds the ladder with in the first place.
 fn ladder_step(theme: &Theme) -> f32 {
-    if crate::theme::is_light(theme.page) {
-        -1.0
-    } else {
-        1.0
-    }
+    if crate::theme::is_light(theme.page) { -1.0 } else { 1.0 }
 }
 
 /// The `(tint source, surface)` a clickable keycap pill paints with, given
@@ -192,10 +188,7 @@ pub fn keycap_button(
     theme: &Theme,
 ) -> Rect {
     let (color, on) = keycap_face(theme, hovered, hover_t);
-    let chip = Chip {
-        label: keycap,
-        color,
-    };
+    let chip = Chip { label: keycap, color };
     let key_w = chip.width();
     let width = key_w + label.chars().count() as u16;
     let label_bg = hover_surface(theme, theme.panel, hovered, hover_t);
@@ -269,15 +262,7 @@ pub fn action(
 ) {
     if hovered == Some(&hit) {
         fill(buf, area, theme.accent);
-        text(
-            buf,
-            area.x,
-            area.y,
-            label,
-            theme.on_accent,
-            theme.accent,
-            true,
-        );
+        text(buf, area.x, area.y, label, theme.on_accent, theme.accent, true);
     } else {
         text(buf, area.x, area.y, label, theme.accent, surface, false);
     }
@@ -318,16 +303,10 @@ mod tests {
         );
         assert_eq!(
             keycap_face(&theme, true, 0.5),
-            (
-                mix(theme.text_muted, warmed, 0.5),
-                mix(theme.control, theme.control_hover, 0.5)
-            ),
+            (mix(theme.text_muted, warmed, 0.5), mix(theme.control, theme.control_hover, 0.5)),
             "mid-fade both ends are halfway"
         );
-        assert_eq!(
-            keycap_face(&theme, true, 1.0),
-            (warmed, theme.control_hover)
-        );
+        assert_eq!(keycap_face(&theme, true, 1.0), (warmed, theme.control_hover));
     }
 
     /// A light theme's surface ladder runs *downward* in lightness, so the
@@ -380,11 +359,7 @@ mod tests {
             assert_eq!(hover_surface(&theme, rest, true, 0.0), rest, "starts at rest");
             assert_eq!(
                 hover_surface(&theme, rest, true, 0.5),
-                mix(
-                    rest,
-                    crate::theme::lift_color(theme.control_hover, HOVER_LIFT),
-                    0.5
-                )
+                mix(rest, crate::theme::lift_color(theme.control_hover, HOVER_LIFT), 0.5)
             );
             assert_eq!(
                 hover_surface(&theme, rest, true, 1.0),

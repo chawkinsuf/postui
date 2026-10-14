@@ -29,11 +29,7 @@ impl Named {
     }
 
     pub fn event(self) -> KeyEvent {
-        let mods = if self.ctrl {
-            KeyModifiers::CONTROL
-        } else {
-            KeyModifiers::NONE
-        };
+        let mods = if self.ctrl { KeyModifiers::CONTROL } else { KeyModifiers::NONE };
         KeyEvent::new(self.code, mods)
     }
 }
@@ -197,11 +193,8 @@ impl Surfaces {
     /// `Motion` rows.
     pub const LISTS: Self = Self::NAV.minus(Self::RESPONSE);
     /// Where a row opens on Enter (`o`).
-    pub const OPENS_ROW: Self = Self::SIDEBAR
-        .or(Self::TABLE)
-        .or(Self::VAR_LIST)
-        .or(Self::VAR_GRID)
-        .or(Self::MANAGE_LIST);
+    pub const OPENS_ROW: Self =
+        Self::SIDEBAR.or(Self::TABLE).or(Self::VAR_LIST).or(Self::VAR_GRID).or(Self::MANAGE_LIST);
     /// Where a field opens on Enter (`i`). Manage detail panes take it
     /// too (spec §5.4; plan M1 Deviation 24).
     pub const OPENS_FIELD: Self = Self::TABLE
@@ -213,18 +206,11 @@ impl Surfaces {
     /// The lists vim's `/` has no search on yet (key list §6, parked).
     pub const SEARCHLESS: Self = Self::OPENS_ROW;
     /// The lists and tables the list verbs act on (key list §6).
-    pub const ROWS: Self = Self::SIDEBAR
-        .or(Self::TABLE)
-        .or(Self::MANAGE_LIST)
-        .or(Self::VAR_LIST)
-        .or(Self::VAR_GRID);
+    pub const ROWS: Self =
+        Self::SIDEBAR.or(Self::TABLE).or(Self::MANAGE_LIST).or(Self::VAR_LIST).or(Self::VAR_GRID);
     /// Where `u`, `ctrl+r` and `:` are the app's (spec §5.11): everywhere
     /// but pickers (they type) and dialogs (their letters answer).
-    pub const APP: Self = Self::NAV
-        .or(Self::BODY)
-        .or(Self::PROMPT)
-        .or(Self::FORM)
-        .or(Self::OTHER);
+    pub const APP: Self = Self::NAV.or(Self::BODY).or(Self::PROMPT).or(Self::FORM).or(Self::OTHER);
     /// The dialogs with a field: a one-field prompt and a form.
     pub const FORMS: Self = Self::PROMPT.or(Self::FORM);
     /// Where the window and tab keys apply (spec §5.8; plan M4a Deviation 2,
@@ -283,7 +269,9 @@ pub fn field_class(id: super::ctx::FieldId, surface: Surface) -> Surfaces {
     match id {
         _ if id.insert_only() => Surfaces::FIELD_QUERY,
         FieldId::Body => Surfaces::FIELD_BODY.or(Surfaces::FIELD_SCREEN),
-        FieldId::ModalInput(_) if surface == Surface::Prompt => Surfaces::FIELD_LINE.or(Surfaces::FIELD_PROMPT),
+        FieldId::ModalInput(_) if surface == Surface::Prompt => {
+            Surfaces::FIELD_LINE.or(Surfaces::FIELD_PROMPT)
+        }
         FieldId::ModalInput(_) => Surfaces::FIELD_LINE,
         _ => Surfaces::FIELD_LINE.or(Surfaces::FIELD_SCREEN),
     }
@@ -301,13 +289,7 @@ pub struct Binding {
 }
 
 const fn row(keys: &'static str, on: Surfaces, intent: Intent, count: CountRule) -> Binding {
-    Binding {
-        keys,
-        profile: Profiles::VIM,
-        on,
-        intent,
-        count,
-    }
+    Binding { keys, profile: Profiles::VIM, on, intent, count }
 }
 
 /// An arrows row: one key, no count (arrows never builds one).
@@ -907,7 +889,11 @@ fn fits(row: &[Tok], typed: &[Tok]) -> bool {
 /// The best row for `buf` among `rows` on `class`: a complete row with no
 /// `<any>` first, then one with `<any>` (plan M3a Deviation 10), then
 /// whether some row extends `buf`.
-fn best<'a>(rows: impl IntoIterator<Item = (&'static Binding, &'a [Tok])>, buf: &[Tok], class: Surfaces) -> Match {
+fn best<'a>(
+    rows: impl IntoIterator<Item = (&'static Binding, &'a [Tok])>,
+    buf: &[Tok],
+    class: Surfaces,
+) -> Match {
     let mut prefix = false;
     let mut wild = None;
     for (b, keys) in rows {
@@ -938,7 +924,11 @@ pub fn keys_for(profile: KeyProfile, surface: Surface, action: &Action) -> Optio
 /// [`keys_for`] on a surface class: a field class in idle Normal (plan M4b
 /// Deviation 21). A tab row spells `CycleTabs` whether or not it leaves a
 /// field; the `o` reopen row spells `ReopenField`.
-pub fn keys_for_class(profile: KeyProfile, class: Surfaces, action: &Action) -> Option<&'static str> {
+pub fn keys_for_class(
+    profile: KeyProfile,
+    class: Surfaces,
+    action: &Action,
+) -> Option<&'static str> {
     TABLE
         .iter()
         .find(|b| {
@@ -946,7 +936,9 @@ pub fn keys_for_class(profile: KeyProfile, class: Surfaces, action: &Action) -> 
                 && b.on.overlaps(class)
                 && match b.intent {
                     Intent::Act(f) | Intent::CloseThen(f) => f() == *action,
-                    Intent::Verb(v) => matches!(action, Action::OnSelection(w) if w.kind() == v.kind()),
+                    Intent::Verb(v) => {
+                        matches!(action, Action::OnSelection(w) if w.kind() == v.kind())
+                    }
                     Intent::Tab { delta } => *action == Action::CycleTabs(delta),
                     Intent::Reopen(None) => *action == Action::ReopenField,
                     _ => false,
@@ -1004,13 +996,22 @@ mod tests {
     fn field_rows_leave_note_and_swallow() {
         let line = Surfaces::FIELD_LINE;
         let body = Surfaces::FIELD_BODY;
-        assert!(matches!(class_match("j", line), Match::Complete(b) if matches!(b.intent, Intent::Leave(n) if n == DOWN)));
-        assert!(matches!(class_match("<Up>", line), Match::Complete(b) if matches!(b.intent, Intent::Leave(_))));
-        assert!(matches!(class_match("<C-d>", line), Match::Complete(b) if b.count == CountRule::Ignore));
+        assert!(
+            matches!(class_match("j", line), Match::Complete(b) if matches!(b.intent, Intent::Leave(n) if n == DOWN))
+        );
+        assert!(
+            matches!(class_match("<Up>", line), Match::Complete(b) if matches!(b.intent, Intent::Leave(_)))
+        );
+        assert!(
+            matches!(class_match("<C-d>", line), Match::Complete(b) if b.count == CountRule::Ignore)
+        );
         assert!(matches!(class_match("j", body), Match::NoMatch), "j is a motion in the body");
         assert!(matches!(class_match("q", line), Match::Prefix));
         for keys in ["qa", "q<CR>", "q<C-c>"] {
-            assert!(matches!(class_match(keys, line), Match::Complete(b) if matches!(b.intent, Intent::Recording)), "{keys}");
+            assert!(
+                matches!(class_match(keys, line), Match::Complete(b) if matches!(b.intent, Intent::Recording)),
+                "{keys}"
+            );
         }
         for keys in ["@a", "@<Esc>"] {
             assert!(
@@ -1019,16 +1020,33 @@ mod tests {
             );
         }
         for keys in ["ma", "'a", "`a"] {
-            assert!(matches!(class_match(keys, body), Match::Complete(b) if matches!(b.intent, Intent::Note(NO_MARKS))), "{keys}");
+            assert!(
+                matches!(class_match(keys, body), Match::Complete(b) if matches!(b.intent, Intent::Note(NO_MARKS))),
+                "{keys}"
+            );
         }
-        assert!(matches!(class_match("ZZ", line), Match::Complete(b) if matches!(b.intent, Intent::Swallow)), "a dialog field");
+        assert!(
+            matches!(class_match("ZZ", line), Match::Complete(b) if matches!(b.intent, Intent::Swallow)),
+            "a dialog field"
+        );
         let screen_line = line.or(Surfaces::FIELD_SCREEN);
-        assert!(matches!(class_match("ZZ", screen_line), Match::Complete(b) if matches!(b.intent, Intent::CloseThen(_))));
-        assert!(matches!(class_match("ZQ", screen_line), Match::Complete(b) if matches!(b.intent, Intent::Act(_))));
-        assert!(matches!(class_match("Zx", screen_line), Match::Complete(b) if matches!(b.intent, Intent::Swallow)));
-        assert!(matches!(class_match(":", body), Match::Complete(b) if matches!(b.intent, Intent::Act(_))));
+        assert!(
+            matches!(class_match("ZZ", screen_line), Match::Complete(b) if matches!(b.intent, Intent::CloseThen(_)))
+        );
+        assert!(
+            matches!(class_match("ZQ", screen_line), Match::Complete(b) if matches!(b.intent, Intent::Act(_)))
+        );
+        assert!(
+            matches!(class_match("Zx", screen_line), Match::Complete(b) if matches!(b.intent, Intent::Swallow))
+        );
+        assert!(
+            matches!(class_match(":", body), Match::Complete(b) if matches!(b.intent, Intent::Act(_)))
+        );
         assert!(matches!(class_match("x", line), Match::NoMatch), "the engine's");
-        assert!(matches!(class_match("g", line), Match::NoMatch), "a dialog field's g is the engine's");
+        assert!(
+            matches!(class_match("g", line), Match::NoMatch),
+            "a dialog field's g is the engine's"
+        );
     }
 
     /// Plan M3a Deviation 10: a specific row beats an `<any>` row of the
@@ -1043,8 +1061,12 @@ mod tests {
             ROWS.iter().map(|b| &*Box::leak(notation::parse(b.keys).into_boxed_slice())).collect();
         let rows = || ROWS.iter().zip(keys.iter().copied());
         let typed = |s: &str| notation::parse(s);
-        assert!(matches!(best(rows(), &typed("ZZ"), Surfaces::FIELD_LINE), Match::Complete(b) if b.keys == "ZZ"));
-        assert!(matches!(best(rows(), &typed("Zx"), Surfaces::FIELD_LINE), Match::Complete(b) if b.keys == "Z<any>"));
+        assert!(
+            matches!(best(rows(), &typed("ZZ"), Surfaces::FIELD_LINE), Match::Complete(b) if b.keys == "ZZ")
+        );
+        assert!(
+            matches!(best(rows(), &typed("Zx"), Surfaces::FIELD_LINE), Match::Complete(b) if b.keys == "Z<any>")
+        );
         assert!(matches!(best(rows(), &typed("Z"), Surfaces::FIELD_LINE), Match::Prefix));
     }
 
@@ -1053,17 +1075,29 @@ mod tests {
     #[test]
     fn the_fold_keys_are_the_sidebars_and_a_note_elsewhere() {
         use crate::components::manage::ManageTab;
-        let complete = |keys: &str, s: Surface| match lookup(&notation::parse(keys), KeyProfile::Vim, s) {
-            Match::Complete(b) => Some(b.intent),
-            _ => None,
-        };
+        let complete =
+            |keys: &str, s: Surface| match lookup(&notation::parse(keys), KeyProfile::Vim, s) {
+                Match::Complete(b) => Some(b.intent),
+                _ => None,
+            };
         assert!(matches!(complete("zc", Surface::Sidebar), Some(Intent::Counted(_))));
         assert!(matches!(complete("zM", Surface::Sidebar), Some(Intent::Act(_))));
-        for s in [Surface::VarList, Surface::Settings, Surface::ManageList(ManageTab::Environments), Surface::UrlLine] {
+        for s in [
+            Surface::VarList,
+            Surface::Settings,
+            Surface::ManageList(ManageTab::Environments),
+            Surface::UrlLine,
+        ] {
             assert!(matches!(complete("za", s), Some(Intent::Note(t)) if t == NO_FOLD), "{s:?}");
             assert!(matches!(complete("zR", s), Some(Intent::Swallow)), "{s:?}");
         }
-        assert!(matches!(lookup(&notation::parse("zc"), KeyProfile::Arrows, Surface::Sidebar), Match::NoMatch), "vim's");
+        assert!(
+            matches!(
+                lookup(&notation::parse("zc"), KeyProfile::Arrows, Surface::Sidebar),
+                Match::NoMatch
+            ),
+            "vim's"
+        );
     }
 
     /// Plan M3a Deviation 18: a keys.toml letter never reaches a field, so
@@ -1092,14 +1126,32 @@ mod tests {
         use crate::keyroute::FieldId;
         let screen_line = Surfaces::FIELD_LINE.or(Surfaces::FIELD_SCREEN);
         assert_eq!(field_class(FieldId::Url, Surface::UrlLine), screen_line);
-        assert_eq!(field_class(FieldId::TableCell { row: 0, col: 1 }, Surface::Table(crate::components::editor::EditorTab::Headers)), screen_line);
-        assert_eq!(field_class(FieldId::Body, Surface::Body), Surfaces::FIELD_BODY.or(Surfaces::FIELD_SCREEN));
-        assert_eq!(field_class(FieldId::ModalInput(0), Surface::Prompt), Surfaces::FIELD_LINE.or(Surfaces::FIELD_PROMPT));
+        assert_eq!(
+            field_class(
+                FieldId::TableCell { row: 0, col: 1 },
+                Surface::Table(crate::components::editor::EditorTab::Headers)
+            ),
+            screen_line
+        );
+        assert_eq!(
+            field_class(FieldId::Body, Surface::Body),
+            Surfaces::FIELD_BODY.or(Surfaces::FIELD_SCREEN)
+        );
+        assert_eq!(
+            field_class(FieldId::ModalInput(0), Surface::Prompt),
+            Surfaces::FIELD_LINE.or(Surfaces::FIELD_PROMPT)
+        );
         assert_eq!(field_class(FieldId::ModalInput(1), Surface::Form), Surfaces::FIELD_LINE);
         for id in [FieldId::Palette, FieldId::Jq, FieldId::Search, FieldId::FilePicker] {
             assert_eq!(field_class(id, Surface::Picker), Surfaces::FIELD_QUERY, "{id:?}");
         }
-        assert!(matches!(lookup_class(&notation::parse("j"), KeyProfile::Vim, Surfaces::FIELD_QUERY), Match::NoMatch), "no row in a query box");
+        assert!(
+            matches!(
+                lookup_class(&notation::parse("j"), KeyProfile::Vim, Surfaces::FIELD_QUERY),
+                Match::NoMatch
+            ),
+            "no row in a query box"
+        );
     }
 
     #[test]
@@ -1109,10 +1161,8 @@ mod tests {
         // length that overlap only through `<any>` are allowed: the specific
         // one wins (plan M3a Deviation 10).
         let prefix_of = |a: &[Tok], b: &[Tok]| a.len() < b.len() && fits(&b[..a.len()], a);
-        let classes = Surface::SAMPLES
-            .iter()
-            .map(|s| (format!("{s:?}"), Surfaces::of(*s)))
-            .chain([
+        let classes =
+            Surface::SAMPLES.iter().map(|s| (format!("{s:?}"), Surfaces::of(*s))).chain([
                 ("FIELD_LINE".to_string(), Surfaces::FIELD_LINE),
                 ("FIELD_BODY".to_string(), Surfaces::FIELD_BODY),
                 ("FIELD_PROMPT".to_string(), Surfaces::FIELD_LINE.or(Surfaces::FIELD_PROMPT)),
@@ -1156,17 +1206,23 @@ mod tests {
         use crate::action::Verb;
         for b in TABLE {
             let edge = matches!(b.intent, Intent::Edge { .. });
-            let counted_verb = matches!(b.intent, Intent::Verb(Verb::Delete { .. } | Verb::Put { .. }));
+            let counted_verb =
+                matches!(b.intent, Intent::Verb(Verb::Delete { .. } | Verb::Put { .. }));
             if edge {
                 assert_eq!(b.count, CountRule::Pass, "{}: an Edge row reads its count", b.keys);
             }
             let tab = matches!(b.intent, Intent::Tab { .. });
             if b.count == CountRule::Pass {
                 assert!(
-                    edge || counted_verb || tab || matches!(
-                        b.intent,
-                        Intent::Motion(_) | Intent::Extend(_) | Intent::Counted(_) | Intent::Edit { .. }
-                    ),
+                    edge || counted_verb
+                        || tab
+                        || matches!(
+                            b.intent,
+                            Intent::Motion(_)
+                                | Intent::Extend(_)
+                                | Intent::Counted(_)
+                                | Intent::Edit { .. }
+                        ),
                     "{}: Pass is for Edge rows, dd, p, the tab keys, the response's motions and counted actions, \
                      and the engine's edits",
                     b.keys
@@ -1198,23 +1254,39 @@ mod tests {
         let del = Action::OnSelection(Verb::Delete { count: 1 });
         assert_eq!(keys_for(Vim, Surface::Sidebar, &del), Some("dd"));
         assert_eq!(keys_for(Arrows, Surface::Sidebar, &del), Some("d"));
-        assert_eq!(keys_for(Vim, Surface::Sidebar, &Action::OnSelection(Verb::Delete { count: 3 })), Some("dd"));
+        assert_eq!(
+            keys_for(Vim, Surface::Sidebar, &Action::OnSelection(Verb::Delete { count: 3 })),
+            Some("dd")
+        );
         assert_eq!(keys_for(Vim, Surface::VarGrid, &Action::OnSelection(Verb::Yank)), Some("yy"));
         assert_eq!(keys_for(Arrows, Surface::VarGrid, &Action::OnSelection(Verb::Yank)), Some("c"));
-        assert_eq!(keys_for(Vim, Surface::VarForm, &Action::OnSelection(Verb::Reveal)), None, "M4's :reveal");
+        assert_eq!(
+            keys_for(Vim, Surface::VarForm, &Action::OnSelection(Verb::Reveal)),
+            None,
+            "M4's :reveal"
+        );
         assert_eq!(keys_for(Vim, Surface::Sidebar, &Action::CycleTabs(1)), Some("gt"));
         assert_eq!(keys_for(Vim, Surface::Sidebar, &Action::CycleTabs(-1)), Some("gT"));
-        assert_eq!(keys_for(Arrows, Surface::Sidebar, &Action::CycleTabs(1)), None, "arrows' tab keys are the keymap's");
+        assert_eq!(
+            keys_for(Arrows, Surface::Sidebar, &Action::CycleTabs(1)),
+            None,
+            "arrows' tab keys are the keymap's"
+        );
         assert!(vim_first_chars().contains(&'d') && vim_first_chars().contains(&'y'));
     }
 
     #[test]
     fn lookups_find_rows_prefixes_and_misses() {
         use KeyProfile::Vim;
-        assert!(matches!(lookup(&[Tok::Char('j')], Vim, Surface::Sidebar), Match::Complete(b) if b.keys == "j"));
+        assert!(
+            matches!(lookup(&[Tok::Char('j')], Vim, Surface::Sidebar), Match::Complete(b) if b.keys == "j")
+        );
         assert!(matches!(lookup(&[Tok::Char('g')], Vim, Surface::Sidebar), Match::Prefix));
         assert!(matches!(lookup(&[Tok::Char('x')], Vim, Surface::Sidebar), Match::NoMatch));
-        assert!(matches!(lookup(&[Tok::Char('j')], KeyProfile::Arrows, Surface::Sidebar), Match::NoMatch));
+        assert!(matches!(
+            lookup(&[Tok::Char('j')], KeyProfile::Arrows, Surface::Sidebar),
+            Match::NoMatch
+        ));
         assert!(
             matches!(lookup(&[Tok::Char('j')], Vim, Surface::Picker), Match::Complete(b) if b.keys == "j"),
             "a field-less picker (the dropdown) moves; a query box never reaches the table"
@@ -1240,7 +1312,10 @@ mod tests {
         assert!(!takes_count(Surface::Dialog), "a dialog's letters answer; digits are not counts");
         assert!(!takes_count(Surface::Picker), "a picker types");
         for s in [Surface::Prompt, Surface::Form, Surface::Other, Surface::Body] {
-            assert!(!takes_count(s), "{s:?} is not a navigation surface; `u` repeating there is not a count");
+            assert!(
+                !takes_count(s),
+                "{s:?} is not a navigation surface; `u` repeating there is not a count"
+            );
         }
     }
 }

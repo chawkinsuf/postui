@@ -129,12 +129,7 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(20, 10)).unwrap();
         term.draw(|f| {
             fill(f.buffer_mut(), Rect::new(0, 0, 20, 10), theme.page);
-            floating_panel(
-                f.buffer_mut(),
-                Rect::new(2, 2, 10, 5),
-                Rect::new(0, 0, 20, 10),
-                &theme,
-            );
+            floating_panel(f.buffer_mut(), Rect::new(2, 2, 10, 5), Rect::new(0, 0, 20, 10), &theme);
         })
         .unwrap();
         assert_eq!(buf_cell(&term, 5, 4).bg, theme.panel); // panel fill
@@ -194,15 +189,8 @@ mod tests {
         })
         .unwrap();
         let bg = buf_cell(&term, 3, 2).bg;
-        assert_ne!(
-            bg, theme.page,
-            "half strength must move off the undimmed color"
-        );
-        assert_ne!(
-            bg,
-            dim55(theme.page),
-            "half strength must not already be fully dimmed"
-        );
+        assert_ne!(bg, theme.page, "half strength must move off the undimmed color");
+        assert_ne!(bg, dim55(theme.page), "half strength must not already be fully dimmed");
         // Both endpoints are `Color::Rgb`, so the blend is channel-wise
         // monotone between them — a stronger assertion than merely "not
         // equal to either endpoint".
@@ -223,12 +211,7 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(20, 10)).unwrap();
         term.draw(|f| {
             fill(f.buffer_mut(), Rect::new(0, 0, 20, 10), theme.page);
-            floating_panel(
-                f.buffer_mut(),
-                Rect::new(2, 2, 10, 5),
-                Rect::new(0, 0, 20, 10),
-                &theme,
-            );
+            floating_panel(f.buffer_mut(), Rect::new(2, 2, 10, 5), Rect::new(0, 0, 20, 10), &theme);
         })
         .unwrap();
         // Top edge (non-corner column), inside the panel's own border row.
@@ -251,12 +234,7 @@ mod tests {
             fill(f.buffer_mut(), Rect::new(0, 0, 12, 7), theme.page);
             // panel touches the right/bottom screen edge, so its shadow
             // bands fall entirely outside `screen` — must not panic.
-            floating_panel(
-                f.buffer_mut(),
-                Rect::new(2, 2, 10, 5),
-                Rect::new(0, 0, 12, 7),
-                &theme,
-            );
+            floating_panel(f.buffer_mut(), Rect::new(2, 2, 10, 5), Rect::new(0, 0, 12, 7), &theme);
         })
         .unwrap();
         assert_eq!(buf_cell(&term, 5, 4).bg, theme.panel);

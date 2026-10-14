@@ -82,9 +82,8 @@ struct OptionData {
 type SelectorOptions = IndexMap<String, IndexMap<String, OptionData>>;
 
 fn parse_legacy_group(value: &toml::Value, name: &str) -> Result<LegacyGroup, EditError> {
-    let table = value
-        .as_table()
-        .ok_or_else(|| parse_err(format!("[groups.{name}] must be a table")))?;
+    let table =
+        value.as_table().ok_or_else(|| parse_err(format!("[groups.{name}] must be a table")))?;
     if table.contains_key("members") && table.contains_key("fields") {
         return Err(parse_err(format!(
             "[groups.{name}] has both `members` and `fields`; keep only `fields`"
@@ -103,9 +102,7 @@ fn parse_legacy_group(value: &toml::Value, name: &str) -> Result<LegacyGroup, Ed
     let mut fields = Vec::new();
     for f in list {
         let f = f.as_str().ok_or_else(|| {
-            parse_err(format!(
-                "[groups.{name}] `fields` must be an array of names"
-            ))
+            parse_err(format!("[groups.{name}] `fields` must be an array of names"))
         })?;
         fields.push(f.to_string());
     }
@@ -117,9 +114,8 @@ fn parse_legacy_group(value: &toml::Value, name: &str) -> Result<LegacyGroup, Ed
             .ok_or_else(|| parse_err(format!("[groups.{name}.options] must be a table")))?;
         for (key, row) in opts {
             let row_path = format!("groups.{name}.options.{key}");
-            let row = row
-                .as_table()
-                .ok_or_else(|| parse_err(format!("[{row_path}] must be a table")))?;
+            let row =
+                row.as_table().ok_or_else(|| parse_err(format!("[{row_path}] must be a table")))?;
             let mut option = LegacyOption::default();
             for (field, v) in row {
                 let v = v.as_str().ok_or_else(|| {
@@ -140,21 +136,12 @@ fn parse_legacy_group(value: &toml::Value, name: &str) -> Result<LegacyGroup, Ed
         }
     }
 
-    Ok(LegacyGroup {
-        fields,
-        options,
-        stage6,
-    })
+    Ok(LegacyGroup { fields, options, stage6 })
 }
 
 fn parse_legacy_var(value: &toml::Value, name: &str) -> Result<LegacyVar, EditError> {
-    let table = value
-        .as_table()
-        .ok_or_else(|| parse_err(format!("[{name}] must be a table")))?;
-    let description = table
-        .get("description")
-        .and_then(toml::Value::as_str)
-        .map(str::to_string);
+    let table = value.as_table().ok_or_else(|| parse_err(format!("[{name}] must be a table")))?;
+    let description = table.get("description").and_then(toml::Value::as_str).map(str::to_string);
 
     let mut options = IndexMap::new();
     if let Some(opts) = table.get("options") {
@@ -168,9 +155,8 @@ fn parse_legacy_var(value: &toml::Value, name: &str) -> Result<LegacyVar, EditEr
             .ok_or_else(|| parse_err(format!("[{name}.options] must be a table")))?;
         for (key, row) in opts {
             let row_path = format!("{name}.options.{key}");
-            let row = row
-                .as_table()
-                .ok_or_else(|| parse_err(format!("[{row_path}] must be a table")))?;
+            let row =
+                row.as_table().ok_or_else(|| parse_err(format!("[{row_path}] must be a table")))?;
             let mut option = LegacyOption::default();
             let mut seen_value = false;
             for (field, v) in row {
@@ -191,18 +177,13 @@ fn parse_legacy_var(value: &toml::Value, name: &str) -> Result<LegacyVar, EditEr
                 }
             }
             if !seen_value {
-                return Err(parse_err(format!(
-                    "[{row_path}] is missing required field \"value\""
-                )));
+                return Err(parse_err(format!("[{row_path}] is missing required field \"value\"")));
             }
             options.insert(key.clone(), option);
         }
     }
 
-    Ok(LegacyVar {
-        description,
-        options,
-    })
+    Ok(LegacyVar { description, options })
 }
 
 fn parse_legacy_vars(vars_doc: &str) -> Result<Legacy, EditError> {
@@ -213,19 +194,13 @@ fn parse_legacy_vars(vars_doc: &str) -> Result<Legacy, EditError> {
             continue;
         }
         if name == "groups" {
-            let groups = value
-                .as_table()
-                .ok_or_else(|| parse_err("[groups] must be a table"))?;
+            let groups = value.as_table().ok_or_else(|| parse_err("[groups] must be a table"))?;
             for (group, gvalue) in groups {
-                legacy
-                    .groups
-                    .insert(group.clone(), parse_legacy_group(gvalue, group)?);
+                legacy.groups.insert(group.clone(), parse_legacy_group(gvalue, group)?);
             }
             continue;
         }
-        legacy
-            .vars
-            .insert(name.clone(), parse_legacy_var(value, name)?);
+        legacy.vars.insert(name.clone(), parse_legacy_var(value, name)?);
     }
     Ok(legacy)
 }
@@ -239,33 +214,25 @@ fn parse_legacy_vars(vars_doc: &str) -> Result<Legacy, EditError> {
 /// than a migration prompt.
 fn parse_legacy_env(env: &str, doc: &str, legacy_names: &[String]) -> Result<LegacyEnv, EditError> {
     let top = top_level(doc, &format!("environments/{env}.toml"))?;
-    let mut out = LegacyEnv {
-        has_entries: top.contains_key("entries"),
-        ..LegacyEnv::default()
-    };
+    let mut out = LegacyEnv { has_entries: top.contains_key("entries"), ..LegacyEnv::default() };
     let Some(options) = top.get("options") else {
         return Ok(out);
     };
-    let options = options.as_table().ok_or_else(|| {
-        parse_err(format!(
-            "environments/{env}.toml: [options] must be a table"
-        ))
-    })?;
+    let options = options
+        .as_table()
+        .ok_or_else(|| parse_err(format!("environments/{env}.toml: [options] must be a table")))?;
     for (name, keys) in options {
         if !legacy_names.contains(name) {
             continue;
         }
         let keys = keys.as_table().ok_or_else(|| {
-            parse_err(format!(
-                "environments/{env}.toml: [options.{name}] must be a table"
-            ))
+            parse_err(format!("environments/{env}.toml: [options.{name}] must be a table"))
         })?;
         let mut per_name = IndexMap::new();
         for (key, row) in keys {
             let row_path = format!("environments/{env}.toml: [options.{name}.{key}]");
-            let row = row
-                .as_table()
-                .ok_or_else(|| parse_err(format!("{row_path} must be a table")))?;
+            let row =
+                row.as_table().ok_or_else(|| parse_err(format!("{row_path} must be a table")))?;
             let mut fields = IndexMap::new();
             for (field, v) in row {
                 let v = v
@@ -285,9 +252,7 @@ fn parse_legacy_env(env: &str, doc: &str, legacy_names: &[String]) -> Result<Leg
 /// `fields`, and any inline `options` table is dropped (its records were
 /// already captured for the environment files).
 fn rewrite_groups_as_selectors(doc: &str) -> Result<String, EditError> {
-    let mut doc = doc
-        .parse::<DocumentMut>()
-        .map_err(|e| parse_err(e.to_string()))?;
+    let mut doc = doc.parse::<DocumentMut>().map_err(|e| parse_err(e.to_string()))?;
     let root = doc.as_table_mut();
     if root.contains_key("groups") {
         if root.contains_key("selectors") {
@@ -316,9 +281,7 @@ fn rewrite_groups_as_selectors(doc: &str) -> Result<String, EditError> {
 /// When both containers exist, the entries subtrees are moved into the
 /// options table one by one instead of renamed wholesale.
 fn rewrite_env_containers(doc: &str, legacy_names: &[String]) -> Result<String, EditError> {
-    let mut doc = doc
-        .parse::<DocumentMut>()
-        .map_err(|e| parse_err(e.to_string()))?;
+    let mut doc = doc.parse::<DocumentMut>().map_err(|e| parse_err(e.to_string()))?;
     let root = doc.as_table_mut();
 
     if let Some(options) = root.get_mut("options").and_then(Item::as_table_mut) {
@@ -436,12 +399,8 @@ pub fn migrate(
     env_docs: &[(String, String)],
 ) -> Result<MigrationOutcome, EditError> {
     let legacy = parse_legacy_vars(vars_doc)?;
-    let legacy_names: Vec<String> = legacy
-        .vars
-        .keys()
-        .chain(legacy.groups.keys())
-        .cloned()
-        .collect();
+    let legacy_names: Vec<String> =
+        legacy.vars.keys().chain(legacy.groups.keys()).cloned().collect();
     let mut legacy_envs: Vec<(String, LegacyEnv)> = Vec::new();
     for (name, doc) in env_docs {
         legacy_envs.push((name.clone(), parse_legacy_env(name, doc, &legacy_names)?));
@@ -515,10 +474,7 @@ pub fn migrate(
             }
             per_selector.insert(
                 key.clone(),
-                OptionData {
-                    description: option.description.clone(),
-                    values,
-                },
+                OptionData { description: option.description.clone(), values },
             );
         }
         if !per_selector.is_empty() || !decl_options.contains_key(name) {
@@ -559,12 +515,10 @@ pub fn migrate(
             let is_converted_var = converted.contains(name);
             let per_selector = options.entry(name.clone()).or_default();
             for (key, row) in keys {
-                let slot = per_selector
-                    .entry(key.clone())
-                    .or_insert_with(|| OptionData {
-                        description: None,
-                        values: fields.iter().map(|f| (f.clone(), String::new())).collect(),
-                    });
+                let slot = per_selector.entry(key.clone()).or_insert_with(|| OptionData {
+                    description: None,
+                    values: fields.iter().map(|f| (f.clone(), String::new())).collect(),
+                });
                 for (field, v) in row {
                     if field == "description" {
                         slot.description = Some(v.clone());
@@ -607,21 +561,12 @@ pub fn migrate(
 
     // ---- environments/default.toml ----
     let mut new_default_env = None;
-    if env_docs.is_empty()
-        && decl_options
-            .values()
-            .any(|per_selector| !per_selector.is_empty())
-    {
+    if env_docs.is_empty() && decl_options.values().any(|per_selector| !per_selector.is_empty()) {
         new_default_env = Some(write_options("", &decl_options)?);
         notes.push("created environments/default.toml to hold the migrated options".to_string());
     }
 
-    Ok(MigrationOutcome {
-        variables: new_variables,
-        envs,
-        new_default_env,
-        notes,
-    })
+    Ok(MigrationOutcome { variables: new_variables, envs, new_default_env, notes })
 }
 
 #[cfg(test)]
@@ -645,10 +590,7 @@ members = ["user_id", "customer_id"]
 user_id = "1001"
 customer_id = "c-77"
 "#;
-        let qa_env = (
-            "qa".to_string(),
-            "[options.tier.gold]\nvalue = \"g-qa\"\n".to_string(),
-        );
+        let qa_env = ("qa".to_string(), "[options.tier.gold]\nvalue = \"g-qa\"\n".to_string());
         let out = migrate(vars, &[qa_env]).unwrap();
         let new_vars = out.variables.unwrap();
         let m = crate::varmodel::parse_variables(&new_vars).unwrap();
@@ -665,10 +607,7 @@ customer_id = "c-77"
         let e = crate::varmodel::parse_environment(qa_text).unwrap();
         assert_eq!(e.options["tier"]["gold"].values["tier"], "g-qa"); // env override won
         assert_eq!(e.options["tier"]["free"].values["tier"], "f-1");
-        assert_eq!(
-            e.options["tier"]["gold"].description.as_deref(),
-            Some("the good one")
-        );
+        assert_eq!(e.options["tier"]["gold"].description.as_deref(), Some("the good one"));
         assert_eq!(e.options["user"]["alice"].values["customer_id"], "c-77");
         crate::varmodel::validate_env(&m, &e).unwrap();
         assert!(
@@ -700,10 +639,7 @@ base_url = "https://qa.example.com"
 user_id = "1001"
 customer_id = "c-77"
 "#;
-        assert!(needs_migration(
-            vars,
-            &[("qa".to_string(), env.to_string())]
-        ));
+        assert!(needs_migration(vars, &[("qa".to_string(), env.to_string())]));
         let out = migrate(vars, &[("qa".to_string(), env.to_string())]).unwrap();
         let new_vars = out.variables.unwrap();
         assert!(
@@ -713,10 +649,7 @@ customer_id = "c-77"
         assert!(!new_vars.contains("[groups."), "{new_vars}");
         let m = crate::varmodel::parse_variables(&new_vars).unwrap();
         assert_eq!(m.selectors["user"].fields, ["user_id", "customer_id"]);
-        assert_eq!(
-            m.selectors["user"].description.as_deref(),
-            Some("user with customer")
-        );
+        assert_eq!(m.selectors["user"].description.as_deref(), Some("user with customer"));
         let (_, qa_text) = &out.envs[0];
         assert!(
             qa_text.contains("[options.user.\"user 1\"]"),
@@ -765,9 +698,7 @@ value = "g-1"
         let m = crate::varmodel::parse_variables(&out.variables.unwrap()).unwrap();
         crate::varmodel::validate_env(&m, &e).unwrap();
         assert!(
-            out.notes
-                .iter()
-                .any(|n| n.contains("environments/default.toml")),
+            out.notes.iter().any(|n| n.contains("environments/default.toml")),
             "{:?}",
             out.notes
         );
@@ -826,10 +757,7 @@ value = "g-qa"
     fn group_with_both_members_and_fields_is_an_error() {
         let vars = "[groups.user]\nmembers = [\"a\"]\nfields = [\"a\"]\n";
         let err = migrate(vars, &[]).unwrap_err();
-        assert!(
-            matches!(&err, EditError::Parse(m) if m.contains("groups.user")),
-            "{err:?}"
-        );
+        assert!(matches!(&err, EditError::Parse(m) if m.contains("groups.user")), "{err:?}");
     }
 
     #[test]
@@ -846,10 +774,7 @@ value = "g-qa"
         let out = migrate(vars, &envs).unwrap();
         let qa = crate::varmodel::parse_environment(&out.envs[0].1).unwrap();
         assert_eq!(qa.options["tier"]["qa-only"].values["tier"], "q-1");
-        assert_eq!(
-            qa.options["tier"]["qa-only"].description.as_deref(),
-            Some("just here")
-        );
+        assert_eq!(qa.options["tier"]["qa-only"].description.as_deref(), Some("just here"));
         assert_eq!(qa.options["tier"]["gold"].values["tier"], "g-1");
         let prod = crate::varmodel::parse_environment(&out.envs[1].1).unwrap();
         assert!(!prod.options["tier"].contains_key("qa-only"));
@@ -859,10 +784,7 @@ value = "g-qa"
     #[test]
     fn a_plain_variable_enumerated_only_in_an_env_also_becomes_a_selector() {
         let vars = "[shard]\ndescription = \"which shard\"\n";
-        let envs = vec![(
-            "qa".to_string(),
-            "[options.shard.east]\nvalue = \"e-1\"\n".to_string(),
-        )];
+        let envs = vec![("qa".to_string(), "[options.shard.east]\nvalue = \"e-1\"\n".to_string())];
         assert!(needs_migration(vars, &envs));
         let out = migrate(vars, &envs).unwrap();
         let m = crate::varmodel::parse_variables(&out.variables.unwrap()).unwrap();
@@ -906,10 +828,7 @@ value = "s-a"
         // undeclared-selector validation error, not a legacy shape — a
         // migration prompt here would blank the whole model over a typo.
         let vars = "[base_url]\ndefault = \"x\"\n";
-        let envs = vec![(
-            "qa".to_string(),
-            "[options.ghost.a]\nvalue = \"1\"\n".to_string(),
-        )];
+        let envs = vec![("qa".to_string(), "[options.ghost.a]\nvalue = \"1\"\n".to_string())];
         assert!(!needs_migration(vars, &envs));
         let out = migrate(vars, &envs).unwrap();
         assert_eq!(out, MigrationOutcome::default());
@@ -918,10 +837,7 @@ value = "s-a"
     #[test]
     fn env_group_option_naming_a_non_member_is_an_error() {
         let vars = "[groups.user]\nmembers = [\"user_id\"]\n";
-        let envs = vec![(
-            "qa".to_string(),
-            "[options.user.alice]\nghost = \"1\"\n".to_string(),
-        )];
+        let envs = vec![("qa".to_string(), "[options.user.alice]\nghost = \"1\"\n".to_string())];
         let err = migrate(vars, &envs).unwrap_err();
         assert!(
             matches!(&err, EditError::Parse(m) if m.contains("options.user.alice.ghost")),
@@ -956,9 +872,7 @@ user_id = "1001"
         assert_eq!(e.options["user"]["alice"].values["customer_id"], "");
         crate::varmodel::validate_env(&m, &e).unwrap();
         assert!(
-            out.notes
-                .iter()
-                .any(|n| n.contains("customer_id") && n.contains("alice")),
+            out.notes.iter().any(|n| n.contains("customer_id") && n.contains("alice")),
             "{:?}",
             out.notes
         );
@@ -966,33 +880,21 @@ user_id = "1001"
 
     #[test]
     fn needs_migration_spots_each_legacy_shape() {
-        assert!(needs_migration(
-            "[tier]\n[tier.options.gold]\nvalue = \"g\"\n",
-            &[]
-        ));
+        assert!(needs_migration("[tier]\n[tier.options.gold]\nvalue = \"g\"\n", &[]));
         assert!(needs_migration("[groups.user]\nmembers = [\"a\"]\n", &[]));
         assert!(needs_migration("[groups.user]\nfields = [\"a\"]\n", &[]));
         assert!(needs_migration(
             "",
-            &[(
-                "qa".to_string(),
-                "[entries.user.\"u\"]\nuser_id = \"1\"\n".to_string()
-            )]
+            &[("qa".to_string(), "[entries.user.\"u\"]\nuser_id = \"1\"\n".to_string())]
         ));
         assert!(needs_migration(
             "[base_url]\ndefault = \"x\"\n",
-            &[(
-                "qa".to_string(),
-                "[options.base_url.a]\nvalue = \"1\"\n".to_string()
-            )]
+            &[("qa".to_string(), "[options.base_url.a]\nvalue = \"1\"\n".to_string())]
         ));
         assert!(!needs_migration("", &[("qa".to_string(), String::new())]));
         assert!(!needs_migration(
             "[selectors.user]\nfields = [\"user_id\"]\n",
-            &[(
-                "qa".to_string(),
-                "[options.user.\"u\"]\nuser_id = \"1\"\n".to_string()
-            )]
+            &[("qa".to_string(), "[options.user.\"u\"]\nuser_id = \"1\"\n".to_string())]
         ));
     }
 }

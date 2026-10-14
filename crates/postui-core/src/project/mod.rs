@@ -219,10 +219,7 @@ fn join_warnings(warnings: &[Warning]) -> Option<String> {
 }
 
 fn parse_err(file: &str) -> impl Fn(&dyn std::fmt::Display) -> Error + '_ {
-    move |e| Error::Parse {
-        file: file.to_string(),
-        error: e.to_string(),
-    }
+    move |e| Error::Parse { file: file.to_string(), error: e.to_string() }
 }
 
 impl Project {
@@ -310,9 +307,7 @@ impl Project {
     }
 
     pub fn env_tls(&self) -> Option<TlsPolicy> {
-        self.active_env
-            .as_deref()
-            .and_then(|slug| meta::env_tls(&self.meta, slug))
+        self.active_env.as_deref().and_then(|slug| meta::env_tls(&self.meta, slug))
     }
 
     pub fn prepare_context(&self) -> crate::prepare::PrepareContext {
@@ -387,7 +382,11 @@ impl Project {
             spaces_warning: self.spaces_warning.clone(),
             environments_warning: self.environments_warning.clone(),
             local: self.local.clone(),
-            open_request_stamps: self.open_requests.iter().map(|(k, h)| (k.clone(), h.stamp)).collect(),
+            open_request_stamps: self
+                .open_requests
+                .iter()
+                .map(|(k, h)| (k.clone(), h.stamp))
+                .collect(),
         }
     }
 
@@ -406,15 +405,7 @@ impl Project {
         self.open_requests = m
             .open_request_stamps
             .into_iter()
-            .map(|(k, stamp)| {
-                (
-                    k,
-                    Held {
-                        req: crate::model::HttpRequest::default(),
-                        stamp,
-                    },
-                )
-            })
+            .map(|(k, stamp)| (k, Held { req: crate::model::HttpRequest::default(), stamp }))
             .collect();
     }
 
@@ -576,7 +567,11 @@ impl Project {
 
     /// Reads the current text (for the op's `before`) and writes `after`
     /// (`None` removes). The only way a document's text changes.
-    pub(crate) fn fs_write_text(&mut self, path: &RelPath, after: Option<&str>) -> Result<(), Error> {
+    pub(crate) fn fs_write_text(
+        &mut self,
+        path: &RelPath,
+        after: Option<&str>,
+    ) -> Result<(), Error> {
         let before = self.disk.read(path)?;
         if before.as_deref() == after {
             return Ok(());
@@ -585,20 +580,13 @@ impl Project {
             Some(t) => self.disk.write(path, t)?,
             None => self.disk.remove(path)?,
         }
-        self.record(Op::Text {
-            path: path.clone(),
-            before,
-            after: after.map(str::to_string),
-        });
+        self.record(Op::Text { path: path.clone(), before, after: after.map(str::to_string) });
         Ok(())
     }
 
     pub(crate) fn fs_rename(&mut self, from: &RelPath, to: &RelPath) -> Result<(), Error> {
         self.disk.rename(from, to)?;
-        self.record(Op::Renamed {
-            from: from.clone(),
-            to: to.clone(),
-        });
+        self.record(Op::Renamed { from: from.clone(), to: to.clone() });
         Ok(())
     }
 
@@ -648,14 +636,14 @@ impl Project {
     ) -> Result<(), Error> {
         let path = rel(PROJECT_TOML)?;
         let text = self.disk.read(&path)?.unwrap_or_default();
-        let mut doc: toml_edit::DocumentMut = text
-            .parse()
-            .map_err(|e: toml_edit::TomlError| parse_err(PROJECT_TOML)(&e))?;
+        let mut doc: toml_edit::DocumentMut =
+            text.parse().map_err(|e: toml_edit::TomlError| parse_err(PROJECT_TOML)(&e))?;
         f(&mut doc);
         let new_text = doc.to_string();
         // Validate before writing: a rejected edit must leave the file and
         // `self.meta` untouched, not a document `ProjectMeta` can't parse.
-        let parsed: ProjectMeta = toml::from_str(&new_text).map_err(|e| parse_err(PROJECT_TOML)(&e))?;
+        let parsed: ProjectMeta =
+            toml::from_str(&new_text).map_err(|e| parse_err(PROJECT_TOML)(&e))?;
         self.fs_write_text(&path, Some(&new_text))?;
         self.meta = parsed;
         Ok(())
@@ -826,7 +814,9 @@ impl Project {
                         warnings.push(format!("could not load environment {name:?}: {e}"));
                     }
                 }
-                Some(name) => warnings.push(format!("restored environment {name:?} no longer exists")),
+                Some(name) => {
+                    warnings.push(format!("restored environment {name:?} no longer exists"))
+                }
                 // `.local/state.toml` never distinguishes "explicitly no
                 // environment" from "this field was never written" (its
                 // default): a project that has never persisted local
@@ -854,11 +844,7 @@ impl Project {
         parse: impl FnOnce(&str) -> Result<T, String>,
     ) -> Result<T, OpenError> {
         let root = disk.root().to_path_buf();
-        let fatal = |error: String| OpenError {
-            root: root.clone(),
-            file: file.to_string(),
-            error,
-        };
+        let fatal = |error: String| OpenError { root: root.clone(), file: file.to_string(), error };
         let path = RelPath::new(file).map_err(|e| fatal(e.to_string()))?;
         match disk.read(&path).map_err(|e| fatal(e.to_string()))? {
             None => Ok(T::default()),
@@ -987,8 +973,7 @@ impl Project {
         let spaces_warning = join_warnings(&space_warnings);
         warnings.extend(space_warnings);
 
-        let (legacy_vars, pending_migration, migration_warnings) =
-            migration::probe(&mut disk);
+        let (legacy_vars, pending_migration, migration_warnings) = migration::probe(&mut disk);
         warnings.extend(migration_warnings);
         let model = if legacy_vars {
             VarModel::default()
@@ -1021,9 +1006,8 @@ impl Project {
                     warnings.push(format!(
                         "no environments — created environments/{DEFAULT_ENVIRONMENT}.toml"
                     ));
-                    environments = Self::list_environments(&mut disk, &meta)
-                        .map_err(&list_failed)?
-                        .0;
+                    environments =
+                        Self::list_environments(&mut disk, &meta).map_err(&list_failed)?.0;
                 }
                 Err(e) => warnings.push(format!("could not create the default environment: {e}")),
             }
@@ -1037,10 +1021,7 @@ impl Project {
                 toml::from_str(t).map_err(|e| e.to_string())
             })?;
 
-        let first_space = spaces
-            .first()
-            .cloned()
-            .unwrap_or_else(|| DEFAULT_SPACE.to_string());
+        let first_space = spaces.first().cloned().unwrap_or_else(|| DEFAULT_SPACE.to_string());
         let open_request_space = state
             .open_request
             .as_deref()
@@ -1157,10 +1138,7 @@ impl Project {
             };
             for (file, text) in [
                 (PROJECT_TOML, project_toml.as_str()),
-                (
-                    VARIABLES_TOML,
-                    "# Declare variables: [name] with optional description/default\n",
-                ),
+                (VARIABLES_TOML, "# Declare variables: [name] with optional description/default\n"),
                 (".gitignore", "/.local/\n"),
             ] {
                 match disk.write_new(&RelPath::new(file)?, text) {
@@ -1180,11 +1158,7 @@ impl Project {
         let (mut project, mut warnings) = Project::open(root.to_path_buf())?;
         if project.meta.spaces.is_empty() {
             let spaces = project.spaces.clone();
-            let spaces = if spaces.is_empty() {
-                vec![DEFAULT_SPACE.to_string()]
-            } else {
-                spaces
-            };
+            let spaces = if spaces.is_empty() { vec![DEFAULT_SPACE.to_string()] } else { spaces };
             let seeded = (|| -> Result<(), Error> {
                 project.fs_create_dir(&space_rel(&spaces[0])?)?;
                 project.edit_project_toml(|doc| {
@@ -1221,9 +1195,8 @@ impl Project {
             };
             let path = rel(PROJECT_TOML)?;
             let text = self.disk.read(&path)?.unwrap_or_default();
-            let mut doc: toml_edit::DocumentMut = text
-                .parse()
-                .map_err(|e: toml_edit::TomlError| parse_err(PROJECT_TOML)(&e))?;
+            let mut doc: toml_edit::DocumentMut =
+                text.parse().map_err(|e: toml_edit::TomlError| parse_err(PROJECT_TOML)(&e))?;
             doc["spaces"] = toml_edit::value(meta::slug_array(&spaces));
             let new_text = doc.to_string();
             // Validate before writing, as `edit_project_toml` does.
@@ -1410,9 +1383,13 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let (dir, mut p) = fixture();
         p.set_secret_for("dev", "token", "s3cret".to_string()).unwrap();
-        let mode = std::fs::metadata(dir.path().join(".local/secrets.toml")).unwrap().permissions().mode() & 0o777;
+        let mode =
+            std::fs::metadata(dir.path().join(".local/secrets.toml")).unwrap().permissions().mode()
+                & 0o777;
         assert_eq!(mode, 0o600);
-        let public = std::fs::metadata(dir.path().join("project.toml")).unwrap().permissions().mode() & 0o777;
+        let public =
+            std::fs::metadata(dir.path().join("project.toml")).unwrap().permissions().mode()
+                & 0o777;
         assert_ne!(public, 0o600, "project.toml keeps the umask mode");
     }
 
@@ -1446,11 +1423,8 @@ mod tests {
         )
         .unwrap();
         std::fs::create_dir_all(dir.path().join(".local")).unwrap();
-        std::fs::write(
-            dir.path().join(".local/secrets.toml"),
-            "[dev]\ntoken = \"s3cret\"\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join(".local/secrets.toml"), "[dev]\ntoken = \"s3cret\"\n")
+            .unwrap();
         std::fs::write(
             dir.path().join(".local/state.toml"),
             "environment = \"dev\"\n\n[selections.dev]\nregion = \"east\"\n\n[shared_selections]\nlocale = \"en\"\n",
@@ -1656,7 +1630,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("requests/main")).unwrap();
         std::fs::create_dir_all(dir.path().join("environments")).unwrap();
-        std::fs::write(dir.path().join("project.toml"), "environments = [\"qa\", \"dev\"]\n").unwrap();
+        std::fs::write(dir.path().join("project.toml"), "environments = [\"qa\", \"dev\"]\n")
+            .unwrap();
         for env in ["dev", "prod", "qa"] {
             std::fs::write(dir.path().join(format!("environments/{env}.toml")), "").unwrap();
         }
@@ -1702,7 +1677,8 @@ mod tests {
     #[test]
     fn spaces_warning_names_an_invalid_entry_and_clears_when_it_is_removed() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\", \"Bad Name\"]\n").unwrap();
+        std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\", \"Bad Name\"]\n")
+            .unwrap();
         std::fs::create_dir_all(dir.path().join("requests/main")).unwrap();
         let (mut p, warnings) = Project::open(dir.path().to_path_buf()).unwrap();
         let w = p.spaces_warning().expect("an invalid entry warns").to_string();
@@ -1725,7 +1701,10 @@ mod tests {
             Err(Error::Conflict("boom".into()))
         });
         assert!(r.is_err());
-        assert_eq!(read(&dir, "variables.toml").as_deref(), Some("[host]\ndefault = \"localhost\"\n"));
+        assert_eq!(
+            read(&dir, "variables.toml").as_deref(),
+            Some("[host]\ndefault = \"localhost\"\n")
+        );
         assert_eq!(p.journal_len(), 0);
     }
 
@@ -1751,7 +1730,8 @@ mod tests {
 
     fn bump_mtime(path: &std::path::Path) {
         // Coarse-mtime filesystems need the clock to move.
-        let t = std::fs::metadata(path).unwrap().modified().unwrap() + std::time::Duration::from_secs(2);
+        let t = std::fs::metadata(path).unwrap().modified().unwrap()
+            + std::time::Duration::from_secs(2);
         std::fs::File::open(path).unwrap().set_modified(t).unwrap();
     }
 
@@ -1759,7 +1739,11 @@ mod tests {
     fn poll_is_quiet_until_a_watched_file_changes_then_re_reads() {
         let (dir, mut p) = fixture();
         assert_eq!(p.poll(), (false, Vec::new()));
-        std::fs::write(dir.path().join("variables.toml"), "[host]\ndefault = \"changed\"\n[extra]\n").unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[host]\ndefault = \"changed\"\n[extra]\n",
+        )
+        .unwrap();
         bump_mtime(&dir.path().join("variables.toml"));
         let (changed, warnings) = p.poll();
         assert!(changed && warnings.is_empty(), "{warnings:?}");
@@ -1841,7 +1825,11 @@ mod tests {
         let (dir, mut p) = fixture();
         p.open_request("main/ping").unwrap();
         p.open_request("auth/login").unwrap();
-        std::fs::write(dir.path().join("requests/main/ping.toml"), "method = \"GET\"\nurl = \"outside\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("requests/main/ping.toml"),
+            "method = \"GET\"\nurl = \"outside\"\n",
+        )
+        .unwrap();
         std::fs::remove_file(dir.path().join("requests/auth/login.toml")).unwrap();
         p.reload_all();
         assert_eq!(p.held_request("main/ping").unwrap().url, "outside");
@@ -1876,7 +1864,11 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("environments")).unwrap();
         std::fs::write(dir.path().join("project.toml"), "").unwrap();
         // Stage-6 shape: a `[groups]` table `migrate::needs_migration` recognises.
-        std::fs::write(dir.path().join("variables.toml"), "[groups.region]\nmembers = [\"host\"]\n").unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[groups.region]\nmembers = [\"host\"]\n",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         assert!(p.pending_migration().is_some());
@@ -1982,7 +1974,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("environments")).unwrap();
         std::fs::write(dir.path().join("project.toml"), "").unwrap();
-        std::fs::write(dir.path().join("variables.toml"), "[groups.region]\nmembers = [\"host\"]\n").unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[groups.region]\nmembers = [\"host\"]\n",
+        )
+        .unwrap();
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         p.decline_migration();
         assert!(p.pending_migration().is_none());
@@ -2011,7 +2007,10 @@ mod tests {
         let r: Result<(), Error> = p.transaction("t", EntryMeta::default(), |p| {
             p.spaces.push("bogus".to_string());
             p.active_env = None;
-            p.secrets.entry("dev".to_string()).or_default().insert("k".to_string(), "v".to_string());
+            p.secrets
+                .entry("dev".to_string())
+                .or_default()
+                .insert("k".to_string(), "v".to_string());
             p.fs_write_text(&path, Some("[changed]\n"))?;
             p.fs_rename(&from, &to)?;
             if let Some(req) = p.open_requests.shift_remove("main/ping") {
@@ -2023,7 +2022,10 @@ mod tests {
         assert_eq!(p.spaces(), ["main", "auth"]);
         assert_eq!(p.active_env(), Some("dev"));
         assert!(p.secrets().get("dev").is_none());
-        assert_eq!(read(&dir, "variables.toml").as_deref(), Some("[host]\ndefault = \"localhost\"\n"));
+        assert_eq!(
+            read(&dir, "variables.toml").as_deref(),
+            Some("[host]\ndefault = \"localhost\"\n")
+        );
         assert_eq!(p.journal_len(), 0);
         assert!(p.held_request("main/ping").is_some(), "the rename was rolled back");
         assert!(p.held_request("main/renamed").is_none());

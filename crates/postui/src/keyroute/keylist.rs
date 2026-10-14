@@ -56,7 +56,13 @@ pub struct Row {
 /// rows up to it.
 pub const MILESTONE: Milestone = Milestone::M5b;
 
-const fn row(id: &'static str, tier: Tier, status: Status, milestone: Milestone, arrows: bool) -> Row {
+const fn row(
+    id: &'static str,
+    tier: Tier,
+    status: Status,
+    milestone: Milestone,
+    arrows: bool,
+) -> Row {
     Row { id, tier, status, milestone, arrows }
 }
 

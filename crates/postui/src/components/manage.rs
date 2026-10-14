@@ -25,12 +25,8 @@ pub enum ManageTab {
 impl ManageTab {
     /// Every tab, in on-screen order — the order `index`/`from_index`/
     /// `cycle` and the tab strip all read from.
-    pub const ALL: [ManageTab; 4] = [
-        ManageTab::Variables,
-        ManageTab::Environments,
-        ManageTab::Spaces,
-        ManageTab::Settings,
-    ];
+    pub const ALL: [ManageTab; 4] =
+        [ManageTab::Variables, ManageTab::Environments, ManageTab::Spaces, ManageTab::Settings];
 
     /// How many trailing tabs sit at the strip's right edge.
     pub const RIGHT_ANCHORED: usize = 1;
@@ -45,10 +41,7 @@ impl ManageTab {
     }
 
     pub fn index(self) -> usize {
-        Self::ALL
-            .iter()
-            .position(|t| *t == self)
-            .expect("ALL lists every tab")
+        Self::ALL.iter().position(|t| *t == self).expect("ALL lists every tab")
     }
 
     pub fn from_index(i: usize) -> Self {
@@ -59,10 +52,8 @@ impl ManageTab {
     /// strip `width` — the geometry `draw_manage_bar` lays the strip out
     /// with, exposed so the app can glide the underline between them.
     pub fn strip_spans(width: u16) -> Vec<(u16, u16)> {
-        let tabs: Vec<(String, Option<(&'static str, ratatui::style::Color)>)> = Self::ALL
-            .iter()
-            .map(|t| (t.label().to_string(), None))
-            .collect();
+        let tabs: Vec<(String, Option<(&'static str, ratatui::style::Color)>)> =
+            Self::ALL.iter().map(|t| (t.label().to_string(), None)).collect();
         TabStrip::spans_in(&tabs, Self::RIGHT_ANCHORED, width)
     }
 }
@@ -121,7 +112,10 @@ impl Manage {
     }
 
     /// [`Self::list_for`], mutably.
-    pub fn list_for_mut(&mut self, tab: ManageTab) -> &mut crate::components::manage_list::ManageList {
+    pub fn list_for_mut(
+        &mut self,
+        tab: ManageTab,
+    ) -> &mut crate::components::manage_list::ManageList {
         if tab == self.live || !matches!(tab, ManageTab::Environments | ManageTab::Spaces) {
             &mut self.list
         } else {
@@ -182,10 +176,8 @@ pub fn draw_manage_bar(
         return;
     }
 
-    let tabs: Vec<(String, Option<(&'static str, ratatui::style::Color)>)> = ManageTab::ALL
-        .iter()
-        .map(|t| (t.label().to_string(), None))
-        .collect();
+    let tabs: Vec<(String, Option<(&'static str, ratatui::style::Color)>)> =
+        ManageTab::ALL.iter().map(|t| (t.label().to_string(), None)).collect();
 
     // Tab strip: label row on the bar's middle row, underline below it.
     let hovered_tab = ManageTab::ALL
@@ -222,10 +214,7 @@ pub fn draw_manage_bar(
         if rect.x >= strip_end {
             continue;
         }
-        let clipped = Rect {
-            width: rect.width.min(strip_end - rect.x),
-            ..*rect
-        };
+        let clipped = Rect { width: rect.width.min(strip_end - rect.x), ..*rect };
         hits.register(clipped, Hit::ManageTab(i));
     }
 }
@@ -261,20 +250,11 @@ mod tests {
     #[test]
     fn the_strip_gets_the_full_bar_width() {
         let (content, hits) = render_at(ManageTab::Variables, 44);
-        for t in [
-            ManageTab::Variables,
-            ManageTab::Environments,
-            ManageTab::Spaces,
-        ] {
-            assert!(
-                content.contains(t.label()),
-                "{} missing: {content}",
-                t.label()
-            );
+        for t in [ManageTab::Variables, ManageTab::Environments, ManageTab::Spaces] {
+            assert!(content.contains(t.label()), "{} missing: {content}", t.label());
         }
         assert!(
-            hits.rect_of(&Hit::ManageTab(ManageTab::Settings.index()))
-                .is_some(),
+            hits.rect_of(&Hit::ManageTab(ManageTab::Settings.index())).is_some(),
             "Settings stays reachable even clipped"
         );
     }
@@ -290,12 +270,7 @@ mod tests {
     #[test]
     fn the_settings_tab_paints_at_the_strips_right_edge() {
         for width in [80u16, 100, 120] {
-            let bar = Rect {
-                x: 0,
-                y: 0,
-                width,
-                height: 3,
-            };
+            let bar = Rect { x: 0, y: 0, width, height: 3 };
             let strip = strip_area(bar);
             // The strip is entitled to the whole bar, so its right edge
             // is the bar's -- asserted here rather than folded into the
@@ -356,10 +331,7 @@ mod tests {
             accent_at(strip_x + mid as u16 + 1),
             "the segment is painted at the handed-in position"
         );
-        assert!(
-            !accent_at(strip_x + x2 + w2 - 1),
-            "and not at the active tab's own static span"
-        );
+        assert!(!accent_at(strip_x + x2 + w2 - 1), "and not at the active tab's own static span");
     }
 
     /// The tab chord's walk over this strip, wrapping, is the app's
@@ -388,26 +360,17 @@ mod tests {
         for tab in ManageTab::ALL {
             let (content, hits) = render(tab);
             for (i, t) in ManageTab::ALL.iter().enumerate() {
-                assert!(
-                    content.contains(t.label()),
-                    "{} missing: {content}",
-                    t.label()
-                );
+                assert!(content.contains(t.label()), "{} missing: {content}", t.label());
                 assert!(hits.rect_of(&Hit::ManageTab(i)).is_some());
             }
             assert!(!content.contains("Close"), "Close was removed: {content}");
+            assert!(!content.contains("Reload"), "Reload moved to the header: {content}");
             assert!(
-                !content.contains("Reload"),
-                "Reload moved to the header: {content}"
-            );
-            assert!(
-                hits.rect_of(&Hit::FooterChip(Action::CloseScreen))
-                    .is_none(),
+                hits.rect_of(&Hit::FooterChip(Action::CloseScreen)).is_none(),
                 "no close hit remains"
             );
             assert!(
-                hits.rect_of(&Hit::FooterChip(Action::ReloadFromDisk))
-                    .is_none(),
+                hits.rect_of(&Hit::FooterChip(Action::ReloadFromDisk)).is_none(),
                 "no reload hit remains on the bar"
             );
         }

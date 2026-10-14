@@ -131,11 +131,7 @@ pub fn capped(buf: &mut Buffer, area: Rect, face: Color, surface: Color) -> Rect
     if area.height < CAP_H || area.width == 0 {
         return Rect { height: 0, ..area };
     }
-    let content = Rect {
-        y: area.y + 1,
-        height: area.height - 2,
-        ..area
-    };
+    let content = Rect { y: area.y + 1, height: area.height - 2, ..area };
     super::fill(buf, content, face);
 
     let bottom_y = area.y + area.height - 1;
@@ -169,11 +165,7 @@ pub fn slivered(buf: &mut Buffer, area: Rect, face: Color, surface: Color) -> Re
     if area.height < SLIVER_H || area.width == 0 {
         return Rect { height: 0, ..area };
     }
-    let content = Rect {
-        y: area.y + 1,
-        height: area.height - 2,
-        ..area
-    };
+    let content = Rect { y: area.y + 1, height: area.height - 2, ..area };
     super::fill(buf, content, face);
 
     let bottom_y = area.y + area.height - 1;
@@ -208,23 +200,13 @@ pub fn chip_block(
     theme: &Theme,
 ) -> Rect {
     if CHIP_CAPS == ChipCaps::Sliver && bounds.height >= SLIVER_H && mid_y > bounds.y {
-        let block = Rect {
-            x,
-            y: mid_y - 1,
-            width,
-            height: SLIVER_H,
-        };
+        let block = Rect { x, y: mid_y - 1, width, height: SLIVER_H };
         let surface = backdrop(buf, block, theme);
         if slivered(buf, block, face, surface).height > 0 {
             return block;
         }
     }
-    let row = Rect {
-        x,
-        y: mid_y,
-        width,
-        height: 1,
-    };
+    let row = Rect { x, y: mid_y, width, height: 1 };
     super::fill(buf, row, face);
     row
 }

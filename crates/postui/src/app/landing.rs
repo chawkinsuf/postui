@@ -120,7 +120,10 @@ impl App {
 
     /// `change to {open request}` (spec R2's request-file row), or
     /// `fallback` when nothing is open.
-    pub(super) fn open_request_label(&self, fallback: crate::undo::StepLabel) -> crate::undo::StepLabel {
+    pub(super) fn open_request_label(
+        &self,
+        fallback: crate::undo::StepLabel,
+    ) -> crate::undo::StepLabel {
         match self.editor.slug.as_deref() {
             Some(slug) => crate::undo::StepLabel::change(self.request_display(slug)),
             None => fallback,
@@ -244,7 +247,8 @@ impl App {
         }
         if l.space.is_none()
             && l.open.is_none()
-            && let Some(space) = self.editor.slug.as_deref().and_then(postui_core::storage::space_of)
+            && let Some(space) =
+                self.editor.slug.as_deref().and_then(postui_core::storage::space_of)
             && space != self.active_space()
         {
             l.space = Some(space.to_string());
@@ -285,9 +289,7 @@ impl App {
     /// [`Self::view`], with `list`'s row (when given) in place of the one
     /// on screen.
     fn view_on(&self, list: Option<ManageTab>) -> View {
-        let buffer = self
-            .editor_holds_unsaved()
-            .then(|| Box::new(self.editor.current_request()));
+        let buffer = self.editor_holds_unsaved().then(|| Box::new(self.editor.current_request()));
         let open = match self.editor.slug.clone() {
             Some(slug) => Open::Request { slug, buffer },
             None => Open::Scratch { buffer },
@@ -314,9 +316,13 @@ impl App {
     /// The row under `tab`'s own cursor, live or parked.
     fn list_row_of(&self, tab: ManageTab) -> Option<ListRow> {
         match tab {
-            ManageTab::Environments => self.manage_selected(ManageTab::Environments).map(ListRow::Env),
+            ManageTab::Environments => {
+                self.manage_selected(ManageTab::Environments).map(ListRow::Env)
+            }
             ManageTab::Spaces => self.manage_selected(ManageTab::Spaces).map(ListRow::Space),
-            ManageTab::Variables => self.varmanager.detail.name().map(|n| ListRow::Var(n.to_string())),
+            ManageTab::Variables => {
+                self.varmanager.detail.name().map(|n| ListRow::Var(n.to_string()))
+            }
             ManageTab::Settings => None,
         }
     }
@@ -366,14 +372,11 @@ impl App {
                 p.record_space_open(open_slug.as_deref());
             }
             if !p.set_active_space(&target_space) {
-                self.toasts
-                    .push(format!("no space named {target_space:?}"), ToastKind::Warning);
+                self.toasts.push(format!("no space named {target_space:?}"), ToastKind::Warning);
                 return false;
             }
-            self.toasts.push(
-                format!("space: {}", self.space_name(&target_space)),
-                ToastKind::Success,
-            );
+            self.toasts
+                .push(format!("space: {}", self.space_name(&target_space)), ToastKind::Success);
         }
 
         // 3. What the editor holds. The band fades out from the open
@@ -412,8 +415,7 @@ impl App {
                     Err(e) => {
                         // Seat nothing: the editor stays exactly where it
                         // was (05a3b4d).
-                        self.toasts
-                            .push(format!("could not open {slug}: {e}"), ToastKind::Error);
+                        self.toasts.push(format!("could not open {slug}: {e}"), ToastKind::Error);
                         landed = false;
                     }
                 }
@@ -505,11 +507,8 @@ impl App {
     /// The cursor on the open request's row, else the first request row,
     /// else the first row.
     fn cursor_on_open(&mut self) {
-        let on_open = self
-            .editor
-            .slug
-            .clone()
-            .is_some_and(|s| self.sidebar.select_key(&RowKey::Request(s)));
+        let on_open =
+            self.editor.slug.clone().is_some_and(|s| self.sidebar.select_key(&RowKey::Request(s)));
         if !on_open {
             self.sidebar.select_first();
         }

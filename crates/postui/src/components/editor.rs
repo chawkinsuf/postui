@@ -34,12 +34,8 @@ pub enum EditorTab {
 /// ([`EditorTab::index`], bindable as `editor_tab_N`) follow this same
 /// order, so the number you bind always matches the tab's on-screen
 /// position.
-const DRAW_ORDER: [EditorTab; 4] = [
-    EditorTab::Headers,
-    EditorTab::Params,
-    EditorTab::Vars,
-    EditorTab::Body,
-];
+const DRAW_ORDER: [EditorTab; 4] =
+    [EditorTab::Headers, EditorTab::Params, EditorTab::Vars, EditorTab::Body];
 
 impl EditorTab {
     /// How many tabs the strip draws (`{N}gt`'s range; plan M4a).
@@ -59,10 +55,7 @@ impl EditorTab {
     /// This tab's position in [`DRAW_ORDER`] — what the tab strip's left-to-
     /// right layout, mouse clicks, and `EditorTabCycle` all key off.
     pub fn draw_position(self) -> usize {
-        DRAW_ORDER
-            .iter()
-            .position(|t| *t == self)
-            .expect("DRAW_ORDER lists every tab")
+        DRAW_ORDER.iter().position(|t| *t == self).expect("DRAW_ORDER lists every tab")
     }
 
     pub fn from_draw_position(i: usize) -> Self {
@@ -404,10 +397,8 @@ impl Editor {
     /// limbo. A selection already there is kept.
     fn enter_content(&mut self) {
         self.sub_focus = SubFocus::Content;
-        if matches!(
-            self.active_tab,
-            EditorTab::Params | EditorTab::Headers | EditorTab::Vars
-        ) && self.table.selected.is_none()
+        if matches!(self.active_tab, EditorTab::Params | EditorTab::Headers | EditorTab::Vars)
+            && self.table.selected.is_none()
         {
             self.table.selected = Some(0);
         }
@@ -462,9 +453,8 @@ impl Editor {
     /// in-progress edit pointed at fields that just got replaced.
     pub fn apply_snapshot(&mut self, req: &HttpRequest) {
         let caret = self.caret();
-        let keys_before: Vec<String> = (0..self.table_len())
-            .filter_map(|i| self.table_key_at(i))
-            .collect();
+        let keys_before: Vec<String> =
+            (0..self.table_len()).filter_map(|i| self.table_key_at(i)).collect();
         self.name = req.name.clone();
         self.method = req.method;
         self.url = LineInput::new(&req.url);
@@ -501,15 +491,11 @@ impl Editor {
     pub fn caret(&self) -> Caret {
         match self.sub_focus {
             SubFocus::Url => Caret::Url(self.url.cursor()),
-            SubFocus::Content if self.active_tab == EditorTab::Body => Caret::Body {
-                row: self.body.cursor.row,
-                col: self.body.cursor.col,
-            },
+            SubFocus::Content if self.active_tab == EditorTab::Body => {
+                Caret::Body { row: self.body.cursor.row, col: self.body.cursor.col }
+            }
             SubFocus::Content => match self.table.selected {
-                Some(row) => Caret::Cell {
-                    row,
-                    key: self.table_key_at(row),
-                },
+                Some(row) => Caret::Cell { row, key: self.table_key_at(row) },
                 None => Caret::None,
             },
             _ => Caret::None,
@@ -539,10 +525,7 @@ impl Editor {
                 // the last-drawn body height (top-aligned when no draw has
                 // recorded one yet). Wrapped lines make this approximate;
                 // edtui trues it up as soon as the cursor moves.
-                let half = self
-                    .last_body_area
-                    .map(|a| usize::from(a.height) / 2)
-                    .unwrap_or(0);
+                let half = self.last_body_area.map(|a| usize::from(a.height) / 2).unwrap_or(0);
                 self.body.set_viewport_offset(0, row.saturating_sub(half));
             }
             Caret::Cell { row, key } => {
@@ -582,11 +565,7 @@ impl Editor {
             variables: self.variables.clone(),
             body: {
                 let text = self.body_text();
-                if text.is_empty() {
-                    None
-                } else {
-                    Some(Body::Json { text })
-                }
+                if text.is_empty() { None } else { Some(Body::Json { text }) }
             },
         }
     }
@@ -694,10 +673,7 @@ impl Editor {
     pub fn body_insert_str(&mut self, s: &str) {
         for c in s.chars() {
             self.body_handler.on_key_event(
-                KeyEvent::new(
-                    KeyCode::Char(c),
-                    ratatui::crossterm::event::KeyModifiers::NONE,
-                ),
+                KeyEvent::new(KeyCode::Char(c), ratatui::crossterm::event::KeyModifiers::NONE),
                 &mut self.body,
             );
         }
@@ -709,7 +685,8 @@ impl Editor {
     fn body_overlays(&self) -> Vec<Overlay> {
         use crate::keyroute::engine_glue::Pos;
         let span = |(s, e): (Pos, Pos)| {
-            (e.col > s.col).then(|| (edtui::Index2::new(s.row, s.col), edtui::Index2::new(e.row, e.col - 1)))
+            (e.col > s.col)
+                .then(|| (edtui::Index2::new(s.row, s.col), edtui::Index2::new(e.row, e.col - 1)))
         };
         let mut out = Vec::new();
         if let Some((from, to)) = self.body_visual {
@@ -784,11 +761,7 @@ impl Editor {
             EditorTab::Vars => self.variables.len(),
             EditorTab::Body => 0,
         };
-        if count > 0 {
-            format!("{} · {count}", t.label())
-        } else {
-            t.label().to_string()
-        }
+        if count > 0 { format!("{} · {count}", t.label()) } else { t.label().to_string() }
     }
 
     /// The tab strip's current per-tab spans (see [`crate::paint::TabStrip::spans`]),
@@ -851,11 +824,7 @@ impl Editor {
         let rows = self.body.lines.len();
         let len_of = |row: usize| self.body.lines.len_col(row).unwrap_or(0);
         let row_chars = |body: &EditorState, row: usize| -> Vec<char> {
-            body.lines
-                .iter_row()
-                .nth(row)
-                .map(|l| l.to_vec())
-                .unwrap_or_default()
+            body.lines.iter_row().nth(row).map(|l| l.to_vec()).unwrap_or_default()
         };
         match ev.code {
             KeyCode::Left if word => {
@@ -957,10 +926,7 @@ impl Editor {
         let Some(area) = self.last_body_area else {
             return false;
         };
-        if !area.contains(Position {
-            x: m.column,
-            y: m.row,
-        }) {
+        if !area.contains(Position { x: m.column, y: m.row }) {
             return false;
         }
         if m.kind == MouseEventKind::Down(MouseButton::Left) {
@@ -1025,10 +991,7 @@ impl Editor {
     fn body_word_cells(&self, i: edtui::Index2) -> Option<(edtui::Index2, edtui::Index2)> {
         let line = self.body.lines.iter_row().nth(i.row)?;
         let (s, e) = super::word_nav::word_span_at(line, i.col)?;
-        Some((
-            edtui::Index2::new(i.row, s),
-            edtui::Index2::new(i.row, e - 1),
-        ))
+        Some((edtui::Index2::new(i.row, s), edtui::Index2::new(i.row, e - 1)))
     }
 
     /// Extends the body selection to the drag point `(x, y)`: the moving
@@ -1065,11 +1028,8 @@ impl Editor {
             };
             self.set_body_selection_cells(a, b);
             // The caret rides the moving end, like a plain sweep's does.
-            self.body.cursor = if key(head) < key(ws) {
-                a
-            } else {
-                edtui::Index2::new(b.row, b.col + 1)
-            };
+            self.body.cursor =
+                if key(head) < key(ws) { a } else { edtui::Index2::new(b.row, b.col + 1) };
             self.body.mode = EditorMode::Insert;
             return true;
         }
@@ -1163,11 +1123,7 @@ impl Editor {
     /// one shift+Right selects exactly one char). Clears the selection
     /// when the boundaries coincide.
     fn set_body_selection_boundaries(&mut self, a: edtui::Index2, b: edtui::Index2) {
-        let (lo, hi) = if (a.row, a.col) <= (b.row, b.col) {
-            (a, b)
-        } else {
-            (b, a)
-        };
+        let (lo, hi) = if (a.row, a.col) <= (b.row, b.col) { (a, b) } else { (b, a) };
         if lo == hi {
             self.body.selection = None;
             return;
@@ -1251,23 +1207,14 @@ impl Editor {
         let sel = self.body.selection.as_ref()?;
         let (start, end) = (sel.start(), sel.end());
         let mut out = String::new();
-        for (row, line) in self
-            .body
-            .lines
-            .iter_row()
-            .enumerate()
-            .skip(start.row)
-            .take(end.row - start.row + 1)
+        for (row, line) in
+            self.body.lines.iter_row().enumerate().skip(start.row).take(end.row - start.row + 1)
         {
             if row > start.row {
                 out.push('\n');
             }
             let from = if row == start.row { start.col } else { 0 };
-            let to = if row == end.row {
-                (end.col + 1).min(line.len())
-            } else {
-                line.len()
-            };
+            let to = if row == end.row { (end.col + 1).min(line.len()) } else { line.len() };
             out.extend(line.iter().skip(from).take(to.saturating_sub(from)));
         }
         Some(out)
@@ -1316,10 +1263,7 @@ impl Editor {
                 let n = if line.first() == Some(&'\t') {
                     1
                 } else {
-                    line.iter()
-                        .take(BODY_TAB_WIDTH)
-                        .take_while(|c| **c == ' ')
-                        .count()
+                    line.iter().take(BODY_TAB_WIDTH).take_while(|c| **c == ' ').count()
                 };
                 line.drain(0..n);
                 -(n as isize)
@@ -1391,10 +1335,7 @@ impl Editor {
         // Below the last line: the end of the last line, like every desktop
         // editor (edtui instead snapped to the last char of the buffer).
         let last = self.body.lines.len().checked_sub(1)?;
-        Some(edtui::Index2::new(
-            last,
-            self.body.lines.len_col(last).unwrap_or(0),
-        ))
+        Some(edtui::Index2::new(last, self.body.lines.len_col(last).unwrap_or(0)))
     }
 
     /// Like [`Self::body_cursor_for_click`], but drag-tolerant: a sweep
@@ -1432,10 +1373,7 @@ impl Editor {
 /// past the last char) — `find_tokens`'s spans are byte ranges, while both
 /// caret positions postui tracks are char indices.
 fn char_byte_offset(text: &str, idx: usize) -> usize {
-    text.char_indices()
-        .nth(idx)
-        .map(|(b, _)| b)
-        .unwrap_or(text.len())
+    text.char_indices().nth(idx).map(|(b, _)| b).unwrap_or(text.len())
 }
 
 /// The tab width edtui renders the body with: its `ViewState` default, which
@@ -1887,10 +1825,7 @@ impl Component for Editor {
                     EditorTab::Headers => {
                         let auto_rows = self.computed_row_count();
                         let divider = if auto_rows > 0 { 1 } else { 0 };
-                        (
-                            self.inherited_header_lines(ctx.theme).len() as u16,
-                            auto_rows + divider,
-                        )
+                        (self.inherited_header_lines(ctx.theme).len() as u16, auto_rows + divider)
                     }
                     // The referenced-vars section: one row per token the
                     // request references, plus its divider.
@@ -1917,11 +1852,8 @@ impl Component for Editor {
         // settled collapsed height and at every mid-animation height while
         // the pane eases between the two.
         let below_bar = inner.height.saturating_sub(ADDRESS_BAR_HEIGHT);
-        let tab_bar_height = if self.table_collapsed {
-            1.min(below_bar)
-        } else {
-            TAB_BAR_HEIGHT.min(below_bar)
-        };
+        let tab_bar_height =
+            if self.table_collapsed { 1.min(below_bar) } else { TAB_BAR_HEIGHT.min(below_bar) };
         // The toolbar row holds the Body tab's body-only tools; every other
         // tab starts its content directly under the tab bar — and a hidden
         // editor drops the row along with the content it acts on.
@@ -2127,24 +2059,13 @@ impl Editor {
         let method_label = format!("{} ▾", self.method.as_str());
         let label_w = method_label.chars().count() as u16;
         let start_x = method_area.x + method_area.width.saturating_sub(label_w) / 2;
-        text(
-            buf,
-            start_x,
-            text_y,
-            &method_label,
-            theme.on_accent,
-            method_fill,
-            true,
-        );
+        text(buf, start_x, text_y, &method_label, theme.on_accent, method_fill, true);
         hits.register(method_area, crate::hit::Hit::MethodSelector);
         // The dropdown opens just below `anchor.y` (see `modal::draw_popup`),
         // so the anchor is the bar's bottom (cap) row -- not the whole hit
         // target -- or the popup would overlap the badge itself.
-        self.last_method_area = Some(Rect {
-            y: method_area.y + method_area.height - 1,
-            height: 1,
-            ..method_area
-        });
+        self.last_method_area =
+            Some(Rect { y: method_area.y + method_area.height - 1, height: 1, ..method_area });
 
         // --- URL segment -------------------------------------------------
         // Hover and focus are two steps on one ramp off the resting fill
@@ -2163,9 +2084,8 @@ impl Editor {
         // crosses onto one of them. The well *contains* them — it stays
         // lit while the pointer is anywhere inside it, and each chip draws
         // its own hover on top of the lit fill.
-        let url_hovered = ctx
-            .pointer
-            .is_some_and(|(x, y)| url_area.contains(ratatui::layout::Position { x, y }));
+        let url_hovered =
+            ctx.pointer.is_some_and(|(x, y)| url_area.contains(ratatui::layout::Position { x, y }));
         // The surface the focus lift climbs from — the hover fill when the
         // pointer is on the well. Easing up from `theme.control` instead
         // would drop a lit well back to rest for the first frame of the
@@ -2177,11 +2097,8 @@ impl Editor {
         } else {
             theme.control
         };
-        let url_fill = if url_focused {
-            mix(url_base, url_focus_fill, ctx.focus_t())
-        } else {
-            url_base
-        };
+        let url_fill =
+            if url_focused { mix(url_base, url_focus_fill, ctx.focus_t()) } else { url_base };
         cap::capped(buf, url_area, url_fill, bar_surface);
         hits.register(url_area, crate::hit::Hit::UrlBar);
         self.last_url_area = Some(url_area);
@@ -2215,9 +2132,7 @@ impl Editor {
                 .saturating_sub(unsaved_w),
             ..url_area
         };
-        let mut url_line = self
-            .url
-            .draw_line_windowed(url_caret_live, theme, url_text_area.width);
+        let mut url_line = self.url.draw_line_windowed(url_caret_live, theme, url_text_area.width);
         url_line.style = Style::default().bg(url_fill).patch(url_line.style);
         buf.set_line(url_text_area.x, text_y, &url_line, url_text_area.width);
         // Token tinting paints over the text just drawn, and registers its
@@ -2231,11 +2146,7 @@ impl Editor {
             theme,
             hits,
         );
-        self.last_url_text_area = Some(Rect {
-            y: text_y,
-            height: 1,
-            ..url_text_area
-        });
+        self.last_url_text_area = Some(Rect { y: text_y, height: 1, ..url_text_area });
 
         // --- scratch marker ----------------------------------------------
         // Left of the copy chip, which sits left of the lock: the cluster
@@ -2319,16 +2230,9 @@ impl Editor {
         if chip_area.width > 0 {
             let chip_hovered = ctx.hovered == Some(&crate::hit::Hit::CopyUrl);
             let chip_tinted = theme.tint(theme.accent, url_fill);
-            let chip_bg = if chip_hovered {
-                mix(url_fill, chip_tinted, ctx.hover_t())
-            } else {
-                url_fill
-            };
-            let chip_fg = if chip_hovered {
-                theme.text
-            } else {
-                theme.text_muted
-            };
+            let chip_bg =
+                if chip_hovered { mix(url_fill, chip_tinted, ctx.hover_t()) } else { url_fill };
+            let chip_fg = if chip_hovered { theme.text } else { theme.text_muted };
             fill(buf, chip_area, chip_bg);
             text(
                 buf,
@@ -2367,26 +2271,16 @@ impl Editor {
             // same key -- they never run on the same screen). Defaults to
             // 0.0 (pure `accent`) the one frame a send starts before its
             // first `Action::Tick` has run.
-            let breathe_t = ctx
-                .anims
-                .value_or(crate::anim::AnimKey::SendBreathe, ctx.now, 0.0);
+            let breathe_t = ctx.anims.value_or(crate::anim::AnimKey::SendBreathe, ctx.now, 0.0);
             let face = mix(theme.accent, theme.accent_edge_dark, breathe_t);
             // Hovering a send in flight swaps the label to "Cancel" so the
             // click-to-cancel affordance is discoverable, without touching
             // the pulse/spinner face logic.
-            let label = if send_hovered {
-                "Cancel".to_string()
-            } else {
-                format!("{glyph} Sending")
-            };
+            let label =
+                if send_hovered { "Cancel".to_string() } else { format!("{glyph} Sending") };
             (label, face, theme.on_accent, true)
         } else if disabled {
-            (
-                "Send".to_string(),
-                theme.control,
-                theme.text_disabled,
-                false,
-            )
+            ("Send".to_string(), theme.control, theme.text_disabled, false)
         } else if send_hovered {
             (
                 "Send".to_string(),
@@ -2433,8 +2327,7 @@ impl Editor {
             EditorTab::Vars => &self.variables,
             EditorTab::Body => return None,
         };
-        map.get_index(i)
-            .map(|(k, e)| (k.as_str(), e.value.as_str()))
+        map.get_index(i).map(|(k, e)| (k.as_str(), e.value.as_str()))
     }
 
     /// Row `i`'s enabled flag on the active table tab. `true` out of range
@@ -2528,10 +2421,7 @@ impl Editor {
             EditorTab::Vars => &self.variables,
             EditorTab::Body => return false,
         };
-        self.table
-            .editing
-            .as_ref()
-            .is_some_and(|e| e.row == map.len())
+        self.table.editing.as_ref().is_some_and(|e| e.row == map.len())
     }
 
     /// Commits any in-progress table cell edit into the active tab's map —
@@ -2593,10 +2483,8 @@ impl Editor {
 
         let strip_area = Rect { height: 2, ..area };
         let spans = crate::paint::TabStrip::spans(&tab_strip);
-        let (static_left, static_width) = spans
-            .get(active)
-            .map(|(x, w)| (*x as f32, *w as f32))
-            .unwrap_or((0.0, 0.0));
+        let (static_left, static_width) =
+            spans.get(active).map(|(x, w)| (*x as f32, *w as f32)).unwrap_or((0.0, 0.0));
         // Independently animated left/right edges (Task 10): each key falls
         // back to this tab's own static edge when untracked, so the very
         // first draw of the strip snaps straight there with no slide-in
@@ -2639,9 +2527,7 @@ impl Editor {
                     active,
                     hovered,
                     underline,
-                    disabled: self
-                        .body_tab_disabled()
-                        .then(|| EditorTab::Body.draw_position()),
+                    disabled: self.body_tab_disabled().then(|| EditorTab::Body.draw_position()),
                     right_anchored: 0,
                 }
                 .paint(buf, strip_area, theme.page, theme)
@@ -2689,14 +2575,9 @@ impl Editor {
             Some(crate::hit::Hit::SplitStop(s)) => Some(*s),
             _ => None,
         };
-        let control_x = area
-            .right()
-            .saturating_sub(crate::paint::SPLIT_CONTROL_WIDTH + 1);
-        let rects = crate::paint::SplitControl {
-            state: split,
-            hovered,
-        }
-        .paint(buf, control_x, area.y, theme);
+        let control_x = area.right().saturating_sub(crate::paint::SPLIT_CONTROL_WIDTH + 1);
+        let rects = crate::paint::SplitControl { state: split, hovered }
+            .paint(buf, control_x, area.y, theme);
         for (rect, stop) in rects {
             hits.register(rect, crate::hit::Hit::SplitStop(stop));
         }
@@ -2714,20 +2595,9 @@ impl Editor {
         // On a pane too narrow to fit it clear of the tab strip (and the
         // "vars" badge), the pill drops — the control itself stays.
         if pill_x > strip_end {
-            crate::paint::Chip {
-                label: "alt+w",
-                color: pill_color,
-            }
-            .paint(buf, pill_x, area.y, pill_on, theme);
-            hits.register(
-                Rect {
-                    x: pill_x,
-                    y: area.y,
-                    width: pill_w,
-                    height: 1,
-                },
-                cycle_hit,
-            );
+            crate::paint::Chip { label: "alt+w", color: pill_color }
+                .paint(buf, pill_x, area.y, pill_on, theme);
+            hits.register(Rect { x: pill_x, y: area.y, width: pill_w, height: 1 }, cycle_hit);
         }
     }
 
@@ -2790,11 +2660,7 @@ impl Editor {
             .iter()
             .filter(|(_, entry)| entry.enabled)
             .map(|(name, entry)| {
-                let status = match self
-                    .headers
-                    .iter()
-                    .find(|(n, _)| n.eq_ignore_ascii_case(name))
-                {
+                let status = match self.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)) {
                     Some((_, req_entry)) if req_entry.enabled => "overridden",
                     Some(_) => "disabled",
                     None => "project",
@@ -2830,11 +2696,8 @@ impl Editor {
         let buf = frame.buffer_mut();
         crate::paint::fill(buf, area, theme.panel);
 
-        let sub_label = if self.substitute_body {
-            "substitute {{on}}"
-        } else {
-            "substitute {{off}}"
-        };
+        let sub_label =
+            if self.substitute_body { "substitute {{on}}" } else { "substitute {{off}}" };
         let chips: Vec<(&str, &str, Option<Action>)> = vec![
             ("alt+j", "format", Some(Action::FormatBody)),
             ("alt+g", "minify", Some(Action::MinifyBody)),
@@ -2909,15 +2772,9 @@ impl Editor {
                 } else {
                     (refs.len() as u16 + 1).min(area.height.saturating_sub(table_h))
                 };
-                let refs_area = (refs_h > 0).then(|| Rect {
-                    y: area.y + table_h,
-                    height: refs_h,
-                    ..area
-                });
-                let table_area = Rect {
-                    height: table_h,
-                    ..area
-                };
+                let refs_area =
+                    (refs_h > 0).then(|| Rect { y: area.y + table_h, height: refs_h, ..area });
+                let table_area = Rect { height: table_h, ..area };
                 let table_ctx = DrawCtx {
                     theme,
                     focused,
@@ -2977,10 +2834,7 @@ impl Editor {
                     height: computed_h,
                     ..table_area
                 });
-                let table_area = Rect {
-                    height: table_h,
-                    ..table_area
-                };
+                let table_area = Rect { height: table_h, ..table_area };
                 let table_ctx = DrawCtx {
                     theme,
                     focused,
@@ -3029,11 +2883,7 @@ impl Editor {
                     viewport: area.height as usize,
                 };
                 if spec.overflows() && area.width > 1 {
-                    let column = Rect {
-                        x: area.x + area.width - 1,
-                        width: 1,
-                        ..area
-                    };
+                    let column = Rect { x: area.x + area.width - 1, width: 1, ..area };
                     area.width -= 1;
                     crate::hit::draw_scrollbar(
                         frame,
@@ -3063,8 +2913,7 @@ impl Editor {
                 // parse (see `json_body_highlights`).
                 let text_now = self.body_text();
                 if self.body_hl_text != text_now || self.body_hl_marker != Some(theme.accent) {
-                    self.body
-                        .set_highlights(json_body_highlights(&self.body.lines, theme));
+                    self.body.set_highlights(json_body_highlights(&self.body.lines, theme));
                     self.body_hl_text = text_now;
                     self.body_hl_marker = Some(theme.accent);
                     self.body_hl_overlays.clear();
@@ -3075,7 +2924,9 @@ impl Editor {
                 if self.body_hl_overlays != overlays {
                     // One splice: the JSON colours behind them move once.
                     let stale = self.body_hl_overlays.len().min(self.body.highlights.len());
-                    let fresh = overlays.iter().map(|o| edtui::Highlight::new(o.from, o.to, o.kind.style(theme)));
+                    let fresh = overlays
+                        .iter()
+                        .map(|o| edtui::Highlight::new(o.from, o.to, o.kind.style(theme)));
                     self.body.highlights.splice(..stale, fresh);
                     self.body_hl_overlays = overlays;
                 }
@@ -3120,7 +2971,8 @@ impl Editor {
                 // The engine's search prompt covers the bottom row (below):
                 // a token under it gets no hit a click could find (final
                 // review M-4).
-                let prompt_row = self.body_search.prompt.is_some().then(|| area.bottom().saturating_sub(1));
+                let prompt_row =
+                    self.body_search.prompt.is_some().then(|| area.bottom().saturating_sub(1));
                 for y in area.y..area.bottom() {
                     if Some(y) == prompt_row {
                         continue;
@@ -3144,8 +2996,12 @@ impl Editor {
                     buf.set_style(row, style);
                     let text = format!("{}{}", line.dir.delim(), line.text);
                     buf.set_stringn(row.x, y, &text, usize::from(row.width), style);
-                    let before: usize = line.text.chars().take(line.cursor).map(body_char_width).sum();
-                    let x = row.x.saturating_add(1).saturating_add(u16::try_from(before).unwrap_or(u16::MAX));
+                    let before: usize =
+                        line.text.chars().take(line.cursor).map(body_char_width).sum();
+                    let x = row
+                        .x
+                        .saturating_add(1)
+                        .saturating_add(u16::try_from(before).unwrap_or(u16::MAX));
                     if x < row.right() {
                         buf[(x, y)].set_style(style.add_modifier(Modifier::REVERSED));
                     }
@@ -3234,15 +3090,7 @@ impl Editor {
             let source = format!("({})", info.source.label());
             let source_w = (source.chars().count() as u16).min(area.width);
             let source_x = area.right().saturating_sub(source_w + 1);
-            crate::paint::text(
-                buf,
-                source_x,
-                y,
-                &source,
-                theme.text_muted,
-                theme.page,
-                false,
-            );
+            crate::paint::text(buf, source_x, y, &source, theme.text_muted, theme.page, false);
             let value_avail = source_x.saturating_sub(2).saturating_sub(cols.value_x);
             crate::paint::text(
                 buf,
@@ -3282,19 +3130,11 @@ impl Editor {
                 format!("{} reveal", crate::glyph::EYE)
             };
             let show_toggle = self.computed.has_secret;
-            let toggle_w = if show_toggle {
-                toggle_label.chars().count() as u16 + 1
-            } else {
-                0
-            };
+            let toggle_w = if show_toggle { toggle_label.chars().count() as u16 + 1 } else { 0 };
             let prefix = "\u{2500}\u{2500} auto ";
-            let dash_w = area
-                .width
-                .saturating_sub(prefix.chars().count() as u16 + toggle_w);
-            let mut spans = vec![Span::styled(
-                format!("{prefix}{}", "\u{2500}".repeat(dash_w as usize)),
-                dim,
-            )];
+            let dash_w = area.width.saturating_sub(prefix.chars().count() as u16 + toggle_w);
+            let mut spans =
+                vec![Span::styled(format!("{prefix}{}", "\u{2500}".repeat(dash_w as usize)), dim)];
             if show_toggle {
                 let hovered = ctx.hovered == Some(&crate::hit::Hit::AutoHeaderReveal);
                 let toggle_style = if hovered {
@@ -3317,11 +3157,7 @@ impl Editor {
             y += 1;
         }
 
-        let auto = self
-            .computed
-            .rows
-            .iter()
-            .filter(|r| r.origin != HeaderOrigin::Request);
+        let auto = self.computed.rows.iter().filter(|r| r.origin != HeaderOrigin::Request);
         for (i, row) in auto.enumerate() {
             if y >= max_y {
                 break;
@@ -3393,11 +3229,7 @@ fn json_body_highlights(lines: &Lines, theme: &Theme) -> Vec<edtui::Highlight> {
     let rows: Vec<Vec<char>> = lines.iter_row().map(|l| l.to_vec()).collect();
     let mut out = Vec::new();
     let hl = |r: usize, a: usize, b: usize, color| {
-        Highlight::new(
-            Index2::new(r, a),
-            Index2::new(r, b),
-            Style::default().fg(color),
-        )
+        Highlight::new(Index2::new(r, a), Index2::new(r, b), Style::default().fg(color))
     };
     let (mut r, mut c) = (0usize, 0usize);
     while r < rows.len() {
@@ -3501,10 +3333,7 @@ mod tests {
     #[test]
     fn typing_into_url_marks_dirty_and_updates_request() {
         let mut e = Editor::default();
-        e.load(
-            Some("a".into()),
-            HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap(),
-        );
+        e.load(Some("a".into()), HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap());
         assert!(!e.is_dirty());
         assert_eq!(e.sub_focus, SubFocus::Url, "load must not change sub_focus");
         e.handle_key(key(KeyCode::Enter)); // open the selected URL line
@@ -3522,10 +3351,7 @@ mod tests {
     #[test]
     fn mark_saved_clears_dirty_flag() {
         let mut e = Editor::default();
-        e.load(
-            Some("a".into()),
-            HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap(),
-        );
+        e.load(Some("a".into()), HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap());
         e.handle_key(key(KeyCode::Enter)); // open the selected URL line
         e.handle_key(key(KeyCode::Char('/')));
         assert!(e.is_dirty());
@@ -3550,11 +3376,7 @@ mod tests {
         app.update(Action::SetMethod(postui_core::model::Method::Post));
         assert_eq!(app.editor.active_tab, EditorTab::Headers);
         app.update(Action::EditorTabCycle(-1));
-        assert_eq!(
-            app.editor.active_tab,
-            EditorTab::Body,
-            "backward wraps to last tab"
-        );
+        assert_eq!(app.editor.active_tab, EditorTab::Body, "backward wraps to last tab");
     }
 
     #[test]
@@ -3574,11 +3396,7 @@ mod tests {
         // (an empty Params table doesn't consume Up, so Editor's fallback
         // applies) and lands on the URL line selected, not open.
         let mut e = Editor::default();
-        assert_eq!(
-            e.sub_focus,
-            SubFocus::Url,
-            "default sub_focus starts on the URL line"
-        );
+        assert_eq!(e.sub_focus, SubFocus::Url, "default sub_focus starts on the URL line");
         e.handle_key(key(KeyCode::Down));
         assert_eq!(e.sub_focus, SubFocus::Content);
         assert_eq!(e.table.selected, Some(0), "lands on a visible row");
@@ -3685,10 +3503,7 @@ mod tests {
     fn body_ctrl_shift_right_selects_the_next_word() {
         let mut e = body_editor("foo bar");
         e.body.cursor = edtui::Index2::new(0, 0);
-        e.handle_key(KeyEvent::new(
-            KeyCode::Right,
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-        ));
+        e.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::SHIFT));
         assert_eq!(e.body.cursor, edtui::Index2::new(0, 3));
         assert_eq!(e.body_selected_text().as_deref(), Some("foo"));
     }
@@ -3731,18 +3546,9 @@ mod tests {
             ..Editor::default()
         };
         for key in ["Accept", "X-Debug"] {
-            e.headers.insert(
-                key.into(),
-                Entry {
-                    value: "1".into(),
-                    enabled: true,
-                },
-            );
+            e.headers.insert(key.into(), Entry { value: "1".into(), enabled: true });
         }
-        e.restore_caret(&Caret::Cell {
-            row: 2,
-            key: Some("Accept-copy".into()),
-        });
+        e.restore_caret(&Caret::Cell { row: 2, key: Some("Accept-copy".into()) });
         assert_eq!(
             e.table.selected,
             Some(1),
@@ -3759,10 +3565,7 @@ mod tests {
             sub_focus: SubFocus::Content,
             ..Editor::default()
         };
-        e.restore_caret(&Caret::Cell {
-            row: 3,
-            key: Some("Accept".into()),
-        });
+        e.restore_caret(&Caret::Cell { row: 3, key: Some("Accept".into()) });
         assert_eq!(e.table.selected, Some(0));
     }
 
@@ -3772,11 +3575,7 @@ mod tests {
         let mut e = body_editor(&text);
         e.last_body_area = None;
         e.restore_caret(&Caret::Body { row: 50, col: 0 });
-        assert_eq!(
-            e.body.viewport_offset().1,
-            50,
-            "unknown height: top-align the restored row"
-        );
+        assert_eq!(e.body.viewport_offset().1, 50, "unknown height: top-align the restored row");
     }
 
     /// Draws `e` and returns the fg color of the buffer cell holding the
@@ -3801,9 +3600,7 @@ mod tests {
         let backend = TestBackend::new(120, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let buf = terminal.backend().buffer().clone();
         let area = e.last_body_area.unwrap();
         for y in area.y..area.bottom() {
@@ -3867,9 +3664,7 @@ mod tests {
             let backend = TestBackend::new(120, 24);
             let mut terminal = Terminal::new(backend).unwrap();
             let mut hits = crate::hit::HitMap::default();
-            terminal
-                .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-                .unwrap();
+            terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
             terminal.backend().buffer().clone()
         };
 
@@ -3895,10 +3690,7 @@ mod tests {
         let buf = draw(&mut e);
         let first = &buf[(content_x, area.y)];
         assert_eq!(first.symbol(), "a", "expected the first char of line 1");
-        assert_eq!(
-            first.bg, theme.selection,
-            "the drag head cell paints with the selection fill"
-        );
+        assert_eq!(first.bg, theme.selection, "the drag head cell paints with the selection fill");
     }
 
     #[test]
@@ -3957,10 +3749,7 @@ mod tests {
         // A key whose colon sits on the NEXT line still reads as a key.
         let lines = Lines::from("{\n  \"k\"\n  : 1\n}");
         let hls = json_body_highlights(&lines, &theme);
-        let h = hls
-            .iter()
-            .find(|h| h.start == edtui::Index2::new(1, 2))
-            .expect("key highlight");
+        let h = hls.iter().find(|h| h.start == edtui::Index2::new(1, 2)).expect("key highlight");
         assert_eq!(h.style.fg, Some(theme.accent));
     }
 
@@ -3980,9 +3769,7 @@ mod tests {
             let backend = TestBackend::new(120, 20);
             let mut terminal = Terminal::new(backend).unwrap();
             let mut hits = crate::hit::HitMap::default();
-            terminal
-                .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-                .unwrap();
+            terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
             let buf = terminal.backend().buffer().clone();
             let area = e.last_body_area.unwrap();
             let mut n = 0;
@@ -3997,18 +3784,11 @@ mod tests {
         };
         let mut e = body_editor("foo bar");
         e.method = Method::Post;
-        assert!(
-            reversed_cells(&mut e) > 0,
-            "no selection: the caret cell renders reversed"
-        );
+        assert!(reversed_cells(&mut e) > 0, "no selection: the caret cell renders reversed");
         e.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::CONTROL));
         // The selection itself renders via the theme's selection *color*,
         // not REVERSED — so with the caret hidden no reversed cell remains.
-        assert_eq!(
-            reversed_cells(&mut e),
-            0,
-            "selection live: the block caret hides"
-        );
+        assert_eq!(reversed_cells(&mut e), 0, "selection live: the block caret hides");
     }
 
     #[test]
@@ -4063,26 +3843,14 @@ mod tests {
 
     #[test]
     fn method_focus_enter_or_space_opens_the_dropdown() {
-        let mut e = Editor {
-            sub_focus: SubFocus::Method,
-            ..Editor::default()
-        };
-        assert_eq!(
-            e.handle_key(key(KeyCode::Enter)),
-            Some(Action::OpenMethodDropdown)
-        );
-        assert_eq!(
-            e.handle_key(key(KeyCode::Char(' '))),
-            Some(Action::OpenMethodDropdown)
-        );
+        let mut e = Editor { sub_focus: SubFocus::Method, ..Editor::default() };
+        assert_eq!(e.handle_key(key(KeyCode::Enter)), Some(Action::OpenMethodDropdown));
+        assert_eq!(e.handle_key(key(KeyCode::Char(' '))), Some(Action::OpenMethodDropdown));
     }
 
     #[test]
     fn method_focus_down_lands_in_the_content_and_esc_blurs() {
-        let mut e = Editor {
-            sub_focus: SubFocus::Method,
-            ..Editor::default()
-        };
+        let mut e = Editor { sub_focus: SubFocus::Method, ..Editor::default() };
         e.handle_key(key(KeyCode::Down));
         assert_eq!(e.sub_focus, SubFocus::Content);
         assert_eq!(e.table.selected, Some(0), "lands on a visible row");
@@ -4098,16 +3866,8 @@ mod tests {
     #[test]
     fn plain_arrows_never_cycle_the_tab_strip() {
         for stop in [SubFocus::Method, SubFocus::Url, SubFocus::Content, SubFocus::None] {
-            for code in [
-                KeyCode::Left,
-                KeyCode::Right,
-                KeyCode::Char('h'),
-                KeyCode::Char('l'),
-            ] {
-                let mut e = Editor {
-                    sub_focus: stop,
-                    ..Editor::default()
-                };
+            for code in [KeyCode::Left, KeyCode::Right, KeyCode::Char('h'), KeyCode::Char('l')] {
+                let mut e = Editor { sub_focus: stop, ..Editor::default() };
                 let out = e.handle_key(key(code));
                 assert!(
                     !matches!(out, Some(Action::EditorTabCycle(_))),
@@ -4123,10 +3883,7 @@ mod tests {
     #[test]
     fn the_vim_letters_do_nothing_on_the_method_badge() {
         for letter in ['h', 'l', 'j', 'k'] {
-            let mut e = Editor {
-                sub_focus: SubFocus::Method,
-                ..Editor::default()
-            };
+            let mut e = Editor { sub_focus: SubFocus::Method, ..Editor::default() };
             assert_eq!(e.handle_key(key(KeyCode::Char(letter))), None, "{letter}");
             assert_eq!(e.sub_focus, SubFocus::Method, "{letter}");
         }
@@ -4177,11 +3934,7 @@ mod tests {
             ed.handle_key(key(KeyCode::Char('x')));
             let text_before = ed.url.text().to_string();
             ed.handle_key(key(closer));
-            assert_eq!(
-                ed.sub_focus,
-                SubFocus::Url,
-                "{closer:?}: stays on the URL line, selected"
-            );
+            assert_eq!(ed.sub_focus, SubFocus::Url, "{closer:?}: stays on the URL line, selected");
             assert!(!ed.plain_keys_type(), "{closer:?}: field is closed");
             assert_eq!(ed.url.text(), text_before, "{closer:?}: text kept");
         }
@@ -4205,13 +3958,7 @@ mod tests {
         // Params/Headers the first row (or the ghost + Add row of an empty
         // table) is selected immediately, so every keyboard stop shows.
         let mut e = Editor::default();
-        e.params.insert(
-            "a".into(),
-            Entry {
-                value: "1".into(),
-                enabled: true,
-            },
-        );
+        e.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
         e.sub_focus = SubFocus::Url;
         e.handle_key(key(KeyCode::Down));
         assert_eq!(e.sub_focus, SubFocus::Content);
@@ -4237,13 +3984,7 @@ mod tests {
     #[test]
     fn left_right_in_the_table_move_the_cell_cursor_not_the_tab_strip() {
         let mut e = Editor::default();
-        e.params.insert(
-            "a".into(),
-            Entry {
-                value: "1".into(),
-                enabled: true,
-            },
-        );
+        e.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
         e.sub_focus = SubFocus::Url;
         e.handle_key(key(KeyCode::Down));
         assert_eq!((e.sub_focus, e.table.selected), (SubFocus::Content, Some(0)));
@@ -4262,19 +4003,10 @@ mod tests {
     #[test]
     fn up_at_row_zero_climbs_out_and_k_and_ctrl_k_do_not() {
         let mut e = Editor::default();
-        e.params.insert(
-            "a".into(),
-            Entry {
-                value: "1".into(),
-                enabled: true,
-            },
-        );
+        e.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
         e.sub_focus = SubFocus::Content;
         e.table.selected = Some(0);
-        assert_eq!(
-            e.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL)),
-            None
-        );
+        assert_eq!(e.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL)), None);
         assert_eq!(e.sub_focus, SubFocus::Content, "ctrl+k is not a motion");
         assert_eq!(e.handle_key(key(KeyCode::Char('k'))), None);
         assert_eq!(e.sub_focus, SubFocus::Content, "k is not a motion");
@@ -4288,20 +4020,8 @@ mod tests {
         // A non-empty table still doesn't consume Up at row 0 (the top),
         // so Editor's fallback kicks in even though the table has rows.
         let mut e = Editor::default();
-        e.params.insert(
-            "a".into(),
-            Entry {
-                value: "1".into(),
-                enabled: true,
-            },
-        );
-        e.params.insert(
-            "b".into(),
-            Entry {
-                value: "2".into(),
-                enabled: true,
-            },
-        );
+        e.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
+        e.params.insert("b".into(), Entry { value: "2".into(), enabled: true });
         e.sub_focus = SubFocus::Content;
         e.table.selected = Some(0);
         let action = e.handle_key(key(KeyCode::Up));
@@ -4320,46 +4040,21 @@ mod tests {
         // Once selected has moved off row 0, Up navigates the table instead
         // of returning focus to the URL line.
         let mut e = Editor::default();
-        e.params.insert(
-            "a".into(),
-            Entry {
-                value: "1".into(),
-                enabled: true,
-            },
-        );
-        e.params.insert(
-            "b".into(),
-            Entry {
-                value: "2".into(),
-                enabled: true,
-            },
-        );
+        e.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
+        e.params.insert("b".into(), Entry { value: "2".into(), enabled: true });
         e.sub_focus = SubFocus::Content;
         e.table.selected = Some(1);
         let action = e.handle_key(key(KeyCode::Up));
         assert_eq!(action, Some(Action::Render));
-        assert_eq!(
-            e.sub_focus,
-            SubFocus::Content,
-            "table navigation must not move focus"
-        );
+        assert_eq!(e.sub_focus, SubFocus::Content, "table navigation must not move focus");
         assert_eq!(e.table.selected, Some(0));
     }
 
     #[test]
     fn duplicate_key_commit_in_params_tab_shows_warning_toast() {
-        let mut e = Editor {
-            active_tab: EditorTab::Params,
-            ..Editor::default()
-        };
+        let mut e = Editor { active_tab: EditorTab::Params, ..Editor::default() };
         for (k, v) in [("a", "1"), ("b", "2")] {
-            e.params.insert(
-                k.into(),
-                Entry {
-                    value: v.into(),
-                    enabled: true,
-                },
-            );
+            e.params.insert(k.into(), Entry { value: v.into(), enabled: true });
         }
         e.sub_focus = SubFocus::Content;
         // Rename "a" onto "b": the two rows collapse, with a warning.
@@ -4435,11 +4130,7 @@ mod tests {
         };
         e.set_body_text("one\ntwo");
         e.handle_key(key(KeyCode::Down)); // move to row 1 inside the body
-        assert_eq!(
-            e.sub_focus,
-            SubFocus::Content,
-            "Up/Down navigate inside a multi-line body"
-        );
+        assert_eq!(e.sub_focus, SubFocus::Content, "Up/Down navigate inside a multi-line body");
         e.handle_key(key(KeyCode::Up)); // back to row 0, still inside
         assert_eq!(e.sub_focus, SubFocus::Content);
         e.handle_key(key(KeyCode::Up)); // at row 0 → climb out to the URL line
@@ -4452,12 +4143,7 @@ mod tests {
         e.set_body_text("{ \"in-progress\": ");
         let req = e.current_request();
         let back = HttpRequest::from_toml_str(&req.to_toml_string()).unwrap();
-        assert_eq!(
-            back.body,
-            Some(Body::Json {
-                text: "{ \"in-progress\": ".into()
-            })
-        );
+        assert_eq!(back.body, Some(Body::Json { text: "{ \"in-progress\": ".into() }));
     }
 
     #[test]
@@ -4486,22 +4172,13 @@ mod tests {
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| {
-                app.toasts
-                    .draw(f, f.area(), &theme, &app.anims, std::time::Instant::now())
-            })
+            .draw(|f| app.toasts.draw(f, f.area(), &theme, &app.anims, std::time::Instant::now()))
             .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
-        assert!(
-            content.contains("line 2"),
-            "toast must carry the error position: {content}"
-        );
+        assert!(content.contains("line 2"), "toast must carry the error position: {content}");
 
         let mut app = App::new_for_test();
-        assert!(
-            app.update(Action::MinifyBody),
-            "empty body is a no-op, not an error"
-        );
+        assert!(app.update(Action::MinifyBody), "empty body is a no-op, not an error");
         assert_eq!(app.editor.body_text(), "");
         assert!(app.toasts.is_empty(), "no toast for an empty body");
     }
@@ -4521,8 +4198,7 @@ mod tests {
     /// order, or a panic when any chip is missing.
     fn control_rects(hits: &crate::hit::HitMap) -> [Rect; 5] {
         crate::split::SplitStop::ALL.map(|s| {
-            hits.rect_of(&Hit::SplitStop(s))
-                .unwrap_or_else(|| panic!("{s:?} chip registered"))
+            hits.rect_of(&Hit::SplitStop(s)).unwrap_or_else(|| panic!("{s:?} chip registered"))
         })
     }
 
@@ -4545,16 +4221,11 @@ mod tests {
             let mut e = Editor::default();
             let mut terminal = Terminal::new(TestBackend::new(120, 14)).unwrap();
             let mut hits = crate::hit::HitMap::default();
-            terminal
-                .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-                .unwrap();
+            terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
             let pill = hits.rect_of(&hit).expect("split keycap pill");
             let [first, ..] = control_rects(&hits);
             let buf = terminal.backend().buffer();
-            (
-                buf.cell((pill.x + 1, pill.y)).unwrap().bg,
-                buf.cell((first.x, first.y)).unwrap().bg,
-            )
+            (buf.cell((pill.x + 1, pill.y)).unwrap().bg, buf.cell((first.x, first.y)).unwrap().bg)
         };
 
         let (rest_pill, rest_chip) = draw(None);
@@ -4567,10 +4238,7 @@ mod tests {
         );
         let (color, on) = crate::paint::keycap_face(&theme, true, 1.0);
         assert_eq!(hot_pill, theme.tint(color, on), "hovered, it warms");
-        assert_eq!(
-            chip_while_pill_hot, rest_chip,
-            "the staircase chip beside it is untouched"
-        );
+        assert_eq!(chip_while_pill_hot, rest_chip, "the staircase chip beside it is untouched");
     }
 
     /// The split control advertises its own shortcut in place: an `alt+w`
@@ -4591,10 +4259,7 @@ mod tests {
             "pill, one gap column, then the control's left end cap"
         );
         assert_eq!(pill.y, first.y, "same row as the control");
-        assert!(
-            content.contains(&format!(" {}+w ", crate::keys::alt_label())),
-            "{content}"
-        );
+        assert!(content.contains(&format!(" {}+w ", crate::keys::alt_label())), "{content}");
     }
 
     /// Draws `e` at 120x14 (wide enough for every toolbar chip, Body tab
@@ -4614,9 +4279,7 @@ mod tests {
         let backend = TestBackend::new(120, 14);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         (format!("{:?}", terminal.backend().buffer()), hits)
     }
 
@@ -4636,9 +4299,7 @@ mod tests {
             let backend = TestBackend::new(120, 14);
             let mut terminal = Terminal::new(backend).unwrap();
             let mut hits = crate::hit::HitMap::default();
-            terminal
-                .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-                .unwrap();
+            terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
             let body_rect = hits
                 .rect_of(&crate::hit::Hit::EditorTab(EditorTab::Body.draw_position()))
                 .expect("body tab hit");
@@ -4647,11 +4308,7 @@ mod tests {
         let theme = Theme::dark();
         let mut e = Editor::default();
         assert_eq!(e.method, postui_core::model::Method::Get);
-        assert_eq!(
-            draw(&mut e),
-            theme.text_disabled,
-            "GET: Body label in the disabled color"
-        );
+        assert_eq!(draw(&mut e), theme.text_disabled, "GET: Body label in the disabled color");
         e.method = postui_core::model::Method::Post;
         assert_eq!(
             draw(&mut e),
@@ -4666,26 +4323,14 @@ mod tests {
         // group, vars to the editor's context chips. Only the collapse
         // toggle keeps the tab-label row's right edge.
         let mut e = Editor::default();
-        e.load(
-            Some("a".into()),
-            HttpRequest::from_toml_str("url = \"https://x\"\n").unwrap(),
-        );
+        e.load(Some("a".into()), HttpRequest::from_toml_str("url = \"https://x\"\n").unwrap());
         e.url = LineInput::new("https://x/changed");
         assert!(e.is_dirty());
         let (_, hits) = draw_editor(&mut e);
+        assert!(hits.rect_of(&Hit::FooterChip(Action::SaveRequest)).is_none());
+        assert!(hits.rect_of(&Hit::FooterChip(Action::DiscardChanges)).is_none());
         assert!(
-            hits.rect_of(&Hit::FooterChip(Action::SaveRequest))
-                .is_none()
-        );
-        assert!(
-            hits.rect_of(&Hit::FooterChip(Action::DiscardChanges))
-                .is_none()
-        );
-        assert!(
-            hits.rect_of(&Hit::FooterChip(Action::OpenVarPicker {
-                completing: false,
-            }))
-            .is_none()
+            hits.rect_of(&Hit::FooterChip(Action::OpenVarPicker { completing: false })).is_none()
         );
         control_rects(&hits); // the split control stays
     }
@@ -4695,16 +4340,10 @@ mod tests {
     /// clicks — only the split cluster keeps the row.
     #[test]
     fn hidden_tab_labels_fade_out_and_take_no_clicks() {
-        let mut e = Editor {
-            table_collapsed: true,
-            ..Editor::default()
-        };
+        let mut e = Editor { table_collapsed: true, ..Editor::default() };
         let (out, hits) = draw_editor(&mut e);
         assert!(!out.contains("Params"), "tab labels are invisible: {out}");
-        assert!(
-            hits.rect_of(&Hit::EditorTab(0)).is_none(),
-            "hidden tabs take no clicks"
-        );
+        assert!(hits.rect_of(&Hit::EditorTab(0)).is_none(), "hidden tabs take no clicks");
         control_rects(&hits); // the split control stays
         assert!(out.contains('\u{2586}'), "the control's chips stay: {out}");
     }
@@ -4713,14 +4352,8 @@ mod tests {
     /// address bar (method / URL / Send) stays fully usable while hidden.
     #[test]
     fn hidden_editor_keeps_its_address_bar() {
-        let mut e = Editor {
-            table_collapsed: true,
-            ..Editor::default()
-        };
-        e.load(
-            Some("a".into()),
-            HttpRequest::from_toml_str("url = \"https://x/path\"\n").unwrap(),
-        );
+        let mut e = Editor { table_collapsed: true, ..Editor::default() };
+        e.load(Some("a".into()), HttpRequest::from_toml_str("url = \"https://x/path\"\n").unwrap());
         e.table_collapsed = true;
         let (out, hits) = draw_editor(&mut e);
         assert!(out.contains("https://x/path"), "{out}");
@@ -4744,9 +4377,7 @@ mod tests {
         let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         hits
     }
 
@@ -4756,10 +4387,7 @@ mod tests {
     #[test]
     fn hidden_editor_keeps_a_row_for_the_split_controls_lower_eave() {
         let theme = Theme::dark();
-        let mut e = Editor {
-            table_collapsed: true,
-            ..Editor::default()
-        };
+        let mut e = Editor { table_collapsed: true, ..Editor::default() };
         let ctx = DrawCtx {
             theme: &theme,
             focused: true,
@@ -4771,26 +4399,12 @@ mod tests {
         };
         let mut terminal = Terminal::new(TestBackend::new(120, COLLAPSED_HEIGHT)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let rects = control_rects(&hits);
         let strip_y = rects[0].y;
-        assert_eq!(
-            strip_y + 1,
-            COLLAPSED_HEIGHT - 1,
-            "one row remains under the strip"
-        );
-        let cell = terminal
-            .backend()
-            .buffer()
-            .cell((rects[0].x, strip_y + 1))
-            .unwrap();
-        assert_eq!(
-            cell.symbol(),
-            "\u{2580}",
-            "the lower eave lands on the last row"
-        );
+        assert_eq!(strip_y + 1, COLLAPSED_HEIGHT - 1, "one row remains under the strip");
+        let cell = terminal.backend().buffer().cell((rects[0].x, strip_y + 1)).unwrap();
+        assert_eq!(cell.symbol(), "\u{2580}", "the lower eave lands on the last row");
         assert_eq!(cell.fg, theme.control);
     }
 
@@ -4807,10 +4421,7 @@ mod tests {
             hits.rect_of(&Hit::UrlBar).unwrap()
         };
 
-        let mut e = Editor {
-            table_collapsed: true,
-            ..Editor::default()
-        };
+        let mut e = Editor { table_collapsed: true, ..Editor::default() };
         let hits = draw_editor_sized(&mut e, 120, COLLAPSED_HEIGHT);
         let url = hits.rect_of(&Hit::UrlBar).expect("URL well drawn");
         assert_eq!(
@@ -4835,10 +4446,7 @@ mod tests {
         // control's right end cap takes that cell.
         assert_eq!(last.x + last.width, 120 - 3, "{last:?}");
 
-        let mut e = Editor {
-            table_collapsed: true,
-            ..Editor::default()
-        };
+        let mut e = Editor { table_collapsed: true, ..Editor::default() };
         let hits = draw_editor_sized(&mut e, 120, COLLAPSED_HEIGHT);
         let rects = control_rects(&hits);
         assert_eq!(rects[4].x + rects[4].width, 120 - 3, "{:?}", rects[4]);
@@ -4860,10 +4468,7 @@ mod tests {
             hits.rect_of(&Hit::UrlBar).unwrap()
         };
         for h in COLLAPSED_HEIGHT..=CHROME_HEIGHT + 2 {
-            let mut e = Editor {
-                active_tab: EditorTab::Body,
-                ..Editor::default()
-            };
+            let mut e = Editor { active_tab: EditorTab::Body, ..Editor::default() };
             e.method = postui_core::model::Method::Post;
             let hits = draw_editor_sized(&mut e, 120, h);
             let url = hits.rect_of(&Hit::UrlBar).expect("URL well drawn");
@@ -4877,10 +4482,7 @@ mod tests {
 
     #[test]
     fn the_toolbar_row_exists_only_on_the_body_tab() {
-        let mut e = Editor {
-            active_tab: EditorTab::Params,
-            ..Editor::default()
-        };
+        let mut e = Editor { active_tab: EditorTab::Params, ..Editor::default() };
         let (_, hits) = draw_editor(&mut e);
         // With no toolbar row outside Body, the params table starts directly
         // under the tab bar: its NAME/VALUE header row first, then row 0.
@@ -4893,69 +4495,39 @@ mod tests {
     #[test]
     fn scratch_dirty_is_typed_content_with_no_saved_snapshot() {
         let mut e = Editor::default();
-        assert!(
-            !e.is_scratch_dirty(),
-            "a blank editor holds nothing to lose"
-        );
+        assert!(!e.is_scratch_dirty(), "a blank editor holds nothing to lose");
         e.url = LineInput::new("https://x");
         assert!(e.is_scratch_dirty(), "typed content with no file behind it");
-        e.load(
-            Some("a".into()),
-            HttpRequest::from_toml_str("url = \"https://x\"\n").unwrap(),
-        );
-        assert!(
-            !e.is_scratch_dirty(),
-            "a loaded request is `is_dirty`'s territory, never this"
-        );
+        e.load(Some("a".into()), HttpRequest::from_toml_str("url = \"https://x\"\n").unwrap());
+        assert!(!e.is_scratch_dirty(), "a loaded request is `is_dirty`'s territory, never this");
     }
 
     #[test]
     fn body_only_toolbar_chips_are_absent_on_the_params_tab() {
-        let mut e = Editor {
-            active_tab: EditorTab::Params,
-            ..Editor::default()
-        };
+        let mut e = Editor { active_tab: EditorTab::Params, ..Editor::default() };
         let (_, hits) = draw_editor(&mut e);
         assert!(hits.rect_of(&Hit::FooterChip(Action::FormatBody)).is_none());
         assert!(hits.rect_of(&Hit::FooterChip(Action::MinifyBody)).is_none());
-        assert!(
-            hits.rect_of(&Hit::FooterChip(Action::ToggleBodyVars))
-                .is_none()
-        );
-        assert!(
-            hits.rect_of(&Hit::FooterChip(Action::OpenBodyInEditor))
-                .is_none()
-        );
+        assert!(hits.rect_of(&Hit::FooterChip(Action::ToggleBodyVars)).is_none());
+        assert!(hits.rect_of(&Hit::FooterChip(Action::OpenBodyInEditor)).is_none());
     }
 
     #[test]
     fn body_only_toolbar_chips_appear_on_the_body_tab() {
-        let mut e = Editor {
-            active_tab: EditorTab::Body,
-            ..Editor::default()
-        };
+        let mut e = Editor { active_tab: EditorTab::Body, ..Editor::default() };
         let (content, hits) = draw_editor(&mut e);
         assert!(content.contains("format"), "{content}");
         assert!(content.contains("minify"), "{content}");
         assert!(content.contains("$EDITOR"), "{content}");
         assert!(hits.rect_of(&Hit::FooterChip(Action::FormatBody)).is_some());
         assert!(hits.rect_of(&Hit::FooterChip(Action::MinifyBody)).is_some());
-        assert!(
-            hits.rect_of(&Hit::FooterChip(Action::ToggleBodyVars))
-                .is_some()
-        );
-        assert!(
-            hits.rect_of(&Hit::FooterChip(Action::OpenBodyInEditor))
-                .is_some()
-        );
+        assert!(hits.rect_of(&Hit::FooterChip(Action::ToggleBodyVars)).is_some());
+        assert!(hits.rect_of(&Hit::FooterChip(Action::OpenBodyInEditor)).is_some());
         assert!(
             !content.contains("select all"),
             "the select-all chip is gone (ctrl+a covers it): {content}"
         );
-        assert!(
-            content.contains(&format!("{}+e", crate::keys::alt_label())),
-            "{content}"
-        );
+        assert!(content.contains(&format!("{}+e", crate::keys::alt_label())), "{content}");
         assert!(content.contains("clear"), "{content}");
         assert!(hits.rect_of(&Hit::FooterChip(Action::BodyClear)).is_some());
     }
@@ -4980,34 +4552,22 @@ mod tests {
     fn tls_lock_in_the_address_bar_reflects_insecure_state() {
         let mut e = Editor::default();
         let (locked, hits) = draw_editor(&mut e);
-        assert!(
-            locked.contains('\u{F033E}'),
-            "verifying shows a filled lock: {locked}"
-        );
+        assert!(locked.contains('\u{F033E}'), "verifying shows a filled lock: {locked}");
         assert!(!locked.contains('\u{F0340}'), "{locked}");
         assert!(
-            hits.rect_of(&Hit::FooterChip(Action::ToggleInsecure))
-                .is_some(),
+            hits.rect_of(&Hit::FooterChip(Action::ToggleInsecure)).is_some(),
             "the lock is clickable"
         );
 
         e.insecure = true;
         let (unlocked, hits) = draw_editor(&mut e);
-        assert!(
-            unlocked.contains('\u{F0340}'),
-            "insecure shows an outline lock: {unlocked}"
-        );
+        assert!(unlocked.contains('\u{F0340}'), "insecure shows an outline lock: {unlocked}");
         assert!(!unlocked.contains('\u{F033E}'), "{unlocked}");
-        assert!(
-            !unlocked.contains("tls {{"),
-            "the old tab-row chip is gone: {unlocked}"
-        );
+        assert!(!unlocked.contains("tls {{"), "the old tab-row chip is gone: {unlocked}");
 
         // The lock holds the well's rightmost slot, with the copy chip
         // flush against its inner edge.
-        let lock = hits
-            .rect_of(&Hit::FooterChip(Action::ToggleInsecure))
-            .unwrap();
+        let lock = hits.rect_of(&Hit::FooterChip(Action::ToggleInsecure)).unwrap();
         let copy = hits.rect_of(&Hit::CopyUrl).unwrap();
         assert_eq!(
             copy.x + copy.width,
@@ -5043,10 +4603,7 @@ mod tests {
         assert_eq!(ed.current_request().jq, Some(".a".into()));
         ed.jq.clear();
         assert_eq!(ed.current_request().jq, None, "an empty bar is no filter");
-        assert!(
-            !ed.is_dirty(),
-            "clearing the filter is a view setting, not an edit"
-        );
+        assert!(!ed.is_dirty(), "clearing the filter is a view setting, not an edit");
         req.jq = None;
         ed.apply_snapshot(&req);
         assert_eq!(ed.jq, "");
@@ -5066,10 +4623,7 @@ mod tests {
         assert!(!ed.current_request().jq_enabled);
         assert!(!ed.is_dirty());
         ed.jq_enabled = true;
-        assert!(
-            !ed.is_dirty(),
-            "switching the filter on is a view setting, not an edit"
-        );
+        assert!(!ed.is_dirty(), "switching the filter on is a view setting, not an edit");
         ed.jq.clear();
         ed.jq_enabled = false;
         assert!(
@@ -5084,23 +4638,13 @@ mod tests {
     #[test]
     fn changing_the_jq_filter_alone_is_not_dirty() {
         let mut ed = Editor::default();
-        ed.load(
-            None,
-            HttpRequest {
-                url: "http://x".into(),
-                ..Default::default()
-            },
-        );
+        ed.load(None, HttpRequest { url: "http://x".into(), ..Default::default() });
         ed.mark_saved();
         ed.jq = ".meta".into();
         assert!(!ed.is_dirty());
         ed.url.set_text("http://y");
         assert!(ed.is_dirty(), "a real edit still is");
-        assert_eq!(
-            ed.current_request().jq.as_deref(),
-            Some(".meta"),
-            "the filter still saves"
-        );
+        assert_eq!(ed.current_request().jq.as_deref(), Some(".meta"), "the filter still saves");
     }
 
     #[test]
@@ -5122,11 +4666,7 @@ mod tests {
     #[test]
     fn body_tab_label_shows_json_validity() {
         let render = |method: postui_core::model::Method, text: &str| {
-            let mut e = Editor {
-                active_tab: EditorTab::Body,
-                method,
-                ..Editor::default()
-            };
+            let mut e = Editor { active_tab: EditorTab::Body, method, ..Editor::default() };
             e.set_body_text(text);
             let theme = Theme::dark();
             let ctx = DrawCtx {
@@ -5141,9 +4681,7 @@ mod tests {
             let backend = TestBackend::new(60, 10);
             let mut terminal = Terminal::new(backend).unwrap();
             let mut hits = crate::hit::HitMap::default();
-            terminal
-                .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-                .unwrap();
+            terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
             format!("{:?}", terminal.backend().buffer())
         };
         use postui_core::model::Method;
@@ -5169,10 +4707,7 @@ mod tests {
     /// once the body has text and the method sends it.
     #[test]
     fn tab_strip_spans_track_badge_presence() {
-        let mut e = Editor {
-            method: postui_core::model::Method::Post,
-            ..Editor::default()
-        };
+        let mut e = Editor { method: postui_core::model::Method::Post, ..Editor::default() };
         let without = e.tab_strip_spans()[EditorTab::Body.draw_position()].1;
         e.set_body_text("{}");
         let with = e.tab_strip_spans()[EditorTab::Body.draw_position()].1;
@@ -5212,18 +4747,10 @@ x-a = "1"
         let backend = TestBackend::new(80, 14);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
-        assert!(
-            content.contains("Params · 2"),
-            "param count lives inside its tab: {content}"
-        );
-        assert!(
-            content.contains("Headers · 1"),
-            "header count lives inside its tab: {content}"
-        );
+        assert!(content.contains("Params · 2"), "param count lives inside its tab: {content}");
+        assert!(content.contains("Headers · 1"), "header count lives inside its tab: {content}");
 
         // No standalone count chip left of the split control any more:
         // the cell two columns left of the control (where the chip used
@@ -5231,18 +4758,12 @@ x-a = "1"
         let [min, ..] = control_rects(&hits);
         let buf = terminal.backend().buffer();
         let cell = buf.cell((min.x - 2, min.y)).unwrap();
-        assert_eq!(
-            cell.bg, theme.page,
-            "no count chip at the strip's right edge: {cell:?}"
-        );
+        assert_eq!(cell.bg, theme.page, "no count chip at the strip's right edge: {cell:?}");
     }
 
     #[test]
     fn body_tab_renders_its_text() {
-        let mut e = Editor {
-            active_tab: EditorTab::Body,
-            ..Editor::default()
-        };
+        let mut e = Editor { active_tab: EditorTab::Body, ..Editor::default() };
         e.set_body_text("{\"marker\": 1}");
         let theme = Theme::dark();
         let ctx = DrawCtx {
@@ -5262,14 +4783,9 @@ x-a = "1"
         let backend = TestBackend::new(60, 12);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
-        assert!(
-            content.contains("marker"),
-            "body text must render: {content}"
-        );
+        assert!(content.contains("marker"), "body text must render: {content}");
     }
 
     /// The body content's accent ring (Task 12) shows exactly when
@@ -5283,11 +4799,7 @@ x-a = "1"
     fn body_ring_shows_exactly_when_content_focused() {
         let theme = Theme::dark();
         let render = |sub_focus: SubFocus, pane_focused: bool| -> (Terminal<TestBackend>, Rect) {
-            let mut e = Editor {
-                active_tab: EditorTab::Body,
-                sub_focus,
-                ..Editor::default()
-            };
+            let mut e = Editor { active_tab: EditorTab::Body, sub_focus, ..Editor::default() };
             e.set_body_text("{}");
             let ctx = DrawCtx {
                 theme: &theme,
@@ -5301,19 +4813,12 @@ x-a = "1"
             let backend = TestBackend::new(60, 12);
             let mut terminal = Terminal::new(backend).unwrap();
             let mut hits = crate::hit::HitMap::default();
-            terminal
-                .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-                .unwrap();
+            terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
             let body_area = e.last_body_area.expect("body area recorded");
             (terminal, body_area)
         };
         let left_edge_cell = |terminal: &Terminal<TestBackend>, body_area: Rect| {
-            terminal
-                .backend()
-                .buffer()
-                .cell((body_area.x - 1, body_area.y + 1))
-                .unwrap()
-                .clone()
+            terminal.backend().buffer().cell((body_area.x - 1, body_area.y + 1)).unwrap().clone()
         };
 
         let (terminal, body_area) = render(SubFocus::Content, true);
@@ -5329,18 +4834,10 @@ x-a = "1"
         );
 
         let (terminal, body_area) = render(SubFocus::Url, true);
-        assert_ne!(
-            left_edge_cell(&terminal, body_area).symbol(),
-            "│",
-            "url sub-focus: no ring"
-        );
+        assert_ne!(left_edge_cell(&terminal, body_area).symbol(), "│", "url sub-focus: no ring");
 
         let (terminal, body_area) = render(SubFocus::None, true);
-        assert_ne!(
-            left_edge_cell(&terminal, body_area).symbol(),
-            "│",
-            "no sub-focus: no ring"
-        );
+        assert_ne!(left_edge_cell(&terminal, body_area).symbol(), "│", "no sub-focus: no ring");
     }
 
     #[test]
@@ -5370,15 +4867,10 @@ url = "https://api.example.com/users""#,
         let backend = TestBackend::new(90, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("POST"), "method badge: {content}");
-        assert!(
-            content.contains("https://api.example.com/users"),
-            "url text: {content}"
-        );
+        assert!(content.contains("https://api.example.com/users"), "url text: {content}");
         assert!(content.contains("Params"), "params tab label: {content}");
         assert!(content.contains("Headers"), "headers tab label: {content}");
         assert!(content.contains("Body"), "body tab label: {content}");
@@ -5401,18 +4893,13 @@ url = "https://api.example.com/users""#,
         let backend = TestBackend::new(60, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         (terminal, hits)
     }
 
     #[test]
     fn method_focus_lifts_the_badge_to_hovers_color() {
-        let mut e = Editor {
-            sub_focus: SubFocus::Method,
-            ..Editor::default()
-        };
+        let mut e = Editor { sub_focus: SubFocus::Method, ..Editor::default() };
         let theme = Theme::dark();
         let (terminal, hits) = draw_for_bar_test(&mut e);
         let method_area = hits.rect_of(&crate::hit::Hit::MethodSelector).unwrap();
@@ -5426,19 +4913,14 @@ url = "https://api.example.com/users""#,
              user can see where Enter will land"
         );
         // No ring: the margin cell left of the badge stays plain page.
-        let margin = buf
-            .cell((method_area.x.saturating_sub(1), method_area.y + 1))
-            .unwrap();
+        let margin = buf.cell((method_area.x.saturating_sub(1), method_area.y + 1)).unwrap();
         assert_eq!(margin.symbol(), " ", "no ring glyph beside the badge");
     }
 
     #[test]
     fn fused_bar_centers_text_between_quarter_row_caps() {
         let mut e = Editor::default();
-        e.load(
-            Some("a".into()),
-            HttpRequest::from_toml_str(r#"url = "https://x/y""#).unwrap(),
-        );
+        e.load(Some("a".into()), HttpRequest::from_toml_str(r#"url = "https://x/y""#).unwrap());
         // This test asserts the resting bevel; URL focus (which `load`
         // grants) would lift the caps.
         e.sub_focus = SubFocus::None;
@@ -5451,10 +4933,7 @@ url = "https://api.example.com/users""#,
         let text_y = method_area.y + 1;
         let method_face = theme.method_color(postui_core::model::Method::Get);
         let cell = buf.cell((method_area.x, text_y)).unwrap();
-        assert_eq!(
-            cell.bg, method_face,
-            "method cell bg must be the GET method color"
-        );
+        assert_eq!(cell.bg, method_face, "method cell bg must be the GET method color");
         // Quarter-row caps above and below, in the segment's own fill
         // over the page -- the flat `paint::cap` anatomy every full-size
         // control in the app shares, and nothing bevelled.
@@ -5464,18 +4943,12 @@ url = "https://api.example.com/users""#,
         assert_eq!(top_cap.fg, method_face, "the cap quarter is the segment");
         assert_eq!(top_cap.bg, theme.page, "the rest of the row is the page");
         let bottom_cap = buf.cell((method_area.x, text_y + 1)).unwrap();
-        assert_eq!(
-            bottom_cap.symbol(),
-            CAP_BOTTOM,
-            "method bottom cap: {bottom_cap:?}"
-        );
+        assert_eq!(bottom_cap.symbol(), CAP_BOTTOM, "method bottom cap: {bottom_cap:?}");
         assert_eq!(bottom_cap.fg, theme.page, "inverted: page over the face");
         assert_eq!(bottom_cap.bg, method_face);
         // The run continues across the URL segment without a seam: same
         // glyph, same surface, only the segment's own fill changes.
-        let url_cap = buf
-            .cell((method_area.x + method_area.width + 2, text_y + 1))
-            .unwrap();
+        let url_cap = buf.cell((method_area.x + method_area.width + 2, text_y + 1)).unwrap();
         assert_eq!(url_cap.symbol(), CAP_BOTTOM, "url cap row: {url_cap:?}");
         assert_eq!(url_cap.fg, theme.page);
         assert_eq!(url_cap.bg, theme.control);
@@ -5484,9 +4957,8 @@ url = "https://api.example.com/users""#,
         // bar is one fused control, not stacked rows.
         let content = format!("{buf:?}");
         assert!(content.contains("https://x/y"), "url text: {content}");
-        let url_row: String = (0..60)
-            .filter_map(|x| buf.cell((x, text_y)).map(|c| c.symbol()))
-            .collect();
+        let url_row: String =
+            (0..60).filter_map(|x| buf.cell((x, text_y)).map(|c| c.symbol())).collect();
         assert!(
             url_row.contains("https://x/y"),
             "url text must share the method label's row: {url_row}"
@@ -5494,8 +4966,7 @@ url = "https://api.example.com/users""#,
         // The URL text is inset from the method segment, not flush against it.
         let gap: String = (0..2)
             .filter_map(|dx| {
-                buf.cell((method_area.x + method_area.width + dx, text_y))
-                    .map(|c| c.symbol())
+                buf.cell((method_area.x + method_area.width + dx, text_y)).map(|c| c.symbol())
             })
             .collect();
         assert_eq!(gap, "  ", "2 columns of left padding before the URL text");
@@ -5534,7 +5005,10 @@ url = "https://api.example.com/users""#,
             HttpRequest::from_toml_str(r#"url = "https://x/y""#).unwrap(),
         );
         let (row, _) = bar_row(&mut saved);
-        assert!(!row.contains("unsaved"), "a request with a file behind it carries no marker: {row}");
+        assert!(
+            !row.contains("unsaved"),
+            "a request with a file behind it carries no marker: {row}"
+        );
     }
 
     /// Draws the address bar with an explicit `anims`/`now` (rather than
@@ -5559,21 +5033,12 @@ url = "https://api.example.com/users""#,
         now: std::time::Instant,
     ) -> (Terminal<TestBackend>, crate::hit::HitMap) {
         let theme = Theme::dark();
-        let ctx = DrawCtx {
-            theme: &theme,
-            focused: true,
-            hovered,
-            pointer,
-            dragging: false,
-            anims,
-            now,
-        };
+        let ctx =
+            DrawCtx { theme: &theme, focused: true, hovered, pointer, dragging: false, anims, now };
         let backend = TestBackend::new(60, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         (terminal, hits)
     }
 
@@ -5596,19 +5061,9 @@ url = "https://api.example.com/users""#,
         let (terminal, hits) =
             draw_for_bar_test_at(&mut e, Some(&crate::hit::Hit::MethodSelector), &anims, mid);
         let method_area = hits.rect_of(&crate::hit::Hit::MethodSelector).unwrap();
-        let cell = terminal
-            .backend()
-            .buffer()
-            .cell((method_area.x, method_area.y + 1))
-            .unwrap();
-        assert_ne!(
-            cell.bg, method_face,
-            "must have eased away from the resting face"
-        );
-        assert_ne!(
-            cell.bg, method_lifted,
-            "must not have reached the fully hovered fill yet"
-        );
+        let cell = terminal.backend().buffer().cell((method_area.x, method_area.y + 1)).unwrap();
+        assert_ne!(cell.bg, method_face, "must have eased away from the resting face");
+        assert_ne!(cell.bg, method_lifted, "must not have reached the fully hovered fill yet");
 
         // Settled: the fade has finished, so the fill reaches the target
         // exactly — the same value hover always painted before the fade
@@ -5617,15 +5072,8 @@ url = "https://api.example.com/users""#,
         let (terminal, hits) =
             draw_for_bar_test_at(&mut e, Some(&crate::hit::Hit::MethodSelector), &anims, done);
         let method_area = hits.rect_of(&crate::hit::Hit::MethodSelector).unwrap();
-        let cell = terminal
-            .backend()
-            .buffer()
-            .cell((method_area.x, method_area.y + 1))
-            .unwrap();
-        assert_eq!(
-            cell.bg, method_lifted,
-            "settles on the same hover fill as before"
-        );
+        let cell = terminal.backend().buffer().cell((method_area.x, method_area.y + 1)).unwrap();
+        assert_eq!(cell.bg, method_lifted, "settles on the same hover fill as before");
     }
 
     #[test]
@@ -5634,10 +5082,7 @@ url = "https://api.example.com/users""#,
         use std::time::Duration;
 
         let mut e = Editor::default();
-        e.load(
-            Some("a".into()),
-            HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap(),
-        );
+        e.load(Some("a".into()), HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap());
         e.sub_focus = SubFocus::Url;
         let theme = Theme::dark();
         let focused_fill = crate::theme::lift_color(theme.control, URL_FOCUS_LIFT);
@@ -5652,14 +5097,8 @@ url = "https://api.example.com/users""#,
         let url_x = method_area.x + method_area.width;
         let text_y = method_area.y + 1;
         let well = terminal.backend().buffer().cell((url_x, text_y)).unwrap();
-        assert_ne!(
-            well.bg, theme.control,
-            "must have eased away from the resting fill"
-        );
-        assert_ne!(
-            well.bg, focused_fill,
-            "must not have reached the fully focused fill yet"
-        );
+        assert_ne!(well.bg, theme.control, "must have eased away from the resting fill");
+        assert_ne!(well.bg, focused_fill, "must not have reached the fully focused fill yet");
 
         let done = t0 + Duration::from_millis(90);
         let (terminal, hits) = draw_for_bar_test_at(&mut e, None, &anims, done);
@@ -5667,19 +5106,13 @@ url = "https://api.example.com/users""#,
         let url_x = method_area.x + method_area.width;
         let text_y = method_area.y + 1;
         let well = terminal.backend().buffer().cell((url_x, text_y)).unwrap();
-        assert_eq!(
-            well.bg, focused_fill,
-            "settles on the same focus lift as before"
-        );
+        assert_eq!(well.bg, focused_fill, "settles on the same focus lift as before");
     }
 
     #[test]
     fn send_cap_is_bold_on_accent_when_enabled() {
         let mut e = Editor::default();
-        e.load(
-            Some("a".into()),
-            HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap(),
-        );
+        e.load(Some("a".into()), HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap());
         let theme = Theme::dark();
         let (terminal, hits) = draw_for_bar_test(&mut e);
         let send_area = hits.rect_of(&crate::hit::Hit::SendButton).unwrap();
@@ -5705,10 +5138,7 @@ url = "https://api.example.com/users""#,
     #[test]
     fn sending_shows_spinner_glyph_and_keeps_send_hit_registered() {
         let mut e = Editor::default();
-        e.load(
-            Some("a".into()),
-            HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap(),
-        );
+        e.load(Some("a".into()), HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap());
         e.sending = true;
         let (terminal, hits) = draw_for_bar_test(&mut e);
         assert!(
@@ -5721,10 +5151,7 @@ url = "https://api.example.com/users""#,
             spinner_glyphs.iter().any(|g| content.contains(*g)),
             "sending must show a spinner glyph: {content}"
         );
-        assert!(
-            content.contains("Sending"),
-            "sending label must read Sending: {content}"
-        );
+        assert!(content.contains("Sending"), "sending label must read Sending: {content}");
     }
 
     /// Hovering the Send cap while a request is in flight swaps its label to
@@ -5733,10 +5160,7 @@ url = "https://api.example.com/users""#,
     #[test]
     fn hovering_send_while_sending_shows_cancel_label() {
         let mut e = Editor::default();
-        e.load(
-            Some("a".into()),
-            HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap(),
-        );
+        e.load(Some("a".into()), HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap());
         e.sending = true;
         let theme = Theme::dark();
         let ctx = DrawCtx {
@@ -5751,9 +5175,7 @@ url = "https://api.example.com/users""#,
         let backend = TestBackend::new(60, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(
             content.contains("Cancel"),
@@ -5848,18 +5270,11 @@ url = "https://api.example.com/users""#,
         );
         assert!(
             hits.rect_of(&crate::hit::Hit::CopyUrl)
-                .is_some_and(|r| r.contains(ratatui::layout::Position {
-                    x: chip_x,
-                    y: text_y
-                })),
+                .is_some_and(|r| r.contains(ratatui::layout::Position { x: chip_x, y: text_y })),
             "the test must be pointing at the copy chip itself"
         );
         // Away from the chip, the well's own fill is still the hover lift.
-        let well = terminal
-            .backend()
-            .buffer()
-            .cell((url_area.x, text_y))
-            .unwrap();
+        let well = terminal.backend().buffer().cell((url_area.x, text_y)).unwrap();
         assert_eq!(
             well.bg,
             crate::theme::lift_color(theme.control, URL_HOVER_LIFT),
@@ -5881,11 +5296,7 @@ url = "https://api.example.com/users""#,
             &anims,
             std::time::Instant::now(),
         );
-        let well = terminal
-            .backend()
-            .buffer()
-            .cell((url_area.x, text_y))
-            .unwrap();
+        let well = terminal.backend().buffer().cell((url_area.x, text_y)).unwrap();
         assert_eq!(well.bg, theme.control, "unhovered well rests: {well:?}");
     }
 
@@ -5912,11 +5323,7 @@ url = "https://api.example.com/users""#,
                 .filter(|&x| buf[(x, text_y)].modifier.contains(Modifier::REVERSED))
                 .count()
         };
-        assert_eq!(
-            reversed_cells(buf),
-            0,
-            "selected, not open: no caret cell should paint"
-        );
+        assert_eq!(reversed_cells(buf), 0, "selected, not open: no caret cell should paint");
         let well = buf.cell((url_area.x, text_y)).unwrap();
         assert_eq!(
             well.bg,
@@ -5929,10 +5336,7 @@ url = "https://api.example.com/users""#,
         e.open_url_from_app();
         let (terminal2, _) = draw_for_bar_test(&mut e);
         let buf2 = terminal2.backend().buffer();
-        assert!(
-            reversed_cells(buf2) > 0,
-            "open: the caret cell renders reversed"
-        );
+        assert!(reversed_cells(buf2) > 0, "open: the caret cell renders reversed");
     }
 
     #[test]
@@ -5959,11 +5363,7 @@ url = "https://api.example.com/users""#,
         // not a drop back to the resting control fill.
         let (terminal, _) =
             draw_for_bar_test_pointing(&mut e, Some(&crate::hit::Hit::UrlBar), pointer, &anims, t0);
-        let well = terminal
-            .backend()
-            .buffer()
-            .cell((url_area.x, text_y))
-            .unwrap();
+        let well = terminal.backend().buffer().cell((url_area.x, text_y)).unwrap();
         assert_eq!(
             well.bg, hover_fill,
             "the click must not dip below the fill it was already at: {well:?}"
@@ -5977,11 +5377,7 @@ url = "https://api.example.com/users""#,
             &anims,
             t0 + Duration::from_millis(90),
         );
-        let well = terminal
-            .backend()
-            .buffer()
-            .cell((url_area.x, text_y))
-            .unwrap();
+        let well = terminal.backend().buffer().cell((url_area.x, text_y)).unwrap();
         assert_eq!(well.bg, focus_fill, "settles on the focus lift: {well:?}");
     }
 
@@ -5999,11 +5395,7 @@ url = "https://api.example.com/users""#,
             &anims,
             std::time::Instant::now(),
         );
-        let well = terminal
-            .backend()
-            .buffer()
-            .cell((url_area.x, text_y))
-            .unwrap();
+        let well = terminal.backend().buffer().cell((url_area.x, text_y)).unwrap();
         assert_eq!(
             well.bg,
             crate::theme::lift_color(theme.control, URL_FOCUS_LIFT),
@@ -6014,10 +5406,7 @@ url = "https://api.example.com/users""#,
     #[test]
     fn focused_url_lifts_the_url_fill_and_caps() {
         let mut e = Editor::default();
-        e.load(
-            Some("a".into()),
-            HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap(),
-        );
+        e.load(Some("a".into()), HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap());
         e.sub_focus = SubFocus::Url;
         let theme = Theme::dark();
         let (terminal, hits) = draw_for_bar_test(&mut e);
@@ -6027,73 +5416,30 @@ url = "https://api.example.com/users""#,
         let url_x = method_area.x + method_area.width;
         let lifted = crate::theme::lift_color(theme.control, URL_FOCUS_LIFT);
         let well = buf.cell((url_x, text_y)).unwrap();
-        assert_eq!(
-            well.bg, lifted,
-            "the focused URL well brightens past control_hover: {well:?}"
-        );
+        assert_eq!(well.bg, lifted, "the focused URL well brightens past control_hover: {well:?}");
         assert_ne!(lifted, theme.control_hover, "focus must outshine hover");
         // The cap *is* the lifted fill -- a quarter row of the well
         // itself over the page, so the whole segment lifts as one. There
         // is no separate edge colour to keep in step any more.
         let cap = buf.cell((url_x, method_area.y)).unwrap();
-        assert_eq!(
-            cap.symbol(),
-            crate::paint::cap::CAP_TOP,
-            "url top cap: {cap:?}"
-        );
+        assert_eq!(cap.symbol(), crate::paint::cap::CAP_TOP, "url top cap: {cap:?}");
         assert_eq!(cap.fg, lifted, "the cap carries the lifted fill");
         assert_eq!(cap.bg, theme.page, "over the page, not over an edge");
         // No ring: the bar's old top-left ring corner cell stays plain.
-        let corner = buf
-            .cell((
-                method_area.x.saturating_sub(1),
-                method_area.y.saturating_sub(1),
-            ))
-            .unwrap();
+        let corner =
+            buf.cell((method_area.x.saturating_sub(1), method_area.y.saturating_sub(1))).unwrap();
         assert_eq!(corner.symbol(), " ", "no ring glyph around the bar");
     }
 
     #[test]
     fn headers_tab_shows_inherited_rows_with_status() {
-        let mut e = Editor {
-            active_tab: EditorTab::Headers,
-            ..Editor::default()
-        };
-        e.inherited_headers.insert(
-            "accept".into(),
-            Entry {
-                value: "application/json".into(),
-                enabled: true,
-            },
-        );
-        e.inherited_headers.insert(
-            "x-a".into(),
-            Entry {
-                value: "1".into(),
-                enabled: true,
-            },
-        );
-        e.inherited_headers.insert(
-            "x-b".into(),
-            Entry {
-                value: "2".into(),
-                enabled: true,
-            },
-        );
-        e.headers.insert(
-            "X-A".into(),
-            Entry {
-                value: "9".into(),
-                enabled: true,
-            },
-        );
-        e.headers.insert(
-            "X-B".into(),
-            Entry {
-                value: "n".into(),
-                enabled: false,
-            },
-        );
+        let mut e = Editor { active_tab: EditorTab::Headers, ..Editor::default() };
+        e.inherited_headers
+            .insert("accept".into(), Entry { value: "application/json".into(), enabled: true });
+        e.inherited_headers.insert("x-a".into(), Entry { value: "1".into(), enabled: true });
+        e.inherited_headers.insert("x-b".into(), Entry { value: "2".into(), enabled: true });
+        e.headers.insert("X-A".into(), Entry { value: "9".into(), enabled: true });
+        e.headers.insert("X-B".into(), Entry { value: "n".into(), enabled: false });
         let theme = Theme::dark();
         let ctx = DrawCtx {
             theme: &theme,
@@ -6107,9 +5453,7 @@ url = "https://api.example.com/users""#,
         let backend = TestBackend::new(70, 14);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("(project)"), "{content}");
         assert!(content.contains("(overridden)"), "{content}");
@@ -6126,10 +5470,8 @@ url = "https://api.example.com/users""#,
     fn wheel_scroll_over_unfocused_body_tab_actually_scrolls() {
         let mut app = App::new_for_test();
         app.editor.active_tab = EditorTab::Body;
-        let many_lines: String = (0..200)
-            .map(|i| format!("line {i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let many_lines: String =
+            (0..200).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         app.editor.set_body_text(&many_lines);
         assert_eq!(app.editor.body.cursor.row, 0, "starts at the top");
 
@@ -6162,10 +5504,7 @@ url = "https://api.example.com/users""#,
     fn empty_params_table_still_paints_page_below_its_short_content() {
         let mut app = App::new_for_test();
         app.editor.active_tab = EditorTab::Params;
-        assert!(
-            app.editor.params.is_empty(),
-            "fresh scratch editor: no rows"
-        );
+        assert!(app.editor.params.is_empty(), "fresh scratch editor: no rows");
 
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -6206,24 +5545,9 @@ url = "https://api.example.com/users""#,
 
     #[test]
     fn vars_tab_reuses_the_table_editor_with_a_count_in_its_label() {
-        let mut e = Editor {
-            active_tab: EditorTab::Vars,
-            ..Editor::default()
-        };
-        e.variables.insert(
-            "token".into(),
-            Entry {
-                value: "abc".into(),
-                enabled: true,
-            },
-        );
-        e.variables.insert(
-            "region".into(),
-            Entry {
-                value: "us-east".into(),
-                enabled: true,
-            },
-        );
+        let mut e = Editor { active_tab: EditorTab::Vars, ..Editor::default() };
+        e.variables.insert("token".into(), Entry { value: "abc".into(), enabled: true });
+        e.variables.insert("region".into(), Entry { value: "us-east".into(), enabled: true });
         let theme = Theme::dark();
         let ctx = DrawCtx {
             theme: &theme,
@@ -6237,47 +5561,23 @@ url = "https://api.example.com/users""#,
         let backend = TestBackend::new(80, 14);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
-        assert!(
-            content.contains("Vars · 2"),
-            "count in tab label: {content}"
-        );
+        assert!(content.contains("Vars · 2"), "count in tab label: {content}");
         assert!(content.contains("token"), "key text: {content}");
         assert!(content.contains("us-east"), "value text: {content}");
         assert!(
-            hits.rect_of(&crate::hit::Hit::TableCell {
-                row: e.variables.len(),
-                col: 0
-            })
-            .is_some(),
+            hits.rect_of(&crate::hit::Hit::TableCell { row: e.variables.len(), col: 0 }).is_some(),
             "the ghost row's cells must be registered on the Vars tab"
         );
     }
 
     #[test]
     fn vars_tab_lists_the_variables_the_request_references() {
-        let mut e = Editor {
-            active_tab: EditorTab::Vars,
-            ..Editor::default()
-        };
+        let mut e = Editor { active_tab: EditorTab::Vars, ..Editor::default() };
         e.url = LineInput::new("https://{{base}}/v1");
-        e.headers.insert(
-            "auth".into(),
-            Entry {
-                value: "Bearer {{token}}".into(),
-                enabled: true,
-            },
-        );
-        e.headers.insert(
-            "x-off".into(),
-            Entry {
-                value: "{{ignored}}".into(),
-                enabled: false,
-            },
-        );
+        e.headers.insert("auth".into(), Entry { value: "Bearer {{token}}".into(), enabled: true });
+        e.headers.insert("x-off".into(), Entry { value: "{{ignored}}".into(), enabled: false });
         e.set_body_text("{\"k\": \"{{body_var}}\"}");
         // substitute_body stays false: body tokens are sent verbatim, so
         // the body's token is not "referenced" by the send.
@@ -6294,24 +5594,13 @@ url = "https://api.example.com/users""#,
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("referenced"), "section divider: {content}");
         assert!(content.contains("{{base}}"), "url token listed: {content}");
-        assert!(
-            content.contains("{{token}}"),
-            "header token listed: {content}"
-        );
-        assert!(
-            content.contains("not defined"),
-            "an unresolvable token says so: {content}"
-        );
-        assert!(
-            !content.contains("ignored"),
-            "disabled rows are not scanned: {content}"
-        );
+        assert!(content.contains("{{token}}"), "header token listed: {content}");
+        assert!(content.contains("not defined"), "an unresolvable token says so: {content}");
+        assert!(!content.contains("ignored"), "disabled rows are not scanned: {content}");
         assert!(
             !content.contains("body_var"),
             "body tokens only count with substitute on: {content}"
@@ -6322,9 +5611,7 @@ url = "https://api.example.com/users""#,
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("body_var"), "{content}");
     }
@@ -6333,10 +5620,7 @@ url = "https://api.example.com/users""#,
     fn referenced_vars_render_as_aligned_table_columns() {
         // Tokens of different lengths land in the table's own name column,
         // and their values all start at the table's value column.
-        let mut e = Editor {
-            active_tab: EditorTab::Vars,
-            ..Editor::default()
-        };
+        let mut e = Editor { active_tab: EditorTab::Vars, ..Editor::default() };
         e.url = LineInput::new("https://{{b}}/{{longer_name}}");
         let theme = Theme::dark();
         let ctx = DrawCtx {
@@ -6351,14 +5635,10 @@ url = "https://api.example.com/users""#,
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let buf = terminal.backend().buffer();
         let row_text = |y: u16| -> String {
-            (0..buf.area.width)
-                .map(|x| buf.cell((x, y)).unwrap().symbol().to_string())
-                .collect()
+            (0..buf.area.width).map(|x| buf.cell((x, y)).unwrap().symbol().to_string()).collect()
         };
         // `str::find` returns a byte offset; rows can hold multi-byte
         // glyphs (the header's `│` divider), so convert to a column.
@@ -6395,10 +5675,7 @@ url = "https://api.example.com/users""#,
 
     #[test]
     fn vars_tab_shows_no_referenced_section_without_tokens() {
-        let mut e = Editor {
-            active_tab: EditorTab::Vars,
-            ..Editor::default()
-        };
+        let mut e = Editor { active_tab: EditorTab::Vars, ..Editor::default() };
         e.url = LineInput::new("https://plain.example/v1");
         let theme = Theme::dark();
         let ctx = DrawCtx {
@@ -6413,14 +5690,9 @@ url = "https://api.example.com/users""#,
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
-        assert!(
-            !content.contains("referenced"),
-            "no tokens, no section: {content}"
-        );
+        assert!(!content.contains("referenced"), "no tokens, no section: {content}");
     }
 
     #[test]
@@ -6460,17 +5732,8 @@ url = "https://api.example.com/users""#,
 
     #[test]
     fn vars_tab_shows_dim_overrides_hint_on_a_shadowing_row() {
-        let mut e = Editor {
-            active_tab: EditorTab::Vars,
-            ..Editor::default()
-        };
-        e.variables.insert(
-            "token".into(),
-            Entry {
-                value: "override".into(),
-                enabled: true,
-            },
-        );
+        let mut e = Editor { active_tab: EditorTab::Vars, ..Editor::default() };
+        e.variables.insert("token".into(), Entry { value: "override".into(), enabled: true });
         e.shadowed.insert("token".into(), "qa: 1001".into());
         e.table.selected = Some(0);
         let theme = Theme::dark();
@@ -6486,29 +5749,18 @@ url = "https://api.example.com/users""#,
         let backend = TestBackend::new(80, 14);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
-        assert!(
-            content.contains("overrides qa: 1001"),
-            "expected the dim shadow hint: {content}"
-        );
+        assert!(content.contains("overrides qa: 1001"), "expected the dim shadow hint: {content}");
         let buf = terminal.backend().buffer();
         let row = hits.rect_of(&crate::hit::Hit::TableRow(0)).unwrap();
         assert_eq!(row.height, 1, "the hint costs the row no height");
         // The hint trails the value on the row's own line, three columns
         // past where "override" ends.
-        let value = hits
-            .rect_of(&crate::hit::Hit::TableCell { row: 0, col: 1 })
-            .unwrap();
+        let value = hits.rect_of(&crate::hit::Hit::TableCell { row: 0, col: 1 }).unwrap();
         let hint_x = value.x + "override".len() as u16 + 3;
         let hint_cell = buf.cell((hint_x, row.y)).unwrap();
-        assert_eq!(
-            hint_cell.symbol(),
-            "o",
-            "the hint starts where it was measured to start"
-        );
+        assert_eq!(hint_cell.symbol(), "o", "the hint starts where it was measured to start");
         assert_eq!(
             hint_cell.fg, theme.text_muted,
             "the overrides hint is dim, not full text color"
@@ -6519,17 +5771,8 @@ url = "https://api.example.com/users""#,
     fn params_and_headers_tabs_never_show_a_shadow_hint() {
         // `shadow` is only ever passed for Vars, so a shadowed key on
         // Params/Headers draws no hint at all.
-        let mut e = Editor {
-            active_tab: EditorTab::Params,
-            ..Editor::default()
-        };
-        e.params.insert(
-            "page".into(),
-            Entry {
-                value: "2".into(),
-                enabled: true,
-            },
-        );
+        let mut e = Editor { active_tab: EditorTab::Params, ..Editor::default() };
+        e.params.insert("page".into(), Entry { value: "2".into(), enabled: true });
         e.shadowed.insert("page".into(), "qa: 1001".into());
         e.table.selected = Some(0);
         let theme = Theme::dark();
@@ -6545,14 +5788,9 @@ url = "https://api.example.com/users""#,
         let backend = TestBackend::new(80, 14);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
-        assert!(
-            !content.contains("overrides"),
-            "the Params tab shows no shadow hint: {content}"
-        );
+        assert!(!content.contains("overrides"), "the Params tab shows no shadow hint: {content}");
     }
 
     #[test]
@@ -6587,12 +5825,7 @@ url = "https://api.example.com/users""#,
                 // cell at a time; every cell here is ASCII, so it doubles as
                 // a column index.
                 let x = buf.area.x + start as u16;
-                if buf
-                    .cell((x, y))
-                    .unwrap()
-                    .modifier
-                    .contains(Modifier::CROSSED_OUT)
-                {
+                if buf.cell((x, y)).unwrap().modifier.contains(Modifier::CROSSED_OUT) {
                     return true;
                 }
             }
@@ -6611,13 +5844,9 @@ url = "https://api.example.com/users""#,
         .unwrap();
         app.resync_project();
         app.editor.active_tab = EditorTab::Headers;
-        app.editor.headers.insert(
-            "Accept".into(),
-            Entry {
-                value: "text/plain".into(),
-                enabled: true,
-            },
-        );
+        app.editor
+            .headers
+            .insert("Accept".into(), Entry { value: "text/plain".into(), enabled: true });
         app.update(Action::Render);
 
         let backend = TestBackend::new(100, 70);
@@ -6706,12 +5935,7 @@ mod body_click_tests {
     use ratatui::widgets::Widget;
 
     /// The synthetic area the body editor is "rendered" into by the helper.
-    const AREA: Rect = Rect {
-        x: 0,
-        y: 0,
-        width: 40,
-        height: 10,
-    };
+    const AREA: Rect = Rect { x: 0, y: 0, width: 40, height: 10 };
 
     /// Builds a Body-tab editor with `text` in the buffer, then renders the
     /// body view once into a synthetic 40x10 area with exactly the same
@@ -6818,11 +6042,7 @@ mod body_click_tests {
         assert!(e.body_drag_to(4, 0), "drag inside the body area consumed");
         assert_eq!(e.body.cursor, Index2::new(0, 2));
         assert_eq!(e.body_selected_text().as_deref(), Some("hel"));
-        assert_eq!(
-            e.body.mode,
-            EditorMode::Insert,
-            "selection never surfaces a vim mode"
-        );
+        assert_eq!(e.body.mode, EditorMode::Insert, "selection never surfaces a vim mode");
     }
 
     #[test]
@@ -6947,10 +6167,7 @@ mod body_click_tests {
         let mut e = editor_with_body("alpha\nbravo\ncharlie\n");
         e.handle_mouse(left_down(20, 2)); // past "charlie": caret (2,7)
         assert!(e.body_drag_to(2, 0)); // first char of line 0
-        assert_eq!(
-            e.body_selected_text().as_deref(),
-            Some("alpha\nbravo\ncharlie")
-        );
+        assert_eq!(e.body_selected_text().as_deref(), Some("alpha\nbravo\ncharlie"));
     }
 
     #[test]

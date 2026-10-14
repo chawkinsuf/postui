@@ -190,11 +190,7 @@ impl FieldsEditorState {
                 removed: false,
             })
             .collect();
-        Self {
-            selector,
-            rows,
-            focus: 0,
-        }
+        Self { selector, rows, focus: 0 }
     }
 
     /// The 󰅖/↩ button: flip row `i`'s removal mark. An added (never-saved)
@@ -218,11 +214,7 @@ impl FieldsEditorState {
 
     /// The "+ Add field" button: append an empty row and focus it.
     pub fn add_row(&mut self) {
-        self.rows.push(FieldRow {
-            original: None,
-            input: LineInput::new(""),
-            removed: false,
-        });
+        self.rows.push(FieldRow { original: None, input: LineInput::new(""), removed: false });
         self.focus = self.rows.len() - 1;
     }
 
@@ -244,13 +236,7 @@ impl FieldsEditorState {
             .rows
             .iter()
             .filter(|r| r.original.is_some())
-            .map(|r| {
-                if r.removed {
-                    String::new()
-                } else {
-                    r.input.text().trim().to_string()
-                }
-            })
+            .map(|r| if r.removed { String::new() } else { r.input.text().trim().to_string() })
             .collect();
         for row in self.rows.iter().filter(|r| r.original.is_none()) {
             let text = row.input.text().trim();
@@ -315,10 +301,7 @@ impl PromptField {
     /// The index of the currently selected choice (0 when the text
     /// matches none — the seed always comes from the list).
     pub(crate) fn choice_index(&self) -> usize {
-        self.choices
-            .iter()
-            .position(|c| c == self.input.text())
-            .unwrap_or(0)
+        self.choices.iter().position(|c| c == self.input.text()).unwrap_or(0)
     }
 }
 
@@ -357,10 +340,8 @@ pub(crate) fn resync_after_choice_cycle(kind: &PromptKind, fields: &mut [PromptF
     let PromptKind::EditVarValue { scope_values, .. } = kind else {
         return;
     };
-    let Some(dest) = fields
-        .iter()
-        .find(|f| f.key == "destination")
-        .map(|f| f.input.text().to_string())
+    let Some(dest) =
+        fields.iter().find(|f| f.key == "destination").map(|f| f.input.text().to_string())
     else {
         return;
     };
@@ -449,12 +430,7 @@ pub(crate) fn value_popup_choices(
 /// in turn (or "(not set)" when nothing would supply at all). Returns
 /// `false`, changing nothing, when the chosen scope stores nothing.
 pub(crate) fn stage_value_removal(fields: &mut [PromptField], kind: &mut PromptKind) -> bool {
-    let PromptKind::EditVarValue {
-        scope_values,
-        pending_removals,
-        ..
-    } = kind
-    else {
+    let PromptKind::EditVarValue { scope_values, pending_removals, .. } = kind else {
         return false;
     };
     let (chosen, stored) = chosen_scope(fields, scope_values);
@@ -598,19 +574,13 @@ pub struct MenuItem {
 
 impl MenuItem {
     pub fn new(label: impl Into<String>, action: Action) -> Self {
-        Self {
-            label: label.into(),
-            action: Some(action),
-        }
+        Self { label: label.into(), action: Some(action) }
     }
 
     /// A row that is shown but cannot be chosen — e.g. "Open" on a request
     /// whose file doesn't parse.
     pub fn disabled(label: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            action: None,
-        }
+        Self { label: label.into(), action: None }
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -866,7 +836,8 @@ impl ModalStack {
     /// `false` with the field already open, on the button row, and on a
     /// stop with no text: the new-selector toggle, a choice field.
     pub(crate) fn reopen_field(&mut self) -> bool {
-        if self.button_focus.is_some() || self.field_open || !self.top().is_some_and(Modal::is_form) {
+        if self.button_focus.is_some() || self.field_open || !self.top().is_some_and(Modal::is_form)
+        {
             return false;
         }
         let toggle = matches!(
@@ -885,7 +856,9 @@ impl ModalStack {
     pub(crate) fn answer_letters(&self) -> Vec<char> {
         match self.top() {
             Some(Modal::Confirm { choices, .. }) => choices.iter().map(|(c, ..)| *c).collect(),
-            Some(Modal::ConfigStartup { .. }) => config_startup_choices().iter().map(|(c, ..)| *c).collect(),
+            Some(Modal::ConfigStartup { .. }) => {
+                config_startup_choices().iter().map(|(c, ..)| *c).collect()
+            }
             Some(Modal::ConfigEditInvalid { .. }) => vec![CONFIG_EDIT_KEEP, CONFIG_EDIT_DISCARD],
             Some(Modal::KeymapChoice { .. }) => keymap_choices().iter().map(|(c, ..)| *c).collect(),
             _ => Vec::new(),
@@ -989,9 +962,7 @@ impl ModalStack {
         let FieldValue::Text(text) = value;
         match self.stack.last_mut() {
             Some(Modal::Prompt { input, .. }) => *input = LineInput::new(&text),
-            Some(Modal::NewProject {
-                name, path, on_path, ..
-            }) => {
+            Some(Modal::NewProject { name, path, on_path, .. }) => {
                 *on_path = idx == 1;
                 if idx == 1 {
                     *path = LineInput::new(&text);
@@ -1030,18 +1001,13 @@ impl ModalStack {
         }
         match self.stack.last()? {
             Modal::Prompt { input, .. } => Some(input),
-            Modal::NewProject {
-                name,
-                path,
-                on_path,
-                ..
-            } => Some(if *on_path { path } else { name }),
+            Modal::NewProject { name, path, on_path, .. } => {
+                Some(if *on_path { path } else { name })
+            }
             Modal::MultiPrompt { fields, focus, .. } => fields.get(*focus).map(|f| &f.input),
-            Modal::FieldsEditor(state) => state
-                .rows
-                .get(state.focus)
-                .filter(|r| !r.removed)
-                .map(|r| &r.input),
+            Modal::FieldsEditor(state) => {
+                state.rows.get(state.focus).filter(|r| !r.removed).map(|r| &r.input)
+            }
             Modal::FilePicker(state) => Some(state.input()),
             _ => None,
         }
@@ -1055,22 +1021,15 @@ impl ModalStack {
         }
         match self.stack.last_mut()? {
             Modal::Prompt { input, .. } => Some(input),
-            Modal::NewProject {
-                name,
-                path,
-                on_path,
-                ..
-            } => Some(if *on_path { path } else { name }),
+            Modal::NewProject { name, path, on_path, .. } => {
+                Some(if *on_path { path } else { name })
+            }
             Modal::MultiPrompt { fields, focus, .. } => {
                 fields.get_mut(*focus).map(|f| &mut f.input)
             }
             Modal::FieldsEditor(state) => {
                 let focus = state.focus;
-                state
-                    .rows
-                    .get_mut(focus)
-                    .filter(|r| !r.removed)
-                    .map(|r| &mut r.input)
+                state.rows.get_mut(focus).filter(|r| !r.removed).map(|r| &mut r.input)
             }
             Modal::FilePicker(state) => Some(state.input_mut()),
             _ => None,
@@ -1147,15 +1106,12 @@ impl ModalStack {
         match self.stack.last()? {
             Modal::Prompt { .. } | Modal::FilePicker(_) => Some(0),
             Modal::NewProject { on_path, .. } => Some(usize::from(*on_path)),
-            Modal::MultiPrompt { fields, focus, .. } => fields
-                .get(*focus)
-                .filter(|f| f.choices.is_empty())
-                .map(|_| *focus),
-            Modal::FieldsEditor(state) => state
-                .rows
-                .get(state.focus)
-                .filter(|r| !r.removed)
-                .map(|_| state.focus),
+            Modal::MultiPrompt { fields, focus, .. } => {
+                fields.get(*focus).filter(|f| f.choices.is_empty()).map(|_| *focus)
+            }
+            Modal::FieldsEditor(state) => {
+                state.rows.get(state.focus).filter(|r| !r.removed).map(|_| state.focus)
+            }
             _ => None,
         }
     }
@@ -1235,11 +1191,7 @@ impl ModalStack {
     pub fn cancel_top(&mut self) -> Option<ModalResult> {
         Some(match self.stack.last()? {
             Modal::Prompt { kind, .. } => Self::prompt_cancel(kind),
-            _ => ModalResult {
-                actions: vec![],
-                close: true,
-                ..Default::default()
-            },
+            _ => ModalResult { actions: vec![], close: true, ..Default::default() },
         })
     }
 
@@ -1257,13 +1209,8 @@ impl ModalStack {
 
     /// A one-field prompt's confirm: its result, or the empty-name toast.
     fn prompt_confirm(input: &LineInput, kind: &PromptKind) -> Option<ModalResult> {
-        Self::confirm_prompt(input, kind).or_else(|| {
-            input
-                .text()
-                .trim()
-                .is_empty()
-                .then(|| Self::empty_prompt_toast(kind))
-        })
+        Self::confirm_prompt(input, kind)
+            .or_else(|| input.text().trim().is_empty().then(|| Self::empty_prompt_toast(kind)))
     }
 
     /// A one-field prompt's cancel: the send-time secret prompt cancels
@@ -1278,11 +1225,7 @@ impl ModalStack {
             PromptKind::ImportCurl(run) => vec![Action::ImportCurlSkip(run.clone())],
             _ => vec![],
         };
-        ModalResult {
-            actions,
-            close: true,
-            ..Default::default()
-        }
+        ModalResult { actions, close: true, ..Default::default() }
     }
 
     /// The top modal's confirm, from wherever focus sits — the button
@@ -1356,12 +1299,7 @@ impl ModalStack {
     /// Called by `confirm_top`, never by `handle_key` directly: Enter now
     /// toggles the field instead of submitting.
     fn confirm_multi_prompt(fields: &[PromptField], kind: &PromptKind) -> Option<ModalResult> {
-        let get = |k: &str| {
-            fields
-                .iter()
-                .find(|f| f.key == k)
-                .map(|f| f.input.text().trim())
-        };
+        let get = |k: &str| fields.iter().find(|f| f.key == k).map(|f| f.input.text().trim());
         let actions = match kind {
             PromptKind::NewOptionInline { owner } => {
                 let key_text = get("key").filter(|s| !s.is_empty())?.to_string();
@@ -1371,9 +1309,7 @@ impl ModalStack {
                         values.insert(field.to_string(), f.input.text().to_string());
                     }
                 }
-                let description = get("description")
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string);
+                let description = get("description").filter(|s| !s.is_empty()).map(str::to_string);
                 vec![Action::ConfirmNewOptionInline {
                     owner: owner.clone(),
                     key: key_text,
@@ -1388,9 +1324,7 @@ impl ModalStack {
                         values.insert(f.key.clone(), f.input.text().to_string());
                     }
                 }
-                let description = get("description")
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string);
+                let description = get("description").filter(|s| !s.is_empty()).map(str::to_string);
                 vec![Action::ConfirmEditOption {
                     owner: owner.clone(),
                     key: key.clone(),
@@ -1414,11 +1348,7 @@ impl ModalStack {
                     Some("This request") => ExtractDestination::Request,
                     _ => ExtractDestination::ProjectDefault,
                 };
-                vec![Action::ConfirmExtractSelection {
-                    name,
-                    destination,
-                    surface: *surface,
-                }]
+                vec![Action::ConfirmExtractSelection { name, destination, surface: *surface }]
             }
             PromptKind::ExtractSelector(source) => {
                 let name = get("name").filter(|s| !s.is_empty())?.to_string();
@@ -1430,18 +1360,12 @@ impl ModalStack {
                     source: *source,
                 }]
             }
-            PromptKind::EditVarValue {
-                name,
-                pending_removals,
-                ..
-            } => {
+            PromptKind::EditVarValue { name, pending_removals, .. } => {
                 // An emptied value is a legitimate edit, so no
                 // non-empty filter here; removing the stored
                 // value outright is the Remove button.
-                let value = fields
-                    .iter()
-                    .find(|f| f.key == "value")
-                    .map(|f| f.input.text().to_string())?;
+                let value =
+                    fields.iter().find(|f| f.key == "value").map(|f| f.input.text().to_string())?;
                 let chosen = get("destination").unwrap_or_default();
                 let destination = destination_from_label(chosen);
                 // Pending removals land first. The chosen scope
@@ -1471,11 +1395,7 @@ impl ModalStack {
             }
             _ => return None, // not a MultiPrompt kind
         };
-        Some(ModalResult {
-            actions,
-            close: true,
-            ..Default::default()
-        })
+        Some(ModalResult { actions, close: true, ..Default::default() })
     }
 
     /// Builds the `Prompt` modal's confirm result from its current text —
@@ -1490,45 +1410,34 @@ impl ModalStack {
         }
         let actions: Option<Vec<Action>> = match kind {
             PromptKind::NewRequest => Some(vec![Action::CreateRequest(text.to_string())]),
-            PromptKind::ImportCurl(run) => Some(vec![Action::ImportCurlCreate {
-                run: run.clone(),
-                name: text.to_string(),
-            }]),
-            PromptKind::RenameRequest { from } => Some(vec![Action::RenameRequest {
-                from: from.clone(),
-                to: text.to_string(),
-            }]),
+            PromptKind::ImportCurl(run) => {
+                Some(vec![Action::ImportCurlCreate { run: run.clone(), name: text.to_string() }])
+            }
+            PromptKind::RenameRequest { from } => {
+                Some(vec![Action::RenameRequest { from: from.clone(), to: text.to_string() }])
+            }
             PromptKind::SaveAs => Some(vec![Action::SaveRequestAs(text.to_string())]),
-            PromptKind::SaveAsThen(then) => Some(vec![Action::SaveRequestAsThen(
-                text.to_string(),
-                then.clone(),
-            )]),
+            PromptKind::SaveAsThen(then) => {
+                Some(vec![Action::SaveRequestAsThen(text.to_string(), then.clone())])
+            }
             PromptKind::NewEnvironment => Some(vec![Action::CreateEnv(text.to_string())]),
             PromptKind::NewSpace => Some(vec![Action::CreateSpace(text.to_string())]),
-            PromptKind::RenameSpace { from } => Some(vec![Action::RenameSpace {
-                from: from.clone(),
-                to: text.to_string(),
-            }]),
-            PromptKind::RenameEnvironment { from } => Some(vec![Action::RenameEnv {
-                from: from.clone(),
-                to: text.to_string(),
-            }]),
+            PromptKind::RenameSpace { from } => {
+                Some(vec![Action::RenameSpace { from: from.clone(), to: text.to_string() }])
+            }
+            PromptKind::RenameEnvironment { from } => {
+                Some(vec![Action::RenameEnv { from: from.clone(), to: text.to_string() }])
+            }
             PromptKind::NewVariable => Some(vec![Action::VarStruct(VarStructOp::NewVar {
                 name: text.to_string(),
                 description: None,
             })]),
             PromptKind::NewVariableAndInsert { completing } => {
                 let name = text.to_string();
-                let insert_text = if *completing {
-                    format!("{name}}}}}")
-                } else {
-                    format!("{{{{{name}}}}}")
-                };
+                let insert_text =
+                    if *completing { format!("{name}}}}}") } else { format!("{{{{{name}}}}}") };
                 Some(vec![
-                    Action::VarStruct(VarStructOp::NewVar {
-                        name,
-                        description: None,
-                    }),
+                    Action::VarStruct(VarStructOp::NewVar { name, description: None }),
                     Action::InsertVarText(insert_text),
                 ])
             }
@@ -1549,15 +1458,8 @@ impl ModalStack {
                     shared: *shared,
                 })])
             }
-            PromptKind::SecretValue {
-                name,
-                env,
-                then_send,
-            } => Some(vec![if *then_send {
-                Action::SetSecret {
-                    name: name.clone(),
-                    value: text.to_string(),
-                }
+            PromptKind::SecretValue { name, env, then_send } => Some(vec![if *then_send {
+                Action::SetSecret { name: name.clone(), value: text.to_string() }
             } else {
                 Action::VarEdit(super::varmanager::VarEditOp::SetSecretValue {
                     env: env.clone(),
@@ -1581,11 +1483,7 @@ impl ModalStack {
         // option still missing a field) swallows confirm rather than
         // closing on nonsense — same "not ready yet" treatment as the
         // empty-text case above.
-        actions.map(|actions| ModalResult {
-            actions,
-            close: true,
-            ..Default::default()
-        })
+        actions.map(|actions| ModalResult { actions, close: true, ..Default::default() })
     }
 
     /// What `confirm_top` answers when `confirm_prompt` refuses because
@@ -1709,12 +1607,7 @@ impl ModalStack {
                 chips.push((Key::Named("alt+a"), "add field".to_string(), None));
                 chips.push((
                     Key::Named("alt+d"),
-                    if removed {
-                        "restore field"
-                    } else {
-                        "remove field"
-                    }
-                    .to_string(),
+                    if removed { "restore field" } else { "remove field" }.to_string(),
                     None,
                 ));
             }
@@ -1767,11 +1660,7 @@ impl ModalStack {
                     (Key::Named("alt+a"), "add field", None),
                     (
                         Key::Named("alt+d"),
-                        if removed {
-                            "restore field"
-                        } else {
-                            "remove field"
-                        },
+                        if removed { "restore field" } else { "remove field" },
                         None,
                     ),
                     (Key::Named("enter"), "apply", None),
@@ -1826,10 +1715,7 @@ impl ModalStack {
             Modal::Confirm { .. } => unreachable!("Confirm returned early"),
             // The new-selector prompt's toggle row is a focus stop, so
             // its keys are advertised the way every other area's are.
-            Modal::Prompt {
-                kind: PromptKind::NewSelector { on_toggle, .. },
-                ..
-            } => {
+            Modal::Prompt { kind: PromptKind::NewSelector { on_toggle, .. }, .. } => {
                 let mut chips = vec![(Key::Named("\u{2191}\u{2193}"), "move focus", None)];
                 if *on_toggle {
                     chips.push((Key::Named("space"), "toggle", None));
@@ -1907,18 +1793,13 @@ impl ModalStack {
             // own chips stay put (and nothing dims).
             Modal::Dropdown(_) => return None,
         };
-        let mut chips: Vec<crate::components::footer::FooterChip> = chips
-            .into_iter()
-            .map(|(k, l, a)| (k, l.to_string(), a))
-            .collect();
+        let mut chips: Vec<crate::components::footer::FooterChip> =
+            chips.into_iter().map(|(k, l, a)| (k, l.to_string(), a)).collect();
         // Reaching here with the top modal a form means the field is open
         // (the button-row and selected-field cases both returned above):
         // the confirm chord (Task 10) works from a field too, so its chip
         // joins the field's own "esc done".
-        if self
-            .top()
-            .is_some_and(|m| m.is_form() && !matches!(m, Modal::Prompt { .. }))
-        {
+        if self.top().is_some_and(|m| m.is_form() && !matches!(m, Modal::Prompt { .. })) {
             chips.push((Key::Named("⇧enter"), "confirm".to_string(), None));
         }
         Some(chips)
@@ -1979,11 +1860,13 @@ impl ModalStack {
             // `resumed_config_edit`; only `d` (Discard) is answerable from
             // here, since `Action::ConfigEditDiscard` needs nothing else.
             Modal::ConfigEditInvalid { path, .. } => match key.code {
-                KeyCode::Char(c) if c.eq_ignore_ascii_case(&CONFIG_EDIT_DISCARD) => Some(ModalResult {
-                    actions: vec![Action::ConfigEditDiscard { path: path.clone() }],
-                    close: false, // the action's own arm pops
-                    ..Default::default()
-                }),
+                KeyCode::Char(c) if c.eq_ignore_ascii_case(&CONFIG_EDIT_DISCARD) => {
+                    Some(ModalResult {
+                        actions: vec![Action::ConfigEditDiscard { path: path.clone() }],
+                        close: false, // the action's own arm pops
+                        ..Default::default()
+                    })
+                }
                 _ => None, // swallowed: modals capture all input
             },
             // No `Esc` arm, as for `ConfigStartup`. The answering action's
@@ -2013,29 +1896,24 @@ impl ModalStack {
                 }
             }
             Modal::Message { .. } => match key.code {
-                KeyCode::Esc | KeyCode::Enter => Some(ModalResult {
-                    actions: vec![],
-                    close: true,
-                    ..Default::default()
-                }),
+                KeyCode::Esc | KeyCode::Enter => {
+                    Some(ModalResult { actions: vec![], close: true, ..Default::default() })
+                }
                 _ => None, // swallowed: modals capture all input
             },
             Modal::Confirm { choices, .. } => match key.code {
-                KeyCode::Esc => Some(ModalResult {
-                    actions: vec![],
-                    close: true,
-                    ..Default::default()
-                }),
+                KeyCode::Esc => {
+                    Some(ModalResult { actions: vec![], close: true, ..Default::default() })
+                }
                 KeyCode::Char(c) => {
                     let c = c.to_ascii_lowercase();
-                    choices
-                        .iter()
-                        .find(|(choice, _, _)| choice.to_ascii_lowercase() == c)
-                        .map(|(_, _, actions)| ModalResult {
+                    choices.iter().find(|(choice, _, _)| choice.to_ascii_lowercase() == c).map(
+                        |(_, _, actions)| ModalResult {
                             actions: actions.clone(),
                             close: true,
                             ..Default::default()
-                        })
+                        },
+                    )
                 }
                 _ => None, // swallowed: modals capture all input
             },
@@ -2087,13 +1965,7 @@ impl ModalStack {
                 // than falling through to the generic opener below, which
                 // must never see this stop selected with `on_toggle: true`.
                 _ if crate::keys::opens_field(&key)
-                    && matches!(
-                        kind,
-                        PromptKind::NewSelector {
-                            on_toggle: true,
-                            ..
-                        }
-                    )
+                    && matches!(kind, PromptKind::NewSelector { on_toggle: true, .. })
                     && !*field_open =>
                 {
                     if let PromptKind::NewSelector { shared, .. } = kind {
@@ -2109,13 +1981,7 @@ impl ModalStack {
                 // above answers Enter/Space for it instead).
                 _ if crate::keys::opens_field(&key)
                     && !*field_open
-                    && !matches!(
-                        kind,
-                        PromptKind::NewSelector {
-                            on_toggle: true,
-                            ..
-                        }
-                    ) =>
+                    && !matches!(kind, PromptKind::NewSelector { on_toggle: true, .. }) =>
                 {
                     *field_open = true;
                     None
@@ -2158,12 +2024,7 @@ impl ModalStack {
             Modal::Chooser(state) => state.handle_key(key),
             Modal::FilePicker(state) => state.handle_key(key),
             Modal::VarPicker(state) => state.handle_key(key),
-            Modal::NewProject {
-                name,
-                path,
-                on_path,
-                prefilled,
-            } => match key.code {
+            Modal::NewProject { name, path, on_path, prefilled } => match key.code {
                 // Enter/Space reopen a selected field (spec
                 // 2026-09-16's shared rule), same as `Prompt`.
                 _ if crate::keys::opens_field(&key) && !*field_open => {
@@ -2283,7 +2144,13 @@ impl ModalStack {
                         let before = input.text_at_open();
                         input.end_edit();
                         let after = input.text().to_string();
-                        Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
+                        Self::record_field_close(
+                            &mut self.steps,
+                            &mut self.redo,
+                            idx,
+                            before,
+                            after,
+                        );
                     }
                     if *on_path {
                         // Already on the last field: the button row is
@@ -2312,7 +2179,13 @@ impl ModalStack {
                         let before = input.text_at_open();
                         input.end_edit();
                         let after = input.text().to_string();
-                        Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
+                        Self::record_field_close(
+                            &mut self.steps,
+                            &mut self.redo,
+                            idx,
+                            before,
+                            after,
+                        );
                     }
                     *on_path = false;
                     *field_open = false;
@@ -2354,29 +2227,15 @@ impl ModalStack {
                     None // swallowed: modals capture all input
                 }
                 // A disabled row has no action: swallowed, menu stays open.
-                KeyCode::Enter => state
-                    .items
-                    .get(state.selected)?
-                    .action
-                    .clone()
-                    .map(|action| ModalResult {
-                        actions: vec![action],
-                        close: true,
-                        ..Default::default()
-                    }),
-                KeyCode::Esc => Some(ModalResult {
-                    actions: vec![],
-                    close: true,
-                    ..Default::default()
+                KeyCode::Enter => state.items.get(state.selected)?.action.clone().map(|action| {
+                    ModalResult { actions: vec![action], close: true, ..Default::default() }
                 }),
+                KeyCode::Esc => {
+                    Some(ModalResult { actions: vec![], close: true, ..Default::default() })
+                }
                 _ => None, // swallowed: modals capture all input
             },
-            Modal::MultiPrompt {
-                fields,
-                kind,
-                focus,
-                ..
-            } => match key.code {
+            Modal::MultiPrompt { fields, kind, focus, .. } => match key.code {
                 // Enter/Space reopen a selected field (spec
                 // 2026-09-16's shared rule) — a choice field never opens,
                 // it only cycles via Left/Right.
@@ -2497,7 +2356,13 @@ impl ModalStack {
                         let before = fields[idx].input.text_at_open();
                         fields[idx].input.end_edit();
                         let after = fields[idx].input.text().to_string();
-                        Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
+                        Self::record_field_close(
+                            &mut self.steps,
+                            &mut self.redo,
+                            idx,
+                            before,
+                            after,
+                        );
                     }
                     *field_open = false;
                     if *focus + 1 < fields.len() {
@@ -2516,7 +2381,13 @@ impl ModalStack {
                         let before = fields[idx].input.text_at_open();
                         fields[idx].input.end_edit();
                         let after = fields[idx].input.text().to_string();
-                        Self::record_field_close(&mut self.steps, &mut self.redo, idx, before, after);
+                        Self::record_field_close(
+                            &mut self.steps,
+                            &mut self.redo,
+                            idx,
+                            before,
+                            after,
+                        );
                     }
                     *focus = focus.saturating_sub(1); // the first field stays
                     *field_open = false;
@@ -2729,9 +2600,7 @@ impl ModalStack {
         // "outside the modal".
         let backdrop = if self.footer_chips().is_some() {
             Rect {
-                height: screen
-                    .height
-                    .saturating_sub(crate::components::footer::FOOTER_HEIGHT),
+                height: screen.height.saturating_sub(crate::components::footer::FOOTER_HEIGHT),
                 ..screen
             }
         } else {
@@ -2774,7 +2643,9 @@ impl ModalStack {
             Modal::ConfigStartup { error } => {
                 let buttons: Vec<(&str, crate::hit::Hit, bool)> = config_startup_choices()
                     .iter()
-                    .map(|(_, label, choice)| (*label, crate::hit::Hit::ConfigStartupChoice(*choice), false))
+                    .map(|(_, label, choice)| {
+                        (*label, crate::hit::Hit::ConfigStartupChoice(*choice), false)
+                    })
                     .collect();
                 draw_blocking_dialog(
                     frame,
@@ -2818,7 +2689,9 @@ impl ModalStack {
             Modal::KeymapChoice { aimed } => {
                 let buttons: Vec<(&str, crate::hit::Hit, bool)> = keymap_choices()
                     .iter()
-                    .map(|(_, label, profile)| (*label, crate::hit::Hit::KeymapChoice(*profile), *aimed == Some(*profile)))
+                    .map(|(_, label, profile)| {
+                        (*label, crate::hit::Hit::KeymapChoice(*profile), *aimed == Some(*profile))
+                    })
                     .collect();
                 draw_blocking_dialog(
                     frame,
@@ -2879,19 +2752,14 @@ impl ModalStack {
                 } else {
                     ControlState::Normal
                 };
-                Button {
-                    label: btn_label,
-                    kind: ButtonKind::Primary,
-                    state: btn_state,
-                }
-                .paint(frame.buffer_mut(), btn_area, theme);
+                Button { label: btn_label, kind: ButtonKind::Primary, state: btn_state }.paint(
+                    frame.buffer_mut(),
+                    btn_area,
+                    theme,
+                );
                 hits.register(btn_area, crate::hit::Hit::ModalConfirm);
             }
-            Modal::Confirm {
-                title,
-                body,
-                choices,
-            } => {
+            Modal::Confirm { title, body, choices } => {
                 let area = centered_rect(screen, 60.min(screen.width), 13.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
                 paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
@@ -2932,33 +2800,22 @@ impl ModalStack {
                 let mut x = area.x + area.width.saturating_sub(2 + btn_row_w);
                 for (c, label, _) in choices.iter() {
                     let w = paint::button_min_width(label);
-                    let btn_area = Rect {
-                        x,
-                        y: buttons_y,
-                        width: w,
-                        height: BUTTON_HEIGHT,
-                    };
+                    let btn_area = Rect { x, y: buttons_y, width: w, height: BUTTON_HEIGHT };
                     let choice_state = if hovered == Some(&crate::hit::Hit::ConfirmChoice(*c)) {
                         ControlState::Hover
                     } else {
                         ControlState::Normal
                     };
-                    Button {
-                        label,
-                        kind: ButtonKind::Secondary,
-                        state: choice_state,
-                    }
-                    .paint(frame.buffer_mut(), btn_area, theme);
+                    Button { label, kind: ButtonKind::Secondary, state: choice_state }.paint(
+                        frame.buffer_mut(),
+                        btn_area,
+                        theme,
+                    );
                     hits.register(btn_area, crate::hit::Hit::ConfirmChoice(*c));
                     x += w + 2;
                 }
             }
-            Modal::Prompt {
-                title,
-                input,
-                kind,
-                revealed,
-            } => {
+            Modal::Prompt { title, input, kind, revealed } => {
                 let masked = kind.is_secret() && !*revealed;
                 // Height unchanged from the hint-row days: the space keeps
                 // the shell airy.
@@ -2995,9 +2852,8 @@ impl ModalStack {
                 } else {
                     None
                 };
-                let reveal_w = reveal_label
-                    .as_deref()
-                    .map_or(0, |l| crate::paint::button_min_width(l) + 1);
+                let reveal_w =
+                    reveal_label.as_deref().map_or(0, |l| crate::paint::button_min_width(l) + 1);
                 let field_area = Rect {
                     x: area.x + 2,
                     y: title_y + 2,
@@ -3016,13 +2872,7 @@ impl ModalStack {
                 // the resting stop (spec 2026-09-16, same split as the
                 // editor's URL bar).
                 let field_focused = button_focus.is_none()
-                    && !matches!(
-                        kind,
-                        PromptKind::NewSelector {
-                            on_toggle: true,
-                            ..
-                        }
-                    );
+                    && !matches!(kind, PromptKind::NewSelector { on_toggle: true, .. });
                 let field_caret_live = field_focused && field_open;
                 let content = if masked {
                     input.draw_line_windowed_masked(
@@ -3039,11 +2889,7 @@ impl ModalStack {
                 };
                 TextField {
                     content,
-                    state: if field_focused {
-                        ControlState::Focused
-                    } else {
-                        ControlState::Normal
-                    },
+                    state: if field_focused { ControlState::Focused } else { ControlState::Normal },
                 }
                 .paint(frame.buffer_mut(), field_area, theme);
                 hits.register(field_area, crate::hit::Hit::ModalInput(0));
@@ -3112,10 +2958,7 @@ impl ModalStack {
                 // already had between the field and the buttons: wrapped,
                 // muted, and read as the footnote it is rather than as
                 // half of the heading.
-                if let PromptKind::RenameVariable {
-                    note: Some(note), ..
-                } = kind
-                {
+                if let PromptKind::RenameVariable { note: Some(note), .. } = kind {
                     let note_y = field_area.y + FIELD_HEIGHT + 1;
                     let height = buttons_y.saturating_sub(note_y).saturating_sub(1);
                     if height > 0 {
@@ -3138,7 +2981,8 @@ impl ModalStack {
                 if let PromptKind::ImportCurl(run) = kind {
                     let import = run.current();
                     let width = area.width.saturating_sub(4);
-                    let target = format!("{} {}", import.request.method.as_str(), import.request.url);
+                    let target =
+                        format!("{} {}", import.request.method.as_str(), import.request.url);
                     let mut lines = vec![target];
                     if !import.ignored.is_empty() {
                         lines.push(format!("ignores {}", import.ignored.join(", ")));
@@ -3161,18 +3005,22 @@ impl ModalStack {
 
                 let verb = kind.cancel_verb();
                 let cancel = format!("{}{}", verb[..1].to_ascii_uppercase(), &verb[1..]);
-                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered, button_focus, &cancel);
+                draw_cancel_confirm_row(
+                    frame,
+                    hits,
+                    theme,
+                    area,
+                    buttons_y,
+                    hovered,
+                    button_focus,
+                    &cancel,
+                );
             }
             Modal::Palette(state) => state.draw(frame, screen, theme, hits, hovered, keymap, t),
             Modal::Chooser(state) => state.draw(frame, screen, theme, hits, hovered, t),
             Modal::FilePicker(state) => state.draw(frame, screen, theme, hits, hovered, t),
             Modal::VarPicker(state) => state.draw(frame, screen, theme, hits, hovered, t),
-            Modal::NewProject {
-                name,
-                path,
-                on_path,
-                ..
-            } => {
+            Modal::NewProject { name, path, on_path, .. } => {
                 let area = centered_rect(screen, 60.min(screen.width), 19.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
                 paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
@@ -3204,12 +3052,8 @@ impl ModalStack {
                     theme.panel,
                     false,
                 );
-                let name_area = Rect {
-                    x: field_x,
-                    y: name_label_y + 1,
-                    width: field_w,
-                    height: FIELD_HEIGHT,
-                };
+                let name_area =
+                    Rect { x: field_x, y: name_label_y + 1, width: field_w, height: FIELD_HEIGHT };
                 // Either field keeps the keyboard only while the button
                 // row doesn't have it. That's the resting-stop highlight
                 // (the fill lift below) — it applies while the field is
@@ -3228,11 +3072,7 @@ impl ModalStack {
                         theme,
                         field_w.saturating_sub(2),
                     ),
-                    state: if name_focused {
-                        ControlState::Focused
-                    } else {
-                        ControlState::Normal
-                    },
+                    state: if name_focused { ControlState::Focused } else { ControlState::Normal },
                 }
                 .paint(frame.buffer_mut(), name_area, theme);
                 hits.register(name_area, crate::hit::Hit::ModalInput(0));
@@ -3252,23 +3092,15 @@ impl ModalStack {
                 let browse_label = "Browse\u{2026}";
                 let browse_w = paint::button_min_width(browse_label);
                 let path_w = field_w.saturating_sub(browse_w + 1);
-                let path_area = Rect {
-                    x: field_x,
-                    y: path_label_y + 1,
-                    width: path_w,
-                    height: FIELD_HEIGHT,
-                };
+                let path_area =
+                    Rect { x: field_x, y: path_label_y + 1, width: path_w, height: FIELD_HEIGHT };
                 TextField {
                     content: path.draw_line_windowed(
                         path_caret_live,
                         theme,
                         path_w.saturating_sub(2),
                     ),
-                    state: if path_focused {
-                        ControlState::Focused
-                    } else {
-                        ControlState::Normal
-                    },
+                    state: if path_focused { ControlState::Focused } else { ControlState::Normal },
                 }
                 .paint(frame.buffer_mut(), path_area, theme);
                 hits.register(path_area, crate::hit::Hit::ModalInput(1));
@@ -3291,15 +3123,19 @@ impl ModalStack {
                 hits.register(browse_area, crate::hit::Hit::NewProjectBrowse);
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
-                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered, button_focus, "Cancel");
+                draw_cancel_confirm_row(
+                    frame,
+                    hits,
+                    theme,
+                    area,
+                    buttons_y,
+                    hovered,
+                    button_focus,
+                    "Cancel",
+                );
             }
             Modal::Dropdown(state) => draw_dropdown(frame, screen, theme, hits, hovered, state),
-            Modal::MultiPrompt {
-                title,
-                fields,
-                focus,
-                kind,
-            } => {
+            Modal::MultiPrompt { title, fields, focus, kind } => {
                 // Each field costs a label row plus a `FIELD_HEIGHT` box;
                 // around them sit the top pad, the title, a blank row, a
                 // gap row, the button row and the bottom pad. Counting the
@@ -3343,20 +3179,12 @@ impl ModalStack {
                         theme.panel,
                         false,
                     );
-                    let field_area = Rect {
-                        x: field_x,
-                        y: y + 1,
-                        width: field_w,
-                        height: FIELD_HEIGHT,
-                    };
+                    let field_area =
+                        Rect { x: field_x, y: y + 1, width: field_w, height: FIELD_HEIGHT };
                     // Label row + input box together: click focuses the
                     // field (registered after ModalBody, so it wins).
                     hits.register(
-                        Rect {
-                            y,
-                            height: 1 + FIELD_HEIGHT,
-                            ..field_area
-                        },
+                        Rect { y, height: 1 + FIELD_HEIGHT, ..field_area },
                         crate::hit::Hit::ModalField(i),
                     );
                     if field.choices.is_empty() {
@@ -3454,7 +3282,16 @@ impl ModalStack {
                 }
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
-                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered, button_focus, "Cancel");
+                draw_cancel_confirm_row(
+                    frame,
+                    hits,
+                    theme,
+                    area,
+                    buttons_y,
+                    hovered,
+                    button_focus,
+                    "Cancel",
+                );
                 // The value popup's remove: only when the chosen Write-to
                 // scope actually stores a value to delete. Painted as the
                 // same one-row "✕ remove" accent control the variable
@@ -3517,12 +3354,7 @@ impl ModalStack {
                 let mut y = title_y + 2;
                 for (i, row) in state.rows.iter().enumerate() {
                     let focused = button_focus.is_none() && i == state.focus && !row.removed;
-                    let field_area = Rect {
-                        x: field_x,
-                        y,
-                        width: field_w,
-                        height: FIELD_HEIGHT,
-                    };
+                    let field_area = Rect { x: field_x, y, width: field_w, height: FIELD_HEIGHT };
                     if row.removed {
                         // Marked for removal: the name, dim and struck,
                         // where the box was.
@@ -3533,11 +3365,11 @@ impl ModalStack {
                                 .fg(theme.text_disabled)
                                 .add_modifier(ratatui::style::Modifier::CROSSED_OUT),
                         ));
-                        TextField {
-                            content: line,
-                            state: ControlState::Disabled,
-                        }
-                        .paint(frame.buffer_mut(), field_area, theme);
+                        TextField { content: line, state: ControlState::Disabled }.paint(
+                            frame.buffer_mut(),
+                            field_area,
+                            theme,
+                        );
                     } else {
                         // Same split as `Prompt`/`MultiPrompt`'s own
                         // field (spec 2026-09-16): the resting-stop
@@ -3568,31 +3400,11 @@ impl ModalStack {
                     };
                     let toggle_hit = crate::hit::Hit::ModalRowToggle(i);
                     let toggle_hovered = hovered == Some(&toggle_hit);
-                    let glyph = if row.removed {
-                        "\u{21a9}"
-                    } else {
-                        crate::glyph::CLOSE
-                    };
-                    let fg = if toggle_hovered {
-                        theme.text
-                    } else {
-                        theme.text_muted
-                    };
-                    let bg = if toggle_hovered {
-                        theme.control_hover
-                    } else {
-                        theme.panel
-                    };
+                    let glyph = if row.removed { "\u{21a9}" } else { crate::glyph::CLOSE };
+                    let fg = if toggle_hovered { theme.text } else { theme.text_muted };
+                    let bg = if toggle_hovered { theme.control_hover } else { theme.panel };
                     paint::fill(frame.buffer_mut(), toggle_area, bg);
-                    paint::text(
-                        frame.buffer_mut(),
-                        toggle_area.x + 1,
-                        y + 1,
-                        glyph,
-                        fg,
-                        bg,
-                        false,
-                    );
+                    paint::text(frame.buffer_mut(), toggle_area.x + 1, y + 1, glyph, fg, bg, false);
                     hits.register(toggle_area, toggle_hit);
                     y += FIELD_HEIGHT;
                 }
@@ -3619,7 +3431,16 @@ impl ModalStack {
                 hits.register(add_area, add_hit);
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
-                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered, button_focus, "Cancel");
+                draw_cancel_confirm_row(
+                    frame,
+                    hits,
+                    theme,
+                    area,
+                    buttons_y,
+                    hovered,
+                    button_focus,
+                    "Cancel",
+                );
             }
         }
     }
@@ -3641,12 +3462,8 @@ fn draw_dropdown(
     hovered: Option<&crate::hit::Hit>,
     state: &DropdownState,
 ) {
-    let max_label = state
-        .items
-        .iter()
-        .map(|item| item.label.chars().count() as u16)
-        .max()
-        .unwrap_or(0);
+    let max_label =
+        state.items.iter().map(|item| item.label.chars().count() as u16).max().unwrap_or(0);
     // The popup floats over undimmed live content, so it needs real
     // breathing room: 2 columns of panel each side of the rows and a blank
     // margin row above and below, on top of the 1-cell panel edge —
@@ -3689,12 +3506,7 @@ fn draw_dropdown(
     };
     let y = y.clamp(screen.y, (screen.y + screen.height).saturating_sub(height));
 
-    let area = Rect {
-        x,
-        y,
-        width,
-        height,
-    };
+    let area = Rect { x, y, width, height };
     hits.register(area, crate::hit::Hit::ModalBody);
 
     // A dropdown opens whole on its first frame: fill, shadow, ring and
@@ -3717,12 +3529,7 @@ fn draw_dropdown(
             break;
         }
         let label = &item.label;
-        let row_area = Rect {
-            x: inner.x,
-            y: inner.y + i as u16,
-            width: inner.width,
-            height: 1,
-        };
+        let row_area = Rect { x: inner.x, y: inner.y + i as u16, width: inner.width, height: 1 };
         hits.register(row_area, crate::hit::Hit::DropdownRow(i));
         let enabled = item.is_enabled();
         let selected = enabled && i == state.selected;
@@ -3740,11 +3547,7 @@ fn draw_dropdown(
         // surfaces), same convention as the var-picker/palette/chooser
         // popups: a hovered row shows its full hover fill immediately.
         let hover_t = 1.0;
-        paint::ListRow {
-            highlight,
-            zebra: None,
-        }
-        .paint(
+        paint::ListRow { highlight, zebra: None }.paint(
             frame.buffer_mut(),
             row_area.y,
             row_area.x,
@@ -3768,11 +3571,7 @@ fn draw_dropdown(
         // accent bar on — so the marker glyph (or its leading blank) simply
         // overwrites that column: menus show a full-width selection fill
         // with no left bar, unlike the sidebar/palette lists that keep one.
-        let marker = if state.current == Some(i) {
-            "\u{2713} "
-        } else {
-            "  "
-        };
+        let marker = if state.current == Some(i) { "\u{2713} " } else { "  " };
         let fg = if !enabled {
             theme.text_muted
         } else if selected {
@@ -3796,10 +3595,7 @@ fn draw_dropdown(
 /// [`paint::button_min_width`], plus a 2-column gap between adjacent
 /// buttons.
 fn button_row_width(labels: &[impl AsRef<str>]) -> u16 {
-    let widths: u16 = labels
-        .iter()
-        .map(|l| paint::button_min_width(l.as_ref()))
-        .sum();
+    let widths: u16 = labels.iter().map(|l| paint::button_min_width(l.as_ref())).sum();
     let gaps = labels.len().saturating_sub(1) as u16 * 2;
     widths + gaps
 }
@@ -3829,28 +3625,15 @@ fn draw_cancel_confirm_row(
     cancel: &str,
 ) {
     let buttons = [
-        (
-            cancel,
-            ButtonKind::Secondary,
-            crate::hit::Hit::ModalCancel,
-        ),
-        (
-            "Confirm",
-            ButtonKind::Primary,
-            crate::hit::Hit::ModalConfirm,
-        ),
+        (cancel, ButtonKind::Secondary, crate::hit::Hit::ModalCancel),
+        ("Confirm", ButtonKind::Primary, crate::hit::Hit::ModalConfirm),
     ];
     let labels: Vec<&str> = buttons.iter().map(|(l, ..)| *l).collect();
     let row_w = button_row_width(&labels);
     let mut x = area.x + area.width.saturating_sub(2 + row_w);
     for (label, kind, hit) in buttons {
         let w = paint::button_min_width(label);
-        let btn_area = Rect {
-            x,
-            y: buttons_y,
-            width: w,
-            height: BUTTON_HEIGHT,
-        };
+        let btn_area = Rect { x, y: buttons_y, width: w, height: BUTTON_HEIGHT };
         let this = if hit == crate::hit::Hit::ModalCancel {
             FormButton::Cancel
         } else {
@@ -3927,12 +3710,7 @@ fn draw_blocking_dialog(
     let mut x = area.x + area.width.saturating_sub(2 + btn_row_w);
     for (label, hit, aimed) in buttons {
         let w = paint::button_min_width(label);
-        let btn_area = Rect {
-            x,
-            y: buttons_y,
-            width: w,
-            height: BUTTON_HEIGHT,
-        };
+        let btn_area = Rect { x, y: buttons_y, width: w, height: BUTTON_HEIGHT };
         let state = if *aimed {
             ControlState::Focused
         } else if hovered == Some(hit) {
@@ -3940,12 +3718,11 @@ fn draw_blocking_dialog(
         } else {
             ControlState::Normal
         };
-        Button {
-            label,
-            kind: ButtonKind::Secondary,
-            state,
-        }
-        .paint(frame.buffer_mut(), btn_area, theme);
+        Button { label, kind: ButtonKind::Secondary, state }.paint(
+            frame.buffer_mut(),
+            btn_area,
+            theme,
+        );
         hits.register(btn_area, hit.clone());
         x += w + 2;
     }
@@ -3954,12 +3731,7 @@ fn draw_blocking_dialog(
 pub fn centered_rect(screen: Rect, width: u16, height: u16) -> Rect {
     let w = width.min(screen.width);
     let h = height.min(screen.height);
-    Rect::new(
-        screen.x + (screen.width - w) / 2,
-        screen.y + (screen.height - h) / 2,
-        w,
-        h,
-    )
+    Rect::new(screen.x + (screen.width - w) / 2, screen.y + (screen.height - h) / 2, w, h)
 }
 
 #[cfg(test)]
@@ -3986,26 +3758,11 @@ mod tests {
     fn a_dropdown_opens_one_row_below_its_anchors_content_row() {
         let theme = Theme::dark();
         let open_y = |anchor: Rect| {
-            let state = DropdownState {
-                anchor,
-                items: dropdown_items(),
-                selected: 0,
-                current: Some(0),
-            };
+            let state =
+                DropdownState { anchor, items: dropdown_items(), selected: 0, current: Some(0) };
             let mut terminal = Terminal::new(TestBackend::new(60, 30)).unwrap();
             let mut hits = crate::hit::HitMap::default();
-            terminal
-                .draw(|f| {
-                    draw_dropdown(
-                        f,
-                        f.area(),
-                        &theme,
-                        &mut hits,
-                        None,
-                        &state,
-                    )
-                })
-                .unwrap();
+            terminal.draw(|f| draw_dropdown(f, f.area(), &theme, &mut hits, None, &state)).unwrap();
             hits.rect_of(&crate::hit::Hit::ModalBody).unwrap().y
         };
 
@@ -4040,10 +3797,7 @@ mod tests {
              prepended cell that shifts the text"
         );
         assert!(
-            focused.spans[0]
-                .style
-                .add_modifier
-                .contains(Modifier::REVERSED),
+            focused.spans[0].style.add_modifier.contains(Modifier::REVERSED),
             "that char is drawn as the caret"
         );
         assert_eq!(focused.spans[1].content.as_ref(), "not set)");
@@ -4052,10 +3806,7 @@ mod tests {
         assert_eq!(resting.spans.len(), 1);
         assert_eq!(resting.spans[0].content.as_ref(), "(not set)");
         assert!(
-            !resting.spans[0]
-                .style
-                .add_modifier
-                .contains(Modifier::REVERSED),
+            !resting.spans[0].style.add_modifier.contains(Modifier::REVERSED),
             "no caret while unfocused"
         );
     }
@@ -4096,10 +3847,7 @@ mod tests {
                 PromptField::text("dest", "Destination", "here"),
             ],
             focus: 0,
-            kind: PromptKind::NewSelector {
-                shared: false,
-                on_toggle: false,
-            },
+            kind: PromptKind::NewSelector { shared: false, on_toggle: false },
         });
 
         let theme = Theme::for_terminal();
@@ -4140,14 +3888,8 @@ mod tests {
     #[test]
     fn esc_closes_top_modal_only() {
         let mut m = ModalStack::default();
-        m.push(Modal::Message {
-            title: "A".into(),
-            body: "a".into(),
-        });
-        m.push(Modal::Message {
-            title: "B".into(),
-            body: "b".into(),
-        });
+        m.push(Modal::Message { title: "A".into(), body: "a".into() });
+        m.push(Modal::Message { title: "B".into(), body: "b".into() });
         let res = m.handle_key(key(KeyCode::Esc)).unwrap();
         assert!(res.close);
         assert!(res.actions.is_empty());
@@ -4158,10 +3900,7 @@ mod tests {
     #[test]
     fn other_keys_are_swallowed_by_message_modal() {
         let mut m = ModalStack::default();
-        m.push(Modal::Message {
-            title: "A".into(),
-            body: "a".into(),
-        });
+        m.push(Modal::Message { title: "A".into(), body: "a".into() });
         assert!(
             m.handle_key(key(KeyCode::Char('q'))).is_none(),
             "keys must not leak through a modal to global bindings"
@@ -4171,9 +3910,10 @@ mod tests {
     #[test]
     fn palette_enter_returns_action_and_closes() {
         let mut m = ModalStack::default();
-        m.push(Modal::Palette(
-            crate::components::palette::PaletteState::new(&crate::usage::UsageStore::default(), 0),
-        ));
+        m.push(Modal::Palette(crate::components::palette::PaletteState::new(
+            &crate::usage::UsageStore::default(),
+            0,
+        )));
         for c in "quit".chars() {
             assert!(m.handle_key(key(KeyCode::Char(c))).is_none());
         }
@@ -4193,10 +3933,7 @@ mod tests {
     #[test]
     fn message_modal_closes_without_action() {
         let mut m = ModalStack::default();
-        m.push(Modal::Message {
-            title: "t".into(),
-            body: "b".into(),
-        });
+        m.push(Modal::Message { title: "t".into(), body: "b".into() });
         let res = m.handle_key(key(KeyCode::Esc)).unwrap();
         assert!(res.close && res.actions.is_empty());
     }
@@ -4205,10 +3942,7 @@ mod tests {
     fn top_returns_the_top_modal() {
         let mut m = ModalStack::default();
         assert!(m.top().is_none());
-        m.push(Modal::Message {
-            title: "t".into(),
-            body: "b".into(),
-        });
+        m.push(Modal::Message { title: "t".into(), body: "b".into() });
         assert!(matches!(m.top(), Some(Modal::Message { .. })));
     }
 
@@ -4247,9 +3981,7 @@ mod tests {
         assert_eq!(browse.y, path.y, "shares the path row");
         assert!(browse.x > path.x + path.width, "sits to the field's right");
         // alt+b asks the app to open the folder picker without closing.
-        let res = m
-            .handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT))
-            .unwrap();
+        let res = m.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT)).unwrap();
         assert!(!res.close);
         assert_eq!(res.actions, vec![Action::BrowseNewProjectDir]);
     }
@@ -4302,10 +4034,7 @@ mod tests {
         m.handle_key(key(KeyCode::Esc)); // close to selected
         m.handle_key(key(KeyCode::Esc)); // to the button row
         let res = m.confirm_top().expect("submits from the button row");
-        assert!(matches!(
-            res.actions.as_slice(),
-            [Action::CreateProject { .. }]
-        ));
+        assert!(matches!(res.actions.as_slice(), [Action::CreateProject { .. }]));
     }
 
     fn draw_modal(m: &mut ModalStack) -> String {
@@ -4382,9 +4111,7 @@ mod tests {
             title: "New option".into(),
             fields: vec![PromptField::text("key", "Key", "")],
             focus: 0,
-            kind: PromptKind::NewOptionInline {
-                owner: "host".into(),
-            },
+            kind: PromptKind::NewOptionInline { owner: "host".into() },
         });
         let content = draw_modal(&mut m);
         assert!(!content.contains("tab switch"), "{content}");
@@ -4400,17 +4127,10 @@ mod tests {
         m.push(Modal::Confirm {
             title: "Discard changes".into(),
             body: "Revert?".into(),
-            choices: vec![
-                ('d', "Discard changes".into(), vec![]),
-                ('k', "Keep".into(), vec![]),
-            ],
+            choices: vec![('d', "Discard changes".into(), vec![]), ('k', "Keep".into(), vec![])],
         });
         let chips = spelled(m.footer_chips().expect("a confirm supplies chips"));
-        assert!(
-            chips
-                .iter()
-                .any(|(k, l, a)| k == "d" && l == "discard changes" && a.is_none())
-        );
+        assert!(chips.iter().any(|(k, l, a)| k == "d" && l == "discard changes" && a.is_none()));
         assert!(chips.iter().any(|(k, l, _)| k == "k" && l == "keep"));
         assert!(chips.iter().any(|(k, l, _)| k == "esc" && l == "cancel"));
     }
@@ -4470,10 +4190,7 @@ mod tests {
         assert!(content.contains("reveal"), "{content}");
         assert!(hits.rect_of(&crate::hit::Hit::ModalRevealToggle).is_some());
         let chips = spelled(m.footer_chips().unwrap());
-        assert!(
-            chips.iter().any(|(k, l, _)| k == "ctrl+r" && l == "reveal"),
-            "{chips:?}"
-        );
+        assert!(chips.iter().any(|(k, l, _)| k == "ctrl+r" && l == "reveal"), "{chips:?}");
 
         if let Some(Modal::Prompt { revealed, .. }) = m.top_mut() {
             *revealed = true;
@@ -4482,10 +4199,7 @@ mod tests {
         assert!(content.contains(crate::glyph::EYE_OFF), "{content}");
         assert!(content.contains("hide"), "{content}");
         let chips = spelled(m.footer_chips().unwrap());
-        assert!(
-            chips.iter().any(|(k, l, _)| k == "ctrl+r" && l == "hide"),
-            "{chips:?}"
-        );
+        assert!(chips.iter().any(|(k, l, _)| k == "ctrl+r" && l == "hide"), "{chips:?}");
     }
 
     /// A plain (non-secret) prompt gets neither the button nor the chip.
@@ -4528,7 +4242,9 @@ mod tests {
     /// [`draw_modal_buf`], plus the `HitMap` from the same draw — for a
     /// test that needs to locate a control (e.g. `Hit::ModalInput(0)`'s
     /// rect) before inspecting the cells painted there.
-    fn draw_modal_buf_with_hits(m: &mut ModalStack) -> (ratatui::buffer::Buffer, crate::hit::HitMap) {
+    fn draw_modal_buf_with_hits(
+        m: &mut ModalStack,
+    ) -> (ratatui::buffer::Buffer, crate::hit::HitMap) {
         let theme = Theme::dark();
         let keymap = crate::keys::Keymap::default_bindings();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
@@ -4582,10 +4298,7 @@ mod tests {
         m.push(Modal::Prompt {
             title: format!("Rename foo {}", "wordy ".repeat(20)),
             input: LineInput::new("foo"),
-            kind: PromptKind::RenameVariable {
-                from: "foo".into(),
-                note: None,
-            },
+            kind: PromptKind::RenameVariable { from: "foo".into(), note: None },
             revealed: false,
         });
         assert_nothing_outside_the_panel(&draw_modal_buf(&mut m));
@@ -4641,10 +4354,7 @@ mod tests {
     #[test]
     fn draw_renders_title_and_body() {
         let mut m = ModalStack::default();
-        m.push(Modal::Message {
-            title: "About".into(),
-            body: "hello world".into(),
-        });
+        m.push(Modal::Message { title: "About".into(), body: "hello world".into() });
         let theme = Theme::dark();
         let keymap = crate::keys::Keymap::default_bindings();
         let backend = TestBackend::new(80, 24);
@@ -4672,10 +4382,7 @@ mod tests {
     #[test]
     fn draw_dims_the_backdrop_and_paints_the_panel_surface() {
         let mut m = ModalStack::default();
-        m.push(Modal::Message {
-            title: "About".into(),
-            body: "hello world".into(),
-        });
+        m.push(Modal::Message { title: "About".into(), body: "hello world".into() });
         let theme = Theme::dark();
         let keymap = crate::keys::Keymap::default_bindings();
         let backend = TestBackend::new(80, 24);
@@ -4709,10 +4416,7 @@ mod tests {
         );
         let panel = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
         let center = (panel.x + panel.width / 2, panel.y + panel.height / 2);
-        assert_eq!(
-            buffer[center].bg, theme.panel,
-            "the panel's own fill must be theme.panel"
-        );
+        assert_eq!(buffer[center].bg, theme.panel, "the panel's own fill must be theme.panel");
     }
 
     #[test]
@@ -4782,9 +4486,10 @@ mod tests {
     #[test]
     fn palette_row_matches_the_selected_row_and_accent_bar() {
         let mut m = ModalStack::default();
-        m.push(Modal::Palette(
-            crate::components::palette::PaletteState::new(&crate::usage::UsageStore::default(), 0),
-        ));
+        m.push(Modal::Palette(crate::components::palette::PaletteState::new(
+            &crate::usage::UsageStore::default(),
+            0,
+        )));
         let theme = Theme::dark();
         let keymap = crate::keys::Keymap::default_bindings();
         let backend = TestBackend::new(80, 24);
@@ -4849,10 +4554,7 @@ mod tests {
             selected: 0,
             current: Some(0),
         }));
-        assert!(
-            m.handle_key(key(KeyCode::Up)).is_none(),
-            "clamped at top, swallowed"
-        );
+        assert!(m.handle_key(key(KeyCode::Up)).is_none(), "clamped at top, swallowed");
         assert!(m.handle_key(key(KeyCode::Down)).is_none());
         let res = m.handle_key(key(KeyCode::Enter)).unwrap();
         assert!(res.close);
@@ -4901,30 +4603,15 @@ mod tests {
         // Anchor sits one row above the bottom: drawing below it would
         // cross the screen edge, so the popup must flip above instead.
         let anchor = Rect::new(10, 23, 8, 1);
-        let state = DropdownState {
-            anchor,
-            items: dropdown_items(),
-            selected: 0,
-            current: Some(0),
-        };
+        let state =
+            DropdownState { anchor, items: dropdown_items(), selected: 0, current: Some(0) };
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| {
-                draw_dropdown(
-                    f,
-                    screen,
-                    &Theme::dark(),
-                    &mut hits,
-                    None,
-                    &state,
-                )
-            })
+            .draw(|f| draw_dropdown(f, screen, &Theme::dark(), &mut hits, None, &state))
             .unwrap();
-        let row0 = hits
-            .rect_of(&crate::hit::Hit::DropdownRow(0))
-            .expect("row 0 registered");
+        let row0 = hits.rect_of(&crate::hit::Hit::DropdownRow(0)).expect("row 0 registered");
         assert!(
             row0.y < anchor.y,
             "flipped-up popup rows must sit above the anchor row, got y={}",
@@ -4949,30 +4636,16 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| {
-                draw_dropdown(
-                    f,
-                    screen,
-                    &Theme::dark(),
-                    &mut hits,
-                    None,
-                    &state,
-                )
-            })
+            .draw(|f| draw_dropdown(f, screen, &Theme::dark(), &mut hits, None, &state))
             .unwrap();
         let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
         let row0 = hits.rect_of(&crate::hit::Hit::DropdownRow(0)).unwrap();
-        let last = hits
-            .rect_of(&crate::hit::Hit::DropdownRow(dropdown_items().len() - 1))
-            .unwrap();
+        let last = hits.rect_of(&crate::hit::Hit::DropdownRow(dropdown_items().len() - 1)).unwrap();
         assert!(
             row0.y >= body.y + 2,
             "a blank margin row separates the first row from the top edge"
         );
-        assert!(
-            last.y + last.height + 2 <= body.y + body.height,
-            "and from the bottom edge"
-        );
+        assert!(last.y + last.height + 2 <= body.y + body.height, "and from the bottom edge");
         assert!(
             row0.x >= body.x + 2 && row0.x + row0.width + 2 <= body.x + body.width,
             "rows keep two columns of panel on both sides"
@@ -5048,11 +4721,7 @@ mod tests {
             panic!("expected a Dropdown on top");
         };
         assert_eq!(state.selected, 1, "cursor moved");
-        assert_eq!(
-            state.current,
-            Some(0),
-            "checkmark stays on the original row"
-        );
+        assert_eq!(state.current, Some(0), "checkmark stays on the original row");
     }
 
     #[test]
@@ -5068,18 +4737,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| {
-                draw_dropdown(
-                    f,
-                    screen,
-                    &theme,
-                    &mut hits,
-                    None,
-                    &state,
-                )
-            })
-            .unwrap();
+        terminal.draw(|f| draw_dropdown(f, screen, &theme, &mut hits, None, &state)).unwrap();
         let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
         let buffer = terminal.backend().buffer();
         // Top edge stroke, excluding the corner column.
@@ -5101,40 +4759,19 @@ mod tests {
         // A window of N rows sits on consecutive screen lines (1-line
         // pitch), painted with `ListRow`.
         let screen = Rect::new(0, 0, 80, 24);
-        let items: Vec<MenuItem> = (0..5)
-            .map(|i| MenuItem::new(format!("Item {i}"), Action::Render))
-            .collect();
-        let state = DropdownState {
-            anchor: Rect::new(10, 5, 8, 1),
-            items,
-            selected: 0,
-            current: None,
-        };
+        let items: Vec<MenuItem> =
+            (0..5).map(|i| MenuItem::new(format!("Item {i}"), Action::Render)).collect();
+        let state =
+            DropdownState { anchor: Rect::new(10, 5, 8, 1), items, selected: 0, current: None };
         let theme = Theme::dark();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| {
-                draw_dropdown(
-                    f,
-                    screen,
-                    &theme,
-                    &mut hits,
-                    None,
-                    &state,
-                )
-            })
-            .unwrap();
-        let rows: Vec<Rect> = (0..5)
-            .map(|i| hits.rect_of(&crate::hit::Hit::DropdownRow(i)).unwrap())
-            .collect();
+        terminal.draw(|f| draw_dropdown(f, screen, &theme, &mut hits, None, &state)).unwrap();
+        let rows: Vec<Rect> =
+            (0..5).map(|i| hits.rect_of(&crate::hit::Hit::DropdownRow(i)).unwrap()).collect();
         for w in rows.windows(2) {
-            assert_eq!(
-                w[1].y,
-                w[0].y + 1,
-                "rows sit on a dense, consecutive 1-line pitch"
-            );
+            assert_eq!(w[1].y, w[0].y + 1, "rows sit on a dense, consecutive 1-line pitch");
         }
     }
 
@@ -5151,26 +4788,11 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| {
-                draw_dropdown(
-                    f,
-                    screen,
-                    &theme,
-                    &mut hits,
-                    None,
-                    &state,
-                )
-            })
-            .unwrap();
+        terminal.draw(|f| draw_dropdown(f, screen, &theme, &mut hits, None, &state)).unwrap();
         let row0 = hits.rect_of(&crate::hit::Hit::DropdownRow(0)).unwrap();
         let buffer = terminal.backend().buffer();
         let leading = &buffer[(row0.x, row0.y)];
-        assert_ne!(
-            leading.symbol(),
-            "▌",
-            "menus don't keep the list-row left accent bar"
-        );
+        assert_ne!(leading.symbol(), "▌", "menus don't keep the list-row left accent bar");
         assert_eq!(leading.bg, theme.selection);
     }
 
@@ -5363,17 +4985,10 @@ mod tests {
         m.push(sample_multi_prompt());
         assert_eq!(m.caret_field(), Some(0));
         m.handle_key(key(KeyCode::Tab)); // focus 1: the choice field
-        m.push(Modal::Message {
-            title: "t".into(),
-            body: "b".into(),
-        });
+        m.push(Modal::Message { title: "t".into(), body: "b".into() });
         m.pop(); // pop reopens the top form's field
         assert!(m.field_open());
-        assert_eq!(
-            m.caret_field(),
-            None,
-            "the choice stepper is a stop, not a text field"
-        );
+        assert_eq!(m.caret_field(), None, "the choice stepper is a stop, not a text field");
     }
 
     #[test]
@@ -5385,10 +5000,7 @@ mod tests {
         assert!(m.field_open());
         m.close_top_field();
         m.handle_key(key(KeyCode::Down));
-        assert!(
-            m.button_focus().is_some(),
-            "Down from a selected prompt field aims the buttons"
-        );
+        assert!(m.button_focus().is_some(), "Down from a selected prompt field aims the buttons");
         assert!(!m.reopen_field(), "the button row has no field");
     }
 
@@ -5629,20 +5241,14 @@ mod tests {
         // Open (fresh push): the caret paints.
         let (buf, hits) = draw_modal_buf_with_hits(&mut m);
         let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
-        assert!(
-            row_has_a_reversed_cell(&buf, field),
-            "the caret paints while the field is open"
-        );
+        assert!(row_has_a_reversed_cell(&buf, field), "the caret paints while the field is open");
 
         // Closing the field to selected: no caret, but the fill is
         // still the lifted (focused) one, not the resting one.
         m.close_top_field();
         let (buf, hits) = draw_modal_buf_with_hits(&mut m);
         let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
-        assert!(
-            !row_has_a_reversed_cell(&buf, field),
-            "no caret while merely selected"
-        );
+        assert!(!row_has_a_reversed_cell(&buf, field), "no caret while merely selected");
         let focused_fill = TextField::face(ControlState::Focused, &theme);
         assert_eq!(
             buf[(field.x + crate::paint::FIELD_PAD, field.y + 1)].bg,
@@ -5677,20 +5283,14 @@ mod tests {
         // Open (fresh push): the caret paints.
         let (buf, hits) = draw_modal_buf_with_hits(&mut m);
         let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
-        assert!(
-            row_has_a_reversed_cell(&buf, field),
-            "the caret paints while the field is open"
-        );
+        assert!(row_has_a_reversed_cell(&buf, field), "the caret paints while the field is open");
 
         // Esc closes the field to selected: no caret, but the fill is
         // still the lifted (focused) one, not the resting one.
         m.handle_key(key(KeyCode::Esc));
         let (buf, hits) = draw_modal_buf_with_hits(&mut m);
         let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
-        assert!(
-            !row_has_a_reversed_cell(&buf, field),
-            "no caret while merely selected"
-        );
+        assert!(!row_has_a_reversed_cell(&buf, field), "no caret while merely selected");
         let focused_fill = TextField::face(ControlState::Focused, &theme);
         assert_eq!(
             buf[(field.x + crate::paint::FIELD_PAD, field.y + 1)].bg,
@@ -5809,32 +5409,21 @@ mod tests {
             m.push(Modal::Prompt {
                 title: "New selector".into(),
                 input: LineInput::new(""),
-                kind: PromptKind::NewSelector {
-                    shared: false,
-                    on_toggle: false,
-                },
+                kind: PromptKind::NewSelector { shared: false, on_toggle: false },
                 revealed: false,
             });
             m.close_top_field();
             m.handle_key(key(KeyCode::Down));
             assert!(!m.field_open(), "on the toggle stop, selected");
             m.handle_key(key(opener));
-            let Some(Modal::Prompt {
-                kind: PromptKind::NewSelector { shared, on_toggle },
-                ..
-            }) = m.top()
+            let Some(Modal::Prompt { kind: PromptKind::NewSelector { shared, on_toggle }, .. }) =
+                m.top()
             else {
                 panic!("stays a NewSelector prompt");
             };
             assert!(*shared, "{opener:?} must flip shared like Space does");
-            assert!(
-                *on_toggle,
-                "{opener:?} must not move focus off the toggle"
-            );
-            assert!(
-                !m.field_open(),
-                "{opener:?} must not open the name field behind the toggle"
-            );
+            assert!(*on_toggle, "{opener:?} must not move focus off the toggle");
+            assert!(!m.field_open(), "{opener:?} must not open the name field behind the toggle");
         }
     }
 
@@ -5844,11 +5433,7 @@ mod tests {
         m.handle_key(key(KeyCode::Char('a')));
         m.close_top_field();
         assert!(!m.field_open(), "field now selected, not open");
-        assert_eq!(
-            m.button_focus(),
-            None,
-            "still on the field, not the buttons yet"
-        );
+        assert_eq!(m.button_focus(), None, "still on the field, not the buttons yet");
         assert!(
             m.handle_key(key(KeyCode::Esc)).is_none(),
             "Esc from selected reaches the button row"
@@ -6009,18 +5594,12 @@ mod tests {
 
         let (buf, hits) = draw_modal_buf_with_hits(&mut m);
         let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
-        assert!(
-            row_has_a_reversed_cell(&buf, field),
-            "the caret paints while the field is open"
-        );
+        assert!(row_has_a_reversed_cell(&buf, field), "the caret paints while the field is open");
 
         m.handle_key(key(KeyCode::Esc));
         let (buf, hits) = draw_modal_buf_with_hits(&mut m);
         let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
-        assert!(
-            !row_has_a_reversed_cell(&buf, field),
-            "no caret while merely selected"
-        );
+        assert!(!row_has_a_reversed_cell(&buf, field), "no caret while merely selected");
         let focused_fill = TextField::face(ControlState::Focused, &theme);
         assert_eq!(
             buf[(field.x + crate::paint::FIELD_PAD, field.y + 1)].bg,
@@ -6046,18 +5625,12 @@ mod tests {
 
         let (buf, hits) = draw_modal_buf_with_hits(&mut m);
         let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
-        assert!(
-            row_has_a_reversed_cell(&buf, field),
-            "the caret paints while the row is open"
-        );
+        assert!(row_has_a_reversed_cell(&buf, field), "the caret paints while the row is open");
 
         m.handle_key(key(KeyCode::Esc));
         let (buf, hits) = draw_modal_buf_with_hits(&mut m);
         let field = hits.rect_of(&crate::hit::Hit::ModalInput(0)).unwrap();
-        assert!(
-            !row_has_a_reversed_cell(&buf, field),
-            "no caret while merely selected"
-        );
+        assert!(!row_has_a_reversed_cell(&buf, field), "no caret while merely selected");
         let focused_fill = TextField::face(ControlState::Focused, &theme);
         assert_eq!(
             buf[(field.x + crate::paint::FIELD_PAD, field.y + 1)].bg,
@@ -6084,9 +5657,8 @@ mod tests {
         m.close_top_field(); // closes the (empty) field to selected
         m.handle_key(key(KeyCode::Esc)); // reaches the button row
         assert_eq!(m.button_focus(), Some(FormButton::Confirm));
-        let res = m
-            .handle_key(key(KeyCode::Enter))
-            .expect("an empty name toasts instead of confirming");
+        let res =
+            m.handle_key(key(KeyCode::Enter)).expect("an empty name toasts instead of confirming");
         assert!(!res.close, "an empty name has nothing to confirm");
         assert_eq!(
             m.button_focus(),
@@ -6100,10 +5672,9 @@ mod tests {
     /// what is missing and leaves the prompt up.
     #[test]
     fn confirming_an_empty_prompt_toasts_and_keeps_it_open() {
-        for (title, kind) in [
-            ("New request", PromptKind::NewRequest),
-            ("Save request as", PromptKind::SaveAs),
-        ] {
+        for (title, kind) in
+            [("New request", PromptKind::NewRequest), ("Save request as", PromptKind::SaveAs)]
+        {
             let mut m = ModalStack::default();
             m.push(Modal::Prompt {
                 title: title.into(),
@@ -6113,9 +5684,7 @@ mod tests {
             });
             m.close_top_field(); // closes the (empty) field to selected
             m.handle_key(key(KeyCode::Esc)); // reaches the button row
-            let res = m
-                .handle_key(key(KeyCode::Enter))
-                .expect("a refusal is still a result");
+            let res = m.handle_key(key(KeyCode::Enter)).expect("a refusal is still a result");
             assert!(!res.close, "{title}: the prompt stays up");
             assert!(
                 matches!(res.actions.as_slice(), [Action::ShowToast(msg, crate::components::toast::ToastKind::Info)] if msg == "Type a name first"),
@@ -6225,11 +5794,7 @@ mod tests {
         m.close_top_field(); // closes the field to selected
         let chips = spelled(m.footer_chips().expect("form modal always has chips"));
         assert!(chips.iter().any(|(k, l, _)| k == "enter" && l == "edit"));
-        assert!(
-            chips
-                .iter()
-                .any(|(k, l, _)| k.contains("enter") && l == "confirm")
-        );
+        assert!(chips.iter().any(|(k, l, _)| k.contains("enter") && l == "confirm"));
         assert!(chips.iter().any(|(k, l, _)| k == "esc" && l == "buttons"));
     }
 
@@ -6243,10 +5808,7 @@ mod tests {
         let mut m = prompt_stack();
         m.close_top_field(); // closes the (unedited) field
         let chips = spelled(m.footer_chips().unwrap());
-        assert!(
-            !chips.iter().any(|(_, l, _)| l == "undo"),
-            "nothing recorded yet: {chips:?}"
-        );
+        assert!(!chips.iter().any(|(_, l, _)| l == "undo"), "nothing recorded yet: {chips:?}");
 
         let mut m = prompt_stack();
         m.handle_key(key(KeyCode::Char('a')));
@@ -6263,40 +5825,25 @@ mod tests {
     #[test]
     fn pickers_say_close_and_confirms_say_cancel() {
         let mut m = ModalStack::default();
-        m.push(Modal::Chooser(super::super::chooser::ChooserState::new(
-            "Pick",
-            vec![],
-        )));
+        m.push(Modal::Chooser(super::super::chooser::ChooserState::new("Pick", vec![])));
         assert!(
-            spelled(m.footer_chips().unwrap())
-                .iter()
-                .any(|(k, l, _)| k == "esc" && l == "close")
+            spelled(m.footer_chips().unwrap()).iter().any(|(k, l, _)| k == "esc" && l == "close")
         );
         let dir = tempfile::tempdir().unwrap();
         let mut m = ModalStack::default();
-        m.push(Modal::FilePicker(
-            super::super::file_picker::FilePickerState::new(
-                "Open project",
-                super::super::file_picker::PickerTarget::OpenProject,
-                dir.path(),
-                "",
-            ),
-        ));
+        m.push(Modal::FilePicker(super::super::file_picker::FilePickerState::new(
+            "Open project",
+            super::super::file_picker::PickerTarget::OpenProject,
+            dir.path(),
+            "",
+        )));
         assert!(
-            spelled(m.footer_chips().unwrap())
-                .iter()
-                .any(|(k, l, _)| k == "esc" && l == "close")
+            spelled(m.footer_chips().unwrap()).iter().any(|(k, l, _)| k == "esc" && l == "close")
         );
         let mut m = ModalStack::default();
-        m.push(Modal::Confirm {
-            title: "?".into(),
-            body: String::new(),
-            choices: vec![],
-        });
+        m.push(Modal::Confirm { title: "?".into(), body: String::new(), choices: vec![] });
         assert!(
-            spelled(m.footer_chips().unwrap())
-                .iter()
-                .any(|(k, l, _)| k == "esc" && l == "cancel")
+            spelled(m.footer_chips().unwrap()).iter().any(|(k, l, _)| k == "esc" && l == "cancel")
         );
     }
 
@@ -6319,11 +5866,7 @@ mod tests {
         m.push(Modal::Prompt {
             title: "Secret".into(),
             input: LineInput::new(""),
-            kind: PromptKind::SecretValue {
-                name: "k".into(),
-                env: "dev".into(),
-                then_send: true,
-            },
+            kind: PromptKind::SecretValue { name: "k".into(), env: "dev".into(), then_send: true },
             revealed: false,
         });
         m.close_top_field();
@@ -6333,7 +5876,9 @@ mod tests {
         );
         let res = m.handle_key(key(KeyCode::Esc)).unwrap();
         assert!(res.close);
-        assert!(matches!(res.actions.as_slice(), [Action::ShowToast(msg, _)] if msg == "send canceled"));
+        assert!(
+            matches!(res.actions.as_slice(), [Action::ShowToast(msg, _)] if msg == "send canceled")
+        );
     }
 
     #[test]
@@ -6342,10 +5887,7 @@ mod tests {
         m.handle_key(key(KeyCode::Char('a')));
         m.close_top_field(); // closes the field to selected
         m.handle_key(key(KeyCode::Esc)); // reaches the button row
-        assert!(
-            m.focused_input_mut().is_none(),
-            "paste must not dig into a blurred field"
-        );
+        assert!(m.focused_input_mut().is_none(), "paste must not dig into a blurred field");
         // Task 11 (spec 2026-09-16): the button row still has no live
         // field of its own, but the close it just recorded lives on the
         // modal's own step stack — ctrl+z from here reaches that.
@@ -6361,16 +5903,10 @@ mod tests {
     #[test]
     fn pickers_and_confirms_still_close_on_one_esc() {
         let mut m = ModalStack::default();
-        m.push(Modal::Confirm {
-            title: "?".into(),
-            body: String::new(),
-            choices: vec![],
-        });
+        m.push(Modal::Confirm { title: "?".into(), body: String::new(), choices: vec![] });
         assert!(m.handle_key(key(KeyCode::Esc)).unwrap().close);
         let mut m = ModalStack::default();
-        m.push(Modal::Chooser(
-            crate::components::chooser::ChooserState::new("Pick", vec![]),
-        ));
+        m.push(Modal::Chooser(crate::components::chooser::ChooserState::new("Pick", vec![])));
         assert!(m.handle_key(key(KeyCode::Esc)).unwrap().close);
     }
 
@@ -6445,10 +5981,7 @@ mod tests {
         m.push(Modal::Prompt {
             title: "New selector".into(),
             input: LineInput::new(""),
-            kind: PromptKind::NewSelector {
-                shared: false,
-                on_toggle: false,
-            },
+            kind: PromptKind::NewSelector { shared: false, on_toggle: false },
             revealed: false,
         });
         m.close_top_field();
@@ -6457,10 +5990,7 @@ mod tests {
         m.handle_key(key(KeyCode::Down)); // toggle -> buttons
         assert_eq!(m.button_focus(), Some(FormButton::Confirm));
         m.handle_key(key(KeyCode::Up)); // back to the toggle, still aimed there
-        let Some(Modal::Prompt {
-            kind: PromptKind::NewSelector { on_toggle, .. },
-            ..
-        }) = m.top()
+        let Some(Modal::Prompt { kind: PromptKind::NewSelector { on_toggle, .. }, .. }) = m.top()
         else {
             panic!("stays a NewSelector prompt");
         };
@@ -6622,7 +6152,18 @@ mod tests {
         });
         m.close_top_field();
         let chips = m.footer_chips().unwrap();
-        assert!(chips.iter().any(|(k, l, _)| *k == Key::OrRow("enter", Action::ReopenField) && l == "edit"), "{chips:?}");
-        assert!(chips.iter().any(|(k, l, _)| *k == Key::OrRow("\u{21e7}enter", Action::ConfirmTopModal) && l == "confirm"), "{chips:?}");
+        assert!(
+            chips
+                .iter()
+                .any(|(k, l, _)| *k == Key::OrRow("enter", Action::ReopenField) && l == "edit"),
+            "{chips:?}"
+        );
+        assert!(
+            chips
+                .iter()
+                .any(|(k, l, _)| *k == Key::OrRow("\u{21e7}enter", Action::ConfirmTopModal)
+                    && l == "confirm"),
+            "{chips:?}"
+        );
     }
 }

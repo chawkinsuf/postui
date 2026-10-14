@@ -164,20 +164,8 @@ impl TabStrip<'_> {
 
             text(buf, x + 1, labels_y, label, fg, on, active);
             if let Some((glyph, color)) = badge {
-                let color = if disabled {
-                    theme.text_disabled
-                } else {
-                    *color
-                };
-                text(
-                    buf,
-                    x + 1 + label_w,
-                    labels_y,
-                    &format!(" {glyph}"),
-                    color,
-                    on,
-                    true,
-                );
+                let color = if disabled { theme.text_disabled } else { *color };
+                text(buf, x + 1 + label_w, labels_y, &format!(" {glyph}"), color, on, true);
             }
 
             rects.push(Rect::new(x, labels_y, *width, 2));
@@ -273,11 +261,7 @@ mod tests {
 
         let mut term = Terminal::new(TestBackend::new(12, 1)).unwrap();
         term.draw(|f| {
-            Chip {
-                label: "ed",
-                color: theme.accent,
-            }
-            .paint(f.buffer_mut(), 0, 0, on, &theme);
+            Chip { label: "ed", color: theme.accent }.paint(f.buffer_mut(), 0, 0, on, &theme);
         })
         .unwrap();
         let c = buf_cell(&term, 1, 0);
@@ -301,18 +285,11 @@ mod tests {
         let on = theme.page;
         let dark_accent = Color::Rgb(20, 30, 40);
         let fill = theme.tint(dark_accent, on);
-        assert!(
-            !crate::theme::is_light(fill),
-            "fixture: fill is dark: {fill:?}"
-        );
+        assert!(!crate::theme::is_light(fill), "fixture: fill is dark: {fill:?}");
 
         let mut term = Terminal::new(TestBackend::new(12, 1)).unwrap();
         term.draw(|f| {
-            Chip {
-                label: "ed",
-                color: dark_accent,
-            }
-            .paint(f.buffer_mut(), 0, 0, on, &theme);
+            Chip { label: "ed", color: dark_accent }.paint(f.buffer_mut(), 0, 0, on, &theme);
         })
         .unwrap();
         let c = buf_cell(&term, 1, 0);
@@ -340,21 +317,19 @@ mod tests {
             let theme = Theme::generate(&b.seeds);
             let mut term = Terminal::new(TestBackend::new(12, 1)).unwrap();
             term.draw(|f| {
-                Chip {
-                    label: "^V",
-                    color: theme.text_muted,
-                }
-                .paint(f.buffer_mut(), 0, 0, theme.control, &theme);
+                Chip { label: "^V", color: theme.text_muted }.paint(
+                    f.buffer_mut(),
+                    0,
+                    0,
+                    theme.control,
+                    &theme,
+                );
             })
             .unwrap();
             let c = buf_cell(&term, 1, 0);
             let l = |color: Color| crate::theme::oklab_l(crate::theme::rgb_of(color));
             let delta = (l(c.fg) - l(c.bg)).abs();
-            assert!(
-                delta >= 0.34,
-                "{}: keycap contrast {delta:.3} too low ({c:?})",
-                b.name
-            );
+            assert!(delta >= 0.34, "{}: keycap contrast {delta:.3} too low ({c:?})", b.name);
         }
     }
 
@@ -363,11 +338,13 @@ mod tests {
         let theme = Theme::dark();
         let mut term = Terminal::new(TestBackend::new(12, 1)).unwrap();
         term.draw(|f| {
-            Chip {
-                label: "GET",
-                color: theme.success,
-            }
-            .paint(f.buffer_mut(), 0, 0, theme.panel, &theme);
+            Chip { label: "GET", color: theme.success }.paint(
+                f.buffer_mut(),
+                0,
+                0,
+                theme.panel,
+                &theme,
+            );
         })
         .unwrap();
         let c = buf_cell(&term, 1, 0);
@@ -413,10 +390,8 @@ mod tests {
 
     #[test]
     fn zero_right_anchored_is_unchanged() {
-        let tabs: Vec<(String, Option<(&'static str, ratatui::style::Color)>)> = ["A", "BB", "CCC"]
-            .iter()
-            .map(|s| (s.to_string(), None))
-            .collect();
+        let tabs: Vec<(String, Option<(&'static str, ratatui::style::Color)>)> =
+            ["A", "BB", "CCC"].iter().map(|s| (s.to_string(), None)).collect();
         assert_eq!(TabStrip::spans_in(&tabs, 0, 80), TabStrip::spans(&tabs));
     }
 
@@ -497,10 +472,7 @@ mod tests {
             "the tab's own left edge is now bare hairline — the segment \
              tracks the caller-given offset, not the active tab index"
         );
-        assert_eq!(
-            at_old_left.fg, theme.hairline,
-            "bare hairline, not the accent segment"
-        );
+        assert_eq!(at_old_left.fg, theme.hairline, "bare hairline, not the accent segment");
     }
 
     /// A fractional edge that rounds to a half-cell (not a whole one) paints
@@ -531,11 +503,7 @@ mod tests {
         .unwrap();
         let x0 = rects[0].x;
         let left_boundary = buf_cell(&term, x0 + 2, 1);
-        assert_eq!(
-            left_boundary.symbol(),
-            "╺",
-            "left boundary shows only its right half"
-        );
+        assert_eq!(left_boundary.symbol(), "╺", "left boundary shows only its right half");
         assert_eq!(left_boundary.fg, theme.accent);
         for x in 3..=5 {
             let full = buf_cell(&term, x0 + x, 1);
@@ -543,11 +511,7 @@ mod tests {
             assert_eq!(full.fg, theme.accent);
         }
         let right_boundary = buf_cell(&term, x0 + 6, 1);
-        assert_eq!(
-            right_boundary.symbol(),
-            "╸",
-            "right boundary shows only its left half"
-        );
+        assert_eq!(right_boundary.symbol(), "╸", "right boundary shows only its left half");
         assert_eq!(right_boundary.fg, theme.accent);
         // Just outside the segment on either side: bare hairline.
         assert_eq!(buf_cell(&term, x0 + 1, 1).symbol(), "━");
@@ -606,10 +570,7 @@ mod tests {
             "the hovered inactive tab's label lifts to theme.text"
         );
         let active_cell = buf_cell(&term, rects[0].x + 1, 0);
-        assert_eq!(
-            active_cell.fg, theme.text,
-            "the active tab stays theme.text"
-        );
+        assert_eq!(active_cell.fg, theme.text, "the active tab stays theme.text");
         assert!(active_cell.modifier.contains(Modifier::BOLD));
         assert!(
             !hovered_cell.modifier.contains(Modifier::BOLD),

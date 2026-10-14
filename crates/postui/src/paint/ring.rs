@@ -70,12 +70,7 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(6, 4)).unwrap();
         term.draw(|f| {
             fill(f.buffer_mut(), Rect::new(0, 0, 6, 4), theme.panel);
-            ring(
-                f.buffer_mut(),
-                Rect::new(0, 0, 6, 4),
-                theme.accent,
-                theme.panel,
-            );
+            ring(f.buffer_mut(), Rect::new(0, 0, 6, 4), theme.accent, theme.panel);
         })
         .unwrap();
 
@@ -125,18 +120,8 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(4, 4)).unwrap();
         term.draw(|f| {
             fill(f.buffer_mut(), Rect::new(0, 0, 4, 4), theme.panel);
-            ring(
-                f.buffer_mut(),
-                Rect::new(1, 1, 1, 1),
-                theme.accent,
-                theme.panel,
-            );
-            ring(
-                f.buffer_mut(),
-                Rect::new(1, 1, 0, 3),
-                theme.accent,
-                theme.panel,
-            );
+            ring(f.buffer_mut(), Rect::new(1, 1, 1, 1), theme.accent, theme.panel);
+            ring(f.buffer_mut(), Rect::new(1, 1, 0, 3), theme.accent, theme.panel);
         })
         .unwrap();
         for y in 0..4 {

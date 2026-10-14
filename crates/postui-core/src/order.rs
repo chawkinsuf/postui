@@ -9,10 +9,7 @@ use crate::storage::RequestListing;
 
 /// The order list of `space`, empty when none is written.
 pub fn space_order<'a>(meta: &'a ProjectMeta, space: &str) -> &'a [String] {
-    meta.space
-        .get(space)
-        .map(|s| s.order.as_slice())
-        .unwrap_or(&[])
+    meta.space.get(space).map(|s| s.order.as_slice()).unwrap_or(&[])
 }
 
 /// `slug` with its leading `space/` stripped, or `None` if it is not in
@@ -62,16 +59,12 @@ pub fn order_level<'a>(
 /// and dropping the key when the list is empty. Keeps the table's other
 /// keys and the file's comments.
 pub(crate) fn write_order(doc: &mut toml_edit::DocumentMut, space: &str, order: &[String]) {
-    let table = doc
-        .entry("space")
-        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+    let table = doc.entry("space").or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
     let Some(t) = table.as_table_mut() else {
         return;
     };
     t.set_implicit(true);
-    let item = t
-        .entry(space)
-        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+    let item = t.entry(space).or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
     let Some(it) = item.as_table_mut() else {
         return;
     };
@@ -94,23 +87,11 @@ pub(crate) fn write_order(doc: &mut toml_edit::DocumentMut, space: &str, order: 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OrderEdit {
     /// `rel` was inserted at index `at`.
-    Inserted {
-        space: String,
-        rel: String,
-        at: usize,
-    },
+    Inserted { space: String, rel: String, at: usize },
     /// `rel` was removed from index `at`.
-    Removed {
-        space: String,
-        rel: String,
-        at: usize,
-    },
+    Removed { space: String, rel: String, at: usize },
     /// Every entry `from` became `to`.
-    Renamed {
-        space: String,
-        from: String,
-        to: String,
-    },
+    Renamed { space: String, from: String, to: String },
 }
 
 impl OrderEdit {
@@ -136,9 +117,7 @@ pub(crate) fn level_is_listed(
     level: &str,
     exists: &dyn Fn(&str) -> bool,
 ) -> bool {
-    order
-        .iter()
-        .any(|e| level_of(e) == level && exists(&format!("{space}/{e}")))
+    order.iter().any(|e| level_of(e) == level && exists(&format!("{space}/{e}")))
 }
 
 pub(crate) fn arrive(
@@ -152,11 +131,7 @@ pub(crate) fn arrive(
     }
     let at = order.len();
     order.push(rel.to_string());
-    vec![OrderEdit::Inserted {
-        space: space.to_string(),
-        rel: rel.to_string(),
-        at,
-    }]
+    vec![OrderEdit::Inserted { space: space.to_string(), rel: rel.to_string(), at }]
 }
 
 /// [`order_remove`]'s edit, on a list already in hand: every occurrence,
@@ -167,11 +142,7 @@ pub(crate) fn remove(space: &str, order: &mut Vec<String>, rel: &str) -> Vec<Ord
     for at in (0..order.len()).rev() {
         if order[at] == rel {
             order.remove(at);
-            edits.push(OrderEdit::Removed {
-                space: space.to_string(),
-                rel: rel.to_string(),
-                at,
-            });
+            edits.push(OrderEdit::Removed { space: space.to_string(), rel: rel.to_string(), at });
         }
     }
     edits
@@ -221,11 +192,7 @@ pub fn displayed_slugs(listing: &[RequestListing], order: &[String], space: &str
     }
     by_level
         .into_values()
-        .flat_map(|entries| {
-            order_level(&entries, order, space)
-                .into_iter()
-                .map(|e| e.slug.clone())
-        })
+        .flat_map(|entries| order_level(&entries, order, space).into_iter().map(|e| e.slug.clone()))
         .collect()
 }
 

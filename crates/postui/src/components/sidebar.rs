@@ -178,12 +178,8 @@ impl Sidebar {
         let prev = self.selected_key();
         let prev_index = self.selected;
         let prefix = format!("{space}/");
-        let mut sorted: Vec<RequestListing> = self
-            .listing
-            .iter()
-            .filter(|l| l.slug.starts_with(&prefix))
-            .cloned()
-            .collect();
+        let mut sorted: Vec<RequestListing> =
+            self.listing.iter().filter(|l| l.slug.starts_with(&prefix)).cloned().collect();
         sorted.sort_by(|a, b| a.slug.cmp(&b.slug));
 
         // The overlay is a set of slugs relative to the space the drag
@@ -196,12 +192,7 @@ impl Sidebar {
             .filter(|d| d.space == space)
             .map(|d| (d.level.as_str(), d.working.as_slice()));
         let mut rows = Vec::new();
-        let ctx = LevelCtx {
-            expanded,
-            space,
-            order,
-            overlay,
-        };
+        let ctx = LevelCtx { expanded, space, order, overlay };
         Self::build_rows(&sorted, &prefix, 0, &ctx, &mut rows);
         self.rows = rows;
         // The row a closed folder hid is remembered only while it is still
@@ -254,9 +245,7 @@ impl Sidebar {
             if let Some(space) = postui_core::storage::space_of(&l.slug) {
                 let leaf = l.slug.rsplit('/').next().unwrap_or(&l.slug);
                 let name = l.name.clone().unwrap_or_else(|| leaf.to_string());
-                out.entry(space.to_string())
-                    .or_default()
-                    .push((name, l.slug.clone()));
+                out.entry(space.to_string()).or_default().push((name, l.slug.clone()));
             }
         }
         out.into_iter()
@@ -277,19 +266,10 @@ impl Sidebar {
         expanded: &BTreeSet<String>,
     ) -> Option<String> {
         let prefix = format!("{space}/");
-        let mut sorted: Vec<RequestListing> = self
-            .listing
-            .iter()
-            .filter(|l| l.slug.starts_with(&prefix))
-            .cloned()
-            .collect();
+        let mut sorted: Vec<RequestListing> =
+            self.listing.iter().filter(|l| l.slug.starts_with(&prefix)).cloned().collect();
         sorted.sort_by(|a, b| a.slug.cmp(&b.slug));
-        let ctx = LevelCtx {
-            expanded,
-            space,
-            order,
-            overlay: None,
-        };
+        let ctx = LevelCtx { expanded, space, order, overlay: None };
         let mut rows = Vec::new();
         Self::build_rows(&sorted, &prefix, 0, &ctx, &mut rows);
         rows.into_iter().find_map(|r| match r {
@@ -333,32 +313,22 @@ impl Sidebar {
         ctx: &LevelCtx<'_>,
         rows: &mut Vec<Row>,
     ) {
-        let LevelCtx {
-            expanded,
-            space,
-            order,
-            overlay,
-        } = *ctx;
+        let LevelCtx { expanded, space, order, overlay } = *ctx;
         let mut folder_children: std::collections::BTreeMap<String, Vec<RequestListing>> =
             std::collections::BTreeMap::new();
         let mut requests: Vec<&RequestListing> = Vec::new();
         for e in entries {
             let rest = &e.slug[prefix.len()..];
             if let Some((seg, _)) = rest.split_once('/') {
-                let path = if prefix.is_empty() {
-                    seg.to_string()
-                } else {
-                    format!("{prefix}{seg}")
-                };
+                let path =
+                    if prefix.is_empty() { seg.to_string() } else { format!("{prefix}{seg}") };
                 folder_children.entry(path).or_default().push(e.clone());
             } else {
                 requests.push(e);
             }
         }
-        let this_level = prefix
-            .strip_prefix(&format!("{space}/"))
-            .unwrap_or("")
-            .trim_end_matches('/');
+        let this_level =
+            prefix.strip_prefix(&format!("{space}/")).unwrap_or("").trim_end_matches('/');
         let order_here: &[String] = match overlay {
             Some((level, working)) if level == this_level => working,
             _ => order,
@@ -377,12 +347,7 @@ impl Sidebar {
         for (path, children) in folder_children {
             let name = path.rsplit('/').next().unwrap_or(&path).to_string();
             let is_expanded = expanded.contains(&path);
-            rows.push(Row::Folder {
-                path: path.clone(),
-                name,
-                depth,
-                expanded: is_expanded,
-            });
+            rows.push(Row::Folder { path: path.clone(), name, depth, expanded: is_expanded });
             if is_expanded {
                 let child_prefix = format!("{path}/");
                 Self::build_rows(&children, &child_prefix, depth + 1, ctx, rows);
@@ -458,9 +423,9 @@ impl Sidebar {
     fn listed(listing: &[RequestListing], key: &RowKey) -> bool {
         match key {
             RowKey::Request(slug) => listing.iter().any(|l| l.slug == *slug),
-            RowKey::Folder(path) => listing
-                .iter()
-                .any(|l| l.slug.strip_prefix(path.as_str()).is_some_and(|rest| rest.starts_with('/'))),
+            RowKey::Folder(path) => listing.iter().any(|l| {
+                l.slug.strip_prefix(path.as_str()).is_some_and(|rest| rest.starts_with('/'))
+            }),
         }
     }
 
@@ -480,10 +445,8 @@ impl Sidebar {
         self.fold_row = None;
         self.expand_to(slug);
 
-        if let Some(i) = self
-            .rows
-            .iter()
-            .position(|r| matches!(r, Row::Request { slug: s, .. } if s == slug))
+        if let Some(i) =
+            self.rows.iter().position(|r| matches!(r, Row::Request { slug: s, .. } if s == slug))
         {
             self.selected = Some(i);
             self.ensure_visible = true;
@@ -497,15 +460,8 @@ impl Sidebar {
     pub fn select_nearest_request(&mut self, from: usize) {
         self.fold_row = None;
         let is_request = |r: &Row| matches!(r, Row::Request { .. });
-        let below = self
-            .rows
-            .iter()
-            .skip(from)
-            .position(is_request)
-            .map(|i| i + from);
-        let above = self.rows[..from.min(self.rows.len())]
-            .iter()
-            .rposition(is_request);
+        let below = self.rows.iter().skip(from).position(is_request).map(|i| i + from);
+        let above = self.rows[..from.min(self.rows.len())].iter().rposition(is_request);
         if let Some(i) = below.or(above) {
             self.selected = Some(i);
             self.ensure_visible = true;
@@ -582,7 +538,9 @@ impl Sidebar {
                 }
             }
             Verb::Yank => self.selected_slug().map(Action::YankRequest),
-            Verb::Put { above, count } => Some(Action::PutRequest { anchor: self.put_anchor(above), above, count }),
+            Verb::Put { above, count } => {
+                Some(Action::PutRequest { anchor: self.put_anchor(above), above, count })
+            }
             _ => None,
         }
     }
@@ -609,9 +567,7 @@ impl Sidebar {
     /// independent of pane focus and of the keyboard cursor.
     pub fn open_row(&self) -> Option<usize> {
         let open = self.open_slug.as_deref()?;
-        self.rows
-            .iter()
-            .position(|r| matches!(r, Row::Request { slug, .. } if slug == open))
+        self.rows.iter().position(|r| matches!(r, Row::Request { slug, .. } if slug == open))
     }
 
     /// Reports the currently selected folder's path and the state it should
@@ -719,7 +675,9 @@ impl Sidebar {
             return;
         }
         let holder = Self::folds_of(&real).into_iter().find(|f| {
-            self.rows.iter().any(|r| matches!(r, Row::Folder { path, expanded: false, .. } if path == f))
+            self.rows
+                .iter()
+                .any(|r| matches!(r, Row::Folder { path, expanded: false, .. } if path == f))
         });
         if let Some(path) = holder {
             let at = RowKey::Folder(path);
@@ -773,10 +731,8 @@ impl Sidebar {
         let Some(parent) = Self::parent_path_of(row) else {
             return;
         };
-        if let Some(i) = self
-            .rows
-            .iter()
-            .position(|r| matches!(r, Row::Folder { path, .. } if *path == parent))
+        if let Some(i) =
+            self.rows.iter().position(|r| matches!(r, Row::Folder { path, .. } if *path == parent))
         {
             self.selected = Some(i);
             self.ensure_visible = true;
@@ -840,11 +796,8 @@ impl Sidebar {
     /// a folder row.
     pub fn level_group(&self, i: usize, space: &str) -> Option<(String, Vec<String>)> {
         let (first, last) = self.group_bounds(i)?;
-        let rel = |slug: &str| {
-            postui_core::order::relative(slug, space)
-                .unwrap_or(slug)
-                .to_string()
-        };
+        let rel =
+            |slug: &str| postui_core::order::relative(slug, space).unwrap_or(slug).to_string();
         let group: Vec<String> = self.rows[first..=last]
             .iter()
             .filter_map(|r| match r {
@@ -861,9 +814,7 @@ impl Sidebar {
 
     /// The request row for `slug`, if it is visible.
     pub fn row_of(&self, slug: &str) -> Option<usize> {
-        self.rows
-            .iter()
-            .position(|r| matches!(r, Row::Request { slug: s, .. } if s == slug))
+        self.rows.iter().position(|r| matches!(r, Row::Request { slug: s, .. } if s == slug))
     }
 
     /// The listing the rows were last built from: every space, not just
@@ -899,17 +850,12 @@ impl Sidebar {
     /// request itself is found in `working` by slug, so a listing that
     /// changed under the drag can never make it move the wrong sibling.
     pub fn drag_to_row(&mut self, i: usize) -> bool {
-        let Some((slug, space)) = self
-            .drag
-            .as_ref()
-            .map(|d| (d.slug.clone(), d.space.clone()))
+        let Some((slug, space)) = self.drag.as_ref().map(|d| (d.slug.clone(), d.space.clone()))
         else {
             return false;
         };
-        let Some(cur_row) = self
-            .rows
-            .iter()
-            .position(|r| matches!(r, Row::Request { slug: s, .. } if *s == slug))
+        let Some(cur_row) =
+            self.rows.iter().position(|r| matches!(r, Row::Request { slug: s, .. } if *s == slug))
         else {
             return false;
         };
@@ -961,9 +907,7 @@ impl Component for Sidebar {
                 _ => None,
             }
         {
-            return self
-                .selected_slug()
-                .map(|slug| Action::MoveRequest { slug, delta });
+            return self.selected_slug().map(|slug| Action::MoveRequest { slug, delta });
         }
         match ev.code {
             KeyCode::Down if plain => {
@@ -975,14 +919,10 @@ impl Component for Sidebar {
                 Some(Action::Render)
             }
             KeyCode::Enter if plain => match self.selected_row()? {
-                Row::Request {
-                    slug, broken: None, ..
-                } => Some(Action::OpenRequest(slug.clone())),
-                Row::Request {
-                    slug,
-                    broken: Some(_),
-                    ..
-                } => Some(Action::ShowRequestError(slug.clone())),
+                Row::Request { slug, broken: None, .. } => Some(Action::OpenRequest(slug.clone())),
+                Row::Request { slug, broken: Some(_), .. } => {
+                    Some(Action::ShowRequestError(slug.clone()))
+                }
                 Row::Folder { .. } => Some(Action::ToggleSelectedFolder),
             },
             // ctrl+d/u are the half page; ctrl+f/b and PageDown/PageUp the
@@ -1027,14 +967,10 @@ impl Component for Sidebar {
                 Some(Action::SidebarFold { op: crate::action::FoldOp::Open, count: usize::MAX })
             }
             KeyCode::Left if plain && self.hides_cursor_row() => Some(Action::Render),
-            KeyCode::Right if plain => matches!(
-                self.selected_row()?,
-                Row::Folder {
-                    expanded: false,
-                    ..
-                }
-            )
-            .then_some(Action::ToggleSelectedFolder),
+            KeyCode::Right if plain => {
+                matches!(self.selected_row()?, Row::Folder { expanded: false, .. })
+                    .then_some(Action::ToggleSelectedFolder)
+            }
             KeyCode::Left if plain => match self.selected_row()? {
                 Row::Folder { expanded: true, .. } => Some(Action::ToggleSelectedFolder),
                 _ => {
@@ -1096,12 +1032,11 @@ impl Component for Sidebar {
             } else {
                 ControlState::Normal
             };
-            Button {
-                label: "+ New request",
-                kind: ButtonKind::Primary,
-                state,
-            }
-            .paint(buf, button_area, theme);
+            Button { label: "+ New request", kind: ButtonKind::Primary, state }.paint(
+                buf,
+                button_area,
+                theme,
+            );
             hits.register(button_area, Hit::SidebarNewRequest);
         }
 
@@ -1159,20 +1094,8 @@ impl Component for Sidebar {
         if let Some(spec) = self.scrollbar_spec().filter(ScrollbarSpec::overflows)
             && area.width > 1
         {
-            let column = Rect {
-                x: area.x + area.width - 1,
-                width: 1,
-                ..list_area
-            };
-            hit::draw_scrollbar(
-                frame,
-                hits,
-                column,
-                &spec,
-                ctx.hovered,
-                ctx.dragging,
-                ctx.theme,
-            );
+            let column = Rect { x: area.x + area.width - 1, width: 1, ..list_area };
+            hit::draw_scrollbar(frame, hits, column, &spec, ctx.hovered, ctx.dragging, ctx.theme);
         }
 
         let hover_t = ctx.hover_t();
@@ -1208,13 +1131,8 @@ impl Component for Sidebar {
 
         let buf = frame.buffer_mut();
 
-        for (display_pos, (i, row)) in self
-            .rows
-            .iter()
-            .enumerate()
-            .skip(self.scroll)
-            .take(visible_height.max(1))
-            .enumerate()
+        for (display_pos, (i, row)) in
+            self.rows.iter().enumerate().skip(self.scroll).take(visible_height.max(1)).enumerate()
         {
             let text_row = list_area.y + display_pos as u16;
             if text_row >= area.y + area.height {
@@ -1284,22 +1202,14 @@ impl Component for Sidebar {
             let row_fill = if let Some(a) = band_alpha {
                 let base = Self::resolve_fill(theme, RowHighlight::None, theme.panel, hover_t);
                 let blended = crate::theme::mix(base, theme.selection, a);
-                fill(
-                    buf,
-                    Rect::new(list_area.x, text_row, list_area.width, 1),
-                    blended,
-                );
+                fill(buf, Rect::new(list_area.x, text_row, list_area.width, 1), blended);
                 if let Some(cell) = buf.cell_mut((list_area.x, text_row)) {
                     cell.set_symbol("\u{258c}");
                     cell.set_fg(crate::theme::mix(blended, theme.accent, a));
                 }
                 blended
             } else {
-                ListRow {
-                    highlight,
-                    zebra: None,
-                }
-                .paint(
+                ListRow { highlight, zebra: None }.paint(
                     buf,
                     text_row,
                     list_area.x,
@@ -1322,29 +1232,17 @@ impl Component for Sidebar {
                 }
             };
 
-            self.paint_row(
-                buf, row, text_row, list_area, row_fill, is_open, is_dragged, theme,
-            );
+            self.paint_row(buf, row, text_row, list_area, row_fill, is_open, is_dragged, theme);
 
             // Hit math is a direct `y - list_top` on the 1-line pitch now —
             // no half-pad rows to fold in.
-            let row_rect = Rect {
-                x: list_area.x,
-                y: text_row,
-                width: list_area.width,
-                height: 1,
-            };
+            let row_rect = Rect { x: list_area.x, y: text_row, width: list_area.width, height: 1 };
             hits.register(row_rect, Hit::SidebarRow(i));
 
             if let Row::Folder { depth, .. } = row {
                 let arrow_x = list_area.x + 1 + (*depth as u16) * 2;
                 if arrow_x < list_area.x + list_area.width {
-                    let arrow_rect = Rect {
-                        x: arrow_x,
-                        y: text_row,
-                        width: 1,
-                        height: 1,
-                    };
+                    let arrow_rect = Rect { x: arrow_x, y: text_row, width: 1, height: 1 };
                     hits.register(arrow_rect, Hit::SidebarFolderArrow(i));
                 }
             }
@@ -1448,24 +1346,11 @@ impl Sidebar {
         // A row being dragged paints its grip glyph in the reserved
         // accent-bar column — nothing else shifts.
         if dragged {
-            text(
-                buf,
-                list_area.x,
-                text_row,
-                "\u{22ee}",
-                theme.accent,
-                row_fill,
-                false,
-            );
+            text(buf, list_area.x, text_row, "\u{22ee}", theme.accent, row_fill, false);
         }
 
         match row {
-            Row::Folder {
-                name,
-                depth,
-                expanded,
-                ..
-            } => {
+            Row::Folder { name, depth, expanded, .. } => {
                 let x = text_x + (*depth as u16) * 2;
                 if x >= right {
                     return;
@@ -1486,13 +1371,7 @@ impl Sidebar {
                     );
                 }
             }
-            Row::Request {
-                slug,
-                name,
-                depth,
-                broken,
-                method,
-            } => {
+            Row::Request { slug, name, depth, broken, method } => {
                 let x = text_x + (*depth as u16) * 2;
                 if x >= right {
                     return;
@@ -1501,11 +1380,8 @@ impl Sidebar {
 
                 let content_x = match (method, broken) {
                     (Some(m), None) => {
-                        let label = format!(
-                            "{:<width$}",
-                            Self::method_tag(*m),
-                            width = TAG_WIDTH as usize
-                        );
+                        let label =
+                            format!("{:<width$}", Self::method_tag(*m), width = TAG_WIDTH as usize);
                         text(
                             buf,
                             x,
@@ -1531,15 +1407,7 @@ impl Sidebar {
                 // A send still waiting on its result marks its row with a
                 // pending glyph, whichever request is open on screen.
                 let content_x = if self.in_flight.contains(slug.as_str()) {
-                    text(
-                        buf,
-                        content_x,
-                        text_row,
-                        "\u{21bb} ",
-                        theme.accent,
-                        row_fill,
-                        false,
-                    );
+                    text(buf, content_x, text_row, "\u{21bb} ", theme.accent, row_fill, false);
                     content_x + 2
                 } else {
                     content_x
@@ -1552,15 +1420,7 @@ impl Sidebar {
                     && self.open_slug.as_deref() == Some(slug.as_str())
                     && self.open_dirty;
                 let name_x = if dirty {
-                    text(
-                        buf,
-                        content_x,
-                        text_row,
-                        "\u{25cf} ",
-                        theme.accent,
-                        row_fill,
-                        false,
-                    );
+                    text(buf, content_x, text_row, "\u{25cf} ", theme.accent, row_fill, false);
                     content_x + 2
                 } else {
                     content_x
@@ -1568,11 +1428,7 @@ impl Sidebar {
                 if name_x >= right {
                     return;
                 }
-                let name_fg = if broken.is_some() {
-                    theme.error
-                } else {
-                    theme.text
-                };
+                let name_fg = if broken.is_some() { theme.error } else { theme.text };
                 text(
                     buf,
                     name_x,
@@ -1602,9 +1458,14 @@ mod tests {
     /// keys are named keys only.
     #[test]
     fn the_sidebar_has_no_verb_letters() {
-        let mut s = Sidebar { rows: vec![req_row("main/a")], selected: Some(0), ..Sidebar::default() };
+        let mut s =
+            Sidebar { rows: vec![req_row("main/a")], selected: Some(0), ..Sidebar::default() };
         for c in ['n', 'a', 'r', 'd', 'm', 'y', 'p', 'P'] {
-            assert_eq!(s.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)), None, "{c}");
+            assert_eq!(
+                s.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+                None,
+                "{c}"
+            );
         }
     }
 
@@ -1670,7 +1531,11 @@ mod tests {
         assert_eq!(s.put_anchor(true), None);
         assert!(s.selected_is_folder());
         s.selected = Some(9);
-        assert_eq!(s.put_anchor(false).as_deref(), Some("main/j/o"), "never the subfolder's request");
+        assert_eq!(
+            s.put_anchor(false).as_deref(),
+            Some("main/j/o"),
+            "never the subfolder's request"
+        );
         assert_eq!(s.put_anchor(true).as_deref(), Some("main/j/k"));
         s.selected = Some(0);
         assert!(!s.selected_is_folder());
@@ -1738,12 +1603,7 @@ mod tests {
     fn rows_honour_the_order_list_per_level_and_folders_stay_alphabetical() {
         let mut s = Sidebar::default();
         let l = listing(&["a", "b", "c", "zed/x", "zed/y", "auth/p"]);
-        s.refresh(
-            l,
-            "main",
-            &expanded(&["zed", "auth"]),
-            &order(&["c", "a", "zed/y"]),
-        );
+        s.refresh(l, "main", &expanded(&["zed", "auth"]), &order(&["c", "a", "zed/y"]));
         assert_eq!(
             row_slugs(&s),
             [
@@ -1842,16 +1702,10 @@ mod tests {
         s.refresh(listing(&["api/ping", "top"]), "main", &expanded(&[]), &[]);
         s.handle_key(key(KeyCode::Down)); // first press lands on row 0 ("top")
         s.handle_key(key(KeyCode::Down)); // now on the "api" folder row
-        assert!(matches!(
-            s.rows[s.selected.expect("a selected row")],
-            Row::Folder { .. }
-        ));
+        assert!(matches!(s.rows[s.selected.expect("a selected row")], Row::Folder { .. }));
         assert_eq!(s.selected_slug(), None, "folder rows have no slug");
         // Enter on a folder emits ToggleSelectedFolder
-        assert_eq!(
-            s.handle_key(key(KeyCode::Enter)),
-            Some(Action::ToggleSelectedFolder)
-        );
+        assert_eq!(s.handle_key(key(KeyCode::Enter)), Some(Action::ToggleSelectedFolder));
     }
 
     /// The ctrl chords land in the same state as the named page keys they
@@ -1861,7 +1715,12 @@ mod tests {
     fn page_chords_are_strict_synonyms_and_the_vim_letters_are_gone() {
         fn fresh() -> Sidebar {
             let mut s = Sidebar::default();
-            s.refresh(listing(&["api/a", "api/b", "c", "d", "e", "f"]), "main", &expanded(&["api"]), &[]);
+            s.refresh(
+                listing(&["api/a", "api/b", "c", "d", "e", "f"]),
+                "main",
+                &expanded(&["api"]),
+                &[],
+            );
             s.handle_key(key(KeyCode::Down));
             s.handle_key(key(KeyCode::Down));
             s.last_list_height = 4;
@@ -1881,10 +1740,8 @@ mod tests {
             assert_eq!(s.handle_key(letter), None, "{letter:?}");
             assert_eq!(s.selected, before, "{letter:?} moved the sidebar");
         }
-        let pairs: [(KeyEvent, KeyEvent); 2] = [
-            (ctrl('f'), key(KeyCode::PageDown)),
-            (ctrl('b'), key(KeyCode::PageUp)),
-        ];
+        let pairs: [(KeyEvent, KeyEvent); 2] =
+            [(ctrl('f'), key(KeyCode::PageDown)), (ctrl('b'), key(KeyCode::PageUp))];
         for (alias, canonical) in pairs {
             let (mut a, mut b) = (fresh(), fresh());
             let ra = a.handle_key(alias);
@@ -1903,11 +1760,7 @@ mod tests {
         s.handle_key(ctrl('b'));
         assert_eq!(s.selected, Some(2), "a full page back from the last row");
         s.handle_key(ctrl('d'));
-        assert_eq!(
-            s.selected,
-            Some(start + 2),
-            "half of the 4-row page, from fresh()'s row 2"
-        );
+        assert_eq!(s.selected, Some(start + 2), "half of the 4-row page, from fresh()'s row 2");
         s.handle_key(ctrl('u'));
         assert_eq!(s.selected, Some(start), "half a page back lands where fresh() started");
     }
@@ -1926,21 +1779,13 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(30, 10);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         assert_eq!(s.scroll, 10, "free scroll survives draw");
         // moving the selection scrolls it back into view
         s.handle_key(key(KeyCode::Down));
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
-        assert!(
-            s.scroll <= 1,
-            "keyboard nav brings the selection into view: {}",
-            s.scroll
-        );
+        terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+        assert!(s.scroll <= 1, "keyboard nav brings the selection into view: {}", s.scroll);
     }
 
     #[test]
@@ -1974,11 +1819,7 @@ mod tests {
         s.refresh(listing(&["alpha", "beta", "gamma"]), "main", &expanded(&[]), &[]);
         s.select_slug("main/beta");
         s.refresh(listing(&["alpha", "gamma"]), "main", &expanded(&[]), &[]);
-        assert_eq!(
-            s.selected_slug().as_deref(),
-            Some("main/gamma"),
-            "the row that slid up"
-        );
+        assert_eq!(s.selected_slug().as_deref(), Some("main/gamma"), "the row that slid up");
         s.refresh(listing(&["alpha"]), "main", &expanded(&[]), &[]);
         assert_eq!(
             s.selected_slug().as_deref(),
@@ -1997,11 +1838,7 @@ mod tests {
             "a fresh list starts on its first request"
         );
         s.refresh(listing(&["sub/x"]), "main", &expanded(&[]), &[]);
-        assert_eq!(
-            s.selected,
-            Some(0),
-            "only a folder row left: the cursor sits on it"
-        );
+        assert_eq!(s.selected, Some(0), "only a folder row left: the cursor sits on it");
         s.refresh(listing(&[]), "main", &expanded(&[]), &[]);
         assert_eq!(s.selected, None, "no rows, no cursor");
     }
@@ -2009,30 +1846,11 @@ mod tests {
     #[test]
     fn first_request_in_space_looks_inside_collapsed_folders_and_prefers_the_top_level() {
         let mut s = Sidebar::default();
-        s.refresh(
-            listing(&["deploy/run", "deploy/prod/x"]),
-            "main",
-            &expanded(&[]),
-            &[],
-        );
-        assert_eq!(
-            s.first_visible_request_in_space("main", &[], &expanded(&[])),
-            None
-        );
-        assert_eq!(
-            s.first_request_in_space("main", &[]).as_deref(),
-            Some("main/deploy/run")
-        );
-        s.refresh(
-            listing(&["deploy/run", "top"]),
-            "main",
-            &expanded(&[]),
-            &[],
-        );
-        assert_eq!(
-            s.first_request_in_space("main", &[]).as_deref(),
-            Some("main/top")
-        );
+        s.refresh(listing(&["deploy/run", "deploy/prod/x"]), "main", &expanded(&[]), &[]);
+        assert_eq!(s.first_visible_request_in_space("main", &[], &expanded(&[])), None);
+        assert_eq!(s.first_request_in_space("main", &[]).as_deref(), Some("main/deploy/run"));
+        s.refresh(listing(&["deploy/run", "top"]), "main", &expanded(&[]), &[]);
+        assert_eq!(s.first_request_in_space("main", &[]).as_deref(), Some("main/top"));
     }
 
     /// A disabled (instantly-jumping) `Anims` shared by every test's
@@ -2063,9 +1881,7 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(30, 12);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut hits = HitMap::default();
-        terminal
-            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         (format!("{:?}", terminal.backend().buffer()), hits)
     }
 
@@ -2078,9 +1894,7 @@ mod tests {
 
         let (content, hits) = render_hits(&mut s);
         assert!(content.contains('\u{2588}'), "thumb glyph is drawn");
-        let thumb = hits
-            .rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar))
-            .expect("thumb hit");
+        let thumb = hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar)).expect("thumb hit");
         assert_eq!(thumb.width, 1);
         // 30 wide, no border/padding now -> the bar owns the pane's last
         // column outright.
@@ -2091,18 +1905,13 @@ mod tests {
         // cap is the padding that used to be a blank row -- leaving 8
         // lines for the list, so 8 rows fit on the dense 1-line pitch.
         let viewport = 8i16;
+        assert!(thumb.height < track.height, "30 rows in an 8-row viewport is a short thumb");
         assert!(
-            thumb.height < track.height,
-            "30 rows in an 8-row viewport is a short thumb"
-        );
-        assert!(
-            hits.rect_of(&Hit::ScrollbarTrack(PaneId::Sidebar, viewport))
-                .is_some(),
+            hits.rect_of(&Hit::ScrollbarTrack(PaneId::Sidebar, viewport)).is_some(),
             "page-down segment below the thumb"
         );
         assert!(
-            hits.rect_of(&Hit::ScrollbarTrack(PaneId::Sidebar, -viewport))
-                .is_none(),
+            hits.rect_of(&Hit::ScrollbarTrack(PaneId::Sidebar, -viewport)).is_none(),
             "no page-up segment while the thumb is at the top"
         );
 
@@ -2111,14 +1920,10 @@ mod tests {
         s.ensure_visible = false;
         let (_, hits) = render_hits(&mut s);
         assert!(
-            hits.rect_of(&Hit::ScrollbarTrack(PaneId::Sidebar, -viewport))
-                .is_some(),
+            hits.rect_of(&Hit::ScrollbarTrack(PaneId::Sidebar, -viewport)).is_some(),
             "page-up segment above the thumb"
         );
-        assert!(
-            hits.rect_of(&Hit::ScrollbarTrack(PaneId::Sidebar, viewport))
-                .is_some()
-        );
+        assert!(hits.rect_of(&Hit::ScrollbarTrack(PaneId::Sidebar, viewport)).is_some());
         let thumb = hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar)).unwrap();
         assert!(thumb.y > track.y, "thumb moved down with the scroll offset");
     }
@@ -2139,28 +1944,17 @@ mod tests {
     #[test]
     fn draw_registers_new_request_button_row_hits_and_folder_arrow() {
         let mut s = Sidebar::default();
-        s.refresh(
-            listing(&["api/ping", "top"]),
-            "main",
-            &expanded(&["api"]),
-            &[],
-        );
+        s.refresh(listing(&["api/ping", "top"]), "main", &expanded(&["api"]), &[]);
         let theme = Theme::dark();
         let ctx = draw_ctx(&theme, None);
         let backend = ratatui::backend::TestBackend::new(30, 12);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut hits = HitMap::default();
-        terminal
-            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits)).unwrap();
 
         let button_rect = hits.rect_of(&Hit::SidebarNewRequest).expect("button hit");
         let label_row: String = (button_rect.x..button_rect.x + button_rect.width)
-            .map(|x| {
-                terminal.backend().buffer()[(x, button_rect.y + 1)]
-                    .symbol()
-                    .to_string()
-            })
+            .map(|x| terminal.backend().buffer()[(x, button_rect.y + 1)].symbol().to_string())
             .collect();
         assert!(label_row.contains("+ New request"));
         // No `[`/`]` anywhere in the whole pane: scan every cell's symbol
@@ -2204,9 +1998,7 @@ mod tests {
 
         // Folder row 1 also registers its arrow glyph cell, which must win
         // over the row hit at that exact point (registered after it).
-        let arrow_rect = hits
-            .rect_of(&Hit::SidebarFolderArrow(1))
-            .expect("folder arrow hit");
+        let arrow_rect = hits.rect_of(&Hit::SidebarFolderArrow(1)).expect("folder arrow hit");
         assert_eq!(arrow_rect.width, 1);
         assert_eq!(
             hits.hit_at(arrow_rect.x, arrow_rect.y),
@@ -2226,9 +2018,7 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(30, 12);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut hits = HitMap::default();
-        terminal
-            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let row1 = hits.rect_of(&Hit::SidebarRow(1)).unwrap();
         // The hit rect *is* the text row on the 1-line pitch. Sampled at
         // the row's right end: column 0 is the selection/focus lane hover
@@ -2236,14 +2026,8 @@ mod tests {
         // own fill.
         let text_row = row1.y;
         let cell = terminal.backend().buffer()[(row1.x + row1.width - 1, text_row)].clone();
-        assert_eq!(
-            cell.bg, theme.control,
-            "hovered row uses the control fill, not inverted fg/bg"
-        );
-        assert_ne!(
-            cell.fg, theme.panel,
-            "text isn't painted by inverting fg/bg"
-        );
+        assert_eq!(cell.bg, theme.control, "hovered row uses the control fill, not inverted fg/bg");
+        assert_ne!(cell.fg, theme.panel, "text isn't painted by inverting fg/bg");
     }
 
     /// The OPEN request's row keeps the full `▌` bar + `theme.selection`
@@ -2263,9 +2047,7 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(30, 12);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut hits = HitMap::default();
-        terminal
-            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let buf = terminal.backend().buffer();
 
         // Row 0 ("next", open, not cursor): the `▌` bar + selection fill,
@@ -2277,11 +2059,7 @@ mod tests {
         assert_eq!(bar_cell.symbol(), "\u{258c}", "accent bar on the open row");
         assert_eq!(bar_cell.fg, theme.accent);
         assert_eq!(fill_cell.bg, theme.selection);
-        assert_eq!(
-            name_cell.symbol(),
-            "n",
-            "sanity: sampled the name cell (\"next\")"
-        );
+        assert_eq!(name_cell.symbol(), "n", "sanity: sampled the name cell (\"next\")");
         assert_eq!(
             name_cell.fg, theme.text,
             "open row's name stays normal-colored; the band carries the signal"
@@ -2293,24 +2071,13 @@ mod tests {
         let bar_cell = buf[(row1.x, row1.y)].clone();
         let fill_cell = buf[(row1.x + row1.width - 2, row1.y)].clone();
         let name_cell = buf[(row1.x + 7, row1.y)].clone();
-        assert_ne!(
-            bar_cell.symbol(),
-            "\u{258c}",
-            "no accent bar on the cursor row"
-        );
+        assert_ne!(bar_cell.symbol(), "\u{258c}", "no accent bar on the cursor row");
         assert_eq!(
             fill_cell.bg, theme.control_hover,
             "cursor row carries the steady control_hover fill"
         );
-        assert_eq!(
-            name_cell.symbol(),
-            "t",
-            "sanity: sampled \"top\"'s name cell"
-        );
-        assert_eq!(
-            name_cell.fg, theme.text,
-            "cursor row's name stays normal-colored"
-        );
+        assert_eq!(name_cell.symbol(), "t", "sanity: sampled \"top\"'s name cell");
+        assert_eq!(name_cell.fg, theme.text, "cursor row's name stays normal-colored");
     }
 
     /// The band ignores pane focus: the open request keeps its bar + fill
@@ -2328,9 +2095,7 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(30, 12);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut hits = HitMap::default();
-        terminal
-            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let buf = terminal.backend().buffer();
 
         let row0 = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
@@ -2343,10 +2108,7 @@ mod tests {
 
         // The unfocused cursor row shows no marker of its own.
         let row1 = hits.rect_of(&Hit::SidebarRow(1)).unwrap();
-        assert_ne!(
-            buf[(row1.x + row1.width - 2, row1.y)].bg,
-            theme.control_hover
-        );
+        assert_ne!(buf[(row1.x + row1.width - 2, row1.y)].bg, theme.control_hover);
         assert_ne!(buf[(row1.x + row1.width - 2, row1.y)].bg, theme.selection);
     }
 
@@ -2365,19 +2127,14 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(30, 12);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut hits = HitMap::default();
-        terminal
-            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let buf = terminal.backend().buffer();
         let row0 = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
         let bar_cell = buf[(row0.x, row0.y)].clone();
         let fill_cell = buf[(row0.x + row0.width - 2, row0.y)].clone();
         let name_cell = buf[(row0.x + 7, row0.y)].clone();
         assert_eq!(bar_cell.symbol(), "\u{258c}");
-        assert_eq!(
-            fill_cell.bg,
-            crate::theme::mix(theme.selection, theme.control_hover, 0.5)
-        );
+        assert_eq!(fill_cell.bg, crate::theme::mix(theme.selection, theme.control_hover, 0.5));
         assert_eq!(
             name_cell.fg, theme.text,
             "coinciding open+cursor: the lifted fill wins, name stays normal-colored"
@@ -2408,11 +2165,7 @@ mod tests {
             "focused + on the open row: lifted"
         );
         assert_eq!(paint(false, 0), theme.selection, "unfocused: as today");
-        assert_eq!(
-            paint(true, 1),
-            theme.selection,
-            "cursor elsewhere: the open row as today"
-        );
+        assert_eq!(paint(true, 1), theme.selection, "cursor elsewhere: the open row as today");
     }
 
     #[test]
@@ -2448,9 +2201,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let ctx = draw_ctx(&theme, None);
         let mut hits2 = HitMap::default();
-        terminal
-            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits2))
-            .unwrap();
+        terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits2)).unwrap();
         let tag_cell = terminal.backend().buffer()[(row1.x + 1, row1.y)].clone();
         assert_eq!(tag_cell.symbol(), "G", "GET tag's first letter");
         assert_eq!(
@@ -2458,10 +2209,7 @@ mod tests {
             theme.method_color(Method::Get),
             "tag text is colored by method, not filled"
         );
-        assert_eq!(
-            tag_cell.bg, theme.panel,
-            "tag sits directly on the row's flat panel fill"
-        );
+        assert_eq!(tag_cell.bg, theme.panel, "tag sits directly on the row's flat panel fill");
     }
 
     /// A request with a send still waiting shows a pending glyph between
@@ -2489,9 +2237,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let ctx = draw_ctx(&theme, None);
         let mut hits2 = HitMap::default();
-        terminal
-            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits2))
-            .unwrap();
+        terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits2)).unwrap();
         let buf = terminal.backend().buffer();
         // Glyph sits where the name would otherwise start: one past the
         // accent-bar column plus the padded tag field.
@@ -2502,9 +2248,7 @@ mod tests {
         assert_eq!(name.symbol(), "p", "name follows the glyph");
 
         s.in_flight.clear();
-        terminal
-            .draw(|f| s.draw(f, f.area(), &ctx, &mut HitMap::default()))
-            .unwrap();
+        terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut HitMap::default())).unwrap();
         let cleared = terminal.backend().buffer()[(row0.x + 1 + TAG_WIDTH + 1, row0.y)].clone();
         assert_eq!(cleared.symbol(), "p", "glyph gone once the send settles");
     }
@@ -2572,10 +2316,7 @@ mod tests {
         // 50ms-old start against a 100ms move, so `now` samples mid-flight
         // rather than at t=0 or t=1.
         let mut anims = crate::anim::Anims::new(true);
-        anims.snap(
-            crate::anim::AnimKey::ListTravel(crate::anim::ListId::Sidebar),
-            0.0,
-        );
+        anims.snap(crate::anim::AnimKey::ListTravel(crate::anim::ListId::Sidebar), 0.0);
         let started = now - std::time::Duration::from_millis(50);
         anims.retarget(
             crate::anim::AnimKey::ListTravel(crate::anim::ListId::Sidebar),
@@ -2596,9 +2337,7 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(30, 12);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut hits = HitMap::default();
-        terminal
-            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let buf = terminal.backend().buffer();
 
         let row0 = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
@@ -2675,12 +2414,7 @@ mod tests {
     #[test]
     fn a_working_drag_order_overrides_exactly_one_level() {
         let mut s = Sidebar::default();
-        s.refresh(
-            listing(&["a", "b", "c", "auth/x", "auth/y"]),
-            "main",
-            &expanded(&["auth"]),
-            &[],
-        );
+        s.refresh(listing(&["a", "b", "c", "auth/x", "auth/y"]), "main", &expanded(&["auth"]), &[]);
         assert!(s.begin_drag(2, "main")); // main/c
         let d = s.drag.as_ref().unwrap();
         assert_eq!(d.original, ["a", "b", "c"]);
@@ -2689,14 +2423,7 @@ mod tests {
         s.rebuild("main", &expanded(&["auth"]), &[]);
         assert_eq!(
             row_slugs(&s),
-            [
-                "main/c",
-                "main/a",
-                "main/b",
-                "main/auth/",
-                "main/auth/x",
-                "main/auth/y"
-            ]
+            ["main/c", "main/a", "main/b", "main/auth/", "main/auth/x", "main/auth/y"]
         );
         // Pointer past the group's end pins to the last slot.
         assert!(s.drag_to_row(10));
@@ -2718,10 +2445,7 @@ mod tests {
         assert!(s.begin_drag(3, "main"));
         s.refresh(listing(&["a", "c", "d"]), "main", &expanded(&[]), &[]);
         assert!(s.drag_to_row(0));
-        assert_eq!(
-            s.drag.as_ref().unwrap().working,
-            order(&["d", "a", "b", "c"])
-        );
+        assert_eq!(s.drag.as_ref().unwrap().working, order(&["d", "a", "b", "c"]));
     }
 
     #[test]
@@ -2742,9 +2466,7 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(30, 12);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut hits = HitMap::default();
-        terminal
-            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
-            .unwrap();
+        terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits)).unwrap();
 
         let dragged_row = hits.rect_of(&Hit::SidebarRow(0)).expect("dragged row hit");
         let other_row = hits.rect_of(&Hit::SidebarRow(1)).expect("other row hit");
@@ -2769,19 +2491,10 @@ mod tests {
         let ev = KeyEvent::new(KeyCode::Up, KeyModifiers::ALT);
         assert_eq!(
             s.handle_key(ev),
-            Some(Action::MoveRequest {
-                slug: "main/b".into(),
-                delta: -1
-            })
+            Some(Action::MoveRequest { slug: "main/b".into(), delta: -1 })
         );
         let ev = KeyEvent::new(KeyCode::Down, KeyModifiers::ALT);
-        assert_eq!(
-            s.handle_key(ev),
-            Some(Action::MoveRequest {
-                slug: "main/b".into(),
-                delta: 1
-            })
-        );
+        assert_eq!(s.handle_key(ev), Some(Action::MoveRequest { slug: "main/b".into(), delta: 1 }));
         // Plain Up still just moves the cursor.
         assert_eq!(
             s.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
@@ -2804,7 +2517,12 @@ mod tests {
     fn probe_tree(open: &[&str], at: &RowKey) -> (Sidebar, BTreeSet<String>) {
         let mut s = Sidebar::default();
         let open = expanded(open);
-        s.refresh(listing(&["top", "api/ping", "api/pong", "api/auth/login", "zeta/z1"]), "main", &open, &[]);
+        s.refresh(
+            listing(&["top", "api/ping", "api/pong", "api/auth/login", "zeta/z1"]),
+            "main",
+            &open,
+            &[],
+        );
         assert!(s.select_key(at), "{at:?} shows");
         (s, open)
     }
@@ -2841,11 +2559,16 @@ mod tests {
     /// was deleted from outside) is no longer remembered as the hidden row.
     #[test]
     fn a_hidden_request_that_vanished_is_forgotten() {
-        let (mut s, mut open) = probe_tree(&["api", "api/auth", "zeta"], &RowKey::Request("main/api/pong".into()));
+        let (mut s, mut open) =
+            probe_tree(&["api", "api/auth", "zeta"], &RowKey::Request("main/api/pong".into()));
         press(&mut s, &mut open, FoldKey::Z(crate::action::FoldOp::Close, 1));
         let folder = RowKey::Folder("main/api".into());
         assert_eq!(s.selected_key(), Some(folder.clone()));
-        assert_eq!(s.fold_cursor(), Some(RowKey::Request("main/api/pong".into())), "remembered while it exists");
+        assert_eq!(
+            s.fold_cursor(),
+            Some(RowKey::Request("main/api/pong".into())),
+            "remembered while it exists"
+        );
         s.show_fold_cursor(RowKey::Request("main/zeta/gone".into()));
         assert_eq!(s.fold_cursor(), Some(folder), "the vanished row is not remembered");
     }
@@ -2865,7 +2588,11 @@ mod tests {
         s.refresh(listing(&["top", "api/ping", "api/auth/login", "zeta/z1"]), "main", &open, &[]);
         assert_eq!(s.selected_key(), Some(api.clone()));
         assert_eq!(s.fold_cursor(), Some(api.clone()), "pong is gone: nothing hidden");
-        assert_eq!(s.handle_key(key(KeyCode::Right)), Some(Action::ToggleSelectedFolder), "l: the folder's own key");
+        assert_eq!(
+            s.handle_key(key(KeyCode::Right)),
+            Some(Action::ToggleSelectedFolder),
+            "l: the folder's own key"
+        );
 
         let auth = RowKey::Folder("main/api/auth".into());
         let (mut s, mut open) = probe_tree(&["api", "api/auth", "zeta"], &auth);
@@ -2909,45 +2636,396 @@ mod tests {
         let zm = Z(CloseAll, 1);
         let zr = Z(OpenAll, 1);
         let cases = vec![
-            FoldCase { id: "F1", open: &all, at: req("api/pong"), keys: vec![zc], closed: &["api"], real: req("api/pong"), shown: dir("api"), no_fold: false },
-            FoldCase { id: "F2", open: &all, at: req("api/auth/login"), keys: vec![zc], closed: &["api/auth"], real: req("api/auth/login"), shown: dir("api/auth"), no_fold: false },
-            FoldCase { id: "F3", open: &all, at: req("api/auth/login"), keys: vec![zc, zc], closed: &["api", "api/auth"], real: req("api/auth/login"), shown: dir("api"), no_fold: false },
-            FoldCase { id: "F4", open: &all, at: req("api/auth/login"), keys: vec![zc, zc, zc], closed: &["api", "api/auth"], real: req("api/auth/login"), shown: dir("api"), no_fold: false },
-            FoldCase { id: "F5", open: &all, at: dir("api"), keys: vec![zc], closed: &["api"], real: dir("api"), shown: dir("api"), no_fold: false },
-            FoldCase { id: "F6", open: &all, at: dir("api"), keys: vec![zc, zc], closed: &["api"], real: dir("api"), shown: dir("api"), no_fold: false },
-            FoldCase { id: "F7", open: &all, at: req("top"), keys: vec![zc], closed: &[], real: req("top"), shown: req("top"), no_fold: true },
-            FoldCase { id: "F8", open: &all, at: req("top"), keys: vec![zo], closed: &[], real: req("top"), shown: req("top"), no_fold: true },
-            FoldCase { id: "F9", open: &all, at: req("top"), keys: vec![za], closed: &[], real: req("top"), shown: req("top"), no_fold: true },
-            FoldCase { id: "F10", open: &all, at: req("api/ping"), keys: vec![zo], closed: &[], real: req("api/ping"), shown: req("api/ping"), no_fold: false },
-            FoldCase { id: "F11", open: &all, at: req("api/auth/login"), keys: vec![zm, zo], closed: &["api/auth", "zeta"], real: req("api/auth/login"), shown: dir("api/auth"), no_fold: false },
-            FoldCase { id: "F12", open: &all, at: req("api/auth/login"), keys: vec![zm, Z(Open, 2)], closed: &["zeta"], real: req("api/auth/login"), shown: req("api/auth/login"), no_fold: false },
-            FoldCase { id: "F13", open: &all, at: req("api/auth/login"), keys: vec![zm, zr], closed: &[], real: req("api/auth/login"), shown: req("api/auth/login"), no_fold: false },
-            FoldCase { id: "F14a", open: &all, at: req("api/auth/login"), keys: vec![za], closed: &["api/auth"], real: req("api/auth/login"), shown: dir("api/auth"), no_fold: false },
-            FoldCase { id: "F14b", open: &all, at: req("api/auth/login"), keys: vec![za, za], closed: &[], real: req("api/auth/login"), shown: req("api/auth/login"), no_fold: false },
-            FoldCase { id: "F15", open: &all, at: req("api/auth/login"), keys: vec![Z(Toggle, 2)], closed: &["api", "api/auth"], real: req("api/auth/login"), shown: dir("api"), no_fold: false },
-            FoldCase { id: "F16", open: &all, at: req("api/auth/login"), keys: vec![zm, za], closed: &["api/auth", "zeta"], real: req("api/auth/login"), shown: dir("api/auth"), no_fold: false },
-            FoldCase { id: "F17", open: &all, at: req("api/auth/login"), keys: vec![zm, Z(Toggle, 2)], closed: &["zeta"], real: req("api/auth/login"), shown: req("api/auth/login"), no_fold: false },
-            FoldCase { id: "F18", open: &all, at: req("api/pong"), keys: vec![zc, Down], closed: &["api"], real: dir("zeta"), shown: dir("zeta"), no_fold: false },
-            FoldCase { id: "F19", open: &all, at: req("api/pong"), keys: vec![zc, Up], closed: &["api"], real: req("top"), shown: req("top"), no_fold: false },
-            FoldCase { id: "F20", open: &all, at: dir("api/auth"), keys: vec![zc], closed: &["api/auth"], real: dir("api/auth"), shown: dir("api/auth"), no_fold: false },
-            FoldCase { id: "F21", open: &all, at: dir("api/auth"), keys: vec![zc, Down], closed: &["api/auth"], real: dir("zeta"), shown: dir("zeta"), no_fold: false },
-            FoldCase { id: "F22", open: &all, at: dir("api"), keys: vec![zc, Down], closed: &["api"], real: dir("zeta"), shown: dir("zeta"), no_fold: false },
-            FoldCase { id: "F23", open: &["api", "zeta"], at: req("api/ping"), keys: vec![zc, zo], closed: &["api/auth"], real: req("api/ping"), shown: req("api/ping"), no_fold: false },
-            FoldCase { id: "F24", open: &all, at: req("top"), keys: vec![zm], closed: &["api", "api/auth", "zeta"], real: req("top"), shown: req("top"), no_fold: false },
-            FoldCase { id: "F25", open: &all, at: req("zeta/z1"), keys: vec![zc, zo], closed: &[], real: req("zeta/z1"), shown: req("zeta/z1"), no_fold: false },
-            FoldCase { id: "F26", open: &all, at: req("api/auth/login"), keys: vec![Z(Close, 3)], closed: &["api", "api/auth"], real: req("api/auth/login"), shown: dir("api"), no_fold: false },
-            FoldCase { id: "F27", open: &all, at: req("api/auth/login"), keys: vec![zm, zc], closed: &["api", "api/auth", "zeta"], real: req("api/auth/login"), shown: dir("api"), no_fold: false },
-            FoldCase { id: "F28", open: &all, at: dir("api"), keys: vec![zm, zc], closed: &["api", "api/auth", "zeta"], real: dir("api"), shown: dir("api"), no_fold: false },
-            FoldCase { id: "F29", open: &all, at: req("top"), keys: vec![zr], closed: &[], real: req("top"), shown: req("top"), no_fold: false },
-            FoldCase { id: "F30", open: &all, at: req("api/auth/login"), keys: vec![zc, Down], closed: &["api/auth"], real: dir("zeta"), shown: dir("zeta"), no_fold: false },
-            FoldCase { id: "F31", open: &all, at: req("api/auth/login"), keys: vec![zc, zc, Up], closed: &["api", "api/auth"], real: req("top"), shown: req("top"), no_fold: false },
-            FoldCase { id: "F32", open: &all, at: req("api/pong"), keys: vec![zc, Down, zo], closed: &["api"], real: dir("zeta"), shown: dir("zeta"), no_fold: false },
-            FoldCase { id: "F33", open: &all, at: req("api/pong"), keys: vec![zc, zo], closed: &[], real: req("api/pong"), shown: req("api/pong"), no_fold: false },
-            FoldCase { id: "F34", open: &all, at: dir("api"), keys: vec![zm, zo], closed: &["api/auth", "zeta"], real: dir("api"), shown: dir("api"), no_fold: false },
-            FoldCase { id: "F35", open: &all, at: dir("api/auth"), keys: vec![zm, Z(Open, 2)], closed: &["zeta"], real: dir("api/auth"), shown: dir("api/auth"), no_fold: false },
-            FoldCase { id: "F36", open: &all, at: req("api/ping"), keys: vec![zm, zo, zc], closed: &["api", "api/auth", "zeta"], real: req("api/ping"), shown: dir("api"), no_fold: false },
-            FoldCase { id: "F37", open: &all, at: req("api/auth/login"), keys: vec![zm, zo, zo], closed: &["zeta"], real: req("api/auth/login"), shown: req("api/auth/login"), no_fold: false },
-            FoldCase { id: "F38", open: &all, at: req("api/pong"), keys: vec![zm, zr, zo], closed: &[], real: req("api/pong"), shown: req("api/pong"), no_fold: false },
+            FoldCase {
+                id: "F1",
+                open: &all,
+                at: req("api/pong"),
+                keys: vec![zc],
+                closed: &["api"],
+                real: req("api/pong"),
+                shown: dir("api"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F2",
+                open: &all,
+                at: req("api/auth/login"),
+                keys: vec![zc],
+                closed: &["api/auth"],
+                real: req("api/auth/login"),
+                shown: dir("api/auth"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F3",
+                open: &all,
+                at: req("api/auth/login"),
+                keys: vec![zc, zc],
+                closed: &["api", "api/auth"],
+                real: req("api/auth/login"),
+                shown: dir("api"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F4",
+                open: &all,
+                at: req("api/auth/login"),
+                keys: vec![zc, zc, zc],
+                closed: &["api", "api/auth"],
+                real: req("api/auth/login"),
+                shown: dir("api"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F5",
+                open: &all,
+                at: dir("api"),
+                keys: vec![zc],
+                closed: &["api"],
+                real: dir("api"),
+                shown: dir("api"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F6",
+                open: &all,
+                at: dir("api"),
+                keys: vec![zc, zc],
+                closed: &["api"],
+                real: dir("api"),
+                shown: dir("api"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F7",
+                open: &all,
+                at: req("top"),
+                keys: vec![zc],
+                closed: &[],
+                real: req("top"),
+                shown: req("top"),
+                no_fold: true,
+            },
+            FoldCase {
+                id: "F8",
+                open: &all,
+                at: req("top"),
+                keys: vec![zo],
+                closed: &[],
+                real: req("top"),
+                shown: req("top"),
+                no_fold: true,
+            },
+            FoldCase {
+                id: "F9",
+                open: &all,
+                at: req("top"),
+                keys: vec![za],
+                closed: &[],
+                real: req("top"),
+                shown: req("top"),
+                no_fold: true,
+            },
+            FoldCase {
+                id: "F10",
+                open: &all,
+                at: req("api/ping"),
+                keys: vec![zo],
+                closed: &[],
+                real: req("api/ping"),
+                shown: req("api/ping"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F11",
+                open: &all,
+                at: req("api/auth/login"),
+                keys: vec![zm, zo],
+                closed: &["api/auth", "zeta"],
+                real: req("api/auth/login"),
+                shown: dir("api/auth"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F12",
+                open: &all,
+                at: req("api/auth/login"),
+                keys: vec![zm, Z(Open, 2)],
+                closed: &["zeta"],
+                real: req("api/auth/login"),
+                shown: req("api/auth/login"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F13",
+                open: &all,
+                at: req("api/auth/login"),
+                keys: vec![zm, zr],
+                closed: &[],
+                real: req("api/auth/login"),
+                shown: req("api/auth/login"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F14a",
+                open: &all,
+                at: req("api/auth/login"),
+                keys: vec![za],
+                closed: &["api/auth"],
+                real: req("api/auth/login"),
+                shown: dir("api/auth"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F14b",
+                open: &all,
+                at: req("api/auth/login"),
+                keys: vec![za, za],
+                closed: &[],
+                real: req("api/auth/login"),
+                shown: req("api/auth/login"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F15",
+                open: &all,
+                at: req("api/auth/login"),
+                keys: vec![Z(Toggle, 2)],
+                closed: &["api", "api/auth"],
+                real: req("api/auth/login"),
+                shown: dir("api"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F16",
+                open: &all,
+                at: req("api/auth/login"),
+                keys: vec![zm, za],
+                closed: &["api/auth", "zeta"],
+                real: req("api/auth/login"),
+                shown: dir("api/auth"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F17",
+                open: &all,
+                at: req("api/auth/login"),
+                keys: vec![zm, Z(Toggle, 2)],
+                closed: &["zeta"],
+                real: req("api/auth/login"),
+                shown: req("api/auth/login"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F18",
+                open: &all,
+                at: req("api/pong"),
+                keys: vec![zc, Down],
+                closed: &["api"],
+                real: dir("zeta"),
+                shown: dir("zeta"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F19",
+                open: &all,
+                at: req("api/pong"),
+                keys: vec![zc, Up],
+                closed: &["api"],
+                real: req("top"),
+                shown: req("top"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F20",
+                open: &all,
+                at: dir("api/auth"),
+                keys: vec![zc],
+                closed: &["api/auth"],
+                real: dir("api/auth"),
+                shown: dir("api/auth"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F21",
+                open: &all,
+                at: dir("api/auth"),
+                keys: vec![zc, Down],
+                closed: &["api/auth"],
+                real: dir("zeta"),
+                shown: dir("zeta"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F22",
+                open: &all,
+                at: dir("api"),
+                keys: vec![zc, Down],
+                closed: &["api"],
+                real: dir("zeta"),
+                shown: dir("zeta"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F23",
+                open: &["api", "zeta"],
+                at: req("api/ping"),
+                keys: vec![zc, zo],
+                closed: &["api/auth"],
+                real: req("api/ping"),
+                shown: req("api/ping"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F24",
+                open: &all,
+                at: req("top"),
+                keys: vec![zm],
+                closed: &["api", "api/auth", "zeta"],
+                real: req("top"),
+                shown: req("top"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F25",
+                open: &all,
+                at: req("zeta/z1"),
+                keys: vec![zc, zo],
+                closed: &[],
+                real: req("zeta/z1"),
+                shown: req("zeta/z1"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F26",
+                open: &all,
+                at: req("api/auth/login"),
+                keys: vec![Z(Close, 3)],
+                closed: &["api", "api/auth"],
+                real: req("api/auth/login"),
+                shown: dir("api"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F27",
+                open: &all,
+                at: req("api/auth/login"),
+                keys: vec![zm, zc],
+                closed: &["api", "api/auth", "zeta"],
+                real: req("api/auth/login"),
+                shown: dir("api"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F28",
+                open: &all,
+                at: dir("api"),
+                keys: vec![zm, zc],
+                closed: &["api", "api/auth", "zeta"],
+                real: dir("api"),
+                shown: dir("api"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F29",
+                open: &all,
+                at: req("top"),
+                keys: vec![zr],
+                closed: &[],
+                real: req("top"),
+                shown: req("top"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F30",
+                open: &all,
+                at: req("api/auth/login"),
+                keys: vec![zc, Down],
+                closed: &["api/auth"],
+                real: dir("zeta"),
+                shown: dir("zeta"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F31",
+                open: &all,
+                at: req("api/auth/login"),
+                keys: vec![zc, zc, Up],
+                closed: &["api", "api/auth"],
+                real: req("top"),
+                shown: req("top"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F32",
+                open: &all,
+                at: req("api/pong"),
+                keys: vec![zc, Down, zo],
+                closed: &["api"],
+                real: dir("zeta"),
+                shown: dir("zeta"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F33",
+                open: &all,
+                at: req("api/pong"),
+                keys: vec![zc, zo],
+                closed: &[],
+                real: req("api/pong"),
+                shown: req("api/pong"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F34",
+                open: &all,
+                at: dir("api"),
+                keys: vec![zm, zo],
+                closed: &["api/auth", "zeta"],
+                real: dir("api"),
+                shown: dir("api"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F35",
+                open: &all,
+                at: dir("api/auth"),
+                keys: vec![zm, Z(Open, 2)],
+                closed: &["zeta"],
+                real: dir("api/auth"),
+                shown: dir("api/auth"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F36",
+                open: &all,
+                at: req("api/ping"),
+                keys: vec![zm, zo, zc],
+                closed: &["api", "api/auth", "zeta"],
+                real: req("api/ping"),
+                shown: dir("api"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F37",
+                open: &all,
+                at: req("api/auth/login"),
+                keys: vec![zm, zo, zo],
+                closed: &["zeta"],
+                real: req("api/auth/login"),
+                shown: req("api/auth/login"),
+                no_fold: false,
+            },
+            FoldCase {
+                id: "F38",
+                open: &all,
+                at: req("api/pong"),
+                keys: vec![zm, zr, zo],
+                closed: &[],
+                real: req("api/pong"),
+                shown: req("api/pong"),
+                no_fold: false,
+            },
         ];
         for FoldCase { id, open: open_before, at, keys, closed, real, shown, no_fold } in cases {
             let (mut s, mut open) = probe_tree(open_before, &at);
@@ -2955,7 +3033,8 @@ mod tests {
             for key in keys {
                 noted |= press(&mut s, &mut open, key);
             }
-            let shut: Vec<&str> = all.iter().copied().filter(|f| !open.contains(&format!("main/{f}"))).collect();
+            let shut: Vec<&str> =
+                all.iter().copied().filter(|f| !open.contains(&format!("main/{f}"))).collect();
             assert_eq!(shut, closed, "{id}: the folders shut");
             assert_eq!(s.fold_cursor(), Some(real), "{id}: the cursor's row");
             assert_eq!(s.selected_key(), Some(shown), "{id}: the row it shows on");
@@ -2981,7 +3060,11 @@ mod tests {
         press(&mut s, &mut open, FoldKey::Down);
         assert_eq!(s.fold_cursor(), Some(auth.clone()));
         press(&mut s, &mut open, zo);
-        assert_eq!(s.selected_key(), Some(auth.clone()), "zo opened the folder, the cursor stays on it");
+        assert_eq!(
+            s.selected_key(),
+            Some(auth.clone()),
+            "zo opened the folder, the cursor stays on it"
+        );
         // A click on the folder row is a move too.
         let (mut s, mut open) = probe_tree(&all, &login);
         press(&mut s, &mut open, zc);

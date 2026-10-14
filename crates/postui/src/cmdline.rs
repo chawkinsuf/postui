@@ -46,7 +46,9 @@ impl CmdlineHistory {
         };
         let lines = history.as_table().and_then(|t| match t.get("cmdline") {
             None => Some(Vec::new()),
-            Some(v) => v.as_array().and_then(|a| a.iter().map(|l| l.as_str().map(str::to_string)).collect()),
+            Some(v) => v
+                .as_array()
+                .and_then(|a| a.iter().map(|l| l.as_str().map(str::to_string)).collect()),
         });
         match lines {
             Some(mut lines) => {
@@ -71,9 +73,8 @@ impl CmdlineHistory {
         for line in &self.lines {
             lines.push(line.as_str());
         }
-        let history = doc
-            .entry("history")
-            .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+        let history =
+            doc.entry("history").or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
         if let Some(table) = history.as_table_like_mut() {
             table.insert("cmdline", toml_edit::value(lines));
         }
@@ -146,14 +147,20 @@ mod tests {
         assert!(out.contains("other = 1"), "{out}");
         assert_eq!(CmdlineHistory::parse(&out).0.lines(), ["w", "q", "send"]);
         assert_eq!(CmdlineHistory::parse("").0, CmdlineHistory::default(), "no file, no history");
-        assert_eq!(CmdlineHistory::parse("[palette]\n").0, CmdlineHistory::default(), "no table, no history");
+        assert_eq!(
+            CmdlineHistory::parse("[palette]\n").0,
+            CmdlineHistory::default(),
+            "no table, no history"
+        );
     }
 
     /// Review Focus 4 (the user's rule): a `[history]` that does not read
     /// is reported and never written.
     #[test]
     fn a_history_that_does_not_read_is_not_writable() {
-        for text in ["[history]\ncmdline = 5\n", "[history]\ncmdline = [1, \"w\"]\n", "history = 3\n"] {
+        for text in
+            ["[history]\ncmdline = 5\n", "[history]\ncmdline = [1, \"w\"]\n", "history = 3\n"]
+        {
             let (h, warning) = CmdlineHistory::parse(text);
             assert!(warning.is_some(), "{text}");
             assert!(!h.writable(), "{text}");

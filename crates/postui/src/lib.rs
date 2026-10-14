@@ -60,7 +60,8 @@ mod vim_boundary_test {
     const ENGINE_USERS: [&str; 2] = ["components/response.rs", "components/editor.rs"];
 
     const ENGINE: [&str; 3] = ["crate::vim::", "vim::engine", "engine_glue"];
-    const SEAM: [&str; 5] = [".vim.", "glue_of(", "live_engine_field(", "session_parts(", "sync_session("];
+    const SEAM: [&str; 5] =
+        [".vim.", "glue_of(", "live_engine_field(", "session_parts(", "sync_session("];
 
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         for e in std::fs::read_dir(dir).unwrap().flatten() {
@@ -94,7 +95,9 @@ mod vim_boundary_test {
             let lines: Vec<&str> = text.lines().collect();
             for (i, line) in lines.iter().enumerate() {
                 // A test module at the bottom of a file ends the code.
-                if line.trim() == "#[cfg(test)]" && lines.get(i + 1).is_some_and(|n| n.trim_start().starts_with("mod ")) {
+                if line.trim() == "#[cfg(test)]"
+                    && lines.get(i + 1).is_some_and(|n| n.trim_start().starts_with("mod "))
+                {
                     break;
                 }
                 if line.trim_start().starts_with("//") {
