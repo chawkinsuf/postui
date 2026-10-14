@@ -1147,10 +1147,9 @@ impl Component for Sidebar {
             // right-click arming a context menu), gets a steady
             // `control_hover`-fill marker: visibly targeted, clearly not the
             // band. When the two coincide (the common case right after an
-            // open), the band alone shows: the cursor always sits somewhere
-            // (R6), so no marker elsewhere means it is here. The open row
-            // never repaints for the cursor, so moving the cursor off it (a
-            // right-click arming another row's menu, #7) leaves it as is.
+            // open), the band alone shows. The open row never repaints for
+            // the cursor, so moving the cursor off it (a right-click arming
+            // another row's menu, #7) leaves it as is.
             let is_open = matches!(
                 row,
                 Row::Request { slug, .. } if self.open_slug.as_deref() == Some(slug.as_str())

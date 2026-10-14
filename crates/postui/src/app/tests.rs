@@ -5712,20 +5712,20 @@ fn right_click_on_another_row_leaves_the_open_row_unchanged() {
     render_once(&mut app);
     let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(0)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
-    let open_fill = |app: &mut App| {
-        let backend = ratatui::backend::TestBackend::new(120, 40);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
-        let row0 = app.hits.rect_of(&crate::hit::Hit::SidebarRow(0)).unwrap();
-        terminal.backend().buffer()[(row0.x + row0.width - 2, row0.y)].bg
+    // The fill at the far end of row `i`, past its text.
+    let row_fill = |app: &mut App, i: usize| {
+        let buf = super::field_tests::draw_buffer(app);
+        let row = app.hits.rect_of(&crate::hit::Hit::SidebarRow(i)).unwrap();
+        buf[(row.x + row.width - 2, row.y)].bg
     };
-    let before = open_fill(&mut app);
+    assert_eq!(row_fill(&mut app, 0), app.theme.selection, "the opened row paints the band");
 
     let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(1)).unwrap();
     app.handle_mouse(right_down(r.x, r.y));
     assert_eq!(app.sidebar.selected, Some(1), "the cursor moved to the clicked row");
     assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "its menu is open");
-    assert_eq!(open_fill(&mut app), before, "the open row's fill did not change");
+    assert_eq!(row_fill(&mut app, 0), app.theme.selection, "the open row's fill did not change");
+    assert_eq!(row_fill(&mut app, 1), app.theme.control_hover, "the menu's row shows the cursor");
 }
 
 /// Same regression, for the folder-arrow click path (which sets

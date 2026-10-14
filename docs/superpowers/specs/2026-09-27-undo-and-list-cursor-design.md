@@ -487,7 +487,8 @@ reopens R; redo opens the neighbour again.
   the band wins and nothing marks the cursor (sidebar.rs l.904–948).
   Before R6, a cleared cursor looked identical to a cursor on the open
   row, which is how sweep 7 moved the wrong request.
-- **Proposal:** R6 makes the cursor always present, so no new state
+- **Proposal (superseded 2026-10-14, see the amendment below):** R6
+  makes the cursor always present, so no new state
   needs showing. Add one cue: while the sidebar is focused and the
   cursor is on the open row, that row's fill is
   `mix(selection, control_hover, 0.5)` instead of plain `selection`.
@@ -500,9 +501,9 @@ reopens R; redo opens the neighbour again.
   cursor did. A right-click on another row moves the cursor there so
   the menu acts on that row, so the open row changed colour although
   nothing had happened to it. Arrow browsing did the same. The open row
-  now always paints plain `selection`, whatever the cursor does. The
-  cursor's only marker is the `control_hover` fill on a different row.
-  R6 means no marker anywhere tells you the cursor is on the open row.
+  now always paints plain `selection`, whatever the cursor does: it
+  shows which request is open, and nothing else. The cursor's only
+  marker is the `control_hover` fill when it sits on a different row.
   The tests are now
   `cursor_on_the_open_row_paints_the_plain_band_and_keeps_the_name_plain`,
   `the_open_row_paints_the_same_wherever_the_cursor_is` and
@@ -725,8 +726,9 @@ on it (§4.7)?**
   cheap, and sweep 7 listed the identical fill as a finding. Rejecting
   it leaves R6's invariant as the only fix, which already removes the
   harmful case (a cursor that is not there).
-- **Reversed 2026-10-14 (task #7, `you`): no lift.** R6's invariant is
-  now the only cue (see the amendment in §4.7).
+- **Reversed 2026-10-14 (task #7, `you`): no lift.** The open row
+  shows which request is open and does not change with the cursor (see
+  the amendment in §4.7).
 
 **OQ4. Should deleting a space still stop for unsaved changes?** Today
 deleting the space that holds the open, unsaved request raises the
