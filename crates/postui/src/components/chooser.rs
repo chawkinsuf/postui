@@ -361,12 +361,15 @@ impl ChooserState {
         let height = (chrome + content_rows).max(chrome + 3).min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
         hits.register(area, crate::hit::Hit::ModalBody);
-        paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
-        if t < 1.0 {
-            return;
-        }
         if self.previewing {
-            paint::ring(frame.buffer_mut(), area, theme.accent, theme.panel);
+            // Over its own undimmed preview there is no dim to fade in, so
+            // no settle: the panel opens whole, ringed to stand off it.
+            paint::floating_panel_accented(frame.buffer_mut(), area, screen, theme);
+        } else {
+            paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
+            if t < 1.0 {
+                return;
+            }
         }
 
         let title_y = area.y + 1;

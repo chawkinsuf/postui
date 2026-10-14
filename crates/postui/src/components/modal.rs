@@ -2638,13 +2638,11 @@ impl ModalStack {
         let Some(top) = self.stack.last_mut() else {
             return;
         };
-        // `AnimKey::ModalOpen` is the dimming shell's own open-settle — an
-        // undimmed modal has no open transition at all (see
-        // `App::push_modal`, which never retargets `ModalOpen` for one),
-        // so it always reads as fully open here.
-        let dims = top.dims_backdrop();
-        let t = if dims { anims.value_or(crate::anim::AnimKey::ModalOpen, now, 1.0) } else { 1.0 };
-        if dims {
+        // `AnimKey::ModalOpen` is the dimming shell's own open-settle. An
+        // undimmed modal has none: `App::push_modal` never retargets it for
+        // one, and the modal paints whole whatever `t` reads.
+        let t = anims.value_or(crate::anim::AnimKey::ModalOpen, now, 1.0);
+        if top.dims_backdrop() {
             paint::dim_backdrop(frame.buffer_mut(), backdrop, t);
         }
         // Registered before the modal's own hits so any click landing
@@ -3530,8 +3528,7 @@ fn draw_dropdown(
     // reading in behind it looked like a menu that hadn't finished
     // loading rather than motion, so there is no open transition at all
     // (closing was always instant).
-    paint::floating_panel(frame.buffer_mut(), area, screen, theme);
-    paint::ring(frame.buffer_mut(), area, theme.accent, theme.panel);
+    paint::floating_panel_accented(frame.buffer_mut(), area, screen, theme);
 
     let inner = Rect {
         x: area.x + 2,
