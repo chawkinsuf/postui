@@ -288,9 +288,11 @@ pub struct JqBar {
     /// When `pending`'s run was started, so the bar can hold its spinner
     /// back for `JQ_SPINNER_AFTER` and then animate it.
     pending_since: Instant,
-    pub ai_pending: bool,
-    /// When the AI request started, for the spinner.
-    pub ai_started: std::time::Instant,
+    /// When the AI request outstanding for this view started (for the
+    /// "asking…" spinner), `None` while none is. A display copy: the
+    /// request is the app's (`App::ai_task`), which rewrites this after
+    /// every action.
+    pub ai_asking: Option<Instant>,
     pub completion: JqCompletion,
     /// What Tab does on a ghost (`config.toml` `jq_tab`).
     pub tab: JqTab,
@@ -338,7 +340,7 @@ impl JqBar {
     fn is_open(&self) -> bool {
         self.focused
             || (self.enabled && !self.input.text().is_empty())
-            || self.ai_pending
+            || self.ai_asking.is_some()
             || self.pending.is_some()
     }
 
@@ -353,7 +355,7 @@ impl JqBar {
     /// candidates present.
     fn offering(&self) -> bool {
         self.focused
-            && !self.ai_pending
+            && self.ai_asking.is_none()
             && self.caret_at_end()
             && !self.completion.candidates.is_empty()
     }
@@ -565,8 +567,7 @@ impl Default for JqBar {
             note: None,
             pending: None,
             pending_since: Instant::now(),
-            ai_pending: false,
-            ai_started: Instant::now(),
+            ai_asking: None,
             completion: JqCompletion::default(),
             tab: JqTab::Menu,
             menu: None,
@@ -3696,7 +3697,7 @@ impl Response {
                     self.jq_segment_backspace();
                 }
                 KeyCode::Esc => {
-                    if self.jq.ai_pending {
+                    if self.jq.ai_asking.is_some() {
                         return Some(Action::CancelJqDescribe);
                     }
                     // The field rule: Esc closes the bar keeping its text,
@@ -5023,19 +5024,15 @@ fn draw_jq_bar(
             .now
             .saturating_duration_since(bar.pending_since)
             .as_millis()
-            / 80) as usize
+            / 100) as usize
             % SPINNER.len();
         format!(" {} ", SPINNER[frame_i])
     } else {
         "jq ".to_string()
     };
     let mut spans = vec![Span::styled(chip, Style::default().fg(chip_color))];
-    if bar.ai_pending {
-        let frame_i = (ctx
-            .now
-            .saturating_duration_since(bar.ai_started)
-            .as_millis()
-            / 80) as usize
+    if let Some(started) = bar.ai_asking {
+        let frame_i = (ctx.now.saturating_duration_since(started).as_millis() / 100) as usize
             % SPINNER.len();
         spans.push(Span::styled(
             format!("{} asking…", SPINNER[frame_i]),

@@ -1861,6 +1861,11 @@ impl App {
 pub struct AiTask {
     /// Matched against `JqAiFinished::request`.
     pub request: u64,
+    /// The view the request was shaped from: the request ends when that
+    /// view leaves the screen (see `App::dispatch`).
+    generation: u64,
+    /// When it was made, for the bar's spinner.
+    started: Instant,
     /// The command task, for tests to await. `cancel` aborts it, which
     /// kills the command.
     pub handle: tokio::task::JoinHandle<()>,
@@ -2154,6 +2159,19 @@ impl App {
                 self.spawn_pretty_parse(generation, body);
             }
         }
+        // An AI request belongs to the view it was shaped from: once that
+        // view has left the screen (another request opened, a send, a
+        // project switch) its reply has nowhere to land, so the request
+        // ends with it. The bar's "asking…" is a display copy.
+        let on_screen = self.session.response.view().map(|v| v.generation);
+        if self
+            .ai_task
+            .as_ref()
+            .is_some_and(|t| Some(t.generation) != on_screen)
+        {
+            self.cancel_ai();
+        }
+        self.session.response.jq_bar_mut().ai_asking = self.ai_task.as_ref().map(|t| t.started);
         // The send button shows "sending" only when the in-flight send
         // belongs to the request being looked at.
         let editor_in_flight = self.session.in_flight_for(&self.editor.slug);
@@ -4324,7 +4342,6 @@ impl App {
                 for w in &warnings {
                     self.toasts.push(w.to_string(), ToastKind::Warning);
                 }
-                self.dispatch(Action::CancelJqDescribe);
                 let generation = self.session.begin_send(&self.editor.slug);
                 let tx = self.tx.clone();
                 let client = self.clients.for_request(&prepared).clone();
@@ -5079,15 +5096,7 @@ impl App {
                 true
             }
             Action::CancelJqDescribe => {
-                // Kills the command (the prompt-building job is separate and
-                // still reaches the `--debug-ai` log). Bumping the counter
-                // invalidates any reply still in flight — `JqAiFinished`
-                // compares against it, not against `ai_task` (cleared here).
-                if let Some(task) = self.ai_task.take() {
-                    task.cancel();
-                }
-                self.ai_request += 1;
-                self.session.response.jq_bar_mut().ai_pending = false;
+                self.cancel_ai();
                 true
             }
             Action::OpenJqDescribe => {
@@ -5174,20 +5183,15 @@ impl App {
                 let Ok(handle) = tokio::runtime::Handle::try_current() else {
                     return true;
                 };
-                // Aborting the superseded task kills its command (the child
-                // is `kill_on_drop`); its reply, if one slipped through, is
-                // dropped by request number (`JqAiFinished`).
-                if let Some(task) = self.ai_task.take() {
-                    task.cancel();
-                }
-                self.ai_request += 1;
-                let request = self.ai_request;
                 let generation = view.generation;
                 // Shared, not copied: the join (when no parsed document is
                 // cached) happens on the blocking pool.
                 let lines = view.body_lines();
                 let doc = view.jq_document();
                 let current = self.session.response.jq_text().to_string();
+                // A request still outstanding is superseded.
+                self.cancel_ai();
+                let request = self.ai_request;
                 let cmd = self.ui_settings.ai_cmd.clone();
                 let log = self.ai_log.clone();
                 let tx = self.tx.clone();
@@ -5248,20 +5252,15 @@ impl App {
                         }
                         Err(e) => Err(format!("AI command failed: {e}")),
                     };
-                    let _ = tx.send(Action::JqAiFinished {
-                        generation,
-                        request,
-                        result,
-                    });
+                    let _ = tx.send(Action::JqAiFinished { request, result });
                 });
                 self.ai_task = Some(AiTask {
                     request,
+                    generation,
+                    started: Instant::now(),
                     handle: task,
                     cancelled,
                 });
-                let bar = self.session.response.jq_bar_mut();
-                bar.ai_pending = true;
-                bar.ai_started = Instant::now();
                 self.dispatch(Action::FocusPane(PaneId::Response));
                 self.session.response.set_jq_focus(true);
                 true
@@ -5279,28 +5278,14 @@ impl App {
                 }
                 true
             }
-            Action::JqAiFinished {
-                generation,
-                request,
-                result,
-            } => {
-                // Dropped when superseded by a newer request (or cancelled
-                // — `CancelJqDescribe` bumps `ai_request` too) or when the
-                // response it was shaped from is gone. Compared against the
-                // counter, not `ai_task`'s handle: a caller that already
-                // took the handle to await it (tests) still gets a valid
-                // reply landed.
-                if request != self.ai_request
-                    || self
-                        .session
-                        .response
-                        .view()
-                        .is_none_or(|v| v.generation != generation)
-                {
+            Action::JqAiFinished { request, result } => {
+                // A reply for a request that has ended (superseded,
+                // cancelled, or its view gone — see `cancel_ai`) is
+                // dropped; the one still outstanding is always on screen.
+                if request != self.ai_request {
                     return false;
                 }
                 self.ai_task = None;
-                self.session.response.jq_bar_mut().ai_pending = false;
                 match result.map(|reply| postui_core::jq::ai::extract_filter(&reply)) {
                     Ok(Some(filter)) => {
                         let cursor = filter.chars().count();
@@ -9914,15 +9899,29 @@ impl App {
         }
     }
 
-    /// Whether any in-flight HTTP request is still ticking (e.g. animating
-    /// a spinner) and therefore needs a redraw.
+    /// Ends the outstanding AI request, if any: kills its command (the
+    /// prompt-building job is separate and still reaches the `--debug-ai`
+    /// log) and bumps the counter, so a reply already queued is dropped
+    /// (`JqAiFinished`).
+    fn cancel_ai(&mut self) {
+        if let Some(task) = self.ai_task.take() {
+            task.cancel();
+        }
+        self.ai_request += 1;
+    }
+
+    /// Whether anything is waiting on background work that draws a
+    /// spinner (a send, a parse, a jq run, an AI request), so ticks must
+    /// keep redrawing.
     fn in_flight_ticking(&self) -> bool {
         !self.session.in_flight.is_empty()
             // A background pretty-print animates its own spinner, so ticks
             // must keep coming while one is running — and so does the jq
-            // bar's, once a background run outlives its grace period.
+            // bar's, once a background run outlives its grace period, and
+            // its "asking…" while an AI request is outstanding.
             || self.session.response.view().is_some_and(|v| v.parsing)
             || self.session.response.jq_bar().pending.is_some()
+            || self.ai_task.is_some()
     }
 
     /// Whether any tracked animation is still easing toward its target right
