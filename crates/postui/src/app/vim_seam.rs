@@ -7,8 +7,8 @@ use super::router::Ran;
 use super::*;
 use crate::config::KeyProfile;
 use crate::keyroute::engine_glue::{
-    self, AppRequest, Edge, FieldBuf, FieldSession, Glue, Mode, Note, OpenAs, OpenSeat, Outcome,
-    Pos, Settled, Shape, Start, ViewCtx,
+    self, AppRequest, Edge, FieldBuf, FieldSession, Glue, Mode, Mouse, Note, OpenAs, OpenSeat,
+    Outcome, Pos, Settled, Shape, Start, ViewCtx,
 };
 use crate::keyroute::notation::Tok;
 use crate::keyroute::table::{self, Intent, Match};
@@ -56,6 +56,9 @@ pub(crate) struct VimState {
     /// once every dialog is closed, as Vim's Visual has ended when its
     /// `:'<,'>` line does (`end_visual_off_response`).
     ex_over_visual: bool,
+    /// What the mouse did on a field's text during this event, which the
+    /// engine settles at its end (`vim_mouse_end`).
+    text_mouse: Option<(FieldId, Pos, Mouse)>,
 }
 
 /// The change `.` repeats (spec §5.12) and the history's change count
@@ -385,8 +388,9 @@ impl App {
     /// plan M3a Deviation 12). A keyboard open drops a GUI selection (the
     /// Settings field selects all for arrows). A press that opened a
     /// one-line field keeps the anchor it planted, which seating the caret
-    /// drops, so a drag that follows selects (final review I-3; the body's
-    /// anchor lives apart from its caret).
+    /// drops, so a drag that follows selects in a query box, whose GUI
+    /// selection stands (final review I-3). Elsewhere the press settles
+    /// after the open, and the engine selects from it.
     fn open_session(&mut self, id: FieldId, open: Option<OpenAs>, keyboard: bool, default: Start) {
         let (glue, buf) = self.session_parts(id);
         let Some(mut buf) = buf else { return };
@@ -914,10 +918,13 @@ impl App {
     }
 }
 
-/// Where a mouse event stands for the field session, between
-/// [`App::vim_mouse_start`] and [`App::vim_mouse_end`]: `None` for an event
-/// that is not a button's, else how the engine settles after it.
-pub(super) struct MouseEdge(Option<Option<Settled>>);
+/// Whether a mouse event syncs the session, between
+/// [`App::vim_mouse_start`] and [`App::vim_mouse_end`]: a button's does,
+/// and `left_press` tells a left press.
+pub(super) struct MouseEdge {
+    button: bool,
+    left_press: bool,
+}
 
 /// The rest of the App calls these, and only these, to reach vim: each is
 /// a whole operation, or answers `None` (or `false`) when vim has no part
@@ -953,28 +960,69 @@ impl App {
                 | MouseEventKind::Up(_)
                 | MouseEventKind::Drag(MouseButton::Left)
         );
-        if !button {
-            return MouseEdge(None);
+        if button {
+            self.sync_session(None, Cause::Before);
+            self.vim.text_mouse = None;
         }
-        self.sync_session(None, Cause::Before);
-        // The sweep in flight is the live field's own engine's: a dialog
-        // field runs on the dialog engine (plan M3b Deviation 1).
-        let sweeping = self.live_engine_field().is_some_and(|id| self.glue_of(id).sweeping());
-        MouseEdge(Some(match m.kind {
-            MouseEventKind::Down(MouseButton::Left) => Some(Settled::Click),
-            MouseEventKind::Drag(MouseButton::Left) => Some(Settled::Sweep),
-            MouseEventKind::Up(MouseButton::Left) => {
-                Some(if sweeping { Settled::Release } else { Settled::Click })
-            }
-            _ => None,
-        }))
+        MouseEdge { button, left_press: m.kind == MouseEventKind::Down(MouseButton::Left) }
     }
 
-    /// After a mouse event: a button's settles the session.
+    /// After a mouse event: a button's settles the session. What the
+    /// mouse did on the text of the field that has the caret now settles
+    /// at its char (spec 2026-10-14); any other left press is a plain
+    /// click, and a release does nothing, as in Vim.
     pub(super) fn vim_mouse_end(&mut self, edge: MouseEdge) {
-        if let MouseEdge(Some(how)) = edge {
-            self.sync_session(None, Cause::Mouse(how));
+        if !edge.button {
+            return;
         }
+        let how = match self.vim.text_mouse.take() {
+            Some((field, at, mouse)) if self.field_caret() == FieldCaret::Live(field) => {
+                Some(Settled::Mouse(at, mouse))
+            }
+            _ => edge.left_press.then_some(Settled::Click),
+        };
+        self.sync_session(None, Cause::Mouse(how));
+    }
+
+    /// A left press on `field`'s text at char `(row, col)`, with Vim's click
+    /// count. In vim the engine makes the selection, so the field's own
+    /// mouse does nothing: `true`. Outside vim and in a query box, which
+    /// keeps its own selection, `false`.
+    pub(super) fn vim_text_press(
+        &mut self,
+        field: FieldId,
+        at: (usize, usize),
+        clicks: u8,
+    ) -> bool {
+        self.vim_text_mouse(field, at, Mouse::Press(clicks))
+    }
+
+    /// A sweep on `field`'s text to char `(row, col)`: as
+    /// [`Self::vim_text_press`].
+    pub(super) fn vim_text_drag(&mut self, field: FieldId, at: (usize, usize)) -> bool {
+        self.vim_text_mouse(field, at, Mouse::Drag)
+    }
+
+    /// A right press on the text of `field`, the field being edited, at
+    /// char `(row, col)`: in vim it extends the selection (Vim's
+    /// `'mousemodel'` `extend`). `false` outside vim and in a query box,
+    /// where the menu stands.
+    pub(super) fn vim_text_extend(&mut self, field: FieldId, at: (usize, usize)) -> bool {
+        self.vim_text_mouse(field, at, Mouse::Extend)
+    }
+
+    /// Only on the field with the caret: the arm has opened it, and the
+    /// end of the event settles there. Any other field's press stays the
+    /// field's own (the file picker's path box is a query box's).
+    fn vim_text_mouse(&mut self, field: FieldId, (row, col): (usize, usize), how: Mouse) -> bool {
+        if self.profile() != KeyProfile::Vim
+            || field.insert_only()
+            || self.field_caret() != FieldCaret::Live(field)
+        {
+            return false;
+        }
+        self.vim.text_mouse = Some((field, Pos::new(row, col), how));
+        true
     }
 
     /// The end of a key or mouse event: a V selection the keyboard left

@@ -7006,6 +7006,44 @@ fn new_project_browse_button_fills_the_path_from_the_picked_folder() {
     assert!(on_path, "focus lands on the path field the browse filled");
 }
 
+/// Task #15 review: a click in the file picker's path box places the caret
+/// and arms a sweep, in both profiles (its box is `ModalInput(0)`, served
+/// by `focus_input`; in vim it is a query box, so its own mouse runs).
+#[test]
+fn a_click_in_the_file_pickers_path_box_places_the_caret() {
+    use crate::components::file_picker::{FilePickerState, PickerTarget};
+    use crate::config::KeyProfile;
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = App::new_for_test();
+        app.use_profile(profile);
+        // Off, so the modal's settle-in doesn't hide its box on one frame.
+        app.anims.enabled = false;
+        let root = tempfile::tempdir().unwrap();
+        app.push_modal(Modal::FilePicker(FilePickerState::new(
+            "Open project",
+            PickerTarget::OpenProject,
+            root.path(),
+            "",
+        )));
+        app.paste_text("abcdef");
+        render_once(&mut app);
+        let before = match app.modals.top() {
+            Some(Modal::FilePicker(p)) => p.input().cursor(),
+            _ => panic!("the picker is up"),
+        };
+        assert!(before > 2, "{profile:?}: the path box holds text");
+        let r = app.hits.rect_of(&Hit::ModalInput(0)).expect("the path box");
+        app.handle_mouse(left_down(r.x + 2 + 1, r.y + 1));
+        let Some(Modal::FilePicker(p)) = app.modals.top() else { panic!() };
+        assert_ne!(p.input().cursor(), before, "{profile:?}: the caret moved to the click");
+        assert_eq!(
+            app.text_drag,
+            Some(TextDrag::Field(crate::keyroute::FieldId::ModalInput(0))),
+            "{profile:?}: a sweep is armed"
+        );
+    }
+}
+
 #[test]
 fn picker_keys_paste_scroll_and_footer_route_through_the_modal_stack() {
     use crate::components::file_picker::{FilePickerState, PickerTarget};
@@ -21857,7 +21895,7 @@ fn a_left_press_during_a_live_drag_also_ends_a_thumb_drag_and_a_stale_press() {
     app.handle_mouse(left_down(r0.x + 2, r0.y));
     assert_eq!(app.sidebar_press.as_ref().map(|(_, s)| s.as_str()), Some("main/alpha"));
     app.drag = Some(Drag { pane: PaneId::Sidebar, grab_offset: 0, horizontal: false });
-    app.text_drag = Some(TextDrag::Body);
+    app.text_drag = Some(TextDrag::Field(crate::keyroute::FieldId::Body));
 
     // A press on bare editor background: no row to arm.
     let editor = app.hits.rect_of(&Hit::Pane(PaneId::Editor)).unwrap();

@@ -64,25 +64,10 @@ pub struct Drag {
 /// `Up(Left)` — the text-selection sibling of the scrollbar [`Drag`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextDrag {
-    Body,
-    Url,
+    /// The response pane's text.
     Response,
-    /// A sweep inside the response pane's jq filter bar.
-    Jq,
-    /// A sweep inside the top modal's text box `i` (see `Hit::ModalInput`).
-    ModalInput(usize),
-    /// A sweep inside the table cell under edit (`TableEditorState::editing`
-    /// names which one).
-    TableCell,
-    /// A sweep inside the variable form's field under edit
-    /// (`VarFormState::editing` names which one).
-    VmField,
-    /// A sweep inside the selector-grid cell under edit
-    /// (`OptionGridState::editing` names which one).
-    VmCell,
-    /// A sweep inside the Settings tab's field under edit
-    /// (`SettingsTab::editing` names which one).
-    Settings,
+    /// A text field's: the body, or a one-line field.
+    Field(crate::keyroute::FieldId),
 }
 
 /// Whether `n` can't be a new declaration's name: one of the reserved
@@ -377,9 +362,9 @@ pub struct App {
     /// The last `split_ratio` value `AnimKey::SplitRatio` was driven
     /// toward — see [`Self::sync_split_ratio_anim`].
     split_ratio_target: crate::split::SplitRatio,
-    /// The most recent left-click's hit and when it landed, used to detect
-    /// a double-click (same hit, within 400ms).
-    last_click: Option<(Hit, std::time::Instant)>,
+    /// The most recent left press, for the click counts
+    /// ([`mouse::count_clicks`]).
+    last_click: Option<mouse::LastClick>,
     /// Set by `Action::VarStruct`'s handler when `apply_var_struct` returns
     /// `Err` (and cleared before every action `update` dispatches), so
     /// `apply_modal_result` can stop a sequenced `ModalResult` — e.g.

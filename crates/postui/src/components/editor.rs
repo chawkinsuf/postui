@@ -985,6 +985,25 @@ impl Editor {
         true
     }
 
+    /// The char at screen cell `(x, y)` in the body, as `(row, col)`: a
+    /// press's (inside the drawn body, with a click's own mapping) or a
+    /// sweep's (anywhere, with a sweep's). `None` off the Body tab.
+    pub(crate) fn body_char_at(&self, x: u16, y: u16, drag: bool) -> Option<(usize, usize)> {
+        if self.active_tab != EditorTab::Body {
+            return None;
+        }
+        let at = if drag {
+            self.body_cursor_for_drag(x, y)?
+        } else {
+            let area = self.last_body_area?;
+            if !area.contains(ratatui::layout::Position { x, y }) {
+                return None;
+            }
+            self.body_cursor_for_click(x, y)?
+        };
+        Some((at.row, at.col))
+    }
+
     /// The inclusive cell span a double click at caret `i` selects: the
     /// word/punctuation/whitespace run around `i.col` on its line. `None`
     /// when the caret sits past the line's last char (nothing under it).
