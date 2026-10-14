@@ -67,13 +67,14 @@ impl ChooserState {
         }
     }
 
-    /// Attaches a [`ChooserToggle`] (builder-style, for construction).
-    /// Whether a title-row toggle is attached — the footer advertises its
-    /// key (`tab`) only then.
+    /// Whether a title-row toggle is attached and showing — the footer
+    /// advertises its keys only then. An empty label is an inert toggle
+    /// (see `draw`).
     pub fn has_toggle(&self) -> bool {
-        self.toggle.is_some()
+        self.toggle.as_ref().is_some_and(|t| !t.label.is_empty())
     }
 
+    /// Attaches a [`ChooserToggle`] (builder-style, for construction).
     pub fn with_toggle(mut self, label: impl Into<String>, action: Action) -> Self {
         self.toggle = Some(ChooserToggle { label: label.into(), action });
         self
@@ -227,8 +228,8 @@ impl ChooserState {
             }
             KeyCode::Enter => return self.confirm(),
             _ if self.fires_toggle(&key) => {
-                return self.toggle.as_ref().map(|t| super::modal::ModalResult {
-                    actions: vec![t.action.clone()],
+                return self.toggle_action().map(|a| super::modal::ModalResult {
+                    actions: vec![a.clone()],
                     close: false,
                     ..Default::default()
                 });

@@ -437,6 +437,18 @@ fn left_and_right_flip_the_theme_picker_in_both_profiles() {
         assert_eq!(c.input(), "gruv", "{profile:?}: the filter is untouched");
         feed(&mut app, "<Tab>");
         assert_eq!(app.theme_name, "gruvbox-dark", "{profile:?}: Tab still flips");
+        // An unpaired theme leaves the toggle inert; the arrows stay its
+        // keys all the same and never move the caret (you, 2026-10-14).
+        feed(&mut app, "<Esc>");
+        app.update(Action::ApplyTheme("terminal".into()));
+        app.update(Action::OpenThemeChooser);
+        draw(&mut app);
+        feed(&mut app, "<Left>");
+        assert_eq!(app.theme_name, "terminal", "{profile:?}: inert, nothing flips");
+        // A filter matching nothing: the toggle has nothing to flip.
+        feed(&mut app, "zq<Left>X");
+        let Some(Modal::Chooser(c)) = app.modals.top() else { panic!("the theme picker") };
+        assert_eq!(c.input(), "zqX", "{profile:?}: Left kept off the caret");
     }
 }
 

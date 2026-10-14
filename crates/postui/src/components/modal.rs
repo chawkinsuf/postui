@@ -4136,6 +4136,23 @@ mod tests {
         assert!(chips.iter().any(|(k, l, _)| k == "esc" && l == "cancel"));
     }
 
+    /// Task #6: the chooser's `←→ toggle` chip shows only while its toggle
+    /// label does; an inert toggle (label hidden, e.g. the theme picker on
+    /// Terminal) advertises nothing.
+    #[test]
+    fn chooser_toggle_chip_follows_the_visible_label() {
+        use crate::components::chooser::ChooserState;
+        let toggle_chip = |label: &str| {
+            let mut m = ModalStack::default();
+            m.push(Modal::Chooser(
+                ChooserState::new("Theme", vec![]).with_toggle(label, Action::Render),
+            ));
+            spelled(m.footer_chips().unwrap()).iter().any(|(k, l, _)| k == "←→" && l == "toggle")
+        };
+        assert!(toggle_chip("◂ dark ▸"));
+        assert!(!toggle_chip(""), "a hidden toggle has no chip");
+    }
+
     /// The SelectOption picker has no filter, so its footer must not
     /// advertise one; the Insert-mode picker keeps the a–z filter chip.
     #[test]
