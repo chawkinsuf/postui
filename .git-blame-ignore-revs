@@ -1,0 +1,5 @@
+# Formatting-only commits, skipped by `git blame` (GitHub reads this file
+# on its own; locally, scripts/install-hooks.sh sets blame.ignoreRevsFile).
+
+# style: cargo fmt
+8fda1cef736ac39ab70dd1ce60ee030f3310433f

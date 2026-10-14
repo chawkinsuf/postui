@@ -1,0 +1,23 @@
+#!/bin/sh
+# Refuses a commit whose Rust code is not rustfmt-clean, the same check CI
+# runs. Installed by scripts/install-hooks.sh.
+
+# Nothing Rust staged: nothing to check.
+if ! git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.rs$|(^|/)rustfmt\.toml$'; then
+    exit 0
+fi
+
+cargo=$(command -v cargo || echo "$HOME/.cargo/bin/cargo")
+if [ ! -x "$cargo" ]; then
+    echo "pre-commit: cargo not found; skipping the format check" >&2
+    exit 0
+fi
+
+if ! unformatted=$("$cargo" fmt --all --check -- --files-with-diff 2>&1); then
+    echo "pre-commit: not formatted:" >&2
+    echo "$unformatted" | sed 's/^/    /' >&2
+    echo "Run:" >&2
+    echo "    cargo fmt --all" >&2
+    echo "then stage the result and commit again." >&2
+    exit 1
+fi
