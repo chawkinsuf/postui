@@ -456,9 +456,10 @@ fn draw_var_tooltip(
     let header_w = (tip.name.width() + 2 + source.width()).min(wrap_w) + 1 + pills_w;
     // The tip goes below its token, or above when there is more room
     // there; either way it is cut to that side, so it never covers the
-    // token it describes.
+    // token it describes. Above, its drop shadow (the row under the
+    // panel) needs a row of its own, or it would darken the token.
     let below_room = screen.bottom().saturating_sub(tip.anchor.bottom());
-    let above_room = tip.anchor.y.saturating_sub(screen.y);
+    let above_room = tip.anchor.y.saturating_sub(screen.y + 1);
     let side_room = below_room.max(above_room);
     // Padding rows top and bottom, the header, then each section present
     // behind a blank row of its own. With too little room for it all,
@@ -487,7 +488,7 @@ fn draw_var_tooltip(
     if (width as usize) < 6 + pills_w || side_room < height {
         return;
     }
-    let y = if height <= below_room { tip.anchor.bottom() } else { tip.anchor.y - height };
+    let y = if height <= below_room { tip.anchor.bottom() } else { tip.anchor.y - 1 - height };
     let x = tip.anchor.x.min(screen.right().saturating_sub(width + 1)).max(screen.x);
     let area = Rect::new(x, y, width, height);
     let buf = frame.buffer_mut();
@@ -1004,9 +1005,14 @@ mod tests {
     #[test]
     fn a_tall_tip_is_cut_to_one_side_of_its_token_and_never_covers_it() {
         let info = tip_info(Some(&"a".repeat(30 * TOOLTIP_MAX_TEXT_W)), Some("about x"));
-        // Token on row 10 of 20: 10 rows above it, 9 below.
-        let (panel, rows) = draw_tip(120, 20, 10, &info).expect("a tip is drawn");
-        assert_eq!((panel.y, panel.bottom()), (0, 10), "above, ending at the token: {panel:?}");
+        // Token on row 11 of 20: 10 rows above it for the tip and its
+        // drop shadow (the row under the panel), 8 below.
+        let (panel, rows) = draw_tip(120, 20, 11, &info).expect("a tip is drawn");
+        assert_eq!(
+            (panel.y, panel.bottom()),
+            (0, 10),
+            "above, its shadow row clear of the token: {panel:?}"
+        );
         // 10 rows above: borders, header and two gaps take 5, the
         // description 1, the value keeps the other 4 — cut.
         assert_eq!(rows[2..], {
@@ -1015,7 +1021,8 @@ mod tests {
             v.extend([String::new(), "about x".into()]);
             v
         });
-        // Token on row 9: 9 above, 10 below — the tip goes below.
+        // Token on row 9: 8 above (after the shadow row), 10 below — the
+        // tip goes below.
         let (panel, _) = draw_tip(120, 20, 9, &info).expect("a tip is drawn");
         assert_eq!((panel.y, panel.bottom()), (10, 20), "below the token: {panel:?}");
     }
