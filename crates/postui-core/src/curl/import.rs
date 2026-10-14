@@ -24,8 +24,10 @@ pub struct CurlImport {
     /// literal text (`export TOKEN=abc`); `None` for any other value
     /// (`$(…)`, `$BASE/x`) and for a variable the paste never assigned.
     pub variables: Vec<(String, Option<String>)>,
-    /// `{METHOD} {last non-empty path segment, else host}`. Never holds a
-    /// `/` (a `/` in a display path means a folder).
+    /// The text of a `# @name …` comment line above the command, spaces
+    /// folded (a `/` in it means a folder, as typed into the prompt).
+    /// Else `{METHOD} {last non-empty path segment, else host}`, which
+    /// never holds a `/`.
     pub suggested_name: String,
 }
 
@@ -97,7 +99,10 @@ pub fn parse(text: &str) -> Result<CurlBatch, CurlError> {
     // What each shell variable the paste assigned holds so far (spec R7):
     // its literal text, or `None` when it was anything else.
     let mut env: IndexMap<String, Option<String>> = IndexMap::new();
+    // A `# @name` names the next curl command, past any other lines.
+    let mut name = None;
     for (i, mut cmd) in commands.into_iter().enumerate() {
+        name = cmd.name.take().or(name);
         // `TOKEN=abc curl …` (or `TOKEN+=abc`): bash expands curl's words
         // before the leading assignments take effect, and they do not
         // outlive the command, so they change nothing here.
@@ -116,6 +121,9 @@ pub fn parse(text: &str) -> Result<CurlBatch, CurlError> {
         cmd.marks.drain(..lead);
         let mut import = parse_command(cmd)
             .map_err(|kind| CurlError { command: many.then_some(i + 1), kind })?;
+        if let Some(name) = name.take() {
+            import.suggested_name = name;
+        }
         import.ignored.splice(0..0, leading);
         import.variables =
             import.converted.iter().map(|n| (n.clone(), env.get(n).cloned().flatten())).collect();
@@ -411,7 +419,7 @@ fn percent_encode(s: &str) -> String {
 }
 
 fn parse_command(cmd: ShellCommand) -> Result<CurlImport, CurlErrorKind> {
-    let ShellCommand { words, tail, converted, substitutions, marks: _, alone: _ } = cmd;
+    let ShellCommand { words, tail, converted, substitutions, marks: _, alone: _, name: _ } = cmd;
     let mut flags = Flags::default();
     let mut words = words.into_iter().skip(1);
     let mut options_done = false;
@@ -689,6 +697,18 @@ mod tests {
         assert_eq!(body(&c), None);
         assert!(c.ignored.is_empty());
         assert_eq!(c.suggested_name, "GET users");
+    }
+
+    #[test]
+    fn a_name_comment_is_the_suggested_name() {
+        let batch =
+            parse("# @name List users\ncurl https://api.x/users\ncurl https://api.x/me").unwrap();
+        let names: Vec<&str> = batch.commands.iter().map(|c| c.suggested_name.as_str()).collect();
+        assert_eq!(names, ["List users", "GET me"]);
+        // It names the next curl command, past other lines, and is not a
+        // skipped line: values still land.
+        let c = one("# @name Me\nexport T=abc\ncurl -H \"X: $T\" https://api.x/me");
+        assert_eq!((c.suggested_name.as_str(), c.variables[0].1.as_deref()), ("Me", Some("abc")));
     }
 
     #[test]

@@ -24,6 +24,10 @@ pub(crate) struct ShellCommand {
     /// `a; b`), ended by the line's end, not `;`, `&`, `&&` or `||`, and
     /// no tail. Only such a line can assign a value (spec R7).
     pub alone: bool,
+    /// The text of the last `# @name …` comment line before this command
+    /// and after the one before it: where the comment sits, nothing more.
+    /// `curl::parse` decides which request it names (spec §3.1).
+    pub name: Option<String>,
 }
 
 /// What a word was before quote removal, for reading assignments (spec R7).
@@ -62,6 +66,8 @@ pub(crate) fn split(text: &str) -> Result<Vec<ShellCommand>, ShellError> {
         tail_words: Vec::new(),
         line_start: true,
         after_and_or: false,
+        line_blank: true,
+        name: None,
     }
     .run()
 }
@@ -115,6 +121,13 @@ struct Splitter<'a> {
     line_start: bool,
     /// The last command was ended by `&&` or `||`.
     after_and_or: bool,
+    /// Nothing but spaces so far on this line of text. Kept by `run`'s
+    /// loop alone: a char a helper takes (a quote's text, an escaped line
+    /// break, an operator's second char) belongs to a word or operator, so
+    /// the line is not blank after it either way.
+    line_blank: bool,
+    /// A `# @name …` line waiting for the next command.
+    name: Option<String>,
 }
 
 impl Splitter<'_> {
@@ -125,6 +138,8 @@ impl Splitter<'_> {
     /// parses.
     fn run(mut self) -> Result<Vec<ShellCommand>, ShellError> {
         while let Some(c) = self.chars.next() {
+            let blank = c == '\n' || (self.line_blank && matches!(c, ' ' | '\t'));
+            let line_blank = std::mem::replace(&mut self.line_blank, blank);
             match c {
                 ' ' | '\t' => self.end_word(),
                 '\n' if self.line_continues() => {}
@@ -155,7 +170,7 @@ impl Splitter<'_> {
                     }
                 }
                 '>' | '<' => self.redirect(c),
-                '#' if !self.in_word => self.skip_comment(),
+                '#' if !self.in_word => self.skip_comment(line_blank && !self.in_tail),
                 '\\' => match self.chars.next() {
                     Some('\n') => {} // a continuation
                     Some(n) => {
@@ -278,6 +293,7 @@ impl Splitter<'_> {
             cmd.marks.remove(0);
         }
         if !cmd.words.is_empty() {
+            cmd.name = self.name.take();
             self.commands.push(cmd);
         }
     }
@@ -310,12 +326,19 @@ impl Splitter<'_> {
         self.start_tail(op);
     }
 
-    fn skip_comment(&mut self) {
-        while let Some(&n) = self.chars.peek() {
-            if n == '\n' {
-                break;
+    /// A comment that is its own line between commands (`own_line`) and
+    /// reads `# @name …` names the next command, its spaces folded.
+    fn skip_comment(&mut self, own_line: bool) {
+        let mut text = String::new();
+        while let Some(n) = self.chars.next_if(|&n| n != '\n') {
+            if own_line {
+                text.push(n);
             }
-            self.chars.next();
+        }
+        let name = text.trim_start().strip_prefix("@name").filter(|r| r.starts_with([' ', '\t']));
+        let name = name.map(|n| n.split_whitespace().collect::<Vec<_>>().join(" "));
+        if let Some(name) = name.filter(|n| !n.is_empty()) {
+            self.name = Some(name);
         }
     }
 
@@ -714,6 +737,35 @@ mod tests {
         let cmds = split("# fetch it\n\ncurl https://x/#frag # trailing\n").unwrap();
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].words, ["curl", "https://x/#frag"]);
+    }
+
+    #[test]
+    fn a_name_comment_names_the_next_command() {
+        let names = |t| split(t).unwrap().into_iter().map(|c| c.name).collect::<Vec<_>>();
+        let named = |n: &str| Some(n.to_string());
+        // Comments and blank lines may sit between; a later name replaces.
+        assert_eq!(
+            names("# @name List users\n# note\n\ncurl a\ncurl b"),
+            [named("List users"), None]
+        );
+        assert_eq!(names("# @name x\n  #@name   y  \ncurl a"), [named("y")]);
+        // It sits before the next command, curl or not (`parse` carries it
+        // on to the next curl one).
+        assert_eq!(names("# @name x\nexport T=1\ncurl a"), [named("x"), None]);
+        // Only a comment that is its own line counts.
+        assert_eq!(names("curl a # @name x\ncurl b"), [None, None]);
+        assert_eq!(names("curl a; # @name x\ncurl b"), [None, None]);
+        assert_eq!(names("curl a \\\n# @name x\ncurl b"), [None, None]);
+        assert_eq!(names("curl a |\n  # @name x\n jq .\ncurl b"), [None, None]);
+        // A line ending in `&&` goes on, but a comment line still sits
+        // between its commands.
+        assert_eq!(names("curl a &&\n  # @name x\ncurl b"), [None, named("x")]);
+        // Spaces inside fold to one.
+        assert_eq!(names("# @name a \t  b\ncurl a"), [named("a b")]);
+        // An empty name, another tag, or a name left at the end names nothing.
+        assert_eq!(names("# @name\ncurl a\n# @names x\ncurl b\n# @name z"), [None, None]);
+        // The text is kept as written: a `/` is a folder for the prompt.
+        assert_eq!(names("# @name users/List all\ncurl a"), [named("users/List all")]);
     }
 
     #[test]

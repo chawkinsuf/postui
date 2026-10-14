@@ -65,11 +65,11 @@ impl App {
     pub(super) fn push_curl_prompt(&mut self, run: CurlImportRun) {
         let space = self.active_space();
         let folder = run.folder.clone().unwrap_or_else(|| space.clone());
-        let leaf = self.free_request_name(&folder, &run.current().suggested_name);
+        let name = self.free_request_name(&folder, &run.current().suggested_name);
         // The prompt speaks folders inside the space, as New request does.
         let prefill = match folder.strip_prefix(&format!("{space}/")) {
-            Some(rel) => format!("{rel}/{leaf}"),
-            None => leaf,
+            Some(rel) => format!("{rel}/{name}"),
+            None => name,
         };
         self.push_modal(Modal::Prompt {
             title: run.title(),
@@ -80,18 +80,25 @@ impl App {
     }
 
     /// `base`, else `base 2`, `base 3`, …: the first name no request in
-    /// `folder` answers to (spec R8).
+    /// `folder` answers to (spec R8). A `base` with folders in it
+    /// (`api/List`) numbers its leaf, in the folder it points into, read as
+    /// the create will read it; one the create refuses is left as it is,
+    /// for the prompt to say why.
     fn free_request_name(&self, folder: &str, base: &str) -> String {
         let Some(p) = self.project() else {
             return base.to_string();
         };
-        if !p.sibling_name_taken(folder, base, None) {
+        let path = format!("{folder}/{base}");
+        let Some((folder, leaf)) = postui_core::storage::split_display_path(&path) else {
+            return base.to_string();
+        };
+        if !p.sibling_name_taken(&folder, &leaf, None) {
             return base.to_string();
         }
-        (2..)
-            .map(|n| format!("{base} {n}"))
-            .find(|c| !p.sibling_name_taken(folder, c, None))
-            .expect("some suffix is free")
+        let n = (2..)
+            .find(|n| !p.sibling_name_taken(&folder, &format!("{leaf} {n}"), None))
+            .expect("some suffix is free");
+        format!("{} {n}", base.trim_end())
     }
 
     /// `Action::ImportCurlCreate` (spec §4.2 step 4). A refused name toasts
