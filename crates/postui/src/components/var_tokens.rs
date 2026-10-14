@@ -123,7 +123,8 @@ pub struct VarView {
     /// the owning selector's.
     descriptions: IndexMap<String, String>,
     /// A selector field's selected option's own description, when it has
-    /// a non-blank one: it replaces the selector's in the tooltip.
+    /// one: it replaces the selector's in the tooltip. Neither map holds a
+    /// blank description (see [`written`]).
     option_descriptions: IndexMap<String, String>,
 }
 
@@ -154,10 +155,12 @@ impl VarView {
                     .variables()
                     .vars
                     .iter()
-                    .filter_map(|(n, decl)| decl.description.clone().map(|desc| (n.clone(), desc)))
+                    .filter_map(|(n, decl)| {
+                        written(&decl.description).map(|desc| (n.clone(), desc))
+                    })
                     .collect();
                 for decl in project.variables().selectors.values() {
-                    if let Some(desc) = &decl.description {
+                    if let Some(desc) = written(&decl.description) {
                         for field in &decl.fields {
                             d.insert(field.clone(), desc.clone());
                         }
@@ -170,14 +173,12 @@ impl VarView {
                 .meta
                 .iter()
                 .filter_map(|(field, meta)| match meta {
-                    VarMeta::SelectorMember { selector, selected } => {
-                        options_of(project.variables(), project.env_data(), selector)?
+                    VarMeta::SelectorMember { selector, selected } => written(
+                        &options_of(project.variables(), project.env_data(), selector)?
                             .get(selected)?
-                            .description
-                            .clone()
-                            .filter(|desc| !desc.trim().is_empty())
-                            .map(|desc| (field.clone(), desc))
-                    }
+                            .description,
+                    )
+                    .map(|desc| (field.clone(), desc)),
                     _ => None,
                 })
                 .collect(),
@@ -242,6 +243,12 @@ impl VarView {
             None => TokenSource::Undefined,
         }
     }
+}
+
+/// A declared description, unless it is blank: a blank one is none, so it
+/// never hides a fallback or draws an empty section.
+fn written(description: &Option<String>) -> Option<String> {
+    description.clone().filter(|d| !d.trim().is_empty())
 }
 
 /// The color a token's braces and name are tinted: the accent when it
@@ -339,6 +346,15 @@ mod tests {
         v.descriptions.insert("base_url".into(), "API root".into());
         assert_eq!(v.describe("base_url").description.as_deref(), Some("API root"));
         assert_eq!(v.describe("user").description, None);
+    }
+
+    /// A blank description is no description, wherever it was written.
+    #[test]
+    fn a_blank_description_is_none() {
+        assert_eq!(written(&Some(" \n ".into())), None);
+        assert_eq!(written(&Some(String::new())), None);
+        assert_eq!(written(&None), None);
+        assert_eq!(written(&Some(" API root ".into())).as_deref(), Some(" API root "));
     }
 
     /// A selector field describes the option that filled it when that
