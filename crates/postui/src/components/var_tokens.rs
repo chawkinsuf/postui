@@ -226,11 +226,13 @@ impl VarView {
                 Some(VarMeta::Secret) | Some(VarMeta::MissingSecret)
             ),
             source,
-            descriptions: [self.descriptions.get(name), self.option_descriptions.get(name)]
-                .into_iter()
-                .flatten()
-                .cloned()
-                .collect(),
+            descriptions: {
+                let own = self.descriptions.get(name);
+                // An option repeating its selector's description word for
+                // word adds nothing: shown once.
+                let option = self.option_descriptions.get(name).filter(|d| Some(*d) != own);
+                [own, option].into_iter().flatten().cloned().collect()
+            },
         }
     }
 
@@ -361,6 +363,21 @@ mod tests {
         assert_eq!(v.describe("uid").descriptions, ["acting user", "the premium one"]);
 
         v.request.insert("uid".into(), "7".into());
+        assert_eq!(v.describe("uid").descriptions, ["acting user"]);
+    }
+
+    /// An option that repeats its selector's description word for word
+    /// (a copied option, a template) shows it once, not twice.
+    #[test]
+    fn an_option_repeating_its_selectors_description_shows_it_once() {
+        let mut v = view();
+        v.resolved.values.insert("uid".into(), "1001".into());
+        v.resolved.meta.insert(
+            "uid".into(),
+            VarMeta::SelectorMember { selector: "user".into(), selected: "alice".into() },
+        );
+        v.descriptions.insert("uid".into(), "acting user".into());
+        v.option_descriptions.insert("uid".into(), "acting user".into());
         assert_eq!(v.describe("uid").descriptions, ["acting user"]);
     }
 
