@@ -25,7 +25,8 @@ pub(crate) struct ShellCommand {
     /// no tail. Only such a line can assign a value (spec R7).
     pub alone: bool,
     /// The text of the last `# @name …` comment line before this command
-    /// and after the one before it (spec §3.1).
+    /// and after the one before it: where the comment sits, nothing more.
+    /// `curl::parse` decides which request it names (spec §3.1).
     pub name: Option<String>,
 }
 
@@ -120,7 +121,10 @@ struct Splitter<'a> {
     line_start: bool,
     /// The last command was ended by `&&` or `||`.
     after_and_or: bool,
-    /// Nothing but spaces so far on this line of text.
+    /// Nothing but spaces so far on this line of text. Kept by `run`'s
+    /// loop alone: a char a helper takes (a quote's text, an escaped line
+    /// break, an operator's second char) belongs to a word or operator, so
+    /// the line is not blank after it either way.
     line_blank: bool,
     /// A `# @name …` line waiting for the next command.
     name: Option<String>,
@@ -745,7 +749,8 @@ mod tests {
             [named("List users"), None]
         );
         assert_eq!(names("# @name x\n  #@name   y  \ncurl a"), [named("y")]);
-        // Another command takes it, even one that is not curl.
+        // It sits before the next command, curl or not (`parse` carries it
+        // on to the next curl one).
         assert_eq!(names("# @name x\nexport T=1\ncurl a"), [named("x"), None]);
         // Only a comment that is its own line counts.
         assert_eq!(names("curl a # @name x\ncurl b"), [None, None]);

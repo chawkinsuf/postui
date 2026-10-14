@@ -102,9 +102,7 @@ pub fn parse(text: &str) -> Result<CurlBatch, CurlError> {
     // A `# @name` names the next curl command, past any other lines.
     let mut name = None;
     for (i, mut cmd) in commands.into_iter().enumerate() {
-        if cmd.name.is_some() {
-            name = cmd.name.take();
-        }
+        name = cmd.name.take().or(name);
         // `TOKEN=abc curl …` (or `TOKEN+=abc`): bash expands curl's words
         // before the leading assignments take effect, and they do not
         // outlive the command, so they change nothing here.

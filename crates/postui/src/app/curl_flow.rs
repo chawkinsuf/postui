@@ -65,11 +65,11 @@ impl App {
     pub(super) fn push_curl_prompt(&mut self, run: CurlImportRun) {
         let space = self.active_space();
         let folder = run.folder.clone().unwrap_or_else(|| space.clone());
-        let leaf = self.free_request_name(&folder, &run.current().suggested_name);
+        let name = self.free_request_name(&folder, &run.current().suggested_name);
         // The prompt speaks folders inside the space, as New request does.
         let prefill = match folder.strip_prefix(&format!("{space}/")) {
-            Some(rel) => format!("{rel}/{leaf}"),
-            None => leaf,
+            Some(rel) => format!("{rel}/{name}"),
+            None => name,
         };
         self.push_modal(Modal::Prompt {
             title: run.title(),
@@ -95,12 +95,10 @@ impl App {
         if !p.sibling_name_taken(&folder, &leaf, None) {
             return base.to_string();
         }
-        let dirs = &base[..base.rfind('/').map_or(0, |i| i + 1)];
-        (2..)
-            .map(|n| format!("{leaf} {n}"))
-            .find(|c| !p.sibling_name_taken(&folder, c, None))
-            .map(|c| format!("{dirs}{c}"))
-            .expect("some suffix is free")
+        let n = (2..)
+            .find(|n| !p.sibling_name_taken(&folder, &format!("{leaf} {n}"), None))
+            .expect("some suffix is free");
+        format!("{base} {n}")
     }
 
     /// `Action::ImportCurlCreate` (spec §4.2 step 4). A refused name toasts
