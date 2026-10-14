@@ -4243,8 +4243,8 @@ fn draw_header_strip(
     // Row 2 (left): the icon actions, on the stretch of the underline row
     // the tabs' rule doesn't reach.
     let jq_available = view.has_tree_view() && view.mode == ViewMode::Pretty;
-    let jq_on = jq_available && bar.enabled && !bar.input.text().is_empty();
-    draw_header_actions(frame, hits, area, jq_available, jq_on, ctx);
+    let jq_open = jq_available && bar.is_open();
+    draw_header_actions(frame, hits, area, jq_available, jq_open, ctx);
 
     let buf = frame.buffer_mut();
     let row1_y = area.y + 1;
@@ -4361,14 +4361,15 @@ const HEADER_ACTIONS: [(&str, crate::hit::Hit); 5] = [
 /// they sit directly above the response body they act on. The jq button
 /// (the last entry) is skipped entirely while `jq_available` is false —
 /// there is nothing for it to filter — and painted in its pressed
-/// (inverted) state while `jq_on`, so a filtered tree is explained even
-/// when the bar has scrolled out of mind.
+/// (inverted) state while `jq_open`: the bar is showing, so a click
+/// closes it. That covers a filtered tree (explained even when the bar
+/// has scrolled out of mind) and an empty bar just opened (task #3).
 fn draw_header_actions(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
     area: Rect,
     jq_available: bool,
-    jq_on: bool,
+    jq_open: bool,
     ctx: &DrawCtx,
 ) {
     use unicode_width::UnicodeWidthStr;
@@ -4383,7 +4384,7 @@ fn draw_header_actions(
         // Display width, not char count, so the labels' padding is honoured.
         let w = label.width() as u16;
         let rect = Rect::new(x, y, w, 1);
-        let pressed = jq_on && hit == crate::hit::Hit::ResponseJqButton;
+        let pressed = jq_open && hit == crate::hit::Hit::ResponseJqButton;
         crate::paint::action(
             buf,
             rect,

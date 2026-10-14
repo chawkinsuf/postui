@@ -234,12 +234,18 @@ impl App {
                 // Modal and scrollbar hits are exempt, like every other
                 // click-away rule: a popup over the pane or a scroll must
                 // not pull the caret out from under what was being typed.
+                // Nor is the bar's own switch (the header 󰈲, the footer's
+                // `unfilter`) a click away: an empty bar hides once it
+                // blurs, and the toggle would then read it as closed and
+                // open it again. `ToggleJqBar` blurs as it closes.
                 let jq_blurred = self.session.response.jq_focused()
                     && self.modals.is_empty()
                     && !matches!(
                         hit,
                         Some(
                             Hit::ResponseJqBar
+                                | Hit::ResponseJqButton
+                                | Hit::FooterChip(Action::ToggleJqBar)
                                 | Hit::ScrollbarThumb(_)
                                 | Hit::ScrollbarTrack(..)
                                 | Hit::HScrollThumb(_)

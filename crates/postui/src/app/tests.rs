@@ -20400,6 +20400,53 @@ fn the_toggle_closes_an_open_bar_whether_or_not_it_is_focused() {
     assert!(!app.editor.jq_enabled);
 }
 
+/// Whether the header's 󰈲 button is painted pressed (the accent fill).
+fn jq_button_pressed(app: &mut App) -> bool {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    let r = app.hits.rect_of(&Hit::ResponseJqButton).expect("jq button registered");
+    terminal.backend().buffer().cell((r.x, r.y)).unwrap().bg == app.theme.accent
+}
+
+/// Task #3: the button is pressed exactly while the bar is showing —
+/// an empty bar the user just opened included — so pressed always means
+/// "clicking closes it".
+#[test]
+fn the_jq_button_is_pressed_while_the_bar_shows_even_when_empty() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    assert!(!jq_button_pressed(&mut app), "closed: not pressed");
+    app.update(Action::OpenJqBar);
+    assert!(app.session.response.jq_open() && app.session.response.jq_text().is_empty());
+    assert!(jq_button_pressed(&mut app), "open and empty: pressed");
+    app.update(Action::JqApply(".data.total".into()));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(!app.session.response.jq_focused());
+    assert!(jq_button_pressed(&mut app), "a filter on, unfocused: pressed");
+    app.update(Action::ToggleJqBar);
+    assert!(!jq_button_pressed(&mut app), "switched off: not pressed");
+}
+
+/// Task #3: clicking the bar's own switch — the header button, or the
+/// footer's `unfilter` chip — is not a click away from it. An empty bar
+/// hides the moment it blurs, so blurring first made the toggle read it
+/// as closed and open it straight back.
+#[test]
+fn clicking_the_jq_switch_closes_an_empty_focused_bar() {
+    for hit in [Hit::ResponseJqButton, Hit::FooterChip(Action::ToggleJqBar)] {
+        let mut app = App::new_for_test();
+        ready_response(&mut app, JQ_BODY);
+        click_hit(&mut app, Hit::ResponseJqButton);
+        assert!(app.session.response.jq_focused(), "{hit:?}: the first click opens it");
+        click_hit(&mut app, hit.clone());
+        assert!(!app.session.response.jq_open(), "{hit:?}: the second click closes it");
+        assert!(app.editor.jq_enabled, "{hit:?}: nothing to switch off");
+        assert!(!app.editor.is_dirty(), "{hit:?}");
+    }
+}
+
 #[test]
 fn esc_on_an_empty_bar_just_hides_it() {
     let mut app = App::new_for_test();

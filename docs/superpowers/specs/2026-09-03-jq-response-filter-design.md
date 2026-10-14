@@ -436,6 +436,12 @@ because they're easy to get wrong reading the code cold:
   under a syntax error) starts from the right document. Enter does not "commit" anything separately;
   the filter is already live on every keystroke. The 󰈲 button paints
   pressed (inverted) while a filter is on.
+  *Amended 2026-10-14 (task #3, your request):* pressed means the bar is
+  showing (`jq_open`), so an empty bar just opened is pressed too, and a
+  pressed button always closes on click. Clicking the bar's own switch
+  (the 󰈲 button, the footer's `unfilter` chip) is not a click away from
+  a focused bar. Before this, the click blurred an empty bar first, which
+  hid it, and the toggle then opened it again.
 - **A run whose outputs are all `null` — every document `null`, or one
   array of nothing but nulls — or that produces no output at all does
   not replace the tree.** The full body shows, the chip dims as for an
