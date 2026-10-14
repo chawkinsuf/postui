@@ -1087,17 +1087,13 @@ fn a_query_box_session_never_records_for_dot() {
 
 /// Vim's drag (probed, 9.1 `mouse=a`): Visual starts where the press left
 /// the caret and follows the pointer, either way, past a line's end too.
-/// The field's own sweep selection is dropped: the engine paints its own.
 #[test]
 fn a_drag_makes_visual_from_the_press() {
     let mut f = Field::new("abcdef", 0);
     f.mouse(1, Mouse::Press(1));
     assert_eq!((f.engine.mode(), f.col()), (Mode::Normal, 1));
-    f.input.begin_mouse_selection();
-    f.input.extend_mouse_selection_to(4);
     f.mouse(4, Mouse::Drag);
     assert_eq!((f.engine.mode(), f.visual()), (Mode::Visual(Shape::Char), Some((1, 4))));
-    assert_eq!(f.input.selection(), None, "the GUI selection goes");
     assert_eq!(f.input.paint_span(), Some((1, 5)), "Visual takes the char under the pointer");
     f.mouse(0, Mouse::Drag);
     assert_eq!(f.visual(), Some((1, 0)), "leftward, the press stays the anchor");
@@ -1456,7 +1452,6 @@ fn a_field_in_visual_takes_a_double_click_and_drops_a_gui_keys() {
     };
     let mut f = Field::new("one two three", 0);
     f.keys("v");
-    f.input.select_word_at(5);
     f.mouse(5, Mouse::Press(2));
     assert_eq!((f.engine.mode(), f.visual()), (Mode::Visual(Shape::Char), Some((4, 6))));
     assert_eq!(f.input.selection(), None, "the GUI selection goes");

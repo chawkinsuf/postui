@@ -21857,7 +21857,7 @@ fn a_left_press_during_a_live_drag_also_ends_a_thumb_drag_and_a_stale_press() {
     app.handle_mouse(left_down(r0.x + 2, r0.y));
     assert_eq!(app.sidebar_press.as_ref().map(|(_, s)| s.as_str()), Some("main/alpha"));
     app.drag = Some(Drag { pane: PaneId::Sidebar, grab_offset: 0, horizontal: false });
-    app.text_drag = Some(TextDrag::Body);
+    app.text_drag = Some(TextDrag::Field(crate::keyroute::FieldId::Body));
 
     // A press on bare editor background: no row to arm.
     let editor = app.hits.rect_of(&Hit::Pane(PaneId::Editor)).unwrap();

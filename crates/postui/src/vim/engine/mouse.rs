@@ -31,8 +31,8 @@ pub(super) struct Pressed {
 }
 
 impl Engine {
-    /// The mouse at `at`. The caret is where the engine last left it: the
-    /// field's own mouse code moved it, and Vim's move is made here.
+    /// The mouse at `at`. The field's own mouse left the caret alone, so
+    /// it is where the engine last left it.
     pub(super) fn mouse<B: TextBuf>(
         &mut self,
         at: Pos,
@@ -40,8 +40,7 @@ impl Engine {
         buf: &mut B,
         st: &mut BufState,
     ) {
-        let from = self.rested.unwrap_or_else(|| buf.cursor());
-        buf.set_cursor(from);
+        let from = buf.cursor();
         let at = Pos::new(at.row.min(buf.line_count() - 1), at.col);
         match how {
             Mouse::Press(clicks) => self.mouse_press(at, clicks, from, buf, st),

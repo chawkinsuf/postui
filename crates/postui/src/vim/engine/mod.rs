@@ -670,6 +670,7 @@ impl Engine {
         let Target { buf, state } = t;
         state.begin_session(buf.text());
         self.clear_pending();
+        self.pressed = None;
         self.note = None;
         self.request = None;
         self.visual = None;
@@ -828,6 +829,7 @@ impl Engine {
         }
         state.history.commit();
         self.clear_pending();
+        self.pressed = None;
         self.restart = None;
         self.note = None;
         self.request = None;

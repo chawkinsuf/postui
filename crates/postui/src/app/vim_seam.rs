@@ -56,22 +56,10 @@ pub(crate) struct VimState {
     /// once every dialog is closed, as Vim's Visual has ended when its
     /// `:'<,'>` line does (`end_visual_off_response`).
     ex_over_visual: bool,
-    /// The last left press, for Vim's click count.
-    last_press: Option<LastPress>,
+    /// What the mouse did on a field's text during this event, which the
+    /// engine settles at its end (`vim_mouse_end`).
+    text_mouse: Option<(FieldId, Pos, Mouse)>,
 }
-
-/// A left press as Vim counts multi-clicks (`check_termcode()`): one on
-/// the cell of the last, within `'mousetime'` of it, counts on, and after
-/// a fourth the count starts over.
-#[derive(Debug, Clone, Copy)]
-struct LastPress {
-    cell: (u16, u16),
-    at: std::time::Instant,
-    clicks: u8,
-}
-
-/// Vim's `'mousetime'` default.
-const MOUSE_TIME: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// The change `.` repeats (spec §5.12) and the history's change count
 /// right after it: any change since makes it stale (plan M5b Deviation 6).
@@ -930,24 +918,12 @@ impl App {
     }
 }
 
-/// Where a mouse event stands for the field session, between
-/// [`App::vim_mouse_start`] and [`App::vim_mouse_end`]: `None` for an event
-/// that is not a button's, else what it does on the field's text, if
-/// anything.
-pub(super) struct MouseEdge(Option<Option<Mouse>>);
-
-/// The text field a hit lands on, for a right press.
-fn hit_field(hit: &Hit) -> Option<FieldId> {
-    Some(match *hit {
-        Hit::UrlBar => FieldId::Url,
-        Hit::BodyEditor => FieldId::Body,
-        Hit::TableCell { row, col } => FieldId::TableCell { row, col: usize::from(col) },
-        Hit::VmFormField(field) => FieldId::VmForm(field),
-        Hit::VmEntryCell { row, col } => FieldId::VmGrid { row, col },
-        Hit::SettingsControl(field) => FieldId::Settings(field),
-        Hit::ModalInput(i) => FieldId::ModalInput(i),
-        _ => return None,
-    })
+/// Whether a mouse event syncs the session, between
+/// [`App::vim_mouse_start`] and [`App::vim_mouse_end`]: a button's does,
+/// and `left_press` tells a left press.
+pub(super) struct MouseEdge {
+    button: bool,
+    left_press: bool,
 }
 
 /// The rest of the App calls these, and only these, to reach vim: each is
@@ -972,8 +948,7 @@ impl App {
     /// motion and the wheel cannot, so only a button event syncs the
     /// session (spec §3.1). Of the drags only the left button's sweeps a
     /// selection: some terminals (Ghostty) report hover as `Drag(Right)`,
-    /// and each sync reads the whole body (final review T4). A release
-    /// does nothing on the text, as in Vim.
+    /// and each sync reads the whole body (final review T4).
     pub(super) fn vim_mouse_start(
         &mut self,
         m: &ratatui::crossterm::event::MouseEvent,
@@ -985,83 +960,63 @@ impl App {
                 | MouseEventKind::Up(_)
                 | MouseEventKind::Drag(MouseButton::Left)
         );
-        if !button {
-            return MouseEdge(None);
+        if button {
+            self.sync_session(None, Cause::Before);
+            self.vim.text_mouse = None;
         }
-        self.sync_session(None, Cause::Before);
-        MouseEdge(Some(match m.kind {
-            MouseEventKind::Down(MouseButton::Left) => Some(Mouse::Press(self.vim_clicks(m))),
-            MouseEventKind::Drag(MouseButton::Left) => Some(Mouse::Drag),
-            MouseEventKind::Down(_) => {
-                self.vim.last_press = None;
-                let hit = self.hits.hit_at_ignoring_overlays(m.column, m.row).cloned();
-                (m.kind == MouseEventKind::Down(MouseButton::Right)
-                    && hit.is_some_and(|hit| self.vim_right_press_extends(&hit)))
-                .then_some(Mouse::Extend)
-            }
-            _ => None,
-        }))
+        MouseEdge { button, left_press: m.kind == MouseEventKind::Down(MouseButton::Left) }
     }
 
-    /// Vim's click count for a left press (see [`LastPress`]).
-    fn vim_clicks(&mut self, m: &ratatui::crossterm::event::MouseEvent) -> u8 {
-        let (cell, at) = ((m.column, m.row), std::time::Instant::now());
-        let clicks = match self.vim.last_press {
-            Some(last)
-                if last.cell == cell
-                    && at.duration_since(last.at) < MOUSE_TIME
-                    && last.clicks < 4 =>
-            {
-                last.clicks + 1
-            }
-            _ => 1,
-        };
-        self.vim.last_press = Some(LastPress { cell, at, clicks });
-        clicks
-    }
-
-    /// After a mouse event: a button's settles the session. The mouse on
-    /// the text settles with the char it pointed at, which the field's own
-    /// mouse code put there during the event; a press anywhere else is a
-    /// plain click.
+    /// After a mouse event: a button's settles the session. What the
+    /// mouse did on the text of the field that has the caret now settles
+    /// at its char (spec 2026-10-14); any other left press is a plain
+    /// click, and a release does nothing, as in Vim.
     pub(super) fn vim_mouse_end(&mut self, edge: MouseEdge) {
-        let MouseEdge(Some(mouse)) = edge else { return };
-        // A press or a sweep on a field's text arms `text_drag`; a right
-        // press disarms it, the right button sweeping nothing.
-        let on_text = self.text_drag.is_some() || mouse == Some(Mouse::Extend);
-        let at = match self.field_caret() {
-            FieldCaret::Live(id) if on_text => self.mouse_at(id),
-            _ => None,
-        };
-        let how = match (mouse, at) {
-            (Some(mouse), Some(at)) => Some(Settled::Mouse(at, mouse)),
-            (Some(Mouse::Press(_)), None) => Some(Settled::Click),
-            _ => None,
+        if !edge.button {
+            return;
+        }
+        let how = match self.vim.text_mouse.take() {
+            Some((field, at, mouse)) if self.field_caret() == FieldCaret::Live(field) => {
+                Some(Settled::Mouse(at, mouse))
+            }
+            _ => edge.left_press.then_some(Settled::Click),
         };
         self.sync_session(None, Cause::Mouse(how));
     }
 
-    /// Where the mouse last pointed in `id`'s text.
-    fn mouse_at(&mut self, id: FieldId) -> Option<Pos> {
-        if id == FieldId::Body {
-            let at = self.editor.body_mouse_at();
-            return Some(Pos::new(at.row, at.col));
-        }
-        match self.session_parts(id).1? {
-            FieldBuf::Line(input) => Some(Pos::new(0, input.mouse_at())),
-            FieldBuf::Body(..) => None,
-        }
+    /// A left press on `field`'s text at char `(row, col)`, with Vim's click
+    /// count. In vim the engine makes the selection, so the field's own
+    /// mouse does nothing: `true`. Outside vim and in a query box, which
+    /// keeps its own selection, `false`.
+    pub(super) fn vim_text_press(
+        &mut self,
+        field: FieldId,
+        at: (usize, usize),
+        clicks: u8,
+    ) -> bool {
+        self.vim_text_mouse(field, at, Mouse::Press(clicks))
     }
 
-    /// In vim a right press on the field being edited extends its
-    /// selection (Vim's `'mousemodel'` `extend`): the caller runs it as a
-    /// left press on `hit`, which puts the pointer on its char, and the
-    /// engine extends. Elsewhere, and in a query box, the menu stands.
-    pub(super) fn vim_right_press_extends(&self, hit: &Hit) -> bool {
-        self.profile() == KeyProfile::Vim
-            && self
-                .live_engine_field()
-                .is_some_and(|id| !id.insert_only() && hit_field(hit) == Some(id))
+    /// A sweep on `field`'s text to char `(row, col)`: as
+    /// [`Self::vim_text_press`].
+    pub(super) fn vim_text_drag(&mut self, field: FieldId, at: (usize, usize)) -> bool {
+        self.vim_text_mouse(field, at, Mouse::Drag)
+    }
+
+    /// A right press on the text of `field`, the field being edited, at
+    /// char `(row, col)`: in vim it extends the selection (Vim's
+    /// `'mousemodel'` `extend`). `false` outside vim and in a query box,
+    /// where the menu stands.
+    pub(super) fn vim_text_extend(&mut self, field: FieldId, at: (usize, usize)) -> bool {
+        self.vim_text_mouse(field, at, Mouse::Extend)
+    }
+
+    fn vim_text_mouse(&mut self, field: FieldId, (row, col): (usize, usize), how: Mouse) -> bool {
+        if self.profile() != KeyProfile::Vim || field.insert_only() {
+            return false;
+        }
+        self.vim.text_mouse = Some((field, Pos::new(row, col), how));
+        true
     }
 
     /// The end of a key or mouse event: a V selection the keyboard left
