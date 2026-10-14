@@ -87,7 +87,10 @@ mod tests {
     fn the_tables_are_sorted_disjoint_runs() {
         for table in [UPPER, LOWER] {
             for &(first, last, step, _) in table {
-                assert!(first <= last && (step == 1 || step == 2), "({first:#x}, {last:#x}, {step})");
+                assert!(
+                    first <= last && (step == 1 || step == 2),
+                    "({first:#x}, {last:#x}, {step})"
+                );
             }
             for w in table.windows(2) {
                 assert!(w[0].1 < w[1].0, "{:?} overlaps {:?}", w[0], w[1]);

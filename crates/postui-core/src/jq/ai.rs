@@ -36,11 +36,7 @@ write a bare `.key` unless that key is at the top level.";
 /// The whole stdin text for the AI command: system section, structure,
 /// example path, current filter, and the user's sentence.
 pub fn prompt(shape: &Shape, current_filter: &str, request: &str) -> String {
-    let current = if current_filter.trim().is_empty() {
-        "(none)"
-    } else {
-        current_filter.trim()
-    };
+    let current = if current_filter.trim().is_empty() { "(none)" } else { current_filter.trim() };
     let example = match &shape.example_path {
         Some(path) => format!("\nA full path in this document: {path}\n"),
         None => String::new(),
@@ -56,17 +52,10 @@ pub fn prompt(shape: &Shape, current_filter: &str, request: &str) -> String {
 /// own line above a quoted filter), else the first non-empty line. What a
 /// line yields is `Line::filter`.
 pub fn extract_filter(reply: &str) -> Option<String> {
-    let lines: Vec<Line> = reply
-        .lines()
-        .map(str::trim)
-        .map(Line::parse)
-        .filter(|line| !line.is_fence())
-        .collect();
+    let lines: Vec<Line> =
+        reply.lines().map(str::trim).map(Line::parse).filter(|line| !line.is_fence()).collect();
     let quoted = lines.iter().filter(|line| line.is_quoted());
-    quoted
-        .chain(lines.iter())
-        .map(Line::filter)
-        .find(|filter| !filter.is_empty())
+    quoted.chain(lines.iter()).map(Line::filter).find(|filter| !filter.is_empty())
 }
 
 /// One reply line, cut at its backticks the way Markdown reads them: a run
@@ -90,12 +79,7 @@ struct Line<'a> {
 impl<'a> Line<'a> {
     fn parse(line: &'a str) -> Self {
         let in_filter = quotes_balanced(line);
-        let mut out = Line {
-            raw: line,
-            in_filter,
-            spans: Vec::new(),
-            last_closed: false,
-        };
+        let mut out = Line { raw: line, in_filter, spans: Vec::new(), last_closed: false };
         let mut pos = 0;
         while let Some((start, open)) = next_run(line, pos, in_filter) {
             let from = start + open;
@@ -222,31 +206,18 @@ mod tests {
     use super::*;
 
     fn shape(outline: &str, example: Option<&str>) -> Shape {
-        Shape {
-            outline: outline.into(),
-            example_path: example.map(str::to_string),
-        }
+        Shape { outline: outline.into(), example_path: example.map(str::to_string) }
     }
 
     #[test]
     fn the_prompt_carries_the_structure_the_example_the_filter_and_the_request_in_order() {
         let p = prompt(&shape("a\n  b: number", Some(".a.b")), ".a", "double it");
-        let shape_at = p
-            .find("Structure:\na\n  b: number\n")
-            .expect("structure block");
-        let example_at = p
-            .find("A full path in this document: .a.b")
-            .expect("example line");
+        let shape_at = p.find("Structure:\na\n  b: number\n").expect("structure block");
+        let example_at = p.find("A full path in this document: .a.b").expect("example line");
         let filter_at = p.find("Current filter: .a").expect("filter line");
         let req_at = p.find("Request: double it").expect("request line");
-        assert!(
-            shape_at < example_at && example_at < filter_at && filter_at < req_at,
-            "{p}"
-        );
-        assert!(
-            p.contains("jq 1.7"),
-            "system section names the dialect: {p}"
-        );
+        assert!(shape_at < example_at && example_at < filter_at && filter_at < req_at, "{p}");
+        assert!(p.contains("jq 1.7"), "system section names the dialect: {p}");
         assert!(p.contains("no backticks"), "{p}");
         assert!(
             p.contains("write its whole path from the root"),
@@ -275,27 +246,15 @@ mod tests {
 
     #[test]
     fn replies_are_trimmed_unfenced_and_cut_to_their_first_line() {
-        assert_eq!(
-            extract_filter("  .a | length \n"),
-            Some(".a | length".into())
-        );
-        assert_eq!(
-            extract_filter("```jq\n.a | length\n```"),
-            Some(".a | length".into())
-        );
-        assert_eq!(
-            extract_filter("```\n\n.a\n\nexplanation\n```"),
-            Some(".a".into())
-        );
+        assert_eq!(extract_filter("  .a | length \n"), Some(".a | length".into()));
+        assert_eq!(extract_filter("```jq\n.a | length\n```"), Some(".a | length".into()));
+        assert_eq!(extract_filter("```\n\n.a\n\nexplanation\n```"), Some(".a".into()));
         assert_eq!(extract_filter("\n\n"), None);
     }
 
     #[test]
     fn backticks_around_the_reply_are_dropped() {
-        assert_eq!(
-            extract_filter("`.data[] | .name`\n"),
-            Some(".data[] | .name".into())
-        );
+        assert_eq!(extract_filter("`.data[] | .name`\n"), Some(".data[] | .name".into()));
         assert_eq!(extract_filter("`` .a ``"), Some(".a".into()));
         assert_eq!(extract_filter("``"), None);
         assert_eq!(
@@ -325,10 +284,7 @@ mod tests {
             extract_filter(".items[] | select(.code | test(\"`\"))"),
             Some(".items[] | select(.code | test(\"`\"))".into())
         );
-        assert_eq!(
-            extract_filter(".name == \"a`b\""),
-            Some(".name == \"a`b\"".into())
-        );
+        assert_eq!(extract_filter(".name == \"a`b\""), Some(".name == \"a`b\"".into()));
         assert_eq!(
             extract_filter(".x == \"say \\\"hi\\\"\" | `.y`"),
             Some(".x == \"say \\\"hi\\\"\" | `.y`".into()),
@@ -392,10 +348,7 @@ mod tests {
 
     #[test]
     fn a_one_line_triple_backtick_reply_is_unwrapped_but_fence_lines_are_skipped() {
-        assert_eq!(
-            extract_filter("```.data[] | .name```"),
-            Some(".data[] | .name".into())
-        );
+        assert_eq!(extract_filter("```.data[] | .name```"), Some(".data[] | .name".into()));
         assert_eq!(extract_filter("```jq .a```"), Some(".a".into()));
         assert_eq!(
             extract_filter("```jq .data[] | .name\n```"),
@@ -444,10 +397,7 @@ mod tests {
 
     #[test]
     fn a_line_of_only_backticks_falls_through_to_the_next() {
-        assert_eq!(
-            extract_filter("``\n.data[] | .name\n"),
-            Some(".data[] | .name".into())
-        );
+        assert_eq!(extract_filter("``\n.data[] | .name\n"), Some(".data[] | .name".into()));
         assert_eq!(extract_filter("``\n\n"), None);
     }
 }

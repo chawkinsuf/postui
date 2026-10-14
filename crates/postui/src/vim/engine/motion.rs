@@ -7,10 +7,12 @@
 use super::buf::{Pos, TextBuf};
 use super::class::class;
 use super::keys::{FindKind, Motion, Op, Screen};
-use super::settings::{PARAGRAPHS, SECTIONS, TABSTOP};
 use super::search::{self, Dir};
+use super::settings::{PARAGRAPHS, SECTIONS, TABSTOP};
 use super::view::View;
-use super::{BufState, Engine, LastSearch, Mode, Note, ViewCtx, first_non_blank, first_non_blank_fix};
+use super::{
+    BufState, Engine, LastSearch, Mode, Note, ViewCtx, first_non_blank, first_non_blank_fix,
+};
 use unicode_width::UnicodeWidthChar;
 
 /// How an operator treats a motion (`:help exclusive`, `:help linewise`).
@@ -70,13 +72,25 @@ impl Moved {
 
     /// A failure that changes nothing, not even the wanted column.
     fn refused(from: Pos) -> Self {
-        Self { to: from, kind: MKind::Exclusive, want: WantUpdate::Keep, failed: true, no_adjust: false }
+        Self {
+            to: from,
+            kind: MKind::Exclusive,
+            want: WantUpdate::Keep,
+            failed: true,
+            no_adjust: false,
+        }
     }
 
     /// A search that failed (Vim's `normal_search()`): the caret stays and
     /// the wanted column is reset, since `w_set_curswant` is set first.
     fn search_failed(from: Pos) -> Self {
-        Self { to: from, kind: MKind::Exclusive, want: WantUpdate::Here, failed: true, no_adjust: false }
+        Self {
+            to: from,
+            kind: MKind::Exclusive,
+            want: WantUpdate::Here,
+            failed: true,
+            no_adjust: false,
+        }
     }
 }
 
@@ -125,7 +139,13 @@ pub(crate) fn col_for(line: &[char], want: Want, one_more: bool) -> usize {
 /// The new wanted column after a motion landed on `at`. `tab_end`: the caret
 /// on a tab sits on its last cell (Vim's `getvcol` in Normal mode, and in
 /// Visual when the caret is past the anchor).
-pub(crate) fn updated_want<B: TextBuf>(buf: &B, at: Pos, update: WantUpdate, old: Want, tab_end: bool) -> Want {
+pub(crate) fn updated_want<B: TextBuf>(
+    buf: &B,
+    at: Pos,
+    update: WantUpdate,
+    old: Want,
+    tab_end: bool,
+) -> Want {
     match update {
         WantUpdate::Keep => old,
         WantUpdate::End => Want::End,
@@ -277,7 +297,12 @@ pub(crate) fn fwd_word<B: TextBuf>(w: &mut Walk<B>, count: usize, big: bool, eol
 }
 
 /// Vim's `bck_word()`. `false` = FAIL (started at the start of the buffer).
-pub(crate) fn bck_word<B: TextBuf>(w: &mut Walk<B>, count: usize, big: bool, mut stop: bool) -> bool {
+pub(crate) fn bck_word<B: TextBuf>(
+    w: &mut Walk<B>,
+    count: usize,
+    big: bool,
+    mut stop: bool,
+) -> bool {
     'outer: for _ in 0..count {
         let sclass = w.cls(big);
         if w.dec() == -1 {
@@ -306,7 +331,13 @@ pub(crate) fn bck_word<B: TextBuf>(w: &mut Walk<B>, count: usize, big: bool, mut
 
 /// Vim's `end_word()`. `stop`: the first count does not hop when already on
 /// a word end (`cw`). `empty`: stop on an empty line.
-pub(crate) fn end_word<B: TextBuf>(w: &mut Walk<B>, count: usize, big: bool, mut stop: bool, empty: bool) -> bool {
+pub(crate) fn end_word<B: TextBuf>(
+    w: &mut Walk<B>,
+    count: usize,
+    big: bool,
+    mut stop: bool,
+    empty: bool,
+) -> bool {
     'outer: for _ in 0..count {
         let sclass = w.cls(big);
         if w.inc() == -1 {
@@ -393,7 +424,11 @@ pub(crate) fn run<B: TextBuf>(
         Motion::Right => right(buf, from, n, cx, false),
         Motion::ForwardWrap => right(buf, from, n, cx, true),
         Motion::Up | Motion::Down => {
-            let row = if motion == Motion::Down { (from.row + n).min(last) } else { from.row.saturating_sub(n) };
+            let row = if motion == Motion::Down {
+                (from.row + n).min(last)
+            } else {
+                from.row.saturating_sub(n)
+            };
             if row == from.row {
                 return Moved::refused(from);
             }
@@ -401,13 +436,21 @@ pub(crate) fn run<B: TextBuf>(
             Moved::to(Pos::new(row, col), MKind::Linewise, WantUpdate::Keep)
         }
         Motion::LineStart => Moved::to(Pos::new(from.row, 0), MKind::Exclusive, WantUpdate::Here),
-        Motion::FirstNonBlank => {
-            Moved::to(Pos::new(from.row, first_non_blank(&buf.line(from.row))), MKind::Exclusive, WantUpdate::Here)
-        }
+        Motion::FirstNonBlank => Moved::to(
+            Pos::new(from.row, first_non_blank(&buf.line(from.row))),
+            MKind::Exclusive,
+            WantUpdate::Here,
+        ),
         Motion::LineEnd => {
             if n > 1 && from.row == last {
                 // Vim's `nv_dollar` wants the end before `cursor_down` fails.
-                return Moved { to: from, kind: MKind::Inclusive, want: WantUpdate::End, failed: true, no_adjust: false };
+                return Moved {
+                    to: from,
+                    kind: MKind::Inclusive,
+                    want: WantUpdate::End,
+                    failed: true,
+                    no_adjust: false,
+                };
             }
             let row = (from.row + n - 1).min(last);
             let len = buf.line_len(row);
@@ -420,7 +463,11 @@ pub(crate) fn run<B: TextBuf>(
                 0 => last,
                 c => (c - 1).min(last),
             };
-            Moved::to(Pos::new(row, first_non_blank(&buf.line(row))), MKind::Linewise, WantUpdate::Here)
+            Moved::to(
+                Pos::new(row, first_non_blank(&buf.line(row))),
+                MKind::Linewise,
+                WantUpdate::Here,
+            )
         }
         Motion::WordFwd { big } => word_fwd(buf, from, n, big, cx, false),
         Motion::WordEnd { big } => word_fwd(buf, from, n, big, cx, true),
@@ -448,20 +495,42 @@ pub(crate) fn run<B: TextBuf>(
             // `bckend_word()` fails only when it starts on the first char.
             let mut w = Walk::new(buf, from);
             let ok = bckend_word(&mut w, n, big, false);
-            Moved { to: w.pos, kind: MKind::Inclusive, want: WantUpdate::Here, failed: !ok, no_adjust: false }
+            Moved {
+                to: w.pos,
+                kind: MKind::Inclusive,
+                want: WantUpdate::Here,
+                failed: !ok,
+                no_adjust: false,
+            }
         }
         Motion::Paragraph { forward } => match find_par(buf, from.row, forward, n) {
-            Some((row, true)) => Moved::to(Pos::new(row, buf.line_len(row) - 1), MKind::Inclusive, WantUpdate::Here),
+            Some((row, true)) => {
+                Moved::to(Pos::new(row, buf.line_len(row) - 1), MKind::Inclusive, WantUpdate::Here)
+            }
             Some((row, false)) => Moved::to(Pos::new(row, 0), MKind::Exclusive, WantUpdate::Here),
             // Vim's `nv_findpar()` resets the wanted column before it looks.
-            None => Moved { to: from, kind: MKind::Exclusive, want: WantUpdate::Here, failed: true, no_adjust: false },
+            None => Moved {
+                to: from,
+                kind: MKind::Exclusive,
+                want: WantUpdate::Here,
+                failed: true,
+                no_adjust: false,
+            },
         },
         Motion::DownFirstNonBlank | Motion::UpFirstNonBlank => {
-            let row = if motion == Motion::DownFirstNonBlank { (from.row + n).min(last) } else { from.row.saturating_sub(n) };
+            let row = if motion == Motion::DownFirstNonBlank {
+                (from.row + n).min(last)
+            } else {
+                from.row.saturating_sub(n)
+            };
             if row == from.row {
                 return Moved::refused(from);
             }
-            Moved::to(Pos::new(row, first_non_blank_fix(&buf.line(row))), MKind::Linewise, WantUpdate::Here)
+            Moved::to(
+                Pos::new(row, first_non_blank_fix(&buf.line(row))),
+                MKind::Linewise,
+                WantUpdate::Here,
+            )
         }
         Motion::MatchPair if count > 0 => {
             if count > 100 {
@@ -469,13 +538,20 @@ pub(crate) fn run<B: TextBuf>(
             }
             let lines = buf.line_count();
             let row = ((count * lines).div_ceil(100)).clamp(1, lines) - 1;
-            Moved::to(Pos::new(row, first_non_blank(&buf.line(row))), MKind::Linewise, WantUpdate::Here)
+            Moved::to(
+                Pos::new(row, first_non_blank(&buf.line(row))),
+                MKind::Linewise,
+                WantUpdate::Here,
+            )
         }
         Motion::MatchPair => match find_match(buf, from, MatchFrom::Percent, true) {
             Some(to) => Moved::to(to, MKind::Inclusive, WantUpdate::Here),
             None => Moved::refused(from),
         },
-        Motion::ScreenLine(_) | Motion::SearchNext { .. } | Motion::Ident { .. } | Motion::Search { .. } => {
+        Motion::ScreenLine(_)
+        | Motion::SearchNext { .. }
+        | Motion::Ident { .. }
+        | Motion::Search { .. } => {
             unreachable!("Engine::run_motion takes the window and search motions")
         }
     }
@@ -483,7 +559,11 @@ pub(crate) fn run<B: TextBuf>(
 
 fn found(to: Option<Pos>, from: Pos, kind: FindKind) -> Moved {
     match to {
-        Some(to) => Moved::to(to, if kind.forward() { MKind::Inclusive } else { MKind::Exclusive }, WantUpdate::Here),
+        Some(to) => Moved::to(
+            to,
+            if kind.forward() { MKind::Inclusive } else { MKind::Exclusive },
+            WantUpdate::Here,
+        ),
         None => Moved::refused(from),
     }
 }
@@ -492,7 +572,12 @@ fn found(to: Option<Pos>, from: Pos, kind: FindKind) -> Moved {
 /// row it stops on, and whether it ran onto the last line going forward
 /// (the motion then takes that line's last char and is inclusive). `None`
 /// when a count is left over at the first or last line.
-fn find_par<B: TextBuf>(buf: &B, start: usize, forward: bool, count: usize) -> Option<(usize, bool)> {
+fn find_par<B: TextBuf>(
+    buf: &B,
+    start: usize,
+    forward: bool,
+    count: usize,
+) -> Option<(usize, bool)> {
     let last = buf.line_count() - 1;
     let mut curr = start;
     for left in (0..count).rev() {
@@ -506,7 +591,8 @@ fn find_par<B: TextBuf>(buf: &B, start: usize, forward: bool, count: usize) -> O
                 break;
             }
             first = false;
-            let next = if forward { (curr < last).then_some(curr + 1) } else { curr.checked_sub(1) };
+            let next =
+                if forward { (curr < last).then_some(curr + 1) } else { curr.checked_sub(1) };
             match next {
                 Some(row) => curr = row,
                 None if left > 0 => return None,
@@ -541,7 +627,8 @@ fn in_macro(opt: &str, s: &[char]) -> bool {
         let m0 = m0 as char;
         let m1 = names.get(i + 1).map(|&b| b as char);
         let first = Some(m0) == s0 || (m0 == ' ' && matches!(s0, None | Some(' ')));
-        let second = m1 == s1 || (matches!(m1, None | Some(' ')) && (s0.is_none() || matches!(s1, None | Some(' '))));
+        let second = m1 == s1
+            || (matches!(m1, None | Some(' ')) && (s0.is_none() || matches!(s1, None | Some(' '))));
         if first && second {
             return true;
         }
@@ -623,7 +710,14 @@ fn back_wrap<B: TextBuf>(buf: &B, from: Pos, n: usize, cx: &MotionCx) -> Moved {
 }
 
 /// Vim's `nv_wordcmd()`: `w` `W` (`end` false) and `e` `E`.
-fn word_fwd<B: TextBuf>(buf: &B, from: Pos, n: usize, big: bool, cx: &MotionCx, end: bool) -> Moved {
+fn word_fwd<B: TextBuf>(
+    buf: &B,
+    from: Pos,
+    n: usize,
+    big: bool,
+    cx: &MotionCx,
+    end: bool,
+) -> Moved {
     let mut w = Walk::new(buf, from);
     let mut kind = if end { MKind::Inclusive } else { MKind::Exclusive };
     let mut word_end = end;
@@ -635,7 +729,11 @@ fn word_fwd<B: TextBuf>(buf: &B, from: Pos, n: usize, big: bool, cx: &MotionCx, 
         word_end = true;
         stop = true;
     }
-    let ok = if word_end { end_word(&mut w, n, big, stop, false) } else { fwd_word(&mut w, n, big, cx.op.is_some()) };
+    let ok = if word_end {
+        end_word(&mut w, n, big, stop, false)
+    } else {
+        fwd_word(&mut w, n, big, cx.op.is_some())
+    };
     // Don't leave the caret on the NUL past the end of a line (Vim's
     // `adjust_cursor()`): `dw` on a line's last word stops at its end
     // (spec §3.6 rule 2).
@@ -643,12 +741,25 @@ fn word_fwd<B: TextBuf>(buf: &B, from: Pos, n: usize, big: bool, cx: &MotionCx, 
         w.pos.col -= 1;
         kind = MKind::Inclusive;
     }
-    Moved { to: w.pos, kind, want: WantUpdate::Here, failed: !ok && cx.op.is_none(), no_adjust: false }
+    Moved {
+        to: w.pos,
+        kind,
+        want: WantUpdate::Here,
+        failed: !ok && cx.op.is_none(),
+        no_adjust: false,
+    }
 }
 
 /// Vim's `searchc()`: the `n`th `ch` on the line. `stop` false skips a
 /// match right next to the caret (a repeated till).
-fn find<B: TextBuf>(buf: &B, from: Pos, kind: FindKind, ch: char, n: usize, mut stop: bool) -> Option<Pos> {
+fn find<B: TextBuf>(
+    buf: &B,
+    from: Pos,
+    kind: FindKind,
+    ch: char,
+    n: usize,
+    mut stop: bool,
+) -> Option<Pos> {
     let line = buf.line(from.row);
     let len = line.len() as isize;
     let dir: isize = if kind.forward() { 1 } else { -1 };
@@ -703,7 +814,12 @@ fn backslashes_before(line: &[char], col: usize) -> usize {
 /// quotes, `'x'` literals are skipped, and a bracket's escaping must match
 /// the start's. `quotes` false is Vim's temporary `cpo=%` (the opening
 /// search of a block object ignores quotes).
-pub(crate) fn find_match<B: TextBuf>(buf: &B, from: Pos, how: MatchFrom, quotes: bool) -> Option<Pos> {
+pub(crate) fn find_match<B: TextBuf>(
+    buf: &B,
+    from: Pos,
+    how: MatchFrom,
+    quotes: bool,
+) -> Option<Pos> {
     let last = buf.line_count() - 1;
     let mut row = from.row;
     let mut line: Vec<char> = buf.line(row).into_owned();
@@ -767,7 +883,9 @@ pub(crate) fn find_match<B: TextBuf>(buf: &B, from: Pos, how: MatchFrom, quotes:
                 if i == col + usize::from(backwards) {
                     at_start = n & 1;
                 }
-                if line[i] == '"' && (i == 0 || line[i - 1] != '\'' || line.get(i + 1) != Some(&'\'')) {
+                if line[i] == '"'
+                    && (i == 0 || line[i - 1] != '\'' || line.get(i + 1) != Some(&'\''))
+                {
                     n += 1;
                 }
                 if line[i] == '\\' && i + 1 < line.len() {
@@ -855,12 +973,22 @@ pub(crate) fn find_match<B: TextBuf>(buf: &B, from: Pos, how: MatchFrom, quotes:
 
 impl Engine {
     /// A bare motion in Normal or Visual.
-    pub(super) fn exec_move<B: TextBuf>(&mut self, motion: Motion, count: usize, buf: &mut B, st: &mut BufState, ctx: &ViewCtx) {
+    pub(super) fn exec_move<B: TextBuf>(
+        &mut self,
+        motion: Motion,
+        count: usize,
+        buf: &mut B,
+        st: &mut BufState,
+        ctx: &ViewCtx,
+    ) {
         let visual = matches!(self.mode, Mode::Visual(_));
         let from = buf.cursor();
         let want = self.want_at(buf, st, from);
         let cx = MotionCx { op: None, visual, want };
-        let search = matches!(motion, Motion::Search { .. } | Motion::SearchNext { .. } | Motion::Ident { .. });
+        let search = matches!(
+            motion,
+            Motion::Search { .. } | Motion::SearchNext { .. } | Motion::Ident { .. }
+        );
         let m = self.run_motion(buf, from, motion, count, &cx, ctx);
         let mut to = self.clamped(buf, m.to);
         if matches!(self.mode, Mode::InsertNormal { .. }) && !search {
@@ -883,7 +1011,15 @@ impl Engine {
     }
 
     /// Every motion: the window-relative ones here, the rest in [`run`].
-    pub(super) fn run_motion<B: TextBuf>(&mut self, buf: &B, from: Pos, motion: Motion, count: usize, cx: &MotionCx, ctx: &ViewCtx) -> Moved {
+    pub(super) fn run_motion<B: TextBuf>(
+        &mut self,
+        buf: &B,
+        from: Pos,
+        motion: Motion,
+        count: usize,
+        cx: &MotionCx,
+        ctx: &ViewCtx,
+    ) -> Moved {
         match motion {
             Motion::ScreenLine(place) => {
                 let view = View::of::<B>(ctx);
@@ -902,7 +1038,11 @@ impl Engine {
                     (None, Some(view)) => view.corrected_row(buf, row),
                     _ => row,
                 };
-                Moved::to(Pos::new(row, first_non_blank_fix(&buf.line(row))), MKind::Linewise, WantUpdate::Here)
+                Moved::to(
+                    Pos::new(row, first_non_blank_fix(&buf.line(row))),
+                    MKind::Linewise,
+                    WantUpdate::Here,
+                )
             }
             Motion::SearchNext { reverse } => {
                 let Some(last) = self.memory.last.clone() else {
@@ -926,7 +1066,8 @@ impl Engine {
                 let dir = if backward { Dir::Backward } else { Dir::Forward };
                 // Vim's `do_search()` keeps the pattern as its delimiter
                 // leaves it: `#`'s `\?` becomes `?`.
-                let text = search::as_stored(&search::ident_pattern(&line, start, end, backward), dir);
+                let text =
+                    search::as_stored(&search::ident_pattern(&line, start, end, backward), dir);
                 self.memory.last = Some(LastSearch { text: text.clone(), dir });
                 self.search_motion(buf, Pos::new(from.row, start), &text, dir, count)
             }
@@ -946,7 +1087,14 @@ impl Engine {
     /// A search as a motion (Vim's `normal_search()`): exclusive, charwise,
     /// the wanted column reset even on failure; a wrap or a miss leaves its
     /// message, and the highlight goes on.
-    pub(super) fn search_motion<B: TextBuf>(&mut self, buf: &B, from: Pos, text: &str, dir: Dir, count: usize) -> Moved {
+    pub(super) fn search_motion<B: TextBuf>(
+        &mut self,
+        buf: &B,
+        from: Pos,
+        text: &str,
+        dir: Dir,
+        count: usize,
+    ) -> Moved {
         self.memory.hl = true;
         let pat = match self.compiled(text) {
             Ok(p) => p,
@@ -978,7 +1126,9 @@ impl Engine {
     /// The column `j` and `k` aim for from `at`: the remembered one while
     /// the caret is still there, else the caret's own.
     pub(super) fn want_at<B: TextBuf>(&self, buf: &B, st: &BufState, at: Pos) -> Want {
-        st.want(at).unwrap_or_else(|| updated_want(buf, at, WantUpdate::Here, Want::default(), self.tab_rule(st, at)))
+        st.want(at).unwrap_or_else(|| {
+            updated_want(buf, at, WantUpdate::Here, Want::default(), self.tab_rule(st, at))
+        })
     }
 
     /// The tab rule Vim's `w_virtcol` holds for a caret at `at`: the cached
@@ -1034,8 +1184,18 @@ mod tests {
     fn paragraph_starts_follow_vims_start_ps() {
         let starts = |s: &str| starts_paragraph(&s.chars().collect::<Vec<_>>());
         for (line, yes) in [
-            ("", true), ("\u{c}", true), ("  ", false), ("x", false), (".PP", true), (".SH x", true),
-            (".H", true), (".IP", true), (".x", false), (". ", false), (".", false), ("{", false),
+            ("", true),
+            ("\u{c}", true),
+            ("  ", false),
+            ("x", false),
+            (".PP", true),
+            (".SH x", true),
+            (".H", true),
+            (".IP", true),
+            (".x", false),
+            (". ", false),
+            (".", false),
+            ("{", false),
         ] {
             assert_eq!(starts(line), yes, "{line:?}");
         }

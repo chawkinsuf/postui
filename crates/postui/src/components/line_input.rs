@@ -183,10 +183,7 @@ impl LineInput {
         if self.run == Some(kind) && kind != EditKind::Whole {
             return;
         }
-        self.undo.push(Snapshot {
-            text: self.text.clone(),
-            cursor: self.cursor,
-        });
+        self.undo.push(Snapshot { text: self.text.clone(), cursor: self.cursor });
         if self.undo.len() > HISTORY_CAP {
             self.undo.remove(0);
         }
@@ -398,11 +395,7 @@ impl LineInput {
     /// Byte offset of the char at `idx` (or the end-of-string offset when
     /// `idx == len_chars()`).
     fn byte_offset(&self, idx: usize) -> usize {
-        self.text
-            .char_indices()
-            .nth(idx)
-            .map(|(b, _)| b)
-            .unwrap_or(self.text.len())
+        self.text.char_indices().nth(idx).map(|(b, _)| b).unwrap_or(self.text.len())
     }
 
     /// Removes the chars from index `idx` up to the cursor (nothing when
@@ -514,9 +507,7 @@ impl LineInput {
         // ctrl+arrow skips words; alt+arrow is the same gesture as macOS
         // terminals deliver it (option+arrow), so both spellings work on
         // every platform.
-        let word = key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let word = key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         // Shifted motion extends a selection from an anchor planted at the
         // pre-move cursor; unshifted motion collapses any selection first
         // (Left/Right land on the selection's own edge, GUI-style).
@@ -602,11 +593,8 @@ impl LineInput {
                 }
                 // ctrl/alt+backspace removes the whole word behind the
                 // caret, the same hop word-left would make.
-                let target = if word {
-                    self.word_target(false)
-                } else {
-                    self.cursor.saturating_sub(1)
-                };
+                let target =
+                    if word { self.word_target(false) } else { self.cursor.saturating_sub(1) };
                 self.delete_back_from(target);
                 true
             }
@@ -630,21 +618,15 @@ impl LineInput {
                 self.break_run();
                 if shift {
                     self.anchor.get_or_insert(self.cursor);
-                    self.cursor = if word {
-                        self.word_target(false)
-                    } else {
-                        self.cursor.saturating_sub(1)
-                    };
+                    self.cursor =
+                        if word { self.word_target(false) } else { self.cursor.saturating_sub(1) };
                 } else if !word && let Some((start, _)) = self.selection() {
                     self.cursor = start;
                     self.anchor = None;
                 } else {
                     self.anchor = None;
-                    self.cursor = if word {
-                        self.word_target(false)
-                    } else {
-                        self.cursor.saturating_sub(1)
-                    };
+                    self.cursor =
+                        if word { self.word_target(false) } else { self.cursor.saturating_sub(1) };
                 }
                 true
             }
@@ -1230,9 +1212,7 @@ mod tests {
 
     #[test]
     fn windowed_cursor_at_end_of_long_text_scrolls_so_the_slice_ends_at_the_cursor() {
-        let text: String = (0..200)
-            .map(|i| char::from(b'a' + (i % 26) as u8))
-            .collect();
+        let text: String = (0..200).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
         let input = LineInput::new(&text); // cursor defaults to end (200)
         let theme = Theme::dark();
         let line = input.draw_line_windowed(true, &theme, 20);
@@ -1270,10 +1250,7 @@ mod tests {
         let theme = Theme::dark();
         let line = input.draw_line_windowed(true, &theme, 10);
         let rendered = line_text(&line);
-        assert!(
-            rendered.starts_with('h'),
-            "must start from char 0: {rendered:?}"
-        );
+        assert!(rendered.starts_with('h'), "must start from char 0: {rendered:?}");
     }
 
     #[test]
@@ -1545,11 +1522,7 @@ mod tests {
         }
         assert_eq!(reversed[0], ('a', true), "selected");
         assert_eq!(reversed[1], ('b', true), "selected");
-        assert_eq!(
-            reversed[2],
-            ('c', false),
-            "the caret hides while a selection is live"
-        );
+        assert_eq!(reversed[2], ('c', false), "the caret hides while a selection is live");
         assert_eq!(reversed[3], ('d', false), "outside the selection");
     }
 
@@ -1574,9 +1547,7 @@ mod tests {
         let line = input.draw_line_windowed_no_caret(true, &theme, 20);
         assert_eq!(line_text(&line), "hello", "no trailing caret cell");
         assert!(
-            line.spans
-                .iter()
-                .all(|s| !s.style.add_modifier.contains(Modifier::REVERSED)),
+            line.spans.iter().all(|s| !s.style.add_modifier.contains(Modifier::REVERSED)),
             "cursor past the end: nothing reversed"
         );
         assert_eq!(input.caret_column(20), 5);
@@ -1584,9 +1555,7 @@ mod tests {
         let line = input.draw_line_windowed_no_caret(true, &theme, 20);
         assert_eq!(line_text(&line), "hello");
         assert!(
-            line.spans
-                .iter()
-                .all(|s| !s.style.add_modifier.contains(Modifier::REVERSED)),
+            line.spans.iter().all(|s| !s.style.add_modifier.contains(Modifier::REVERSED)),
             "cursor mid-text: the cell under it stays plain"
         );
         assert_eq!(input.caret_column(20), 2);
@@ -1604,9 +1573,7 @@ mod tests {
         input.select_all();
         let line = input.draw_line_windowed_no_caret(true, &theme, 8);
         assert!(
-            line.spans
-                .iter()
-                .all(|s| s.style.add_modifier.contains(Modifier::REVERSED)),
+            line.spans.iter().all(|s| s.style.add_modifier.contains(Modifier::REVERSED)),
             "the selection is still drawn reversed"
         );
     }
@@ -1618,10 +1585,7 @@ mod tests {
         let theme = Theme::dark();
         let line = input.draw_line(true, &theme);
         let rendered = line_text(&line);
-        assert_eq!(
-            rendered, "ab",
-            "no reversed blank caret cell after the selection"
-        );
+        assert_eq!(rendered, "ab", "no reversed blank caret cell after the selection");
     }
 
     fn word_key(c: KeyCode, extra: KeyModifiers) -> KeyEvent {
@@ -1654,10 +1618,9 @@ mod tests {
     fn ctrl_shift_arrows_extend_the_selection_by_word() {
         let mut input = LineInput::new("foo bar");
         input.handle_key(code(KeyCode::Home));
-        assert!(input.handle_key(word_key(
-            KeyCode::Right,
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT
-        )));
+        assert!(
+            input.handle_key(word_key(KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::SHIFT))
+        );
         assert_eq!(input.selection(), Some((0, 3)));
         assert_eq!(input.selected_text().as_deref(), Some("foo"));
     }
@@ -1735,18 +1698,14 @@ mod tests {
         let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
         assert!(total <= 10);
         assert!(
-            line.spans
-                .iter()
-                .all(|s| s.style.add_modifier.contains(Modifier::REVERSED)),
+            line.spans.iter().all(|s| s.style.add_modifier.contains(Modifier::REVERSED)),
             "every visible cell is inside the selection"
         );
     }
 
     #[test]
     fn windowed_unfocused_long_text_renders_from_zero() {
-        let text: String = (0..200)
-            .map(|i| char::from(b'a' + (i % 26) as u8))
-            .collect();
+        let text: String = (0..200).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
         let input = LineInput::new(&text);
         let theme = Theme::dark();
         let line = input.draw_line_windowed(false, &theme, 20);
@@ -1788,7 +1747,9 @@ mod tests {
             .draw_line(true, &theme)
             .spans
             .iter()
-            .flat_map(|s| s.content.chars().map(move |_| s.style.add_modifier.contains(Modifier::REVERSED)))
+            .flat_map(|s| {
+                s.content.chars().map(move |_| s.style.add_modifier.contains(Modifier::REVERSED))
+            })
             .collect();
         assert_eq!(reversed, [false, true, true, false]);
         input.set_visual(None);

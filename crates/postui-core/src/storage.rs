@@ -10,10 +10,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("{}: {source}", path.display())]
-    Io {
-        path: PathBuf,
-        source: std::io::Error,
-    },
+    Io { path: PathBuf, source: std::io::Error },
     #[error("failed to parse request: {0}")]
     Parse(String),
     #[error("invalid slug {0:?}")]
@@ -66,11 +63,7 @@ pub fn validate_slug(slug: &str) -> Result<(), StorageError> {
                     .chars()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
         });
-    if ok {
-        Ok(())
-    } else {
-        Err(StorageError::InvalidSlug(slug.to_string()))
-    }
+    if ok { Ok(()) } else { Err(StorageError::InvalidSlug(slug.to_string())) }
 }
 
 /// `root/requests/<slug>.toml` — the on-disk path for a request slug.
@@ -119,11 +112,7 @@ pub fn slugify_or(name: &str, fallback: &str) -> String {
         }
     }
     let out = out.trim_matches('-').to_string();
-    if out.is_empty() || validate_slug(&out).is_err() {
-        fallback.to_string()
-    } else {
-        out
-    }
+    if out.is_empty() || validate_slug(&out).is_err() { fallback.to_string() } else { out }
 }
 
 /// Splits a typed display path into `(folder_slug_prefix, leaf_display)`:
@@ -175,10 +164,7 @@ mod tests {
             split_display_path("API Auth/Get User"),
             Some(("api-auth".into(), "Get User".into()))
         );
-        assert_eq!(
-            split_display_path("Get User"),
-            Some(("".into(), "Get User".into()))
-        );
+        assert_eq!(split_display_path("Get User"), Some(("".into(), "Get User".into())));
         assert_eq!(
             split_display_path("a/b/  Leaf Name  "),
             Some(("a/b".into(), "Leaf Name".into()))
@@ -202,16 +188,7 @@ mod tests {
 
     #[test]
     fn slug_validation_rejects_traversal_and_bad_chars() {
-        for bad in [
-            "",
-            "../etc",
-            "a//b",
-            "/abs",
-            "trailing/",
-            "Has Space",
-            "UPPER",
-            "dot.dot",
-        ] {
+        for bad in ["", "../etc", "a//b", "/abs", "trailing/", "Has Space", "UPPER", "dot.dot"] {
             assert!(validate_slug(bad).is_err(), "{bad:?} should be invalid");
         }
         for good in ["login", "auth/login", "a-b_c/d0"] {

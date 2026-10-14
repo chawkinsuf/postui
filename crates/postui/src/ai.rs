@@ -25,10 +25,7 @@ pub fn program_available(cmd: &str) -> bool {
 /// environment assignments — for toasts, menu hints, and the log, which
 /// never sees the rest of the command (a key may be in it).
 pub fn program_name(cmd: &str) -> &str {
-    shell_words(cmd)
-        .into_iter()
-        .find(|word| !is_assignment(word))
-        .unwrap_or("")
+    shell_words(cmd).into_iter().find(|word| !is_assignment(word)).unwrap_or("")
 }
 
 /// `cmd` split at whitespace the way a shell sees words: a quoted stretch
@@ -87,12 +84,7 @@ impl CommandOutput {
         if self.success {
             return Ok(self.stdout);
         }
-        let last = self
-            .stderr
-            .lines()
-            .rev()
-            .find(|l| !l.trim().is_empty())
-            .map(str::trim);
+        let last = self.stderr.lines().rev().find(|l| !l.trim().is_empty()).map(str::trim);
         Err(last.map(str::to_string).unwrap_or(self.status))
     }
 }
@@ -153,11 +145,7 @@ pub fn log_not_json(request: u64, when: SystemTime, cmd: &str) -> String {
 /// command may carry a key (`KEY=… llm`, `llm --key …`), the log is plain
 /// text, and the full command is in config.toml anyway.
 fn entry_header(request: u64, when: SystemTime, cmd: &str) -> String {
-    format!(
-        "=== #{request} {}  {}\n",
-        utc_timestamp(when),
-        program_name(cmd)
-    )
+    format!("=== #{request} {}  {}\n", utc_timestamp(when), program_name(cmd))
 }
 
 /// The second half, appended when the command finishes: what came back,
@@ -179,10 +167,7 @@ pub fn log_reply(request: u64, outcome: &Result<CommandOutput, String>) -> Strin
             out.push_str(&format!("--- {}\n", output.status));
             if output.success {
                 let filter = postui_core::jq::ai::extract_filter(&output.stdout);
-                out.push_str(&format!(
-                    "--- filter: {}\n",
-                    filter.as_deref().unwrap_or("(none)")
-                ));
+                out.push_str(&format!("--- filter: {}\n", filter.as_deref().unwrap_or("(none)")));
             }
         }
         Err(e) => out.push_str(&format!("--- could not run: {e}\n")),
@@ -193,10 +178,7 @@ pub fn log_reply(request: u64, outcome: &Result<CommandOutput, String>) -> Strin
 
 /// `2026-10-14T16:44:58Z`.
 fn utc_timestamp(when: SystemTime) -> String {
-    let secs = when
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let secs = when.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let (days, rem) = (secs / 86_400, secs % 86_400);
     // Howard Hinnant's civil_from_days.
     let z = days as i64 + 719_468;
@@ -241,25 +223,18 @@ mod tests {
 
     #[tokio::test]
     async fn run_command_reports_the_last_stderr_line_on_failure() {
-        let out = run_command("echo one >&2; echo two >&2; exit 3".into(), String::new())
-            .await
-            .unwrap();
+        let out =
+            run_command("echo one >&2; echo two >&2; exit 3".into(), String::new()).await.unwrap();
         assert_eq!(out.stderr, "one\ntwo\n", "the whole stderr is kept");
         assert_eq!(out.into_reply().unwrap_err(), "two");
-        let err = run_command("exit 4".into(), String::new())
-            .await
-            .unwrap()
-            .into_reply()
-            .unwrap_err();
+        let err =
+            run_command("exit 4".into(), String::new()).await.unwrap().into_reply().unwrap_err();
         assert!(err.contains("4"), "{err}");
     }
 
     #[test]
     fn timestamps_are_utc_iso() {
-        assert_eq!(
-            utc_timestamp(SystemTime::UNIX_EPOCH),
-            "1970-01-01T00:00:00Z"
-        );
+        assert_eq!(utc_timestamp(SystemTime::UNIX_EPOCH), "1970-01-01T00:00:00Z");
         let when = SystemTime::UNIX_EPOCH + Duration::from_secs(1_791_996_298);
         assert_eq!(utc_timestamp(when), "2026-10-14T16:44:58Z");
         let leap = SystemTime::UNIX_EPOCH + Duration::from_secs(951_782_400);
@@ -309,10 +284,7 @@ LINES
         );
         assert!(!entry.contains("filter:"), "{entry}");
         let entry = log_reply(3, &Err("no sh".into()));
-        assert!(
-            entry.contains("--- reply #3\n--- could not run: no sh\n"),
-            "{entry}"
-        );
+        assert!(entry.contains("--- reply #3\n--- could not run: no sh\n"), "{entry}");
     }
 
     #[test]
@@ -326,10 +298,7 @@ LINES
         assert!(entry.starts_with("=== #1 1970-01-01T00:00:00Z  llm\n"), "{entry}");
         assert!(!entry.contains("sk-"), "{entry}");
         let entry = log_not_json(4, SystemTime::UNIX_EPOCH, "claude -p");
-        assert_eq!(
-            entry,
-            "=== #4 1970-01-01T00:00:00Z  claude\n--- not JSON: nothing sent\n\n"
-        );
+        assert_eq!(entry, "=== #4 1970-01-01T00:00:00Z  claude\n--- not JSON: nothing sent\n\n");
     }
 
     #[test]

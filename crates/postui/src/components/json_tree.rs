@@ -50,10 +50,7 @@ pub struct Token<'a> {
 
 impl<'a> Token<'a> {
     fn new(text: impl Into<Cow<'a, str>>, kind: TokenKind) -> Self {
-        Self {
-            text: text.into(),
-            kind,
-        }
+        Self { text: text.into(), kind }
     }
 }
 
@@ -166,11 +163,7 @@ impl<'a> TreeLine<'a> {
 
     /// The text after the key (and `: `) and before any trailing comma.
     fn value_text(&self) -> &'a str {
-        let start = if self.key_len > 0 {
-            self.key_len + 2
-        } else {
-            0
-        };
+        let start = if self.key_len > 0 { self.key_len + 2 } else { 0 };
         let end = self.text.len() - usize::from(self.comma_in_text());
         &self.text[start..end]
     }
@@ -305,11 +298,7 @@ impl JsonTree {
     }
 
     fn line_text(&self, full_index: usize) -> &str {
-        let start = if full_index == 0 {
-            0
-        } else {
-            self.lines[full_index - 1].end as usize
-        };
+        let start = if full_index == 0 { 0 } else { self.lines[full_index - 1].end as usize };
         &self.text[start..self.lines[full_index].end as usize]
     }
 
@@ -343,8 +332,7 @@ impl JsonTree {
     }
 
     pub fn visible_line(&self, visible_index: usize) -> Option<TreeLine<'_>> {
-        self.full_index_of_visible(visible_index)
-            .map(|i| self.line(i))
+        self.full_index_of_visible(visible_index).map(|i| self.line(i))
     }
 
     /// The path segment `full_index` contributes: its key, or its index
@@ -358,9 +346,7 @@ impl JsonTree {
             let quoted = &self.line_text(full_index)[..rec.key_len as usize];
             return Some(PathSeg::Key(unescape(quoted)));
         }
-        self.containers[rec.parent as usize]
-            .is_array
-            .then_some(PathSeg::Index(rec.index as usize))
+        self.containers[rec.parent as usize].is_array.then_some(PathSeg::Index(rec.index as usize))
     }
 
     /// The container ids `full_index` lives inside, outermost first. A
@@ -487,12 +473,8 @@ impl JsonTree {
                 i += 1;
             }
         }
-        self.visible_width = self
-            .visible
-            .iter()
-            .map(|&i| self.line(i as usize).render_width())
-            .max()
-            .unwrap_or(0);
+        self.visible_width =
+            self.visible.iter().map(|&i| self.line(i as usize).render_width()).max().unwrap_or(0);
     }
 
     /// The visible lines, in order. A collapsed container's opening line
@@ -500,19 +482,14 @@ impl JsonTree {
     /// the visible set — for a whole-tree pass, not for a per-row lookup
     /// (that is `visible_line`).
     pub fn visible_lines(&self) -> Vec<TreeLine<'_>> {
-        self.visible
-            .iter()
-            .map(|&i| self.line(i as usize))
-            .collect()
+        self.visible.iter().map(|&i| self.line(i as usize)).collect()
     }
 
     /// Where `full_index` sits among the visible lines, or `None` if it is
     /// currently hidden inside a collapsed container.
     pub fn visible_index_of(&self, full_index: usize) -> Option<usize> {
         // `visible` is sorted (it is a subsequence of the line indices).
-        u32::try_from(full_index)
-            .ok()
-            .and_then(|i| self.visible.binary_search(&i).ok())
+        u32::try_from(full_index).ok().and_then(|i| self.visible.binary_search(&i).ok())
     }
 
     /// Whether the line at `visible_index` opens a container (and so carries
@@ -557,7 +534,10 @@ impl JsonTree {
     pub fn fold_at(&mut self, full: usize, op: crate::action::FoldOp, count: usize) -> bool {
         use crate::action::FoldOp;
         let ids = self.folds_at(full);
-        let closed: Vec<bool> = ids.iter().map(|&id| self.lines[self.containers[id].open_line as usize].collapsed()).collect();
+        let closed: Vec<bool> = ids
+            .iter()
+            .map(|&id| self.lines[self.containers[id].open_line as usize].collapsed())
+            .collect();
         let Some((open, pick)) = op.pick(&closed, count) else {
             // `zR` and `zM`: no chain, every fold.
             return self.fold_all(op == FoldOp::CloseAll);
@@ -586,8 +566,14 @@ impl JsonTree {
         let mut line = first;
         while line <= last.min(self.lines.len().saturating_sub(1)) {
             let ids = self.folds_at(line);
-            let closed_at = ids.iter().position(|&id| self.lines[self.containers[id].open_line as usize].collapsed());
-            let pick = if open { closed_at.map(|k| ids[k]) } else { closed_at.unwrap_or(ids.len()).checked_sub(1).map(|k| ids[k]) };
+            let closed_at = ids
+                .iter()
+                .position(|&id| self.lines[self.containers[id].open_line as usize].collapsed());
+            let pick = if open {
+                closed_at.map(|k| ids[k])
+            } else {
+                closed_at.unwrap_or(ids.len()).checked_sub(1).map(|k| ids[k])
+            };
             let Some(id) = pick else {
                 line += 1;
                 continue;
@@ -688,9 +674,7 @@ impl JsonTree {
     /// corpus search runs over, so a match inside a collapsed container is
     /// still findable.
     pub fn full_text_lines(&self) -> Vec<String> {
-        (0..self.lines.len())
-            .map(|i| self.line(i).expanded_text())
-            .collect()
+        (0..self.lines.len()).map(|i| self.line(i).expanded_text()).collect()
     }
 
     /// Recursive flattening walk. `key` is the object key this value hangs
@@ -854,10 +838,7 @@ mod tests {
         let collapsed = t.visible_lines().len();
         assert!(collapsed < total);
         let line_text = t.visible_lines()[1].plain_text();
-        assert!(
-            line_text.contains("2 keys"),
-            "collapsed summary shows child count: {line_text}"
-        );
+        assert!(line_text.contains("2 keys"), "collapsed summary shows child count: {line_text}");
         t.toggle(1);
         assert_eq!(t.visible_lines().len(), total, "re-expand restores");
     }
@@ -874,10 +855,7 @@ mod tests {
             .expect("inner line visible before any collapsing");
         t.toggle(inner_line); // collapse inner
         let inner_summary = t.visible_lines()[inner_line].plain_text();
-        assert!(
-            inner_summary.contains("1 key"),
-            "inner collapsed summary: {inner_summary}"
-        );
+        assert!(inner_summary.contains("1 key"), "inner collapsed summary: {inner_summary}");
 
         let outer_line = t
             .visible_lines()
@@ -886,10 +864,7 @@ mod tests {
             .expect("outer line visible");
         t.toggle(outer_line); // collapse outer (inner is now hidden, still collapsed)
         let outer_summary = t.visible_lines()[outer_line].plain_text();
-        assert!(
-            outer_summary.contains("2 keys"),
-            "outer collapsed summary: {outer_summary}"
-        );
+        assert!(outer_summary.contains("2 keys"), "outer collapsed summary: {outer_summary}");
 
         t.toggle(outer_line); // re-expand outer
         let inner_summary_again = t.visible_lines()[inner_line].plain_text();
@@ -904,10 +879,7 @@ mod tests {
         let mut t = JsonTree::parse(r#"{"outer": {"needle": "x"}}"#).unwrap();
         t.toggle(1); // collapse outer
         let text = t.full_text_lines().join("\n");
-        assert!(
-            text.contains("needle"),
-            "search text ignores collapse state"
-        );
+        assert!(text.contains("needle"), "search text ignores collapse state");
     }
 
     #[test]
@@ -921,10 +893,7 @@ mod tests {
         let mut t = JsonTree::parse(r#"{"xs": [1, 2, 3]}"#).unwrap();
         t.toggle(1);
         let line = t.visible_lines()[1].plain_text();
-        assert!(
-            line.contains("3 items"),
-            "array summary shows item count: {line}"
-        );
+        assert!(line.contains("3 items"), "array summary shows item count: {line}");
     }
 
     #[test]
@@ -945,14 +914,9 @@ mod tests {
             .position(|l| l.contains("deep"))
             .expect("the deep line exists in the search text");
         t.toggle(1); // collapse "a"
-        assert!(
-            t.visible_index_of(deep).is_none(),
-            "the deep line is hidden while collapsed"
-        );
+        assert!(t.visible_index_of(deep).is_none(), "the deep line is hidden while collapsed");
         t.expand_ancestors(deep);
-        let vis = t
-            .visible_index_of(deep)
-            .expect("expanding ancestors reveals the line");
+        let vis = t.visible_index_of(deep).expect("expanding ancestors reveals the line");
         assert!(t.visible_lines()[vis].plain_text().contains("deep"));
     }
 
@@ -995,26 +959,14 @@ mod tests {
         let t = JsonTree::parse(r#"{"a": 1, "b": [2, 3], "c": true}"#).unwrap();
         assert_eq!(
             t.full_text_lines(),
-            vec![
-                "{",
-                "  \"a\": 1,",
-                "  \"b\": [",
-                "    2,",
-                "    3",
-                "  ],",
-                "  \"c\": true",
-                "}"
-            ]
+            vec!["{", "  \"a\": 1,", "  \"b\": [", "    2,", "    3", "  ],", "  \"c\": true", "}"]
         );
     }
 
     #[test]
     fn empty_containers_are_a_single_uncollapsible_line() {
         let t = JsonTree::parse(r#"{"a": {}, "b": []}"#).unwrap();
-        assert_eq!(
-            t.full_text_lines(),
-            vec!["{", "  \"a\": {},", "  \"b\": []", "}"]
-        );
+        assert_eq!(t.full_text_lines(), vec!["{", "  \"a\": {},", "  \"b\": []", "}"]);
         assert!(t.visible_lines()[1].container.is_none());
     }
 
@@ -1036,21 +988,34 @@ mod tests {
         // full lines: 0 {, 1 "a": {, 2 "b": 1, 3 }, 4 "c": 2, 5 }
         let doc = r#"{"a": {"b": 1}, "c": 2}"#;
         let fresh = || JsonTree::parse(doc).unwrap();
-        let closed = |t: &JsonTree| (0..t.line_count()).filter(|&i| t.line(i).collapsed).collect::<Vec<_>>();
+        let closed =
+            |t: &JsonTree| (0..t.line_count()).filter(|&i| t.line(i).collapsed).collect::<Vec<_>>();
         let mut t = fresh();
         assert!(t.fold_all(true));
-        assert_eq!((closed(&t), t.holder(2)), (vec![0, 1], Some(0)), "F0: zM closes every container");
+        assert_eq!(
+            (closed(&t), t.holder(2)),
+            (vec![0, 1], Some(0)),
+            "F0: zM closes every container"
+        );
         assert!(t.fold_all(false));
         assert_eq!((closed(&t), t.holder(2)), (vec![], Some(2)), "F1: zR");
         let mut t = fresh();
         assert!(t.fold_at(2, Close, 1));
-        assert_eq!((closed(&t), t.holder(2)), (vec![1], Some(1)), "F2: zc closes the object around the line");
+        assert_eq!(
+            (closed(&t), t.holder(2)),
+            (vec![1], Some(1)),
+            "F2: zc closes the object around the line"
+        );
         assert!(t.fold_at(2, Open, 1));
         assert_eq!(t.holder(2), Some(2), "F3: zo");
         let mut t = fresh();
         t.fold_all(true);
         assert!(t.fold_at(2, Open, 1));
-        assert_eq!((closed(&t), t.holder(2)), (vec![1], Some(1)), "F7: zo opens the outermost closed fold");
+        assert_eq!(
+            (closed(&t), t.holder(2)),
+            (vec![1], Some(1)),
+            "F7: zo opens the outermost closed fold"
+        );
         assert!(t.fold_at(2, Open, 1));
         assert_eq!(closed(&t), Vec::<usize>::new());
         let mut t = fresh();
@@ -1092,21 +1057,10 @@ mod tests {
     #[test]
     fn token_kinds_classify_keys_strings_numbers_and_literals() {
         let t = JsonTree::parse(r#"{"k": "s", "n": 1, "b": null}"#).unwrap();
-        let kinds = |i: usize| {
-            t.line(i)
-                .tokens()
-                .iter()
-                .map(|x| x.kind)
-                .collect::<Vec<_>>()
-        };
+        let kinds = |i: usize| t.line(i).tokens().iter().map(|x| x.kind).collect::<Vec<_>>();
         assert_eq!(
             kinds(1),
-            vec![
-                TokenKind::Key,
-                TokenKind::Punct,
-                TokenKind::Str,
-                TokenKind::Punct
-            ]
+            vec![TokenKind::Key, TokenKind::Punct, TokenKind::Str, TokenKind::Punct]
         );
         assert_eq!(kinds(2)[2], TokenKind::Number);
         assert_eq!(kinds(3)[2], TokenKind::Literal);
@@ -1130,15 +1084,9 @@ mod tests {
             JsonTree::parse(r#"{"data": {"items": [{"name": "a"}, 2], "odd key": true}}"#).unwrap();
         assert_eq!(t.jq_path_of(0), ".");
         assert_eq!(t.jq_path_of(line_with(&t, "\"items\"")), ".data.items");
-        assert_eq!(
-            t.jq_path_of(line_with(&t, "\"name\"")),
-            ".data.items[0].name"
-        );
+        assert_eq!(t.jq_path_of(line_with(&t, "\"name\"")), ".data.items[0].name");
         assert_eq!(t.jq_path_of(line_with(&t, "2")), ".data.items[1]");
-        assert_eq!(
-            t.jq_path_of(line_with(&t, "\"odd key\"")),
-            r#".data["odd key"]"#
-        );
+        assert_eq!(t.jq_path_of(line_with(&t, "\"odd key\"")), r#".data["odd key"]"#);
         let items_open = line_with(&t, "\"items\"");
         let items_close = t.line(items_open).container.as_ref().unwrap().end_line;
         assert_eq!(t.jq_path_of(items_close), ".data.items");
@@ -1150,15 +1098,9 @@ mod tests {
             r#"{"s": "a\"b", "n": 1.5, "b": true, "z": null, "o": {}, "arr": [1]}"#,
         )
         .unwrap();
-        assert_eq!(
-            t.line(line_with(&t, "\"s\"")).scalar_text(),
-            Some(r#""a\"b""#)
-        );
+        assert_eq!(t.line(line_with(&t, "\"s\"")).scalar_text(), Some(r#""a\"b""#));
         assert_eq!(t.line(line_with(&t, "\"n\"")).scalar_text(), Some("1.5"));
-        assert_eq!(
-            t.line(line_with(&t, "\"b\": true")).scalar_text(),
-            Some("true")
-        );
+        assert_eq!(t.line(line_with(&t, "\"b\": true")).scalar_text(), Some("true"));
         assert_eq!(t.line(line_with(&t, "\"z\"")).scalar_text(), Some("null"));
         assert_eq!(
             t.line(line_with(&t, "\"o\"")).scalar_text(),
@@ -1166,11 +1108,7 @@ mod tests {
             "empty containers are not scalars"
         );
         assert_eq!(t.line(line_with(&t, "\"arr\"")).scalar_text(), None);
-        assert_eq!(
-            t.line(t.line_count() - 1).scalar_text(),
-            None,
-            "closing brace"
-        );
+        assert_eq!(t.line(t.line_count() - 1).scalar_text(), None, "closing brace");
     }
 
     #[test]
@@ -1179,16 +1117,10 @@ mod tests {
             r#"{"items": [{"id": 1, "name": "a"}, {"id": 2}], "nums": [1, 2], "empty": []}"#,
         )
         .unwrap();
-        assert_eq!(
-            t.first_element_keys(line_with(&t, "\"items\"")),
-            vec!["id", "name"]
-        );
+        assert_eq!(t.first_element_keys(line_with(&t, "\"items\"")), vec!["id", "name"]);
         assert!(t.first_element_keys(line_with(&t, "\"nums\"")).is_empty());
         assert!(t.first_element_keys(line_with(&t, "\"empty\"")).is_empty());
-        assert!(
-            t.first_element_keys(line_with(&t, "\"id\": 1")).is_empty(),
-            "not an array"
-        );
+        assert!(t.first_element_keys(line_with(&t, "\"id\": 1")).is_empty(), "not an array");
     }
 
     #[test]
@@ -1196,9 +1128,8 @@ mod tests {
         let t = JsonTree::parse(r#"{"items": [{"meta": {"status": "on"}}], "top": 1}"#).unwrap();
         let items = line_with(&t, "\"items\"");
         let status = line_with(&t, "\"status\"");
-        let (array_line, rel) = t
-            .nearest_array_ancestor(status)
-            .expect("status sits inside items[0]");
+        let (array_line, rel) =
+            t.nearest_array_ancestor(status).expect("status sits inside items[0]");
         assert_eq!(array_line, items);
         assert_eq!(render_path(&rel), ".meta.status");
         let element = line_with(&t, "\"meta\"") - 1; // the `{` opening items[0]
@@ -1213,17 +1144,11 @@ mod tests {
     #[test]
     fn parse_many_runs_documents_together_like_jq_and_restarts_paths() {
         let t = JsonTree::parse_many(&["{\"a\": 1}".to_string(), "[2]".to_string()]).unwrap();
-        assert_eq!(
-            t.full_text_lines(),
-            vec!["{", "  \"a\": 1", "}", "[", "  2", "]"]
-        );
+        assert_eq!(t.full_text_lines(), vec!["{", "  \"a\": 1", "}", "[", "  2", "]"]);
         assert_eq!(t.jq_path_of(3), ".");
         assert_eq!(t.jq_path_of(4), ".[0]");
         assert!(JsonTree::parse_many(&["{".to_string()]).is_none());
-        assert!(
-            JsonTree::parse_many(&[]).is_some(),
-            "no outputs is an empty tree, not a failure"
-        );
+        assert!(JsonTree::parse_many(&[]).is_some(), "no outputs is an empty tree, not a failure");
     }
 
     #[test]
@@ -1238,11 +1163,7 @@ mod tests {
         // {"a": {"b": {"c": 1}}, "d": 2}
         let mut t = JsonTree::parse(r#"{"a": {"b": {"c": 1}}, "d": 2}"#).unwrap();
         let all: Vec<u32> = (0..t.line_count() as u32).collect();
-        assert_eq!(
-            t.visible_indices(),
-            &all[..],
-            "everything visible after parse"
-        );
+        assert_eq!(t.visible_indices(), &all[..], "everything visible after parse");
         assert_eq!(t.visible_len(), all.len());
         t.toggle(1); // "a": {
         assert_eq!(t.visible_indices(), &[0, 1, 6, 7], "a's subtree is skipped");
@@ -1266,10 +1187,7 @@ mod tests {
         t.toggle(a);
         // visible: 0 "{", 1 "a": {…}, 2 "c": 2, 3 "}"
         assert_eq!(t.full_index_of_visible(2), Some(line_with(&t, "\"c\"")));
-        assert_eq!(
-            t.visible_line(2).map(|l| l.expanded_text()),
-            Some("  \"c\": 2".to_string())
-        );
+        assert_eq!(t.visible_line(2).map(|l| l.expanded_text()), Some("  \"c\": 2".to_string()));
         assert_eq!(t.visible_line(9), None);
     }
 }

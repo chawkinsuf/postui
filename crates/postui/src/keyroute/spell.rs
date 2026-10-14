@@ -60,11 +60,13 @@ pub enum Nav {
 fn row_for(at: SpellCtx, action: &Action) -> Option<&'static str> {
     match at.field {
         FieldSpell::None => table::keys_for(at.profile, at.surface, action),
-        FieldSpell::Normal(class) => table::keys_for_class(at.profile, class, action).or_else(|| {
-            matches!(action, Action::Undo | Action::Redo)
-                .then(|| table::keys_for(at.profile, at.surface, action))
-                .flatten()
-        }),
+        FieldSpell::Normal(class) => {
+            table::keys_for_class(at.profile, class, action).or_else(|| {
+                matches!(action, Action::Undo | Action::Redo)
+                    .then(|| table::keys_for(at.profile, at.surface, action))
+                    .flatten()
+            })
+        }
         FieldSpell::Typing => None,
     }
 }
@@ -133,17 +135,20 @@ pub fn keycap(key: &Key, at: SpellCtx, keymap: &Keymap) -> Option<String> {
             verb => super::ex::spelling(&verb)?,
         },
         Key::Pick => if vim { "^N/^P" } else { "\u{2191}\u{2193}" }.to_string(),
-        Key::OrRow(named, a) => row_for(at, a).map_or_else(|| (*named).to_string(), notation::display),
+        Key::OrRow(named, a) => {
+            row_for(at, a).map_or_else(|| (*named).to_string(), notation::display)
+        }
     })
 }
 
 /// The painted `(keycap, label, action)` rows for `chips`, dropping the
 /// chips with no key here.
-pub fn resolve<L>(chips: Vec<(Key, L, Option<Action>)>, at: SpellCtx, keymap: &Keymap) -> Vec<(String, L, Option<Action>)> {
-    chips
-        .into_iter()
-        .filter_map(|(k, l, a)| Some((keycap(&k, at, keymap)?, l, a)))
-        .collect()
+pub fn resolve<L>(
+    chips: Vec<(Key, L, Option<Action>)>,
+    at: SpellCtx,
+    keymap: &Keymap,
+) -> Vec<(String, L, Option<Action>)> {
+    chips.into_iter().filter_map(|(k, l, a)| Some((keycap(&k, at, keymap)?, l, a))).collect()
 }
 
 /// A combo's arrow names as the footer draws them: `alt+left` is `alt+←`.
@@ -186,7 +191,10 @@ pub fn spelled<L>(chips: Vec<(Key, L, Option<Action>)>) -> Vec<(String, L, Optio
 /// [`spelled`] on `surface`: a verb chip is spelled from the row on the
 /// surface its pane is, so a test of a pane's chips names that surface.
 #[cfg(test)]
-pub fn spelled_on<L>(surface: crate::keyroute::Surface, chips: Vec<(Key, L, Option<Action>)>) -> Vec<(String, L, Option<Action>)> {
+pub fn spelled_on<L>(
+    surface: crate::keyroute::Surface,
+    chips: Vec<(Key, L, Option<Action>)>,
+) -> Vec<(String, L, Option<Action>)> {
     resolve(chips, SpellCtx { surface, ..SpellCtx::default() }, &Keymap::default_bindings())
 }
 
@@ -215,15 +223,31 @@ mod tests {
         let tabs = || Key::Pair(Action::CycleTabs(-1), Action::CycleTabs(1));
         assert_eq!(cap(tabs(), normal).as_deref(), Some("gT/gt"));
         assert_eq!(cap(tabs(), typing), None);
-        assert_eq!(cap(Key::Of(Action::Undo), normal).as_deref(), Some("u"), "the engine hands u on from idle Normal");
+        assert_eq!(
+            cap(Key::Of(Action::Undo), normal).as_deref(),
+            Some("u"),
+            "the engine hands u on from idle Normal"
+        );
         assert_eq!(cap(Key::Of(Action::Undo), typing).as_deref(), Some("^Z"));
         assert_eq!(cap(Key::Of(Action::OpenExPalette), normal).as_deref(), Some(":"));
-        assert_eq!(cap(Key::Of(Action::CloseWindow { write: true, force: false }), normal).as_deref(), Some("ZZ"));
-        assert_eq!(cap(Key::Of(Action::SaveRequest), normal).as_deref(), Some(":w"), "the line opens from idle Normal");
+        assert_eq!(
+            cap(Key::Of(Action::CloseWindow { write: true, force: false }), normal).as_deref(),
+            Some("ZZ")
+        );
+        assert_eq!(
+            cap(Key::Of(Action::SaveRequest), normal).as_deref(),
+            Some(":w"),
+            "the line opens from idle Normal"
+        );
         assert_eq!(cap(Key::Of(Action::SaveRequest), typing), None);
-        assert_eq!(cap(Key::Of(Action::OnSelection(crate::action::Verb::Delete { count: 1 })), normal), None, "no verb row in a field");
+        assert_eq!(
+            cap(Key::Of(Action::OnSelection(crate::action::Verb::Delete { count: 1 })), normal),
+            None,
+            "no verb row in a field"
+        );
         let prompt_class = table::field_class(FieldId::ModalInput(0), Surface::Prompt);
-        let prompt = SpellCtx { field: FieldSpell::Normal(prompt_class), ..at(Vim, Surface::Prompt) };
+        let prompt =
+            SpellCtx { field: FieldSpell::Normal(prompt_class), ..at(Vim, Surface::Prompt) };
         assert_eq!(cap(tabs(), prompt), None, "a dialog field has no tab rows");
     }
 
@@ -236,16 +260,24 @@ mod tests {
         let confirm = Key::OrRow("\u{21e7}enter", Action::ConfirmTopModal);
         assert_eq!(keycap(&edit, at(Arrows, Surface::Prompt), &a).as_deref(), Some("enter"));
         assert_eq!(keycap(&edit, at(Vim, Surface::Prompt), &v).as_deref(), Some("o"));
-        assert_eq!(keycap(&confirm, at(Arrows, Surface::Prompt), &a).as_deref(), Some("\u{21e7}enter"));
+        assert_eq!(
+            keycap(&confirm, at(Arrows, Surface::Prompt), &a).as_deref(),
+            Some("\u{21e7}enter")
+        );
         assert_eq!(keycap(&confirm, at(Vim, Surface::Prompt), &v).as_deref(), Some("enter"));
-        assert_eq!(keycap(&confirm, at(Vim, Surface::Form), &v).as_deref(), Some("\u{21e7}enter"), "a form keeps its ladder");
+        assert_eq!(
+            keycap(&confirm, at(Vim, Surface::Form), &v).as_deref(),
+            Some("\u{21e7}enter"),
+            "a form keeps its ladder"
+        );
     }
 
     /// Spec §5.10: the footer advertises `^N/^P` on a picker in vim.
     #[test]
     fn a_pickers_move_keys_per_profile() {
         let keymap = Keymap::default_bindings();
-        let at = |profile| SpellCtx { profile, surface: Surface::Picker, field: FieldSpell::Typing };
+        let at =
+            |profile| SpellCtx { profile, surface: Surface::Picker, field: FieldSpell::Typing };
         assert_eq!(keycap(&Key::Pick, at(Arrows), &keymap).as_deref(), Some("\u{2191}\u{2193}"));
         assert_eq!(keycap(&Key::Pick, at(Vim), &keymap).as_deref(), Some("^N/^P"));
     }
@@ -255,19 +287,59 @@ mod tests {
         let a = Keymap::default_bindings();
         let v = Keymap::default_bindings_for(Vim);
         let cap = |k: Key, s: SpellCtx, m: &Keymap| keycap(&k, s, m);
-        assert_eq!(cap(Key::Of(Action::Undo), at(Arrows, Surface::Sidebar), &a).as_deref(), Some("^Z"));
+        assert_eq!(
+            cap(Key::Of(Action::Undo), at(Arrows, Surface::Sidebar), &a).as_deref(),
+            Some("^Z")
+        );
         assert_eq!(cap(Key::Of(Action::Undo), at(Vim, Surface::Sidebar), &v).as_deref(), Some("u"));
         let live = SpellCtx { field: FieldSpell::Typing, ..at(Vim, Surface::UrlLine) };
-        assert_eq!(cap(Key::Of(Action::Undo), live, &v).as_deref(), Some("^Z"), "a live field types u");
-        assert_eq!(cap(Key::Of(Action::OpenPalette), at(Arrows, Surface::Sidebar), &a).as_deref(), Some("^P"));
-        assert_eq!(cap(Key::Of(Action::OpenPalette), at(Vim, Surface::Sidebar), &v).as_deref(), Some("^P"));
-        assert_eq!(cap(Key::OneOf(Action::OpenExPalette, Action::OpenPalette), at(Vim, Surface::Sidebar), &v).as_deref(), Some(":"));
-        assert_eq!(cap(Key::OneOf(Action::OpenExPalette, Action::OpenPalette), at(Arrows, Surface::Sidebar), &a).as_deref(), Some("^P"));
+        assert_eq!(
+            cap(Key::Of(Action::Undo), live, &v).as_deref(),
+            Some("^Z"),
+            "a live field types u"
+        );
+        assert_eq!(
+            cap(Key::Of(Action::OpenPalette), at(Arrows, Surface::Sidebar), &a).as_deref(),
+            Some("^P")
+        );
+        assert_eq!(
+            cap(Key::Of(Action::OpenPalette), at(Vim, Surface::Sidebar), &v).as_deref(),
+            Some("^P")
+        );
+        assert_eq!(
+            cap(
+                Key::OneOf(Action::OpenExPalette, Action::OpenPalette),
+                at(Vim, Surface::Sidebar),
+                &v
+            )
+            .as_deref(),
+            Some(":")
+        );
+        assert_eq!(
+            cap(
+                Key::OneOf(Action::OpenExPalette, Action::OpenPalette),
+                at(Arrows, Surface::Sidebar),
+                &a
+            )
+            .as_deref(),
+            Some("^P")
+        );
         let tabs = Key::Pair(Action::CycleTabs(-1), Action::CycleTabs(1));
         let alt = crate::keys::alt_label();
-        assert_eq!(cap(tabs.clone(), at(Arrows, Surface::Sidebar), &a), Some(format!("{alt}+\u{2190}\u{2192}")));
-        assert_eq!(cap(tabs.clone(), at(Vim, Surface::Sidebar), &v).as_deref(), Some("gT/gt"), "plan M4a: the rows");
-        assert_eq!(cap(tabs, live, &v), None, "vim's keymap binds no alt+\u{2190}/\u{2192}: the chip drops in a field");
+        assert_eq!(
+            cap(tabs.clone(), at(Arrows, Surface::Sidebar), &a),
+            Some(format!("{alt}+\u{2190}\u{2192}"))
+        );
+        assert_eq!(
+            cap(tabs.clone(), at(Vim, Surface::Sidebar), &v).as_deref(),
+            Some("gT/gt"),
+            "plan M4a: the rows"
+        );
+        assert_eq!(
+            cap(tabs, live, &v),
+            None,
+            "vim's keymap binds no alt+\u{2190}/\u{2192}: the chip drops in a field"
+        );
         let del = Key::Of(Action::OnSelection(crate::action::Verb::Delete { count: 1 }));
         assert_eq!(cap(del.clone(), at(Arrows, Surface::Sidebar), &a).as_deref(), Some("d"));
         assert_eq!(cap(del.clone(), at(Vim, Surface::Sidebar), &v).as_deref(), Some("dd"));
@@ -282,13 +354,35 @@ mod tests {
             Some(format!("{alt}+a")),
             "at SubFocus::None (the url line): the chord"
         );
-        assert_eq!(cap(add(), at(Vim, Surface::UrlLine), &v), None, "vim gave up alt+a (plan M2 Deviation 5)");
-        assert_eq!(cap(Key::Nav(Nav::UpDown), at(Vim, Surface::Settings), &v).as_deref(), Some("j/k"));
-        assert_eq!(cap(Key::Quit { plain_q: true }, at(Arrows, Surface::Sidebar), &a).as_deref(), Some("q"));
-        assert_eq!(cap(Key::Quit { plain_q: true }, at(Vim, Surface::Sidebar), &v).as_deref(), Some(":q"));
-        assert_eq!(cap(Key::Send { shift_enter: false }, at(Arrows, Surface::UrlLine), &a).as_deref(), Some("^R"));
-        assert_eq!(cap(Key::Send { shift_enter: false }, at(Vim, Surface::UrlLine), &v).as_deref(), Some("^Enter"));
-        assert_eq!(cap(Key::Send { shift_enter: true }, at(Vim, Surface::UrlLine), &v).as_deref(), Some("\u{21e7}enter"));
+        assert_eq!(
+            cap(add(), at(Vim, Surface::UrlLine), &v),
+            None,
+            "vim gave up alt+a (plan M2 Deviation 5)"
+        );
+        assert_eq!(
+            cap(Key::Nav(Nav::UpDown), at(Vim, Surface::Settings), &v).as_deref(),
+            Some("j/k")
+        );
+        assert_eq!(
+            cap(Key::Quit { plain_q: true }, at(Arrows, Surface::Sidebar), &a).as_deref(),
+            Some("q")
+        );
+        assert_eq!(
+            cap(Key::Quit { plain_q: true }, at(Vim, Surface::Sidebar), &v).as_deref(),
+            Some(":q")
+        );
+        assert_eq!(
+            cap(Key::Send { shift_enter: false }, at(Arrows, Surface::UrlLine), &a).as_deref(),
+            Some("^R")
+        );
+        assert_eq!(
+            cap(Key::Send { shift_enter: false }, at(Vim, Surface::UrlLine), &v).as_deref(),
+            Some("^Enter")
+        );
+        assert_eq!(
+            cap(Key::Send { shift_enter: true }, at(Vim, Surface::UrlLine), &v).as_deref(),
+            Some("\u{21e7}enter")
+        );
     }
 
     /// Spec §4.6 (plan M4b Deviation 20): where no key binds an action in
@@ -299,19 +393,56 @@ mod tests {
         let v = Keymap::default_bindings_for(Vim);
         let a = Keymap::default_bindings();
         let cap = |k: Key, s: SpellCtx, m: &Keymap| keycap(&k, s, m);
-        assert_eq!(cap(Key::Of(Action::SaveRequest), at(Vim, Surface::Sidebar), &v).as_deref(), Some(":w"));
-        assert_eq!(cap(Key::Of(Action::SaveRequest), at(Arrows, Surface::Sidebar), &a).as_deref(), Some("^S"));
-        assert_eq!(cap(Key::Of(Action::CycleSplit), at(Vim, Surface::UrlLine), &v).as_deref(), Some(":split"));
-        assert_eq!(cap(Key::Of(Action::Send), at(Vim, Surface::UrlLine), &v).as_deref(), Some("^Enter"), "a bound chord beats the verb");
-        assert_eq!(cap(Key::Of(Action::SaveRequest), at(Vim, Surface::Picker), &v), None, "no : on a picker");
-        assert_eq!(cap(Key::Quit { plain_q: false }, at(Vim, Surface::Sidebar), &v).as_deref(), Some(":q"));
-        assert_eq!(cap(Key::Quit { plain_q: false }, at(Vim, Surface::Picker), &v).as_deref(), Some("^C"));
+        assert_eq!(
+            cap(Key::Of(Action::SaveRequest), at(Vim, Surface::Sidebar), &v).as_deref(),
+            Some(":w")
+        );
+        assert_eq!(
+            cap(Key::Of(Action::SaveRequest), at(Arrows, Surface::Sidebar), &a).as_deref(),
+            Some("^S")
+        );
+        assert_eq!(
+            cap(Key::Of(Action::CycleSplit), at(Vim, Surface::UrlLine), &v).as_deref(),
+            Some(":split")
+        );
+        assert_eq!(
+            cap(Key::Of(Action::Send), at(Vim, Surface::UrlLine), &v).as_deref(),
+            Some("^Enter"),
+            "a bound chord beats the verb"
+        );
+        assert_eq!(
+            cap(Key::Of(Action::SaveRequest), at(Vim, Surface::Picker), &v),
+            None,
+            "no : on a picker"
+        );
+        assert_eq!(
+            cap(Key::Quit { plain_q: false }, at(Vim, Surface::Sidebar), &v).as_deref(),
+            Some(":q")
+        );
+        assert_eq!(
+            cap(Key::Quit { plain_q: false }, at(Vim, Surface::Picker), &v).as_deref(),
+            Some("^C")
+        );
         let envs = Surface::ManageList(crate::components::manage::ManageTab::Environments);
-        assert_eq!(cap(Key::Quit { plain_q: false }, at(Vim, envs), &v).as_deref(), Some(":qa"), "on Manage :q closes the screen");
+        assert_eq!(
+            cap(Key::Quit { plain_q: false }, at(Vim, envs), &v).as_deref(),
+            Some(":qa"),
+            "on Manage :q closes the screen"
+        );
         assert_eq!(quit_action(at(Vim, envs)), Action::GatedQuit);
-        assert_eq!(quit_action(at(Vim, Surface::Sidebar)), Action::CloseWindow { write: false, force: false });
-        assert_eq!(cap(Key::Quit { plain_q: true }, at(Arrows, envs), &a).as_deref(), Some("q"), "arrows unchanged");
-        assert_eq!(cap(Key::Quit { plain_q: true }, at(Arrows, Surface::Sidebar), &a).as_deref(), Some("q"));
+        assert_eq!(
+            quit_action(at(Vim, Surface::Sidebar)),
+            Action::CloseWindow { write: false, force: false }
+        );
+        assert_eq!(
+            cap(Key::Quit { plain_q: true }, at(Arrows, envs), &a).as_deref(),
+            Some("q"),
+            "arrows unchanged"
+        );
+        assert_eq!(
+            cap(Key::Quit { plain_q: true }, at(Arrows, Surface::Sidebar), &a).as_deref(),
+            Some("q")
+        );
         let live = SpellCtx { field: FieldSpell::Typing, ..at(Vim, Surface::UrlLine) };
         assert_eq!(cap(Key::Of(Action::SaveRequest), live, &v), None, "typing: the keymap only");
     }

@@ -28,7 +28,11 @@ impl Pending {
     /// match nothing (spec §3.7).
     pub fn replay(&self) -> Vec<ratatui::crossterm::event::KeyEvent> {
         let digits = self.count.map(|n| n.to_string()).unwrap_or_default();
-        digits.chars().map(|c| Tok::Char(c).event()).chain(self.keys.iter().map(|t| t.event())).collect()
+        digits
+            .chars()
+            .map(|c| Tok::Char(c).event())
+            .chain(self.keys.iter().map(|t| t.event()))
+            .collect()
     }
 
     pub fn keys(&self) -> &[Tok] {
@@ -49,10 +53,7 @@ impl Pending {
         if !self.keys.is_empty() || (d == 0 && self.count.is_none()) {
             return false;
         }
-        self.count = Some(crate::vim::engine::accumulate_count(
-            self.count.unwrap_or(0),
-            d,
-        ));
+        self.count = Some(crate::vim::engine::accumulate_count(self.count.unwrap_or(0), d));
         true
     }
 

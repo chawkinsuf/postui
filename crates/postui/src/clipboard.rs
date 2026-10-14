@@ -74,13 +74,7 @@ impl Clipboard {
     /// the feature, so this stays unreachable outside tests.
     #[cfg(any(test, feature = "test-util"))]
     pub fn new_for_test(cmd: Option<String>, limit: usize, allow_arboard: bool) -> Self {
-        Self {
-            cmd,
-            osc52_limit: limit,
-            allow_arboard,
-            arboard: None,
-            test_read: None,
-        }
+        Self { cmd, osc52_limit: limit, allow_arboard, arboard: None, test_read: None }
     }
 
     /// Makes the next `read()` calls return `text` (tests only).
@@ -154,9 +148,7 @@ impl Clipboard {
         }
 
         match child.wait_with_output() {
-            Ok(output) if output.status.success() => CopyResult::Copied {
-                via: "clipboard_cmd",
-            },
+            Ok(output) if output.status.success() => CopyResult::Copied { via: "clipboard_cmd" },
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
                 if stderr.is_empty() {
@@ -177,13 +169,8 @@ impl Clipboard {
         let encoded = base64::engine::general_purpose::STANDARD.encode(text);
         let sequence = format!("\x1b]52;c;{encoded}\x07");
         let mut stdout = std::io::stdout();
-        match stdout
-            .write_all(sequence.as_bytes())
-            .and_then(|()| stdout.flush())
-        {
-            Ok(()) => CopyResult::Copied {
-                via: "terminal (OSC 52)",
-            },
+        match stdout.write_all(sequence.as_bytes()).and_then(|()| stdout.flush()) {
+            Ok(()) => CopyResult::Copied { via: "terminal (OSC 52)" },
             Err(e) => CopyResult::Failed(e.to_string()),
         }
     }
@@ -203,12 +190,7 @@ mod tests {
 
         let result = clipboard.copy("hello");
 
-        assert!(matches!(
-            result,
-            CopyResult::Copied {
-                via: "clipboard_cmd"
-            }
-        ));
+        assert!(matches!(result, CopyResult::Copied { via: "clipboard_cmd" }));
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "hello");
     }
 
@@ -261,11 +243,6 @@ mod tests {
 
         let result = clipboard.copy("1234567"); // 7 bytes, below the limit
 
-        assert!(matches!(
-            result,
-            CopyResult::Copied {
-                via: "terminal (OSC 52)"
-            }
-        ));
+        assert!(matches!(result, CopyResult::Copied { via: "terminal (OSC 52)" }));
     }
 }

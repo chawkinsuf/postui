@@ -11,10 +11,7 @@ pub struct TokenSpan {
 }
 
 pub fn is_valid_var_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Scans for well-formed `{{ name }}` tokens (optional inner whitespace).
@@ -36,11 +33,7 @@ pub fn find_tokens(text: &str) -> Vec<TokenSpan> {
         };
         let name = text[inner_start..close].trim();
         if is_valid_var_name(name) {
-            out.push(TokenSpan {
-                name: name.to_string(),
-                start: i,
-                end: close + 2,
-            });
+            out.push(TokenSpan { name: name.to_string(), start: i, end: close + 2 });
             i = close + 2;
         } else {
             i += 1;
@@ -85,10 +78,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     fn vals(pairs: &[(&str, &str)]) -> IndexMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
 
     #[test]
@@ -150,30 +140,20 @@ mod tests {
             &mut missing,
         );
         assert_eq!(out, "http://x/u/7?q={{gone}}");
-        assert_eq!(
-            missing.into_iter().collect::<Vec<_>>(),
-            vec!["gone".to_string()]
-        );
+        assert_eq!(missing.into_iter().collect::<Vec<_>>(), vec!["gone".to_string()]);
     }
 
     #[test]
     fn substitute_without_tokens_is_identity() {
         let mut missing = BTreeSet::new();
-        assert_eq!(
-            substitute("plain { braces }", &vals(&[]), &mut missing),
-            "plain { braces }"
-        );
+        assert_eq!(substitute("plain { braces }", &vals(&[]), &mut missing), "plain { braces }");
         assert!(missing.is_empty());
     }
 
     #[test]
     fn substitute_is_single_pass_not_recursive() {
         let mut missing = BTreeSet::new();
-        let out = substitute(
-            "{{a}}",
-            &vals(&[("a", "{{b}}"), ("b", "boom")]),
-            &mut missing,
-        );
+        let out = substitute("{{a}}", &vals(&[("a", "{{b}}"), ("b", "boom")]), &mut missing);
         assert_eq!(out, "{{b}}", "a substituted value must not be re-scanned");
         assert!(missing.is_empty());
     }

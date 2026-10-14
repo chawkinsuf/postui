@@ -124,32 +124,13 @@ pub fn draw_header(
     let project_label = format!(" Project: {project} ");
     let space_label = format!(" Space: {space} \u{25be} ");
     let env_label = format!(" Environment: {env} \u{25be} ");
-    let project_pill = crate::paint::Chip {
-        label: "alt+z",
-        color: theme.text_muted,
-    };
-    let env_pill = crate::paint::Chip {
-        label: "alt+x",
-        color: theme.text_muted,
-    };
-    let space_pill = crate::paint::Chip {
-        label: "alt+c",
-        color: theme.text_muted,
-    };
+    let project_pill = crate::paint::Chip { label: "alt+z", color: theme.text_muted };
+    let env_pill = crate::paint::Chip { label: "alt+x", color: theme.text_muted };
+    let space_pill = crate::paint::Chip { label: "alt+c", color: theme.text_muted };
     let chips = [
-        (
-            &project_label,
-            Hit::HeaderProject,
-            &project_pill,
-            Hit::HeaderProjectCycle,
-        ),
+        (&project_label, Hit::HeaderProject, &project_pill, Hit::HeaderProjectCycle),
         (&env_label, Hit::HeaderEnv, &env_pill, Hit::HeaderEnvCycle),
-        (
-            &space_label,
-            Hit::HeaderSpace,
-            &space_pill,
-            Hit::HeaderSpaceCycle,
-        ),
+        (&space_label, Hit::HeaderSpace, &space_pill, Hit::HeaderSpaceCycle),
     ];
 
     // The right cluster's pieces, measured before anything is painted:
@@ -157,15 +138,9 @@ pub fn draw_header(
     // must show.
     let manage_label = " Manage ";
     let manage_label_w = manage_label.chars().count() as u16;
-    let manage_pill = crate::paint::Chip {
-        label: "alt+r",
-        color: theme.text_muted,
-    };
+    let manage_pill = crate::paint::Chip { label: "alt+r", color: theme.text_muted };
     let theme_label = " Theme ";
-    let theme_pill = crate::paint::Chip {
-        label: "alt+t",
-        color: theme.text_muted,
-    };
+    let theme_pill = crate::paint::Chip { label: "alt+t", color: theme.text_muted };
     let theme_w = theme_label.chars().count() as u16 + theme_pill.width();
     // What the right cluster needs at minimum, margin included: the bare
     // Manage name, plus whichever of the save group (dirty) or the
@@ -188,10 +163,7 @@ pub fn draw_header(
     // disambiguate they have nothing to separate. The labels are in both
     // measurements: they never yield. Each measurement is the column
     // just past the cluster's last chip.
-    let labels_w: u16 = chips
-        .iter()
-        .map(|(label, _, _, _)| label.chars().count() as u16)
-        .sum();
+    let labels_w: u16 = chips.iter().map(|(label, _, _, _)| label.chars().count() as u16).sum();
     let pills_w: u16 = chips.iter().map(|(_, _, pill, _)| pill.width() + 1).sum();
     let margin = x - area.x;
     let cluster_full = margin + labels_w + pills_w + CHIP_GROUP_GAP * (chips.len() as u16 - 1);
@@ -199,11 +171,8 @@ pub fn draw_header(
     // Both clusters fit when a column of panel separates them.
     let fits = |left_end: u16, right_w: u16| left_end + 1 + right_w <= area.width;
     let show_cycle_pills = fits(cluster_full, right_essential + manage_pill.width());
-    let show_manage_pill = show_cycle_pills
-        || fits(
-            cluster_no_cycle_pills,
-            right_essential + manage_pill.width(),
-        );
+    let show_manage_pill =
+        show_cycle_pills || fits(cluster_no_cycle_pills, right_essential + manage_pill.width());
 
     for (i, (label, hit, pill, cycle_hit)) in chips.iter().enumerate() {
         // The keycap pill leads: it is the cycle affordance — the footer
@@ -216,10 +185,7 @@ pub fn draw_header(
         // not the previous chip's — shortcut.
         if show_cycle_pills {
             let (color, on) = crate::paint::keycap_face(theme, hovered == Some(cycle_hit), hover_t);
-            let chip = crate::paint::Chip {
-                label: pill.label,
-                color,
-            };
+            let chip = crate::paint::Chip { label: pill.label, color };
             // The slivers carry the pill's own tinted fill, so the cap is
             // the same colour as the face it belongs to.
             let block = crate::paint::cap::chip_block(
@@ -254,17 +220,9 @@ pub fn draw_header(
     // The right cluster is laid out from the right margin inwards, each
     // piece taking its place only if it was budgeted for above.
     let right_edge = (area.x + area.width).saturating_sub(3);
-    let manage_pill_w = if show_manage_pill {
-        manage_pill.width()
-    } else {
-        0
-    };
+    let manage_pill_w = if show_manage_pill { manage_pill.width() } else { 0 };
     let manage_w = manage_label_w + manage_pill_w;
-    let right_w = if dirty {
-        SAVE_GROUP_W + SAVE_GROUP_GAP + manage_w
-    } else {
-        manage_w
-    };
+    let right_w = if dirty { SAVE_GROUP_W + SAVE_GROUP_GAP + manage_w } else { manage_w };
     // Theme goes first: it shows only when the whole cluster, Theme
     // included, sits clear of the selectors.
     let theme_visible = fits(left_end, 3 + right_w + CHIP_GROUP_GAP + theme_w);
@@ -308,16 +266,13 @@ pub fn draw_header(
     } else {
         let on_manage = hovered == Some(&Hit::HeaderManage);
         let (color, pill_on) = crate::paint::keycap_face(theme, on_manage, hover_t);
-        (
-            color,
-            pill_on,
-            crate::paint::hover_surface(theme, theme.panel, on_manage, hover_t),
-        )
+        (color, pill_on, crate::paint::hover_surface(theme, theme.panel, on_manage, hover_t))
     };
     // Caps across the whole span, keycap and name alike, exactly as
     // `paint_bar_button` does for its neighbours — Manage keeps its own
     // copy only because the pressed state overrides hover.
-    let manage_block = crate::paint::cap::chip_block(buf, area, mid_y, manage_x, manage_w, vm_label_bg, theme);
+    let manage_block =
+        crate::paint::cap::chip_block(buf, area, mid_y, manage_x, manage_w, vm_label_bg, theme);
     if show_manage_pill {
         crate::paint::cap::chip_block(
             buf,
@@ -328,21 +283,10 @@ pub fn draw_header(
             theme.tint(vm_pill_color, vm_pill_on),
             theme,
         );
-        crate::paint::Chip {
-            label: manage_pill.label,
-            color: vm_pill_color,
-        }
-        .paint(buf, manage_x, mid_y, vm_pill_on, theme);
+        crate::paint::Chip { label: manage_pill.label, color: vm_pill_color }
+            .paint(buf, manage_x, mid_y, vm_pill_on, theme);
     }
-    text(
-        buf,
-        manage_x + manage_pill_w,
-        mid_y,
-        manage_label,
-        theme.text,
-        vm_label_bg,
-        false,
-    );
+    text(buf, manage_x + manage_pill_w, mid_y, manage_label, theme.text, vm_label_bg, false);
     hits.register(manage_block, Hit::HeaderManage);
 
     // Reload takes the save/discard slot on the Manage screen. The two
@@ -388,7 +332,8 @@ pub fn draw_header(
         let save_hit = Hit::FooterChip(Action::SaveRequest);
         let discard_hit = Hit::FooterChip(Action::DiscardChanges);
         let save_w = SAVE_LABEL.chars().count() as u16 + save_key.chars().count() as u16 + 2;
-        let discard_w = DISCARD_LABEL.chars().count() as u16 + discard_key.chars().count() as u16 + 2;
+        let discard_w =
+            DISCARD_LABEL.chars().count() as u16 + discard_key.chars().count() as u16 + 2;
         let group_right = manage_x.saturating_sub(SAVE_GROUP_GAP);
         let save_x = group_right.saturating_sub(save_w);
         // Discard sits left of save so save keeps its anchored spot.
@@ -646,22 +591,10 @@ mod tests {
         let rect = hits.rect_of(&Hit::HeaderEnv).expect("env chip");
         let lifted = crate::paint::hover_surface(&theme, theme.control, true, 1.0);
 
-        assert_eq!(
-            cell(&term, rect.x, mid_of(&rect)).bg,
-            lifted,
-            "the face lifts"
-        );
+        assert_eq!(cell(&term, rect.x, mid_of(&rect)).bg, lifted, "the face lifts");
         if CHIP_CAPS == ChipCaps::Sliver {
-            assert_eq!(
-                cell(&term, rect.x, rect.y).fg,
-                lifted,
-                "and so does the sliver above it"
-            );
-            assert_eq!(
-                cell(&term, rect.x, rect.y + 2).fg,
-                lifted,
-                "and the one below"
-            );
+            assert_eq!(cell(&term, rect.x, rect.y).fg, lifted, "and so does the sliver above it");
+            assert_eq!(cell(&term, rect.x, rect.y + 2).fg, lifted, "and the one below");
         }
     }
 
@@ -724,8 +657,7 @@ mod tests {
             "and the name, having no fill at rest, shows bare panel above it"
         );
 
-        let (term, hits) =
-            render_wide(&theme, "alpha", "qa", false, Some(&Hit::HeaderTheme), 150);
+        let (term, hits) = render_wide(&theme, "alpha", "qa", false, Some(&Hit::HeaderTheme), 150);
         let rect = hits.rect_of(&Hit::HeaderTheme).unwrap();
         let lifted = crate::paint::hover_surface(&theme, theme.panel, true, 1.0);
         assert_eq!(
@@ -733,11 +665,7 @@ mod tests {
             lifted,
             "hovered, the name's sliver carries the lifted fill too"
         );
-        assert_eq!(
-            cell(&term, rect.x + key_w, rect.y + 2).fg,
-            lifted,
-            "top and bottom alike"
-        );
+        assert_eq!(cell(&term, rect.x + key_w, rect.y + 2).fg, lifted, "top and bottom alike");
     }
 
     /// Theme is one button — an `alt+t` keycap and the word beside it,
@@ -857,9 +785,7 @@ mod tests {
             "and its label lifts on the same clock"
         );
 
-        let discard = hits
-            .rect_of(&Hit::FooterChip(Action::DiscardChanges))
-            .expect("discard hit");
+        let discard = hits.rect_of(&Hit::FooterChip(Action::DiscardChanges)).expect("discard hit");
         assert_eq!(
             cell(&terminal, discard.x + 1, mid_of(&discard)).bg,
             theme.tint(theme.text_muted, theme.control),
@@ -884,10 +810,7 @@ mod tests {
             .rect_of(&Hit::FooterChip(crate::action::Action::ReloadFromDisk))
             .expect("the chip routes through footer-chip dispatch");
         let manage = hits.rect_of(&Hit::HeaderManage).unwrap();
-        assert!(
-            hit.x + hit.width <= manage.x,
-            "it sits left of the Manage chip"
-        );
+        assert!(hit.x + hit.width <= manage.x, "it sits left of the Manage chip");
     }
 
     #[test]
@@ -896,14 +819,8 @@ mod tests {
         let (term, hits) = render_dirty(&theme, 180);
         let content = format!("{:?}", term.backend().buffer());
         assert!(!content.contains("Reload"), "{content}");
-        assert!(
-            content.contains("Save"),
-            "save still shows when dirty: {content}"
-        );
-        assert!(
-            hits.rect_of(&Hit::FooterChip(crate::action::Action::ReloadFromDisk))
-                .is_none()
-        );
+        assert!(content.contains("Save"), "save still shows when dirty: {content}");
+        assert!(hits.rect_of(&Hit::FooterChip(crate::action::Action::ReloadFromDisk)).is_none());
     }
 
     /// A bar too narrow for the right-aligned chip drops it rather than
@@ -965,14 +882,9 @@ mod tests {
         let theme = Theme::dark();
         let (term, hits) = render(&theme, "alpha", "qa", None);
         let chip = hits.rect_of(&Hit::HeaderProject).unwrap();
-        let pill = hits
-            .rect_of(&Hit::HeaderProjectCycle)
-            .expect("project-cycle pill registered");
+        let pill = hits.rect_of(&Hit::HeaderProjectCycle).expect("project-cycle pill registered");
         assert_eq!(chip.x, pill.x + pill.width + 1);
-        assert_eq!(
-            row_text(&term, &pill),
-            format!(" {}+z ", crate::keys::alt_label())
-        );
+        assert_eq!(row_text(&term, &pill), format!(" {}+z ", crate::keys::alt_label()));
     }
 
     /// The bar's outer rows used to be flat panel end to end. They now
@@ -1015,9 +927,7 @@ mod tests {
     fn project_chip_fills_control_and_registers_hit() {
         let theme = Theme::dark();
         let (term, hits) = render(&theme, "alpha", "qa", None);
-        let rect = hits
-            .rect_of(&Hit::HeaderProject)
-            .expect("project hit registered");
+        let rect = hits.rect_of(&Hit::HeaderProject).expect("project hit registered");
         let c = cell(&term, rect.x + 1, mid_of(&rect));
         assert_eq!(c.bg, theme.control);
         assert_eq!(c.fg, theme.text);
@@ -1051,15 +961,11 @@ mod tests {
         let theme = Theme::dark();
         let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 130);
         let project = hits.rect_of(&Hit::HeaderProject).unwrap();
-        let project_cycle = hits
-            .rect_of(&Hit::HeaderProjectCycle)
-            .expect("project cycle hit");
+        let project_cycle = hits.rect_of(&Hit::HeaderProjectCycle).expect("project cycle hit");
         let env = hits.rect_of(&Hit::HeaderEnv).unwrap();
         let env_cycle = hits.rect_of(&Hit::HeaderEnvCycle).expect("env cycle hit");
         let space = hits.rect_of(&Hit::HeaderSpace).expect("space hit");
-        let space_cycle = hits
-            .rect_of(&Hit::HeaderSpaceCycle)
-            .expect("space cycle hit");
+        let space_cycle = hits.rect_of(&Hit::HeaderSpaceCycle).expect("space cycle hit");
         let manage = hits.rect_of(&Hit::HeaderManage).unwrap();
         assert_eq!(project.x, project_cycle.x + project_cycle.width + 1);
         assert_eq!(
@@ -1067,16 +973,8 @@ mod tests {
             project.x + project.width + 4,
             "a group gap after the project chip, same as the others"
         );
-        assert_eq!(
-            env.x,
-            env_cycle.x + env_cycle.width + 1,
-            "its pill leads it"
-        );
-        assert_eq!(
-            space_cycle.x,
-            env.x + env.width + 4,
-            "a group gap before the space pill"
-        );
+        assert_eq!(env.x, env_cycle.x + env_cycle.width + 1, "its pill leads it");
+        assert_eq!(space_cycle.x, env.x + env.width + 4, "a group gap before the space pill");
         assert_eq!(space.x, space_cycle.x + space_cycle.width + 1);
         assert!(
             manage.x > space.x + space.width + 4,
@@ -1098,21 +996,10 @@ mod tests {
     fn cycle_pills_yield_on_a_bar_too_narrow_for_the_whole_cluster() {
         let theme = Theme::dark();
         let (_term, hits) = render_wide(&theme, "alpha", "qa", false, None, 75);
-        assert!(
-            hits.rect_of(&Hit::HeaderSpaceCycle).is_none(),
-            "the space cycle pill yields"
-        );
-        assert!(
-            hits.rect_of(&Hit::HeaderEnvCycle).is_none(),
-            "so does the env cycle pill"
-        );
-        assert!(
-            hits.rect_of(&Hit::HeaderProjectCycle).is_none(),
-            "and the project cycle pill"
-        );
-        let project = hits
-            .rect_of(&Hit::HeaderProject)
-            .expect("project chip stays");
+        assert!(hits.rect_of(&Hit::HeaderSpaceCycle).is_none(), "the space cycle pill yields");
+        assert!(hits.rect_of(&Hit::HeaderEnvCycle).is_none(), "so does the env cycle pill");
+        assert!(hits.rect_of(&Hit::HeaderProjectCycle).is_none(), "and the project cycle pill");
+        let project = hits.rect_of(&Hit::HeaderProject).expect("project chip stays");
         let space = hits.rect_of(&Hit::HeaderSpace).expect("space chip stays");
         let env = hits.rect_of(&Hit::HeaderEnv).expect("env chip stays");
         let manage = hits.rect_of(&Hit::HeaderManage).expect("Manage chip stays");
@@ -1161,10 +1048,7 @@ mod tests {
             " Manage ".chars().count() as u16,
             "the keycap yielded; the label never does"
         );
-        assert!(
-            manage.x + manage.width <= 78,
-            "the whole chip is inside the bar: {manage:?}"
-        );
+        assert!(manage.x + manage.width <= 78, "the whole chip is inside the bar: {manage:?}");
         assert_eq!(row_text(&term, &manage), " Manage ");
 
         // Wide enough for the keycap but not the cycle pills: only the
@@ -1213,14 +1097,9 @@ mod tests {
         let theme = Theme::dark();
         let (term, hits) = render(&theme, "alpha", "qa", None);
         let env_rect = hits.rect_of(&Hit::HeaderEnv).unwrap();
-        let rect = hits
-            .rect_of(&Hit::HeaderEnvCycle)
-            .expect("env-cycle pill registered");
+        let rect = hits.rect_of(&Hit::HeaderEnvCycle).expect("env-cycle pill registered");
         assert_eq!(env_rect.x, rect.x + rect.width + 1);
-        assert_eq!(
-            row_text(&term, &rect),
-            format!(" {}+x ", crate::keys::alt_label())
-        );
+        assert_eq!(row_text(&term, &rect), format!(" {}+x ", crate::keys::alt_label()));
         assert_eq!(
             cell(&term, rect.x + 1, mid_of(&rect)).bg,
             theme.tint(theme.text_muted, theme.control),
@@ -1247,19 +1126,10 @@ mod tests {
     fn manage_chip_leads_the_theme_chip_with_a_leading_keycap() {
         let theme = Theme::dark();
         let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 150);
-        let rect = hits
-            .rect_of(&Hit::HeaderManage)
-            .expect("manage chip registered");
+        let rect = hits.rect_of(&Hit::HeaderManage).expect("manage chip registered");
         let theme_rect = hits.rect_of(&Hit::HeaderTheme).expect("theme chip");
-        assert_eq!(
-            theme_rect.x,
-            rect.x + rect.width + 4,
-            "a group gap between Manage and Theme"
-        );
-        assert_eq!(
-            row_text(&term, &rect),
-            format!(" {}+r  Manage ", crate::keys::alt_label())
-        );
+        assert_eq!(theme_rect.x, rect.x + rect.width + 4, "a group gap between Manage and Theme");
+        assert_eq!(row_text(&term, &rect), format!(" {}+r  Manage ", crate::keys::alt_label()));
         let label_cell = cell(&term, rect.x + alt_pill_w() + 1, mid_of(&rect));
         assert_eq!(label_cell.symbol(), "M");
         assert_eq!(label_cell.fg, theme.text, "prominent label, not muted");
@@ -1304,10 +1174,7 @@ mod tests {
         let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 150);
         let rect = hits.rect_of(&Hit::HeaderTheme).unwrap();
         assert_eq!(rect.x + rect.width, 150 - 3, "right-aligned");
-        assert_eq!(
-            row_text(&term, &rect),
-            format!(" {}+t  Theme ", crate::keys::alt_label())
-        );
+        assert_eq!(row_text(&term, &rect), format!(" {}+t  Theme ", crate::keys::alt_label()));
         let label_cell = cell(&term, rect.x + alt_pill_w() + 1, mid_of(&rect));
         assert_eq!(label_cell.symbol(), "T");
         assert_eq!(label_cell.fg, theme.text, "prominent label, not muted");
@@ -1343,19 +1210,14 @@ mod tests {
     fn cycle_pills_yield_to_the_save_group_on_a_dirty_bar() {
         let theme = Theme::dark();
         let (_term, hits) = render_wide(&theme, "alpha", "qa", false, None, 120);
-        assert!(
-            hits.rect_of(&Hit::HeaderSpaceCycle).is_some(),
-            "clean: pills stay"
-        );
+        assert!(hits.rect_of(&Hit::HeaderSpaceCycle).is_some(), "clean: pills stay");
         let (_term, hits) = render_dirty(&theme, 120);
         assert!(
-            hits.rect_of(&Hit::FooterChip(crate::action::Action::SaveRequest))
-                .is_some(),
+            hits.rect_of(&Hit::FooterChip(crate::action::Action::SaveRequest)).is_some(),
             "dirty: the save chip is on the bar"
         );
         assert!(
-            hits.rect_of(&Hit::FooterChip(crate::action::Action::DiscardChanges))
-                .is_some(),
+            hits.rect_of(&Hit::FooterChip(crate::action::Action::DiscardChanges)).is_some(),
             "and so is discard"
         );
         assert!(
@@ -1385,13 +1247,11 @@ mod tests {
         let theme = Theme::dark();
         let (_term, hits) = render_wide(&theme, "alpha", "qa", false, None, 180);
         assert!(
-            hits.rect_of(&Hit::FooterChip(Action::SaveRequest))
-                .is_none(),
+            hits.rect_of(&Hit::FooterChip(Action::SaveRequest)).is_none(),
             "clean: no save chip"
         );
         assert!(
-            hits.rect_of(&Hit::FooterChip(Action::DiscardChanges))
-                .is_none(),
+            hits.rect_of(&Hit::FooterChip(Action::DiscardChanges)).is_none(),
             "clean: no discard chip"
         );
 
@@ -1404,28 +1264,15 @@ mod tests {
             .expect("dirty: discard chip registered");
         let manage = hits.rect_of(&Hit::HeaderManage).unwrap();
         let theme_rect = hits.rect_of(&Hit::HeaderTheme).unwrap();
-        assert!(
-            discard.x + discard.width < save.x,
-            "discard sits left of save"
-        );
+        assert!(discard.x + discard.width < save.x, "discard sits left of save");
         assert_eq!(
             save.x + save.width + 8,
             manage.x,
             "the group sits a clear gap left of the Manage chip: save {save:?} manage {manage:?}"
         );
-        assert!(
-            manage.x + manage.width < theme_rect.x,
-            "and Manage, then Theme, close the bar"
-        );
-        assert_eq!(
-            row_text(&term, &save),
-            " ^S  Save ",
-            "keycap-then-name idiom"
-        );
-        assert_eq!(
-            row_text(&term, &discard),
-            format!(" {}+d  Discard ", crate::keys::alt_label())
-        );
+        assert!(manage.x + manage.width < theme_rect.x, "and Manage, then Theme, close the bar");
+        assert_eq!(row_text(&term, &save), " ^S  Save ", "keycap-then-name idiom");
+        assert_eq!(row_text(&term, &discard), format!(" {}+d  Discard ", crate::keys::alt_label()));
     }
 
     /// On a bar too narrow to hold both, the save group outranks the
@@ -1437,14 +1284,10 @@ mod tests {
         let theme = Theme::dark();
         let (_term, hits) = render_dirty(&theme, 120);
         assert!(
-            hits.rect_of(&Hit::FooterChip(Action::SaveRequest))
-                .is_some(),
+            hits.rect_of(&Hit::FooterChip(Action::SaveRequest)).is_some(),
             "save survives the squeeze"
         );
-        assert!(
-            hits.rect_of(&Hit::HeaderTheme).is_none(),
-            "theme yields to the save group"
-        );
+        assert!(hits.rect_of(&Hit::HeaderTheme).is_none(), "theme yields to the save group");
     }
 
     /// The Manage chip never drops: on a bar too narrow to right-anchor

@@ -24,11 +24,7 @@ pub fn keys_at(input_expr: &str, doc: &JqDocument) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
     let _ = with_compiled(input_expr, |filter| {
         let ctx = Ctx::<Data>::new(&filter.lut, Vars::new([]));
-        for item in filter
-            .id
-            .run((ctx, (*doc.0).clone()))
-            .take(COMPLETE_OUTPUTS)
-        {
+        for item in filter.id.run((ctx, (*doc.0).clone())).take(COMPLETE_OUTPUTS) {
             let Ok(val) = item else {
                 break;
             };
@@ -148,8 +144,7 @@ fn shorthand_slot(before: &str) -> bool {
         return false;
     }
     let seg = before[open + 1..].trim_end();
-    seg.is_empty()
-        || (seg.ends_with(',') && last_top_level(seg, b',') == Some(seg.len() - 1))
+    seg.is_empty() || (seg.ends_with(',') && last_top_level(seg, b',') == Some(seg.len() - 1))
 }
 
 /// Inspects the whole bar text (the caller guarantees the caret is at
@@ -224,17 +219,8 @@ pub fn context(text: &str) -> Option<Context> {
 
 /// Builtins whose argument runs once per element of the input, so inside
 /// `map(` the `.` is an element, not the array.
-const PER_ELEMENT: [&str; 9] = [
-    "map",
-    "map_values",
-    "sort_by",
-    "group_by",
-    "unique_by",
-    "min_by",
-    "max_by",
-    "any",
-    "all",
-];
+const PER_ELEMENT: [&str; 9] =
+    ["map", "map_values", "sort_by", "group_by", "unique_by", "min_by", "max_by", "any", "all"];
 
 /// One forward pass over `s`: which bytes sit inside a string literal,
 /// the bracket depth before each byte, where each closer (`)`, `]`, `}`
@@ -307,11 +293,7 @@ fn scan(s: &str) -> Scan {
 /// caret, joined with ` | `; `.` when all are empty.
 fn input_expr(head: &str) -> String {
     let parts = resolve(head);
-    if parts.is_empty() {
-        ".".into()
-    } else {
-        parts.join(" | ")
-    }
+    if parts.is_empty() { ".".into() } else { parts.join(" | ") }
 }
 
 /// The pieces of the input expression, outermost first.
@@ -373,9 +355,7 @@ fn last_top_level(s: &str, what: u8) -> Option<usize> {
 fn top_level_count(s: &str, what: u8) -> usize {
     let sc = scan(s);
     let b = s.as_bytes();
-    (0..b.len())
-        .filter(|&i| b[i] == what && !sc.in_string[i] && sc.depth[i] == 0)
-        .count()
+    (0..b.len()).filter(|&i| b[i] == what && !sc.in_string[i] && sc.depth[i] == 0).count()
 }
 
 /// The path chain (`.a`, `."k"`, `[…]`, `?`, `$x`, a bare `.`) ending at
@@ -407,9 +387,7 @@ fn path_chain(tail: &str) -> &str {
             })
         } else if c == b'"' {
             // `."my key"` — only a string right after `.` is a path step.
-            sc.open_of[i - 1]
-                .filter(|&o| o > 0 && b[o - 1] == b'.')
-                .map(|o| o - 1)
+            sc.open_of[i - 1].filter(|&o| o > 0 && b[o - 1] == b'.').map(|o| o - 1)
         } else if is_ident_byte(c) {
             let j = ident_run_start(&t[..i]);
             match (j > 0).then(|| b[j - 1]) {
@@ -499,11 +477,7 @@ fn quote(s: &str) -> String {
 pub fn candidates(ctx: &Context, keys: &[String]) -> Vec<Candidate> {
     let p = ctx.partial.as_str();
     let extends = |s: &str| s.starts_with(p) && s.len() > p.len();
-    let plain = |rest: String| Candidate {
-        ghost: rest.clone(),
-        insert: rest,
-        replace_from: None,
-    };
+    let plain = |rest: String| Candidate { ghost: rest.clone(), insert: rest, replace_from: None };
     match ctx.kind {
         Kind::Word => builtins()
             .iter()
@@ -551,11 +525,7 @@ pub fn candidates(ctx: &Context, keys: &[String]) -> Vec<Candidate> {
                     // `{my` → `{"my key"}`: the word is rewritten quoted,
                     // with no dot — shorthand names the key, not a path.
                     let q = quote(k);
-                    Candidate {
-                        insert: q.clone(),
-                        ghost: q,
-                        replace_from: Some(ctx.token_start),
-                    }
+                    Candidate { insert: q.clone(), ghost: q, replace_from: Some(ctx.token_start) }
                 }
             })
             .collect(),
@@ -607,11 +577,7 @@ pub fn closer(text: &str) -> Option<Candidate> {
             }
         }
     }
-    Some(Candidate {
-        ghost: close.to_string(),
-        insert: close.to_string(),
-        replace_from: None,
-    })
+    Some(Candidate { ghost: close.to_string(), insert: close.to_string(), replace_from: None })
 }
 
 #[cfg(test)]
@@ -694,23 +660,14 @@ mod tests {
             vec!["id", "name", "status", "extra"],
             "keys of every output, deduplicated, in order"
         );
-        assert_eq!(
-            keys_at(".data.items | .[]", &doc()),
-            vec!["id", "name", "status", "extra"]
-        );
+        assert_eq!(keys_at(".data.items | .[]", &doc()), vec!["id", "name", "status", "extra"]);
     }
 
     #[test]
     fn keys_at_is_empty_for_non_objects_errors_and_bad_filters() {
-        assert!(
-            keys_at(".data.items", &doc()).is_empty(),
-            "an array has no keys"
-        );
+        assert!(keys_at(".data.items", &doc()).is_empty(), "an array has no keys");
         assert!(keys_at(".data.total", &doc()).is_empty());
-        assert!(
-            keys_at(".data.items[] | .id | .x", &doc()).is_empty(),
-            "runtime error"
-        );
+        assert!(keys_at(".data.items[] | .id | .x", &doc()).is_empty(), "runtime error");
         assert!(keys_at("select(", &doc()).is_empty(), "does not compile");
         assert!(keys_at("$x", &doc()).is_empty(), "unbound variable");
     }
@@ -756,10 +713,7 @@ mod tests {
         assert_eq!(c.token_start, 14);
         assert!(c.input_expr.is_none());
         let c = context("sel").unwrap();
-        assert_eq!(
-            (c.kind, c.partial.as_str(), c.token_start),
-            (Kind::Word, "sel", 0)
-        );
+        assert_eq!((c.kind, c.partial.as_str(), c.token_start), (Kind::Word, "sel", 0));
     }
 
     fn shorthand(text: &str) -> (String, usize, bool) {
@@ -817,7 +771,8 @@ mod tests {
 
     #[test]
     fn shorthand_candidates_are_keys_without_a_dot() {
-        let keys: Vec<String> = ["name", "my key", "nested"].iter().map(|k| k.to_string()).collect();
+        let keys: Vec<String> =
+            ["name", "my key", "nested"].iter().map(|k| k.to_string()).collect();
         let ctx = context("map({n").unwrap();
         let got: Vec<(String, String, Option<usize>)> = candidates(&ctx, &keys)
             .into_iter()
@@ -825,10 +780,7 @@ mod tests {
             .collect();
         assert_eq!(
             got,
-            vec![
-                ("ame".into(), "ame".into(), None),
-                ("ested".into(), "ested".into(), None),
-            ]
+            vec![("ame".into(), "ame".into(), None), ("ested".into(), "ested".into(), None),]
         );
         assert!(
             context("map({").is_none(),
@@ -893,10 +845,7 @@ mod tests {
             (".data.\"my k", ".data"),
             (".data.\"my key\".na", ".data.\"my key\""),
             (".a.b?.c", ".a.b?"),
-            (
-                ".a | if .x then .b else .c end | .d",
-                ".a | if .x then .b else .c end",
-            ),
+            (".a | if .x then .b else .c end | .d", ".a | if .x then .b else .c end"),
             ("limit(3; .data.items[] | .na", ".data.items[]"),
             (".a |= .b", "."),
             (".a as $x | $x.na", ".a as $x | $x"),
@@ -905,10 +854,7 @@ mod tests {
             (".. | .na", ".."),
             (".a | .b | .c | .na", ".a | .b | .c"),
             ("(.a | .b).na", "(.a | .b)"),
-            (
-                ".data.items | sort_by(.id) | .[0].na",
-                ".data.items | sort_by(.id) | .[0]",
-            ),
+            (".data.items | sort_by(.id) | .[0].na", ".data.items | sort_by(.id) | .[0]"),
             (".data | (.items[] | .na", ".data | .items[]"),
             ("select(.a == 1).na", "select(.a == 1)"),
         ];
@@ -949,11 +895,7 @@ mod tests {
         assert_eq!(builtin("select").map(|b| b.arity), Some(1));
         assert_eq!(builtin("length").map(|b| b.arity), Some(0));
         assert_eq!(builtin("map").map(|b| b.arity), Some(1));
-        assert_eq!(
-            builtin("range").map(|b| b.arity),
-            Some(1),
-            "lowest arity wins"
-        );
+        assert_eq!(builtin("range").map(|b| b.arity), Some(1), "lowest arity wins");
         assert_eq!(builtin("if").map(|b| b.arity), Some(0));
         assert!(builtin("reduce").is_some());
         assert!(builtins().iter().all(|b| !b.name.starts_with('_')));
@@ -966,24 +908,14 @@ mod tests {
 
     fn ghosts(text: &str, keys: &[&str]) -> Vec<String> {
         let keys: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
-        candidates(&context(text).unwrap(), &keys)
-            .into_iter()
-            .map(|c| c.ghost)
-            .collect()
+        candidates(&context(text).unwrap(), &keys).into_iter().map(|c| c.ghost).collect()
     }
 
     #[test]
     fn key_candidates_strictly_extend_the_partial_in_body_order() {
         assert_eq!(ghosts(".", &["id", "name"]), vec!["id", "name"]);
-        assert_eq!(
-            ghosts(".i", &["name", "ids", "id", "identity"]),
-            vec!["ds", "d", "dentity"]
-        );
-        assert_eq!(
-            ghosts(".id", &["id", "ids"]),
-            vec!["s"],
-            "an exact match adds nothing"
-        );
+        assert_eq!(ghosts(".i", &["name", "ids", "id", "identity"]), vec!["ds", "d", "dentity"]);
+        assert_eq!(ghosts(".id", &["id", "ids"]), vec!["s"], "an exact match adds nothing");
         assert!(ghosts(".zz", &["id"]).is_empty());
         assert!(ghosts(".I", &["id"]).is_empty(), "case-sensitive");
     }

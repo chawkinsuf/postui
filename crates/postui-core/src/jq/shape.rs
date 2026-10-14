@@ -17,9 +17,7 @@ pub struct ShapeLimits {
 
 impl Default for ShapeLimits {
     fn default() -> Self {
-        Self {
-            max_bytes: 16 * 1024,
-        }
+        Self { max_bytes: 16 * 1024 }
     }
 }
 
@@ -55,17 +53,15 @@ fn build(mut schema: Schema, limits: ShapeLimits) -> Shape {
     schema.collapse();
     // The keys a request names sit at the top level — or, for a document
     // that is an array (or several things), one level under it.
-    let root_is_record = schema.is_only_object() && schema.object.as_ref().is_some_and(Object::is_record);
+    let root_is_record =
+        schema.is_only_object() && schema.object.as_ref().is_some_and(Object::is_record);
     let mut outline = Outline::new(limits.max_bytes, if root_is_record { 0 } else { 1 });
     let mut path = Vec::new();
     outline.render(None, &schema, 0, &mut path);
     // The example names keys the model can see: the deepest leaf among the
     // lines kept.
     let (outline, deepest) = outline.text();
-    Shape {
-        outline,
-        example_path: deepest.map(|segs| jq_path(&segs)),
-    }
+    Shape { outline, example_path: deepest.map(|segs| jq_path(&segs)) }
 }
 
 /// Everything seen at one position of the document, merged.
@@ -130,11 +126,7 @@ impl Object {
             return at;
         }
         let name: Rc<str> = Rc::from(name);
-        self.fields.push(Field {
-            name: Rc::clone(&name),
-            seen: 0,
-            schema: Schema::default(),
-        });
+        self.fields.push(Field { name: Rc::clone(&name), seen: 0, schema: Schema::default() });
         let at = self.fields.len() - 1;
         self.index.insert(name, at);
         at
@@ -191,11 +183,7 @@ impl Object {
         // A value that is only ever null says nothing about the kind. String
         // formats are not compared: one value that happens to look like an
         // email must not unfold a table of 2000 names.
-        let mut kinds = self
-            .fields
-            .iter()
-            .map(|f| f.schema.kind_bits())
-            .filter(|&bits| bits != 0);
+        let mut kinds = self.fields.iter().map(|f| f.schema.kind_bits()).filter(|&bits| bits != 0);
         let first = kinds.next();
         // (`first` is `None` when every value is null: nothing to fold on.)
         if may_fold
@@ -213,10 +201,7 @@ impl Object {
             }
             self.index = Default::default();
             values.collapse();
-            self.folded = Some(Folded {
-                names,
-                values: Box::new(values),
-            });
+            self.folded = Some(Folded { names, values: Box::new(values) });
             return;
         }
         for field in &mut self.fields {
@@ -371,24 +356,15 @@ impl Schema {
         let mut kinds: Vec<String> = Vec::new();
         if let Some(object) = &self.object {
             kinds.push(match &object.folded {
-                Some(folded) => format!(
-                    "object, {} keys ({})",
-                    folded.names.len(),
-                    key_list(&folded.names)
-                ),
+                Some(folded) => {
+                    format!("object, {} keys ({})", folded.names.len(), key_list(&folded.names))
+                }
                 None if object.is_empty() => "{} (always empty)".into(),
                 None => "object".into(),
             });
         }
         if let Some(elements) = &self.array {
-            kinds.push(
-                if elements.is_empty() {
-                    "[] (always empty)"
-                } else {
-                    "array"
-                }
-                .into(),
-            );
+            kinds.push(if elements.is_empty() { "[] (always empty)" } else { "array" }.into());
         }
         match self.string {
             Some(Some(tag)) => kinds.push(format!("string ({tag})")),
@@ -579,11 +555,8 @@ impl Outline {
                 // The example reaches one value by a key every object has
                 // (the first, failing that), the way the model reaches a
                 // named one.
-                let (key, _) = folded
-                    .names
-                    .iter()
-                    .find(|(_, optional)| !optional)
-                    .unwrap_or(&folded.names[0]);
+                let (key, _) =
+                    folded.names.iter().find(|(_, optional)| !optional).unwrap_or(&folded.names[0]);
                 path.push(Seg::Key(Rc::clone(key)));
                 self.render(Some("[]".into()), &folded.values, indent + 1, path);
                 path.pop();
@@ -754,10 +727,7 @@ data[]
             ),
             "t: string (date-time)\nu: string (url)\ne: string (email)\nid: string (uuid)"
         );
-        assert_eq!(
-            outline(r#"[{"t": "2026-09-03"}, {"t": "soon"}]"#),
-            ".[]\n  t: string"
-        );
+        assert_eq!(outline(r#"[{"t": "2026-09-03"}, {"t": "soon"}]"#), ".[]\n  t: string");
     }
 
     #[test]
@@ -779,10 +749,7 @@ data[]
         let fields: Vec<String> = (0..30)
             .map(|i| format!(r#""field_{i:02}": {}"#, if i % 2 == 0 { "1" } else { "\"s\"" }))
             .collect();
-        let body = format!(
-            r#"{{"items": [{{{}}}], "total": 7, "next": "x"}}"#,
-            fields.join(", ")
-        );
+        let body = format!(r#"{{"items": [{{{}}}], "total": 7, "next": "x"}}"#, fields.join(", "));
         let s = shape(&body, ShapeLimits { max_bytes: 200 }).unwrap();
         // `items[]` is 7 bytes and each field line 18 (+1 newline); with the
         // marker's reserve held back, eight fields fit in 200.
@@ -807,12 +774,13 @@ data[]
         let fields: Vec<String> = (0..30)
             .map(|i| format!(r#""f{i:02}": {}"#, if i % 2 == 0 { "1" } else { "\"s\"" }))
             .collect();
-        let body = format!(
-            r#"[{{"id": 1, "meta": {{{}}}, "total": 1}}]"#,
-            fields.join(", ")
-        );
+        let body = format!(r#"[{{"id": 1, "meta": {{{}}}, "total": 1}}]"#, fields.join(", "));
         let s = shape(&body, ShapeLimits { max_bytes: 120 }).unwrap();
-        assert!(s.outline.starts_with(".[]\n  id: number\n  meta\n    f00: number\n"), "{}", s.outline);
+        assert!(
+            s.outline.starts_with(".[]\n  id: number\n  meta\n    f00: number\n"),
+            "{}",
+            s.outline
+        );
         // The marker sits where the dropped lines were (indent 2), and
         // `total` (indent 1) still shows after it.
         assert!(
@@ -861,10 +829,8 @@ data[]
 
     #[test]
     fn a_wide_object_is_one_line_naming_its_keys_so_the_keys_after_it_still_show() {
-        let body = format!(
-            r#"{{"rates": {}, "data": [{{"id": 1}}]}}"#,
-            keyed(FOLD_KEYS + 1, "1.5")
-        );
+        let body =
+            format!(r#"{{"rates": {}, "data": [{{"id": 1}}]}}"#, keyed(FOLD_KEYS + 1, "1.5"));
         assert_eq!(
             outline(&body),
             format!(
@@ -877,9 +843,28 @@ data[]
     #[test]
     fn a_wide_record_keeps_every_field_name() {
         let names = [
-            "views", "likes", "shares", "saves", "clicks", "opens", "replies", "reposts",
-            "follows", "mentions", "quotes", "bookmarks", "impressions", "reach", "visits",
-            "downloads", "installs", "signups", "logins", "purchases", "refunds", "votes",
+            "views",
+            "likes",
+            "shares",
+            "saves",
+            "clicks",
+            "opens",
+            "replies",
+            "reposts",
+            "follows",
+            "mentions",
+            "quotes",
+            "bookmarks",
+            "impressions",
+            "reach",
+            "visits",
+            "downloads",
+            "installs",
+            "signups",
+            "logins",
+            "purchases",
+            "refunds",
+            "votes",
         ];
         let pairs: Vec<String> = names.iter().map(|n| format!(r#""{n}": 1"#)).collect();
         let body = format!(r#"{{"stats": {{{}}}}}"#, pairs.join(", "));
@@ -895,10 +880,7 @@ data[]
     #[test]
     fn a_folded_object_merges_its_values_and_null_does_not_stop_the_fold() {
         let mut body = keyed(FOLD_KEYS, r#"{"name": "x"}"#);
-        body.insert_str(
-            body.len() - 1,
-            r#", "late": {"name": "y", "extra": 1}, "gone": null"#,
-        );
+        body.insert_str(body.len() - 1, r#", "late": {"name": "y", "extra": 1}, "gone": null"#);
         assert_eq!(
             outline(&body),
             format!(
@@ -911,9 +893,8 @@ data[]
     #[test]
     fn element_keys_that_are_ids_fold_into_one_line_of_quoted_keys() {
         let id = |i: usize| format!("123e4567-e89b-12d3-a456-4266141740{i:02}");
-        let elements: Vec<String> = (0..FOLD_KEYS + 5)
-            .map(|i| format!(r#"{{"{}": {{"n": {i}}}}}"#, id(i)))
-            .collect();
+        let elements: Vec<String> =
+            (0..FOLD_KEYS + 5).map(|i| format!(r#"{{"{}": {{"n": {i}}}}}"#, id(i))).collect();
         let s = shape(&format!("[{}]", elements.join(",")), ShapeLimits::default()).unwrap();
         // Each element has one of the keys, so every key is marked `?`. A
         // quoted id is 39 bytes with it and each after the first 41: nine
@@ -921,15 +902,9 @@ data[]
         let shown: Vec<String> = (0..9).map(|i| format!("\"{}\"?", id(i))).collect();
         assert_eq!(
             s.outline,
-            format!(
-                ".[]: object, 25 keys ({}, … 16 more)\n  []\n    n: number",
-                shown.join(", ")
-            )
+            format!(".[]: object, 25 keys ({}, … 16 more)\n  []\n    n: number", shown.join(", "))
         );
-        assert_eq!(
-            s.example_path,
-            Some(format!(r#".[]["{}"].n"#, id(0)))
-        );
+        assert_eq!(s.example_path, Some(format!(r#".[]["{}"].n"#, id(0))));
     }
 
     #[test]
@@ -999,9 +974,8 @@ data[]
         // Three records; `nickname` is in one, `email` (a formatted string
         // among plain ones) in all.
         let row = |extra: &str| {
-            let mut pairs: Vec<String> = (0..FOLD_KEYS)
-                .map(|i| format!(r#""c{i:02}": "v""#))
-                .collect();
+            let mut pairs: Vec<String> =
+                (0..FOLD_KEYS).map(|i| format!(r#""c{i:02}": "v""#)).collect();
             pairs.push(r#""email": "a@b.co""#.into());
             if !extra.is_empty() {
                 pairs.push(extra.into());
@@ -1016,10 +990,8 @@ data[]
     #[test]
     fn the_example_through_a_fold_uses_a_key_every_object_has() {
         // `_debug` leads the first record only; `views` is in every record.
-        let mut records = vec![format!(
-            r#"{{"_debug": 1, {}}}"#,
-            keyed(FOLD_KEYS, "1").trim_matches(['{', '}'])
-        )];
+        let mut records =
+            vec![format!(r#"{{"_debug": 1, {}}}"#, keyed(FOLD_KEYS, "1").trim_matches(['{', '}']))];
         records.extend((0..3).map(|_| keyed(FOLD_KEYS, "1")));
         let s = shape(&format!("[{}]", records.join(",")), ShapeLimits::default()).unwrap();
         assert!(s.outline.contains("keys (_debug?, K00"), "{}", s.outline);
@@ -1046,9 +1018,8 @@ data[]
 
     #[test]
     fn sections_of_arrays_with_their_own_record_types_stay_listed() {
-        let sections: Vec<String> = (0..FOLD_KEYS + 1)
-            .map(|i| format!(r#""s{i:02}": [{{"a{i:02}": 1}}]"#))
-            .collect();
+        let sections: Vec<String> =
+            (0..FOLD_KEYS + 1).map(|i| format!(r#""s{i:02}": [{{"a{i:02}": 1}}]"#)).collect();
         let lines = outline(&format!("{{{}}}", sections.join(", ")));
         assert!(!lines.contains("keys ("), "{lines}");
         assert!(lines.contains("s07[]\n  a07: number\n"), "{lines}");

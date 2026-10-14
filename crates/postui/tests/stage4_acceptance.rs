@@ -65,10 +65,7 @@ fn left_down(x: u16, y: u16) -> MouseEvent {
 /// something a caller should recover from.
 fn click(app: &mut App, hit: Hit) {
     render(app);
-    let r = app
-        .hits
-        .rect_of(&hit)
-        .unwrap_or_else(|| panic!("no rect registered for {hit:?}"));
+    let r = app.hits.rect_of(&hit).unwrap_or_else(|| panic!("no rect registered for {hit:?}"));
     let cx = r.x + r.width / 2;
     let cy = r.y + r.height / 2;
     app.handle_mouse(left_down(cx, cy));
@@ -127,13 +124,7 @@ async fn stage4_mouse_only_acceptance_flow() {
     // --- step 2: click SidebarNewRequest -> prompt opens; name via keys --
     click(&mut app, Hit::SidebarNewRequest);
     assert!(
-        matches!(
-            app.modals.top(),
-            Some(Modal::Prompt {
-                kind: PromptKind::NewRequest,
-                ..
-            })
-        ),
+        matches!(app.modals.top(), Some(Modal::Prompt { kind: PromptKind::NewRequest, .. })),
         "clicking the new-request button opens the naming prompt"
     );
     type_text(&mut app, "items/create");
@@ -166,15 +157,9 @@ async fn stage4_mouse_only_acceptance_flow() {
     // --- step 5: tab switches by click; add a param via keys; toggle its
     //     checkbox off then on via click ----------------------------------
     click(&mut app, Hit::EditorTab(0)); // Headers
-    assert_eq!(
-        app.editor.active_tab,
-        postui::components::editor::EditorTab::Headers
-    );
+    assert_eq!(app.editor.active_tab, postui::components::editor::EditorTab::Headers);
     click(&mut app, Hit::EditorTab(1)); // Params
-    assert_eq!(
-        app.editor.active_tab,
-        postui::components::editor::EditorTab::Params
-    );
+    assert_eq!(app.editor.active_tab, postui::components::editor::EditorTab::Params);
 
     app.focus = postui::layout::PaneId::Editor;
     app.editor.sub_focus = SubFocus::Content;
@@ -249,9 +234,7 @@ async fn stage4_mouse_only_acceptance_flow() {
     type_text(&mut app, "quit");
     // The query is a subsequence match, so more than one command can survive
     // it ("quit" also matches "Request: duplicate"); click Quit's own row.
-    let Some(Modal::Palette(p)) = app.modals.top() else {
-        unreachable!()
-    };
+    let Some(Modal::Palette(p)) = app.modals.top() else { unreachable!() };
     let quit_row = p.filtered().iter().position(|c| c.id == "quit").unwrap();
     click(&mut app, Hit::PaletteRow(quit_row));
     // The flow's edits were never saved, so quitting gates on the

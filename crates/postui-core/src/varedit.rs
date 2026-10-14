@@ -30,8 +30,7 @@ impl std::fmt::Display for EditError {
 impl std::error::Error for EditError {}
 
 fn parse(doc: &str) -> Result<DocumentMut, EditError> {
-    doc.parse::<DocumentMut>()
-        .map_err(|e| EditError::Parse(e.to_string()))
+    doc.parse::<DocumentMut>().map_err(|e| EditError::Parse(e.to_string()))
 }
 
 fn not_found(msg: impl Into<String>) -> EditError {
@@ -131,10 +130,7 @@ fn move_key_first(parent: &mut Table, key: &str) {
 /// rename target must be checked against both.
 fn name_exists(root: &Table, name: &str) -> bool {
     root.contains_key(name)
-        || root
-            .get("selectors")
-            .and_then(Item::as_table)
-            .is_some_and(|g| g.contains_key(name))
+        || root.get("selectors").and_then(Item::as_table).is_some_and(|g| g.contains_key(name))
 }
 
 /// Splits a leading-decor prefix at its LAST blank line into `(file_header,
@@ -199,14 +195,9 @@ fn attach_header_to_new_first(parent: &mut Table, header: &str) {
     }
     match parent.get_mut(&key) {
         Some(Item::Table(t)) => {
-            let existing = t
-                .decor()
-                .prefix()
-                .and_then(RawString::as_str)
-                .unwrap_or_default()
-                .to_string();
-            t.decor_mut()
-                .set_prefix(join_decor_prefix(header, &existing));
+            let existing =
+                t.decor().prefix().and_then(RawString::as_str).unwrap_or_default().to_string();
+            t.decor_mut().set_prefix(join_decor_prefix(header, &existing));
         }
         _ => {
             if let Some(mut km) = parent.key_mut(&key) {
@@ -216,8 +207,7 @@ fn attach_header_to_new_first(parent: &mut Table, header: &str) {
                     .and_then(RawString::as_str)
                     .unwrap_or_default()
                     .to_string();
-                km.leaf_decor_mut()
-                    .set_prefix(join_decor_prefix(header, &existing));
+                km.leaf_decor_mut().set_prefix(join_decor_prefix(header, &existing));
             }
         }
     }
@@ -233,10 +223,7 @@ fn remove_transferring_header(parent: &mut Table, key: &str) -> Option<Item> {
     let header = is_first
         .then(|| match parent.get(key) {
             Some(Item::Table(t)) => t.decor().prefix().and_then(RawString::as_str),
-            _ => parent
-                .key(key)
-                .and_then(|k| k.leaf_decor().prefix())
-                .and_then(RawString::as_str),
+            _ => parent.key(key).and_then(|k| k.leaf_decor().prefix()).and_then(RawString::as_str),
         })
         .flatten()
         .and_then(split_leading_decor)
@@ -334,10 +321,7 @@ pub fn rename_var(doc: &str, from: &str, to: &str) -> Result<String, EditError> 
                 continue;
             };
 
-            if let Some(arr) = selector_table
-                .get_mut("fields")
-                .and_then(Item::as_array_mut)
-            {
+            if let Some(arr) = selector_table.get_mut("fields").and_then(Item::as_array_mut) {
                 for v in arr.iter_mut() {
                     if v.as_str() == Some(from) {
                         let decor = v.decor().clone();
@@ -362,10 +346,8 @@ pub fn delete_var(doc: &str, name: &str) -> Result<String, EditError> {
     }
     if let Some(selectors_table) = root.get("selectors").and_then(Item::as_table) {
         for (gname, gitem) in selectors_table.iter() {
-            let Some(fields) = gitem
-                .as_table()
-                .and_then(|t| t.get("fields"))
-                .and_then(Item::as_array)
+            let Some(fields) =
+                gitem.as_table().and_then(|t| t.get("fields")).and_then(Item::as_array)
             else {
                 continue;
             };
@@ -442,9 +424,7 @@ pub fn set_selector_shared(doc: &str, name: &str, shared: bool) -> Result<String
 /// `validate_env`.
 pub fn rename_selector(doc: &str, from: &str, to: &str) -> Result<String, EditError> {
     if !crate::vars::is_valid_var_name(to) {
-        return Err(EditError::Conflict(format!(
-            "\"{to}\" is not a valid selector name"
-        )));
+        return Err(EditError::Conflict(format!("\"{to}\" is not a valid selector name")));
     }
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
@@ -563,9 +543,7 @@ pub fn rename_option(doc: &str, selector: &str, from: &str, to: &str) -> Result<
     let g = options_selector_mut(root, selector)
         .ok_or_else(|| not_found(format!("selector \"{selector}\" has no options here")))?;
     if !g.contains_key(from) {
-        return Err(not_found(format!(
-            "option \"{from}\" not found in selector \"{selector}\""
-        )));
+        return Err(not_found(format!("option \"{from}\" not found in selector \"{selector}\"")));
     }
     if from != to && g.contains_key(to) {
         return Err(EditError::Conflict(format!(
@@ -593,9 +571,7 @@ pub fn remove_option_description(
         .and_then(|g| g.get_mut(option))
         .and_then(Item::as_table_mut)
         .ok_or_else(|| {
-            not_found(format!(
-                "option \"{option}\" not found in selector \"{selector}\""
-            ))
+            not_found(format!("option \"{option}\" not found in selector \"{selector}\""))
         })?;
     t.remove("description");
     Ok(doc.to_string())
@@ -608,9 +584,7 @@ pub fn delete_option(doc: &str, selector: &str, option: &str) -> Result<String, 
     let removed =
         options_selector_mut(root, selector).and_then(|g| remove_transferring_header(g, option));
     if removed.is_none() {
-        return Err(not_found(format!(
-            "option \"{option}\" not found in selector \"{selector}\""
-        )));
+        return Err(not_found(format!("option \"{option}\" not found in selector \"{selector}\"")));
     }
     Ok(doc.to_string())
 }
@@ -730,10 +704,8 @@ pub fn rename_env_var(doc: &str, from: &str, to: &str) -> Result<String, EditErr
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
     let has_flat = root.contains_key(from);
-    let has_options = root
-        .get("options")
-        .and_then(Item::as_table)
-        .is_some_and(|e| e.contains_key(from));
+    let has_options =
+        root.get("options").and_then(Item::as_table).is_some_and(|e| e.contains_key(from));
     if !has_flat && !has_options {
         return Ok(doc.to_string());
     }
@@ -744,10 +716,7 @@ pub fn rename_env_var(doc: &str, from: &str, to: &str) -> Result<String, EditErr
     if from != to {
         let flat_conflict = has_flat && root.contains_key(to);
         let options_conflict = has_options
-            && root
-                .get("options")
-                .and_then(Item::as_table)
-                .is_some_and(|e| e.contains_key(to));
+            && root.get("options").and_then(Item::as_table).is_some_and(|e| e.contains_key(to));
         if flat_conflict || options_conflict {
             return Err(EditError::Conflict(format!(
                 "\"{to}\" already exists in this environment; rename would merge two options into one"
@@ -930,10 +899,7 @@ customer_id = "c-91"
     }
 
     fn vals(pairs: &[(&str, &str)]) -> IndexMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
 
     // -------------------------------------------------------------
@@ -1002,10 +968,7 @@ fields = ["user_id", "customer_id"]
             out.contains("[base_url]\ndescription = \"API root\"\n"),
             "the description stays: {out}"
         );
-        assert!(
-            reparses_vars(&out).vars["base_url"].default.is_none(),
-            "{out}"
-        );
+        assert!(reparses_vars(&out).vars["base_url"].default.is_none(), "{out}");
         // A variable with no default passes through unchanged...
         let none = clear_default(&out, "base_url").unwrap();
         assert_eq!(none, out);
@@ -1019,10 +982,7 @@ fields = ["user_id", "customer_id"]
     #[test]
     fn set_secret_flag_not_found_on_missing_var() {
         let err = set_secret_flag(VARS, "nope", true).unwrap_err();
-        assert_eq!(
-            err,
-            EditError::NotFound("variable \"nope\" not found".to_string())
-        );
+        assert_eq!(err, EditError::NotFound("variable \"nope\" not found".to_string()));
     }
 
     #[test]
@@ -1061,10 +1021,7 @@ fields = ["user_id", "customer_id"]
     #[test]
     fn rename_var_not_found_on_missing_var() {
         let err = rename_var(VARS, "nope", "x").unwrap_err();
-        assert_eq!(
-            err,
-            EditError::NotFound("variable \"nope\" not found".to_string())
-        );
+        assert_eq!(err, EditError::NotFound("variable \"nope\" not found".to_string()));
     }
 
     #[test]
@@ -1123,10 +1080,7 @@ secret = true
     #[test]
     fn delete_var_not_found_on_missing_var() {
         let err = delete_var(VARS, "nope").unwrap_err();
-        assert_eq!(
-            err,
-            EditError::NotFound("variable \"nope\" not found".to_string())
-        );
+        assert_eq!(err, EditError::NotFound("variable \"nope\" not found".to_string()));
     }
 
     #[test]
@@ -1138,16 +1092,10 @@ secret = true
             &["user_id".to_string(), "customer_id".to_string()],
         )
         .unwrap();
-        assert!(
-            out.contains("fields = [\"user_id\", \"customer_id\"]"),
-            "{out}"
-        );
+        assert!(out.contains("fields = [\"user_id\", \"customer_id\"]"), "{out}");
         let m = reparses_vars(&out);
         assert_eq!(m.selectors["user"].fields, ["user_id", "customer_id"]);
-        assert_eq!(
-            m.selectors["user"].description.as_deref(),
-            Some("linked pair")
-        );
+        assert_eq!(m.selectors["user"].description.as_deref(), Some("linked pair"));
     }
 
     #[test]
@@ -1157,10 +1105,7 @@ secret = true
         let m = reparses_vars(&out);
         assert!(m.selectors["locale"].shared);
         let out = set_selector_shared(&out, "locale", false).unwrap();
-        assert!(
-            !out.contains("shared"),
-            "flag removed, not set false: {out}"
-        );
+        assert!(!out.contains("shared"), "flag removed, not set false: {out}");
         assert!(!reparses_vars(&out).selectors["locale"].shared);
 
         let err = set_selector_shared("", "nope", true).unwrap_err();
@@ -1184,14 +1129,9 @@ secret = true
     #[test]
     fn upsert_selector_replaces_fields_on_an_existing_selector() {
         let out = upsert_selector(VARS, "test-user", None, &["user_id".to_string()]).unwrap();
+        assert_eq!(reparses_vars(&out).selectors["test-user"].fields, ["user_id"]);
         assert_eq!(
-            reparses_vars(&out).selectors["test-user"].fields,
-            ["user_id"]
-        );
-        assert_eq!(
-            reparses_vars(&out).selectors["test-user"]
-                .description
-                .as_deref(),
+            reparses_vars(&out).selectors["test-user"].description.as_deref(),
             Some("user with linked customer"),
             "a description left as None is untouched"
         );
@@ -1208,10 +1148,7 @@ secret = true
     #[test]
     fn delete_selector_not_found_on_missing_selector() {
         let err = delete_selector(VARS, "nope").unwrap_err();
-        assert_eq!(
-            err,
-            EditError::NotFound("selector \"nope\" not found".to_string())
-        );
+        assert_eq!(err, EditError::NotFound("selector \"nope\" not found".to_string()));
     }
 
     // -------------------------------------------------------------
@@ -1228,14 +1165,8 @@ secret = true
     #[test]
     fn set_env_value_updates_an_existing_flat_pair() {
         let out = set_env_value(ENV, "base_url", Some("https://qa2.example.com")).unwrap();
-        assert_eq!(
-            out,
-            ENV.replace("https://qa.example.com", "https://qa2.example.com")
-        );
-        assert_eq!(
-            reparses_env(&out).values["base_url"],
-            "https://qa2.example.com"
-        );
+        assert_eq!(out, ENV.replace("https://qa.example.com", "https://qa2.example.com"));
+        assert_eq!(reparses_env(&out).values["base_url"], "https://qa2.example.com");
     }
 
     #[test]
@@ -1296,10 +1227,7 @@ tier = "g-1"
         assert_eq!(out2.matches("[options.user.").count(), 1);
         let e = reparses_env(&out2);
         assert_eq!(e.options["user"]["user 1"].values["user_id"], "9999");
-        assert_eq!(
-            e.options["user"]["user 1"].description.as_deref(),
-            Some("admin")
-        );
+        assert_eq!(e.options["user"]["user 1"].description.as_deref(), Some("admin"));
         assert_eq!(e.values["base_url"], "x");
     }
 
@@ -1316,28 +1244,17 @@ tier = "g-1"
         let e = reparses_env(&out);
         assert_eq!(e.options["test-user"].len(), 3);
         assert_eq!(e.options["test-user"]["user 1"].values["user_id"], "1001");
-        assert_eq!(
-            e.options["test-user"]["user 3"].values["customer_id"],
-            "c-03"
-        );
+        assert_eq!(e.options["test-user"]["user 3"].values["customer_id"], "c-03");
         assert_eq!(e.options["tier"]["gold"].values["tier"], "g-1");
     }
 
     #[test]
     fn upsert_option_quotes_awkward_option_names() {
-        let out = upsert_option(
-            "",
-            "user",
-            "the \"big\" one, v2",
-            None,
-            &vals(&[("user_id", "1")]),
-        )
-        .unwrap();
+        let out =
+            upsert_option("", "user", "the \"big\" one, v2", None, &vals(&[("user_id", "1")]))
+                .unwrap();
         let e = reparses_env(&out);
-        assert_eq!(
-            e.options["user"]["the \"big\" one, v2"].values["user_id"],
-            "1"
-        );
+        assert_eq!(e.options["user"]["the \"big\" one, v2"].values["user_id"], "1");
     }
 
     #[test]
@@ -1381,14 +1298,8 @@ tier = "g-1"
         // `description` inside an options table is an option's own
         // description, so writing one under that name would produce a
         // document the model rejects.
-        let err = upsert_option(
-            ENV,
-            "test-user",
-            "description",
-            None,
-            &vals(&[("user_id", "1")]),
-        )
-        .unwrap_err();
+        let err = upsert_option(ENV, "test-user", "description", None, &vals(&[("user_id", "1")]))
+            .unwrap_err();
         assert_eq!(
             err,
             EditError::Conflict(
@@ -1410,10 +1321,7 @@ tier = "g-1"
             "[options.test-user.\"the first user\"]\nuser_id = \"1001\"\ncustomer_id = \"c-77\"\n"
         ));
         let e = reparses_env(&out);
-        assert_eq!(
-            e.options["test-user"].keys().collect::<Vec<_>>(),
-            ["the first user", "user 2"]
-        );
+        assert_eq!(e.options["test-user"].keys().collect::<Vec<_>>(), ["the first user", "user 2"]);
     }
 
     #[test]
@@ -1444,10 +1352,7 @@ tier = "g-1"
     fn delete_option_removes_only_that_option() {
         let out = delete_option(ENV, "test-user", "user 1").unwrap();
         let e = reparses_env(&out);
-        assert_eq!(
-            e.options["test-user"].keys().collect::<Vec<_>>(),
-            ["user 2"]
-        );
+        assert_eq!(e.options["test-user"].keys().collect::<Vec<_>>(), ["user 2"]);
         assert!(e.options.contains_key("tier"));
     }
 
@@ -1488,10 +1393,7 @@ tier = "g-1"
         assert_eq!(e.options["test-user"]["user 1"].values["uid"], "1001");
         assert_eq!(e.options["test-user"]["user 2"].values["uid"], "1002");
         assert_eq!(
-            e.options["test-user"]["user 1"]
-                .values
-                .keys()
-                .collect::<Vec<_>>(),
+            e.options["test-user"]["user 1"].values.keys().collect::<Vec<_>>(),
             ["uid", "customer_id"],
             "the renamed key keeps its position"
         );
@@ -1508,16 +1410,8 @@ tier = "g-1"
     fn strip_option_field_removes_it_from_every_option() {
         let out = strip_option_field(ENV, "test-user", "customer_id").unwrap();
         let e = reparses_env(&out);
-        assert!(
-            !e.options["test-user"]["user 1"]
-                .values
-                .contains_key("customer_id")
-        );
-        assert!(
-            !e.options["test-user"]["user 2"]
-                .values
-                .contains_key("customer_id")
-        );
+        assert!(!e.options["test-user"]["user 1"].values.contains_key("customer_id"));
+        assert!(!e.options["test-user"]["user 2"].values.contains_key("customer_id"));
         assert_eq!(e.options["test-user"]["user 1"].values["user_id"], "1001");
     }
 
@@ -1537,10 +1431,7 @@ tier = "g-1"
         // Existing values are never overwritten…
         assert_eq!(options["user 1"].values["user_id"], "1001");
         let again = ensure_option_field(&out, "test-user", "user_id").unwrap();
-        assert_eq!(
-            reparses_env(&again).options["test-user"]["user 1"].values["user_id"],
-            "1001"
-        );
+        assert_eq!(reparses_env(&again).options["test-user"]["user 1"].values["user_id"], "1001");
         // …and another selector's options are untouched.
         assert!(!env.options["tier"]["gold"].values.contains_key("region"));
     }
@@ -1570,10 +1461,7 @@ tier = "g-1"
         assert!(out.starts_with("# variables.toml\n"), "{out}");
         assert!(out.contains("[selectors.tier]"), "{out}");
         let m = reparses_vars(&out);
-        assert_eq!(
-            m.selectors["customer"].fields,
-            vec!["user_id", "customer_id"]
-        );
+        assert_eq!(m.selectors["customer"].fields, vec!["user_id", "customer_id"]);
         assert!(!m.selectors.contains_key("test-user"));
     }
 
@@ -1757,10 +1645,7 @@ tier = "g-1"
             promote_var(VARS, Some(ENV), "new_var", "hello", PromoteTarget::Default).unwrap();
         assert!(env_out.is_none());
         assert!(vars_out.ends_with("[new_var]\ndefault = \"hello\"\n"));
-        assert_eq!(
-            reparses_vars(&vars_out).vars["new_var"].default.as_deref(),
-            Some("hello")
-        );
+        assert_eq!(reparses_vars(&vars_out).vars["new_var"].default.as_deref(), Some("hello"));
     }
 
     #[test]

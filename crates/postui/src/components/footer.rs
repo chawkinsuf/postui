@@ -88,7 +88,11 @@ pub(crate) fn footer_chips(
             // each action is what `Sidebar::verb_action` resolves on a
             // request row (plan M2 Deviation 3).
             (Key::Of(Action::OnSelection(Verb::Add)), "new", Some(Action::PromptNewRequest)),
-            (Key::Of(Action::OnSelection(Verb::Rename)), "rename", Some(Action::PromptRenameRequest)),
+            (
+                Key::Of(Action::OnSelection(Verb::Rename)),
+                "rename",
+                Some(Action::PromptRenameRequest),
+            ),
             (
                 Key::Of(Action::OnSelection(Verb::Delete { count: 1 })),
                 "delete",
@@ -117,7 +121,9 @@ pub(crate) fn footer_chips(
             // flight), so the slot goes empty and `esc done` leads the row.
             match (sending, field_open) {
                 (true, true) => {}
-                (true, false) => chips.push((Key::Named("esc"), "cancel", Some(Action::CancelSend))),
+                (true, false) => {
+                    chips.push((Key::Named("esc"), "cancel", Some(Action::CancelSend)))
+                }
                 _ => chips.push((
                     Key::Send { shift_enter: shift_enter_send },
                     "send",
@@ -254,20 +260,12 @@ pub(crate) fn footer_chips(
                 chips.extend([
                     (
                         Key::Named("enter"),
-                        if jq_bar == JqBarState::Menu {
-                            "select"
-                        } else {
-                            "apply"
-                        },
+                        if jq_bar == JqBarState::Menu { "select" } else { "apply" },
                         None,
                     ),
                     (Key::Named("esc"), "done", Some(Action::CloseField)),
                     (Key::Of(Action::ToggleJqBar), "unfilter", Some(Action::ToggleJqBar)),
-                    (
-                        Key::Named(crate::glyph::CREATION),
-                        "describe…",
-                        Some(Action::OpenJqDescribe),
-                    ),
+                    (Key::Named(crate::glyph::CREATION), "describe…", Some(Action::OpenJqDescribe)),
                 ]);
                 chips
             } else if field_open {
@@ -291,7 +289,11 @@ pub(crate) fn footer_chips(
                     (Key::Of(Action::OpenJqBar), "filter", Some(Action::OpenJqBar)),
                 ];
                 if jq_bar == JqBarState::Open {
-                    chips.push((Key::Of(Action::ToggleJqBar), "unfilter", Some(Action::ToggleJqBar)));
+                    chips.push((
+                        Key::Of(Action::ToggleJqBar),
+                        "unfilter",
+                        Some(Action::ToggleJqBar),
+                    ));
                 }
                 chips
             }
@@ -384,8 +386,8 @@ pub fn draw_footer(
     use crate::keyroute::spell::{keycap, quit_action, resolve};
     // Each chip's click runs the action its keycap is spelled from (the
     // code review's fifth and sixth findings).
-    let quit_key = keycap(&Key::Quit { plain_q: plain_q_quits }, spell, keymap)
-        .unwrap_or_else(|| "^C".into());
+    let quit_key =
+        keycap(&Key::Quit { plain_q: plain_q_quits }, spell, keymap).unwrap_or_else(|| "^C".into());
     let quit_chip = (quit_key.as_str(), "quit", Some(quit_action(spell)));
     let quit_w = chip_width(&quit_chip);
     let quit_x = (area.x + area.width).saturating_sub(quit_w + 1);
@@ -407,7 +409,8 @@ pub fn draw_footer(
         // `:` in vim (the ex line is a superset of the palette), `^P` in
         // arrows (plan M4b Deviation 17).
         let (ex, plain) = (Action::OpenExPalette, Action::OpenPalette);
-        let palette_key = keycap(&Key::OneOf(ex.clone(), plain.clone()), spell, keymap).unwrap_or_else(|| "^P".into());
+        let palette_key = keycap(&Key::OneOf(ex.clone(), plain.clone()), spell, keymap)
+            .unwrap_or_else(|| "^P".into());
         let palette_action = crate::keyroute::spell::one_of(spell, &ex, &plain, keymap).clone();
         let palette_chip = (palette_key.as_str(), "commands", Some(palette_action));
         let palette_w = chip_width(&palette_chip);
@@ -462,23 +465,10 @@ pub fn draw_footer(
         .collect(),
     };
     let owned = resolve(raw, spell, keymap);
-    let chips: Vec<(&str, &str, Option<Action>)> = owned
-        .iter()
-        .map(|(k, l, a)| (k.as_str(), l.as_str(), a.clone()))
-        .collect();
+    let chips: Vec<(&str, &str, Option<Action>)> =
+        owned.iter().map(|(k, l, a)| (k.as_str(), l.as_str(), a.clone())).collect();
     let start_x = area.x + 1;
-    paint_chip_row(
-        buf,
-        area,
-        mid_y,
-        start_x,
-        right_limit,
-        &chips,
-        theme,
-        hits,
-        hovered,
-        hover_t,
-    );
+    paint_chip_row(buf, area, mid_y, start_x, right_limit, &chips, theme, hits, hovered, hover_t);
     let chips_end = chip_row_end(start_x, right_limit, &chips);
     // One column shy of `right_limit`: the commands chip's leading pad is
     // painted in the pill's own fill, so anything ending right against it
@@ -649,7 +639,10 @@ mod tests {
     /// The spelling context of the sidebar: a verb chip is spelled from
     /// the row on its pane's surface.
     fn sidebar_spell() -> crate::keyroute::SpellCtx {
-        crate::keyroute::SpellCtx { surface: crate::keyroute::Surface::Sidebar, ..Default::default() }
+        crate::keyroute::SpellCtx {
+            surface: crate::keyroute::Surface::Sidebar,
+            ..Default::default()
+        }
     }
 
     /// `super::footer_chips` as the arrows profile paints it: these tests
@@ -671,17 +664,20 @@ mod tests {
             PaneId::Sidebar => crate::keyroute::Surface::Sidebar,
             _ => crate::keyroute::Surface::Table(crate::components::editor::EditorTab::Headers),
         };
-        crate::keyroute::spell::spelled_on(surface, super::footer_chips(
-            focus,
-            shift_enter_send,
-            sending,
-            add_row_label,
-            url_focused,
-            url_selected,
-            table_row_selected,
-            jq_bar,
-            field_open,
-        ))
+        crate::keyroute::spell::spelled_on(
+            surface,
+            super::footer_chips(
+                focus,
+                shift_enter_send,
+                sending,
+                add_row_label,
+                url_focused,
+                url_selected,
+                table_row_selected,
+                jq_bar,
+                field_open,
+            ),
+        )
     }
 
     /// A footer chip is the same composite button Theme and Manage are — a
@@ -720,11 +716,7 @@ mod tests {
         // " ^R " is the pill; the word " send " follows it.
         let word_x = 4;
         assert_eq!(buf[(word_x, 1)].symbol(), " ", "the pad before the word");
-        assert_eq!(
-            buf[(word_x + 1, 1)].symbol(),
-            "s",
-            "fixture: the word starts here"
-        );
+        assert_eq!(buf[(word_x + 1, 1)].symbol(), "s", "fixture: the word starts here");
         assert_eq!(
             buf[(word_x + 1, 1)].bg,
             lifted,
@@ -775,9 +767,8 @@ mod tests {
             })
             .unwrap();
 
-        let rect = hits
-            .rect_of(&Hit::FooterChip(Action::PromptNewRequest))
-            .expect("new-request chip hit");
+        let rect =
+            hits.rect_of(&Hit::FooterChip(Action::PromptNewRequest)).expect("new-request chip hit");
         assert_eq!(
             rect.height,
             CHIP_CAPS.height(),
@@ -853,10 +844,7 @@ mod tests {
         // visible. The old surface-only lift moved the fill by ~0.008.
         let l = |c| crate::theme::oklab_l(crate::theme::rgb_of(c));
         let delta = (l(pill_bg(1.0)) - l(pill_bg(0.0))).abs();
-        assert!(
-            delta > 0.05,
-            "a hovered pill must be visibly different, not {delta:.4} apart"
-        );
+        assert!(delta > 0.05, "a hovered pill must be visibly different, not {delta:.4} apart");
     }
 
     /// The fade belongs to the chip under the pointer. An unhovered chip
@@ -901,10 +889,7 @@ mod tests {
         let focused = chips(JqBarState::Focused);
         assert!(!focused.iter().any(|c| c.starts_with("tab")), "{focused:?}");
         let cycle = chips(JqBarState::Completing { cycle: true });
-        assert_eq!(
-            &cycle[..2],
-            &["tab next".to_string(), "→ accept".to_string()]
-        );
+        assert_eq!(&cycle[..2], &["tab next".to_string(), "→ accept".to_string()]);
         assert_eq!(&cycle[2..], &focused[..], "the usual chips follow");
         let menu_ghost = chips(JqBarState::Completing { cycle: false });
         assert_eq!(menu_ghost[0], "tab complete");
@@ -912,18 +897,11 @@ mod tests {
         let menu = chips(JqBarState::Menu);
         assert_eq!(
             &menu[..3],
-            &[
-                "tab next".to_string(),
-                "shift+tab prev".to_string(),
-                "enter select".to_string()
-            ]
+            &["tab next".to_string(), "shift+tab prev".to_string(), "enter select".to_string()]
         );
         assert_eq!(&menu[3..], &focused[1..], "enter reads select, not apply");
         let closer = chips(JqBarState::Closer);
-        assert_eq!(
-            &closer[..2],
-            &["tab accept".to_string(), "→ accept".to_string()]
-        );
+        assert_eq!(&closer[..2], &["tab accept".to_string(), "→ accept".to_string()]);
         assert_eq!(&closer[2..], &focused[..]);
     }
 
@@ -959,7 +937,10 @@ mod tests {
 
     /// The footer drawn as the app draws it: with the focused surface's
     /// spelling context (a row-spelled chip only shows where its row binds).
-    fn render_hits_on(focus: PaneId, spell: crate::keyroute::SpellCtx) -> (String, crate::hit::HitMap) {
+    fn render_hits_on(
+        focus: PaneId,
+        spell: crate::keyroute::SpellCtx,
+    ) -> (String, crate::hit::HitMap) {
         let theme = Theme::for_terminal();
         let backend = TestBackend::new(120, FOOTER_HEIGHT);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1109,10 +1090,7 @@ mod tests {
             true,
         );
         assert_eq!(
-            chips
-                .iter()
-                .map(|(k, l, _)| format!("{k} {l}"))
-                .collect::<Vec<_>>(),
+            chips.iter().map(|(k, l, _)| format!("{k} {l}")).collect::<Vec<_>>(),
             vec!["enter search".to_string(), "esc done".to_string()]
         );
     }
@@ -1124,13 +1102,11 @@ mod tests {
         for focus in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
             let (_, hits) = render_hits(focus);
             assert!(
-                hits.rect_of(&Hit::FooterChip(Action::SaveRequest))
-                    .is_none(),
+                hits.rect_of(&Hit::FooterChip(Action::SaveRequest)).is_none(),
                 "{focus:?}: save moved to the app bar"
             );
             assert!(
-                hits.rect_of(&Hit::FooterChip(Action::DiscardChanges))
-                    .is_none(),
+                hits.rect_of(&Hit::FooterChip(Action::DiscardChanges)).is_none(),
                 "{focus:?}: discard moved to the app bar"
             );
         }
@@ -1156,9 +1132,7 @@ mod tests {
             && *l == "vars"
             && *a == Some(Action::OpenVarPicker { completing: false })));
         assert!(
-            !chips
-                .iter()
-                .any(|(_, _, a)| *a == Some(Action::SaveRequest)),
+            !chips.iter().any(|(_, _, a)| *a == Some(Action::SaveRequest)),
             "save lives in the global right-side group, not the context chips"
         );
     }
@@ -1180,9 +1154,7 @@ mod tests {
             false,
         );
         assert!(
-            !chips
-                .iter()
-                .any(|(_, _, a)| *a == Some(Action::TableAddRow)),
+            !chips.iter().any(|(_, _, a)| *a == Some(Action::TableAddRow)),
             "add-row is inert while the address bar is focused"
         );
         assert!(chips.iter().any(|(k, l, a)| *k == "alt+y"
@@ -1206,15 +1178,11 @@ mod tests {
             false,
         );
         assert!(
-            chips
-                .iter()
-                .any(|(_, _, a)| *a == Some(Action::TableAddRow)),
+            chips.iter().any(|(_, _, a)| *a == Some(Action::TableAddRow)),
             "content focus keeps the add-row chip"
         );
         assert!(
-            !chips
-                .iter()
-                .any(|(_, _, a)| *a == Some(Action::ToggleInsecure)),
+            !chips.iter().any(|(_, _, a)| *a == Some(Action::ToggleInsecure)),
             "address-bar chips stay off the content-focus footer"
         );
     }
@@ -1262,9 +1230,7 @@ mod tests {
             false,
         );
         assert!(
-            !chips
-                .iter()
-                .any(|(_, l, a)| *l == "edit" && *a == Some(Action::FocusUrl)),
+            !chips.iter().any(|(_, l, a)| *l == "edit" && *a == Some(Action::FocusUrl)),
             "the method badge must not advertise the URL line's enter-edit chip: {chips:?}"
         );
     }
@@ -1334,9 +1300,7 @@ mod tests {
             false,
         );
         assert!(
-            chips
-                .iter()
-                .any(|(_, l, a)| *l == "enable" && *a == Some(Action::ToggleTableRow(2)))
+            chips.iter().any(|(_, l, a)| *l == "enable" && *a == Some(Action::ToggleTableRow(2)))
         );
 
         let chips = footer_chips(
@@ -1351,9 +1315,7 @@ mod tests {
             false,
         );
         assert!(
-            !chips
-                .iter()
-                .any(|(_, l, _)| *l == "disable" || *l == "enable" || *l == "delete"),
+            !chips.iter().any(|(_, l, _)| *l == "disable" || *l == "enable" || *l == "delete"),
             "no row selected: no row chips"
         );
     }
@@ -1378,7 +1340,9 @@ mod tests {
     /// The spelling context while the response is focused.
     fn response_spell() -> crate::keyroute::SpellCtx {
         crate::keyroute::SpellCtx {
-            surface: crate::keyroute::Surface::Response(crate::components::response::ViewMode::Pretty),
+            surface: crate::keyroute::Surface::Response(
+                crate::components::response::ViewMode::Pretty,
+            ),
             ..Default::default()
         }
     }
@@ -1428,10 +1392,7 @@ mod tests {
                 )
             })
             .unwrap();
-        assert!(
-            hits.rect_of(&Hit::FooterChip(Action::CycleTabs(1)))
-                .is_some()
-        );
+        assert!(hits.rect_of(&Hit::FooterChip(Action::CycleTabs(1))).is_some());
         assert!(
             hits.rect_of(&Hit::FooterChip(Action::OpenResponseSearch { backward: false }))
                 .is_some()
@@ -1472,19 +1433,13 @@ mod tests {
                 )
             })
             .unwrap();
-        assert!(
-            hits.rect_of(&Hit::FooterChip(Action::PromptNewRequest))
-                .is_some()
-        );
+        assert!(hits.rect_of(&Hit::FooterChip(Action::PromptNewRequest)).is_some());
         // The palette chip is right-aligned: after the last per-pane chip,
         // one gap column before the quit hint.
-        let palette = hits
-            .rect_of(&Hit::FooterChip(Action::OpenPalette))
-            .expect("palette chip registered");
+        let palette =
+            hits.rect_of(&Hit::FooterChip(Action::OpenPalette)).expect("palette chip registered");
         let quit = hits.rect_of(&Hit::FooterChip(Action::Quit)).unwrap();
-        let delete = hits
-            .rect_of(&Hit::FooterChip(Action::DeleteSelectedRequest))
-            .unwrap();
+        let delete = hits.rect_of(&Hit::FooterChip(Action::DeleteSelectedRequest)).unwrap();
         assert_eq!(palette.x + palette.width + 1, quit.x);
         assert!(
             delete.x + delete.width < palette.x,
@@ -1654,10 +1609,7 @@ mod tests {
         let plain_x = 1u16; // area.x + 1, the loop's starting column
         let plain_cell = buf.cell((plain_x + 1, 1)).unwrap();
         assert_eq!(plain_cell.symbol(), "e", "first letter of \"enter\"");
-        assert_eq!(
-            plain_cell.bg, theme.panel,
-            "non-clickable entry is unfilled"
-        );
+        assert_eq!(plain_cell.bg, theme.panel, "non-clickable entry is unfilled");
         assert_eq!(plain_cell.fg, theme.text_muted);
 
         // "a new" (PromptNewRequest) IS clickable: tinted key pill.
@@ -1709,13 +1661,8 @@ mod tests {
                 )
             })
             .unwrap();
-        let rect = hits
-            .rect_of(&Hit::FooterChip(Action::Quit))
-            .expect("quit hit registered");
-        assert!(
-            rect.x + rect.width >= 119,
-            "quit chip is right-aligned: {rect:?}"
-        );
+        let rect = hits.rect_of(&Hit::FooterChip(Action::Quit)).expect("quit hit registered");
+        assert!(rect.x + rect.width >= 119, "quit chip is right-aligned: {rect:?}");
         let buf = terminal.backend().buffer();
         let cell = buf.cell((rect.x + 1, mid_of(&rect))).unwrap();
         assert_eq!(cell.symbol(), "q");
@@ -1845,10 +1792,28 @@ mod tests {
             terminal
                 .draw(|f| {
                     draw_footer(
-                        f, f.area(), &theme, PaneId::Sidebar, false, false, None, false, false, None,
-                        JqBarState::Closed, false, None, true, true, status,
-                        crate::keyroute::SpellCtx::default(), &crate::keys::Keymap::default_bindings(),
-                        None, &mut hits, None, 1.0,
+                        f,
+                        f.area(),
+                        &theme,
+                        PaneId::Sidebar,
+                        false,
+                        false,
+                        None,
+                        false,
+                        false,
+                        None,
+                        JqBarState::Closed,
+                        false,
+                        None,
+                        true,
+                        true,
+                        status,
+                        crate::keyroute::SpellCtx::default(),
+                        &crate::keys::Keymap::default_bindings(),
+                        None,
+                        &mut hits,
+                        None,
+                        1.0,
                     )
                 })
                 .unwrap();

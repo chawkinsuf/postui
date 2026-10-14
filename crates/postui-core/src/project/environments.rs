@@ -41,9 +41,7 @@ impl Project {
     /// The indices of `list` the app displays, in order: the entries that
     /// name an environment the project actually has.
     fn env_slots(&self, list: &[String]) -> Vec<usize> {
-        (0..list.len())
-            .filter(|i| self.environments.contains(&list[*i]))
-            .collect()
+        (0..list.len()).filter(|i| self.environments.contains(&list[*i])).collect()
     }
 
     /// Re-lists from `meta` and disk; a listing that fails keeps the list
@@ -56,7 +54,11 @@ impl Project {
     }
 
     /// Moves `name` by `delta` among the displayed environments (a swap).
-    pub fn move_environment(&mut self, name: &str, delta: i32) -> Result<Option<ListChange>, Error> {
+    pub fn move_environment(
+        &mut self,
+        name: &str,
+        delta: i32,
+    ) -> Result<Option<ListChange>, Error> {
         let mut envs = self.env_write_list();
         let slots = self.env_slots(&envs);
         let Some(pos) = slots.iter().position(|i| envs[*i] == *name) else {
@@ -71,7 +73,9 @@ impl Project {
         let after: Vec<String> = slots.iter().map(|i| envs[*i].clone()).collect();
         let key = MergeKey::EnvOrder { name: name.to_string() };
         self.transaction_merging("move environment", key, |p| {
-            p.edit_project_toml(|doc| doc["environments"] = toml_edit::value(meta::slug_array(&envs)))?;
+            p.edit_project_toml(|doc| {
+                doc["environments"] = toml_edit::value(meta::slug_array(&envs))
+            })?;
             p.refresh_environments();
             Ok(())
         })?;
@@ -80,7 +84,10 @@ impl Project {
 
     /// Writes the whole displayed order as a drag left it. Refuses an
     /// order that is not exactly the displayed set.
-    pub fn set_environment_order(&mut self, displayed: &[String]) -> Result<Option<ListChange>, Error> {
+    pub fn set_environment_order(
+        &mut self,
+        displayed: &[String],
+    ) -> Result<Option<ListChange>, Error> {
         let mut envs = self.env_write_list();
         let slots = self.env_slots(&envs);
         let valid: Vec<String> = slots.iter().map(|i| envs[*i].clone()).collect();
@@ -100,7 +107,9 @@ impl Project {
             envs[*slot] = name.clone();
         }
         self.transaction("reorder environments", EntryMeta::default(), |p| {
-            p.edit_project_toml(|doc| doc["environments"] = toml_edit::value(meta::slug_array(&envs)))?;
+            p.edit_project_toml(|doc| {
+                doc["environments"] = toml_edit::value(meta::slug_array(&envs))
+            })?;
             p.refresh_environments();
             Ok(())
         })?;
@@ -302,7 +311,9 @@ impl Project {
         let slug = slug.to_string();
         self.transaction("set tls policy", EntryMeta::default(), |p| {
             p.edit_project_toml(|doc| match policy {
-                Some(pol) => meta::set_item_key(doc, meta::Kind::Environment, &slug, "tls", pol.as_str()),
+                Some(pol) => {
+                    meta::set_item_key(doc, meta::Kind::Environment, &slug, "tls", pol.as_str())
+                }
                 None => {
                     if let Some(it) = doc
                         .get_mut(meta::Kind::Environment.table())
@@ -321,8 +332,10 @@ impl Project {
     pub fn load_environment(&mut self, name: &str) -> Result<EnvData, Error> {
         let path = env_rel(name)?;
         let text = self.disk.read(&path)?.ok_or_else(|| Error::NotFound(name.to_string()))?;
-        let data = varmodel::parse_environment(&text).map_err(|e| Error::Parse { file: path.to_string(), error: e.to_string() })?;
-        varmodel::validate_env(&self.model, &data).map_err(|e| Error::Parse { file: path.to_string(), error: e.to_string() })?;
+        let data = varmodel::parse_environment(&text)
+            .map_err(|e| Error::Parse { file: path.to_string(), error: e.to_string() })?;
+        varmodel::validate_env(&self.model, &data)
+            .map_err(|e| Error::Parse { file: path.to_string(), error: e.to_string() })?;
         Ok(data)
     }
 
@@ -436,7 +449,10 @@ mod tests {
         );
         assert!(p.set_environment_order(&["qa".into(), "dev".into()]).unwrap().is_none());
         assert!(matches!(p.set_environment_order(&["qa".into()]), Err(Error::NotFound(_))));
-        assert!(matches!(p.set_environment_order(&["qa".into(), "nope".into()]), Err(Error::NotFound(_))));
+        assert!(matches!(
+            p.set_environment_order(&["qa".into(), "nope".into()]),
+            Err(Error::NotFound(_))
+        ));
         assert_eq!(p.journal_len(), 1, "a drag never merges");
     }
 
@@ -507,7 +523,10 @@ mod tests {
         assert!(dir.path().join("environments/development.toml").is_file());
         assert!(!dir.path().join("environments/dev.toml").exists());
         assert_eq!(p.active_env(), Some("development"));
-        assert_eq!(p.secrets().get("development").and_then(|m| m.get("token")).map(String::as_str), Some("s3cret"));
+        assert_eq!(
+            p.secrets().get("development").and_then(|m| m.get("token")).map(String::as_str),
+            Some("s3cret")
+        );
         assert!(p.secrets().get("dev").is_none());
         assert_eq!(p.selections_for("development").get("region").map(String::as_str), Some("east"));
         assert!(read(&dir, ".local/secrets.toml").unwrap().contains("[development]"));

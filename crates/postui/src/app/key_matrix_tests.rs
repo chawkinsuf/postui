@@ -173,20 +173,24 @@ struct Case {
     undo: bool,
 }
 
+#[rustfmt::skip]
 const fn vim(id: &'static str, fixture: Fixture, keys: &'static str, expect: &'static [Expect]) -> Case {
     Case { id, profile: KeyProfile::Vim, fixture, keys, expect, undo: false }
 }
 
+#[rustfmt::skip]
 const fn arrows(id: &'static str, fixture: Fixture, keys: &'static str, expect: &'static [Expect]) -> Case {
     Case { id, profile: KeyProfile::Arrows, fixture, keys, expect, undo: false }
 }
 
 /// A case that changes data: after its checks, one undo (`u` in vim,
 /// ctrl+z in arrows) must restore the snapshot taken before its keys.
+#[rustfmt::skip]
 const fn vim_u(id: &'static str, fixture: Fixture, keys: &'static str, expect: &'static [Expect]) -> Case {
     Case { id, profile: KeyProfile::Vim, fixture, keys, expect, undo: true }
 }
 
+#[rustfmt::skip]
 const fn arrows_u(id: &'static str, fixture: Fixture, keys: &'static str, expect: &'static [Expect]) -> Case {
     Case { id, profile: KeyProfile::Arrows, fixture, keys, expect, undo: true }
 }
@@ -194,6 +198,7 @@ const fn arrows_u(id: &'static str, fixture: Fixture, keys: &'static str, expect
 use Expect::*;
 use Fixture::*;
 
+#[rustfmt::skip]
 const CASES: &[Case] = &[
     vim("L.move", SidebarThree, "j", &[SidebarSel("main/gamma")]),
     vim("L.move", SidebarThree, "k", &[SidebarSel("main/alpha")]),
@@ -591,10 +596,16 @@ pub(super) fn build(f: Fixture) -> App {
     match f {
         SidebarThree | SidebarFolder | SidebarThreeBetaOpen | ConfirmYesNo => {
             for slug in ["main/alpha", "main/beta", "main/gamma"] {
-                postui_core::fixtures::save_request(app.proj().root(), slug, &req("https://x/1")).unwrap();
+                postui_core::fixtures::save_request(app.proj().root(), slug, &req("https://x/1"))
+                    .unwrap();
             }
             if matches!(f, SidebarFolder) {
-                postui_core::fixtures::save_request(app.proj().root(), "main/f/inner", &req("https://x/1")).unwrap();
+                postui_core::fixtures::save_request(
+                    app.proj().root(),
+                    "main/f/inner",
+                    &req("https://x/1"),
+                )
+                .unwrap();
             }
             app.update(Action::RefreshSidebar);
             if matches!(f, SidebarThreeBetaOpen) {
@@ -671,7 +682,10 @@ pub(super) fn build(f: Fixture) -> App {
                 items[0] = format!("\"{}\"", "x".repeat(300));
             }
             let (body, content_type) = if matches!(f, ResponseText) {
-                ((1..=100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n"), "text/plain")
+                (
+                    (1..=100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n"),
+                    "text/plain",
+                )
             } else {
                 (format!("[{}]", items.join(",")), "application/json")
             };
@@ -702,7 +716,12 @@ pub(super) fn build(f: Fixture) -> App {
                 app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
                 draw(&mut app);
                 let v = app.session.response.view().expect("the response is ready");
-                assert!(v.cursor > 0 && v.h_scroll > 0, "the cursor {} and the scroll {}", v.cursor, v.h_scroll);
+                assert!(
+                    v.cursor > 0 && v.h_scroll > 0,
+                    "the cursor {} and the scroll {}",
+                    v.cursor,
+                    v.h_scroll
+                );
             }
         }
         ManageEnvs | ManageEnvDetail => {
@@ -789,18 +808,26 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
             matches!(app.sidebar.selected_key(), Some(crate::components::sidebar::RowKey::Folder(p)) if p == path)
         }
         TableRow(n) => app.editor.table.selected == Some(n),
-        TableCol(n) => usize::from(app.editor.table.col == crate::components::table_editor::Col::Value) == n,
+        TableCol(n) => {
+            usize::from(app.editor.table.col == crate::components::table_editor::Col::Value) == n
+        }
         TableLen(n) => app.editor.headers.len() == n,
         ResponseLine(n) => app.session.response.view().is_some_and(|v| v.cursor == n),
-        ResponseLast => app.session.response.view().is_some_and(|v| v.cursor + 1 == v.visible_len()),
+        ResponseLast => {
+            app.session.response.view().is_some_and(|v| v.cursor + 1 == v.visible_len())
+        }
         FocusIs(p) => app.focus == p,
         EditorTabIs(t) => app.editor.active_tab == t,
         ResponseModeIs(m) => app.session.response.view().is_some_and(|v| v.mode == m),
         ManageTabIs(t) => app.manage.tab == t,
         ResponseVisible(n) => app.session.response.view().is_some_and(|v| v.visible_len() == n),
-        ResponsePaged => app.session.response.view().is_some_and(|v| v.scroll > 0 && v.cursor == v.scroll),
+        ResponsePaged => {
+            app.session.response.view().is_some_and(|v| v.scroll > 0 && v.cursor == v.scroll)
+        }
         ResponseTop(n) => app.session.response.view().is_some_and(|v| v.scroll == n),
-        ResponseBottom(n) => app.session.response.view().is_some_and(|v| v.scroll + v.height() - 1 == n),
+        ResponseBottom(n) => {
+            app.session.response.view().is_some_and(|v| v.scroll + v.height() - 1 == n)
+        }
         Unnamed(s) => app.vim.glue.unnamed_text() == s,
         ManageCursor(n) => app.manage.list.cursor == n,
         ManageFocus(f) => app.manage.list.focus == f,
@@ -812,7 +839,8 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
         SettingsRow(n) => app.settings.cursor == n,
         Sub(s) => app.focus == PaneId::Editor && app.editor.sub_focus == s,
         VarSel(name) => {
-            app.varmanager.left_rows.get(app.varmanager.left_cursor).and_then(VmRow::name) == Some(name)
+            app.varmanager.left_rows.get(app.varmanager.left_cursor).and_then(VmRow::name)
+                == Some(name)
         }
         VmFocusIs(f) => app.varmanager.focus == f,
         GridCell(row, col) => app.varmanager.grid.cursor == (row, col),
@@ -845,7 +873,9 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
             .eq(names.iter().copied()),
         OptionCount(n) => {
             app.project()
-                .and_then(|p| postui_core::varmodel::options_of(p.variables(), p.env_data(), "user"))
+                .and_then(|p| {
+                    postui_core::varmodel::options_of(p.variables(), p.env_data(), "user")
+                })
                 .map_or(0, |o| o.len())
                 == n
         }
@@ -859,8 +889,12 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
         NoQuit => !app.should_quit,
         Dirty(d) => app.editor.is_dirty() == d,
         UrlText(t) => app.editor.url.text() == t,
-        PalettePinned(name) => matches!(app.modals.top(), Some(Modal::Palette(p)) if p.pinned().map(|r| r.name) == Some(name)),
-        PaletteRefused(t) => matches!(app.modals.top(), Some(Modal::Palette(p)) if p.refused() == Some(t)),
+        PalettePinned(name) => {
+            matches!(app.modals.top(), Some(Modal::Palette(p)) if p.pinned().map(|r| r.name) == Some(name))
+        }
+        PaletteRefused(t) => {
+            matches!(app.modals.top(), Some(Modal::Palette(p)) if p.refused() == Some(t))
+        }
         ModalOpen => !app.modals.is_empty(),
         ScreenIs(s) => app.screen == s,
         BodyHl(on) => app.vim.search_memory.hlsearch() == on,
@@ -976,7 +1010,10 @@ fn run(case: &Case) -> Result<(), String> {
         feed(&mut app, if case.profile == KeyProfile::Vim { "u" } else { "<C-z>" });
         let after = snapshot(&app);
         if after != before {
-            return Err(format!("undo did not restore exactly:\n{}", snapshot_diff(&before, &after)));
+            return Err(format!(
+                "undo did not restore exactly:\n{}",
+                snapshot_diff(&before, &after)
+            ));
         }
     }
     Ok(())
@@ -986,7 +1023,8 @@ fn run(case: &Case) -> Result<(), String> {
 pub(super) fn snapshot_diff(before: &Snapshot, after: &Snapshot) -> String {
     let text = |b: Option<&Vec<u8>>| b.map(|b| String::from_utf8_lossy(b).into_owned());
     let mut out = Vec::new();
-    let paths: std::collections::BTreeSet<&String> = before.files.keys().chain(after.files.keys()).collect();
+    let paths: std::collections::BTreeSet<&String> =
+        before.files.keys().chain(after.files.keys()).collect();
     for path in paths {
         let (b, a) = (before.files.get(path), after.files.get(path));
         if b != a {
@@ -1119,7 +1157,10 @@ fn every_manage_list_advertises_its_way_back() {
             let mut app = build(f);
             app.use_profile(profile);
             draw(&mut app);
-            assert!(app.hits.rect_of(&Hit::FooterChip(Action::CloseScreen)).is_none(), "{profile:?} {f:?}");
+            assert!(
+                app.hits.rect_of(&Hit::FooterChip(Action::CloseScreen)).is_none(),
+                "{profile:?} {f:?}"
+            );
         }
     }
 }
@@ -1150,7 +1191,12 @@ fn a_refused_counted_put_toasts_once() {
     draw(&mut app);
     app.yank = crate::yank::Register::Request("auth/login".into());
     feed(&mut app, "3p");
-    let n = app.toasts.messages().iter().filter(|m| m.contains("was yanked from another space")).count();
+    let n = app
+        .toasts
+        .messages()
+        .iter()
+        .filter(|m| m.contains("was yanked from another space"))
+        .count();
     assert_eq!(n, 1, "{:?}", app.toasts.messages());
 }
 
@@ -1161,7 +1207,8 @@ fn a_counted_put_that_works_makes_every_copy_as_one_undo_step() {
     let mut app = build(SidebarThree);
     app.use_profile(KeyProfile::Vim);
     draw(&mut app);
-    let requests = |app: &App| app.sidebar.rows.iter().filter(|r| matches!(r, Row::Request { .. })).count();
+    let requests =
+        |app: &App| app.sidebar.rows.iter().filter(|r| matches!(r, Row::Request { .. })).count();
     feed(&mut app, "yy3p");
     assert_eq!(requests(&app), 6, "{:?}", app.sidebar.rows);
     feed(&mut app, "u");
@@ -1175,9 +1222,17 @@ fn every_shipped_key_list_row_has_a_case() {
         let cases: Vec<&Case> = CASES.iter().filter(|c| c.id == row.id).collect();
         match row.status {
             Status::Ship => {
-                assert!(cases.iter().any(|c| c.profile == KeyProfile::Vim), "{} has no vim case", row.id);
+                assert!(
+                    cases.iter().any(|c| c.profile == KeyProfile::Vim),
+                    "{} has no vim case",
+                    row.id
+                );
                 if row.arrows {
-                    assert!(cases.iter().any(|c| c.profile == KeyProfile::Arrows), "{} has no arrows case", row.id);
+                    assert!(
+                        cases.iter().any(|c| c.profile == KeyProfile::Arrows),
+                        "{} has no arrows case",
+                        row.id
+                    );
                 }
             }
             Status::Out => assert!(
@@ -1189,7 +1244,11 @@ fn every_shipped_key_list_row_has_a_case() {
         }
     }
     for c in CASES {
-        assert!(keylist::KEY_LIST.iter().any(|r| r.id == c.id), "a case names an unknown row: {}", c.id);
+        assert!(
+            keylist::KEY_LIST.iter().any(|r| r.id == c.id),
+            "a case names an unknown row: {}",
+            c.id
+        );
     }
 }
 
@@ -1210,7 +1269,9 @@ const SWEEP: [Fixture; 9] = [
 
 fn verb_row(profile: KeyProfile, surface: crate::keyroute::Surface, verb: Verb) -> bool {
     table::TABLE.iter().any(|b| {
-        b.profile.has(profile) && b.on.has(surface) && matches!(b.intent, Intent::Verb(v) if v.kind() == verb.kind())
+        b.profile.has(profile)
+            && b.on.has(surface)
+            && matches!(b.intent, Intent::Verb(v) if v.kind() == verb.kind())
     })
 }
 
@@ -1226,19 +1287,26 @@ fn every_action_is_keyboard_reachable_in_both_profiles() {
         let surface = app.surface();
         for verb in Verb::ALL {
             let Some(action) = app.selection_action(surface, verb) else { continue };
-            assert!(verb_row(KeyProfile::Arrows, surface, verb), "{f:?}: arrows has no key for {verb:?}");
+            assert!(
+                verb_row(KeyProfile::Arrows, surface, verb),
+                "{f:?}: arrows has no key for {verb:?}"
+            );
             if verb_row(KeyProfile::Vim, surface, verb) {
                 vim_verb_actions.push(action);
             } else {
                 // Spec §5.4: the other verbs are ex verbs in vim (plan M2 Deviation 9's list is empty now).
-                assert!(crate::keyroute::ex::reaches(verb), "{f:?}: vim reaches {verb:?} neither by a row nor by an ex verb");
+                assert!(
+                    crate::keyroute::ex::reaches(verb),
+                    "{f:?}: vim reaches {verb:?} neither by a row nor by an ex verb"
+                );
                 vim_verb_actions.push(action);
             }
         }
     }
     let arrows = crate::keys::Keymap::default_bindings_for(KeyProfile::Arrows);
     let vim = crate::keys::Keymap::default_bindings_for(KeyProfile::Vim);
-    let palette: Vec<Action> = crate::components::palette::all_commands().into_iter().map(|c| c.action).collect();
+    let palette: Vec<Action> =
+        crate::components::palette::all_commands().into_iter().map(|c| c.action).collect();
     for (name, action) in crate::keys::named_actions() {
         if arrows.combo_for(name).is_none() {
             continue; // keys.toml-only: no profile has a default key (Deviation 9)
@@ -1294,17 +1362,28 @@ fn every_verb_chip_resolves_to_its_chip() {
                     Some(action.clone()),
                     "{profile:?} {f:?}: the {label} chip and its key disagree"
                 );
-                let Some(keys) = table::keys_for(profile, surface, &Action::OnSelection(verb)) else {
+                let Some(keys) = table::keys_for(profile, surface, &Action::OnSelection(verb))
+                else {
                     continue; // no key in this profile: the chip drops its keycap
                 };
-                let ctx = KeyCtx { profile, surface, field: app.field_caret(), user_bare: None, cap: usize::MAX, engine: None, answers: Vec::new() };
+                let ctx = KeyCtx {
+                    profile,
+                    surface,
+                    field: app.field_caret(),
+                    user_bare: None,
+                    cap: usize::MAX,
+                    engine: None,
+                    answers: Vec::new(),
+                };
                 let mut router = Router::default();
                 let mut last = Resolved::Declined;
                 for ev in crate::keyroute::notation::events(keys) {
                     last = router.resolve(ev, &ctx);
                 }
                 let ran: Vec<&Step> = match &last {
-                    Resolved::Run(steps) => steps.iter().filter(|s| !matches!(s, Step::OpenAs(_))).collect(),
+                    Resolved::Run(steps) => {
+                        steps.iter().filter(|s| !matches!(s, Step::OpenAs(_))).collect()
+                    }
                     _ => Vec::new(),
                 };
                 assert!(
@@ -1327,7 +1406,19 @@ fn every_verb_chip_resolves_to_its_chip() {
 fn every_painted_keycap_resolves_to_its_chip() {
     use crate::keyroute::spell::{Key, glyphs, keycap, pair, spell};
     use crate::keyroute::{FieldSpell, KeyCtx, Resolved, Router, Step, ex};
-    let fixtures = [SidebarThree, TableThreeHeaders, UrlLine, Body, ResponseLines, ManageEnvs, ManageSpaces, VarList, VarGrid, VarForm, Settings];
+    let fixtures = [
+        SidebarThree,
+        TableThreeHeaders,
+        UrlLine,
+        Body,
+        ResponseLines,
+        ManageEnvs,
+        ManageSpaces,
+        VarList,
+        VarGrid,
+        VarForm,
+        Settings,
+    ];
     for profile in [KeyProfile::Vim, KeyProfile::Arrows] {
         let mut checked = 0;
         // Each fixture as built, and in vim the URL line opened and Esc'd
@@ -1350,7 +1441,8 @@ fn every_painted_keycap_resolves_to_its_chip() {
             // One action's spelling is honest when it is reached one of the three ways.
             let honest = |app: &App, action: &Action, spelled: &str| -> bool {
                 if let Some(keys) = match at.field {
-                    FieldSpell::Normal(class) => table::keys_for_class(profile, class, action).or(table::keys_for(profile, surface, action)),
+                    FieldSpell::Normal(class) => table::keys_for_class(profile, class, action)
+                        .or(table::keys_for(profile, surface, action)),
                     _ => table::keys_for(profile, surface, action),
                 } {
                     assert_eq!(spelled, crate::keyroute::notation::display(keys));
@@ -1371,9 +1463,14 @@ fn every_painted_keycap_resolves_to_its_chip() {
                     let Resolved::Run(steps) = last else { return false };
                     return steps.iter().any(|s| match (s, action) {
                         (Step::Action(a), _) if a == action => true,
-                        (Step::Action(Action::GoTab { to: crate::action::TabTo::By(d), .. }), Action::CycleTabs(c)) => *d == i64::from(*c),
+                        (
+                            Step::Action(Action::GoTab { to: crate::action::TabTo::By(d), .. }),
+                            Action::CycleTabs(c),
+                        ) => *d == i64::from(*c),
                         // The engine hands `u`/ctrl+r on from idle Normal.
-                        (Step::Engine(_), Action::Undo | Action::Redo) => matches!(at.field, FieldSpell::Normal(_)),
+                        (Step::Engine(_), Action::Undo | Action::Redo) => {
+                            matches!(at.field, FieldSpell::Normal(_))
+                        }
                         _ => false,
                     });
                 }
@@ -1388,7 +1485,10 @@ fn every_painted_keycap_resolves_to_its_chip() {
             for (key, label, _) in chips(&app) {
                 let Some(shown) = keycap(&key, at, &app.keymap) else { continue };
                 let ok = match &key {
-                    Key::Of(a) => honest(&app, a, &spell(at, a, &app.keymap).unwrap()) && shown == glyphs(&spell(at, a, &app.keymap).unwrap()),
+                    Key::Of(a) => {
+                        honest(&app, a, &spell(at, a, &app.keymap).unwrap())
+                            && shown == glyphs(&spell(at, a, &app.keymap).unwrap())
+                    }
                     Key::OneOf(a, b) => {
                         let a_s = spell(at, a, &app.keymap);
                         let (action, s) = match a_s {
@@ -1398,29 +1498,46 @@ fn every_painted_keycap_resolves_to_its_chip() {
                         honest(&app, action, &s) && shown == glyphs(&s)
                     }
                     Key::Pair(a, b) => {
-                        let (sa, sb) = (spell(at, a, &app.keymap).unwrap(), spell(at, b, &app.keymap).unwrap());
-                        honest(&app, a, &sa) && honest(&app, b, &sb) && shown == pair(&glyphs(&sa), &glyphs(&sb))
+                        let (sa, sb) = (
+                            spell(at, a, &app.keymap).unwrap(),
+                            spell(at, b, &app.keymap).unwrap(),
+                        );
+                        honest(&app, a, &sa)
+                            && honest(&app, b, &sb)
+                            && shown == pair(&glyphs(&sa), &glyphs(&sb))
                     }
                     Key::Quit { .. } => {
                         shown == "q" && profile == KeyProfile::Arrows
-                            || shown == ":q" && matches!(ex::resolve("q", &scope), ex::Resolved::Pinned(_))
-                            || Some(shown.as_str()) == spell(at, &Action::Quit, &app.keymap).as_deref().map(|_| "^C")
+                            || shown == ":q"
+                                && matches!(ex::resolve("q", &scope), ex::Resolved::Pinned(_))
+                            || Some(shown.as_str())
+                                == spell(at, &Action::Quit, &app.keymap).as_deref().map(|_| "^C")
                     }
                     Key::Send { .. } => {
                         shown == "\u{21e7}enter"
                             || shown == "^R" && profile == KeyProfile::Arrows
-                            || honest(&app, &Action::Send, &spell(at, &Action::Send, &app.keymap).unwrap())
+                            || honest(
+                                &app,
+                                &Action::Send,
+                                &spell(at, &Action::Send, &app.keymap).unwrap(),
+                            )
                     }
                     Key::OrRow(named, a) => shown == *named || honest(&app, a, &shown),
                     Key::Named(_) | Key::Nav(_) | Key::Answer(_) | Key::Pick => continue,
                 };
-                assert!(ok, "{profile:?} {f:?} {prelude:?}: the {label} chip paints {shown:?}, which does not run its action");
+                assert!(
+                    ok,
+                    "{profile:?} {f:?} {prelude:?}: the {label} chip paints {shown:?}, which does not run its action"
+                );
                 checked += 1;
             }
         }
         assert!(checked >= 15, "{profile:?}: only {checked} keycaps were checked");
         if profile == KeyProfile::Vim {
-            assert!(normal_seen, "no vim state reached a field's idle Normal: FieldSpell::Normal went unchecked");
+            assert!(
+                normal_seen,
+                "no vim state reached a field's idle Normal: FieldSpell::Normal went unchecked"
+            );
         }
     }
 }

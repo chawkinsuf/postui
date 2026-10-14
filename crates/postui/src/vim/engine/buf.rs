@@ -152,7 +152,8 @@ impl TextBuf for OneLineBuf<'_> {
     /// (`LineInput::vim_visual`), so it is never read back as one.
     fn gui_selection(&self) -> Option<GuiSel> {
         let (start, end) = self.0.selection()?;
-        let (anchor, head) = if self.0.cursor() == end { (start, end - 1) } else { (end - 1, start) };
+        let (anchor, head) =
+            if self.0.cursor() == end { (start, end - 1) } else { (end - 1, start) };
         Some(GuiSel { anchor: Pos::new(0, anchor), head: Pos::new(0, head) })
     }
 
@@ -402,7 +403,8 @@ mod tests {
         assert_eq!(state.selection, None);
         assert!(state.highlights.is_empty());
         assert_eq!(visual, Some((Index2::new(0, 2), Index2::new(1, 1))));
-        BodyBuf::new(&mut state, &mut visual).show(Paint::Visual { anchor: Pos::new(2, 1), line: true });
+        BodyBuf::new(&mut state, &mut visual)
+            .show(Paint::Visual { anchor: Pos::new(2, 1), line: true });
         assert_eq!(visual, Some((Index2::new(1, 0), Index2::new(2, 2))));
         BodyBuf::new(&mut state, &mut visual).show(Paint::Insert);
         assert_eq!(state.mode, EditorMode::Insert);
@@ -416,7 +418,10 @@ mod tests {
         input.begin_mouse_selection();
         input.extend_mouse_selection_to(4);
         let mut b = OneLineBuf::new(&mut input);
-        assert_eq!(b.gui_selection(), Some(GuiSel { anchor: Pos::new(0, 1), head: Pos::new(0, 3) }));
+        assert_eq!(
+            b.gui_selection(),
+            Some(GuiSel { anchor: Pos::new(0, 1), head: Pos::new(0, 3) })
+        );
         b.clear_gui_selection();
         assert_eq!(b.gui_selection(), None);
 
@@ -433,7 +438,11 @@ mod tests {
         let mut input = LineInput::new("abcdef");
         input.set_cursor(1);
         input.set_visual(Some((3, VisualShape::Char)));
-        assert_eq!(OneLineBuf::new(&mut input).gui_selection(), None, "the engine's own paint is not a GUI selection");
+        assert_eq!(
+            OneLineBuf::new(&mut input).gui_selection(),
+            None,
+            "the engine's own paint is not a GUI selection"
+        );
 
         let mut state = EditorState::new(Lines::from("abc\ndef"));
         state.cursor = Index2::new(0, 1);
@@ -441,7 +450,10 @@ mod tests {
         state.selection.as_mut().unwrap().end = Index2::new(1, 2);
         let mut visual = None;
         let mut b = BodyBuf::new(&mut state, &mut visual);
-        assert_eq!(b.gui_selection(), Some(GuiSel { anchor: Pos::new(0, 1), head: Pos::new(1, 2) }));
+        assert_eq!(
+            b.gui_selection(),
+            Some(GuiSel { anchor: Pos::new(0, 1), head: Pos::new(1, 2) })
+        );
         b.clear_gui_selection();
         assert_eq!(state.selection, None);
     }

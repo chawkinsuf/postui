@@ -445,11 +445,7 @@ impl HitMap {
 
     /// The scrollbar track drawn for `pane` on the last frame, if any.
     pub fn track_of(&self, pane: PaneId) -> Option<Rect> {
-        self.tracks
-            .iter()
-            .rev()
-            .find(|(p, _)| *p == pane)
-            .map(|(_, r)| *r)
+        self.tracks.iter().rev().find(|(p, _)| *p == pane).map(|(_, r)| *r)
     }
 
     /// Records the full horizontal scrollbar row drawn for `pane` this
@@ -461,11 +457,7 @@ impl HitMap {
     /// The horizontal scrollbar track drawn for `pane` on the last frame,
     /// if any.
     pub fn h_track_of(&self, pane: PaneId) -> Option<Rect> {
-        self.h_tracks
-            .iter()
-            .rev()
-            .find(|(p, _)| *p == pane)
-            .map(|(_, r)| *r)
+        self.h_tracks.iter().rev().find(|(p, _)| *p == pane).map(|(_, r)| *r)
     }
 
     pub fn register(&mut self, rect: Rect, hit: Hit) {
@@ -493,19 +485,13 @@ impl HitMap {
     /// was anchored (a token can be drawn more than once). Borrows, so
     /// the per-frame check allocates nothing.
     pub fn var_token_drawn_at(&self, rect: Rect, name: &str) -> bool {
-        self.regions
-            .iter()
-            .any(|(r, h)| *r == rect && matches!(h, Hit::VarToken(n) if n == name))
+        self.regions.iter().any(|(r, h)| *r == rect && matches!(h, Hit::VarToken(n) if n == name))
     }
 
     /// Every rect `hit` was registered over this frame, in draw order.
     #[cfg(test)]
     pub fn rects_of(&self, hit: &Hit) -> Vec<Rect> {
-        self.regions
-            .iter()
-            .filter(|(_, h)| h == hit)
-            .map(|(r, _)| *r)
-            .collect()
+        self.regions.iter().filter(|(_, h)| h == hit).map(|(r, _)| *r).collect()
     }
 
     /// Topmost hit containing the point, skipping [`Hit::VarToken`]
@@ -562,11 +548,7 @@ impl HitMap {
 
     /// Last-registered rect for `hit` — the test helper click tests use.
     pub fn rect_of(&self, hit: &Hit) -> Option<Rect> {
-        self.regions
-            .iter()
-            .rev()
-            .find(|(_, h)| h == hit)
-            .map(|(rect, _)| *rect)
+        self.regions.iter().rev().find(|(_, h)| h == hit).map(|(rect, _)| *rect)
     }
 }
 
@@ -653,9 +635,7 @@ pub fn draw_scrollbar(
     let track_style = Style::default().fg(theme.text_muted);
     frame.render_widget(
         Paragraph::new(
-            (0..track.height)
-                .map(|_| Line::styled("\u{2502}", track_style))
-                .collect::<Vec<_>>(),
+            (0..track.height).map(|_| Line::styled("\u{2502}", track_style)).collect::<Vec<_>>(),
         ),
         track,
     );
@@ -670,16 +650,10 @@ pub fn draw_scrollbar(
     } else {
         Style::default().fg(theme.accent)
     };
-    let thumb = Rect {
-        y: track.y + top,
-        height,
-        ..track
-    };
+    let thumb = Rect { y: track.y + top, height, ..track };
     frame.render_widget(
         Paragraph::new(
-            (0..height)
-                .map(|_| Line::styled("\u{2588}", thumb_style))
-                .collect::<Vec<_>>(),
+            (0..height).map(|_| Line::styled("\u{2588}", thumb_style)).collect::<Vec<_>>(),
         ),
         thumb,
     );
@@ -687,22 +661,12 @@ pub fn draw_scrollbar(
     // Page segments first so the thumb wins where they would overlap.
     let page = spec.viewport.min(i16::MAX as usize) as i16;
     if top > 0 {
-        hits.register(
-            Rect {
-                height: top,
-                ..track
-            },
-            Hit::ScrollbarTrack(spec.pane, -page),
-        );
+        hits.register(Rect { height: top, ..track }, Hit::ScrollbarTrack(spec.pane, -page));
     }
     let below_y = thumb.y + height;
     if below_y < track.y + track.height {
         hits.register(
-            Rect {
-                y: below_y,
-                height: track.y + track.height - below_y,
-                ..track
-            },
+            Rect { y: below_y, height: track.y + track.height - below_y, ..track },
             Hit::ScrollbarTrack(spec.pane, page),
         );
     }
@@ -724,11 +688,7 @@ mod tests {
         assert_eq!(m.hit_at(3, 2), Some(&Hit::SidebarRow(0)));
         assert_eq!(m.hit_at(0, 0), Some(&Hit::Pane(PaneId::Sidebar)));
         assert_eq!(m.hit_at(50, 50), None);
-        assert_eq!(
-            m.pane_at(3, 2),
-            Some(PaneId::Sidebar),
-            "pane_at sees through overlays"
-        );
+        assert_eq!(m.pane_at(3, 2), Some(PaneId::Sidebar), "pane_at sees through overlays");
         assert_eq!(m.rect_of(&Hit::SidebarRow(0)), Some(Rect::new(2, 2, 3, 1)));
     }
 
@@ -738,12 +698,7 @@ mod tests {
     }
 
     fn spec(offset: usize) -> ScrollbarSpec {
-        ScrollbarSpec {
-            pane: PaneId::Sidebar,
-            offset,
-            content: 100,
-            viewport: 10,
-        }
+        ScrollbarSpec { pane: PaneId::Sidebar, offset, content: 100, viewport: 10 }
     }
 
     #[test]
@@ -762,29 +717,16 @@ mod tests {
         );
 
         // Thumb height tracks the visible fraction, and never vanishes.
-        let half = ScrollbarSpec {
-            pane: PaneId::Sidebar,
-            offset: 0,
-            content: 40,
-            viewport: 20,
-        };
+        let half = ScrollbarSpec { pane: PaneId::Sidebar, offset: 0, content: 40, viewport: 20 };
         assert_eq!(thumb_geometry(&half, 10).1, 5);
-        let tiny = ScrollbarSpec {
-            pane: PaneId::Sidebar,
-            offset: 0,
-            content: 100_000,
-            viewport: 10,
-        };
+        let tiny =
+            ScrollbarSpec { pane: PaneId::Sidebar, offset: 0, content: 100_000, viewport: 10 };
         assert_eq!(thumb_geometry(&tiny, 10).1, 1, "min thumb height is 1");
 
         // Every reachable thumb top maps to an offset that redraws it there.
         for top in 0..=9u16 {
             let offset = offset_for_thumb_top(&spec(0), 10, top);
-            assert_eq!(
-                thumb_geometry(&spec(offset), 10).0,
-                top,
-                "round trip for thumb top {top}"
-            );
+            assert_eq!(thumb_geometry(&spec(offset), 10).0, top, "round trip for thumb top {top}");
         }
         assert_eq!(
             offset_for_thumb_top(&spec(0), 10, 9),
@@ -827,41 +769,20 @@ mod tests {
     #[test]
     fn pointer_shape_maps_background_and_modal_dismiss_regions_to_default() {
         assert_eq!(PointerShape::for_hit(None), PointerShape::Default);
-        assert_eq!(
-            PointerShape::for_hit(Some(&Hit::Pane(PaneId::Sidebar))),
-            PointerShape::Default
-        );
-        assert_eq!(
-            PointerShape::for_hit(Some(&Hit::ModalOutside)),
-            PointerShape::Default
-        );
-        assert_eq!(
-            PointerShape::for_hit(Some(&Hit::ModalBody)),
-            PointerShape::Default
-        );
+        assert_eq!(PointerShape::for_hit(Some(&Hit::Pane(PaneId::Sidebar))), PointerShape::Default);
+        assert_eq!(PointerShape::for_hit(Some(&Hit::ModalOutside)), PointerShape::Default);
+        assert_eq!(PointerShape::for_hit(Some(&Hit::ModalBody)), PointerShape::Default);
     }
 
     #[test]
     fn pointer_shape_maps_text_entry_surfaces_to_text() {
-        assert_eq!(
-            PointerShape::for_hit(Some(&Hit::UrlBar)),
-            PointerShape::Text
-        );
-        assert_eq!(
-            PointerShape::for_hit(Some(&Hit::BodyEditor)),
-            PointerShape::Text
-        );
+        assert_eq!(PointerShape::for_hit(Some(&Hit::UrlBar)), PointerShape::Text);
+        assert_eq!(PointerShape::for_hit(Some(&Hit::BodyEditor)), PointerShape::Text);
         // The response pane's selectable content: bare background
         // (Raw/Headers) and the Pretty view's rows — a click on either
         // anchors a selection sweep, so both I-beam.
-        assert_eq!(
-            PointerShape::for_hit(Some(&Hit::Pane(PaneId::Response))),
-            PointerShape::Text
-        );
-        assert_eq!(
-            PointerShape::for_hit(Some(&Hit::JsonRow(3))),
-            PointerShape::Text
-        );
+        assert_eq!(PointerShape::for_hit(Some(&Hit::Pane(PaneId::Response))), PointerShape::Text);
+        assert_eq!(PointerShape::for_hit(Some(&Hit::JsonRow(3))), PointerShape::Text);
     }
 
     #[test]
@@ -893,27 +814,14 @@ mod tests {
 
     #[test]
     fn scrollbar_is_skipped_when_content_fits() {
-        let fits = ScrollbarSpec {
-            pane: PaneId::Sidebar,
-            offset: 0,
-            content: 4,
-            viewport: 10,
-        };
+        let fits = ScrollbarSpec { pane: PaneId::Sidebar, offset: 0, content: 4, viewport: 10 };
         let theme = Theme::for_terminal();
         let backend = TestBackend::new(1, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = HitMap::default();
         terminal
             .draw(|f| {
-                draw_scrollbar(
-                    f,
-                    &mut hits,
-                    Rect::new(0, 0, 1, 10),
-                    &fits,
-                    None,
-                    false,
-                    &theme,
-                )
+                draw_scrollbar(f, &mut hits, Rect::new(0, 0, 1, 10), &fits, None, false, &theme)
             })
             .unwrap();
         assert_eq!(hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar)), None);

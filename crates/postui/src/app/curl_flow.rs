@@ -13,8 +13,7 @@ impl App {
             return true;
         }
         let Ok(text) = self.clipboard.read() else {
-            self.toasts
-                .push("clipboard doesn't hold a curl command", ToastKind::Error);
+            self.toasts.push("clipboard doesn't hold a curl command", ToastKind::Error);
             return true;
         };
         let batch = match postui_core::curl::parse(&text) {
@@ -55,10 +54,7 @@ impl App {
                 self.reseed_editor(None, postui_core::model::HttpRequest::default());
                 self.editor.saved = None;
                 self.vim_drop_body();
-                self.toasts.push(
-                    format!("Request discarded{}", self.undo_hint()),
-                    ToastKind::Info,
-                );
+                self.toasts.push(format!("Request discarded{}", self.undo_hint()), ToastKind::Info);
             }
         }
         self.push_curl_prompt(run);
@@ -114,9 +110,9 @@ impl App {
             .partition(|(n, _)| postui_core::varmodel::is_reserved(n));
         // An environment file that can't be read leaves the name to the
         // create, which refuses it and says why.
-        let (secrets, kept): (Vec<_>, Vec<_>) = variables
-            .into_iter()
-            .partition(|(n, _)| !self.project_mut().is_some_and(|p| p.variable_exists(n).unwrap_or(false)));
+        let (secrets, kept): (Vec<_>, Vec<_>) = variables.into_iter().partition(|(n, _)| {
+            !self.project_mut().is_some_and(|p| p.variable_exists(n).unwrap_or(false))
+        });
         // A paste's value not known is no news against the project's.
         let kept: Vec<(String, bool)> = kept
             .into_iter()
@@ -179,8 +175,7 @@ impl App {
         self.apply(Action::ReloadProjectFiles);
         let req = if live {
             if self.editor.url.text().trim().is_empty() {
-                self.toasts
-                    .push("cannot copy: URL is empty", ToastKind::Warning);
+                self.toasts.push("cannot copy: URL is empty", ToastKind::Warning);
                 return true;
             }
             self.editor.current_request()
@@ -188,8 +183,7 @@ impl App {
             let slug = slug.expect("a request that is not open has a slug");
             match self.project_mut().map(|p| p.read_request(&slug)) {
                 Some(Ok(r)) if r.url.trim().is_empty() => {
-                    self.toasts
-                        .push("cannot copy: URL is empty", ToastKind::Warning);
+                    self.toasts.push("cannot copy: URL is empty", ToastKind::Warning);
                     return true;
                 }
                 Some(Ok(r)) => r,

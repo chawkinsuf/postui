@@ -65,10 +65,7 @@ impl ThemeRegistry {
         for (file_name, text) in files {
             match parse_theme_text(&text) {
                 Ok((label, counterpart, seeds)) => {
-                    let name = file_name
-                        .strip_suffix(".toml")
-                        .unwrap_or(&file_name)
-                        .to_string();
+                    let name = file_name.strip_suffix(".toml").unwrap_or(&file_name).to_string();
                     customs.push(ThemeEntry {
                         label: label.unwrap_or_else(|| name.clone()),
                         counterpart: counterpart.or_else(|| conventional_counterpart(&name)),
@@ -157,10 +154,7 @@ fn conventional_counterpart(name: &str) -> Option<String> {
         _ => name
             .strip_suffix("-dark")
             .map(|base| format!("{base}-light"))
-            .or_else(|| {
-                name.strip_suffix("-light")
-                    .map(|base| format!("{base}-dark"))
-            }),
+            .or_else(|| name.strip_suffix("-light").map(|base| format!("{base}-dark"))),
     }
 }
 
@@ -187,14 +181,8 @@ fn parse_theme_text(text: &str) -> Result<(Option<String>, Option<String>, Seeds
         warning: color("warning")?,
         error: color("error")?,
     };
-    let label = value
-        .get("name")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let counterpart = value
-        .get("counterpart")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let label = value.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let counterpart = value.get("counterpart").and_then(|v| v.as_str()).map(|s| s.to_string());
     Ok((label, counterpart, seeds))
 }
 
@@ -232,14 +220,8 @@ mod tests {
                 "solarized-light",
             ]
         );
-        assert!(matches!(
-            r.get("terminal").unwrap().source,
-            ThemeSource::Terminal
-        ));
-        assert_eq!(
-            r.get("gruvbox-dark").unwrap().counterpart.as_deref(),
-            Some("gruvbox-light")
-        );
+        assert!(matches!(r.get("terminal").unwrap().source, ThemeSource::Terminal));
+        assert_eq!(r.get("gruvbox-dark").unwrap().counterpart.as_deref(), Some("gruvbox-light"));
         assert_eq!(r.get("terminal").unwrap().counterpart, None);
     }
 
@@ -252,26 +234,14 @@ mod tests {
         let seeds_body = "fg = \"#e2e2e6\"\naccent = \"#0178d4\"\n\
              success = \"#9ece6a\"\nwarning = \"#e0af68\"\nerror = \"#f7768e\"\n";
         let (r, warnings) = ThemeRegistry::from_files(vec![
-            (
-                "zebra-dark.toml".into(),
-                format!("bg = \"#101418\"\n{seeds_body}"),
-            ),
-            (
-                "zebra-light.toml".into(),
-                format!("bg = \"#fafafa\"\n{seeds_body}"),
-            ),
+            ("zebra-dark.toml".into(), format!("bg = \"#101418\"\n{seeds_body}")),
+            ("zebra-light.toml".into(), format!("bg = \"#fafafa\"\n{seeds_body}")),
             (
                 "noir.toml".into(),
                 format!("counterpart = \"gruvbox-light\"\nbg = \"#000000\"\n{seeds_body}"),
             ),
-            (
-                "dangling-dark.toml".into(),
-                format!("bg = \"#000005\"\n{seeds_body}"),
-            ),
-            (
-                "lone.toml".into(),
-                format!("bg = \"#000009\"\n{seeds_body}"),
-            ),
+            ("dangling-dark.toml".into(), format!("bg = \"#000005\"\n{seeds_body}")),
+            ("lone.toml".into(), format!("bg = \"#000009\"\n{seeds_body}")),
         ]);
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(
@@ -279,10 +249,7 @@ mod tests {
             Some("zebra-light"),
             "stem convention pairs the two zebras"
         );
-        assert_eq!(
-            r.get("zebra-light").unwrap().counterpart.as_deref(),
-            Some("zebra-dark")
-        );
+        assert_eq!(r.get("zebra-light").unwrap().counterpart.as_deref(), Some("zebra-dark"));
         assert_eq!(
             r.get("noir").unwrap().counterpart.as_deref(),
             Some("gruvbox-light"),
@@ -315,11 +282,7 @@ mod tests {
         let r = ThemeRegistry::builtin();
         let mut ansi = [None; 16];
         ansi[4] = Some((1, 120, 212));
-        let q = QueriedColors {
-            bg: Some((16, 16, 20)),
-            fg: None,
-            ansi,
-        };
+        let q = QueriedColors { bg: Some((16, 16, 20)), fg: None, ansi };
         let t = r.resolve("terminal", &q).unwrap();
         assert_eq!(t.page, Color::Rgb(16, 16, 20));
         assert_eq!(t.accent, Color::Rgb(1, 120, 212));
@@ -350,21 +313,9 @@ mod tests {
             .filter(|e| matches!(e.source, ThemeSource::Custom(_)))
             .map(|e| e.name.as_str())
             .collect();
-        assert_eq!(
-            customs,
-            vec!["aardvark", "zebra"],
-            "customs after builtins, sorted"
-        );
-        assert_eq!(
-            r.get("aardvark").unwrap().label,
-            "Aard Vark",
-            "name key overrides the stem"
-        );
-        assert_eq!(
-            r.get("zebra").unwrap().label,
-            "zebra",
-            "label defaults to the stem"
-        );
+        assert_eq!(customs, vec!["aardvark", "zebra"], "customs after builtins, sorted");
+        assert_eq!(r.get("aardvark").unwrap().label, "Aard Vark", "name key overrides the stem");
+        assert_eq!(r.get("zebra").unwrap().label, "zebra", "label defaults to the stem");
         let t = r.resolve("zebra", &QueriedColors::default()).unwrap();
         assert_eq!(t.page, Color::Rgb(0x10, 0x14, 0x18));
     }
@@ -399,10 +350,7 @@ mod tests {
              success = \"#9ece6a\"\nwarning = \"#e0af68\"\nerror = \"#f7768e\"\n"
                 .into(),
         )]);
-        assert!(
-            warnings.is_empty(),
-            "shadowing is deliberate, no warning: {warnings:?}"
-        );
+        assert!(warnings.is_empty(), "shadowing is deliberate, no warning: {warnings:?}");
         assert_eq!(r.entries().len(), 9, "shadow replaces, not appends");
         assert_eq!(r.entries()[1].name, "dark", "position preserved");
         let t = r.resolve("dark", &QueriedColors::default()).unwrap();
@@ -418,11 +366,7 @@ mod tests {
         // Terminal entry: silent query falls back to the dark seeds...
         assert!(r.entry_is_dark(r.get("terminal").unwrap(), &q));
         // ...but a light queried background flips it.
-        let light = QueriedColors {
-            bg: Some((0xfa, 0xfa, 0xfa)),
-            fg: None,
-            ansi: [None; 16],
-        };
+        let light = QueriedColors { bg: Some((0xfa, 0xfa, 0xfa)), fg: None, ansi: [None; 16] };
         assert!(!r.entry_is_dark(r.get("terminal").unwrap(), &light));
     }
 

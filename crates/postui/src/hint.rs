@@ -109,12 +109,9 @@ fn manage_noun(tab: Option<crate::components::manage::ManageTab>) -> &'static st
 pub fn hint_for(hit: &Hit, keymap: &Keymap, ctx: &HintCtx) -> Option<String> {
     match hint_source(hit, ctx)? {
         Source::Text(s) => Some(s),
-        Source::Of(action) => Some(describe_action(
-            &action,
-            keymap,
-            !shows_its_own_keycap(hit),
-            ctx.spell,
-        )),
+        Source::Of(action) => {
+            Some(describe_action(&action, keymap, !shows_its_own_keycap(hit), ctx.spell))
+        }
     }
 }
 
@@ -171,9 +168,7 @@ fn describe_action(
             _ => cmd.description,
         };
         let description = short_description(action).unwrap_or(full);
-        let combo = with_key
-            .then(|| crate::keyroute::spell::spell(at, action, keymap))
-            .flatten();
+        let combo = with_key.then(|| crate::keyroute::spell::spell(at, action, keymap)).flatten();
         return match combo {
             Some(combo) => format!("{description} \u{b7} {combo}"),
             None => description.to_string(),
@@ -312,35 +307,28 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::HeaderSpaceCycle => text("Switch to the next space"),
         Hit::HeaderEnv => of(Action::OpenEnvChooser),
         Hit::HeaderEnvCycle => of(Action::CycleEnv(1)),
-        Hit::HeaderManage => text(if ctx.on {
-            "Close the Manage screen"
-        } else {
-            "Open the Manage screen"
-        }),
+        Hit::HeaderManage => {
+            text(if ctx.on { "Close the Manage screen" } else { "Open the Manage screen" })
+        }
         Hit::HeaderTheme => of(Action::OpenThemeChooser),
         // The row toggle's chip drives the same two-state control as the
         // row's own checkbox, so it says the same thing. Handled here
         // rather than through `describe_action`, which has no `ctx`.
-        Hit::FooterChip(Action::ToggleTableRow(_)) => text(if ctx.on {
-            "Disable this row"
-        } else {
-            "Enable this row"
-        }),
+        Hit::FooterChip(Action::ToggleTableRow(_)) => {
+            text(if ctx.on { "Disable this row" } else { "Enable this row" })
+        }
         Hit::FooterChip(action) => of(action.clone()),
 
         // -- Manage screen --
-        Hit::ManageNew => Some(Source::Text(format!(
-            "Create a new {}",
-            manage_noun(ctx.manage_tab)
-        ))),
-        Hit::ManageRename => Some(Source::Text(format!(
-            "Rename this {}",
-            manage_noun(ctx.manage_tab)
-        ))),
-        Hit::ManageDelete => Some(Source::Text(format!(
-            "Delete this {}",
-            manage_noun(ctx.manage_tab)
-        ))),
+        Hit::ManageNew => {
+            Some(Source::Text(format!("Create a new {}", manage_noun(ctx.manage_tab))))
+        }
+        Hit::ManageRename => {
+            Some(Source::Text(format!("Rename this {}", manage_noun(ctx.manage_tab))))
+        }
+        Hit::ManageDelete => {
+            Some(Source::Text(format!("Delete this {}", manage_noun(ctx.manage_tab))))
+        }
         Hit::ManageMoveAll => text("Move all requests to another space"),
 
         // -- Settings tab --
@@ -348,11 +336,9 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         // state it is currently in. `ctx.on` is the tick the user sees:
         // `ai_confirmed` is stored inverted from its row, which is
         // worded as the consent question.
-        Hit::SettingsControl(SettingsField::Animations) => text(if ctx.on {
-            "Turn eased transitions off"
-        } else {
-            "Turn eased transitions on"
-        }),
+        Hit::SettingsControl(SettingsField::Animations) => {
+            text(if ctx.on { "Turn eased transitions off" } else { "Turn eased transitions on" })
+        }
         Hit::SettingsControl(SettingsField::HoverHints) => text(if ctx.on {
             "Stop explaining hovered buttons"
         } else {
@@ -384,10 +370,9 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::SettingsFile { file, reset: false } => {
             Some(Source::Text(format!("Open {} in your editor", file.name())))
         }
-        Hit::SettingsFile { file, reset: true } => Some(Source::Text(format!(
-            "Reset {} to its defaults",
-            file.name()
-        ))),
+        Hit::SettingsFile { file, reset: true } => {
+            Some(Source::Text(format!("Reset {} to its defaults", file.name())))
+        }
         Hit::ManageEnvTls(None) => text("Let each request decide on TLS checks"),
         Hit::ManageEnvTls(Some(postui_core::project::TlsPolicy::Verify)) => {
             text("Always check TLS certificates here")
@@ -398,11 +383,9 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
 
         // -- Sidebar --
         Hit::SidebarNewRequest => of(Action::PromptNewRequest),
-        Hit::SidebarFolderArrow(_) => text(if ctx.on {
-            "Collapse this folder"
-        } else {
-            "Expand this folder"
-        }),
+        Hit::SidebarFolderArrow(_) => {
+            text(if ctx.on { "Collapse this folder" } else { "Expand this folder" })
+        }
 
         // -- Editor --
         // The button itself flips to "Cancel" on hover while a send is in
@@ -413,11 +396,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::SendButton => of(Action::Send),
         Hit::MethodSelector => of(Action::OpenMethodDropdown),
         Hit::CopyUrl => of(Action::CopyToClipboard(CopyTarget::Url)),
-        Hit::TableCheckbox(_) => text(if ctx.on {
-            "Disable this row"
-        } else {
-            "Enable this row"
-        }),
+        Hit::TableCheckbox(_) => text(if ctx.on { "Disable this row" } else { "Enable this row" }),
         Hit::TableCopy(_) => text("Copy this row's value"),
         Hit::TableDelete(_) => text("Delete this row"),
         Hit::SplitStop(stop) => text(match stop {
@@ -427,17 +406,13 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             SplitStop::ResponseBig => "Split 25/75",
             SplitStop::ResponseFull => "Response full size",
         }),
-        Hit::SplitStep(d) => text(if *d > 0 {
-            "Give the response more room"
-        } else {
-            "Give the editor more room"
-        }),
+        Hit::SplitStep(d) => {
+            text(if *d > 0 { "Give the response more room" } else { "Give the editor more room" })
+        }
         Hit::AutoHeaderCopy(_) => text("Copy this header's value"),
-        Hit::AutoHeaderReveal => text(if ctx.on {
-            "Hide the computed secrets"
-        } else {
-            "Show the computed secrets"
-        }),
+        Hit::AutoHeaderReveal => {
+            text(if ctx.on { "Hide the computed secrets" } else { "Show the computed secrets" })
+        }
 
         // -- Response --
         // The toolbar's three buttons act on the tab that is up, not on
@@ -445,11 +420,9 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         // `PromptSaveView`, where the palette's own copy/save commands
         // always take the body. So they say what the open tab holds
         // rather than borrowing those palette lines.
-        Hit::CopyBodyButton => text(if ctx.on {
-            "Copy the response headers"
-        } else {
-            "Copy the response body"
-        }),
+        Hit::CopyBodyButton => {
+            text(if ctx.on { "Copy the response headers" } else { "Copy the response body" })
+        }
         Hit::SaveBodyButton => text(if ctx.on {
             "Save the headers to a file"
         } else {
@@ -460,11 +433,9 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         } else {
             "Open the response body in your editor"
         }),
-        Hit::ResponseSearchButton => text(if ctx.on {
-            "Search the response headers"
-        } else {
-            "Search the response body"
-        }),
+        Hit::ResponseSearchButton => {
+            text(if ctx.on { "Search the response headers" } else { "Search the response body" })
+        }
         Hit::ResponseSearchNext => text("Go to the next match"),
         Hit::ResponseSearchPrev => text("Go to the previous match"),
         Hit::HeaderCopy(_) => text("Copy this header's value"),
@@ -477,16 +448,12 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         } else {
             "Show the dark themes instead"
         }),
-        Hit::PickerPrimary => text(if ctx.on {
-            "Save under the typed name"
-        } else {
-            "Open the shown folder"
-        }),
-        Hit::PickerHidden => text(if ctx.on {
-            "Hide the hidden files again"
-        } else {
-            "Show the hidden files too"
-        }),
+        Hit::PickerPrimary => {
+            text(if ctx.on { "Save under the typed name" } else { "Open the shown folder" })
+        }
+        Hit::PickerHidden => {
+            text(if ctx.on { "Hide the hidden files again" } else { "Show the hidden files too" })
+        }
         Hit::NewProjectBrowse => text("Browse for the project folder"),
         Hit::ConfirmChoice(_) => text("Answer with this choice"),
         Hit::KeymapChoice(crate::config::KeyProfile::Arrows) => text("Use arrows and Enter"),
@@ -504,16 +471,12 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::ConfigEditDiscard => text("Discard these edits"),
         Hit::ModalCancel => text("Cancel and close \u{b7} esc on the buttons"),
         Hit::ModalConfirm => text("Confirm and close \u{b7} enter"),
-        Hit::ModalChoiceArrow { dir, .. } => text(if *dir > 0 {
-            "Go to the next choice"
-        } else {
-            "Go to the previous choice"
-        }),
-        Hit::ModalRowToggle(_) => text(if ctx.on {
-            "Bring this field back"
-        } else {
-            "Remove this field"
-        }),
+        Hit::ModalChoiceArrow { dir, .. } => {
+            text(if *dir > 0 { "Go to the next choice" } else { "Go to the previous choice" })
+        }
+        Hit::ModalRowToggle(_) => {
+            text(if ctx.on { "Bring this field back" } else { "Remove this field" })
+        }
         Hit::ModalAddRow => text("Add another field"),
         Hit::ModalSharedToggle => text("Use the same options in every environment"),
         Hit::ModalRevealToggle => text(if ctx.on {
@@ -536,11 +499,9 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             TipEditVerb::Define => "Define this variable",
         }),
         Hit::TipCopy(_) => text("Copy this variable's value"),
-        Hit::TipReveal(_) => text(if ctx.on {
-            "Hide this secret's value"
-        } else {
-            "Show this secret's value"
-        }),
+        Hit::TipReveal(_) => {
+            text(if ctx.on { "Hide this secret's value" } else { "Show this secret's value" })
+        }
 
         // -- Variable Manager --
         Hit::VmNewVar => of(Action::PromptNewVar),
@@ -550,11 +511,9 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         } else {
             "Mark this variable as a secret"
         }),
-        Hit::VmRevealToggle => text(if ctx.on {
-            "Hide this secret's value"
-        } else {
-            "Show this secret's value"
-        }),
+        Hit::VmRevealToggle => {
+            text(if ctx.on { "Hide this secret's value" } else { "Show this secret's value" })
+        }
         Hit::VmRemoveEnvValue => text("Remove this environment's value"),
         Hit::VmRename => text(&format!("Rename this {}", ctx.vm_noun.label())),
         Hit::VmDelete => text(&format!("Delete this {}", ctx.vm_noun.label())),
@@ -581,20 +540,11 @@ mod tests {
     #[test]
     fn the_managers_rename_and_delete_name_what_is_open() {
         let keymap = Keymap::default_bindings();
-        for (noun, expected) in [
-            (VmNoun::Variable, "variable"),
-            (VmNoun::Selector, "selector"),
-        ] {
-            let ctx = HintCtx {
-                vm_noun: noun,
-                ..ctx()
-            };
+        for (noun, expected) in [(VmNoun::Variable, "variable"), (VmNoun::Selector, "selector")] {
+            let ctx = HintCtx { vm_noun: noun, ..ctx() };
             for hit in [Hit::VmRename, Hit::VmDelete] {
                 let h = hint_for(&hit, &keymap, &ctx).unwrap();
-                assert!(
-                    h.contains(expected),
-                    "{hit:?} with {noun:?} open said {h:?}"
-                );
+                assert!(h.contains(expected), "{hit:?} with {noun:?} open said {h:?}");
             }
         }
     }
@@ -610,10 +560,7 @@ mod tests {
             (TipEditVerb::Secret, "Set this secret"),
             (TipEditVerb::Define, "Define this variable"),
         ] {
-            let ctx = HintCtx {
-                tip_edit: verb,
-                ..ctx()
-            };
+            let ctx = HintCtx { tip_edit: verb, ..ctx() };
             let h = hint_for(&Hit::TipEdit("tok".into()), &keymap, &ctx).unwrap();
             assert_eq!(h, expected, "{verb:?}");
         }
@@ -643,10 +590,18 @@ mod tests {
         for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
             let keymap = Keymap::default_bindings_for(profile);
             let ctx = HintCtx {
-                spell: SpellCtx { profile, surface: Surface::UrlLine, field: crate::keyroute::FieldSpell::None },
+                spell: SpellCtx {
+                    profile,
+                    surface: Surface::UrlLine,
+                    field: crate::keyroute::FieldSpell::None,
+                },
                 ..ctx()
             };
-            assert_eq!(hint_for(&Hit::CopyUrl, &keymap, &ctx).as_deref(), Some(want.as_str()), "{profile:?}");
+            assert_eq!(
+                hint_for(&Hit::CopyUrl, &keymap, &ctx).as_deref(),
+                Some(want.as_str()),
+                "{profile:?}"
+            );
         }
     }
 
@@ -655,17 +610,9 @@ mod tests {
     #[test]
     fn a_keycapped_control_leaves_the_key_off() {
         let keymap = Keymap::default_bindings();
+        assert_eq!(hint_for(&Hit::HeaderTheme, &keymap, &ctx()).unwrap(), "Pick a color theme");
         assert_eq!(
-            hint_for(&Hit::HeaderTheme, &keymap, &ctx()).unwrap(),
-            "Pick a color theme"
-        );
-        assert_eq!(
-            hint_for(
-                &Hit::FooterChip(Action::PromptRenameRequest),
-                &keymap,
-                &ctx()
-            )
-            .unwrap(),
+            hint_for(&Hit::FooterChip(Action::PromptRenameRequest), &keymap, &ctx()).unwrap(),
             "Rename the open request"
         );
     }
@@ -706,10 +653,7 @@ mod tests {
         assert_eq!(hint_for(&Hit::UrlBar, &keymap, &ctx()), None);
         assert_eq!(hint_for(&Hit::SidebarRow(0), &keymap, &ctx()), None);
         assert!(hint_for(&Hit::TableDelete(0), &keymap, &ctx()).is_some());
-        assert_eq!(
-            hint_for(&Hit::TableCopy(0), &keymap, &ctx()).unwrap(),
-            "Copy this row's value"
-        );
+        assert_eq!(hint_for(&Hit::TableCopy(0), &keymap, &ctx()).unwrap(), "Copy this row's value");
         assert!(hint_for(&Hit::FooterChip(Action::Quit), &keymap, &ctx()).is_some());
     }
 
@@ -718,12 +662,7 @@ mod tests {
     fn palette_parentheticals_are_dropped() {
         let keymap = Keymap::default_bindings();
         assert_eq!(
-            hint_for(
-                &Hit::FooterChip(Action::DeleteSelectedRequest),
-                &keymap,
-                &ctx()
-            )
-            .unwrap(),
+            hint_for(&Hit::FooterChip(Action::DeleteSelectedRequest), &keymap, &ctx()).unwrap(),
             "Delete the open request"
         );
     }
@@ -853,24 +792,11 @@ mod tests {
     fn the_value_popup_remove_hint_names_its_scope() {
         let keymap = Keymap::default_bindings();
         let for_scope = |d| {
-            hint_for(
-                &Hit::ModalRemove,
-                &keymap,
-                &HintCtx {
-                    remove_scope: Some(d),
-                    ..ctx()
-                },
-            )
-            .unwrap()
+            hint_for(&Hit::ModalRemove, &keymap, &HintCtx { remove_scope: Some(d), ..ctx() })
+                .unwrap()
         };
-        assert_eq!(
-            for_scope(ExtractDestination::Request),
-            "Remove this request's value"
-        );
-        assert_eq!(
-            for_scope(ExtractDestination::ActiveEnv),
-            "Remove this environment's value"
-        );
+        assert_eq!(for_scope(ExtractDestination::Request), "Remove this request's value");
+        assert_eq!(for_scope(ExtractDestination::ActiveEnv), "Remove this environment's value");
         assert_eq!(
             for_scope(ExtractDestination::ProjectDefault),
             "Remove the project default value"
@@ -937,12 +863,7 @@ mod tests {
         }
         // The two `Headers` tabs read differently, which is the whole point.
         assert_eq!(
-            hint_for(
-                &Hit::EditorTab(EditorTab::Headers.draw_position()),
-                &keymap,
-                &ctx()
-            )
-            .unwrap(),
+            hint_for(&Hit::EditorTab(EditorTab::Headers.draw_position()), &keymap, &ctx()).unwrap(),
             "Edit the request headers"
         );
         assert_eq!(
@@ -1008,36 +929,21 @@ mod tests {
             Hit::SettingsKeymap(crate::config::KeyProfile::Vim),
             Hit::KeymapChoice(crate::config::KeyProfile::Arrows),
             Hit::KeymapChoice(crate::config::KeyProfile::Vim),
-            Hit::SettingsFile {
-                file: crate::action::ConfigFile::Config,
-                reset: false,
-            },
-            Hit::SettingsFile {
-                file: crate::action::ConfigFile::Keys,
-                reset: true,
-            },
+            Hit::SettingsFile { file: crate::action::ConfigFile::Config, reset: false },
+            Hit::SettingsFile { file: crate::action::ConfigFile::Keys, reset: true },
         ] {
             let h = hint_for(&hit, &keymap, &ctx()).unwrap();
             // The key, where one is appended, doesn't count against the
             // wording — it is the same three or four cells everywhere.
             let words = h.split(" \u{b7} ").next().unwrap();
-            assert!(
-                words.chars().count() <= 42,
-                "too long \u{2014} {hit:?}: {h:?}"
-            );
+            assert!(words.chars().count() <= 42, "too long \u{2014} {hit:?}: {h:?}");
             assert!(
                 !words.contains(';') && !words.contains('('),
                 "one clause, no caveats \u{2014} {hit:?}: {h:?}"
             );
-            assert!(
-                !words.ends_with('.'),
-                "no full stop \u{2014} {hit:?}: {h:?}"
-            );
+            assert!(!words.ends_with('.'), "no full stop \u{2014} {hit:?}: {h:?}");
             let first = words.chars().next().unwrap();
-            assert!(
-                first.is_uppercase(),
-                "sentence case \u{2014} {hit:?}: {h:?}"
-            );
+            assert!(first.is_uppercase(), "sentence case \u{2014} {hit:?}: {h:?}");
         }
     }
 }

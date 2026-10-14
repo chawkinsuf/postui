@@ -32,12 +32,7 @@ fn dump(app: &mut App) -> String {
 }
 
 fn moved(x: u16, y: u16) -> MouseEvent {
-    MouseEvent {
-        kind: MouseEventKind::Moved,
-        column: x,
-        row: y,
-        modifiers: KeyModifiers::NONE,
-    }
+    MouseEvent { kind: MouseEventKind::Moved, column: x, row: y, modifiers: KeyModifiers::NONE }
 }
 
 fn left_down(x: u16, y: u16) -> MouseEvent {
@@ -54,7 +49,8 @@ fn left_down(x: u16, y: u16) -> MouseEvent {
 /// tooltip can name.
 fn app_with_vars() -> App {
     let mut app = App::new_for_test();
-    app.proj_mut().edit_variables(|_| {
+    app.proj_mut()
+        .edit_variables(|_| {
             Ok("[base_url]\ndefault = \"http://fallback\"\n\n\
                 [page]\ndefault = \"1\"\n\n\
                 [api_key]\nsecret = true\n\n\
@@ -62,15 +58,15 @@ fn app_with_vars() -> App {
                 .to_string())
         })
         .unwrap();
-    app.proj_mut().edit_env("qa", |_| {
+    app.proj_mut()
+        .edit_env("qa", |_| {
             Ok("base_url = \"http://qa.test\"\n\n\
                 [options.user.\"user 2\"]\nuid = \"1001\"\n"
                 .to_string())
         })
         .unwrap();
     app.proj_mut().set_active_env(Some("qa".into()));
-    app.proj_mut().set_secret("api_key", "sk-qa-999".into())
-        .unwrap();
+    app.proj_mut().set_secret("api_key", "sk-qa-999".into()).unwrap();
     app.update(Action::Render);
     app
 }
@@ -98,10 +94,7 @@ fn hover_token(app: &mut App, name: &str) -> Rect {
 /// tip is on screen and its rects are live.
 fn click_hit(app: &mut App, hit: Hit) {
     draw(app);
-    let r = app
-        .hits
-        .rect_of(&hit)
-        .unwrap_or_else(|| panic!("no rect registered for {hit:?}"));
+    let r = app.hits.rect_of(&hit).unwrap_or_else(|| panic!("no rect registered for {hit:?}"));
     app.handle_mouse(left_down(r.x, r.y));
 }
 
@@ -126,10 +119,7 @@ fn a_url_token_registers_a_var_token_hit_inside_the_url_bar() {
         "token {token:?} must sit inside the URL bar {url_bar:?}"
     );
     // Registered *over* the URL bar: a click resolves to the token.
-    assert_eq!(
-        app.hits.hit_at(token.x + 1, token.y),
-        Some(&Hit::VarToken("base_url".into()))
-    );
+    assert_eq!(app.hits.hit_at(token.x + 1, token.y), Some(&Hit::VarToken("base_url".into())));
 }
 
 #[test]
@@ -162,14 +152,8 @@ fn hovering_a_token_shows_its_value_and_scope_and_leaving_drops_the_tooltip() {
     let tip = app.var_token_tip().expect("hovering makes a tip");
     assert_eq!(tip.name, "base_url");
     let frame = dump(&mut app);
-    assert!(
-        frame.contains("http://qa.test"),
-        "the tooltip shows the value: {frame}"
-    );
-    assert!(
-        frame.contains("env = qa"),
-        "...and the scope it came from: {frame}"
-    );
+    assert!(frame.contains("http://qa.test"), "the tooltip shows the value: {frame}");
+    assert!(frame.contains("env = qa"), "...and the scope it came from: {frame}");
 
     // Moving off the token drops it on the very next motion event.
     let away = app.hits.rect_of(&Hit::UrlBar).unwrap();
@@ -193,15 +177,9 @@ fn a_click_elsewhere_drops_a_tooltip_even_with_no_motion_event() {
     // No `Moved` in between: the press itself is the pointer's new home.
     let away = app.hits.rect_of(&Hit::EditorTab(0)).unwrap();
     app.handle_mouse(left_down(away.x + 1, away.y));
-    assert!(
-        app.var_token_tip().is_none(),
-        "the tip belongs to where the pointer is now"
-    );
+    assert!(app.var_token_tip().is_none(), "the tip belongs to where the pointer is now");
     let frame = dump(&mut app);
-    assert!(
-        !frame.contains("env = qa"),
-        "and it is off the screen: {frame}"
-    );
+    assert!(!frame.contains("env = qa"), "and it is off the screen: {frame}");
 }
 
 #[test]
@@ -221,27 +199,17 @@ fn the_scope_line_names_default_group_request_and_missing_secret() {
     hover_token(&mut app, "uid");
     let frame = dump(&mut app);
     assert!(frame.contains("1001"), "{frame}");
-    assert!(
-        frame.contains("option = user 2"),
-        "the selected option by name: {frame}"
-    );
+    assert!(frame.contains("option = user 2"), "the selected option by name: {frame}");
 
     // The request's own `[variables]` overlay outranks everything.
-    app.editor.variables.insert(
-        "base_url".into(),
-        Entry {
-            value: "http://local".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .variables
+        .insert("base_url".into(), Entry { value: "http://local".into(), enabled: true });
     app.update(Action::Render);
     set_url(&mut app, "{{base_url}}");
     hover_token(&mut app, "base_url");
     let frame = dump(&mut app);
-    assert!(
-        frame.contains("http://local") && frame.contains("this request"),
-        "{frame}"
-    );
+    assert!(frame.contains("http://local") && frame.contains("this request"), "{frame}");
 }
 
 #[test]
@@ -250,11 +218,7 @@ fn a_group_field_with_no_selection_reads_as_needs_selection() {
     set_url(&mut app, "{{uid}}");
     let buf = draw(&mut app);
     let r = app.hits.rect_of(&Hit::VarToken("uid".into())).unwrap();
-    assert_eq!(
-        buf[(r.x, r.y)].fg,
-        app.theme.error,
-        "an unselected group field cannot resolve"
-    );
+    assert_eq!(buf[(r.x, r.y)].fg, app.theme.error, "an unselected group field cannot resolve");
 
     hover_token(&mut app, "uid");
     let frame = dump(&mut app);
@@ -265,8 +229,7 @@ fn a_group_field_with_no_selection_reads_as_needs_selection() {
 fn a_long_value_wraps_across_tooltip_rows_instead_of_truncating() {
     let mut app = app_with_vars();
     let long = format!("http://qa.test/{}/tail-end", "a".repeat(70));
-    app.proj_mut().edit_env("qa", |_| Ok(format!("base_url = \"{long}\"\n")))
-        .unwrap();
+    app.proj_mut().edit_env("qa", |_| Ok(format!("base_url = \"{long}\"\n"))).unwrap();
     app.update(Action::Render);
     set_url(&mut app, "{{base_url}}/x");
     hover_token(&mut app, "base_url");
@@ -275,9 +238,8 @@ fn a_long_value_wraps_across_tooltip_rows_instead_of_truncating() {
     // Reassemble the drawn frame row by row and check every piece of the
     // value made it to the screen — the head, the filler, and the tail
     // (which only a wrapped, untruncated tooltip can show).
-    let rows: Vec<String> = (0..H)
-        .map(|y| (0..W).map(|x| buf[(x, y)].symbol()).collect())
-        .collect();
+    let rows: Vec<String> =
+        (0..H).map(|y| (0..W).map(|x| buf[(x, y)].symbol()).collect()).collect();
     assert!(
         rows.iter().any(|r| r.contains("http://qa.test/a")),
         "the value's head is on screen: {rows:?}"
@@ -287,10 +249,7 @@ fn a_long_value_wraps_across_tooltip_rows_instead_of_truncating() {
         "...and its tail survives on a later row: {rows:?}"
     );
     let frame = dump(&mut app);
-    assert!(
-        !frame.contains('\u{2026}'),
-        "nothing was ellipsized: {frame}"
-    );
+    assert!(!frame.contains('\u{2026}'), "nothing was ellipsized: {frame}");
 }
 
 #[test]
@@ -300,10 +259,7 @@ fn a_secrets_tooltip_is_masked_and_never_reveals_the_value() {
     hover_token(&mut app, "api_key");
     let frame = dump(&mut app);
     assert!(frame.contains("\u{25cf}"), "masked value: {frame}");
-    assert!(
-        !frame.contains("sk-qa-999"),
-        "a secret is never shown in the clear: {frame}"
-    );
+    assert!(!frame.contains("sk-qa-999"), "a secret is never shown in the clear: {frame}");
 
     // ...and a secret with no value for this env reads as missing.
     let mut app = app_with_vars();
@@ -334,10 +290,7 @@ fn clicking_a_token_places_the_caret_and_its_tip_pill_opens_the_value_popup() {
         usize::from(r.x + 1 - text.x),
         "the caret follows the pointer into the token"
     );
-    assert!(
-        app.modals.top().is_none(),
-        "a plain click is caret placement, not a dialog"
-    );
+    assert!(app.modals.top().is_none(), "a plain click is caret placement, not a dialog");
 
     // The value popup is reached through the tooltip's edit pill.
     hover_token(&mut app, "base_url");
@@ -360,23 +313,14 @@ fn clicking_a_token_places_the_caret_and_its_tip_pill_opens_the_value_popup() {
 #[test]
 fn tokens_in_table_cells_are_tinted_and_hoverable_without_disturbing_the_table() {
     let mut app = app_with_vars();
-    app.editor.params.insert(
-        "q".into(),
-        Entry {
-            value: "{{base_url}}".into(),
-            enabled: true,
-        },
-    );
+    app.editor.params.insert("q".into(), Entry { value: "{{base_url}}".into(), enabled: true });
     app.editor.active_tab = EditorTab::Params;
     app.editor.table.selected = Some(0);
     app.update(Action::Render);
 
     let buf = draw(&mut app);
     let r = app.hits.rect_of(&Hit::VarToken("base_url".into())).unwrap();
-    let cell = app
-        .hits
-        .rect_of(&Hit::TableCell { row: 0, col: 1 })
-        .unwrap();
+    let cell = app.hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
     assert!(
         r.x >= cell.x && r.right() <= cell.right() && r.y == cell.y,
         "the token sits in the value cell: {r:?} vs {cell:?}"
@@ -397,22 +341,15 @@ fn tokens_in_table_cells_are_tinted_and_hoverable_without_disturbing_the_table()
     // caret on the clicked column — the token overlay is not a button.
     app.handle_mouse(left_down(r.x + 1, r.y));
     assert_eq!(app.editor.table.selected, Some(0));
-    let edit = app
-        .editor
-        .table
-        .editing
-        .as_ref()
-        .expect("the click starts the cell edit under the token");
+    let edit =
+        app.editor.table.editing.as_ref().expect("the click starts the cell edit under the token");
     assert_eq!(edit.input.text(), "{{base_url}}");
     assert_eq!(
         edit.input.cursor(),
         usize::from(r.x + 1 - cell.x),
         "the caret follows the pointer into the token"
     );
-    assert!(
-        app.modals.top().is_none(),
-        "a plain click is caret placement, not a dialog"
-    );
+    assert!(app.modals.top().is_none(), "a plain click is caret placement, not a dialog");
 }
 
 #[test]
@@ -422,17 +359,10 @@ fn a_cell_under_edit_still_tints_its_tokens_and_keeps_its_caret() {
     // still caret placement — left clicks resolve past the token span to
     // the cell beneath, so the edit is never disturbed.
     let mut app = app_with_vars();
-    app.editor.params.insert(
-        "q".into(),
-        Entry {
-            value: "{{base_url}}".into(),
-            enabled: true,
-        },
-    );
+    app.editor.params.insert("q".into(), Entry { value: "{{base_url}}".into(), enabled: true });
     app.editor.active_tab = EditorTab::Params;
     app.update(Action::Render);
-    app.editor
-        .click_table_cell(0, postui::components::table_editor::Col::Value);
+    app.editor.click_table_cell(0, postui::components::table_editor::Col::Value);
     assert!(app.editor.table.editing.is_some(), "the cell is under edit");
 
     draw(&mut app);
@@ -446,12 +376,7 @@ fn a_cell_under_edit_still_tints_its_tokens_and_keeps_its_caret() {
         .expect("the cell hit is registered beneath the token");
 
     app.handle_mouse(left_down(r.x + 3, r.y));
-    let edit = app
-        .editor
-        .table
-        .editing
-        .as_ref()
-        .expect("the click keeps the cell under edit");
+    let edit = app.editor.table.editing.as_ref().expect("the click keeps the cell under edit");
     assert_eq!(
         edit.input.cursor(),
         usize::from(r.x + 3 - cell.x),
@@ -463,15 +388,10 @@ fn a_cell_under_edit_still_tints_its_tokens_and_keeps_its_caret() {
 #[test]
 fn computed_header_rows_tint_only_the_unresolved_span() {
     let mut app = app_with_vars();
-    app.editor.headers.insert(
-        "X-Trace".into(),
-        Entry {
-            value: "{{base_url}}".into(),
-            enabled: true,
-        },
-    );
-    app.proj_mut().edit_variables(|doc| Ok(format!("{doc}\n[missing_one]\n")))
-        .unwrap();
+    app.editor
+        .headers
+        .insert("X-Trace".into(), Entry { value: "{{base_url}}".into(), enabled: true });
+    app.proj_mut().edit_variables(|doc| Ok(format!("{doc}\n[missing_one]\n"))).unwrap();
     // A project default header carrying one resolvable and one unresolvable
     // token: only the second may be tinted red.
     let root = app.proj().root().to_path_buf();
@@ -490,11 +410,7 @@ fn computed_header_rows_tint_only_the_unresolved_span() {
         .hits
         .rect_of(&Hit::VarToken("missing_one".into()))
         .expect("the computed row's unresolved token registers");
-    assert_eq!(
-        buf[(bad.x, bad.y)].fg,
-        app.theme.error,
-        "the unresolved token is red"
-    );
+    assert_eq!(buf[(bad.x, bad.y)].fg, app.theme.error, "the unresolved token is red");
     assert_ne!(
         buf[(good.x, good.y)].fg,
         app.theme.error,
@@ -510,10 +426,8 @@ fn body_editor_tokens_are_tinted_and_hoverable() {
     app.update(Action::Render);
 
     let buf = draw(&mut app);
-    let r = app
-        .hits
-        .rect_of(&Hit::VarToken("base_url".into()))
-        .expect("the body's token registers");
+    let r =
+        app.hits.rect_of(&Hit::VarToken("base_url".into())).expect("the body's token registers");
     assert_eq!(buf[(r.x, r.y)].fg, app.theme.accent);
     let body = app.hits.rect_of(&Hit::BodyEditor).unwrap();
     assert!(r.x >= body.x && r.right() <= body.right());
@@ -531,10 +445,7 @@ fn a_resting_caret_raises_the_same_tooltip_after_two_ticks() {
     app.editor.url.set_cursor(4);
     draw(&mut app);
 
-    assert!(
-        app.var_token_tip().is_none(),
-        "not yet: the caret just landed"
-    );
+    assert!(app.var_token_tip().is_none(), "not yet: the caret just landed");
     app.update(Action::Tick);
     draw(&mut app);
     assert!(app.var_token_tip().is_none(), "no dwell yet is not resting");
@@ -544,9 +455,7 @@ fn a_resting_caret_raises_the_same_tooltip_after_two_ticks() {
     std::thread::sleep(std::time::Duration::from_millis(250));
     app.update(Action::Tick);
     draw(&mut app);
-    let tip = app
-        .var_token_tip()
-        .expect("resting past the dwell raises the tip");
+    let tip = app.var_token_tip().expect("resting past the dwell raises the tip");
     assert_eq!(tip.name, "base_url");
     let frame = dump(&mut app);
     assert!(frame.contains("http://qa.test"), "{frame}");
@@ -563,13 +472,7 @@ fn a_resting_caret_raises_the_same_tooltip_after_two_ticks() {
 #[test]
 fn the_tooltip_leaves_with_its_token_even_if_the_pointer_never_moves() {
     let mut app = app_with_vars();
-    app.editor.params.insert(
-        "q".into(),
-        Entry {
-            value: "{{base_url}}".into(),
-            enabled: true,
-        },
-    );
+    app.editor.params.insert("q".into(), Entry { value: "{{base_url}}".into(), enabled: true });
     app.editor.active_tab = EditorTab::Params;
     app.update(Action::Render);
     hover_token(&mut app, "base_url");
@@ -579,8 +482,5 @@ fn the_tooltip_leaves_with_its_token_even_if_the_pointer_never_moves() {
     app.editor.active_tab = EditorTab::Body;
     app.update(Action::Render);
     draw(&mut app);
-    assert!(
-        app.var_token_tip().is_none(),
-        "the tooltip must not outlive the token it describes"
-    );
+    assert!(app.var_token_tip().is_none(), "the tooltip must not outlive the token it describes");
 }

@@ -107,26 +107,22 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(20, 3)).unwrap();
         term.draw(|f| {
             paint::fill(f.buffer_mut(), Rect::new(0, 0, 20, 3), theme.panel);
-            ListRow {
-                highlight: RowHighlight::Selected,
-                zebra: None,
-            }
-            .paint(f.buffer_mut(), 1, 0, 20, theme.panel, 1.0, &theme);
+            ListRow { highlight: RowHighlight::Selected, zebra: None }.paint(
+                f.buffer_mut(),
+                1,
+                0,
+                20,
+                theme.panel,
+                1.0,
+                &theme,
+            );
         })
         .unwrap();
         assert_eq!(buf_cell(&term, 0, 1).symbol(), "▌");
         assert_eq!(buf_cell(&term, 0, 1).fg, theme.accent);
         assert_eq!(buf_cell(&term, 5, 1).bg, theme.selection);
-        assert_eq!(
-            buf_cell(&term, 5, 0).bg,
-            theme.panel,
-            "single-line: no pads above"
-        );
-        assert_eq!(
-            buf_cell(&term, 5, 2).bg,
-            theme.panel,
-            "single-line: no pads below"
-        );
+        assert_eq!(buf_cell(&term, 5, 0).bg, theme.panel, "single-line: no pads above");
+        assert_eq!(buf_cell(&term, 5, 2).bg, theme.panel, "single-line: no pads below");
     }
 
     #[test]
@@ -135,16 +131,24 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(20, 2)).unwrap();
         term.draw(|f| {
             paint::fill(f.buffer_mut(), Rect::new(0, 0, 20, 2), theme.panel);
-            ListRow {
-                highlight: RowHighlight::None,
-                zebra: Some(false),
-            }
-            .paint(f.buffer_mut(), 0, 0, 20, theme.panel, 1.0, &theme);
-            ListRow {
-                highlight: RowHighlight::None,
-                zebra: Some(true),
-            }
-            .paint(f.buffer_mut(), 1, 0, 20, theme.panel, 1.0, &theme);
+            ListRow { highlight: RowHighlight::None, zebra: Some(false) }.paint(
+                f.buffer_mut(),
+                0,
+                0,
+                20,
+                theme.panel,
+                1.0,
+                &theme,
+            );
+            ListRow { highlight: RowHighlight::None, zebra: Some(true) }.paint(
+                f.buffer_mut(),
+                1,
+                0,
+                20,
+                theme.panel,
+                1.0,
+                &theme,
+            );
         })
         .unwrap();
         assert_eq!(buf_cell(&term, 5, 0).bg, theme.panel);
@@ -158,11 +162,15 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(20, 1)).unwrap();
         term.draw(|f| {
             paint::fill(f.buffer_mut(), Rect::new(0, 0, 20, 1), theme.panel);
-            ListRow {
-                highlight: RowHighlight::Hover,
-                zebra: None,
-            }
-            .paint(f.buffer_mut(), 0, 0, 20, theme.panel, 0.5, &theme);
+            ListRow { highlight: RowHighlight::Hover, zebra: None }.paint(
+                f.buffer_mut(),
+                0,
+                0,
+                20,
+                theme.panel,
+                0.5,
+                &theme,
+            );
         })
         .unwrap();
         let bg = buf_cell(&term, 5, 0).bg;
@@ -175,19 +183,19 @@ mod tests {
         let theme = Theme::dark();
         let base = theme.panel;
         let hover_t = 0.5;
-        for highlight in [
-            RowHighlight::None,
-            RowHighlight::Hover,
-            RowHighlight::Selected,
-        ] {
+        for highlight in [RowHighlight::None, RowHighlight::Hover, RowHighlight::Selected] {
             let mut term = Terminal::new(TestBackend::new(4, 1)).unwrap();
             term.draw(|f| {
                 paint::fill(f.buffer_mut(), Rect::new(0, 0, 4, 1), base);
-                ListRow {
-                    highlight,
-                    zebra: None,
-                }
-                .paint(f.buffer_mut(), 0, 0, 4, base, hover_t, &theme);
+                ListRow { highlight, zebra: None }.paint(
+                    f.buffer_mut(),
+                    0,
+                    0,
+                    4,
+                    base,
+                    hover_t,
+                    &theme,
+                );
             })
             .unwrap();
             let painted = buf_cell(&term, 2, 0).bg;

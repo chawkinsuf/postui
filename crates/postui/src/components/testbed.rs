@@ -83,50 +83,23 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
     if !fits(area, y, BUTTON_HEIGHT) {
         return;
     }
-    safe_text(
-        buf,
-        area,
-        x0,
-        y + 1,
-        "Primary",
-        theme.text_muted,
-        theme.page,
-        false,
-    );
+    safe_text(buf, area, x0, y + 1, "Primary", theme.text_muted, theme.page, false);
     for (i, state) in STATES.iter().enumerate() {
         let x = x0 + LABEL_COL + i as u16 * BUTTON_COL;
         let rect = Rect::new(x, y, BUTTON_COL.saturating_sub(2), BUTTON_HEIGHT);
-        Button {
-            label: "Send",
-            kind: ButtonKind::Primary,
-            state: *state,
-        }
-        .paint(buf, rect, theme);
+        Button { label: "Send", kind: ButtonKind::Primary, state: *state }.paint(buf, rect, theme);
     }
     y += BUTTON_HEIGHT;
 
     if !fits(area, y, BUTTON_HEIGHT) {
         return;
     }
-    safe_text(
-        buf,
-        area,
-        x0,
-        y + 1,
-        "Secondary",
-        theme.text_muted,
-        theme.page,
-        false,
-    );
+    safe_text(buf, area, x0, y + 1, "Secondary", theme.text_muted, theme.page, false);
     for (i, state) in STATES.iter().enumerate() {
         let x = x0 + LABEL_COL + i as u16 * BUTTON_COL;
         let rect = Rect::new(x, y, BUTTON_COL.saturating_sub(2), BUTTON_HEIGHT);
-        Button {
-            label: "Cancel",
-            kind: ButtonKind::Secondary,
-            state: *state,
-        }
-        .paint(buf, rect, theme);
+        Button { label: "Cancel", kind: ButtonKind::Secondary, state: *state }
+            .paint(buf, rect, theme);
     }
     y += BUTTON_HEIGHT + 1;
 
@@ -145,11 +118,7 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
     for (i, state) in STATES.iter().enumerate() {
         let x = x0 + i as u16 * FIELD_COL;
         let rect = Rect::new(x, y, FIELD_COL.saturating_sub(2), FIELD_HEIGHT);
-        TextField {
-            content: Line::raw("content"),
-            state: *state,
-        }
-        .paint(buf, rect, theme);
+        TextField { content: Line::raw("content"), state: *state }.paint(buf, rect, theme);
     }
     y += FIELD_HEIGHT + 1;
 
@@ -161,31 +130,13 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
         if !fits(area, y, 1) {
             return;
         }
-        let slot = PropertyRow {
-            label,
-            label_w,
-            hovered: i == 0,
-            disabled: false,
-            trailing: &[],
-        }
-        .paint(
-            buf,
-            &mut hits,
-            Rect::new(x0, y, FIELD_COL.saturating_sub(2), 1),
-            theme,
-        );
+        let slot = PropertyRow { label, label_w, hovered: i == 0, disabled: false, trailing: &[] }
+            .paint(buf, &mut hits, Rect::new(x0, y, FIELD_COL.saturating_sub(2), 1), theme);
         match i {
-            0 => Well {
-                content: Line::raw("hover washes the row"),
-                state: ControlState::Focused,
-            }
-            .paint(buf, slot.rect, theme),
+            0 => Well { content: Line::raw("hover washes the row"), state: ControlState::Focused }
+                .paint(buf, slot.rect, theme),
             1 => {
-                Toggle {
-                    on: true,
-                    state: ControlState::Normal,
-                }
-                .paint(buf, slot.rect, theme);
+                Toggle { on: true, state: ControlState::Normal }.paint(buf, slot.rect, theme);
             }
             _ => {
                 let mut px = slot.rect.x;
@@ -194,12 +145,11 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
                     if px + w > slot.rect.x + slot.rect.width {
                         break;
                     }
-                    Pill {
-                        label: seg,
-                        kind,
-                        state: ControlState::Normal,
-                    }
-                    .paint(buf, Rect::new(px, y, w, 1), theme);
+                    Pill { label: seg, kind, state: ControlState::Normal }.paint(
+                        buf,
+                        Rect::new(px, y, w, 1),
+                        theme,
+                    );
                     px += w + 1;
                 }
             }
@@ -252,16 +202,7 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
     if !fits(area, y, 1) {
         return;
     }
-    safe_text(
-        buf,
-        area,
-        x0 + LABEL_COL,
-        y,
-        "static",
-        theme.text_muted,
-        theme.page,
-        false,
-    );
+    safe_text(buf, area, x0 + LABEL_COL, y, "static", theme.text_muted, theme.page, false);
     y += 1;
     if !fits(area, y, 2) {
         return;
@@ -274,27 +215,13 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
         disabled: None,
         right_anchored: 0,
     }
-    .paint(
-        buf,
-        Rect::new(x0 + LABEL_COL, y, strip_w, 2),
-        theme.page,
-        theme,
-    );
+    .paint(buf, Rect::new(x0 + LABEL_COL, y, strip_w, 2), theme.page, theme);
     y += 2;
 
     if !fits(area, y, 1) {
         return;
     }
-    safe_text(
-        buf,
-        area,
-        x0 + LABEL_COL,
-        y,
-        "mid-slide",
-        theme.text_muted,
-        theme.page,
-        false,
-    );
+    safe_text(buf, area, x0 + LABEL_COL, y, "mid-slide", theme.text_muted, theme.page, false);
     y += 1;
     if !fits(area, y, 2) {
         return;
@@ -310,12 +237,7 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
         disabled: None,
         right_anchored: 0,
     }
-    .paint(
-        buf,
-        Rect::new(x0 + LABEL_COL, y, strip_w, 2),
-        theme.page,
-        theme,
-    );
+    .paint(buf, Rect::new(x0 + LABEL_COL, y, strip_w, 2), theme.page, theme);
     y += 2 + 1;
 
     // --- Chips -------------------------------------------------------------
@@ -348,15 +270,7 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
     // bounds-safe — it paints purely through `paint::fill`/`cell_mut` — so
     // no `safe_*` wrapper is needed here, only the same fits-check every
     // other multi-row block uses to decide whether to draw it at all.
-    frac_vspan(
-        buf,
-        x0,
-        x0 + 40,
-        y as f32 + 0.5,
-        y as f32 + 3.5,
-        theme.accent,
-        theme.page,
-    );
+    frac_vspan(buf, x0, x0 + 40, y as f32 + 0.5, y as f32 + 3.5, theme.accent, theme.page);
     y += 4 + 1;
 
     // --- Floating panel --------------------------------------------------
@@ -437,34 +351,17 @@ fn draw_motion_section(buf: &mut Buffer, area: Rect, x0: u16, y: &mut u16, ctx: 
         if !fits(area, *y, 2) {
             return;
         }
-        safe_text(
-            buf,
-            area,
-            x0,
-            *y,
-            label,
-            theme.text_muted,
-            theme.page,
-            false,
-        );
+        safe_text(buf, area, x0, *y, label, theme.text_muted, theme.page, false);
         let t = ctx.anims.value_or(key, ctx.now, 0.0);
         TabStrip {
             tabs: &motion_tabs,
             active: 0,
             hovered: None,
             disabled: None,
-            underline: (
-                lerp(spans[0].0, spans[1].0, t),
-                lerp(spans[0].1, spans[1].1, t),
-            ),
+            underline: (lerp(spans[0].0, spans[1].0, t), lerp(spans[0].1, spans[1].1, t)),
             right_anchored: 0,
         }
-        .paint(
-            buf,
-            Rect::new(x0 + MOTION_LABEL_COL, *y, strip_w, 2),
-            theme.page,
-            theme,
-        );
+        .paint(buf, Rect::new(x0 + MOTION_LABEL_COL, *y, strip_w, 2), theme.page, theme);
         *y += 2;
     }
 
@@ -485,22 +382,9 @@ fn draw_motion_section(buf: &mut Buffer, area: Rect, x0: u16, y: &mut u16, ctx: 
         if !fits(area, *y, 1) {
             return;
         }
-        safe_text(
-            buf,
-            area,
-            x0,
-            *y,
-            label,
-            theme.text_muted,
-            theme.page,
-            false,
-        );
+        safe_text(buf, area, x0, *y, label, theme.text_muted, theme.page, false);
         let hover_t = ctx.anims.value_or(key, ctx.now, 0.0);
-        ListRow {
-            highlight: RowHighlight::Hover,
-            zebra: None,
-        }
-        .paint(
+        ListRow { highlight: RowHighlight::Hover, zebra: None }.paint(
             buf,
             *y,
             x0 + MOTION_LABEL_COL,
@@ -561,22 +445,9 @@ fn draw_motion_section(buf: &mut Buffer, area: Rect, x0: u16, y: &mut u16, ctx: 
         if !fits(area, *y, ROWS as u16) {
             return;
         }
-        safe_text(
-            buf,
-            area,
-            x0,
-            *y,
-            label,
-            theme.text_muted,
-            theme.page,
-            false,
-        );
+        safe_text(buf, area, x0, *y, label, theme.text_muted, theme.page, false);
         for i in 0..ROWS {
-            ListRow {
-                highlight: RowHighlight::None,
-                zebra: Some(i % 2 == 1),
-            }
-            .paint(
+            ListRow { highlight: RowHighlight::None, zebra: Some(i % 2 == 1) }.paint(
                 buf,
                 *y + i as u16,
                 x0 + MOTION_LABEL_COL,
@@ -726,34 +597,19 @@ mod tests {
             "underline comparison header missing"
         );
         for label in ["140ms (plan)", "250ms", "400ms", "500ms (current demo)"] {
-            assert!(
-                content.contains(label),
-                "underline duration label {label:?} missing"
-            );
+            assert!(content.contains(label), "underline duration label {label:?} missing");
         }
-        assert!(
-            content.contains("hover fade (duration)"),
-            "hover comparison header missing"
-        );
+        assert!(content.contains("hover fade (duration)"), "hover comparison header missing");
         for label in ["70ms (plan)", "150ms", "300ms"] {
-            assert!(
-                content.contains(label),
-                "hover duration label {label:?} missing"
-            );
+            assert!(content.contains(label), "hover duration label {label:?} missing");
         }
-        assert!(
-            content.contains("send breathe — 700ms/pole (plan)"),
-            "send breathe label missing"
-        );
+        assert!(content.contains("send breathe — 700ms/pole (plan)"), "send breathe label missing");
         assert!(
             content.contains("list travel (duration)"),
             "list travel comparison header missing"
         );
         for label in ["100ms/row (plan)", "250ms/row"] {
-            assert!(
-                content.contains(label),
-                "list travel duration label {label:?} missing"
-            );
+            assert!(content.contains(label), "list travel duration label {label:?} missing");
         }
     }
 
@@ -791,11 +647,8 @@ mod tests {
         let buf = term.backend().buffer();
         let width = buf.area.width;
         let height = buf.area.height;
-        let row_text = |y: u16| -> String {
-            (0..width)
-                .map(|x| buf.cell((x, y)).unwrap().symbol())
-                .collect()
-        };
+        let row_text =
+            |y: u16| -> String { (0..width).map(|x| buf.cell((x, y)).unwrap().symbol()).collect() };
         // Restricted to the MOTION section itself: the earlier TAB STRIP
         // section also paints accent-colored underline bars (on 2 rows),
         // and this assertion is specifically about the 4 duration-

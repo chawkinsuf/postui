@@ -14,7 +14,10 @@ impl App {
     /// Read when `:` opens the line.
     pub(crate) fn ex_scope(&self) -> crate::keyroute::ex::Scope {
         let surface = self.surface();
-        let verbs = Verb::ALL.into_iter().filter(|v| self.selection_action(surface, *v).is_some()).collect();
+        let verbs = Verb::ALL
+            .into_iter()
+            .filter(|v| self.selection_action(surface, *v).is_some())
+            .collect();
         crate::keyroute::ex::Scope { surface, verbs }
     }
 
@@ -28,7 +31,8 @@ impl App {
                 self.manage.list.verb_action(tab, self.project()?, verb)
             }
             Surface::VarList | Surface::VarGrid | Surface::VarForm => {
-                let open_request = self.editor.slug.is_some().then(|| self.editor.current_request());
+                let open_request =
+                    self.editor.slug.is_some().then(|| self.editor.current_request());
                 self.varmanager.verb_action(self.project()?, open_request.as_ref(), verb)
             }
             _ => None,

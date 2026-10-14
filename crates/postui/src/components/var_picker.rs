@@ -63,11 +63,8 @@ pub fn insert_entries(
     resolved: &indexmap::IndexMap<String, String>,
     request_vars: &indexmap::IndexMap<String, postui_core::model::Entry>,
 ) -> Vec<VarEntry> {
-    let group_fields: std::collections::HashSet<&str> = model
-        .selectors
-        .values()
-        .flat_map(|g| g.fields.iter().map(String::as_str))
-        .collect();
+    let group_fields: std::collections::HashSet<&str> =
+        model.selectors.values().flat_map(|g| g.fields.iter().map(String::as_str)).collect();
 
     let mut entries: Vec<VarEntry> = Vec::new();
 
@@ -318,11 +315,8 @@ impl VarPickerState {
         match &self.mode {
             PickerMode::Insert => {
                 let name = &self.entries[idx].name;
-                let text = if self.completing {
-                    format!("{name}}}}}")
-                } else {
-                    format!("{{{{{name}}}}}")
-                };
+                let text =
+                    if self.completing { format!("{name}}}}}") } else { format!("{{{{{name}}}}}") };
                 Some(super::modal::ModalResult {
                     actions: vec![Action::InsertVarText(text)],
                     close: true,
@@ -450,11 +444,7 @@ impl VarPickerState {
     /// `redo`) and re-runs the filter, mirroring what typing that step
     /// forward did. Returns whether there was a step to take.
     pub(crate) fn undo_filter(&mut self, redo: bool) -> bool {
-        let stepped = if redo {
-            self.input.redo()
-        } else {
-            self.input.undo()
-        };
+        let stepped = if redo { self.input.redo() } else { self.input.undo() };
         if stepped {
             self.refilter();
         }
@@ -479,13 +469,10 @@ impl VarPickerState {
         const CHROME: u16 = 10;
         let pane_h = match &self.mode {
             PickerMode::Insert => 0,
-            PickerMode::SelectOption { .. } => self
-                .select_entries
-                .iter()
-                .map(pane_line_count)
-                .max()
-                .unwrap_or(1)
-                .clamp(1, 8) as u16,
+            PickerMode::SelectOption { .. } => {
+                self.select_entries.iter().map(pane_line_count).max().unwrap_or(1).clamp(1, 8)
+                    as u16
+            }
         };
         let chrome = match &self.mode {
             PickerMode::Insert => CHROME,
@@ -511,15 +498,7 @@ impl VarPickerState {
                 format!("Select \u{2014} {selector}")
             }
         };
-        paint::text(
-            frame.buffer_mut(),
-            area.x + 2,
-            title_y,
-            &title,
-            theme.text,
-            theme.panel,
-            true,
-        );
+        paint::text(frame.buffer_mut(), area.x + 2, title_y, &title, theme.text, theme.panel, true);
 
         // Only Insert mode has a typed filter field: what's typed there can
         // become a new variable's name. SelectOption mode's list starts
@@ -532,14 +511,13 @@ impl VarPickerState {
                     width: area.width.saturating_sub(2),
                     height: FIELD_HEIGHT,
                 };
-                let content = self
-                    .input
-                    .draw_line_windowed(true, theme, field_area.width.saturating_sub(2));
-                TextField {
-                    content,
-                    state: ControlState::Focused,
-                }
-                .paint(frame.buffer_mut(), field_area, theme);
+                let content =
+                    self.input.draw_line_windowed(true, theme, field_area.width.saturating_sub(2));
+                TextField { content, state: ControlState::Focused }.paint(
+                    frame.buffer_mut(),
+                    field_area,
+                    theme,
+                );
                 field_area.y + FIELD_HEIGHT + 2
             }
             PickerMode::SelectOption { .. } => title_y + 2,
@@ -581,11 +559,7 @@ impl VarPickerState {
             } else {
                 RowHighlight::None
             };
-            ListRow {
-                highlight,
-                zebra: None,
-            }
-            .paint(
+            ListRow { highlight, zebra: None }.paint(
                 frame.buffer_mut(),
                 text_row,
                 list_area.x,
@@ -616,12 +590,8 @@ impl VarPickerState {
                     row_fill,
                     selected,
                 );
-                let row_rect = Rect {
-                    x: list_area.x,
-                    y: text_row,
-                    width: list_area.width,
-                    height: 1,
-                };
+                let row_rect =
+                    Rect { x: list_area.x, y: text_row, width: list_area.width, height: 1 };
                 hits.register(row_rect, crate::hit::Hit::VarPickerRow(i));
                 continue;
             }
@@ -772,12 +742,7 @@ impl VarPickerState {
                 }
             }
 
-            let row_rect = Rect {
-                x: list_area.x,
-                y: text_row,
-                width: list_area.width,
-                height: 1,
-            };
+            let row_rect = Rect { x: list_area.x, y: text_row, width: list_area.width, height: 1 };
             hits.register(row_rect, crate::hit::Hit::VarPickerRow(i));
         }
 
@@ -797,10 +762,7 @@ impl VarPickerState {
                 theme.panel,
                 false,
             );
-            let entry = self
-                .filtered
-                .get(self.selected)
-                .map(|&idx| &self.select_entries[idx]);
+            let entry = self.filtered.get(self.selected).map(|&idx| &self.select_entries[idx]);
             if let Some(entry) = entry {
                 let x = list_area.x + 1;
                 let mut y = rule_y + 1;
@@ -920,19 +882,12 @@ mod tests {
         let mut request_vars = indexmap::IndexMap::new();
         request_vars.insert(
             "trace_id".to_string(),
-            postui_core::model::Entry {
-                value: "req-value".to_string(),
-                enabled: true,
-            },
+            postui_core::model::Entry { value: "req-value".to_string(), enabled: true },
         );
 
         let entries = insert_entries(&model, &resolved, &request_vars);
 
-        assert_eq!(
-            entries.len(),
-            1,
-            "one name defined at two scopes is one row, not two"
-        );
+        assert_eq!(entries.len(), 1, "one name defined at two scopes is one row, not two");
         let entry = &entries[0];
         assert_eq!(entry.name, "trace_id");
         assert_eq!(entry.scope, VarScope::Request, "request shadows project");
@@ -949,16 +904,10 @@ mod tests {
         let entries = vec![var_entry("base_url", None, Some("x"))];
         let mut p = VarPickerState::new(entries.clone(), true);
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
-        assert_eq!(
-            res.actions,
-            vec![Action::InsertVarText("base_url}}".into())]
-        );
+        assert_eq!(res.actions, vec![Action::InsertVarText("base_url}}".into())]);
         let mut p = VarPickerState::new(entries, false);
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
-        assert_eq!(
-            res.actions,
-            vec![Action::InsertVarText("{{base_url}}".into())]
-        );
+        assert_eq!(res.actions, vec![Action::InsertVarText("{{base_url}}".into())]);
     }
 
     #[test]
@@ -971,10 +920,7 @@ mod tests {
     #[test]
     fn seed_filter_then_typing_and_undo_walk_the_filter_back() {
         let mut p = VarPickerState::new(
-            vec![
-                var_entry("base", Some("api root"), None),
-                var_entry("tok", None, Some("secret")),
-            ],
+            vec![var_entry("base", Some("api root"), None), var_entry("tok", None, Some("secret"))],
             false,
         );
         p.seed_filter("base");
@@ -989,10 +935,7 @@ mod tests {
     #[test]
     fn typing_filters_on_name_and_description() {
         let mut p = VarPickerState::new(
-            vec![
-                var_entry("base", Some("api root"), None),
-                var_entry("tok", None, Some("secret")),
-            ],
+            vec![var_entry("base", Some("api root"), None), var_entry("tok", None, Some("secret"))],
             false,
         );
         for c in "root".chars() {
@@ -1012,9 +955,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(!content.contains("enter insert"), "{content}");
         assert!(!content.contains("esc cancel"), "{content}");
@@ -1036,9 +977,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("base"));
         assert!(content.contains("api root"));
@@ -1060,9 +999,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let area = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
         let title_y = area.y + 1;
         let field_area = Rect {
@@ -1092,9 +1029,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let row0 = hits.rect_of(&crate::hit::Hit::VarPickerRow(0)).unwrap();
         let buffer = terminal.backend().buffer();
         let bar = buffer[(row0.x, row0.y)].clone();
@@ -1123,14 +1058,7 @@ mod tests {
         let mut hits = crate::hit::HitMap::default();
         terminal
             .draw(|f| {
-                p.draw(
-                    f,
-                    f.area(),
-                    &theme,
-                    &mut hits,
-                    Some(&crate::hit::Hit::VarPickerRow(1)),
-                    1.0,
-                )
+                p.draw(f, f.area(), &theme, &mut hits, Some(&crate::hit::Hit::VarPickerRow(1)), 1.0)
             })
             .unwrap();
         let row1 = hits.rect_of(&crate::hit::Hit::VarPickerRow(1)).unwrap();
@@ -1244,9 +1172,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let row0 = hits.rect_of(&crate::hit::Hit::VarPickerRow(0)).unwrap();
         let row1 = hits.rect_of(&crate::hit::Hit::VarPickerRow(1)).unwrap();
         let row2 = hits.rect_of(&crate::hit::Hit::VarPickerRow(2)).unwrap();
@@ -1284,9 +1210,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let row0 = hits.rect_of(&crate::hit::Hit::VarPickerRow(0)).unwrap();
         let row1 = hits.rect_of(&crate::hit::Hit::VarPickerRow(1)).unwrap();
         let buffer = terminal.backend().buffer();
@@ -1315,12 +1239,7 @@ mod tests {
         // Down once lands on the ghost row (row 1, one past the one entry).
         p.handle_key(key(KeyCode::Down));
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
-        assert_eq!(
-            res.actions,
-            vec![Action::OpenNewOptionInlinePrompt {
-                owner: "user".into()
-            }]
-        );
+        assert_eq!(res.actions, vec![Action::OpenNewOptionInlinePrompt { owner: "user".into() }]);
         assert!(res.close);
     }
 
@@ -1339,9 +1258,7 @@ mod tests {
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(
             res.actions,
-            vec![Action::OpenNewOptionInlinePrompt {
-                owner: "identity".into()
-            }]
+            vec![Action::OpenNewOptionInlinePrompt { owner: "identity".into() }]
         );
     }
 
@@ -1362,9 +1279,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("add new option"), "{content}");
     }
@@ -1402,9 +1317,7 @@ mod tests {
         let theme = Theme::dark();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         (format!("{:?}", terminal.backend().buffer()), hits)
     }
 
@@ -1440,11 +1353,7 @@ mod tests {
             assert!(p.handle_key(key(KeyCode::Char(c))).is_none());
         }
         p.handle_key(key(KeyCode::Backspace));
-        assert_eq!(
-            p.selected(),
-            1,
-            "typing neither filters nor moves the cursor"
-        );
+        assert_eq!(p.selected(), 1, "typing neither filters nor moves the cursor");
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert!(
             res.actions.iter().any(|a| matches!(
@@ -1503,10 +1412,7 @@ mod tests {
         assert!(content.contains("1002"), "{content}");
         assert!(!content.contains("admin"), "{content}");
         assert!(!content.contains("1001"), "{content}");
-        assert!(
-            content.contains("\u{2500}"),
-            "a rule separates list and pane"
-        );
+        assert!(content.contains("\u{2500}"), "a rule separates list and pane");
     }
 
     #[test]
@@ -1539,10 +1445,7 @@ mod tests {
             "the value renders in the pane now that rows drop it: {content}"
         );
         assert!(content.contains("the shared box"), "{content}");
-        assert!(
-            !content.contains("= https"),
-            "the row's old `= value` tail is gone: {content}"
-        );
+        assert!(!content.contains("= https"), "the row's old `= value` tail is gone: {content}");
         assert!(content.contains("\u{2500}"), "the pane's rule renders");
     }
 

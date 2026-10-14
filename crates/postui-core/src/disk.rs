@@ -63,11 +63,7 @@ impl std::fmt::Display for RelPath {
 #[derive(Debug, thiserror::Error)]
 pub enum DiskError {
     #[error("could not {op} {path}: {source}")]
-    Io {
-        op: &'static str,
-        path: String,
-        source: std::io::Error,
-    },
+    Io { op: &'static str, path: String, source: std::io::Error },
     #[error("invalid path {0:?}")]
     BadPath(String),
     #[error("{0} already exists")]
@@ -77,12 +73,11 @@ pub enum DiskError {
 }
 
 impl DiskError {
-    fn io<'a>(op: &'static str, path: &'a RelPath) -> impl FnOnce(std::io::Error) -> DiskError + 'a {
-        move |source| DiskError::Io {
-            op,
-            path: path.to_string(),
-            source,
-        }
+    fn io<'a>(
+        op: &'static str,
+        path: &'a RelPath,
+    ) -> impl FnOnce(std::io::Error) -> DiskError + 'a {
+        move |source| DiskError::Io { op, path: path.to_string(), source }
     }
 }
 
@@ -132,11 +127,7 @@ pub struct Disk {
 
 impl Disk {
     pub fn new(root: PathBuf) -> Disk {
-        Disk {
-            root,
-            stamps: HashMap::new(),
-            private: HashSet::new(),
-        }
+        Disk { root, stamps: HashMap::new(), private: HashSet::new() }
     }
 
     /// Marks `rel` private: every write of it lands 0600, tightening a
@@ -175,13 +166,11 @@ impl Disk {
     pub fn read(&mut self, rel: &RelPath) -> Result<Option<String>, DiskError> {
         match self.read_bytes(rel)? {
             None => Ok(None),
-            Some(bytes) => String::from_utf8(bytes)
-                .map(Some)
-                .map_err(|e| DiskError::Io {
-                    op: "read",
-                    path: rel.to_string(),
-                    source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-                }),
+            Some(bytes) => String::from_utf8(bytes).map(Some).map_err(|e| DiskError::Io {
+                op: "read",
+                path: rel.to_string(),
+                source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+            }),
         }
     }
 
@@ -237,8 +226,7 @@ impl Disk {
         // landing a moment after the rename shows up as a change instead
         // of quietly becoming the recorded state.
         let staged = tmp.as_file().metadata().ok().map(|m| Self::stamp_of(&m));
-        tmp.persist(&target)
-            .map_err(|e| DiskError::io("write", rel)(e.error))?;
+        tmp.persist(&target).map_err(|e| DiskError::io("write", rel)(e.error))?;
         match staged {
             Some(s) => {
                 self.stamps.insert(rel.clone(), s);
@@ -319,10 +307,7 @@ impl Disk {
     }
 
     fn stamp_of(m: &std::fs::Metadata) -> Stamp {
-        Stamp::Present {
-            mtime: m.modified().ok(),
-            len: m.len(),
-        }
+        Stamp::Present { mtime: m.modified().ok(), len: m.len() }
     }
 
     /// The stamp recorded at the last read or write of `rel`; `None` for a
@@ -351,7 +336,8 @@ impl Disk {
             return Err(DiskError::AlreadyExists(to.to_string()));
         }
         if let Some(parent) = to_abs.parent() {
-            std::fs::create_dir_all(parent).map_err(DiskError::io("create the directory of", to))?;
+            std::fs::create_dir_all(parent)
+                .map_err(DiskError::io("create the directory of", to))?;
         }
         std::fs::rename(&from_abs, &to_abs).map_err(DiskError::io("move", from))?;
         self.record(from);
@@ -447,12 +433,8 @@ impl Disk {
     /// numeric entry, starting at 1.
     fn next_trash_slot(&mut self) -> Result<RelPath, DiskError> {
         let root = Self::trash_root();
-        let max = self
-            .list(&root)?
-            .iter()
-            .filter_map(|e| e.name.parse::<u64>().ok())
-            .max()
-            .unwrap_or(0);
+        let max =
+            self.list(&root)?.iter().filter_map(|e| e.name.parse::<u64>().ok()).max().unwrap_or(0);
         root.join(&(max + 1).to_string())
     }
 
@@ -461,10 +443,7 @@ impl Disk {
     pub fn trash(&mut self, rel: &RelPath) -> Result<Ticket, DiskError> {
         let slot = self.next_trash_slot()?.join(rel.as_str())?;
         self.rename(rel, &slot)?;
-        Ok(Ticket {
-            original: rel.clone(),
-            slot,
-        })
+        Ok(Ticket { original: rel.clone(), slot })
     }
 
     /// Renames a trashed path back. `AlreadyExists` when the original is
@@ -576,7 +555,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let (d, mut disk) = disk();
         std::fs::write(d.path().join("control"), b"").unwrap();
-        let control = std::fs::metadata(d.path().join("control")).unwrap().permissions().mode() & 0o777;
+        let control =
+            std::fs::metadata(d.path().join("control")).unwrap().permissions().mode() & 0o777;
         let a = RelPath::new("project.toml").unwrap();
         let b = RelPath::new("environments/dev.toml").unwrap();
         disk.write(&a, "").unwrap();
@@ -604,7 +584,10 @@ mod tests {
         let fresh = RelPath::new(".local/other.toml").unwrap();
         disk.mark_private(fresh.clone());
         disk.write_new(&fresh, "").unwrap();
-        assert_eq!(std::fs::metadata(disk.abs(&fresh)).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(disk.abs(&fresh)).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]
@@ -805,10 +788,7 @@ mod tests {
         let t2 = disk.trash(&d).unwrap();
         assert_eq!(t1.slot.as_str(), ".local/trash/1/requests/auth");
         assert_eq!(t2.slot.as_str(), ".local/trash/2/requests/auth");
-        assert_eq!(
-            disk.read(&t1.slot.join("a.toml").unwrap()).unwrap().as_deref(),
-            Some("1")
-        );
+        assert_eq!(disk.read(&t1.slot.join("a.toml").unwrap()).unwrap().as_deref(), Some("1"));
     }
 
     #[test]

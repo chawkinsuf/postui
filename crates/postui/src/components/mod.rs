@@ -101,11 +101,7 @@ pub trait Component {
 /// instead of a `│` glyph.
 pub fn pane_surface(buf: &mut Buffer, area: Rect, theme: &Theme) -> Rect {
     fill(buf, area, theme.page);
-    Rect {
-        x: area.x + 1,
-        width: area.width.saturating_sub(2),
-        ..area
-    }
+    Rect { x: area.x + 1, width: area.width.saturating_sub(2), ..area }
 }
 
 #[cfg(test)]
@@ -135,10 +131,7 @@ mod tests {
         }
         let content = format!("{buf:?}");
         for glyph in ['╭', '╮', '╰', '╯', '│'] {
-            assert!(
-                !content.contains(glyph),
-                "no pane border glyph {glyph:?} expected: {content}"
-            );
+            assert!(!content.contains(glyph), "no pane border glyph {glyph:?} expected: {content}");
         }
     }
 }

@@ -75,10 +75,7 @@ impl ChooserState {
     }
 
     pub fn with_toggle(mut self, label: impl Into<String>, action: Action) -> Self {
-        self.toggle = Some(ChooserToggle {
-            label: label.into(),
-            action,
-        });
+        self.toggle = Some(ChooserToggle { label: label.into(), action });
         self
     }
 
@@ -109,10 +106,8 @@ impl ChooserState {
     /// one is visible under the current filter; otherwise leaves the
     /// selection where it is.
     pub fn select_id(&mut self, id: &str) {
-        if let Some(pos) = self
-            .filtered
-            .iter()
-            .position(|&i| self.items[i].id.as_deref() == Some(id))
+        if let Some(pos) =
+            self.filtered.iter().position(|&i| self.items[i].id.as_deref() == Some(id))
         {
             self.select(pos);
         }
@@ -149,17 +144,13 @@ impl ChooserState {
     }
 
     pub fn selected_label(&self) -> Option<&str> {
-        self.filtered
-            .get(self.selected)
-            .map(|&i| self.items[i].label.as_str())
+        self.filtered.get(self.selected).map(|&i| self.items[i].label.as_str())
     }
 
     /// The `id` of the highlighted item, mapped through the filter — `None`
     /// when nothing is selected or the item carries no id.
     pub fn selected_id(&self) -> Option<&str> {
-        self.filtered
-            .get(self.selected)
-            .and_then(|&i| self.items[i].id.as_deref())
+        self.filtered.get(self.selected).and_then(|&i| self.items[i].id.as_deref())
     }
 
     /// Moves the keyboard/mouse cursor to filtered row `i` (clamped in
@@ -275,11 +266,7 @@ impl ChooserState {
     /// `redo`) and re-runs the filter, mirroring what typing that step
     /// forward did. Returns whether there was a step to take.
     pub(crate) fn undo_filter(&mut self, redo: bool) -> bool {
-        let stepped = if redo {
-            self.input.redo()
-        } else {
-            self.input.undo()
-        };
+        let stepped = if redo { self.input.redo() } else { self.input.undo() };
         if stepped {
             self.refilter();
         }
@@ -327,22 +314,9 @@ impl ChooserState {
             // Tab/BackTab — mirrored by `handle_key`.
             let w = t.label.chars().count() as u16;
             let x = (area.x + area.width).saturating_sub(w + 2);
-            paint::text(
-                frame.buffer_mut(),
-                x,
-                title_y,
-                &t.label,
-                theme.accent,
-                theme.panel,
-                false,
-            );
+            paint::text(frame.buffer_mut(), x, title_y, &t.label, theme.accent, theme.panel, false);
             hits.register(
-                Rect {
-                    x,
-                    y: title_y,
-                    width: w,
-                    height: 1,
-                },
+                Rect { x, y: title_y, width: w, height: 1 },
                 crate::hit::Hit::ChooserToggle,
             );
         }
@@ -353,14 +327,13 @@ impl ChooserState {
             width: area.width.saturating_sub(2),
             height: FIELD_HEIGHT,
         };
-        let content = self
-            .input
-            .draw_line_windowed(true, theme, field_area.width.saturating_sub(2));
-        TextField {
-            content,
-            state: ControlState::Focused,
-        }
-        .paint(frame.buffer_mut(), field_area, theme);
+        let content =
+            self.input.draw_line_windowed(true, theme, field_area.width.saturating_sub(2));
+        TextField { content, state: ControlState::Focused }.paint(
+            frame.buffer_mut(),
+            field_area,
+            theme,
+        );
 
         let list_area = Rect {
             x: area.x + 1,
@@ -387,13 +360,7 @@ impl ChooserState {
         // hover fill immediately, same convention as `DrawCtx::hover_t`'s
         // own documented default when no fade is in flight.
         let hover_t = 1.0;
-        for (i, &idx) in self
-            .filtered
-            .iter()
-            .enumerate()
-            .skip(self.scroll)
-            .take(list_h.max(1))
-        {
+        for (i, &idx) in self.filtered.iter().enumerate().skip(self.scroll).take(list_h.max(1)) {
             let item = &self.items[idx];
             let text_row = list_area.y + (i - self.scroll) as u16;
             let selected = i == self.selected;
@@ -405,11 +372,7 @@ impl ChooserState {
             } else {
                 RowHighlight::None
             };
-            ListRow {
-                highlight,
-                zebra: None,
-            }
-            .paint(
+            ListRow { highlight, zebra: None }.paint(
                 frame.buffer_mut(),
                 text_row,
                 list_area.x,
@@ -425,15 +388,7 @@ impl ChooserState {
             let right = list_area.x + list_area.width;
             let label = clip(item.label.as_str(), right.saturating_sub(x));
             let label_w = (label.chars().count() as u16).min(right.saturating_sub(x));
-            paint::text(
-                frame.buffer_mut(),
-                x,
-                text_row,
-                label,
-                theme.text,
-                row_fill,
-                selected,
-            );
+            paint::text(frame.buffer_mut(), x, text_row, label, theme.text, row_fill, selected);
             x += label_w;
             if let Some(detail) = &item.detail {
                 let detail = format!(" {detail}");
@@ -449,12 +404,7 @@ impl ChooserState {
                 );
             }
 
-            let row_rect = Rect {
-                x: list_area.x,
-                y: text_row,
-                width: list_area.width,
-                height: 1,
-            };
+            let row_rect = Rect { x: list_area.x, y: text_row, width: list_area.width, height: 1 };
             hits.register(row_rect, crate::hit::Hit::ChooserRow(i));
         }
     }
@@ -518,9 +468,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
+        terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(!content.contains("enter select"), "{content}");
         assert!(!content.contains("esc cancel"), "{content}");
@@ -528,7 +476,8 @@ mod tests {
 
     #[test]
     fn left_and_right_move_the_caret_and_tab_fires_the_toggle() {
-        let mut c = ChooserState::new("Pick", vec![]).with_toggle("dark", Action::ToggleThemePickerPolarity);
+        let mut c = ChooserState::new("Pick", vec![])
+            .with_toggle("dark", Action::ToggleThemePickerPolarity);
         for ch in "ab".chars() {
             c.handle_key(key(KeyCode::Char(ch)));
         }
@@ -562,11 +511,7 @@ mod tests {
         for ch in "tmp/w".chars() {
             c.handle_key(key(KeyCode::Char(ch)));
         }
-        assert_eq!(
-            c.selected_label(),
-            Some("web"),
-            "detail participates in the fuzzy match"
-        );
+        assert_eq!(c.selected_label(), Some("web"), "detail participates in the fuzzy match");
         let res = c.handle_key(key(KeyCode::Enter)).unwrap();
         assert!(res.close);
         assert_eq!(res.actions, vec![Action::Render]);
@@ -582,10 +527,7 @@ mod tests {
         for ch in "zz".chars() {
             c.handle_key(key(KeyCode::Char(ch)));
         }
-        assert!(
-            c.handle_key(key(KeyCode::Enter)).is_none(),
-            "no match: Enter swallowed"
-        );
+        assert!(c.handle_key(key(KeyCode::Enter)).is_none(), "no match: Enter swallowed");
         let res = c.handle_key(key(KeyCode::Esc)).unwrap();
         assert!(res.close && res.actions.is_empty());
     }
@@ -613,9 +555,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
+        terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("Projects"), "title should render");
         assert!(content.contains("svc"), "first label should render");
@@ -630,9 +570,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
+        terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let row0 = hits.rect_of(&crate::hit::Hit::ChooserRow(0)).unwrap();
         let buffer = terminal.backend().buffer();
         let bar = buffer[(row0.x, row0.y)].clone();
@@ -658,14 +596,7 @@ mod tests {
         let mut hits = crate::hit::HitMap::default();
         terminal
             .draw(|f| {
-                c.draw(
-                    f,
-                    f.area(),
-                    &theme,
-                    &mut hits,
-                    Some(&crate::hit::Hit::ChooserRow(1)),
-                    1.0,
-                )
+                c.draw(f, f.area(), &theme, &mut hits, Some(&crate::hit::Hit::ChooserRow(1)), 1.0)
             })
             .unwrap();
         let row1 = hits.rect_of(&crate::hit::Hit::ChooserRow(1)).unwrap();
@@ -680,10 +611,7 @@ mod tests {
     #[test]
     fn tab_fires_the_toggle_without_closing_and_is_inert_without_one() {
         let mut plain = ChooserState::new("t", items(&["a", "b"]));
-        assert!(
-            plain.handle_key(key(KeyCode::Tab)).is_none(),
-            "no toggle: Tab is ignored"
-        );
+        assert!(plain.handle_key(key(KeyCode::Tab)).is_none(), "no toggle: Tab is ignored");
         let mut c =
             ChooserState::new("t", items(&["a", "b"])).with_toggle("◂ dark ▸", Action::Quit);
         for code in [KeyCode::Tab, KeyCode::BackTab] {
@@ -725,11 +653,7 @@ mod tests {
         c.select_id("beta-id");
         assert_eq!(c.selected_id(), Some("beta-id"));
         c.select_id("no-such-id");
-        assert_eq!(
-            c.selected_id(),
-            Some("beta-id"),
-            "unknown id leaves selection"
-        );
+        assert_eq!(c.selected_id(), Some("beta-id"), "unknown id leaves selection");
     }
 
     #[test]
@@ -739,9 +663,7 @@ mod tests {
         let theme = Theme::dark();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
+        terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let toggle = hits
             .rect_of(&crate::hit::Hit::ChooserToggle)
             .expect("toggle label registers a clickable hit");
@@ -764,9 +686,7 @@ mod tests {
         let theme = Theme::dark();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
+        terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         assert!(
             hits.rect_of(&crate::hit::Hit::ChooserToggle).is_none(),
             "hidden toggle must not be clickable"
@@ -796,11 +716,7 @@ mod tests {
         for ch in "bet".chars() {
             c.handle_key(key(KeyCode::Char(ch)));
         }
-        assert_eq!(
-            c.selected_id(),
-            Some("beta-id"),
-            "id follows the filtered selection"
-        );
+        assert_eq!(c.selected_id(), Some("beta-id"), "id follows the filtered selection");
     }
 
     #[test]
@@ -810,9 +726,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
+        terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let area = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
         let title_y = area.y + 1;
         let field_area = Rect {
@@ -839,9 +753,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
+        terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let row0 = hits.rect_of(&crate::hit::Hit::ChooserRow(0)).unwrap();
         let row1 = hits.rect_of(&crate::hit::Hit::ChooserRow(1)).unwrap();
         let row2 = hits.rect_of(&crate::hit::Hit::ChooserRow(2)).unwrap();
@@ -863,9 +775,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         c.select(12);
-        terminal
-            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
+        terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         assert!(
             hits.rect_of(&crate::hit::Hit::ChooserRow(12)).is_some(),
             "scrolling to the last of 13 items must bring it into view"

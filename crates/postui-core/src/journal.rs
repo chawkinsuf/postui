@@ -25,11 +25,7 @@ pub enum Op {
     Restored { ticket: Ticket },
     /// A document's text went from `before` to `after` (`None` = absent).
     /// Inverse: write `before` (or remove).
-    Text {
-        path: RelPath,
-        before: Option<String>,
-        after: Option<String>,
-    },
+    Text { path: RelPath, before: Option<String>, after: Option<String> },
 }
 
 impl Op {
@@ -83,7 +79,8 @@ pub struct Entry {
 impl Entry {
     /// A merged burst that put the document back where it started.
     fn is_identity(&self) -> bool {
-        self.ops.len() == 1 && matches!(&self.ops[0], Op::Text { before, after, .. } if before == after)
+        self.ops.len() == 1
+            && matches!(&self.ops[0], Op::Text { before, after, .. } if before == after)
     }
 
     /// Folds `next` into `self` when both are single `Text` ops on the
@@ -100,14 +97,9 @@ impl Entry {
             return false;
         };
         match (a, b) {
-            (
-                Op::Text { path: p1, after, .. },
-                Op::Text {
-                    path: p2,
-                    after: after2,
-                    ..
-                },
-            ) if same_len && p1 == p2 => {
+            (Op::Text { path: p1, after, .. }, Op::Text { path: p2, after: after2, .. })
+                if same_len && p1 == p2 =>
+            {
                 *after = after2.clone();
                 self.merge = Some((k2.clone(), *t2));
                 true
@@ -138,12 +130,7 @@ impl Journal {
     }
 
     pub fn with_cap(cap: usize) -> Journal {
-        Journal {
-            undo: Vec::new(),
-            redo: Vec::new(),
-            cap,
-            next_id: 1,
-        }
+        Journal { undo: Vec::new(), redo: Vec::new(), cap, next_id: 1 }
     }
 
     /// Records a new entry: clears redo, merges a burst (dropping it if
@@ -281,9 +268,7 @@ mod tests {
     #[test]
     fn a_burst_with_the_same_merge_key_folds_into_one_entry() {
         let mut j = Journal::new();
-        let key = || MergeKey::SpaceOrder {
-            name: "auth".to_string(),
-        };
+        let key = || MergeKey::SpaceOrder { name: "auth".to_string() };
         let mut e1 = text_entry("move", "project.toml", "[a,b]", "[b,a]");
         e1.merge = Some((key(), std::time::Instant::now()));
         let mut e2 = text_entry("move", "project.toml", "[b,a]", "[b,a,c]");
@@ -306,28 +291,18 @@ mod tests {
         let mut j = Journal::new();
         let mut e1 = text_entry("move", "project.toml", "1", "2");
         e1.merge = Some((
-            MergeKey::SpaceOrder {
-                name: "a".to_string(),
-            },
+            MergeKey::SpaceOrder { name: "a".to_string() },
             std::time::Instant::now() - MERGE_WINDOW * 2,
         ));
         let mut e2 = text_entry("move", "project.toml", "2", "3");
-        e2.merge = Some((
-            MergeKey::SpaceOrder {
-                name: "a".to_string(),
-            },
-            std::time::Instant::now(),
-        ));
+        e2.merge =
+            Some((MergeKey::SpaceOrder { name: "a".to_string() }, std::time::Instant::now()));
         j.push(e1);
         j.push(e2);
         assert_eq!(j.len(), 2, "outside the window");
         let mut e3 = text_entry("move", "project.toml", "3", "4");
-        e3.merge = Some((
-            MergeKey::SpaceOrder {
-                name: "b".to_string(),
-            },
-            std::time::Instant::now(),
-        ));
+        e3.merge =
+            Some((MergeKey::SpaceOrder { name: "b".to_string() }, std::time::Instant::now()));
         j.push(e3);
         assert_eq!(j.len(), 3, "different key");
     }
@@ -389,10 +364,7 @@ mod tests {
     fn op_touched_names_every_path_an_op_affects() {
         let a = RelPath::new("requests/main/a.toml").unwrap();
         let b = RelPath::new("requests/auth/a.toml").unwrap();
-        let op = Op::Renamed {
-            from: a.clone(),
-            to: b.clone(),
-        };
+        let op = Op::Renamed { from: a.clone(), to: b.clone() };
         assert_eq!(op.touched(), vec![&a, &b]);
     }
 }

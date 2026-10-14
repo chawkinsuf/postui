@@ -112,7 +112,9 @@ impl Open {
             (Open::Request { slug: a, buffer: x }, Open::Request { slug: b, buffer: y }) => {
                 a == b && x.is_some() == y.is_some()
             }
-            (Open::Scratch { buffer: x }, Open::Scratch { buffer: y }) => x.is_some() == y.is_some(),
+            (Open::Scratch { buffer: x }, Open::Scratch { buffer: y }) => {
+                x.is_some() == y.is_some()
+            }
             _ => false,
         }
     }
@@ -155,6 +157,8 @@ pub struct StepLabel {
     pub subject: String,
 }
 
+/// The constructors, one per line.
+#[rustfmt::skip]
 impl StepLabel {
     fn of(verb: Verb, subject: impl Into<String>) -> Self {
         Self { verb, subject: subject.into() }
@@ -181,7 +185,9 @@ impl StepLabel {
     pub fn delete_option(name: &str, env: &str) -> Self {
         Self::delete(format!("option \"{name}\" in {env}"))
     }
+}
 
+impl StepLabel {
     /// The toast an undo (`redo == false`) or redo of this step shows.
     pub fn toast(&self, redo: bool) -> String {
         let done = if redo { "Redid" } else { "Undid" };
@@ -271,9 +277,7 @@ impl History {
         self.redo.clear();
 
         let merged = self.coalescing
-            && self
-                .last_record
-                .is_some_and(|last| now - last < COALESCE_WINDOW)
+            && self.last_record.is_some_and(|last| now - last < COALESCE_WINDOW)
             && Self::try_merge(self.undo.last_mut(), &step);
 
         if !merged {
@@ -301,19 +305,13 @@ impl History {
     /// Attempts to merge `new` into `top` in place. Returns whether it did.
     fn try_merge(top: Option<&mut Step>, new: &Step) -> bool {
         let Some(top) = top else { return false };
-        let StepKind::EditorDelta {
-            slug: top_slug,
-            before: top_before,
-            after: top_after,
-        } = &mut top.kind
+        let StepKind::EditorDelta { slug: top_slug, before: top_before, after: top_after } =
+            &mut top.kind
         else {
             return false;
         };
-        let StepKind::EditorDelta {
-            slug: new_slug,
-            before: new_before,
-            after: new_after,
-        } = &new.kind
+        let StepKind::EditorDelta { slug: new_slug, before: new_before, after: new_after } =
+            &new.kind
         else {
             return false;
         };
@@ -454,9 +452,7 @@ mod tests {
                 before: Box::new(req(before)),
                 after: Box::new(req(after)),
             },
-            context: Context {
-                slug: Some("a".into()),
-            },
+            context: Context { slug: Some("a".into()) },
         }
     }
 
@@ -469,9 +465,7 @@ mod tests {
         h.record(delta("ht", "htt"), t0 + Duration::from_millis(200));
         let step = h.pop_undo().unwrap();
         assert!(h.pop_undo().is_none(), "burst must be one step");
-        let StepKind::EditorDelta { before, after, .. } = step.kind else {
-            panic!()
-        };
+        let StepKind::EditorDelta { before, after, .. } = step.kind else { panic!() };
         assert_eq!(before.url, "");
         assert_eq!(after.url, "htt");
     }
@@ -501,9 +495,7 @@ mod tests {
                     before: Box::new(req("h")),
                     after: Box::new(named),
                 },
-                context: Context {
-                    slug: Some("a".into()),
-                },
+                context: Context { slug: Some("a".into()) },
             },
             t0 + Duration::from_millis(100),
         );
@@ -561,9 +553,7 @@ mod tests {
                 before: UiValue::Flag(true),
                 after: UiValue::Flag(false),
             },
-            context: Context {
-                slug: None,
-            },
+            context: Context { slug: None },
         });
         let popped = h.pop_undo().expect("the step is there");
         assert!(matches!(
@@ -632,11 +622,7 @@ mod tests {
         after.jq = Some(".a".into());
         assert_eq!(coalesce_key(&before, &after), Some(CoalesceKey::Jq));
         after.url.push('x');
-        assert_eq!(
-            coalesce_key(&before, &after),
-            None,
-            "two fields at once never coalesce"
-        );
+        assert_eq!(coalesce_key(&before, &after), None, "two fields at once never coalesce");
     }
 
     #[test]
@@ -644,20 +630,64 @@ mod tests {
         let cases: &[(StepLabel, &str, &str)] = &[
             (StepLabel::create("Fresh"), "Undid create of Fresh", "Redid create of Fresh"),
             (StepLabel::rename("Pong"), "Undid rename to Pong", "Redid rename to Pong"),
-            (StepLabel::moved("Ping", "Auth"), "Undid move of Ping to Auth", "Redid move of Ping to Auth"),
-            (StepLabel::moved_all(3, "Auth"), "Undid move of 3 requests to Auth", "Redid move of 3 requests to Auth"),
-            (StepLabel::moved_all(1, "Auth"), "Undid move of 1 request to Auth", "Redid move of 1 request to Auth"),
-            (StepLabel::reorder("space Billing"), "Undid reorder of space Billing", "Redid reorder of space Billing"),
+            (
+                StepLabel::moved("Ping", "Auth"),
+                "Undid move of Ping to Auth",
+                "Redid move of Ping to Auth",
+            ),
+            (
+                StepLabel::moved_all(3, "Auth"),
+                "Undid move of 3 requests to Auth",
+                "Redid move of 3 requests to Auth",
+            ),
+            (
+                StepLabel::moved_all(1, "Auth"),
+                "Undid move of 1 request to Auth",
+                "Redid move of 1 request to Auth",
+            ),
+            (
+                StepLabel::reorder("space Billing"),
+                "Undid reorder of space Billing",
+                "Redid reorder of space Billing",
+            ),
             (StepLabel::change("Ping"), "Undid change to Ping", "Redid change to Ping"),
-            (StepLabel::variable("base_url"), "Undid change to variable base_url", "Redid change to variable base_url"),
-            (StepLabel::environment("Staging"), "Undid change to environment Staging", "Redid change to environment Staging"),
-            (StepLabel::space("Auth v2!"), "Undid change to space Auth v2!", "Redid change to space Auth v2!"),
+            (
+                StepLabel::variable("base_url"),
+                "Undid change to variable base_url",
+                "Redid change to variable base_url",
+            ),
+            (
+                StepLabel::environment("Staging"),
+                "Undid change to environment Staging",
+                "Redid change to environment Staging",
+            ),
+            (
+                StepLabel::space("Auth v2!"),
+                "Undid change to space Auth v2!",
+                "Redid change to space Auth v2!",
+            ),
             (StepLabel::project(), "Undid project change", "Redid project change"),
             (StepLabel::delete("Fancy Name!"), "Restored Fancy Name!", "Deleted Fancy Name! again"),
-            (StepLabel::delete_env("Staging One"), "Restored environment Staging One", "Deleted environment Staging One again"),
-            (StepLabel::delete_space("Auth v2!"), "Restored space Auth v2!", "Deleted space Auth v2! again"),
-            (StepLabel::delete_variable("api_key"), "Restored \"api_key\"", "Deleted \"api_key\" again"),
-            (StepLabel::delete_option("alice", "QA"), "Restored option \"alice\" in QA", "Deleted option \"alice\" in QA again"),
+            (
+                StepLabel::delete_env("Staging One"),
+                "Restored environment Staging One",
+                "Deleted environment Staging One again",
+            ),
+            (
+                StepLabel::delete_space("Auth v2!"),
+                "Restored space Auth v2!",
+                "Deleted space Auth v2! again",
+            ),
+            (
+                StepLabel::delete_variable("api_key"),
+                "Restored \"api_key\"",
+                "Deleted \"api_key\" again",
+            ),
+            (
+                StepLabel::delete_option("alice", "QA"),
+                "Restored option \"alice\" in QA",
+                "Deleted option \"alice\" in QA again",
+            ),
         ];
         for (label, undo, redo) in cases {
             assert_eq!(label.toast(false), *undo);

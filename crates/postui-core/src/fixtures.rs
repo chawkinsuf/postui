@@ -8,9 +8,9 @@
 use crate::model::HttpRequest;
 use crate::order::{OrderEdit, level_of, merge_level, space_order, write_order};
 use crate::project::{
-    DEFAULT_ENVIRONMENT, DEFAULT_SPACE, Kind, ListChange, LocalState, Project, ProjectError, ProjectMeta,
-    display_name_of, display_taken, env_display, environment_path, set_item_name, space_dir,
-    slug_array, space_display, unique_slug_among, valid_space_name,
+    DEFAULT_ENVIRONMENT, DEFAULT_SPACE, Kind, ListChange, LocalState, Project, ProjectError,
+    ProjectMeta, display_name_of, display_taken, env_display, environment_path, set_item_name,
+    slug_array, space_dir, space_display, unique_slug_among, valid_space_name,
 };
 use crate::storage::{
     RequestListing, StorageError, request_path, requests_dir, space_of, validate_slug,
@@ -74,10 +74,7 @@ pub fn trash(root: &Path, path: &Path) -> std::io::Result<Trashed> {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::rename(path, &dest)?;
-    Ok(Trashed {
-        original: path.to_path_buf(),
-        trashed: dest,
-    })
+    Ok(Trashed { original: path.to_path_buf(), trashed: dest })
 }
 
 // ---------------------------------------------------------------------
@@ -123,9 +120,8 @@ fn edit_project_toml(
 ) -> Result<(), ProjectError> {
     let path = root.join("project.toml");
     let text = read_optional(&path)?.unwrap_or_default();
-    let mut doc: toml_edit::DocumentMut = text
-        .parse()
-        .map_err(|e: toml_edit::TomlError| ProjectError::Parse(e.to_string()))?;
+    let mut doc: toml_edit::DocumentMut =
+        text.parse().map_err(|e: toml_edit::TomlError| ProjectError::Parse(e.to_string()))?;
     f(&mut doc);
     write_atomic(&path, doc.to_string().as_bytes())?;
     Ok(())
@@ -223,9 +219,8 @@ pub fn list_spaces_with_warnings(root: &Path, meta: &ProjectMeta) -> (Vec<String
 pub fn write_spaces(root: &Path, spaces: &[String]) -> Result<(), ProjectError> {
     let path = root.join("project.toml");
     let text = read_optional(&path)?.unwrap_or_default();
-    let mut doc: toml_edit::DocumentMut = text
-        .parse()
-        .map_err(|e: toml_edit::TomlError| ProjectError::Parse(e.to_string()))?;
+    let mut doc: toml_edit::DocumentMut =
+        text.parse().map_err(|e: toml_edit::TomlError| ProjectError::Parse(e.to_string()))?;
     doc["spaces"] = toml_edit::value(slug_array(spaces));
     write_atomic(&path, doc.to_string().as_bytes())?;
     Ok(())
@@ -318,10 +313,7 @@ pub fn create_environment(root: &Path, display: &str) -> Result<String, ProjectE
     }
     let slug = environment_slug_for(root, &display, None);
     std::fs::create_dir_all(root.join("environments"))?;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(environment_path(root, &slug))?;
+    std::fs::OpenOptions::new().write(true).create_new(true).open(environment_path(root, &slug))?;
     edit_project_toml(root, |doc| {
         set_item_name(doc, Kind::Environment, &slug, &display);
     })?;
@@ -420,10 +412,7 @@ pub fn init_project(root: &Path, name: Option<&str>) -> std::io::Result<()> {
 /// Builds a closure that wraps an `io::Error` with the path it concerns,
 /// for use as `.map_err(io_err(&path))`.
 fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> StorageError + '_ {
-    move |source| StorageError::Io {
-        path: path.to_path_buf(),
-        source,
-    }
+    move |source| StorageError::Io { path: path.to_path_buf(), source }
 }
 
 /// Ensures `root/requests/` exists and that the project has at least one
@@ -446,10 +435,7 @@ pub fn ensure_project(root: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(requests_dir(root))?;
     let Ok(meta) = load_meta(root) else {
         if list_spaces(root, &crate::project::ProjectMeta::default()).is_empty() {
-            std::fs::create_dir_all(crate::project::space_dir(
-                root,
-                DEFAULT_SPACE,
-            ))?;
+            std::fs::create_dir_all(crate::project::space_dir(root, DEFAULT_SPACE))?;
         }
         return Ok(());
     };
@@ -464,10 +450,7 @@ pub fn ensure_project(root: &Path) -> std::io::Result<()> {
             }
         }
     } else if list_spaces(root, &meta).is_empty() {
-        std::fs::create_dir_all(crate::project::space_dir(
-            root,
-            DEFAULT_SPACE,
-        ))?;
+        std::fs::create_dir_all(crate::project::space_dir(root, DEFAULT_SPACE))?;
     }
     Ok(())
 }
@@ -508,9 +491,7 @@ pub fn list_requests(root: &Path) -> (Vec<RequestListing>, Option<String>) {
     let walk_err = walk_toml_files(&base, &mut |path| {
         let rel = path.strip_prefix(&base).unwrap_or(&path);
         let slug = rel.with_extension("");
-        let slug = slug
-            .to_string_lossy()
-            .replace(std::path::MAIN_SEPARATOR, "/");
+        let slug = slug.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
         match space_of(&slug) {
             None => {
                 loose.push(format!(
@@ -539,23 +520,14 @@ pub fn list_requests(root: &Path) -> (Vec<RequestListing>, Option<String>) {
             },
             Err(e) => (None, None, Some(e.to_string())),
         };
-        out.push(RequestListing {
-            slug,
-            broken,
-            method,
-            name,
-        });
+        out.push(RequestListing { slug, broken, method, name });
     })
     .err()
     .map(|e| e.to_string());
     out.sort_by(|a, b| a.slug.cmp(&b.slug));
     let mut warnings: Vec<String> = walk_err.into_iter().collect();
     warnings.extend(loose);
-    let warning = if warnings.is_empty() {
-        None
-    } else {
-        Some(warnings.join("; "))
-    };
+    let warning = if warnings.is_empty() { None } else { Some(warnings.join("; ")) };
     (out, warning)
 }
 
@@ -585,12 +557,8 @@ pub fn save_request(root: &Path, slug: &str, req: &HttpRequest) -> Result<(), St
     std::fs::create_dir_all(parent).map_err(io_err(parent))?;
     let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(io_err(parent))?;
     use std::io::Write;
-    tmp.write_all(req.to_toml_string().as_bytes())
-        .map_err(io_err(&path))?;
-    tmp.persist(&path).map_err(|e| StorageError::Io {
-        path: path.clone(),
-        source: e.error,
-    })?;
+    tmp.write_all(req.to_toml_string().as_bytes()).map_err(io_err(&path))?;
+    tmp.persist(&path).map_err(|e| StorageError::Io { path: path.clone(), source: e.error })?;
     Ok(())
 }
 
@@ -654,10 +622,7 @@ pub fn set_level_order(
     edit_order(root, space, |order| {
         let before = order.clone();
         *order = merge_level(order, level, slugs);
-        change = Some(ListChange {
-            before,
-            after: order.clone(),
-        });
+        change = Some(ListChange { before, after: order.clone() });
         Vec::new()
     })?;
     Ok(change.filter(|c| c.before != c.after))
@@ -694,10 +659,7 @@ mod tests {
             std::fs::read_to_string(dir.path().join("project.toml")).unwrap(),
             "name = \"edited\"\n"
         );
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join(".gitignore")).unwrap(),
-            "custom\n"
-        );
+        assert_eq!(std::fs::read_to_string(dir.path().join(".gitignore")).unwrap(), "custom\n");
         assert!(Project::is_project(dir.path()));
     }
 
@@ -712,18 +674,9 @@ mod tests {
     #[test]
     fn load_environment_rejects_path_traversal_names() {
         let dir = tempdir().unwrap();
-        assert!(matches!(
-            load_environment(dir.path(), "../x"),
-            Err(ProjectError::BadName(_))
-        ));
-        assert!(matches!(
-            load_environment(dir.path(), "a/b"),
-            Err(ProjectError::BadName(_))
-        ));
-        assert!(matches!(
-            load_environment(dir.path(), "Bad Name"),
-            Err(ProjectError::BadName(_))
-        ));
+        assert!(matches!(load_environment(dir.path(), "../x"), Err(ProjectError::BadName(_))));
+        assert!(matches!(load_environment(dir.path(), "a/b"), Err(ProjectError::BadName(_))));
+        assert!(matches!(load_environment(dir.path(), "Bad Name"), Err(ProjectError::BadName(_))));
     }
 
     #[test]
@@ -731,12 +684,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let meta = load_meta(dir.path()).unwrap(); // no project.toml at all
         assert!(meta.name.is_none() && meta.default_headers.is_empty());
-        let base = dir
-            .path()
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .to_string();
+        let base = dir.path().file_name().unwrap().to_string_lossy().to_string();
         assert_eq!(display_name(dir.path(), &meta), base);
         std::fs::write(
             dir.path().join("project.toml"),
@@ -752,10 +700,7 @@ mod tests {
     #[test]
     fn variables_parse_validate_names_and_reject_unknown_fields() {
         let dir = tempdir().unwrap();
-        assert!(
-            load_variables(dir.path()).unwrap().vars.is_empty(),
-            "missing file is empty"
-        );
+        assert!(load_variables(dir.path()).unwrap().vars.is_empty(), "missing file is empty");
         std::fs::write(
             dir.path().join("variables.toml"),
             "[base_url]\ndescription = \"root\"\ndefault = \"http://l\"\n\n[token]\n",
@@ -766,15 +711,9 @@ mod tests {
         assert!(vars.vars["token"].default.is_none());
 
         std::fs::write(dir.path().join("variables.toml"), "[\"bad name\"]\n").unwrap();
-        assert!(matches!(
-            load_variables(dir.path()),
-            Err(ProjectError::Parse(_))
-        ));
+        assert!(matches!(load_variables(dir.path()), Err(ProjectError::Parse(_))));
         std::fs::write(dir.path().join("variables.toml"), "[a]\nbogus = 1\n").unwrap();
-        assert!(matches!(
-            load_variables(dir.path()),
-            Err(ProjectError::Parse(_))
-        ));
+        assert!(matches!(load_variables(dir.path()), Err(ProjectError::Parse(_))));
     }
 
     #[test]
@@ -834,42 +773,23 @@ mod tests {
             create_space(dir.path(), "AUTH V2!"),
             Err(ProjectError::AlreadyExists(_))
         ));
-        assert!(matches!(
-            create_space(dir.path(), "  "),
-            Err(ProjectError::BadName(_))
-        ));
-        assert_eq!(
-            create_space(dir.path(), "???").unwrap(),
-            "space",
-            "all-unsafe falls back"
-        );
+        assert!(matches!(create_space(dir.path(), "  "), Err(ProjectError::BadName(_))));
+        assert_eq!(create_space(dir.path(), "???").unwrap(), "space", "all-unsafe falls back");
     }
 
     #[test]
     fn create_environment_slugifies_the_display_name_and_records_it() {
         let dir = tempdir().unwrap();
         init_project(dir.path(), None).unwrap();
-        assert_eq!(
-            create_environment(dir.path(), "Staging (EU)").unwrap(),
-            "staging-eu"
-        );
+        assert_eq!(create_environment(dir.path(), "Staging (EU)").unwrap(), "staging-eu");
         assert!(environment_path(dir.path(), "staging-eu").is_file());
-        assert_eq!(
-            env_display(&load_meta(dir.path()).unwrap(), "staging-eu"),
-            "Staging (EU)"
-        );
-        assert_eq!(
-            create_environment(dir.path(), "staging eu").unwrap(),
-            "staging-eu-2"
-        );
+        assert_eq!(env_display(&load_meta(dir.path()).unwrap(), "staging-eu"), "Staging (EU)");
+        assert_eq!(create_environment(dir.path(), "staging eu").unwrap(), "staging-eu-2");
         assert!(matches!(
             create_environment(dir.path(), "staging (eu)"),
             Err(ProjectError::AlreadyExists(_))
         ));
-        assert!(matches!(
-            create_environment(dir.path(), ""),
-            Err(ProjectError::BadName(_))
-        ));
+        assert!(matches!(create_environment(dir.path(), ""), Err(ProjectError::BadName(_))));
         assert_eq!(create_environment(dir.path(), "!!").unwrap(), "environment");
     }
 
@@ -911,10 +831,7 @@ mod tests {
         // one is bad.
         for bad in ["", "   "] {
             assert!(
-                matches!(
-                    create_environment(dir.path(), bad),
-                    Err(ProjectError::BadName(_))
-                ),
+                matches!(create_environment(dir.path(), bad), Err(ProjectError::BadName(_))),
                 "expected BadName for {bad:?}"
             );
         }
@@ -941,16 +858,10 @@ mod tests {
             "token = \"qa-tok\"\nextra = \"e\"\n",
         )
         .unwrap();
-        std::fs::write(
-            dir.path().join("environments/prod.toml"),
-            "token = \"prod-tok\"\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("environments/prod.toml"), "token = \"prod-tok\"\n")
+            .unwrap();
         std::fs::write(dir.path().join("environments/Bad Name.toml"), "").unwrap();
-        assert_eq!(
-            list_environments(dir.path()),
-            vec!["prod".to_string(), "qa".to_string()]
-        );
+        assert_eq!(list_environments(dir.path()), vec!["prod".to_string(), "qa".to_string()]);
 
         let mut model = varmodel::VarModel::default();
         model.vars.insert(
@@ -963,11 +874,7 @@ mod tests {
         );
         model.vars.insert(
             "token".into(),
-            varmodel::VarDecl {
-                description: None,
-                default: None,
-                secret: false,
-            },
+            varmodel::VarDecl { description: None, default: None, secret: false },
         );
         let env = load_environment(dir.path(), "qa").unwrap();
         let r = varmodel::resolve_env(
@@ -976,15 +883,9 @@ mod tests {
             &varmodel::Selections::new(),
             &varmodel::SecretValues::new(),
         );
-        assert_eq!(
-            r.values["base"], "http://l",
-            "default used when env has no value"
-        );
+        assert_eq!(r.values["base"], "http://l", "default used when env has no value");
         assert_eq!(r.values["token"], "qa-tok", "env value wins");
-        assert_eq!(
-            r.values["extra"], "e",
-            "undeclared env value still resolves (lenient)"
-        );
+        assert_eq!(r.values["extra"], "e", "undeclared env value still resolves (lenient)");
         let empty_env = varmodel::EnvData::default();
         let r = varmodel::resolve_env(
             &model,
@@ -1032,25 +933,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut shared_selections = IndexMap::new();
         shared_selections.insert("locale".to_string(), "fr".to_string());
-        let state = LocalState {
-            environment: Some("qa".into()),
-            shared_selections,
-            ..Default::default()
-        };
+        let state =
+            LocalState { environment: Some("qa".into()), shared_selections, ..Default::default() };
         save_local_state(dir.path(), &state).unwrap();
         assert_eq!(load_local_state(dir.path()).unwrap(), state);
         // An old state.toml without the table loads with an empty map.
-        std::fs::write(
-            dir.path().join(".local/state.toml"),
-            "environment = \"qa\"\n",
-        )
-        .unwrap();
-        assert!(
-            load_local_state(dir.path())
-                .unwrap()
-                .shared_selections
-                .is_empty()
-        );
+        std::fs::write(dir.path().join(".local/state.toml"), "environment = \"qa\"\n").unwrap();
+        assert!(load_local_state(dir.path()).unwrap().shared_selections.is_empty());
     }
 
     #[test]
@@ -1087,10 +976,7 @@ mod tests {
     #[test]
     fn secrets_round_trip_and_missing_file_is_empty() {
         let dir = tempdir().unwrap();
-        assert!(
-            load_secrets(dir.path()).unwrap().is_empty(),
-            "missing secrets.toml is empty"
-        );
+        assert!(load_secrets(dir.path()).unwrap().is_empty(), "missing secrets.toml is empty");
 
         let mut secrets = IndexMap::new();
         let mut qa = IndexMap::new();
@@ -1126,10 +1012,7 @@ mod tests {
     }
 
     fn meta_with(spaces: &[&str]) -> ProjectMeta {
-        ProjectMeta {
-            spaces: spaces.iter().map(|s| s.to_string()).collect(),
-            ..Default::default()
-        }
+        ProjectMeta { spaces: spaces.iter().map(|s| s.to_string()).collect(), ..Default::default() }
     }
 
     #[test]
@@ -1139,10 +1022,7 @@ mod tests {
             std::fs::create_dir_all(dir.path().join("requests").join(d)).unwrap();
         }
         let meta = meta_with(&["main", "auth", "ghost"]);
-        assert_eq!(
-            list_spaces(dir.path(), &meta),
-            ["main", "auth", "ghost", "billing", "zeta"]
-        );
+        assert_eq!(list_spaces(dir.path(), &meta), ["main", "auth", "ghost", "billing", "zeta"]);
     }
 
     #[test]
@@ -1199,33 +1079,21 @@ mod tests {
         create_space(dir.path(), "auth").unwrap();
         assert!(space_dir(dir.path(), "auth").is_dir());
         assert_eq!(load_meta(dir.path()).unwrap().spaces, ["main", "auth"]);
-        assert!(matches!(
-            create_space(dir.path(), "auth"),
-            Err(ProjectError::AlreadyExists(_))
-        ));
-        assert!(matches!(
-            create_space(dir.path(), "   "),
-            Err(ProjectError::BadName(_))
-        ));
+        assert!(matches!(create_space(dir.path(), "auth"), Err(ProjectError::AlreadyExists(_))));
+        assert!(matches!(create_space(dir.path(), "   "), Err(ProjectError::BadName(_))));
     }
 
     #[test]
     fn create_space_rejects_an_unlisted_dir_that_already_exists() {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(space_dir(dir.path(), "auth")).unwrap();
-        assert!(matches!(
-            create_space(dir.path(), "auth"),
-            Err(ProjectError::AlreadyExists(_))
-        ));
+        assert!(matches!(create_space(dir.path(), "auth"), Err(ProjectError::AlreadyExists(_))));
     }
 
     #[test]
     fn local_state_round_trips_space_and_space_open() {
         let dir = tempdir().unwrap();
-        let mut st = LocalState {
-            space: Some("auth".into()),
-            ..Default::default()
-        };
+        let mut st = LocalState { space: Some("auth".into()), ..Default::default() };
         st.space_open.insert("auth".into(), "auth/login".into());
         st.space_open.insert("main".into(), "main/health".into());
         save_local_state(dir.path(), &st).unwrap();
@@ -1242,11 +1110,7 @@ mod tests {
         let (listing, walk_err) = list_requests(dir.path());
         assert!(walk_err.is_none());
         let slugs: Vec<&str> = listing.iter().map(|l| l.slug.as_str()).collect();
-        assert_eq!(
-            slugs,
-            ["auth/login", "main/get-user"],
-            "sorted, subdir path as slug"
-        );
+        assert_eq!(slugs, ["auth/login", "main/get-user"], "sorted, subdir path as slug");
         assert!(listing.iter().all(|l| l.broken.is_none()));
         assert!(
             listing.iter().all(|l| l.method == Some(Method::Get)),
@@ -1259,22 +1123,14 @@ mod tests {
     fn broken_file_is_listed_with_error_and_load_reports_line() {
         let dir = tempfile::tempdir().unwrap();
         ensure_project(dir.path()).unwrap();
-        std::fs::write(
-            dir.path().join("requests/main/bad.toml"),
-            "url = \"x\"\nurl = \"dup\"\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("requests/main/bad.toml"), "url = \"x\"\nurl = \"dup\"\n")
+            .unwrap();
         let (listing, walk_err) = list_requests(dir.path());
         assert!(walk_err.is_none());
         assert_eq!(listing[0].slug, "main/bad");
         assert!(listing[0].broken.is_some());
-        assert_eq!(
-            listing[0].method, None,
-            "a broken file has no parsed method"
-        );
-        let err = load_request(dir.path(), "main/bad")
-            .unwrap_err()
-            .to_string();
+        assert_eq!(listing[0].method, None, "a broken file has no parsed method");
+        let err = load_request(dir.path(), "main/bad").unwrap_err().to_string();
         assert!(
             err.contains('2') || err.to_lowercase().contains("duplicate"),
             "error should locate/describe the duplicate key: {err}"
@@ -1322,10 +1178,7 @@ mod tests {
         // Restore perms before any assertion so tempdir cleanup can't fail.
         std::fs::set_permissions(&sub, original_perms).unwrap();
 
-        assert!(
-            walk_err.is_some(),
-            "permission-denied subdir should surface an error"
-        );
+        assert!(walk_err.is_some(), "permission-denied subdir should surface an error");
         assert!(
             listing.iter().any(|l| l.slug == "main/aaa"),
             "listing should still include everything walked before the error: {listing:?}"
@@ -1339,10 +1192,7 @@ mod tests {
         save_request(dir.path(), "main/ok", &req()).unwrap();
         std::fs::write(dir.path().join("requests/loose.toml"), "url = \"x\"\n").unwrap();
         let (listing, warn) = list_requests(dir.path());
-        assert_eq!(
-            listing.iter().map(|l| l.slug.as_str()).collect::<Vec<_>>(),
-            ["main/ok"]
-        );
+        assert_eq!(listing.iter().map(|l| l.slug.as_str()).collect::<Vec<_>>(), ["main/ok"]);
         let warn = warn.expect("loose file reported");
         assert!(warn.contains("loose.toml"), "{warn}");
         assert!(warn.contains("not in a space"), "{warn}");
@@ -1363,10 +1213,7 @@ mod tests {
         );
         let warn = warn.expect("invalid space dir reported");
         assert!(warn.contains("Auth"), "{warn}");
-        assert!(
-            warn.contains("is not in a valid space (space names are a-z 0-9 - _)"),
-            "{warn}"
-        );
+        assert!(warn.contains("is not in a valid space (space names are a-z 0-9 - _)"), "{warn}");
     }
 
     #[test]
@@ -1392,10 +1239,7 @@ mod tests {
         ensure_project(dir.path()).unwrap();
         assert!(dir.path().join("requests/main").is_dir());
         assert!(!dir.path().join("project.toml").exists());
-        assert_eq!(
-            list_spaces(dir.path(), &crate::project::ProjectMeta::default()),
-            ["main"]
-        );
+        assert_eq!(list_spaces(dir.path(), &crate::project::ProjectMeta::default()), ["main"]);
     }
 
     #[test]
@@ -1414,10 +1258,7 @@ mod tests {
 ";
         std::fs::write(dir.path().join("project.toml"), bad).unwrap();
         ensure_project(dir.path()).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("project.toml")).unwrap(),
-            bad
-        );
+        assert_eq!(std::fs::read_to_string(dir.path().join("project.toml")).unwrap(), bad);
         assert!(dir.path().join("requests/main").is_dir());
     }
 
@@ -1430,10 +1271,7 @@ mod tests {
         assert!(!request_exists(dir.path(), "main/a"));
         assert_eq!(t.original, request_path(dir.path(), "main/a"));
         assert!(t.trashed.is_file());
-        assert!(matches!(
-            delete_request(dir.path(), "main/a"),
-            Err(StorageError::NotFound(_))
-        ));
+        assert!(matches!(delete_request(dir.path(), "main/a"), Err(StorageError::NotFound(_))));
     }
 
     fn req() -> HttpRequest {

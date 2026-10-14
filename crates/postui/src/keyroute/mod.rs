@@ -13,11 +13,11 @@ pub mod pending;
 pub mod spell;
 pub mod table;
 
+/// The most a count can say: the router's cap, which is the engine's.
+pub use crate::vim::engine::settings::MAX_COUNT;
 pub use ctx::{EngineKind, EngineView, FieldCaret, FieldId, FieldSpell, KeyCtx, SpellCtx, Surface};
 /// How a step asks a field to open: part of the router's `Step`.
 pub use engine_glue::OpenAs;
-/// The most a count can say: the router's cap, which is the engine's.
-pub use crate::vim::engine::settings::MAX_COUNT;
 
 use crate::action::{Action, TabTo};
 use crate::config::KeyProfile;
@@ -121,7 +121,10 @@ impl Router {
         }
         // Spec §5.12: vim's `dd`, `p` and `P` are what `.` repeats.
         if b.profile == table::Profiles::VIM
-            && matches!(b.intent, Intent::Verb(crate::action::Verb::Delete { .. } | crate::action::Verb::Put { .. }))
+            && matches!(
+                b.intent,
+                Intent::Verb(crate::action::Verb::Delete { .. } | crate::action::Verb::Put { .. })
+            )
         {
             self.change = Some(Change { keys: b.keys, count });
         }
@@ -177,7 +180,13 @@ impl Router {
     /// it first. In idle Normal the router looks first, at the field rows
     /// only, and replays whatever matches none of them into the engine as
     /// typed: the engine never knows the router looked.
-    fn resolve_field(&mut self, ev: KeyEvent, class: Surfaces, engine: EngineView, ctx: &KeyCtx) -> Resolved {
+    fn resolve_field(
+        &mut self,
+        ev: KeyEvent,
+        class: Surfaces,
+        engine: EngineView,
+        ctx: &KeyCtx,
+    ) -> Resolved {
         if engine.mode != engine_glue::Mode::Normal || engine.pending {
             self.pending.clear();
             return Resolved::Run(vec![Step::Engine(ev)]);
@@ -289,7 +298,12 @@ impl Router {
             if matches!(
                 tok,
                 Tok::Named(
-                    KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right | KeyCode::PageUp | KeyCode::PageDown
+                    KeyCode::Up
+                        | KeyCode::Down
+                        | KeyCode::Left
+                        | KeyCode::Right
+                        | KeyCode::PageUp
+                        | KeyCode::PageDown
                 )
             ) {
                 return Resolved::Run(vec![Step::Key(ev); n.min(ctx.cap)]);
@@ -341,10 +355,13 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
                 vec![Step::Action(Action::OnSelection(v)); times(cap)]
             }
         }
-        Intent::Open { key, seat } => vec![Step::OpenAs(engine_glue::OpenAs::Insert(seat)), Step::Key(key.event())],
+        Intent::Open { key, seat } => {
+            vec![Step::OpenAs(engine_glue::OpenAs::Insert(seat)), Step::Key(key.event())]
+        }
         // The engine reads the count as Vim does: `2cc` on one line.
         Intent::Edit { key, keys } => {
-            let mut steps = vec![Step::OpenAs(engine_glue::OpenAs::Normal), Step::Key(key.event()), Step::Sync];
+            let mut steps =
+                vec![Step::OpenAs(engine_glue::OpenAs::Normal), Step::Key(key.event()), Step::Sync];
             let typed = count.map_or_else(|| keys.to_string(), |n| format!("{n}{keys}"));
             steps.extend(notation::parse(&typed).into_iter().map(|t| Step::Engine(t.event())));
             steps
@@ -393,7 +410,9 @@ pub(crate) fn expand(b: &table::Binding, count: Option<usize>, cap: usize) -> Ve
 /// (the response, a Manage detail pane).
 pub(crate) fn replay(change: Change, surface: Surface, cap: usize) -> Option<Vec<Step>> {
     match table::lookup(&notation::parse(change.keys), KeyProfile::Vim, surface) {
-        Match::Complete(b) if matches!(b.intent, Intent::Verb(_)) => Some(expand(b, change.count, cap)),
+        Match::Complete(b) if matches!(b.intent, Intent::Verb(_)) => {
+            Some(expand(b, change.count, cap))
+        }
         _ => None,
     }
 }
@@ -412,7 +431,15 @@ mod tests {
     use ratatui::crossterm::event::KeyModifiers;
 
     fn cx(profile: KeyProfile, surface: Surface) -> KeyCtx {
-        KeyCtx { profile, surface, field: FieldCaret::None, user_bare: None, cap: MAX_COUNT, engine: None, answers: Vec::new() }
+        KeyCtx {
+            profile,
+            surface,
+            field: FieldCaret::None,
+            user_bare: None,
+            cap: MAX_COUNT,
+            engine: None,
+            answers: Vec::new(),
+        }
     }
 
     use crate::keyroute::engine_glue::{Mode, OpenAs, OpenSeat};
@@ -434,10 +461,18 @@ mod tests {
     /// half-typed, the engine sees every key first.
     #[test]
     fn a_busy_engine_sees_every_key() {
-        for (mode, pending) in [(Mode::Insert, false), (Mode::Visual(crate::keyroute::engine_glue::Shape::Char), false), (Mode::Normal, true)] {
+        for (mode, pending) in [
+            (Mode::Insert, false),
+            (Mode::Visual(crate::keyroute::engine_glue::Shape::Char), false),
+            (Mode::Normal, true),
+        ] {
             let s = in_url(mode, pending);
             for keys in ["j", ":", "q", "3", "<Esc>", "<C-d>"] {
-                assert_eq!(feed(&mut Router::default(), &s, keys), run(eng(keys)), "{mode:?} {pending}: {keys}");
+                assert_eq!(
+                    feed(&mut Router::default(), &s, keys),
+                    run(eng(keys)),
+                    "{mode:?} {pending}: {keys}"
+                );
             }
         }
     }
@@ -452,7 +487,11 @@ mod tests {
         assert_eq!(feed(&mut r, &s, "2"), Resolved::Consumed);
         assert_eq!(r.echo(), "2");
         assert_eq!(feed(&mut r, &s, "d"), run(eng("2d")), "the count reaches the engine as typed");
-        assert_eq!(feed(&mut Router::default(), &s, "0"), run(eng("0")), "a leading 0 is the motion");
+        assert_eq!(
+            feed(&mut Router::default(), &s, "0"),
+            run(eng("0")),
+            "a leading 0 is the motion"
+        );
         assert_eq!(feed(&mut Router::default(), &s, "12<C-a>"), run(eng("12<C-a>")));
         assert_eq!(
             feed(&mut Router::default(), &s, "<Esc>"),
@@ -471,12 +510,18 @@ mod tests {
     fn j_and_k_leave_a_one_line_field() {
         let s = in_url(Mode::Normal, false);
         let close = Step::Action(Action::CloseField);
-        assert_eq!(feed(&mut Router::default(), &s, "j"), run(vec![close.clone(), key(KeyCode::Down)]));
+        assert_eq!(
+            feed(&mut Router::default(), &s, "j"),
+            run(vec![close.clone(), key(KeyCode::Down)])
+        );
         assert_eq!(
             feed(&mut Router::default(), &s, "3k"),
             run(vec![close.clone(), key(KeyCode::Up), key(KeyCode::Up), key(KeyCode::Up)])
         );
-        assert_eq!(feed(&mut Router::default(), &s, "<C-d>"), run(vec![close, ctrl_key(KeyCode::Char('d'))]));
+        assert_eq!(
+            feed(&mut Router::default(), &s, "<C-d>"),
+            run(vec![close, ctrl_key(KeyCode::Char('d'))])
+        );
         let body = KeyCtx { field: FieldCaret::Live(FieldId::Body), surface: Surface::Body, ..s };
         assert_eq!(feed(&mut Router::default(), &body, "j"), run(eng("j")), "a body motion");
     }
@@ -490,9 +535,21 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &dialog, "j"), run(vec![key(KeyCode::Down)]));
         assert_eq!(feed(&mut Router::default(), &dialog, "G"), run(vec![key(KeyCode::End)]));
         let j_answers = KeyCtx { answers: vec!['j'], ..cx(Vim, Surface::Dialog) };
-        assert_eq!(feed(&mut Router::default(), &j_answers, "j"), Resolved::Declined, "an answer is never a move");
-        assert_eq!(feed(&mut Router::default(), &j_answers, "J"), Resolved::Declined, "either case, as the dialog matches");
-        assert_eq!(feed(&mut Router::default(), &cx(Arrows, Surface::Dialog), "j"), Resolved::Declined, "arrows has no vim rows");
+        assert_eq!(
+            feed(&mut Router::default(), &j_answers, "j"),
+            Resolved::Declined,
+            "an answer is never a move"
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &j_answers, "J"),
+            Resolved::Declined,
+            "either case, as the dialog matches"
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Arrows, Surface::Dialog), "j"),
+            Resolved::Declined,
+            "arrows has no vim rows"
+        );
     }
 
     /// Plan M3b Deviations 7 and 8: a one-field prompt's field in idle
@@ -504,16 +561,31 @@ mod tests {
             engine: Some(EngineView { mode: Mode::Normal, pending: false }),
             ..cx(Vim, Surface::Prompt)
         };
-        assert_eq!(feed(&mut Router::default(), &s, "<CR>"), run(vec![Step::Action(Action::ConfirmTopModal)]));
-        assert_eq!(feed(&mut Router::default(), &s, "<Esc>"), run(vec![Step::Action(Action::CancelTopModal)]));
+        assert_eq!(
+            feed(&mut Router::default(), &s, "<CR>"),
+            run(vec![Step::Action(Action::ConfirmTopModal)])
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &s, "<Esc>"),
+            run(vec![Step::Action(Action::CancelTopModal)])
+        );
         assert_eq!(
             feed(&mut Router::default(), &s, "j"),
             run(vec![Step::Action(Action::CloseField), key(KeyCode::Down)])
         );
         let form = KeyCtx { surface: Surface::Form, ..s.clone() };
-        assert_eq!(feed(&mut Router::default(), &form, "<Esc>"), run(eng("<Esc>")), "a form field's idle Esc is the engine's to decline");
-        let insert = KeyCtx { engine: Some(EngineView { mode: Mode::Insert, pending: false }), ..s };
-        assert_eq!(feed(&mut Router::default(), &insert, "<Esc>"), run(eng("<Esc>")), "Insert's Esc is the engine's");
+        assert_eq!(
+            feed(&mut Router::default(), &form, "<Esc>"),
+            run(eng("<Esc>")),
+            "a form field's idle Esc is the engine's to decline"
+        );
+        let insert =
+            KeyCtx { engine: Some(EngineView { mode: Mode::Insert, pending: false }), ..s };
+        assert_eq!(
+            feed(&mut Router::default(), &insert, "<Esc>"),
+            run(eng("<Esc>")),
+            "Insert's Esc is the engine's"
+        );
     }
 
     /// Spec §3.7 item 2: a query box has no Normal, so every key is the
@@ -537,11 +609,17 @@ mod tests {
         let form = cx(Vim, Surface::Form);
         assert_eq!(
             feed(&mut Router::default(), &form, "i"),
-            run(vec![Step::OpenAs(OpenAs::Insert(OpenSeat::Keep)), Step::Action(Action::ReopenField)])
+            run(vec![
+                Step::OpenAs(OpenAs::Insert(OpenSeat::Keep)),
+                Step::Action(Action::ReopenField)
+            ])
         );
         assert_eq!(
             feed(&mut Router::default(), &form, "A"),
-            run(vec![Step::OpenAs(OpenAs::Insert(OpenSeat::End)), Step::Action(Action::ReopenField)])
+            run(vec![
+                Step::OpenAs(OpenAs::Insert(OpenSeat::End)),
+                Step::Action(Action::ReopenField)
+            ])
         );
         assert_eq!(
             feed(&mut Router::default(), &form, "o"),
@@ -552,8 +630,14 @@ mod tests {
             feed(&mut Router::default(), &cx(Vim, Surface::Prompt), "<CR>"),
             run(vec![Step::Action(Action::ConfirmTopModal)])
         );
-        assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Prompt), "l"), run(vec![key(KeyCode::Right)]));
-        assert_eq!(feed(&mut Router::default(), &cx(Arrows, Surface::Form), "i"), Resolved::Declined);
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Vim, Surface::Prompt), "l"),
+            run(vec![key(KeyCode::Right)])
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Arrows, Surface::Form), "i"),
+            Resolved::Declined
+        );
     }
 
     /// Plan M3b Deviation 19: a picker with no query of its own (the
@@ -578,7 +662,11 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &resp, "2zo"), fold(FoldOp::Open, 2));
         assert_eq!(feed(&mut Router::default(), &resp, "zR"), fold(FoldOp::OpenAll, 1));
         assert_eq!(feed(&mut Router::default(), &resp, "zM"), fold(FoldOp::CloseAll, 1));
-        assert_eq!(feed(&mut Router::default(), &cx(Arrows, resp.surface), "z"), Resolved::Declined, "arrows has no fold keys");
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Arrows, resp.surface), "z"),
+            Resolved::Declined,
+            "arrows has no fold keys"
+        );
     }
 
     /// Spec §5.8 (plan M4a Deviations 7 and 8): `gt` and `gT` step the strip;
@@ -594,7 +682,10 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &s, "1gt"), select(1));
         assert_eq!(feed(&mut Router::default(), &s, "2gT"), step(-2));
         assert_eq!(feed(&mut Router::default(), &s, "14gT"), step(-14), "the strip wraps it");
-        assert_eq!(feed(&mut Router::default(), &cx(Arrows, Surface::Sidebar), "g"), Resolved::Declined);
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Arrows, Surface::Sidebar), "g"),
+            Resolved::Declined
+        );
     }
 
     /// Spec §3.7's field rows (plan M4a Deviation 2): in a screen field's idle
@@ -605,7 +696,11 @@ mod tests {
     fn tab_keys_in_a_screen_field() {
         let s = in_url(Mode::Normal, false);
         let go = |to| run(vec![Step::Action(Action::GoTab { to })]);
-        assert_eq!(feed(&mut Router::default(), &s, "gt"), go(TabTo::By(1)), "no unconditional close");
+        assert_eq!(
+            feed(&mut Router::default(), &s, "gt"),
+            go(TabTo::By(1)),
+            "no unconditional close"
+        );
         assert_eq!(feed(&mut Router::default(), &s, "2gT"), go(TabTo::By(-2)));
         assert_eq!(feed(&mut Router::default(), &s, "2gt"), go(TabTo::Nth(2)));
         assert_eq!(feed(&mut Router::default(), &s, "gg"), run(eng("gg")), "gg is the engine's");
@@ -618,7 +713,11 @@ mod tests {
             engine: Some(EngineView { mode: Mode::Normal, pending: false }),
             ..cx(Vim, Surface::Prompt)
         };
-        assert_eq!(feed(&mut Router::default(), &prompt, "g"), run(eng("g")), "a dialog field's g is the engine's");
+        assert_eq!(
+            feed(&mut Router::default(), &prompt, "g"),
+            run(eng("g")),
+            "a dialog field's g is the engine's"
+        );
     }
 
     /// Spec §5.8 (plan M4a Deviations 3 and 4): the window keys, their ctrl
@@ -633,13 +732,24 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &s, "<C-w>W"), mv(PaneDir::Prev));
         assert_eq!(feed(&mut Router::default(), &s, "<C-w><C-w>"), mv(PaneDir::Next));
         assert_eq!(feed(&mut Router::default(), &s, "<C-w>p"), mv(PaneDir::Last));
-        assert_eq!(feed(&mut Router::default(), &s, "3<C-w>j"), mv(PaneDir::Down), "the count is dropped");
+        assert_eq!(
+            feed(&mut Router::default(), &s, "3<C-w>j"),
+            mv(PaneDir::Down),
+            "the count is dropped"
+        );
         let mut r = Router::default();
         assert_eq!(feed(&mut r, &s, "<C-w>"), Resolved::Consumed);
         assert_eq!(r.echo(), "^W");
         assert_eq!(feed(&mut r, &s, "x"), Resolved::Consumed, "junk is swallowed");
-        assert_eq!(feed(&mut r, &s, "j"), run(vec![key(KeyCode::Down)]), "and the next key is fresh");
-        assert_eq!(feed(&mut Router::default(), &cx(Arrows, Surface::Sidebar), "<C-w>"), Resolved::Declined);
+        assert_eq!(
+            feed(&mut r, &s, "j"),
+            run(vec![key(KeyCode::Down)]),
+            "and the next key is fresh"
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Arrows, Surface::Sidebar), "<C-w>"),
+            Resolved::Declined
+        );
     }
 
     /// Spec §3.7 and §5.8 (plan M4a Deviations 2 and 4): from a screen
@@ -657,7 +767,11 @@ mod tests {
         );
         assert_eq!(feed(&mut Router::default(), &s, "<C-w>x"), Resolved::Consumed);
         let insert = in_url(Mode::Insert, false);
-        assert_eq!(feed(&mut Router::default(), &insert, "<C-w>"), run(eng("<C-w>")), "Insert deletes a word");
+        assert_eq!(
+            feed(&mut Router::default(), &insert, "<C-w>"),
+            run(eng("<C-w>")),
+            "Insert deletes a word"
+        );
     }
 
     /// Key list §8 (`P.ctrlw-arrows`): the arrow keys are the direction
@@ -677,15 +791,21 @@ mod tests {
             Resolved::Consumed,
             "a named key that is no target is vim's beep"
         );
-        assert_eq!(feed(&mut Router::default(), &in_url(Mode::Normal, false), "<C-w><Home>"), Resolved::Consumed, "swallowed in a field");
+        assert_eq!(
+            feed(&mut Router::default(), &in_url(Mode::Normal, false), "<C-w><Home>"),
+            Resolved::Consumed,
+            "swallowed in a field"
+        );
     }
 
     /// Plan M3a Deviation 9: the prefix keys never reach the engine.
     #[test]
     fn the_prefix_keys_are_notes_or_swallowed() {
         let s = in_url(Mode::Normal, false);
-        let macros = run(vec![Step::Action(Action::ShowToast(table::NO_MACROS.into(), ToastKind::Info))]);
-        let marks = run(vec![Step::Action(Action::ShowToast(table::NO_MARKS.into(), ToastKind::Info))]);
+        let macros =
+            run(vec![Step::Action(Action::ShowToast(table::NO_MACROS.into(), ToastKind::Info))]);
+        let marks =
+            run(vec![Step::Action(Action::ShowToast(table::NO_MARKS.into(), ToastKind::Info))]);
         let mut r = Router::default();
         assert_eq!(feed(&mut r, &s, "q"), Resolved::Consumed);
         assert_eq!(r.echo(), "q");
@@ -694,7 +814,10 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &s, "ma"), marks);
         assert_eq!(feed(&mut Router::default(), &s, "`x"), marks);
         assert_eq!(feed(&mut Router::default(), &s, "Zx"), Resolved::Consumed);
-        assert_eq!(feed(&mut Router::default(), &s, ":"), run(vec![Step::Action(Action::OpenExPalette)]));
+        assert_eq!(
+            feed(&mut Router::default(), &s, ":"),
+            run(vec![Step::Action(Action::OpenExPalette)])
+        );
         let mut r = Router::default();
         feed(&mut r, &s, "q");
         assert_eq!(feed(&mut r, &s, "<Esc>"), Resolved::Consumed, "Esc cancels the pair silently");
@@ -709,7 +832,11 @@ mod tests {
         let unsynced = KeyCtx { engine: None, ..in_url(Mode::Normal, false) };
         assert_eq!(feed(&mut Router::default(), &unsynced, "j"), Resolved::Declined);
         let arrows = KeyCtx { profile: Arrows, ..in_url(Mode::Normal, false) };
-        assert_eq!(feed(&mut Router::default(), &arrows, "j"), Resolved::Declined, "arrows has no engine");
+        assert_eq!(
+            feed(&mut Router::default(), &arrows, "j"),
+            Resolved::Declined,
+            "arrows has no engine"
+        );
     }
 
     /// Spec §5.6 and plan M3a Deviation 12: the opening keys say how.
@@ -729,7 +856,11 @@ mod tests {
             run(vec![sel(crate::action::Verb::Add)]),
             "an add verb's Insert is the app's `OnSelection` arm's (ex_tests' add-verb test)"
         );
-        assert_eq!(feed(&mut Router::default(), &table, "o"), run(vec![enter]), "o opens in Normal");
+        assert_eq!(
+            feed(&mut Router::default(), &table, "o"),
+            run(vec![enter]),
+            "o opens in Normal"
+        );
     }
 
     /// Spec §8.3 for the field classes: whatever follows a field prefix,
@@ -743,7 +874,11 @@ mod tests {
                 feed(&mut r, &s, prefix);
                 r.resolve(Tok::Char(c).event(), &s);
                 assert_eq!(r.echo(), "", "{prefix}{c}");
-                assert_eq!(r.resolve(Tok::Char('x').event(), &s), run(eng("x")), "{prefix}{c}: x is fresh");
+                assert_eq!(
+                    r.resolve(Tok::Char('x').event(), &s),
+                    run(eng("x")),
+                    "{prefix}{c}: x is fresh"
+                );
             }
         }
     }
@@ -771,19 +906,36 @@ mod tests {
 
     #[test]
     fn j_moves_in_vim_and_is_declined_in_arrows() {
-        assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "j"), run(vec![key(KeyCode::Down)]));
-        assert_eq!(feed(&mut Router::default(), &cx(Arrows, Surface::Sidebar), "j"), Resolved::Declined);
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "j"),
+            run(vec![key(KeyCode::Down)])
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Arrows, Surface::Sidebar), "j"),
+            Resolved::Declined
+        );
         let mut r = Router::default();
-        assert_eq!(feed(&mut r, &cx(Arrows, Surface::Sidebar), "3"), Resolved::Declined, "no counts in arrows");
+        assert_eq!(
+            feed(&mut r, &cx(Arrows, Surface::Sidebar), "3"),
+            Resolved::Declined,
+            "no counts in arrows"
+        );
         assert_eq!(r.echo(), "");
     }
 
     #[test]
     fn a_count_repeats_a_motion_capped_by_the_surface() {
-        assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "3j"), run(vec![key(KeyCode::Down); 3]));
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "3j"),
+            run(vec![key(KeyCode::Down); 3])
+        );
         let small = KeyCtx { cap: 2, ..cx(Vim, Surface::Sidebar) };
         assert_eq!(feed(&mut Router::default(), &small, "9j"), run(vec![key(KeyCode::Down); 2]));
-        assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "3o"), run(vec![key(KeyCode::Enter)]), "o ignores it");
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "3o"),
+            run(vec![key(KeyCode::Enter)]),
+            "o ignores it"
+        );
     }
 
     #[test]
@@ -797,18 +949,37 @@ mod tests {
         let resp = cx(Vim, Surface::Response(crate::components::response::ViewMode::Raw));
         use crate::action::ResponseMotion as M;
         let mv = |m| run(vec![Step::Action(Action::ResponseMove(m))]);
-        assert_eq!(feed(&mut Router::default(), &resp, "G"), mv(M::Goto { line: None, last: true }));
-        assert_eq!(feed(&mut Router::default(), &resp, "10G"), mv(M::Goto { line: Some(10), last: true }));
-        assert_eq!(feed(&mut Router::default(), &resp, "gg"), mv(M::Goto { line: None, last: false }));
+        assert_eq!(
+            feed(&mut Router::default(), &resp, "G"),
+            mv(M::Goto { line: None, last: true })
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &resp, "10G"),
+            mv(M::Goto { line: Some(10), last: true })
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &resp, "gg"),
+            mv(M::Goto { line: None, last: false })
+        );
         assert_eq!(feed(&mut Router::default(), &resp, "5j"), mv(M::Lines(5)));
         assert_eq!(feed(&mut Router::default(), &resp, "<Up>"), mv(M::Lines(-1)));
-        assert_eq!(feed(&mut Router::default(), &resp, "3<C-d>"), mv(M::HalfPage { down: true, count: Some(3) }));
-        assert_eq!(feed(&mut Router::default(), &resp, "2<C-f>"), mv(M::Page { down: true, count: 2 }));
+        assert_eq!(
+            feed(&mut Router::default(), &resp, "3<C-d>"),
+            mv(M::HalfPage { down: true, count: Some(3) })
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &resp, "2<C-f>"),
+            mv(M::Page { down: true, count: 2 })
+        );
         assert_eq!(
             feed(&mut Router::default(), &resp, "12zt"),
             mv(M::Place { at: crate::action::Place::Top, line: Some(12) })
         );
-        assert_eq!(feed(&mut Router::default(), &cx(Arrows, resp.surface), "j"), Resolved::Declined, "arrows' j is a letter");
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Arrows, resp.surface), "j"),
+            Resolved::Declined,
+            "arrows' j is a letter"
+        );
     }
 
     #[test]
@@ -834,10 +1005,16 @@ mod tests {
         let mut r = Router::default();
         let s = cx(Vim, Surface::Sidebar);
         feed(&mut r, &s, "g");
-        assert_eq!(r.resolve(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), &s), Resolved::Declined);
+        assert_eq!(
+            r.resolve(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), &s),
+            Resolved::Declined
+        );
         assert_eq!(r.echo(), "");
         feed(&mut r, &s, "3");
-        assert_eq!(r.resolve(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT), &s), Resolved::Declined);
+        assert_eq!(
+            r.resolve(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT), &s),
+            Resolved::Declined
+        );
         assert_eq!(r.echo(), "", "an alt chord drops a count too");
     }
 
@@ -851,10 +1028,21 @@ mod tests {
 
     #[test]
     fn a_bare_char_with_no_row_is_swallowed_on_navigation_surfaces_only() {
-        assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "x"), Resolved::Consumed);
-        assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Dialog), "x"), Resolved::Declined, "its letters answer");
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "x"),
+            Resolved::Consumed
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Vim, Surface::Dialog), "x"),
+            Resolved::Declined,
+            "its letters answer"
+        );
         assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Other), "x"), Resolved::Declined);
-        assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "<Space>"), Resolved::Declined, "Space is the surface's");
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "<Space>"),
+            Resolved::Declined,
+            "Space is the surface's"
+        );
     }
 
     #[test]
@@ -871,7 +1059,11 @@ mod tests {
         let mut r = Router::default();
         feed(&mut r, &cx(Vim, Surface::Sidebar), "3");
         assert_eq!(
-            feed(&mut r, &cx(Vim, Surface::Table(crate::components::editor::EditorTab::Params)), "j"),
+            feed(
+                &mut r,
+                &cx(Vim, Surface::Table(crate::components::editor::EditorTab::Params)),
+                "j"
+            ),
             run(vec![key(KeyCode::Down)])
         );
     }
@@ -908,16 +1100,35 @@ mod tests {
     fn vim_list_verbs_resolve_to_on_selection() {
         use crate::action::Verb;
         let s = cx(Vim, Surface::Sidebar);
-        assert_eq!(feed(&mut Router::default(), &s, "dd"), run(vec![sel(Verb::Delete { count: 1 })]));
-        assert_eq!(feed(&mut Router::default(), &s, "3dd"), run(vec![sel(Verb::Delete { count: 3 })]));
+        assert_eq!(
+            feed(&mut Router::default(), &s, "dd"),
+            run(vec![sel(Verb::Delete { count: 1 })])
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &s, "3dd"),
+            run(vec![sel(Verb::Delete { count: 3 })])
+        );
         assert_eq!(feed(&mut Router::default(), &s, "yy"), run(vec![sel(Verb::Yank)]));
         assert_eq!(
             feed(&mut Router::default(), &s, "3yy"),
-            run(vec![Step::Action(Action::ShowToast("Counted yank is not supported".into(), ToastKind::Info))])
+            run(vec![Step::Action(Action::ShowToast(
+                "Counted yank is not supported".into(),
+                ToastKind::Info
+            ))])
         );
-        assert_eq!(feed(&mut Router::default(), &s, "1yy"), run(vec![sel(Verb::Yank)]), "1yy is yy, as in vim");
-        assert_eq!(feed(&mut Router::default(), &s, "p"), run(vec![sel(Verb::Put { above: false, count: 1 })]));
-        assert_eq!(feed(&mut Router::default(), &s, "2p"), run(vec![sel(Verb::Put { above: false, count: 2 })]));
+        assert_eq!(
+            feed(&mut Router::default(), &s, "1yy"),
+            run(vec![sel(Verb::Yank)]),
+            "1yy is yy, as in vim"
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &s, "p"),
+            run(vec![sel(Verb::Put { above: false, count: 1 })])
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &s, "2p"),
+            run(vec![sel(Verb::Put { above: false, count: 2 })])
+        );
         let capped = KeyCtx { cap: 4, ..s.clone() };
         assert_eq!(
             feed(&mut Router::default(), &capped, "9P"),
@@ -925,7 +1136,11 @@ mod tests {
             "a put's count is capped by the surface"
         );
         assert_eq!(feed(&mut Router::default(), &s, "a"), run(vec![sel(Verb::Add)]));
-        assert_eq!(feed(&mut Router::default(), &s, "3r"), run(vec![sel(Verb::Rename)]), "a count is ignored");
+        assert_eq!(
+            feed(&mut Router::default(), &s, "3r"),
+            run(vec![sel(Verb::Rename)]),
+            "a count is ignored"
+        );
         let mut r = Router::default();
         assert_eq!(feed(&mut r, &s, "d"), Resolved::Consumed);
         assert_eq!(r.echo(), "d");
@@ -941,11 +1156,25 @@ mod tests {
             "Counted delete works on requests and table rows".into(),
             ToastKind::Info,
         ));
-        for surface in [Surface::ManageList(ManageTab::Environments), Surface::VarList, Surface::VarGrid] {
+        for surface in
+            [Surface::ManageList(ManageTab::Environments), Surface::VarList, Surface::VarGrid]
+        {
             let s = cx(Vim, surface);
-            assert_eq!(feed(&mut Router::default(), &s, "2dd"), run(vec![note.clone()]), "{surface:?}");
-            assert_eq!(feed(&mut Router::default(), &s, "dd"), run(vec![sel(Verb::Delete { count: 1 })]), "{surface:?}");
-            assert_eq!(feed(&mut Router::default(), &s, "1dd"), run(vec![sel(Verb::Delete { count: 1 })]), "{surface:?}");
+            assert_eq!(
+                feed(&mut Router::default(), &s, "2dd"),
+                run(vec![note.clone()]),
+                "{surface:?}"
+            );
+            assert_eq!(
+                feed(&mut Router::default(), &s, "dd"),
+                run(vec![sel(Verb::Delete { count: 1 })]),
+                "{surface:?}"
+            );
+            assert_eq!(
+                feed(&mut Router::default(), &s, "1dd"),
+                run(vec![sel(Verb::Delete { count: 1 })]),
+                "{surface:?}"
+            );
         }
     }
 
@@ -956,9 +1185,15 @@ mod tests {
         use crate::action::Verb;
         use crate::components::manage::ManageTab;
         let s = cx(Arrows, Surface::Sidebar);
-        assert_eq!(feed(&mut Router::default(), &s, "d"), run(vec![sel(Verb::Delete { count: 1 })]));
+        assert_eq!(
+            feed(&mut Router::default(), &s, "d"),
+            run(vec![sel(Verb::Delete { count: 1 })])
+        );
         assert_eq!(feed(&mut Router::default(), &s, "y"), run(vec![sel(Verb::Yank)]));
-        assert_eq!(feed(&mut Router::default(), &s, "P"), run(vec![sel(Verb::Put { above: true, count: 1 })]));
+        assert_eq!(
+            feed(&mut Router::default(), &s, "P"),
+            run(vec![sel(Verb::Put { above: true, count: 1 })])
+        );
         assert_eq!(feed(&mut Router::default(), &s, "a"), run(vec![sel(Verb::Add)]));
         assert_eq!(feed(&mut Router::default(), &s, "n"), Resolved::Declined, "n is no longer new");
         let env = cx(Arrows, Surface::ManageDetail(ManageTab::Environments));
@@ -968,7 +1203,10 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &form, "p"), run(vec![sel(Verb::Promote)]));
         let grid = cx(Arrows, Surface::VarGrid);
         assert_eq!(feed(&mut Router::default(), &grid, "c"), run(vec![sel(Verb::Yank)]));
-        assert_eq!(feed(&mut Router::default(), &grid, "v"), run(vec![sel(Verb::Put { above: false, count: 1 })]));
+        assert_eq!(
+            feed(&mut Router::default(), &grid, "v"),
+            run(vec![sel(Verb::Put { above: false, count: 1 })])
+        );
         assert_eq!(
             feed(&mut Router::default(), &grid, "o"),
             run(vec![Step::Action(Action::StartNewOptionEdit)])
@@ -985,7 +1223,11 @@ mod tests {
             (Surface::VarGrid, "e"),
             (Surface::VarGrid, "c"),
         ] {
-            assert_eq!(feed(&mut Router::default(), &cx(Vim, surface), keys), Resolved::Consumed, "{surface:?} {keys}");
+            assert_eq!(
+                feed(&mut Router::default(), &cx(Vim, surface), keys),
+                Resolved::Consumed,
+                "{surface:?} {keys}"
+            );
         }
     }
 
@@ -994,7 +1236,10 @@ mod tests {
     #[test]
     fn an_arrows_keys_toml_letter_wins_over_a_verb_row() {
         let bound = KeyCtx { user_bare: Some(Action::Quit), ..cx(Arrows, Surface::Sidebar) };
-        assert_eq!(feed(&mut Router::default(), &bound, "y"), run(vec![Step::Action(Action::Quit)]));
+        assert_eq!(
+            feed(&mut Router::default(), &bound, "y"),
+            run(vec![Step::Action(Action::Quit)])
+        );
         assert_eq!(
             feed(&mut Router::default(), &cx(Arrows, Surface::Sidebar), "y"),
             run(vec![sel(crate::action::Verb::Yank)])
@@ -1007,7 +1252,10 @@ mod tests {
         let mut r = Router::default();
         assert_eq!(feed(&mut r, &cx(Vim, Surface::Dialog), "3"), Resolved::Declined);
         assert_eq!(r.echo(), "", "pending stays idle");
-        assert_eq!(feed(&mut r, &cx(Vim, Surface::Sidebar), "3j"), run(vec![key(KeyCode::Down); 3]));
+        assert_eq!(
+            feed(&mut r, &cx(Vim, Surface::Sidebar), "3j"),
+            run(vec![key(KeyCode::Down); 3])
+        );
         for surface in [Surface::Prompt, Surface::Form, Surface::Other] {
             let mut r = Router::default();
             assert_eq!(feed(&mut r, &cx(Vim, surface), "3"), Resolved::Declined, "{surface:?}");
@@ -1029,18 +1277,37 @@ mod tests {
     fn a_leading_zero_is_a_key() {
         let resp = cx(Vim, Surface::Response(crate::components::response::ViewMode::Pretty));
         let start = crate::action::ResponseMotion::Col(crate::action::ColMove::Start);
-        assert_eq!(feed(&mut Router::default(), &resp, "0"), run(vec![Step::Action(Action::ResponseMove(start))]));
-        assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "0"), Resolved::Consumed);
+        assert_eq!(
+            feed(&mut Router::default(), &resp, "0"),
+            run(vec![Step::Action(Action::ResponseMove(start))])
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "0"),
+            Resolved::Consumed
+        );
     }
 
     #[test]
     fn undo_redo_and_the_palette_are_rows() {
         let s = cx(Vim, Surface::Sidebar);
         assert_eq!(feed(&mut Router::default(), &s, "u"), run(vec![Step::Action(Action::Undo)]));
-        assert_eq!(feed(&mut Router::default(), &s, "3u"), run(vec![Step::Action(Action::Undo); 3]));
-        assert_eq!(feed(&mut Router::default(), &s, "<C-r>"), run(vec![Step::Action(Action::Redo)]));
-        assert_eq!(feed(&mut Router::default(), &s, "3:"), run(vec![Step::Action(Action::OpenExPalette)]));
-        assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Picker), "u"), Resolved::Declined, "a picker types it");
+        assert_eq!(
+            feed(&mut Router::default(), &s, "3u"),
+            run(vec![Step::Action(Action::Undo); 3])
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &s, "<C-r>"),
+            run(vec![Step::Action(Action::Redo)])
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &s, "3:"),
+            run(vec![Step::Action(Action::OpenExPalette)])
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Vim, Surface::Picker), "u"),
+            Resolved::Declined,
+            "a picker types it"
+        );
     }
 
     /// Spec §4.5 (plan M4a Deviation 11): the response's letters are rows in
@@ -1052,7 +1319,10 @@ mod tests {
         use crate::components::response::ViewMode;
         assert_eq!(
             feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "/"),
-            run(vec![Step::Action(Action::ShowToast("No search in this list yet".into(), ToastKind::Info))])
+            run(vec![Step::Action(Action::ShowToast(
+                "No search in this list yet".into(),
+                ToastKind::Info
+            ))])
         );
         let search = run(vec![Step::Action(Action::OpenResponseSearch { backward: false })]);
         let next = run(vec![Step::Action(Action::StepResponseSearch(1))]);
@@ -1067,11 +1337,26 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &arrows, "N"), prev);
         let resp = cx(Vim, Surface::Response(ViewMode::Headers));
         let find = |f| run(vec![Step::Action(Action::ResponseFind(f))]);
-        assert_eq!(feed(&mut Router::default(), &resp, "n"), find(ResponseFind::Next { reverse: false, count: 1 }));
-        assert_eq!(feed(&mut Router::default(), &resp, "3N"), find(ResponseFind::Next { reverse: true, count: 3 }));
-        assert_eq!(feed(&mut Router::default(), &resp, "2*"), find(ResponseFind::Word { backward: false, count: 2 }));
-        assert_eq!(feed(&mut Router::default(), &resp, "#"), find(ResponseFind::Word { backward: true, count: 1 }));
-        assert_eq!(feed(&mut Router::default(), &resp, "?"), run(vec![Step::Action(Action::OpenResponseSearch { backward: true })]));
+        assert_eq!(
+            feed(&mut Router::default(), &resp, "n"),
+            find(ResponseFind::Next { reverse: false, count: 1 })
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &resp, "3N"),
+            find(ResponseFind::Next { reverse: true, count: 3 })
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &resp, "2*"),
+            find(ResponseFind::Word { backward: false, count: 2 })
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &resp, "#"),
+            find(ResponseFind::Word { backward: true, count: 1 })
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &resp, "?"),
+            run(vec![Step::Action(Action::OpenResponseSearch { backward: true })])
+        );
         assert_eq!(feed(&mut Router::default(), &resp, "c"), Resolved::Consumed, "vim has no c");
         assert_eq!(
             feed(&mut Router::default(), &cx(Arrows, Surface::Response(ViewMode::Headers)), "c"),
@@ -1087,25 +1372,60 @@ mod tests {
         let resp = cx(Vim, Surface::Response(ViewMode::Raw));
         let vis = cx(Vim, Surface::ResponseLines(ViewMode::Raw));
         let act = |a| run(vec![Step::Action(a)]);
-        assert_eq!(feed(&mut Router::default(), &resp, "V"), act(Action::ResponseLines(LinesOp::Start)));
-        assert_eq!(feed(&mut Router::default(), &resp, "3yy"), act(Action::ResponseLines(LinesOp::Yank { count: Some(3) })));
-        assert_eq!(feed(&mut Router::default(), &vis, "3j"), act(Action::ResponseExtend(M::Lines(3))));
-        assert_eq!(feed(&mut Router::default(), &vis, "G"), act(Action::ResponseExtend(M::Goto { line: None, last: true })));
-        assert_eq!(feed(&mut Router::default(), &vis, "y"), act(Action::ResponseLines(LinesOp::Yank { count: None })));
-        assert_eq!(feed(&mut Router::default(), &vis, "o"), act(Action::ResponseLines(LinesOp::Swap)));
-        assert_eq!(feed(&mut Router::default(), &vis, "V"), act(Action::ResponseLines(LinesOp::End)));
-        assert_eq!(feed(&mut Router::default(), &vis, "<Esc>"), act(Action::ResponseLines(LinesOp::End)));
+        assert_eq!(
+            feed(&mut Router::default(), &resp, "V"),
+            act(Action::ResponseLines(LinesOp::Start))
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &resp, "3yy"),
+            act(Action::ResponseLines(LinesOp::Yank { count: Some(3) }))
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &vis, "3j"),
+            act(Action::ResponseExtend(M::Lines(3)))
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &vis, "G"),
+            act(Action::ResponseExtend(M::Goto { line: None, last: true }))
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &vis, "y"),
+            act(Action::ResponseLines(LinesOp::Yank { count: None }))
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &vis, "o"),
+            act(Action::ResponseLines(LinesOp::Swap))
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &vis, "V"),
+            act(Action::ResponseLines(LinesOp::End))
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &vis, "<Esc>"),
+            act(Action::ResponseLines(LinesOp::End))
+        );
         assert_eq!(
             feed(&mut Router::default(), &vis, "v"),
             run(vec![Step::Action(Action::ShowToast(table::ONLY_LINES.into(), ToastKind::Info))])
         );
         assert_eq!(feed(&mut Router::default(), &vis, "u"), Resolved::Consumed, "swallowed in V");
-        assert_eq!(feed(&mut Router::default(), &vis, ":"), act(Action::OpenExPalette), "Vim's : in Visual");
+        assert_eq!(
+            feed(&mut Router::default(), &vis, ":"),
+            act(Action::OpenExPalette),
+            "Vim's : in Visual"
+        );
         let close_all = Action::TreeFold { op: crate::action::FoldOp::CloseAll, count: 1 };
         assert_eq!(feed(&mut Router::default(), &vis, "zM"), act(close_all), "Vim's zM in Visual");
-        assert_eq!(feed(&mut Router::default(), &vis, "<C-w>k"), act(Action::PaneMove(crate::action::PaneDir::Up)));
+        assert_eq!(
+            feed(&mut Router::default(), &vis, "<C-w>k"),
+            act(Action::PaneMove(crate::action::PaneDir::Up))
+        );
         let search = act(Action::OpenResponseSearch { backward: false });
-        assert_eq!(feed(&mut Router::default(), &cx(Arrows, vis.surface), "/"), search, "arrows' / with a selection up");
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Arrows, vis.surface), "/"),
+            search,
+            "arrows' / with a selection up"
+        );
     }
 
     /// Amendment A6.3 (probe V14 in the Task 6 report): in V, PageDown and
@@ -1118,13 +1438,28 @@ mod tests {
         use crate::components::response::ViewMode;
         let vis = cx(Vim, Surface::ResponseLines(ViewMode::Pretty));
         let ext = |m| run(vec![Step::Action(Action::ResponseExtend(m))]);
-        assert_eq!(feed(&mut Router::default(), &vis, "<PageDown>"), ext(M::Page { down: true, count: 1 }));
-        assert_eq!(feed(&mut Router::default(), &vis, "3<PageUp>"), ext(M::Page { down: false, count: 3 }));
-        assert_eq!(feed(&mut Router::default(), &vis, "<C-f>"), ext(M::Page { down: true, count: 1 }));
+        assert_eq!(
+            feed(&mut Router::default(), &vis, "<PageDown>"),
+            ext(M::Page { down: true, count: 1 })
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &vis, "3<PageUp>"),
+            ext(M::Page { down: false, count: 3 })
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &vis, "<C-f>"),
+            ext(M::Page { down: true, count: 1 })
+        );
         let resp = cx(Vim, Surface::Response(ViewMode::Pretty));
         let mv = |m| run(vec![Step::Action(Action::ResponseMove(m))]);
-        assert_eq!(feed(&mut Router::default(), &resp, "3<PageDown>"), mv(M::Page { down: true, count: 3 }));
-        assert_eq!(feed(&mut Router::default(), &resp, "<PageUp>"), mv(M::Page { down: false, count: 1 }));
+        assert_eq!(
+            feed(&mut Router::default(), &resp, "3<PageDown>"),
+            mv(M::Page { down: true, count: 3 })
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &resp, "<PageUp>"),
+            mv(M::Page { down: false, count: 1 })
+        );
         let arrows = cx(Arrows, Surface::Response(ViewMode::Pretty));
         assert_eq!(feed(&mut Router::default(), &arrows, "<PageDown>"), Resolved::Declined);
     }
@@ -1145,7 +1480,9 @@ mod tests {
         let mv = |m| run(vec![Step::Action(Action::ResponseMove(m))]);
         assert_eq!(feed(&mut Router::default(), &resp, "2<Space>"), mv(M::Col(ColMove::Space(2))));
         assert_eq!(feed(&mut Router::default(), &resp, "<CR>"), mv(M::NextLine(1)));
-        for surface in [Surface::ResponseLines(ViewMode::Pretty), Surface::Response(ViewMode::Pretty)] {
+        for surface in
+            [Surface::ResponseLines(ViewMode::Pretty), Surface::Response(ViewMode::Pretty)]
+        {
             let arrows = cx(Arrows, surface);
             assert_eq!(feed(&mut Router::default(), &arrows, "<CR>"), Resolved::Declined);
             assert_eq!(feed(&mut Router::default(), &arrows, "<Space>"), Resolved::Declined);
@@ -1169,7 +1506,8 @@ mod tests {
         for profile in [Arrows, Vim] {
             for surface in Surface::SAMPLES {
                 let mut prefixes: Vec<Vec<Tok>> = Vec::new();
-                for b in table::TABLE.iter().filter(|b| b.profile.has(profile) && b.on.has(surface)) {
+                for b in table::TABLE.iter().filter(|b| b.profile.has(profile) && b.on.has(surface))
+                {
                     let keys = notation::parse(b.keys);
                     for n in 1..keys.len() {
                         prefixes.push(keys[..n].to_vec());
@@ -1185,8 +1523,13 @@ mod tests {
                         r.resolve(Tok::Char(c).event(), &s);
                         let mut both = prefix.clone();
                         both.push(Tok::Char(c));
-                        let still = matches!(table::lookup(&both, profile, surface), table::Match::Prefix);
-                        assert_eq!(r.echo().is_empty(), !still, "{profile:?} {surface:?} {prefix:?} then {c:?}");
+                        let still =
+                            matches!(table::lookup(&both, profile, surface), table::Match::Prefix);
+                        assert_eq!(
+                            r.echo().is_empty(),
+                            !still,
+                            "{profile:?} {surface:?} {prefix:?} then {c:?}"
+                        );
                         if !still {
                             assert_eq!(
                                 r.resolve(Tok::Char('j').event(), &s),
@@ -1216,7 +1559,10 @@ mod tests {
         assert_eq!(feed(&mut r, &s, "Zx"), Resolved::Consumed, "vim's beep");
         assert_eq!(feed(&mut r, &s, "j"), run(vec![key(KeyCode::Down)]));
         let url = in_url(Mode::Normal, false);
-        assert_eq!(feed(&mut Router::default(), &url, "ZZ"), run(vec![Step::Action(Action::CloseField), zz()]));
+        assert_eq!(
+            feed(&mut Router::default(), &url, "ZZ"),
+            run(vec![Step::Action(Action::CloseField), zz()])
+        );
         assert_eq!(feed(&mut Router::default(), &url, "ZQ"), run(vec![zq()]));
         assert_eq!(feed(&mut Router::default(), &url, "Zx"), Resolved::Consumed);
         let prompt = KeyCtx {
@@ -1224,9 +1570,20 @@ mod tests {
             engine: Some(EngineView { mode: Mode::Normal, pending: false }),
             ..cx(Vim, Surface::Prompt)
         };
-        assert_eq!(feed(&mut Router::default(), &prompt, "ZZ"), Resolved::Consumed, "a dialog field swallows Z<any>");
-        assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Dialog), "Z"), Resolved::Declined, "no row on a dialog");
-        assert_eq!(feed(&mut Router::default(), &cx(Arrows, Surface::Sidebar), "Z"), Resolved::Declined);
+        assert_eq!(
+            feed(&mut Router::default(), &prompt, "ZZ"),
+            Resolved::Consumed,
+            "a dialog field swallows Z<any>"
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Vim, Surface::Dialog), "Z"),
+            Resolved::Declined,
+            "no row on a dialog"
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Arrows, Surface::Sidebar), "Z"),
+            Resolved::Declined
+        );
     }
 
     /// Spec §5.11, key list G.qa/G.marks/G.regs: the notes on a list, and
@@ -1239,7 +1596,11 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &s, "'a"), note(table::NO_MARKS));
         assert_eq!(feed(&mut Router::default(), &s, "`a"), note(table::NO_MARKS));
         assert_eq!(feed(&mut Router::default(), &s, "\"a"), note(table::NO_REGISTERS));
-        assert_eq!(feed(&mut Router::default(), &s, "m"), run(vec![sel(crate::action::Verb::Move)]), "m stays move on a list");
+        assert_eq!(
+            feed(&mut Router::default(), &s, "m"),
+            run(vec![sel(crate::action::Verb::Move)]),
+            "m stays move on a list"
+        );
         let mut r = Router::default();
         assert_eq!(feed(&mut r, &s, "qa"), note(table::NO_MACROS));
         assert_eq!(r.recording(), Some('a'));
@@ -1310,20 +1671,40 @@ mod tests {
         use crate::action::Verb;
         use crate::components::manage::ManageTab;
         let dd = Change { keys: "dd", count: Some(2) };
-        assert_eq!(replay(dd, Surface::Sidebar, MAX_COUNT), Some(vec![Step::Action(Action::OnSelection(Verb::Delete { count: 2 }))]));
+        assert_eq!(
+            replay(dd, Surface::Sidebar, MAX_COUNT),
+            Some(vec![Step::Action(Action::OnSelection(Verb::Delete { count: 2 }))])
+        );
         assert_eq!(
             replay(dd, Surface::ManageList(ManageTab::Environments), MAX_COUNT),
             Some(vec![note_step(table::NO_COUNTED_DELETE)]),
             "the list's own refusal, as a typed `2dd`"
         );
-        assert_eq!(replay(dd, Surface::ManageDetail(ManageTab::Environments), MAX_COUNT), None, "no `dd` there");
-        assert_eq!(replay(dd, Surface::Response(crate::components::response::ViewMode::Pretty), MAX_COUNT), None);
+        assert_eq!(
+            replay(dd, Surface::ManageDetail(ManageTab::Environments), MAX_COUNT),
+            None,
+            "no `dd` there"
+        );
+        assert_eq!(
+            replay(dd, Surface::Response(crate::components::response::ViewMode::Pretty), MAX_COUNT),
+            None
+        );
         assert_eq!(
             replay(Change { keys: "p", count: Some(9) }, Surface::Sidebar, 4),
             Some(vec![Step::Action(Action::OnSelection(Verb::Put { above: false, count: 4 }))]),
             "capped as a typed put"
         );
-        assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "3."), run(vec![Step::Action(Action::RepeatChange { count: Some(3) })]));
-        assert_eq!(feed(&mut Router::default(), &cx(Vim, Surface::Table(crate::components::editor::EditorTab::Headers)), "."), run(vec![Step::Action(Action::RepeatChange { count: None })]));
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Vim, Surface::Sidebar), "3."),
+            run(vec![Step::Action(Action::RepeatChange { count: Some(3) })])
+        );
+        assert_eq!(
+            feed(
+                &mut Router::default(),
+                &cx(Vim, Surface::Table(crate::components::editor::EditorTab::Headers)),
+                "."
+            ),
+            run(vec![Step::Action(Action::RepeatChange { count: None })])
+        );
     }
 }

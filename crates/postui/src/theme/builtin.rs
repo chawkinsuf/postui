@@ -138,17 +138,9 @@ mod tests {
             let ratio = wcag_contrast(rgb_of(t.text_muted), rgb_of(t.page));
             let text = wcag_contrast(rgb_of(t.text), rgb_of(t.page));
             let floor = MUTED_MIN_CONTRAST.min(text / MUTED_TEXT_GAP);
-            assert!(
-                ratio >= floor,
-                "{}: muted vs page {ratio:.2} (floor {floor:.2})",
-                b.name
-            );
+            assert!(ratio >= floor, "{}: muted vs page {ratio:.2} (floor {floor:.2})", b.name);
             // ...while still reading as a quieter tone than `text`.
-            assert!(
-                text > ratio,
-                "{}: text {text:.2} vs muted {ratio:.2}",
-                b.name
-            );
+            assert!(text > ratio, "{}: text {text:.2} vs muted {ratio:.2}", b.name);
         }
     }
 
@@ -189,12 +181,7 @@ mod tests {
                 "{}: counterpart must have the opposite polarity",
                 b.name
             );
-            assert_eq!(
-                cp.counterpart,
-                Some(b.name),
-                "{}: link must be mutual",
-                b.name
-            );
+            assert_eq!(cp.counterpart, Some(b.name), "{}: link must be mutual", b.name);
         }
     }
 

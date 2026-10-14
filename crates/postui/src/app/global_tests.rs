@@ -80,7 +80,11 @@ fn zz_on_a_field_that_refuses_its_commit_keeps_running() {
     let mut app = refused_settings_field();
     feed(&mut app, "ZZ");
     assert!(!app.should_quit, "the close was refused: no quit");
-    assert_eq!(app.settings.editing, Some(crate::components::settings::SettingsField::Osc52Limit), "the field stays open");
+    assert_eq!(
+        app.settings.editing,
+        Some(crate::components::settings::SettingsField::Osc52Limit),
+        "the field stays open"
+    );
     assert!(app.editor.is_dirty(), "nothing saved");
     assert!(app.modals.is_empty());
     // The leave rows halt the same way: `j` closes nothing and moves nothing.
@@ -131,7 +135,10 @@ fn a_window_verb_in_a_dialog_over_manage_quits() {
     for q in [":q<CR>", ":q!<CR>"] {
         let mut app = vim(Fixture::VarList);
         feed(&mut app, "a");
-        assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "{q}: the new-variable prompt");
+        assert!(
+            matches!(app.modals.top(), Some(Modal::Prompt { .. })),
+            "{q}: the new-variable prompt"
+        );
         assert_eq!(app.surface(), crate::keyroute::Surface::Prompt);
         feed(&mut app, "<Esc>");
         feed(&mut app, q);

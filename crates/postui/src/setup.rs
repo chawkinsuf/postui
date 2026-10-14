@@ -70,11 +70,7 @@ pub fn detect_from_env() -> Option<TerminalKind> {
     let term_program = std::env::var("TERM_PROGRAM").ok();
     let term = std::env::var("TERM").ok();
     let lc_terminal = std::env::var("LC_TERMINAL").ok();
-    detect(
-        term_program.as_deref(),
-        term.as_deref(),
-        lc_terminal.as_deref(),
-    )
+    detect(term_program.as_deref(), term.as_deref(), lc_terminal.as_deref())
 }
 
 fn ghostty_section() -> &'static str {
@@ -215,30 +211,15 @@ mod tests {
             detect(Some("ghostty"), Some("xterm-256color"), None),
             Some(TerminalKind::Ghostty)
         );
-        assert_eq!(
-            detect(Some("iTerm.app"), None, None),
-            Some(TerminalKind::ITerm2)
-        );
-        assert_eq!(
-            detect(Some("Apple_Terminal"), None, None),
-            Some(TerminalKind::AppleTerminal)
-        );
-        assert_eq!(
-            detect(Some("WezTerm"), None, None),
-            Some(TerminalKind::WezTerm)
-        );
+        assert_eq!(detect(Some("iTerm.app"), None, None), Some(TerminalKind::ITerm2));
+        assert_eq!(detect(Some("Apple_Terminal"), None, None), Some(TerminalKind::AppleTerminal));
+        assert_eq!(detect(Some("WezTerm"), None, None), Some(TerminalKind::WezTerm));
     }
 
     #[test]
     fn detect_falls_back_to_term_then_lc_terminal() {
-        assert_eq!(
-            detect(None, Some("xterm-kitty"), None),
-            Some(TerminalKind::Kitty)
-        );
-        assert_eq!(
-            detect(None, Some("xterm-ghostty"), None),
-            Some(TerminalKind::Ghostty)
-        );
+        assert_eq!(detect(None, Some("xterm-kitty"), None), Some(TerminalKind::Kitty));
+        assert_eq!(detect(None, Some("xterm-ghostty"), None), Some(TerminalKind::Ghostty));
         // iTerm2 over SSH: TERM_PROGRAM is gone, LC_TERMINAL crossed.
         assert_eq!(
             detect(None, Some("xterm-256color"), Some("iTerm2")),
@@ -272,10 +253,7 @@ mod tests {
     fn linux_short_circuits_even_with_a_local_terminal_detected() {
         let t = setup_text(false, Some(TerminalKind::Ghostty));
         assert!(t.contains("Nothing to configure on Linux"));
-        assert!(
-            !t.contains("keybind ="),
-            "local Linux Ghostty needs no snippet: {t}"
-        );
+        assert!(!t.contains("keybind ="), "local Linux Ghostty needs no snippet: {t}");
     }
 
     #[test]

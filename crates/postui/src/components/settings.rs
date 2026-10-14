@@ -175,7 +175,6 @@ pub fn jq_tab_spelling(mode: JqTab) -> &'static str {
 const KEYMAP_SEGMENTS: [(&str, KeyProfile); 2] =
     [("Arrows", KeyProfile::Arrows), ("Vim", KeyProfile::Vim)];
 
-
 impl SettingsTab {
     pub fn rows() -> &'static [SettingsRow] {
         use ConfigFile::*;
@@ -204,10 +203,7 @@ impl SettingsTab {
         if editable {
             return 0;
         }
-        Self::rows()
-            .iter()
-            .position(|r| matches!(r, SettingsRow::File(_)))
-            .unwrap_or(0)
+        Self::rows().iter().position(|r| matches!(r, SettingsRow::File(_))).unwrap_or(0)
     }
 
     /// Lifts the cursor onto the first row that can actually show it --
@@ -269,10 +265,7 @@ impl SettingsTab {
     /// control rather than on the row behind it.
     pub fn focus_field(&mut self, field: SettingsField) {
         self.focused = true;
-        if let Some(i) = Self::rows()
-            .iter()
-            .position(|r| *r == SettingsRow::Setting(field))
-        {
+        if let Some(i) = Self::rows().iter().position(|r| *r == SettingsRow::Setting(field)) {
             self.set_cursor(i);
         }
     }
@@ -361,7 +354,8 @@ impl SettingsTab {
                 (Key::Named("esc"), "done", Some(Action::CloseField)),
             ];
         }
-        let mut chips = vec![(Key::Nav(Nav::UpDown), "move", None), (Key::Named("enter"), "change", None)];
+        let mut chips =
+            vec![(Key::Nav(Nav::UpDown), "move", None), (Key::Named("enter"), "change", None)];
         if matches!(self.row(), SettingsRow::File(_)) {
             // Names what the key dispatches, not the two buttons it
             // aims between: ←→ moves the selection, enter is what
@@ -457,12 +451,7 @@ pub fn draw_settings(
         if y >= bottom {
             return;
         }
-        let rect = Rect {
-            x: x0,
-            y,
-            width: row_w,
-            height: 1,
-        };
+        let rect = Rect { x: x0, y, width: row_w, height: 1 };
         // File rows are not governed by `editable` at all: Edit… and
         // Reset are the two ways *out* of a broken config.toml, so they
         // stay exactly as live as always. Only a setting row — whose
@@ -507,9 +496,9 @@ pub fn draw_settings(
         }
         .paint(buf, hits, rect, theme);
         match row {
-            SettingsRow::Setting(field) => draw_setting_control(
-                buf, hits, hovered, theme, tab, ui, *field, &slot, i, editable,
-            ),
+            SettingsRow::Setting(field) => {
+                draw_setting_control(buf, hits, hovered, theme, tab, ui, *field, &slot, i, editable)
+            }
             SettingsRow::File(file) => {
                 draw_file_buttons(buf, hits, hovered, theme, tab, i, *file, &slot)
             }
@@ -564,10 +553,7 @@ fn file_button_state(
     hovered: Option<&Hit>,
     file: ConfigFile,
 ) -> ControlState {
-    let hit = Hit::SettingsFile {
-        file,
-        reset: which == 1,
-    };
+    let hit = Hit::SettingsFile { file, reset: which == 1 };
     if tab.focused && tab.cursor == row && tab.file_button == which {
         ControlState::Focused
     } else if hovered == Some(&hit) {
@@ -604,24 +590,14 @@ fn draw_file_buttons(
         if x + w > right {
             return;
         }
-        let rect = Rect {
-            x,
-            width: w,
-            ..slot.rect
-        };
+        let rect = Rect { x, width: w, ..slot.rect };
         Pill {
             label,
             kind: ButtonKind::Secondary,
             state: file_button_state(tab, row, which, hovered, file),
         }
         .paint(buf, rect, theme);
-        hits.register(
-            rect,
-            Hit::SettingsFile {
-                file,
-                reset: which == 1,
-            },
-        );
+        hits.register(rect, Hit::SettingsFile { file, reset: which == 1 });
         x += w + 1;
     }
 }
@@ -736,11 +712,7 @@ fn draw_setting_control(
             v => Line::raw(v),
         }
     };
-    Well {
-        content,
-        state: well_state,
-    }
-    .paint(buf, rect, theme);
+    Well { content, state: well_state }.paint(buf, rect, theme);
     if editable {
         hits.register(rect, hit);
     }
@@ -772,11 +744,7 @@ fn paint_segments<T: Copy + PartialEq>(
         }
         // The active segment is Primary; the cursor still lifts
         // whichever segment the pointer or keyboard is on.
-        let kind = if current == value {
-            ButtonKind::Primary
-        } else {
-            ButtonKind::Secondary
-        };
+        let kind = if current == value { ButtonKind::Primary } else { ButtonKind::Secondary };
         // Focused before Hover, like every other ladder on this
         // screen: with the band gone the cursor is the only thing
         // saying where the keyboard is, and it must not vanish
@@ -790,11 +758,7 @@ fn paint_segments<T: Copy + PartialEq>(
         } else {
             ControlState::Normal
         };
-        let rect = Rect {
-            x,
-            width: w,
-            ..slot.rect
-        };
+        let rect = Rect { x, width: w, ..slot.rect };
         Pill { label, kind, state }.paint(buf, rect, theme);
         if editable {
             hits.register(rect, seg);
@@ -844,10 +808,7 @@ mod tests {
         // config.toml holds TOML i64s: a value past that would be
         // written back negative and revert to the default on the next
         // load, so it is refused at the commit instead.
-        assert_eq!(
-            parse_osc52_limit(&i64::MAX.to_string()),
-            Ok(i64::MAX as usize)
-        );
+        assert_eq!(parse_osc52_limit(&i64::MAX.to_string()), Ok(i64::MAX as usize));
         assert!(parse_osc52_limit(&(i64::MAX as u64 + 1).to_string()).is_err());
         assert!(parse_osc52_limit("18000000000000000000").is_err());
     }
@@ -871,10 +832,7 @@ mod tests {
     /// what was typed (the field rule), so the chip says "done".
     #[test]
     fn a_live_edit_advertises_commit_and_close() {
-        let tab = SettingsTab {
-            editing: Some(SettingsField::AiCmd),
-            ..Default::default()
-        };
+        let tab = SettingsTab { editing: Some(SettingsField::AiCmd), ..Default::default() };
         let chips = crate::keyroute::spell::spelled(tab.footer_chips());
         assert!(chips.iter().any(|(k, l, _)| *k == "enter" && *l == "save"));
         assert!(
@@ -902,10 +860,8 @@ mod tests {
     /// It lives among the Files rows -- the two ways out -- instead.
     #[test]
     fn a_broken_config_keeps_the_cursor_on_the_rows_that_still_work() {
-        let first_file = SettingsTab::rows()
-            .iter()
-            .position(|r| matches!(r, SettingsRow::File(_)))
-            .unwrap();
+        let first_file =
+            SettingsTab::rows().iter().position(|r| matches!(r, SettingsRow::File(_))).unwrap();
         assert_eq!(SettingsTab::first_live_row(true), 0);
         assert_eq!(SettingsTab::first_live_row(false), first_file);
 
@@ -920,10 +876,7 @@ mod tests {
         assert_eq!(tab.cursor, first_file);
 
         // A working config is unchanged: row 0 is reachable.
-        let mut tab = SettingsTab {
-            cursor: SettingsTab::rows().len() - 1,
-            ..Default::default()
-        };
+        let mut tab = SettingsTab { cursor: SettingsTab::rows().len() - 1, ..Default::default() };
         tab.clamp_to_live(true);
         for _ in 0..SettingsTab::rows().len() * 2 {
             tab.move_cursor(-1, true);
@@ -949,11 +902,7 @@ mod tests {
     #[test]
     fn setting_the_cursor_re_aims_at_edit_too() {
         let last = SettingsTab::rows().len() - 1;
-        let mut tab = SettingsTab {
-            cursor: last - 1,
-            file_button: 1,
-            ..Default::default()
-        };
+        let mut tab = SettingsTab { cursor: last - 1, file_button: 1, ..Default::default() };
         tab.set_cursor(last);
         assert_eq!(tab.cursor, last);
         assert_eq!(tab.file_button, 0, "the clicked row starts on Edit…");
@@ -1003,10 +952,7 @@ mod tests {
     fn every_control_registers_a_hit() {
         let hits = render(&SettingsTab::default(), &UiSettings::default());
         for (i, row) in SettingsTab::rows().iter().enumerate() {
-            assert!(
-                hits.rect_of(&Hit::SettingsRow(i)).is_some(),
-                "row {i} is not clickable"
-            );
+            assert!(hits.rect_of(&Hit::SettingsRow(i)).is_some(), "row {i} is not clickable");
             match row {
                 SettingsRow::Setting(SettingsField::JqTab) => {
                     for (_, mode) in JQ_SEGMENTS {
@@ -1025,8 +971,7 @@ mod tests {
                 SettingsRow::File(file) => {
                     for reset in [false, true] {
                         assert!(
-                            hits.rect_of(&Hit::SettingsFile { file: *file, reset })
-                                .is_some(),
+                            hits.rect_of(&Hit::SettingsFile { file: *file, reset }).is_some(),
                             "{file:?} reset={reset} has no button"
                         );
                     }
@@ -1044,10 +989,7 @@ mod tests {
         let theme = Theme::dark();
         let ui = UiSettings::default();
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        let tab = SettingsTab {
-            cursor: 3,
-            ..Default::default()
-        };
+        let tab = SettingsTab { cursor: 3, ..Default::default() };
         let mut hits = HitMap::default();
         term.draw(|f| {
             let body = Rect::new(0, 0, 100, 30);
@@ -1077,28 +1019,13 @@ mod tests {
             .position(|r| *r == SettingsRow::Setting(SettingsField::AiCmd))
             .unwrap();
         let mut hits = HitMap::default();
-        let tab = SettingsTab {
-            cursor: ai_row,
-            focused: true,
-            ..Default::default()
-        };
+        let tab = SettingsTab { cursor: ai_row, focused: true, ..Default::default() };
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
         term.draw(|f| {
-            draw_settings(
-                f,
-                Rect::new(0, 0, 100, 30),
-                &theme,
-                &tab,
-                &ui,
-                None,
-                &mut hits,
-                None,
-            );
+            draw_settings(f, Rect::new(0, 0, 100, 30), &theme, &tab, &ui, None, &mut hits, None);
         })
         .unwrap();
-        let well = hits
-            .rect_of(&Hit::SettingsControl(SettingsField::AiCmd))
-            .unwrap();
+        let well = hits.rect_of(&Hit::SettingsControl(SettingsField::AiCmd)).unwrap();
         let painted = term.backend().buffer().cell((well.x, well.y)).unwrap().bg;
         assert_eq!(
             painted,
@@ -1121,11 +1048,7 @@ mod tests {
             .iter()
             .position(|r| *r == SettingsRow::Setting(SettingsField::JqTab))
             .unwrap();
-        let tab = SettingsTab {
-            cursor: jq_row,
-            focused: true,
-            ..Default::default()
-        };
+        let tab = SettingsTab { cursor: jq_row, focused: true, ..Default::default() };
         // The pointer is on the very segment the keyboard is on.
         let active = Hit::SettingsJqTab(ui.jq_tab);
         let mut hits = HitMap::default();
@@ -1143,19 +1066,14 @@ mod tests {
             );
         })
         .unwrap();
-        let seg = hits
-            .rect_of(&active)
-            .expect("the active segment is painted");
+        let seg = hits.rect_of(&active).expect("the active segment is painted");
         let painted = term.backend().buffer().cell((seg.x, seg.y)).unwrap().bg;
         assert_eq!(
             painted,
             crate::theme::lift_color(theme.accent, 0.20),
             "the cursor still lifts the active segment"
         );
-        assert_ne!(
-            painted, theme.accent_edge_light,
-            "the pointer must not paint over the cursor"
-        );
+        assert_ne!(painted, theme.accent_edge_light, "the pointer must not paint over the cursor");
     }
 
     /// The same ordering in the one ladder that is a plain function: the
@@ -1163,19 +1081,12 @@ mod tests {
     /// button beside it still shows Hover.
     #[test]
     fn the_aimed_file_button_stays_focused_under_the_pointer() {
-        let row = SettingsTab::rows()
-            .iter()
-            .position(|r| matches!(r, SettingsRow::File(_)))
-            .unwrap();
+        let row =
+            SettingsTab::rows().iter().position(|r| matches!(r, SettingsRow::File(_))).unwrap();
         let SettingsRow::File(file) = SettingsTab::rows()[row] else {
             unreachable!("the row we just found is a file row")
         };
-        let tab = SettingsTab {
-            cursor: row,
-            file_button: 1,
-            focused: true,
-            ..Default::default()
-        };
+        let tab = SettingsTab { cursor: row, file_button: 1, focused: true, ..Default::default() };
         let reset = Hit::SettingsFile { file, reset: true };
         let edit = Hit::SettingsFile { file, reset: false };
         assert_eq!(
@@ -1220,14 +1131,9 @@ mod tests {
                 );
             })
             .unwrap();
-            let row = hits
-                .rect_of(&Hit::SettingsRow(ai_row))
-                .expect("the row is clickable");
+            let row = hits.rect_of(&Hit::SettingsRow(ai_row)).expect("the row is clickable");
             // A column in the label half, clear of every control.
-            (
-                term.backend().buffer().cell((row.x, row.y)).unwrap().bg,
-                row,
-            )
+            (term.backend().buffer().cell((row.x, row.y)).unwrap().bg, row)
         };
         let (resting, _) = label_bg(None);
         assert_eq!(resting, theme.page, "a row nobody points at stays flat");
@@ -1258,12 +1164,10 @@ mod tests {
         // column in from there -- the same arithmetic `draw_settings` does.
         let control_x = 2 + label_column(&labels);
         for file in [ConfigFile::Config, ConfigFile::Keys] {
-            let edit = hits
-                .rect_of(&Hit::SettingsFile { file, reset: false })
-                .expect("Edit… is painted");
-            let reset = hits
-                .rect_of(&Hit::SettingsFile { file, reset: true })
-                .expect("Reset is painted");
+            let edit =
+                hits.rect_of(&Hit::SettingsFile { file, reset: false }).expect("Edit… is painted");
+            let reset =
+                hits.rect_of(&Hit::SettingsFile { file, reset: true }).expect("Reset is painted");
             assert_eq!(
                 edit.x, control_x,
                 "{file:?}: Edit… starts at the control column, like every other row's control"
@@ -1286,11 +1190,7 @@ mod tests {
         let theme = Theme::dark();
         let ui = UiSettings::default();
         let render_bgs = |focused: bool| -> Vec<ratatui::style::Color> {
-            let tab = SettingsTab {
-                cursor: 0,
-                focused,
-                ..Default::default()
-            };
+            let tab = SettingsTab { cursor: 0, focused, ..Default::default() };
             let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
             let mut hits = HitMap::default();
             terminal
@@ -1314,14 +1214,8 @@ mod tests {
         // Something *did* lift while focused -- otherwise the assertion
         // below would pass on an empty premise.
         let lifted = crate::theme::lift_color(theme.control, 0.12);
-        assert!(
-            focused.contains(&lifted),
-            "the focused cursor lifts its control"
-        );
-        assert!(
-            !blurred.contains(&lifted),
-            "and nothing lifts once the tab has lost the cursor"
-        );
+        assert!(focused.contains(&lifted), "the focused cursor lifts its control");
+        assert!(!blurred.contains(&lifted), "and nothing lifts once the tab has lost the cursor");
     }
 
     #[test]

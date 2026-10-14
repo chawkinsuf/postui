@@ -105,7 +105,8 @@ impl Engine {
             };
             i * SHIFTWIDTH
         };
-        let new_fnb = set_indent(&mut Ed { buf: &mut *buf, hist: &mut st.history }, row, &lead, new_indent);
+        let new_fnb =
+            set_indent(&mut Ed { buf: &mut *buf, hist: &mut st.history }, row, &lead, new_indent);
         insstart_less -= new_fnb as isize;
         let new_col: isize = if rel >= 0 {
             if rel == 0 {
@@ -122,7 +123,11 @@ impl Engine {
         buf.set_cursor(caret);
         let s = self.session();
         if caret.row == s.start.row && s.start.col != 0 {
-            s.start.col = if (s.start.col as isize) <= insstart_less { 0 } else { (s.start.col as isize - insstart_less) as usize };
+            s.start.col = if (s.start.col as isize) <= insstart_less {
+                0
+            } else {
+                (s.start.col as isize - insstart_less) as usize
+            };
         }
         if let Some(stack) = s.replace.as_mut()
             && start_col >= 0

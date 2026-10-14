@@ -46,10 +46,18 @@ fn a_refused_count_gt_in_an_open_field_keeps_it_open() {
     let before = (app.editor.url.text().to_string(), app.editor.url.cursor());
     for keys in ["4gt", "9gt"] {
         feed(&mut app, keys);
-        assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Url), "{keys}: the field stays open");
+        assert_eq!(
+            app.vim.glue.session(),
+            FieldSession::Live(FieldId::Url),
+            "{keys}: the field stays open"
+        );
         assert!(app.editor.url_open(), "{keys}");
         assert_eq!(app.mode_indicator(), Some("NORMAL"), "{keys}");
-        assert_eq!((app.editor.url.text().to_string(), app.editor.url.cursor()), before, "{keys}: text and caret");
+        assert_eq!(
+            (app.editor.url.text().to_string(), app.editor.url.cursor()),
+            before,
+            "{keys}: text and caret"
+        );
         assert_eq!(app.editor.active_tab, EditorTab::Headers, "{keys}: the tab stays");
         assert_eq!(app.key_echo(), "", "{keys}");
     }
@@ -92,9 +100,17 @@ fn a_tab_step_onto_the_current_tab_keeps_an_open_field_open() {
     // Headers is tab 1 of the GET's three.
     for keys in ["1gt", "3gT", "12gT"] {
         feed(&mut app, keys);
-        assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Url), "{keys}: the field stays open");
+        assert_eq!(
+            app.vim.glue.session(),
+            FieldSession::Live(FieldId::Url),
+            "{keys}: the field stays open"
+        );
         assert!(app.editor.url_open(), "{keys}");
-        assert_eq!((app.editor.url.text().to_string(), app.editor.url.cursor()), before, "{keys}: text and caret");
+        assert_eq!(
+            (app.editor.url.text().to_string(), app.editor.url.cursor()),
+            before,
+            "{keys}: text and caret"
+        );
         assert_eq!(app.editor.active_tab, EditorTab::Headers, "{keys}");
         assert_eq!(app.editor.sub_focus, SubFocus::Url, "{keys}");
     }
@@ -128,11 +144,19 @@ fn a_tab_key_whose_field_close_is_refused_moves_nothing() {
         app.settings.begin_edit(SettingsField::Osc52Limit, "abc");
         draw(&mut app);
         feed(&mut app, "<Esc>");
-        assert_eq!(app.settings.editing, Some(SettingsField::Osc52Limit), "the fixture's commit is refused");
+        assert_eq!(
+            app.settings.editing,
+            Some(SettingsField::Osc52Limit),
+            "the fixture's commit is refused"
+        );
         assert_eq!(app.mode_indicator(), Some("NORMAL"));
         feed(&mut app, keys);
         assert_eq!(app.manage.tab, ManageTab::Settings, "{keys}: the tab stays");
-        assert_eq!(app.settings.editing, Some(SettingsField::Osc52Limit), "{keys}: the edit stays live");
+        assert_eq!(
+            app.settings.editing,
+            Some(SettingsField::Osc52Limit),
+            "{keys}: the edit stays live"
+        );
         assert_eq!(app.settings.field_text(), "abc", "{keys}");
     }
 }
@@ -150,7 +174,10 @@ fn a_tab_key_leaves_a_settings_field_past_a_variables_edit_behind_it() {
     app.manage.tab = ManageTab::Settings;
     app.settings.begin_edit(SettingsField::Osc52Limit, "1000");
     draw(&mut app);
-    assert_eq!(app.field_caret(), crate::keyroute::FieldCaret::Live(FieldId::Settings(SettingsField::Osc52Limit)));
+    assert_eq!(
+        app.field_caret(),
+        crate::keyroute::FieldCaret::Live(FieldId::Settings(SettingsField::Osc52Limit))
+    );
     assert_eq!(app.mode_indicator(), Some("NORMAL"));
     feed(&mut app, "gT");
     assert_eq!(app.settings.editing, None, "the Settings field closed");
@@ -214,10 +241,18 @@ fn a_refused_ctrl_w_in_an_open_field_keeps_it_open() {
     // The editor is the top right pane: nothing above it, nothing right.
     for keys in ["<C-w>k", "<C-w>l"] {
         feed(&mut app, keys);
-        assert_eq!(app.vim.glue.session(), FieldSession::Live(FieldId::Url), "{keys}: the field stays open");
+        assert_eq!(
+            app.vim.glue.session(),
+            FieldSession::Live(FieldId::Url),
+            "{keys}: the field stays open"
+        );
         assert!(app.editor.url_open(), "{keys}");
         assert_eq!(app.mode_indicator(), Some("NORMAL"), "{keys}");
-        assert_eq!((app.editor.url.text().to_string(), app.editor.url.cursor()), before, "{keys}: text and caret");
+        assert_eq!(
+            (app.editor.url.text().to_string(), app.editor.url.cursor()),
+            before,
+            "{keys}: text and caret"
+        );
         assert_eq!(app.focus, PaneId::Editor, "{keys}: focus stays");
         assert_eq!(app.key_echo(), "", "{keys}");
     }
@@ -299,7 +334,12 @@ fn vim_alt_arrows_do_nothing_on_the_sidebar_and_manage() {
     postui_core::fixtures::save_request(app.proj().root(), "main/f/inner", &req).unwrap();
     app.update(Action::RefreshSidebar);
     draw(&mut app);
-    let folder = app.sidebar.rows.iter().position(|r| matches!(r, Row::Folder { .. })).expect("the folder is listed");
+    let folder = app
+        .sidebar
+        .rows
+        .iter()
+        .position(|r| matches!(r, Row::Folder { .. }))
+        .expect("the folder is listed");
     app.sidebar.selected = Some(folder);
     // Collapsed, so a plain → would open it.
     if matches!(app.sidebar.rows[folder], Row::Folder { expanded: true, .. }) {
@@ -314,7 +354,11 @@ fn vim_alt_arrows_do_nothing_on_the_sidebar_and_manage() {
     }
     // Any chord with alt held: a terminal that adds shift (or meta) to
     // alt+→ is still not a plain arrow.
-    for mods in [KeyModifiers::ALT, KeyModifiers::ALT | KeyModifiers::SHIFT, KeyModifiers::ALT | KeyModifiers::META] {
+    for mods in [
+        KeyModifiers::ALT,
+        KeyModifiers::ALT | KeyModifiers::SHIFT,
+        KeyModifiers::ALT | KeyModifiers::META,
+    ] {
         let mut app = app_in(Fixture::VarList, KeyProfile::Vim);
         app.handle_key(KeyEvent::new(KeyCode::Right, mods));
         assert_eq!(app.varmanager.focus, VmFocus::List, "the list keeps the keyboard: {mods:?}");
@@ -464,7 +508,15 @@ fn a_paste_on_another_tab_never_reaches_a_variables_edit_behind_it() {
     for (profile, open) in [(KeyProfile::Arrows, "<CR>"), (KeyProfile::Vim, "i<Esc>")] {
         let mut app = app_in(Fixture::VarForm, profile);
         feed(&mut app, open);
-        let before = app.varmanager.form.editing.as_ref().expect("the edit is live").input.text().to_string();
+        let before = app
+            .varmanager
+            .form
+            .editing
+            .as_ref()
+            .expect("the edit is live")
+            .input
+            .text()
+            .to_string();
         app.manage.tab = ManageTab::Settings;
         assert!(!app.paste_text("pasted"), "{profile:?}: nothing on the Settings tab takes it");
         let edit = app.varmanager.form.editing.as_ref().expect("the edit stays live");
@@ -474,7 +526,11 @@ fn a_paste_on_another_tab_never_reaches_a_variables_edit_behind_it() {
         assert!(app.paste_text("pasted"), "{profile:?}: the Settings edit takes it");
         assert_eq!(app.settings.field_text(), "pasted", "{profile:?}");
         let edit = app.varmanager.form.editing.as_ref().expect("the edit stays live");
-        assert_eq!(edit.input.text(), before, "{profile:?}: and the edit behind the tab is still untouched");
+        assert_eq!(
+            edit.input.text(),
+            before,
+            "{profile:?}: and the edit behind the tab is still untouched"
+        );
     }
 }
 
@@ -545,10 +601,27 @@ fn a_multi_step_cycle_skips_the_disabled_body_tab() {
 #[test]
 fn a_step_from_a_disabled_tab_lands_on_its_neighbour() {
     use crate::action::TabTo;
-    let strip = || (vec![Some(Action::EditorTabSelect(0)), Some(Action::EditorTabSelect(1)), None, Some(Action::EditorTabSelect(3))], 2);
+    let strip = || {
+        (
+            vec![
+                Some(Action::EditorTabSelect(0)),
+                Some(Action::EditorTabSelect(1)),
+                None,
+                Some(Action::EditorTabSelect(3)),
+            ],
+            2,
+        )
+    };
     assert_eq!(super::panes::strip_target(strip(), TabTo::By(1)), Some(Action::EditorTabSelect(3)));
-    assert_eq!(super::panes::strip_target(strip(), TabTo::By(-1)), Some(Action::EditorTabSelect(1)));
-    assert_eq!(super::panes::strip_target(strip(), TabTo::By(2)), Some(Action::EditorTabSelect(0)), "wraps");
+    assert_eq!(
+        super::panes::strip_target(strip(), TabTo::By(-1)),
+        Some(Action::EditorTabSelect(1))
+    );
+    assert_eq!(
+        super::panes::strip_target(strip(), TabTo::By(2)),
+        Some(Action::EditorTabSelect(0)),
+        "wraps"
+    );
 }
 
 /// Review Focus 5: a focus change made without ctrl+w is learned.
@@ -584,7 +657,10 @@ fn ctrl_w_l_learns_the_right_pane_from_a_plain_key() {
 fn click_sidebar(app: &mut App) {
     use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
     draw(app);
-    let r = app.hits.rect_of(&crate::hit::Hit::Pane(PaneId::Sidebar)).expect("the sidebar pane is drawn");
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::Pane(PaneId::Sidebar))
+        .expect("the sidebar pane is drawn");
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: r.x + 1,

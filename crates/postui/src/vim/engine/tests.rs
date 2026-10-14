@@ -8,7 +8,10 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Style;
 
 pub(super) fn k(c: char) -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(c), if c.is_uppercase() { KeyModifiers::SHIFT } else { KeyModifiers::NONE })
+    KeyEvent::new(
+        KeyCode::Char(c),
+        if c.is_uppercase() { KeyModifiers::SHIFT } else { KeyModifiers::NONE },
+    )
 }
 
 pub(super) fn code(c: KeyCode) -> KeyEvent {
@@ -39,12 +42,20 @@ impl Field {
         let mut input = LineInput::new(text);
         input.set_cursor(col);
         let mut f = Self { input, engine: Engine::new(), state: BufState::new() };
-        f.engine.enter(start, Seat::Keep, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+        f.engine.enter(
+            start,
+            Seat::Keep,
+            Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        );
         f
     }
 
     pub fn key(&mut self, ev: KeyEvent) -> Outcome {
-        self.engine.handle(ev, Target { buf: &mut OneLineBuf::new(&mut self.input), state: &mut self.state }, &ViewCtx::default())
+        self.engine.handle(
+            ev,
+            Target { buf: &mut OneLineBuf::new(&mut self.input), state: &mut self.state },
+            &ViewCtx::default(),
+        )
     }
 
     /// Plain chars, one key each; returns the last outcome.
@@ -78,13 +89,24 @@ impl Body {
         let mut ed = EditorState::new(Lines::from(text));
         ed.cursor = edtui::Index2::new(row, col);
         let mut b = Self { ed, visual: None, engine: Engine::new(), state: BufState::new() };
-        b.engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+        b.engine.enter(
+            Start::Normal,
+            Seat::Keep,
+            Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state },
+        );
         b
     }
 
     pub fn key(&mut self, ev: KeyEvent) -> Outcome {
         let ctx = ViewCtx { viewport_rows: Some(20) };
-        self.engine.handle(ev, Target { buf: &mut BodyBuf::new(&mut self.ed, &mut self.visual), state: &mut self.state }, &ctx)
+        self.engine.handle(
+            ev,
+            Target {
+                buf: &mut BodyBuf::new(&mut self.ed, &mut self.visual),
+                state: &mut self.state,
+            },
+            &ctx,
+        )
     }
 
     /// Plain chars, one key each; returns the last outcome.
@@ -124,7 +146,14 @@ fn esc_in_normal_is_declined_but_cancels_a_pending_count() {
 fn a_one_line_field_declines_row_keys_and_the_body_keeps_them() {
     let mut f = Field::new("abc", 1);
     assert_eq!(f.keys("5j"), Outcome::Declined { count: Some(5), keys: vec![k('j')] });
-    for key in [k('k'), code(KeyCode::Up), code(KeyCode::Down), code(KeyCode::Enter), code(KeyCode::Tab), code(KeyCode::BackTab)] {
+    for key in [
+        k('k'),
+        code(KeyCode::Up),
+        code(KeyCode::Down),
+        code(KeyCode::Enter),
+        code(KeyCode::Tab),
+        code(KeyCode::BackTab),
+    ] {
         assert!(declined(&f.key(key)), "{key:?}");
     }
     let mut b = Body::new("a\nb", 0, 0);
@@ -167,7 +196,9 @@ fn inert_keys_show_their_note_and_arm_nothing() {
 #[test]
 fn echo_and_pending_follow_the_half_typed_command() {
     let mut f = Field::new("abc", 0);
-    for (keys, echo) in [("3", "3"), ("2d", "2d"), ("d3", "d3"), ("di", "di"), ("f", "f"), ("r", "r")] {
+    for (keys, echo) in
+        [("3", "3"), ("2d", "2d"), ("d3", "d3"), ("di", "di"), ("f", "f"), ("r", "r")]
+    {
         f.keys(keys);
         assert_eq!(f.engine.echo(), echo, "{keys:?}");
         assert!(f.engine.pending());
@@ -187,7 +218,10 @@ fn del_edits_a_typed_count_instead_of_being_x() {
     assert_eq!(f.engine.echo(), "3");
     f.key(code(KeyCode::Delete));
     assert!(!f.engine.pending(), "the count is gone");
-    assert!(!declined(&f.key(code(KeyCode::Delete))), "with no count typed, Delete is x, not a decline");
+    assert!(
+        !declined(&f.key(code(KeyCode::Delete))),
+        "with no count typed, Delete is x, not a decline"
+    );
     assert!(!f.engine.pending());
 }
 
@@ -212,11 +246,19 @@ fn a_stale_caret_is_clamped_before_any_key() {
     };
     let mut b = stale();
     b.keys("x");
-    assert_eq!((b.text(), b.caret()), ("abc\nde".to_string(), Pos::new(1, 1)), "x takes the clamped caret's char");
+    assert_eq!(
+        (b.text(), b.caret()),
+        ("abc\nde".to_string(), Pos::new(1, 1)),
+        "x takes the clamped caret's char"
+    );
     let mut b = stale();
     b.keys("iZ");
     b.key(esc());
-    assert_eq!((b.text(), b.caret()), ("abc\ndeZf".to_string(), Pos::new(1, 2)), "i opens before the last char, as in Normal");
+    assert_eq!(
+        (b.text(), b.caret()),
+        ("abc\ndeZf".to_string(), Pos::new(1, 2)),
+        "i opens before the last char, as in Normal"
+    );
     let mut b = stale();
     b.keys("yl");
     assert_eq!(b.engine.registers().unnamed().text, "f");
@@ -225,7 +267,10 @@ fn a_stale_caret_is_clamped_before_any_key() {
     for key in ['l', 'x', 'j', 'k', 'w', 'b', 'e', '$', 'p', 'u', 'd'] {
         b.key(k(key));
         let (caret, len) = (b.caret(), b.text().chars().count());
-        assert!(caret.row == 0 && caret.col <= len.saturating_sub(1), "{key}: {caret:?} rests on a char");
+        assert!(
+            caret.row == 0 && caret.col <= len.saturating_sub(1),
+            "{key}: {caret:?} rests on a char"
+        );
     }
     b.key(esc());
     assert_eq!(b.caret().row, 0);
@@ -312,7 +357,11 @@ fn start_insert_types_and_esc_steps_back() {
 fn a_one_line_field_has_no_second_line() {
     for keys in ["o", "O"] {
         let mut f = Field::new("abc", 1);
-        assert_eq!(f.keys(keys), Outcome::Consumed { changed: false, note: None, request: None }, "{keys}");
+        assert_eq!(
+            f.keys(keys),
+            Outcome::Consumed { changed: false, note: None, request: None },
+            "{keys}"
+        );
         assert_eq!((f.text(), f.engine.mode(), f.col()), ("abc", Mode::Normal, 1), "{keys}");
         assert!(!f.state.can_undo(), "{keys}: no undo step");
     }
@@ -321,7 +370,13 @@ fn a_one_line_field_has_no_second_line() {
 #[test]
 fn one_line_insert_declines_the_keys_the_field_does_not_own() {
     let mut f = Field::start("abc", 3, Start::Insert);
-    for key in [code(KeyCode::Enter), code(KeyCode::Tab), code(KeyCode::BackTab), code(KeyCode::Up), code(KeyCode::Down)] {
+    for key in [
+        code(KeyCode::Enter),
+        code(KeyCode::Tab),
+        code(KeyCode::BackTab),
+        code(KeyCode::Up),
+        code(KeyCode::Down),
+    ] {
         assert!(declined(&f.key(key)), "{key:?}");
         assert_eq!((f.text(), f.engine.mode()), ("abc", Mode::Insert));
     }
@@ -340,7 +395,9 @@ fn insert_only_declines_esc() {
 fn paste_in_insert_is_part_of_the_session() {
     let mut f = Field::new("ab", 0);
     f.keys("a");
-    let out = f.engine.paste("XY", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    let out = f
+        .engine
+        .paste("XY", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
     assert_eq!(out, Outcome::Consumed { changed: true, note: None, request: None });
     f.keys("Z");
     f.key(esc());
@@ -353,24 +410,38 @@ fn paste_in_insert_is_part_of_the_session() {
 #[test]
 fn pasted_line_breaks_flatten_in_a_field_and_split_in_the_body() {
     let mut f = Field::start("", 0, Start::Insert);
-    f.engine.paste("a\r\nb\tc", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.engine.paste(
+        "a\r\nb\tc",
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+    );
     assert_eq!(f.text(), "a b c");
     let mut f = Field::start("", 0, Start::Insert);
-    f.engine.paste("a\rb\r\n\r\nc", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.engine.paste(
+        "a\rb\r\n\r\nc",
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+    );
     assert_eq!(f.text(), "a b c", "a run of breaks is one space");
     let mut b = Body::new("", 0, 0);
     b.keys("i");
-    b.engine.paste("x\r\ny\rz", Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.engine.paste(
+        "x\r\ny\rz",
+        Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state },
+    );
     assert_eq!(b.text(), "x\ny\nz");
     assert_eq!(b.caret(), Pos::new(2, 1));
-    b.engine.paste("\tw", Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.engine.paste(
+        "\tw",
+        Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state },
+    );
     assert_eq!(b.text(), "x\ny\nz\tw", "a pasted tab stays a tab in the body (no expandtab)");
 }
 
 #[test]
 fn paste_in_normal_is_declined_for_piece_four() {
     let mut f = Field::new("ab", 0);
-    let out = f.engine.paste("X", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    let out = f
+        .engine
+        .paste("X", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
     assert_eq!(out, Outcome::Declined { count: None, keys: vec![] });
     assert_eq!(f.text(), "ab");
 }
@@ -398,7 +469,10 @@ fn one_line_put_and_join_rules() {
 
     let mut f = Field::new("  ab", 3);
     f.keys("yy");
-    assert_eq!(f.engine.registers().unnamed(), &Register { text: "  ab\n".into(), kind: RegKind::Line });
+    assert_eq!(
+        f.engine.registers().unnamed(),
+        &Register { text: "  ab\n".into(), kind: RegKind::Line }
+    );
     f.keys("dd");
     assert_eq!(f.text(), "", "dd takes the whole field");
 }
@@ -424,14 +498,30 @@ fn one_register_is_shared_by_every_buffer() {
     let mut state = BufState::new();
     let mut field = LineInput::new("one two");
     field.set_cursor(0);
-    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state });
+    engine.enter(
+        Start::Normal,
+        Seat::Keep,
+        Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state },
+    );
     for c in "yiw".chars() {
-        engine.handle(k(c), Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state }, &ViewCtx::default());
+        engine.handle(
+            k(c),
+            Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state },
+            &ViewCtx::default(),
+        );
     }
     let mut ed = EditorState::new(Lines::from("x"));
     let mut body_state = BufState::new();
-    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body_state });
-    engine.handle(k('p'), Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body_state }, &ViewCtx::default());
+    engine.enter(
+        Start::Normal,
+        Seat::Keep,
+        Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body_state },
+    );
+    engine.handle(
+        k('p'),
+        Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body_state },
+        &ViewCtx::default(),
+    );
     assert_eq!(BodyBuf::new(&mut ed, &mut None).text(), "xone");
 }
 
@@ -546,14 +636,30 @@ fn dot_is_global_across_buffers() {
     let (mut s1, mut s2) = (BufState::new(), BufState::new());
     let mut url = LineInput::new("aaa bbb");
     url.set_cursor(0);
-    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut OneLineBuf::new(&mut url), state: &mut s1 });
+    engine.enter(
+        Start::Normal,
+        Seat::Keep,
+        Target { buf: &mut OneLineBuf::new(&mut url), state: &mut s1 },
+    );
     for ev in [k('c'), k('w'), k('Z'), esc()] {
-        engine.handle(ev, Target { buf: &mut OneLineBuf::new(&mut url), state: &mut s1 }, &ViewCtx::default());
+        engine.handle(
+            ev,
+            Target { buf: &mut OneLineBuf::new(&mut url), state: &mut s1 },
+            &ViewCtx::default(),
+        );
     }
     let mut cell = LineInput::new("ccc ddd");
     cell.set_cursor(0);
-    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut OneLineBuf::new(&mut cell), state: &mut s2 });
-    engine.handle(k('.'), Target { buf: &mut OneLineBuf::new(&mut cell), state: &mut s2 }, &ViewCtx::default());
+    engine.enter(
+        Start::Normal,
+        Seat::Keep,
+        Target { buf: &mut OneLineBuf::new(&mut cell), state: &mut s2 },
+    );
+    engine.handle(
+        k('.'),
+        Target { buf: &mut OneLineBuf::new(&mut cell), state: &mut s2 },
+        &ViewCtx::default(),
+    );
     assert_eq!((url.text(), cell.text()), ("Z bbb", "Z ddd"));
 }
 
@@ -566,22 +672,46 @@ fn a_body_insert_replayed_in_a_field_drops_enter_and_tab() {
     let mut engine = Engine::new();
     let mut body = BufState::new();
     let mut ed = EditorState::new(Lines::from("a"));
-    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body });
+    engine.enter(
+        Start::Normal,
+        Seat::Keep,
+        Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body },
+    );
     for ev in [k('A'), k(','), code(KeyCode::Enter), k('x'), esc()] {
-        engine.handle(ev, Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body }, &body_ctx);
+        engine.handle(
+            ev,
+            Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body },
+            &body_ctx,
+        );
     }
     assert_eq!(BodyBuf::new(&mut ed, &mut None).text(), "a,\nx");
     let mut state = BufState::new();
     let mut field = LineInput::new("q");
-    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state });
-    engine.handle(k('.'), Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state }, &ViewCtx::default());
+    engine.enter(
+        Start::Normal,
+        Seat::Keep,
+        Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state },
+    );
+    engine.handle(
+        k('.'),
+        Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state },
+        &ViewCtx::default(),
+    );
     assert_eq!(field.text(), "q,x");
 
     for ev in [k('j'), k('A'), code(KeyCode::Tab), k('y'), esc()] {
-        engine.handle(ev, Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body }, &body_ctx);
+        engine.handle(
+            ev,
+            Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body },
+            &body_ctx,
+        );
     }
     assert_eq!(BodyBuf::new(&mut ed, &mut None).text(), "a,\nx y");
-    engine.handle(k('.'), Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state }, &ViewCtx::default());
+    engine.handle(
+        k('.'),
+        Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state },
+        &ViewCtx::default(),
+    );
     assert_eq!(field.text(), "q,xy");
 }
 
@@ -593,15 +723,35 @@ fn a_body_paste_replayed_in_a_field_is_flattened() {
     let mut engine = Engine::new();
     let mut body = BufState::new();
     let mut ed = EditorState::new(Lines::from("a"));
-    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body });
-    engine.handle(k('A'), Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body }, &body_ctx);
+    engine.enter(
+        Start::Normal,
+        Seat::Keep,
+        Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body },
+    );
+    engine.handle(
+        k('A'),
+        Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body },
+        &body_ctx,
+    );
     engine.paste("1\n2", Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body });
-    engine.handle(esc(), Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body }, &body_ctx);
+    engine.handle(
+        esc(),
+        Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body },
+        &body_ctx,
+    );
     assert_eq!(BodyBuf::new(&mut ed, &mut None).text(), "a1\n2");
     let mut state = BufState::new();
     let mut field = LineInput::new("q");
-    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state });
-    engine.handle(k('.'), Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state }, &ViewCtx::default());
+    engine.enter(
+        Start::Normal,
+        Seat::Keep,
+        Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state },
+    );
+    engine.handle(
+        k('.'),
+        Target { buf: &mut OneLineBuf::new(&mut field), state: &mut state },
+        &ViewCtx::default(),
+    );
     let flat = crate::components::line_input::flatten_paste("1\n2");
     assert!(!flat.contains('\n'));
     assert_eq!(field.text(), format!("q{flat}"));
@@ -628,7 +778,11 @@ fn enter_seats_the_caret() {
         (Start::Insert, Seat::End, 5),
     ] {
         let mut f = Field::new("  abc", 3);
-        f.engine.enter(start, seat, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+        f.engine.enter(
+            start,
+            seat,
+            Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        );
         assert_eq!(f.col(), col, "{start:?} {seat:?}");
     }
 }
@@ -640,19 +794,32 @@ fn buf_state_reports_the_session() {
     f.keys("x");
     assert!(f.state.edited() && f.state.can_undo());
     f.state.end_session();
-    assert_eq!((f.state.text_at_start(), f.state.edited(), f.state.can_undo()), (None, false, false));
+    assert_eq!(
+        (f.state.text_at_start(), f.state.edited(), f.state.can_undo()),
+        (None, false, false)
+    );
 }
 
 #[test]
 fn the_body_history_survives_a_trip_away_but_not_an_outside_change() {
     let mut b = Body::new("abc", 0, 0);
     b.keys("x");
-    b.engine.leave(Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
-    b.engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.engine
+        .leave(Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.engine.enter(
+        Start::Normal,
+        Seat::Keep,
+        Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state },
+    );
     assert!(b.state.can_undo(), "unchanged text: `u` still undoes the last small edit");
-    b.engine.leave(Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.engine
+        .leave(Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
     b.ed.lines = Lines::from("reloaded");
-    b.engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.engine.enter(
+        Start::Normal,
+        Seat::Keep,
+        Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state },
+    );
     assert!(!b.state.can_undo(), "the text changed outside the engine");
 }
 
@@ -661,18 +828,44 @@ fn carry_keeps_insert_and_drops_visual_and_the_record() {
     let mut engine = Engine::new();
     let (mut s1, mut s2) = (BufState::new(), BufState::new());
     let (mut a, mut b) = (LineInput::new("ab"), LineInput::new("cd"));
-    engine.enter(Start::Insert, Seat::End, Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 });
-    engine.handle(k('X'), Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 }, &ViewCtx::default());
+    engine.enter(
+        Start::Insert,
+        Seat::End,
+        Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 },
+    );
+    engine.handle(
+        k('X'),
+        Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 },
+        &ViewCtx::default(),
+    );
     b.set_cursor(0);
-    engine.carry(Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 }, Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 });
+    engine.carry(
+        Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 },
+        Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 },
+    );
     assert_eq!(engine.mode(), Mode::Insert);
     assert!(s1.can_undo(), "the step open in the field left behind closed");
-    engine.handle(k('Y'), Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 }, &ViewCtx::default());
+    engine.handle(
+        k('Y'),
+        Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 },
+        &ViewCtx::default(),
+    );
     assert_eq!((a.text(), b.text()), ("abX", "Ycd"));
-    engine.handle(esc(), Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 }, &ViewCtx::default());
-    engine.handle(k('v'), Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 }, &ViewCtx::default());
+    engine.handle(
+        esc(),
+        Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 },
+        &ViewCtx::default(),
+    );
+    engine.handle(
+        k('v'),
+        Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 },
+        &ViewCtx::default(),
+    );
     assert!(b.paint_span().is_some());
-    engine.carry(Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 }, Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 });
+    engine.carry(
+        Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 },
+        Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 },
+    );
     assert_eq!((engine.mode(), engine.visual_anchor()), (Mode::Normal, None));
     assert_eq!(b.paint_span(), None, "the field left behind no longer paints Visual");
 }
@@ -688,9 +881,17 @@ fn carry_out_of_the_body_clears_its_visual_and_keeps_the_history_check() {
     let mut ed = EditorState::new(Lines::from("abc\ndef"));
     let mut vis = None;
     let mut field = LineInput::new("q");
-    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut ed, &mut vis), state: &mut body });
+    engine.enter(
+        Start::Normal,
+        Seat::Keep,
+        Target { buf: &mut BodyBuf::new(&mut ed, &mut vis), state: &mut body },
+    );
     for ev in [k('x'), k('v'), k('j')] {
-        engine.handle(ev, Target { buf: &mut BodyBuf::new(&mut ed, &mut vis), state: &mut body }, &body_ctx);
+        engine.handle(
+            ev,
+            Target { buf: &mut BodyBuf::new(&mut ed, &mut vis), state: &mut body },
+            &body_ctx,
+        );
     }
     assert_eq!((ed.mode, vis.is_some()), (EditorMode::Visual, true));
     engine.carry(
@@ -708,7 +909,11 @@ fn carry_out_of_the_body_clears_its_visual_and_keeps_the_history_check() {
         Target { buf: &mut OneLineBuf::new(&mut field), state: &mut cell },
     );
     ed.lines = Lines::from("reloaded");
-    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body });
+    engine.enter(
+        Start::Normal,
+        Seat::Keep,
+        Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body },
+    );
     assert!(!body.can_undo(), "the text changed outside the engine after the carry");
 }
 
@@ -721,8 +926,16 @@ fn carry_strips_an_unused_autoindent_in_the_body_it_leaves() {
     let (mut body, mut cell) = (BufState::new(), BufState::new());
     let mut ed = EditorState::new(Lines::from("  a"));
     let mut field = LineInput::new("q");
-    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body });
-    engine.handle(k('o'), Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body }, &body_ctx);
+    engine.enter(
+        Start::Normal,
+        Seat::Keep,
+        Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body },
+    );
+    engine.handle(
+        k('o'),
+        Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body },
+        &body_ctx,
+    );
     assert_eq!(BodyBuf::new(&mut ed, &mut None).text(), "  a\n  ");
     engine.carry(
         Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body },
@@ -742,9 +955,17 @@ fn carry_from_the_body_into_a_field_takes_the_fields_keys() {
     let mut engine = Engine::new();
     let (mut body, mut cell) = (BufState::new(), BufState::new());
     let mut ed = EditorState::new(Lines::from("a"));
-    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body });
+    engine.enter(
+        Start::Normal,
+        Seat::Keep,
+        Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body },
+    );
     for ev in [k('A'), code(KeyCode::Enter), k('b')] {
-        engine.handle(ev, Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body }, &body_ctx);
+        engine.handle(
+            ev,
+            Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body },
+            &body_ctx,
+        );
     }
     let mut field = LineInput::new("q");
     engine.carry(
@@ -753,14 +974,30 @@ fn carry_from_the_body_into_a_field_takes_the_fields_keys() {
     );
     assert!(body.can_undo());
     assert_eq!(engine.mode(), Mode::Insert);
-    let out = engine.handle(code(KeyCode::Enter), Target { buf: &mut OneLineBuf::new(&mut field), state: &mut cell }, &ViewCtx::default());
+    let out = engine.handle(
+        code(KeyCode::Enter),
+        Target { buf: &mut OneLineBuf::new(&mut field), state: &mut cell },
+        &ViewCtx::default(),
+    );
     assert!(declined(&out), "a field declines Enter");
     for ev in [k('z'), esc()] {
-        engine.handle(ev, Target { buf: &mut OneLineBuf::new(&mut field), state: &mut cell }, &ViewCtx::default());
+        engine.handle(
+            ev,
+            Target { buf: &mut OneLineBuf::new(&mut field), state: &mut cell },
+            &ViewCtx::default(),
+        );
     }
     assert_eq!(field.text(), "qz");
-    engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body });
-    engine.handle(k('.'), Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body }, &body_ctx);
+    engine.enter(
+        Start::Normal,
+        Seat::Keep,
+        Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body },
+    );
+    engine.handle(
+        k('.'),
+        Target { buf: &mut BodyBuf::new(&mut ed, &mut None), state: &mut body },
+        &body_ctx,
+    );
     assert_eq!(BodyBuf::new(&mut ed, &mut None).text(), "a\nzb");
 }
 
@@ -772,7 +1009,11 @@ fn carry_from_the_body_into_a_field_takes_the_fields_keys() {
 #[test]
 fn a_session_entered_in_insert_records_as_i_once_something_is_typed() {
     let enter = |f: &mut Field| {
-        f.engine.enter(Start::Insert, Seat::Keep, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+        f.engine.enter(
+            Start::Insert,
+            Seat::Keep,
+            Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        );
     };
     let mut f = Field::new("abcdef", 2);
     f.keys("x");
@@ -797,13 +1038,25 @@ fn a_query_box_session_never_records_for_dot() {
     let mut f = Field::new("abcd", 0);
     f.keys("x");
     let (mut query, mut qs) = (LineInput::new(""), BufState::new());
-    f.engine.enter(Start::InsertOnly, Seat::End, Target { buf: &mut OneLineBuf::new(&mut query), state: &mut qs });
+    f.engine.enter(
+        Start::InsertOnly,
+        Seat::End,
+        Target { buf: &mut OneLineBuf::new(&mut query), state: &mut qs },
+    );
     for ev in [k('w'), k('q'), code(KeyCode::Left), k('z')] {
-        f.engine.handle(ev, Target { buf: &mut OneLineBuf::new(&mut query), state: &mut qs }, &ViewCtx::default());
+        f.engine.handle(
+            ev,
+            Target { buf: &mut OneLineBuf::new(&mut query), state: &mut qs },
+            &ViewCtx::default(),
+        );
     }
     f.engine.leave(Target { buf: &mut OneLineBuf::new(&mut query), state: &mut qs });
     assert_eq!(query.text(), "wzq");
-    f.engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.engine.enter(
+        Start::Normal,
+        Seat::Keep,
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+    );
     f.keys(".");
     assert_eq!(f.text(), "cd", "`.` still repeats the x");
 }
@@ -814,10 +1067,16 @@ fn a_mouse_sweep_is_adopted_as_visual_on_release() {
     f.input.set_cursor(1);
     f.input.begin_mouse_selection();
     f.input.extend_mouse_selection_to(4);
-    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Sweep);
+    f.engine.settle(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Settled::Sweep,
+    );
     assert_eq!(f.engine.mode(), Mode::Visual(Shape::Char));
     assert_eq!(f.input.selection(), Some((1, 4)), "mid-sweep the mouse owns the geometry");
-    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Release);
+    f.engine.settle(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Settled::Release,
+    );
     assert_eq!((f.engine.visual_anchor(), f.col()), (Some(Pos::new(0, 1)), 3));
     assert_eq!(f.input.selection(), None);
     assert_eq!(f.input.paint_span(), Some((1, 4)), "the same chars, now painted as Visual");
@@ -830,11 +1089,20 @@ fn a_click_ends_visual_and_a_gui_key_selection_is_adopted_from_normal() {
     let mut f = Field::new("abcdef", 0);
     f.keys("vl");
     f.input.set_cursor(4);
-    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    f.engine.settle(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Settled::Click,
+    );
     assert_eq!((f.engine.mode(), f.col()), (Mode::Normal, 4));
     f.input.select_all();
-    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Key);
-    assert_eq!((f.engine.mode(), f.engine.visual_anchor(), f.col()), (Mode::Visual(Shape::Char), Some(Pos::new(0, 0)), 5));
+    f.engine.settle(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Settled::Key,
+    );
+    assert_eq!(
+        (f.engine.mode(), f.engine.visual_anchor(), f.col()),
+        (Mode::Visual(Shape::Char), Some(Pos::new(0, 0)), 5)
+    );
 }
 
 /// Fix round 1: a click that moves the caret in Insert splits the session
@@ -845,7 +1113,10 @@ fn a_click_in_insert_splits_the_session() {
     let mut f = Field::new("abcd", 0);
     f.keys("iXY");
     f.input.set_cursor(5);
-    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    f.engine.settle(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Settled::Click,
+    );
     assert_eq!(f.engine.mode(), Mode::Insert);
     f.keys("Z");
     f.key(esc());
@@ -864,19 +1135,32 @@ fn a_click_in_insert_splits_the_session() {
 fn a_settle_that_does_not_move_the_caret_does_not_split() {
     let mut f = Field::new("ab", 0);
     f.keys("aX");
-    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
-    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Key);
+    f.engine.settle(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Settled::Click,
+    );
+    f.engine.settle(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Settled::Key,
+    );
     f.keys("Y");
     f.key(esc());
     assert_eq!((f.text(), f.state.history.len()), ("aXYb", 1));
     f.keys("A");
     f.input.set_cursor(0);
-    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Key);
+    f.engine.settle(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Settled::Key,
+    );
     f.keys("Q");
     f.key(esc());
     assert_eq!((f.text(), f.col()), ("QaXYb", 0));
     f.keys(".");
-    assert_eq!(f.text(), "QQaXYb", "a moved caret splits on a Key settle too: `.` is `1i` + Q, not `A` + Q");
+    assert_eq!(
+        f.text(),
+        "QQaXYb",
+        "a moved caret splits on a Key settle too: `.` is `1i` + Q, not `A` + Q"
+    );
 }
 
 /// Vim's `start_arrow(&tpos)`: an autoindent nothing followed is stripped
@@ -887,7 +1171,10 @@ fn a_click_off_an_unused_autoindent_strips_it() {
     b.keys("o");
     assert_eq!((b.text(), b.caret()), ("  a\n  \nb".to_string(), Pos::new(1, 2)));
     b.ed.cursor = edtui::Index2::new(2, 0);
-    b.engine.settle(Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state }, Settled::Click);
+    b.engine.settle(
+        Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state },
+        Settled::Click,
+    );
     assert_eq!((b.text(), b.engine.mode()), ("  a\n\nb".to_string(), Mode::Insert));
     b.keys("Z");
     assert_eq!(b.text(), "  a\n\nZb");
@@ -904,9 +1191,15 @@ fn a_sweep_from_insert_strips_the_autoindent_where_the_caret_was() {
     SwitchMode(EditorMode::Visual).execute(&mut b.ed);
     b.ed.selection.as_mut().expect("a selection").end = edtui::Index2::new(2, 2);
     b.ed.cursor = edtui::Index2::new(2, 2);
-    b.engine.settle(Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state }, Settled::Release);
+    b.engine.settle(
+        Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state },
+        Settled::Release,
+    );
     assert_eq!(b.text(), "  a\n\nbcd");
-    assert_eq!((b.engine.mode(), b.engine.visual_anchor(), b.caret()), (Mode::Visual(Shape::Char), Some(Pos::new(2, 0)), Pos::new(2, 2)));
+    assert_eq!(
+        (b.engine.mode(), b.engine.visual_anchor(), b.caret()),
+        (Mode::Visual(Shape::Char), Some(Pos::new(2, 0)), Pos::new(2, 2))
+    );
 }
 
 /// A sweep that starts in Insert in a one-line field keeps the mouse's
@@ -916,9 +1209,15 @@ fn a_sweep_from_insert_keeps_the_mouse_selection() {
     let mut f = Field::start("abcdef", 1, Start::Insert);
     f.input.begin_mouse_selection();
     f.input.extend_mouse_selection_to(4);
-    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Sweep);
+    f.engine.settle(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Settled::Sweep,
+    );
     assert_eq!((f.engine.mode(), f.input.selection()), (Mode::Visual(Shape::Char), Some((1, 4))));
-    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Release);
+    f.engine.settle(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Settled::Release,
+    );
     assert_eq!((f.engine.visual_anchor(), f.col()), (Some(Pos::new(0, 1)), 3));
 }
 
@@ -929,7 +1228,10 @@ fn a_click_drops_a_pending_operator() {
     f.keys("d");
     assert!(f.engine.pending());
     f.input.set_cursor(4);
-    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    f.engine.settle(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Settled::Click,
+    );
     assert!(!f.engine.pending());
     f.keys("w");
     assert_eq!(f.text(), "abc def", "`w` is a motion now, not `dw`");
@@ -943,10 +1245,16 @@ fn a_gui_selection_left_in_visual_is_not_adopted_later() {
     let mut b = Body::new("abc\ndef", 0, 0);
     b.keys("v");
     SwitchMode(EditorMode::Visual).execute(&mut b.ed);
-    b.engine.settle(Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state }, Settled::Key);
+    b.engine.settle(
+        Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state },
+        Settled::Key,
+    );
     assert_eq!(b.ed.selection, None);
     b.key(esc());
-    b.engine.settle(Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state }, Settled::Key);
+    b.engine.settle(
+        Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state },
+        Settled::Key,
+    );
     assert_eq!(b.engine.mode(), Mode::Normal);
 }
 
@@ -956,13 +1264,17 @@ fn a_gui_selection_left_in_visual_is_not_adopted_later() {
 #[test]
 fn a_field_in_visual_adopts_a_clicked_selection_and_drops_a_gui_keys() {
     let settle = |f: &mut Field, how| {
-        f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, how);
+        f.engine
+            .settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, how);
     };
     let mut f = Field::new("one two three", 0);
     f.keys("v");
     f.input.select_word_at(5);
     settle(&mut f, Settled::Click);
-    assert_eq!((f.engine.mode(), f.engine.visual_anchor(), f.col()), (Mode::Visual(Shape::Char), Some(Pos::new(0, 4)), 6));
+    assert_eq!(
+        (f.engine.mode(), f.engine.visual_anchor(), f.col()),
+        (Mode::Visual(Shape::Char), Some(Pos::new(0, 4)), 6)
+    );
     assert_eq!(f.input.selection(), None, "adopted, so the GUI selection goes");
     assert_eq!(f.input.paint_span(), Some((4, 7)));
 
@@ -982,15 +1294,21 @@ fn a_field_in_visual_adopts_a_clicked_selection_and_drops_a_gui_keys() {
 fn external_edit_ends_visual_and_a_pending_command() {
     let mut f = Field::new("abcdef", 0);
     f.keys("vl");
-    f.engine.external_edit(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, |s| {
-        s.splice(Pos::new(0, 0), Pos::new(0, 3), "");
-    });
+    f.engine.external_edit(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        |s| {
+            s.splice(Pos::new(0, 0), Pos::new(0, 3), "");
+        },
+    );
     assert_eq!((f.text(), f.engine.mode(), f.engine.visual_anchor()), ("def", Mode::Normal, None));
     assert_eq!(f.input.paint_span(), None);
     f.keys("d");
-    f.engine.external_edit(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, |s| {
-        s.splice(Pos::new(0, 0), Pos::new(0, 0), "x");
-    });
+    f.engine.external_edit(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        |s| {
+            s.splice(Pos::new(0, 0), Pos::new(0, 0), "x");
+        },
+    );
     assert!(!f.engine.pending());
 }
 
@@ -998,7 +1316,10 @@ fn external_edit_ends_visual_and_a_pending_command() {
 fn a_query_box_keeps_its_gui_selection_and_typing_replaces_it() {
     let mut f = Field::start("hello", 5, Start::InsertOnly);
     f.input.select_all();
-    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Key);
+    f.engine.settle(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Settled::Key,
+    );
     assert_eq!(f.engine.mode(), Mode::Insert);
     f.keys("x");
     assert_eq!(f.text(), "x");
@@ -1017,10 +1338,13 @@ fn leave_during_insert_is_one_step_without_stepping_back() {
 fn external_edit_is_one_step_and_not_dot_repeatable() {
     let mut f = Field::new("abcd", 0);
     f.keys("x");
-    let changed = f.engine.external_edit(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, |s| {
-        s.splice(Pos::new(0, 0), Pos::new(0, 0), "{{t}}");
-        s.set_cursor(Pos::new(0, 5));
-    });
+    let changed = f.engine.external_edit(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        |s| {
+            s.splice(Pos::new(0, 0), Pos::new(0, 0), "{{t}}");
+            s.set_cursor(Pos::new(0, 5));
+        },
+    );
     assert!(changed);
     assert_eq!(f.text(), "{{t}}bcd");
     assert_eq!(f.state.history.len(), 2);
@@ -1028,12 +1352,19 @@ fn external_edit_is_one_step_and_not_dot_repeatable() {
     assert_eq!(f.text(), "{{t}}cd", "`.` still repeats the x");
     f.keys("uu");
     assert_eq!(f.text(), "bcd");
-    let moved = f.engine.external_edit(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, |s| {
-        assert_eq!(s.buf().text(), "bcd");
-        s.set_cursor(Pos::new(0, 9));
-    });
+    let moved = f.engine.external_edit(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        |s| {
+            assert_eq!(s.buf().text(), "bcd");
+            s.set_cursor(Pos::new(0, 9));
+        },
+    );
     assert!(!moved, "only the caret moved");
-    assert_eq!((f.col(), f.state.history.len()), (2, 1), "clamped to Normal's last char; no new step");
+    assert_eq!(
+        (f.col(), f.state.history.len()),
+        (2, 1),
+        "clamped to Normal's last char; no new step"
+    );
 }
 
 /// In Insert an external edit splits the session as a cursor key does:
@@ -1043,10 +1374,13 @@ fn external_edit_is_one_step_and_not_dot_repeatable() {
 fn external_edit_in_insert_splits_the_session() {
     let mut f = Field::new("ab", 0);
     f.keys("aX");
-    f.engine.external_edit(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, |s| {
-        s.splice(Pos::new(0, 2), Pos::new(0, 2), "{{t}}");
-        s.set_cursor(Pos::new(0, 7));
-    });
+    f.engine.external_edit(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        |s| {
+            s.splice(Pos::new(0, 2), Pos::new(0, 2), "{{t}}");
+            s.set_cursor(Pos::new(0, 7));
+        },
+    );
     assert_eq!(f.engine.mode(), Mode::Insert);
     f.keys("Y");
     f.key(esc());
@@ -1094,9 +1428,39 @@ fn the_history_keeps_undolevels_steps() {
 fn every_tier_one_edit_works_on_an_empty_body() {
     use edtui::EditorView;
     use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
-    for keys in ["x", "X", "dd", "D", "dw", "cwX\u{1b}", "ccX\u{1b}", "p", "P", "J", "rX", "o\u{1b}",
-                 "Ox\u{1b}", "iab\u{1b}", "A\u{1b}", "yyp", "vd", "Vd", "vy", "u", "x.", "v~", "Vp",
-                 "di{", "ci\"x\u{1b}", "%", "G", "w", "e", "b", "$"] {
+    for keys in [
+        "x",
+        "X",
+        "dd",
+        "D",
+        "dw",
+        "cwX\u{1b}",
+        "ccX\u{1b}",
+        "p",
+        "P",
+        "J",
+        "rX",
+        "o\u{1b}",
+        "Ox\u{1b}",
+        "iab\u{1b}",
+        "A\u{1b}",
+        "yyp",
+        "vd",
+        "Vd",
+        "vy",
+        "u",
+        "x.",
+        "v~",
+        "Vp",
+        "di{",
+        "ci\"x\u{1b}",
+        "%",
+        "G",
+        "w",
+        "e",
+        "b",
+        "$",
+    ] {
         let mut b = Body::new("", 0, 0);
         for c in keys.chars() {
             b.key(if c == '\u{1b}' { esc() } else { k(c) });
@@ -1118,7 +1482,10 @@ fn a_declined_undo_or_redo_hands_back_the_key_as_typed() {
     // `u` is a plain key: every swallowed key comes back, a register
     // prefix included. `ctrl+r` is a chord: it comes back alone.
     f.keys("\"\"");
-    assert_eq!(f.key(k('u')), Outcome::Declined { count: None, keys: vec![k('"'), k('"'), k('u')] });
+    assert_eq!(
+        f.key(k('u')),
+        Outcome::Declined { count: None, keys: vec![k('"'), k('"'), k('u')] }
+    );
     f.keys("\"\"3");
     assert_eq!(f.key(ctrl('r')), Outcome::Declined { count: None, keys: vec![ctrl('r')] });
     assert!(!f.engine.pending());
@@ -1155,7 +1522,8 @@ fn a_stale_redo_after_an_outside_undo_does_not_panic() {
 /// still catch an accidental quadratic.
 #[test]
 fn a_5000_line_body_stays_fast() {
-    let rows: Vec<String> = (0..5000).map(|i| format!("  \"k{i}\": {{\"v\": [{i}, 2]}},")).collect();
+    let rows: Vec<String> =
+        (0..5000).map(|i| format!("  \"k{i}\": {{\"v\": [{i}, 2]}},")).collect();
     let text = format!("{{\n{}\n}}", rows.join("\n"));
     for keys in ["dG", "dGu", "ci{"] {
         let mut b = Body::new(&text, 2500, 4);
@@ -1228,7 +1596,11 @@ fn a_linewise_zero_register_puts_charwise_in_a_field() {
     f.keys("yy");
     assert_eq!(f.engine.registers().zero(), &Register { text: "ab\n".into(), kind: RegKind::Line });
     f.keys("x");
-    assert_eq!(f.engine.registers().unnamed().text, "a", "a delete writes only the unnamed register");
+    assert_eq!(
+        f.engine.registers().unnamed().text,
+        "a",
+        "a delete writes only the unnamed register"
+    );
     f.keys("\"0p");
     assert_eq!((f.text(), f.col()), ("bab", 2));
 }
@@ -1244,7 +1616,11 @@ fn case_operators_echo_and_cancel() {
         assert!(!f.engine.pending());
     }
     for keys in ["gUu", "g~u", "gu~", "gUd", "dgU"] {
-        assert_eq!(f.keys(keys), Outcome::Consumed { changed: false, note: None, request: None }, "{keys:?} cancels");
+        assert_eq!(
+            f.keys(keys),
+            Outcome::Consumed { changed: false, note: None, request: None },
+            "{keys:?} cancels"
+        );
         assert!(!f.engine.pending(), "{keys:?}");
         assert_eq!(f.text(), "abc");
     }
@@ -1305,7 +1681,11 @@ fn gi_resumes_where_leave_ended_insert() {
     let mut f = Field::new("abcd", 0);
     f.keys("lliX");
     f.engine.leave(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
-    f.engine.enter(Start::Normal, Seat::ColZero, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.engine.enter(
+        Start::Normal,
+        Seat::ColZero,
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+    );
     f.keys("giY");
     f.key(esc());
     assert_eq!(f.text(), "abXYcd");
@@ -1317,14 +1697,33 @@ fn gi_resumes_where_carry_left_a_buffer() {
     let mut engine = Engine::new();
     let (mut s1, mut s2) = (BufState::new(), BufState::new());
     let (mut a, mut b) = (LineInput::new("ab"), LineInput::new("cd"));
-    engine.enter(Start::Insert, Seat::End, Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 });
-    engine.handle(k('X'), Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 }, &ViewCtx::default());
+    engine.enter(
+        Start::Insert,
+        Seat::End,
+        Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 },
+    );
+    engine.handle(
+        k('X'),
+        Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 },
+        &ViewCtx::default(),
+    );
     b.set_cursor(0);
-    engine.carry(Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 }, Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 });
+    engine.carry(
+        Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 },
+        Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 },
+    );
     engine.leave(Target { buf: &mut OneLineBuf::new(&mut b), state: &mut s2 });
-    engine.enter(Start::Normal, Seat::ColZero, Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 });
+    engine.enter(
+        Start::Normal,
+        Seat::ColZero,
+        Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 },
+    );
     for ev in [k('g'), k('i'), k('Y'), esc()] {
-        engine.handle(ev, Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 }, &ViewCtx::default());
+        engine.handle(
+            ev,
+            Target { buf: &mut OneLineBuf::new(&mut a), state: &mut s1 },
+            &ViewCtx::default(),
+        );
     }
     assert_eq!(a.text(), "abXY");
 }
@@ -1342,9 +1741,14 @@ fn gi_after_an_outside_change_clamps_or_forgets() {
     b.keys("giY");
     b.key(esc());
     assert_eq!(b.text(), "aY", "clamped to the end of the only line");
-    b.engine.leave(Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.engine
+        .leave(Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
     b.ed.lines = Lines::from("reloaded");
-    b.engine.enter(Start::Normal, Seat::ColZero, Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.engine.enter(
+        Start::Normal,
+        Seat::ColZero,
+        Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state },
+    );
     b.keys("giZ");
     b.key(esc());
     assert_eq!(b.text(), "Zreloaded");
@@ -1358,9 +1762,16 @@ fn gv_reselects_what_leave_ended() {
     f.keys("vl");
     f.engine.leave(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
     assert_eq!(f.engine.mode(), Mode::Normal);
-    f.engine.enter(Start::Normal, Seat::ColZero, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.engine.enter(
+        Start::Normal,
+        Seat::ColZero,
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+    );
     f.keys("gv");
-    assert_eq!((f.engine.mode(), f.engine.visual_anchor(), f.col()), (Mode::Visual(Shape::Char), Some(Pos::new(0, 1)), 2));
+    assert_eq!(
+        (f.engine.mode(), f.engine.visual_anchor(), f.col()),
+        (Mode::Visual(Shape::Char), Some(Pos::new(0, 1)), 2)
+    );
 }
 
 /// Deviation 7: a click that ends Visual remembers the area as it was
@@ -1370,7 +1781,10 @@ fn a_click_ending_visual_remembers_the_area_before_the_click() {
     let mut f = Field::new("abcdef", 1);
     f.keys("vl");
     f.input.set_cursor(5);
-    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    f.engine.settle(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Settled::Click,
+    );
     assert_eq!(f.engine.mode(), Mode::Normal);
     f.keys("gv");
     assert_eq!((f.engine.visual_anchor(), f.col()), (Some(Pos::new(0, 1)), 2));
@@ -1390,9 +1804,14 @@ fn gv_after_an_outside_change_clamps_or_does_nothing() {
     assert_eq!(b.engine.mode(), Mode::Visual(Shape::Char));
     assert_eq!((b.engine.visual_anchor(), b.caret()), (Some(Pos::new(1, 0)), Pos::new(1, 1)));
     b.key(esc());
-    b.engine.leave(Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.engine
+        .leave(Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
     b.ed.lines = Lines::from("reloaded");
-    b.engine.enter(Start::Normal, Seat::ColZero, Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.engine.enter(
+        Start::Normal,
+        Seat::ColZero,
+        Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state },
+    );
     b.keys("gv");
     assert_eq!(b.engine.mode(), Mode::Normal, "the area went with the history");
 }
@@ -1426,7 +1845,11 @@ fn insert_ctrl_r_takes_the_next_key_as_the_register() {
     assert_eq!(f.engine.echo(), "^R^O");
     assert_eq!(note(f.keys("\"")), "ctrl+r ctrl+o not supported");
     f.key(ctrl('r'));
-    assert_eq!(f.key(esc()), Outcome::Consumed { changed: false, note: None, request: None }, "Esc names no register");
+    assert_eq!(
+        f.key(esc()),
+        Outcome::Consumed { changed: false, note: None, request: None },
+        "Esc names no register"
+    );
     assert_eq!(f.engine.mode(), Mode::Insert);
     f.key(ctrl('r'));
     assert_eq!(f.key(ctrl('c')), Outcome::Declined { count: None, keys: vec![ctrl('c')] });
@@ -1442,7 +1865,9 @@ fn insert_ctrl_r_takes_the_next_key_as_the_register() {
 fn insert_ctrl_r_flattens_into_a_field_and_a_query_box() {
     for start in [Start::Insert, Start::InsertOnly] {
         let mut f = Field::start("", 0, start);
-        f.engine.registers_mut().set_unnamed(Register { text: "a\nb\tc\n".into(), kind: RegKind::Line });
+        f.engine
+            .registers_mut()
+            .set_unnamed(Register { text: "a\nb\tc\n".into(), kind: RegKind::Line });
         f.key(ctrl('r'));
         assert!(!declined(&f.key(k('"'))), "{start:?}");
         assert_eq!(f.text(), "a b c", "{start:?}");
@@ -1528,14 +1953,18 @@ fn insert_ctrl_r_swallows_a_third_ctrl_r_and_ctrl_o_takes_any_key() {
     f.key(ctrl('r'));
     f.key(ctrl('o'));
     match f.key(ctrl('w')) {
-        Outcome::Consumed { note: Some(Note::Unsupported(n)), .. } => assert_eq!(n, "ctrl+r ctrl+o not supported"),
+        Outcome::Consumed { note: Some(Note::Unsupported(n)), .. } => {
+            assert_eq!(n, "ctrl+r ctrl+o not supported")
+        }
         other => panic!("no note: {other:?}"),
     }
     assert!(!f.engine.pending());
     f.key(ctrl('r'));
     f.key(ctrl('p'));
     match f.key(ctrl('c')) {
-        Outcome::Consumed { note: Some(Note::Unsupported(n)), .. } => assert_eq!(n, "ctrl+r ctrl+p not supported"),
+        Outcome::Consumed { note: Some(Note::Unsupported(n)), .. } => {
+            assert_eq!(n, "ctrl+r ctrl+p not supported")
+        }
         other => panic!("no note: {other:?}"),
     }
     f.keys("Z");
@@ -1563,7 +1992,10 @@ fn visual_linewise_case_keeps_the_caret_on_its_letter_past_a_grown_sz() {
 fn a_half_typed_ctrl_r_is_dropped_at_every_edge() {
     let mut f = Field::start("ab", 2, Start::Insert);
     f.key(ctrl('r'));
-    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    f.engine.settle(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Settled::Click,
+    );
     assert!(!f.engine.pending());
     f.keys("\"");
     assert_eq!(f.text(), "ab\"", "the quote is typed, not read as a register");
@@ -1573,11 +2005,22 @@ fn a_half_typed_ctrl_r_is_dropped_at_every_edge() {
     f.key(ctrl('r'));
     let (mut other, mut os) = (LineInput::new("q"), BufState::new());
     other.set_cursor(0);
-    f.engine.carry(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os });
+    f.engine.carry(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os },
+    );
     assert!(!f.engine.pending());
-    f.engine.handle(k('0'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
+    f.engine.handle(
+        k('0'),
+        Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os },
+        &ViewCtx::default(),
+    );
     assert_eq!(other.text(), "0q", "typed in the new field, not read as \"0");
-    f.engine.handle(ctrl('r'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
+    f.engine.handle(
+        ctrl('r'),
+        Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os },
+        &ViewCtx::default(),
+    );
     f.engine.leave(Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os });
     assert!(!f.engine.pending());
 }
@@ -1601,10 +2044,46 @@ fn key_of(c: char) -> KeyEvent {
 fn every_first_wave_key_works_on_an_empty_body() {
     use edtui::EditorView;
     use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
-    for keys in ["~", "3~", "g~~", "gUw", "guiw", ">>", "<<", ">j", "}", "{", "d}", "ge", "dge", "+", "-", "\r",
-                 "dip", "dap", "vip", "yap", "vipd", "\u{1}", "\u{18}", "3iX\u{1b}", "3o\u{1b}", "3OY\u{1b}",
-                 "gv", "vl\u{1b}gv", "giX\u{1b}", "aX\u{1b}giY\u{1b}", "A\u{12}\"\u{1b}", "yyA\u{12}0\u{1b}",
-                 "\"0p", "yy\"0P", "vp", "\"0yiw", "x.", "3iX\u{1b}u"] {
+    for keys in [
+        "~",
+        "3~",
+        "g~~",
+        "gUw",
+        "guiw",
+        ">>",
+        "<<",
+        ">j",
+        "}",
+        "{",
+        "d}",
+        "ge",
+        "dge",
+        "+",
+        "-",
+        "\r",
+        "dip",
+        "dap",
+        "vip",
+        "yap",
+        "vipd",
+        "\u{1}",
+        "\u{18}",
+        "3iX\u{1b}",
+        "3o\u{1b}",
+        "3OY\u{1b}",
+        "gv",
+        "vl\u{1b}gv",
+        "giX\u{1b}",
+        "aX\u{1b}giY\u{1b}",
+        "A\u{12}\"\u{1b}",
+        "yyA\u{12}0\u{1b}",
+        "\"0p",
+        "yy\"0P",
+        "vp",
+        "\"0yiw",
+        "x.",
+        "3iX\u{1b}u",
+    ] {
         let mut b = Body::new("", 0, 0);
         for c in keys.chars() {
             b.key(key_of(c));
@@ -1623,8 +2102,24 @@ fn every_first_wave_key_works_on_an_empty_body() {
 fn first_wave_commands_survive_the_largest_count() {
     let rows: Vec<String> = (0..200).map(|i| format!("  \"k{i}\": [{i}, 0x1f],")).collect();
     let text = format!("{{\n{}\n}}", rows.join("\n"));
-    for keys in ["9999~", "9999g~~", "9999>>", "9999<<", "9999}", "9999{", "9999ge", "9999+", "9999-",
-                 "9999\u{1}", "9999\u{18}", "d9999ip", "v9999ap", "9999gv", "9999giX\u{1b}", "x9999."] {
+    for keys in [
+        "9999~",
+        "9999g~~",
+        "9999>>",
+        "9999<<",
+        "9999}",
+        "9999{",
+        "9999ge",
+        "9999+",
+        "9999-",
+        "9999\u{1}",
+        "9999\u{18}",
+        "d9999ip",
+        "v9999ap",
+        "9999gv",
+        "9999giX\u{1b}",
+        "x9999.",
+    ] {
         let mut b = Body::new(&text, 100, 4);
         let started = std::time::Instant::now();
         for c in keys.chars() {
@@ -1678,18 +2173,29 @@ fn replace_edges() {
     b.keys("Rx");
     b.key(code(KeyCode::Backspace));
     b.key(code(KeyCode::Backspace));
-    assert_eq!((b.text(), b.caret()), ("abc".into(), Pos::new(0, 1)), "only moves before the start");
+    assert_eq!(
+        (b.text(), b.caret()),
+        ("abc".into(), Pos::new(0, 1)),
+        "only moves before the start"
+    );
     let mut b = Body::new("abcdef\nxy", 0, 1);
     b.keys("R");
-    b.engine.paste("12\n34", Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.engine.paste(
+        "12\n34",
+        Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state },
+    );
     // Vim's `ins_eol()` replaces nothing, so "34" goes over "de" (probed:
     // Vim 9.1 `R12<CR>34<Esc>` on "abcdef" gives "a12" / "34f").
     assert_eq!(b.text(), "a12\n34f\nxy", "a paste replaces char by char and a line break splits");
     let mut f = Field::new("abcdef", 1);
     f.keys("R");
-    f.engine.paste("12\n34", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.engine
+        .paste("12\n34", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
     assert_eq!(f.text(), "a12 34", "a field takes it flattened");
-    assert!(!declined(&f.key(code(KeyCode::Enter))) || f.engine.mode() == Mode::Replace, "Enter is the field's");
+    assert!(
+        !declined(&f.key(code(KeyCode::Enter))) || f.engine.mode() == Mode::Replace,
+        "Enter is the field's"
+    );
 }
 
 /// `BS` over a Replace line break puts the blanks `Enter` stripped back in
@@ -1715,12 +2221,19 @@ fn replace_bs_over_a_break_restores_mixed_blanks_in_order() {
 fn a_replace_paste_never_autoindents() {
     let mut b = Body::new("  abcdef\nxy", 0, 3);
     b.keys("R");
-    b.engine.paste("12\n  34", Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state });
+    b.engine.paste(
+        "12\n  34",
+        Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state },
+    );
     assert_eq!((b.text(), b.caret()), ("  a12\n  34\nxy".into(), Pos::new(1, 4)));
     for _ in 0..5 {
         b.key(code(KeyCode::Backspace));
     }
-    assert_eq!((b.text(), b.caret()), ("  a12def\nxy".into(), Pos::new(0, 5)), "the paste's break joins back, nothing restored");
+    assert_eq!(
+        (b.text(), b.caret()),
+        ("  a12def\nxy".into(), Pos::new(0, 5)),
+        "the paste's break joins back, nothing restored"
+    );
 }
 
 /// A cursor key or a click flushes the replace stack but keeps Replace; a
@@ -1738,14 +2251,37 @@ fn replace_survives_a_split_and_a_carry() {
     assert_eq!(f.text(), "Zycd");
     let (mut other, mut os) = (LineInput::new("pq"), BufState::new());
     other.set_cursor(0);
-    f.engine.carry(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os });
+    f.engine.carry(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os },
+    );
     assert_eq!(f.engine.mode(), Mode::Replace);
-    f.engine.handle(k('W'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
+    f.engine.handle(
+        k('W'),
+        Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os },
+        &ViewCtx::default(),
+    );
     assert_eq!(other.text(), "Wq");
-    f.engine.handle(esc(), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
-    f.engine.handle(k('0'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
-    f.engine.handle(k('g'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
-    f.engine.handle(k('i'), Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os }, &ViewCtx::default());
+    f.engine.handle(
+        esc(),
+        Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os },
+        &ViewCtx::default(),
+    );
+    f.engine.handle(
+        k('0'),
+        Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os },
+        &ViewCtx::default(),
+    );
+    f.engine.handle(
+        k('g'),
+        Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os },
+        &ViewCtx::default(),
+    );
+    f.engine.handle(
+        k('i'),
+        Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os },
+        &ViewCtx::default(),
+    );
     assert_eq!(f.engine.mode(), Mode::Insert, "gi is always Insert");
 }
 
@@ -1800,16 +2336,26 @@ fn insert_ctrl_r_runs_ctrl_t_and_ctrl_d_from_a_register() {
     b.key(ctrl('r'));
     b.keys("\"");
     b.key(esc());
-    assert_eq!((b.text(), b.caret()), ("x\u{14}yabc".into(), Pos::new(0, 2)), "ctrl+r ctrl+r: literal");
+    assert_eq!(
+        (b.text(), b.caret()),
+        ("x\u{14}yabc".into(), Pos::new(0, 2)),
+        "ctrl+r ctrl+r: literal"
+    );
     let mut b = Body::new("abc", 0, 0);
-    b.engine.registers_mut().set_unnamed(Register { text: "\u{14}\u{14}x\u{4}".into(), kind: RegKind::Char });
+    b.engine
+        .registers_mut()
+        .set_unnamed(Register { text: "\u{14}\u{14}x\u{4}".into(), kind: RegKind::Char });
     b.keys("i");
     b.key(ctrl('r'));
     b.keys("\"");
     b.key(esc());
     assert_eq!(b.text(), "  xabc");
     b.keys("j.");
-    assert_eq!((b.text(), b.caret()), ("    xxabc".into(), Pos::new(0, 4)), "the record holds the register's keys");
+    assert_eq!(
+        (b.text(), b.caret()),
+        ("    xxabc".into(), Pos::new(0, 4)),
+        "the record holds the register's keys"
+    );
     for chord in ['t', 'd'] {
         let mut b = Body::new("  abc", 0, 2);
         b.keys("i");
@@ -1829,21 +2375,36 @@ fn ctrl_o_runs_one_normal_command_then_resumes() {
     f.key(ctrl('o'));
     assert_eq!(f.engine.mode(), Mode::InsertNormal { replace: false });
     f.keys("2");
-    assert_eq!((f.engine.echo(), f.engine.mode()), ("2".into(), Mode::InsertNormal { replace: false }));
+    assert_eq!(
+        (f.engine.echo(), f.engine.mode()),
+        ("2".into(), Mode::InsertNormal { replace: false })
+    );
     f.keys("w");
     // Vim 9.1: `iX<C-o>2wY<Esc>` on "abc def" gives "Xabc deYf".
     assert_eq!((f.engine.mode(), f.col()), (Mode::Insert, 7));
     f.key(ctrl('o'));
-    assert_eq!(f.key(esc()), Outcome::Consumed { changed: false, note: None, request: None }, "Esc is inert");
+    assert_eq!(
+        f.key(esc()),
+        Outcome::Consumed { changed: false, note: None, request: None },
+        "Esc is inert"
+    );
     assert_eq!(f.engine.mode(), Mode::Insert);
     f.key(ctrl('o'));
-    assert_eq!(f.keys("j"), Outcome::Declined { count: None, keys: vec![k('j')] }, "declined after resuming");
+    assert_eq!(
+        f.keys("j"),
+        Outcome::Declined { count: None, keys: vec![k('j')] },
+        "declined after resuming"
+    );
     assert_eq!(f.engine.mode(), Mode::Insert);
     f.key(ctrl('o'));
     assert_eq!(f.key(ctrl('c')), Outcome::Declined { count: None, keys: vec![ctrl('c')] });
     assert_eq!(f.engine.mode(), Mode::Insert);
     f.key(ctrl('o'));
-    assert_eq!(f.key(ctrl('o')), Outcome::Declined { count: None, keys: vec![ctrl('o')] }, "Normal ctrl+o is the app's");
+    assert_eq!(
+        f.key(ctrl('o')),
+        Outcome::Declined { count: None, keys: vec![ctrl('o')] },
+        "Normal ctrl+o is the app's"
+    );
     assert_eq!(f.engine.mode(), Mode::Insert);
     let mut q = Field::start("ab", 1, Start::InsertOnly);
     assert!(declined(&q.key(ctrl('o'))));
@@ -1866,20 +2427,30 @@ fn ctrl_o_at_the_session_edges() {
     f.key(ctrl('o'));
     f.engine.leave(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
     assert_eq!(f.engine.mode(), Mode::Normal);
-    f.engine.enter(Start::Normal, Seat::Keep, Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.engine.enter(
+        Start::Normal,
+        Seat::Keep,
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+    );
     f.keys("l");
     assert_eq!(f.engine.mode(), Mode::Normal, "nothing resumed");
     f.keys("iY");
     f.key(ctrl('o'));
     let (mut other, mut os) = (LineInput::new("pq"), BufState::new());
     other.set_cursor(0);
-    f.engine.carry(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os });
+    f.engine.carry(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Target { buf: &mut OneLineBuf::new(&mut other), state: &mut os },
+    );
     assert_eq!(f.engine.mode(), Mode::Normal, "a restart carries as Normal");
     let mut f = Field::new("abc", 0);
     f.keys("iX");
     f.key(ctrl('o'));
     f.input.set_cursor(2);
-    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    f.engine.settle(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Settled::Click,
+    );
     assert_eq!(f.engine.mode(), Mode::Insert, "a click is the command");
     f.keys("Z");
     assert_eq!(f.text(), "XaZbc");
@@ -1887,10 +2458,13 @@ fn ctrl_o_at_the_session_edges() {
     f.keys("iX");
     f.key(ctrl('o'));
     f.keys("v");
-    f.engine.external_edit(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, |ed| {
-        ed.splice(Pos::new(0, 0), Pos::new(0, 0), "Q");
-        ed.set_cursor(Pos::new(0, 2));
-    });
+    f.engine.external_edit(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        |ed| {
+            ed.splice(Pos::new(0, 0), Pos::new(0, 0), "Q");
+            ed.set_cursor(Pos::new(0, 2));
+        },
+    );
     assert_eq!(f.engine.mode(), Mode::Insert);
     f.keys("W");
     assert_eq!(f.text(), "QXWabc", "typing resumes at the caret");
@@ -1912,7 +2486,10 @@ fn a_click_ending_visual_inside_ctrl_o_resumes_insert() {
     f.keys("v");
     assert_eq!(f.engine.mode(), Mode::Visual(Shape::Char));
     f.input.set_cursor(3);
-    f.engine.settle(Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state }, Settled::Click);
+    f.engine.settle(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Settled::Click,
+    );
     assert_eq!((f.engine.mode(), f.engine.visual_anchor()), (Mode::Insert, None));
     f.keys("Z");
     assert_eq!(f.text(), "XabZc", "typing lands at the clicked caret");
@@ -1947,7 +2524,11 @@ fn the_view_survives_odd_viewports_and_outside_changes() {
         let mut b = Body::new(&text.join("\n"), 0, 0);
         let ctx = ViewCtx { viewport_rows: rows };
         for key in [k('G'), k('g'), k('g'), k('2'), k('5'), k('G'), k('j'), k('k')] {
-            b.engine.handle(key, Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state }, &ctx);
+            b.engine.handle(
+                key,
+                Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state },
+                &ctx,
+            );
         }
         let top = b.ed.viewport_offset().1;
         assert!(top <= b.caret().row, "{rows:?}: top {top} past the caret");
@@ -1969,7 +2550,11 @@ fn scroll_chords_in_a_field_and_after_an_operator() {
     let mut f = Field::new("abc", 1);
     for c in ['d', 'u', 'f', 'b'] {
         assert_eq!(f.keys("3").clone(), Outcome::consumed());
-        assert_eq!(f.key(ctrl(c)), Outcome::Declined { count: Some(3), keys: vec![ctrl(c)] }, "{c}");
+        assert_eq!(
+            f.key(ctrl(c)),
+            Outcome::Declined { count: Some(3), keys: vec![ctrl(c)] },
+            "{c}"
+        );
     }
     f.keys("v");
     assert!(!declined(&f.key(ctrl('d'))));
@@ -1992,7 +2577,11 @@ fn a_one_row_window_half_pages_by_one_line() {
     let mut b = Body::new("a\nb\nc", 0, 0);
     let ctx = ViewCtx { viewport_rows: Some(1) };
     let key = |b: &mut Body, ev| {
-        b.engine.handle(ev, Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state }, &ctx);
+        b.engine.handle(
+            ev,
+            Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state },
+            &ctx,
+        );
     };
     key(&mut b, ctrl('d'));
     assert_eq!((b.caret().row, b.ed.viewport_offset().1), (1, 1));
@@ -2032,7 +2621,11 @@ fn screen_lines_and_a_counted_zz_without_a_window() {
     let mut b = Body::new(&text.join("\n"), 10, 3);
     let keys = |b: &mut Body, s: &str| {
         for c in s.chars() {
-            b.engine.handle(k(c), Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state }, &ViewCtx::default());
+            b.engine.handle(
+                k(c),
+                Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state },
+                &ViewCtx::default(),
+            );
         }
     };
     keys(&mut b, "H");
@@ -2074,10 +2667,24 @@ fn the_plus_register_copies_out_and_never_pastes_in() {
     let mut f = Field::new("abc def", 0);
     f.keys("\"+");
     assert_eq!(f.engine.echo(), "\"+");
-    assert_eq!(f.keys("yiw"), Outcome::Consumed { changed: false, note: None, request: Some(AppRequest::CopyToClipboard("abc".into())) });
+    assert_eq!(
+        f.keys("yiw"),
+        Outcome::Consumed {
+            changed: false,
+            note: None,
+            request: Some(AppRequest::CopyToClipboard("abc".into()))
+        }
+    );
     assert_eq!(f.engine.registers().unnamed().text, "abc");
     assert_eq!(f.engine.registers().zero().text, "abc");
-    assert_eq!(f.keys("\"+dw"), Outcome::Consumed { changed: true, note: None, request: Some(AppRequest::CopyToClipboard("abc ".into())) });
+    assert_eq!(
+        f.keys("\"+dw"),
+        Outcome::Consumed {
+            changed: true,
+            note: None,
+            request: Some(AppRequest::CopyToClipboard("abc ".into()))
+        }
+    );
     assert_eq!(f.engine.registers().zero().text, "abc", "a delete leaves \"0 alone");
     let note = |out: Outcome| match out {
         Outcome::Consumed { note: Some(Note::Unsupported(n)), changed, .. } => (n, changed),
@@ -2086,7 +2693,10 @@ fn the_plus_register_copies_out_and_never_pastes_in() {
     assert_eq!(note(f.keys("\"+p")), ("paste with your terminal (ctrl+v)".into(), false));
     assert!(!f.state.can_undo() || f.text() == "def", "no undo step for a refused put");
     f.keys("v");
-    assert!(matches!(f.keys("\"+y"), Outcome::Consumed { request: Some(AppRequest::CopyToClipboard(_)), .. }));
+    assert!(matches!(
+        f.keys("\"+y"),
+        Outcome::Consumed { request: Some(AppRequest::CopyToClipboard(_)), .. }
+    ));
     f.keys("v\"+d");
     assert_eq!(f.text(), "ef");
     f.keys("A");
@@ -2145,13 +2755,23 @@ fn the_search_prompt_in_a_field() {
     f.keys("fo");
     let line = f.engine.search_line().expect("open");
     assert_eq!((line.dir, line.text.as_str(), line.cursor), (Dir::Forward, "fo", 2));
-    assert_eq!(f.engine.search_preview(&OneLineBuf::new(&mut f.input)), Some((Pos::new(0, 8), Pos::new(0, 10))));
-    assert_eq!(f.engine.search_matches(&OneLineBuf::new(&mut f.input), 0..1).len(), 2, "incsearch paints every match of the typed text");
+    assert_eq!(
+        f.engine.search_preview(&OneLineBuf::new(&mut f.input)),
+        Some((Pos::new(0, 8), Pos::new(0, 10)))
+    );
+    assert_eq!(
+        f.engine.search_matches(&OneLineBuf::new(&mut f.input), 0..1).len(),
+        2,
+        "incsearch paints every match of the typed text"
+    );
     assert!(!declined(&f.key(code(KeyCode::Enter))));
     assert_eq!(f.text(), "foo", "d3/fo deleted to the third hit, which wrapped");
     assert_eq!(f.engine.mode(), Mode::Normal);
     assert!(f.engine.memory.hlsearch());
-    assert_eq!(f.engine.search_matches(&OneLineBuf::new(&mut f.input), 0..1), vec![(Pos::new(0, 0), Pos::new(0, 2))]);
+    assert_eq!(
+        f.engine.search_matches(&OneLineBuf::new(&mut f.input), 0..1),
+        vec![(Pos::new(0, 0), Pos::new(0, 2))]
+    );
     f.engine.memory.no_hlsearch();
     assert!(!f.engine.memory.hlsearch());
     assert!(f.engine.search_matches(&OneLineBuf::new(&mut f.input), 0..1).is_empty());
@@ -2160,7 +2780,11 @@ fn the_search_prompt_in_a_field() {
     assert_eq!(f.engine.search_line().unwrap().text, "\t");
     f.key(code(KeyCode::Backspace));
     assert_eq!(f.engine.mode(), Mode::Search(Dir::Forward));
-    assert_eq!(f.key(code(KeyCode::Backspace)), Outcome::consumed(), "BS on an empty pattern cancels");
+    assert_eq!(
+        f.key(code(KeyCode::Backspace)),
+        Outcome::consumed(),
+        "BS on an empty pattern cancels"
+    );
     assert_eq!(f.engine.mode(), Mode::Normal);
     assert!(!f.engine.pending());
     let mut g = Field::new("x fo", 0);
@@ -2197,12 +2821,15 @@ fn the_search_prompt_refuses_and_cancels() {
     assert_eq!(f.key(ctrl('c')), Outcome::Declined { count: None, keys: vec![ctrl('c')] });
     assert_eq!((f.engine.mode(), f.engine.pending()), (Mode::Normal, false));
     f.keys("/");
-    f.engine.paste("ba\nr", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
+    f.engine
+        .paste("ba\nr", Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state });
     assert_eq!(f.engine.search_line().unwrap().text, "ba r");
     f.key(esc());
     f.keys("/");
     match f.key(ctrl('r')) {
-        Outcome::Consumed { note: Some(Note::Unsupported(n)), .. } => assert_eq!(n, "ctrl+r not supported in a search"),
+        Outcome::Consumed { note: Some(Note::Unsupported(n)), .. } => {
+            assert_eq!(n, "ctrl+r not supported in a search")
+        }
         other => panic!("{other:?}"),
     }
     assert_eq!(f.engine.mode(), Mode::Search(Dir::Forward));
@@ -2235,7 +2862,11 @@ fn search_survives_hostile_patterns_and_big_bodies() {
     let started = std::time::Instant::now();
     b.key(code(KeyCode::Enter));
     b.keys("nnnN*#");
-    assert!(started.elapsed().as_millis() < 500, "six searches took {} ms", started.elapsed().as_millis());
+    assert!(
+        started.elapsed().as_millis() < 500,
+        "six searches took {} ms",
+        started.elapsed().as_millis()
+    );
     assert!(b.engine.search_matches(&BodyBuf::new(&mut b.ed, &mut b.visual), 0..30).len() <= 30);
 }
 
@@ -2248,7 +2879,10 @@ fn the_highlight_reuses_the_compiled_pattern() {
     let started = std::time::Instant::now();
     for _ in 0..200 {
         assert_eq!(b.engine.search_matches(&BodyBuf::new(&mut b.ed, &mut b.visual), 0..2).len(), 2);
-        assert_eq!(b.engine.search_preview(&BodyBuf::new(&mut b.ed, &mut b.visual)), Some((Pos::new(0, 3), Pos::new(0, 5))));
+        assert_eq!(
+            b.engine.search_preview(&BodyBuf::new(&mut b.ed, &mut b.visual)),
+            Some((Pos::new(0, 3), Pos::new(0, 5)))
+        );
     }
     let ms = started.elapsed().as_millis();
     assert!(ms < 200, "200 frames took {ms} ms");
@@ -2268,7 +2902,11 @@ fn a_counted_search_on_one_long_line_is_fast() {
     assert_eq!(b.caret(), Pos::new(0, 19_999), "the 10,000th comma");
     b.keys("9999N");
     assert_eq!(b.caret(), Pos::new(0, 1));
-    assert!(started.elapsed().as_millis() < 1000, "9999n took {ms} ms, 9999N {} ms in all", started.elapsed().as_millis());
+    assert!(
+        started.elapsed().as_millis() < 1000,
+        "9999n took {ms} ms, 9999N {} ms in all",
+        started.elapsed().as_millis()
+    );
 }
 
 /// Review focus 2 and 5 (3b's sweep, extended): every second-wave key on an
@@ -2277,9 +2915,43 @@ fn a_counted_search_on_one_long_line_is_fast() {
 fn every_second_wave_key_works_on_an_empty_body() {
     use edtui::EditorView;
     use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
-    for keys in ["Rab\u{1b}", "R\u{1b}", "Rx\r\u{1b}", "i\u{14}\u{1b}", "i\u{4}\u{1b}", "i0\u{4}\u{1b}", "iX\u{f}0Y\u{1b}", "i\u{f}\u{1b}",
-                 "\u{4}", "\u{15}", "\u{6}", "\u{2}", "H", "M", "L", "dL", "zz", "zt", "zb", "5zt", "/x\r", "/\r", "n", "N", "*", "#",
-                 "d/x\r", "v/x\rd", "/\u{1b}", "/\u{8}", "\"+yy", "\"+p", "A\u{12}+\u{1b}", "\u{f}", "iX\u{f}/x\rY\u{1b}"] {
+    for keys in [
+        "Rab\u{1b}",
+        "R\u{1b}",
+        "Rx\r\u{1b}",
+        "i\u{14}\u{1b}",
+        "i\u{4}\u{1b}",
+        "i0\u{4}\u{1b}",
+        "iX\u{f}0Y\u{1b}",
+        "i\u{f}\u{1b}",
+        "\u{4}",
+        "\u{15}",
+        "\u{6}",
+        "\u{2}",
+        "H",
+        "M",
+        "L",
+        "dL",
+        "zz",
+        "zt",
+        "zb",
+        "5zt",
+        "/x\r",
+        "/\r",
+        "n",
+        "N",
+        "*",
+        "#",
+        "d/x\r",
+        "v/x\rd",
+        "/\u{1b}",
+        "/\u{8}",
+        "\"+yy",
+        "\"+p",
+        "A\u{12}+\u{1b}",
+        "\u{f}",
+        "iX\u{f}/x\rY\u{1b}",
+    ] {
         let mut b = Body::new("", 0, 0);
         for c in keys.chars() {
             b.key(match c {
@@ -2315,7 +2987,11 @@ fn a_counted_search_lands_where_single_steps_land() {
                 for count in 1..=40 {
                     let next = search::search(&buf, step.0, dir, 1, &p).unwrap();
                     step = (next.0, step.1 || next.1);
-                    assert_eq!(search::search(&buf, from, dir, count, &p), Some(step), "{pat} {dir:?} from {from:?} count {count}");
+                    assert_eq!(
+                        search::search(&buf, from, dir, count, &p),
+                        Some(step),
+                        "{pat} {dir:?} from {from:?} count {count}"
+                    );
                 }
             }
         }
@@ -2328,8 +3004,26 @@ fn a_counted_search_lands_where_single_steps_land() {
 fn second_wave_commands_survive_the_largest_count() {
     let rows: Vec<String> = (0..200).map(|i| format!("  \"k{i}\": [{i}, 0x1f],")).collect();
     let text = format!("{{\n{}\n}}", rows.join("\n"));
-    for keys in ["9999\u{4}", "9999\u{15}", "9999\u{6}", "9999\u{2}", "9999H", "9999L", "9999zz", "9999zt", "9999zb", "9999n", "9999N",
-                 "9999*", "9999#", "d9999/k\r", "9999/k\r", "9999Rx\u{1b}", "9999i\u{14}\u{1b}", "iX\u{f}9999j"] {
+    for keys in [
+        "9999\u{4}",
+        "9999\u{15}",
+        "9999\u{6}",
+        "9999\u{2}",
+        "9999H",
+        "9999L",
+        "9999zz",
+        "9999zt",
+        "9999zb",
+        "9999n",
+        "9999N",
+        "9999*",
+        "9999#",
+        "d9999/k\r",
+        "9999/k\r",
+        "9999Rx\u{1b}",
+        "9999i\u{14}\u{1b}",
+        "iX\u{f}9999j",
+    ] {
         for rows in [Some(23), Some(1), None] {
             let mut b = Body::new(&text, 100, 4);
             let ctx = ViewCtx { viewport_rows: rows };
@@ -2344,7 +3038,14 @@ fn second_wave_commands_survive_the_largest_count() {
                     '\u{2}' => ctrl('b'),
                     c => key_of(c),
                 };
-                b.engine.handle(ev, Target { buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual), state: &mut b.state }, &ctx);
+                b.engine.handle(
+                    ev,
+                    Target {
+                        buf: &mut BodyBuf::new(&mut b.ed, &mut b.visual),
+                        state: &mut b.state,
+                    },
+                    &ctx,
+                );
             }
             let ms = started.elapsed().as_millis();
             assert!(ms < 2000, "{keys:?} with {rows:?} rows took {ms} ms");

@@ -29,7 +29,11 @@ impl Ran {
     }
 
     pub(crate) fn and(self, o: Ran) -> Self {
-        Self { changed: self.changed || o.changed, open_as: o.open_as.or(self.open_as), routed: self.routed || o.routed }
+        Self {
+            changed: self.changed || o.changed,
+            open_as: o.open_as.or(self.open_as),
+            routed: self.routed || o.routed,
+        }
     }
 }
 
@@ -65,7 +69,11 @@ impl App {
             user_bare: self.user_bare(ev, profile, surface),
             cap: self.repeat_cap(surface),
             engine: None,
-            answers: if surface == Surface::Dialog { self.modals.answer_letters() } else { Vec::new() },
+            answers: if surface == Surface::Dialog {
+                self.modals.answer_letters()
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -87,7 +95,8 @@ impl App {
     ) -> Option<Action> {
         let bare = matches!(ev.code, KeyCode::Char(_))
             && ev.modifiers.difference(KeyModifiers::SHIFT).is_empty();
-        let on = if profile == crate::config::KeyProfile::Vim { Surfaces::NAV } else { Surfaces::KEYED };
+        let on =
+            if profile == crate::config::KeyProfile::Vim { Surfaces::NAV } else { Surfaces::KEYED };
         if !bare || !self.modals.is_empty() || !on.has(surface) {
             return None;
         }
@@ -122,17 +131,19 @@ impl App {
         let most = match surface {
             Surface::Sidebar => self.sidebar.rows.len().saturating_mul(2),
             Surface::Table(_) => (self.editor.table_len() + 1).max(2),
-            Surface::Response(_) | Surface::ResponseLines(_) => self.session.response.view().map_or(0, |v| {
-                v.visible_len().max(v.measured_width().unwrap_or(MAX_COUNT))
-            }),
+            Surface::Response(_) | Surface::ResponseLines(_) => self
+                .session
+                .response
+                .view()
+                .map_or(0, |v| v.visible_len().max(v.measured_width().unwrap_or(MAX_COUNT))),
             Surface::Settings => crate::components::settings::SettingsTab::rows().len(),
             Surface::ManageList(tab) => self.manage_items(tab).len(),
             Surface::ManageDetail(tab) => {
                 crate::components::manage_list::ManageList::detail_span(tab)
             }
-            Surface::VarList | Surface::VarGrid | Surface::VarForm => self
-                .project()
-                .map_or(0, |p| self.varmanager.repeat_cap(p)),
+            Surface::VarList | Surface::VarGrid | Surface::VarForm => {
+                self.project().map_or(0, |p| self.varmanager.repeat_cap(p))
+            }
             _ => MAX_COUNT,
         };
         most.max(1)
@@ -214,14 +225,18 @@ impl App {
             return echo;
         }
         // Third, the recording note (spec §3.8, §5.11).
-        self.router.recording().map_or_else(String::new, |reg| format!("recording @{reg} — not supported"))
+        self.router
+            .recording()
+            .map_or_else(String::new, |reg| format!("recording @{reg} — not supported"))
     }
 
     /// The thing the keys go to right now (spec §3.3).
     pub fn surface(&self) -> Surface {
         match self.modals.top() {
             Some(Modal::Prompt { .. }) => Surface::Prompt,
-            Some(Modal::NewProject { .. } | Modal::MultiPrompt { .. } | Modal::FieldsEditor(_)) => Surface::Form,
+            Some(Modal::NewProject { .. } | Modal::MultiPrompt { .. } | Modal::FieldsEditor(_)) => {
+                Surface::Form
+            }
             Some(
                 Modal::Palette(_)
                 | Modal::Chooser(_)
@@ -263,7 +278,11 @@ impl App {
             Screen::Main => match self.focus {
                 PaneId::Sidebar => Surface::Sidebar,
                 PaneId::Response => {
-                    let mode = self.session.response.view().map_or(crate::components::response::ViewMode::Pretty, |v| v.mode);
+                    let mode = self
+                        .session
+                        .response
+                        .view()
+                        .map_or(crate::components::response::ViewMode::Pretty, |v| v.mode);
                     if self.session.response.line_selection() {
                         Surface::ResponseLines(mode)
                     } else {

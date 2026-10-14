@@ -31,11 +31,7 @@ pub fn state_dir() -> Option<std::path::PathBuf> {
     #[cfg(not(target_os = "macos"))]
     {
         let dirs = directories::BaseDirs::new()?;
-        Some(
-            dirs.state_dir()
-                .unwrap_or(dirs.data_local_dir())
-                .join(APP_NAME),
-        )
+        Some(dirs.state_dir().unwrap_or(dirs.data_local_dir()).join(APP_NAME))
     }
 }
 
@@ -46,26 +42,24 @@ pub fn state_dir() -> Option<std::path::PathBuf> {
 #[cfg(target_os = "macos")]
 fn xdg_app_dir(var: &str, default: &[&str]) -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
-    let base = std::env::var_os(var)
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| {
+    let base =
+        std::env::var_os(var).map(PathBuf::from).filter(|p| p.is_absolute()).or_else(|| {
             let home = PathBuf::from(std::env::var_os("HOME")?);
             Some(default.iter().fold(home, |p, part| p.join(part)))
         })?;
     Some(base.join(APP_NAME))
 }
 
-pub mod jq;
+pub mod curl;
 pub mod disk;
 pub mod fixtures;
 #[cfg(any(test, feature = "test-util"))]
 pub mod fs_lint;
 pub mod journal;
+pub mod jq;
 pub mod json;
 pub mod migrate;
 pub mod model;
-pub mod curl;
 pub mod order;
 pub mod prepare;
 /// The open project. `project::Project` owns every read and write of
@@ -89,19 +83,13 @@ mod tests {
     #[test]
     fn config_dir_ends_with_the_app_folder() {
         let dir = super::config_dir().expect("a config dir resolves");
-        assert_eq!(
-            dir.file_name().and_then(|n| n.to_str()),
-            Some(super::APP_NAME)
-        );
+        assert_eq!(dir.file_name().and_then(|n| n.to_str()), Some(super::APP_NAME));
     }
 
     #[test]
     fn state_dir_ends_with_the_app_folder() {
         let dir = super::state_dir().expect("a state dir resolves");
-        assert_eq!(
-            dir.file_name().and_then(|n| n.to_str()),
-            Some(super::APP_NAME)
-        );
+        assert_eq!(dir.file_name().and_then(|n| n.to_str()), Some(super::APP_NAME));
     }
 }
 

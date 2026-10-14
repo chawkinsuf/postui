@@ -36,31 +36,19 @@ impl Project {
         }
         let gone = std::mem::take(&mut self.local.active_space);
         let gone = self.space_name(&gone);
-        self.local.active_space = self
-            .spaces
-            .first()
-            .cloned()
-            .unwrap_or_else(|| DEFAULT_SPACE.to_string());
+        self.local.active_space =
+            self.spaces.first().cloned().unwrap_or_else(|| DEFAULT_SPACE.to_string());
         Some(format!("space {gone:?} no longer exists"))
     }
 
     /// `(old, new)` for every request under space `from`, at any folder
     /// level — what a rename of the space's directory does to slugs.
-    fn space_moves(
-        listing: &[RequestListing],
-        from: &str,
-        to: &str,
-    ) -> Vec<(String, String)> {
+    fn space_moves(listing: &[RequestListing], from: &str, to: &str) -> Vec<(String, String)> {
         let prefix = format!("{from}/");
         listing
             .iter()
             .filter(|l| crate::storage::space_of(&l.slug) == Some(from))
-            .map(|l| {
-                (
-                    l.slug.clone(),
-                    l.slug.replacen(&prefix, &format!("{to}/"), 1),
-                )
-            })
+            .map(|l| (l.slug.clone(), l.slug.replacen(&prefix, &format!("{to}/"), 1)))
             .collect()
     }
 
@@ -191,10 +179,11 @@ impl Project {
             if p.disk.is_dir(&dir) {
                 p.fs_trash(&dir)?;
             }
-            p.open_requests
-                .retain(|slug, _| crate::storage::space_of(slug) != Some(name.as_str()));
+            p.open_requests.retain(|slug, _| crate::storage::space_of(slug) != Some(name.as_str()));
             p.forget_space_local(&name);
-            if p.local.open_request.as_deref().and_then(crate::storage::space_of) == Some(name.as_str()) {
+            if p.local.open_request.as_deref().and_then(crate::storage::space_of)
+                == Some(name.as_str())
+            {
                 p.local.open_request = None;
             }
             p.refresh_spaces();
@@ -207,9 +196,8 @@ impl Project {
     /// Moves `name` by `delta` among the displayed spaces (a swap).
     pub fn move_space(&mut self, name: &str, delta: i32) -> Result<Option<ListChange>, Error> {
         let mut spaces = self.write_list();
-        let slots: Vec<usize> = (0..spaces.len())
-            .filter(|i| meta::valid_space_name(&spaces[*i]))
-            .collect();
+        let slots: Vec<usize> =
+            (0..spaces.len()).filter(|i| meta::valid_space_name(&spaces[*i])).collect();
         let Some(pos) = slots.iter().position(|i| spaces[*i] == *name) else {
             return Err(Error::NotFound(name.to_string()));
         };
@@ -233,9 +221,8 @@ impl Project {
     /// order that is not exactly the displayed set.
     pub fn set_space_order(&mut self, displayed: &[String]) -> Result<Option<ListChange>, Error> {
         let mut spaces = self.write_list();
-        let slots: Vec<usize> = (0..spaces.len())
-            .filter(|i| meta::valid_space_name(&spaces[*i]))
-            .collect();
+        let slots: Vec<usize> =
+            (0..spaces.len()).filter(|i| meta::valid_space_name(&spaces[*i])).collect();
         let valid: Vec<String> = slots.iter().map(|i| spaces[*i].clone()).collect();
         if let Some(extra) = displayed.iter().find(|n| !valid.contains(n)) {
             return Err(Error::NotFound(extra.clone()));
@@ -262,7 +249,12 @@ impl Project {
 
     /// Rewrites one level of `space`'s request order to `shown`
     /// (`order::set_level_order`'s merge rule). A drag: never merges.
-    pub fn set_request_order(&mut self, space: &str, level: &str, shown: &[String]) -> Result<Option<ListChange>, Error> {
+    pub fn set_request_order(
+        &mut self,
+        space: &str,
+        level: &str,
+        shown: &[String],
+    ) -> Result<Option<ListChange>, Error> {
         let before = crate::order::space_order(&self.meta, space).to_vec();
         let after = crate::order::merge_level(&before, level, shown);
         if before == after {
@@ -279,7 +271,14 @@ impl Project {
     }
 
     /// alt+↑/↓: `rel` moves by `delta` among `shown`; a burst merges.
-    pub fn move_request_shown(&mut self, space: &str, level: &str, shown: &[String], rel: &str, delta: i32) -> Result<Option<ListChange>, Error> {
+    pub fn move_request_shown(
+        &mut self,
+        space: &str,
+        level: &str,
+        shown: &[String],
+        rel: &str,
+        delta: i32,
+    ) -> Result<Option<ListChange>, Error> {
         let Some(pos) = shown.iter().position(|s| s == rel) else {
             return Err(Error::NotFound(format!("{space}/{rel}")));
         };
@@ -295,7 +294,8 @@ impl Project {
         if before == after {
             return Ok(None);
         }
-        let key = MergeKey::RequestOrder { space: space.to_string(), slug: format!("{space}/{rel}") };
+        let key =
+            MergeKey::RequestOrder { space: space.to_string(), slug: format!("{space}/{rel}") };
         self.transaction_merging("move request", key, |p| {
             p.order_edit(space, |order| {
                 *order = after.clone();
@@ -337,7 +337,10 @@ mod tests {
         assert_eq!(p.spaces(), ["main", "login-flow"]);
         assert_eq!(p.space_name("login-flow"), "Login Flow");
         assert_eq!(p.local().active_space, "login-flow");
-        assert_eq!(p.local().space_open.get("login-flow").map(String::as_str), Some("login-flow/login"));
+        assert_eq!(
+            p.local().space_open.get("login-flow").map(String::as_str),
+            Some("login-flow/login")
+        );
         let state = read(&dir, ".local/state.toml").unwrap();
         assert!(state.contains("login-flow"), "{state}");
         assert!(read(&dir, "project.toml").unwrap().contains("[space.login-flow]"));
@@ -349,7 +352,11 @@ mod tests {
     fn rename_records_a_move_for_every_request_in_the_space() {
         let (dir, mut p) = fixture();
         std::fs::create_dir_all(dir.path().join("requests/main/api")).unwrap();
-        std::fs::write(dir.path().join("requests/main/api/deep.toml"), "method = \"GET\"\nurl = \"https://x/d\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("requests/main/api/deep.toml"),
+            "method = \"GET\"\nurl = \"https://x/d\"\n",
+        )
+        .unwrap();
         p.reload_all();
         p.rename_space("main", "Core").unwrap();
         let u = p.undo().unwrap().unwrap();
@@ -384,7 +391,10 @@ mod tests {
         assert!(dir.path().join(".local/trash/1/requests/auth/login.toml").is_file());
         assert_eq!(p.spaces(), ["main"]);
         assert_eq!(p.local().active_space, "main");
-        assert!(p.local().open_request.is_none(), "the open request pointed into the deleted space");
+        assert!(
+            p.local().open_request.is_none(),
+            "the open request pointed into the deleted space"
+        );
         assert!(!read(&dir, "project.toml").unwrap().contains("[space.auth]"));
         assert!(matches!(p.delete_space("main"), Err(Error::LastSpace)));
     }
@@ -448,7 +458,11 @@ mod tests {
     fn request_order_edits_write_the_space_table_and_merge_bursts() {
         let (dir, mut p) = fixture();
         for n in ["a", "b", "c"] {
-            std::fs::write(dir.path().join(format!("requests/main/{n}.toml")), "method = \"GET\"\nurl = \"u\"\n").unwrap();
+            std::fs::write(
+                dir.path().join(format!("requests/main/{n}.toml")),
+                "method = \"GET\"\nurl = \"u\"\n",
+            )
+            .unwrap();
         }
         p.relist();
         let shown: Vec<String> = ["a", "b", "c", "ping"].iter().map(|s| s.to_string()).collect();
@@ -457,7 +471,10 @@ mod tests {
         p.move_request_shown("main", "", &shown, "c", -1).unwrap();
         assert_eq!(crate::order::space_order(p.meta(), "main"), ["c", "a", "b", "ping"]);
         assert_eq!(p.journal_len(), 1);
-        let c = p.set_request_order("main", "", &["ping".into(), "c".into(), "a".into(), "b".into()]).unwrap().unwrap();
+        let c = p
+            .set_request_order("main", "", &["ping".into(), "c".into(), "a".into(), "b".into()])
+            .unwrap()
+            .unwrap();
         assert_eq!(c.after, ["ping", "c", "a", "b"]);
         assert_eq!(p.journal_len(), 2, "a drag never merges");
     }

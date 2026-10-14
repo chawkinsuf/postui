@@ -39,10 +39,7 @@ fn init_default_startup_writes_project_toml_with_the_main_space() {
 
     app.init_default_project(app.root().to_path_buf());
 
-    assert_eq!(
-        postui_core::fixtures::load_meta(dir.path()).unwrap().spaces,
-        ["main"]
-    );
+    assert_eq!(postui_core::fixtures::load_meta(dir.path()).unwrap().spaces, ["main"]);
     assert_eq!(app.proj().spaces(), ["main"]);
     assert!(dir.path().join("requests/main").is_dir());
 }
@@ -78,10 +75,7 @@ fn resolve_startup_registry_last_wins_over_known() {
     };
     let (root, disposition, stale_last) = resolve_startup(&registry, None, None).unwrap();
     assert_eq!(root, last_dir.path());
-    assert_eq!(
-        disposition,
-        StartupDisposition::OpenAsIs { register: false }
-    );
+    assert_eq!(disposition, StartupDisposition::OpenAsIs { register: false });
     assert_eq!(stale_last, None);
 }
 
@@ -108,10 +102,7 @@ fn resolve_startup_uses_first_existing_known_when_no_last() {
     };
     let (root, disposition, _) = resolve_startup(&registry, None, None).unwrap();
     assert_eq!(root, dir_a.path());
-    assert_eq!(
-        disposition,
-        StartupDisposition::OpenAsIs { register: false }
-    );
+    assert_eq!(disposition, StartupDisposition::OpenAsIs { register: false });
 }
 
 #[test]
@@ -125,10 +116,7 @@ fn resolve_startup_stale_last_is_skipped_in_favor_of_first_existing_known() {
     };
     let (root, disposition, stale_last) = resolve_startup(&registry, None, None).unwrap();
     assert_eq!(root, dir_a.path());
-    assert_eq!(
-        disposition,
-        StartupDisposition::OpenAsIs { register: false }
-    );
+    assert_eq!(disposition, StartupDisposition::OpenAsIs { register: false });
     assert_eq!(stale_last, Some(missing));
 }
 
@@ -136,10 +124,8 @@ fn resolve_startup_stale_last_is_skipped_in_favor_of_first_existing_known() {
 fn resolve_startup_stale_last_falls_through_to_default_when_no_known() {
     let missing = PathBuf::from("/nonexistent-last-xyz");
     let default_dir = PathBuf::from("/nonexistent/postui-default-xyz");
-    let registry = crate::config::ProjectsRegistry {
-        last: Some(missing.clone()),
-        ..Default::default()
-    };
+    let registry =
+        crate::config::ProjectsRegistry { last: Some(missing.clone()), ..Default::default() };
     let (root, disposition, stale_last) =
         resolve_startup(&registry, None, Some(default_dir.clone())).unwrap();
     assert_eq!(root, default_dir);
@@ -156,17 +142,10 @@ fn resolve_startup_returns_none_when_nothing_available() {
 #[test]
 fn init_project_here_creates_project_toml_at_current_root() {
     let mut app = App::new_for_test();
-    assert!(!postui_core::project::Project::is_project(
-        app.proj().root()
-    ));
+    assert!(!postui_core::project::Project::is_project(app.proj().root()));
     app.update(Action::InitProjectHere);
     assert!(postui_core::project::Project::is_project(app.proj().root()));
-    assert_eq!(
-        postui_core::fixtures::load_meta(app.proj().root())
-            .unwrap()
-            .spaces,
-        ["main"]
-    );
+    assert_eq!(postui_core::fixtures::load_meta(app.proj().root()).unwrap().spaces, ["main"]);
     // The stock `default` env is written and the app lands in it, exactly
     // as an open of the finished project would.
     assert_eq!(app.proj().environments(), vec!["default".to_string()]);
@@ -237,10 +216,7 @@ fn focus_next_moves_focus() {
 fn close_pops_modal_instead_of_quitting() {
     use crate::components::modal::Modal;
     let mut app = App::new_for_test();
-    app.modals.push(Modal::Message {
-        title: "t".into(),
-        body: "b".into(),
-    });
+    app.modals.push(Modal::Message { title: "t".into(), body: "b".into() });
     app.update(Action::Close);
     assert!(app.modals.is_empty());
     assert!(!app.should_quit);
@@ -274,18 +250,13 @@ fn palette_row_of(app: &App, id: &str) -> usize {
     let Some(Modal::Palette(p)) = app.modals.top() else {
         panic!("expected the palette to be open");
     };
-    p.filtered()
-        .iter()
-        .position(|c| c.id == id)
-        .unwrap_or_else(|| panic!("{id} was filtered out"))
+    p.filtered().iter().position(|c| c.id == id).unwrap_or_else(|| panic!("{id} was filtered out"))
 }
 
 /// Moves the open palette's cursor onto command `id`.
 fn select_palette_command(app: &mut App, id: &str) {
     let i = palette_row_of(app, id);
-    let Some(Modal::Palette(p)) = app.modals.top_mut() else {
-        unreachable!()
-    };
+    let Some(Modal::Palette(p)) = app.modals.top_mut() else { unreachable!() };
     p.select(i);
 }
 
@@ -329,11 +300,7 @@ fn ctrl_c_copies_the_url_selection_instead_of_quitting() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
-        Some(cmd),
-        65536,
-        false,
-    ));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
     app.editor.url = crate::components::line_input::LineInput::new("https://example.com");
     app.editor.open_url_from_app();
     app.editor.url.select_all();
@@ -341,14 +308,8 @@ fn ctrl_c_copies_the_url_selection_instead_of_quitting() {
     app.handle_key(ctrl('c'));
 
     assert!(!app.should_quit, "copy pre-empts quit");
-    assert_eq!(
-        std::fs::read_to_string(&out).unwrap(),
-        "https://example.com"
-    );
-    assert!(
-        app.editor.url.selection().is_some(),
-        "copy keeps the selection"
-    );
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://example.com");
+    assert!(app.editor.url.selection().is_some(), "copy keeps the selection");
     // With the selection gone, ctrl+c means quit again (here gated on the
     // unsaved URL edit, so it surfaces as the confirm modal).
     app.editor.url.clear_selection();
@@ -365,11 +326,7 @@ fn ctrl_c_copies_the_jq_bar_selection_instead_of_quitting() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
-        Some(cmd),
-        65536,
-        false,
-    ));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
     ready_response(&mut app, r#"{"data":{"items":[{"id":1}]}}"#);
     app.update(Action::FocusPane(PaneId::Response));
     assert!(app.session.response.set_jq_focus(true), "a JSON body: the bar can focus");
@@ -381,10 +338,7 @@ fn ctrl_c_copies_the_jq_bar_selection_instead_of_quitting() {
     assert!(!app.should_quit, "copy pre-empts quit");
     assert!(app.modals.is_empty(), "no quit gate either");
     assert_eq!(std::fs::read_to_string(&out).unwrap(), ".data.items");
-    assert!(
-        app.session.response.jq_bar().input.selection().is_some(),
-        "copy keeps the selection"
-    );
+    assert!(app.session.response.jq_bar().input.selection().is_some(), "copy keeps the selection");
 }
 
 /// The search box's copy twin of the jq-bar test above: opened the way
@@ -398,20 +352,12 @@ fn ctrl_c_copies_the_response_search_selection_instead_of_quitting() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
-        Some(cmd),
-        65536,
-        false,
-    ));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
     ready_response(&mut app, r#"{"data":{"items":[{"id":1}]}}"#);
     app.focus = PaneId::Response;
     app.handle_key(plain('/'));
     type_str(&mut app, "id");
-    app.session
-        .response
-        .search_input_mut()
-        .expect("search is active")
-        .select_all();
+    app.session.response.search_input_mut().expect("search is active").select_all();
 
     app.handle_key(ctrl('c'));
 
@@ -427,11 +373,7 @@ fn ctrl_c_copies_a_modal_prompt_selection_and_keeps_the_modal_open() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
-        Some(cmd),
-        65536,
-        false,
-    ));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
     let mut input = crate::components::line_input::LineInput::new("my-request");
     input.select_all();
     app.modals.push(Modal::Prompt {
@@ -463,9 +405,7 @@ fn ctrl_char_does_not_type_into_palette() {
     app.update(Action::OpenPalette);
     app.handle_key(ctrl('x')); // unbound ctrl combo
     // palette input must still be empty: filter list unchanged
-    let crate::components::modal::Modal::Palette(p) = app.modals.top().unwrap() else {
-        panic!()
-    };
+    let crate::components::modal::Modal::Palette(p) = app.modals.top().unwrap() else { panic!() };
     assert_eq!(p.input(), "");
 }
 
@@ -490,7 +430,10 @@ fn colon_opens_the_palette_from_a_list_and_from_an_open_field() {
     app.editor.open_url_from_app();
     let before = app.editor.url.text().to_string();
     app.handle_key(plain(':'));
-    assert!(matches!(app.modals.top(), Some(Modal::Palette(_))), "an open field's Normal mode has `:` too");
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Palette(_))),
+        "an open field's Normal mode has `:` too"
+    );
     assert_eq!(app.editor.url.text(), before, "nothing typed");
 }
 
@@ -566,14 +509,10 @@ fn colon_opens_the_palette_from_every_manage_surface() {
         app.update(Action::Close);
     };
 
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Spaces),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
     opens(&mut app, "the Spaces list");
 
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Variables),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Variables) });
     app.sync_varmanager();
     opens(&mut app, "the Variables list");
 
@@ -581,9 +520,7 @@ fn colon_opens_the_palette_from_every_manage_surface() {
     app.varmanager.focus = VmFocus::Grid;
     opens(&mut app, "the options grid");
 
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Settings),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
     opens(&mut app, "the Settings tab");
 }
 
@@ -595,13 +532,9 @@ fn colon_opens_the_palette_from_every_manage_surface() {
 #[test]
 fn undo_leaves_focus_alone_when_the_stored_caret_is_in_an_unchanged_field() {
     let mut app = App::new_for_test();
-    app.editor.headers.insert(
-        "accept".into(),
-        postui_core::model::Entry {
-            value: "*/*".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .headers
+        .insert("accept".into(), postui_core::model::Entry { value: "*/*".into(), enabled: true });
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
     app.capture_undo(); // seed: caret on the URL line
@@ -670,9 +603,7 @@ fn ctrl_d_pages_the_manage_list_through_the_router() {
     for n in ["auth", "billing", "cache"] {
         app.update(Action::CreateSpace(n.into()));
     }
-    app.update(Action::OpenManage {
-        tab: Some(crate::components::manage::ManageTab::Spaces),
-    });
+    app.update(Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Spaces) });
     app.manage.list.cursor = 0;
     app.handle_key(ctrl('d'));
     assert_ne!(app.manage.list.cursor, 0, "ctrl+d must move the cursor");
@@ -688,9 +619,7 @@ fn ctrl_d_pages_the_variable_manager_list_through_the_router() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::OpenManage {
-        tab: Some(crate::components::manage::ManageTab::Variables),
-    });
+    app.update(Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Variables) });
     app.sync_varmanager();
     app.varmanager.left_cursor = 0;
     app.handle_key(ctrl('d'));
@@ -706,10 +635,7 @@ fn tick_requests_no_redraw_when_idle() {
 #[test]
 fn tick_requests_redraw_while_toast_visible() {
     let mut app = App::new_for_test();
-    app.update(Action::ShowToast(
-        "hi".into(),
-        crate::components::toast::ToastKind::Info,
-    ));
+    app.update(Action::ShowToast("hi".into(), crate::components::toast::ToastKind::Info));
     assert!(app.update(Action::Tick));
 }
 
@@ -725,20 +651,13 @@ fn apply_ui_settings_wires_animations_into_anims() {
     let mut app = App::new_for_test();
     assert!(app.anims.enabled, "new_for_test defaults to animations on");
 
-    let settings = crate::config::UiSettings {
-        animations: false,
-        ..crate::config::UiSettings::default()
-    };
+    let settings =
+        crate::config::UiSettings { animations: false, ..crate::config::UiSettings::default() };
     app.apply_ui_settings(settings, "dark".into(), crate::theme::Theme::dark());
-    assert!(
-        !app.anims.enabled,
-        "animations = false in UiSettings must disable App.anims"
-    );
+    assert!(!app.anims.enabled, "animations = false in UiSettings must disable App.anims");
 
-    let settings = crate::config::UiSettings {
-        animations: true,
-        ..crate::config::UiSettings::default()
-    };
+    let settings =
+        crate::config::UiSettings { animations: true, ..crate::config::UiSettings::default() };
     app.apply_ui_settings(settings, "dark".into(), crate::theme::Theme::dark());
     assert!(app.anims.enabled, "animations = true re-enables App.anims");
 }
@@ -748,10 +667,7 @@ fn hover_change_starts_a_hover_fade_and_tick_redraws_while_animating() {
     let mut app = App::new_for_test();
     app.begin_hover_fade();
     assert!(app.animating(), "hover fade counts as a live animation");
-    assert!(
-        app.update(Action::Tick),
-        "ticks redraw while an animation is live"
-    );
+    assert!(app.update(Action::Tick), "ticks redraw while an animation is live");
 }
 
 #[test]
@@ -818,7 +734,11 @@ fn the_vim_wheel_drags_the_response_cursor_along() {
         app.update(Action::ScrollPane(PaneId::Response, 20));
         let v = app.session.response.view().unwrap();
         assert_eq!(v.scroll, 20, "{profile:?}");
-        assert_eq!(v.cursor, if follows { 20 } else { 0 }, "{profile:?}: the cursor on the window's top line");
+        assert_eq!(
+            v.cursor,
+            if follows { 20 } else { 0 },
+            "{profile:?}: the cursor on the window's top line"
+        );
     }
     let mut app = App::new_for_test();
     app.use_profile(KeyProfile::Vim);
@@ -897,13 +817,9 @@ fn render_once(app: &mut App) {
 fn deleting_a_table_row_by_key_is_immediate() {
     let mut app = App::new_for_test();
     app.editor.active_tab = EditorTab::Params;
-    app.editor.params.insert(
-        "page".into(),
-        postui_core::model::Entry {
-            value: "2".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Content;
     app.editor.table.selected = Some(0);
@@ -919,13 +835,9 @@ fn deleting_a_vars_row_by_key_is_immediate() {
     // request-scoped `[variables]` table.
     let mut app = App::new_for_test();
     app.editor.active_tab = EditorTab::Vars;
-    app.editor.variables.insert(
-        "token".into(),
-        postui_core::model::Entry {
-            value: "abc".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .variables
+        .insert("token".into(), postui_core::model::Entry { value: "abc".into(), enabled: true });
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Content;
     app.editor.table.selected = Some(0);
@@ -940,13 +852,9 @@ fn deleting_a_vars_row_by_key_is_immediate() {
 #[test]
 fn table_row_context_menu_duplicate_delete_extract_end_to_end() {
     let mut app = App::new_for_test();
-    app.editor.params.insert(
-        "page".into(),
-        postui_core::model::Entry {
-            value: "2".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
     app.focus = PaneId::Editor;
     app.editor.active_tab = EditorTab::Params;
     app.editor.sub_focus = SubFocus::Content;
@@ -983,10 +891,7 @@ fn table_row_context_menu_duplicate_delete_extract_end_to_end() {
         app.editor.params.get_index(1),
         Some((
             &"page-copy".to_string(),
-            &postui_core::model::Entry {
-                value: "2".into(),
-                enabled: true,
-            }
+            &postui_core::model::Entry { value: "2".into(), enabled: true }
         ))
     );
 
@@ -1020,20 +925,12 @@ fn table_row_context_menu_duplicate_delete_extract_end_to_end() {
 fn duplicate_table_row_resolves_collisions_like_duplicate_request() {
     let mut app = App::new_for_test();
     app.editor.active_tab = EditorTab::Params;
-    app.editor.params.insert(
-        "page".into(),
-        postui_core::model::Entry {
-            value: "2".into(),
-            enabled: true,
-        },
-    );
-    app.editor.params.insert(
-        "page-copy".into(),
-        postui_core::model::Entry {
-            value: "9".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
+    app.editor
+        .params
+        .insert("page-copy".into(), postui_core::model::Entry { value: "9".into(), enabled: true });
     app.update(Action::DuplicateTableRow(0));
     assert!(app.editor.params.contains_key("page-copy-2"));
     assert_eq!(app.editor.params["page-copy-2"].value, "2");
@@ -1052,11 +949,7 @@ fn editor_tab_cycle_order_is_headers_params_vars_body() {
     app.update(Action::EditorTabCycle(1));
     assert_eq!(app.editor.active_tab, EditorTab::Body);
     app.update(Action::EditorTabCycle(1));
-    assert_eq!(
-        app.editor.active_tab,
-        EditorTab::Headers,
-        "cycle wraps back to Headers"
-    );
+    assert_eq!(app.editor.active_tab, EditorTab::Headers, "cycle wraps back to Headers");
 }
 
 /// alt+←/→ is the one tab chord: `Action::CycleTabs` steps whichever
@@ -1139,32 +1032,16 @@ fn body_tab_is_unreachable_for_get_and_head() {
     let mut app = App::new_for_test();
     assert_eq!(app.editor.method, postui_core::model::Method::Get);
     app.update(Action::EditorTabSelect(3));
-    assert_eq!(
-        app.editor.active_tab,
-        EditorTab::Headers,
-        "select is a no-op"
-    );
+    assert_eq!(app.editor.active_tab, EditorTab::Headers, "select is a no-op");
     app.update(Action::EditorTabSelect(2)); // Vars, the tab before Body
     app.update(Action::EditorTabCycle(1));
-    assert_eq!(
-        app.editor.active_tab,
-        EditorTab::Headers,
-        "forward skips Body"
-    );
+    assert_eq!(app.editor.active_tab, EditorTab::Headers, "forward skips Body");
     app.update(Action::EditorTabCycle(-1));
-    assert_eq!(
-        app.editor.active_tab,
-        EditorTab::Vars,
-        "backward skips Body"
-    );
+    assert_eq!(app.editor.active_tab, EditorTab::Vars, "backward skips Body");
 
     app.update(Action::SetMethod(postui_core::model::Method::Head));
     app.update(Action::EditorTabSelect(3));
-    assert_eq!(
-        app.editor.active_tab,
-        EditorTab::Vars,
-        "HEAD: still a no-op"
-    );
+    assert_eq!(app.editor.active_tab, EditorTab::Vars, "HEAD: still a no-op");
 
     app.update(Action::SetMethod(postui_core::model::Method::Post));
     app.update(Action::EditorTabSelect(3));
@@ -1178,11 +1055,7 @@ fn switching_to_a_bodyless_method_hops_off_the_body_tab() {
     app.update(Action::EditorTabSelect(3));
     assert_eq!(app.editor.active_tab, EditorTab::Body);
     app.update(Action::SetMethod(postui_core::model::Method::Get));
-    assert_eq!(
-        app.editor.active_tab,
-        EditorTab::Headers,
-        "GET can't sit on a disabled tab"
-    );
+    assert_eq!(app.editor.active_tab, EditorTab::Headers, "GET can't sit on a disabled tab");
     // The body text itself survives the round trip.
     app.update(Action::SetMethod(postui_core::model::Method::Put));
     app.update(Action::EditorTabSelect(3));
@@ -1194,34 +1067,15 @@ fn shadowed_var_shows_masked_hint_when_project_var_is_secret() {
     use postui_core::model::Entry;
 
     let mut app = App::new_for_test();
-    std::fs::write(
-        app.proj().root().join("variables.toml"),
-        "[token]\nsecret = true\n",
-    )
-    .unwrap();
+    std::fs::write(app.proj().root().join("variables.toml"), "[token]\nsecret = true\n").unwrap();
     app.update(Action::ReloadProjectFiles);
-    app.proj_mut()
-        .set_secret_for("", "token", "s3cr3t".into())
-        .unwrap();
+    app.proj_mut().set_secret_for("", "token", "s3cr3t".into()).unwrap();
 
-    app.editor.variables.insert(
-        "token".into(),
-        Entry {
-            value: "override".into(),
-            enabled: true,
-        },
-    );
+    app.editor.variables.insert("token".into(), Entry { value: "override".into(), enabled: true });
     app.update(Action::Render);
 
-    let hint = app
-        .editor
-        .shadowed
-        .get("token")
-        .expect("token shadows the project secret");
-    assert!(
-        !hint.contains("s3cr3t"),
-        "the secret's real value must never appear: {hint}"
-    );
+    let hint = app.editor.shadowed.get("token").expect("token shadows the project secret");
+    assert!(!hint.contains("s3cr3t"), "the secret's real value must never appear: {hint}");
     assert!(
         hint.contains("\u{25cf}\u{25cf}\u{25cf}\u{25cf}"),
         "expected a masked secret hint, got: {hint}"
@@ -1232,13 +1086,9 @@ fn shadowed_var_shows_masked_hint_when_project_var_is_secret() {
 fn undo_restores_a_deleted_table_row() {
     let mut app = App::new_for_test();
     app.editor.active_tab = EditorTab::Params;
-    app.editor.params.insert(
-        "page".into(),
-        postui_core::model::Entry {
-            value: "2".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Content;
     app.editor.table.selected = Some(0);
@@ -1257,13 +1107,9 @@ fn undoing_a_table_row_delete_selects_the_restored_row() {
     let mut app = App::new_for_test();
     app.update(Action::CreateRequest("reselect".into()));
     for (k, v) in [("Accept", "application/json"), ("X-Debug", "1")] {
-        app.editor.headers.insert(
-            k.into(),
-            postui_core::model::Entry {
-                value: v.into(),
-                enabled: true,
-            },
-        );
+        app.editor
+            .headers
+            .insert(k.into(), postui_core::model::Entry { value: v.into(), enabled: true });
     }
     app.editor.active_tab = EditorTab::Headers;
     app.editor.preferred_tab = EditorTab::Headers;
@@ -1291,21 +1137,14 @@ fn undoing_a_table_row_delete_selects_the_restored_row() {
 fn deleting_a_table_row_toasts_with_the_undo_hint() {
     let mut app = App::new_for_test();
     app.editor.active_tab = EditorTab::Headers;
-    app.editor.headers.insert(
-        "Accept".into(),
-        postui_core::model::Entry {
-            value: "*/*".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .headers
+        .insert("Accept".into(), postui_core::model::Entry { value: "*/*".into(), enabled: true });
     app.toasts = Default::default();
     app.update(Action::DeleteTableRow(0));
     assert!(app.editor.headers.is_empty(), "the row was removed");
     let hint = app.undo_hint();
-    assert_eq!(
-        app.toasts.last_message(),
-        Some(format!("Deleted row \"Accept\"{hint}")).as_deref()
-    );
+    assert_eq!(app.toasts.last_message(), Some(format!("Deleted row \"Accept\"{hint}")).as_deref());
 }
 
 /// A row whose key was never filled in has no name to quote, so it is
@@ -1315,22 +1154,15 @@ fn deleting_an_unnamed_table_row_names_its_position() {
     let mut app = App::new_for_test();
     app.editor.active_tab = EditorTab::Headers;
     for key in ["Accept", "  "] {
-        app.editor.headers.insert(
-            key.into(),
-            postui_core::model::Entry {
-                value: "*/*".into(),
-                enabled: true,
-            },
-        );
+        app.editor
+            .headers
+            .insert(key.into(), postui_core::model::Entry { value: "*/*".into(), enabled: true });
     }
     app.toasts = Default::default();
     app.update(Action::DeleteTableRow(1));
     assert_eq!(app.editor.headers.len(), 1, "the blank row was removed");
     let hint = app.undo_hint();
-    assert_eq!(
-        app.toasts.last_message(),
-        Some(format!("Deleted row 2{hint}")).as_deref()
-    );
+    assert_eq!(app.toasts.last_message(), Some(format!("Deleted row 2{hint}")).as_deref());
 }
 
 /// An out-of-range index removes nothing, so it must not toast either.
@@ -1361,13 +1193,9 @@ fn ctrl_d_pages_the_table_editor_through_the_router() {
     let mut app = App::new_for_test();
     app.editor.active_tab = EditorTab::Params;
     for (k, v) in [("a", "1"), ("b", "2"), ("c", "3")] {
-        app.editor.params.insert(
-            k.into(),
-            postui_core::model::Entry {
-                value: v.into(),
-                enabled: true,
-            },
-        );
+        app.editor
+            .params
+            .insert(k.into(), postui_core::model::Entry { value: v.into(), enabled: true });
     }
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Content;
@@ -1380,19 +1208,13 @@ fn ctrl_d_pages_the_table_editor_through_the_router() {
 fn clicking_the_row_delete_affordance_deletes_the_row() {
     let mut app = App::new_for_test();
     app.editor.active_tab = EditorTab::Params;
-    app.editor.params.insert(
-        "page".into(),
-        postui_core::model::Entry {
-            value: "2".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
     app.editor.table.selected = Some(0);
     render_once(&mut app);
-    let del = app
-        .hits
-        .rect_of(&Hit::TableDelete(0))
-        .expect("delete affordance on the selected row");
+    let del =
+        app.hits.rect_of(&Hit::TableDelete(0)).expect("delete affordance on the selected row");
     assert!(app.handle_mouse(left_down(del.x, del.y)));
     assert!(app.modals.top().is_none(), "delete is undoable, no confirm");
     assert!(app.editor.params.is_empty(), "clicking 󰅖 deletes the row");
@@ -1416,10 +1238,7 @@ fn ctrl_v_pastes_clipboard_text_into_the_url_bar() {
     app.update(Action::FocusUrl);
     app.handle_key(ctrl('v'));
     assert_eq!(app.editor.url.text(), "https://example.com /x");
-    assert!(
-        app.modals.is_empty(),
-        "ctrl+v must not open the variable picker any more"
-    );
+    assert!(app.modals.is_empty(), "ctrl+v must not open the variable picker any more");
 }
 
 /// Modals capture all input, but paste digs through: ctrl+v while a
@@ -1452,11 +1271,7 @@ fn ctrl_z_in_an_open_cell_undoes_in_the_cell_not_the_history() {
     click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
     type_chars(&mut app, "999");
     app.capture_undo();
-    assert_eq!(
-        app.history.undo_len(),
-        steps,
-        "an open cell records nothing yet"
-    );
+    assert_eq!(app.history.undo_len(), steps, "an open cell records nothing yet");
     app.handle_key(ctrl('z'));
     let edit = app.editor.table.editing.as_ref().expect("the cell stays open");
     assert_eq!(edit.input.text(), "1", "the typing run came off inside the cell");
@@ -1476,10 +1291,7 @@ fn ctrl_z_with_the_caret_in_the_jq_bar_steps_the_bar_not_a_live_cell_behind_it()
     app.update(Action::OpenJqBar);
     assert_eq!(app.focus, PaneId::Response);
     assert!(app.session.response.jq_focused());
-    assert!(
-        app.editor.table.editing.is_some(),
-        "the cell edit survives the jump"
-    );
+    assert!(app.editor.table.editing.is_some(), "the cell edit survives the jump");
     type_chars(&mut app, ".foo");
     app.handle_key(ctrl('z'));
     assert_ne!(app.session.response.jq_text(), ".foo", "the bar stepped");
@@ -1496,20 +1308,14 @@ fn ctrl_z_with_the_caret_in_the_jq_bar_steps_the_bar_not_a_live_cell_behind_it()
 fn ctrl_z_in_a_palette_over_a_live_settings_edit_steps_the_palette() {
     use crate::components::settings::SettingsField;
     let mut app = App::new_for_test();
-    app.update(Action::OpenManage {
-        tab: Some(crate::components::manage::ManageTab::Settings),
-    });
+    app.update(Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Settings) });
     app.settings.begin_edit(SettingsField::Osc52Limit, "");
     type_chars(&mut app, "5");
     app.handle_key(ctrl('p'));
     assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
     type_chars(&mut app, "th");
     app.handle_key(ctrl('z'));
-    assert_eq!(
-        app.settings.field_text(),
-        "5",
-        "the Settings field under the modal is untouched"
-    );
+    assert_eq!(app.settings.field_text(), "5", "the Settings field under the modal is untouched");
     let filter = app.modals.focused_input().map(|i| i.text().to_string());
     assert_ne!(filter.as_deref(), Some("th"), "the palette filter stepped");
 }
@@ -1530,10 +1336,7 @@ fn ctrl_z_in_a_modal_prompt_undoes_the_prompts_typing() {
         panic!("the prompt stays open");
     };
     assert_eq!(input.text(), "");
-    app.handle_key(KeyEvent::new(
-        KeyCode::Char('z'),
-        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-    ));
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT));
     let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
         panic!("the prompt stays open");
     };
@@ -1573,10 +1376,7 @@ fn redo_reaches_a_modal_field_close_after_its_last_undo_empties_the_step_stack()
     // Redo through the SAME normal key path — ctrl+shift+z via
     // `App::handle_key`, not a direct `undo_field_step(true)` call — must
     // still reach the modal's redo stack.
-    app.handle_key(KeyEvent::new(
-        KeyCode::Char('z'),
-        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-    ));
+    app.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT));
     let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
         panic!("the prompt stays open");
     };
@@ -1603,11 +1403,7 @@ fn ctrl_z_in_an_untouched_open_cell_is_the_app_history() {
     assert!(steps > 0);
     click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
     app.handle_key(ctrl('z'));
-    assert_eq!(
-        app.history.undo_len(),
-        steps - 1,
-        "the app history stepped back"
-    );
+    assert_eq!(app.history.undo_len(), steps - 1, "the app history stepped back");
 }
 
 /// A field that has run out of undo must not quietly spend an app-history
@@ -1632,11 +1428,7 @@ fn an_exhausted_settings_field_undo_never_reaches_the_app_history() {
     app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
     type_chars(&mut app, "x");
     app.handle_key(ctrl('z'));
-    assert_eq!(
-        app.settings.field_text(),
-        "claude -p",
-        "the typing run came off inside the field"
-    );
+    assert_eq!(app.settings.field_text(), "claude -p", "the typing run came off inside the field");
     // The undo stack is empty now, but the redo stack is not, so the field
     // still counts as edited: the key must stop here, not fall through.
     app.handle_key(ctrl('z'));
@@ -1692,14 +1484,8 @@ fn ctrl_v_pastes_multiline_text_into_the_body_editor() {
 fn alt_v_opens_the_variable_picker() {
     let mut app = App::new_for_test();
     app.update(Action::FocusUrl);
-    app.handle_key(KeyEvent::new(
-        KeyCode::Char('v'),
-        KeyModifiers::ALT,
-    ));
-    assert!(
-        matches!(app.modals.top(), Some(Modal::VarPicker(_))),
-        "alt+v opens the picker"
-    );
+    app.handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT));
+    assert!(matches!(app.modals.top(), Some(Modal::VarPicker(_))), "alt+v opens the picker");
 }
 
 /// A terminal bracketed paste (cmd+V on macOS, ctrl+shift+V on Linux)
@@ -1759,10 +1545,7 @@ fn super_a_selects_all_and_super_z_undoes() {
     use crate::keys::KeyCombo;
     let folded =
         crate::keys::normalize_super_keys(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::SUPER));
-    assert_eq!(
-        keymap.lookup(&KeyCombo::from_event(&folded)),
-        Some(Action::Undo)
-    );
+    assert_eq!(keymap.lookup(&KeyCombo::from_event(&folded)), Some(Action::Undo));
 }
 
 /// The filter-query modals hold their query as a plain String rather than
@@ -1825,16 +1608,7 @@ fn paste_reaches_the_response_search_only_while_its_input_is_live() {
     app.handle_key(plain('/'));
     assert!(app.paste_text("a"));
     let text = |app: &App| {
-        app.session
-            .response
-            .view()
-            .unwrap()
-            .search
-            .as_ref()
-            .unwrap()
-            .input
-            .text()
-            .to_string()
+        app.session.response.view().unwrap().search.as_ref().unwrap().input.text().to_string()
     };
     assert_eq!(text(&app), "a");
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -1845,13 +1619,9 @@ fn paste_reaches_the_response_search_only_while_its_input_is_live() {
 /// Seeds the Params tab with `page = 1` and puts the editor in front.
 fn app_with_one_param() -> App {
     let mut app = App::new_for_test();
-    app.editor.params.insert(
-        "page".into(),
-        postui_core::model::Entry {
-            value: "1".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
     app.editor.active_tab = EditorTab::Params;
     app.focus = PaneId::Editor;
     app
@@ -1900,9 +1670,7 @@ fn add_row_chip_hides_only_while_a_new_row_is_being_added() {
     app.editor.sub_focus = SubFocus::Content;
     render_once(&mut app);
     assert!(
-        app.hits
-            .rect_of(&Hit::FooterChip(Action::TableAddRow))
-            .is_some(),
+        app.hits.rect_of(&Hit::FooterChip(Action::TableAddRow)).is_some(),
         "no edit live: the add chip shows"
     );
 
@@ -1910,9 +1678,7 @@ fn add_row_chip_hides_only_while_a_new_row_is_being_added() {
     assert!(app.editor.table.editing.is_some(), "a cell edit began");
     render_once(&mut app);
     assert!(
-        app.hits
-            .rect_of(&Hit::FooterChip(Action::TableAddRow))
-            .is_some(),
+        app.hits.rect_of(&Hit::FooterChip(Action::TableAddRow)).is_some(),
         "editing an existing row: the add chip stays"
     );
 
@@ -1921,9 +1687,7 @@ fn add_row_chip_hides_only_while_a_new_row_is_being_added() {
     assert_eq!(edit.row, app.editor.params.len(), "on the ghost row");
     render_once(&mut app);
     assert!(
-        app.hits
-            .rect_of(&Hit::FooterChip(Action::TableAddRow))
-            .is_none(),
+        app.hits.rect_of(&Hit::FooterChip(Action::TableAddRow)).is_none(),
         "already adding a row: the add chip hides"
     );
 }
@@ -1949,31 +1713,19 @@ fn selected_row_footer_chips_come_and_go_with_the_selection() {
     app.editor.sub_focus = SubFocus::Content;
     render_once(&mut app);
     assert!(
-        app.hits
-            .rect_of(&Hit::FooterChip(Action::ToggleTableRow(0)))
-            .is_none(),
+        app.hits.rect_of(&Hit::FooterChip(Action::ToggleTableRow(0))).is_none(),
         "nothing selected: no row chips"
     );
 
     app.editor.table.selected = Some(0);
     render_once(&mut app);
-    assert!(
-        app.hits
-            .rect_of(&Hit::FooterChip(Action::ToggleTableRow(0)))
-            .is_some()
-    );
-    assert!(
-        app.hits
-            .rect_of(&Hit::FooterChip(Action::DeleteTableRow(0)))
-            .is_some()
-    );
+    assert!(app.hits.rect_of(&Hit::FooterChip(Action::ToggleTableRow(0))).is_some());
+    assert!(app.hits.rect_of(&Hit::FooterChip(Action::DeleteTableRow(0))).is_some());
 
     click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
     render_once(&mut app);
     assert!(
-        app.hits
-            .rect_of(&Hit::FooterChip(Action::ToggleTableRow(0)))
-            .is_none(),
+        app.hits.rect_of(&Hit::FooterChip(Action::ToggleTableRow(0))).is_none(),
         "cell edit live: space/d type, so the chips hide"
     );
 }
@@ -1988,12 +1740,7 @@ fn alt_a_starts_a_new_row_on_the_active_table_tab() {
     app.handle_key(alt('a'));
     assert_eq!(app.focus, PaneId::Editor);
     assert_eq!(app.editor.sub_focus, SubFocus::Content);
-    let edit = app
-        .editor
-        .table
-        .editing
-        .as_ref()
-        .expect("a new-row edit began on the Headers tab");
+    let edit = app.editor.table.editing.as_ref().expect("a new-row edit began on the Headers tab");
     assert_eq!((edit.row, edit.col), (0, Col::Key));
     type_chars(&mut app, "X-Trace");
     app.handle_key(enter_key());
@@ -2019,31 +1766,19 @@ fn hover_resyncs_to_controls_revealed_under_a_stationary_pointer() {
     // from the row's right edge — see `draw_row_actions`).
     let x = row.right() - 7;
     app.handle_mouse(moved(x, row.y));
-    assert_ne!(
-        app.hovered,
-        Some(Hit::TableCopy(0)),
-        "frame N has no button registered yet"
-    );
+    assert_ne!(app.hovered, Some(Hit::TableCopy(0)), "frame N has no button registered yet");
     render_once(&mut app); // frame N+1 draws + registers the buttons
-    assert!(
-        app.resync_hover(),
-        "the resync notices the new control under the pointer"
-    );
+    assert!(app.resync_hover(), "the resync notices the new control under the pointer");
     assert_eq!(app.hovered, Some(Hit::TableCopy(0)));
-    assert!(
-        !app.resync_hover(),
-        "a second resync with nothing changed is quiet"
-    );
+    assert!(!app.resync_hover(), "a second resync with nothing changed is quiet");
 }
 
 /// Moves the pointer onto `row_hit`'s rect so hover-revealed affordances
 /// (the row's toggle/trash buttons) get registered, then clicks `hit`.
 fn hover_row_then_click(app: &mut App, row_hit: Hit, hit: Hit) {
     render_once(app);
-    let r = app
-        .hits
-        .rect_of(&row_hit)
-        .unwrap_or_else(|| panic!("no rect registered for {row_hit:?}"));
+    let r =
+        app.hits.rect_of(&row_hit).unwrap_or_else(|| panic!("no rect registered for {row_hit:?}"));
     app.handle_mouse(moved(r.x + 1, r.y));
     click_hit(app, hit);
 }
@@ -2051,10 +1786,7 @@ fn hover_row_then_click(app: &mut App, row_hit: Hit, hit: Hit) {
 /// Re-renders and clicks just inside `hit`'s rect.
 fn click_hit(app: &mut App, hit: Hit) {
     render_once(app);
-    let r = app
-        .hits
-        .rect_of(&hit)
-        .unwrap_or_else(|| panic!("no rect registered for {hit:?}"));
+    let r = app.hits.rect_of(&hit).unwrap_or_else(|| panic!("no rect registered for {hit:?}"));
     let x = if r.width > 1 { r.x + 1 } else { r.x };
     app.handle_mouse(left_down(x, r.y));
 }
@@ -2136,10 +1868,7 @@ fn field_open_agrees_with_the_open_text_field() {
             crate::components::modal::PromptField::text("fields", "Fields", ""),
         ],
         focus: 0,
-        kind: crate::components::modal::PromptKind::NewSelector {
-            shared: false,
-            on_toggle: false,
-        },
+        kind: crate::components::modal::PromptKind::NewSelector { shared: false, on_toggle: false },
     });
     agree(&mut app, true, "a form modal with its field focused");
     // The first Esc closes the field to selected (spec 2026-09-16, no
@@ -2147,16 +1876,10 @@ fn field_open_agrees_with_the_open_text_field() {
     // agrees with `open_text_field_mut` here too; the second Esc is what
     // actually leaves the field, landing on the button row.
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(
-        app.modals.button_focus().is_none(),
-        "the first Esc only closes the field to selected"
-    );
+    assert!(app.modals.button_focus().is_none(), "the first Esc only closes the field to selected");
     agree(&mut app, true, "a form modal field closed to selected");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(
-        app.modals.button_focus().is_some(),
-        "the second Esc lands on the button row"
-    );
+    assert!(app.modals.button_focus().is_some(), "the second Esc lands on the button row");
     agree(&mut app, false, "a form modal aimed at its button row");
 }
 
@@ -2177,10 +1900,7 @@ fn the_footer_field_flag_is_pane_local() {
         !app.field_open(),
         "the cell edit is live but the caret is on the response pane: no field is open there, and an Esc would not reach the cell"
     );
-    assert!(
-        !app.pane_field_open(PaneId::Response),
-        "the response pane has no field of its own"
-    );
+    assert!(!app.pane_field_open(PaneId::Response), "the response pane has no field of its own");
     assert!(app.pane_field_open(PaneId::Editor));
 
     let chips = crate::keyroute::spell::spelled(crate::components::footer::footer_chips(
@@ -2228,19 +1948,13 @@ fn click_cell_edits_in_place_and_click_away_commits() {
 fn two_fast_clicks_on_a_cell_leave_exactly_one_edit_session() {
     let mut app = app_with_one_param();
     render_once(&mut app);
-    let cell = app
-        .hits
-        .rect_of(&Hit::TableCell { row: 0, col: 1 })
-        .unwrap();
+    let cell = app.hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
     app.handle_mouse(left_down(cell.x + 1, cell.y));
     type_chars(&mut app, "2");
     // The second click of a double click lands on the same cell; it must
     // do nothing beyond what the first did.
     render_once(&mut app);
-    let cell = app
-        .hits
-        .rect_of(&Hit::TableCell { row: 0, col: 1 })
-        .unwrap();
+    let cell = app.hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
     app.handle_mouse(left_down(cell.x + 1, cell.y));
     let edit = app.editor.table.editing.as_ref().expect("still editing");
     assert_eq!(edit.input.text(), "12", "the typing survives");
@@ -2252,10 +1966,7 @@ fn two_fast_clicks_on_a_cell_leave_exactly_one_edit_session() {
     render_once(&mut app);
     let row = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
     assert_eq!(row.height, 1, "the edited row edits in place");
-    let key = app
-        .hits
-        .rect_of(&Hit::TableCell { row: 0, col: 0 })
-        .unwrap();
+    let key = app.hits.rect_of(&Hit::TableCell { row: 0, col: 0 }).unwrap();
     app.handle_mouse(left_down(key.right(), row.y));
     let edit = app
         .editor
@@ -2270,10 +1981,7 @@ fn two_fast_clicks_on_a_cell_leave_exactly_one_edit_session() {
 fn table_cell_click_places_the_caret_and_drag_sweeps_a_selection() {
     let mut app = app_with_one_param();
     render_once(&mut app);
-    let cell = app
-        .hits
-        .rect_of(&Hit::TableCell { row: 0, col: 0 })
-        .unwrap();
+    let cell = app.hits.rect_of(&Hit::TableCell { row: 0, col: 0 }).unwrap();
     // Click at the cell's left edge: the edit opens with the caret at the
     // clicked column, not at the end.
     app.handle_mouse(left_down(cell.x, cell.y));
@@ -2297,16 +2005,10 @@ fn table_cell_click_places_the_caret_and_drag_sweeps_a_selection() {
 fn table_cell_double_click_selects_the_word() {
     let mut app = app_with_one_param();
     render_once(&mut app);
-    let cell = app
-        .hits
-        .rect_of(&Hit::TableCell { row: 0, col: 0 })
-        .unwrap();
+    let cell = app.hits.rect_of(&Hit::TableCell { row: 0, col: 0 }).unwrap();
     app.handle_mouse(left_down(cell.x + 1, cell.y));
     render_once(&mut app);
-    let cell = app
-        .hits
-        .rect_of(&Hit::TableCell { row: 0, col: 0 })
-        .unwrap();
+    let cell = app.hits.rect_of(&Hit::TableCell { row: 0, col: 0 }).unwrap();
     app.handle_mouse(left_down(cell.x + 1, cell.y)); // within 400ms => clicks == 2
     let edit = app.editor.table.editing.as_ref().expect("editing");
     assert_eq!(
@@ -2363,13 +2065,9 @@ fn checkbox_and_delete_clicks_during_an_edit_commit_it_first() {
     let mut app = App::new_for_test();
     app.editor.active_tab = EditorTab::Params;
     for (k, v) in [("a", "1"), ("b", "2")] {
-        app.editor.params.insert(
-            k.into(),
-            postui_core::model::Entry {
-                value: v.into(),
-                enabled: true,
-            },
-        );
+        app.editor
+            .params
+            .insert(k.into(), postui_core::model::Entry { value: v.into(), enabled: true });
     }
     app.focus = PaneId::Editor;
     click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
@@ -2388,10 +2086,7 @@ fn checkbox_and_delete_clicks_during_an_edit_commit_it_first() {
         "ax",
         "the rename committed before the delete applied"
     );
-    assert!(
-        app.editor.params.get_index(1).is_none(),
-        "the clicked row is gone"
-    );
+    assert!(app.editor.params.get_index(1).is_none(), "the clicked row is gone");
 }
 
 /// Params `a=1, b=2, c=3`, editor focused.
@@ -2399,13 +2094,9 @@ fn app_with_three_params() -> App {
     let mut app = App::new_for_test();
     app.editor.active_tab = EditorTab::Params;
     for (k, v) in [("a", "1"), ("b", "2"), ("c", "3")] {
-        app.editor.params.insert(
-            k.into(),
-            postui_core::model::Entry {
-                value: v.into(),
-                enabled: true,
-            },
-        );
+        app.editor
+            .params
+            .insert(k.into(), postui_core::model::Entry { value: v.into(), enabled: true });
     }
     app.focus = PaneId::Editor;
     app
@@ -2442,14 +2133,8 @@ fn a_collapsing_commit_reresolves_the_row_a_delete_click_named() {
     // edited row itself shows no buttons while its cell edit is live, so a
     // stale click on it can no longer happen at all.)
     hover_row_then_click(&mut app, Hit::TableRow(1), Hit::TableDelete(1));
-    assert!(
-        !app.editor.params.contains_key("b"),
-        "the clicked row is the one deleted"
-    );
-    assert!(
-        app.editor.params.contains_key("c"),
-        "and never the row that shifted into its index"
-    );
+    assert!(!app.editor.params.contains_key("b"), "the clicked row is the one deleted");
+    assert!(app.editor.params.contains_key("c"), "and never the row that shifted into its index");
 }
 
 #[test]
@@ -2495,10 +2180,7 @@ fn clicking_the_toolbar_save_chip_commits_the_cell_under_edit_and_saves() {
         "the in-progress cell rides along with a mouse-only save: {:?}",
         saved.params
     );
-    assert!(
-        !app.editor.is_dirty(),
-        "a successful save clears the dirty flag"
-    );
+    assert!(!app.editor.is_dirty(), "a successful save clears the dirty flag");
 }
 
 #[test]
@@ -2556,19 +2238,13 @@ fn switching_editor_tabs_retargets_the_underline_slide() {
     let left_key = AnimKey::TabUnderline(StripId::EditorTabs);
     let right_key = AnimKey::TabUnderlineWidth(StripId::EditorTabs);
     let before = Instant::now();
-    assert!(
-        app.anims.value(left_key, before).is_none(),
-        "untouched before any switch"
-    );
+    assert!(app.anims.value(left_key, before).is_none(), "untouched before any switch");
 
     app.update(Action::EditorTabSelect(EditorTab::Params.index()));
     assert_eq!(app.editor.active_tab, EditorTab::Params);
 
     let now = Instant::now();
-    assert!(
-        app.anims.active(now),
-        "the underline is easing right after the switch"
-    );
+    assert!(app.anims.active(now), "the underline is easing right after the switch");
 
     let spans = app.editor.tab_strip_spans();
     let (x, w) = spans[EditorTab::Params.draw_position()];
@@ -2622,11 +2298,7 @@ fn the_manage_underline_lands_under_the_label_it_targets() {
     let right = app.anims.value(right_key, done_at).unwrap();
     // The underline is relative to the strip's origin; the hit rect is
     // absolute.
-    assert_eq!(
-        strip_x + left as u16,
-        rect.x,
-        "underline settles under the painted Settings label"
-    );
+    assert_eq!(strip_x + left as u16, rect.x, "underline settles under the painted Settings label");
     assert_eq!((right - left) as u16, rect.width);
 }
 
@@ -2645,10 +2317,7 @@ fn switching_manage_tabs_retargets_the_underline_slide() {
 
     app.update(Action::SelectManageTab(ManageTab::Spaces));
     let now = Instant::now();
-    assert!(
-        app.anims.active(now),
-        "the underline is easing after the switch"
-    );
+    assert!(app.anims.active(now), "the underline is easing after the switch");
     let spans = ManageTab::strip_spans(app.manage_strip_width);
     let (x, w) = spans[ManageTab::Spaces.index()];
     let done_at = now + app.ui_settings.anim_ms.tab_slide + Duration::from_millis(5);
@@ -2663,9 +2332,7 @@ fn switching_manage_tabs_retargets_the_underline_slide() {
 
     // Closing and reopening forgets the glide so the reopened bar snaps.
     app.update(Action::CloseScreen);
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Variables),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Variables) });
     assert!(app.anims.value(left_key, Instant::now()).is_none());
 }
 
@@ -2684,11 +2351,7 @@ fn no_project_opens_on_settings_but_alt_v_still_closes() {
 
     // The close half must not re-open on Settings.
     app.update(Action::OpenManage { tab: None });
-    assert_ne!(
-        app.screen,
-        Screen::Manage,
-        "alt+r closes the screen it opened"
-    );
+    assert_ne!(app.screen, Screen::Manage, "alt+r closes the screen it opened");
 
     // The scenario above alone doesn't pin the opening-path-only guard:
     // once `manage.tab` is already `Settings`, the pre-existing
@@ -2699,18 +2362,12 @@ fn no_project_opens_on_settings_but_alt_v_still_closes() {
     // (Environments), is what actually exercises that clause: dropping
     // it would make `OpenManage{tab:None}` re-target to Settings and
     // stay open, instead of closing.
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Environments),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
     assert_eq!(app.screen, Screen::Manage);
     assert_eq!(app.manage.tab, ManageTab::Environments);
 
     app.update(Action::OpenManage { tab: None });
-    assert_ne!(
-        app.screen,
-        Screen::Manage,
-        "alt+r closes; it does not re-target the tab"
-    );
+    assert_ne!(app.screen, Screen::Manage, "alt+r closes; it does not re-target the tab");
 }
 
 /// An explicit request is honoured as asked, message and all.
@@ -2719,9 +2376,7 @@ fn no_project_honours_an_explicit_tab_request() {
     use crate::components::manage::ManageTab;
     let mut app = App::new_for_test();
     app.project = None;
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Environments),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
     assert_eq!(app.manage.tab, ManageTab::Environments);
 }
 
@@ -2733,11 +2388,7 @@ fn up_from_a_cell_under_edit_commits_and_never_desyncs_the_focus() {
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     assert!(app.editor.table.editing.is_none(), "the edit committed");
     assert_eq!(app.editor.params["page"].value, "12");
-    assert_eq!(
-        app.editor.sub_focus,
-        SubFocus::Content,
-        "the first Up stays in the table"
-    );
+    assert_eq!(app.editor.sub_focus, SubFocus::Content, "the first Up stays in the table");
     // Only then does Up climb out — with no edit left open behind it.
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     assert_eq!(app.editor.sub_focus, SubFocus::Url);
@@ -2747,22 +2398,15 @@ fn up_from_a_cell_under_edit_commits_and_never_desyncs_the_focus() {
 #[test]
 fn clicking_elsewhere_in_the_app_clears_the_table_selection() {
     let mut app = App::new_for_test();
-    app.editor.params.insert(
-        "page".into(),
-        postui_core::model::Entry {
-            value: "2".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
     app.editor.table.selected = Some(0);
     render_once(&mut app);
     // Click into the sidebar pane background.
     let sidebar = app.hits.rect_of(&Hit::Pane(PaneId::Sidebar)).unwrap();
     app.handle_mouse(left_down(sidebar.x + 1, sidebar.y + sidebar.height - 2));
-    assert_eq!(
-        app.editor.table.selected, None,
-        "clicking another pane clears the selection"
-    );
+    assert_eq!(app.editor.table.selected, None, "clicking another pane clears the selection");
 
     // Same for the URL bar.
     app.editor.table.selected = Some(0);
@@ -2800,11 +2444,7 @@ fn clicking_the_url_bar_focuses_the_url_line_and_places_the_caret() {
     let text_area = app.editor.last_url_text_area.unwrap();
     assert!(app.handle_mouse(left_down(text_area.x - 1, text_area.y)));
     assert_eq!(app.editor.sub_focus, SubFocus::Url);
-    assert_eq!(
-        app.editor.url.cursor(),
-        0,
-        "clicks left of the text go to char 0"
-    );
+    assert_eq!(app.editor.url.cursor(), 0, "clicks left of the text go to char 0");
 }
 
 /// Button-held motion, the event kind real terminals send for a drag
@@ -2847,14 +2487,9 @@ fn dragging_the_sidebar_thumb_scrolls_and_release_ends_the_drag() {
     app.sidebar.refresh(slugs, "main", &Default::default(), &[]);
     render_once(&mut app);
 
-    let thumb = app
-        .hits
-        .rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar))
-        .expect("sidebar thumb");
+    let thumb = app.hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar)).expect("sidebar thumb");
     let track = app.hits.track_of(PaneId::Sidebar).expect("sidebar track");
-    let spec = app
-        .scrollbar_spec(PaneId::Sidebar)
-        .expect("sidebar scrollbar spec");
+    let spec = app.scrollbar_spec(PaneId::Sidebar).expect("sidebar scrollbar spec");
     assert_eq!(app.sidebar.scroll, 0);
 
     assert!(app.handle_mouse(left_down(thumb.x, thumb.y)));
@@ -2868,18 +2503,12 @@ fn dragging_the_sidebar_thumb_scrolls_and_release_ends_the_drag() {
         "drag maps the thumb's new top back to a content offset"
     );
     assert!(after > 0);
-    assert!(
-        !app.sidebar.ensure_visible,
-        "a free-scroll drag must not snap back to the selection"
-    );
+    assert!(!app.sidebar.ensure_visible, "a free-scroll drag must not snap back to the selection");
 
     app.handle_mouse(left_up(thumb.x, thumb.y + 3));
     assert!(app.drag.is_none());
     app.handle_mouse(moved(thumb.x, thumb.y + 6));
-    assert_eq!(
-        app.sidebar.scroll, after,
-        "motion after release no longer scrolls"
-    );
+    assert_eq!(app.sidebar.scroll, after, "motion after release no longer scrolls");
 }
 
 #[test]
@@ -2900,14 +2529,9 @@ fn dragging_the_sidebar_thumb_with_drag_events_scrolls_the_same_as_moved() {
     app.sidebar.refresh(slugs, "main", &Default::default(), &[]);
     render_once(&mut app);
 
-    let thumb = app
-        .hits
-        .rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar))
-        .expect("sidebar thumb");
+    let thumb = app.hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar)).expect("sidebar thumb");
     let track = app.hits.track_of(PaneId::Sidebar).expect("sidebar track");
-    let spec = app
-        .scrollbar_spec(PaneId::Sidebar)
-        .expect("sidebar scrollbar spec");
+    let spec = app.scrollbar_spec(PaneId::Sidebar).expect("sidebar scrollbar spec");
     assert_eq!(app.sidebar.scroll, 0);
 
     assert!(app.handle_mouse(left_down(thumb.x, thumb.y)));
@@ -2921,28 +2545,19 @@ fn dragging_the_sidebar_thumb_with_drag_events_scrolls_the_same_as_moved() {
         "Drag(Left) motion maps the thumb's new top back to a content offset"
     );
     assert!(after > 0);
-    assert!(
-        !app.sidebar.ensure_visible,
-        "a free-scroll drag must not snap back to the selection"
-    );
+    assert!(!app.sidebar.ensure_visible, "a free-scroll drag must not snap back to the selection");
 
     app.handle_mouse(left_up(thumb.x, thumb.y + 3));
     assert!(app.drag.is_none());
     app.handle_mouse(dragged(thumb.x, thumb.y + 6));
-    assert_eq!(
-        app.sidebar.scroll, after,
-        "motion after release no longer scrolls"
-    );
+    assert_eq!(app.sidebar.scroll, after, "motion after release no longer scrolls");
 }
 
 #[test]
 fn scrollbar_track_click_below_the_thumb_pages_the_response() {
     use crate::hit::Hit;
     let mut app = App::new_for_test();
-    let body = (0..200)
-        .map(|i| format!("line {i}"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let body = (0..200).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
     app.session.response.set_state(
         ResponseState::Ready(Box::new(crate::http::ResponseData {
             status: 200,
@@ -2960,9 +2575,7 @@ fn scrollbar_track_click_below_the_thumb_pages_the_response() {
     render_once(&mut app);
 
     let track = app.hits.track_of(PaneId::Response).expect("response track");
-    let spec = app
-        .scrollbar_spec(PaneId::Response)
-        .expect("response scrollbar spec");
+    let spec = app.scrollbar_spec(PaneId::Response).expect("response scrollbar spec");
     assert_eq!(app.session.response.view().unwrap().scroll, 0);
 
     let below = track.y + track.height - 1;
@@ -2983,10 +2596,7 @@ fn scrollbar_track_click_below_the_thumb_pages_the_response() {
 fn click_on_pane_hit_focuses_that_pane() {
     let mut app = App::new_for_test();
     render_once(&mut app);
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::Pane(PaneId::Response))
-        .unwrap();
+    let r = app.hits.rect_of(&crate::hit::Hit::Pane(PaneId::Response)).unwrap();
     app.handle_mouse(left_down(r.x + 2, r.y + 2));
     assert_eq!(app.focus, PaneId::Response);
 }
@@ -3017,10 +2627,9 @@ fn the_header_env_chip_still_switches_environments_on_the_manager_screen() {
         .expect("header env chip registered on the manager screen");
     app.handle_mouse(left_down(r.x + 1, r.y));
     match app.modals.top() {
-        Some(Modal::Dropdown(state)) => assert_eq!(
-            state.anchor, r,
-            "the dropdown anchors to the header env chip"
-        ),
+        Some(Modal::Dropdown(state)) => {
+            assert_eq!(state.anchor, r, "the dropdown anchors to the header env chip")
+        }
         _ => panic!("the header env chip opens the env dropdown from the manager screen too"),
     }
 
@@ -3043,10 +2652,7 @@ fn the_manager_left_list_lists_variables_then_selectors() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::OpenManage { tab: None });
     let content = rendered_text(&mut app);
-    assert!(
-        content.contains("VARIABLES") && content.contains("SELECTORS"),
-        "{content}"
-    );
+    assert!(content.contains("VARIABLES") && content.contains("SELECTORS"), "{content}");
     assert!(content.contains("base_url"), "{content}");
 
     use crate::components::varmanager::{VmDetail, VmRow};
@@ -3056,10 +2662,7 @@ fn the_manager_left_list_lists_variables_then_selectors() {
         .iter()
         .position(|r| r == &VmRow::Group("user".into()))
         .expect("the group has a row");
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::VmLeftRow(group_row))
-        .expect("left row registered");
+    let r = app.hits.rect_of(&crate::hit::Hit::VmLeftRow(group_row)).expect("left row registered");
     // 1-line pitch: the row's hit rect is exactly one row tall now, so the
     // click must land on its own `y`, not `y + 1` (the next row's).
     app.handle_mouse(left_down(r.x + 1, r.y));
@@ -3076,12 +2679,8 @@ fn right_clicking_a_left_row_opens_its_rename_duplicate_delete_menu() {
     rendered_text(&mut app);
 
     use crate::components::varmanager::VmRow;
-    let row = app
-        .varmanager
-        .left_rows
-        .iter()
-        .position(|r| r == &VmRow::Var("base_url".into()))
-        .unwrap();
+    let row =
+        app.varmanager.left_rows.iter().position(|r| r == &VmRow::Var("base_url".into())).unwrap();
     let r = app.hits.rect_of(&crate::hit::Hit::VmLeftRow(row)).unwrap();
     // 1-line pitch: click on the row's own `y`, not `y + 1`.
     app.handle_mouse(right_down(r.x + 1, r.y));
@@ -3091,12 +2690,7 @@ fn right_clicking_a_left_row_opens_its_rename_duplicate_delete_menu() {
     };
     let labels: Vec<String> = menu.items.iter().map(|i| i.label.clone()).collect();
     assert_eq!(labels, vec!["Rename\u{2026}", "Duplicate", "Delete"]);
-    assert_eq!(
-        menu.items[2].action,
-        Some(Action::DeleteVar {
-            name: "base_url".into()
-        })
-    );
+    assert_eq!(menu.items[2].action, Some(Action::DeleteVar { name: "base_url".into() }));
 }
 
 #[test]
@@ -3106,22 +2700,13 @@ fn duplicating_a_variable_copies_its_description_and_default() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::DuplicateVar {
-        name: "base_url".into(),
-    });
-    let copy = app
-        .proj()
-        .variables()
-        .vars
-        .get("base_url-copy")
-        .expect("copy declared");
+    app.update(Action::DuplicateVar { name: "base_url".into() });
+    let copy = app.proj().variables().vars.get("base_url-copy").expect("copy declared");
     assert_eq!(copy.default.as_deref(), Some("http://localhost:8080"));
     assert_eq!(copy.description.as_deref(), Some("API root"));
 
     // A second duplicate steps the suffix rather than colliding.
-    app.update(Action::DuplicateVar {
-        name: "base_url".into(),
-    });
+    app.update(Action::DuplicateVar { name: "base_url".into() });
     assert!(app.proj().variables().vars.contains_key("base_url-copy-2"));
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
 }
@@ -3136,14 +2721,10 @@ fn duplicating_a_group_is_offered_but_disabled() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Group("user".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Group("user".into()));
 
-    let menu = app
-        .varmanager
-        .context_menu(app.varmanager.left_cursor)
-        .expect("menu for a group row");
+    let menu =
+        app.varmanager.context_menu(app.varmanager.left_cursor).expect("menu for a group row");
     assert_eq!(menu[1].label, "Duplicate");
     assert_eq!(menu[1].action, None);
 }
@@ -3164,11 +2745,7 @@ fn header_vars_button_toggles_the_variable_manager() {
         .rect_of(&crate::hit::Hit::HeaderManage)
         .expect("vars button still present on the manager screen");
     app.handle_mouse(left_down(r.x, r.y));
-    assert_eq!(
-        app.screen,
-        crate::app::Screen::Main,
-        "second click toggles back"
-    );
+    assert_eq!(app.screen, crate::app::Screen::Main, "second click toggles back");
 }
 
 #[test]
@@ -3179,10 +2756,9 @@ fn click_header_env_opens_env_chooser() {
     assert!(app.modals.is_empty());
     app.handle_mouse(left_down(r.x, r.y));
     match app.modals.top() {
-        Some(Modal::Dropdown(state)) => assert_eq!(
-            state.anchor, r,
-            "the dropdown anchors to the header env chip"
-        ),
+        Some(Modal::Dropdown(state)) => {
+            assert_eq!(state.anchor, r, "the dropdown anchors to the header env chip")
+        }
         _ => panic!("clicking the env name should open the env dropdown"),
     }
 }
@@ -3207,10 +2783,7 @@ fn click_header_env_cycle_pill_cycles_the_environment() {
 fn click_footer_palette_chip_opens_palette() {
     let mut app = App::new_for_test();
     render_once(&mut app);
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::FooterChip(Action::OpenPalette))
-        .unwrap();
+    let r = app.hits.rect_of(&crate::hit::Hit::FooterChip(Action::OpenPalette)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
     assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
 }
@@ -3219,18 +2792,9 @@ fn click_footer_palette_chip_opens_palette() {
 fn hover_change_requests_redraw_and_same_hover_does_not() {
     let mut app = App::new_for_test();
     render_once(&mut app);
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::Pane(PaneId::Sidebar))
-        .unwrap();
-    assert!(
-        app.handle_mouse(moved(r.x + 1, r.y + 1)),
-        "first hover redraws"
-    );
-    assert!(
-        !app.handle_mouse(moved(r.x + 1, r.y + 2)),
-        "same hit: no redraw"
-    );
+    let r = app.hits.rect_of(&crate::hit::Hit::Pane(PaneId::Sidebar)).unwrap();
+    assert!(app.handle_mouse(moved(r.x + 1, r.y + 1)), "first hover redraws");
+    assert!(!app.handle_mouse(moved(r.x + 1, r.y + 2)), "same hit: no redraw");
 }
 
 #[test]
@@ -3241,10 +2805,7 @@ fn pointer_shape_update_emits_only_on_change() {
     // Nothing hovered yet: already `Default`, the shape it starts at.
     assert_eq!(app.pointer_shape_update(), None);
 
-    let chip = app
-        .hits
-        .rect_of(&crate::hit::Hit::FooterChip(Action::OpenPalette))
-        .unwrap();
+    let chip = app.hits.rect_of(&crate::hit::Hit::FooterChip(Action::OpenPalette)).unwrap();
     app.handle_mouse(moved(chip.x, chip.y));
     assert_eq!(
         app.pointer_shape_update(),
@@ -3254,10 +2815,7 @@ fn pointer_shape_update_emits_only_on_change() {
     // Still hovering the same button: no repeat emission.
     assert_eq!(app.pointer_shape_update(), None);
 
-    let sidebar = app
-        .hits
-        .rect_of(&crate::hit::Hit::Pane(PaneId::Sidebar))
-        .unwrap();
+    let sidebar = app.hits.rect_of(&crate::hit::Hit::Pane(PaneId::Sidebar)).unwrap();
     app.handle_mouse(moved(sidebar.x, sidebar.y));
     assert_eq!(
         app.pointer_shape_update(),
@@ -3270,10 +2828,7 @@ fn pointer_shape_update_emits_only_on_change() {
 fn wheel_over_pane_routes_via_pane_at_to_scroll_pane() {
     let mut app = App::new_for_test();
     render_once(&mut app);
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::Pane(PaneId::Sidebar))
-        .unwrap();
+    let r = app.hits.rect_of(&crate::hit::Hit::Pane(PaneId::Sidebar)).unwrap();
     let before = app.focus;
     assert!(app.handle_mouse(scroll_down(r.x + 1, r.y + 1)));
     assert_eq!(app.focus, before, "wheel must not steal focus");
@@ -3300,10 +2855,7 @@ fn horizontal_wheel_over_the_response_pane_scrolls_it_sideways() {
         0,
     );
     render_once(&mut app);
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::Pane(PaneId::Response))
-        .unwrap();
+    let r = app.hits.rect_of(&crate::hit::Hit::Pane(PaneId::Response)).unwrap();
     assert!(app.handle_mouse(scroll_right(r.x + 1, r.y + 1)));
     assert!(
         app.session.response.view().unwrap().h_scroll > 0,
@@ -3348,16 +2900,10 @@ fn quitting_with_unsaved_changes_can_save_first() {
 fn discard_changes_reverts_immediately_with_an_undo_hint() {
     let mut app = dirty_app(); // url edited from "https://x/r"
     app.update(Action::DiscardChanges);
-    assert!(
-        app.modals.is_empty(),
-        "discard is undoable, so no confirm gate"
-    );
+    assert!(app.modals.is_empty(), "discard is undoable, so no confirm gate");
     assert!(!app.editor.is_dirty(), "reverted to the saved snapshot");
     assert_eq!(app.editor.url.text(), "https://x/r");
-    assert!(
-        rendered_text(&mut app).contains("^Z undoes"),
-        "the toast advertises the escape hatch"
-    );
+    assert!(rendered_text(&mut app).contains("^Z undoes"), "the toast advertises the escape hatch");
 }
 
 /// Sweep backlog item 1: in vim the hint names `u` (the footer's key), and
@@ -3374,7 +2920,11 @@ fn vims_discard_hint_names_u_and_u_undoes_the_discard() {
     let edited = app.editor.body_text();
     feed(&mut app, ":e!<CR>");
     assert_ne!(app.editor.body_text(), edited, "discarded");
-    assert!(app.toasts.messages().contains(&"Changes discarded — u undoes"), "{:?}", app.toasts.messages());
+    assert!(
+        app.toasts.messages().contains(&"Changes discarded — u undoes"),
+        "{:?}",
+        app.toasts.messages()
+    );
     feed(&mut app, "u");
     assert_eq!(app.editor.body_text(), edited, "the hint's key undoes the discard");
 }
@@ -3387,10 +2937,7 @@ fn applying_a_jq_filter_never_dirties_the_request_or_gates_quit() {
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.update(Action::JqApply(".meta".into()));
     assert_eq!(app.editor.jq, ".meta", "the filter landed on the editor");
-    assert!(
-        !app.editor.is_dirty(),
-        "a jq filter change is a view setting, not an edit"
-    );
+    assert!(!app.editor.is_dirty(), "a jq filter change is a view setting, not an edit");
     assert!(!app.sidebar.open_dirty, "the sidebar row shows no dirty dot");
     app.update(Action::Quit);
     assert!(app.modals.is_empty(), "no unsaved-changes gate");
@@ -3403,10 +2950,7 @@ fn discard_on_a_clean_editor_is_a_no_op() {
     app.update(Action::DiscardChanges);
     app.toasts = Default::default();
     app.update(Action::DiscardChanges);
-    assert!(
-        app.toasts.is_empty(),
-        "a clean editor has nothing to discard, so no toast"
-    );
+    assert!(app.toasts.is_empty(), "a clean editor has nothing to discard, so no toast");
 }
 
 #[test]
@@ -3422,11 +2966,7 @@ fn discard_is_itself_undoable() {
     app.capture_undo(); // …and so does the discard
     assert_eq!(app.editor.url.text(), "https://x/r");
     app.update(Action::Undo);
-    assert_eq!(
-        app.editor.url.text(),
-        dirty_url,
-        "undo brings the discarded edit back"
-    );
+    assert_eq!(app.editor.url.text(), dirty_url, "undo brings the discarded edit back");
 }
 
 /// [`dirty_app`] with the shadow seeded on the opened request before the
@@ -3500,9 +3040,7 @@ fn switching_requests_with_the_url_line_open_records_the_edit_before_the_load() 
         }
         app.capture_undo();
         let dirty_url = app.editor.url.text().to_string();
-        app.update(Action::SaveRequestThen(Box::new(Action::ForceOpenRequest(
-            "main/s".into(),
-        ))));
+        app.update(Action::SaveRequestThen(Box::new(Action::ForceOpenRequest("main/s".into()))));
         app.capture_undo();
         assert_eq!(app.editor.slug.as_deref(), Some("main/s"));
         (app, dirty_url)
@@ -3531,13 +3069,9 @@ fn switching_requests_with_the_url_line_open_records_the_edit_before_the_load() 
 fn clicking_the_row_toggle_toggles_without_selecting() {
     let mut app = App::new_for_test();
     app.editor.active_tab = EditorTab::Params;
-    app.editor.params.insert(
-        "a".into(),
-        postui_core::model::Entry {
-            value: "1".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .params
+        .insert("a".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
     render_once(&mut app);
     // The buttons are hover-revealed: move the pointer onto the row first,
     // redraw so the frame registers them, then click.
@@ -3550,10 +3084,7 @@ fn clicking_the_row_toggle_toggles_without_selecting() {
         .expect("hovered row registers its toggle");
     app.handle_mouse(left_down(toggle.x + 1, toggle.y));
     assert!(!app.editor.params["a"].enabled, "the click toggled");
-    assert_eq!(
-        app.editor.table.selected, None,
-        "a toggle click is not a row selection"
-    );
+    assert_eq!(app.editor.table.selected, None, "a toggle click is not a row selection");
 }
 
 /// An app whose editor holds typed-but-never-saved content: no slug, no
@@ -3666,10 +3197,7 @@ fn clicking_a_multi_prompt_field_moves_focus_there() {
             crate::components::modal::PromptField::text("fields", "Fields", ""),
         ],
         focus: 0,
-        kind: crate::components::modal::PromptKind::NewSelector {
-            shared: false,
-            on_toggle: false,
-        },
+        kind: crate::components::modal::PromptKind::NewSelector { shared: false, on_toggle: false },
     });
     render_once(&mut app);
     let second = app
@@ -3836,21 +3364,14 @@ fn dragging_in_the_body_selects_and_ctrl_c_copies_it() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
-        Some(cmd),
-        65536,
-        false,
-    ));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
     app.editor.active_tab = EditorTab::Body;
     app.editor.set_body_text("hello\nworld");
     render_once(&mut app);
     let area = app.editor.last_body_area.expect("body area recorded");
     // 2 lines -> a 2-cell gutter; content column 0 is at area.x + 2.
     app.handle_mouse(left_down(area.x + 2, area.y));
-    assert!(
-        app.handle_mouse(dragged(area.x + 4, area.y)),
-        "the sweep routes to the body editor"
-    );
+    assert!(app.handle_mouse(dragged(area.x + 4, area.y)), "the sweep routes to the body editor");
     app.handle_mouse(left_up(area.x + 4, area.y));
     assert_eq!(app.editor.body_selected_text().as_deref(), Some("hel"));
     assert!(app.text_drag.is_none(), "release ends the sweep");
@@ -3875,10 +3396,7 @@ fn double_click_in_body_selects_the_word_and_drag_extends_by_words() {
     // extends the selection a whole word at a time.
     assert!(app.handle_mouse(dragged(area.x + 2 + 7, area.y)));
     app.handle_mouse(left_up(area.x + 2 + 7, area.y));
-    assert_eq!(
-        app.editor.body_selected_text().as_deref(),
-        Some("alpha beta")
-    );
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("alpha beta"));
 }
 
 #[test]
@@ -3886,25 +3404,13 @@ fn double_click_in_response_selects_the_word_and_drag_extends_by_words() {
     let mut app = App::new_for_test();
     ready_response(&mut app, "plain text body"); // not JSON -> Raw view
     render_once(&mut app);
-    let area = app
-        .session
-        .response
-        .view()
-        .unwrap()
-        .last_area
-        .expect("body area recorded");
+    let area = app.session.response.view().unwrap().last_area.expect("body area recorded");
     app.handle_mouse(left_down(area.x + 1, area.y));
     app.handle_mouse(left_down(area.x + 1, area.y)); // within 400ms => clicks == 2
-    assert_eq!(
-        app.session.response.selected_text().as_deref(),
-        Some("plain")
-    );
+    assert_eq!(app.session.response.selected_text().as_deref(), Some("plain"));
     assert!(app.handle_mouse(dragged(area.x + 7, area.y)));
     app.handle_mouse(left_up(area.x + 7, area.y));
-    assert_eq!(
-        app.session.response.selected_text().as_deref(),
-        Some("plain text")
-    );
+    assert_eq!(app.session.response.selected_text().as_deref(), Some("plain text"));
 }
 
 #[test]
@@ -4100,7 +3606,8 @@ fn a_switch_into_an_empty_space_opens_nothing_and_selects_nothing() {
 #[test]
 fn opening_a_request_puts_the_cursor_on_it_even_in_a_collapsed_folder() {
     let (mut app, dir) = spaced_app();
-    postui_core::fixtures::save_request(dir.path(), "main/deep/inner/x", &req("https://x/9")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/deep/inner/x", &req("https://x/9"))
+        .unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/deep/inner/x".into()));
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/deep/inner/x"));
@@ -4126,7 +3633,10 @@ fn switching_projects_lands_the_cursor_on_the_restored_request() {
     }
     postui_core::fixtures::save_local_state(
         other.path(),
-        &postui_core::project::LocalState { open_request: Some("main/gamma".into()), ..Default::default() },
+        &postui_core::project::LocalState {
+            open_request: Some("main/gamma".into()),
+            ..Default::default()
+        },
     )
     .unwrap();
     app.sidebar.selected = Some(0);
@@ -4266,10 +3776,7 @@ fn an_unfocused_sidebar_draws_no_cursor_fill_at_startup() {
         let backend = ratatui::backend::TestBackend::new(120, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
-        let row = app
-            .hits
-            .rect_of(&crate::hit::Hit::SidebarRow(0))
-            .expect("row 0 drawn");
+        let row = app.hits.rect_of(&crate::hit::Hit::SidebarRow(0)).expect("row 0 drawn");
         terminal.backend().buffer()[(row.x + row.width - 2, row.y)].bg
     };
     app.focus = PaneId::Editor;
@@ -4305,10 +3812,7 @@ fn entering_a_space_never_clears_the_cursor() {
     let (mut app, _dir) = spaced_app();
     let space = |name: &str| Landing { space: Some(name.to_string()), ..Landing::default() };
     assert!(app.land(space("auth")));
-    assert!(
-        app.sidebar.selected.is_some(),
-        "auth has a row (login); the cursor must be on it"
-    );
+    assert!(app.sidebar.selected.is_some(), "auth has a row (login); the cursor must be on it");
     assert!(app.land(space("main")));
     assert!(
         app.sidebar.selected.is_some(),
@@ -4322,7 +3826,9 @@ fn entering_a_space_never_clears_the_cursor() {
 fn a_reopened_buffer_that_sends_no_body_leaves_the_body_tab() {
     use crate::undo::Open;
     let (mut app, dir) = spaced_app();
-    let post = postui_core::model::HttpRequest::from_toml_str("method = \"POST\"\nurl = \"https://x/1\"").unwrap();
+    let post =
+        postui_core::model::HttpRequest::from_toml_str("method = \"POST\"\nurl = \"https://x/1\"")
+            .unwrap();
     postui_core::fixtures::save_request(dir.path(), "main/alpha", &post).unwrap();
     app.editor.preferred_tab = EditorTab::Body;
     let buffer = Box::new(req("https://x/2"));
@@ -4351,10 +3857,7 @@ fn force_open_request_selects_its_sidebar_row() {
     // rather than a sidebar click: the sidebar must follow, expanding
     // ancestors as needed, so selection and open request can't diverge.
     app.update(Action::ForceOpenRequest("main/auth/login".into()));
-    assert_eq!(
-        app.sidebar.selected_slug().as_deref(),
-        Some("main/auth/login")
-    );
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/auth/login"));
 }
 
 #[test]
@@ -4368,9 +3871,7 @@ fn opening_another_request_swaps_the_response_panel() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
     app.update(Action::ForceOpenRequest("main/a".into()));
-    app.session
-        .response
-        .set_state(ResponseState::Failed("a's result".into()), 0);
+    app.session.response.set_state(ResponseState::Failed("a's result".into()), 0);
 
     app.update(Action::ForceOpenRequest("main/b".into()));
     assert!(
@@ -4404,11 +3905,7 @@ fn opening_over_dirty_editor_prompts_save_discard_cancel() {
     // Requesting to open "b" while dirty must prompt instead of opening.
     app.update(Action::OpenRequest("main/b".into()));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
-    assert_eq!(
-        app.editor.slug.as_deref(),
-        Some("main/a"),
-        "still on the original request"
-    );
+    assert_eq!(app.editor.slug.as_deref(), Some("main/a"), "still on the original request");
 
     // 'd' discards the edit and opens "b".
     app.handle_key(plain('d'));
@@ -4427,10 +3924,7 @@ fn opening_over_dirty_editor_prompts_save_discard_cancel() {
     app.handle_key(plain('s'));
     assert_eq!(app.editor.slug.as_deref(), Some("main/b"));
     let saved = postui_core::fixtures::load_request(dir.path(), "main/a").unwrap();
-    assert_eq!(
-        saved.url, "https://x/a/",
-        "the edit was persisted before opening b"
-    );
+    assert_eq!(saved.url, "https://x/a/", "the edit was persisted before opening b");
 }
 
 fn sidebar_test_app() -> (App, tempfile::TempDir) {
@@ -4477,10 +3971,7 @@ fn sidebar_shows_only_the_active_space_rooted_at_depth_zero() {
         .collect();
     assert_eq!(slugs, ["main/alpha", "main/beta"]);
     assert!(
-        !app.sidebar
-            .rows
-            .iter()
-            .any(|r| matches!(r, Row::Folder { .. })),
+        !app.sidebar.rows.iter().any(|r| matches!(r, Row::Folder { .. })),
         "the space is never a row"
     );
 }
@@ -4545,17 +4036,10 @@ fn switching_spaces_goes_through_the_dirty_gate() {
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     dirty_the_editor(&mut app);
     app.update(Action::SwitchSpace("auth".into()));
-    assert!(
-        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
-        "gate opened"
-    );
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "gate opened");
     assert_eq!(app.proj().local().active_space, "main", "not switched yet");
     app.update(Action::Close);
-    assert_eq!(
-        app.proj().local().active_space,
-        "main",
-        "cancel keeps the space"
-    );
+    assert_eq!(app.proj().local().active_space, "main", "cancel keeps the space");
 }
 
 #[test]
@@ -4564,11 +4048,7 @@ fn jump_and_cycle_resolve_by_position_and_wrap() {
     app.update(Action::JumpSpace(2));
     assert_eq!(app.proj().local().active_space, "auth");
     app.update(Action::JumpSpace(9));
-    assert_eq!(
-        app.proj().local().active_space,
-        "auth",
-        "out of range is a no-op"
-    );
+    assert_eq!(app.proj().local().active_space, "auth", "out of range is a no-op");
     app.update(Action::CycleSpace(1));
     assert_eq!(app.proj().local().active_space, "main", "wraps");
     app.update(Action::CycleSpace(-1));
@@ -4605,22 +4085,13 @@ fn new_and_renamed_requests_land_inside_the_active_space() {
     let (mut app, dir) = spaced_app();
     app.update(Action::SwitchSpace("auth".into()));
     app.update(Action::CreateRequest("Tokens/Refresh".into()));
-    assert!(
-        dir.path()
-            .join("requests/auth/tokens/refresh.toml")
-            .is_file()
-    );
+    assert!(dir.path().join("requests/auth/tokens/refresh.toml").is_file());
     assert_eq!(app.editor.slug.as_deref(), Some("auth/tokens/refresh"));
     app.update(Action::PromptRenameRequest);
-    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
-        panic!("prompt")
-    };
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else { panic!("prompt") };
     assert_eq!(input.text(), "tokens/Refresh", "prefill hides the space");
     app.update(Action::Close);
-    app.update(Action::RenameRequest {
-        from: "auth/tokens/refresh".into(),
-        to: "Renewed".into(),
-    });
+    app.update(Action::RenameRequest { from: "auth/tokens/refresh".into(), to: "Renewed".into() });
     assert!(dir.path().join("requests/auth/renewed.toml").is_file());
 }
 
@@ -4632,12 +4103,8 @@ fn a_loose_top_level_file_warns_once_and_never_enters_the_tree() {
 
     app.toasts = Default::default();
     app.update(Action::RefreshSidebar);
-    let warned: Vec<_> = app
-        .toasts
-        .entries()
-        .into_iter()
-        .filter(|(m, _)| m.contains("loose.toml"))
-        .collect();
+    let warned: Vec<_> =
+        app.toasts.entries().into_iter().filter(|(m, _)| m.contains("loose.toml")).collect();
     assert_eq!(warned.len(), 1, "{:?}", app.toasts.messages());
     assert_eq!(
         warned[0].1,
@@ -4650,18 +4117,12 @@ fn a_loose_top_level_file_warns_once_and_never_enters_the_tree() {
     app.toasts = Default::default();
     app.update(Action::RefreshSidebar);
     assert!(
-        !app.toasts
-            .messages()
-            .iter()
-            .any(|m| m.contains("loose.toml")),
+        !app.toasts.messages().iter().any(|m| m.contains("loose.toml")),
         "{:?}",
         app.toasts.messages()
     );
 
-    assert_eq!(
-        app.sidebar.rows, rows_before,
-        "the loose file is skipped, never listed"
-    );
+    assert_eq!(app.sidebar.rows, rows_before, "the loose file is skipped, never listed");
 }
 
 #[test]
@@ -4673,17 +4134,11 @@ fn a_request_under_an_invalid_space_dir_warns_once_and_never_enters_the_tree() {
 
     app.toasts = Default::default();
     app.update(Action::RefreshSidebar);
-    let warned: Vec<_> = app
-        .toasts
-        .entries()
-        .into_iter()
-        .filter(|(m, _)| m.contains("Auth/login.toml"))
-        .collect();
+    let warned: Vec<_> =
+        app.toasts.entries().into_iter().filter(|(m, _)| m.contains("Auth/login.toml")).collect();
     assert_eq!(warned.len(), 1, "{:?}", app.toasts.messages());
     assert!(
-        warned[0]
-            .0
-            .contains("is not in a valid space (space names are a-z 0-9 - _)"),
+        warned[0].0.contains("is not in a valid space (space names are a-z 0-9 - _)"),
         "{}",
         warned[0].0
     );
@@ -4697,19 +4152,12 @@ fn a_request_under_an_invalid_space_dir_warns_once_and_never_enters_the_tree() {
     app.toasts = Default::default();
     app.update(Action::RefreshSidebar);
     assert!(
-        !app.toasts
-            .messages()
-            .iter()
-            .any(|m| m.contains("Auth/login.toml")),
+        !app.toasts.messages().iter().any(|m| m.contains("Auth/login.toml")),
         "{:?}",
         app.toasts.messages()
     );
 
-    assert!(
-        !app.proj().spaces().iter().any(|s| s == "Auth"),
-        "{:?}",
-        app.proj().spaces()
-    );
+    assert!(!app.proj().spaces().iter().any(|s| s == "Auth"), "{:?}", app.proj().spaces());
     assert_eq!(
         app.sidebar.rows, rows_before,
         "the request under a non-space directory is skipped, never listed"
@@ -4728,22 +4176,15 @@ fn an_invalid_listed_space_name_warns_once_and_survives_the_next_space_op() {
 
     app.toasts = Default::default();
     app.update(Action::RefreshSidebar);
-    let warned: Vec<_> = app
-        .toasts
-        .entries()
-        .into_iter()
-        .filter(|(m, _)| m.contains("Not Valid"))
-        .collect();
+    let warned: Vec<_> =
+        app.toasts.entries().into_iter().filter(|(m, _)| m.contains("Not Valid")).collect();
     assert_eq!(warned.len(), 1, "{:?}", app.toasts.messages());
     assert_eq!(warned[0].1, &crate::components::toast::ToastKind::Warning);
 
     app.toasts = Default::default();
     app.update(Action::RefreshSidebar);
     assert!(
-        !app.toasts
-            .messages()
-            .iter()
-            .any(|m| m.contains("Not Valid")),
+        !app.toasts.messages().iter().any(|m| m.contains("Not Valid")),
         "{:?}",
         app.toasts.messages()
     );
@@ -4763,31 +4204,21 @@ fn an_invalid_listed_environment_name_warns_once_and_survives_the_next_env_op() 
     let (mut app, dir) = app_with_envs();
     let toml = dir.path().join("project.toml");
     let text = std::fs::read_to_string(&toml).unwrap();
-    std::fs::write(
-        &toml,
-        format!("environments = [\"prod\", \"Not Valid\", \"qa\"]\n{text}"),
-    )
-    .unwrap();
+    std::fs::write(&toml, format!("environments = [\"prod\", \"Not Valid\", \"qa\"]\n{text}"))
+        .unwrap();
     app.reload_project_documents();
 
     app.toasts = Default::default();
     app.update(Action::RefreshSidebar);
-    let warned: Vec<_> = app
-        .toasts
-        .entries()
-        .into_iter()
-        .filter(|(m, _)| m.contains("Not Valid"))
-        .collect();
+    let warned: Vec<_> =
+        app.toasts.entries().into_iter().filter(|(m, _)| m.contains("Not Valid")).collect();
     assert_eq!(warned.len(), 1, "{:?}", app.toasts.messages());
     assert_eq!(warned[0].1, &crate::components::toast::ToastKind::Warning);
 
     app.toasts = Default::default();
     app.update(Action::RefreshSidebar);
     assert!(
-        !app.toasts
-            .messages()
-            .iter()
-            .any(|m| m.contains("Not Valid")),
+        !app.toasts.messages().iter().any(|m| m.contains("Not Valid")),
         "{:?}",
         app.toasts.messages()
     );
@@ -4796,9 +4227,7 @@ fn an_invalid_listed_environment_name_warns_once_and_survives_the_next_env_op() 
     // hand-written entry — it keeps its slot in `project.toml`.
     app.update(Action::CreateEnv("dev".into()));
     assert_eq!(
-        postui_core::fixtures::load_meta(dir.path())
-            .unwrap()
-            .environments,
+        postui_core::fixtures::load_meta(dir.path()).unwrap().environments,
         ["prod", "Not Valid", "qa", "dev"]
     );
     assert_eq!(app.proj().environments(), ["prod", "qa", "dev"]);
@@ -4845,7 +4274,11 @@ fn new_space_prompt_creates_without_switching() {
     assert!(app.modals.is_empty());
     assert!(dir.path().join("requests/billing").is_dir());
     assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
-    assert_eq!(app.proj().local().active_space, "main", "the prompt makes the space, it does not enter it");
+    assert_eq!(
+        app.proj().local().active_space,
+        "main",
+        "the prompt makes the space, it does not enter it"
+    );
     let toasts = app.toasts.messages().len();
     app.update(Action::CreateSpace("auth".into()));
     assert!(app.toasts.messages().len() > toasts, "duplicate toasts");
@@ -4872,9 +4305,7 @@ fn creating_a_space_with_a_free_form_name_slugs_the_folder_and_shows_the_name() 
     );
     // The chooser lists display names but switches by slug.
     app.update(Action::OpenSpaceChooser);
-    let Some(Modal::Dropdown(state)) = app.modals.top() else {
-        panic!("dropdown")
-    };
+    let Some(Modal::Dropdown(state)) = app.modals.top() else { panic!("dropdown") };
     let row = state
         .items
         .iter()
@@ -4892,7 +4323,11 @@ fn creating_a_space_does_not_switch_to_it() {
     assert!(dir.path().join("requests/billing").is_dir());
     assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
     assert_eq!(app.proj().local().active_space, "auth", "the new space is created, not entered");
-    assert_eq!(app.editor.slug.as_deref(), Some("auth/login"), "the request you were aiming at stays open");
+    assert_eq!(
+        app.editor.slug.as_deref(),
+        Some("auth/login"),
+        "the request you were aiming at stays open"
+    );
 }
 
 #[test]
@@ -4909,10 +4344,18 @@ fn creating_an_environment_puts_the_manage_cursor_on_the_new_row() {
     use crate::components::manage::ManageTab;
     let (mut app, _dir) = app_with_envs();
     app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
-    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("prod"), "the cursor starts on the first row");
+    assert_eq!(
+        app.manage_selected(ManageTab::Environments).as_deref(),
+        Some("prod"),
+        "the cursor starts on the first row"
+    );
     app.update(Action::CreateEnv("staging".into()));
     assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("staging"));
-    assert_eq!(app.proj().active_env(), Some("staging"), "creating an environment still activates it");
+    assert_eq!(
+        app.proj().active_env(),
+        Some("staging"),
+        "creating an environment still activates it"
+    );
 }
 
 #[test]
@@ -4926,15 +4369,26 @@ fn each_manage_list_tab_keeps_its_own_cursor() {
     app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
     app.manage.list.cursor = 1;
     app.update(Action::SelectManageTab(ManageTab::Spaces));
-    assert_eq!(app.manage.list.cursor, 2, "the Spaces tab arrives on its own cursor (the create left it on billing), not on the env cursor");
+    assert_eq!(
+        app.manage.list.cursor, 2,
+        "the Spaces tab arrives on its own cursor (the create left it on billing), not on the env cursor"
+    );
     assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("billing"));
     app.manage.list.cursor = 1;
     app.update(Action::SelectManageTab(ManageTab::Environments));
-    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"), "Environments kept the cursor it had");
+    assert_eq!(
+        app.manage_selected(ManageTab::Environments).as_deref(),
+        Some("qa"),
+        "Environments kept the cursor it had"
+    );
     app.update(Action::SelectManageTab(ManageTab::Variables));
     app.update(Action::SelectManageTab(ManageTab::Settings));
     app.update(Action::SelectManageTab(ManageTab::Spaces));
-    assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("auth"), "Spaces kept its own cursor");
+    assert_eq!(
+        app.manage_selected(ManageTab::Spaces).as_deref(),
+        Some("auth"),
+        "Spaces kept its own cursor"
+    );
     app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
     assert_eq!(app.manage.list.cursor, 1, "OpenManage keeps it too");
 }
@@ -4958,34 +4412,33 @@ fn deleting_an_environment_lands_the_manage_cursor_on_the_neighbour() {
     let (mut app, _dir) = manage_envs_app();
     app.manage_select_name("dev");
     app.update(Action::DeleteEnv("dev".into()));
-    assert_eq!(app.manage_selected(crate::components::manage::ManageTab::Environments).as_deref(), Some("qa"), "the last row went: the one above");
+    assert_eq!(
+        app.manage_selected(crate::components::manage::ManageTab::Environments).as_deref(),
+        Some("qa"),
+        "the last row went: the one above"
+    );
     app.manage_select_name("prod");
     app.update(Action::DeleteEnv("prod".into()));
-    assert_eq!(app.manage_selected(crate::components::manage::ManageTab::Environments).as_deref(), Some("qa"), "the row that slid up into index 0");
+    assert_eq!(
+        app.manage_selected(crate::components::manage::ManageTab::Environments).as_deref(),
+        Some("qa"),
+        "the row that slid up into index 0"
+    );
 }
 
 #[test]
 fn renaming_a_space_takes_a_display_name_and_reslugs() {
     let (mut app, dir) = spaced_app();
     app.update(Action::SwitchSpace("auth".into()));
-    app.update(Action::RenameSpace {
-        from: "auth".into(),
-        to: "Identity & SSO".into(),
-    });
+    app.update(Action::RenameSpace { from: "auth".into(), to: "Identity & SSO".into() });
     assert_eq!(app.proj().spaces(), ["main", "identity-sso"]);
     assert_eq!(app.proj().local().active_space, "identity-sso");
     assert_eq!(app.editor.slug.as_deref(), Some("identity-sso/login"));
-    assert!(
-        dir.path()
-            .join("requests/identity-sso/login.toml")
-            .is_file()
-    );
+    assert!(dir.path().join("requests/identity-sso/login.toml").is_file());
     assert_eq!(app.proj().space_name("identity-sso"), "Identity & SSO");
     // The rename prompt opens prefilled with the display name, not the slug.
     app.update(Action::PromptRenameSpace("identity-sso".into()));
-    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
-        panic!("prompt")
-    };
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else { panic!("prompt") };
     assert_eq!(input.text(), "Identity & SSO");
 }
 
@@ -5002,10 +4455,7 @@ fn creating_an_environment_with_a_free_form_name_slugs_the_file_and_undoes_with_
     app.update(Action::Undo);
     assert!(!dir.path().join("environments/staging-eu.toml").exists());
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(
-        meta.environment.get("staging-eu").is_none(),
-        "project.toml rides along with the step"
-    );
+    assert!(meta.environment.get("staging-eu").is_none(), "project.toml rides along with the step");
     app.update(Action::Redo);
     assert!(dir.path().join("environments/staging-eu.toml").is_file());
     assert_eq!(app.proj().env_name("staging-eu"), "Staging (EU)");
@@ -5015,34 +4465,24 @@ fn creating_an_environment_with_a_free_form_name_slugs_the_file_and_undoes_with_
 fn renaming_an_environment_takes_a_display_name_and_reslugs() {
     let (mut app, dir) = app_with_envs();
     app.update(Action::SwitchEnv(Some("qa".into())));
-    app.update(Action::RenameEnv {
-        from: "qa".into(),
-        to: "QA / Staging".into(),
-    });
+    app.update(Action::RenameEnv { from: "qa".into(), to: "QA / Staging".into() });
     assert!(dir.path().join("environments/qa-staging.toml").is_file());
     assert!(!dir.path().join("environments/qa.toml").exists());
     assert_eq!(app.proj().active_env(), Some("qa-staging"));
     assert_eq!(app.proj().env_name("qa-staging"), "QA / Staging");
     app.update(Action::PromptRenameEnv("qa-staging".into()));
-    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
-        panic!("prompt")
-    };
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else { panic!("prompt") };
     assert_eq!(input.text(), "QA / Staging");
     app.update(Action::Close);
 
     app.update(Action::OpenEnvChooser);
-    let Some(Modal::Dropdown(state)) = app.modals.top() else {
-        panic!("dropdown")
-    };
+    let Some(Modal::Dropdown(state)) = app.modals.top() else { panic!("dropdown") };
     let row = state
         .items
         .iter()
         .find(|it| it.label == "QA / Staging")
         .expect("display name in the chooser");
-    assert_eq!(
-        row.action,
-        Some(Action::SwitchEnv(Some("qa-staging".into())))
-    );
+    assert_eq!(row.action, Some(Action::SwitchEnv(Some("qa-staging".into()))));
     app.update(Action::Close);
 
     // Undo puts the file and its name back.
@@ -5059,16 +4499,11 @@ fn manage_lists_show_display_names_and_the_move_toast_uses_them() {
     let (mut app, _dir) = spaced_app();
     app.update(Action::CreateSpace("Auth v2".into()));
     app.update(Action::SwitchSpace("main".into()));
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Spaces),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
     let text = rendered_text_tall(&mut app);
     assert!(text.contains("3  Auth v2"), "{text}");
     app.update(Action::Close);
-    app.update(Action::MoveRequestToSpace {
-        slug: "main/alpha".into(),
-        space: "auth-v2".into(),
-    });
+    app.update(Action::MoveRequestToSpace { slug: "main/alpha".into(), space: "auth-v2".into() });
     assert!(
         app.toasts.messages().contains(&"Moved alpha to Auth v2"),
         "{:?}",
@@ -5081,10 +4516,7 @@ fn rename_space_cascades_editor_sidebar_and_state() {
     let (mut app, dir) = spaced_app();
     app.update(Action::SwitchSpace("auth".into()));
     assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
-    app.update(Action::RenameSpace {
-        from: "auth".into(),
-        to: "identity".into(),
-    });
+    app.update(Action::RenameSpace { from: "auth".into(), to: "identity".into() });
     assert_eq!(app.proj().spaces(), ["main", "identity"]);
     assert_eq!(app.proj().local().active_space, "identity");
     assert_eq!(app.editor.slug.as_deref(), Some("identity/login"));
@@ -5101,10 +4533,7 @@ fn undo_of_a_space_rename_takes_the_open_request_back_with_it() {
     // the editor, the sidebar and the session follow the rename back.
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
-    app.update(Action::RenameSpace {
-        from: "main".into(),
-        to: "Renamed".into(),
-    });
+    app.update(Action::RenameSpace { from: "main".into(), to: "Renamed".into() });
     assert_eq!(app.editor.slug.as_deref(), Some("renamed/alpha"));
 
     app.update(Action::Undo);
@@ -5135,24 +4564,13 @@ fn delete_space_says_the_count_then_trashes_and_undoes() {
     );
     assert!(!dir.path().join("requests/main").exists());
     assert_eq!(app.proj().spaces(), ["auth"]);
-    assert_eq!(
-        app.proj().local().active_space,
-        "auth",
-        "switched away before deleting"
-    );
+    assert_eq!(app.proj().local().active_space, "auth", "switched away before deleting");
     assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
-    assert_eq!(
-        postui_core::fixtures::load_meta(dir.path()).unwrap().spaces,
-        ["auth"]
-    );
+    assert_eq!(postui_core::fixtures::load_meta(dir.path()).unwrap().spaces, ["auth"]);
 
     app.update(Action::Undo);
     assert!(dir.path().join("requests/main/alpha.toml").is_file());
-    assert_eq!(
-        app.proj().spaces(),
-        ["main", "auth"],
-        "list entry restored at its old position"
-    );
+    assert_eq!(app.proj().spaces(), ["main", "auth"], "list entry restored at its old position");
 }
 
 #[test]
@@ -5184,37 +4602,19 @@ fn delete_space_refuses_the_last_space_and_says_nothing_of_requests_for_an_empty
 #[test]
 fn move_space_reorders_and_persists() {
     let (mut app, dir) = spaced_app();
-    app.update(Action::MoveSpace {
-        name: "auth".into(),
-        delta: -1,
-    });
+    app.update(Action::MoveSpace { name: "auth".into(), delta: -1 });
     assert_eq!(app.proj().spaces(), ["auth", "main"]);
-    assert_eq!(
-        postui_core::fixtures::load_meta(dir.path()).unwrap().spaces,
-        ["auth", "main"]
-    );
+    assert_eq!(postui_core::fixtures::load_meta(dir.path()).unwrap().spaces, ["auth", "main"]);
     app.update(Action::JumpSpace(1));
-    assert_eq!(
-        app.proj().local().active_space,
-        "auth",
-        "alt+1 follows the new order"
-    );
+    assert_eq!(app.proj().local().active_space, "auth", "alt+1 follows the new order");
 }
 
 #[test]
 fn move_env_reorders_and_persists() {
     let (mut app, dir) = app_with_envs();
-    app.update(Action::MoveEnv {
-        name: "qa".into(),
-        delta: -1,
-    });
+    app.update(Action::MoveEnv { name: "qa".into(), delta: -1 });
     assert_eq!(app.proj().environments(), ["qa", "prod"]);
-    assert_eq!(
-        postui_core::fixtures::load_meta(dir.path())
-            .unwrap()
-            .environments,
-        ["qa", "prod"]
-    );
+    assert_eq!(postui_core::fixtures::load_meta(dir.path()).unwrap().environments, ["qa", "prod"]);
 }
 
 #[test]
@@ -5224,17 +4624,10 @@ fn cycling_environments_follows_the_new_order() {
     app.update(Action::CreateEnv("dev".into()));
     assert_eq!(app.proj().environments(), ["prod", "qa", "dev"]);
     assert_eq!(app.env_label(), "dev");
-    app.update(Action::MoveEnv {
-        name: "dev".into(),
-        delta: -1,
-    });
+    app.update(Action::MoveEnv { name: "dev".into(), delta: -1 });
     assert_eq!(app.proj().environments(), ["prod", "dev", "qa"]);
     app.update(Action::CycleEnv(1));
-    assert_eq!(
-        app.env_label(),
-        "qa",
-        "alt+x steps through the reordered list, not the old one"
-    );
+    assert_eq!(app.env_label(), "qa", "alt+x steps through the reordered list, not the old one");
 }
 
 #[test]
@@ -5246,14 +4639,8 @@ fn two_move_space_steps_in_a_row_both_land_without_waiting_for_mtime() {
     app.reload_project_documents();
     assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
 
-    app.update(Action::MoveSpace {
-        name: "billing".into(),
-        delta: -1,
-    });
-    app.update(Action::MoveSpace {
-        name: "billing".into(),
-        delta: -1,
-    });
+    app.update(Action::MoveSpace { name: "billing".into(), delta: -1 });
+    app.update(Action::MoveSpace { name: "billing".into(), delta: -1 });
     assert_eq!(app.proj().spaces(), ["billing", "main", "auth"]);
     assert_eq!(
         postui_core::fixtures::load_meta(dir.path()).unwrap().spaces,
@@ -5265,10 +4652,7 @@ fn two_move_space_steps_in_a_row_both_land_without_waiting_for_mtime() {
 fn move_request_reorders_persists_and_keeps_the_selection_on_the_moved_row() {
     let (mut app, dir) = spaced_app(); // main/alpha, main/beta
     render_once(&mut app);
-    app.update(Action::MoveRequest {
-        slug: "main/beta".into(),
-        delta: -1,
-    });
+    app.update(Action::MoveRequest { slug: "main/beta".into(), delta: -1 });
     let slugs: Vec<String> = app
         .sidebar
         .rows
@@ -5281,10 +4665,7 @@ fn move_request_reorders_persists_and_keeps_the_selection_on_the_moved_row() {
     assert_eq!(slugs, ["main/beta", "main/alpha"]);
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert_eq!(
-        postui_core::order::space_order(&meta, "main"),
-        ["beta", "alpha"]
-    );
+    assert_eq!(postui_core::order::space_order(&meta, "main"), ["beta", "alpha"]);
 }
 
 #[test]
@@ -5293,10 +4674,7 @@ fn two_move_request_steps_in_a_row_both_land_without_waiting_for_mtime() {
     postui_core::fixtures::save_request(_dir.path(), "main/gamma", &req("https://x/3")).unwrap();
     app.update(Action::RefreshSidebar);
     for _ in 0..2 {
-        app.update(Action::MoveRequest {
-            slug: "main/gamma".into(),
-            delta: -1,
-        });
+        app.update(Action::MoveRequest { slug: "main/gamma".into(), delta: -1 });
     }
     assert_eq!(request_rows(&app).first().map(String::as_str), Some("main/gamma"));
 }
@@ -5316,27 +4694,11 @@ fn request_context_menu_offers_move_up_and_down_disabled_at_the_ends() {
     render_once(&mut app);
     let r = app.hits.rect_of(&Hit::SidebarRow(0)).unwrap();
     app.handle_mouse(right_down(r.x + 1, r.y));
-    let Some(Modal::Dropdown(menu)) = app.modals.top() else {
-        panic!("context menu")
-    };
-    let up = menu
-        .items
-        .iter()
-        .find(|i| i.label == "Move up")
-        .expect("Move up");
-    let down = menu
-        .items
-        .iter()
-        .find(|i| i.label == "Move down")
-        .expect("Move down");
+    let Some(Modal::Dropdown(menu)) = app.modals.top() else { panic!("context menu") };
+    let up = menu.items.iter().find(|i| i.label == "Move up").expect("Move up");
+    let down = menu.items.iter().find(|i| i.label == "Move down").expect("Move down");
     assert!(up.action.is_none(), "first row: Move up is disabled");
-    assert_eq!(
-        down.action,
-        Some(Action::MoveRequest {
-            slug: "main/alpha".into(),
-            delta: 1
-        })
-    );
+    assert_eq!(down.action, Some(Action::MoveRequest { slug: "main/alpha".into(), delta: 1 }));
 }
 
 #[test]
@@ -5344,10 +4706,7 @@ fn move_all_requests_empties_the_source_and_follows_the_open_request() {
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     let steps_before = app.history.undo_len();
-    app.update(Action::MoveAllRequests {
-        from: "main".into(),
-        to: "auth".into(),
-    });
+    app.update(Action::MoveAllRequests { from: "main".into(), to: "auth".into() });
     assert!(dir.path().join("requests/auth/alpha.toml").is_file());
     assert!(dir.path().join("requests/auth/beta.toml").is_file());
     assert_eq!(app.proj().local().active_space, "auth");
@@ -5358,11 +4717,7 @@ fn move_all_requests_empties_the_source_and_follows_the_open_request() {
     // `ForceOpenRequest`, so the next input event finds nothing to diff:
     // a move is not an edit, and must never leave a phantom
     // `EditorDelta` behind on top of it.
-    assert_eq!(
-        app.history.undo_len(),
-        steps_before + 1,
-        "one step for the move"
-    );
+    assert_eq!(app.history.undo_len(), steps_before + 1, "one step for the move");
     assert!(!app.capture_undo(), "the move itself is not an edit");
     assert_eq!(app.history.undo_len(), steps_before + 1);
     dirty_the_editor(&mut app);
@@ -5383,38 +4738,19 @@ fn undo_of_a_move_all_puts_every_file_and_both_lists_back_and_follows_the_open_r
     postui_core::fixtures::set_level_order(dir.path(), "auth", "", &["login".to_string()]).unwrap();
     app.reload_project_documents();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
-    app.update(Action::MoveAllRequests {
-        from: "main".into(),
-        to: "auth".into(),
-    });
+    app.update(Action::MoveAllRequests { from: "main".into(), to: "auth".into() });
     assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
     assert_eq!(app.proj().local().active_space, "auth");
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert_eq!(
-        postui_core::order::space_order(&meta, "auth"),
-        ["login", "gamma", "alpha", "beta"]
-    );
+    assert_eq!(postui_core::order::space_order(&meta, "auth"), ["login", "gamma", "alpha", "beta"]);
 
     app.update(Action::Undo);
     for slug in ["alpha", "beta", "gamma"] {
-        assert!(
-            dir.path()
-                .join(format!("requests/main/{slug}.toml"))
-                .is_file(),
-            "{slug} back"
-        );
-        assert!(
-            !dir.path()
-                .join(format!("requests/auth/{slug}.toml"))
-                .exists(),
-            "{slug} gone"
-        );
+        assert!(dir.path().join(format!("requests/main/{slug}.toml")).is_file(), "{slug} back");
+        assert!(!dir.path().join(format!("requests/auth/{slug}.toml")).exists(), "{slug} gone");
     }
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert_eq!(
-        postui_core::order::space_order(&meta, "main"),
-        ["gamma", "alpha"]
-    );
+    assert_eq!(postui_core::order::space_order(&meta, "main"), ["gamma", "alpha"]);
     assert_eq!(postui_core::order::space_order(&meta, "auth"), ["login"]);
     assert_eq!(
         app.editor.slug.as_deref(),
@@ -5422,20 +4758,14 @@ fn undo_of_a_move_all_puts_every_file_and_both_lists_back_and_follows_the_open_r
         "the open request follows back to its own file, not to the first moved one"
     );
     assert_eq!(app.proj().local().active_space, "main");
-    assert_eq!(
-        request_rows(&app),
-        ["main/gamma", "main/alpha", "main/beta"]
-    );
+    assert_eq!(request_rows(&app), ["main/gamma", "main/alpha", "main/beta"]);
 
     app.update(Action::Redo);
     assert!(dir.path().join("requests/auth/beta.toml").is_file());
     assert!(!dir.path().join("requests/main/beta.toml").exists());
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(postui_core::order::space_order(&meta, "main").is_empty());
-    assert_eq!(
-        postui_core::order::space_order(&meta, "auth"),
-        ["login", "gamma", "alpha", "beta"]
-    );
+    assert_eq!(postui_core::order::space_order(&meta, "auth"), ["login", "gamma", "alpha", "beta"]);
     assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
 }
 
@@ -5453,10 +4783,7 @@ fn move_all_requests_cascades_the_order_lists() {
     )
     .unwrap();
     app.reload_project_documents();
-    app.update(Action::MoveAllRequests {
-        from: "main".into(),
-        to: "auth".into(),
-    });
+    app.update(Action::MoveAllRequests { from: "main".into(), to: "auth".into() });
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(
         postui_core::order::space_order(&meta, "main").is_empty(),
@@ -5509,10 +4836,7 @@ fn undo_of_a_delete_restores_the_order_slot() {
 #[test]
 fn undo_of_a_rename_restores_the_order_slot() {
     let (mut app, dir) = slotted_app(&["beta", "alpha"]);
-    app.update(Action::RenameRequest {
-        from: "main/beta".into(),
-        to: "zeta".into(),
-    });
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "zeta".into() });
     assert_eq!(slot_order(&dir), ["zeta", "alpha"]);
     app.update(Action::Undo);
     assert_eq!(slot_order(&dir), ["beta", "alpha"]);
@@ -5546,23 +4870,14 @@ fn undo_of_a_move_to_space_restores_both_lists() {
     let (mut app, dir) = slotted_app(&["beta", "alpha"]);
     postui_core::fixtures::set_level_order(dir.path(), "auth", "", &["login".to_string()]).unwrap();
     app.reload_project_documents();
-    app.update(Action::ForceMoveRequestToSpace {
-        slug: "main/alpha".into(),
-        space: "auth".into(),
-    });
+    app.update(Action::ForceMoveRequestToSpace { slug: "main/alpha".into(), space: "auth".into() });
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert_eq!(postui_core::order::space_order(&meta, "main"), ["beta"]);
-    assert_eq!(
-        postui_core::order::space_order(&meta, "auth"),
-        ["login", "alpha"]
-    );
+    assert_eq!(postui_core::order::space_order(&meta, "auth"), ["login", "alpha"]);
 
     app.update(Action::Undo);
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert_eq!(
-        postui_core::order::space_order(&meta, "main"),
-        ["beta", "alpha"]
-    );
+    assert_eq!(postui_core::order::space_order(&meta, "main"), ["beta", "alpha"]);
     assert_eq!(postui_core::order::space_order(&meta, "auth"), ["login"]);
 }
 
@@ -5573,30 +4888,17 @@ fn quick_keyboard_moves_of_one_request_roll_up_into_one_undo_step() {
     app.sidebar.select_slug("main/gamma");
     let steps = app.history.undo_len();
     for _ in 0..2 {
-        app.update(Action::MoveRequest {
-            slug: "main/gamma".into(),
-            delta: -1,
-        });
+        app.update(Action::MoveRequest { slug: "main/gamma".into(), delta: -1 });
     }
     assert_eq!(slot_order(&dir), ["gamma", "alpha", "beta"]);
     assert_eq!(app.history.undo_len(), steps + 1, "a burst is one step");
     // A move that changes nothing records nothing.
-    app.update(Action::MoveRequest {
-        slug: "main/gamma".into(),
-        delta: -1,
-    });
+    app.update(Action::MoveRequest { slug: "main/gamma".into(), delta: -1 });
     assert_eq!(app.history.undo_len(), steps + 1);
 
     app.update(Action::Undo);
-    assert_eq!(
-        slot_order(&dir),
-        ["alpha", "beta", "gamma"],
-        "one undo takes the whole burst back"
-    );
-    assert_eq!(
-        request_rows(&app),
-        ["main/alpha", "main/beta", "main/gamma"]
-    );
+    assert_eq!(slot_order(&dir), ["alpha", "beta", "gamma"], "one undo takes the whole burst back");
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
     assert_eq!(
         app.sidebar.selected_slug().as_deref(),
         Some("main/gamma"),
@@ -5620,27 +4922,14 @@ fn a_keyboard_reorder_that_returns_to_the_start_leaves_no_step_and_undo_reaches_
     app.update(Action::CreateRequest("delta".into()));
     assert!(app.proj().request_exists("main/delta"));
     let steps = app.history.undo_len();
-    app.update(Action::MoveRequest {
-        slug: "main/beta".into(),
-        delta: 1,
-    });
-    app.update(Action::MoveRequest {
-        slug: "main/beta".into(),
-        delta: -1,
-    });
+    app.update(Action::MoveRequest { slug: "main/beta".into(), delta: 1 });
+    app.update(Action::MoveRequest { slug: "main/beta".into(), delta: -1 });
     assert_eq!(
-        app.proj()
-            .last_entry()
-            .map(|(_, l)| l.to_string())
-            .as_deref(),
+        app.proj().last_entry().map(|(_, l)| l.to_string()).as_deref(),
         Some("create request"),
         "the burst netted to nothing: no order entry remains"
     );
-    assert_eq!(
-        app.history.undo_len(),
-        steps,
-        "and its marker was dropped with it"
-    );
+    assert_eq!(app.history.undo_len(), steps, "and its marker was dropped with it");
 
     app.update(Action::Undo);
     assert!(
@@ -5662,30 +4951,17 @@ fn a_dissolved_burst_with_an_edit_between_its_halves_records_no_second_marker() 
     app.capture_undo(); // re-seed the shadow on the newly opened request
     let steps = app.history.undo_len();
 
-    app.update(Action::MoveRequest {
-        slug: "main/beta".into(),
-        delta: 1,
-    });
+    app.update(Action::MoveRequest { slug: "main/beta".into(), delta: 1 });
     dirty_the_editor(&mut app);
     // Close the URL field: with it still live, ctrl+z would be its own
     // undo and this test is about the app history.
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.capture_undo();
     let url_after_edit = app.editor.url.text().to_string();
+    assert_eq!(app.history.undo_len(), steps + 2, "the move's marker, then the typed character");
+    app.update(Action::MoveRequest { slug: "main/beta".into(), delta: -1 });
     assert_eq!(
-        app.history.undo_len(),
-        steps + 2,
-        "the move's marker, then the typed character"
-    );
-    app.update(Action::MoveRequest {
-        slug: "main/beta".into(),
-        delta: -1,
-    });
-    assert_eq!(
-        app.proj()
-            .last_entry()
-            .map(|(_, l)| l.to_string())
-            .as_deref(),
+        app.proj().last_entry().map(|(_, l)| l.to_string()).as_deref(),
         Some("create request"),
         "the burst netted to nothing: no order entry remains"
     );
@@ -5702,18 +4978,11 @@ fn a_dissolved_burst_with_an_edit_between_its_halves_records_no_second_marker() 
         "undo applied the editor delta, not the create beneath it"
     );
     assert_eq!(
-        app.proj()
-            .last_entry()
-            .map(|(_, l)| l.to_string())
-            .as_deref(),
+        app.proj().last_entry().map(|(_, l)| l.to_string()).as_deref(),
         Some("create request"),
         "the journal did not move: no project entry was replayed"
     );
-    assert_ne!(
-        app.editor.url.text(),
-        url_after_edit,
-        "the typed character is gone"
-    );
+    assert_ne!(app.editor.url.text(), url_after_edit, "the typed character is gone");
 
     // Only then does undo reach the create, skipping the stale marker.
     app.update(Action::Undo);
@@ -5724,14 +4993,8 @@ fn a_dissolved_burst_with_an_edit_between_its_halves_records_no_second_marker() 
 fn keyboard_moves_of_different_requests_are_separate_steps() {
     let (mut app, _dir) = slotted_app(&["alpha", "beta", "gamma"]);
     let steps = app.history.undo_len();
-    app.update(Action::MoveRequest {
-        slug: "main/gamma".into(),
-        delta: -1,
-    });
-    app.update(Action::MoveRequest {
-        slug: "main/alpha".into(),
-        delta: 1,
-    });
+    app.update(Action::MoveRequest { slug: "main/gamma".into(), delta: -1 });
+    app.update(Action::MoveRequest { slug: "main/alpha".into(), delta: 1 });
     assert_eq!(app.history.undo_len(), steps + 2);
 }
 
@@ -5765,10 +5028,7 @@ fn a_dropped_row_drag_is_its_own_undo_step() {
     app.handle_mouse(moved(r0.x + 2, r2.y));
     app.handle_mouse(left_up(r0.x + 2, r2.y));
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert_eq!(
-        postui_core::order::space_order(&meta, "main"),
-        ["beta", "gamma", "alpha"]
-    );
+    assert_eq!(postui_core::order::space_order(&meta, "main"), ["beta", "gamma", "alpha"]);
     assert_eq!(app.history.undo_len(), steps + 1);
 
     // A second drag straight after the first is a second step: drags
@@ -5779,10 +5039,7 @@ fn a_dropped_row_drag_is_its_own_undo_step() {
     app.handle_mouse(left_up(r2.x + 2, r1.y));
     assert_eq!(app.history.undo_len(), steps + 2);
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert_eq!(
-        postui_core::order::space_order(&meta, "main"),
-        ["beta", "alpha", "gamma"]
-    );
+    assert_eq!(postui_core::order::space_order(&meta, "main"), ["beta", "alpha", "gamma"]);
 
     app.update(Action::Undo);
     app.update(Action::Undo);
@@ -5791,10 +5048,7 @@ fn a_dropped_row_drag_is_its_own_undo_step() {
         postui_core::order::space_order(&meta, "main").is_empty(),
         "the level was never listed before the first drag, and is not after its undo"
     );
-    assert_eq!(
-        request_rows(&app),
-        ["main/alpha", "main/beta", "main/gamma"]
-    );
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
 }
 
@@ -5806,22 +5060,12 @@ fn quick_keyboard_space_moves_roll_up_into_one_undo_step() {
     assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
     let steps = app.history.undo_len();
     for _ in 0..2 {
-        app.update(Action::MoveSpace {
-            name: "billing".into(),
-            delta: -1,
-        });
+        app.update(Action::MoveSpace { name: "billing".into(), delta: -1 });
     }
     assert_eq!(listed_spaces(&dir), ["billing", "main", "auth"]);
     assert_eq!(app.history.undo_len(), steps + 1, "a burst is one step");
-    app.update(Action::MoveSpace {
-        name: "billing".into(),
-        delta: -1,
-    });
-    assert_eq!(
-        app.history.undo_len(),
-        steps + 1,
-        "a no-op move records nothing"
-    );
+    app.update(Action::MoveSpace { name: "billing".into(), delta: -1 });
+    assert_eq!(app.history.undo_len(), steps + 1, "a no-op move records nothing");
 
     app.update(Action::Undo);
     assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"]);
@@ -5837,14 +5081,8 @@ fn quick_keyboard_space_moves_roll_up_into_one_undo_step() {
 
     // Down then up: the burst ends where it started and records nothing.
     let steps = app.history.undo_len();
-    app.update(Action::MoveSpace {
-        name: "main".into(),
-        delta: 1,
-    });
-    app.update(Action::MoveSpace {
-        name: "main".into(),
-        delta: -1,
-    });
+    app.update(Action::MoveSpace { name: "main".into(), delta: 1 });
+    app.update(Action::MoveSpace { name: "main".into(), delta: -1 });
     assert_eq!(app.history.undo_len(), steps);
 }
 
@@ -5855,22 +5093,12 @@ fn quick_keyboard_env_moves_roll_up_into_one_undo_step() {
     assert_eq!(app.proj().environments(), ["prod", "qa", "dev"]);
     let steps = app.history.undo_len();
     for _ in 0..2 {
-        app.update(Action::MoveEnv {
-            name: "dev".into(),
-            delta: -1,
-        });
+        app.update(Action::MoveEnv { name: "dev".into(), delta: -1 });
     }
     assert_eq!(listed_envs(&dir), ["dev", "prod", "qa"]);
     assert_eq!(app.history.undo_len(), steps + 1, "a burst is one step");
-    app.update(Action::MoveEnv {
-        name: "dev".into(),
-        delta: -1,
-    });
-    assert_eq!(
-        app.history.undo_len(),
-        steps + 1,
-        "a no-op move records nothing"
-    );
+    app.update(Action::MoveEnv { name: "dev".into(), delta: -1 });
+    assert_eq!(app.history.undo_len(), steps + 1, "a no-op move records nothing");
 
     app.update(Action::Undo);
     assert_eq!(listed_envs(&dir), ["prod", "qa", "dev"]);
@@ -5886,14 +5114,8 @@ fn quick_keyboard_env_moves_roll_up_into_one_undo_step() {
 
     // Down then up: the burst ends where it started and records nothing.
     let steps = app.history.undo_len();
-    app.update(Action::MoveEnv {
-        name: "prod".into(),
-        delta: 1,
-    });
-    app.update(Action::MoveEnv {
-        name: "prod".into(),
-        delta: -1,
-    });
+    app.update(Action::MoveEnv { name: "prod".into(), delta: 1 });
+    app.update(Action::MoveEnv { name: "prod".into(), delta: -1 });
     assert_eq!(app.history.undo_len(), steps);
 }
 
@@ -5913,11 +5135,7 @@ fn a_dropped_space_drag_is_its_own_undo_step_and_undo_follows_the_cursor() {
     assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"]);
     assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
     assert_eq!(
-        app.manage
-            .list
-            .selected(ManageTab::Spaces, app.proj())
-            .map(str::to_string)
-            .as_deref(),
+        app.manage.list.selected(ManageTab::Spaces, app.proj()).map(str::to_string).as_deref(),
         Some("main"),
         "the cursor follows the dragged space back"
     );
@@ -5959,20 +5177,13 @@ fn undo_walks_back_through_a_space_create_to_the_reorder_beneath_it() {
     // so undo is strictly linear — it takes the create first and only
     // then the reorder underneath it.
     let (mut app, dir) = spaced_app();
-    app.update(Action::MoveSpace {
-        name: "main".into(),
-        delta: 1,
-    });
+    app.update(Action::MoveSpace { name: "main".into(), delta: 1 });
     assert_eq!(listed_spaces(&dir), ["auth", "main"]);
     app.update(Action::CreateSpace("billing".into()));
     assert_eq!(listed_spaces(&dir), ["auth", "main", "billing"]);
 
     app.update(Action::Undo);
-    assert_eq!(
-        listed_spaces(&dir),
-        ["auth", "main"],
-        "the create goes first"
-    );
+    assert_eq!(listed_spaces(&dir), ["auth", "main"], "the create goes first");
     app.update(Action::Undo);
     assert_eq!(listed_spaces(&dir), ["main", "auth"], "then the reorder");
 
@@ -5989,10 +5200,7 @@ fn undo_of_a_move_all_follows_the_open_request_even_when_it_collided() {
     postui_core::fixtures::save_request(dir.path(), "auth/alpha", &req("https://x/a")).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/alpha".into()));
-    app.update(Action::MoveAllRequests {
-        from: "main".into(),
-        to: "auth".into(),
-    });
+    app.update(Action::MoveAllRequests { from: "main".into(), to: "auth".into() });
     assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha-2"));
 
     app.update(Action::Undo);
@@ -6002,10 +5210,7 @@ fn undo_of_a_move_all_follows_the_open_request_even_when_it_collided() {
         "the step's own pairing finds the way back"
     );
     assert!(dir.path().join("requests/main/alpha.toml").is_file());
-    assert!(
-        dir.path().join("requests/auth/alpha.toml").is_file(),
-        "auth's own alpha untouched"
-    );
+    assert!(dir.path().join("requests/auth/alpha.toml").is_file(), "auth's own alpha untouched");
     assert!(!dir.path().join("requests/auth/alpha-2.toml").exists());
     app.update(Action::Redo);
     assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha-2"));
@@ -6028,10 +5233,7 @@ fn move_all_requests_keeps_the_source_arrangement_in_a_listed_destination() {
     postui_core::fixtures::set_level_order(dir.path(), "auth", "", &["login".to_string()]).unwrap();
     app.reload_project_documents();
     app.update(Action::RefreshSidebar);
-    app.update(Action::MoveAllRequests {
-        from: "main".into(),
-        to: "auth".into(),
-    });
+    app.update(Action::MoveAllRequests { from: "main".into(), to: "auth".into() });
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert_eq!(
         postui_core::order::space_order(&meta, "auth"),
@@ -6046,18 +5248,10 @@ fn move_all_requests_holding_a_dirty_open_request_gates_first() {
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     dirty_the_editor(&mut app);
-    app.update(Action::MoveAllRequests {
-        from: "main".into(),
-        to: "auth".into(),
-    });
-    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
-        panic!("gate")
-    };
+    app.update(Action::MoveAllRequests { from: "main".into(), to: "auth".into() });
+    let Some(Modal::Confirm { title, .. }) = app.modals.top() else { panic!("gate") };
     assert_eq!(title, "Unsaved changes");
-    assert!(
-        dir.path().join("requests/main/alpha.toml").is_file(),
-        "nothing moved yet"
-    );
+    assert!(dir.path().join("requests/main/alpha.toml").is_file(), "nothing moved yet");
     assert_eq!(app.proj().local().active_space, "main");
 
     // Discarding runs the move: the editor is re-opened from disk by
@@ -6089,11 +5283,7 @@ fn creating_a_request_over_a_dirty_editor_raises_the_unsaved_gate() {
     assert!(
         matches!(app.modals.top(), Some(Modal::Confirm { title, .. }) if title == "Unsaved changes")
     );
-    assert_eq!(
-        app.editor.slug.as_deref(),
-        Some("main/orders"),
-        "editor untouched behind the gate"
-    );
+    assert_eq!(app.editor.slug.as_deref(), Some("main/orders"), "editor untouched behind the gate");
     assert_eq!(app.editor.url.text(), "http://x");
     // 'd' = discard, then the create proceeds.
     press(&mut app, 'd');
@@ -6151,10 +5341,7 @@ fn duplicating_lands_the_copy_after_its_source() {
 fn renaming_keeps_the_slot_and_deleting_removes_the_entry() {
     let (mut app, dir) = ordered_app();
     app.sidebar.select_slug("main/beta");
-    app.update(Action::RenameRequest {
-        from: "main/beta".into(),
-        to: "bee".into(),
-    });
+    app.update(Action::RenameRequest { from: "main/beta".into(), to: "bee".into() });
     assert_eq!(main_order(&dir), ["bee", "alpha"]);
     app.update(Action::DeleteRequest("main/bee".into()));
     assert_eq!(main_order(&dir), ["alpha"]);
@@ -6163,16 +5350,10 @@ fn renaming_keeps_the_slot_and_deleting_removes_the_entry() {
 #[test]
 fn moving_to_another_space_removes_here_and_arrives_there_only_if_listed() {
     let (mut app, dir) = ordered_app();
-    app.update(Action::ForceMoveRequestToSpace {
-        slug: "main/beta".into(),
-        space: "auth".into(),
-    });
+    app.update(Action::ForceMoveRequestToSpace { slug: "main/beta".into(), space: "auth".into() });
     assert_eq!(main_order(&dir), ["alpha"]);
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(
-        postui_core::order::space_order(&meta, "auth").is_empty(),
-        "auth has no list yet"
-    );
+    assert!(postui_core::order::space_order(&meta, "auth").is_empty(), "auth has no list yet");
 }
 
 #[test]
@@ -6181,9 +5362,7 @@ fn request_context_menu_offers_one_move_row_that_opens_the_space_chooser() {
     render_once(&mut app);
     let r = app.hits.rect_of(&Hit::SidebarRow(0)).unwrap();
     app.handle_mouse(right_down(r.x + 1, r.y));
-    let Some(Modal::Dropdown(d)) = app.modals.top() else {
-        panic!("menu")
-    };
+    let Some(Modal::Dropdown(d)) = app.modals.top() else { panic!("menu") };
     let labels: Vec<&str> = d.items.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(
         labels,
@@ -6199,10 +5378,7 @@ fn request_context_menu_offers_one_move_row_that_opens_the_space_chooser() {
         ]
     );
     let move_row = d.items[6].action.clone();
-    assert_eq!(
-        move_row,
-        Some(Action::PromptMoveRequestToSpace("main/alpha".into()))
-    );
+    assert_eq!(move_row, Some(Action::PromptMoveRequestToSpace("main/alpha".into())));
     app.update(Action::Close);
     app.update(move_row.unwrap());
     let Some(Modal::Chooser(c)) = app.modals.top() else {
@@ -6213,10 +5389,7 @@ fn request_context_menu_offers_one_move_row_that_opens_the_space_chooser() {
     let result = c.confirm().unwrap();
     assert_eq!(
         result.actions,
-        vec![Action::MoveRequestToSpace {
-            slug: "main/alpha".into(),
-            space: "auth".into()
-        }]
+        vec![Action::MoveRequestToSpace { slug: "main/alpha".into(), space: "auth".into() }]
     );
 }
 
@@ -6238,10 +5411,7 @@ fn m_with_only_one_space_says_so_instead_of_doing_nothing() {
     press(&mut app, 'm');
     assert!(app.modals.is_empty(), "nowhere to move to, so no picker");
     let said = app.toasts.messages().join(" | ");
-    assert!(
-        said.contains("Only one space"),
-        "the key must say why it did nothing: {said:?}"
-    );
+    assert!(said.contains("Only one space"), "the key must say why it did nothing: {said:?}");
     assert!(
         app.toasts
             .entries()
@@ -6281,9 +5451,7 @@ fn request_context_menu_has_no_move_row_in_a_single_space_project() {
     render_once(&mut app);
     let r = app.hits.rect_of(&Hit::SidebarRow(0)).unwrap();
     app.handle_mouse(right_down(r.x + 1, r.y));
-    let Some(Modal::Dropdown(d)) = app.modals.top() else {
-        panic!("menu")
-    };
+    let Some(Modal::Dropdown(d)) = app.modals.top() else { panic!("menu") };
     assert!(
         d.items.iter().all(|i| !i.label.starts_with("Move to")),
         "{:?}",
@@ -6302,10 +5470,7 @@ fn move_request_to_space_moves_the_file_stays_put_and_undoes() {
     render_once(&mut app);
     app.sidebar.select_slug("main/alpha");
     let steps_before = app.history.undo_len();
-    app.update(Action::MoveRequestToSpace {
-        slug: "main/alpha".into(),
-        space: "auth".into(),
-    });
+    app.update(Action::MoveRequestToSpace { slug: "main/alpha".into(), space: "auth".into() });
     assert!(dir.path().join("requests/auth/alpha.toml").is_file());
     assert_eq!(app.proj().local().active_space, "main");
     assert_eq!(app.editor.slug, None, "the editor clears");
@@ -6330,10 +5495,7 @@ fn moving_a_request_that_is_not_open_leaves_the_editor_alone() {
     app.update(Action::ForceOpenRequest("main/beta".into()));
     render_once(&mut app);
     app.sidebar.select_slug("main/alpha");
-    app.update(Action::MoveRequestToSpace {
-        slug: "main/alpha".into(),
-        space: "auth".into(),
-    });
+    app.update(Action::MoveRequestToSpace { slug: "main/alpha".into(), space: "auth".into() });
     assert_eq!(app.proj().local().active_space, "main");
     assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
@@ -6344,10 +5506,7 @@ fn moving_the_last_request_selects_the_one_above() {
     let (mut app, _dir) = spaced_app();
     render_once(&mut app);
     app.sidebar.select_slug("main/beta");
-    app.update(Action::MoveRequestToSpace {
-        slug: "main/beta".into(),
-        space: "auth".into(),
-    });
+    app.update(Action::MoveRequestToSpace { slug: "main/beta".into(), space: "auth".into() });
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
 }
 
@@ -6360,10 +5519,7 @@ fn undo_of_a_move_follows_the_file_back_and_keeps_the_outgoing_space_s_memory() 
     // still describes the outgoing space.
     let (mut app, _dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
-    app.update(Action::MoveRequestToSpace {
-        slug: "main/alpha".into(),
-        space: "auth".into(),
-    });
+    app.update(Action::MoveRequestToSpace { slug: "main/alpha".into(), space: "auth".into() });
     assert_eq!(app.proj().local().active_space, "main");
     // Go look at it in auth, then undo from there: the file comes back to
     // main and the editor follows it, leaving auth on what it was on.
@@ -6394,10 +5550,7 @@ fn a_blocked_secrets_write_refuses_the_whole_environment_rename() {
     std::fs::create_dir_all(dir.path().join(".local/secrets.toml/in-the-way")).unwrap();
 
     app.toasts = Default::default();
-    app.update(Action::RenameEnv {
-        from: "dev".into(),
-        to: "staging".into(),
-    });
+    app.update(Action::RenameEnv { from: "dev".into(), to: "staging".into() });
     let msg = app.toasts.messages().join(" | ");
     assert!(msg.contains("cannot rename environment:"), "{msg}");
     assert!(app.last_action_failed);
@@ -6414,10 +5567,7 @@ fn a_blocked_secrets_write_refuses_the_whole_environment_rename() {
 fn a_failed_redo_of_a_file_step_says_redo_not_undo() {
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
-    app.update(Action::MoveRequestToSpace {
-        slug: "main/alpha".into(),
-        space: "auth".into(),
-    });
+    app.update(Action::MoveRequestToSpace { slug: "main/alpha".into(), space: "auth".into() });
     app.update(Action::Undo);
     assert!(dir.path().join("requests/main/alpha.toml").is_file());
 
@@ -6434,17 +5584,11 @@ fn a_failed_redo_of_a_file_step_says_redo_not_undo() {
 fn move_request_to_the_space_it_is_already_in_says_so() {
     let (mut app, _dir) = spaced_app();
     app.toasts = Default::default();
-    app.update(Action::MoveRequestToSpace {
-        slug: "main/alpha".into(),
-        space: "main".into(),
-    });
+    app.update(Action::MoveRequestToSpace { slug: "main/alpha".into(), space: "main".into() });
     assert_eq!(app.toasts.messages(), ["already in main"]);
 
     app.toasts = Default::default();
-    app.update(Action::MoveRequestToSpace {
-        slug: "main/alpha".into(),
-        space: "nope".into(),
-    });
+    app.update(Action::MoveRequestToSpace { slug: "main/alpha".into(), space: "nope".into() });
     assert_eq!(app.toasts.messages(), ["no space named \"nope\""]);
 }
 
@@ -6453,18 +5597,10 @@ fn move_request_to_space_holding_a_dirty_open_request_gates_first() {
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     dirty_the_editor(&mut app);
-    app.update(Action::MoveRequestToSpace {
-        slug: "main/alpha".into(),
-        space: "auth".into(),
-    });
-    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
-        panic!("gate")
-    };
+    app.update(Action::MoveRequestToSpace { slug: "main/alpha".into(), space: "auth".into() });
+    let Some(Modal::Confirm { title, .. }) = app.modals.top() else { panic!("gate") };
     assert_eq!(title, "Unsaved changes");
-    assert!(
-        dir.path().join("requests/main/alpha.toml").is_file(),
-        "nothing moved yet"
-    );
+    assert!(dir.path().join("requests/main/alpha.toml").is_file(), "nothing moved yet");
     assert_eq!(app.proj().local().active_space, "main");
 }
 
@@ -6498,10 +5634,7 @@ fn click_folder_arrow_expands_the_folder() {
         .rect_of(&crate::hit::Hit::SidebarFolderArrow(1))
         .expect("folder arrow hit registered");
     app.handle_mouse(left_down(r.x, r.y));
-    assert!(
-        app.sidebar.rows.len() > before,
-        "expanding the folder reveals its child row"
-    );
+    assert!(app.sidebar.rows.len() > before, "expanding the folder reveals its child row");
 }
 
 /// A project with three flat top-level requests, sorted (by name, all
@@ -6543,11 +5676,7 @@ fn click_after_keyboard_nav_snaps_the_travel_band_to_the_clicked_row() {
     let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(2)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
 
-    assert_eq!(
-        app.sidebar.selected,
-        Some(2),
-        "the click moves the selection"
-    );
+    assert_eq!(app.sidebar.selected, Some(2), "the click moves the selection");
     let now = std::time::Instant::now();
     let key = crate::anim::AnimKey::ListTravel(crate::anim::ListId::Sidebar);
     assert_eq!(
@@ -6568,11 +5697,7 @@ fn click_after_keyboard_nav_snaps_the_travel_band_to_the_clicked_row() {
     let buf = terminal.backend().buffer();
     let row0 = app.hits.rect_of(&crate::hit::Hit::SidebarRow(0)).unwrap();
     let row2 = app.hits.rect_of(&crate::hit::Hit::SidebarRow(2)).unwrap();
-    assert_eq!(
-        buf[(row2.x, row2.y)].symbol(),
-        "\u{258c}",
-        "accent bar on the clicked row"
-    );
+    assert_eq!(buf[(row2.x, row2.y)].symbol(), "\u{258c}", "accent bar on the clicked row");
     assert_eq!(
         buf[(row2.x + row2.width - 2, row2.y)].bg,
         crate::theme::mix(app.theme.selection, app.theme.control_hover, 0.5)
@@ -6601,10 +5726,7 @@ fn folder_arrow_click_moves_only_the_cursor_not_the_travel_band() {
 
     // Click the folder arrow on row 1 ("api").
     render_once(&mut app);
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::SidebarFolderArrow(1))
-        .unwrap();
+    let r = app.hits.rect_of(&crate::hit::Hit::SidebarFolderArrow(1)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
 
     assert_eq!(app.sidebar.selected, Some(1));
@@ -6731,14 +5853,8 @@ fn right_click_on_dead_space_while_context_menu_open_closes_it() {
 
     // The response pane's background offers no context menu while there
     // is no response text to copy.
-    let dead = app
-        .hits
-        .rect_of(&crate::hit::Hit::Pane(crate::layout::PaneId::Response))
-        .unwrap();
-    assert!(app.handle_mouse(right_down(
-        dead.x + dead.width / 2,
-        dead.y + dead.height / 2
-    )));
+    let dead = app.hits.rect_of(&crate::hit::Hit::Pane(crate::layout::PaneId::Response)).unwrap();
+    assert!(app.handle_mouse(right_down(dead.x + dead.width / 2, dead.y + dead.height / 2)));
     assert!(app.modals.is_empty(), "the menu closes, nothing reopens");
     assert_eq!(app.sidebar.selected, Some(0), "pre-selection restored");
 }
@@ -6762,11 +5878,7 @@ fn deleting_a_row_above_the_selection_snaps_the_travel_band_not_a_ghost() {
     // Delete "alpha" (row 0, above it) -- "gamma" is still the open
     // request, but its row index shifts from 2 to 1.
     app.update(Action::DeleteRequest("main/alpha".into()));
-    assert_eq!(
-        app.sidebar.selected,
-        Some(1),
-        "gamma re-maps to row 1 once alpha is gone"
-    );
+    assert_eq!(app.sidebar.selected, Some(1), "gamma re-maps to row 1 once alpha is gone");
 
     let now = std::time::Instant::now();
     let key = crate::anim::AnimKey::ListTravel(crate::anim::ListId::Sidebar);
@@ -6785,14 +5897,9 @@ fn deleting_a_row_above_the_selection_snaps_the_travel_band_not_a_ghost() {
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     let buf = terminal.backend().buffer();
     let row1 = app.hits.rect_of(&crate::hit::Hit::SidebarRow(1)).unwrap();
-    assert_eq!(
-        buf[(row1.x, row1.y)].symbol(),
-        "\u{258c}",
-        "accent bar on gamma's new row"
-    );
-    let bar_count = (0..buf.area.height)
-        .filter(|&y| buf[(row1.x, y)].symbol() == "\u{258c}")
-        .count();
+    assert_eq!(buf[(row1.x, row1.y)].symbol(), "\u{258c}", "accent bar on gamma's new row");
+    let bar_count =
+        (0..buf.area.height).filter(|&y| buf[(row1.x, y)].symbol() == "\u{258c}").count();
     assert_eq!(bar_count, 1, "exactly one row carries the accent bar");
 }
 
@@ -6804,23 +5911,12 @@ fn single_click_folder_name_selects_only_double_click_expands() {
     let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(1)).unwrap();
 
     app.handle_mouse(left_down(r.x, r.y));
-    assert_eq!(
-        app.sidebar.selected,
-        Some(1),
-        "single click selects the folder"
-    );
-    assert_eq!(
-        app.sidebar.rows.len(),
-        before,
-        "single click must not expand the folder"
-    );
+    assert_eq!(app.sidebar.selected, Some(1), "single click selects the folder");
+    assert_eq!(app.sidebar.rows.len(), before, "single click must not expand the folder");
 
     // Second Down on the same hit within 400ms is a double click.
     app.handle_mouse(left_down(r.x, r.y));
-    assert!(
-        app.sidebar.rows.len() > before,
-        "double click expands the folder"
-    );
+    assert!(app.sidebar.rows.len() > before, "double click expands the folder");
 }
 
 #[test]
@@ -6851,18 +5947,9 @@ fn triple_click_toggles_the_folder_exactly_once() {
 fn click_new_request_button_opens_prompt_modal() {
     let (mut app, _dir) = sidebar_test_app();
     render_once(&mut app);
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::SidebarNewRequest)
-        .unwrap();
+    let r = app.hits.rect_of(&crate::hit::Hit::SidebarNewRequest).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
-    assert!(matches!(
-        app.modals.top(),
-        Some(Modal::Prompt {
-            kind: PromptKind::NewRequest,
-            ..
-        })
-    ));
+    assert!(matches!(app.modals.top(), Some(Modal::Prompt { kind: PromptKind::NewRequest, .. })));
 }
 
 #[test]
@@ -6875,10 +5962,7 @@ fn clicking_a_prompts_own_body_does_not_close_it_or_touch_the_input() {
     let (mut app, _dir) = sidebar_test_app();
     app.anims.enabled = false;
     render_once(&mut app);
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::SidebarNewRequest)
-        .unwrap();
+    let r = app.hits.rect_of(&crate::hit::Hit::SidebarNewRequest).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
     assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })));
 
@@ -6892,18 +5976,10 @@ fn clicking_a_prompts_own_body_does_not_close_it_or_touch_the_input() {
     app.handle_mouse(left_down(inside.0, inside.1));
 
     assert!(
-        matches!(
-            app.modals.top(),
-            Some(Modal::Prompt {
-                kind: PromptKind::NewRequest,
-                ..
-            })
-        ),
+        matches!(app.modals.top(), Some(Modal::Prompt { kind: PromptKind::NewRequest, .. })),
         "clicking the modal's own chrome must not close it"
     );
-    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
-        unreachable!()
-    };
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else { unreachable!() };
     assert_eq!(input.text(), "ping", "typed input must be untouched");
 }
 
@@ -6950,11 +6026,8 @@ fn broken_file_shows_marker_and_error_modal() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
     postui_core::fixtures::ensure_project(dir.path()).unwrap();
-    std::fs::write(
-        dir.path().join("requests/main/bad.toml"),
-        "url = \"x\"\nurl = \"dup\"\n",
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("requests/main/bad.toml"), "url = \"x\"\nurl = \"dup\"\n")
+        .unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
     let Row::Request { broken, .. } = &app.sidebar.rows[0] else {
@@ -6993,10 +6066,7 @@ fn dirty_dot_renders_in_sidebar() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     let content = format!("{:?}", terminal.backend().buffer());
-    assert!(
-        content.contains('\u{25cf}'),
-        "expected a dirty dot in the sidebar: {content}"
-    );
+    assert!(content.contains('\u{25cf}'), "expected a dirty dot in the sidebar: {content}");
 }
 
 #[test]
@@ -7004,13 +6074,7 @@ fn new_request_prompt_flow_creates_file_and_opens_it() {
     let mut app = App::new_for_test();
     app.focus = PaneId::Sidebar;
     app.handle_key(plain('a'));
-    assert!(matches!(
-        app.modals.top(),
-        Some(Modal::Prompt {
-            kind: PromptKind::NewRequest,
-            ..
-        })
-    ));
+    assert!(matches!(app.modals.top(), Some(Modal::Prompt { kind: PromptKind::NewRequest, .. })));
     for c in "api/ping".chars() {
         app.handle_key(plain(c));
     }
@@ -7055,28 +6119,17 @@ fn new_request_blank_name_toasts_and_creates_nothing() {
     }
     submit_prompt(&mut app);
     assert!(!app.toasts.is_empty(), "a blank name must toast");
-    assert!(
-        postui_core::fixtures::list_requests(app.proj().root())
-            .0
-            .is_empty()
-    );
+    assert!(postui_core::fixtures::list_requests(app.proj().root()).0.is_empty());
 }
 
 #[test]
 fn new_request_same_display_name_toasts_and_creates_nothing() {
     let mut app = App::new_for_test();
     app.update(Action::CreateRequest("My Request!".into()));
-    assert_eq!(
-        postui_core::fixtures::list_requests(app.proj().root())
-            .0
-            .len(),
-        1
-    );
+    assert_eq!(postui_core::fixtures::list_requests(app.proj().root()).0.len(), 1);
     app.update(Action::CreateRequest("my request!".into()));
     assert_eq!(
-        postui_core::fixtures::list_requests(app.proj().root())
-            .0
-            .len(),
+        postui_core::fixtures::list_requests(app.proj().root()).0.len(),
         1,
         "case-insensitive duplicate display name is rejected"
     );
@@ -7104,10 +6157,7 @@ fn rename_flow_speaks_display_names_and_regenerates_the_slug() {
 
     // Renaming (with a sloppy trailing space) regenerates the slug and
     // rewrites the name.
-    app.update(Action::RenameRequest {
-        from: "main/get-user".into(),
-        to: "Get User v2 ".into(),
-    });
+    app.update(Action::RenameRequest { from: "main/get-user".into(), to: "Get User v2 ".into() });
     assert_eq!(app.editor.slug.as_deref(), Some("main/get-user-v2"));
     assert_eq!(app.editor.name.as_deref(), Some("Get User v2"));
     assert_eq!(app.sidebar.open_slug.as_deref(), Some("main/get-user-v2"));
@@ -7125,23 +6175,11 @@ fn delete_and_duplicate_toasts_show_display_names() {
     app.sidebar.select_slug("main/fancy-name");
 
     app.update(Action::DeleteSelectedRequest);
-    assert!(
-        app.modals.is_empty(),
-        "delete is undoable, so no confirm gate"
-    );
-    assert!(!postui_core::fixtures::request_exists(
-        app.proj().root(),
-        "main/fancy-name"
-    ));
+    assert!(app.modals.is_empty(), "delete is undoable, so no confirm gate");
+    assert!(!postui_core::fixtures::request_exists(app.proj().root(), "main/fancy-name"));
     let text = rendered_text(&mut app);
-    assert!(
-        text.contains("Deleted Fancy Name!"),
-        "display name in the delete toast"
-    );
-    assert!(
-        text.contains("^Z undoes"),
-        "the toast advertises the escape hatch"
-    );
+    assert!(text.contains("Deleted Fancy Name!"), "display name in the delete toast");
+    assert!(text.contains("^Z undoes"), "the toast advertises the escape hatch");
     app.update(Action::Undo);
     assert!(
         postui_core::fixtures::request_exists(app.proj().root(), "main/fancy-name"),
@@ -7197,10 +6235,7 @@ fn new_request_duplicate_name_toasts_and_leaves_existing_file_alone() {
     assert_eq!(input.text(), "api/ping");
     assert!(!app.toasts.is_empty(), "a duplicate name must toast");
     let existing = postui_core::fixtures::load_request(app.proj().root(), "main/api/ping").unwrap();
-    assert_eq!(
-        existing.url, "https://x/existing",
-        "existing file must not be overwritten"
-    );
+    assert_eq!(existing.url, "https://x/existing", "existing file must not be overwritten");
 }
 
 #[test]
@@ -7213,10 +6248,7 @@ fn rename_request_updates_disk_and_open_slug() {
     app.focus = PaneId::Sidebar;
     app.handle_key(plain('r'));
     match app.modals.top() {
-        Some(Modal::Prompt {
-            kind: PromptKind::RenameRequest { from },
-            ..
-        }) => {
+        Some(Modal::Prompt { kind: PromptKind::RenameRequest { from }, .. }) => {
             assert_eq!(from, "main/old");
         }
         _ => panic!("expected a RenameRequest prompt"),
@@ -7245,10 +6277,7 @@ fn delete_open_request_clears_editor_and_removes_file() {
     app.focus = PaneId::Sidebar;
     app.handle_key(plain('d'));
     assert!(app.modals.is_empty(), "delete needs no confirm");
-    assert!(
-        app.editor.slug.is_none(),
-        "editor must reset once its open request is deleted"
-    );
+    assert!(app.editor.slug.is_none(), "editor must reset once its open request is deleted");
     assert!(postui_core::fixtures::load_request(app.proj().root(), "main/gone").is_err());
 }
 
@@ -7257,13 +6286,7 @@ fn save_with_no_slug_opens_save_as_prompt() {
     let mut app = App::new_for_test();
     app.editor.url = crate::components::line_input::LineInput::new("https://x/new");
     app.update(Action::SaveRequest);
-    assert!(matches!(
-        app.modals.top(),
-        Some(Modal::Prompt {
-            kind: PromptKind::SaveAs,
-            ..
-        })
-    ));
+    assert!(matches!(app.modals.top(), Some(Modal::Prompt { kind: PromptKind::SaveAs, .. })));
     for c in "fresh".chars() {
         app.handle_key(plain(c));
     }
@@ -7300,14 +6323,8 @@ async fn stale_generation_results_are_ignored() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
     app.session.send_generation = 5;
-    app.update(Action::RequestFailed {
-        generation: 4,
-        error: "old".into(),
-    });
-    assert!(
-        matches!(app.session.response.state(), ResponseState::Empty),
-        "stale result dropped"
-    );
+    app.update(Action::RequestFailed { generation: 4, error: "old".into() });
+    assert!(matches!(app.session.response.state(), ResponseState::Empty), "stale result dropped");
 }
 
 #[tokio::test]
@@ -7316,10 +6333,7 @@ async fn empty_url_toasts_instead_of_sending() {
     let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
     app.update(Action::Send);
     assert!(app.session.in_flight.is_empty());
-    assert!(
-        !app.toasts.is_empty(),
-        "empty URL must toast rather than send"
-    );
+    assert!(!app.toasts.is_empty(), "empty URL must toast rather than send");
 }
 
 #[tokio::test]
@@ -7327,18 +6341,9 @@ async fn force_send_with_empty_url_toasts_and_does_not_spawn() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
     app.update(Action::ForceSend);
-    assert!(
-        app.session.in_flight.is_empty(),
-        "no task should be spawned for an empty URL"
-    );
-    assert!(
-        !app.toasts.is_empty(),
-        "empty URL must toast even via ForceSend directly"
-    );
-    assert_eq!(
-        app.session.send_generation, 0,
-        "generation must not advance without a send"
-    );
+    assert!(app.session.in_flight.is_empty(), "no task should be spawned for an empty URL");
+    assert!(!app.toasts.is_empty(), "empty URL must toast even via ForceSend directly");
+    assert_eq!(app.session.send_generation, 0, "generation must not advance without a send");
 }
 
 #[test]
@@ -7355,10 +6360,7 @@ fn modal_prompt_field_supports_click_to_place_drag_select_and_double_click() {
         app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
     render_once(&mut app);
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::ModalInput(0))
-        .expect("prompt input hit");
+    let r = app.hits.rect_of(&crate::hit::Hit::ModalInput(0)).expect("prompt input hit");
 
     // Click lands the caret on the clicked char (inner text starts two
     // cells into the box, on its middle row).
@@ -7377,11 +6379,7 @@ fn modal_prompt_field_supports_click_to_place_drag_select_and_double_click() {
     app.handle_mouse(left_up(r.x + 2 + 2, r.y + 1));
     app.handle_mouse(left_down(r.x + 2 + 2, r.y + 1));
     let input = app.modals.focused_input().expect("prompt input");
-    assert_eq!(
-        input.selection(),
-        Some((0, 5)),
-        "double click selects the word"
-    );
+    assert_eq!(input.selection(), Some((0, 5)), "double click selects the word");
 }
 
 /// Final-review finding 1: Esc closes a modal field to selected, then a
@@ -7400,21 +6398,12 @@ fn clicking_a_field_closed_to_selected_reopens_it_for_typing() {
     }
     // Closing the field keeps the text and lands on the selected state.
     app.modals.close_top_field();
-    assert!(
-        !app.modals.field_open(),
-        "the field must close to selected"
-    );
+    assert!(!app.modals.field_open(), "the field must close to selected");
 
     render_once(&mut app);
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::ModalInput(0))
-        .expect("prompt input hit");
+    let r = app.hits.rect_of(&crate::hit::Hit::ModalInput(0)).expect("prompt input hit");
     app.handle_mouse(left_down(r.x + 2 + 2, r.y + 1));
-    assert!(
-        app.modals.field_open(),
-        "a click on a closed-to-selected field must reopen it"
-    );
+    assert!(app.modals.field_open(), "a click on a closed-to-selected field must reopen it");
 
     // Caret must actually render now, not just the flag: draw once more
     // and look for the input's own REVERSED cell (the caret's styling).
@@ -7456,11 +6445,7 @@ async fn shift_enter_sends_even_while_the_body_editor_has_focus() {
     let ev = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
     app.handle_key(ev);
     assert!(!app.session.in_flight.is_empty(), "shift+enter sent");
-    assert_eq!(
-        app.editor.body_text(),
-        "{}",
-        "no newline leaked into the body"
-    );
+    assert_eq!(app.editor.body_text(), "{}", "no newline leaked into the body");
 }
 
 #[test]
@@ -7513,7 +6498,9 @@ fn plain_enter_confirms_a_one_field_prompt_but_never_a_multi_field_form() {
     let dir = tempfile::tempdir().unwrap();
     app.modals.push(Modal::NewProject {
         name: crate::components::line_input::LineInput::new("demo"),
-        path: crate::components::line_input::LineInput::new(&dir.path().join("demo").to_string_lossy()),
+        path: crate::components::line_input::LineInput::new(
+            &dir.path().join("demo").to_string_lossy(),
+        ),
         on_path: false,
         prefilled: true,
     });
@@ -7538,7 +6525,9 @@ fn plain_enter_never_confirms_a_form_modal_even_if_keys_toml_binds_it_to_send() 
     let dir = tempfile::tempdir().unwrap();
     app.modals.push(Modal::NewProject {
         name: crate::components::line_input::LineInput::new("demo"),
-        path: crate::components::line_input::LineInput::new(&dir.path().join("demo").to_string_lossy()),
+        path: crate::components::line_input::LineInput::new(
+            &dir.path().join("demo").to_string_lossy(),
+        ),
         on_path: false,
         prefilled: true,
     });
@@ -7556,10 +6545,7 @@ async fn force_send_spawns_a_task_and_marks_response_in_flight() {
     app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9"); // unroutable, never actually hit
     app.update(Action::ForceSend);
     assert!(!app.session.in_flight.is_empty());
-    assert!(matches!(
-        app.session.response.state(),
-        ResponseState::InFlight { .. }
-    ));
+    assert!(matches!(app.session.response.state(), ResponseState::InFlight { .. }));
     assert_eq!(app.session.send_generation, 1);
 }
 
@@ -7591,11 +6577,7 @@ async fn send_is_a_noop_while_the_open_request_is_in_flight() {
 
     app.update(Action::Send);
     app.update(Action::ForceSend);
-    assert_eq!(
-        app.session.in_flight.len(),
-        1,
-        "a request already in flight cannot be sent again"
-    );
+    assert_eq!(app.session.in_flight.len(), 1, "a request already in flight cannot be sent again");
     assert_eq!(
         app.session.in_flight[0].generation, generation,
         "the original send is untouched, not superseded"
@@ -7615,10 +6597,7 @@ async fn esc_nothing_else_consumed_cancels_the_open_requests_send() {
         app.session.in_flight.is_empty(),
         "a bare esc cancels the open request's send from any pane"
     );
-    assert!(matches!(
-        app.session.response.state(),
-        ResponseState::Cancelled
-    ));
+    assert!(matches!(app.session.response.state(), ResponseState::Cancelled));
 }
 
 #[tokio::test]
@@ -7630,10 +6609,7 @@ async fn cancel_send_aborts_task_and_marks_cancelled() {
     assert!(!app.session.in_flight.is_empty());
     app.update(Action::CancelSend);
     assert!(app.session.in_flight.is_empty());
-    assert!(matches!(
-        app.session.response.state(),
-        ResponseState::Cancelled
-    ));
+    assert!(matches!(app.session.response.state(), ResponseState::Cancelled));
     // no-op when nothing is in flight
     assert!(!app.update(Action::CancelSend));
 }
@@ -7646,10 +6622,7 @@ async fn cancelled_send_ignores_a_result_that_was_already_queued() {
     app.update(Action::ForceSend);
     let generation = app.session.send_generation;
     app.update(Action::CancelSend);
-    assert!(matches!(
-        app.session.response.state(),
-        ResponseState::Cancelled
-    ));
+    assert!(matches!(app.session.response.state(), ResponseState::Cancelled));
 
     // Simulate the in-flight task's result landing after cancellation,
     // still tagged with the generation it was spawned under.
@@ -7664,10 +6637,7 @@ async fn cancelled_send_ignores_a_result_that_was_already_queued() {
         size: 4,
         content_type: None,
     };
-    app.update(Action::ResponseArrived {
-        generation,
-        data: Box::new(data),
-    });
+    app.update(Action::ResponseArrived { generation, data: Box::new(data) });
     assert!(
         matches!(app.session.response.state(), ResponseState::Cancelled),
         "a result racing the cancel must not overwrite it"
@@ -7698,10 +6668,7 @@ async fn response_arrived_with_current_generation_clears_in_flight() {
         size: 2,
         content_type: None,
     };
-    app.update(Action::ResponseArrived {
-        generation: 1,
-        data: Box::new(data.clone()),
-    });
+    app.update(Action::ResponseArrived { generation: 1, data: Box::new(data.clone()) });
     assert!(app.session.in_flight.is_empty());
     assert!(matches!(app.session.response.state(), ResponseState::Ready(d) if **d == data));
 }
@@ -7709,12 +6676,9 @@ async fn response_arrived_with_current_generation_clears_in_flight() {
 #[test]
 fn esc_on_in_flight_response_pane_requests_cancel() {
     let mut app = App::new_for_test();
-    app.session.response.set_state(
-        ResponseState::InFlight {
-            started: std::time::Instant::now(),
-        },
-        0,
-    );
+    app.session
+        .response
+        .set_state(ResponseState::InFlight { started: std::time::Instant::now() }, 0);
     let action = app
         .session
         .response
@@ -7741,30 +6705,12 @@ fn plain_keys_reach_the_focused_response_pane() {
     );
     app.focus = PaneId::Response;
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    assert_eq!(
-        app.session.response.view().unwrap().cursor,
-        1,
-        "Down moved the response cursor"
-    );
+    assert_eq!(app.session.response.view().unwrap().cursor, 1, "Down moved the response cursor");
     // 'q' quits globally, but the pane's search input takes it first.
     app.handle_key(plain('/'));
     app.handle_key(plain('q'));
-    assert!(
-        !app.should_quit,
-        "a key the pane consumed must not fall through"
-    );
-    assert_eq!(
-        app.session
-            .response
-            .view()
-            .unwrap()
-            .search
-            .as_ref()
-            .unwrap()
-            .input
-            .text(),
-        "q"
-    );
+    assert!(!app.should_quit, "a key the pane consumed must not fall through");
+    assert_eq!(app.session.response.view().unwrap().search.as_ref().unwrap().input.text(), "q");
 }
 
 #[test]
@@ -7901,16 +6847,10 @@ fn switch_restores_target_projects_open_request_and_saves_state() {
 fn project_chooser_offers_a_new_project_row() {
     let (mut app, _a, _b) = two_projects();
     app.update(Action::OpenProjectChooser);
-    let Some(Modal::Chooser(c)) = app.modals.top() else {
-        panic!("expected chooser")
-    };
+    let Some(Modal::Chooser(c)) = app.modals.top() else { panic!("expected chooser") };
     let labels: Vec<&str> = c.items.iter().map(|i| i.label.as_str()).collect();
     let n = labels.len();
-    assert_eq!(
-        &labels[n - 2..],
-        ["open by path\u{2026}", "new project\u{2026}"],
-        "{labels:?}"
-    );
+    assert_eq!(&labels[n - 2..], ["open by path\u{2026}", "new project\u{2026}"], "{labels:?}");
     assert_eq!(c.items[n - 1].actions, vec![Action::PromptNewProject]);
 
     type_chars(&mut app, "new project");
@@ -7922,9 +6862,7 @@ fn project_chooser_offers_a_new_project_row() {
 fn project_chooser_lists_known_and_open_by_path_creates() {
     let (mut app, _a, _b) = two_projects();
     app.update(Action::OpenProjectChooser);
-    let Some(Modal::Chooser(c)) = app.modals.top() else {
-        panic!("expected chooser")
-    };
+    let Some(Modal::Chooser(c)) = app.modals.top() else { panic!("expected chooser") };
     assert!(
         format!("{:?}", (c.input(), c.selected_label())).contains("alpha")
             || c.selected_label().is_some()
@@ -7932,9 +6870,7 @@ fn project_chooser_lists_known_and_open_by_path_creates() {
     app.update(Action::Close);
     let fresh = tempfile::tempdir().unwrap();
     let target = fresh.path().join("newproj");
-    app.update(Action::OpenProjectByPath(
-        target.to_string_lossy().into_owned(),
-    ));
+    app.update(Action::OpenProjectByPath(target.to_string_lossy().into_owned()));
     assert!(
         matches!(app.modals.top(), Some(Modal::Confirm { .. })),
         "non-project path asks to create"
@@ -7955,14 +6891,8 @@ fn new_project_modal_prefills_path_from_name_and_creates() {
         app.handle_key(plain(c));
     }
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    let Some(Modal::NewProject { path, .. }) = app.modals.top() else {
-        panic!()
-    };
-    assert!(
-        path.text().ends_with("/my-svc"),
-        "slugified prefill: {}",
-        path.text()
-    );
+    let Some(Modal::NewProject { path, .. }) = app.modals.top() else { panic!() };
+    assert!(path.text().ends_with("/my-svc"), "slugified prefill: {}", path.text());
     // Enter now only closes the open field to selected (spec 2026-09-16);
     // submitting is the button row's Confirm click, same as clicking OK.
     render_once(&mut app);
@@ -8061,22 +6991,15 @@ fn picker_keys_paste_scroll_and_footer_route_through_the_modal_stack() {
     )));
 
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    let Some(Modal::FilePicker(p)) = app.modals.top() else {
-        panic!()
-    };
+    let Some(Modal::FilePicker(p)) = app.modals.top() else { panic!() };
     assert_eq!(p.selected(), 1);
 
     let text = rendered_text(&mut app);
     assert!(text.contains("Open project"), "picker drawn: {text}");
-    assert!(
-        text.contains("open this folder"),
-        "footer advertises: {text}"
-    );
+    assert!(text.contains("open this folder"), "footer advertises: {text}");
 
     app.paste_text(&root.path().join("two").to_string_lossy());
-    let Some(Modal::FilePicker(p)) = app.modals.top() else {
-        panic!()
-    };
+    let Some(Modal::FilePicker(p)) = app.modals.top() else { panic!() };
     assert_eq!(p.dir(), root.path().join("two"));
 
     // Scrolling over the picker is a no-op that still counts as handled.
@@ -8137,15 +7060,11 @@ fn picker_mouse_rows_primary_and_hidden_toggle() {
     // Rows: "..", "one". A click selects; a second click on the selected
     // row acts on it (a project folder opens outright).
     click_hit(&mut app, Hit::PickerRow(1));
-    let Some(Modal::FilePicker(p)) = app.modals.top() else {
-        panic!()
-    };
+    let Some(Modal::FilePicker(p)) = app.modals.top() else { panic!() };
     assert_eq!(p.selected(), 1);
 
     click_hit(&mut app, Hit::PickerHidden);
-    let Some(Modal::FilePicker(p)) = app.modals.top() else {
-        panic!()
-    };
+    let Some(Modal::FilePicker(p)) = app.modals.top() else { panic!() };
     assert!(p.show_hidden());
     assert_eq!(p.row_names(), vec!["..", ".dot", "one"]);
 
@@ -8191,10 +7110,7 @@ fn create_project_with_dirty_editor_defers_last_until_dirty_gate_resolves() {
         path: new_path.to_string_lossy().into_owned(),
     });
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
-    assert_eq!(
-        app.registry.last, old_last,
-        "last must not change before the dirty gate resolves"
-    );
+    assert_eq!(app.registry.last, old_last, "last must not change before the dirty gate resolves");
     assert!(
         app.registry.known.contains(&new_path),
         "new path is known even though not yet current"
@@ -8211,16 +7127,9 @@ fn cycle_env_reloads_project_files_before_switching() {
     let (mut app, dir) = app_with_envs();
     // Rewrite variables.toml on disk with a bumped mtime so
     // reload_if_changed picks it up.
-    std::fs::write(
-        dir.path().join("variables.toml"),
-        "[greeting]\ndefault = \"hi\"\n",
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("variables.toml"), "[greeting]\ndefault = \"hi\"\n").unwrap();
     let t = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
-    let f = std::fs::File::options()
-        .append(true)
-        .open(dir.path().join("variables.toml"))
-        .unwrap();
+    let f = std::fs::File::options().append(true).open(dir.path().join("variables.toml")).unwrap();
     f.set_modified(t).unwrap();
 
     app.update(Action::CycleEnv(1));
@@ -8247,14 +7156,8 @@ fn switch_env_failure_shows_warning_without_stale_success_toast() {
     std::fs::write(dir.path().join("environments/broken.toml"), "not toml [").unwrap();
     app.update(Action::SwitchEnv(Some("broken".into())));
     let text = rendered_text(&mut app);
-    assert!(
-        text.contains("could not load environment"),
-        "warning shown: {text}"
-    );
-    assert!(
-        !text.contains("env:"),
-        "no stale success toast on failure: {text}"
-    );
+    assert!(text.contains("could not load environment"), "warning shown: {text}");
+    assert!(!text.contains("env:"), "no stale success toast on failure: {text}");
 }
 
 #[test]
@@ -8279,20 +7182,12 @@ fn new_project_tab_prefill_noop_when_slugify_is_empty() {
         app.handle_key(plain(c));
     }
     let before = {
-        let Some(Modal::NewProject { path, .. }) = app.modals.top() else {
-            panic!()
-        };
+        let Some(Modal::NewProject { path, .. }) = app.modals.top() else { panic!() };
         path.text().to_string()
     };
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    let Some(Modal::NewProject { path, .. }) = app.modals.top() else {
-        panic!()
-    };
-    assert_eq!(
-        path.text(),
-        before,
-        "empty slugify must not append to the path prefill"
-    );
+    let Some(Modal::NewProject { path, .. }) = app.modals.top() else { panic!() };
+    assert_eq!(path.text(), before, "empty slugify must not append to the path prefill");
 }
 
 #[test]
@@ -8300,15 +7195,9 @@ fn create_project_with_empty_path_toasts_and_creates_nothing() {
     let mut app = App::new_for_test();
     let before_root = app.proj().root().to_path_buf();
     let before_known = app.registry.known.clone();
-    app.update(Action::CreateProject {
-        name: "x".into(),
-        path: "".into(),
-    });
+    app.update(Action::CreateProject { name: "x".into(), path: "".into() });
     let text = rendered_text(&mut app);
-    assert!(
-        text.contains("project path is empty — enter a path"),
-        "error toast shown: {text}"
-    );
+    assert!(text.contains("project path is empty — enter a path"), "error toast shown: {text}");
     assert_eq!(app.proj().root(), before_root, "no project switch");
     assert_eq!(app.registry.known, before_known, "no project registered");
 }
@@ -8316,28 +7205,14 @@ fn create_project_with_empty_path_toasts_and_creates_nothing() {
 #[test]
 fn stale_table_edit_does_not_capture_insert_var_text_after_focus_moves() {
     let mut app = App::new_for_test();
-    app.editor.params.insert(
-        "page".into(),
-        postui_core::model::Entry {
-            value: "2".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
     app.editor.active_tab = EditorTab::Params;
     app.editor.sub_focus = SubFocus::Content;
     app.editor.table.selected = Some(0);
-    app.editor
-        .table
-        .begin_edit_selected(&app.editor.params.clone());
-    let pending_before = app
-        .editor
-        .table
-        .editing
-        .as_ref()
-        .unwrap()
-        .input
-        .text()
-        .to_string();
+    app.editor.table.begin_edit_selected(&app.editor.params.clone());
+    let pending_before = app.editor.table.editing.as_ref().unwrap().input.text().to_string();
 
     app.update(Action::FocusPane(PaneId::Response));
     app.update(Action::InsertVarText("x".into()));
@@ -8370,40 +7245,19 @@ fn app_with_envs() -> (App, tempfile::TempDir) {
 fn set_env_tls_writes_project_toml_and_toasts() {
     use postui_core::project::TlsPolicy;
     let (mut app, dir) = app_with_envs();
-    app.update(Action::SetEnvTls {
-        env: "prod".into(),
-        policy: Some(TlsPolicy::Verify),
-    });
+    app.update(Action::SetEnvTls { env: "prod".into(), policy: Some(TlsPolicy::Verify) });
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert_eq!(
-        postui_core::project::env_tls(&meta, "prod"),
-        Some(TlsPolicy::Verify)
-    );
+    assert_eq!(postui_core::project::env_tls(&meta, "prod"), Some(TlsPolicy::Verify));
     assert_eq!(
         postui_core::project::env_tls(app.proj().meta(), "prod"),
         Some(TlsPolicy::Verify),
         "meta reloaded in memory"
     );
-    assert_eq!(
-        app.toasts.messages().last().copied(),
-        Some("prod forces TLS verification")
-    );
-    app.update(Action::SetEnvTls {
-        env: "prod".into(),
-        policy: Some(TlsPolicy::Insecure),
-    });
-    assert_eq!(
-        app.toasts.messages().last().copied(),
-        Some("prod skips TLS verification")
-    );
-    app.update(Action::SetEnvTls {
-        env: "prod".into(),
-        policy: None,
-    });
-    assert_eq!(
-        postui_core::project::env_tls(app.proj().meta(), "prod"),
-        None
-    );
+    assert_eq!(app.toasts.messages().last().copied(), Some("prod forces TLS verification"));
+    app.update(Action::SetEnvTls { env: "prod".into(), policy: Some(TlsPolicy::Insecure) });
+    assert_eq!(app.toasts.messages().last().copied(), Some("prod skips TLS verification"));
+    app.update(Action::SetEnvTls { env: "prod".into(), policy: None });
+    assert_eq!(postui_core::project::env_tls(app.proj().meta(), "prod"), None);
     assert_eq!(
         app.toasts.messages().last().copied(),
         Some("prod leaves TLS verification to each request")
@@ -8416,16 +7270,10 @@ fn toggle_insecure_under_an_environment_force_saves_but_warns() {
     let (mut app, dir) = app_with_envs();
     // The toast names the environment the way the header does: by its
     // display name, not its slug.
-    std::fs::write(
-        dir.path().join("project.toml"),
-        "[environment.prod]\nname = \"Prod\"\n",
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("project.toml"), "[environment.prod]\nname = \"Prod\"\n")
+        .unwrap();
     app.reload_project_documents();
-    app.update(Action::SetEnvTls {
-        env: "prod".into(),
-        policy: Some(TlsPolicy::Verify),
-    });
+    app.update(Action::SetEnvTls { env: "prod".into(), policy: Some(TlsPolicy::Verify) });
     app.update(Action::SwitchEnv(Some("prod".into())));
     app.update(Action::ToggleInsecure);
     assert!(app.editor.insecure, "the request's own flag still flips");
@@ -8433,10 +7281,7 @@ fn toggle_insecure_under_an_environment_force_saves_but_warns() {
         app.toasts.messages().last().copied(),
         Some("Saved, but Prod forces TLS verification")
     );
-    app.update(Action::SetEnvTls {
-        env: "prod".into(),
-        policy: Some(TlsPolicy::Insecure),
-    });
+    app.update(Action::SetEnvTls { env: "prod".into(), policy: Some(TlsPolicy::Insecure) });
     app.update(Action::ToggleInsecure);
     assert!(!app.editor.insecure);
     assert_eq!(
@@ -8444,10 +7289,7 @@ fn toggle_insecure_under_an_environment_force_saves_but_warns() {
         Some("Saved, but Prod skips TLS verification")
     );
     // No force: the plain toasts.
-    app.update(Action::SetEnvTls {
-        env: "prod".into(),
-        policy: None,
-    });
+    app.update(Action::SetEnvTls { env: "prod".into(), policy: None });
     app.update(Action::ToggleInsecure);
     assert_eq!(
         app.toasts.messages().last().copied(),
@@ -8460,9 +7302,7 @@ fn manage_environments_pane_has_a_tls_control_that_writes_the_force() {
     use crate::components::manage::ManageTab;
     use postui_core::project::TlsPolicy;
     let (mut app, _dir) = app_with_envs();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Environments),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
     app.manage_select_name("prod");
     let text = rendered_text_tall(&mut app);
     assert!(text.contains("TLS"), "{text}");
@@ -8471,39 +7311,22 @@ fn manage_environments_pane_has_a_tls_control_that_writes_the_force() {
     assert!(text.contains("Insecure"), "{text}");
 
     click_hit(&mut app, Hit::ManageEnvTls(Some(TlsPolicy::Verify)));
-    assert_eq!(
-        postui_core::project::env_tls(app.proj().meta(), "prod"),
-        Some(TlsPolicy::Verify)
-    );
+    assert_eq!(postui_core::project::env_tls(app.proj().meta(), "prod"), Some(TlsPolicy::Verify));
     click_hit(&mut app, Hit::ManageEnvTls(None));
-    assert_eq!(
-        postui_core::project::env_tls(app.proj().meta(), "prod"),
-        None
-    );
+    assert_eq!(postui_core::project::env_tls(app.proj().meta(), "prod"), None);
 
     // `t` cycles per request → verify → insecure → per request.
     app.handle_key(plain('t'));
-    assert_eq!(
-        postui_core::project::env_tls(app.proj().meta(), "prod"),
-        Some(TlsPolicy::Verify)
-    );
+    assert_eq!(postui_core::project::env_tls(app.proj().meta(), "prod"), Some(TlsPolicy::Verify));
     app.handle_key(plain('t'));
-    assert_eq!(
-        postui_core::project::env_tls(app.proj().meta(), "prod"),
-        Some(TlsPolicy::Insecure)
-    );
+    assert_eq!(postui_core::project::env_tls(app.proj().meta(), "prod"), Some(TlsPolicy::Insecure));
     app.handle_key(plain('t'));
-    assert_eq!(
-        postui_core::project::env_tls(app.proj().meta(), "prod"),
-        None
-    );
+    assert_eq!(postui_core::project::env_tls(app.proj().meta(), "prod"), None);
     // Advertised in the footer.
     assert!(
         crate::keyroute::spell::spelled_on(
             crate::keyroute::Surface::ManageList(ManageTab::Environments),
-            app.manage
-                .list
-                .footer_chips(ManageTab::Environments, app.proj())
+            app.manage.list.footer_chips(ManageTab::Environments, app.proj())
         )
         .iter()
         .any(|(k, l, _)| *k == "t" && *l == "tls"),
@@ -8516,19 +7339,14 @@ fn padlock_shows_the_effective_tls_state_under_an_environment_force() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     let (mut app, _dir) = app_with_envs();
-    app.update(Action::SetEnvTls {
-        env: "prod".into(),
-        policy: Some(TlsPolicy::Insecure),
-    });
+    app.update(Action::SetEnvTls { env: "prod".into(), policy: Some(TlsPolicy::Insecure) });
     let lock_glyph = |app: &mut App| -> (String, ratatui::style::Color) {
         app.anims.finish_all();
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
-        let r = app
-            .hits
-            .rect_of(&Hit::FooterChip(Action::ToggleInsecure))
-            .expect("padlock registered");
+        let r =
+            app.hits.rect_of(&Hit::FooterChip(Action::ToggleInsecure)).expect("padlock registered");
         let cell = &terminal.backend().buffer()[(r.x + 1, r.y)];
         (cell.symbol().to_string(), cell.fg)
     };
@@ -8551,11 +7369,7 @@ fn cycle_env_wraps_and_skips_no_env() {
     app.update(Action::CycleEnv(1));
     assert_eq!(app.env_label(), "qa");
     app.update(Action::CycleEnv(1));
-    assert_eq!(
-        app.env_label(),
-        "prod",
-        "wraps directly, never through no-env"
-    );
+    assert_eq!(app.env_label(), "prod", "wraps directly, never through no-env");
     assert_eq!(app.proj().env_data().values["tok"], "p");
     let st = postui_core::fixtures::load_local_state(dir.path()).unwrap();
     assert_eq!(st.environment.as_deref(), Some("prod"), "persisted");
@@ -8580,11 +7394,8 @@ fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
     // file) rather than a bare made-up key: `reload_if_changed` prunes
     // selections the model can't account for, so only a genuine one
     // survives the reload an undo triggers.
-    std::fs::write(
-        dir.path().join("variables.toml"),
-        "[selectors.user]\nfields = [\"user\"]\n",
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("variables.toml"), "[selectors.user]\nfields = [\"user\"]\n")
+        .unwrap();
     std::fs::write(
         dir.path().join("environments/qa.toml"),
         "tok = \"q\"\n\n[options.user.alice]\nuser = \"1001\"\n",
@@ -8594,10 +7405,7 @@ fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
     app.update(Action::SwitchEnv(Some("qa".into())));
     app.proj_mut().set_secret("tok", "s3cret".into()).unwrap();
     app.proj_mut().set_selection_for("qa", "user", "alice");
-    app.update(Action::RenameEnv {
-        from: "qa".into(),
-        to: "staging".into(),
-    });
+    app.update(Action::RenameEnv { from: "qa".into(), to: "staging".into() });
     assert!(dir.path().join("environments/staging.toml").is_file());
     assert!(!dir.path().join("environments/qa.toml").exists());
     assert_eq!(app.env_label(), "staging");
@@ -8613,23 +7421,12 @@ fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
     app.update(Action::Undo);
     assert!(dir.path().join("environments/qa.toml").is_file());
     assert_eq!(app.env_label(), "qa");
-    assert_eq!(
-        app.proj().secrets()["qa"]["tok"],
-        "s3cret",
-        "secrets re-keyed back"
-    );
-    assert_eq!(
-        app.proj().selections_for("qa")["user"],
-        "alice",
-        "selections re-keyed back"
-    );
+    assert_eq!(app.proj().secrets()["qa"]["tok"], "s3cret", "secrets re-keyed back");
+    assert_eq!(app.proj().selections_for("qa")["user"], "alice", "selections re-keyed back");
     assert!(app.proj().selections_for("staging").is_empty());
     let st = postui_core::fixtures::load_local_state(dir.path()).unwrap();
     assert_eq!(st.selections["qa"]["user"], "alice");
-    assert!(
-        !st.selections.contains_key("staging"),
-        "no phantom key left on disk"
-    );
+    assert!(!st.selections.contains_key("staging"), "no phantom key left on disk");
 }
 
 #[test]
@@ -8639,11 +7436,8 @@ fn delete_env_never_confirms_and_its_toast_says_values_and_secrets_went() {
     // file) rather than a bare made-up key: `reload_if_changed` prunes
     // selections the model can't account for, so only a genuine one
     // survives the reload an undo triggers.
-    std::fs::write(
-        dir.path().join("variables.toml"),
-        "[selectors.user]\nfields = [\"user\"]\n",
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("variables.toml"), "[selectors.user]\nfields = [\"user\"]\n")
+        .unwrap();
     std::fs::write(
         dir.path().join("environments/qa.toml"),
         "tok = \"q\"\n\n[options.user.alice]\nuser = \"1001\"\n",
@@ -8656,9 +7450,9 @@ fn delete_env_never_confirms_and_its_toast_says_values_and_secrets_went() {
     app.update(Action::DeleteEnv("qa".into()));
     assert!(app.modals.is_empty(), "delete never confirms");
     assert!(
-        app.toasts.last_message().is_some_and(|m| m.starts_with(
-            "Deleted environment qa: its values and secrets went with it"
-        )),
+        app.toasts.last_message().is_some_and(
+            |m| m.starts_with("Deleted environment qa: its values and secrets went with it")
+        ),
         "{:?}",
         app.toasts.messages()
     );
@@ -8668,27 +7462,17 @@ fn delete_env_never_confirms_and_its_toast_says_values_and_secrets_went() {
         "prod",
         "deleting the active env falls through to the first remaining one"
     );
-    assert!(
-        !postui_core::fixtures::load_secrets(dir.path())
-            .unwrap()
-            .contains_key("qa")
-    );
+    assert!(!postui_core::fixtures::load_secrets(dir.path()).unwrap().contains_key("qa"));
     assert!(!app.proj().environments().contains(&"qa".to_string()));
     assert!(app.proj().selections_for("qa").is_empty());
     assert!(
-        !postui_core::fixtures::load_local_state(dir.path())
-            .unwrap()
-            .selections
-            .contains_key("qa")
+        !postui_core::fixtures::load_local_state(dir.path()).unwrap().selections.contains_key("qa")
     );
 
     app.update(Action::Undo);
     assert!(dir.path().join("environments/qa.toml").is_file());
     assert_eq!(app.env_label(), "qa", "active env restored");
-    assert_eq!(
-        postui_core::fixtures::load_secrets(dir.path()).unwrap()["qa"]["tok"],
-        "s3cret"
-    );
+    assert_eq!(postui_core::fixtures::load_secrets(dir.path()).unwrap()["qa"]["tok"], "s3cret");
     assert_eq!(
         app.proj().secrets()["qa"]["tok"],
         "s3cret",
@@ -8700,9 +7484,7 @@ fn delete_env_never_confirms_and_its_toast_says_values_and_secrets_went() {
         "the restored selections come back into memory too"
     );
     assert_eq!(
-        postui_core::fixtures::load_local_state(dir.path())
-            .unwrap()
-            .selections["qa"]["user"],
+        postui_core::fixtures::load_local_state(dir.path()).unwrap().selections["qa"]["user"],
         "alice"
     );
 }
@@ -8715,15 +7497,9 @@ fn env_dropdown_has_no_no_environment_row() {
     let (mut app, _dir) = app_with_envs();
     app.update(Action::SwitchEnv(Some("qa".into())));
     app.update(Action::OpenEnvChooser);
-    let Some(Modal::Dropdown(state)) = app.modals.top() else {
-        panic!("expected dropdown")
-    };
+    let Some(Modal::Dropdown(state)) = app.modals.top() else { panic!("expected dropdown") };
     let labels: Vec<&str> = state.items.iter().map(|it| it.label.as_str()).collect();
-    assert_eq!(
-        labels,
-        ["prod", "qa", "new environment…", "manage environments…"],
-        "{labels:?}"
-    );
+    assert_eq!(labels, ["prod", "qa", "new environment…", "manage environments…"], "{labels:?}");
 }
 
 /// The last environment can't be deleted — the app has no no-env state
@@ -8737,9 +7513,7 @@ fn deleting_the_last_environment_is_refused() {
     app.update(Action::DeleteEnv("prod".into()));
     assert!(app.modals.is_empty(), "no confirm for the last env");
     assert!(
-        app.toasts
-            .last_message()
-            .is_some_and(|m| m.contains("at least one environment")),
+        app.toasts.last_message().is_some_and(|m| m.contains("at least one environment")),
         "{:?}",
         app.toasts.messages()
     );
@@ -8751,27 +7525,19 @@ fn env_chooser_opens_on_the_active_environment() {
     let (mut app, _dir) = app_with_envs();
     app.update(Action::SwitchEnv(Some("qa".into())));
     app.update(Action::OpenEnvChooser);
-    let Some(Modal::Dropdown(state)) = app.modals.top() else {
-        panic!("expected dropdown")
-    };
+    let Some(Modal::Dropdown(state)) = app.modals.top() else { panic!("expected dropdown") };
     assert_eq!(
         state.items[state.selected].label, "qa",
         "the dropdown opens on the active env, not row 0"
     );
-    assert_eq!(
-        state.current,
-        Some(state.selected),
-        "the ✓ marker sits on the active env"
-    );
+    assert_eq!(state.current, Some(state.selected), "the ✓ marker sits on the active env");
     app.update(Action::Close);
 
     // With no env active (an env file gone missing) it opens on row 0
     // with no ✓ anywhere.
     app.update(Action::SwitchEnv(None));
     app.update(Action::OpenEnvChooser);
-    let Some(Modal::Dropdown(state)) = app.modals.top() else {
-        panic!("expected dropdown")
-    };
+    let Some(Modal::Dropdown(state)) = app.modals.top() else { panic!("expected dropdown") };
     assert_eq!(state.selected, 0);
     assert_eq!(state.current, None);
 }
@@ -8794,13 +7560,7 @@ fn env_chooser_new_environment_row_opens_prompt() {
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(
-        matches!(
-            app.modals.top(),
-            Some(Modal::Prompt {
-                kind: PromptKind::NewEnvironment,
-                ..
-            })
-        ),
+        matches!(app.modals.top(), Some(Modal::Prompt { kind: PromptKind::NewEnvironment, .. })),
         "confirming the create row should open the name prompt"
     );
 }
@@ -8830,18 +7590,12 @@ fn create_env_invalid_or_duplicate_name_toasts_and_keeps_active_env() {
     let toasts_before = app.toasts.messages().len();
 
     app.update(Action::CreateEnv("   ".into()));
-    assert!(
-        app.toasts.messages().len() > toasts_before,
-        "invalid name must toast"
-    );
+    assert!(app.toasts.messages().len() > toasts_before, "invalid name must toast");
     assert_eq!(app.env_label(), "qa");
 
     let toasts_before = app.toasts.messages().len();
     app.update(Action::CreateEnv("prod".into()));
-    assert!(
-        app.toasts.messages().len() > toasts_before,
-        "duplicate name must toast"
-    );
+    assert!(app.toasts.messages().len() > toasts_before, "duplicate name must toast");
     assert_eq!(app.env_label(), "qa", "no switch on failure");
     assert_eq!(
         std::fs::read_to_string(dir.path().join("environments/prod.toml")).unwrap(),
@@ -8920,10 +7674,7 @@ fn toggle_insecure_toasts_the_new_state() {
         Some("TLS verification disabled for this request")
     );
     app.update(Action::ToggleInsecure);
-    assert_eq!(
-        app.toasts.messages().last().copied(),
-        Some("TLS verification enabled")
-    );
+    assert_eq!(app.toasts.messages().last().copied(), Some("TLS verification enabled"));
 }
 
 fn app_with_vars() -> App {
@@ -8945,9 +7696,7 @@ fn typing_double_brace_in_url_opens_completing_picker_and_insert_lands_in_url() 
     app.handle_key(plain('{'));
     assert!(app.modals.is_empty(), "one brace: no picker");
     app.handle_key(plain('{'));
-    let Some(Modal::VarPicker(p)) = app.modals.top() else {
-        panic!("expected picker")
-    };
+    let Some(Modal::VarPicker(p)) = app.modals.top() else { panic!("expected picker") };
     assert!(p.completing);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.editor.url.text(), "{{base}}");
@@ -8977,10 +7726,7 @@ fn the_vars_chip_keeps_the_url_focused_so_the_picker_can_insert() {
     app.update(Action::FocusUrl);
     assert_eq!(app.editor.sub_focus, SubFocus::Url);
 
-    click_hit(
-        &mut app,
-        Hit::FooterChip(Action::OpenVarPicker { completing: false }),
-    );
+    click_hit(&mut app, Hit::FooterChip(Action::OpenVarPicker { completing: false }));
     assert!(matches!(app.modals.top(), Some(Modal::VarPicker(_))));
     assert_eq!(
         app.editor.sub_focus,
@@ -8990,10 +7736,7 @@ fn the_vars_chip_keeps_the_url_focused_so_the_picker_can_insert() {
 
     click_hit(&mut app, Hit::VarPickerRow(0));
     assert_eq!(app.editor.url.text(), "{{base}}");
-    assert!(
-        app.toasts.is_empty(),
-        "no \"nowhere to insert\" — the caret was still there"
-    );
+    assert!(app.toasts.is_empty(), "no \"nowhere to insert\" — the caret was still there");
 }
 
 /// Same rule for a live table cell: the chip inserts into what is being
@@ -9004,17 +7747,9 @@ fn the_vars_chip_inserts_into_a_table_cell_under_edit() {
     app.anims.enabled = false;
     click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
     type_chars(&mut app, "x");
-    click_hit(
-        &mut app,
-        Hit::FooterChip(Action::OpenVarPicker { completing: false }),
-    );
+    click_hit(&mut app, Hit::FooterChip(Action::OpenVarPicker { completing: false }));
     click_hit(&mut app, Hit::VarPickerRow(0));
-    let edit = app
-        .editor
-        .table
-        .editing
-        .as_ref()
-        .expect("the cell is still under edit");
+    let edit = app.editor.table.editing.as_ref().expect("the cell is still under edit");
     assert_eq!(edit.input.text(), "x{{base}}");
 }
 
@@ -9051,10 +7786,7 @@ fields = ["user_id", "customer_id"]
     let mut req = req("https://x/ping");
     req.variables.insert(
         "trace_id".into(),
-        postui_core::model::Entry {
-            value: "abc-123".into(),
-            enabled: true,
-        },
+        postui_core::model::Entry { value: "abc-123".into(), enabled: true },
     );
     postui_core::fixtures::save_request(dir.path(), "main/r", &req).unwrap();
 
@@ -9101,10 +7833,7 @@ fn insert_picker_marks_secret_vars_with_the_lock_badge_and_never_shows_the_value
     let content = rendered_text(&mut app);
     assert!(content.contains("api_key"), "{content}");
     assert!(content.contains("\u{F033E}"), "secret badge: {content}");
-    assert!(
-        !content.contains("sk-super-secret"),
-        "secret value must never render: {content}"
-    );
+    assert!(!content.contains("sk-super-secret"), "secret value must never render: {content}");
 }
 
 #[test]
@@ -9157,10 +7886,7 @@ fn insert_picker_new_variable_confirm_creates_the_var_and_inserts_at_the_origina
         "https://x/{{token}}?a=1",
         "inserted at the original cursor, focus returned exactly where it was"
     );
-    assert!(
-        app.proj().variables().vars.contains_key("token"),
-        "the new variable was declared"
-    );
+    assert!(app.proj().variables().vars.contains_key("token"), "the new variable was declared");
     let saved = postui_core::fixtures::load_variables(app.proj().root()).unwrap();
     assert!(saved.vars.contains_key("token"), "written to disk too");
 }
@@ -9202,10 +7928,7 @@ fn insert_picker_new_variable_confirm_with_a_reserved_name_toasts_and_inserts_no
         "\"options\" must not be declared — it's a reserved name"
     );
     let saved = postui_core::fixtures::load_variables(app.proj().root()).unwrap();
-    assert!(
-        !saved.vars.contains_key("options"),
-        "variables.toml on disk must be unchanged"
-    );
+    assert!(!saved.vars.contains_key("options"), "variables.toml on disk must be unchanged");
 }
 
 #[test]
@@ -9252,7 +7975,11 @@ fn the_response_v_selection_yanks_and_ends_on_a_window_key() {
     assert!(app.toasts.messages().contains(&"3 lines yanked"), "{:?}", app.toasts.messages());
     app.handle_key(plain('y'));
     app.handle_key(plain('y'));
-    assert_eq!(app.toasts.messages().iter().filter(|m| **m == "3 lines yanked").count(), 1, "one line says nothing");
+    assert_eq!(
+        app.toasts.messages().iter().filter(|m| **m == "3 lines yanked").count(),
+        1,
+        "one line says nothing"
+    );
     app.handle_key(shifted('V'));
     app.handle_key(plain('j'));
     app.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
@@ -9300,10 +8027,18 @@ fn vim_searches_extend_the_response_v_selection() {
     assert_eq!(cursor(&app), 29, "#");
     search(&mut app, plain('/'), "zzz");
     assert_eq!(cursor(&app), 29, "a miss stays");
-    assert!(app.toasts.messages().contains(&"Pattern not found: zzz"), "{:?}", app.toasts.messages());
+    assert!(
+        app.toasts.messages().contains(&"Pattern not found: zzz"),
+        "{:?}",
+        app.toasts.messages()
+    );
     assert_eq!(app.mode_indicator(), Some("V-LINE"), "and keeps V");
     app.handle_key(plain('y'));
-    assert!(app.toasts.messages().contains(&"30 lines yanked"), "anchored at the first row: {:?}", app.toasts.messages());
+    assert!(
+        app.toasts.messages().contains(&"30 lines yanked"),
+        "anchored at the first row: {:?}",
+        app.toasts.messages()
+    );
 
     let mut app = App::new_for_test();
     app.use_profile(KeyProfile::Arrows);
@@ -9402,10 +8137,18 @@ fn the_body_and_the_response_share_vims_last_pattern() {
     ready_response(&mut app, "x\nb\na\nb");
     app.focus = PaneId::Response;
     feed(&mut app, "n");
-    assert_eq!(app.session.response.view().unwrap().cursor, 2, "the response's n finds the body's /a");
+    assert_eq!(
+        app.session.response.view().unwrap().cursor,
+        2,
+        "the response's n finds the body's /a"
+    );
     feed(&mut app, "?b<CR>");
     assert_eq!(app.session.response.view().unwrap().cursor, 1);
-    assert_eq!(app.vim.search_memory.pattern(), Some(("b", true)), "the response's ?b is the engine's");
+    assert_eq!(
+        app.vim.search_memory.pattern(),
+        Some(("b", true)),
+        "the response's ?b is the engine's"
+    );
     assert!(app.vim.search_memory.hlsearch(), "and the body's highlight is back on");
     app.focus = PaneId::Editor;
     feed(&mut app, "n");
@@ -9502,7 +8245,10 @@ fn space_and_enter_in_a_response_line_selection_follow_the_profile() {
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
     assert!(app.session.response.line_selection());
     app.handle_key(space);
-    assert!(app.session.response.view().unwrap().visible_len() < rows, "arrows: Space folds `a`, as on main");
+    assert!(
+        app.session.response.view().unwrap().visible_len() < rows,
+        "arrows: Space folds `a`, as on main"
+    );
     assert!(!app.session.response.line_selection(), "and the fold drops the selection");
 }
 
@@ -9530,7 +8276,11 @@ fn an_arrows_keys_toml_letter_wins_over_a_response_line_selection() {
     app.keymap.apply_overrides("quit = [\"ctrl+c\", \"x\"]\n").unwrap();
     ready_response(&mut app, &body);
     app.focus = PaneId::Response;
-    assert_eq!(app.key_ctx(&plain('x')).user_bare, Some(Action::Quit), "vim: a letter wins on the response");
+    assert_eq!(
+        app.key_ctx(&plain('x')).user_bare,
+        Some(Action::Quit),
+        "vim: a letter wins on the response"
+    );
     app.handle_key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT));
     assert_eq!(app.key_ctx(&plain('x')).user_bare, None, "vim's V swallows it");
     app.handle_key(plain('x'));
@@ -9565,27 +8315,16 @@ fn ctrl_c_copies_a_table_cell_selection_and_keeps_the_edit_live() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
-        Some(cmd),
-        65536,
-        false,
-    ));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
     let mut input = crate::components::line_input::LineInput::new("page");
     input.select_all();
-    app.editor.table.editing = Some(CellEdit {
-        row: 0,
-        col: Col::Key,
-        input,
-    });
+    app.editor.table.editing = Some(CellEdit { row: 0, col: Col::Key, input });
 
     app.handle_key(ctrl('c'));
 
     assert!(!app.should_quit);
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "page");
-    assert!(
-        app.editor.table.editing.is_some(),
-        "the cell edit stays live"
-    );
+    assert!(app.editor.table.editing.is_some(), "the cell edit stays live");
 }
 
 #[test]
@@ -9595,11 +8334,7 @@ fn ctrl_c_copies_a_var_form_selection_on_the_varmanager_screen() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
-        Some(cmd),
-        65536,
-        false,
-    ));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
     app.screen = Screen::Manage;
     let mut edit = form_edit(VmField::Default, "token value");
     edit.input.select_all();
@@ -9637,10 +8372,7 @@ fn url_bar_drag_selects_and_double_click_selects_the_word() {
     // Dragging on from the double click extends word by word: onto
     // "example" the selection grows to the run between the two words.
     assert!(app.handle_mouse(dragged(area.x + 10, area.y)));
-    assert_eq!(
-        app.editor.url.selected_text().as_deref(),
-        Some("https://example")
-    );
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("https://example"));
     app.handle_mouse(left_up(area.x + 10, area.y));
 
     // A later plain click collapses the selection.
@@ -9654,27 +8386,14 @@ fn dragging_in_the_response_selects_and_ctrl_c_copies_it() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
-        Some(cmd),
-        65536,
-        false,
-    ));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
     ready_response(&mut app, "plain text body"); // not JSON -> Raw view
     render_once(&mut app);
-    let area = app
-        .session
-        .response
-        .view()
-        .unwrap()
-        .last_area
-        .expect("body area recorded");
+    let area = app.session.response.view().unwrap().last_area.expect("body area recorded");
     app.handle_mouse(left_down(area.x, area.y));
     assert!(app.handle_mouse(dragged(area.x + 4, area.y)));
     app.handle_mouse(left_up(area.x + 4, area.y));
-    assert_eq!(
-        app.session.response.selected_text().as_deref(),
-        Some("plain")
-    );
+    assert_eq!(app.session.response.selected_text().as_deref(), Some("plain"));
 
     app.handle_key(ctrl('c'));
     assert!(!app.should_quit, "copy pre-empts quit");
@@ -9687,10 +8406,7 @@ fn click_response_tab_switches_to_headers() {
     let mut app = App::new_for_test();
     ready_response(&mut app, r#"{"a": 1}"#);
     render_once(&mut app);
-    let r = app
-        .hits
-        .rect_of(&Hit::ResponseTab(ViewMode::Headers))
-        .unwrap();
+    let r = app.hits.rect_of(&Hit::ResponseTab(ViewMode::Headers)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
     assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Headers);
     assert_eq!(app.focus, PaneId::Response);
@@ -9781,19 +8497,9 @@ fn the_search_button_opens_the_response_search() {
     let mut app = App::new_for_test();
     ready_response(&mut app, r#"{"a": 1}"#);
     render_once(&mut app);
-    let r = app
-        .hits
-        .rect_of(&Hit::ResponseSearchButton)
-        .expect("Find button");
+    let r = app.hits.rect_of(&Hit::ResponseSearchButton).expect("Find button");
     app.handle_mouse(left_down(r.x, r.y));
-    let search = app
-        .session
-        .response
-        .view()
-        .unwrap()
-        .search
-        .as_ref()
-        .expect("search opened");
+    let search = app.session.response.view().unwrap().search.as_ref().expect("search opened");
     assert!(search.active, "and it is taking typing, exactly as / does");
     assert_eq!(app.focus, PaneId::Response);
 }
@@ -9808,43 +8514,19 @@ fn the_search_step_buttons_cycle_the_matches() {
     }
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     render_once(&mut app);
-    let matches = app
-        .session
-        .response
-        .view()
-        .unwrap()
-        .search
-        .as_ref()
-        .unwrap();
+    let matches = app.session.response.view().unwrap().search.as_ref().unwrap();
     assert_eq!(matches.matches.len(), 3, "one per value");
     assert_eq!(matches.current, 0);
 
     let next = app.hits.rect_of(&Hit::ResponseSearchNext).expect("▼");
     app.handle_mouse(left_down(next.x, next.y));
-    assert_eq!(
-        app.session
-            .response
-            .view()
-            .unwrap()
-            .search
-            .as_ref()
-            .unwrap()
-            .current,
-        1
-    );
+    assert_eq!(app.session.response.view().unwrap().search.as_ref().unwrap().current, 1);
 
     let prev = app.hits.rect_of(&Hit::ResponseSearchPrev).expect("▲");
     app.handle_mouse(left_down(prev.x, prev.y));
     app.handle_mouse(left_down(prev.x, prev.y));
     assert_eq!(
-        app.session
-            .response
-            .view()
-            .unwrap()
-            .search
-            .as_ref()
-            .unwrap()
-            .current,
+        app.session.response.view().unwrap().search.as_ref().unwrap().current,
         2,
         "▲ wraps backwards past the first match"
     );
@@ -9854,13 +8536,9 @@ fn the_search_step_buttons_cycle_the_matches() {
 fn click_table_checkbox_toggles_enabled() {
     let mut app = App::new_for_test();
     app.editor.active_tab = EditorTab::Params;
-    app.editor.params.insert(
-        "page".into(),
-        postui_core::model::Entry {
-            value: "2".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
     hover_row_then_click(&mut app, Hit::TableRow(0), Hit::TableCheckbox(0));
     assert!(!app.editor.params["page"].enabled);
     assert_eq!(
@@ -9872,13 +8550,9 @@ fn click_table_checkbox_toggles_enabled() {
 
 fn three_params(app: &mut App) {
     for (k, v) in [("a", "1"), ("b", "2"), ("c", "3")] {
-        app.editor.params.insert(
-            k.into(),
-            postui_core::model::Entry {
-                value: v.into(),
-                enabled: true,
-            },
-        );
+        app.editor
+            .params
+            .insert(k.into(), postui_core::model::Entry { value: v.into(), enabled: true });
     }
 }
 
@@ -9897,21 +8571,12 @@ fn collapse_hides_body_and_fades_the_tab_labels_out() {
 
     let buf = terminal.backend().buffer();
     let content = format!("{buf:?}");
-    assert!(
-        !content.contains("NAME"),
-        "table header must not be drawn while collapsed: {content}"
-    );
+    assert!(!content.contains("NAME"), "table header must not be drawn while collapsed: {content}");
 
     // Hiding hides the controls too: the tab labels (count included) fade
     // out entirely, leaving only the split control on the row.
-    assert!(
-        !content.contains("Params · 3"),
-        "tab labels are invisible while hidden: {content}"
-    );
-    assert!(
-        content.contains('\u{2586}'),
-        "the split control's chips stay: {content}"
-    );
+    assert!(!content.contains("Params · 3"), "tab labels are invisible while hidden: {content}");
+    assert!(content.contains('\u{2586}'), "the split control's chips stay: {content}");
 }
 
 #[test]
@@ -9921,15 +8586,9 @@ fn collapse_toggle_click_and_key() {
     render_once(&mut app);
     assert!(!app.table_collapsed);
 
-    let r = app
-        .hits
-        .rect_of(&Hit::SplitStop(crate::split::SplitStop::ResponseFull))
-        .unwrap();
+    let r = app.hits.rect_of(&Hit::SplitStop(crate::split::SplitStop::ResponseFull)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
-    assert!(
-        app.table_collapsed,
-        "clicking the response-full chip collapses the editor"
-    );
+    assert!(app.table_collapsed, "clicking the response-full chip collapses the editor");
 
     app.handle_key(alt('p'));
     assert!(!app.table_collapsed, "alt+p toggles it back off");
@@ -9951,10 +8610,7 @@ fn collapse_on_a_table_tab_shrinks_editor_to_a_row_and_grows_response() {
         crate::components::editor::COLLAPSED_HEIGHT,
         "editor pane shrinks to exactly its one-row strip"
     );
-    assert!(
-        response.height > expanded_response.height,
-        "response pane reclaims the freed rows"
-    );
+    assert!(response.height > expanded_response.height, "response pane reclaims the freed rows");
 }
 
 #[test]
@@ -9975,10 +8631,7 @@ fn collapse_on_the_body_tab_shrinks_editor_to_chrome_too() {
         crate::components::editor::COLLAPSED_HEIGHT,
         "Body tab active: hide collapses the editor all the same"
     );
-    assert!(
-        response.height > expanded_response.height,
-        "response pane reclaims the freed rows"
-    );
+    assert!(response.height > expanded_response.height, "response pane reclaims the freed rows");
 }
 
 /// The response pane's collapse is a layout preference, not per-request
@@ -10043,9 +8696,7 @@ fn no_blank_screen_across_request_switches() {
     // Hide request A's response, then switch away — the collapse follows.
     app.editor.slug = Some("a".into());
     app.update(Action::Render);
-    app.session
-        .response
-        .set_state(crate::components::response::ResponseState::Cancelled, 0);
+    app.session.response.set_state(crate::components::response::ResponseState::Cancelled, 0);
     app.update(Action::ToggleResponseCollapse);
     app.editor.slug = Some("b".into());
     app.update(Action::Render);
@@ -10058,10 +8709,7 @@ fn no_blank_screen_across_request_switches() {
     app.editor.slug = Some("a".into());
     app.update(Action::Render);
     assert!(app.table_collapsed, "the editor stays hidden");
-    assert!(
-        !app.session.response.collapsed,
-        "the response stays expanded"
-    );
+    assert!(!app.session.response.collapsed, "the response stays expanded");
 }
 
 #[test]
@@ -10072,10 +8720,7 @@ fn hiding_the_expanded_response_swaps_the_panels() {
 
     app.update(Action::ToggleResponseCollapse);
     assert!(app.session.response.collapsed, "the response hides");
-    assert!(
-        !app.table_collapsed,
-        "the editor expands instead of leaving the screen blank"
-    );
+    assert!(!app.table_collapsed, "the editor expands instead of leaving the screen blank");
 }
 
 #[test]
@@ -10088,10 +8733,7 @@ fn open_method_dropdown_has_all_seven_methods_selected_at_current() {
     };
     assert_eq!(state.items.len(), 7);
     assert_eq!(state.selected, 2, "Put is index 2 in Method::ALL");
-    assert_eq!(
-        state.items[2].action,
-        Some(Action::SetMethod(postui_core::model::Method::Put))
-    );
+    assert_eq!(state.items[2].action, Some(Action::SetMethod(postui_core::model::Method::Put)));
 }
 
 #[test]
@@ -10149,10 +8791,7 @@ fn method_dropdown_opens_and_closes_without_any_animation_in_flight() {
     let now = std::time::Instant::now();
 
     let no_motion = |app: &App, when: &str| {
-        assert!(
-            !app.anims.active(now),
-            "{when}: no animation may be in flight around a dropdown"
-        );
+        assert!(!app.anims.active(now), "{when}: no animation may be in flight around a dropdown");
     };
 
     // Open, then close via Esc (`Action::Close`).
@@ -10283,20 +8922,14 @@ fn click_chooser_row_selects_then_click_again_confirms() {
         matches!(app.modals.top(), Some(Modal::Chooser(_))),
         "first click only selects: modal stays open"
     );
-    let Some(Modal::Chooser(c)) = app.modals.top() else {
-        unreachable!()
-    };
+    let Some(Modal::Chooser(c)) = app.modals.top() else { unreachable!() };
     assert_eq!(c.selected(), 1, "selection moved to the clicked row");
     assert_ne!(app.proj().root(), b.path(), "not switched yet");
 
     render_once(&mut app);
     let row1 = app.hits.rect_of(&Hit::ChooserRow(1)).unwrap();
     assert!(app.handle_mouse(left_down(row1.x, row1.y)));
-    assert_eq!(
-        app.proj().root(),
-        b.path(),
-        "second click on the already-selected row confirms"
-    );
+    assert_eq!(app.proj().root(), b.path(), "second click on the already-selected row confirms");
     assert!(app.modals.is_empty());
 }
 
@@ -10309,10 +8942,7 @@ fn click_outside_the_palette_closes_it_with_no_action() {
     let palette_row = app.hits.rect_of(&Hit::PaletteRow(0)).unwrap();
     // A point in the screen's top-left corner, clear of the centered
     // palette rect.
-    assert!(
-        palette_row.y > 0,
-        "sanity: the palette isn't flush against the top edge"
-    );
+    assert!(palette_row.y > 0, "sanity: the palette isn't flush against the top edge");
     assert!(app.handle_mouse(left_down(0, 0)));
     assert!(app.modals.is_empty());
     assert!(!app.should_quit);
@@ -10329,10 +8959,7 @@ fn click_confirm_choice_chip_fires_its_action() {
     let chip = app.hits.rect_of(&Hit::ConfirmChoice('d')).unwrap();
     assert!(app.handle_mouse(left_down(chip.x, chip.y)));
     assert!(app.modals.is_empty());
-    assert!(
-        app.should_quit,
-        "clicking the [d] chip must discard changes and quit"
-    );
+    assert!(app.should_quit, "clicking the [d] chip must discard changes and quit");
 }
 
 #[test]
@@ -10345,10 +8972,7 @@ fn click_message_ok_button_closes_it_same_as_enter() {
     render_once(&mut app);
     let ok = app.hits.rect_of(&Hit::ModalConfirm).unwrap();
     assert!(app.handle_mouse(left_down(ok.x, ok.y)));
-    assert!(
-        app.modals.is_empty(),
-        "clicking OK must close the modal, exactly like Enter/Esc"
-    );
+    assert!(app.modals.is_empty(), "clicking OK must close the modal, exactly like Enter/Esc");
 }
 
 #[test]
@@ -10362,14 +8986,9 @@ fn click_prompt_cancel_button_closes_without_creating_a_request() {
     render_once(&mut app);
     let cancel = app.hits.rect_of(&Hit::ModalCancel).unwrap();
     assert!(app.handle_mouse(left_down(cancel.x, cancel.y)));
+    assert!(app.modals.is_empty(), "clicking Cancel must close the modal, exactly like Esc");
     assert!(
-        app.modals.is_empty(),
-        "clicking Cancel must close the modal, exactly like Esc"
-    );
-    assert!(
-        postui_core::fixtures::list_requests(app.proj().root())
-            .0
-            .is_empty(),
+        postui_core::fixtures::list_requests(app.proj().root()).0.is_empty(),
         "Cancel must not create anything, matching Esc's no-op"
     );
 }
@@ -10400,20 +9019,11 @@ fn the_aimed_modal_button_paints_focused_and_the_field_does_not() {
     let field_in_field = bg_of(&mut app, Hit::ModalInput(0));
     app.modals.close_top_field(); // field to selected
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
-    assert_eq!(
-        app.modals.button_focus(),
-        Some(crate::components::modal::FormButton::Confirm)
-    );
+    assert_eq!(app.modals.button_focus(), Some(crate::components::modal::FormButton::Confirm));
     let confirm_aimed = bg_of(&mut app, Hit::ModalConfirm);
     let field_blurred = bg_of(&mut app, Hit::ModalInput(0));
-    assert_ne!(
-        confirm_in_field, confirm_aimed,
-        "the aimed Confirm lifts its fill"
-    );
-    assert_ne!(
-        field_in_field, field_blurred,
-        "the field drops its focused fill"
-    );
+    assert_ne!(confirm_in_field, confirm_aimed, "the aimed Confirm lifts its fill");
+    assert_ne!(field_in_field, field_blurred, "the field drops its focused fill");
 }
 
 #[test]
@@ -10425,10 +9035,7 @@ fn cancel_click_closes_a_form_modal_from_inside_its_field() {
     render_once(&mut app);
     let cancel = app.hits.rect_of(&Hit::ModalCancel).unwrap();
     app.handle_mouse(left_down(cancel.x, cancel.y));
-    assert!(
-        app.modals.is_empty(),
-        "a Cancel click is the cancel, not a synthesized Esc"
-    );
+    assert!(app.modals.is_empty(), "a Cancel click is the cancel, not a synthesized Esc");
 }
 
 #[test]
@@ -10476,10 +9083,7 @@ fn click_new_project_cancel_button_closes_without_creating() {
     render_once(&mut app);
     let cancel = app.hits.rect_of(&Hit::ModalCancel).unwrap();
     assert!(app.handle_mouse(left_down(cancel.x, cancel.y)));
-    assert!(
-        app.modals.is_empty(),
-        "clicking Cancel must close the modal, exactly like Esc"
-    );
+    assert!(app.modals.is_empty(), "clicking Cancel must close the modal, exactly like Esc");
     assert!(
         !postui_core::project::Project::is_project(&root.path().join("my-svc")),
         "Cancel must not create anything, matching Esc's no-op"
@@ -10521,8 +9125,7 @@ fn chooser_keys_and_wheel_keep_a_long_list_scrolling_correctly() {
             ..Default::default()
         })
         .collect();
-    app.modals
-        .push(Modal::Chooser(ChooserState::new("Many", items)));
+    app.modals.push(Modal::Chooser(ChooserState::new("Many", items)));
     // A tall-enough terminal that the modal clamps to its 16-row cap.
     {
         use ratatui::Terminal;
@@ -10581,21 +9184,12 @@ async fn click_send_button_sends_then_click_again_cancels() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     let after = app.hits.rect_of(&Hit::SendButton).unwrap();
-    assert_eq!(
-        before, after,
-        "Send cap occupies the same rect while sending"
-    );
+    assert_eq!(before, after, "Send cap occupies the same rect while sending");
     let content = format!("{:?}", terminal.backend().buffer());
-    assert!(
-        content.contains("Sending"),
-        "cap now reads Sending: {content}"
-    );
+    assert!(content.contains("Sending"), "cap now reads Sending: {content}");
 
     app.handle_mouse(left_down(after.x, after.y));
-    assert!(matches!(
-        app.session.response.state(),
-        ResponseState::Cancelled
-    ));
+    assert!(matches!(app.session.response.state(), ResponseState::Cancelled));
 }
 
 #[test]
@@ -10604,20 +9198,13 @@ fn copy_body_writes_via_clipboard_cmd_and_toasts_copied() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
-        Some(cmd),
-        65536,
-        false,
-    ));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
     ready_response(&mut app, r#"{"a": 1}"#);
 
     app.update(Action::CopyToClipboard(CopyTarget::ResponseBody));
 
     assert_eq!(std::fs::read_to_string(&out).unwrap(), r#"{"a": 1}"#);
-    assert!(
-        rendered_text(&mut app).contains("Copied response body"),
-        "toast confirms the copy"
-    );
+    assert!(rendered_text(&mut app).contains("Copied response body"), "toast confirms the copy");
 }
 
 /// The 󰆏 toolbar button follows the active tab like search does: on the
@@ -10628,15 +9215,9 @@ fn toolbar_copy_follows_the_headers_tab() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
-        Some(cmd),
-        65536,
-        false,
-    ));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
     ready_response(&mut app, r#"{"a": 1}"#);
-    app.update(Action::ResponseViewMode(
-        crate::components::response::ViewMode::Headers,
-    ));
+    app.update(Action::ResponseViewMode(crate::components::response::ViewMode::Headers));
 
     click_hit(&mut app, Hit::CopyBodyButton);
 
@@ -10679,10 +9260,7 @@ fn prompt_save_body_opens_the_picker_and_confirming_writes_the_file() {
     app.update(Action::PromptSaveBody);
 
     let Some(Modal::FilePicker(picker)) = app.modals.top() else {
-        panic!(
-            "expected the file picker, got {:?}",
-            app.modals.top().map(|_| ())
-        );
+        panic!("expected the file picker, got {:?}", app.modals.top().map(|_| ()));
     };
     assert_eq!(picker.target(), PickerTarget::SaveBody);
     assert!(
@@ -10694,10 +9272,7 @@ fn prompt_save_body_opens_the_picker_and_confirming_writes_the_file() {
 
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("body.json");
-    app.update(Action::PickerConfirm {
-        target: PickerTarget::SaveBody,
-        path: out.clone(),
-    });
+    app.update(Action::PickerConfirm { target: PickerTarget::SaveBody, path: out.clone() });
 
     assert_eq!(std::fs::read_to_string(&out).unwrap(), r#"{"a": 1}"#);
     assert!(rendered_text(&mut app).contains("Saved body to"));
@@ -10760,10 +9335,7 @@ fn picker_save_of_a_new_file_closes_the_picker_and_writes() {
     )));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("fresh.json")).unwrap(),
-        r#"{"a": 1}"#
-    );
+    assert_eq!(std::fs::read_to_string(dir.path().join("fresh.json")).unwrap(), r#"{"a": 1}"#);
 }
 
 /// The 󰏫 toolbar button parks `OpenResponseInEditor` for the main loop
@@ -10790,19 +9362,14 @@ fn toolbar_editor_button_parks_the_terminal_action() {
 fn toolbar_save_follows_the_headers_tab() {
     let mut app = App::new_for_test();
     ready_response(&mut app, r#"{"a": 1}"#);
-    app.update(Action::ResponseViewMode(
-        crate::components::response::ViewMode::Headers,
-    ));
+    app.update(Action::ResponseViewMode(crate::components::response::ViewMode::Headers));
 
     click_hit(&mut app, Hit::SaveBodyButton);
 
     let Some(Modal::FilePicker(picker)) = app.modals.top() else {
         panic!("expected the file picker");
     };
-    assert_eq!(
-        picker.target(),
-        crate::components::file_picker::PickerTarget::SaveView
-    );
+    assert_eq!(picker.target(), crate::components::file_picker::PickerTarget::SaveView);
     assert!(
         picker.input().text().ends_with("-response.txt"),
         "headers prefill is .txt: {}",
@@ -10830,15 +9397,9 @@ fn header_copy_click_and_key_parity_both_copy_the_header() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
-        Some(cmd),
-        65536,
-        false,
-    ));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
     ready_response(&mut app, r#"{"a": 1}"#);
-    app.update(Action::ResponseViewMode(
-        crate::components::response::ViewMode::Headers,
-    ));
+    app.update(Action::ResponseViewMode(crate::components::response::ViewMode::Headers));
     render_once(&mut app);
 
     let r = app.hits.rect_of(&Hit::HeaderCopy(0)).unwrap();
@@ -10876,23 +9437,14 @@ fn sent_header_copy_yields_the_real_value_behind_the_mask() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
-        Some(cmd),
-        65536,
-        false,
-    ));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
     ready_response(&mut app, r#"{"a": 1}"#);
-    app.update(Action::ResponseViewMode(
-        crate::components::response::ViewMode::Headers,
-    ));
+    app.update(Action::ResponseViewMode(crate::components::response::ViewMode::Headers));
     render_once(&mut app);
 
     // Row 0: content-type. Row 1: the divider (no pill). Row 2: the sent
     // authorization header.
-    assert!(
-        app.hits.rect_of(&Hit::HeaderCopy(1)).is_none(),
-        "the divider has no copy pill"
-    );
+    assert!(app.hits.rect_of(&Hit::HeaderCopy(1)).is_none(), "the divider has no copy pill");
     let r = app.hits.rect_of(&Hit::HeaderCopy(2)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
 
@@ -10910,11 +9462,7 @@ fn copy_body_with_no_response_toasts_nothing_to_copy_and_leaves_clipboard_untouc
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
-        Some(cmd),
-        65536,
-        false,
-    ));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
 
     app.update(Action::CopyToClipboard(CopyTarget::ResponseBody));
 
@@ -10941,9 +9489,7 @@ fn crossing_a_chip_inside_the_url_well_does_not_restart_the_wells_fade() {
     assert!(app.url_well_hovered, "the pointer is on the well");
     // Sampled a hair after the retarget, so it has eased a sliver off 0
     // rather than sitting exactly on it.
-    let t = app
-        .anims
-        .value_or(AnimKey::UrlWellHover, Instant::now(), 1.0);
+    let t = app.anims.value_or(AnimKey::UrlWellHover, Instant::now(), 1.0);
     assert!(t < 0.5, "entering the well starts its fade over: {t}");
 
     // Settle it, then cross onto the copy chip *inside* the well. The hit
@@ -10954,8 +9500,7 @@ fn crossing_a_chip_inside_the_url_well_does_not_restart_the_wells_fade() {
     assert_eq!(app.hovered, Some(Hit::CopyUrl), "the chip took the hover");
     assert!(app.url_well_hovered, "but the pointer is still on the well");
     assert_eq!(
-        app.anims
-            .value_or(AnimKey::UrlWellHover, Instant::now(), 1.0),
+        app.anims.value_or(AnimKey::UrlWellHover, Instant::now(), 1.0),
         1.0,
         "the well's fade holds while the pointer crosses its own chip"
     );
@@ -10965,13 +9510,8 @@ fn crossing_a_chip_inside_the_url_well_does_not_restart_the_wells_fade() {
     assert!(!app.url_well_hovered, "left the well");
     app.anims.snap(AnimKey::UrlWellHover, 1.0);
     app.handle_mouse(moved(well.x, well.y + 1));
-    let t = app
-        .anims
-        .value_or(AnimKey::UrlWellHover, Instant::now(), 1.0);
-    assert!(
-        t < 0.5,
-        "re-entering the well starts its fade over again: {t}"
-    );
+    let t = app.anims.value_or(AnimKey::UrlWellHover, Instant::now(), 1.0);
+    assert!(t < 0.5, "re-entering the well starts its fade over again: {t}");
 }
 
 #[test]
@@ -10980,11 +9520,7 @@ fn address_bar_copy_chip_is_clickable_and_copies_url() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
-        Some(cmd),
-        65536,
-        false,
-    ));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
     app.editor.url = crate::components::line_input::LineInput::new("https://example.com/x");
 
     render_once(&mut app);
@@ -11030,14 +9566,8 @@ fn palette_manage_command_opens_the_manage_screen() {
     }
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.screen, crate::app::Screen::Manage);
-    assert_eq!(
-        app.manage.tab,
-        crate::components::manage::ManageTab::Variables
-    );
-    assert!(
-        app.modals.is_empty(),
-        "palette closes after running the command"
-    );
+    assert_eq!(app.manage.tab, crate::components::manage::ManageTab::Variables);
+    assert!(app.modals.is_empty(), "palette closes after running the command");
 }
 
 #[test]
@@ -11061,11 +9591,7 @@ fn modals_still_open_and_close_on_top_of_the_manager_screen() {
     // ctrl+p still opens the palette on top of the Manager screen.
     app.handle_key(ctrl('p'));
     assert!(!app.modals.is_empty());
-    assert_eq!(
-        app.screen,
-        crate::app::Screen::Manage,
-        "opening a modal must not leave the screen"
-    );
+    assert_eq!(app.screen, crate::app::Screen::Manage, "opening a modal must not leave the screen");
 
     // Esc closes the modal first, without leaving the Manager screen.
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -11102,10 +9628,7 @@ fn manager_screen_replaces_the_three_panes_but_keeps_header_and_footer() {
     app.update(Action::OpenManage { tab: None });
     let content = rendered_text(&mut app);
     assert!(content.contains("Project:"), "header chips stay");
-    assert!(
-        content.contains("quit"),
-        "footer stays / manager's own chips show"
-    );
+    assert!(content.contains("quit"), "footer stays / manager's own chips show");
     assert!(
         !content.contains("New request"),
         "the sidebar pane is replaced by the full-frame Manager"
@@ -11134,10 +9657,7 @@ fn ctrl_r_and_ctrl_enter_do_not_send_from_the_manager_screen() {
     assert_eq!(app.screen, crate::app::Screen::Manage);
 
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
-    assert!(
-        app.toasts.is_empty(),
-        "ctrl+enter must not reach Action::Send either"
-    );
+    assert!(app.toasts.is_empty(), "ctrl+enter must not reach Action::Send either");
     assert!(app.session.in_flight.is_empty());
     assert_eq!(app.screen, crate::app::Screen::Manage);
 }
@@ -11161,11 +9681,7 @@ fn alt_u_does_not_move_focus_from_the_manager_screen() {
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.screen, crate::app::Screen::Main);
-    assert_eq!(
-        app.focus,
-        PaneId::Response,
-        "CloseScreen restores the untouched prior focus"
-    );
+    assert_eq!(app.focus, PaneId::Response, "CloseScreen restores the untouched prior focus");
 }
 
 /// Same finding: alt+z (`Action::CycleProject(1)`) — an arbitrary other
@@ -11181,10 +9697,7 @@ fn other_unwhitelisted_global_shortcuts_are_swallowed_by_the_manager_screen() {
     assert!(app.toasts.is_empty());
 
     app.handle_key(alt('z')); // CycleProject: would toast "only one project registered"
-    assert!(
-        app.toasts.is_empty(),
-        "alt+z must not reach Action::CycleProject(1)"
-    );
+    assert!(app.toasts.is_empty(), "alt+z must not reach Action::CycleProject(1)");
     assert_eq!(app.screen, crate::app::Screen::Manage);
 }
 
@@ -11205,11 +9718,7 @@ fn alt_x_cycles_env_from_the_manager_screen() {
         "qa",
         "alt+x must reach Action::CycleEnv(1) from the Manager screen"
     );
-    assert_eq!(
-        app.screen,
-        crate::app::Screen::Manage,
-        "cycling the env must not leave the screen"
-    );
+    assert_eq!(app.screen, crate::app::Screen::Manage, "cycling the env must not leave the screen");
 }
 
 /// The whitelist's whole point: opening the palette on top of the Manager
@@ -11236,10 +9745,7 @@ fn ctrl_p_still_opens_the_palette_on_top_of_the_manager_screen() {
 fn alt_t_opens_the_theme_chooser_on_main_and_the_manager_screen() {
     let mut app = App::new_for_test();
     app.handle_key(alt('t'));
-    assert!(
-        matches!(app.modals.top(), Some(Modal::Chooser(_))),
-        "alt+t opens the theme chooser"
-    );
+    assert!(matches!(app.modals.top(), Some(Modal::Chooser(_))), "alt+t opens the theme chooser");
     app.update(Action::Close);
 
     app.handle_key(alt('r'));
@@ -11261,10 +9767,7 @@ fn alt_t_closes_the_open_theme_chooser() {
     app.handle_key(alt('t'));
     assert!(matches!(app.modals.top(), Some(Modal::Chooser(_))));
     app.handle_key(alt('t'));
-    assert!(
-        app.modals.is_empty(),
-        "a second alt+t closes the theme chooser"
-    );
+    assert!(app.modals.is_empty(), "a second alt+t closes the theme chooser");
 
     app.update(Action::OpenProjectChooser);
     assert!(matches!(app.modals.top(), Some(Modal::Chooser(_))));
@@ -11315,10 +9818,7 @@ secret = true
     .unwrap();
     postui_core::fixtures::save_local_state(
         dir,
-        &postui_core::project::LocalState {
-            environment: Some("qa".into()),
-            ..Default::default()
-        },
+        &postui_core::project::LocalState { environment: Some("qa".into()), ..Default::default() },
     )
     .unwrap();
 }
@@ -11340,10 +9840,7 @@ fn var_edit_set_env_value_writes_the_env_file_and_re_resolves() {
 
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(on_disk.contains("https://qa2.example.com"), "{on_disk}");
-    assert_eq!(
-        app.proj().resolved().values["base_url"],
-        "https://qa2.example.com"
-    );
+    assert_eq!(app.proj().resolved().values["base_url"], "https://qa2.example.com");
 }
 
 #[test]
@@ -11458,10 +9955,7 @@ fn var_edit_set_request_var_mutates_the_open_editor_and_marks_it_dirty_without_w
     }));
 
     assert_eq!(app.editor.variables["trace_id"].value, "trace-xyz");
-    assert!(
-        app.editor.is_dirty(),
-        "the existing dirty/save path owns persistence"
-    );
+    assert!(app.editor.is_dirty(), "the existing dirty/save path owns persistence");
     let on_disk = std::fs::read_to_string(dir.path().join("requests/main/ping.toml")).unwrap();
     assert!(
         on_disk.contains("abc-123"),
@@ -11518,10 +10012,7 @@ fn var_edit_a_failed_write_toasts_and_writes_nothing() {
     std::fs::set_permissions(&env_dir, std::fs::Permissions::from_mode(original_mode)).unwrap();
     result.unwrap();
 
-    assert!(
-        !app.toasts.is_empty(),
-        "a failed write must toast, not silently drop the edit"
-    );
+    assert!(!app.toasts.is_empty(), "a failed write must toast, not silently drop the edit");
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!on_disk.contains("blocked"), "{on_disk}");
 }
@@ -11538,12 +10029,7 @@ fn goto_row(app: &mut App, pred: impl Fn(&crate::components::varmanager::VmRow) 
         app.update(Action::OpenManage { tab: None });
     }
     rendered_text(app);
-    let i = app
-        .varmanager
-        .left_rows
-        .iter()
-        .position(pred)
-        .expect("no row matched");
+    let i = app.varmanager.left_rows.iter().position(pred).expect("no row matched");
     app.varmanager.select_row(i);
 }
 
@@ -11587,10 +10073,7 @@ fn a_new_declaration_selects_its_row_in_the_manager() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::VarStruct(VarStructOp::NewVar {
-        name: "zeta".into(),
-        description: None,
-    }));
+    app.update(Action::VarStruct(VarStructOp::NewVar { name: "zeta".into(), description: None }));
     assert_eq!(app.varmanager.detail, VmDetail::Var("zeta".into()));
     assert_eq!(
         app.varmanager.left_rows[app.varmanager.left_cursor],
@@ -11622,10 +10105,7 @@ fn shared_locale_project(dir: &std::path::Path) {
     std::fs::write(dir.join("environments/qa.toml"), "").unwrap();
     postui_core::fixtures::save_local_state(
         dir,
-        &postui_core::project::LocalState {
-            environment: Some("qa".into()),
-            ..Default::default()
-        },
+        &postui_core::project::LocalState { environment: Some("qa".into()), ..Default::default() },
     )
     .unwrap();
 }
@@ -11653,10 +10133,7 @@ fn creds_app(dir: &std::path::Path) -> App {
     .unwrap();
     postui_core::fixtures::save_local_state(
         dir,
-        &postui_core::project::LocalState {
-            environment: Some("qa".into()),
-            ..Default::default()
-        },
+        &postui_core::project::LocalState { environment: Some("qa".into()), ..Default::default() },
     )
     .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -11772,10 +10249,7 @@ fn a_copied_row_does_not_paste_into_a_different_selector() {
         count: 1,
     }));
 
-    assert!(
-        !app.toasts.is_empty(),
-        "a paste into the wrong selector must be refused"
-    );
+    assert!(!app.toasts.is_empty(), "a paste into the wrong selector must be refused");
     let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!qa.contains("[options.other"), "{qa}");
 }
@@ -11813,10 +10287,7 @@ fn shared_selector_new_option_writes_variables_toml_not_the_env() {
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert_eq!(
-        app.proj().variables().options["locale"]["de"].values["lang"],
-        "de"
-    );
+    assert_eq!(app.proj().variables().options["locale"]["de"].values["lang"], "de");
     let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(vars.contains("[options.locale.de]"), "{vars}");
     let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
@@ -11870,10 +10341,7 @@ fn shared_selector_paste_lands_in_variables_toml() {
         count: 1,
     }));
 
-    assert_eq!(
-        app.proj().variables().options["locale"]["en copy"].values["lang"],
-        "en"
-    );
+    assert_eq!(app.proj().variables().options["locale"]["en copy"].values["lang"], "en");
 }
 
 #[test]
@@ -11889,10 +10357,7 @@ fn shared_selector_option_edits_route_to_variables_toml() {
         value: "en-GB".into(),
     }));
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert_eq!(
-        app.proj().variables().options["locale"]["en"].values["lang"],
-        "en-GB"
-    );
+    assert_eq!(app.proj().variables().options["locale"]["en"].values["lang"], "en-GB");
 
     app.update(Action::VarEdit(VarEditOp::SetOptionDescription {
         env: "qa".into(),
@@ -11901,9 +10366,7 @@ fn shared_selector_option_edits_route_to_variables_toml() {
         description: Some("the King's".into()),
     }));
     assert_eq!(
-        app.proj().variables().options["locale"]["en"]
-            .description
-            .as_deref(),
+        app.proj().variables().options["locale"]["en"].description.as_deref(),
         Some("the King's")
     );
 }
@@ -11936,9 +10399,7 @@ fn deleting_a_shared_selector_removes_its_options_and_global_selection() {
     let mut app = shared_locale_app(dir.path());
     app.proj_mut().set_selection_for("qa", "locale", "fr");
 
-    app.update(Action::VarStruct(VarStructOp::Delete {
-        name: "locale".into(),
-    }));
+    app.update(Action::VarStruct(VarStructOp::Delete { name: "locale".into() }));
 
     assert!(!app.proj().variables().selectors.contains_key("locale"));
     let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
@@ -11959,10 +10420,7 @@ fn renaming_a_shared_selector_carries_options_and_the_global_selection() {
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert!(app.proj().variables().selectors["lingo"].shared);
-    assert_eq!(
-        app.proj().variables().options["lingo"]["fr"].values["lang"],
-        "fr"
-    );
+    assert_eq!(app.proj().variables().options["lingo"]["fr"].values["lang"], "fr");
     assert_eq!(app.proj().local().shared_selections["lingo"], "fr");
     assert!(!app.proj().local().shared_selections.contains_key("locale"));
 }
@@ -11994,29 +10452,13 @@ fn add_and_remove_selector_field_reshape_a_shared_selectors_options() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = shared_locale_app(dir.path());
 
-    app.update(Action::AddSelectorField {
-        selector: "locale".into(),
-        field: "fmt".into(),
-    });
+    app.update(Action::AddSelectorField { selector: "locale".into(), field: "fmt".into() });
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert_eq!(
-        app.proj().variables().options["locale"]["en"].values["fmt"],
-        ""
-    );
+    assert_eq!(app.proj().variables().options["locale"]["en"].values["fmt"], "");
 
-    app.update(Action::RemoveSelectorField {
-        selector: "locale".into(),
-        field: "fmt".into(),
-    });
-    assert_eq!(
-        app.proj().variables().selectors["locale"].fields,
-        vec!["lang".to_string()]
-    );
-    assert!(
-        !app.proj().variables().options["locale"]["en"]
-            .values
-            .contains_key("fmt")
-    );
+    app.update(Action::RemoveSelectorField { selector: "locale".into(), field: "fmt".into() });
+    assert_eq!(app.proj().variables().selectors["locale"].fields, vec!["lang".to_string()]);
+    assert!(!app.proj().variables().options["locale"]["en"].values.contains_key("fmt"));
 }
 
 #[test]
@@ -12029,12 +10471,7 @@ fn shared_selector_grid_edit_and_ghost_row_work_without_an_env() {
 
     // The ghost row starts a new option with no environment active…
     app.update(Action::StartNewOptionEdit);
-    let edit = app
-        .varmanager
-        .grid
-        .editing
-        .as_mut()
-        .expect("ghost edit started without an env");
+    let edit = app.varmanager.grid.editing.as_mut().expect("ghost edit started without an env");
     assert_eq!((edit.row, edit.col), (2, 0));
     edit.input.insert_str("de");
     app.commit_grid_edit();
@@ -12050,10 +10487,7 @@ fn shared_selector_grid_edit_and_ghost_row_work_without_an_env() {
     edit.input.select_all();
     edit.input.paste("en-GB");
     app.commit_grid_edit();
-    assert_eq!(
-        app.proj().variables().options["locale"]["en"].values["lang"],
-        "en-GB"
-    );
+    assert_eq!(app.proj().variables().options["locale"]["en"].values["lang"], "en-GB");
 }
 
 #[test]
@@ -12096,11 +10530,7 @@ fn new_selector_prompt_arrows_focus_the_toggle_and_space_flips_shared() {
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    assert!(
-        app.proj().variables().selectors["locale"].shared,
-        "{:?}",
-        app.toasts.messages()
-    );
+    assert!(app.proj().variables().selectors["locale"].shared, "{:?}", app.toasts.messages());
 }
 
 /// Choosing the picker's "add new option…" row closes the picker and
@@ -12127,8 +10557,7 @@ fn chaining_from_the_picker_into_the_option_prompt_does_not_replay_the_open_sett
         "the new-option prompt takes over"
     );
     assert_eq!(
-        app.anims
-            .value_or(crate::anim::AnimKey::ModalOpen, Instant::now(), 1.0),
+        app.anims.value_or(crate::anim::AnimKey::ModalOpen, Instant::now(), 1.0),
         1.0,
         "the handoff keeps the panel settled instead of re-opening it"
     );
@@ -12159,11 +10588,7 @@ fn new_selector_prompt_tab_cycles_between_the_name_field_and_the_toggle() {
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    assert!(
-        app.proj().variables().selectors["locale"].shared,
-        "{:?}",
-        app.toasts.messages()
-    );
+    assert!(app.proj().variables().selectors["locale"].shared, "{:?}", app.toasts.messages());
 }
 
 #[test]
@@ -12188,11 +10613,7 @@ fn new_selector_prompt_up_returns_focus_to_the_name_field() {
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // to the button row
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    assert!(
-        app.proj().variables().selectors["locale"].shared,
-        "{:?}",
-        app.toasts.messages()
-    );
+    assert!(app.proj().variables().selectors["locale"].shared, "{:?}", app.toasts.messages());
 }
 
 #[test]
@@ -12209,16 +10630,8 @@ fn var_struct_new_group_creates_group_with_members() {
     }));
 
     assert!(app.toasts.is_empty());
-    let g = app
-        .proj()
-        .variables()
-        .selectors
-        .get("creds")
-        .expect("group created");
-    assert_eq!(
-        g.fields,
-        vec!["user_id".to_string(), "customer_id".to_string()]
-    );
+    let g = app.proj().variables().selectors.get("creds").expect("group created");
+    assert_eq!(g.fields, vec!["user_id".to_string(), "customer_id".to_string()]);
 }
 
 #[test]
@@ -12293,11 +10706,7 @@ fields = ["tier"]
 "#,
     )
     .unwrap();
-    std::fs::write(
-        dir.path().join("environments/dev.toml"),
-        "shard = \"d-1\"\n",
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("environments/dev.toml"), "shard = \"d-1\"\n").unwrap();
     std::fs::write(
         dir.path().join("environments/qa.toml"),
         "[options.tier.gold]\ntier = \"g-1\"\n",
@@ -12305,20 +10714,14 @@ fields = ["tier"]
     .unwrap();
     postui_core::fixtures::save_local_state(
         dir.path(),
-        &postui_core::project::LocalState {
-            environment: Some("dev".into()),
-            ..Default::default()
-        },
+        &postui_core::project::LocalState { environment: Some("dev".into()), ..Default::default() },
     )
     .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     assert_eq!(app.proj().resolved().values["shard"], "d-1");
 
-    app.update(Action::VarStruct(VarStructOp::Rename {
-        from: "shard".into(),
-        to: "node".into(),
-    }));
+    app.update(Action::VarStruct(VarStructOp::Rename { from: "shard".into(), to: "node".into() }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert!(app.proj().variables().vars.contains_key("node"));
@@ -12348,15 +10751,9 @@ fn var_struct_delete_var_removes_the_declaration_and_clamps_the_cursor() {
     rendered_text(&mut app);
     app.varmanager.left_cursor = app.varmanager.left_rows.len() + 5;
 
-    app.update(Action::VarStruct(VarStructOp::Delete {
-        name: "base_url".into(),
-    }));
+    app.update(Action::VarStruct(VarStructOp::Delete { name: "base_url".into() }));
 
-    assert!(
-        app.toasts.messages().join("\n").contains("^Z undoes"),
-        "{:?}",
-        app.toasts.messages()
-    );
+    assert!(app.toasts.messages().join("\n").contains("^Z undoes"), "{:?}", app.toasts.messages());
     assert!(!app.proj().variables().vars.contains_key("base_url"));
     assert!(
         app.varmanager.left_cursor < app.varmanager.left_rows.len(),
@@ -12398,22 +10795,14 @@ fn var_struct_delete_cascades_into_every_environments_entries_table() {
         postui_core::varmodel::VarMeta::NeedsSelection
     );
 
-    app.update(Action::VarStruct(VarStructOp::Delete {
-        name: "region".into(),
-    }));
+    app.update(Action::VarStruct(VarStructOp::Delete { name: "region".into() }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert!(!app.proj().variables().selectors.contains_key("region"));
     let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(
-        !qa_on_disk.contains("region"),
-        "active env must be stripped: {qa_on_disk}"
-    );
+    assert!(!qa_on_disk.contains("region"), "active env must be stripped: {qa_on_disk}");
     let dev_on_disk = std::fs::read_to_string(dir.path().join("environments/dev.toml")).unwrap();
-    assert!(
-        !dev_on_disk.contains("region"),
-        "non-active env must be stripped too: {dev_on_disk}"
-    );
+    assert!(!dev_on_disk.contains("region"), "non-active env must be stripped too: {dev_on_disk}");
     // The project must still load clean after switching to the
     // previously-stranded env.
     let warns = app.proj_mut().set_active_env(Some("dev".into()));
@@ -12435,9 +10824,7 @@ fn var_struct_delete_group_cascades_into_every_environments_entries_table() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::VarStruct(VarStructOp::Delete {
-        name: "creds".into(),
-    }));
+    app.update(Action::VarStruct(VarStructOp::Delete { name: "creds".into() }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert!(!app.proj().variables().selectors.contains_key("creds"));
@@ -12450,11 +10837,7 @@ fn var_struct_delete_group_cascades_into_every_environments_entries_table() {
 /// `VarStructOp::NewSelector` round trip through a running `App`.
 fn app_new_group(dir: &std::path::Path, name: &str, members: &[&str]) {
     let existing = std::fs::read_to_string(dir.join("variables.toml")).unwrap();
-    let members_list = members
-        .iter()
-        .map(|m| format!("\"{m}\""))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let members_list = members.iter().map(|m| format!("\"{m}\"")).collect::<Vec<_>>().join(", ");
     std::fs::write(
         dir.join("variables.toml"),
         format!("{existing}\n[selectors.{name}]\nfields = [{members_list}]\n"),
@@ -12510,10 +10893,7 @@ fn var_struct_promote_to_default_writes_the_declaration_and_removes_the_request_
     }));
 
     assert!(app.toasts.is_empty());
-    assert_eq!(
-        app.proj().variables().vars["trace_id"].default.as_deref(),
-        Some("abc-123")
-    );
+    assert_eq!(app.proj().variables().vars["trace_id"].default.as_deref(), Some("abc-123"));
     assert!(!app.editor.variables.contains_key("trace_id"));
 }
 
@@ -12588,19 +10968,13 @@ fn extract_to_request_saves_the_request_file_to_disk() {
     });
 
     assert!(
-        app.toasts
-            .messages()
-            .iter()
-            .all(|m| !m.contains("could not")),
+        app.toasts.messages().iter().all(|m| !m.contains("could not")),
         "{:?}",
         app.toasts.messages()
     );
     assert!(!app.editor.is_dirty());
     let on_disk = postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap();
-    assert_eq!(
-        on_disk.variables["trace_id"].value,
-        "https://x/ping/abc-123"
-    );
+    assert_eq!(on_disk.variables["trace_id"].value, "https://x/ping/abc-123");
     assert_eq!(on_disk.url, "{{trace_id}}");
 }
 
@@ -12698,11 +11072,7 @@ fn delete_entry_removes_it_from_the_active_env() {
         name: "bob".into(),
     }));
 
-    assert!(
-        app.toasts.messages().join("\n").contains("^Z undoes"),
-        "{:?}",
-        app.toasts.messages()
-    );
+    assert!(app.toasts.messages().join("\n").contains("^Z undoes"), "{:?}", app.toasts.messages());
     let entries = postui_core::varmodel::selector_options(app.proj().env_data(), "user")
         .expect("the group still has entries here");
     assert!(!entries.contains_key("bob"));
@@ -12760,9 +11130,7 @@ fn prompt_rename_var_surfaces_scan_usage_count_like_delete_does() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::PromptRenameVar {
-        from: "base_url".into(),
-    });
+    app.update(Action::PromptRenameVar { from: "base_url".into() });
 
     // The caveat is a note under the field, not part of the heading — but
     // it must still name the request and the count (finding 7's point).
@@ -12791,9 +11159,7 @@ fn prompt_rename_var_with_no_usage_has_a_plain_title() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::PromptRenameVar {
-        from: "base_url".into(),
-    });
+    app.update(Action::PromptRenameVar { from: "base_url".into() });
 
     let Some(Modal::Prompt { title, .. }) = app.modals.top() else {
         panic!("expected a Prompt modal");
@@ -12816,18 +11182,13 @@ fn prompt_promote_var_onto_an_existing_secret_name_refuses_with_a_message_modal(
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/ping".into()));
 
-    app.update(Action::PromptPromoteVar {
-        name: "api_key".into(),
-    });
+    app.update(Action::PromptPromoteVar { name: "api_key".into() });
 
     assert!(
         matches!(app.modals.top(), Some(Modal::Message { .. })),
         "promoting onto a secret name must be refused with a message modal, not a raw parse error"
     );
-    assert!(
-        app.proj().variables().vars["api_key"].secret,
-        "the declaration must be untouched"
-    );
+    assert!(app.proj().variables().vars["api_key"].secret, "the declaration must be untouched");
     assert!(app.editor.variables.contains_key("api_key"));
 }
 
@@ -12841,9 +11202,7 @@ fn delete_var_warns_about_referencing_requests() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::DeleteVar {
-        name: "base_url".into(),
-    });
+    app.update(Action::DeleteVar { name: "base_url".into() });
 
     assert!(app.modals.is_empty(), "delete is undoable, no confirm");
     assert!(!app.proj().variables().vars.contains_key("base_url"));
@@ -12861,22 +11220,14 @@ fn delete_var_is_immediate_with_an_undo_hint_toast() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::DeleteVar {
-        name: "base_url".into(),
-    });
+    app.update(Action::DeleteVar { name: "base_url".into() });
 
     assert!(app.modals.is_empty(), "delete is undoable, no confirm");
     assert!(!app.proj().variables().vars.contains_key("base_url"));
     let msgs = app.toasts.messages().join("\n");
-    assert!(
-        msgs.contains("^Z undoes"),
-        "the toast advertises the escape hatch: {msgs}"
-    );
+    assert!(msgs.contains("^Z undoes"), "the toast advertises the escape hatch: {msgs}");
     app.update(Action::Undo);
-    assert!(
-        app.proj().variables().vars.contains_key("base_url"),
-        "undo restores the declaration"
-    );
+    assert!(app.proj().variables().vars.contains_key("base_url"), "undo restores the declaration");
 }
 
 #[test]
@@ -12915,17 +11266,12 @@ fn toggle_secret_var_secret_to_nonsecret_leaves_secrets_toml_untouched_and_shows
     }));
     let secrets_before = std::fs::read_to_string(dir.path().join(".local/secrets.toml")).unwrap();
 
-    app.update(Action::ToggleSecretVar {
-        name: "api_key".into(),
-    });
+    app.update(Action::ToggleSecretVar { name: "api_key".into() });
 
     let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
         panic!("expected a Confirm modal");
     };
-    assert!(
-        body.contains("sk-live-abc123"),
-        "the copy-offer modal must show the value: {body}"
-    );
+    assert!(body.contains("sk-live-abc123"), "the copy-offer modal must show the value: {body}");
     let secrets_after = std::fs::read_to_string(dir.path().join(".local/secrets.toml")).unwrap();
     assert_eq!(
         secrets_before, secrets_after,
@@ -12933,15 +11279,10 @@ fn toggle_secret_var_secret_to_nonsecret_leaves_secrets_toml_untouched_and_shows
     );
 
     // Confirming flips the flag but still moves nothing (spec §3).
-    app.update(Action::VarStruct(VarStructOp::ToggleSecret {
-        name: "api_key".into(),
-    }));
+    app.update(Action::VarStruct(VarStructOp::ToggleSecret { name: "api_key".into() }));
     assert!(!app.proj().variables().vars["api_key"].secret);
     let secrets_final = std::fs::read_to_string(dir.path().join(".local/secrets.toml")).unwrap();
-    assert_eq!(
-        secrets_before, secrets_final,
-        "the value stays where it was"
-    );
+    assert_eq!(secrets_before, secrets_final, "the value stays where it was");
 }
 
 #[test]
@@ -12951,24 +11292,17 @@ fn toggle_secret_var_nonsecret_to_secret_moves_env_values_and_strips_env_files()
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     // dev has no value for base_url; qa does — only qa's should move.
-    app.update(Action::ToggleSecretVar {
-        name: "base_url".into(),
-    });
+    app.update(Action::ToggleSecretVar { name: "base_url".into() });
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
 
-    app.update(Action::VarStruct(VarStructOp::ToggleSecret {
-        name: "base_url".into(),
-    }));
+    app.update(Action::VarStruct(VarStructOp::ToggleSecret { name: "base_url".into() }));
 
     assert!(app.toasts.is_empty());
     assert!(app.proj().variables().vars["base_url"].secret);
     let secrets = postui_core::fixtures::load_secrets(dir.path()).unwrap();
     assert_eq!(secrets["qa"]["base_url"], "https://qa.example.com");
     let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(
-        !qa_on_disk.contains("qa.example.com"),
-        "the env file must be stripped: {qa_on_disk}"
-    );
+    assert!(!qa_on_disk.contains("qa.example.com"), "the env file must be stripped: {qa_on_disk}");
 }
 
 #[test]
@@ -12978,9 +11312,7 @@ fn toggle_secret_is_refused_for_a_group() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::ToggleSecretVar {
-        name: "user".into(),
-    });
+    app.update(Action::ToggleSecretVar { name: "user".into() });
 
     assert!(app.modals.is_empty(), "no modal for an invalid target");
     assert!(!app.toasts.is_empty(), "must toast why it's refused");
@@ -12999,13 +11331,7 @@ fn keyboard_a_and_shift_a_open_the_new_var_and_new_group_prompts() {
 
     // Plan M2: the shared letters. `a` adds a variable, `A` the other kind.
     app.handle_key(plain('a'));
-    assert!(matches!(
-        app.modals.top(),
-        Some(Modal::Prompt {
-            kind: PromptKind::NewVariable,
-            ..
-        })
-    ));
+    assert!(matches!(app.modals.top(), Some(Modal::Prompt { kind: PromptKind::NewVariable, .. })));
     // A one-field prompt's Esc cancels it (spec §10 open question 2).
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
@@ -13014,10 +11340,7 @@ fn keyboard_a_and_shift_a_open_the_new_var_and_new_group_prompts() {
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
-            kind: PromptKind::NewSelector {
-                shared: false,
-                on_toggle: false,
-            },
+            kind: PromptKind::NewSelector { shared: false, on_toggle: false },
             ..
         })
     ));
@@ -13029,17 +11352,12 @@ fn keyboard_f2_d_s_open_the_matching_var_row_actions() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
 
     app.handle_key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
     assert!(matches!(
         app.modals.top(),
-        Some(Modal::Prompt {
-            kind: PromptKind::RenameVariable { .. },
-            ..
-        })
+        Some(Modal::Prompt { kind: PromptKind::RenameVariable { .. }, .. })
     ));
     // A one-field prompt's Esc cancels it (spec §10 open question 2).
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -13047,18 +11365,10 @@ fn keyboard_f2_d_s_open_the_matching_var_row_actions() {
 
     app.handle_key(plain('d'));
     assert!(app.modals.is_empty(), "delete is undoable, no confirm");
-    assert!(
-        !app.proj().variables().vars.contains_key("base_url"),
-        "the row is deleted at once"
-    );
+    assert!(!app.proj().variables().vars.contains_key("base_url"), "the row is deleted at once");
     app.update(Action::Undo);
-    assert!(
-        app.proj().variables().vars.contains_key("base_url"),
-        "undo restores it"
-    );
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    assert!(app.proj().variables().vars.contains_key("base_url"), "undo restores it");
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
 
     app.handle_key(plain('s'));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
@@ -13074,20 +11384,11 @@ fn the_context_menu_delete_matches_the_d_key() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
 
-    let via_menu = app
-        .varmanager
-        .context_menu(app.varmanager.left_cursor)
-        .expect("menu for a variable row");
-    assert_eq!(
-        via_menu[2].action,
-        Some(Action::DeleteVar {
-            name: "base_url".into()
-        })
-    );
+    let via_menu =
+        app.varmanager.context_menu(app.varmanager.left_cursor).expect("menu for a variable row");
+    assert_eq!(via_menu[2].action, Some(Action::DeleteVar { name: "base_url".into() }));
     app.update(via_menu[2].action.clone().unwrap());
     assert!(app.modals.is_empty(), "delete is undoable, no confirm");
     assert!(!app.proj().variables().vars.contains_key("base_url"));
@@ -13117,12 +11418,7 @@ fn every_manage_button_lands_on_the_same_rows_in_both_columns() {
         (
             ManageTab::Variables,
             Some("base_url"),
-            &[
-                Hit::VmNewVar,
-                Hit::VmNewSelector,
-                Hit::VmRename,
-                Hit::VmDelete,
-            ],
+            &[Hit::VmNewVar, Hit::VmNewSelector, Hit::VmRename, Hit::VmDelete],
         ),
         (
             ManageTab::Variables,
@@ -13136,20 +11432,11 @@ fn every_manage_button_lands_on_the_same_rows_in_both_columns() {
                 Hit::VmDelete,
             ],
         ),
-        (
-            ManageTab::Environments,
-            None,
-            &[Hit::ManageNew, Hit::ManageRename, Hit::ManageDelete],
-        ),
+        (ManageTab::Environments, None, &[Hit::ManageNew, Hit::ManageRename, Hit::ManageDelete]),
         (
             ManageTab::Spaces,
             None,
-            &[
-                Hit::ManageNew,
-                Hit::ManageRename,
-                Hit::ManageDelete,
-                Hit::ManageMoveAll,
-            ],
+            &[Hit::ManageNew, Hit::ManageRename, Hit::ManageDelete, Hit::ManageMoveAll],
         ),
     ];
 
@@ -13202,34 +11489,21 @@ fn clicking_the_new_variable_button_opens_the_new_variable_prompt() {
     // reachable by key and footer chip). Both buttons paint from 120.
     rendered_text_wide(&mut app);
 
-    let rect = app
-        .hits
-        .rect_of(&crate::hit::Hit::VmNewVar)
-        .expect("+ Variable button must be painted");
+    let rect =
+        app.hits.rect_of(&crate::hit::Hit::VmNewVar).expect("+ Variable button must be painted");
     assert!(app.handle_mouse(left_down(rect.x + 1, rect.y + 1)));
-    assert!(matches!(
-        app.modals.top(),
-        Some(Modal::Prompt {
-            kind: PromptKind::NewVariable,
-            ..
-        })
-    ));
+    assert!(matches!(app.modals.top(), Some(Modal::Prompt { kind: PromptKind::NewVariable, .. })));
 
     // …and the `+ Group` button opens the group prompt.
     app.update(Action::Close);
     rendered_text_wide(&mut app);
-    let rect = app
-        .hits
-        .rect_of(&crate::hit::Hit::VmNewSelector)
-        .expect("+ Group button must be painted");
+    let rect =
+        app.hits.rect_of(&crate::hit::Hit::VmNewSelector).expect("+ Group button must be painted");
     assert!(app.handle_mouse(left_down(rect.x + 1, rect.y + 1)));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
-            kind: PromptKind::NewSelector {
-                shared: false,
-                on_toggle: false,
-            },
+            kind: PromptKind::NewSelector { shared: false, on_toggle: false },
             ..
         })
     ));
@@ -13253,12 +11527,7 @@ fn prompt_new_selector_takes_a_name_and_defaults_its_field() {
     // Creating the selector is the whole gesture: no follow-up prompt
     // opens, the new declaration is simply selected in the manager.
     assert!(app.modals.is_empty());
-    let g = app
-        .proj()
-        .variables()
-        .selectors
-        .get("creds")
-        .expect("selector created");
+    let g = app.proj().variables().selectors.get("creds").expect("selector created");
     assert_eq!(g.fields, vec!["creds".to_string()]);
     app.update(Action::ReloadProjectFiles);
     assert!(app.proj().variables().selectors.contains_key("creds"));
@@ -13278,44 +11547,26 @@ fn add_and_remove_group_members_one_at_a_time() {
 
     // `a` flow: one member name per prompt, appended in order
     for member in ["user_id", "customer_id"] {
-        app.update(Action::PromptAddSelectorField {
-            selector: "creds".into(),
-        });
+        app.update(Action::PromptAddSelectorField { selector: "creds".into() });
         for c in member.chars() {
             app.handle_key(plain(c));
         }
         submit_prompt(&mut app);
     }
     assert_eq!(
-        app.proj()
-            .variables()
-            .selectors
-            .get("creds")
-            .unwrap()
-            .fields,
+        app.proj().variables().selectors.get("creds").unwrap().fields,
         vec!["user_id".to_string(), "customer_id".to_string()]
     );
 
     // duplicate append toasts and changes nothing
     let toasts_before = app.toasts.messages().len();
-    app.update(Action::PromptAddSelectorField {
-        selector: "creds".into(),
-    });
+    app.update(Action::PromptAddSelectorField { selector: "creds".into() });
     for c in "user_id".chars() {
         app.handle_key(plain(c));
     }
     submit_prompt(&mut app);
     assert!(app.toasts.messages().len() > toasts_before);
-    assert_eq!(
-        app.proj()
-            .variables()
-            .selectors
-            .get("creds")
-            .unwrap()
-            .fields
-            .len(),
-        2
-    );
+    assert_eq!(app.proj().variables().selectors.get("creds").unwrap().fields.len(), 2);
 
     // the failed duplicate keeps its prompt open for a retry; drop it
     // A one-field prompt's Esc cancels it (spec §10 open question 2).
@@ -13323,18 +11574,10 @@ fn add_and_remove_group_members_one_at_a_time() {
     assert!(app.modals.is_empty());
 
     // `d` flow: removal is immediate (undoable)
-    app.update(Action::RemoveSelectorField {
-        selector: "creds".into(),
-        field: "user_id".into(),
-    });
+    app.update(Action::RemoveSelectorField { selector: "creds".into(), field: "user_id".into() });
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
     assert_eq!(
-        app.proj()
-            .variables()
-            .selectors
-            .get("creds")
-            .unwrap()
-            .fields,
+        app.proj().variables().selectors.get("creds").unwrap().fields,
         vec!["customer_id".to_string()]
     );
 }
@@ -13369,10 +11612,7 @@ customer_id = "c-78"
     .unwrap();
     postui_core::fixtures::save_local_state(
         dir,
-        &postui_core::project::LocalState {
-            environment: Some("qa".into()),
-            ..Default::default()
-        },
+        &postui_core::project::LocalState { environment: Some("qa".into()), ..Default::default() },
     )
     .unwrap();
 }
@@ -13416,10 +11656,7 @@ fn ctrl_v_on_a_one_field_groups_token_opens_select_option_with_checkmark() {
     assert!(content.contains("alice"), "{content}");
     assert!(content.contains("bob"), "{content}");
     assert!(content.contains("1001"), "{content}");
-    assert!(
-        content.contains("\u{2713}"),
-        "current pick is checked: {content}"
-    );
+    assert!(content.contains("\u{2713}"), "current pick is checked: {content}");
 }
 
 // -- Clicking a token is a value control, not an insert picker ----------
@@ -13465,13 +11702,7 @@ fn editing_a_simple_var_token_opens_the_value_popup_on_its_supplying_scope() {
     let (mut app, _dir) = token_popup_app();
     app.update(Action::OpenVarTokenPopup("base_url".into()));
 
-    let Some(Modal::MultiPrompt {
-        title,
-        fields,
-        kind,
-        ..
-    }) = app.modals.top()
-    else {
+    let Some(Modal::MultiPrompt { title, fields, kind, .. }) = app.modals.top() else {
         panic!("a simple variable token must open the value popup")
     };
     assert_eq!(title, "{{base_url}}");
@@ -13500,10 +11731,7 @@ fn the_value_popup_preselects_the_request_scope_when_a_request_var_supplies_it()
     let (mut app, _dir) = token_popup_app();
     app.editor.variables.insert(
         "base_url".into(),
-        postui_core::model::Entry {
-            value: "http://req.local".into(),
-            enabled: true,
-        },
+        postui_core::model::Entry { value: "http://req.local".into(), enabled: true },
     );
     app.update(Action::OpenVarTokenPopup("base_url".into()));
 
@@ -13514,11 +11742,7 @@ fn the_value_popup_preselects_the_request_scope_when_a_request_var_supplies_it()
     assert_eq!(value.input.text(), "http://req.local");
     let scope = fields.iter().find(|f| f.key == "destination").unwrap();
     assert_eq!(scope.input.text(), "This request");
-    assert_eq!(
-        scope.choices,
-        vec!["This request"],
-        "a request override shadows everything wider"
-    );
+    assert_eq!(scope.choices, vec!["This request"], "a request override shadows everything wider");
 }
 
 #[test]
@@ -13559,10 +11783,7 @@ fn confirming_the_value_popup_writes_the_env_scope_and_re_resolves() {
 
     assert!(app.modals.is_empty(), "confirm closes the popup");
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(
-        on_disk.contains("base_url = \"https://qa2.example.com\""),
-        "{on_disk}"
-    );
+    assert!(on_disk.contains("base_url = \"https://qa2.example.com\""), "{on_disk}");
     assert_eq!(
         app.proj().resolved().values["base_url"],
         "https://qa2.example.com",
@@ -13579,10 +11800,7 @@ fn confirming_the_value_popup_on_the_default_scope_writes_variables_toml() {
         destination: crate::action::ExtractDestination::ProjectDefault,
     });
     let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
-    assert!(
-        on_disk.contains("default = \"http://new-default\""),
-        "{on_disk}"
-    );
+    assert!(on_disk.contains("default = \"http://new-default\""), "{on_disk}");
 }
 
 #[test]
@@ -13618,10 +11836,8 @@ fn clicking_a_choice_field_takes_the_keyboard_off_the_button_row() {
     );
 
     rendered_text(&mut app);
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::ModalField(1))
-        .expect("the choice field takes clicks");
+    let r =
+        app.hits.rect_of(&crate::hit::Hit::ModalField(1)).expect("the choice field takes clicks");
     app.handle_mouse(left_down(r.x + 1, r.y + 1));
     assert_eq!(
         app.modals.button_focus(),
@@ -13640,11 +11856,7 @@ fn clicking_a_choice_field_takes_the_keyboard_off_the_button_row() {
     // ← now steps the chooser back instead of swinging the button aim.
     app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
     assert_eq!(app.modals.button_focus(), None);
-    assert_ne!(
-        scope_text(&app).0,
-        after_click,
-        "Left aimed the field, not the buttons"
-    );
+    assert_ne!(scope_text(&app).0, after_click, "Left aimed the field, not the buttons");
 }
 
 #[test]
@@ -13655,10 +11867,8 @@ fn clicking_the_write_to_field_cycles_the_scope() {
 
     // The destination is field 1; a click advances to the next choice,
     // wrapping — no keyboard needed.
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::ModalField(1))
-        .expect("the choice field takes clicks");
+    let r =
+        app.hits.rect_of(&crate::hit::Hit::ModalField(1)).expect("the choice field takes clicks");
     app.handle_mouse(left_down(r.x + 1, r.y + 1));
     let scope_text = |app: &App| {
         let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
@@ -13672,11 +11882,7 @@ fn clicking_the_write_to_field_cycles_the_scope() {
         "from the preselected env scope, one click advances"
     );
     app.handle_mouse(left_down(r.x + 1, r.y + 1));
-    assert_eq!(
-        scope_text(&app),
-        "This request",
-        "no wrap: the last scope is an end stop"
-    );
+    assert_eq!(scope_text(&app), "This request", "no wrap: the last scope is an end stop");
 }
 
 #[test]
@@ -13751,15 +11957,9 @@ fn cycling_the_write_to_scope_shows_that_scopes_current_value() {
         let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
             panic!("popup open")
         };
-        (
-            fields[0].input.text().to_string(),
-            fields[1].input.text().to_string(),
-        )
+        (fields[0].input.text().to_string(), fields[1].input.text().to_string())
     };
-    assert_eq!(
-        field_texts(&app),
-        ("https://qa.example.com".into(), "Active env value".into())
-    );
+    assert_eq!(field_texts(&app), ("https://qa.example.com".into(), "Active env value".into()));
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(
         field_texts(&app),
@@ -13799,10 +11999,7 @@ fn toasts_paint_undimmed_above_an_open_modal() {
     let plain_fg = find_cell(&mut app).expect("toast visible with no modal");
     app.update(Action::PromptNewVar);
     let modal_fg = find_cell(&mut app).expect("toast visible over the modal");
-    assert_eq!(
-        plain_fg, modal_fg,
-        "the modal backdrop must not dim the toast"
-    );
+    assert_eq!(plain_fg, modal_fg, "the modal backdrop must not dim the toast");
 }
 
 #[test]
@@ -13900,10 +12097,7 @@ fn the_value_popup_advertises_its_chords_in_the_footer() {
     app.update(Action::OpenVarTokenPopup("base_url".into()));
     let content = rendered_text(&mut app);
     assert!(content.contains("write to"), "{content}");
-    assert!(
-        content.contains("remove env value"),
-        "the chip names the chosen scope: {content}"
-    );
+    assert!(content.contains("remove env value"), "the chip names the chosen scope: {content}");
 
     // Cycle to "This request", which stores nothing — no remove chip.
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
@@ -13948,10 +12142,7 @@ fn the_write_to_arrows_step_and_disable_at_the_ends() {
     app.update(Action::OpenVarTokenPopup("base_url".into()));
     rendered_text(&mut app);
 
-    assert!(
-        app.hits.rect_of(&left).is_none(),
-        "at the first scope the left arrow is disabled"
-    );
+    assert!(app.hits.rect_of(&left).is_none(), "at the first scope the left arrow is disabled");
     let r = app.hits.rect_of(&right).expect("right arrow live");
     app.handle_mouse(left_down(r.x, r.y));
     let content = rendered_text(&mut app);
@@ -13965,27 +12156,18 @@ fn the_write_to_arrows_step_and_disable_at_the_ends() {
     app.handle_mouse(left_down(r.x, r.y));
     let content = rendered_text(&mut app);
     assert!(content.contains("This request"), "{content}");
-    assert!(
-        app.hits.rect_of(&right).is_none(),
-        "at the last scope the right arrow is disabled"
-    );
+    assert!(app.hits.rect_of(&right).is_none(), "at the last scope the right arrow is disabled");
 
     let l = app.hits.rect_of(&left).expect("left arrow live at the end");
     app.handle_mouse(left_down(l.x, l.y));
     let content = rendered_text(&mut app);
-    assert!(
-        content.contains("Active env value"),
-        "the left arrow steps back: {content}"
-    );
+    assert!(content.contains("Active env value"), "the left arrow steps back: {content}");
 }
 
 /// Confirms the top modal by clicking its painted Confirm button.
 fn click_modal_confirm(app: &mut App) {
     rendered_text(app);
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::ModalConfirm)
-        .expect("confirm button painted");
+    let r = app.hits.rect_of(&crate::hit::Hit::ModalConfirm).expect("confirm button painted");
     app.handle_mouse(left_down(r.x, r.y));
 }
 
@@ -14000,15 +12182,9 @@ fn remove_is_pending_until_confirm_and_cancel_puts_nothing_on_disk() {
     let r = app.hits.rect_of(&crate::hit::Hit::ModalRemove).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
 
-    assert!(
-        !app.modals.is_empty(),
-        "removal keeps the popup open to show the cleared state"
-    );
+    assert!(!app.modals.is_empty(), "removal keeps the popup open to show the cleared state");
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(
-        on_disk.contains("base_url"),
-        "nothing written yet: {on_disk}"
-    );
+    assert!(on_disk.contains("base_url"), "nothing written yet: {on_disk}");
     // The popup follows the pending removal to the scope that would
     // supply: the default, with its stored value ready to edit (or
     // remove in turn).
@@ -14027,10 +12203,7 @@ fn remove_is_pending_until_confirm_and_cancel_puts_nothing_on_disk() {
     app.handle_mouse(left_down(r.x, r.y));
     let content = rendered_text(&mut app);
     assert!(content.contains("(not set)"), "{content}");
-    assert!(
-        app.hits.rect_of(&crate::hit::Hit::ModalRemove).is_none(),
-        "nothing left to mark"
-    );
+    assert!(app.hits.rect_of(&crate::hit::Hit::ModalRemove).is_none(), "nothing left to mark");
 
     // Cancel: both marks are forgotten, nothing was ever written.
     app.update(Action::Close);
@@ -14105,9 +12278,7 @@ fn typing_a_value_on_a_marked_scope_writes_it_instead_of_removing() {
     // Cycle Write-to back onto the (marked) env scope and type a value.
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
-        panic!("popup open")
-    };
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else { panic!("popup open") };
     let scope = fields.iter().find(|f| f.key == "destination").unwrap();
     assert_eq!(scope.input.text(), "Active env value");
     app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
@@ -14130,10 +12301,7 @@ fn remove_marks_a_request_override_and_confirm_drops_it() {
     let (mut app, _dir) = token_popup_app();
     app.editor.variables.insert(
         "base_url".into(),
-        postui_core::model::Entry {
-            value: "http://req.local".into(),
-            enabled: true,
-        },
+        postui_core::model::Entry { value: "http://req.local".into(), enabled: true },
     );
     app.update(Action::OpenVarTokenPopup("base_url".into()));
     rendered_text(&mut app);
@@ -14177,27 +12345,15 @@ fn remove_marks_the_default_when_it_is_the_supplier_and_confirm_clears_it() {
 #[test]
 fn editing_a_secret_token_opens_the_masked_secret_prompt() {
     let (mut app, _dir) = token_popup_app();
-    app.proj_mut()
-        .set_secret_for("qa", "api_key", "sk-live-abc123".into())
-        .unwrap();
+    app.proj_mut().set_secret_for("qa", "api_key", "sk-live-abc123".into()).unwrap();
     app.update(Action::OpenVarTokenPopup("api_key".into()));
 
-    let Some(Modal::Prompt {
-        kind,
-        input,
-        revealed,
-        ..
-    }) = app.modals.top()
-    else {
+    let Some(Modal::Prompt { kind, input, revealed, .. }) = app.modals.top() else {
         panic!("a secret token must open the masked secret prompt")
     };
     assert_eq!(
         *kind,
-        PromptKind::SecretValue {
-            name: "api_key".into(),
-            env: "qa".into(),
-            then_send: false,
-        }
+        PromptKind::SecretValue { name: "api_key".into(), env: "qa".into(), then_send: false }
     );
     // Editing starts from what is stored (like the Manager's env-value
     // field), masked until ctrl+r reveals it.
@@ -14211,17 +12367,12 @@ fn editing_a_secret_token_opens_the_masked_secret_prompt() {
 #[test]
 fn confirming_the_popup_secret_prompt_saves_without_sending() {
     let (mut app, _dir) = token_popup_app();
-    app.proj_mut()
-        .set_secret_for("qa", "api_key", "old".into())
-        .unwrap();
+    app.proj_mut().set_secret_for("qa", "api_key", "old".into()).unwrap();
     app.editor.url = LineInput::new("http://example.invalid/{{api_key}}");
     app.update(Action::OpenVarTokenPopup("api_key".into()));
     assert!(matches!(
         app.modals.top(),
-        Some(Modal::Prompt {
-            kind: PromptKind::SecretValue { then_send: false, .. },
-            ..
-        })
+        Some(Modal::Prompt { kind: PromptKind::SecretValue { then_send: false, .. }, .. })
     ));
 
     // The seeded text is replaced wholesale.
@@ -14231,10 +12382,7 @@ fn confirming_the_popup_secret_prompt_saves_without_sending() {
     assert!(app.modals.is_empty());
     assert!(app.session.in_flight.is_empty(), "editing a secret never sends");
     assert_eq!(app.proj().secrets()["qa"]["api_key"], "new");
-    assert!(
-        !rendered_text(&mut app).contains("send canceled"),
-        "no send was in play"
-    );
+    assert!(!rendered_text(&mut app).contains("send canceled"), "no send was in play");
 
     app.update(Action::Undo);
     assert_eq!(
@@ -14259,17 +12407,12 @@ fn escaping_the_popup_secret_prompt_does_not_claim_a_canceled_send() {
 #[test]
 fn the_secret_prompts_eye_button_reveals_and_hides_the_value() {
     let (mut app, _dir) = token_popup_app();
-    app.proj_mut()
-        .set_secret_for("qa", "api_key", "sk-live-abc123".into())
-        .unwrap();
+    app.proj_mut().set_secret_for("qa", "api_key", "sk-live-abc123".into()).unwrap();
     app.update(Action::OpenVarTokenPopup("api_key".into()));
     assert!(!rendered_text(&mut app).contains("sk-live-abc123"));
 
     click_hit(&mut app, Hit::ModalRevealToggle);
-    assert!(matches!(
-        app.modals.top(),
-        Some(Modal::Prompt { revealed: true, .. })
-    ));
+    assert!(matches!(app.modals.top(), Some(Modal::Prompt { revealed: true, .. })));
     let shown = rendered_text(&mut app);
     assert!(shown.contains("sk-live-abc123"), "{shown}");
     assert!(shown.contains("hide"), "{shown}");
@@ -14298,13 +12441,8 @@ fn editing_a_token_of_a_selector_with_no_options_opens_the_picker_on_its_ghost_r
     app.update(Action::SwitchEnv(Some("dev".into())));
     app.update(Action::OpenVarTokenPopup("user".into()));
 
-    let Some(Modal::VarPicker(p)) = app.modals.top() else {
-        panic!("expected the select picker")
-    };
-    assert!(matches!(
-        p.mode,
-        crate::components::var_picker::PickerMode::SelectOption { .. }
-    ));
+    let Some(Modal::VarPicker(p)) = app.modals.top() else { panic!("expected the select picker") };
+    assert!(matches!(p.mode, crate::components::var_picker::PickerMode::SelectOption { .. }));
     assert_eq!(p.row_count(), 1, "the ghost row is the only row");
 }
 
@@ -14316,10 +12454,7 @@ fn clicking_an_undefined_token_still_opens_the_insert_picker_seeded() {
     let Some(Modal::VarPicker(p)) = app.modals.top() else {
         panic!("an undefined name keeps the insert/create picker")
     };
-    assert!(matches!(
-        p.mode,
-        crate::components::var_picker::PickerMode::Insert
-    ));
+    assert!(matches!(p.mode, crate::components::var_picker::PickerMode::Insert));
     assert_eq!(p.input(), "nope");
 }
 
@@ -14418,10 +12553,7 @@ fn blocked_send_toast_names_first_needs_selection_var_with_a_picker_hint() {
     let content = rendered_text(&mut app);
     assert!(content.contains("need a selection"), "{content}");
     assert!(
-        content.contains(&format!(
-            "press {}+shift+v to select user",
-            crate::keys::alt_label()
-        )),
+        content.contains(&format!("press {}+shift+v to select user", crate::keys::alt_label())),
         "{content}"
     );
 }
@@ -14499,10 +12631,7 @@ async fn missing_secrets_prompt_sequentially_then_the_request_sends() {
     };
     assert!(title.contains("api_key"), "title: {title}");
     assert!(title.contains("qa"), "title: {title}");
-    assert!(
-        !title.contains("key-val"),
-        "title must never carry a value: {title}"
-    );
+    assert!(!title.contains("key-val"), "title must never carry a value: {title}");
     assert!(
         matches!(kind, PromptKind::SecretValue { name, env, then_send: true } if name == "api_key" && env == "qa")
     );
@@ -14590,21 +12719,11 @@ fn secret_prompt_input_renders_masked_dots_not_the_typed_text() {
     let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
         panic!("expected a secret prompt");
     };
-    assert_eq!(
-        input.text(),
-        typed,
-        "the buffer itself holds the typed text"
-    );
+    assert_eq!(input.text(), typed, "the buffer itself holds the typed text");
 
     let content = rendered_text(&mut app);
-    assert!(
-        !content.contains(typed),
-        "typed text must never render: {content}"
-    );
-    assert!(
-        content.contains('\u{25cf}'),
-        "masked dots must render: {content}"
-    );
+    assert!(!content.contains(typed), "typed text must never render: {content}");
+    assert!(content.contains('\u{25cf}'), "masked dots must render: {content}");
 }
 
 // -- Task 17: in-context flows (spec §6) --------------------------------
@@ -14668,10 +12787,7 @@ fn add_new_entry_writes_to_the_active_envs_entries_table_selects_it_and_restores
     assert!(env_doc.contains("3003"), "{env_doc}");
 
     let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
-    assert!(
-        !shared_doc.contains("carol"),
-        "must not land in variables.toml: {shared_doc}"
-    );
+    assert!(!shared_doc.contains("carol"), "must not land in variables.toml: {shared_doc}");
 
     assert_eq!(app.proj().selections_for("qa")["user"], "carol");
 }
@@ -14787,10 +12903,7 @@ fn the_option_menus_edit_opens_the_prompt_in_the_environment_that_holds_it() {
 
     // Row 0 is "alice" (first option, file order); its context menu's
     // "Edit…" opens the full edit prompt (values + description).
-    let items = app
-        .varmanager
-        .entry_context_menu(app.proj(), 0)
-        .expect("option menu");
+    let items = app.varmanager.entry_context_menu(app.proj(), 0).expect("option menu");
     let edit = items
         .iter()
         .find(|i| i.label.starts_with("Edit"))
@@ -14806,11 +12919,7 @@ fn the_option_menus_edit_opens_the_prompt_in_the_environment_that_holds_it() {
     assert!(
         matches!(kind, PromptKind::EditOption { owner, key } if owner == "user" && key == "alice")
     );
-    assert_eq!(
-        fields[0].input.text(),
-        "1001",
-        "prefilled with the current value"
-    );
+    assert_eq!(fields[0].input.text(), "1001", "prefilled with the current value");
 
     for _ in 0..4 {
         app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
@@ -14840,9 +12949,7 @@ fn focus_header_value_cell(app: &mut App) {
     app.editor.table.selected = Some(0);
     let map = app.editor.headers.clone();
     app.editor.table.begin_edit_selected(&map);
-    app.editor
-        .table
-        .handle_key(tab_key(), &mut app.editor.headers);
+    app.editor.table.handle_key(tab_key(), &mut app.editor.headers);
 }
 
 /// A `{{token}}` in a cell under edit is still a token: tinted, hoverable
@@ -14853,10 +12960,7 @@ fn a_token_in_a_header_cell_under_edit_is_tinted_and_hoverable() {
     let mut app = App::new_for_test();
     app.editor.headers.insert(
         "X-Base".into(),
-        postui_core::model::Entry {
-            value: "{{base_url}}".into(),
-            enabled: true,
-        },
+        postui_core::model::Entry { value: "{{base_url}}".into(), enabled: true },
     );
     focus_header_value_cell(&mut app);
     assert!(app.editor.table.editing.is_some());
@@ -14879,17 +12983,11 @@ fn extract_to_variable_prompts_writes_and_replaces_field_text_dirty_saved() {
     let mut app = App::new_for_test();
     app.editor.headers.insert(
         "x-api-key".into(),
-        postui_core::model::Entry {
-            value: "abc123".into(),
-            enabled: true,
-        },
+        postui_core::model::Entry { value: "abc123".into(), enabled: true },
     );
     app.editor.mark_saved();
     focus_header_value_cell(&mut app);
-    assert_eq!(
-        app.editor.table.editing.as_ref().unwrap().input.text(),
-        "abc123"
-    );
+    assert_eq!(app.editor.table.editing.as_ref().unwrap().input.text(), "abc123");
 
     app.update(Action::ExtractToVariable);
     let Some(Modal::MultiPrompt { kind, .. }) = app.modals.top() else {
@@ -14910,10 +13008,7 @@ fn extract_to_variable_prompts_writes_and_replaces_field_text_dirty_saved() {
         app.editor.headers["x-api-key"].value, "{{api_key}}",
         "the field is committed into the map, not left as a pending edit"
     );
-    assert!(
-        app.editor.table.editing.is_none(),
-        "the cell edit is committed, not left open"
-    );
+    assert!(app.editor.table.editing.is_none(), "the cell edit is committed, not left open");
     assert!(app.editor.is_dirty(), "the field is dirty-saved");
 
     let doc = std::fs::read_to_string(app.proj().root().join("variables.toml")).unwrap();
@@ -14933,10 +13028,7 @@ fn palette_extract_to_variable_with_a_table_cell_genuinely_in_edit_opens_the_pro
     let mut app = App::new_for_test();
     app.editor.headers.insert(
         "x-api-key".into(),
-        postui_core::model::Entry {
-            value: "abc123".into(),
-            enabled: true,
-        },
+        postui_core::model::Entry { value: "abc123".into(), enabled: true },
     );
     app.editor.mark_saved();
     focus_header_value_cell(&mut app);
@@ -14958,10 +13050,7 @@ fn palette_extract_to_variable_with_a_table_cell_genuinely_in_edit_opens_the_pro
     assert!(matches!(kind, PromptKind::ExtractVariable));
     // The table cell edit must still be intact underneath — the palette
     // command didn't disturb it, only read through it.
-    assert_eq!(
-        app.editor.table.editing.as_ref().unwrap().input.text(),
-        "abc123"
-    );
+    assert_eq!(app.editor.table.editing.as_ref().unwrap().input.text(), "abc123");
 }
 
 #[test]
@@ -15039,25 +13128,17 @@ fn extract_to_active_env_writes_the_flat_pair_and_a_bare_declaration_and_replace
     assert_eq!(app.editor.url.text(), "{{session_token}}");
 
     let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
-    let session_token_block = shared_doc
-        .split_once("[session_token]")
-        .expect("session_token declared")
-        .1;
+    let session_token_block =
+        shared_doc.split_once("[session_token]").expect("session_token declared").1;
     assert!(
         !session_token_block.contains("default"),
         "ActiveEnv must declare bare (no shared default): {shared_doc}"
     );
 
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(
-        env_doc.contains("session_token = \"https://x/token-abc123\""),
-        "{env_doc}"
-    );
+    assert!(env_doc.contains("session_token = \"https://x/token-abc123\""), "{env_doc}");
 
-    assert_eq!(
-        app.proj().resolved().values["session_token"],
-        "https://x/token-abc123"
-    );
+    assert_eq!(app.proj().resolved().values["session_token"], "https://x/token-abc123");
 }
 
 #[test]
@@ -15074,10 +13155,7 @@ fn extract_to_request_writes_editor_variables_and_dirty_saves() {
 
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.url.text(), "{{inline_var}}");
-    assert_eq!(
-        app.editor.variables["inline_var"].value,
-        "https://x/inline-value"
-    );
+    assert_eq!(app.editor.variables["inline_var"].value, "https://x/inline-value");
     assert!(app.editor.variables["inline_var"].enabled);
     assert!(app.editor.is_dirty(), "the field is dirty-saved");
 }
@@ -15222,18 +13300,13 @@ fn clicking_off_the_quick_add_option_prompt_still_cancels() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::OpenNewOptionInlinePrompt {
-        owner: "identity".into(),
-    });
+    app.update(Action::OpenNewOptionInlinePrompt { owner: "identity".into() });
     type_chars(&mut app, "carol");
     click_hit(&mut app, Hit::ModalOutside);
 
     assert!(app.modals.is_empty());
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(
-        !env_doc.contains("carol"),
-        "creation prompts keep cancel-on-click-away: {env_doc}"
-    );
+    assert!(!env_doc.contains("carol"), "creation prompts keep cancel-on-click-away: {env_doc}");
 }
 
 #[test]
@@ -15271,15 +13344,10 @@ fn variables_screen_footer_hides_the_dead_save_group_but_keeps_palette_and_quit(
     let content = rendered_text_tall(&mut app);
     assert!(!content.contains("^S"), "{content}");
     assert!(
-        app.hits
-            .rect_of(&crate::hit::Hit::FooterChip(Action::SaveRequest))
-            .is_none(),
+        app.hits.rect_of(&crate::hit::Hit::FooterChip(Action::SaveRequest)).is_none(),
         "no clickable save chip on the Variables screen"
     );
-    assert!(
-        content.contains("^P"),
-        "palette works here and stays: {content}"
-    );
+    assert!(content.contains("^P"), "palette works here and stays: {content}");
     assert!(
         !content.contains("^C"),
         "plain q quits here now, so the quit keycap is honest again: {content}"
@@ -15301,10 +13369,7 @@ fn var_edit_set_option_description_writes_and_clearing_removes_it() {
     }));
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(env_doc.contains("boss"), "{env_doc}");
-    assert!(
-        !env_doc.contains("admin"),
-        "replaced, not appended: {env_doc}"
-    );
+    assert!(!env_doc.contains("admin"), "replaced, not appended: {env_doc}");
 
     app.update(Action::VarEdit(VarEditOp::SetOptionDescription {
         env: "qa".into(),
@@ -15340,10 +13405,7 @@ fn committing_the_description_cell_writes_through_and_an_emptied_one_removes() {
     edit.input = crate::components::line_input::LineInput::new("");
     app.commit_grid_edit();
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(
-        !env_doc.contains("head admin"),
-        "an emptied description leaves the file: {env_doc}"
-    );
+    assert!(!env_doc.contains("head admin"), "an emptied description leaves the file: {env_doc}");
     assert!(env_doc.contains("1001"), "values untouched: {env_doc}");
 }
 
@@ -15371,10 +13433,7 @@ fn confirm_edit_option_with_an_emptied_description_removes_it_from_the_env_file(
         !env_doc.contains("admin"),
         "alice's cleared description must leave the file: {env_doc}"
     );
-    assert!(
-        env_doc.contains("reader"),
-        "bob's description is untouched: {env_doc}"
-    );
+    assert!(env_doc.contains("reader"), "bob's description is untouched: {env_doc}");
 }
 
 // -- Stage 7: the variable-format migration prompt (spec §3.3) ----------
@@ -15403,17 +13462,11 @@ customer_id = "c-77"
 "#,
     )
     .unwrap();
-    std::fs::write(
-        dir.join("environments/qa.toml"),
-        "[options.tier.gold]\nvalue = \"g-qa\"\n",
-    )
-    .unwrap();
+    std::fs::write(dir.join("environments/qa.toml"), "[options.tier.gold]\nvalue = \"g-qa\"\n")
+        .unwrap();
     postui_core::fixtures::save_local_state(
         dir,
-        &postui_core::project::LocalState {
-            environment: Some("qa".into()),
-            ..Default::default()
-        },
+        &postui_core::project::LocalState { environment: Some("qa".into()), ..Default::default() },
     )
     .unwrap();
 }
@@ -15425,19 +13478,11 @@ fn opening_a_legacy_project_offers_the_migration_and_lists_its_notes() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let app = App::with_root(tx, dir.path().to_path_buf());
 
-    let Some(Modal::Confirm {
-        title,
-        body,
-        choices,
-    }) = app.modals.top()
-    else {
+    let Some(Modal::Confirm { title, body, choices }) = app.modals.top() else {
         panic!("a legacy project must offer the migration");
     };
     assert_eq!(title, "Migrate variables");
-    assert!(
-        body.contains("tier"),
-        "the conversion's notes are listed: {body}"
-    );
+    assert!(body.contains("tier"), "the conversion's notes are listed: {body}");
     assert!(body.contains(".bak"), "the safety copy is promised: {body}");
     let keys: Vec<char> = choices.iter().map(|(k, _, _)| *k).collect();
     assert_eq!(keys, vec!['n', 'y']);
@@ -15460,10 +13505,7 @@ fn confirming_the_migration_rewrites_the_files_leaves_baks_and_reloads() {
     app.handle_key(plain('y'));
 
     assert!(app.modals.is_empty(), "answering closes the prompt");
-    assert!(
-        app.proj().pending_migration().is_none(),
-        "nothing left to migrate"
-    );
+    assert!(app.proj().pending_migration().is_none(), "nothing left to migrate");
 
     // The safety copies hold exactly what was there before.
     assert_eq!(
@@ -15481,10 +13523,7 @@ fn confirming_the_migration_rewrites_the_files_leaves_baks_and_reloads() {
     let parsed = postui_core::varmodel::parse_variables(&vars_after).expect("new text parses");
     assert_eq!(parsed.selectors["tier"].fields, ["tier"]);
     assert_eq!(parsed.selectors["user"].fields, ["user_id", "customer_id"]);
-    assert_eq!(
-        app.proj().variables().selectors["user"].fields,
-        ["user_id", "customer_id"]
-    );
+    assert_eq!(app.proj().variables().selectors["user"].fields, ["user_id", "customer_id"]);
     assert_eq!(
         app.proj().variables().vars["base_url"].default.as_deref(),
         Some("http://localhost:8080"),
@@ -15494,16 +13533,10 @@ fn confirming_the_migration_rewrites_the_files_leaves_baks_and_reloads() {
     let qa_after = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     let env = postui_core::varmodel::parse_environment(&qa_after).expect("new env text parses");
     assert_eq!(env.options["tier"]["gold"].values["tier"], "g-qa");
-    assert_eq!(
-        app.proj().env_data().options["user"]["alice"].values["customer_id"],
-        "c-77"
-    );
+    assert_eq!(app.proj().env_data().options["user"]["alice"].values["customer_id"], "c-77");
 
     let content = rendered_text(&mut app);
-    assert!(
-        content.contains("migrated"),
-        "the result is toasted: {content}"
-    );
+    assert!(content.contains("migrated"), "the result is toasted: {content}");
 
     // Core journals the conversion as one entry, so the arm's marker
     // makes it one undo step that puts every file back.
@@ -15514,10 +13547,7 @@ fn confirming_the_migration_rewrites_the_files_leaves_baks_and_reloads() {
         vars_before,
         "undo restores the legacy text"
     );
-    assert!(
-        !dir.path().join("variables.toml.bak").exists(),
-        "undo takes the backup with it"
-    );
+    assert!(!dir.path().join("variables.toml.bak").exists(), "undo takes the backup with it");
 }
 
 #[test]
@@ -15537,10 +13567,7 @@ fn declining_the_migration_leaves_the_files_alone_and_the_project_open() {
         "declining must not touch a single file"
     );
     assert!(!dir.path().join("variables.toml.bak").exists());
-    assert!(
-        app.proj().variables().vars.is_empty(),
-        "variables stay inert"
-    );
+    assert!(app.proj().variables().vars.is_empty(), "variables stay inert");
     assert!(app.proj().resolved().values.is_empty());
 
     // The project itself is still perfectly usable, and the prompt does
@@ -15621,10 +13648,7 @@ fn a_legacy_projects_saved_selections_survive_the_prompt_and_resolve_after_apply
 
     // Nothing was cleared while the prompt is still up...
     assert!(
-        !app.toasts
-            .messages()
-            .iter()
-            .any(|m| m.contains("no longer exists")),
+        !app.toasts.messages().iter().any(|m| m.contains("no longer exists")),
         "no bogus stale-selection warnings: {:?}",
         app.toasts.messages()
     );
@@ -15695,19 +13719,14 @@ fn auto_header_copy_icon_is_the_shared_copy_glyph() {
     let backend = ratatui::backend::TestBackend::new(100, 70);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
-    let rect = app
-        .hits
-        .rect_of(&Hit::AutoHeaderCopy(0))
-        .expect("the Host row's copy icon is registered");
+    let rect =
+        app.hits.rect_of(&Hit::AutoHeaderCopy(0)).expect("the Host row's copy icon is registered");
     let row = terminal.backend().buffer().content[rect.y as usize * 100..]
         .iter()
         .take(100)
         .map(|c| c.symbol())
         .collect::<String>();
-    assert!(
-        row.contains('\u{F018F}'),
-        "the Host row's copy icon is 󰆏: {row}"
-    );
+    assert!(row.contains('\u{F018F}'), "the Host row's copy icon is 󰆏: {row}");
 }
 
 /// The pill's hover fill must not butt up against the value text: one
@@ -15723,10 +13742,8 @@ fn auto_header_copy_pill_keeps_a_cell_of_padding_from_the_value() {
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     // Row 0 is the client's Accept row; the Host row is row 1.
-    let rect = app
-        .hits
-        .rect_of(&Hit::AutoHeaderCopy(1))
-        .expect("the Host row's copy icon is registered");
+    let rect =
+        app.hits.rect_of(&Hit::AutoHeaderCopy(1)).expect("the Host row's copy icon is registered");
     let buf = terminal.backend().buffer();
     let cell = |x: u16| buf[(x, rect.y)].symbol().to_string();
     assert_eq!(rect.width, 3, "the hit covers the whole pill");
@@ -15742,9 +13759,7 @@ fn auto_header_copy_pill_keeps_a_cell_of_padding_from_the_value() {
 #[test]
 fn auto_header_copy_icon_puts_the_resolved_value_on_the_clipboard() {
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
-        None, 65536, false,
-    ));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536, false));
     app.editor.active_tab = EditorTab::Headers;
     app.editor.url = LineInput::new("https://example.com/foo");
     app.update(Action::Render);
@@ -15755,17 +13770,12 @@ fn auto_header_copy_icon_puts_the_resolved_value_on_the_clipboard() {
     // The scratch request has no default headers and no body, so the
     // computed rows are the client's Accept (index 0) and the Host row
     // from the URL (index 1).
-    let rect = app
-        .hits
-        .rect_of(&Hit::AutoHeaderCopy(1))
-        .expect("the Host row's copy icon is registered");
+    let rect =
+        app.hits.rect_of(&Hit::AutoHeaderCopy(1)).expect("the Host row's copy icon is registered");
 
     app.handle_mouse(left_down(rect.x, rect.y));
 
-    assert!(
-        rendered_text(&mut app).contains("Copied Host"),
-        "toast confirms the copy"
-    );
+    assert!(rendered_text(&mut app).contains("Copied Host"), "toast confirms the copy");
 }
 
 /// The row's copy button puts that row's value — as typed, tokens and all
@@ -15773,14 +13783,9 @@ fn auto_header_copy_icon_puts_the_resolved_value_on_the_clipboard() {
 #[test]
 fn the_table_rows_copy_button_puts_its_value_on_the_clipboard() {
     let mut app = app_with_one_param();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
-        None, 65536, false,
-    ));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536, false));
     hover_row_then_click(&mut app, Hit::TableRow(0), Hit::TableCopy(0));
-    assert!(
-        rendered_text(&mut app).contains("Copied page"),
-        "the toast names the row it copied"
-    );
+    assert!(rendered_text(&mut app).contains("Copied page"), "the toast names the row it copied");
 }
 
 /// Copy is a read-only side action: taking a value off a row must not
@@ -15788,16 +13793,10 @@ fn the_table_rows_copy_button_puts_its_value_on_the_clipboard() {
 #[test]
 fn copying_a_row_leaves_the_table_selection_where_it_was() {
     let mut app = app_with_one_param();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
-        None, 65536, false,
-    ));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536, false));
     app.editor.table.selected = Some(0);
     click_hit(&mut app, Hit::TableCopy(0));
-    assert_eq!(
-        app.editor.table.selected,
-        Some(0),
-        "the row stays selected through a copy"
-    );
+    assert_eq!(app.editor.table.selected, Some(0), "the row stays selected through a copy");
 }
 
 /// A cell edit windows its text, so a value longer than its cell scrolls
@@ -15813,18 +13812,8 @@ fn clicking_a_scrolled_cell_edit_puts_the_caret_under_the_pointer() {
     app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     render_once(&mut app);
 
-    let area = app
-        .hits
-        .rect_of(&Hit::TableCell { row: 0, col: 1 })
-        .unwrap();
-    let start = app
-        .editor
-        .table
-        .editing
-        .as_ref()
-        .unwrap()
-        .input
-        .window_start(true, area.width);
+    let area = app.hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
+    let start = app.editor.table.editing.as_ref().unwrap().input.window_start(true, area.width);
     assert!(start > 0, "the caret at the end scrolled the window");
 
     // The cell was just clicked open; without this the next click on it
@@ -15850,10 +13839,7 @@ fn dragging_across_a_scrolled_cell_edit_selects_what_is_under_the_pointer() {
     app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     render_once(&mut app);
 
-    let area = app
-        .hits
-        .rect_of(&Hit::TableCell { row: 0, col: 1 })
-        .unwrap();
+    let area = app.hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
     app.last_click = None;
     app.handle_mouse(left_down(area.x, area.y));
     // The caret moved, so the cell redraws around it: the sweep reads the
@@ -15888,18 +13874,9 @@ fn the_value_cells_hit_rect_stops_where_the_actions_begin() {
     click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
     render_once(&mut app);
 
-    let cell = app
-        .hits
-        .rect_of(&Hit::TableCell { row: 0, col: 1 })
-        .unwrap();
-    let copy = app
-        .hits
-        .rect_of(&Hit::TableCopy(0))
-        .expect("the row under edit shows its actions");
-    assert!(
-        cell.right() <= copy.x,
-        "value cell {cell:?} runs under the actions at {copy:?}"
-    );
+    let cell = app.hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
+    let copy = app.hits.rect_of(&Hit::TableCopy(0)).expect("the row under edit shows its actions");
+    assert!(cell.right() <= copy.x, "value cell {cell:?} runs under the actions at {copy:?}");
 }
 
 /// The copy pill shows on the row being typed into, so it must take the
@@ -15911,11 +13888,7 @@ fn copying_the_row_under_edit_takes_the_typed_value() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = app_with_one_param();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
-        Some(cmd),
-        65536,
-        false,
-    ));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
     click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
     type_chars(&mut app, "23");
 
@@ -15942,10 +13915,7 @@ fn right_clicking_the_copy_button_opens_the_rows_context_menu() {
     let row = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
     app.handle_mouse(moved(row.x + 1, row.y));
     render_once(&mut app);
-    let copy = app
-        .hits
-        .rect_of(&Hit::TableCopy(0))
-        .expect("hover reveals the copy button");
+    let copy = app.hits.rect_of(&Hit::TableCopy(0)).expect("hover reveals the copy button");
     app.handle_mouse(right_down(copy.x + 1, copy.y));
 
     assert_eq!(
@@ -15953,10 +13923,7 @@ fn right_clicking_the_copy_button_opens_the_rows_context_menu() {
         Some(0),
         "the click lands the cursor on the row before its menu opens"
     );
-    assert!(
-        matches!(app.modals.top(), Some(Modal::Dropdown(_))),
-        "the row's context menu opened"
-    );
+    assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "the row's context menu opened");
 }
 
 #[test]
@@ -15986,10 +13953,7 @@ fn computed_headers_mask_a_secret_by_default_and_the_reveal_toggle_unmasks() {
         !masked.contains("sk-live-abc123"),
         "the secret must not render in the clear by default: {masked}"
     );
-    assert!(
-        masked.contains("\u{25cf}"),
-        "the masked value renders as the dot mask: {masked}"
-    );
+    assert!(masked.contains("\u{25cf}"), "the masked value renders as the dot mask: {masked}");
     let reveal_rect = app
         .hits
         .rect_of(&Hit::AutoHeaderReveal)
@@ -16002,10 +13966,7 @@ fn computed_headers_mask_a_secret_by_default_and_the_reveal_toggle_unmasks() {
         ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
     terminal2.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     let revealed = format!("{:?}", terminal2.backend().buffer());
-    assert!(
-        revealed.contains("sk-live-abc123"),
-        "revealing shows the real value: {revealed}"
-    );
+    assert!(revealed.contains("sk-live-abc123"), "revealing shows the real value: {revealed}");
 
     // The toggle itself must survive the round trip (still present, now
     // reading "hide") rather than vanishing once nothing is masked.
@@ -16028,10 +13989,7 @@ fn computed_headers_reveal_toggle_hides_when_only_the_request_table_uses_a_secre
     }));
     app.editor.headers.insert(
         "X-Ignore".into(),
-        postui_core::model::Entry {
-            value: "{{api_key}}".into(),
-            enabled: true,
-        },
+        postui_core::model::Entry { value: "{{api_key}}".into(), enabled: true },
     );
     // A URL gives the section a (secret-free) Host row to draw.
     app.editor.url = LineInput::new("https://example.com/foo");
@@ -16069,10 +14027,7 @@ fn computed_headers_recompute_reflects_an_env_switch() {
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     let qa_view = format!("{:?}", terminal.backend().buffer());
-    assert!(
-        qa_view.contains("https://qa.example.com"),
-        "qa's own value resolves: {qa_view}"
-    );
+    assert!(qa_view.contains("https://qa.example.com"), "qa's own value resolves: {qa_view}");
 
     app.update(Action::SwitchEnv(Some("dev".into())));
     let mut terminal2 =
@@ -16114,10 +14069,7 @@ fn computed_headers_reveal_resets_when_switching_to_a_different_request() {
     let backend = ratatui::backend::TestBackend::new(100, 70);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
-    let reveal_rect = app
-        .hits
-        .rect_of(&Hit::AutoHeaderReveal)
-        .expect("A shows the reveal toggle");
+    let reveal_rect = app.hits.rect_of(&Hit::AutoHeaderReveal).expect("A shows the reveal toggle");
     app.handle_mouse(left_down(reveal_rect.x, reveal_rect.y));
     assert!(app.editor.computed.revealed, "A is now revealed");
 
@@ -16131,10 +14083,7 @@ fn computed_headers_reveal_resets_when_switching_to_a_different_request() {
     );
 
     app.update(Action::OpenRequest("main/b".into()));
-    assert!(
-        !app.editor.computed.revealed,
-        "opening a different request must re-mask"
-    );
+    assert!(!app.editor.computed.revealed, "opening a different request must re-mask");
 
     let mut terminal_b =
         ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
@@ -16144,10 +14093,7 @@ fn computed_headers_reveal_resets_when_switching_to_a_different_request() {
         !b_view.contains("sk-live-abc123"),
         "B must render masked, not inherit A's reveal: {b_view}"
     );
-    assert!(
-        b_view.contains("\u{25cf}"),
-        "B shows the dot mask: {b_view}"
-    );
+    assert!(b_view.contains("\u{25cf}"), "B shows the dot mask: {b_view}");
     assert!(
         b_view.contains("\u{F06D0} reveal") && !b_view.contains("\u{F06D1} hide"),
         "B's own toggle reads \"reveal\", not \"hide\" (the collapse toggle's unrelated \
@@ -16206,9 +14152,7 @@ fn selecting_a_var_renders_its_form_fields() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
     let content = rendered_text_tall(&mut app);
     assert!(content.contains("Description"), "{content}");
     assert!(content.contains("API root"), "{content}");
@@ -16227,9 +14171,7 @@ fn clicking_the_env_value_field_typing_and_clicking_away_writes_the_env_file() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
 
     // Click at the field's right edge: a click places the caret at the
     // pointer, and these assertions want it at the end of the text.
@@ -16253,10 +14195,7 @@ fn clicking_the_env_value_field_typing_and_clicking_away_writes_the_env_file() {
         on_disk.contains("https://qa.example.com9"),
         "the typed digit landed at the caret (end of qa's own override): {on_disk}"
     );
-    assert_eq!(
-        app.proj().resolved().values["base_url"],
-        "https://qa.example.com9"
-    );
+    assert_eq!(app.proj().resolved().values["base_url"], "https://qa.example.com9");
 }
 
 #[test]
@@ -16265,9 +14204,7 @@ fn enter_and_esc_both_commit_a_field_edit() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
 
     // Esc keeps the typed text: it commits exactly like Enter. (Right-edge
     // clicks throughout: a click places the caret at the pointer, and the
@@ -16278,9 +14215,7 @@ fn enter_and_esc_both_commit_a_field_edit() {
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.varmanager.form.editing.is_none());
     assert_eq!(
-        app.proj().variables().vars["base_url"]
-            .description
-            .as_deref(),
+        app.proj().variables().vars["base_url"].description.as_deref(),
         Some("API root!"),
         "Esc keeps the typed text"
     );
@@ -16291,12 +14226,7 @@ fn enter_and_esc_both_commit_a_field_edit() {
     app.handle_key(plain('!'));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.varmanager.form.editing.is_none());
-    assert_eq!(
-        app.proj().variables().vars["base_url"]
-            .description
-            .as_deref(),
-        Some("API root!!")
-    );
+    assert_eq!(app.proj().variables().vars["base_url"].description.as_deref(), Some("API root!!"));
 }
 
 /// The Variable Manager form routes ctrl+z through `open_text_field_mut`'s
@@ -16308,20 +14238,13 @@ fn ctrl_z_in_the_vm_form_field_restores_the_original() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
 
     let r = field_rect(&mut app, VmField::Description);
     app.handle_mouse(left_down(r.x + r.width - 2, r.y));
     app.handle_key(plain('!'));
     app.handle_key(ctrl('z'));
-    let edit = app
-        .varmanager
-        .form
-        .editing
-        .as_ref()
-        .expect("the field stays open");
+    let edit = app.varmanager.form.editing.as_ref().expect("the field stays open");
     assert_eq!(edit.input.text(), "API root", "ctrl+z undid the typing");
 }
 
@@ -16335,9 +14258,7 @@ fn clicking_directly_from_one_field_into_another_commits_the_first() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
 
     // Right-edge click: the caret follows the pointer, and the '!' must
     // land at the end of the text.
@@ -16352,9 +14273,7 @@ fn clicking_directly_from_one_field_into_another_commits_the_first() {
     app.handle_mouse(left_down(r.x + 1, r.y));
 
     assert_eq!(
-        app.proj().variables().vars["base_url"]
-            .description
-            .as_deref(),
+        app.proj().variables().vars["base_url"].description.as_deref(),
         Some("API root!"),
         "the description field must have committed, not been discarded"
     );
@@ -16375,9 +14294,7 @@ fn clicking_into_another_field_after_a_failed_commit_keeps_the_original_edit_liv
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::SwitchEnv(None));
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("api_key".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("api_key".into()));
 
     let r = field_rect(&mut app, VmField::EnvValue);
     app.handle_mouse(left_down(r.x + 1, r.y));
@@ -16397,11 +14314,7 @@ fn clicking_into_another_field_after_a_failed_commit_keeps_the_original_edit_liv
         "the failed commit's field stays live rather than switching to the click"
     );
     assert_eq!(
-        app.varmanager
-            .form
-            .editing
-            .as_ref()
-            .map(|e| e.input.text().to_string()),
+        app.varmanager.form.editing.as_ref().map(|e| e.input.text().to_string()),
         Some("sk-typed-secret".to_string()),
         "its typed text is untouched"
     );
@@ -16421,9 +14334,7 @@ fn clicking_a_different_left_row_after_a_failed_commit_keeps_the_original_edit_l
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::SwitchEnv(None));
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("api_key".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("api_key".into()));
     rendered_text_tall(&mut app);
 
     let r = field_rect(&mut app, VmField::EnvValue);
@@ -16438,10 +14349,7 @@ fn clicking_a_different_left_row_after_a_failed_commit_keeps_the_original_edit_l
         .iter()
         .position(|r| r == &crate::components::varmanager::VmRow::Var("base_url".into()))
         .expect("base_url row present");
-    let left_rect = app
-        .hits
-        .rect_of(&crate::hit::Hit::VmLeftRow(other))
-        .unwrap();
+    let left_rect = app.hits.rect_of(&crate::hit::Hit::VmLeftRow(other)).unwrap();
     app.handle_mouse(left_down(left_rect.x + 1, left_rect.y + 1));
 
     assert_eq!(
@@ -16450,11 +14358,7 @@ fn clicking_a_different_left_row_after_a_failed_commit_keeps_the_original_edit_l
         "the click must not move the detail pane off the failed edit"
     );
     assert_eq!(
-        app.varmanager
-            .form
-            .editing
-            .as_ref()
-            .map(|e| e.input.text().to_string()),
+        app.varmanager.form.editing.as_ref().map(|e| e.input.text().to_string()),
         Some("sk-typed-secret".to_string()),
         "the typed text must survive the click on another row"
     );
@@ -16472,9 +14376,7 @@ fn a_write_failure_keeps_the_typed_text_and_toasts_without_the_secret_value() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::SwitchEnv(None));
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("api_key".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("api_key".into()));
 
     let r = field_rect(&mut app, VmField::EnvValue);
     app.handle_mouse(left_down(r.x + 1, r.y));
@@ -16488,11 +14390,7 @@ fn a_write_failure_keeps_the_typed_text_and_toasts_without_the_secret_value() {
         "a failed write must keep the field live with its typed text"
     );
     assert_eq!(
-        app.varmanager
-            .form
-            .editing
-            .as_ref()
-            .map(|e| e.input.text().to_string()),
+        app.varmanager.form.editing.as_ref().map(|e| e.input.text().to_string()),
         Some("sk-typed-secret".to_string())
     );
     assert!(!app.toasts.is_empty(), "the failure must toast");
@@ -16515,9 +14413,7 @@ fn a_secret_var_masks_its_value_and_the_reveal_toggle_unmasks_it() {
         name: "api_key".into(),
         value: "sk-live-secret".into(),
     }));
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("api_key".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("api_key".into()));
 
     let content = rendered_text_tall(&mut app);
     assert!(!content.contains("Default"), "{content}");
@@ -16537,18 +14433,13 @@ fn the_rename_button_opens_the_same_prompt_as_the_e_key() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
     rendered_text_tall(&mut app);
     let r = app.hits.rect_of(&crate::hit::Hit::VmRename).unwrap();
     app.handle_mouse(left_down(r.x + 1, r.y));
     assert!(matches!(
         app.modals.top(),
-        Some(Modal::Prompt {
-            kind: PromptKind::RenameVariable { .. },
-            ..
-        })
+        Some(Modal::Prompt { kind: PromptKind::RenameVariable { .. }, .. })
     ));
 }
 
@@ -16565,9 +14456,7 @@ fn the_delete_button_opens_the_confirm_with_the_usage_list() {
     .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
     rendered_text_tall(&mut app);
     let r = app.hits.rect_of(&crate::hit::Hit::VmDelete).unwrap();
     app.handle_mouse(left_down(r.x + 1, r.y));
@@ -16586,9 +14475,7 @@ fn the_secret_toggle_button_opens_the_same_confirm_as_the_s_key() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
     rendered_text_tall(&mut app);
     let r = app.hits.rect_of(&crate::hit::Hit::VmSecretToggle).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
@@ -16603,9 +14490,7 @@ fn the_promote_button_promotes_the_requests_override_up_into_the_project() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/ping".into()));
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
     let content = rendered_text_tall(&mut app);
     assert!(content.contains("Promote"), "{content}");
 
@@ -16630,17 +14515,12 @@ fn keyboard_r_and_s_still_work_with_the_form_on_screen() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
 
     app.handle_key(plain('r'));
     assert!(matches!(
         app.modals.top(),
-        Some(Modal::Prompt {
-            kind: PromptKind::RenameVariable { .. },
-            ..
-        })
+        Some(Modal::Prompt { kind: PromptKind::RenameVariable { .. }, .. })
     ));
     // A one-field prompt's Esc cancels it (spec §10 open question 2).
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -16653,9 +14533,7 @@ fn keyboard_r_and_s_still_work_with_the_form_on_screen() {
 // --- Task 16: the group entries grid (spec §3.4) -------------------------
 
 fn goto_group(app: &mut App, name: &str) {
-    goto_row(app, |r| {
-        r == &crate::components::varmanager::VmRow::Group(name.into())
-    });
+    goto_row(app, |r| r == &crate::components::varmanager::VmRow::Group(name.into()));
 }
 
 // -- The fields editor modal (per-row remove / add buttons) --------------
@@ -16676,9 +14554,7 @@ fn fields_editor_app() -> (App, tempfile::TempDir) {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.anims.enabled = false;
-    app.update(Action::PromptGroupFields {
-        selector: "creds".into(),
-    });
+    app.update(Action::PromptGroupFields { selector: "creds".into() });
     (app, dir)
 }
 
@@ -16694,16 +14570,10 @@ fn fields_editor_shows_a_row_per_field_with_remove_buttons_and_an_add_button() {
 
     rendered_text(&mut app);
     assert!(
-        app.hits
-            .rect_of(&crate::hit::Hit::ModalRowToggle(0))
-            .is_some(),
+        app.hits.rect_of(&crate::hit::Hit::ModalRowToggle(0)).is_some(),
         "each row has a remove button"
     );
-    assert!(
-        app.hits
-            .rect_of(&crate::hit::Hit::ModalRowToggle(1))
-            .is_some()
-    );
+    assert!(app.hits.rect_of(&crate::hit::Hit::ModalRowToggle(1)).is_some());
     assert!(
         app.hits.rect_of(&crate::hit::Hit::ModalAddRow).is_some(),
         "an add-field button is present"
@@ -16714,43 +14584,27 @@ fn fields_editor_shows_a_row_per_field_with_remove_buttons_and_an_add_button() {
 fn fields_editor_remove_button_marks_the_row_and_confirm_deletes_the_field() {
     let (mut app, _dir) = fields_editor_app();
     rendered_text(&mut app);
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::ModalRowToggle(1))
-        .unwrap();
+    let r = app.hits.rect_of(&crate::hit::Hit::ModalRowToggle(1)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
-    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
-        panic!("still open")
-    };
+    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else { panic!("still open") };
     assert!(fe.rows[1].removed, "the 󰅖 marks the row for removal");
 
     // Clicking again restores it...
     rendered_text(&mut app);
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::ModalRowToggle(1))
-        .unwrap();
+    let r = app.hits.rect_of(&crate::hit::Hit::ModalRowToggle(1)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
-    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
-        panic!("still open")
-    };
+    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else { panic!("still open") };
     assert!(!fe.rows[1].removed);
 
     // ...remove it again and apply: the removal lands at once (undoable).
     // Enter now only closes the open row to selected (spec 2026-09-16);
     // submitting is the button row's Confirm click, same as clicking OK.
     rendered_text(&mut app);
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::ModalRowToggle(1))
-        .unwrap();
+    let r = app.hits.rect_of(&crate::hit::Hit::ModalRowToggle(1)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
     click_modal_confirm(&mut app);
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
-    assert_eq!(
-        app.proj().variables().selectors["creds"].fields,
-        vec!["user_id"]
-    );
+    assert_eq!(app.proj().variables().selectors["creds"].fields, vec!["user_id"]);
 }
 
 #[test]
@@ -16767,10 +14621,7 @@ fn fields_editor_rename_types_into_the_row() {
     // submitting is the button row's Confirm click, same as clicking OK.
     click_modal_confirm(&mut app);
     assert!(app.modals.is_empty(), "apply closes the editor");
-    assert_eq!(
-        app.proj().variables().selectors["creds"].fields,
-        vec!["uid", "customer_id"]
-    );
+    assert_eq!(app.proj().variables().selectors["creds"].fields, vec!["uid", "customer_id"]);
 }
 
 #[test]
@@ -16779,9 +14630,7 @@ fn fields_editor_add_button_appends_a_focused_row() {
     rendered_text(&mut app);
     let r = app.hits.rect_of(&crate::hit::Hit::ModalAddRow).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
-    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
-        panic!("still open")
-    };
+    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else { panic!("still open") };
     assert_eq!(fe.rows.len(), 3);
     assert_eq!(fe.focus, 2, "the new row takes focus");
 
@@ -16804,9 +14653,7 @@ fn fields_editor_add_button_appends_a_focused_row() {
 fn fields_editor_alt_a_appends_a_focused_row() {
     let (mut app, _dir) = fields_editor_app();
     app.handle_key(alt('a'));
-    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
-        panic!("still open")
-    };
+    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else { panic!("still open") };
     assert_eq!(fe.rows.len(), 3, "alt+a appends a row");
     assert_eq!(fe.focus, 2, "the new row takes focus");
 
@@ -16830,26 +14677,17 @@ fn fields_editor_alt_a_appends_a_focused_row() {
 fn fields_editor_alt_d_toggles_removal_of_the_focused_row() {
     let (mut app, _dir) = fields_editor_app();
     app.handle_key(alt('d'));
-    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
-        panic!("still open")
-    };
-    assert!(
-        fe.rows[0].removed,
-        "alt+d marks the focused row for removal"
-    );
+    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else { panic!("still open") };
+    assert!(fe.rows[0].removed, "alt+d marks the focused row for removal");
     assert_eq!(fe.focus, 1, "focus steps off the removed row");
 
     // Step back onto the removed row — it must be landable, or the
     // keyboard could never restore it — and flip it back.
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
-        panic!("still open")
-    };
+    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else { panic!("still open") };
     assert_eq!(fe.focus, 0, "focus can land on a removed row");
     app.handle_key(alt('d'));
-    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
-        panic!("still open")
-    };
+    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else { panic!("still open") };
     assert!(!fe.rows[0].removed, "alt+d on a removed row restores it");
 
     // Remove the second field and apply: the removal lands at once
@@ -16860,10 +14698,7 @@ fn fields_editor_alt_d_toggles_removal_of_the_focused_row() {
     app.handle_key(alt('d'));
     click_modal_confirm(&mut app);
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
-    assert_eq!(
-        app.proj().variables().selectors["creds"].fields,
-        vec!["user_id"]
-    );
+    assert_eq!(app.proj().variables().selectors["creds"].fields, vec!["user_id"]);
 }
 
 /// While the fields editor is open, the footer swaps to *its* context
@@ -16952,10 +14787,7 @@ fn the_scrim_leaves_the_footer_bright_under_every_modal() {
         terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
         let buf = terminal.backend().buffer();
         // (1, 22): the footer's content row; (40, 11): mid-screen backdrop.
-        (
-            buf.cell((1, 22)).unwrap().bg,
-            buf.cell((40, 11)).unwrap().bg,
-        )
+        (buf.cell((1, 22)).unwrap().bg, buf.cell((40, 11)).unwrap().bg)
     };
 
     let panel = app.theme.panel;
@@ -16966,16 +14798,10 @@ fn the_scrim_leaves_the_footer_bright_under_every_modal() {
     // footer bright, showing its enter/esc keys.
     app.modals.pop();
     let (_, backdrop_before) = footer_bg(&mut app);
-    app.push_modal(Modal::Message {
-        title: "note".into(),
-        body: "hello".into(),
-    });
+    app.push_modal(Modal::Message { title: "note".into(), body: "hello".into() });
     let (footer, backdrop) = footer_bg(&mut app);
     assert_eq!(footer, panel, "message modal: the footer stays undimmed");
-    assert_ne!(
-        backdrop, backdrop_before,
-        "the scrim still dims the screen above the footer"
-    );
+    assert_ne!(backdrop, backdrop_before, "the scrim still dims the screen above the footer");
     let content = rendered_text(&mut app);
     assert!(content.contains("close"), "{content}");
 }
@@ -16998,22 +14824,14 @@ fn clicking_a_rows_copy_button_copies_it_and_the_paste_button_lands_it() {
     // Wide enough for the selector pane's fifth title-row button: [Paste]
     // is the first one a narrow pane drops.
     rendered_text_at(&mut app, 130, 46);
-    let copy = app
-        .hits
-        .rect_of(&crate::hit::Hit::VmEntryCopy(0))
-        .expect("row 0 has a copy button");
+    let copy = app.hits.rect_of(&crate::hit::Hit::VmEntryCopy(0)).expect("row 0 has a copy button");
     app.handle_mouse(left_down(copy.x, copy.y));
-    assert_eq!(
-        app.varmanager.stash.as_ref().map(|s| s.name.as_str()),
-        Some("alice")
-    );
+    assert_eq!(app.varmanager.stash.as_ref().map(|s| s.name.as_str()), Some("alice"));
 
     // The button the copy armed lands the row right back, beside itself.
     rendered_text_at(&mut app, 130, 46);
-    let paste = app
-        .hits
-        .rect_of(&crate::hit::Hit::VmPasteOption)
-        .expect("the copy armed the paste button");
+    let paste =
+        app.hits.rect_of(&crate::hit::Hit::VmPasteOption).expect("the copy armed the paste button");
     app.handle_mouse(left_down(paste.x + 2, paste.y + 1));
     let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert_eq!(env.options["user"]["alice copy"].values["user"], "1001");
@@ -17032,10 +14850,7 @@ fn clicking_an_entrys_radio_records_the_selection_and_re_resolves_every_field() 
     );
 
     rendered_text_tall(&mut app);
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::VmEntryRadio(1))
-        .expect("bob's radio");
+    let r = app.hits.rect_of(&crate::hit::Hit::VmEntryRadio(1)).expect("bob's radio");
     app.handle_mouse(left_down(r.x, r.y));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
@@ -17137,12 +14952,7 @@ fn ctrl_z_in_the_vm_grid_cell_restores_the_original() {
     app.handle_mouse(left_down(r.x + 10, r.y));
     app.handle_key(plain('9'));
     app.handle_key(ctrl('z'));
-    let edit = app
-        .varmanager
-        .grid
-        .editing
-        .as_ref()
-        .expect("the cell stays open");
+    let edit = app.varmanager.grid.editing.as_ref().expect("the cell stays open");
     assert_eq!(edit.input.text(), "1001", "ctrl+z undid the typing");
 }
 
@@ -17199,9 +15009,7 @@ fn form_field_double_click_selects_the_word_and_drag_sweeps() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
 
     // Text starts `WELL_PAD` columns into the field ("API root"); a double
     // click on its first cell selects the word under it.
@@ -17247,19 +15055,14 @@ fn vm_footer_advertises_the_option_verbs_while_the_grid_has_focus() {
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(app.varmanager.focus, VmFocus::Grid);
 
-    let delete = Action::DeleteEntry {
-        env: "qa".into(),
-        selector: "user".into(),
-        name: "alice".into(),
-    };
+    let delete =
+        Action::DeleteEntry { env: "qa".into(), selector: "user".into(), name: "alice".into() };
     let chips = crate::keyroute::spell::spelled_on(
         crate::keyroute::Surface::VarGrid,
         app.varmanager.footer_chips(app.proj(), None),
     );
     assert!(
-        chips
-            .iter()
-            .any(|(k, l, a)| *k == "d" && *l == "delete" && a.as_ref() == Some(&delete)),
+        chips.iter().any(|(k, l, a)| *k == "d" && *l == "delete" && a.as_ref() == Some(&delete)),
         "{chips:?}"
     );
     // Every grid chip is clickable here — "new option" included (it drives
@@ -17271,9 +15074,7 @@ fn vm_footer_advertises_the_option_verbs_while_the_grid_has_focus() {
     // And the drawn footer registers it as a clickable chip.
     rendered_text_tall(&mut app);
     assert!(
-        app.hits
-            .rect_of(&crate::hit::Hit::FooterChip(delete))
-            .is_some(),
+        app.hits.rect_of(&crate::hit::Hit::FooterChip(delete)).is_some(),
         "the chip is click-registered"
     );
 }
@@ -17288,9 +15089,7 @@ fn keyboard_enters_the_variable_form_and_edits_its_fields() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
 
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(app.varmanager.focus, VmFocus::Form, "Right enters the form");
@@ -17329,15 +15128,11 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/ping".into()));
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(app.varmanager.focus, VmFocus::Form);
 
-    let secret = Action::ToggleSecretVar {
-        name: "base_url".into(),
-    };
+    let secret = Action::ToggleSecretVar { name: "base_url".into() };
     let form_chips = |app: &App, open: Option<&postui_core::model::HttpRequest>| {
         crate::keyroute::spell::spelled_on(
             crate::keyroute::Surface::VarForm,
@@ -17346,9 +15141,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     };
     let chips = form_chips(&app, None);
     assert!(
-        chips
-            .iter()
-            .any(|(k, l, a)| *k == "s" && *l == "secret" && a.as_ref() == Some(&secret)),
+        chips.iter().any(|(k, l, a)| *k == "s" && *l == "secret" && a.as_ref() == Some(&secret)),
         "{chips:?}"
     );
     assert!(
@@ -17367,7 +15160,9 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     };
     assert_eq!(
         app.varmanager.form_cursor,
-        crate::components::varmanager::FormStop::Field(crate::components::varmanager::VmField::EnvValue),
+        crate::components::varmanager::FormStop::Field(
+            crate::components::varmanager::VmField::EnvValue
+        ),
         "three downs land on the env-value field"
     );
     let chips = form_chips(&app, None);
@@ -17388,15 +15183,11 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
 
     // The open request overrides this name, so promote is on offer, and
     // `p` opens the same promote prompt the button does.
-    let promote = Action::PromptPromoteVar {
-        name: "base_url".into(),
-    };
+    let promote = Action::PromptPromoteVar { name: "base_url".into() };
     let open_request = app.editor.current_request();
     let chips = form_chips(&app, Some(&open_request));
     assert!(
-        chips
-            .iter()
-            .any(|(k, l, a)| *k == "p" && *l == "promote" && a.as_ref() == Some(&promote)),
+        chips.iter().any(|(k, l, a)| *k == "p" && *l == "promote" && a.as_ref() == Some(&promote)),
         "{chips:?}"
     );
     app.handle_key(plain('p'));
@@ -17422,9 +15213,7 @@ fn form_focus_r_toggles_reveal_on_a_secret_variable() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("api_key".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("api_key".into()));
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
 
     let form_chips = |app: &App| {
@@ -17443,10 +15232,7 @@ fn form_focus_r_toggles_reveal_on_a_secret_variable() {
     app.handle_key(plain('r'));
     assert!(app.varmanager.form.revealed, "r reveals the secret");
     let chips = form_chips(&app);
-    assert!(
-        chips.iter().any(|(k, l, _)| *k == "r" && *l == "hide"),
-        "{chips:?}"
-    );
+    assert!(chips.iter().any(|(k, l, _)| *k == "r" && *l == "hide"), "{chips:?}");
     app.handle_key(plain('r'));
     assert!(!app.varmanager.form.revealed);
 }
@@ -17462,9 +15248,7 @@ fn vm_footer_advertises_edit_fields_on_a_selector() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_group(&mut app, "user");
 
-    let edit_fields = Action::PromptGroupFields {
-        selector: "user".into(),
-    };
+    let edit_fields = Action::PromptGroupFields { selector: "user".into() };
     let chips = crate::keyroute::spell::spelled_on(
         crate::keyroute::Surface::VarList,
         app.varmanager.footer_chips(app.proj(), None),
@@ -17477,17 +15261,12 @@ fn vm_footer_advertises_edit_fields_on_a_selector() {
     );
 
     // On a plain variable there is no fields editor to advertise.
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
     let chips = crate::keyroute::spell::spelled_on(
         crate::keyroute::Surface::VarList,
         app.varmanager.footer_chips(app.proj(), None),
     );
-    assert!(
-        !chips.iter().any(|(_, l, _)| *l == "edit fields"),
-        "{chips:?}"
-    );
+    assert!(!chips.iter().any(|(_, l, _)| *l == "edit fields"), "{chips:?}");
 }
 
 /// User finding: with a variable's form open but the left cursor on a
@@ -17502,9 +15281,7 @@ fn vm_footer_drops_rename_delete_on_a_header_row() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
     app.varmanager.left_cursor = 0; // the "VARIABLES" section header
     let chips = crate::keyroute::spell::spelled_on(
         crate::keyroute::Surface::VarList,
@@ -17529,20 +15306,22 @@ fn vm_footer_drops_chips_with_no_target() {
     app.update(Action::OpenManage { tab: None });
     use crate::keyroute::Surface;
     use crate::keyroute::spell::spelled_on;
-    let keys: Vec<String> = spelled_on(Surface::VarList, app.varmanager.footer_chips(app.proj(), None))
-        .into_iter()
-        .map(|(k, _, _)| k)
-        .collect();
+    let keys: Vec<String> =
+        spelled_on(Surface::VarList, app.varmanager.footer_chips(app.proj(), None))
+            .into_iter()
+            .map(|(k, _, _)| k)
+            .collect();
     assert_eq!(keys, vec!["a", "A", "esc"]);
 
     // Grid focus with the cursor on the ghost row: only "new option".
     goto_group(&mut app, "user");
     app.varmanager.focus = VmFocus::Grid;
     app.varmanager.grid.cursor = (2, 0); // alice, bob, then the ghost
-    let keys: Vec<String> = spelled_on(Surface::VarGrid, app.varmanager.footer_chips(app.proj(), None))
-        .into_iter()
-        .map(|(k, _, _)| k)
-        .collect();
+    let keys: Vec<String> =
+        spelled_on(Surface::VarGrid, app.varmanager.footer_chips(app.proj(), None))
+            .into_iter()
+            .map(|(k, _, _)| k)
+            .collect();
     assert_eq!(keys, vec!["a"]);
 }
 
@@ -17616,12 +15395,7 @@ fn the_ghost_row_creates_an_entry_and_keeps_going_into_its_first_field() {
     assert!(on_disk.contains("[options.user.carol]"), "{on_disk}");
     // The new entry is created with an empty value for every field, so it
     // validates — and the edit walks on into that first field cell.
-    let edit = app
-        .varmanager
-        .grid
-        .editing
-        .as_ref()
-        .expect("editing continues left-to-right");
+    let edit = app.varmanager.grid.editing.as_ref().expect("editing continues left-to-right");
     assert_eq!((edit.row, edit.col), (2, 1));
 
     for c in "3003".chars() {
@@ -17650,12 +15424,8 @@ fn a_refused_entry_name_toasts_and_keeps_the_typed_text() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(!app.toasts.is_empty(), "the refusal is surfaced");
-    let edit = app
-        .varmanager
-        .grid
-        .editing
-        .as_ref()
-        .expect("the failed write left the edit in place");
+    let edit =
+        app.varmanager.grid.editing.as_ref().expect("the failed write left the edit in place");
     assert_eq!(edit.input.text(), "description");
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!on_disk.contains("description"), "{on_disk}");
@@ -17665,25 +15435,16 @@ fn a_refused_entry_name_toasts_and_keeps_the_typed_text() {
 fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    std::fs::write(
-        dir.path().join("environments/dev.toml"),
-        "[options.user.dave]\nuser = \"7\"\n",
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("environments/dev.toml"), "[options.user.dave]\nuser = \"7\"\n")
+        .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_group(&mut app, "user");
 
     // --- rename: slot 0 is the group's current field, retyped -----------
-    app.update(Action::ApplyGroupFields {
-        selector: "user".into(),
-        slots: vec!["user_id".into()],
-    });
+    app.update(Action::ApplyGroupFields { selector: "user".into(), slots: vec!["user_id".into()] });
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert_eq!(
-        app.proj().variables().selectors["user"].fields,
-        vec!["user_id"]
-    );
+    assert_eq!(app.proj().variables().selectors["user"].fields, vec!["user_id"]);
     let qa = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert_eq!(qa.options["user"]["alice"].values["user_id"], "1001");
     let dev = postui_core::fixtures::load_environment(dir.path(), "dev").unwrap();
@@ -17698,10 +15459,7 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
         slots: vec!["user_id".into(), "customer_id".into()],
     });
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert_eq!(
-        app.proj().variables().selectors["user"].fields,
-        vec!["user_id", "customer_id"]
-    );
+    assert_eq!(app.proj().variables().selectors["user"].fields, vec!["user_id", "customer_id"]);
     let qa = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert_eq!(
         qa.options["user"]["alice"].values["customer_id"], "",
@@ -17714,15 +15472,10 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
         slots: vec!["user_id".into(), String::new()],
     });
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
-    assert_eq!(
-        app.proj().variables().selectors["user"].fields,
-        vec!["user_id"]
-    );
+    assert_eq!(app.proj().variables().selectors["user"].fields, vec!["user_id"]);
     let qa = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert!(
-        !qa.options["user"]["alice"]
-            .values
-            .contains_key("customer_id"),
+        !qa.options["user"]["alice"].values.contains_key("customer_id"),
         "the column is gone from every entry"
     );
 }
@@ -17731,24 +15484,15 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
 fn renaming_a_group_moves_its_declaration_its_entries_and_its_selections() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    std::fs::write(
-        dir.path().join("environments/dev.toml"),
-        "[options.user.dave]\nuser = \"7\"\n",
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("environments/dev.toml"), "[options.user.dave]\nuser = \"7\"\n")
+        .unwrap();
     postui_core::fixtures::save_local_state(
         dir.path(),
         &postui_core::project::LocalState {
             environment: Some("qa".into()),
             selections: [
-                (
-                    "qa".to_string(),
-                    [("user".to_string(), "bob".to_string())].into(),
-                ),
-                (
-                    "dev".to_string(),
-                    [("user".to_string(), "dave".to_string())].into(),
-                ),
+                ("qa".to_string(), [("user".to_string(), "bob".to_string())].into()),
+                ("dev".to_string(), [("user".to_string(), "dave".to_string())].into()),
             ]
             .into(),
             ..Default::default()
@@ -17772,10 +15516,7 @@ fn renaming_a_group_moves_its_declaration_its_entries_and_its_selections() {
     for env in ["qa", "dev"] {
         let text =
             std::fs::read_to_string(dir.path().join(format!("environments/{env}.toml"))).unwrap();
-        assert!(
-            text.contains("[options.account."),
-            "{env} entries moved: {text}"
-        );
+        assert!(text.contains("[options.account."), "{env} entries moved: {text}");
         assert!(!text.contains("[options.user."), "{env}: {text}");
     }
     // The selection follows the name in every environment…
@@ -17826,16 +15567,7 @@ fn right_clicking_an_entry_row_opens_its_own_menu() {
     };
     let labels: Vec<&str> = state.items.iter().map(|i| i.label.as_str()).collect();
     // "Rename" has no ellipsis: it starts the inline name-cell edit.
-    assert_eq!(
-        labels,
-        vec![
-            "Edit\u{2026}",
-            "Copy option",
-            "Paste option",
-            "Rename",
-            "Delete"
-        ]
-    );
+    assert_eq!(labels, vec!["Edit\u{2026}", "Copy option", "Paste option", "Rename", "Delete"]);
 }
 
 /// Review finding 1: the right-click path has to commit a live cell edit
@@ -17862,10 +15594,7 @@ fn right_clicking_another_row_commits_the_live_cell_to_the_entry_it_belongs_to()
     let r = cell_rect(&mut app, 0, 0);
     app.handle_mouse(right_down(r.x, r.y));
 
-    assert!(
-        app.varmanager.grid.editing.is_none(),
-        "the right click committed the live cell first"
-    );
+    assert!(app.varmanager.grid.editing.is_none(), "the right click committed the live cell first");
     let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert_eq!(
         env.options["user"]["bob"].values["user"], "20029",
@@ -17897,9 +15626,7 @@ fn right_clicking_commits_a_live_form_field() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
 
     // Right-edge click: the caret follows the pointer, and the '9' must
     // land at the end of the text.
@@ -17949,12 +15676,7 @@ fn the_keyboard_reaches_the_grid_selects_a_row_and_edits_the_focused_cell() {
     // Enter edits the focused cell; Right first moves onto the value column.
     app.handle_key(arrow(KeyCode::Right));
     app.handle_key(arrow(KeyCode::Enter));
-    let edit = app
-        .varmanager
-        .grid
-        .editing
-        .as_ref()
-        .expect("Enter started an edit");
+    let edit = app.varmanager.grid.editing.as_ref().expect("Enter started an edit");
     assert_eq!((edit.row, edit.col), (1, 1));
     assert_eq!(edit.input.text(), "2002");
 
@@ -18045,16 +15767,9 @@ async fn request_panel_buttons_focus_the_editor_pane() {
     for hit in buttons {
         app.update(Action::FocusPane(PaneId::Response));
         render_once(&mut app);
-        let r = app
-            .hits
-            .rect_of(&hit)
-            .unwrap_or_else(|| panic!("{hit:?} not on screen"));
+        let r = app.hits.rect_of(&hit).unwrap_or_else(|| panic!("{hit:?} not on screen"));
         app.handle_mouse(left_down(r.x, r.y));
-        assert_eq!(
-            app.focus,
-            PaneId::Editor,
-            "clicking {hit:?} must focus the request panel"
-        );
+        assert_eq!(app.focus, PaneId::Editor, "clicking {hit:?} must focus the request panel");
     }
 }
 
@@ -18187,11 +15902,8 @@ fn every_named_action_is_mouse_reachable() {
     }
 
     // Group B: the command palette.
-    mouse_reachable.extend(
-        crate::components::palette::all_commands()
-            .into_iter()
-            .map(|c| c.action),
-    );
+    mouse_reachable
+        .extend(crate::components::palette::all_commands().into_iter().map(|c| c.action));
 
     // Group C: `on_hit`'s own direct dispatches not already covered above —
     // the hand-maintained mirror kept beside `on_hit` in `app/mouse.rs`.
@@ -18200,19 +15912,11 @@ fn every_named_action_is_mouse_reachable() {
     // Group D: context menus, built with real state through the same
     // methods the mouse's right-click path calls.
     let mut app = App::new_for_test();
-    app.editor.params.insert(
-        "k".into(),
-        postui_core::model::Entry {
-            value: "v".into(),
-            enabled: true,
-        },
-    );
-    mouse_reachable.extend(
-        app.table_row_context_menu(0)
-            .into_iter()
-            .flatten()
-            .filter_map(|item| item.action),
-    );
+    app.editor
+        .params
+        .insert("k".into(), postui_core::model::Entry { value: "v".into(), enabled: true });
+    mouse_reachable
+        .extend(app.table_row_context_menu(0).into_iter().flatten().filter_map(|item| item.action));
     postui_core::fixtures::save_request(app.proj().root(), "main/req", &req("https://x/req"))
         .unwrap();
     app.refresh_sidebar();
@@ -18313,10 +16017,7 @@ fn testbed_renders_flat_capped_controls_and_an_underline() {
             cell.symbol() == "━" && (cell.fg == accent || cell.fg == focus_ring)
         })
     });
-    assert!(
-        has_accent_underline,
-        "no accent-colored tab-strip underline segment found"
-    );
+    assert!(has_accent_underline, "no accent-colored tab-strip underline segment found");
 }
 
 #[test]
@@ -18365,20 +16066,14 @@ fn testbed_screen_ignores_every_mouse_click_except_the_quit_chip() {
         "a footer-chip click (other than quit) must not open the palette"
     );
 
-    assert!(
-        !app.should_quit,
-        "none of the inert clicks above should have quit the app"
-    );
+    assert!(!app.should_quit, "none of the inert clicks above should have quit the app");
 }
 
 #[test]
 fn testbed_screen_quit_chip_still_quits_via_mouse() {
     let mut app = App::new_for_test_with_testbed(true);
     click_hit(&mut app, Hit::FooterChip(Action::Quit));
-    assert!(
-        app.should_quit,
-        "the footer's own quit chip must still work on the testbed"
-    );
+    assert!(app.should_quit, "the footer's own quit chip must still work on the testbed");
 }
 
 // --- Task 8b (stage 8): looping motion demos on the testbed screen ---------
@@ -18394,10 +16089,7 @@ fn testbed_tick_keeps_animating_true_across_many_ticks() {
     let mut app = App::new_for_test_with_testbed(true);
     for _ in 0..50 {
         app.update(Action::Tick);
-        assert!(
-            app.animating(),
-            "a looping testbed demo should still be in flight or dwelling"
-        );
+        assert!(app.animating(), "a looping testbed demo should still be in flight or dwelling");
     }
 }
 
@@ -18414,17 +16106,12 @@ fn testbed_demo_drive_does_not_run_on_the_main_screen() {
     let now = std::time::Instant::now();
     app.update(Action::Tick);
     assert!(
-        app.anims
-            .value(crate::anim::AnimKey::SendBreathe, now)
-            .is_none(),
+        app.anims.value(crate::anim::AnimKey::SendBreathe, now).is_none(),
         "the testbed's Send-breathe demo must not start ticking on Screen::Main"
     );
     assert!(
         app.anims
-            .value(
-                crate::anim::AnimKey::ListTravel(crate::anim::ListId::Sidebar),
-                now
-            )
+            .value(crate::anim::AnimKey::ListTravel(crate::anim::ListId::Sidebar), now)
             .is_none(),
         "the testbed's list-travel demo must not start ticking on Screen::Main"
     );
@@ -18443,10 +16130,7 @@ fn pushing_a_toast_starts_an_active_toast_fade_anim() {
     // copy" unconditionally, with no fixture setup needed.
     app.update(Action::CopyToClipboard(CopyTarget::ResponseBody));
     assert!(!app.toasts.is_empty(), "the copy must have toasted");
-    assert!(
-        app.animating(),
-        "the freshly pushed toast's own slide-in must already be in flight"
-    );
+    assert!(app.animating(), "the freshly pushed toast's own slide-in must already be in flight");
 }
 
 /// While a send is in flight, `App::animating()` must stay true across
@@ -18462,10 +16146,7 @@ async fn in_flight_send_keeps_animating_true_across_ticks() {
     assert!(!app.session.in_flight.is_empty());
     for _ in 0..5 {
         app.update(Action::Tick);
-        assert!(
-            app.animating(),
-            "the Send-cap breathe must still be easing or dwelling"
-        );
+        assert!(app.animating(), "the Send-cap breathe must still be easing or dwelling");
     }
     // Cleanup: cancel so the spawned task doesn't outlive the test.
     app.update(Action::CancelSend);
@@ -18482,17 +16163,13 @@ async fn send_breathe_anim_is_cleared_once_nothing_is_in_flight() {
     app.update(Action::ForceSend);
     app.update(Action::Tick);
     assert!(
-        app.anims
-            .value(crate::anim::AnimKey::SendBreathe, std::time::Instant::now())
-            .is_some(),
+        app.anims.value(crate::anim::AnimKey::SendBreathe, std::time::Instant::now()).is_some(),
         "the breathe must have started while sending"
     );
     app.update(Action::CancelSend);
     app.update(Action::Tick);
     assert!(
-        app.anims
-            .value(crate::anim::AnimKey::SendBreathe, std::time::Instant::now())
-            .is_none(),
+        app.anims.value(crate::anim::AnimKey::SendBreathe, std::time::Instant::now()).is_none(),
         "the breathe must be cleared once nothing is in flight"
     );
 }
@@ -18508,9 +16185,7 @@ fn toggle_table_collapse_retargets_pane_collapse_instead_of_snapping() {
     assert!(!app.table_collapsed);
     let now = std::time::Instant::now();
     assert!(
-        app.anims
-            .value(crate::anim::AnimKey::PaneCollapse, now)
-            .is_none(),
+        app.anims.value(crate::anim::AnimKey::PaneCollapse, now).is_none(),
         "untouched before the first toggle"
     );
 
@@ -18540,8 +16215,7 @@ fn toggle_response_collapse_flips_the_flag_and_eases_the_anim() {
     assert!(app.session.response.collapsed);
     let now = std::time::Instant::now();
     assert!(
-        !app.anims
-            .is_done(crate::anim::AnimKey::ResponseCollapse, now),
+        !app.anims.is_done(crate::anim::AnimKey::ResponseCollapse, now),
         "collapsing must ease, not snap"
     );
     app.update(Action::ToggleResponseCollapse);
@@ -18601,10 +16275,7 @@ fn cycle_split_steps_through_every_stop_and_wraps() {
         app.update(Action::CycleSplit);
         seen.push(app.split_state().stop());
     }
-    assert_eq!(
-        seen,
-        [ResponseBig, ResponseFull, EditorFull, EditorBig, Even]
-    );
+    assert_eq!(seen, [ResponseBig, ResponseFull, EditorFull, EditorBig, Even]);
 }
 
 /// `Action::SplitStep` (the response header's ▲/▼ buttons) nudges the
@@ -18617,35 +16288,19 @@ fn split_step_moves_one_stop_and_stalls_at_the_ends() {
     let mut app = App::new_for_test();
     assert_eq!(app.split_state().stop(), Even);
     app.update(Action::SplitStep(1));
-    assert_eq!(
-        app.split_state().stop(),
-        ResponseBig,
-        "▲ grows the response"
-    );
+    assert_eq!(app.split_state().stop(), ResponseBig, "▲ grows the response");
     app.update(Action::SplitStep(1));
     assert_eq!(app.split_state().stop(), ResponseFull);
     assert!(app.table_collapsed);
     app.update(Action::SplitStep(1));
-    assert_eq!(
-        app.split_state().stop(),
-        ResponseFull,
-        "stalls at the bottom stop"
-    );
+    assert_eq!(app.split_state().stop(), ResponseFull, "stalls at the bottom stop");
     for _ in 0..4 {
         app.update(Action::SplitStep(-1));
     }
-    assert_eq!(
-        app.split_state().stop(),
-        EditorFull,
-        "▼ shrinks the response"
-    );
+    assert_eq!(app.split_state().stop(), EditorFull, "▼ shrinks the response");
     assert!(app.session.response.collapsed);
     app.update(Action::SplitStep(-1));
-    assert_eq!(
-        app.split_state().stop(),
-        EditorFull,
-        "stalls at the top stop"
-    );
+    assert_eq!(app.split_state().stop(), EditorFull, "stalls at the top stop");
 }
 
 /// The split is a persisted layout preference: chip presses and the
@@ -18657,11 +16312,8 @@ fn split_persists_to_local_state_and_reseeds_on_open() {
     let mut app = App::new_for_test();
     app.update(Action::SplitStop(SplitStop::EditorBig));
     let root = app.proj().root().to_path_buf();
-    let saved = |root: &std::path::Path| {
-        postui_core::fixtures::load_local_state(root)
-            .unwrap()
-            .main_split
-    };
+    let saved =
+        |root: &std::path::Path| postui_core::fixtures::load_local_state(root).unwrap().main_split;
     assert_eq!(saved(&root).as_deref(), Some("editor-big"));
 
     app.update(Action::ToggleResponseCollapse);
@@ -18670,10 +16322,7 @@ fn split_persists_to_local_state_and_reseeds_on_open() {
     // A fresh app on the same root wakes up with the saved split.
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let reopened = App::with_root(tx, root.clone());
-    assert!(
-        reopened.session.response.collapsed,
-        "the minimized response comes back minimized"
-    );
+    assert!(reopened.session.response.collapsed, "the minimized response comes back minimized");
     drop(app); // keeps the temp project alive until the reopened app is done
 }
 
@@ -18693,10 +16342,7 @@ fn switching_to_the_body_tab_keeps_a_hidden_editor_hidden() {
     // Let it settle (real time is fine here -- pane_collapse defaults to
     // 120ms, and `is_done`/`value` both tolerate an already-finished anim).
     std::thread::sleep(std::time::Duration::from_millis(150));
-    assert!(app.anims.is_done(
-        crate::anim::AnimKey::PaneCollapse,
-        std::time::Instant::now()
-    ));
+    assert!(app.anims.is_done(crate::anim::AnimKey::PaneCollapse, std::time::Instant::now()));
 
     // Hide applies on every tab now, the Body buffer included: a tab
     // switch no longer re-opens the pane.
@@ -18724,10 +16370,7 @@ fn caret_resting_in_a_token_shows_its_tooltip_only_after_the_wall_clock_dwell() 
     // draw pass (`components::var_tokens`) -- not by `update` itself.
     render_once(&mut app);
     app.update(Action::Tick);
-    assert!(
-        app.var_token_tip().is_none(),
-        "must not show immediately -- the dwell hasn't elapsed"
-    );
+    assert!(app.var_token_tip().is_none(), "must not show immediately -- the dwell hasn't elapsed");
 
     // Real time is fine here -- the dwell is 200ms and `var_token_tip`
     // tolerates being sampled well past it.
@@ -18746,9 +16389,7 @@ fn caret_resting_in_a_token_shows_its_tooltip_only_after_the_wall_clock_dwell() 
 #[test]
 fn manage_opens_on_the_requested_tab_and_alt_arrows_cycle_tabs() {
     let (mut app, _dir) = spaced_app();
-    app.update(Action::OpenManage {
-        tab: Some(crate::components::manage::ManageTab::Spaces),
-    });
+    app.update(Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Spaces) });
     assert_eq!(app.screen, Screen::Manage);
     assert_eq!(app.manage.tab, crate::components::manage::ManageTab::Spaces);
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
@@ -18778,10 +16419,7 @@ fn manage_bar_paints_three_tabs_and_clicking_one_selects_it() {
         assert!(text.contains(label), "{label} missing: {text}");
     }
     click_hit(&mut app, Hit::ManageTab(1));
-    assert_eq!(
-        app.manage.tab,
-        crate::components::manage::ManageTab::Environments
-    );
+    assert_eq!(app.manage.tab, crate::components::manage::ManageTab::Environments);
 }
 
 #[test]
@@ -18823,10 +16461,7 @@ fn header_cycle_pills_yield_at_eighty_columns_so_the_manage_chip_fits() {
     let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     for hit in [Hit::HeaderProject, Hit::HeaderSpace, Hit::HeaderEnv] {
-        assert!(
-            app.hits.rect_of(&hit).is_some(),
-            "{hit:?} must still be on the bar at 80 columns"
-        );
+        assert!(app.hits.rect_of(&hit).is_some(), "{hit:?} must still be on the bar at 80 columns");
     }
     let manage = app
         .hits
@@ -18847,10 +16482,7 @@ fn header_cycle_pills_yield_at_eighty_columns_so_the_manage_chip_fits() {
         app.hits.rect_of(&Hit::HeaderSpaceCycle).is_none(),
         "the space cycle pill yields first"
     );
-    assert!(
-        app.hits.rect_of(&Hit::HeaderEnvCycle).is_none(),
-        "so does the env cycle pill"
-    );
+    assert!(app.hits.rect_of(&Hit::HeaderEnvCycle).is_none(), "so does the env cycle pill");
 
     // The 120-column path keeps all three pills.
     render_once(&mut app);
@@ -18864,21 +16496,14 @@ fn space_dropdown_lists_numbered_spaces_with_new_and_manage_rows() {
     let (mut app, _dir) = spaced_app();
     render_once(&mut app);
     app.update(Action::OpenSpaceChooser);
-    let Some(Modal::Dropdown(d)) = app.modals.top() else {
-        panic!("dropdown")
-    };
+    let Some(Modal::Dropdown(d)) = app.modals.top() else { panic!("dropdown") };
     let labels: Vec<&str> = d.items.iter().map(|i| i.label.as_str()).collect();
-    assert_eq!(
-        labels,
-        ["1  main", "2  auth", "new space…", "manage spaces…"]
-    );
+    assert_eq!(labels, ["1  main", "2  auth", "new space…", "manage spaces…"]);
     assert_eq!(d.current, Some(0));
     assert_eq!(d.items[1].action, Some(Action::SwitchSpace("auth".into())));
     assert_eq!(
         d.items[3].action,
-        Some(Action::OpenManage {
-            tab: Some(crate::components::manage::ManageTab::Spaces)
-        })
+        Some(Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Spaces) })
     );
 }
 
@@ -18887,16 +16512,12 @@ fn env_dropdown_gains_a_manage_row() {
     let (mut app, _dir) = app_with_envs();
     render_once(&mut app);
     app.update(Action::OpenEnvChooser);
-    let Some(Modal::Dropdown(d)) = app.modals.top() else {
-        panic!("dropdown")
-    };
+    let Some(Modal::Dropdown(d)) = app.modals.top() else { panic!("dropdown") };
     let last = d.items.last().unwrap();
     assert_eq!(last.label, "manage environments…");
     assert_eq!(
         last.action,
-        Some(Action::OpenManage {
-            tab: Some(crate::components::manage::ManageTab::Environments)
-        })
+        Some(Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Environments) })
     );
 }
 
@@ -18906,29 +16527,19 @@ fn env_dropdown_gains_a_manage_row() {
 fn spaces_tab_lists_numbered_spaces_with_request_names_and_buttons() {
     use crate::components::manage::ManageTab;
     let (mut app, _dir) = spaced_app();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Spaces),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
     let text = rendered_text_wide_tall(&mut app);
     assert!(text.contains("1  main"), "{text}");
     assert!(text.contains("2  auth"), "{text}");
     assert!(text.contains("Space: main"), "{text}");
-    assert!(
-        !text.contains("\u{2713}"),
-        "no check mark beside the active space: {text}"
-    );
+    assert!(!text.contains("\u{2713}"), "no check mark beside the active space: {text}");
     // The request names themselves, not a count.
     assert!(!text.contains("2 requests"), "{text}");
     let alpha = text.find("alpha").expect("alpha listed");
     let beta = text.find("beta").expect("beta listed");
     assert!(alpha < beta, "in sidebar order");
     assert!(!text.contains("login"), "auth's request is not main's");
-    for hit in [
-        Hit::ManageNew,
-        Hit::ManageRename,
-        Hit::ManageDelete,
-        Hit::ManageMoveAll,
-    ] {
+    for hit in [Hit::ManageNew, Hit::ManageRename, Hit::ManageDelete, Hit::ManageMoveAll] {
         assert!(app.hits.rect_of(&hit).is_some(), "{hit:?} missing");
     }
     // Reordering is drag/alt+up-down/row-menu only now — no detail-pane
@@ -18944,18 +16555,12 @@ fn spaces_tab_lists_numbered_spaces_with_request_names_and_buttons() {
 fn manage_pane_buttons_sit_right_aligned_on_the_title_row() {
     use crate::components::manage::ManageTab;
     let (mut app, _dir) = spaced_app();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Spaces),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
     rendered_text_wide_tall(&mut app);
     let delete = app.hits.rect_of(&Hit::ManageDelete).unwrap();
     let rename = app.hits.rect_of(&Hit::ManageRename).unwrap();
     let move_all = app.hits.rect_of(&Hit::ManageMoveAll).unwrap();
-    assert_eq!(
-        rename.x + rename.width + 1,
-        delete.x,
-        "Rename just left of it"
-    );
+    assert_eq!(rename.x + rename.width + 1, delete.x, "Rename just left of it");
     assert!(move_all.x < rename.x);
     assert_eq!(delete.y, rename.y);
     // The Variables pane's title row sits at the same y.
@@ -18978,9 +16583,7 @@ fn manage_pane_buttons_sit_right_aligned_on_the_title_row() {
 fn environments_tab_lists_envs_and_hides_the_space_only_buttons() {
     use crate::components::manage::ManageTab;
     let (mut app, _dir) = app_with_envs();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Environments),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
     let text = rendered_text_tall(&mut app);
     assert!(text.contains("prod"), "{text}");
     assert!(text.contains("Environment: prod"), "{text}");
@@ -18993,17 +16596,12 @@ fn environments_tab_lists_envs_and_hides_the_space_only_buttons() {
 fn alt_arrows_reorder_the_environments_tab_too() {
     use crate::components::manage::ManageTab;
     let (mut app, _dir) = app_with_envs();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Environments),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(app.manage.list.cursor, 1);
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
     assert_eq!(app.proj().environments(), ["qa", "prod"]);
-    assert_eq!(
-        app.manage.list.cursor, 0,
-        "cursor follows the moved environment"
-    );
+    assert_eq!(app.manage.list.cursor, 0, "cursor follows the moved environment");
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
     assert_eq!(app.proj().environments(), ["prod", "qa"]);
     assert_eq!(app.manage.list.cursor, 1);
@@ -19013,9 +16611,7 @@ fn alt_arrows_reorder_the_environments_tab_too() {
 fn list_keys_move_delete_and_rename_through_the_prompt() {
     use crate::components::manage::ManageTab;
     let (mut app, _dir) = spaced_app();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Spaces),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(app.manage.list.cursor, 1);
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
@@ -19053,9 +16649,7 @@ fn list_keys_move_delete_and_rename_through_the_prompt() {
 fn rename_button_opens_the_rename_prompt() {
     use crate::components::manage::ManageTab;
     let (mut app, _dir) = app_with_envs();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Environments),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
     rendered_text_tall(&mut app);
     click_hit(&mut app, Hit::ManageRename);
     assert!(matches!(
@@ -19071,22 +16665,15 @@ fn rename_button_opens_the_rename_prompt() {
 fn move_all_button_opens_the_space_chooser() {
     use crate::components::manage::ManageTab;
     let (mut app, _dir) = spaced_app();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Spaces),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
     rendered_text_tall(&mut app);
     click_hit(&mut app, Hit::ManageMoveAll);
-    let Some(Modal::Chooser(c)) = app.modals.top() else {
-        panic!("chooser")
-    };
+    let Some(Modal::Chooser(c)) = app.modals.top() else { panic!("chooser") };
     assert_eq!(c.title(), "Move all requests to");
     assert_eq!(c.selected_label(), Some("auth"));
     assert_eq!(
         c.confirm().unwrap().actions,
-        vec![Action::MoveAllRequests {
-            from: "main".into(),
-            to: "auth".into()
-        }]
+        vec![Action::MoveAllRequests { from: "main".into(), to: "auth".into() }]
     );
 }
 
@@ -19094,19 +16681,14 @@ fn move_all_button_opens_the_space_chooser() {
 fn clicking_new_delete_and_a_row_dispatch_the_right_actions() {
     use crate::components::manage::ManageTab;
     let (mut app, _dir) = app_with_envs();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Environments),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
     rendered_text_tall(&mut app);
     click_hit(&mut app, Hit::ManageRow(1));
     assert_eq!(app.manage.list.cursor, 1);
     click_hit(&mut app, Hit::ManageNew);
     assert!(matches!(
         app.modals.top(),
-        Some(Modal::Prompt {
-            kind: PromptKind::NewEnvironment,
-            ..
-        })
+        Some(Modal::Prompt { kind: PromptKind::NewEnvironment, .. })
     ));
     app.update(Action::Close);
     click_hit(&mut app, Hit::ManageDelete);
@@ -19118,9 +16700,7 @@ fn clicking_new_delete_and_a_row_dispatch_the_right_actions() {
 fn right_clicking_an_environment_row_opens_its_menu_with_move_items() {
     use crate::components::manage::ManageTab;
     let (mut app, _dir) = app_with_envs();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Environments),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
     rendered_text_tall(&mut app);
     let r = app.hits.rect_of(&Hit::ManageRow(1)).unwrap();
     app.handle_mouse(right_down(r.x + 1, r.y));
@@ -19134,21 +16714,9 @@ fn right_clicking_an_environment_row_opens_its_menu_with_move_items() {
         vec!["Rename\u{2026}", "Move up", "Move down", "Delete"],
         "environments have no move-all item"
     );
-    assert_eq!(
-        menu.items[0].action,
-        Some(Action::PromptRenameEnv("qa".into()))
-    );
-    assert_eq!(
-        menu.items[1].action,
-        Some(Action::MoveEnv {
-            name: "qa".into(),
-            delta: -1
-        })
-    );
-    assert!(
-        menu.items[2].action.is_none(),
-        "the last row cannot move down"
-    );
+    assert_eq!(menu.items[0].action, Some(Action::PromptRenameEnv("qa".into())));
+    assert_eq!(menu.items[1].action, Some(Action::MoveEnv { name: "qa".into(), delta: -1 }));
+    assert!(menu.items[2].action.is_none(), "the last row cannot move down");
     assert_eq!(menu.items[3].action, Some(Action::DeleteEnv("qa".into())));
 }
 
@@ -19156,9 +16724,7 @@ fn right_clicking_an_environment_row_opens_its_menu_with_move_items() {
 fn right_clicking_a_space_row_opens_its_menu_with_move_items() {
     use crate::components::manage::ManageTab;
     let (mut app, _dir) = spaced_app();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Spaces),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
     rendered_text_tall(&mut app);
     let r = app.hits.rect_of(&Hit::ManageRow(0)).unwrap();
     app.handle_mouse(right_down(r.x + 1, r.y));
@@ -19169,31 +16735,13 @@ fn right_clicking_a_space_row_opens_its_menu_with_move_items() {
     let labels: Vec<String> = menu.items.iter().map(|i| i.label.clone()).collect();
     assert_eq!(
         labels,
-        vec![
-            "Rename\u{2026}",
-            "Move up",
-            "Move down",
-            "Move all requests\u{2026}",
-            "Delete"
-        ]
+        vec!["Rename\u{2026}", "Move up", "Move down", "Move all requests\u{2026}", "Delete"]
     );
     let first = app.proj().spaces()[0].clone();
-    assert_eq!(
-        menu.items[0].action,
-        Some(Action::PromptRenameSpace(first.clone()))
-    );
+    assert_eq!(menu.items[0].action, Some(Action::PromptRenameSpace(first.clone())));
     assert!(menu.items[1].action.is_none(), "top row cannot move up");
-    assert_eq!(
-        menu.items[2].action,
-        Some(Action::MoveSpace {
-            name: first.clone(),
-            delta: 1
-        })
-    );
-    assert_eq!(
-        menu.items[3].action,
-        Some(Action::PromptMoveAllRequests(first.clone()))
-    );
+    assert_eq!(menu.items[2].action, Some(Action::MoveSpace { name: first.clone(), delta: 1 }));
+    assert_eq!(menu.items[3].action, Some(Action::PromptMoveAllRequests(first.clone())));
     assert_eq!(menu.items[4].action, Some(Action::DeleteSpace(first)));
 }
 
@@ -19201,9 +16749,7 @@ fn right_clicking_a_space_row_opens_its_menu_with_move_items() {
 fn manage_tabs_footer_chips_advertise_list_keys() {
     use crate::components::manage::ManageTab;
     let (mut app, _dir) = spaced_app();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Spaces),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
     let text = rendered_text_wide_tall(&mut app);
     for label in ["rename", "new", "delete", "move all", "reorder"] {
         assert!(text.contains(label), "{label}: {text}");
@@ -19254,23 +16800,11 @@ mod undo_tests {
         app.editor.active_tab = EditorTab::Params;
         app.editor.sub_focus = SubFocus::Content;
         for (k, v) in [("a", "1"), ("b", "2")] {
-            app.editor.params.insert(
-                k.into(),
-                Entry {
-                    value: v.into(),
-                    enabled: true,
-                },
-            );
+            app.editor.params.insert(k.into(), Entry { value: v.into(), enabled: true });
         }
         app.editor.table.selected = Some(1); // key "b"
         let pos = app.editor.caret();
-        assert_eq!(
-            pos,
-            Caret::Cell {
-                row: 1,
-                key: Some("b".into()),
-            }
-        );
+        assert_eq!(pos, Caret::Cell { row: 1, key: Some("b".into()) });
         app.editor.params.shift_remove("a"); // "b" is now index 0
         app.editor.restore_caret(&pos);
         assert_eq!(app.editor.table.selected, Some(0));
@@ -19284,13 +16818,7 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.editor.active_tab = EditorTab::Params;
         app.editor.sub_focus = SubFocus::Content;
-        app.editor.params.insert(
-            "a".into(),
-            Entry {
-                value: "1".into(),
-                enabled: true,
-            },
-        );
+        app.editor.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
         app.editor.table.selected = Some(0);
         let pos = app.editor.caret();
         app.editor.params.clear();
@@ -19305,13 +16833,7 @@ mod undo_tests {
     fn undo_of_a_url_edit_leaves_focus_on_the_table() {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("focus-stays".into()));
-        app.editor.headers.insert(
-            "accept".into(),
-            Entry {
-                value: "*/*".into(),
-                enabled: true,
-            },
-        );
+        app.editor.headers.insert("accept".into(), Entry { value: "*/*".into(), enabled: true });
         app.capture_undo(); // seed shadow
         app.focus = PaneId::Editor;
         app.editor.open_url_from_app();
@@ -19351,13 +16873,7 @@ mod undo_tests {
     fn undo_of_a_cell_edit_keeps_the_cell_cursor_where_it_is() {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("cell-undo".into()));
-        app.editor.params.insert(
-            "a".into(),
-            Entry {
-                value: "1".into(),
-                enabled: true,
-            },
-        );
+        app.editor.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
         app.editor.active_tab = EditorTab::Params;
         app.editor.preferred_tab = EditorTab::Params;
         app.editor.sub_focus = SubFocus::Content;
@@ -19396,9 +16912,7 @@ mod undo_tests {
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         app.capture_undo();
         let step = app.history.pop_undo().expect("the close recorded");
-        let crate::undo::StepKind::EditorDelta { before, after, .. } = step.kind else {
-            panic!()
-        };
+        let crate::undo::StepKind::EditorDelta { before, after, .. } = step.kind else { panic!() };
         assert_eq!(before.url, "");
         assert_eq!(after.url, "http");
         // create's own FileStates step (Task 6) may remain beneath it, but
@@ -19426,11 +16940,7 @@ mod undo_tests {
         app.capture_undo();
         assert_eq!(app.history.undo_len(), steps, "open: nothing recorded");
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(
-            app.editor.sub_focus,
-            SubFocus::Url,
-            "Esc closes to selected, not blurred"
-        );
+        assert_eq!(app.editor.sub_focus, SubFocus::Url, "Esc closes to selected, not blurred");
         assert!(!app.editor.url_open());
         app.capture_undo();
         assert_eq!(app.history.undo_len(), steps + 1, "close: one step");
@@ -19440,17 +16950,10 @@ mod undo_tests {
         type_chars(&mut app, "/b");
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.capture_undo();
-        assert_eq!(
-            app.history.undo_len(),
-            steps + 2,
-            "a second close is a second step"
-        );
+        assert_eq!(app.history.undo_len(), steps + 2, "a second close is a second step");
 
         app.update(Action::Undo);
-        assert!(
-            app.editor.url.text().ends_with("/a"),
-            "undo takes off the second close only"
-        );
+        assert!(app.editor.url.text().ends_with("/a"), "undo takes off the second close only");
     }
 
     /// The Manage screen takes the caret away without touching `focus` or
@@ -19617,8 +17120,7 @@ mod undo_tests {
         app.update(Action::CreateRequest("modal".into()));
         app.capture_undo();
         app.editor.open_url_from_app();
-        app.editor
-            .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.editor.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         app.capture_undo();
         app.update(Action::PromptNewRequest); // opens a modal
         app.update(Action::Undo);
@@ -19630,9 +17132,7 @@ mod undo_tests {
         use crate::components::line_input::LineInput;
         use crate::components::modal::{Modal, PromptKind};
         let mut app = App::new_for_test();
-        app.editor
-            .url
-            .handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE)); // an app-history edit, unrelated
+        app.editor.url.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE)); // an app-history edit, unrelated
         app.push_modal(Modal::Prompt {
             title: "Rename".into(),
             input: LineInput::new("old"),
@@ -19670,16 +17170,14 @@ mod undo_tests {
         app.update(Action::CreateRequest("lin".into()));
         app.capture_undo();
         app.editor.open_url_from_app();
-        app.editor
-            .handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        app.editor.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         app.capture_undo();
         app.update(Action::Undo);
         // The undo landed the line on the reverted text, selected (spec
         // 2026-09-16) — typing again needs the field reopened, same as a
         // keyboard user would with Enter/i.
         app.editor.open_url_from_app();
-        app.editor
-            .handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        app.editor.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
         app.capture_undo();
         app.update(Action::Redo);
         assert_eq!(app.editor.url.text(), "z", "redo stack cleared by new edit");
@@ -19691,8 +17189,7 @@ mod undo_tests {
         app.update(Action::CreateRequest("aaa".into()));
         app.capture_undo();
         app.editor.open_url_from_app();
-        app.editor
-            .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.editor.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         app.capture_undo();
         app.update(Action::SaveRequest); // save so switching away is clean
         app.capture_undo();
@@ -19718,13 +17215,11 @@ mod undo_tests {
         app.update(Action::CreateRequest("jb1".into()));
         app.capture_undo();
         app.editor.open_url_from_app();
-        app.editor
-            .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.editor.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
         app.capture_undo();
         app.update(Action::SaveRequest);
         app.capture_undo();
-        app.editor
-            .handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        app.editor.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
         app.capture_undo();
         // Leave jb1 for a jb2 made outside the app, by force: undo's
         // jump-back must work even with jb1 dirty. Not through a journaled
@@ -19753,8 +17248,7 @@ mod undo_tests {
         app.update(Action::CreateRequest("del-me".into()));
         app.capture_undo();
         app.editor.open_url_from_app();
-        app.editor
-            .handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        app.editor.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
         app.capture_undo();
         app.update(Action::SaveRequest);
         app.capture_undo();
@@ -19777,10 +17271,7 @@ mod undo_tests {
         let path = dir.path().join("requests/main/alpha.toml");
         assert!(!path.exists());
         assert!(postui_core::fixtures::trash_dir(dir.path()).is_dir());
-        assert!(
-            app.editor.slug.is_none(),
-            "deleting the open request clears the editor"
-        );
+        assert!(app.editor.slug.is_none(), "deleting the open request clears the editor");
         assert!(matches!(
             app.history_top_kind_for_test(),
             Some(crate::undo::StepKind::Project { label, .. })
@@ -19808,10 +17299,7 @@ mod undo_tests {
         postui_core::fixtures::save_request(dir.path(), "main/alpha", &req("https://x/2")).unwrap();
         let toasts_before = app.toasts.messages().len();
         app.update(Action::Undo);
-        assert!(
-            app.toasts.messages().len() > toasts_before,
-            "failure toasts"
-        );
+        assert!(app.toasts.messages().len() > toasts_before, "failure toasts");
         let on_disk = std::fs::read_to_string(dir.path().join("requests/main/alpha.toml")).unwrap();
         assert!(on_disk.contains("x/2"), "the newer file is never clobbered");
         assert_eq!(app.history.undo_len(), 0, "the failed step is dropped");
@@ -19823,10 +17311,7 @@ mod undo_tests {
         app.update(Action::CreateRequest("old-name".into()));
         app.capture_undo();
         assert_eq!(app.editor.slug.as_deref(), Some("main/old-name"));
-        app.update(Action::RenameRequest {
-            from: "main/old-name".into(),
-            to: "new-name".into(),
-        });
+        app.update(Action::RenameRequest { from: "main/old-name".into(), to: "new-name".into() });
         app.capture_undo();
         // The forward rename retitles the still-open editor in place
         // (doesn't close it) — undo/redo of the FileStates step it
@@ -19873,10 +17358,8 @@ mod undo_tests {
         app.update(Action::CreateRequest("sv".into()));
         app.capture_undo();
         app.editor.open_url_from_app();
-        app.editor
-            .handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
-        app.editor
-            .handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        app.editor.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        app.editor.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
         app.capture_undo(); // one coalesced EditorDelta: "" -> "ab"
         app.update(Action::SaveRequest); // disk now holds "ab"
         app.capture_undo();
@@ -19884,26 +17367,12 @@ mod undo_tests {
         let saved_file = std::fs::read_to_string(&path).unwrap();
         assert!(!app.editor.is_dirty());
         app.update(Action::Undo); // reverts the "ab" edit, not the save
-        assert_eq!(
-            app.editor.url.text(),
-            "",
-            "the first undo after a save reverts the last edit"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            saved_file,
-            "undo never touches disk"
-        );
-        assert!(
-            app.editor.is_dirty(),
-            "buffer ('') genuinely differs from disk ('ab')"
-        );
+        assert_eq!(app.editor.url.text(), "", "the first undo after a save reverts the last edit");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved_file, "undo never touches disk");
+        assert!(app.editor.is_dirty(), "buffer ('') genuinely differs from disk ('ab')");
         app.update(Action::Redo); // back to the saved content
         assert_eq!(app.editor.url.text(), "ab");
-        assert!(
-            !app.editor.is_dirty(),
-            "buffer matches the saved baseline again"
-        );
+        assert!(!app.editor.is_dirty(), "buffer matches the saved baseline again");
     }
 
     #[test]
@@ -19915,20 +17384,14 @@ mod undo_tests {
         app.update(Action::CreateRequest("sv2".into()));
         app.capture_undo();
         app.editor.open_url_from_app();
-        app.editor
-            .handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        app.editor.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         app.capture_undo();
         app.update(Action::SaveRequest); // disk holds "a"
         app.capture_undo();
-        app.editor
-            .handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        app.editor.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
         app.capture_undo();
         app.update(Action::Undo);
-        assert_eq!(
-            app.editor.url.text(),
-            "a",
-            "one undo lands on the saved snapshot, not past it"
-        );
+        assert_eq!(app.editor.url.text(), "a", "one undo lands on the saved snapshot, not past it");
         assert!(!app.editor.is_dirty(), "buffer matches disk ('a')");
     }
 
@@ -19940,19 +17403,14 @@ mod undo_tests {
         app.update(Action::CreateRequest("sv3".into()));
         app.capture_undo();
         app.editor.open_url_from_app();
-        app.editor
-            .handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        app.editor.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         app.capture_undo();
         app.update(Action::Undo); // url back to ""
         assert_eq!(app.editor.url.text(), "");
         app.update(Action::SaveRequest); // disk holds ""
         app.capture_undo();
         app.update(Action::Redo);
-        assert_eq!(
-            app.editor.url.text(),
-            "a",
-            "the undone edit survives a save as a redo"
-        );
+        assert_eq!(app.editor.url.text(), "a", "the undone edit survives a save as a redo");
         assert!(app.editor.is_dirty(), "buffer ('a') differs from disk ('')");
     }
 
@@ -19993,8 +17451,7 @@ mod undo_tests {
             // true and the shadow (still "two"'s saved snapshot) no longer
             // matches `editor.current_request()`.
             app.editor.open_url_from_app();
-            app.editor
-                .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+            app.editor.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
             assert!(app.editor.is_dirty());
 
             // A step targeting "one" (not the open "two") forces the jump
@@ -20005,9 +17462,7 @@ mod undo_tests {
                     before: Box::new(req("https://before")),
                     after: Box::new(req("https://after")),
                 },
-                context: crate::undo::Context {
-                    slug: Some("one".into()),
-                },
+                context: crate::undo::Context { slug: Some("one".into()) },
             };
 
             let before_undo_len = app.history.undo_len();
@@ -20039,12 +17494,10 @@ mod undo_tests {
                         .expect("dirty gate offers a save-and-retry choice");
                     // The gate saves through `SaveRequestThen` so the
                     // retry can ride a drift confirm's Overwrite choice.
-                    let expects_redo = retry
-                        .2
-                        .contains(&Action::SaveRequestThen(Box::new(Action::Redo)));
-                    let expects_undo = retry
-                        .2
-                        .contains(&Action::SaveRequestThen(Box::new(Action::Undo)));
+                    let expects_redo =
+                        retry.2.contains(&Action::SaveRequestThen(Box::new(Action::Redo)));
+                    let expects_undo =
+                        retry.2.contains(&Action::SaveRequestThen(Box::new(Action::Undo)));
                     assert_eq!(
                         expects_redo, redo,
                         "retry action must match the direction the step was pushed in"
@@ -20138,33 +17591,20 @@ mod undo_tests {
         app.update(Action::Redo);
         assert!(env_path.exists());
         assert_eq!(app.proj().active_env(), Some("staging"));
-        assert!(
-            app.toasts.messages().contains(&"env: staging"),
-            "{:?}",
-            app.toasts.messages()
-        );
+        assert!(app.toasts.messages().contains(&"env: staging"), "{:?}", app.toasts.messages());
     }
 
     #[test]
     fn failed_var_edit_records_no_step() {
         let mut app = App::new_for_test();
-        app.update(Action::VarStruct(VarStructOp::NewVar {
-            name: "a".into(),
-            description: None,
-        }));
-        app.update(Action::VarStruct(VarStructOp::NewVar {
-            name: "b".into(),
-            description: None,
-        }));
+        app.update(Action::VarStruct(VarStructOp::NewVar { name: "a".into(), description: None }));
+        app.update(Action::VarStruct(VarStructOp::NewVar { name: "b".into(), description: None }));
         app.capture_undo();
         let before = app.history.undo_len();
 
         // "b" already exists, so renaming "a" to "b" fails validation and
         // must record nothing.
-        app.update(Action::VarStruct(VarStructOp::Rename {
-            from: "a".into(),
-            to: "b".into(),
-        }));
+        app.update(Action::VarStruct(VarStructOp::Rename { from: "a".into(), to: "b".into() }));
         assert!(!app.toasts.is_empty(), "rename collision must toast");
         assert_eq!(app.history.undo_len(), before, "failed op recorded nothing");
     }
@@ -20181,9 +17621,7 @@ mod undo_tests {
         var_project(dir.path());
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::with_root(tx, dir.path().to_path_buf());
-        goto_row(&mut app, |r| {
-            r == &crate::components::varmanager::VmRow::Var("base_url".into())
-        });
+        goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
 
         let env_path = dir.path().join("environments/qa.toml");
         let before_text = std::fs::read_to_string(&env_path).unwrap();
@@ -20220,9 +17658,7 @@ mod undo_tests {
         var_project(dir.path());
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::with_root(tx, dir.path().to_path_buf());
-        goto_row(&mut app, |r| {
-            r == &crate::components::varmanager::VmRow::Var("base_url".into())
-        });
+        goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
 
         let env_path = dir.path().join("environments/qa.toml");
         let vars_path = dir.path().join("variables.toml");
@@ -20230,12 +17666,8 @@ mod undo_tests {
         let vars_before = std::fs::read_to_string(&vars_path).unwrap();
         let undo_before = app.history.undo_len();
 
-        for field in [
-            VmField::EnvValue,
-            VmField::Default,
-            VmField::Description,
-            VmField::EnvValue,
-        ] {
+        for field in [VmField::EnvValue, VmField::Default, VmField::Description, VmField::EnvValue]
+        {
             let r = field_rect(&mut app, field);
             app.handle_mouse(left_down(r.x + 1, r.y));
         }
@@ -20264,9 +17696,7 @@ mod undo_tests {
         .unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::with_root(tx, dir.path().to_path_buf());
-        goto_row(&mut app, |r| {
-            r == &crate::components::varmanager::VmRow::Var("bare".into())
-        });
+        goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("bare".into()));
 
         let env_path = dir.path().join("environments/qa.toml");
         let vars_path = dir.path().join("variables.toml");
@@ -20274,12 +17704,8 @@ mod undo_tests {
         let vars_before = std::fs::read_to_string(&vars_path).unwrap();
         let undo_before = app.history.undo_len();
 
-        for field in [
-            VmField::EnvValue,
-            VmField::Default,
-            VmField::Description,
-            VmField::EnvValue,
-        ] {
+        for field in [VmField::EnvValue, VmField::Default, VmField::Description, VmField::EnvValue]
+        {
             let r = field_rect(&mut app, field);
             app.handle_mouse(left_down(r.x + 1, r.y));
         }
@@ -20306,9 +17732,7 @@ mod undo_tests {
         var_project(dir.path());
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::with_root(tx, dir.path().to_path_buf());
-        goto_row(&mut app, |r| {
-            r == &crate::components::varmanager::VmRow::Var("base_url".into())
-        });
+        goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
 
         rendered_text_tall(&mut app);
         let r = app
@@ -20344,15 +17768,11 @@ mod undo_tests {
         std::fs::write(&qa_path, "[options.user.alice]\nuser = \"1001\"\n").unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::with_root(tx, dir.path().to_path_buf());
-        goto_row(&mut app, |r| {
-            r == &crate::components::varmanager::VmRow::Var("base_url".into())
-        });
+        goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
 
         rendered_text_tall(&mut app);
         assert!(
-            app.hits
-                .rect_of(&crate::hit::Hit::VmRemoveEnvValue)
-                .is_none(),
+            app.hits.rect_of(&crate::hit::Hit::VmRemoveEnvValue).is_none(),
             "no stored value, no remove control"
         );
 
@@ -20376,29 +17796,19 @@ mod undo_tests {
         let qa_path = dir.path().join("environments/qa.toml");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::with_root(tx, dir.path().to_path_buf());
-        goto_row(&mut app, |r| {
-            r == &crate::components::varmanager::VmRow::Var("base_url".into())
-        });
+        goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
 
         // Click the field, select it all, delete: the commit sees text
         // that differs from the seed and writes it.
         let r = field_rect(&mut app, VmField::EnvValue);
         app.handle_mouse(left_down(r.x + 1, r.y));
-        app.varmanager
-            .form
-            .editing
-            .as_mut()
-            .expect("the field is live")
-            .input
-            .select_all();
+        app.varmanager.form.editing.as_mut().expect("the field is live").input.select_all();
         app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
         app.commit_var_form();
 
         assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
         assert!(
-            std::fs::read_to_string(&qa_path)
-                .unwrap()
-                .contains("base_url = \"\""),
+            std::fs::read_to_string(&qa_path).unwrap().contains("base_url = \"\""),
             "an emptied commit writes the empty value verbatim"
         );
     }
@@ -20416,9 +17826,7 @@ mod undo_tests {
             name: "api_key".into(),
             value: "s3cret".into(),
         }));
-        goto_row(&mut app, |r| {
-            r == &crate::components::varmanager::VmRow::Var("api_key".into())
-        });
+        goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("api_key".into()));
 
         rendered_text_tall(&mut app);
         let r = app
@@ -20428,10 +17836,7 @@ mod undo_tests {
         app.handle_mouse(left_down(r.x, r.y));
 
         assert_eq!(
-            app.proj()
-                .secrets()
-                .get("qa")
-                .and_then(|m| m.get("api_key")),
+            app.proj().secrets().get("qa").and_then(|m| m.get("api_key")),
             None,
             "the stored secret is gone"
         );
@@ -20462,30 +17867,20 @@ mod undo_tests {
         });
         app.capture_undo();
         assert_eq!(
-            app.proj()
-                .secrets()
-                .get("qa")
-                .and_then(|m| m.get("api_key")),
+            app.proj().secrets().get("qa").and_then(|m| m.get("api_key")),
             None,
             "the stored secret is gone"
         );
 
         app.update(Action::Undo);
         assert_eq!(
-            app.proj()
-                .secrets()
-                .get("qa")
-                .and_then(|m| m.get("api_key"))
-                .map(String::as_str),
+            app.proj().secrets().get("qa").and_then(|m| m.get("api_key")).map(String::as_str),
             Some("s3cret"),
             "undo puts the removed secret back"
         );
         app.update(Action::Redo);
         assert_eq!(
-            app.proj()
-                .secrets()
-                .get("qa")
-                .and_then(|m| m.get("api_key")),
+            app.proj().secrets().get("qa").and_then(|m| m.get("api_key")),
             None,
             "redo removes it again"
         );
@@ -20563,13 +17958,9 @@ mod undo_tests {
         use crate::anim::{AnimKey, StripId};
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("with-header".into()));
-        app.editor.headers.insert(
-            "X-One".into(),
-            postui_core::model::Entry {
-                value: "1".into(),
-                enabled: true,
-            },
-        );
+        app.editor
+            .headers
+            .insert("X-One".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
         app.update(Action::SaveRequest);
         app.update(Action::CreateRequest("plain".into()));
         // Choose Params on the plain request (its Headers label has no
@@ -20593,8 +17984,7 @@ mod undo_tests {
             "underline left edge follows the shifted span"
         );
         assert_eq!(
-            app.anims
-                .target(AnimKey::TabUnderlineWidth(StripId::EditorTabs)),
+            app.anims.target(AnimKey::TabUnderlineWidth(StripId::EditorTabs)),
             Some((x + w) as f32),
             "underline right edge follows the shifted span"
         );
@@ -20642,15 +18032,8 @@ mod undo_tests {
         let left_key = AnimKey::TabUnderline(StripId::ResponseTabs);
         assert!(app.anims.value(left_key, Instant::now()).is_some());
 
-        app.update(Action::PrettyParsed {
-            generation: 7,
-            tree: None,
-        });
-        assert_eq!(
-            app.session.response.view().unwrap().mode,
-            ViewMode::Raw,
-            "not-JSON forces Raw"
-        );
+        app.update(Action::PrettyParsed { generation: 7, tree: None });
+        assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Raw, "not-JSON forces Raw");
         assert!(
             app.anims.value(left_key, Instant::now()).is_none(),
             "the forced Raw tab snaps to its own span"
@@ -20692,17 +18075,9 @@ mod undo_tests {
         app.update(Action::CycleMethod); // POST
         app.update(Action::EditorTabSelect(EditorTab::Body.index()));
         app.update(Action::SetMethod(postui_core::model::Method::Get));
-        assert_ne!(
-            app.editor.active_tab,
-            EditorTab::Body,
-            "hops off disabled Body"
-        );
+        assert_ne!(app.editor.active_tab, EditorTab::Body, "hops off disabled Body");
         app.update(Action::SetMethod(postui_core::model::Method::Post));
-        assert_eq!(
-            app.editor.active_tab,
-            EditorTab::Body,
-            "returns when re-enabled"
-        );
+        assert_eq!(app.editor.active_tab, EditorTab::Body, "returns when re-enabled");
     }
 
     #[test]
@@ -20830,10 +18205,7 @@ mod undo_tests {
         app.update(Action::ApplyTheme("gruvbox-dark".into()));
         assert_eq!(app.theme_name, "gruvbox-dark");
         assert_eq!(app.ui_settings.theme, "gruvbox-dark");
-        assert_ne!(
-            app.theme.page, before,
-            "gruvbox page differs from the default dark page"
-        );
+        assert_ne!(app.theme.page, before, "gruvbox page differs from the default dark page");
     }
 
     #[test]
@@ -20860,10 +18232,7 @@ mod undo_tests {
         assert_eq!(app.theme_name, "gruvbox-dark", "highlight applies live");
         assert_ne!(app.theme.text, original);
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(
-            app.theme_name, original_name,
-            "esc restores the prior theme"
-        );
+        assert_eq!(app.theme_name, original_name, "esc restores the prior theme");
         assert_eq!(app.theme.text, original);
         assert!(app.modals.top().is_none());
     }
@@ -20879,10 +18248,7 @@ mod undo_tests {
         assert_eq!(app.theme_name, "dark", "highlight applies live");
         // A bare `Close` (the global esc binding) skips apply_modal_result.
         app.update(Action::Close);
-        assert_eq!(
-            app.theme_name, original_name,
-            "close reverts the prior theme"
-        );
+        assert_eq!(app.theme_name, original_name, "close reverts the prior theme");
         assert_eq!(app.theme.page, original);
         assert!(
             app.theme_preview.is_none(),
@@ -20915,10 +18281,7 @@ mod undo_tests {
         assert_eq!(app.theme_name, "dark");
         assert_eq!(app.ui_settings.theme, "dark");
         assert!(app.modals.top().is_none());
-        assert!(
-            app.theme_preview.is_none(),
-            "preview state cleared on close"
-        );
+        assert!(app.theme_preview.is_none(), "preview state cleared on close");
     }
 
     #[test]
@@ -20929,10 +18292,7 @@ mod undo_tests {
         for ch in "mocha".chars() {
             app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
         }
-        assert_eq!(
-            app.theme_name, "catppuccin-mocha",
-            "refilter re-selects row 0 and previews it"
-        );
+        assert_eq!(app.theme_name, "catppuccin-mocha", "refilter re-selects row 0 and previews it");
     }
 
     fn sidebar_on(app: &mut App, slug: &str) {
@@ -20978,7 +18338,10 @@ mod undo_tests {
         type_z_into_the_url(&mut app);
         app.update(Action::DuplicateRequest);
         assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the gate comes first");
-        assert!(!postui_core::fixtures::request_exists(dir.path(), "main/alpha-copy"), "nothing duplicated yet");
+        assert!(
+            !postui_core::fixtures::request_exists(dir.path(), "main/alpha-copy"),
+            "nothing duplicated yet"
+        );
     }
 
     #[test]
@@ -21064,7 +18427,11 @@ mod undo_tests {
         assert_eq!(app.editor.slug.as_deref(), Some("main/omega"));
         app.update(Action::CreateRequest("fresh".into()));
         app.update(Action::Undo);
-        assert_eq!(app.editor.slug.as_deref(), Some("main/omega"), "the name it had when the create ran");
+        assert_eq!(
+            app.editor.slug.as_deref(),
+            Some("main/omega"),
+            "the name it had when the create ran"
+        );
     }
 
     #[test]
@@ -21132,7 +18499,10 @@ mod undo_tests {
         let path = postui_core::storage::request_path(dir.path(), "main/alpha");
         std::fs::write(&path, "url = \"x\"\nurl = \"dup\"\n").unwrap();
         app.update(Action::Undo);
-        assert!(!postui_core::fixtures::request_exists(dir.path(), "main/gamma"), "the create's own undo still ran");
+        assert!(
+            !postui_core::fixtures::request_exists(dir.path(), "main/gamma"),
+            "the create's own undo still ran"
+        );
         assert!(app.editor.slug.is_none(), "gamma is gone; alpha could not open; a scratch");
         assert!(!app.editor.is_dirty() && !app.editor.is_scratch_dirty(), "nothing was seated");
         assert_eq!(app.editor.url.text(), gamma_url, "the blank scratch a new request also had");
@@ -21147,7 +18517,11 @@ mod undo_tests {
         app.update(Action::ForceOpenRequest("auth/login".into()));
         app.update(Action::Undo);
         assert!(postui_core::fixtures::request_exists(dir.path(), "main/beta"));
-        assert_eq!(app.editor.slug.as_deref(), Some("auth/login"), "the delete never touched the editor");
+        assert_eq!(
+            app.editor.slug.as_deref(),
+            Some("auth/login"),
+            "the delete never touched the editor"
+        );
         assert_eq!(app.proj().local().active_space, "auth");
     }
 
@@ -21181,7 +18555,8 @@ mod undo_tests {
     }
 
     #[test]
-    fn deleting_a_space_holding_the_unsaved_open_request_does_not_gate_and_undo_restores_the_edit() {
+    fn deleting_a_space_holding_the_unsaved_open_request_does_not_gate_and_undo_restores_the_edit()
+    {
         let (mut app, _dir) = spaced_app();
         app.update(Action::ForceOpenRequest("main/alpha".into()));
         let dirty = type_z_into_the_url(&mut app);
@@ -21207,7 +18582,8 @@ mod undo_tests {
     #[test]
     fn undoing_a_delete_inside_a_collapsed_folder_expands_it_and_reselects_the_row() {
         let (mut app, dir) = spaced_app();
-        postui_core::fixtures::save_request(dir.path(), "main/sub/inner", &req("https://x/3")).unwrap();
+        postui_core::fixtures::save_request(dir.path(), "main/sub/inner", &req("https://x/3"))
+            .unwrap();
         app.sidebar.expand_to("main/sub/inner");
         app.update(Action::RefreshSidebar);
         sidebar_on(&mut app, "main/sub/inner");
@@ -21217,7 +18593,10 @@ mod undo_tests {
         app.update(Action::DeleteSelectedRequest);
         assert!(!postui_core::fixtures::request_exists(dir.path(), "main/sub/inner"));
         assert!(
-            !app.sidebar.rows.iter().any(|r| matches!(r, Row::Request { slug, .. } if slug == "main/sub/inner")),
+            !app.sidebar
+                .rows
+                .iter()
+                .any(|r| matches!(r, Row::Request { slug, .. } if slug == "main/sub/inner")),
             "the folder is collapsed"
         );
         app.update(Action::Undo);
@@ -21386,7 +18765,10 @@ mod undo_tests {
         app.update(Action::ForceOpenRequest("main/alpha".into()));
         // A rename onto a name that is taken fails after the op began.
         app.update(Action::RenameRequest { from: "main/alpha".into(), to: "beta".into() });
-        assert!(postui_core::fixtures::request_exists(app.proj().root(), "main/alpha"), "the rename failed");
+        assert!(
+            postui_core::fixtures::request_exists(app.proj().root(), "main/alpha"),
+            "the rename failed"
+        );
         assert!(!app.op_in_flight);
     }
 
@@ -21397,7 +18779,12 @@ mod undo_tests {
     fn a_duplicate_with_no_project_leaves_no_op_in_flight() {
         let (mut app, _dir) = spaced_app();
         app.project = None;
-        app.apply(Action::ForceDuplicateRequest { slug: "main/alpha".into(), anchor: None, above: false, count: 1 });
+        app.apply(Action::ForceDuplicateRequest {
+            slug: "main/alpha".into(),
+            anchor: None,
+            above: false,
+            count: 1,
+        });
         assert!(!app.op_in_flight);
     }
 
@@ -21408,7 +18795,8 @@ mod undo_tests {
     #[test]
     fn the_sidebar_cursor_is_never_none_while_rows_exist() {
         let (mut app, dir) = spaced_app();
-        postui_core::fixtures::save_request(dir.path(), "main/sub/inner", &req("https://x/3")).unwrap();
+        postui_core::fixtures::save_request(dir.path(), "main/sub/inner", &req("https://x/3"))
+            .unwrap();
         app.update(Action::RefreshSidebar);
         let check = |app: &App, step: &str| {
             if !app.sidebar.rows.is_empty() {
@@ -21433,7 +18821,10 @@ mod undo_tests {
             ("undo rename", Action::Undo),
             ("redo rename", Action::Redo),
             ("undo rename again", Action::Undo),
-            ("move to auth", Action::ForceMoveRequestToSpace { slug: "main/alpha".into(), space: "auth".into() }),
+            (
+                "move to auth",
+                Action::ForceMoveRequestToSpace { slug: "main/alpha".into(), space: "auth".into() },
+            ),
             ("undo move", Action::Undo),
             ("switch space", Action::ForceSwitchSpace("auth".into())),
             ("switch back", Action::ForceSwitchSpace("main".into())),
@@ -21495,7 +18886,8 @@ mod undo_tests {
         app.update(Action::RefreshSidebar);
         check(&app, "outside delete of the cursor row");
 
-        postui_core::fixtures::save_request(dir.path(), "main/outsider", &req("https://x/9")).unwrap();
+        postui_core::fixtures::save_request(dir.path(), "main/outsider", &req("https://x/9"))
+            .unwrap();
         app.update(Action::RefreshSidebar);
         check(&app, "outside add of a row");
 
@@ -21526,8 +18918,7 @@ mod undo_tests {
         app.update(Action::ForceOpenRequest("main/alpha".into()));
         app.capture_undo(); // seed the shadow before the edit
         app.editor.open_url_from_app();
-        app.editor
-            .handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        app.editor.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
         app.capture_undo();
         app.update(Action::ForceOpenRequest("main/beta".into()));
         check(&app, "open beta after editing alpha");
@@ -21540,7 +18931,8 @@ mod undo_tests {
         // Project switch (`ForceSwitchProject`), and back.
         let other = tempfile::tempdir().unwrap();
         postui_core::fixtures::ensure_project(other.path()).unwrap();
-        postui_core::fixtures::save_request(other.path(), "main/gamma", &req("https://y/1")).unwrap();
+        postui_core::fixtures::save_request(other.path(), "main/gamma", &req("https://y/1"))
+            .unwrap();
         app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
         check(&app, "switch project");
         app.update(Action::ForceSwitchProject(dir.path().to_path_buf()));
@@ -21653,7 +19045,9 @@ mod undo_tests {
     /// put: it seeds the order and the copy lands above / below.
     #[test]
     fn a_put_on_the_yanked_row_itself_lands_above_or_below_it() {
-        for (above, want) in [(true, ["alpha-copy", "alpha", "beta"]), (false, ["alpha", "alpha-copy", "beta"])] {
+        for (above, want) in
+            [(true, ["alpha-copy", "alpha", "beta"]), (false, ["alpha", "alpha-copy", "beta"])]
+        {
             let (mut app, _dir) = spaced_app();
             assert!(main_order(&app).is_empty());
             app.update(Action::YankRequest("main/alpha".into()));
@@ -21676,7 +19070,11 @@ mod undo_tests {
         }];
         app.sidebar.selected = Some(0);
         let files = request_files(dir.path());
-        app.update(Action::PutRequest { anchor: app.sidebar.put_anchor(false), above: false, count: 1 });
+        app.update(Action::PutRequest {
+            anchor: app.sidebar.put_anchor(false),
+            above: false,
+            count: 1,
+        });
         assert!(
             app.toasts.messages().contains(&"No request in this folder to put beside"),
             "{:?}",
@@ -21702,7 +19100,11 @@ mod undo_tests {
         }];
         app.sidebar.selected = Some(0);
         let files = request_files(dir.path());
-        app.update(Action::PutRequest { anchor: app.sidebar.put_anchor(false), above: false, count: 1 });
+        app.update(Action::PutRequest {
+            anchor: app.sidebar.put_anchor(false),
+            above: false,
+            count: 1,
+        });
         assert!(
             app.toasts.messages().contains(&"Open the folder to put into it"),
             "{:?}",
@@ -21722,7 +19124,11 @@ mod undo_tests {
         sidebar_on(&mut app, "main/alpha");
         type_z_into_the_url(&mut app);
         app.update(Action::YankRequest("main/beta".into()));
-        app.update(Action::PutRequest { anchor: Some("main/alpha".into()), above: false, count: 1 });
+        app.update(Action::PutRequest {
+            anchor: Some("main/alpha".into()),
+            above: false,
+            count: 1,
+        });
         assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the gate comes first");
         assert!(!postui_core::fixtures::request_exists(dir.path(), "main/beta-copy"));
     }
@@ -21786,7 +19192,11 @@ mod undo_tests {
         let (mut app, dir) = spaced_app();
         app.update(Action::YankRequest("main/alpha".into()));
         app.update(Action::SwitchSpace("auth".into()));
-        app.update(Action::PutRequest { anchor: Some("auth/login".into()), above: false, count: 1 });
+        app.update(Action::PutRequest {
+            anchor: Some("auth/login".into()),
+            above: false,
+            count: 1,
+        });
         assert!(
             app.toasts.messages().iter().any(|m| m.contains("was yanked from another space")),
             "{:?}",
@@ -21868,7 +19278,10 @@ mod undo_tests {
         app.update(Action::YankTableRow(0));
         app.update(Action::PutTableRow { at: 1, count: 1 });
         app.capture_undo();
-        assert_eq!(app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(), ["a", "a-copy", "b"]);
+        assert_eq!(
+            app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["a", "a-copy", "b"]
+        );
         assert_eq!(app.editor.table.selected, Some(1));
         app.update(Action::Undo);
         assert_eq!(app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(), ["a", "b"]);
@@ -21885,14 +19298,18 @@ mod undo_tests {
     fn a_table_row_put_keeps_its_key_when_the_table_has_none() {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("rows".into()));
-        app.editor
-            .headers
-            .insert("Authorization".into(), postui_core::model::Entry { value: "t".into(), enabled: true });
+        app.editor.headers.insert(
+            "Authorization".into(),
+            postui_core::model::Entry { value: "t".into(), enabled: true },
+        );
         app.editor.active_tab = EditorTab::Headers;
         app.update(Action::YankTableRow(0));
         app.editor.headers.clear();
         app.update(Action::PutTableRow { at: 0, count: 1 });
-        assert_eq!(app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(), ["Authorization"]);
+        assert_eq!(
+            app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["Authorization"]
+        );
         app.update(Action::PutTableRow { at: 1, count: 1 });
         assert_eq!(
             app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -21924,10 +19341,7 @@ fn file_clipboard(out: &std::path::Path, read: &str) -> crate::clipboard::Clipbo
 
 fn menu_labels(app: &App) -> Vec<String> {
     let Some(Modal::Dropdown(menu)) = app.modals.top() else {
-        panic!(
-            "expected a context menu, got {:?}",
-            app.modals.top().is_some()
-        );
+        panic!("expected a context menu, got {:?}", app.modals.top().is_some());
     };
     menu.items.iter().map(|i| i.label.clone()).collect()
 }
@@ -21959,29 +19373,15 @@ fn right_click_on_the_url_bar_offers_copy_and_paste_and_copy_copies_the_selectio
     assert!(app.handle_mouse(right_down(area.x + 3, area.y)));
     assert_eq!(
         menu_labels(&app),
-        vec![
-            "Copy",
-            "Paste",
-            "Extract to variable\u{2026}",
-            "Extract to selector\u{2026}"
-        ]
+        vec!["Copy", "Paste", "Extract to variable\u{2026}", "Extract to selector\u{2026}"]
     );
-    assert!(
-        app.editor.url.selection().is_some(),
-        "opening the menu keeps the selection"
-    );
+    assert!(app.editor.url.selection().is_some(), "opening the menu keeps the selection");
     let copy = menu_action(&app, "Copy").expect("Copy is enabled with a selection");
     app.update(Action::Close);
     app.update(copy);
 
-    assert_eq!(
-        std::fs::read_to_string(&out).unwrap(),
-        "https://example.com"
-    );
-    assert!(
-        app.editor.url.selection().is_some(),
-        "copy keeps the selection"
-    );
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://example.com");
+    assert!(app.editor.url.selection().is_some(), "copy keeps the selection");
 }
 
 #[test]
@@ -21991,9 +19391,7 @@ fn right_click_on_the_url_bar_without_a_selection_greys_copy_and_paste_lands_in_
     let mut app = App::new_for_test();
     app.set_clipboard_for_test(file_clipboard(&out, "/v2"));
     app.editor.url = crate::components::line_input::LineInput::new("https://example.com");
-    app.editor
-        .url
-        .set_cursor(app.editor.url.text().chars().count());
+    app.editor.url.set_cursor(app.editor.url.text().chars().count());
     // Focus starts elsewhere: the right click has to claim the URL bar
     // itself, or the menu's Paste would have nowhere to land.
     app.focus = PaneId::Sidebar;
@@ -22004,17 +19402,9 @@ fn right_click_on_the_url_bar_without_a_selection_greys_copy_and_paste_lands_in_
     app.handle_mouse(right_down(area.x + 3, area.y));
     assert_eq!(
         menu_labels(&app),
-        vec![
-            "Copy",
-            "Paste",
-            "Extract to variable\u{2026}",
-            "Extract to selector\u{2026}"
-        ]
+        vec!["Copy", "Paste", "Extract to variable\u{2026}", "Extract to selector\u{2026}"]
     );
-    assert!(
-        menu_action(&app, "Copy").is_none(),
-        "nothing selected: Copy is greyed"
-    );
+    assert!(menu_action(&app, "Copy").is_none(), "nothing selected: Copy is greyed");
     let paste = menu_action(&app, "Paste").expect("Paste is enabled");
     app.update(Action::Close);
     app.update(paste);
@@ -22031,24 +19421,16 @@ fn right_click_on_the_edited_table_cell_offers_the_text_menu_and_keeps_the_edit_
     let out = dir.path().join("out.txt");
     let mut app = App::new_for_test();
     app.set_clipboard_for_test(file_clipboard(&out, "-x"));
-    app.editor.params.insert(
-        "page".into(),
-        postui_core::model::Entry {
-            value: "2".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
     app.focus = PaneId::Editor;
     app.editor.active_tab = EditorTab::Params;
     app.editor.sub_focus = SubFocus::Content;
     app.editor.table.selected = Some(0);
     let mut input = crate::components::line_input::LineInput::new("page");
     input.select_all();
-    app.editor.table.editing = Some(CellEdit {
-        row: 0,
-        col: Col::Key,
-        input,
-    });
+    app.editor.table.editing = Some(CellEdit { row: 0, col: Col::Key, input });
     render_once(&mut app);
     let cell = app
         .hits
@@ -22058,12 +19440,7 @@ fn right_click_on_the_edited_table_cell_offers_the_text_menu_and_keeps_the_edit_
     app.handle_mouse(right_down(cell.x, cell.y));
     assert_eq!(
         menu_labels(&app),
-        vec![
-            "Copy",
-            "Paste",
-            "Extract to variable\u{2026}",
-            "Extract to selector\u{2026}"
-        ]
+        vec!["Copy", "Paste", "Extract to variable\u{2026}", "Extract to selector\u{2026}"]
     );
     assert!(
         app.editor.table.editing.is_some(),
@@ -22083,13 +19460,9 @@ fn right_click_on_the_edited_table_cell_offers_the_text_menu_and_keeps_the_edit_
 fn right_click_elsewhere_on_the_row_keeps_the_row_menu_and_commits_the_edit() {
     use crate::components::table_editor::{CellEdit, Col};
     let mut app = App::new_for_test();
-    app.editor.params.insert(
-        "page".into(),
-        postui_core::model::Entry {
-            value: "2".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
     app.focus = PaneId::Editor;
     app.editor.active_tab = EditorTab::Params;
     app.editor.sub_focus = SubFocus::Content;
@@ -22131,29 +19504,16 @@ fn right_click_on_the_response_pane_offers_copy_only() {
     app.set_clipboard_for_test(file_clipboard(&out, ""));
     ready_response(&mut app, "plain text body"); // not JSON -> Raw view
     render_once(&mut app);
-    let area = app
-        .session
-        .response
-        .view()
-        .unwrap()
-        .last_area
-        .expect("body area recorded");
+    let area = app.session.response.view().unwrap().last_area.expect("body area recorded");
     app.handle_mouse(left_down(area.x + 1, area.y));
     app.handle_mouse(left_down(area.x + 1, area.y)); // double click: "plain"
     app.handle_mouse(left_up(area.x + 1, area.y));
-    assert_eq!(
-        app.session.response.selected_text().as_deref(),
-        Some("plain")
-    );
+    assert_eq!(app.session.response.selected_text().as_deref(), Some("plain"));
 
     app.handle_mouse(right_down(area.x + 1, area.y));
     assert_eq!(
         menu_labels(&app),
-        vec![
-            "Copy",
-            "Extract to variable\u{2026}",
-            "Extract to selector\u{2026}"
-        ],
+        vec!["Copy", "Extract to variable\u{2026}", "Extract to selector\u{2026}"],
         "the response is read-only: no Paste"
     );
     let copy = menu_action(&app, "Copy").expect("Copy is enabled with a selection");
@@ -22173,20 +19533,11 @@ fn right_click_on_the_response_pane_copies_the_response_selection_not_the_body_o
     app.editor.body_select_all();
     ready_response(&mut app, "plain text body");
     render_once(&mut app);
-    let area = app
-        .session
-        .response
-        .view()
-        .unwrap()
-        .last_area
-        .expect("body area recorded");
+    let area = app.session.response.view().unwrap().last_area.expect("body area recorded");
     app.handle_mouse(left_down(area.x + 1, area.y));
     app.handle_mouse(left_down(area.x + 1, area.y));
     app.handle_mouse(left_up(area.x + 1, area.y));
-    assert_eq!(
-        app.session.response.selected_text().as_deref(),
-        Some("plain")
-    );
+    assert_eq!(app.session.response.selected_text().as_deref(), Some("plain"));
 
     app.handle_mouse(right_down(area.x + 1, area.y));
     let copy = menu_action(&app, "Copy").unwrap();
@@ -22211,17 +19562,9 @@ fn right_click_on_the_body_editor_offers_copy_and_paste() {
     app.handle_mouse(right_down(area.x + 2, area.y));
     assert_eq!(
         menu_labels(&app),
-        vec![
-            "Copy",
-            "Paste",
-            "Extract to variable\u{2026}",
-            "Extract to selector\u{2026}"
-        ]
+        vec!["Copy", "Paste", "Extract to variable\u{2026}", "Extract to selector\u{2026}"]
     );
-    assert!(
-        app.editor.body_selected_text().is_some(),
-        "opening the menu keeps the selection"
-    );
+    assert!(app.editor.body_selected_text().is_some(), "opening the menu keeps the selection");
     let copy = menu_action(&app, "Copy").expect("Copy is enabled with a selection");
     let paste = menu_action(&app, "Paste").expect("Paste is enabled");
     app.update(Action::Close);
@@ -22242,22 +19585,8 @@ fn right_click_on_the_edited_grid_cell_offers_the_text_menu_instead_of_the_row_m
     app.set_clipboard_for_test(file_clipboard(&out, ""));
     goto_group(&mut app, "user");
     app.vm_start_cell_edit(0, 1);
-    app.varmanager
-        .grid
-        .editing
-        .as_mut()
-        .unwrap()
-        .input
-        .select_all();
-    let expected = app
-        .varmanager
-        .grid
-        .editing
-        .as_ref()
-        .unwrap()
-        .input
-        .text()
-        .to_string();
+    app.varmanager.grid.editing.as_mut().unwrap().input.select_all();
+    let expected = app.varmanager.grid.editing.as_ref().unwrap().input.text().to_string();
     render_once(&mut app);
     let cell = app
         .hits
@@ -22286,11 +19615,7 @@ fn right_click_on_the_edited_grid_cell_offers_the_text_menu_instead_of_the_row_m
         .rect_of(&crate::hit::Hit::VmEntryCell { row: 0, col: 0 })
         .expect("the other cell is registered");
     app.handle_mouse(right_down(other.x, other.y));
-    assert!(
-        menu_labels(&app).iter().any(|l| l == "Rename"),
-        "{:?}",
-        menu_labels(&app)
-    );
+    assert!(menu_labels(&app).iter().any(|l| l == "Rename"), "{:?}", menu_labels(&app));
 }
 
 // --- extract a selection to a variable (right-click text menu) ------------
@@ -22319,17 +19644,9 @@ fn text_menu_offers_extract_to_variable_only_with_a_selection() {
     app.handle_mouse(right_down(area.x + 3, area.y));
     assert_eq!(
         menu_labels(&app),
-        vec![
-            "Copy",
-            "Paste",
-            "Extract to variable\u{2026}",
-            "Extract to selector\u{2026}"
-        ]
+        vec!["Copy", "Paste", "Extract to variable\u{2026}", "Extract to selector\u{2026}"]
     );
-    assert!(
-        menu_action(&app, "Extract to variable\u{2026}").is_none(),
-        "nothing selected: greyed"
-    );
+    assert!(menu_action(&app, "Extract to variable\u{2026}").is_none(), "nothing selected: greyed");
     app.update(Action::Close);
 
     select_in_url(&mut app, "abc-123");
@@ -22344,10 +19661,7 @@ fn text_menu_offers_extract_to_variable_only_with_a_selection() {
     let Some(Modal::MultiPrompt { kind, .. }) = app.modals.top() else {
         panic!("expected the extract prompt");
     };
-    assert!(matches!(
-        kind,
-        PromptKind::ExtractSelection(TextSurface::Url)
-    ));
+    assert!(matches!(kind, PromptKind::ExtractSelection(TextSurface::Url)));
 }
 
 #[test]
@@ -22374,10 +19688,7 @@ fn extracting_a_url_selection_replaces_only_the_selected_part() {
     let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(on_disk.contains("default = \"abc-123\""), "{on_disk}");
     assert!(
-        app.toasts
-            .messages()
-            .iter()
-            .any(|m| m.contains("extracted to {{trace_id}}")),
+        app.toasts.messages().iter().any(|m| m.contains("extracted to {{trace_id}}")),
         "{:?}",
         app.toasts.messages()
     );
@@ -22395,10 +19706,7 @@ fn extracting_a_table_cell_selection_replaces_the_part_and_commits_the_cell() {
     app.update(Action::ForceOpenRequest("main/ping".into()));
     app.editor.headers.insert(
         "authorization".into(),
-        postui_core::model::Entry {
-            value: "Bearer abc".into(),
-            enabled: true,
-        },
+        postui_core::model::Entry { value: "Bearer abc".into(), enabled: true },
     );
     app.focus = PaneId::Editor;
     app.editor.active_tab = EditorTab::Headers;
@@ -22409,11 +19717,7 @@ fn extracting_a_table_cell_selection_replaces_the_part_and_commits_the_cell() {
     input.begin_mouse_selection();
     input.extend_mouse_selection_to(10);
     assert_eq!(input.selected_text().as_deref(), Some("abc"));
-    app.editor.table.editing = Some(CellEdit {
-        row: 0,
-        col: Col::Value,
-        input,
-    });
+    app.editor.table.editing = Some(CellEdit { row: 0, col: Col::Value, input });
 
     app.update(Action::ConfirmExtractSelection {
         name: "token".into(),
@@ -22422,10 +19726,7 @@ fn extracting_a_table_cell_selection_replaces_the_part_and_commits_the_cell() {
     });
 
     assert!(app.editor.table.editing.is_none(), "the cell commits");
-    assert_eq!(
-        app.editor.headers["authorization"].value,
-        "Bearer {{token}}"
-    );
+    assert_eq!(app.editor.headers["authorization"].value, "Bearer {{token}}");
     assert_eq!(app.editor.variables["token"].value, "abc");
 }
 
@@ -22452,10 +19753,7 @@ fn extracting_a_body_selection_replaces_it_with_the_token() {
 
     assert_eq!(app.editor.body_text(), "{{payload}}");
     let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
-    assert!(
-        on_disk.contains("{\\\"id\\\": 1}") || on_disk.contains("'{\"id\": 1}'"),
-        "{on_disk}"
-    );
+    assert!(on_disk.contains("{\\\"id\\\": 1}") || on_disk.contains("'{\"id\": 1}'"), "{on_disk}");
 }
 
 #[test]
@@ -22468,39 +19766,23 @@ fn extracting_a_response_selection_creates_the_variable_without_touching_the_edi
     app.editor.url = crate::components::line_input::LineInput::new("https://x/login");
     ready_response(&mut app, "session abc123 ok"); // not JSON -> Raw view
     render_once(&mut app);
-    let area = app
-        .session
-        .response
-        .view()
-        .unwrap()
-        .last_area
-        .expect("body area recorded");
+    let area = app.session.response.view().unwrap().last_area.expect("body area recorded");
     app.handle_mouse(left_down(area.x + 9, area.y));
     app.handle_mouse(left_down(area.x + 9, area.y)); // double click: "abc123"
     app.handle_mouse(left_up(area.x + 9, area.y));
-    assert_eq!(
-        app.session.response.selected_text().as_deref(),
-        Some("abc123")
-    );
+    assert_eq!(app.session.response.selected_text().as_deref(), Some("abc123"));
 
     app.handle_mouse(right_down(area.x + 9, area.y));
     assert_eq!(
         menu_labels(&app),
-        vec![
-            "Copy",
-            "Extract to variable\u{2026}",
-            "Extract to selector\u{2026}"
-        ]
+        vec!["Copy", "Extract to variable\u{2026}", "Extract to selector\u{2026}"]
     );
     let open = menu_action(&app, "Extract to variable\u{2026}").unwrap();
     app.update(Action::Close);
     app.update(open);
     assert!(matches!(
         app.modals.top(),
-        Some(Modal::MultiPrompt {
-            kind: PromptKind::ExtractSelection(TextSurface::Response),
-            ..
-        })
+        Some(Modal::MultiPrompt { kind: PromptKind::ExtractSelection(TextSurface::Response), .. })
     ));
     app.update(Action::Close);
 
@@ -22512,15 +19794,8 @@ fn extracting_a_response_selection_creates_the_variable_without_touching_the_edi
 
     let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(on_disk.contains("default = \"abc123\""), "{on_disk}");
-    assert_eq!(
-        app.editor.url.text(),
-        "https://x/login",
-        "nothing to replace"
-    );
-    assert_eq!(
-        app.session.response.selected_text().as_deref(),
-        Some("abc123")
-    );
+    assert_eq!(app.editor.url.text(), "https://x/login", "nothing to replace");
+    assert_eq!(app.session.response.selected_text().as_deref(), Some("abc123"));
 }
 
 #[test]
@@ -22551,17 +19826,9 @@ fn text_menu_offers_extract_to_selector_under_extract_to_variable() {
     app.handle_mouse(right_down(area.x + 3, area.y));
     assert_eq!(
         menu_labels(&app),
-        vec![
-            "Copy",
-            "Paste",
-            "Extract to variable\u{2026}",
-            "Extract to selector\u{2026}"
-        ]
+        vec!["Copy", "Paste", "Extract to variable\u{2026}", "Extract to selector\u{2026}"]
     );
-    assert!(
-        menu_action(&app, "Extract to selector\u{2026}").is_none(),
-        "nothing selected: greyed"
-    );
+    assert!(menu_action(&app, "Extract to selector\u{2026}").is_none(), "nothing selected: greyed");
     app.update(Action::Close);
 
     select_in_url(&mut app, "abc-123");
@@ -22579,11 +19846,7 @@ fn text_menu_offers_extract_to_selector_under_extract_to_variable() {
     ));
     let keys: Vec<&str> = fields.iter().map(|f| f.key.as_str()).collect();
     assert_eq!(keys, vec!["name", "option", "scope"]);
-    assert_eq!(
-        fields[1].input.text(),
-        "abc-123",
-        "a short, name-safe value seeds the option name"
-    );
+    assert_eq!(fields[1].input.text(), "abc-123", "a short, name-safe value seeds the option name");
     assert_eq!(fields[2].choices, vec!["Per environment", "Shared"]);
 }
 
@@ -22635,19 +19898,13 @@ fn extract_selector_from_a_url_selection_creates_the_selector_its_option_and_sel
     assert!(env.contains("[options.region.us-east]"), "{env}");
     assert!(env.contains("region = \"east\""), "{env}");
     assert_eq!(
-        app.proj()
-            .selections_for("qa")
-            .get("region")
-            .map(String::as_str),
+        app.proj().selections_for("qa").get("region").map(String::as_str),
         Some("us-east"),
         "the new option is selected so the token resolves"
     );
     assert_eq!(app.proj().resolved().values["region"], "east");
     assert!(
-        app.toasts
-            .messages()
-            .iter()
-            .any(|m| m.contains("extracted to {{region}}")),
+        app.toasts.messages().iter().any(|m| m.contains("extracted to {{region}}")),
         "{:?}",
         app.toasts.messages()
     );
@@ -22689,11 +19946,7 @@ fn extract_selector_shared_puts_the_option_in_variables_toml() {
     let env = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!env.contains("api_version"), "{env}");
     assert_eq!(
-        app.proj()
-            .local()
-            .shared_selections
-            .get("api_version")
-            .map(String::as_str),
+        app.proj().local().shared_selections.get("api_version").map(String::as_str),
         Some("v2")
     );
     assert_eq!(app.proj().resolved().values["api_version"], "v2");
@@ -22723,20 +19976,12 @@ fn extract_selector_refuses_a_taken_name_and_leaves_everything_alone() {
     }
 
     assert_eq!(app.editor.url.text(), "https://x/ping/east");
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("variables.toml")).unwrap(),
-        vars_before
-    );
+    assert_eq!(std::fs::read_to_string(dir.path().join("variables.toml")).unwrap(), vars_before);
     assert_eq!(
         std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap(),
         env_before
     );
-    let errors = app
-        .toasts
-        .messages()
-        .iter()
-        .filter(|m| m.contains("already exists"))
-        .count();
+    let errors = app.toasts.messages().iter().filter(|m| m.contains("already exists")).count();
     assert_eq!(errors, 2, "{:?}", app.toasts.messages());
 }
 
@@ -22747,13 +19992,9 @@ fn row_menu_extract_value_to_selector_promotes_the_row_and_replaces_the_cell() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.editor.params.insert(
-        "tenant".into(),
-        postui_core::model::Entry {
-            value: "acme".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .params
+        .insert("tenant".into(), postui_core::model::Entry { value: "acme".into(), enabled: true });
     app.focus = PaneId::Editor;
     app.editor.active_tab = EditorTab::Params;
     app.editor.sub_focus = SubFocus::Content;
@@ -22781,10 +20022,7 @@ fn row_menu_extract_value_to_selector_promotes_the_row_and_replaces_the_cell() {
     let Some(Modal::MultiPrompt { kind, fields, .. }) = app.modals.top() else {
         panic!("expected the extract-selector prompt");
     };
-    assert!(matches!(
-        kind,
-        PromptKind::ExtractSelector(ExtractSource::FocusedField)
-    ));
+    assert!(matches!(kind, PromptKind::ExtractSelector(ExtractSource::FocusedField)));
     assert_eq!(fields[1].input.text(), "acme");
     app.modals.pop();
 
@@ -22795,10 +20033,7 @@ fn row_menu_extract_value_to_selector_promotes_the_row_and_replaces_the_cell() {
         source: ExtractSource::FocusedField,
     });
     assert_eq!(app.editor.params["tenant"].value, "{{tenant}}");
-    assert!(
-        app.editor.table.editing.is_none(),
-        "the cell edit is committed"
-    );
+    assert!(app.editor.table.editing.is_none(), "the cell edit is committed");
     assert_eq!(app.proj().resolved().values["tenant"], "acme");
 }
 
@@ -22825,14 +20060,8 @@ fn alt_q_focuses_the_jq_bar_and_typing_filters_the_tree_live() {
     assert!(app.session.response.jq_focused());
     type_str(&mut app, ".data.total");
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
-    assert_eq!(
-        app.editor.jq, ".data.total",
-        "the bar mirrors into the request"
-    );
-    assert!(
-        !app.editor.is_dirty(),
-        "a jq filter change is a view setting, not an edit"
-    );
+    assert_eq!(app.editor.jq, ".data.total", "the bar mirrors into the request");
+    assert!(!app.editor.is_dirty(), "a jq filter change is a view setting, not an edit");
     app.handle_key(alt('q'));
     assert!(
         app.session.response.jq_focused(),
@@ -22886,10 +20115,7 @@ fn enter_commits_the_filter_and_leaves_it_on() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(!app.session.response.jq_focused());
     assert!(app.editor.jq_enabled);
-    assert!(
-        app.session.response.jq_open(),
-        "the bar stays up over a filtered tree"
-    );
+    assert!(app.session.response.jq_open(), "the bar stays up over a filtered tree");
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
 }
 
@@ -22908,10 +20134,7 @@ fn esc_on_a_bar_opened_onto_no_filter_keeps_the_typed_filter_and_undo_takes_it_o
     app.sync_jq();
     assert_eq!(app.editor.jq, ".data.total", "esc keeps what was typed");
     assert!(app.editor.jq_enabled, "…and leaves the switch on");
-    assert!(
-        !app.session.response.jq_focused(),
-        "…and the caret leaves the bar"
-    );
+    assert!(!app.session.response.jq_focused(), "…and the caret leaves the bar");
     assert!(app.session.response.jq_open(), "…so the bar stays, unfocused");
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
     // The app history waited for the bar to close; the close is the one
@@ -22941,14 +20164,8 @@ fn esc_keeps_the_edit_to_a_reopened_filter_and_leaves_it_on() {
         app.editor.jq_enabled,
         "opened from off, the filter stays on: Esc never touches the switch"
     );
-    assert!(
-        app.session.response.jq_open(),
-        "…so the bar stays, unfocused"
-    );
-    assert_eq!(
-        app.session.response.view().unwrap().view_text(),
-        "\"active\""
-    );
+    assert!(app.session.response.jq_open(), "…so the bar stays, unfocused");
+    assert_eq!(app.session.response.view().unwrap().view_text(), "\"active\"");
 }
 
 #[test]
@@ -23035,10 +20252,7 @@ fn a_filter_landed_in_a_closed_bar_stays_the_app_historys() {
     // Focusing the bar without typing starts an empty session.
     app.handle_key(alt('q'));
     assert!(app.session.response.jq_focused());
-    assert!(
-        !app.session.response.jq_field_edited(),
-        "nothing typed: the gate is off"
-    );
+    assert!(!app.session.response.jq_field_edited(), "nothing typed: the gate is off");
     app.handle_key(ctrl('z'));
     app.sync_jq();
     assert_eq!(app.editor.jq, "", "ctrl+z stepped the app history");
@@ -23132,7 +20346,11 @@ fn the_response_search_notes_toast_by_profile() {
         assert_eq!(e35, profile == Vim, "{profile:?}: {:?}", app.toasts.messages());
         assert_eq!(app.session.response.view().unwrap().cursor, 0, "{profile:?}");
         super::key_matrix_tests::feed(&mut app, "/zzz<CR>");
-        assert!(app.toasts.messages().contains(&"Pattern not found: zzz"), "{profile:?}: {:?}", app.toasts.messages());
+        assert!(
+            app.toasts.messages().contains(&"Pattern not found: zzz"),
+            "{profile:?}: {:?}",
+            app.toasts.messages()
+        );
     }
 }
 
@@ -23141,20 +20359,14 @@ fn esc_after_a_tee_up_keeps_it_and_ctrl_z_is_what_walks_it_back() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
     app.update(Action::JqApply(".data.total".into()));
-    app.update(Action::JqTeeUp {
-        text: "map(select(.x == ))".into(),
-        cursor: 17,
-    });
+    app.update(Action::JqTeeUp { text: "map(select(.x == ))".into(), cursor: 17 });
     assert!(app.session.response.jq_focused());
     assert_eq!(app.editor.jq, "map(select(.x == ))");
     // The tee-up landed in the focused bar as one undoable step.
     app.handle_key(ctrl('z'));
     app.sync_jq();
     assert_eq!(app.editor.jq, ".data.total");
-    app.update(Action::JqTeeUp {
-        text: "map(select(.x == ))".into(),
-        cursor: 17,
-    });
+    app.update(Action::JqTeeUp { text: "map(select(.x == ))".into(), cursor: 17 });
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.sync_jq();
     assert_eq!(app.editor.jq, "map(select(.x == ))", "Esc keeps it");
@@ -23169,10 +20381,7 @@ fn the_toggle_closes_an_open_bar_whether_or_not_it_is_focused() {
     assert!(app.session.response.jq_open() && !app.session.response.jq_focused());
     // The header button and alt+shift+q both route here.
     app.update(Action::ToggleJqBar);
-    assert!(
-        !app.session.response.jq_open(),
-        "open + unfocused → closed, not focused"
-    );
+    assert!(!app.session.response.jq_open(), "open + unfocused → closed, not focused");
     assert!(!app.editor.jq_enabled);
     assert_eq!(app.session.response.view().unwrap().view_text(), full);
     app.update(Action::ToggleJqBar);
@@ -23229,10 +20438,7 @@ fn a_null_or_empty_result_keeps_the_full_body_with_a_note() {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
-        let rect = app
-            .hits
-            .rect_of(&Hit::ResponseJqBar)
-            .expect("bar row registered");
+        let rect = app.hits.rect_of(&Hit::ResponseJqBar).expect("bar row registered");
         let buf = terminal.backend().buffer();
         let row: String = (rect.x..rect.x + rect.width)
             .map(|x| buf.cell((x, rect.y + 1)).unwrap().symbol().to_string())
@@ -23269,10 +20475,7 @@ fn multiple_outputs_run_together_without_a_blank_line() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
     app.update(Action::JqApply(".data.items[].status".into()));
-    assert_eq!(
-        app.session.response.view().unwrap().view_text(),
-        "\"active\"\n\"off\""
-    );
+    assert_eq!(app.session.response.view().unwrap().view_text(), "\"active\"\n\"off\"");
 }
 
 #[test]
@@ -23325,11 +20528,7 @@ fn undo_after_the_bar_closes_takes_the_whole_edit_off_and_the_bar_follows() {
     app.capture_undo();
     type_str(&mut app, ".total");
     app.capture_undo();
-    assert_eq!(
-        app.history.undo_len(),
-        steps,
-        "the app history waits for the open bar"
-    );
+    assert_eq!(app.history.undo_len(), steps, "the app history waits for the open bar");
     // Take the caret off the bar: while it has the caret ctrl+z is the
     // bar's own undo, and this test is about the app history flowing back
     // into it. The caret leaving is the close, and the close is the one
@@ -23340,11 +20539,7 @@ fn undo_after_the_bar_closes_takes_the_whole_edit_off_and_the_bar_follows() {
     assert_eq!(app.history.undo_len(), steps + 1, "one step for the edit");
     app.update(Action::Undo);
     assert_eq!(app.editor.jq, "");
-    assert_eq!(
-        app.session.response.jq_text(),
-        "",
-        "the bar follows the editor after undo"
-    );
+    assert_eq!(app.session.response.jq_text(), "", "the bar follows the editor after undo");
 }
 
 /// The other half of the jq undo contract: with the caret *in* the bar,
@@ -23361,11 +20556,7 @@ fn ctrl_z_in_the_focused_jq_bar_walks_the_filter_back_and_it_sticks() {
     assert_eq!(app.editor.jq, ".data");
 
     app.handle_key(ctrl('z'));
-    assert_eq!(
-        app.session.response.jq_text(),
-        "",
-        "the typing run came off in the bar"
-    );
+    assert_eq!(app.session.response.jq_text(), "", "the typing run came off in the bar");
     assert_eq!(
         app.editor.jq, "",
         "and the reconcile followed the bar instead of writing the filter back"
@@ -23382,10 +20573,7 @@ fn jq_apply_and_tee_up_drive_the_bar() {
     ready_response(&mut app, JQ_BODY);
     app.update(Action::JqApply(".data.items | length".into()));
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
-    assert!(
-        !app.session.response.jq_focused(),
-        "apply does not focus the bar"
-    );
+    assert!(!app.session.response.jq_focused(), "apply does not focus the bar");
     app.update(Action::JqTeeUp {
         text: ".data.items | map(select(.status == ))".into(),
         cursor: 37,
@@ -23426,9 +20614,7 @@ fn a_big_body_runs_the_filter_in_the_background_and_lands_via_an_action() {
         generation: app.session.send_generation,
         tree: tree.map(Box::new),
     });
-    app.update(Action::ResponseViewMode(
-        crate::components::response::ViewMode::Pretty,
-    ));
+    app.update(Action::ResponseViewMode(crate::components::response::ViewMode::Pretty));
     // `App::new_for_test` builds its channel outside a tokio runtime, so
     // the background run happens inline (`jq_worker`, dispatched
     // immediately) rather than through `tokio::spawn` — the result lands
@@ -23443,16 +20629,10 @@ fn a_big_body_runs_the_filter_in_the_background_and_lands_via_an_action() {
     let req2 = app
         .session
         .response
-        .apply_jq(
-            ".pad | length",
-            crate::components::response::SYNC_PRETTY_BYTES,
-        )
+        .apply_jq(".pad | length", crate::components::response::SYNC_PRETTY_BYTES)
         .expect("still a background-sized run");
     assert!(req2.doc.is_some(), "the doc from the first run is cached");
-    assert!(
-        req2.body.is_none(),
-        "…so no body needs to be handed to the worker"
-    );
+    assert!(req2.body.is_none(), "…so no body needs to be handed to the worker");
 
     // Direct coverage of the worker itself: parses the body when handed no
     // cached document, and runs the filter against it.
@@ -23465,22 +20645,14 @@ fn a_big_body_runs_the_filter_in_the_background_and_lands_via_an_action() {
     );
     let Action::JqRunFinished {
         result:
-            Ok(crate::components::response::JqRunOutput {
-                doc: Some(_),
-                outputs,
-                tree: Some(tree),
-            }),
+            Ok(crate::components::response::JqRunOutput { doc: Some(_), outputs, tree: Some(tree) }),
         ..
     } = &action
     else {
         panic!("the worker parses the body and hands the document back: {action:?}");
     };
     assert_eq!(outputs, &["7".to_string()]);
-    assert_eq!(
-        tree.line_count(),
-        1,
-        "the output tree is built by the worker, not on attach"
-    );
+    assert_eq!(tree.line_count(), 1, "the output tree is built by the worker, not on attach");
 }
 
 #[test]
@@ -23488,19 +20660,14 @@ fn typing_in_the_jq_bar_ghosts_a_key_and_right_accepts_it() {
     let mut app = App::new_for_test();
     app.session.response.set_jq_tab(crate::config::JqTab::Cycle);
     ready_response(&mut app, r#"{"data":{"items":[{"id":1,"status":"a"}]}}"#);
-    app.update(Action::ResponseViewMode(
-        crate::components::response::ViewMode::Pretty,
-    ));
+    app.update(Action::ResponseViewMode(crate::components::response::ViewMode::Pretty));
     app.update(Action::OpenJqBar);
     assert!(app.session.response.jq_focused());
     app.handle_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
     assert_eq!(app.session.response.jq_ghost(), Some("data"));
     app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(app.session.response.jq_text(), ".data");
-    assert_eq!(
-        app.editor.jq, ".data",
-        "an accepted completion is a request edit"
-    );
+    assert_eq!(app.editor.jq, ".data", "an accepted completion is a request edit");
     app.handle_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
     assert_eq!(app.session.response.jq_ghost(), Some("items"));
 }
@@ -23519,9 +20686,7 @@ fn a_big_body_fetches_completion_keys_in_the_background_and_lands_via_an_action(
         generation: app.session.send_generation,
         tree: tree.map(Box::new),
     });
-    app.update(Action::ResponseViewMode(
-        crate::components::response::ViewMode::Pretty,
-    ));
+    app.update(Action::ResponseViewMode(crate::components::response::ViewMode::Pretty));
     app.update(Action::OpenJqBar);
     // Outside a tokio runtime the pool work runs inline: the filter run
     // (which parses the document) and then the key fetch both land within
@@ -23576,20 +20741,14 @@ fn ticks_keep_redrawing_while_a_background_jq_run_is_outstanding() {
         generation: app.session.send_generation,
         tree: crate::components::json_tree::JsonTree::parse(&big).map(Box::new),
     });
-    assert!(
-        !app.update(Action::Tick),
-        "idle: a tick has nothing to redraw"
-    );
+    assert!(!app.update(Action::Tick), "idle: a tick has nothing to redraw");
     app.session
         .response
         .apply_jq(".n", crate::components::response::SYNC_PRETTY_BYTES)
         .expect("big body → background");
     app.editor.jq = ".n".into();
     assert!(app.session.response.jq_bar().pending.is_some());
-    assert!(
-        app.update(Action::Tick),
-        "a pending run keeps ticks redrawing"
-    );
+    assert!(app.update(Action::Tick), "a pending run keeps ticks redrawing");
 }
 
 /// A background run outstanding when the open request changes must not
@@ -23611,9 +20770,7 @@ fn a_pending_background_run_is_dropped_and_reapplied_across_a_request_switch() {
         generation: app.session.send_generation,
         tree: tree.map(Box::new),
     });
-    app.update(Action::ResponseViewMode(
-        crate::components::response::ViewMode::Pretty,
-    ));
+    app.update(Action::ResponseViewMode(crate::components::response::ViewMode::Pretty));
 
     // Start a background run directly against the response — bypassing
     // `sync_jq`/`spawn_jq_run`, which in tests (no tokio runtime) would
@@ -23679,11 +20836,7 @@ fn jq_is_a_no_op_on_a_non_json_response() {
     ready_response(&mut app, "plain");
     assert!(app.handle_key(alt('q')));
     assert!(!app.session.response.jq_focused());
-    assert_eq!(
-        app.toasts.messages().len(),
-        1,
-        "a toast says the response is not JSON"
-    );
+    assert_eq!(app.toasts.messages().len(), 1, "a toast says the response is not JSON");
 }
 
 // --- structural (jq) right-click menu ---
@@ -23706,10 +20859,7 @@ fn right_click_row(app: &mut App, needle: &str) {
         app.session.response.set_scroll(row);
         render_once(app);
     }
-    let rect = app
-        .hits
-        .rect_of(&Hit::JsonRow(row))
-        .expect("row is on screen");
+    let rect = app.hits.rect_of(&Hit::JsonRow(row)).expect("row is on screen");
     app.handle_mouse(right_down(rect.x + 1, rect.y));
 }
 
@@ -23736,18 +20886,9 @@ fn right_click_on_an_array_line_offers_the_array_verbs_above_the_text_menu() {
         ],
         "{labels:?}"
     );
-    assert_eq!(
-        menu_action(&app, "Filter to this"),
-        Some(Action::JqApply(".data.items".into()))
-    );
-    assert_eq!(
-        menu_action(&app, "Copy path"),
-        Some(Action::CopyJqPath(".data.items".into()))
-    );
-    assert_eq!(
-        menu_action(&app, "Count"),
-        Some(Action::JqApply(".data.items | length".into()))
-    );
+    assert_eq!(menu_action(&app, "Filter to this"), Some(Action::JqApply(".data.items".into())));
+    assert_eq!(menu_action(&app, "Copy path"), Some(Action::CopyJqPath(".data.items".into())));
+    assert_eq!(menu_action(&app, "Count"), Some(Action::JqApply(".data.items | length".into())));
     assert_eq!(
         menu_action(&app, "Pluck field\u{2026}"),
         Some(Action::JqPluckPrompt {
@@ -23763,25 +20904,15 @@ fn a_scalar_inside_an_array_element_offers_only_items_where() {
     ready_response(&mut app, JQ_BODY);
     right_click_row(&mut app, "\"status\": \"active\"");
     let labels = menu_labels(&app);
-    assert!(
-        labels.contains(&"Only items where status == \"active\"".to_string()),
-        "{labels:?}"
-    );
+    assert!(labels.contains(&"Only items where status == \"active\"".to_string()), "{labels:?}");
     assert!(!labels.contains(&"Count".to_string()));
     assert_eq!(
         menu_action(&app, "Only items where status == \"active\""),
-        Some(Action::JqApply(
-            r#".data.items | map(select(.status == "active"))"#.into()
-        ))
+        Some(Action::JqApply(r#".data.items | map(select(.status == "active"))"#.into()))
     );
     app.update(Action::Close);
     right_click_row(&mut app, "\"total\"");
-    assert!(
-        !menu_labels(&app)
-            .iter()
-            .any(|l| l.starts_with("Only items")),
-        "no enclosing array"
-    );
+    assert!(!menu_labels(&app).iter().any(|l| l.starts_with("Only items")), "no enclosing array");
 }
 
 #[test]
@@ -23794,10 +20925,7 @@ fn verbs_compose_onto_the_filter_whose_output_is_on_screen_not_the_bar_text() {
     app.update(Action::JqApply(".nope".into()));
     assert_eq!(app.session.response.jq_bar().note, Some("null"));
     right_click_row(&mut app, "\"items\"");
-    assert_eq!(
-        menu_action(&app, "Count"),
-        Some(Action::JqApply(".data.items | length".into()))
-    );
+    assert_eq!(menu_action(&app, "Count"), Some(Action::JqApply(".data.items | length".into())));
     app.update(Action::Close);
     // A syntax error keeps the previous good tree (`.data`'s output) on
     // screen: verbs compose onto `.data`, not onto the broken text.
@@ -23805,10 +20933,7 @@ fn verbs_compose_onto_the_filter_whose_output_is_on_screen_not_the_bar_text() {
     app.update(Action::JqApply(".data | select(".into()));
     assert!(app.session.response.jq_bar().error.is_some());
     right_click_row(&mut app, "\"items\"");
-    assert_eq!(
-        menu_action(&app, "Count"),
-        Some(Action::JqApply(".data | .items | length".into()))
-    );
+    assert_eq!(menu_action(&app, "Count"), Some(Action::JqApply(".data | .items | length".into())));
 }
 
 #[test]
@@ -23817,10 +20942,7 @@ fn clicking_in_the_jq_bar_places_the_caret_and_dragging_selects() {
     ready_response(&mut app, JQ_BODY);
     app.update(Action::JqApply(".data.total".into()));
     render_once(&mut app);
-    let rect = app
-        .hits
-        .rect_of(&Hit::ResponseJqBar)
-        .expect("bar row registered");
+    let rect = app.hits.rect_of(&Hit::ResponseJqBar).expect("bar row registered");
     let text_x = rect.x + 3; // after the `jq ` prefix
 
     // A click focuses the bar and puts the caret under the pointer.
@@ -23850,19 +20972,13 @@ fn clicking_outside_the_jq_bar_blurs_it_like_enter() {
     ready_response(&mut app, JQ_BODY);
     app.update(Action::JqApply(".data.total".into()));
     render_once(&mut app);
-    let rect = app
-        .hits
-        .rect_of(&Hit::ResponseJqBar)
-        .expect("bar row registered");
+    let rect = app.hits.rect_of(&Hit::ResponseJqBar).expect("bar row registered");
     app.handle_mouse(left_down(rect.x + 4, rect.y));
     assert!(app.session.response.jq_focused());
 
     // A click on the response body — the same pane — leaves the bar,
     // keeping the filter on and its text: Enter, by mouse.
-    let row = app
-        .hits
-        .rect_of(&Hit::Pane(PaneId::Response))
-        .expect("response pane registered");
+    let row = app.hits.rect_of(&Hit::Pane(PaneId::Response)).expect("response pane registered");
     assert!(app.handle_mouse(left_down(row.x + 1, row.y + row.height / 2)));
     assert!(!app.session.response.jq_focused(), "the click away blurs");
     assert!(app.session.response.jq_open(), "…and the bar stays open");
@@ -23875,17 +20991,11 @@ fn clicking_outside_the_jq_bar_blurs_it_like_enter() {
     if let Some(thumb) = app.hits.rect_of(&Hit::ScrollbarThumb(PaneId::Response)) {
         app.handle_mouse(left_down(thumb.x, thumb.y));
         app.handle_mouse(left_up(thumb.x, thumb.y));
-        assert!(
-            app.session.response.jq_focused(),
-            "a scrollbar press keeps focus"
-        );
+        assert!(app.session.response.jq_focused(), "a scrollbar press keeps focus");
     }
 
     // A click on another pane blurs too (focus moved off the response).
-    let sidebar = app
-        .hits
-        .rect_of(&Hit::Pane(PaneId::Sidebar))
-        .expect("sidebar registered");
+    let sidebar = app.hits.rect_of(&Hit::Pane(PaneId::Sidebar)).expect("sidebar registered");
     app.handle_mouse(left_down(sidebar.x + 1, sidebar.y + 1));
     assert!(!app.session.response.jq_focused());
 }
@@ -23901,21 +21011,11 @@ fn right_click_on_the_jq_bar_offers_copy_and_paste_only() {
     // Focus starts elsewhere: the right click has to claim the bar.
     app.focus = PaneId::Sidebar;
     render_once(&mut app);
-    let rect = app
-        .hits
-        .rect_of(&Hit::ResponseJqBar)
-        .expect("bar row registered");
+    let rect = app.hits.rect_of(&Hit::ResponseJqBar).expect("bar row registered");
 
     assert!(app.handle_mouse(right_down(rect.x + 5, rect.y)));
-    assert_eq!(
-        menu_labels(&app),
-        vec!["Copy", "Paste"],
-        "no extract items on a filter"
-    );
-    assert!(
-        menu_action(&app, "Copy").is_none(),
-        "nothing selected: Copy is greyed"
-    );
+    assert_eq!(menu_labels(&app), vec!["Copy", "Paste"], "no extract items on a filter");
+    assert!(menu_action(&app, "Copy").is_none(), "nothing selected: Copy is greyed");
     let paste = menu_action(&app, "Paste").expect("Paste is enabled");
     app.update(Action::Close);
     app.update(paste);
@@ -23928,10 +21028,7 @@ fn right_click_on_the_jq_bar_offers_copy_and_paste_only() {
     let copy = menu_action(&app, "Copy").expect("Copy is enabled with a selection");
     app.update(Action::Close);
     app.update(copy);
-    assert_eq!(
-        std::fs::read_to_string(&out).unwrap(),
-        ".data.items | length"
-    );
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), ".data.items | length");
     assert!(app.session.response.jq_bar().input.selection().is_some());
 }
 
@@ -23952,15 +21049,9 @@ fn the_response_footer_always_offers_alt_q_filter_and_close_only_while_open() {
         ))
     };
     let find = |state: JqBarState, key: &str| {
-        chips(state)
-            .into_iter()
-            .find(|(k, _, _)| *k == key)
-            .map(|(_, l, a)| (l, a))
+        chips(state).into_iter().find(|(k, _, _)| *k == key).map(|(_, l, a)| (l, a))
     };
-    assert_eq!(
-        find(JqBarState::Closed, "alt+q"),
-        Some(("filter", Some(Action::OpenJqBar)))
-    );
+    assert_eq!(find(JqBarState::Closed, "alt+q"), Some(("filter", Some(Action::OpenJqBar))));
     assert_eq!(
         find(JqBarState::Open, "alt+q"),
         Some(("filter", Some(Action::OpenJqBar))),
@@ -23983,10 +21074,7 @@ fn verbs_compose_onto_an_existing_filter_with_relative_paths() {
     ready_response(&mut app, JQ_BODY);
     app.update(Action::JqApply(".data".into()));
     right_click_row(&mut app, "\"items\"");
-    assert_eq!(
-        menu_action(&app, "Count"),
-        Some(Action::JqApply(".data | .items | length".into()))
-    );
+    assert_eq!(menu_action(&app, "Count"), Some(Action::JqApply(".data | .items | length".into())));
     app.update(Action::Close);
     app.update(Action::JqApply(".data.items".into()));
     right_click_row(&mut app, "[");
@@ -24004,10 +21092,7 @@ fn with_several_outputs_the_composing_verbs_are_disabled_and_collect_is_offered(
     app.update(Action::JqApply(".data.items[]".into()));
     right_click_row(&mut app, "\"id\": 1");
     let labels = menu_labels(&app);
-    assert!(
-        labels.contains(&"Collect into array".to_string()),
-        "{labels:?}"
-    );
+    assert!(labels.contains(&"Collect into array".to_string()), "{labels:?}");
     assert_eq!(
         menu_action(&app, "Filter to this  (collect into array first)"),
         None,
@@ -24028,9 +21113,7 @@ fn pluck_and_where_open_a_key_chooser_that_writes_the_verb() {
         path: ".data.items".into(),
         keys: vec!["id".into(), "status".into()],
     });
-    let Some(Modal::Chooser(c)) = app.modals.top() else {
-        panic!("chooser")
-    };
+    let Some(Modal::Chooser(c)) = app.modals.top() else { panic!("chooser") };
     assert_eq!(c.title, "Pluck field");
     let pick = c.items[1].actions.clone();
     app.update(Action::Close);
@@ -24038,28 +21121,17 @@ fn pluck_and_where_open_a_key_chooser_that_writes_the_verb() {
         app.update(a);
     }
     assert_eq!(app.session.response.jq_text(), ".data.items | map(.status)");
-    assert_eq!(
-        app.session.response.view().unwrap().view_text(),
-        "[\n  \"active\",\n  \"off\"\n]"
-    );
+    assert_eq!(app.session.response.view().unwrap().view_text(), "[\n  \"active\",\n  \"off\"\n]");
 
     app.update(Action::JqApply("".into()));
-    app.update(Action::JqWherePrompt {
-        path: ".data.items".into(),
-        keys: vec!["status".into()],
-    });
-    let Some(Modal::Chooser(c)) = app.modals.top() else {
-        panic!("chooser")
-    };
+    app.update(Action::JqWherePrompt { path: ".data.items".into(), keys: vec!["status".into()] });
+    let Some(Modal::Chooser(c)) = app.modals.top() else { panic!("chooser") };
     let pick = c.items[0].actions.clone();
     app.update(Action::Close);
     for a in pick {
         app.update(a);
     }
-    assert_eq!(
-        app.session.response.jq_text(),
-        ".data.items | map(select(.status == ))"
-    );
+    assert_eq!(app.session.response.jq_text(), ".data.items | map(select(.status == ))");
     assert!(app.session.response.jq_focused());
     assert_eq!(
         app.session.response.jq_bar().input.cursor(),
@@ -24071,9 +21143,7 @@ fn pluck_and_where_open_a_key_chooser_that_writes_the_verb() {
 fn the_structural_menu_is_absent_on_raw_and_non_json_views() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
-    app.update(Action::ResponseViewMode(
-        crate::components::response::ViewMode::Raw,
-    ));
+    app.update(Action::ResponseViewMode(crate::components::response::ViewMode::Raw));
     render_once(&mut app);
     let area = app.session.response.view().unwrap().last_area.unwrap();
     app.handle_mouse(right_down(area.x + 1, area.y));
@@ -24094,12 +21164,7 @@ async fn drain_ai(app: &mut App) -> Action {
     let task = app.ai_task.as_mut().expect("an AI request is in flight");
     (&mut task.handle).await.unwrap();
     loop {
-        let action = app
-            ._test_rx
-            .as_mut()
-            .unwrap()
-            .try_recv()
-            .expect("the task sent its result");
+        let action = app._test_rx.as_mut().unwrap().try_recv().expect("the task sent its result");
         if matches!(action, Action::JqAiFinished { .. }) {
             return action;
         }
@@ -24128,16 +21193,9 @@ async fn describe_a_filter_sends_the_shape_and_lands_the_reply_in_the_bar() {
     let seen = dir.path().join("seen.txt");
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
-    stub_ai(
-        &mut app,
-        &format!("cat > {} && echo '.data.total'", seen.display()),
-    );
+    stub_ai(&mut app, &format!("cat > {} && echo '.data.total'", seen.display()));
     app.update(Action::OpenJqDescribe);
-    let Some(Modal::Prompt {
-        kind: PromptKind::JqDescribe,
-        ..
-    }) = app.modals.top()
-    else {
+    let Some(Modal::Prompt { kind: PromptKind::JqDescribe, .. }) = app.modals.top() else {
         panic!("prompt")
     };
     type_str(&mut app, "just the total");
@@ -24156,10 +21214,7 @@ async fn describe_a_filter_sends_the_shape_and_lands_the_reply_in_the_bar() {
         ),
         "{sent}"
     );
-    assert!(
-        sent.contains("A full path in this document: .data.items[].id"),
-        "{sent}"
-    );
+    assert!(sent.contains("A full path in this document: .data.items[].id"), "{sent}");
     assert!(sent.contains("Request: just the total"), "{sent}");
     assert!(!sent.contains("active"), "values are never sent: {sent}");
 }
@@ -24181,12 +21236,8 @@ async fn a_debug_ai_log_that_cannot_be_written_is_switched_off_with_one_warning(
     app.update(a);
     assert_eq!(app.session.response.jq_text(), ".data.total", "the reply still lands");
     assert!(app.ai_log.is_none(), "logging is off for the session");
-    let warnings: Vec<_> = app
-        .toasts
-        .messages()
-        .into_iter()
-        .filter(|m| m.contains("could not write"))
-        .collect();
+    let warnings: Vec<_> =
+        app.toasts.messages().into_iter().filter(|m| m.contains("could not write")).collect();
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("--debug-ai logging stopped"), "{warnings:?}");
 }
@@ -24206,10 +21257,7 @@ async fn debug_ai_logs_the_prompt_and_the_raw_reply() {
     assert!(text.contains("=== #1 "), "{text}");
     assert!(text.contains("--- prompt\nYou write jq 1.7 filters"), "{text}");
     assert!(text.contains("Request: just the total\n"), "{text}");
-    assert!(
-        text.contains("--- reply #1\n--- stdout\n`.data.total`\n"),
-        "raw reply: {text}"
-    );
+    assert!(text.contains("--- reply #1\n--- stdout\n`.data.total`\n"), "raw reply: {text}");
     assert!(text.contains("--- stderr\nwarming up\n"), "{text}");
     assert!(text.contains("--- filter: .data.total\n"), "{text}");
 }
@@ -24267,11 +21315,7 @@ async fn a_fenced_reply_is_unwrapped_and_a_bad_reply_lands_with_its_error() {
     app.update(Action::RunJqDescribe("x".into()));
     let a = drain_ai(&mut app).await;
     app.update(a);
-    assert_eq!(
-        app.session.response.jq_text(),
-        "this is not jq",
-        "lands for hand repair"
-    );
+    assert_eq!(app.session.response.jq_text(), "this is not jq", "lands for hand repair");
     assert!(app.session.response.jq_bar().error.is_some());
     assert!(app.session.response.jq_focused());
 }
@@ -24301,24 +21345,13 @@ fn the_first_use_asks_for_confirmation_and_always_persists_the_flag() {
         panic!("confirm modal")
     };
     assert!(body.contains("key names and types"), "{body}");
-    let always = choices
-        .iter()
-        .find(|(c, _, _)| *c == 'a')
-        .expect("an Always choice")
-        .2
-        .clone();
-    assert_eq!(
-        always,
-        vec![Action::SetAiConfirmed, Action::RunJqDescribe("x".into())]
-    );
+    let always = choices.iter().find(|(c, _, _)| *c == 'a').expect("an Always choice").2.clone();
+    assert_eq!(always, vec![Action::SetAiConfirmed, Action::RunJqDescribe("x".into())]);
     app.update(Action::Close);
     app.update(Action::SetAiConfirmed);
     assert!(app.ui_settings.ai_confirmed);
     app.update(Action::ConfirmJqDescribe("y".into()));
-    assert!(
-        !matches!(app.modals.top(), Some(Modal::Confirm { .. })),
-        "no second confirmation"
-    );
+    assert!(!matches!(app.modals.top(), Some(Modal::Confirm { .. })), "no second confirmation");
 }
 
 #[test]
@@ -24328,10 +21361,7 @@ fn describe_is_disabled_when_the_program_is_missing() {
     app.ui_settings.ai_cmd = "definitely-not-a-program-42 -p".into();
     right_click_row(&mut app, "\"items\"");
     assert_eq!(
-        menu_action(
-            &app,
-            "Describe a filter\u{2026}  (definitely-not-a-program-42 not found)"
-        ),
+        menu_action(&app, "Describe a filter\u{2026}  (definitely-not-a-program-42 not found)"),
         None
     );
     app.update(Action::Close);
@@ -24352,10 +21382,7 @@ async fn esc_while_asking_cancels_and_a_late_reply_is_dropped() {
     assert!(app.session.response.jq_bar().ai_asking.is_none());
     assert!(app.ai_task.is_none());
     // A reply for the cancelled request is ignored.
-    let stale = Action::JqAiFinished {
-        request: 1,
-        result: Ok(".x".into()),
-    };
+    let stale = Action::JqAiFinished { request: 1, result: Ok(".x".into()) };
     app.update(stale);
     assert_eq!(app.session.response.jq_text(), "");
 }
@@ -24368,16 +21395,10 @@ async fn ticks_keep_redrawing_while_the_ai_is_asked() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
     stub_ai(&mut app, "sleep 5; echo .x");
-    assert!(
-        !app.update(Action::Tick),
-        "idle: a tick has nothing to redraw"
-    );
+    assert!(!app.update(Action::Tick), "idle: a tick has nothing to redraw");
     app.update(Action::RunJqDescribe("x".into()));
     assert!(app.session.response.jq_bar().ai_asking.is_some());
-    assert!(
-        app.update(Action::Tick),
-        "an outstanding AI request keeps ticks redrawing"
-    );
+    assert!(app.update(Action::Tick), "an outstanding AI request keeps ticks redrawing");
     app.update(Action::CancelJqDescribe);
     assert!(!app.update(Action::Tick), "a cancelled request stops them");
 
@@ -24454,9 +21475,7 @@ fn returning_to_a_shed_response_reparses_it_and_reapplies_its_filter() {
             tree: crate::components::json_tree::JsonTree::parse(&big(i)).map(Box::new),
         });
         // On the Tree tab, so `view_text` below reads the (filtered) tree.
-        app.update(Action::ResponseViewMode(
-            crate::components::response::ViewMode::Pretty,
-        ));
+        app.update(Action::ResponseViewMode(crate::components::response::ViewMode::Pretty));
     }
     app.editor.slug = Some("elsewhere".into());
     app.update(Action::Render);
@@ -24465,27 +21484,17 @@ fn returning_to_a_shed_response_reparses_it_and_reapplies_its_filter() {
     app.editor.jq_enabled = true;
     app.editor.slug = Some("big1".into());
     app.update(Action::Render);
-    let view = app
-        .session
-        .response
-        .view()
-        .expect("big1's response is back");
+    let view = app.session.response.view().expect("big1's response is back");
     assert!(view.tree.is_some(), "the shed tree was re-parsed on return");
     assert!(!view.parsing, "…and the parse is over");
-    assert_eq!(
-        view.view_text(),
-        "1",
-        "the filter ran against the fresh tree"
-    );
+    assert_eq!(view.view_text(), "1", "the filter ran against the fresh tree");
 }
 
 // --- sidebar row drags (press arms, motion promotes, release writes) ---
 
 fn row_rect(app: &mut App, i: usize) -> ratatui::layout::Rect {
     render_once(app);
-    app.hits
-        .rect_of(&Hit::SidebarRow(i))
-        .expect("sidebar row rect")
+    app.hits.rect_of(&Hit::SidebarRow(i)).expect("sidebar row rect")
 }
 
 fn request_rows(app: &App) -> Vec<String> {
@@ -24504,10 +21513,7 @@ fn three_row_app() -> (App, tempfile::TempDir) {
     postui_core::fixtures::save_request(dir.path(), "main/gamma", &req("https://x/3")).unwrap();
     app.update(Action::RefreshSidebar);
     render_once(&mut app);
-    assert_eq!(
-        request_rows(&app),
-        ["main/alpha", "main/beta", "main/gamma"]
-    );
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
     (app, dir)
 }
 
@@ -24532,10 +21538,7 @@ fn a_live_drag_paints_exactly_one_selection_band() {
     // onto row 0.
     app.handle_mouse(left_down(r1.x + 2, r1.y));
     app.handle_mouse(moved(r1.x + 2, r0.y));
-    assert!(
-        app.sidebar.drag.is_some(),
-        "motion promoted the press to a drag"
-    );
+    assert!(app.sidebar.drag.is_some(), "motion promoted the press to a drag");
     assert_eq!(
         request_rows(&app),
         ["main/beta", "main/alpha", "main/gamma"],
@@ -24549,10 +21552,7 @@ fn a_live_drag_paints_exactly_one_selection_band() {
 
     let marked: Vec<usize> = (0..3)
         .filter(|&i| {
-            let rect = app
-                .hits
-                .rect_of(&Hit::SidebarRow(i))
-                .expect("sidebar row rect");
+            let rect = app.hits.rect_of(&Hit::SidebarRow(i)).expect("sidebar row rect");
             let sym = buf[(rect.x, rect.y)].symbol();
             sym == "\u{258c}" || sym == "\u{22ee}"
         })
@@ -24576,14 +21576,8 @@ fn press_move_release_reorders_and_persists() {
     assert!(app.sidebar.drag.is_none(), "a press alone is not a drag");
     assert!(app.sidebar_press.is_some());
     app.handle_mouse(moved(r0.x + 2, r2.y));
-    assert!(
-        app.sidebar.drag.is_some(),
-        "motion onto another row promotes"
-    );
-    assert_eq!(
-        request_rows(&app),
-        ["main/beta", "main/gamma", "main/alpha"]
-    );
+    assert!(app.sidebar.drag.is_some(), "motion onto another row promotes");
+    assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
     assert_eq!(app.pointer_shape_update(), Some(PointerShape::Grabbing));
     app.handle_mouse(left_up(r0.x + 2, r2.y));
     assert!(app.sidebar.drag.is_none());
@@ -24594,15 +21588,9 @@ fn press_move_release_reorders_and_persists() {
         "the grabbing cursor is released with the button"
     );
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert_eq!(
-        postui_core::order::space_order(&meta, "main"),
-        ["beta", "gamma", "alpha"]
-    );
+    assert_eq!(postui_core::order::space_order(&meta, "main"), ["beta", "gamma", "alpha"]);
     render_once(&mut app);
-    assert_eq!(
-        request_rows(&app),
-        ["main/beta", "main/gamma", "main/alpha"]
-    );
+    assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
 }
 
@@ -24628,25 +21616,16 @@ fn release_outside_the_sidebar_and_escape_both_cancel() {
         let r2 = row_rect(&mut app, 2);
         app.handle_mouse(left_down(r0.x + 2, r0.y));
         app.handle_mouse(moved(r0.x + 2, r2.y));
-        assert_eq!(
-            request_rows(&app),
-            ["main/beta", "main/gamma", "main/alpha"]
-        );
+        assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
         if cancel_with_esc {
             app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         } else {
             app.handle_mouse(left_up(110, 30)); // over the response pane
         }
         assert!(app.sidebar.drag.is_none());
-        assert_eq!(
-            request_rows(&app),
-            ["main/alpha", "main/beta", "main/gamma"]
-        );
+        assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
         let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-        assert!(
-            postui_core::order::space_order(&meta, "main").is_empty(),
-            "nothing written"
-        );
+        assert!(postui_core::order::space_order(&meta, "main").is_empty(), "nothing written");
         assert!(!app.should_quit, "esc cancelled the drag, not the app");
     }
 }
@@ -24660,25 +21639,16 @@ fn a_right_click_during_a_drag_cancels_it_without_a_menu() {
     app.handle_mouse(left_down(r0.x + 2, r0.y));
     app.handle_mouse(moved(r0.x + 2, r2.y));
     assert!(app.sidebar.drag.is_some());
-    assert_eq!(
-        request_rows(&app),
-        ["main/beta", "main/gamma", "main/alpha"]
-    );
+    assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
 
     app.handle_mouse(right_down(r1.x + 2, r1.y));
 
     assert!(app.sidebar.drag.is_none());
     assert!(app.sidebar_press.is_none());
     assert!(app.modals.top().is_none(), "no context menu opened");
-    assert_eq!(
-        request_rows(&app),
-        ["main/alpha", "main/beta", "main/gamma"]
-    );
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(
-        postui_core::order::space_order(&meta, "main").is_empty(),
-        "nothing written"
-    );
+    assert!(postui_core::order::space_order(&meta, "main").is_empty(), "nothing written");
 
     // The button that started the drag is still physically down; its
     // eventual release inside the sidebar must not resurrect the drag
@@ -24686,10 +21656,7 @@ fn a_right_click_during_a_drag_cancels_it_without_a_menu() {
     app.handle_mouse(left_up(r1.x + 2, r1.y));
     assert!(app.sidebar.drag.is_none());
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(
-        postui_core::order::space_order(&meta, "main").is_empty(),
-        "still nothing written"
-    );
+    assert!(postui_core::order::space_order(&meta, "main").is_empty(), "still nothing written");
 }
 
 #[test]
@@ -24741,19 +21708,13 @@ fn a_left_press_during_a_live_drag_cancels_it() {
     app.handle_mouse(moved(r0.x + 2, r2.y));
     assert!(app.sidebar.drag.is_some());
     render_once(&mut app);
-    assert_eq!(
-        request_rows(&app),
-        ["main/beta", "main/gamma", "main/alpha"]
-    );
+    assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
 
     // Screen row 0 is painted "beta".
     app.handle_mouse(left_down(r0.x + 2, r0.y));
 
     assert!(app.sidebar.drag.is_none());
-    assert_eq!(
-        request_rows(&app),
-        ["main/alpha", "main/beta", "main/gamma"]
-    );
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
     assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
     assert_eq!(
         app.sidebar_press.as_ref().map(|(i, s)| (*i, s.as_str())),
@@ -24764,10 +21725,7 @@ fn a_left_press_during_a_live_drag_cancels_it() {
     app.handle_mouse(left_up(r0.x + 2, r0.y));
     assert!(app.sidebar.drag.is_none());
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(
-        postui_core::order::space_order(&meta, "main").is_empty(),
-        "nothing written"
-    );
+    assert!(postui_core::order::space_order(&meta, "main").is_empty(), "nothing written");
 }
 
 #[test]
@@ -24779,23 +21737,13 @@ fn a_left_press_during_a_live_drag_also_ends_a_thumb_drag_and_a_stale_press() {
     let (mut app, _dir) = three_row_app();
     let r0 = row_rect(&mut app, 0);
     app.handle_mouse(left_down(r0.x + 2, r0.y));
-    assert_eq!(
-        app.sidebar_press.as_ref().map(|(_, s)| s.as_str()),
-        Some("main/alpha")
-    );
-    app.drag = Some(Drag {
-        pane: PaneId::Sidebar,
-        grab_offset: 0,
-        horizontal: false,
-    });
+    assert_eq!(app.sidebar_press.as_ref().map(|(_, s)| s.as_str()), Some("main/alpha"));
+    app.drag = Some(Drag { pane: PaneId::Sidebar, grab_offset: 0, horizontal: false });
     app.text_drag = Some(TextDrag::Body);
 
     // A press on bare editor background: no row to arm.
     let editor = app.hits.rect_of(&Hit::Pane(PaneId::Editor)).unwrap();
-    app.handle_mouse(left_down(
-        editor.x + editor.width - 2,
-        editor.y + editor.height - 2,
-    ));
+    app.handle_mouse(left_down(editor.x + editor.width - 2, editor.y + editor.height - 2));
 
     assert!(app.drag.is_none(), "the thumb drag ended");
     assert!(app.text_drag.is_none(), "the text sweep ended");
@@ -24812,18 +21760,11 @@ fn a_stale_press_never_promotes_over_a_live_thumb_drag() {
     let r0 = row_rect(&mut app, 0);
     let r2 = row_rect(&mut app, 2);
     app.handle_mouse(left_down(r0.x + 2, r0.y));
-    app.drag = Some(Drag {
-        pane: PaneId::Sidebar,
-        grab_offset: 0,
-        horizontal: false,
-    });
+    app.drag = Some(Drag { pane: PaneId::Sidebar, grab_offset: 0, horizontal: false });
 
     app.handle_mouse(moved(r0.x + 2, r2.y));
     assert!(app.sidebar.drag.is_none(), "no row drag over a thumb drag");
-    assert_eq!(
-        request_rows(&app),
-        ["main/alpha", "main/beta", "main/gamma"]
-    );
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
 
     app.handle_mouse(left_up(r0.x + 2, r2.y));
     assert!(app.drag.is_none(), "the release ends the thumb drag");
@@ -24842,11 +21783,7 @@ fn a_release_ending_a_row_drag_ends_a_thumb_drag_too() {
     assert!(app.sidebar.drag.is_some());
     // However it got there, a thumb drag live alongside the row drag
     // must not outlive the release.
-    app.drag = Some(Drag {
-        pane: PaneId::Response,
-        grab_offset: 0,
-        horizontal: false,
-    });
+    app.drag = Some(Drag { pane: PaneId::Response, grab_offset: 0, horizontal: false });
 
     app.handle_mouse(left_up(r0.x + 2, r2.y));
     assert!(app.sidebar.drag.is_none());
@@ -24860,34 +21797,20 @@ fn a_left_press_during_a_live_space_drag_selects_the_painted_row() {
     let r2 = manage_row(&mut app, 2);
     app.handle_mouse(left_down(r0.x + 2, r0.y));
     app.handle_mouse(moved(r0.x + 2, r2.y));
-    assert_eq!(
-        app.manage.list.drag.as_ref().unwrap().working,
-        ["auth", "billing", "main"]
-    );
+    assert_eq!(app.manage.list.drag.as_ref().unwrap().working, ["auth", "billing", "main"]);
     render_once(&mut app);
 
     // Screen row 0 is painted "auth".
     app.handle_mouse(left_down(r0.x + 2, r0.y));
     assert!(app.manage.list.drag.is_none());
     assert_eq!(
-        app.manage
-            .list
-            .selected(ManageTab::Spaces, app.proj())
-            .map(str::to_string)
-            .as_deref(),
+        app.manage.list.selected(ManageTab::Spaces, app.proj()).map(str::to_string).as_deref(),
         Some("auth"),
         "the click selects the space that was painted under it"
     );
-    assert_eq!(
-        app.manage_press.as_ref().map(|(i, n)| (*i, n.as_str())),
-        Some((1, "auth"))
-    );
+    assert_eq!(app.manage_press.as_ref().map(|(i, n)| (*i, n.as_str())), Some((1, "auth")));
     app.handle_mouse(left_up(r0.x + 2, r0.y));
-    assert_eq!(
-        listed_spaces(&dir),
-        ["main", "auth", "billing"],
-        "nothing written"
-    );
+    assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"], "nothing written");
 }
 
 /// A hover highlight is a statement about where the pointer is. Once the
@@ -24905,10 +21828,7 @@ fn losing_terminal_focus_drops_a_stale_hover_highlight() {
     let (mut app, _dir) = three_row_app();
     let r0 = row_rect(&mut app, 0);
     app.handle_mouse(moved(r0.x + 2, r0.y));
-    assert!(
-        app.hovered.is_some(),
-        "fixture: the pointer is over a row and it is lit"
-    );
+    assert!(app.hovered.is_some(), "fixture: the pointer is over a row and it is lit");
 
     assert!(
         app.on_focus_lost(),
@@ -24941,10 +21861,7 @@ fn losing_terminal_focus_cancels_a_live_drag() {
     assert!(app.on_focus_lost(), "a repaint is due");
     assert!(app.sidebar.drag.is_none());
     assert!(app.sidebar_press.is_none());
-    assert_eq!(
-        request_rows(&app),
-        ["main/alpha", "main/beta", "main/gamma"]
-    );
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(postui_core::order::space_order(&meta, "main").is_empty());
     assert_ne!(app.pointer_shape_update(), Some(PointerShape::Grabbing));
@@ -24977,10 +21894,7 @@ fn switching_projects_disarms_an_armed_press() {
     assert!(app.sidebar_press.is_none());
     render_once(&mut app);
     app.handle_mouse(moved(r0.x + 2, r2.y));
-    assert!(
-        app.sidebar.drag.is_none(),
-        "nothing promotes in the new project"
-    );
+    assert!(app.sidebar.drag.is_none(), "nothing promotes in the new project");
 }
 
 #[test]
@@ -25046,14 +21960,8 @@ fn a_right_click_on_an_armed_press_disarms_it() {
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     app.handle_mouse(moved(r0.x + 2, r2.y));
-    assert!(
-        app.sidebar.drag.is_none(),
-        "the disarmed press cannot promote"
-    );
-    assert_eq!(
-        request_rows(&app),
-        ["main/alpha", "main/beta", "main/gamma"]
-    );
+    assert!(app.sidebar.drag.is_none(), "the disarmed press cannot promote");
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
 }
 
 #[test]
@@ -25077,10 +21985,7 @@ fn a_drag_never_leaves_its_sibling_group() {
     );
     app.handle_mouse(left_up(r0.x + 2, r3.y));
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert_eq!(
-        postui_core::order::space_order(&meta, "main"),
-        ["beta", "alpha"]
-    );
+    assert_eq!(postui_core::order::space_order(&meta, "main"), ["beta", "alpha"]);
 }
 
 #[test]
@@ -25123,15 +22028,9 @@ fn escape_disarms_the_press_so_motion_cannot_restart_the_drag() {
     app.handle_mouse(moved(r0.x + 2, r1.y));
     assert!(app.sidebar.drag.is_none(), "the cancel stays cancelled");
     app.handle_mouse(left_up(r0.x + 2, r1.y));
-    assert_eq!(
-        request_rows(&app),
-        ["main/alpha", "main/beta", "main/gamma"]
-    );
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(
-        postui_core::order::space_order(&meta, "main").is_empty(),
-        "nothing written"
-    );
+    assert!(postui_core::order::space_order(&meta, "main").is_empty(), "nothing written");
 }
 
 #[test]
@@ -25154,11 +22053,7 @@ fn dragging_at_the_list_edge_scrolls_on_tick() {
     assert!(app.sidebar.drag.is_some());
     let before = app.sidebar.scroll;
     app.update(Action::Tick);
-    assert_eq!(
-        app.sidebar.scroll,
-        before + 1,
-        "bottom edge scrolls one row per tick"
-    );
+    assert_eq!(app.sidebar.scroll, before + 1, "bottom edge scrolls one row per tick");
     // The response pane shares that y; a pointer parked over it must not
     // scroll the list it is not over.
     let held = app.sidebar.scroll;
@@ -25189,10 +22084,7 @@ fn a_rebuild_between_press_and_motion_drags_the_pressed_request() {
     app.reload_project_documents();
     app.update(Action::RefreshSidebar);
     render_once(&mut app);
-    assert_eq!(
-        request_rows(&app),
-        ["main/beta", "main/gamma", "main/alpha"]
-    );
+    assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
     app.handle_mouse(moved(r0.x + 2, r0.y)); // now row 0 is main/beta
     assert_eq!(
         app.sidebar.drag.as_ref().map(|d| d.slug.as_str()),
@@ -25274,10 +22166,7 @@ fn switching_space_mid_drag_cancels_it_and_writes_nothing() {
     );
     app.update(Action::SwitchSpace("main".into()));
     render_once(&mut app);
-    assert_eq!(
-        request_rows(&app),
-        ["main/alpha", "main/beta", "main/gamma"]
-    );
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
 }
 
 // ---- Manage screen: dragging a space row -------------------------------
@@ -25289,9 +22178,7 @@ use crate::components::manage::ManageTab;
 fn manage_spaces_app() -> (App, tempfile::TempDir) {
     let (mut app, dir) = spaced_app();
     app.update(Action::CreateSpace("billing".into()));
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Spaces),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
     render_once(&mut app);
     assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
     (app, dir)
@@ -25299,9 +22186,7 @@ fn manage_spaces_app() -> (App, tempfile::TempDir) {
 
 fn manage_row(app: &mut App, i: usize) -> ratatui::layout::Rect {
     render_once(app);
-    app.hits
-        .rect_of(&Hit::ManageRow(i))
-        .expect("manage row rect")
+    app.hits.rect_of(&Hit::ManageRow(i)).expect("manage row rect")
 }
 
 fn listed_spaces(dir: &tempfile::TempDir) -> Vec<String> {
@@ -25313,18 +22198,14 @@ fn listed_spaces(dir: &tempfile::TempDir) -> Vec<String> {
 fn manage_envs_app() -> (App, tempfile::TempDir) {
     let (mut app, dir) = app_with_envs();
     app.update(Action::CreateEnv("dev".into()));
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Environments),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
     render_once(&mut app);
     assert_eq!(app.proj().environments(), ["prod", "qa", "dev"]);
     (app, dir)
 }
 
 fn listed_envs(dir: &tempfile::TempDir) -> Vec<String> {
-    postui_core::fixtures::load_meta(dir.path())
-        .unwrap()
-        .environments
+    postui_core::fixtures::load_meta(dir.path()).unwrap().environments
 }
 
 #[test]
@@ -25333,20 +22214,11 @@ fn dragging_a_space_row_reorders_and_persists() {
     let r0 = manage_row(&mut app, 0);
     let r2 = manage_row(&mut app, 2);
     app.handle_mouse(left_down(r0.x + 2, r0.y));
-    assert!(
-        app.manage.list.drag.is_none(),
-        "a press alone is not a drag"
-    );
+    assert!(app.manage.list.drag.is_none(), "a press alone is not a drag");
     assert!(app.manage_press.is_some());
     app.handle_mouse(moved(r0.x + 2, r2.y));
-    assert!(
-        app.manage.list.drag.is_some(),
-        "motion onto another row promotes"
-    );
-    assert_eq!(
-        app.manage.list.drag.as_ref().unwrap().working,
-        ["auth", "billing", "main"]
-    );
+    assert!(app.manage.list.drag.is_some(), "motion onto another row promotes");
+    assert_eq!(app.manage.list.drag.as_ref().unwrap().working, ["auth", "billing", "main"]);
     assert_eq!(app.pointer_shape_update(), Some(PointerShape::Grabbing));
 
     app.handle_mouse(left_up(r0.x + 2, r2.y));
@@ -25387,11 +22259,7 @@ fn a_space_drag_snaps_back_on_a_release_outside_escape_or_a_right_click() {
         assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"], "{cancel}");
         assert_eq!(app.proj().spaces(), ["main", "auth", "billing"], "{cancel}");
         if cancel == "escape" {
-            assert_eq!(
-                app.screen,
-                Screen::Manage,
-                "escape cancelled the drag, not the screen"
-            );
+            assert_eq!(app.screen, Screen::Manage, "escape cancelled the drag, not the screen");
         }
         if cancel == "right-click" {
             assert!(app.modals.top().is_none(), "no context menu opened");
@@ -25417,20 +22285,11 @@ fn dragging_an_environment_row_reorders_and_persists() {
     let r0 = manage_row(&mut app, 0);
     let r2 = manage_row(&mut app, 2);
     app.handle_mouse(left_down(r0.x + 2, r0.y));
-    assert!(
-        app.manage.list.drag.is_none(),
-        "a press alone is not a drag"
-    );
+    assert!(app.manage.list.drag.is_none(), "a press alone is not a drag");
     assert!(app.manage_press.is_some());
     app.handle_mouse(moved(r0.x + 2, r2.y));
-    assert!(
-        app.manage.list.drag.is_some(),
-        "motion onto another row promotes"
-    );
-    assert_eq!(
-        app.manage.list.drag.as_ref().unwrap().working,
-        ["qa", "dev", "prod"]
-    );
+    assert!(app.manage.list.drag.is_some(), "motion onto another row promotes");
+    assert_eq!(app.manage.list.drag.as_ref().unwrap().working, ["qa", "dev", "prod"]);
 
     app.handle_mouse(left_up(r0.x + 2, r2.y));
     assert!(app.manage.list.drag.is_none());
@@ -25457,9 +22316,7 @@ fn reopening_the_manage_screen_on_another_tab_mid_drag_cancels_it() {
     app.handle_mouse(moved(r0.x + 2, r2.y));
     assert!(app.manage.list.drag.is_some());
 
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Environments),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
 
     assert!(app.manage.list.drag.is_none());
     assert!(app.manage_press.is_none());
@@ -25491,10 +22348,7 @@ fn leaving_the_sidebar_mid_drag_previews_the_cancel() {
     let r2 = row_rect(&mut app, 2);
     app.handle_mouse(left_down(r0.x + 2, r0.y));
     app.handle_mouse(moved(r0.x + 2, r2.y));
-    assert_eq!(
-        request_rows(&app),
-        ["main/beta", "main/gamma", "main/alpha"]
-    );
+    assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
 
     // Over the response pane: a release here would cancel, so the rows
     // show the order that release would leave behind.
@@ -25508,22 +22362,13 @@ fn leaving_the_sidebar_mid_drag_previews_the_cancel() {
 
     // Back over a row: the drag picks up where it left off.
     app.handle_mouse(moved(r0.x + 2, r2.y));
-    assert_eq!(
-        request_rows(&app),
-        ["main/beta", "main/gamma", "main/alpha"]
-    );
+    assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
 
     app.handle_mouse(left_up(110, 30));
     assert!(app.sidebar.drag.is_none());
-    assert_eq!(
-        request_rows(&app),
-        ["main/alpha", "main/beta", "main/gamma"]
-    );
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
     let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
-    assert!(
-        postui_core::order::space_order(&meta, "main").is_empty(),
-        "nothing written"
-    );
+    assert!(postui_core::order::space_order(&meta, "main").is_empty(), "nothing written");
 }
 
 #[test]
@@ -25533,10 +22378,7 @@ fn leaving_the_space_list_mid_drag_previews_the_cancel() {
     let r2 = manage_row(&mut app, 2);
     app.handle_mouse(left_down(r0.x + 2, r0.y));
     app.handle_mouse(moved(r0.x + 2, r2.y));
-    assert_eq!(
-        app.manage.list.drag.as_ref().unwrap().working,
-        ["auth", "billing", "main"]
-    );
+    assert_eq!(app.manage.list.drag.as_ref().unwrap().working, ["auth", "billing", "main"]);
 
     app.handle_mouse(moved(110, 30)); // the detail pane
     assert!(app.manage.list.drag.is_some(), "the drag is still live");
@@ -25547,10 +22389,7 @@ fn leaving_the_space_list_mid_drag_previews_the_cancel() {
     );
 
     app.handle_mouse(moved(r0.x + 2, r2.y));
-    assert_eq!(
-        app.manage.list.drag.as_ref().unwrap().working,
-        ["auth", "billing", "main"]
-    );
+    assert_eq!(app.manage.list.drag.as_ref().unwrap().working, ["auth", "billing", "main"]);
 
     app.handle_mouse(left_up(110, 30));
     assert!(app.manage.list.drag.is_none());
@@ -25573,11 +22412,7 @@ fn footer_text(app: &mut App) -> String {
     let buf = terminal.backend().buffer().clone();
     let h = crate::components::footer::FOOTER_HEIGHT;
     (buf.area.height - h..buf.area.height)
-        .map(|y| {
-            (0..buf.area.width)
-                .map(|x| buf[(x, y)].symbol())
-                .collect::<String>()
-        })
+        .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -25599,11 +22434,7 @@ fn every_other_key_is_swallowed_during_a_sidebar_drag() {
         app.handle_key(ev);
 
         assert!(app.sidebar.drag.is_some(), "{ev:?}: the drag survives");
-        assert_eq!(
-            request_rows(&app),
-            ["main/beta", "main/gamma", "main/alpha"],
-            "{ev:?}"
-        );
+        assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"], "{ev:?}");
         assert_eq!(app.sidebar.selected_slug(), selected, "{ev:?}");
         assert!(app.modals.top().is_none(), "{ev:?}: nothing opened");
         let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
@@ -25777,10 +22608,7 @@ fn tooltip_edit_pill_opens_the_tokens_editor() {
         ),
         "the value popup opens for a plain variable"
     );
-    assert!(
-        app.var_token_tip().is_none(),
-        "the dialog takes the tip down"
-    );
+    assert!(app.var_token_tip().is_none(), "the dialog takes the tip down");
 }
 
 /// A name defined nowhere still gets a tip, and the edit pill is its
@@ -25824,10 +22652,7 @@ fn tooltip_lays_out_a_header_row_then_the_value_then_the_description() {
     let (mut app, _dir, _out) = tooltip_app("base_url");
     hover_token(&mut app, "base_url");
     let panel = app.hits.rect_of(&Hit::TipPanel("base_url".into())).unwrap();
-    assert_eq!(
-        panel.height, 5,
-        "padding, header, value, description, padding"
-    );
+    assert_eq!(panel.height, 5, "padding, header, value, description, padding");
     assert_eq!(
         panel_row(&mut app, panel, panel.y + 1),
         "\u{2502} base_url  env = qa  \u{F018F}  \u{F03EB}  \u{2502}",
@@ -25845,21 +22670,11 @@ fn tooltip_lays_out_a_header_row_then_the_value_then_the_description() {
     // Right-anchored pills: edit holds the anchor edge, copy before it.
     assert_eq!(
         app.hits.rect_of(&Hit::TipEdit("base_url".into())),
-        Some(ratatui::layout::Rect::new(
-            panel.right() - 5,
-            panel.y + 1,
-            3,
-            1
-        ))
+        Some(ratatui::layout::Rect::new(panel.right() - 5, panel.y + 1, 3, 1))
     );
     assert_eq!(
         app.hits.rect_of(&Hit::TipCopy("base_url".into())),
-        Some(ratatui::layout::Rect::new(
-            panel.right() - 8,
-            panel.y + 1,
-            3,
-            1
-        ))
+        Some(ratatui::layout::Rect::new(panel.right() - 8, panel.y + 1, 3, 1))
     );
 }
 
@@ -25872,10 +22687,7 @@ fn tooltip_pills_run_reveal_copy_edit_from_the_left() {
     hover_token(&mut app, "api_key");
     let panel = app.hits.rect_of(&Hit::TipPanel("api_key".into())).unwrap();
     let at = |hit: Hit| app.hits.rect_of(&hit).map(|r| r.x);
-    assert_eq!(
-        at(Hit::TipReveal("api_key".into())),
-        Some(panel.right() - 11)
-    );
+    assert_eq!(at(Hit::TipReveal("api_key".into())), Some(panel.right() - 11));
     assert_eq!(at(Hit::TipCopy("api_key".into())), Some(panel.right() - 8));
     assert_eq!(at(Hit::TipEdit("api_key".into())), Some(panel.right() - 5));
 }
@@ -25908,13 +22720,9 @@ fn hint_ctx_classifies_the_edit_pill_by_what_the_popup_will_open() {
     assert_eq!(verb(&app, "api_key"), TipEditVerb::Secret);
     assert_eq!(verb(&app, "nowhere"), TipEditVerb::Define);
     // A request-scoped value with no declaration edits like a plain one.
-    app.editor.variables.insert(
-        "adhoc".into(),
-        postui_core::model::Entry {
-            value: "x".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .variables
+        .insert("adhoc".into(), postui_core::model::Entry { value: "x".into(), enabled: true });
     assert_eq!(verb(&app, "adhoc"), TipEditVerb::Value);
 }
 
@@ -25922,10 +22730,7 @@ fn hint_ctx_classifies_the_edit_pill_by_what_the_popup_will_open() {
 fn tooltip_stays_while_the_pointer_is_over_it_and_drops_when_it_leaves() {
     let (mut app, _dir, _out) = tooltip_app("base_url");
     hover_token(&mut app, "base_url");
-    assert_eq!(
-        app.var_token_tip().map(|t| t.name),
-        Some("base_url".to_string())
-    );
+    assert_eq!(app.var_token_tip().map(|t| t.name), Some("base_url".to_string()));
     let panel = app
         .hits
         .rect_of(&Hit::TipPanel("base_url".into()))
@@ -25951,23 +22756,14 @@ fn tooltip_copy_puts_the_value_on_the_clipboard() {
     hover_token(&mut app, "base_url");
     let text = tooltip_text(&mut app);
     assert!(text.contains("\u{F018F}"), "copy control: {text}");
-    assert!(
-        !text.contains("\u{F06D0}"),
-        "no reveal for a plain value: {text}"
-    );
+    assert!(!text.contains("\u{F06D0}"), "no reveal for a plain value: {text}");
     // Icons only: the header is the name, two cells, the source, a gap,
     // two 3-cell pills (copy, edit), and 2 columns of padding each side
     // — the value row underneath is exactly as wide.
     let panel = app.hits.rect_of(&Hit::TipPanel("base_url".into())).unwrap();
-    assert_eq!(
-        panel.width,
-        ("base_url".len() + 2 + "env = qa".len() + 1 + 6 + 4) as u16
-    );
+    assert_eq!(panel.width, ("base_url".len() + 2 + "env = qa".len() + 1 + 6 + 4) as u16);
     click_hit(&mut app, Hit::TipCopy("base_url".into()));
-    assert_eq!(
-        std::fs::read_to_string(&out).unwrap(),
-        "https://qa.example.com"
-    );
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
 }
 
 #[test]
@@ -25975,10 +22771,7 @@ fn tooltip_copy_of_a_secret_copies_the_real_value_without_revealing_it() {
     let (mut app, _dir, out) = tooltip_app("api_key");
     hover_token(&mut app, "api_key");
     let text = tooltip_text(&mut app);
-    assert!(
-        text.contains(&"\u{25cf}".repeat(15)),
-        "one dot per char: {text}"
-    );
+    assert!(text.contains(&"\u{25cf}".repeat(15)), "one dot per char: {text}");
     assert!(!text.contains("sk-super-secret"), "{text}");
     click_hit(&mut app, Hit::TipCopy("api_key".into()));
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "sk-super-secret");
@@ -25995,27 +22788,16 @@ fn tooltip_reveal_shows_the_secret_until_the_tip_moves_on() {
     // Icons only: the header (name, two cells, source, a gap, three
     // 3-cell pills) sets the width here; the masked value is narrower.
     let panel = app.hits.rect_of(&Hit::TipPanel("api_key".into())).unwrap();
-    assert_eq!(
-        panel.width,
-        ("api_key".len() + 2 + "env = qa".len() + 1 + 9 + 4) as u16
-    );
+    assert_eq!(panel.width, ("api_key".len() + 2 + "env = qa".len() + 1 + 9 + 4) as u16);
     assert!(text.contains(&"\u{25cf}".repeat(15)), "{text}");
     click_hit(&mut app, Hit::TipReveal("api_key".into()));
     let text = tooltip_text(&mut app);
     assert!(text.contains("sk-super-secret"), "revealed: {text}");
     // Same footprint, pills in the same cells: nothing moved.
-    assert_eq!(
-        app.hits.rect_of(&Hit::TipPanel("api_key".into())),
-        Some(panel)
-    );
+    assert_eq!(app.hits.rect_of(&Hit::TipPanel("api_key".into())), Some(panel));
     assert_eq!(
         app.hits.rect_of(&Hit::TipReveal("api_key".into())),
-        Some(ratatui::layout::Rect::new(
-            panel.right() - 11,
-            panel.y + 1,
-            3,
-            1
-        ))
+        Some(ratatui::layout::Rect::new(panel.right() - 11, panel.y + 1, 3, 1))
     );
     assert!(text.contains("\u{F06D1}"), "hide control: {text}");
     // Clicking hide masks it again.
@@ -26065,10 +22847,7 @@ fn tooltip_reveal_does_not_carry_over_to_another_environments_secret() {
     app.update(Action::CycleEnv(-1));
     hover_token(&mut app, "api_key");
     let text = tooltip_text(&mut app);
-    assert!(
-        text.contains(&"\u{25cf}".repeat(15)),
-        "masked again: {text}"
-    );
+    assert!(text.contains(&"\u{25cf}".repeat(15)), "masked again: {text}");
     assert!(!text.contains("sk-super-secret"), "{text}");
 }
 
@@ -26085,14 +22864,8 @@ fn tooltip_pill_click_keeps_the_table_edit_and_selection() {
     assert!(app.editor.table.editing.is_some(), "a live cell edit");
     hover_token(&mut app, "base_url");
     click_hit(&mut app, Hit::TipCopy("base_url".into()));
-    assert_eq!(
-        std::fs::read_to_string(&out).unwrap(),
-        "https://qa.example.com"
-    );
-    assert!(
-        app.editor.table.editing.is_some(),
-        "the edit survives the copy"
-    );
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
+    assert!(app.editor.table.editing.is_some(), "the edit survives the copy");
     assert_eq!(app.editor.table.selected, Some(0), "so does the selection");
 }
 
@@ -26105,14 +22878,8 @@ fn right_click_under_the_tooltip_reaches_the_row_beneath() {
     let panel = app.hits.rect_of(&Hit::TipPanel("base_url".into())).unwrap();
     // Whatever the panel covers, a right click there must not resolve to
     // the panel — it resolves to what lies under it.
-    let under = app
-        .hits
-        .hit_at_ignoring_overlays(panel.x + 1, panel.bottom() - 1)
-        .cloned();
-    assert!(
-        under.as_ref().is_none_or(|h| h.tip_name().is_none()),
-        "{under:?}"
-    );
+    let under = app.hits.hit_at_ignoring_overlays(panel.x + 1, panel.bottom() - 1).cloned();
+    assert!(under.as_ref().is_none_or(|h| h.tip_name().is_none()), "{under:?}");
 }
 
 /// A token drawn twice (URL and a header value) holds the instance the
@@ -26124,10 +22891,7 @@ fn tooltip_holds_the_instance_it_was_raised_for_when_a_token_is_drawn_twice() {
     app.editor.active_tab = EditorTab::Headers;
     app.editor.headers.insert(
         "x-origin".into(),
-        postui_core::model::Entry {
-            value: "{{base_url}}".into(),
-            enabled: true,
-        },
+        postui_core::model::Entry { value: "{{base_url}}".into(), enabled: true },
     );
     app.update(Action::Render);
     render_once(&mut app);
@@ -26159,10 +22923,7 @@ fn tooltip_does_not_reopen_when_its_screen_comes_back_under_a_resting_pointer() 
     tooltip_text(&mut app);
     app.update(Action::CloseScreen);
     let text = tooltip_text(&mut app);
-    assert!(
-        app.var_token_tip().is_none(),
-        "no hold survives a tipless frame"
-    );
+    assert!(app.var_token_tip().is_none(), "no hold survives a tipless frame");
     assert!(!text.contains("sk-super-secret"), "{text}");
     assert!(app.tip_revealed.is_none());
 }
@@ -26225,10 +22986,7 @@ fn a_held_tip_closes_when_its_token_moves_instead_of_swapping_to_a_covered_one()
     app.editor.active_tab = EditorTab::Headers;
     app.editor.headers.insert(
         "x-origin".into(),
-        postui_core::model::Entry {
-            value: "{{base_url}}".into(),
-            enabled: true,
-        },
+        postui_core::model::Entry { value: "{{base_url}}".into(), enabled: true },
     );
     app.update(Action::Render);
     render_once(&mut app);
@@ -26270,10 +23028,7 @@ fn startup_with_a_broken_project_file_runs_empty_and_leaves_the_file_alone() {
     let err = app.open_error.as_ref().expect("the open is refused");
     assert_eq!(err.root, dir.path());
     assert_eq!(err.file, "project.toml");
-    assert!(
-        app.project().is_none(),
-        "nothing is loaded: the app runs with no project"
-    );
+    assert!(app.project().is_none(), "nothing is loaded: the app runs with no project");
     assert!(app.sidebar.rows.is_empty());
     let notice = app.sidebar.notice.as_deref().expect("the sidebar explains");
     assert!(notice.contains("project.toml"), "{notice}");
@@ -26334,10 +23089,7 @@ fn the_manage_screen_paints_its_body_with_no_project_open() {
     ] {
         app.update(Action::OpenManage { tab: Some(tab) });
         let text = rendered_text(&mut app);
-        assert!(
-            text.contains("no project is open"),
-            "{tab:?} body is unpainted: {text}"
-        );
+        assert!(text.contains("no project is open"), "{tab:?} body is unpainted: {text}");
         app.update(Action::CloseScreen);
     }
 }
@@ -26375,10 +23127,7 @@ fn a_refused_open_gates_every_way_of_writing_a_new_file() {
             "{action:?}: no prompt opens for a project that isn't open"
         );
         assert!(
-            app.toasts
-                .messages()
-                .iter()
-                .any(|m| m.contains("no project")),
+            app.toasts.messages().iter().any(|m| m.contains("no project")),
             "{action:?}: {:?}",
             app.toasts.messages()
         );
@@ -26415,11 +23164,7 @@ fn switching_to_a_project_that_refuses_to_open_stays_put() {
     let mut app = App::with_root(tx, good.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/ping".into()));
     app.update(Action::ForceSwitchProject(bad.path().to_path_buf()));
-    assert_eq!(
-        app.proj().root(),
-        good.path(),
-        "the current project stays open"
-    );
+    assert_eq!(app.proj().root(), good.path(), "the current project stays open");
     assert_eq!(app.editor.slug.as_deref(), Some("main/ping"));
     assert!(app.open_error.is_none());
     assert!(
@@ -26448,10 +23193,7 @@ fn save_and_quit_stays_open_when_the_save_fails() {
     assert!(!app.should_quit, "a failed save must not quit");
     assert!(app.editor.is_dirty(), "the edit is still there to save");
     assert!(
-        app.toasts
-            .messages()
-            .iter()
-            .any(|m| m.contains("could not save")),
+        app.toasts.messages().iter().any(|m| m.contains("could not save")),
         "{:?}",
         app.toasts.messages()
     );
@@ -26471,10 +23213,7 @@ async fn renaming_an_in_flight_request_keeps_its_send_and_its_response() {
     app.update(Action::Render);
     assert!(app.editor.sending);
 
-    app.update(Action::RenameRequest {
-        from: "main/alpha".into(),
-        to: "omega".into(),
-    });
+    app.update(Action::RenameRequest { from: "main/alpha".into(), to: "omega".into() });
     app.update(Action::Render);
     assert_eq!(app.editor.slug.as_deref(), Some("main/omega"));
     assert!(
@@ -26485,10 +23224,7 @@ async fn renaming_an_in_flight_request_keeps_its_send_and_its_response() {
     assert!(!app.session.is_in_flight(&Some("main/alpha".into())));
 
     // The late result lands on the renamed request, not under the old slug.
-    app.update(Action::RequestFailed {
-        generation: 7,
-        error: "boom".into(),
-    });
+    app.update(Action::RequestFailed { generation: 7, error: "boom".into() });
     app.update(Action::Render);
     assert!(matches!(
         app.session.response.state(),
@@ -26510,10 +23246,7 @@ fn undo_of_a_request_delete_reopens_it_in_the_editor() {
     let (mut app, _dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     app.update(Action::DeleteRequest("main/alpha".into()));
-    assert!(
-        app.editor.slug.is_none(),
-        "deleting the open request closes it"
-    );
+    assert!(app.editor.slug.is_none(), "deleting the open request closes it");
 
     app.update(Action::Undo);
     assert_eq!(
@@ -26564,11 +23297,7 @@ fn undo_of_a_space_delete_restores_the_space_its_request_and_its_memory() {
     let toasts_before = app.toasts.messages().len();
     app.update(Action::Undo);
     assert_eq!(app.proj().spaces(), ["main", "auth"]);
-    assert_eq!(
-        app.proj().local().active_space,
-        "main",
-        "undo returns to the deleted space"
-    );
+    assert_eq!(app.proj().local().active_space, "main", "undo returns to the deleted space");
     // Exactly one space switch: restoring `.local/state.toml` must not
     // move the active space itself, or the undo announces the space it is
     // passing through on the way back (`space: auth`) before announcing
@@ -26581,15 +23310,8 @@ fn undo_of_a_space_delete_restores_the_space_its_request_and_its_memory() {
         .filter(|m| m.starts_with("space: "))
         .collect();
     assert_eq!(space_toasts, ["space: main"], "{:?}", app.toasts.messages());
-    assert_eq!(
-        app.editor.slug.as_deref(),
-        Some("main/alpha"),
-        "…with its request open again"
-    );
-    assert!(
-        app.proj().local().expanded.contains("main/api"),
-        "…and its expanded folders back"
-    );
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "…with its request open again");
+    assert!(app.proj().local().expanded.contains("main/api"), "…and its expanded folders back");
     assert_eq!(
         app.proj().space_open_for("auth"),
         auth_memory_before,
@@ -26633,9 +23355,7 @@ fn app_with_an_outside_edit() -> App {
 }
 
 fn on_disk_ping_url(app: &App) -> String {
-    postui_core::fixtures::load_request(app.proj().root(), "main/ping")
-        .unwrap()
-        .url
+    postui_core::fixtures::load_request(app.proj().root(), "main/ping").unwrap().url
 }
 
 fn press(app: &mut App, c: char) {
@@ -26660,18 +23380,9 @@ fn saving_over_an_outside_edit_asks_first_and_writes_nothing() {
     let Some(Modal::Confirm { title, choices, .. }) = app.modals.top() else {
         panic!("expected the drift confirm on top")
     };
-    assert!(
-        title.contains("ping"),
-        "the confirm names the file that moved: {title:?}"
-    );
-    assert!(
-        choices.iter().any(|(c, _, _)| *c == 'r'),
-        "a file that still exists can be reloaded"
-    );
-    assert!(
-        app.editor.is_dirty(),
-        "nothing was saved, so nothing is clean"
-    );
+    assert!(title.contains("ping"), "the confirm names the file that moved: {title:?}");
+    assert!(choices.iter().any(|(c, _, _)| *c == 'r'), "a file that still exists can be reloaded");
+    assert!(app.editor.is_dirty(), "nothing was saved, so nothing is clean");
 }
 
 #[test]
@@ -26780,24 +23491,16 @@ fn saving_after_renaming_the_open_request_never_asks() {
         .unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::OpenRequest("main/ping".into()));
-    app.update(Action::RenameRequest {
-        from: "main/ping".into(),
-        to: "pong".into(),
-    });
+    app.update(Action::RenameRequest { from: "main/ping".into(), to: "pong".into() });
     assert_eq!(app.editor.slug.as_deref(), Some("main/pong"));
 
     dirty_the_editor(&mut app);
     let mine = app.editor.url.text().to_string();
     app.handle_key(ctrl('s'));
 
-    assert!(
-        app.modals.is_empty(),
-        "the app's own rename is not an outside edit"
-    );
+    assert!(app.modals.is_empty(), "the app's own rename is not an outside edit");
     assert_eq!(
-        postui_core::fixtures::load_request(app.proj().root(), "main/pong")
-            .unwrap()
-            .url,
+        postui_core::fixtures::load_request(app.proj().root(), "main/pong").unwrap().url,
         mine
     );
 }
@@ -26863,10 +23566,7 @@ fn saving_a_slug_the_project_no_longer_holds_re_seeds_before_deciding() {
 
     dirty_the_editor(&mut app);
     app.handle_key(ctrl('s'));
-    assert!(
-        app.modals.is_empty(),
-        "the file had not moved, so no question"
-    );
+    assert!(app.modals.is_empty(), "the file had not moved, so no question");
     assert!(
         app.proj().held_request("main/ping").is_some(),
         "the save re-seeded the held entry rather than writing blind"
@@ -26886,10 +23586,7 @@ fn saving_a_slug_the_project_no_longer_holds_re_seeds_before_deciding() {
         matches!(app.modals.top(), Some(Modal::Confirm { .. })),
         "the drift check is live again"
     );
-    assert_eq!(
-        on_disk_ping_url(&app),
-        "https://x/ping-edited-outside-the-app"
-    );
+    assert_eq!(on_disk_ping_url(&app), "https://x/ping-edited-outside-the-app");
 }
 
 #[test]
@@ -26909,15 +23606,9 @@ fn saving_a_slug_that_is_neither_held_nor_readable_toasts_and_fails_the_gate() {
 
     app.update(Action::Quit);
     press(&mut app, 's');
+    assert!(!app.should_quit, "a save that could not even be checked stops the quit");
     assert!(
-        !app.should_quit,
-        "a save that could not even be checked stops the quit"
-    );
-    assert!(
-        app.toasts
-            .messages()
-            .iter()
-            .any(|m| m.contains("main/ping")),
+        app.toasts.messages().iter().any(|m| m.contains("main/ping")),
         "the real error is reported: {:?}",
         app.toasts.messages()
     );
@@ -26931,10 +23622,7 @@ fn undo_of_a_move_all_does_not_launder_an_outside_edit_into_a_clean_save() {
     // that edit, must still be told before it overwrites it.
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
-    app.update(Action::MoveAllRequests {
-        from: "main".into(),
-        to: "auth".into(),
-    });
+    app.update(Action::MoveAllRequests { from: "main".into(), to: "auth".into() });
     assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
     postui_core::fixtures::save_request(
         dir.path(),
@@ -26953,9 +23641,7 @@ fn undo_of_a_move_all_does_not_launder_an_outside_edit_into_a_clean_save() {
         "the outside edit the undo carried back is still unseen by the editor"
     );
     assert_eq!(
-        postui_core::fixtures::load_request(dir.path(), "main/alpha")
-            .unwrap()
-            .url,
+        postui_core::fixtures::load_request(dir.path(), "main/alpha").unwrap().url,
         "https://x/edited-outside-the-app",
         "and nothing was written"
     );
@@ -26965,25 +23651,14 @@ fn undo_of_a_move_all_does_not_launder_an_outside_edit_into_a_clean_save() {
 fn undo_of_a_move_all_without_an_outside_edit_saves_without_asking() {
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
-    app.update(Action::MoveAllRequests {
-        from: "main".into(),
-        to: "auth".into(),
-    });
+    app.update(Action::MoveAllRequests { from: "main".into(), to: "auth".into() });
     app.update(Action::Undo);
 
     dirty_the_editor(&mut app);
     let mine = app.editor.url.text().to_string();
     app.handle_key(ctrl('s'));
-    assert!(
-        app.modals.is_empty(),
-        "the app's own replay is not an outside edit"
-    );
-    assert_eq!(
-        postui_core::fixtures::load_request(dir.path(), "main/alpha")
-            .unwrap()
-            .url,
-        mine
-    );
+    assert!(app.modals.is_empty(), "the app's own replay is not an outside edit");
+    assert_eq!(postui_core::fixtures::load_request(dir.path(), "main/alpha").unwrap().url, mine);
 }
 
 // ---------------------------------------------------------------------------
@@ -27014,10 +23689,7 @@ fn promote_refuses_when_the_open_request_changed_outside_the_app() {
     }));
 
     assert!(
-        app.toasts
-            .messages()
-            .iter()
-            .any(|m| m.contains("changed outside the app")),
+        app.toasts.messages().iter().any(|m| m.contains("changed outside the app")),
         "{:?}",
         app.toasts.messages()
     );
@@ -27028,9 +23700,7 @@ fn promote_refuses_when_the_open_request_changed_outside_the_app() {
         "the variable half never ran"
     );
     assert_eq!(
-        postui_core::fixtures::load_request(dir.path(), "main/ping")
-            .unwrap()
-            .url,
+        postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap().url,
         "https://x/ping-edited-outside-the-app",
         "and the request file is untouched"
     );
@@ -27069,17 +23739,12 @@ fn extract_to_request_over_an_outside_edit_asks_instead_of_overwriting() {
         "the ordinary drift confirm handles it"
     );
     assert_eq!(
-        postui_core::fixtures::load_request(dir.path(), "main/ping")
-            .unwrap()
-            .url,
+        postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap().url,
         "https://x/ping-edited-outside-the-app",
         "nothing is written until the user chooses"
     );
     assert!(
-        !app.toasts
-            .messages()
-            .iter()
-            .any(|m| m.starts_with("extracted to")),
+        !app.toasts.messages().iter().any(|m| m.starts_with("extracted to")),
         "nothing was written, so nothing is claimed: {:?}",
         app.toasts.messages()
     );
@@ -27098,10 +23763,7 @@ fn a_reload_from_disk_is_its_own_undo_step_and_says_so() {
     app.capture_undo();
     app.handle_key(ctrl('s'));
     press(&mut app, 'r');
-    assert_eq!(
-        app.editor.url.text(),
-        "https://x/ping-edited-outside-the-app"
-    );
+    assert_eq!(app.editor.url.text(), "https://x/ping-edited-outside-the-app");
     assert!(
         rendered_text(&mut app).contains("^Z undoes"),
         "the toast advertises the escape hatch, as Discard's does"
@@ -27156,9 +23818,7 @@ fn reload_from_disk_applies_a_theme_named_in_config_toml() {
     assert_eq!(app.theme_name, "gruvbox-dark");
     assert_eq!(app.ui_settings.theme, "gruvbox-dark");
     assert!(
-        app.toasts
-            .messages()
-            .contains(&"Reloaded project and config"),
+        app.toasts.messages().contains(&"Reloaded project and config"),
         "{:?}",
         app.toasts.messages()
     );
@@ -27174,12 +23834,7 @@ fn reload_from_disk_warns_and_falls_back_on_an_unknown_theme_name() {
 
     assert_eq!(app.theme_name, "terminal");
     let warnings = warning_toasts(&app);
-    assert!(
-        warnings
-            .iter()
-            .any(|m| m.contains("unknown theme \"nope\"")),
-        "{warnings:?}"
-    );
+    assert!(warnings.iter().any(|m| m.contains("unknown theme \"nope\"")), "{warnings:?}");
 }
 
 #[test]
@@ -27203,10 +23858,7 @@ fn reload_from_disk_keeps_the_current_settings_when_config_toml_will_not_parse()
         "an unparsable config.toml never empties the registry"
     );
     let warnings = warning_toasts(&app);
-    let named: Vec<_> = warnings
-        .iter()
-        .filter(|m| m.contains("config.toml"))
-        .collect();
+    let named: Vec<_> = warnings.iter().filter(|m| m.contains("config.toml")).collect();
     assert_eq!(named.len(), 1, "{warnings:?}");
 }
 
@@ -27225,14 +23877,8 @@ fn a_config_broken_after_startup_banners_and_disables_the_rows() {
     std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
     app.update(Action::ReloadFromDisk);
 
-    assert!(
-        app.config_error.is_some(),
-        "a reload that refuses the file must record why"
-    );
-    assert!(
-        !app.ui_settings_are_editable(),
-        "rows are disabled while writes would be refused"
-    );
+    assert!(app.config_error.is_some(), "a reload that refuses the file must record why");
+    assert!(!app.ui_settings_are_editable(), "rows are disabled while writes would be refused");
 }
 
 /// A broken config.toml disables the seven setting rows, but the
@@ -27252,9 +23898,7 @@ fn a_broken_config_leaves_the_way_out_live() {
     app.config = crate::config::Config::at(dir.path().to_path_buf());
     app.update(Action::ReloadFromDisk);
     assert!(app.config_error.is_some());
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Settings),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
 
     // Mouse: every setting row registers no hit at all -- nothing that
     // looks live and silently refuses a write.
@@ -27280,19 +23924,13 @@ fn a_broken_config_leaves_the_way_out_live() {
     assert!(app.hits.rect_of(&Hit::SettingsRow(config_row)).is_some());
     assert!(
         app.hits
-            .rect_of(&Hit::SettingsFile {
-                file: crate::action::ConfigFile::Config,
-                reset: false,
-            })
+            .rect_of(&Hit::SettingsFile { file: crate::action::ConfigFile::Config, reset: false })
             .is_some(),
         "Edit… is one of the two ways out"
     );
     assert!(
         app.hits
-            .rect_of(&Hit::SettingsFile {
-                file: crate::action::ConfigFile::Config,
-                reset: true,
-            })
+            .rect_of(&Hit::SettingsFile { file: crate::action::ConfigFile::Config, reset: true })
             .is_some(),
         "Reset is the other -- ForceResetConfigFile handles the unparseable case"
     );
@@ -27337,11 +23975,7 @@ fn a_reload_does_not_stomp_a_live_settings_edit() {
 
     app.update(Action::ReloadFromDisk);
 
-    assert_eq!(
-        app.settings.editing,
-        Some(SettingsField::AiCmd),
-        "the edit survives the reload"
-    );
+    assert_eq!(app.settings.editing, Some(SettingsField::AiCmd), "the edit survives the reload");
     assert_eq!(
         app.settings.field_text(),
         "my-half-typed-comm",
@@ -27359,11 +23993,7 @@ fn reload_from_disk_applies_a_new_keys_toml_end_to_end() {
     std::fs::write(dir.path().join("keys.toml"), "save = \"alt+shift+s\"\n").unwrap();
     // The rebound combo does nothing yet, and the default one still saves.
     let alt_shift_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT | KeyModifiers::SHIFT);
-    assert_eq!(
-        app.keymap
-            .lookup(&crate::keys::KeyCombo::from_event(&alt_shift_s)),
-        None
-    );
+    assert_eq!(app.keymap.lookup(&crate::keys::KeyCombo::from_event(&alt_shift_s)), None);
 
     app.update(Action::ReloadFromDisk);
 
@@ -27380,10 +24010,7 @@ fn reload_from_disk_applies_a_new_keys_toml_end_to_end() {
 
     app.handle_key(alt_shift_s);
 
-    assert!(
-        !app.editor.is_dirty(),
-        "the rebound combo saved the request"
-    );
+    assert!(!app.editor.is_dirty(), "the rebound combo saved the request");
 }
 
 /// alt+shift+r has to reach the reload from *every* screen, not just Main: the
@@ -27410,15 +24037,9 @@ fn alt_r_reloads_from_every_manage_tab() {
 
         app.handle_key(alt_shift('r'));
 
+        assert!(app.modals.is_empty(), "{tab:?}: alt+shift+r opened a modal instead of reloading");
         assert!(
-            app.modals.is_empty(),
-            "{tab:?}: alt+shift+r opened a modal instead of reloading"
-        );
-        assert!(
-            app.toasts
-                .messages()
-                .iter()
-                .any(|m| m.starts_with("Reloaded")),
+            app.toasts.messages().iter().any(|m| m.starts_with("Reloaded")),
             "{tab:?}: {:?}",
             app.toasts.messages()
         );
@@ -27433,11 +24054,8 @@ fn alt_r_reloads_from_every_manage_tab() {
 fn reload_from_disk_keeps_the_open_project_registered() {
     let mut app = App::new_for_test();
     let dir = config_at_tempdir(&mut app);
-    std::fs::write(
-        dir.path().join("config.toml"),
-        "[projects]\nknown = [\"/tmp/elsewhere\"]\n",
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("config.toml"), "[projects]\nknown = [\"/tmp/elsewhere\"]\n")
+        .unwrap();
     let root = app.proj().root().to_path_buf();
 
     app.update(Action::ReloadFromDisk);
@@ -27449,9 +24067,7 @@ fn reload_from_disk_keeps_the_open_project_registered() {
     );
     assert_eq!(app.registry.last.as_ref(), Some(&root));
     assert!(
-        app.registry
-            .known
-            .contains(&PathBuf::from("/tmp/elsewhere")),
+        app.registry.known.contains(&PathBuf::from("/tmp/elsewhere")),
         "and the file's own entries landed"
     );
 }
@@ -27482,10 +24098,7 @@ fn reload_from_disk_retries_a_project_that_refused_to_open() {
     // The open path already said "Switched to …"; saying it twice, in two
     // different wordings, is noise.
     assert!(
-        !app.toasts
-            .messages()
-            .iter()
-            .any(|m| m.starts_with("Reloaded")),
+        !app.toasts.messages().iter().any(|m| m.starts_with("Reloaded")),
         "{:?}",
         app.toasts.messages()
     );
@@ -27535,9 +24148,7 @@ fn reload_from_disk_does_not_claim_a_project_when_none_is_open() {
     app.update(Action::ReloadFromDisk);
 
     assert!(
-        app.toasts
-            .messages()
-            .contains(&"Reloaded config (no project is open)"),
+        app.toasts.messages().contains(&"Reloaded config (no project is open)"),
         "{:?}",
         app.toasts.messages()
     );
@@ -27573,9 +24184,7 @@ fn reload_from_disk_never_blames_an_unparsable_config_toml_for_a_vanished_theme(
     assert_eq!(app.theme_name, "terminal");
     let warnings = warning_toasts(&app);
     assert!(
-        warnings
-            .iter()
-            .any(|m| m == "theme \"mine\" is no longer available; using terminal"),
+        warnings.iter().any(|m| m == "theme \"mine\" is no longer available; using terminal"),
         "{warnings:?}"
     );
     assert!(
@@ -27649,9 +24258,7 @@ fn reload_from_disk_resyncs_the_variable_manager_while_manage_is_open() {
     assert!(
         app.varmanager
             .left_rows
-            .contains(&crate::components::varmanager::VmRow::Var(
-                "added_later".into()
-            )),
+            .contains(&crate::components::varmanager::VmRow::Var("added_later".into())),
         "{:?}",
         app.varmanager.left_rows
     );
@@ -27673,9 +24280,7 @@ fn the_header_reload_chip_runs_the_reload() {
     click_hit(&mut app, Hit::FooterChip(Action::ReloadFromDisk));
 
     assert!(
-        app.toasts
-            .messages()
-            .contains(&"Reloaded project and config"),
+        app.toasts.messages().contains(&"Reloaded project and config"),
         "{:?}",
         app.toasts.messages()
     );
@@ -27702,12 +24307,7 @@ fn reload_from_disk_reconfigures_the_clipboard_and_anims_without_replacing_them(
     // An animation part-way through its transition.
     let t0 = std::time::Instant::now();
     app.anims.snap(crate::anim::AnimKey::Hover, 0.0);
-    app.anims.retarget(
-        crate::anim::AnimKey::Hover,
-        1.0,
-        std::time::Duration::from_millis(100),
-        t0,
-    );
+    app.anims.retarget(crate::anim::AnimKey::Hover, 1.0, std::time::Duration::from_millis(100), t0);
 
     app.update(Action::ReloadFromDisk);
 
@@ -27723,10 +24323,7 @@ fn reload_from_disk_reconfigures_the_clipboard_and_anims_without_replacing_them(
         "the clipboard was reconfigured in place, not rebuilt"
     );
     assert_eq!(
-        app.anims.value(
-            crate::anim::AnimKey::Hover,
-            t0 + std::time::Duration::from_millis(100)
-        ),
+        app.anims.value(crate::anim::AnimKey::Hover, t0 + std::time::Duration::from_millis(100)),
         Some(1.0),
         "the in-flight animation survived the reload"
     );
@@ -27742,9 +24339,7 @@ fn rendered_row(app: &mut App, w: u16, y: u16) -> String {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
     let buf = terminal.backend().buffer();
-    (0..w)
-        .map(|x| buf[(x, y)].symbol().to_string())
-        .collect::<String>()
+    (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()
 }
 
 const FOOTER_ROW: u16 = 40 - 2; // content row of the 3-row footer
@@ -27774,15 +24369,10 @@ fn hovering_a_button_shows_its_hint_between_the_chip_clusters() {
     let mut app = App::new_for_test();
     hover_manage(&mut app);
     let row = rendered_row(&mut app, 160, FOOTER_ROW);
-    let at = row
-        .find(MANAGE_HINT)
-        .unwrap_or_else(|| panic!("hint shown: {row:?}"));
+    let at = row.find(MANAGE_HINT).unwrap_or_else(|| panic!("hint shown: {row:?}"));
     let chips_end = row.find("reorder").unwrap() + "reorder".len();
     let palette = row.find("^P").unwrap();
-    assert!(
-        chips_end < at && at + MANAGE_HINT.len() < palette,
-        "{row:?}"
-    );
+    assert!(chips_end < at && at + MANAGE_HINT.len() < palette, "{row:?}");
 
     let pane = app.hits.rect_of(&Hit::Pane(PaneId::Sidebar)).unwrap();
     app.handle_mouse(moved(pane.x + 2, pane.y + 6));
@@ -27808,10 +24398,7 @@ fn footer_hint_ellipsizes_above_the_lower_bound_and_is_left_out_below_it() {
     let row = rendered_row(&mut app, 120, FOOTER_ROW);
     assert!(!row.contains("Switch to"), "hint left out: {row:?}");
     assert!(row.contains("rename"), "chips keep the row: {row:?}");
-    assert!(
-        row.contains("^P") && row.contains("quit"),
-        "right pair stays: {row:?}"
-    );
+    assert!(row.contains("^P") && row.contains("quit"), "right pair stays: {row:?}");
 }
 
 /// The response toolbar acts on the tab that is up, so its hints follow
@@ -27838,29 +24425,14 @@ fn the_response_toolbar_hints_follow_the_open_tab() {
     );
     render_once(&mut app);
     let hint = |app: &App, hit: &Hit| crate::hint::hint_for(hit, &app.keymap, &app.hint_ctx(hit));
-    assert_eq!(
-        hint(&app, &Hit::CopyBodyButton).unwrap(),
-        "Copy the response body"
-    );
+    assert_eq!(hint(&app, &Hit::CopyBodyButton).unwrap(), "Copy the response body");
 
     app.update(crate::action::Action::ResponseViewMode(ViewMode::Headers));
     render_once(&mut app);
-    assert_eq!(
-        hint(&app, &Hit::CopyBodyButton).unwrap(),
-        "Copy the response headers"
-    );
-    assert_eq!(
-        hint(&app, &Hit::SaveBodyButton).unwrap(),
-        "Save the headers to a file"
-    );
-    assert_eq!(
-        hint(&app, &Hit::ResponseEditorButton).unwrap(),
-        "Open the headers in your editor"
-    );
-    assert_eq!(
-        hint(&app, &Hit::ResponseSearchButton).unwrap(),
-        "Search the response headers"
-    );
+    assert_eq!(hint(&app, &Hit::CopyBodyButton).unwrap(), "Copy the response headers");
+    assert_eq!(hint(&app, &Hit::SaveBodyButton).unwrap(), "Save the headers to a file");
+    assert_eq!(hint(&app, &Hit::ResponseEditorButton).unwrap(), "Open the headers in your editor");
+    assert_eq!(hint(&app, &Hit::ResponseSearchButton).unwrap(), "Search the response headers");
 }
 
 /// `hover_hints = false` switches them off wholesale, leaving the chip
@@ -27899,16 +24471,10 @@ fn an_ellipsized_hint_keeps_a_gap_before_the_commands_chip() {
 fn a_hovered_footer_chip_keeps_the_chip_row() {
     let mut app = App::new_for_test();
     render_once(&mut app);
-    let rename = app
-        .hits
-        .rect_of(&Hit::FooterChip(Action::PromptRenameRequest))
-        .unwrap();
+    let rename = app.hits.rect_of(&Hit::FooterChip(Action::PromptRenameRequest)).unwrap();
     app.handle_mouse(moved(rename.x, rename.y));
     let row = rendered_row(&mut app, 160, FOOTER_ROW);
-    assert!(
-        row.contains("rename") && row.contains("reorder"),
-        "chips stay: {row:?}"
-    );
+    assert!(row.contains("rename") && row.contains("reorder"), "chips stay: {row:?}");
     assert!(row.contains("Rename the"), "hint in the middle: {row:?}");
 
     let row = rendered_row(&mut app, 120, FOOTER_ROW);
@@ -27916,10 +24482,7 @@ fn a_hovered_footer_chip_keeps_the_chip_row() {
         row.contains("rename") && !row.contains("Rename the"),
         "no room, so no hint — but the chips are untouched: {row:?}"
     );
-    assert!(
-        !app.resync_hover(),
-        "the hovered chip is still under the pointer"
-    );
+    assert!(!app.resync_hover(), "the hovered chip is still under the pointer");
 }
 
 /// A footer chip's own hint says what the action does (the chip only
@@ -27939,10 +24502,7 @@ fn footer_chip_hints_describe_the_action() {
     app.editor.sub_focus = SubFocus::Content;
     app.editor.table.selected = Some(0);
     render_once(&mut app);
-    let del = app
-        .hits
-        .rect_of(&Hit::FooterChip(Action::DeleteTableRow(0)))
-        .unwrap();
+    let del = app.hits.rect_of(&Hit::FooterChip(Action::DeleteTableRow(0))).unwrap();
     app.handle_mouse(moved(del.x, del.y));
     let row = rendered_row(&mut app, 160, FOOTER_ROW);
     assert!(row.contains("Delete this row"), "{row:?}");
@@ -27964,15 +24524,10 @@ fn a_broken_config_blocks_startup_until_answered() {
     app.config_error = loaded.config_error;
     app.apply_startup_config_gate();
 
-    assert!(
-        app.modals.top().is_some(),
-        "a broken config must raise a blocking modal"
-    );
+    assert!(app.modals.top().is_some(), "a broken config must raise a blocking modal");
     // Continue-without-saving is the only path that reaches a session,
     // and it is honest about what it costs.
-    app.update(Action::ConfigStartupChoice(
-        crate::action::ConfigStartupChoice::ContinueUnsaved,
-    ));
+    app.update(Action::ConfigStartupChoice(crate::action::ConfigStartupChoice::ContinueUnsaved));
     assert!(app.modals.top().is_none(), "the choice dismisses the modal");
 }
 
@@ -28021,13 +24576,8 @@ fn escaping_the_reset_confirm_puts_the_startup_gate_back() {
     app.config_error = loaded.config_error;
     app.apply_startup_config_gate();
 
-    app.update(Action::ConfigStartupChoice(
-        crate::action::ConfigStartupChoice::Reset,
-    ));
-    assert!(
-        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
-        "Reset asks first"
-    );
+    app.update(Action::ConfigStartupChoice(crate::action::ConfigStartupChoice::Reset));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "Reset asks first");
 
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(
@@ -28036,9 +24586,7 @@ fn escaping_the_reset_confirm_puts_the_startup_gate_back() {
     );
 
     // And the answer that does resolve it still works from there.
-    app.update(Action::ConfigStartupChoice(
-        crate::action::ConfigStartupChoice::ContinueUnsaved,
-    ));
+    app.update(Action::ConfigStartupChoice(crate::action::ConfigStartupChoice::ContinueUnsaved));
     assert!(app.modals.top().is_none());
 }
 
@@ -28058,13 +24606,8 @@ fn an_editor_that_never_ran_puts_the_startup_gate_back() {
     app.config_error = loaded.config_error;
     app.apply_startup_config_gate();
 
-    app.update(Action::ConfigStartupChoice(
-        crate::action::ConfigStartupChoice::Edit,
-    ));
-    assert!(
-        app.modals.top().is_none(),
-        "the editor is about to take the screen, so nothing is up"
-    );
+    app.update(Action::ConfigStartupChoice(crate::action::ConfigStartupChoice::Edit));
+    assert!(app.modals.top().is_none(), "the editor is about to take the screen, so nothing is up");
     assert!(
         app.pending_terminal_action.take().is_some(),
         "the main loop was handed the editor run"
@@ -28097,18 +24640,10 @@ fn the_startup_config_modal_ignores_click_away() {
     app.apply_startup_config_gate();
 
     click_hit(&mut app, Hit::ModalOutside);
-    assert!(
-        app.modals.top().is_some(),
-        "click-away must not dismiss the startup config modal"
-    );
+    assert!(app.modals.top().is_some(), "click-away must not dismiss the startup config modal");
 
-    app.update(Action::ConfigStartupChoice(
-        crate::action::ConfigStartupChoice::ContinueUnsaved,
-    ));
-    assert!(
-        app.modals.top().is_none(),
-        "an actual answer still closes it"
-    );
+    app.update(Action::ConfigStartupChoice(crate::action::ConfigStartupChoice::ContinueUnsaved));
+    assert!(app.modals.top().is_none(), "an actual answer still closes it");
 }
 
 /// Edit… hands the editor a copy. Whatever happens to that copy, the
@@ -28129,19 +24664,13 @@ fn an_invalid_edit_leaves_the_live_config_alone_and_offers_to_resume() {
         error: "expected `]`".into(),
     });
 
-    assert!(
-        app.modals.top().is_some(),
-        "invalid text must raise the modal"
-    );
+    assert!(app.modals.top().is_some(), "invalid text must raise the modal");
     assert_eq!(
         std::fs::read_to_string(&live).unwrap(),
         "animations = false\n",
         "the live file must not be touched by an invalid edit"
     );
-    assert!(
-        temp.exists(),
-        "the temp file survives so editing can resume"
-    );
+    assert!(temp.exists(), "the temp file survives so editing can resume");
 
     app.update(Action::ConfigEditDiscard { path: temp.clone() });
     assert!(!temp.exists(), "discard removes the temp file");
@@ -28168,20 +24697,11 @@ fn the_config_edit_invalid_modal_ignores_click_away() {
     });
 
     click_hit(&mut app, Hit::ModalOutside);
-    assert!(
-        app.modals.top().is_some(),
-        "click-away must not dismiss the invalid-edit modal"
-    );
-    assert!(
-        temp.exists(),
-        "click-away must not drop the temp file either"
-    );
+    assert!(app.modals.top().is_some(), "click-away must not dismiss the invalid-edit modal");
+    assert!(temp.exists(), "click-away must not drop the temp file either");
 
     app.update(Action::ConfigEditDiscard { path: temp.clone() });
-    assert!(
-        app.modals.top().is_none(),
-        "an actual answer still closes it"
-    );
+    assert!(app.modals.top().is_none(), "an actual answer still closes it");
     assert!(!temp.exists(), "discard removes the temp file");
 }
 
@@ -28199,15 +24719,9 @@ fn config_edit_discard_only_answers_its_own_modal() {
         !app.update(Action::ConfigEditDiscard { path: temp.clone() }),
         "nothing to answer -> no-op"
     );
-    assert!(
-        temp.exists(),
-        "a stray discard must not remove an unrelated temp file"
-    );
+    assert!(temp.exists(), "a stray discard must not remove an unrelated temp file");
 
-    app.modals.push(Modal::Message {
-        title: "Unrelated".into(),
-        body: "some other modal".into(),
-    });
+    app.modals.push(Modal::Message { title: "Unrelated".into(), body: "some other modal".into() });
     assert!(
         !app.update(Action::ConfigEditDiscard { path: temp.clone() }),
         "the top modal isn't ConfigEditInvalid -> no-op"
@@ -28234,10 +24748,7 @@ fn a_write_failure_is_reported_not_swallowed() {
 
     let error = app
         .validate_and_write_config_edit(crate::action::ConfigFile::Config, "animations = true\n");
-    assert!(
-        error.is_some(),
-        "a write failure must be reported, not silently swallowed"
-    );
+    assert!(error.is_some(), "a write failure must be reported, not silently swallowed");
 }
 
 /// The Settings tab is fully operable from the keyboard: the cursor
@@ -28276,10 +24787,7 @@ fn a_refused_settings_write_toasts_and_leaves_the_value_alone() {
     app.config = crate::config::Config::at(dir.path().to_path_buf());
     app.ui_settings.hover_hints = true;
 
-    app.update(Action::SetUiFlag {
-        key: "hover_hints",
-        value: false,
-    });
+    app.update(Action::SetUiFlag { key: "hover_hints", value: false });
 
     assert!(
         app.ui_settings.hover_hints,
@@ -28330,9 +24838,7 @@ fn a_bad_osc52_limit_is_rejected_and_the_stored_value_stands() {
 fn esc_on_a_rejected_settings_value_keeps_the_edit_open_like_enter() {
     use crate::components::settings::SettingsField;
     let mut app = App::new_for_test();
-    app.update(Action::OpenManage {
-        tab: Some(crate::components::manage::ManageTab::Settings),
-    });
+    app.update(Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Settings) });
     app.ui_settings.osc52_limit = 65536;
     app.settings.begin_edit(SettingsField::Osc52Limit, "abc");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -28357,13 +24863,10 @@ fn esc_on_a_rejected_settings_value_keeps_the_edit_open_like_enter() {
 #[test]
 fn ctrl_z_in_a_settings_field_undoes_the_typing() {
     let mut app = App::new_for_test();
-    app.update(Action::OpenManage {
-        tab: Some(crate::components::manage::ManageTab::Settings),
-    });
+    app.update(Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Settings) });
     // Open the ai_cmd row's edit directly, the way
     // `a_bad_osc52_limit_is_rejected_and_the_stored_value_stands` does.
-    app.settings
-        .begin_edit(crate::components::settings::SettingsField::AiCmd, "");
+    app.settings.begin_edit(crate::components::settings::SettingsField::AiCmd, "");
     type_chars(&mut app, "xyz");
     app.handle_key(ctrl('z'));
     assert_eq!(app.settings.field_text(), "", "the run came off");
@@ -28375,11 +24878,8 @@ fn ctrl_z_in_a_settings_field_undoes_the_typing() {
 #[test]
 fn esc_in_a_settings_field_keeps_the_text() {
     let mut app = App::new_for_test();
-    app.update(Action::OpenManage {
-        tab: Some(crate::components::manage::ManageTab::Settings),
-    });
-    app.settings
-        .begin_edit(crate::components::settings::SettingsField::AiCmd, "");
+    app.update(Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Settings) });
+    app.settings.begin_edit(crate::components::settings::SettingsField::AiCmd, "");
     type_chars(&mut app, "my-ai --go");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.settings.editing.is_none(), "Esc closed the field");
@@ -28409,10 +24909,7 @@ fn settings_vim_letters_are_the_routers_not_the_arrows_profiles() {
         (plain('g'), named(KeyCode::Home)),
         // Shaped as a terminal sends it: crossterm sets SHIFT on every
         // uppercase char.
-        (
-            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
-            named(KeyCode::End),
-        ),
+        (KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT), named(KeyCode::End)),
     ];
     for (letter, key) in pairs {
         let mut arrows = fresh(KeyProfile::Arrows);
@@ -28475,15 +24972,9 @@ fn a_click_during_a_refused_settings_edit_is_swallowed() {
     use crate::components::manage::ManageTab;
     use crate::components::settings::{SettingsField, SettingsRow, SettingsTab};
     let mut app = App::new_for_test();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Settings),
-    });
-    let row_of = |field| {
-        SettingsTab::rows()
-            .iter()
-            .position(|r| *r == SettingsRow::Setting(field))
-            .unwrap()
-    };
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    let row_of =
+        |field| SettingsTab::rows().iter().position(|r| *r == SettingsRow::Setting(field)).unwrap();
     let osc_row = row_of(SettingsField::Osc52Limit);
     app.settings.cursor = osc_row;
     app.settings.begin_edit(SettingsField::Osc52Limit, "abc");
@@ -28518,13 +25009,8 @@ fn clicking_off_a_settings_field_commits_it_and_drops_the_cursor() {
     use crate::components::manage::ManageTab;
     use crate::components::settings::SettingsField;
     let mut app = App::new_for_test();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Settings),
-    });
-    assert!(
-        app.settings.focused,
-        "opening the tab hands it the cursor to begin with"
-    );
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    assert!(app.settings.focused, "opening the tab hands it the cursor to begin with");
     app.settings.begin_edit(SettingsField::AiCmd, "llm --pipe");
 
     // A point on the tab that registers no hit at all -- the pane's own
@@ -28538,10 +25024,7 @@ fn clicking_off_a_settings_field_commits_it_and_drops_the_cursor() {
     app.handle_mouse(left_down(x, y));
 
     assert!(app.settings.editing.is_none(), "the edit ended");
-    assert_eq!(
-        app.ui_settings.ai_cmd, "llm --pipe",
-        "and committed rather than being thrown away"
-    );
+    assert_eq!(app.ui_settings.ai_cmd, "llm --pipe", "and committed rather than being thrown away");
     assert!(!app.settings.focused, "the cursor went with it");
 
     // The keyboard asks for it back, and the very next arrow moves
@@ -28557,15 +25040,10 @@ fn clicking_off_a_settings_field_commits_it_and_drops_the_cursor() {
 fn clicking_the_tab_strip_drops_the_settings_cursor_too() {
     use crate::components::manage::ManageTab;
     let mut app = App::new_for_test();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Settings),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
     assert!(app.settings.focused);
     click_hit(&mut app, Hit::ManageTab(0));
-    assert!(
-        !app.settings.focused,
-        "a click on the strip is a click away from the tab's controls"
-    );
+    assert!(!app.settings.focused, "a click on the strip is a click away from the tab's controls");
 }
 
 /// Clicking the well of the field already under edit leaves it exactly
@@ -28577,20 +25055,14 @@ fn clicking_the_live_field_does_not_commit_and_reopen_it() {
     use crate::components::manage::ManageTab;
     use crate::components::settings::SettingsField;
     let mut app = App::new_for_test();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Settings),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
     app.ui_settings.osc52_limit = 65536;
     app.settings.begin_edit(SettingsField::Osc52Limit, "abc");
 
     click_hit(&mut app, Hit::SettingsControl(SettingsField::Osc52Limit));
 
     assert_eq!(app.settings.editing, Some(SettingsField::Osc52Limit));
-    assert_eq!(
-        app.settings.field_text(),
-        "abc",
-        "the rejected text survives the click"
-    );
+    assert_eq!(app.settings.field_text(), "abc", "the rejected text survives the click");
     assert!(
         app.toasts.messages().is_empty(),
         "and nothing was committed, so nothing was refused: {:?}",
@@ -28604,19 +25076,12 @@ fn clicking_the_live_field_does_not_commit_and_reopen_it() {
 #[test]
 fn clearing_a_command_field_removes_the_key_rather_than_emptying_it() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(
-        dir.path().join("config.toml"),
-        "clipboard_cmd = \"pbcopy\"\n",
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("config.toml"), "clipboard_cmd = \"pbcopy\"\n").unwrap();
     let mut app = App::new_for_test();
     app.config = crate::config::Config::at(dir.path().to_path_buf());
     app.ui_settings.clipboard_cmd = Some("pbcopy".into());
 
-    app.update(Action::SetUiString {
-        key: "clipboard_cmd",
-        value: String::new(),
-    });
+    app.update(Action::SetUiString { key: "clipboard_cmd", value: String::new() });
 
     assert_eq!(app.ui_settings.clipboard_cmd, None);
     let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
@@ -28646,10 +25111,7 @@ fn resetting_a_parseable_config_confirm_promises_and_keeps_the_project_list() {
         body.contains("preserved"),
         "a parseable file promises the project list is kept: {body:?}"
     );
-    assert!(
-        !body.contains("lost"),
-        "must not also warn of loss: {body:?}"
-    );
+    assert!(!body.contains("lost"), "must not also warn of loss: {body:?}");
     let confirm = choices[0].2.clone();
     app.modals.pop();
     for action in confirm {
@@ -28686,10 +25148,7 @@ fn resetting_an_unparseable_config_confirm_warns_and_replaces_the_file() {
         body.contains("lost"),
         "an unparseable file warns the project list will be lost: {body:?}"
     );
-    assert!(
-        !body.contains("preserved"),
-        "must not also promise safety: {body:?}"
-    );
+    assert!(!body.contains("preserved"), "must not also promise safety: {body:?}");
     let confirm = choices[0].2.clone();
     app.modals.pop();
     for action in confirm {
@@ -28726,11 +25185,7 @@ fn resetting_keys_writes_the_seed_with_or_without_an_existing_file() {
 
     // Now reset again with the seed already present, plus an override,
     // to confirm the same outcome either way.
-    std::fs::write(
-        dir.path().join("keys.toml"),
-        format!("{seed}\nquit = \"ctrl+q\"\n"),
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("keys.toml"), format!("{seed}\nquit = \"ctrl+q\"\n")).unwrap();
     app.update(Action::ResetConfigFile(crate::action::ConfigFile::Keys));
     let Some(crate::components::modal::Modal::Confirm { choices, .. }) = app.modals.top() else {
         panic!("Reset raises a confirm");
@@ -28753,10 +25208,7 @@ fn ctrl_z_reverts_a_settings_flag_commit_and_redo_reapplies() {
     app.config = crate::config::Config::at(dir.path().to_path_buf());
     assert!(app.ui_settings.hover_hints, "default is on");
 
-    app.update(Action::SetUiFlag {
-        key: "hover_hints",
-        value: false,
-    });
+    app.update(Action::SetUiFlag { key: "hover_hints", value: false });
     assert!(!app.ui_settings.hover_hints);
 
     app.update(Action::Undo);
@@ -28774,10 +25226,7 @@ fn ctrl_z_reverts_a_settings_text_commit() {
     app.config = crate::config::Config::at(dir.path().to_path_buf());
     let before = app.ui_settings.ai_cmd.clone();
 
-    app.update(Action::SetUiString {
-        key: "ai_cmd",
-        value: "my-cmd".to_string(),
-    });
+    app.update(Action::SetUiString { key: "ai_cmd", value: "my-cmd".to_string() });
     assert_eq!(app.ui_settings.ai_cmd, "my-cmd");
 
     app.update(Action::Undo);
@@ -28793,17 +25242,11 @@ fn a_refused_settings_write_records_no_step() {
     let mut app = App::new_for_test();
     app.config = crate::config::Config::at(dir.path().to_path_buf());
 
-    app.update(Action::SetUiInt {
-        key: "osc52_limit",
-        value: usize::MAX,
-    });
+    app.update(Action::SetUiInt { key: "osc52_limit", value: usize::MAX });
     app.update(Action::Undo);
 
     assert!(
-        app.toasts
-            .messages()
-            .iter()
-            .any(|m| m.contains("Nothing to undo")),
+        app.toasts.messages().iter().any(|m| m.contains("Nothing to undo")),
         "nothing else changed, so there is nothing to undo: {:?}",
         app.toasts.messages()
     );
@@ -28826,10 +25269,7 @@ fn undo_closes_a_live_untouched_settings_field_before_popping_app_history() {
 
     // An earlier, already-recorded app-history step: the one ctrl+z
     // should reach.
-    app.update(Action::SetUiString {
-        key: "ai_cmd",
-        value: "my-cmd".to_string(),
-    });
+    app.update(Action::SetUiString { key: "ai_cmd", value: "my-cmd".to_string() });
     assert_eq!(app.ui_settings.ai_cmd, "my-cmd");
 
     // A live Settings field, open on the Settings tab, showing exactly
@@ -28862,19 +25302,13 @@ fn undo_of_a_config_reset_restores_the_previous_file() {
     app.config = crate::config::Config::at(dir.path().to_path_buf());
     std::fs::write(dir.path().join("config.toml"), "keymap = \"arrows\"\n").unwrap();
 
-    app.update(Action::SetUiFlag {
-        key: "animations",
-        value: false,
-    });
+    app.update(Action::SetUiFlag { key: "animations", value: false });
     app.update(Action::ForceResetConfigFile(crate::action::ConfigFile::Config));
     assert!(app.ui_settings.animations, "reset restored the default");
     assert!(app.modals.is_empty(), "a reset keeps the keymap, so nothing asks");
 
     app.update(Action::Undo);
-    assert!(
-        !app.ui_settings.animations,
-        "undo of the reset restored the pre-reset value"
-    );
+    assert!(!app.ui_settings.animations, "undo of the reset restored the pre-reset value");
 }
 
 /// A Files row is aimed with left/right and run with enter -- the same
@@ -28887,10 +25321,8 @@ fn a_files_row_runs_edit_or_reset_from_the_keyboard() {
     let mut app = App::new_for_test();
     app.screen = Screen::Manage;
     app.manage.tab = ManageTab::Settings;
-    let first_file = SettingsTab::rows()
-        .iter()
-        .position(|r| matches!(r, SettingsRow::File(_)))
-        .unwrap();
+    let first_file =
+        SettingsTab::rows().iter().position(|r| matches!(r, SettingsRow::File(_))).unwrap();
     app.settings.cursor = first_file;
 
     app.handle_key(KeyEvent::from(KeyCode::Enter));
@@ -28909,10 +25341,7 @@ fn a_files_row_runs_edit_or_reset_from_the_keyboard() {
         Some(crate::components::modal::Modal::Confirm { body, .. })
             if body.contains("config.toml") || body.contains("project list")
     );
-    assert!(
-        raised_confirm,
-        "Reset is the right button and raises the reset confirm"
-    );
+    assert!(raised_confirm, "Reset is the right button and raises the reset confirm");
 }
 
 /// A field edit left live behind a tab switch would go on owning ctrl+v
@@ -28931,10 +25360,7 @@ fn leaving_the_settings_tab_ends_a_live_field_edit() {
     // The Variables tab, with its own form field under edit -- the field
     // ctrl+v must reach.
     app.update(Action::SelectManageTab(ManageTab::Variables));
-    assert!(
-        app.settings.editing.is_none(),
-        "the edit does not survive the tab switch"
-    );
+    assert!(app.settings.editing.is_none(), "the edit does not survive the tab switch");
     app.varmanager.form.editing = Some(form_edit(VmField::Description, ""));
 
     app.paste_text("pasted");
@@ -28970,10 +25396,7 @@ fn a_stale_settings_edit_cannot_steal_the_caret_from_another_tab() {
 
     app.paste_text("pasted");
 
-    assert_eq!(
-        app.varmanager.form.editing.as_ref().unwrap().input.text(),
-        "pasted"
-    );
+    assert_eq!(app.varmanager.form.editing.as_ref().unwrap().input.text(), "pasted");
     assert_eq!(app.settings.field_text(), "hidden", "untouched");
     assert!(
         app.active_selection_text().is_none(),
@@ -28992,15 +25415,10 @@ fn right_click_in_a_live_settings_field_offers_copy_and_paste() {
     use crate::components::manage::ManageTab;
     use crate::components::settings::SettingsField;
     let mut app = App::new_for_test();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Settings),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
     app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
     render_once(&mut app);
-    let r = app
-        .hits
-        .rect_of(&Hit::SettingsControl(SettingsField::AiCmd))
-        .unwrap();
+    let r = app.hits.rect_of(&Hit::SettingsControl(SettingsField::AiCmd)).unwrap();
 
     app.handle_mouse(right_down(r.x + 1, r.y));
 
@@ -29036,25 +25454,14 @@ fn right_click_on_a_settings_row_not_under_edit_offers_no_text_menu() {
     use crate::components::manage::ManageTab;
     use crate::components::settings::SettingsField;
     let mut app = App::new_for_test();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Settings),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
     render_once(&mut app);
-    let r = app
-        .hits
-        .rect_of(&Hit::SettingsControl(SettingsField::AiCmd))
-        .unwrap();
+    let r = app.hits.rect_of(&Hit::SettingsControl(SettingsField::AiCmd)).unwrap();
 
     app.handle_mouse(right_down(r.x + 1, r.y));
 
-    assert!(
-        app.modals.top().is_none(),
-        "nothing is under edit, so there is no selection to copy"
-    );
-    assert!(
-        app.settings.editing.is_none(),
-        "and a right click does not open one"
-    );
+    assert!(app.modals.top().is_none(), "nothing is under edit, so there is no selection to copy");
+    assert!(app.settings.editing.is_none(), "and a right click does not open one");
 }
 
 /// A click inside a text box puts the caret where you clicked. The
@@ -29066,15 +25473,10 @@ fn a_click_in_a_settings_field_places_the_caret_where_it_landed() {
     use crate::components::settings::SettingsField;
     use crate::paint::WELL_PAD;
     let mut app = App::new_for_test();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Settings),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
     app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
     render_once(&mut app);
-    let r = app
-        .hits
-        .rect_of(&Hit::SettingsControl(SettingsField::AiCmd))
-        .unwrap();
+    let r = app.hits.rect_of(&Hit::SettingsControl(SettingsField::AiCmd)).unwrap();
 
     // Four columns into the well's content area.
     app.handle_mouse(left_down(r.x + WELL_PAD + 4, r.y));
@@ -29100,15 +25502,10 @@ fn dragging_in_a_settings_field_sweeps_a_selection() {
     use crate::components::settings::SettingsField;
     use crate::paint::WELL_PAD;
     let mut app = App::new_for_test();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Settings),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
     app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
     render_once(&mut app);
-    let r = app
-        .hits
-        .rect_of(&Hit::SettingsControl(SettingsField::AiCmd))
-        .unwrap();
+    let r = app.hits.rect_of(&Hit::SettingsControl(SettingsField::AiCmd)).unwrap();
 
     app.handle_mouse(left_down(r.x + WELL_PAD, r.y));
     app.handle_mouse(dragged(r.x + WELL_PAD + 6, r.y));
@@ -29131,15 +25528,10 @@ fn double_clicking_a_settings_field_selects_the_word() {
     use crate::components::settings::SettingsField;
     use crate::paint::WELL_PAD;
     let mut app = App::new_for_test();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Settings),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
     app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
     render_once(&mut app);
-    let r = app
-        .hits
-        .rect_of(&Hit::SettingsControl(SettingsField::AiCmd))
-        .unwrap();
+    let r = app.hits.rect_of(&Hit::SettingsControl(SettingsField::AiCmd)).unwrap();
 
     let x = r.x + WELL_PAD + 2;
     app.handle_mouse(left_down(x, r.y));
@@ -29211,9 +25603,7 @@ fn every_text_surface_under_edit_answers_the_mouse_identically() {
                 // variable selected: open the screen and pick one, the
                 // way `clicking_the_env_value_field_typing_and_clicking_away_writes_the_env_file`
                 // and its neighbours do.
-                app.update(Action::OpenManage {
-                    tab: Some(ManageTab::Variables),
-                });
+                app.update(Action::OpenManage { tab: Some(ManageTab::Variables) });
                 render_once(&mut app); // builds the left rows
                 app.varmanager.select_name("base");
                 let hit = Hit::VmFormField(VmField::Description);
@@ -29247,9 +25637,7 @@ fn every_text_surface_under_edit_answers_the_mouse_identically() {
             TextSurface::Settings,
             Box::new(|| {
                 let mut app = App::new_for_test();
-                app.update(Action::OpenManage {
-                    tab: Some(ManageTab::Settings),
-                });
+                app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
                 app.settings.begin_edit(SettingsField::AiCmd, "claude -p");
                 (app, Hit::SettingsControl(SettingsField::AiCmd))
             }),
@@ -29323,9 +25711,7 @@ fn clicking_a_checkbox_row_toggles_and_arms_no_text_sweep() {
     use crate::components::manage::ManageTab;
     use crate::components::settings::SettingsField;
     let mut app = App::new_for_test();
-    app.update(Action::OpenManage {
-        tab: Some(ManageTab::Settings),
-    });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
     let before = app.ui_settings.hover_hints;
     render_once(&mut app);
 
@@ -29378,10 +25764,8 @@ fn redo_after_delete_space_survives_a_project_with_no_local_state_yet() {
 #[test]
 fn redo_after_rename_space_survives_a_project_with_no_local_state_yet() {
     let (mut app, _dir) = spaced_app();
-    let bad = undo_redo_toasts(
-        &mut app,
-        Action::RenameSpace { from: "auth".into(), to: "Login".into() },
-    );
+    let bad =
+        undo_redo_toasts(&mut app, Action::RenameSpace { from: "auth".into(), to: "Login".into() });
     assert!(bad.is_empty(), "{bad:?}");
     assert_eq!(app.proj().spaces(), ["main", "login"]);
 }
@@ -29399,10 +25783,8 @@ fn redo_after_delete_inactive_env_survives_a_project_with_no_local_state_yet() {
 fn redo_after_rename_inactive_env_survives_a_project_with_no_local_state_yet() {
     let (mut app, _dir) = env_app();
     assert_eq!(app.proj().active_env(), Some("dev"));
-    let bad = undo_redo_toasts(
-        &mut app,
-        Action::RenameEnv { from: "qa".into(), to: "Prod".into() },
-    );
+    let bad =
+        undo_redo_toasts(&mut app, Action::RenameEnv { from: "qa".into(), to: "Prod".into() });
     assert!(bad.is_empty(), "{bad:?}");
     assert!(app.proj().environments().iter().any(|e| e == "prod"));
 }
@@ -29460,7 +25842,10 @@ fn undoing_an_environment_rename_names_the_environment() {
     app.update(Action::RenameEnv { from: "qa".into(), to: "Staging".into() });
     let shown = app.env_name("staging");
     app.update(Action::Undo);
-    assert_eq!(app.toasts.last_message(), Some(&format!("Undid change to environment {shown}")[..]));
+    assert_eq!(
+        app.toasts.last_message(),
+        Some(&format!("Undid change to environment {shown}")[..])
+    );
 }
 
 #[test]
@@ -29476,7 +25861,8 @@ fn undoing_a_space_rename_names_the_space() {
 fn undoing_the_migration_names_no_subject() {
     let dir = tempfile::tempdir().unwrap();
     postui_core::fixtures::init_project(dir.path(), Some("legacy")).unwrap();
-    std::fs::write(dir.path().join("variables.toml"), "[groups.user]\nfields = [\"user_id\"]\n").unwrap();
+    std::fs::write(dir.path().join("variables.toml"), "[groups.user]\nfields = [\"user_id\"]\n")
+        .unwrap();
     postui_core::fixtures::save_request(dir.path(), "main/users", &req("https://x/users")).unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
@@ -29490,7 +25876,12 @@ fn undoing_the_migration_names_no_subject() {
     }
     assert!(app.modals.is_empty(), "the offer is dismissed");
     app.update(Action::Undo);
-    assert_eq!(app.toasts.last_message(), Some("Undid project change"), "{:?}", app.toasts.messages());
+    assert_eq!(
+        app.toasts.last_message(),
+        Some("Undid project change"),
+        "{:?}",
+        app.toasts.messages()
+    );
 }
 
 #[test]
@@ -29529,7 +25920,10 @@ fn option_delete_undo_toast_names_the_option_and_env() {
     app.update(Action::Undo);
     assert_eq!(app.toasts.last_message(), Some(&format!("Restored option \"alice\" in {env}")[..]));
     app.update(Action::Redo);
-    assert_eq!(app.toasts.last_message(), Some(&format!("Deleted option \"alice\" in {env} again")[..]));
+    assert_eq!(
+        app.toasts.last_message(),
+        Some(&format!("Deleted option \"alice\" in {env} again")[..])
+    );
 }
 
 #[test]
@@ -29613,10 +26007,18 @@ fn undoing_a_delete_made_from_the_editor_puts_the_sidebar_cursor_back_where_it_w
     app.update(Action::ForceOpenRequest("main/beta".into()));
     app.sidebar.select_slug("main/alpha");
     app.update(Action::DeleteRequest("main/beta".into())); // the editor's own delete
-    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"), "the open row's neighbour");
+    assert_eq!(
+        app.sidebar.selected_slug().as_deref(),
+        Some("main/gamma"),
+        "the open row's neighbour"
+    );
     app.update(Action::Undo);
     assert_eq!(app.editor.slug.as_deref(), Some("main/beta"), "reopened");
-    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"), "rule 1: where it was, not the reopened row");
+    assert_eq!(
+        app.sidebar.selected_slug().as_deref(),
+        Some("main/alpha"),
+        "rule 1: where it was, not the reopened row"
+    );
 }
 
 #[test]
@@ -29628,7 +26030,11 @@ fn an_undo_that_reopens_a_request_leaves_an_unchanged_cursor_where_it_is() {
     app.update(Action::DeleteRequest("main/beta".into()));
     app.update(Action::Undo);
     assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
-    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/gamma"), "a part the op did not change is left alone");
+    assert_eq!(
+        app.sidebar.selected_slug().as_deref(),
+        Some("main/gamma"),
+        "a part the op did not change is left alone"
+    );
 }
 
 /// Sweep-7 bug (b).
@@ -29669,10 +26075,11 @@ fn undoing_a_cross_space_move_lands_the_cursor_on_the_moved_back_request() {
     app.update(Action::PromptMoveSelectedRequestToSpace);
     let Some(Modal::Chooser(c)) = app.modals.top() else { panic!("the move chooser") };
     assert!(
-        c.items.iter().any(|i| i
-            .actions
+        c.items
             .iter()
-            .any(|a| matches!(a, Action::MoveRequestToSpace { slug, .. } if slug == "main/alpha"))),
+            .any(|i| i.actions.iter().any(
+                |a| matches!(a, Action::MoveRequestToSpace { slug, .. } if slug == "main/alpha")
+            )),
         "the chooser moves the moved-back request"
     );
 }
@@ -29709,7 +26116,9 @@ fn folder_space_app() -> (App, tempfile::TempDir) {
     }
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     render_once(&mut app);
-    assert!(matches!(app.sidebar.rows.get(1), Some(Row::Folder { path, .. }) if path == "main/zsub"));
+    assert!(
+        matches!(app.sidebar.rows.get(1), Some(Row::Folder { path, .. }) if path == "main/zsub")
+    );
     (app, dir)
 }
 
@@ -29789,7 +26198,8 @@ fn a_failed_open_keeps_the_previous_request_held_so_drift_is_still_caught() {
 #[test]
 fn deleting_the_open_request_in_a_collapsed_folder_leaves_the_cursor_alone() {
     let (mut app, dir) = spaced_app();
-    postui_core::fixtures::save_request(dir.path(), "main/deep/inner", &req("https://x/9")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/deep/inner", &req("https://x/9"))
+        .unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/deep/inner".into()));
     app.proj_mut().set_expanded(Default::default());
@@ -29907,10 +26317,7 @@ fn a_profile_that_cannot_be_saved_applies_for_the_session() {
         "{:?}",
         app.toasts.messages()
     );
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("config.toml")).unwrap(),
-        "not = [toml"
-    );
+    assert_eq!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap(), "not = [toml");
 }
 
 /// Plan M1 Deviation 23 (keymap half): a reload that cannot parse
@@ -29942,7 +26349,8 @@ fn a_settings_reset_keeps_the_keyboard_profile() {
     use crate::config::KeyProfile;
     let mut app = App::new_for_test();
     let dir = config_at_tempdir(&mut app);
-    std::fs::write(dir.path().join("config.toml"), "keymap = \"vim\"\nanimations = false\n").unwrap();
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"vim\"\nanimations = false\n")
+        .unwrap();
     app.update(Action::ReloadFromDisk);
     assert_eq!(app.profile(), KeyProfile::Vim);
 
@@ -30008,10 +26416,7 @@ fn clicking_a_keyboard_answer_chooses_it() {
 fn the_keyboard_question_waits_for_other_modals() {
     let mut app = App::new_for_test();
     app.ui_settings.keymap = None;
-    app.push_modal(Modal::Message {
-        title: "t".into(),
-        body: "b".into(),
-    });
+    app.push_modal(Modal::Message { title: "t".into(), body: "b".into() });
     assert!(!app.raise_keymap_choice(), "another modal is up: ask later");
     app.modals.pop();
     assert!(app.raise_keymap_choice());
@@ -30158,12 +26563,17 @@ fn the_field_with_the_caret_is_named_once() {
         selected: 0,
         current: Some(0),
     }));
-    assert_eq!(url.field_caret(), FieldCaret::Parked(FieldId::Url), "a modal with no field parks it");
+    assert_eq!(
+        url.field_caret(),
+        FieldCaret::Parked(FieldId::Url),
+        "a modal with no field parks it"
+    );
 
     let mut cell = App::new_for_test();
     cell.focus = PaneId::Editor;
     cell.editor.sub_focus = SubFocus::Content;
-    cell.editor.table.editing = Some(CellEdit { row: 1, col: Col::Value, input: LineInput::new("x") });
+    cell.editor.table.editing =
+        Some(CellEdit { row: 1, col: Col::Value, input: LineInput::new("x") });
     assert_eq!(
         (cell.field_caret(), cell.field_open()),
         (FieldCaret::Live(FieldId::TableCell { row: 1, col: 1 }), true)
@@ -30181,9 +26591,16 @@ fn the_field_with_the_caret_is_named_once() {
         kind: crate::components::modal::PromptKind::NewRequest,
         revealed: false,
     });
-    assert_eq!((app.field_caret(), app.field_open()), (FieldCaret::Live(FieldId::ModalInput(0)), true));
+    assert_eq!(
+        (app.field_caret(), app.field_open()),
+        (FieldCaret::Live(FieldId::ModalInput(0)), true)
+    );
     app.modals.close_top_field();
-    assert_eq!((app.field_caret(), app.field_open()), (FieldCaret::None, true), "selected, no caret");
+    assert_eq!(
+        (app.field_caret(), app.field_open()),
+        (FieldCaret::None, true),
+        "selected, no caret"
+    );
     app.modals.pop();
 
     app.update(Action::OpenPalette);
@@ -30194,7 +26611,10 @@ fn the_field_with_the_caret_is_named_once() {
     app.settings.begin_edit(crate::components::settings::SettingsField::AiCmd, "x");
     assert_eq!(
         (app.field_caret(), app.field_open()),
-        (FieldCaret::Live(FieldId::Settings(crate::components::settings::SettingsField::AiCmd)), true)
+        (
+            FieldCaret::Live(FieldId::Settings(crate::components::settings::SettingsField::AiCmd)),
+            true
+        )
     );
 }
 
@@ -30267,8 +26687,10 @@ fn a_keys_toml_bare_letter_wins_in_vim_and_warns() {
         "quit = [\"ctrl+c\", \"x\"]\nsave = [\"ctrl+s\", \"j\"]\n",
     )
     .unwrap();
-    let (_cfg, loaded, warnings) =
-        crate::config::Config::load_from(crate::config::Config::at(dir.path().to_path_buf()), false);
+    let (_cfg, loaded, warnings) = crate::config::Config::load_from(
+        crate::config::Config::at(dir.path().to_path_buf()),
+        false,
+    );
     assert!(
         warnings.iter().any(|w| w == "keys.toml binds `j`, which shadows vim's `j`"),
         "{warnings:?}"
@@ -30353,7 +26775,11 @@ fn an_arrows_keys_toml_letter_beats_a_verb_row_and_a_default_binding_does_not() 
     assert_eq!(app.key_ctx(&plain('q')).user_bare, None, "a default binding is not an override");
     assert_eq!(app.key_ctx(&plain('y')).user_bare, None);
     app.handle_key(plain('y'));
-    assert_eq!(app.yank, crate::yank::Register::Request("main/alpha".into()), "no override: y yanks");
+    assert_eq!(
+        app.yank,
+        crate::yank::Register::Request("main/alpha".into()),
+        "no override: y yanks"
+    );
 
     let (mut app, _dir) = sidebar_test_app_three_flat_rows();
     app.use_profile(KeyProfile::Arrows);
@@ -30479,7 +26905,12 @@ fn a_reload_warns_of_keys_toml_letters_that_shadow_vim_keys() {
 
     std::fs::write(dir.path().join("config.toml"), "keymap = \"vim\n").unwrap();
     app.update(Action::ReloadFromDisk);
-    assert_eq!(count(&app, 'j'), 1, "the installed keys did not change: {:?}", app.toasts.messages());
+    assert_eq!(
+        count(&app, 'j'),
+        1,
+        "the installed keys did not change: {:?}",
+        app.toasts.messages()
+    );
 
     std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"k\"]\n").unwrap();
     app.update(Action::ReloadFromDisk);
@@ -30572,16 +27003,12 @@ fn repeat_cap_on_manage_and_variables_surfaces_is_row_based() {
 
     // `base_url` (not secret, qa active): Description, Default, the
     // Secret toggle and the env value.
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
     app.varmanager.focus = VmFocus::Form;
     assert_eq!(app.surface(), Surface::VarForm);
     assert_eq!(app.repeat_cap(Surface::VarForm), 4);
     // `api_key` is a secret: no Default row.
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("api_key".into())
-    });
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("api_key".into()));
     app.varmanager.focus = VmFocus::Form;
     assert_eq!(app.repeat_cap(Surface::VarForm), 3);
 }
@@ -30635,12 +27062,26 @@ fn footer_keycaps_follow_the_profile() {
     app.focus = PaneId::Sidebar;
     assert_eq!(footer_chip_text(&mut app, Action::OpenPalette).as_deref(), Some("^P commands"));
     assert_eq!(footer_chip_text(&mut app, Action::PromptNewRequest).as_deref(), Some("a new"));
-    assert_eq!(footer_chip_text(&mut app, Action::DeleteSelectedRequest).as_deref(), Some("d delete"));
+    assert_eq!(
+        footer_chip_text(&mut app, Action::DeleteSelectedRequest).as_deref(),
+        Some("d delete")
+    );
     assert_eq!(footer_chip_text(&mut app, Action::Quit).as_deref(), Some("q quit"));
     app.use_profile(KeyProfile::Vim);
-    assert_eq!(footer_chip_text(&mut app, Action::OpenExPalette).as_deref(), Some(": commands"), "a click opens the line it spells");
-    assert_eq!(footer_chip_text(&mut app, Action::PromptNewRequest).as_deref(), Some("a new"), "a shared letter");
-    assert_eq!(footer_chip_text(&mut app, Action::DeleteSelectedRequest).as_deref(), Some("dd delete"));
+    assert_eq!(
+        footer_chip_text(&mut app, Action::OpenExPalette).as_deref(),
+        Some(": commands"),
+        "a click opens the line it spells"
+    );
+    assert_eq!(
+        footer_chip_text(&mut app, Action::PromptNewRequest).as_deref(),
+        Some("a new"),
+        "a shared letter"
+    );
+    assert_eq!(
+        footer_chip_text(&mut app, Action::DeleteSelectedRequest).as_deref(),
+        Some("dd delete")
+    );
     assert_eq!(
         footer_chip_text(&mut app, Action::CloseWindow { write: false, force: false }).as_deref(),
         Some(":q quit"),
@@ -30666,9 +27107,13 @@ fn variables_list_chips_spell_the_shared_letters() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_row(&mut app, |r| *r == VmRow::Group("user".into()));
     assert_eq!(footer_chip_text(&mut app, Action::PromptNewVar).as_deref(), Some("a new variable"));
-    assert_eq!(footer_chip_text(&mut app, Action::PromptNewSelector).as_deref(), Some("A new selector"));
     assert_eq!(
-        footer_chip_text(&mut app, Action::PromptGroupFields { selector: "user".into() }).as_deref(),
+        footer_chip_text(&mut app, Action::PromptNewSelector).as_deref(),
+        Some("A new selector")
+    );
+    assert_eq!(
+        footer_chip_text(&mut app, Action::PromptGroupFields { selector: "user".into() })
+            .as_deref(),
         Some("m edit fields")
     );
     app.use_profile(KeyProfile::Vim);
@@ -30706,7 +27151,9 @@ fn a_form_modals_undo_and_reveal_chips_name_live_keys() {
     // modal (the dialog's Down/Up walk does the same). Vim's prompt field
     // runs on the engine (plan M3b): Esc goes to Normal, and `j` then `k`
     // close the field to selected.
-    for (profile, undo, close) in [(KeyProfile::Arrows, "^Z undo", ""), (KeyProfile::Vim, "u undo", "<Esc>jk")] {
+    for (profile, undo, close) in
+        [(KeyProfile::Arrows, "^Z undo", ""), (KeyProfile::Vim, "u undo", "<Esc>jk")]
+    {
         let mut app = App::new_for_test();
         app.use_profile(profile);
         app.modals.push(Modal::Prompt {
@@ -30765,9 +27212,17 @@ fn a_counted_undo_or_redo_stops_at_the_end_of_history() {
 
     type_keys(&mut app, "5u");
     assert_eq!((app.history.undo_len(), app.history.redo_len()), (0, 2), "exactly two undos");
-    assert_eq!(toast_count(&app, "Undid change to"), 2, "each undo names its step: {:?}", app.toasts.messages());
+    assert_eq!(
+        toast_count(&app, "Undid change to"),
+        2,
+        "each undo names its step: {:?}",
+        app.toasts.messages()
+    );
     assert_eq!(toast_count(&app, "Nothing to undo"), 1, "{:?}", app.toasts.messages());
-    assert_eq!((app.ui_settings.animations, app.ui_settings.hover_hints), (animations, hover_hints));
+    assert_eq!(
+        (app.ui_settings.animations, app.ui_settings.hover_hints),
+        (animations, hover_hints)
+    );
 
     type_keys(&mut app, "9999u");
     assert_eq!(toast_count(&app, "Nothing to undo"), 2, "one more, not 9 999");
@@ -30809,8 +27264,15 @@ fn an_unset_keymap_switched_to_vim_and_undone_is_unset_again() {
     assert!(written.contains("animations = false"), "{written}");
     assert_eq!(app.ui_settings.keymap, None, "unset, as before the switch");
     assert_eq!(app.profile(), KeyProfile::Arrows);
-    assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), Some(Action::Quit), "the arrows keymap");
-    assert!(matches!(app.modals.top(), Some(Modal::KeymapChoice { .. })), "unset again: the question is back");
+    assert_eq!(
+        app.keymap.lookup(&KeyCombo::parse("q").unwrap()),
+        Some(Action::Quit),
+        "the arrows keymap"
+    );
+    assert!(
+        matches!(app.modals.top(), Some(Modal::KeymapChoice { .. })),
+        "unset again: the question is back"
+    );
 }
 
 /// The final review's M2: a keys.toml reset in vim seeds the vim keymap's
@@ -30828,7 +27290,8 @@ fn a_keys_toml_reset_documents_the_running_profiles_keymap() {
         let mut app = App::new_for_test();
         let dir = config_at_tempdir(&mut app);
         let spelling = profile.spelling();
-        std::fs::write(dir.path().join("config.toml"), format!("keymap = \"{spelling}\"\n")).unwrap();
+        std::fs::write(dir.path().join("config.toml"), format!("keymap = \"{spelling}\"\n"))
+            .unwrap();
         app.update(Action::ReloadFromDisk);
         assert_eq!(app.profile(), profile);
         app.update(Action::ForceResetConfigFile(crate::action::ConfigFile::Keys));
@@ -31258,10 +27721,19 @@ fn selection_action_on_the_manage_lists() {
     app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
     app.manage.list.cursor = 0;
     let first = app.manage_selected(ManageTab::Environments).unwrap();
-    for s in [Surface::ManageList(ManageTab::Environments), Surface::ManageDetail(ManageTab::Environments)] {
+    for s in [
+        Surface::ManageList(ManageTab::Environments),
+        Surface::ManageDetail(ManageTab::Environments),
+    ] {
         assert_eq!(app.selection_action(s, Verb::Add), Some(Action::OpenNewEnvPrompt));
-        assert_eq!(app.selection_action(s, Verb::Rename), Some(Action::PromptRenameEnv(first.clone())));
-        assert_eq!(app.selection_action(s, Verb::Delete { count: 1 }), Some(Action::DeleteEnv(first.clone())));
+        assert_eq!(
+            app.selection_action(s, Verb::Rename),
+            Some(Action::PromptRenameEnv(first.clone()))
+        );
+        assert_eq!(
+            app.selection_action(s, Verb::Delete { count: 1 }),
+            Some(Action::DeleteEnv(first.clone()))
+        );
         assert!(matches!(app.selection_action(s, Verb::Tls), Some(Action::SetEnvTls { .. })));
         assert_eq!(app.selection_action(s, Verb::Move), None, "move all is the Spaces tab's");
     }
@@ -31285,7 +27757,10 @@ fn selection_action_on_the_variables_tab() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_row(&mut app, |r| *r == VmRow::Var("base_url".into()));
     assert_eq!(app.selection_action(Surface::VarList, Verb::Add), Some(Action::PromptNewVar));
-    assert_eq!(app.selection_action(Surface::VarList, Verb::AddAlt), Some(Action::PromptNewSelector));
+    assert_eq!(
+        app.selection_action(Surface::VarList, Verb::AddAlt),
+        Some(Action::PromptNewSelector)
+    );
     assert_eq!(
         app.selection_action(Surface::VarList, Verb::Rename),
         Some(Action::PromptRenameVar { from: "base_url".into() })
@@ -31298,14 +27773,25 @@ fn selection_action_on_the_variables_tab() {
         app.selection_action(Surface::VarList, Verb::Secret),
         Some(Action::ToggleSecretVar { name: "base_url".into() })
     );
-    assert_eq!(app.selection_action(Surface::VarList, Verb::Fields), None, "a variable has no fields");
+    assert_eq!(
+        app.selection_action(Surface::VarList, Verb::Fields),
+        None,
+        "a variable has no fields"
+    );
 
     goto_row(&mut app, |r| *r == VmRow::Group("user".into()));
     app.varmanager.focus = VmFocus::Grid;
     app.varmanager.grid.cursor = (0, 0);
     assert_eq!(app.selection_action(Surface::VarGrid, Verb::Add), Some(Action::StartNewOptionEdit));
-    assert_eq!(app.selection_action(Surface::VarGrid, Verb::Yank), Some(Action::CopyOption { row: 0 }));
-    assert_eq!(app.selection_action(Surface::VarGrid, Verb::Put { above: false, count: 1 }), None, "nothing copied");
+    assert_eq!(
+        app.selection_action(Surface::VarGrid, Verb::Yank),
+        Some(Action::CopyOption { row: 0 })
+    );
+    assert_eq!(
+        app.selection_action(Surface::VarGrid, Verb::Put { above: false, count: 1 }),
+        None,
+        "nothing copied"
+    );
     assert_eq!(
         app.selection_action(Surface::VarGrid, Verb::Rename),
         Some(Action::StartOptionNameEdit { row: 0 })
@@ -31327,7 +27813,11 @@ fn selection_action_on_the_variables_tab() {
         app.selection_action(Surface::VarForm, Verb::Secret),
         Some(Action::ToggleSecretVar { name: "api_key".into() })
     );
-    assert_eq!(app.selection_action(Surface::VarForm, Verb::ClearValue), None, "not on the env value");
+    assert_eq!(
+        app.selection_action(Surface::VarForm, Verb::ClearValue),
+        None,
+        "not on the env value"
+    );
 }
 
 /// Spec §5.4: the form's reveal is an action now (Deviation 1), and only

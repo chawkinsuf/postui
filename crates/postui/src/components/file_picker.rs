@@ -115,11 +115,7 @@ pub fn list_dir(dir: &Path, show_hidden: bool, mode: PickerMode) -> std::io::Res
             continue;
         }
         let is_project = e.is_dir && postui_core::project::Project::is_project(&e.path);
-        entries.push(Entry {
-            name: e.name,
-            is_dir: e.is_dir,
-            is_project,
-        });
+        entries.push(Entry { name: e.name, is_dir: e.is_dir, is_project });
     }
     entries.sort_by(|a, b| {
         b.is_dir
@@ -287,11 +283,7 @@ impl FilePickerState {
     /// What the folder row shows: the folder (home folded to `~`), or
     /// "Drives" above a drive root.
     pub fn dir_label(&self) -> String {
-        if self.at_drives {
-            "Drives".to_string()
-        } else {
-            display_dir(&self.dir)
-        }
+        if self.at_drives { "Drives".to_string() } else { display_dir(&self.dir) }
     }
 
     /// Shows `roots` as the list (one folder row per drive, no parent
@@ -301,11 +293,7 @@ impl FilePickerState {
         self.at_drives = true;
         self.entries = roots
             .into_iter()
-            .map(|r| Entry {
-                name: r.display().to_string(),
-                is_dir: true,
-                is_project: false,
-            })
+            .map(|r| Entry { name: r.display().to_string(), is_dir: true, is_project: false })
             .collect();
         self.error = None;
         self.input = LineInput::new("");
@@ -316,11 +304,7 @@ impl FilePickerState {
     /// The full path a row's entry names: under the folder shown, or the
     /// drive root itself in the drive view.
     fn entry_path(&self, entry: &Entry) -> PathBuf {
-        if self.at_drives {
-            PathBuf::from(&entry.name)
-        } else {
-            self.dir.join(&entry.name)
-        }
+        if self.at_drives { PathBuf::from(&entry.name) } else { self.dir.join(&entry.name) }
     }
 
     /// The row labels in display order — what a test (or the footer)
@@ -345,9 +329,7 @@ impl FilePickerState {
     /// Whether row `i` names the file the field would save over.
     pub fn row_will_overwrite(&self, i: usize) -> bool {
         self.mode() == PickerMode::SaveFile
-            && self
-                .row_entry(i)
-                .is_some_and(|e| !e.is_dir && e.name == self.input.text().trim())
+            && self.row_entry(i).is_some_and(|e| !e.is_dir && e.name == self.input.text().trim())
     }
 
     pub fn select(&mut self, i: usize) {
@@ -403,8 +385,7 @@ impl FilePickerState {
                 let (prefix, rest): (Vec<usize>, Vec<usize>) = (0..self.entries.len())
                     .filter(|&i| self.entries[i].name.to_lowercase().contains(&lower))
                     .partition(|&i| self.entries[i].name.to_lowercase().starts_with(&lower));
-                self.rows
-                    .extend(prefix.into_iter().chain(rest).map(Row::Entry));
+                self.rows.extend(prefix.into_iter().chain(rest).map(Row::Entry));
             }
         }
         self.selected = 0;
@@ -479,10 +460,7 @@ impl FilePickerState {
             }
             return;
         };
-        let child = self
-            .dir
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned());
+        let child = self.dir.file_name().map(|n| n.to_string_lossy().into_owned());
         self.enter_dir(&parent);
         if let Some(child) = child
             && self.dir == parent
@@ -496,10 +474,7 @@ impl FilePickerState {
     /// overwrite question lands back on the picker with nothing lost.
     fn confirm(&self, path: PathBuf) -> Option<ModalResult> {
         Some(ModalResult {
-            actions: vec![Action::PickerConfirm {
-                target: self.target,
-                path,
-            }],
+            actions: vec![Action::PickerConfirm { target: self.target, path }],
             close: self.mode() == PickerMode::ChooseDir,
             ..Default::default()
         })
@@ -608,11 +583,7 @@ impl FilePickerState {
     /// `redo`) and rebuilds the listing from it, exactly as a keystroke
     /// into the field does. Returns whether there was a step to take.
     pub(crate) fn undo_filter(&mut self, redo: bool) -> bool {
-        let stepped = if redo {
-            self.input.redo()
-        } else {
-            self.input.undo()
-        };
+        let stepped = if redo { self.input.redo() } else { self.input.undo() };
         if stepped {
             self.filter_active = true;
             self.rebuild_rows();
@@ -637,10 +608,7 @@ impl FilePickerState {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
             KeyCode::Esc => {
-                return Some(ModalResult {
-                    close: true,
-                    ..Default::default()
-                });
+                return Some(ModalResult { close: true, ..Default::default() });
             }
             KeyCode::Enter if alt => return self.confirm_here(),
             KeyCode::Enter => return self.activate(),
@@ -710,27 +678,11 @@ impl FilePickerState {
             true,
         );
         // Title-row toggle, mirrored by alt+h.
-        let toggle = if self.show_hidden {
-            "hidden \u{25CF}"
-        } else {
-            "hidden \u{25CB}"
-        };
+        let toggle = if self.show_hidden { "hidden \u{25CF}" } else { "hidden \u{25CB}" };
         let tw = toggle.chars().count() as u16;
         let tx = right.saturating_sub(tw + 2);
-        let toggle_fg = if hovered == Some(&Hit::PickerHidden) {
-            theme.text
-        } else {
-            theme.accent
-        };
-        paint::text(
-            frame.buffer_mut(),
-            tx,
-            title_y,
-            toggle,
-            toggle_fg,
-            theme.panel,
-            false,
-        );
+        let toggle_fg = if hovered == Some(&Hit::PickerHidden) { theme.text } else { theme.accent };
+        paint::text(frame.buffer_mut(), tx, title_y, toggle, toggle_fg, theme.panel, false);
         hits.register(Rect::new(tx, title_y, tw, 1), Hit::PickerHidden);
 
         // The folder being shown, clipped from the left so the deepest
@@ -768,9 +720,7 @@ impl FilePickerState {
             height: FIELD_HEIGHT,
         };
         TextField {
-            content: self
-                .input
-                .draw_line_windowed(true, theme, field_area.width.saturating_sub(2)),
+            content: self.input.draw_line_windowed(true, theme, field_area.width.saturating_sub(2)),
             state: ControlState::Focused,
         }
         .paint(frame.buffer_mut(), field_area, theme);
@@ -820,11 +770,7 @@ impl FilePickerState {
             } else {
                 RowHighlight::None
             };
-            ListRow {
-                highlight,
-                zebra: None,
-            }
-            .paint(
+            ListRow { highlight, zebra: None }.paint(
                 frame.buffer_mut(),
                 y,
                 list_area.x,
@@ -856,15 +802,7 @@ impl FilePickerState {
                     }
                 };
             let x = list_area.x + 1;
-            paint::text(
-                frame.buffer_mut(),
-                x,
-                y,
-                icon,
-                theme.text_muted,
-                fill,
-                false,
-            );
+            paint::text(frame.buffer_mut(), x, y, icon, theme.text_muted, fill, false);
             let label_x = x + 2;
             let tag_w = tag.map_or(0, |(s, _)| s.chars().count() as u16 + 1);
             let label_w = (list_area.x + list_area.width).saturating_sub(label_x + tag_w + 1);
@@ -881,10 +819,7 @@ impl FilePickerState {
                 let tx = (list_area.x + list_area.width).saturating_sub(tag_w);
                 paint::text(frame.buffer_mut(), tx, y, s, color, fill, false);
             }
-            hits.register(
-                Rect::new(list_area.x, y, list_area.width, 1),
-                Hit::PickerRow(i),
-            );
+            hits.register(Rect::new(list_area.x, y, list_area.width, 1), Hit::PickerRow(i));
         }
 
         // Buttons: Cancel then the primary, right-aligned like every
@@ -892,26 +827,15 @@ impl FilePickerState {
         // not synthesize Enter (Enter acts on the selected row).
         let buttons = [
             ("Cancel", ButtonKind::Secondary, Hit::ModalCancel),
-            (
-                self.primary_label(),
-                ButtonKind::Primary,
-                Hit::PickerPrimary,
-            ),
+            (self.primary_label(), ButtonKind::Primary, Hit::PickerPrimary),
         ];
-        let row_w: u16 = buttons
-            .iter()
-            .map(|(l, ..)| paint::button_min_width(l))
-            .sum::<u16>()
-            + 2;
+        let row_w: u16 = buttons.iter().map(|(l, ..)| paint::button_min_width(l)).sum::<u16>() + 2;
         let mut x = right.saturating_sub(2 + row_w);
         for (label, kind, hit) in buttons {
             let w = paint::button_min_width(label);
             let btn = Rect::new(x, buttons_y, w, BUTTON_HEIGHT);
-            let state = if hovered == Some(&hit) {
-                ControlState::Hover
-            } else {
-                ControlState::Normal
-            };
+            let state =
+                if hovered == Some(&hit) { ControlState::Hover } else { ControlState::Normal };
             Button { label, kind, state }.paint(frame.buffer_mut(), btn, theme);
             hits.register(btn, hit);
             x += w + 2;
@@ -1069,13 +993,7 @@ mod tests {
         let entries = list_dir(dir.path(), false, PickerMode::ChooseDir).unwrap();
         let proj = entries.iter().find(|e| e.name == "proj").unwrap();
         assert!(proj.is_project);
-        assert!(
-            !entries
-                .iter()
-                .find(|e| e.name == "beta")
-                .unwrap()
-                .is_project
-        );
+        assert!(!entries.iter().find(|e| e.name == "beta").unwrap().is_project);
     }
 
     #[test]
@@ -1111,18 +1029,9 @@ mod tests {
     fn resolve_jump_handles_tilde_absolute_and_relative_paths() {
         let cwd = Path::new("/work");
         let home = Path::new("/home/me");
-        assert_eq!(
-            resolve_jump("~", cwd, Some(home)),
-            Some(PathBuf::from("/home/me"))
-        );
-        assert_eq!(
-            resolve_jump("~/dl", cwd, Some(home)),
-            Some(PathBuf::from("/home/me/dl"))
-        );
-        assert_eq!(
-            resolve_jump("/etc", cwd, Some(home)),
-            Some(PathBuf::from("/etc"))
-        );
+        assert_eq!(resolve_jump("~", cwd, Some(home)), Some(PathBuf::from("/home/me")));
+        assert_eq!(resolve_jump("~/dl", cwd, Some(home)), Some(PathBuf::from("/home/me/dl")));
+        assert_eq!(resolve_jump("/etc", cwd, Some(home)), Some(PathBuf::from("/etc")));
         assert_eq!(
             resolve_jump("sub/x.json", cwd, Some(home)),
             Some(PathBuf::from("/work/sub/x.json"))
@@ -1222,15 +1131,8 @@ mod tests {
         let dir = tree();
         let p = FilePickerState::new("Save", PickerTarget::SaveBody, dir.path(), "apple.json");
         assert_eq!(p.input().text(), "apple.json");
-        assert_eq!(
-            p.row_names(),
-            vec!["..", "Alpha", "beta", "proj", "apple.json", "zed.txt"]
-        );
-        let apple = p
-            .row_names()
-            .iter()
-            .position(|n| n == "apple.json")
-            .unwrap();
+        assert_eq!(p.row_names(), vec!["..", "Alpha", "beta", "proj", "apple.json", "zed.txt"]);
+        let apple = p.row_names().iter().position(|n| n == "apple.json").unwrap();
         assert!(p.row_will_overwrite(apple));
         assert!(!p.row_will_overwrite(apple + 1));
     }
@@ -1350,10 +1252,7 @@ mod tests {
         assert!(!p.show_hidden());
         p.handle_key(alt(KeyCode::Char('h')));
         assert!(p.show_hidden());
-        assert_eq!(
-            p.row_names(),
-            vec!["..", ".hidden", "Alpha", "beta", "proj"]
-        );
+        assert_eq!(p.row_names(), vec!["..", ".hidden", "Alpha", "beta", "proj"]);
         p.toggle_hidden();
         assert_eq!(p.row_names(), vec!["..", "Alpha", "beta", "proj"]);
     }
@@ -1373,11 +1272,7 @@ mod tests {
             return;
         }
         assert_eq!(p.dir(), dir.path());
-        assert!(
-            p.error().is_some_and(|e| e.contains("beta")),
-            "{:?}",
-            p.error()
-        );
+        assert!(p.error().is_some_and(|e| e.contains("beta")), "{:?}", p.error());
     }
 
     #[test]
@@ -1395,10 +1290,7 @@ mod tests {
     fn climbing_above_a_root_shows_the_drive_list_and_entering_one_leaves_it() {
         let dir = tree();
         let mut p = FilePickerState::new("Open project", PickerTarget::OpenProject, dir.path(), "");
-        p.show_drives(vec![
-            dir.path().to_path_buf(),
-            PathBuf::from("/nonexistent-drive"),
-        ]);
+        p.show_drives(vec![dir.path().to_path_buf(), PathBuf::from("/nonexistent-drive")]);
         assert!(p.at_drives());
         assert!(p.dir_label().contains("Drives"));
         let names = p.row_names();
@@ -1417,12 +1309,8 @@ mod tests {
     #[test]
     fn a_filesystem_root_has_no_parent_row() {
         let root = if cfg!(windows) { "C:\\" } else { "/" };
-        let mut p = FilePickerState::new(
-            "Open project",
-            PickerTarget::OpenProject,
-            Path::new(root),
-            "",
-        );
+        let mut p =
+            FilePickerState::new("Open project", PickerTarget::OpenProject, Path::new(root), "");
         assert_ne!(p.row_names().first().map(String::as_str), Some(".."));
         p.climb();
         // Unix has no drives: climbing stays put. Windows shows the drives.
@@ -1467,16 +1355,9 @@ mod tests {
         let backend = TestBackend::new(80, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
-        let folder = dir
-            .path()
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .to_string();
+        let folder = dir.path().file_name().unwrap().to_string_lossy().to_string();
         for needle in [
             "Save response body",
             folder.as_str(),
@@ -1505,9 +1386,7 @@ mod tests {
         let backend = TestBackend::new(80, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("Open this folder"), "{content}");
         assert!(!content.contains("zed.txt"), "files hidden in dir mode");

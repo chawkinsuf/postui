@@ -14,11 +14,7 @@ pub fn ease_out_cubic(t: f32) -> f32 {
 /// than the default ease-out every other animation uses.
 pub fn ease_in_out_cubic(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
-    if t < 0.5 {
-        4.0 * t * t * t
-    } else {
-        1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
-    }
+    if t < 0.5 { 4.0 * t * t * t } else { 1.0 - (-2.0 * t + 2.0).powi(3) / 2.0 }
 }
 
 /// Which easing curve an [`Anim`] eases through. Defaults to `OutCubic`
@@ -133,10 +129,7 @@ pub struct Anims {
 
 impl Anims {
     pub fn new(enabled: bool) -> Self {
-        Self {
-            enabled,
-            entries: HashMap::new(),
-        }
+        Self { enabled, entries: HashMap::new() }
     }
 
     /// Flips the enabled flag without replacing the entries. What a live
@@ -197,16 +190,7 @@ impl Anims {
     ) {
         let start = self.value(key, now).unwrap_or(target);
         let dur = if self.enabled { dur } else { Duration::ZERO };
-        self.entries.insert(
-            key,
-            Anim {
-                start,
-                target,
-                started: now,
-                dur,
-                easing,
-            },
-        );
+        self.entries.insert(key, Anim { start, target, started: now, dur, easing });
     }
 
     /// The value `key` is easing toward (its resting value once done), or
@@ -304,9 +288,7 @@ mod tests {
 
         a.set_enabled(true);
 
-        let mid = a
-            .value(AnimKey::Hover, t0 + Duration::from_millis(50))
-            .unwrap();
+        let mid = a.value(AnimKey::Hover, t0 + Duration::from_millis(50)).unwrap();
         assert!(mid > 0.0 && mid < 1.0, "still mid-transition, got {mid}");
     }
 
@@ -317,15 +299,10 @@ mod tests {
         a.snap(AnimKey::Hover, 0.0);
         a.retarget(AnimKey::Hover, 1.0, Duration::from_millis(100), t0);
         assert_eq!(a.value(AnimKey::Hover, t0), Some(0.0));
-        let mid = a
-            .value(AnimKey::Hover, t0 + Duration::from_millis(50))
-            .unwrap();
+        let mid = a.value(AnimKey::Hover, t0 + Duration::from_millis(50)).unwrap();
         assert!(mid > 0.5, "ease-out is past halfway at t=0.5, got {mid}"); // ease_out_cubic(0.5)=0.875
         assert!(mid < 1.0);
-        assert_eq!(
-            a.value(AnimKey::Hover, t0 + Duration::from_millis(100)),
-            Some(1.0)
-        );
+        assert_eq!(a.value(AnimKey::Hover, t0 + Duration::from_millis(100)), Some(1.0));
         assert!(a.active(t0 + Duration::from_millis(50)));
         assert!(!a.active(t0 + Duration::from_millis(150)));
     }
@@ -339,21 +316,14 @@ mod tests {
         let t_half = t0 + Duration::from_millis(50);
         let v_half = a.value(AnimKey::Hover, t_half).unwrap();
         a.retarget(AnimKey::Hover, 0.0, Duration::from_millis(100), t_half); // reverse
-        assert_eq!(
-            a.value(AnimKey::Hover, t_half),
-            Some(v_half),
-            "no jump on reversal"
-        );
+        assert_eq!(a.value(AnimKey::Hover, t_half), Some(v_half), "no jump on reversal");
     }
 
     #[test]
     fn is_done_tracks_a_single_key_and_defaults_true_when_untracked() {
         let t0 = Instant::now();
         let mut a = Anims::new(true);
-        assert!(
-            a.is_done(AnimKey::Hover, t0),
-            "an untracked key has nothing in flight"
-        );
+        assert!(a.is_done(AnimKey::Hover, t0), "an untracked key has nothing in flight");
         a.snap(AnimKey::Hover, 0.0);
         a.retarget(AnimKey::Hover, 1.0, Duration::from_millis(100), t0);
         assert!(!a.is_done(AnimKey::Hover, t0 + Duration::from_millis(50)));
@@ -364,10 +334,7 @@ mod tests {
     fn is_static_distinguishes_a_hold_from_a_move() {
         let t0 = Instant::now();
         let mut a = Anims::new(true);
-        assert!(
-            !a.is_static(AnimKey::Hover),
-            "an untracked key isn't a hold"
-        );
+        assert!(!a.is_static(AnimKey::Hover), "an untracked key isn't a hold");
         a.snap(AnimKey::Hover, 0.0);
         a.retarget(AnimKey::Hover, 1.0, Duration::from_millis(100), t0);
         assert!(!a.is_static(AnimKey::Hover), "start != target: a move");
@@ -403,24 +370,10 @@ mod tests {
         let t0 = Instant::now();
         let mut a = Anims::new(true);
         a.snap(AnimKey::Hover, 0.0);
-        a.retarget_with(
-            AnimKey::Hover,
-            1.0,
-            Duration::from_millis(100),
-            t0,
-            Easing::InOutCubic,
-        );
-        let quarter = a
-            .value(AnimKey::Hover, t0 + Duration::from_millis(25))
-            .unwrap();
-        assert!(
-            quarter < 0.25,
-            "in-out cubic starts slow, got {quarter} at t=0.25"
-        );
-        assert_eq!(
-            a.value(AnimKey::Hover, t0 + Duration::from_millis(100)),
-            Some(1.0)
-        );
+        a.retarget_with(AnimKey::Hover, 1.0, Duration::from_millis(100), t0, Easing::InOutCubic);
+        let quarter = a.value(AnimKey::Hover, t0 + Duration::from_millis(25)).unwrap();
+        assert!(quarter < 0.25, "in-out cubic starts slow, got {quarter} at t=0.25");
+        assert_eq!(a.value(AnimKey::Hover, t0 + Duration::from_millis(100)), Some(1.0));
     }
 
     #[test]

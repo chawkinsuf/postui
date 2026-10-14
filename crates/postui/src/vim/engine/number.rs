@@ -18,7 +18,9 @@ fn str2nr(s: &[char]) -> (Option<char>, usize, u64, bool) {
     let mut pre = None;
     if s.get(i) == Some(&'0') && !matches!(s.get(i + 1), Some('8' | '9')) {
         match s.get(i + 1).copied() {
-            Some(p @ ('x' | 'X')) if s.get(i + 2).is_some_and(|c| c.is_ascii_hexdigit()) => pre = Some(p),
+            Some(p @ ('x' | 'X')) if s.get(i + 2).is_some_and(|c| c.is_ascii_hexdigit()) => {
+                pre = Some(p)
+            }
             Some(p @ ('b' | 'B')) if matches!(s.get(i + 2), Some('0' | '1')) => pre = Some(p),
             _ => {}
         }
@@ -49,7 +51,12 @@ fn str2nr(s: &[char]) -> (Option<char>, usize, u64, bool) {
 /// caret at `caret` (Vim's `do_addsub()` in Normal mode): the chars
 /// `start..end` it replaces and the new number, or `None` when there is no
 /// number at or after the caret.
-pub(crate) fn add_sub(line: &[char], caret: usize, subtract: bool, amount: u64) -> Option<(usize, usize, String)> {
+pub(crate) fn add_sub(
+    line: &[char],
+    caret: usize,
+    subtract: bool,
+    amount: u64,
+) -> Option<(usize, usize, String)> {
     if caret >= line.len() {
         return None;
     }
@@ -58,8 +65,12 @@ pub(crate) fn add_sub(line: &[char], caret: usize, subtract: bool, amount: u64) 
     let xdigit = |i: usize| at(i).is_some_and(|c| c.is_ascii_hexdigit());
     let bdigit = |i: usize| matches!(at(i), Some('0' | '1'));
     // `0x`/`0b` with `col` on the `x`/`b` and a digit after it.
-    let hex = |col: usize| col > 0 && matches!(at(col), Some('x' | 'X')) && at(col - 1) == Some('0') && xdigit(col + 1);
-    let bin = |col: usize| col > 0 && matches!(at(col), Some('b' | 'B')) && at(col - 1) == Some('0') && bdigit(col + 1);
+    let hex = |col: usize| {
+        col > 0 && matches!(at(col), Some('x' | 'X')) && at(col - 1) == Some('0') && xdigit(col + 1)
+    };
+    let bin = |col: usize| {
+        col > 0 && matches!(at(col), Some('b' | 'B')) && at(col - 1) == Some('0') && bdigit(col + 1)
+    };
     // On a hex or binary number, after its `0x`/`0b`: back over its digits.
     let mut col = caret;
     while col > 0 && bdigit(col) {
@@ -124,7 +135,11 @@ pub(crate) fn add_sub(line: &[char], caret: usize, subtract: bool, amount: u64) 
     // The width kept is the number's without its `-`; hex keeps the case of
     // the old number's last letter (Vim's `hexupper`).
     let mut width = len as isize - isize::from(old_text[0] == '-');
-    let upper = old_text.iter().rev().find(|c| c.is_ascii_alphabetic()).is_some_and(char::is_ascii_uppercase);
+    let upper = old_text
+        .iter()
+        .rev()
+        .find(|c| c.is_ascii_alphabetic())
+        .is_some_and(char::is_ascii_uppercase);
     let mut new = String::new();
     if negative {
         new.push('-');
@@ -155,7 +170,13 @@ impl Engine {
     /// saved first, so a line with no number is still an undo step. On a
     /// number the caret lands on its last char and the wanted column
     /// resets; with no number nothing moves and the wanted column stays.
-    pub(super) fn exec_addsub<B: TextBuf>(&mut self, add: bool, count: usize, buf: &mut B, st: &mut BufState) {
+    pub(super) fn exec_addsub<B: TextBuf>(
+        &mut self,
+        add: bool,
+        count: usize,
+        buf: &mut B,
+        st: &mut BufState,
+    ) {
         let caret = buf.cursor();
         let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
         ed.save_cursor_line(caret);
@@ -208,7 +229,11 @@ mod tests {
             ("18446744073709551616", 0, false, 1, "18446744073709551615"),
             ("-18446744073709551615", 0, true, 1, "18446744073709551615"),
         ] {
-            assert_eq!(apply(line, caret, subtract, amount).as_deref(), Some(want), "{line:?} @{caret}");
+            assert_eq!(
+                apply(line, caret, subtract, amount).as_deref(),
+                Some(want),
+                "{line:?} @{caret}"
+            );
         }
         assert_eq!(apply("abc", 0, false, 1), None);
         assert_eq!(apply("12 ab", 3, false, 1), None, "no number at or after the caret");

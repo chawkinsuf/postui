@@ -33,10 +33,7 @@ fn stage1_acceptance_flow() {
     assert_eq!(app.focus, PaneId::Response);
 
     // 3. Toast renders and expires.
-    app.update(Action::ShowToast(
-        "Welcome to postui".into(),
-        ToastKind::Info,
-    ));
+    app.update(Action::ShowToast("Welcome to postui".into(), ToastKind::Info));
     assert!(render(&mut app).contains("Welcome to postui"));
     // A toast's lifetime is wall-clock (3s), not tick-counted (see
     // `components::toast`) -- real time is fine here, matching the

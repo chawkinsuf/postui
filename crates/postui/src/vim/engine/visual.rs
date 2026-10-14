@@ -7,12 +7,20 @@ use super::history::{Ed, LastVisual, MarkMove};
 use super::keys::{Cmd, Object, VisualOp};
 use super::motion::{Want, WantUpdate, char_width, updated_want, vcol_of};
 use super::object;
-use super::op::{RKind, Range, delete, join_rows, put, put_lines, recase_range, recased_caret, shift_rows, yank_of};
+use super::op::{
+    RKind, Range, delete, join_rows, put, put_lines, recase_range, recased_caret, shift_rows,
+    yank_of,
+};
 use super::register::{PLUS_PASTE_NOTE, RegKind};
 use super::{BufState, Engine, Mode, Note, Outcome, Shape, VisualSize, first_non_blank};
 
 impl Engine {
-    pub(super) fn exec_visual<B: TextBuf>(&mut self, cmd: Cmd, buf: &mut B, st: &mut BufState) -> Outcome {
+    pub(super) fn exec_visual<B: TextBuf>(
+        &mut self,
+        cmd: Cmd,
+        buf: &mut B,
+        st: &mut BufState,
+    ) -> Outcome {
         let caret = buf.cursor();
         match cmd {
             Cmd::VisualStart(shape) => match self.mode {
@@ -47,7 +55,13 @@ impl Engine {
                 // the next command reads `w_virtcol`: the cached one while
                 // the caret stays put (taken where it last moved, in
                 // Visual), else recomputed in Normal.
-                let here = updated_want(buf, caret, WantUpdate::Here, Want::default(), self.tab_rule(st, caret));
+                let here = updated_want(
+                    buf,
+                    caret,
+                    WantUpdate::Here,
+                    Want::default(),
+                    self.tab_rule(st, caret),
+                );
                 self.leave_to_normal(buf, st);
                 if buf.cursor() == caret {
                     st.set_want(here, caret);
@@ -55,7 +69,9 @@ impl Engine {
                     st.forget_want();
                 }
             }
-            Cmd::VisualObject { obj, inner, count } => self.visual_object(obj, inner, count, buf, st),
+            Cmd::VisualObject { obj, inner, count } => {
+                self.visual_object(obj, inner, count, buf, st)
+            }
             Cmd::VisualOp { op, count, reg } => return self.visual_op(op, count, reg, buf, st),
             _ => {}
         }
@@ -83,7 +99,9 @@ impl Engine {
     /// it (Vim's `b_visual`); `None` outside Visual.
     fn area_at<B: TextBuf>(&self, caret: Pos, buf: &B, st: &BufState) -> Option<LastVisual> {
         match (self.mode, self.visual) {
-            (Mode::Visual(shape), Some(anchor)) => Some(LastVisual { anchor, caret, shape, want: self.want_at(buf, st, caret) }),
+            (Mode::Visual(shape), Some(anchor)) => {
+                Some(LastVisual { anchor, caret, shape, want: self.want_at(buf, st, caret) })
+            }
             _ => None,
         }
     }
@@ -122,10 +140,25 @@ impl Engine {
     /// grows a selection over more than one line. When there is no such
     /// object, the shape stays, but the caret goes where the object's walk
     /// stopped (and the anchor where Vim had moved it).
-    fn visual_object<B: TextBuf>(&mut self, obj: Object, inner: bool, count: usize, buf: &mut B, st: &mut BufState) {
+    fn visual_object<B: TextBuf>(
+        &mut self,
+        obj: Object,
+        inner: bool,
+        count: usize,
+        buf: &mut B,
+        st: &mut BufState,
+    ) {
         let caret = buf.cursor();
         let anchor = self.visual.unwrap_or(caret);
-        match object::pick(buf, caret, Some(anchor), self.mode == Mode::Visual(Shape::Line), obj, inner, count) {
+        match object::pick(
+            buf,
+            caret,
+            Some(anchor),
+            self.mode == Mode::Visual(Shape::Line),
+            obj,
+            inner,
+            count,
+        ) {
             Ok(p) => {
                 self.visual = Some(p.start);
                 if let Some(shape) = p.shape {
@@ -192,7 +225,11 @@ impl Engine {
         let hi_line = buf.line(hi.row);
         let hi_start = vcol_of(&hi_line, hi.col);
         let end_vcol = hi_start + hi_line.get(hi.col).map_or(1, |&c| char_width(c, hi_start)) - 1;
-        let cols = if hi.row == lo.row { end_vcol + 1 - vcol_of(&buf.line(lo.row), lo.col) } else { end_vcol };
+        let cols = if hi.row == lo.row {
+            end_vcol + 1 - vcol_of(&buf.line(lo.row), lo.col)
+        } else {
+            end_vcol
+        };
         VisualSize {
             line: lines || self.mode == Mode::Visual(Shape::Line),
             rows: hi.row - lo.row + 1,
@@ -201,8 +238,16 @@ impl Engine {
         }
     }
 
-    fn visual_op<B: TextBuf>(&mut self, op: VisualOp, count: usize, reg: Option<char>, buf: &mut B, st: &mut BufState) -> Outcome {
-        let lines = matches!(op, VisualOp::DeleteLines | VisualOp::YankLines | VisualOp::ChangeLines);
+    fn visual_op<B: TextBuf>(
+        &mut self,
+        op: VisualOp,
+        count: usize,
+        reg: Option<char>,
+        buf: &mut B,
+        st: &mut BufState,
+    ) -> Outcome {
+        let lines =
+            matches!(op, VisualOp::DeleteLines | VisualOp::YankLines | VisualOp::ChangeLines);
         self.last_visual_size = Some(self.visual_size(lines, buf, st));
         let r = self.visual_range(buf, lines);
         let (first, last) = self.visual_rows(buf);
@@ -277,7 +322,13 @@ impl Engine {
     /// where the delete leaves it. `false`: nothing to delete in a buffer
     /// with no lines. An empty area writes no register but is still an undo
     /// step (`u_save_cursor()`).
-    fn visual_delete<B: TextBuf>(&mut self, r: Range, reg: Option<char>, buf: &mut B, st: &mut BufState) -> bool {
+    fn visual_delete<B: TextBuf>(
+        &mut self,
+        r: Range,
+        reg: Option<char>,
+        buf: &mut B,
+        st: &mut BufState,
+    ) -> bool {
         if st.history.emptied(&*buf) {
             st.forget_want();
             return false;
@@ -303,7 +354,15 @@ impl Engine {
     /// written, so `yiw` then `viwp` … `viw"0p` keeps putting the yank.
     /// `"+p` changes nothing (the selection just ends), with a note (see
     /// `exec_put`).
-    fn visual_put<B: TextBuf>(&mut self, r: Range, before: bool, count: usize, reg: Option<char>, buf: &mut B, st: &mut BufState) -> Outcome {
+    fn visual_put<B: TextBuf>(
+        &mut self,
+        r: Range,
+        before: bool,
+        count: usize,
+        reg: Option<char>,
+        buf: &mut B,
+        st: &mut BufState,
+    ) -> Outcome {
         if reg == Some('+') {
             self.note = Some(Note::Unsupported(PLUS_PASTE_NOTE.into()));
             return Outcome::consumed();
@@ -356,7 +415,8 @@ impl Engine {
             } else {
                 // The delete reached the line's end: put after its last char.
                 let forward = len > 0 && at.col >= len;
-                ed.buf.set_cursor(Pos::new(at.row, if forward { len - 1 } else { at.col.min(len) }));
+                ed.buf
+                    .set_cursor(Pos::new(at.row, if forward { len - 1 } else { at.col.min(len) }));
                 let mut caret = put(&mut ed, &text, !forward, n);
                 if self.put_ends_after(&text) {
                     caret.col += 1;
@@ -365,7 +425,9 @@ impl Engine {
                 // register's first line is not empty (`yanklen`): text that
                 // starts with a line break leaves it on that char.
                 let stays = forward && text.text.starts_with('\n');
-                let area = ed.hist.last_put().map(|(start, end)| if stays { (Pos::new(start.row, start.col - 1), end) } else { (start, end) });
+                let area = ed.hist.last_put().map(|(start, end)| {
+                    if stays { (Pos::new(start.row, start.col - 1), end) } else { (start, end) }
+                });
                 (caret, area)
             }
         };
@@ -407,7 +469,8 @@ fn replace_range<B: TextBuf>(ed: &mut Ed<'_, B>, r: Range, ch: char) -> Pos {
         RKind::Line => (Pos::new(r.start.row, 0), Pos::new(r.end.row, ed.buf.line_len(r.end.row))),
     };
     ed.save_rows(r.start, start.row, end.row);
-    let text: String = ed.buf.slice(start, end).chars().map(|c| if c == '\n' { c } else { ch }).collect();
+    let text: String =
+        ed.buf.slice(start, end).chars().map(|c| if c == '\n' { c } else { ch }).collect();
     ed.splice(start, end, &text);
     start
 }

@@ -30,10 +30,7 @@ pub fn describe(ev: &Event) -> String {
                 k.code, k.modifiers, k.kind, k.state
             );
             let combo = crate::keys::KeyCombo::from_event(k);
-            line.push_str(&format!(
-                "  combo(code={:?} mods={:?})",
-                combo.code, combo.modifiers
-            ));
+            line.push_str(&format!("  combo(code={:?} mods={:?})", combo.code, combo.modifiers));
             let norm = crate::keys::normalize_super_keys(*k);
             if norm.code != k.code || norm.modifiers != k.modifiers {
                 line.push_str(&format!(
@@ -70,10 +67,8 @@ pub fn resolve_flags(flags: Option<u8>) -> KeyboardEnhancementFlags {
 pub fn run(flags: Option<u8>) -> anyhow::Result<()> {
     use std::io::Write;
     let resolved = resolve_flags(flags);
-    let supported = matches!(
-        ratatui::crossterm::terminal::supports_keyboard_enhancement(),
-        Ok(true)
-    );
+    let supported =
+        matches!(ratatui::crossterm::terminal::supports_keyboard_enhancement(), Ok(true));
     println!("postui --keydump: raw key-event echo (ctrl+d exits); mouse events are reported too");
     println!(
         "TERM={:?} TERM_PROGRAM={:?}",
@@ -81,11 +76,7 @@ pub fn run(flags: Option<u8>) -> anyhow::Result<()> {
         std::env::var("TERM_PROGRAM").ok()
     );
     println!("terminal reports kitty keyboard protocol support: {supported}");
-    println!(
-        "pushing enhancement flags: {:?} (bits {})",
-        resolved,
-        resolved.bits()
-    );
+    println!("pushing enhancement flags: {:?} (bits {})", resolved, resolved.bits());
 
     enable_raw_mode()?;
     let mut out = std::io::stdout();
@@ -132,10 +123,7 @@ mod tests {
 
     #[test]
     fn resolve_flags_explicit_bits_and_zero() {
-        assert_eq!(
-            resolve_flags(Some(1)),
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-        );
+        assert_eq!(resolve_flags(Some(1)), KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES);
         assert_eq!(
             resolve_flags(Some(5)),
             KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
@@ -156,10 +144,7 @@ mod tests {
         assert!(line.contains("Char('c')"), "{line}");
         assert!(line.contains("SUPER"), "{line}");
         assert!(line.contains("combo("), "{line}");
-        assert!(
-            !line.contains("super-fold"),
-            "super over a non-arrow is not folded: {line}"
-        );
+        assert!(!line.contains("super-fold"), "super over a non-arrow is not folded: {line}");
     }
 
     #[test]

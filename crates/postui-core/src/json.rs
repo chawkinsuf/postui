@@ -10,11 +10,7 @@ pub struct JsonError {
 
 impl fmt::Display for JsonError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "line {}, column {}: {}",
-            self.line, self.column, self.message
-        )
+        write!(f, "line {}, column {}: {}", self.line, self.column, self.message)
     }
 }
 
@@ -22,19 +18,13 @@ impl std::error::Error for JsonError {}
 
 impl From<serde_json::Error> for JsonError {
     fn from(e: serde_json::Error) -> Self {
-        JsonError {
-            line: e.line(),
-            column: e.column(),
-            message: e.to_string(),
-        }
+        JsonError { line: e.line(), column: e.column(), message: e.to_string() }
     }
 }
 
 /// Validates JSON text and returns an error with position information if invalid.
 pub fn validate(text: &str) -> Result<(), JsonError> {
-    serde_json::from_str::<serde_json::Value>(text)
-        .map(|_| ())
-        .map_err(JsonError::from)
+    serde_json::from_str::<serde_json::Value>(text).map(|_| ()).map_err(JsonError::from)
 }
 
 /// Formats JSON text into pretty-printed format (2-space indentation).
@@ -72,10 +62,7 @@ mod tests {
             out.contains("1e3") || out.contains("1e+3"),
             "arbitrary_precision: exponent format preserved (1e3 or 1e+3)"
         );
-        assert!(
-            out.contains("1.50"),
-            "arbitrary_precision: decimal precision preserved"
-        );
+        assert!(out.contains("1.50"), "arbitrary_precision: decimal precision preserved");
         assert!(out.contains("\n"), "actually pretty");
     }
 

@@ -89,11 +89,20 @@ pub(crate) enum MarkMove<'m> {
 impl MarkMove<'_> {
     /// Where a mark at `p` goes when the splice at `at` replaced `removed`
     /// with `inserted`; `None` when it is gone. `nodel`: see `Marks::each`.
-    pub(crate) fn apply(self, p: Pos, at: Pos, removed: &str, inserted: &str, nodel: bool) -> Option<Pos> {
+    pub(crate) fn apply(
+        self,
+        p: Pos,
+        at: Pos,
+        removed: &str,
+        inserted: &str,
+        nodel: bool,
+    ) -> Option<Pos> {
         match self {
             MarkMove::Keep => Some(p),
             MarkMove::DeleteLines { first, last } => moved_by_delete(p, first, last, nodel),
-            MarkMove::InsertLines { at: row, count } => Some(if p.row >= row { Pos::new(p.row + count, p.col) } else { p }),
+            MarkMove::InsertLines { at: row, count } => {
+                Some(if p.row >= row { Pos::new(p.row + count, p.col) } else { p })
+            }
             MarkMove::Join { row, lines } => {
                 let n = lines.len();
                 Some(if p.row > row && p.row <= row + n {
@@ -209,7 +218,13 @@ impl History {
         if self.open.is_none() {
             let empty_before = self.emptied;
             let visual = self.marks.visual;
-            self.open = Some(Step { edits: Vec::new(), caret_before: caret, empty_before, empty_after: false, visual });
+            self.open = Some(Step {
+                edits: Vec::new(),
+                caret_before: caret,
+                empty_before,
+                empty_after: false,
+                visual,
+            });
         }
     }
 
@@ -373,7 +388,8 @@ fn block<B: TextBuf>(buf: &B, at: Pos, now: &str, then: &str, join: bool) -> Blo
 fn undo_redo<B: TextBuf>(buf: &mut B, step: &mut Step, undo: bool, marks: &mut Marks) -> Pos {
     let before = marks.visual;
     let saved = step.caret_before;
-    let order: Vec<&Edit> = if undo { step.edits.iter().rev().collect() } else { step.edits.iter().collect() };
+    let order: Vec<&Edit> =
+        if undo { step.edits.iter().rev().collect() } else { step.edits.iter().collect() };
     // Vim's `newlnum`, as a 0-based row of the first line in a block.
     let mut newlnum = usize::MAX;
     let mut row = None;
@@ -426,7 +442,11 @@ fn undo_redo<B: TextBuf>(buf: &mut B, step: &mut Step, undo: bool, marks: &mut M
         row -= 1;
     }
     let line = buf.line(row);
-    let col = if saved.row == row { saved.col.min(line.len().saturating_sub(1)) } else { first_non_blank_fix(&line) };
+    let col = if saved.row == row {
+        saved.col.min(line.len().saturating_sub(1))
+    } else {
+        first_non_blank_fix(&line)
+    };
     Pos::new(row, col)
 }
 
@@ -486,7 +506,12 @@ impl<B: TextBuf> Ed<'_, B> {
     pub(crate) fn save_rows(&mut self, caret: Pos, first: usize, last: usize) {
         self.hist.begin(caret);
         let text = self.buf.slice(Pos::new(first, 0), Pos::new(last, self.buf.line_len(last)));
-        self.hist.record(Edit { at: Pos::new(first, 0), removed: text.clone(), inserted: text, joined: false });
+        self.hist.record(Edit {
+            at: Pos::new(first, 0),
+            removed: text.clone(),
+            inserted: text,
+            joined: false,
+        });
     }
 
     /// Vim's `u_save_cursor()`: [`Ed::save_rows`] for the caret's line (`rX`
@@ -527,7 +552,12 @@ impl<B: TextBuf> Ed<'_, B> {
             self.hist.marks.lines_deleted(0, 0);
         } else {
             let len = self.buf.line_len(last);
-            self.splice_moving(Pos::new(0, 0), Pos::new(last, len), "", MarkMove::DeleteLines { first: 0, last });
+            self.splice_moving(
+                Pos::new(0, 0),
+                Pos::new(last, len),
+                "",
+                MarkMove::DeleteLines { first: 0, last },
+            );
         }
         self.hist.emptied = true;
     }
@@ -604,7 +634,10 @@ mod tests {
         // line count moves nothing.
         assert_eq!(MarkMove::Chars.apply(p(0, 5), p(0, 2), "", "\n  ", false), Some(p(0, 5)));
         assert_eq!(MarkMove::Chars.apply(p(1, 5), p(0, 2), "", "\n  ", false), Some(p(2, 5)));
-        assert_eq!(MarkMove::Chars.apply(p(1, 1), p(0, 0), "ab\ncd", "AB\nCD", false), Some(p(1, 1)));
+        assert_eq!(
+            MarkMove::Chars.apply(p(1, 1), p(0, 0), "ab\ncd", "AB\nCD", false),
+            Some(p(1, 1))
+        );
         // `J`: a joined line's marks move to where its text lands; one in the
         // blanks it lost goes to the joining space; lines below move up.
         let join = MarkMove::Join { row: 0, lines: &[(1, 1)] };

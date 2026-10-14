@@ -23,6 +23,19 @@ cargo build --release
 Run with no argument to open the last project, or pass a directory to open
 (or create) a project there.
 
+## Development
+
+The code is formatted with `cargo fmt --all` (settings in `rustfmt.toml`;
+tables meant to be read across keep their layout with `#[rustfmt::skip]`).
+CI fails the build on unformatted code. Once per clone, run
+
+```sh
+scripts/install-hooks.sh
+```
+
+to install a pre-commit hook that runs the same check, and to make
+`git blame` skip the formatting-only commits.
+
 ## Mouse
 
 Every control clicks: the header's project chip opens the project chooser and the

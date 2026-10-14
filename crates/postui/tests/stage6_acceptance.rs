@@ -150,9 +150,7 @@ async fn stage6_acceptance_flow() {
         name: "api_key".into(),
         description: Some("service key".into()),
     }));
-    app.update(Action::VarStruct(VarStructOp::ToggleSecret {
-        name: "api_key".into(),
-    }));
+    app.update(Action::VarStruct(VarStructOp::ToggleSecret { name: "api_key".into() }));
 
     // A variable that gets overridden at request scope below.
     app.update(Action::VarStruct(VarStructOp::NewVar {
@@ -164,11 +162,7 @@ async fn stage6_acceptance_flow() {
         value: "proj-trace".into(),
     }));
 
-    assert!(
-        app.toasts.is_empty(),
-        "declarations must all succeed: {}",
-        render(&mut app)
-    );
+    assert!(app.toasts.is_empty(), "declarations must all succeed: {}", render(&mut app));
 
     // ------------------------------------------------------------------
     // Environment values (also action-driven — `edit_env` creates the env
@@ -242,20 +236,12 @@ async fn stage6_acceptance_flow() {
 
     let url = "{{base_url}}/orders/{{region}}?user={{user_id}}&cust={{customer_id}}";
     app.editor.url = LineInput::new(url);
-    app.editor.headers.insert(
-        "x-api-key".to_string(),
-        Entry {
-            value: "{{api_key}}".into(),
-            enabled: true,
-        },
-    );
-    app.editor.headers.insert(
-        "x-trace".to_string(),
-        Entry {
-            value: "{{trace_id}}".into(),
-            enabled: true,
-        },
-    );
+    app.editor
+        .headers
+        .insert("x-api-key".to_string(), Entry { value: "{{api_key}}".into(), enabled: true });
+    app.editor
+        .headers
+        .insert("x-trace".to_string(), Entry { value: "{{trace_id}}".into(), enabled: true });
 
     // --- select the enumerated variable via the real picker path ------
     focus_url_with_cursor_on(&mut app, url, "{{region}}");
@@ -312,7 +298,8 @@ async fn stage6_acceptance_flow() {
 
     app.update(Action::SwitchEnv(Some("qa".into())));
     assert_eq!(
-        app.proj().resolved().values["region"], "east-1",
+        app.proj().resolved().values["region"],
+        "east-1",
         "switching back to qa restores qa's own resolved value"
     );
 
@@ -328,17 +315,10 @@ async fn stage6_acceptance_flow() {
     };
     assert_eq!(
         *kind,
-        PromptKind::SecretValue {
-            name: "api_key".into(),
-            env: "qa".into(),
-            then_send: true,
-        }
+        PromptKind::SecretValue { name: "api_key".into(), env: "qa".into(), then_send: true }
     );
     assert!(!*revealed, "the secret prompt must render masked");
-    assert!(
-        app.session.in_flight.is_empty(),
-        "nothing sends while a secret is missing"
-    );
+    assert!(app.session.in_flight.is_empty(), "nothing sends while a secret is missing");
 
     for c in "sk-qa-999".chars() {
         app.handle_key(plain(c));
@@ -479,10 +459,7 @@ description = \"legacy auth token\"
         on_disk.contains("default = \"https://new.example.com\""),
         "the edited value actually changed: {on_disk}"
     );
-    assert!(
-        !on_disk.contains("http://localhost:8080"),
-        "the old value is gone: {on_disk}"
-    );
+    assert!(!on_disk.contains("http://localhost:8080"), "the old value is gone: {on_disk}");
     assert!(
         on_disk.contains("# do not rename without updating the client SDK"),
         "an untouched entry's comment survives: {on_disk}"

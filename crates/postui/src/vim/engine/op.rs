@@ -103,10 +103,20 @@ pub(crate) fn delete_lines<B: TextBuf>(ed: &mut Ed<'_, B>, first: usize, last: u
     let lines = ed.buf.line_count();
     let last_len = ed.buf.line_len(last);
     if last + 1 < lines {
-        ed.splice_moving(Pos::new(first, 0), Pos::new(last + 1, 0), "", MarkMove::DeleteLines { first, last });
+        ed.splice_moving(
+            Pos::new(first, 0),
+            Pos::new(last + 1, 0),
+            "",
+            MarkMove::DeleteLines { first, last },
+        );
     } else if first > 0 {
         let prev = ed.buf.line_len(first - 1);
-        ed.splice_moving(Pos::new(first - 1, prev), Pos::new(last, last_len), "", MarkMove::DeleteLines { first, last });
+        ed.splice_moving(
+            Pos::new(first - 1, prev),
+            Pos::new(last, last_len),
+            "",
+            MarkMove::DeleteLines { first, last },
+        );
     } else {
         ed.empty_buffer();
     }
@@ -165,7 +175,8 @@ pub(crate) fn recased_caret(line: &[char], how: CaseOp, r: Range) -> Pos {
         RKind::Line => 0,
     };
     let mut out = String::new();
-    let added: usize = line[from.min(line.len())..r.start.col.min(line.len()).max(from.min(line.len()))]
+    let added: usize = line
+        [from.min(line.len())..r.start.col.min(line.len()).max(from.min(line.len()))]
         .iter()
         .map(|&c| {
             out.clear();
@@ -179,7 +190,13 @@ pub(crate) fn recased_caret(line: &[char], how: CaseOp, r: Range) -> Pos {
 /// Visual `>` `<` over rows `first..=last`, `amount` shiftwidths each;
 /// empty rows are skipped and the new indent is spaces (`expandtab`). The
 /// caret goes to the first row's first non-blank.
-pub(crate) fn shift_rows<B: TextBuf>(ed: &mut Ed<'_, B>, first: usize, last: usize, right: bool, amount: usize) -> Pos {
+pub(crate) fn shift_rows<B: TextBuf>(
+    ed: &mut Ed<'_, B>,
+    first: usize,
+    last: usize,
+    right: bool,
+    amount: usize,
+) -> Pos {
     let step = SHIFTWIDTH * amount.max(1);
     for row in first..=last {
         let line = ed.buf.line(row).into_owned();
@@ -227,13 +244,23 @@ pub(crate) fn put_lines<B: TextBuf>(ed: &mut Ed<'_, B>, row: usize, body: &str) 
     let lines = ed.buf.line_count();
     let count = body.matches('\n').count();
     let row = if row < lines {
-        ed.splice_moving(Pos::new(row, 0), Pos::new(row, 0), body, MarkMove::InsertLines { at: row, count });
+        ed.splice_moving(
+            Pos::new(row, 0),
+            Pos::new(row, 0),
+            body,
+            MarkMove::InsertLines { at: row, count },
+        );
         row
     } else {
         let last = lines - 1;
         let len = ed.buf.line_len(last);
         let text = body.strip_suffix('\n').unwrap_or(body);
-        ed.splice_moving(Pos::new(last, len), Pos::new(last, len), &format!("\n{text}"), MarkMove::InsertLines { at: last + 1, count });
+        ed.splice_moving(
+            Pos::new(last, len),
+            Pos::new(last, len),
+            &format!("\n{text}"),
+            MarkMove::InsertLines { at: last + 1, count },
+        );
         last + 1
     };
     Pos::new(row, first_non_blank(&ed.buf.line(row)))
@@ -279,7 +306,8 @@ pub(crate) fn join_rows<B: TextBuf>(ed: &mut Ed<'_, B>, row: usize, n: usize) ->
         let line = ed.buf.line(row + t);
         let lead = first_non_blank(&line);
         let rest = &line[lead..];
-        let space = !rest.is_empty() && rest[0] != ')' && sum != 0 && !matches!(end, Some(' ' | '\t'));
+        let space =
+            !rest.is_empty() && rest[0] != ')' && sum != 0 && !matches!(end, Some(' ' | '\t'));
         // Vim's `do_join()` moves this line's marks by where its text now
         // starts, less the blanks it lost (`mark_col_adjust()`).
         let spaces_removed = lead as isize - isize::from(space);
@@ -294,7 +322,12 @@ pub(crate) fn join_rows<B: TextBuf>(ed: &mut Ed<'_, B>, row: usize, n: usize) ->
     }
     let last = row + n - 1;
     let text: String = joined.iter().collect();
-    ed.splice_moving(Pos::new(row, first.len()), Pos::new(last, ed.buf.line_len(last)), &text, MarkMove::Join { row, lines: &moves });
+    ed.splice_moving(
+        Pos::new(row, first.len()),
+        Pos::new(last, ed.buf.line_len(last)),
+        &text,
+        MarkMove::Join { row, lines: &moves },
+    );
     Pos::new(row, col)
 }
 
@@ -384,13 +417,21 @@ impl Engine {
 
     /// `p` `P` with a count. `"+p` puts nothing: the engine cannot read
     /// the clipboard, so a note says how to paste (Deviation 14).
-    pub(super) fn exec_put<B: TextBuf>(&mut self, before: bool, count: usize, reg: Option<char>, buf: &mut B, st: &mut BufState) {
+    pub(super) fn exec_put<B: TextBuf>(
+        &mut self,
+        before: bool,
+        count: usize,
+        reg: Option<char>,
+        buf: &mut B,
+        st: &mut BufState,
+    ) {
         if reg == Some('+') {
             self.note = Some(Note::Unsupported(PLUS_PASTE_NOTE.into()));
             return;
         }
         let reg = self.regs.read(reg).clone();
-        let mut caret = put(&mut Ed { buf: &mut *buf, hist: &mut st.history }, &reg, before, count.max(1));
+        let mut caret =
+            put(&mut Ed { buf: &mut *buf, hist: &mut st.history }, &reg, before, count.max(1));
         if self.put_ends_after(&reg) {
             caret.col += 1;
         }
@@ -400,13 +441,22 @@ impl Engine {
     /// Vim's `do_put()`: "For CTRL-O p in Insert mode, put cursor after
     /// last char" of a one-line charwise put (`p`, `P`, Visual `p`).
     pub(super) fn put_ends_after(&self, reg: &Register) -> bool {
-        matches!(self.mode, Mode::InsertNormal { .. }) && reg.kind == RegKind::Char && !reg.text.is_empty() && !reg.text.contains('\n')
+        matches!(self.mode, Mode::InsertNormal { .. })
+            && reg.kind == RegKind::Char
+            && !reg.text.is_empty()
+            && !reg.text.contains('\n')
     }
 
     /// `r{c}` with a count (Vim's `nv_replace()`): fails whole, keeping the
     /// wanted column, when fewer than N chars remain (`false`: no `.`). The
     /// caret ends on the last char replaced.
-    pub(super) fn exec_replace<B: TextBuf>(&mut self, ch: char, count: usize, buf: &mut B, st: &mut BufState) -> bool {
+    pub(super) fn exec_replace<B: TextBuf>(
+        &mut self,
+        ch: char,
+        count: usize,
+        buf: &mut B,
+        st: &mut BufState,
+    ) -> bool {
         let caret = buf.cursor();
         let n = count.max(1);
         if caret.col + n > buf.line_len(caret.row) {
@@ -454,7 +504,12 @@ impl Engine {
     /// the last one, clamped to the last char. On an empty line it fails
     /// (`false`: no undo step, no `.`, the wanted column kept); otherwise the
     /// line is saved first, so `~` on `-` is still an undo step.
-    pub(super) fn exec_tilde<B: TextBuf>(&mut self, count: usize, buf: &mut B, st: &mut BufState) -> bool {
+    pub(super) fn exec_tilde<B: TextBuf>(
+        &mut self,
+        count: usize,
+        buf: &mut B,
+        st: &mut BufState,
+    ) -> bool {
         let caret = buf.cursor();
         let len = buf.line_len(caret.row);
         if len == 0 {
@@ -467,7 +522,11 @@ impl Engine {
         recase_range(&mut ed, CaseOp::Toggle, Range { start: caret, end, kind: RKind::Char });
         // Inside Insert `ctrl+o` the caret may stay past the last char
         // (`check_cursor()` with `restart_edit`): Insert resumes there.
-        let to = if matches!(self.mode, Mode::InsertNormal { .. }) { caret.col + n } else { (caret.col + n).min(len - 1) };
+        let to = if matches!(self.mode, Mode::InsertNormal { .. }) {
+            caret.col + n
+        } else {
+            (caret.col + n).min(len - 1)
+        };
         self.land_caret(Pos::new(caret.row, to), buf, st);
         true
     }
@@ -477,7 +536,12 @@ impl Engine {
     /// Returns the count it joined with, which is what Vim stores for `.`
     /// (`9J` two lines above the end repeats as `3J`); `None` when it
     /// failed.
-    pub(super) fn exec_join<B: TextBuf>(&mut self, count: usize, buf: &mut B, st: &mut BufState) -> Option<usize> {
+    pub(super) fn exec_join<B: TextBuf>(
+        &mut self,
+        count: usize,
+        buf: &mut B,
+        st: &mut BufState,
+    ) -> Option<usize> {
         if !B::MULTILINE {
             return None;
         }
@@ -528,7 +592,8 @@ impl Engine {
                 // Vim's `nv_lineop`: except for `yy`, the caret first goes to
                 // the last line's first non-blank, so `dd` right of the
                 // indent starts its range (and its undo caret) there.
-                let col = if op == Op::Yank { from.col } else { first_non_blank_fix(&buf.line(row)) };
+                let col =
+                    if op == Op::Yank { from.col } else { first_non_blank_fix(&buf.line(row)) };
                 Some(Span::between(from, Pos::new(row, col), MKind::Linewise))
             }
             Reach::Motion(m) => {
@@ -547,16 +612,18 @@ impl Engine {
                 span.no_adjust = moved.no_adjust;
                 Some(span)
             }
-            Reach::Object { obj, inner } => match super::object::pick(buf, from, None, false, obj, inner, count) {
-                Ok(picked) => Some(picked.span()),
-                Err(missed) => {
-                    // Vim's `nv_object`: the operator is cancelled, the caret
-                    // stays where the object's walk ended.
-                    buf.set_cursor(self.clamped(buf, missed.at));
-                    st.forget_want();
-                    None
+            Reach::Object { obj, inner } => {
+                match super::object::pick(buf, from, None, false, obj, inner, count) {
+                    Ok(picked) => Some(picked.span()),
+                    Err(missed) => {
+                        // Vim's `nv_object`: the operator is cancelled, the caret
+                        // stays where the object's walk ended.
+                        buf.set_cursor(self.clamped(buf, missed.at));
+                        st.forget_want();
+                        None
+                    }
                 }
-            },
+            }
         }
     }
 

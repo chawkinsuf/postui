@@ -45,13 +45,13 @@ impl Tok {
     pub fn of(ev: &KeyEvent) -> Option<Tok> {
         let mods = ev.modifiers.difference(KeyModifiers::SHIFT);
         match ev.code {
-            KeyCode::Char(c) if mods.is_empty() => Some(Tok::Char(
-                if ev.modifiers.contains(KeyModifiers::SHIFT) {
+            KeyCode::Char(c) if mods.is_empty() => {
+                Some(Tok::Char(if ev.modifiers.contains(KeyModifiers::SHIFT) {
                     c.to_ascii_uppercase()
                 } else {
                     c
-                },
-            )),
+                }))
+            }
             // Ctrl+shift+letter is a different chord (`KeyCombo::from_event`
             // sees it as the uppercase char with CONTROL, in both delivery
             // forms) and the notation has no `<C-S-x>`: no row names it.
@@ -68,7 +68,9 @@ impl Tok {
             code if ev.modifiers.is_empty() && NAMES.iter().any(|(_, k)| *k == code) => {
                 Some(Tok::Named(code))
             }
-            code if ev.modifiers == KeyModifiers::CONTROL && NAMES.iter().any(|(_, k)| *k == code) => {
+            code if ev.modifiers == KeyModifiers::CONTROL
+                && NAMES.iter().any(|(_, k)| *k == code) =>
+            {
                 Some(Tok::CtrlNamed(code))
             }
             _ => None,
@@ -143,16 +145,19 @@ pub fn events(notation: &str) -> Vec<KeyEvent> {
     while !rest.is_empty() {
         match rest.find("<A-") {
             Some(0) => {
-                let end = rest.find('>').unwrap_or_else(|| panic!("unclosed <A-…> in {notation:?}"));
+                let end =
+                    rest.find('>').unwrap_or_else(|| panic!("unclosed <A-…> in {notation:?}"));
                 let name = &rest[3..end];
                 let mut chars = name.chars();
                 let code = match (chars.next(), chars.next()) {
                     (Some(c), None) => KeyCode::Char(c),
-                    _ => NAMES
-                        .iter()
-                        .find(|(n, _)| *n == name)
-                        .unwrap_or_else(|| panic!("unknown key <A-{name}> in {notation:?}"))
-                        .1,
+                    _ => {
+                        NAMES
+                            .iter()
+                            .find(|(n, _)| *n == name)
+                            .unwrap_or_else(|| panic!("unknown key <A-{name}> in {notation:?}"))
+                            .1
+                    }
                 };
                 out.push(KeyEvent::new(code, KeyModifiers::ALT));
                 rest = &rest[end + 1..];
@@ -201,7 +206,10 @@ mod tests {
 
     #[test]
     fn notation_round_trips_through_key_events() {
-        for n in ["j", "gg", "G", "<C-r>", "<CR>", "<Esc>", "3j", "<Down>", ":", "$", "<S-Tab>", "<Space>", "<lt>", "<C-Home>", "3<C-End>"] {
+        for n in [
+            "j", "gg", "G", "<C-r>", "<CR>", "<Esc>", "3j", "<Down>", ":", "$", "<S-Tab>",
+            "<Space>", "<lt>", "<C-Home>", "3<C-End>",
+        ] {
             let toks = parse(n);
             let back: Vec<Tok> = events(n).iter().map(|e| Tok::of(e).expect("nameable")).collect();
             assert_eq!(back, toks, "{n}");
@@ -213,11 +221,21 @@ mod tests {
     fn keys_no_row_can_name_are_none() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT)), None);
-        assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL)), Some(Tok::CtrlNamed(KeyCode::Home)));
-        assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL | KeyModifiers::SHIFT)), None);
+        assert_eq!(
+            Tok::of(&KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL)),
+            Some(Tok::CtrlNamed(KeyCode::Home))
+        );
+        assert_eq!(
+            Tok::of(&KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL | KeyModifiers::SHIFT)),
+            None
+        );
         assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT)), None);
         let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
-        assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Char('R'), KeyModifiers::CONTROL)), None, "uppercase form");
+        assert_eq!(
+            Tok::of(&KeyEvent::new(KeyCode::Char('R'), KeyModifiers::CONTROL)),
+            None,
+            "uppercase form"
+        );
         assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Char('r'), ctrl_shift)), None, "kitty form");
         assert_eq!(Tok::of(&KeyEvent::new(KeyCode::Char('R'), ctrl_shift)), None);
         assert_eq!(

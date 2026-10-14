@@ -7,8 +7,12 @@
 use super::ctx::{EngineKind, EngineView, FieldId};
 use crate::components::line_input::LineInput;
 use crate::config::KeyProfile;
-use crate::vim::engine::{BodyBuf, BodyVisual, BufState, Engine, OneLineBuf, SearchMemory, Splicer, Target, TextBuf};
-pub use crate::vim::engine::{AppRequest, Dir, Mode, Note, Outcome, Pos, SearchLine, Seat, Settled, Shape, Start, ViewCtx};
+pub use crate::vim::engine::{
+    AppRequest, Dir, Mode, Note, Outcome, Pos, SearchLine, Seat, Settled, Shape, Start, ViewCtx,
+};
+use crate::vim::engine::{
+    BodyBuf, BodyVisual, BufState, Engine, OneLineBuf, SearchMemory, Splicer, Target, TextBuf,
+};
 use edtui::{EditorState, Index2, Lines};
 use ratatui::crossterm::event::KeyEvent;
 
@@ -100,7 +104,11 @@ impl Edit<'_> {
             }
             Edit::Append(text) => {
                 let len = s.buf().line_len(caret.row);
-                let at = if caret.col == 0 { caret } else { Pos::new(caret.row, (caret.col + 1).min(len)) };
+                let at = if caret.col == 0 {
+                    caret
+                } else {
+                    Pos::new(caret.row, (caret.col + 1).min(len))
+                };
                 s.splice(at, at, text);
                 let end = end_of(at, text);
                 s.set_cursor(Pos::new(end.row, end.col.saturating_sub(1)));
@@ -145,7 +153,9 @@ fn span_of<B: TextBuf>(b: &B, anchor: Pos, shape: Shape) -> (Pos, Pos) {
 /// Where `text` put at `at` ends.
 fn end_of(at: Pos, text: &str) -> Pos {
     match text.rsplit_once('\n') {
-        Some((head, tail)) => Pos::new(at.row + head.matches('\n').count() + 1, tail.chars().count()),
+        Some((head, tail)) => {
+            Pos::new(at.row + head.matches('\n').count() + 1, tail.chars().count())
+        }
         None => Pos::new(at.row, at.col + text.chars().count()),
     }
 }
@@ -300,7 +310,8 @@ impl Glue {
     /// its `/` or `?` (final review I-4); the body draws its own prompt.
     pub fn echo(&self) -> String {
         let echo = self.engine.echo();
-        let line = matches!(self.session, FieldSession::Live(id) if id.engine_kind() == EngineKind::Line);
+        let line =
+            matches!(self.session, FieldSession::Live(id) if id.engine_kind() == EngineKind::Line);
         match self.engine.search_line() {
             Some(search) if line => echo + &search.text,
             _ => echo,
@@ -370,9 +381,10 @@ impl Glue {
     pub fn yank_lines(&mut self, lines: &[String]) {
         let mut text = lines.join("\n");
         text.push('\n');
-        self.engine
-            .registers_mut()
-            .yank(None, crate::vim::engine::Register { text, kind: crate::vim::engine::RegKind::Line });
+        self.engine.registers_mut().yank(
+            None,
+            crate::vim::engine::Register { text, kind: crate::vim::engine::RegKind::Line },
+        );
     }
 
     /// The unnamed register's text, for the key matrix.
@@ -491,7 +503,13 @@ impl Glue {
 
     /// One key. `memory` is the app's last pattern, lent to the engine for
     /// the call (plan M5b Deviation 20).
-    pub fn handle(&mut self, ev: KeyEvent, buf: &mut FieldBuf<'_>, view: &ViewCtx, memory: &mut SearchMemory) -> Outcome {
+    pub fn handle(
+        &mut self,
+        ev: KeyEvent,
+        buf: &mut FieldBuf<'_>,
+        view: &ViewCtx,
+        memory: &mut SearchMemory,
+    ) -> Outcome {
         self.engine.swap_memory(memory);
         let out = target!(self, buf, |t| self.engine.handle(ev, t, view));
         self.engine.swap_memory(memory);
@@ -623,7 +641,9 @@ impl Glue {
     ) -> BodySearch {
         self.engine.swap_memory(memory);
         let b = BodyBuf::new(state, visual);
-        let prompt = (self.session == FieldSession::Live(FieldId::Body)).then(|| self.engine.search_line()).flatten();
+        let prompt = (self.session == FieldSession::Live(FieldId::Body))
+            .then(|| self.engine.search_line())
+            .flatten();
         let current = prompt.as_ref().and_then(|_| self.engine.search_preview(&b));
         let matches = self.engine.search_matches(&b, rows);
         self.engine.swap_memory(memory);
@@ -714,7 +734,10 @@ mod tests {
     fn a_response_yank_fills_the_unnamed_register_and_0() {
         let mut g = Glue::default();
         g.yank_lines(&["line 5".to_string(), "line 6".to_string()]);
-        let want = crate::vim::engine::Register { text: "line 5\nline 6\n".into(), kind: crate::vim::engine::RegKind::Line };
+        let want = crate::vim::engine::Register {
+            text: "line 5\nline 6\n".into(),
+            kind: crate::vim::engine::RegKind::Line,
+        };
         assert_eq!(g.engine.registers().unnamed(), &want);
         assert_eq!(g.engine.registers().zero(), &want);
     }
@@ -767,14 +790,27 @@ mod tests {
         let mut visual: BodyVisual = None;
         g.own_body(Some("main/a"), &mut SearchMemory::default());
         g.enter(&mut FieldBuf::Body(&mut body, &mut visual), Start::Normal, OpenSeat::Keep);
-        keys(&mut g, &mut FieldBuf::Body(&mut body, &mut visual), "x", &mut SearchMemory::default());
+        keys(
+            &mut g,
+            &mut FieldBuf::Body(&mut body, &mut visual),
+            "x",
+            &mut SearchMemory::default(),
+        );
         let mut url = LineInput::new("u");
         g.carry(&mut FieldBuf::Line(&mut url));
         assert_eq!(g.mode(), Mode::Normal);
-        assert!(g.can_undo(EngineKind::Body), "the body keeps its history while its request is open");
+        assert!(
+            g.can_undo(EngineKind::Body),
+            "the body keeps its history while its request is open"
+        );
         g.leave(&mut FieldBuf::Line(&mut url));
         g.enter(&mut FieldBuf::Body(&mut body, &mut visual), Start::Normal, OpenSeat::Keep);
-        keys(&mut g, &mut FieldBuf::Body(&mut body, &mut visual), "u", &mut SearchMemory::default());
+        keys(
+            &mut g,
+            &mut FieldBuf::Body(&mut body, &mut visual),
+            "u",
+            &mut SearchMemory::default(),
+        );
         assert_eq!(body.lines.to_string(), "one\ntwo");
     }
 
@@ -810,7 +846,12 @@ mod tests {
         let mut visual: BodyVisual = None;
         g.own_body(Some("main/a"), &mut SearchMemory::default());
         g.enter(&mut FieldBuf::Body(&mut body, &mut visual), Start::Normal, OpenSeat::Keep);
-        keys(&mut g, &mut FieldBuf::Body(&mut body, &mut visual), "x", &mut SearchMemory::default());
+        keys(
+            &mut g,
+            &mut FieldBuf::Body(&mut body, &mut visual),
+            "x",
+            &mut SearchMemory::default(),
+        );
         g.own_body(Some("main/a"), &mut SearchMemory::default());
         assert!(g.can_undo(EngineKind::Body), "the same request keeps it");
         g.own_body(Some("main/b"), &mut SearchMemory::default());
@@ -826,7 +867,12 @@ mod tests {
         let mut visual: BodyVisual = None;
         g.own_body(None, &mut SearchMemory::default());
         g.enter(&mut FieldBuf::Body(&mut body, &mut visual), Start::Normal, OpenSeat::Keep);
-        keys(&mut g, &mut FieldBuf::Body(&mut body, &mut visual), "x", &mut SearchMemory::default());
+        keys(
+            &mut g,
+            &mut FieldBuf::Body(&mut body, &mut visual),
+            "x",
+            &mut SearchMemory::default(),
+        );
         g.drop_body(&mut SearchMemory::default());
         g.own_body(None, &mut SearchMemory::default());
         assert!(!g.can_undo(EngineKind::Body));
@@ -840,7 +886,12 @@ mod tests {
         let mut visual: BodyVisual = None;
         g.own_body(Some("main/a"), &mut SearchMemory::default());
         g.enter(&mut FieldBuf::Body(&mut body, &mut visual), Start::Normal, OpenSeat::Keep);
-        keys(&mut g, &mut FieldBuf::Body(&mut body, &mut visual), "x", &mut SearchMemory::default());
+        keys(
+            &mut g,
+            &mut FieldBuf::Body(&mut body, &mut visual),
+            "x",
+            &mut SearchMemory::default(),
+        );
         g.follow_body(Some("main/other"), Some("main/elsewhere"));
         g.own_body(Some("main/a"), &mut SearchMemory::default());
         assert!(g.can_undo(EngineKind::Body), "a rename of another request moves nothing");
@@ -858,14 +909,24 @@ mod tests {
         let mut visual: BodyVisual = None;
         g.own_body(Some("main/a"), &mut SearchMemory::default());
         g.enter(&mut FieldBuf::Body(&mut body, &mut visual), Start::Normal, OpenSeat::Keep);
-        keys(&mut g, &mut FieldBuf::Body(&mut body, &mut visual), "o", &mut SearchMemory::default());
+        keys(
+            &mut g,
+            &mut FieldBuf::Body(&mut body, &mut visual),
+            "o",
+            &mut SearchMemory::default(),
+        );
         assert_eq!(body.lines.to_string(), "  a\n  ");
         let mut url = LineInput::new("u");
         g.carry_from(&mut FieldBuf::Body(&mut body, &mut visual), &mut FieldBuf::Line(&mut url));
         assert_eq!((g.mode(), body.lines.to_string()), (Mode::Insert, "  a\n".to_string()));
         g.leave(&mut FieldBuf::Line(&mut url));
         g.enter(&mut FieldBuf::Body(&mut body, &mut visual), Start::Normal, OpenSeat::Keep);
-        keys(&mut g, &mut FieldBuf::Body(&mut body, &mut visual), "u", &mut SearchMemory::default());
+        keys(
+            &mut g,
+            &mut FieldBuf::Body(&mut body, &mut visual),
+            "u",
+            &mut SearchMemory::default(),
+        );
         assert_eq!(body.lines.to_string(), "  a", "the history survived");
     }
 
@@ -892,8 +953,17 @@ mod tests {
         g.enter(&mut FieldBuf::Body(&mut body, &mut visual), Start::Normal, OpenSeat::Keep);
         g.edit(&mut FieldBuf::Body(&mut body, &mut visual), &Edit::Whole("{\n  \"a\": 1\n}"));
         assert_eq!(body.lines.to_string(), "{\n  \"a\": 1\n}");
-        assert_eq!((body.cursor.row, body.cursor.col), (0, 0), "row 0 has one char: the caret clamps");
-        keys(&mut g, &mut FieldBuf::Body(&mut body, &mut visual), "u", &mut SearchMemory::default());
+        assert_eq!(
+            (body.cursor.row, body.cursor.col),
+            (0, 0),
+            "row 0 has one char: the caret clamps"
+        );
+        keys(
+            &mut g,
+            &mut FieldBuf::Body(&mut body, &mut visual),
+            "u",
+            &mut SearchMemory::default(),
+        );
         assert_eq!(body.lines.to_string(), "{\"a\":1}");
     }
 
@@ -927,11 +997,18 @@ mod tests {
         keys(&mut g, &mut FieldBuf::Body(&mut body, &mut visual), "/foo", &mut memory);
         let s = g.body_search(&mut body, &mut visual, 0..usize::MAX, &mut memory);
         assert_eq!(s.prompt.as_ref().map(|p| p.text.as_str()), Some("foo"));
-        assert_eq!(s.current, Some((Pos::new(0, 8), Pos::new(0, 11))), "incsearch: the match Enter would land on");
+        assert_eq!(
+            s.current,
+            Some((Pos::new(0, 8), Pos::new(0, 11))),
+            "incsearch: the match Enter would land on"
+        );
         keys(&mut g, &mut FieldBuf::Body(&mut body, &mut visual), "<CR>", &mut memory);
         let s = g.body_search(&mut body, &mut visual, 0..usize::MAX, &mut memory);
         assert_eq!((s.prompt, s.current), (None, None));
-        assert_eq!(s.matches, vec![(Pos::new(0, 0), Pos::new(0, 3)), (Pos::new(0, 8), Pos::new(0, 11))]);
+        assert_eq!(
+            s.matches,
+            vec![(Pos::new(0, 0), Pos::new(0, 3)), (Pos::new(0, 8), Pos::new(0, 11))]
+        );
     }
 
     /// Spec §3.7: piece 4 calls the engine here and nowhere else.
@@ -957,7 +1034,8 @@ mod tests {
                 let text = std::fs::read_to_string(&path).unwrap();
                 for name in names {
                     let needle = format!("engine::{name}");
-                    let braced = text.contains("vim::engine::{") && text.contains(&format!("{name},"));
+                    let braced =
+                        text.contains("vim::engine::{") && text.contains(&format!("{name},"));
                     if text.contains(&needle) || braced {
                         hits.push(format!("{rel}: {name}"));
                     }

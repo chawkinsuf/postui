@@ -2,12 +2,14 @@
 //! `current_quote` and `current_block` (textobject.c), for an operator
 //! (`vis: None`) and for Visual (`vis: Some(anchor)`).
 
+use super::Shape;
 use super::buf::{Pos, TextBuf};
 use super::class::white;
 use super::keys::Object;
-use super::motion::{MKind, MatchFrom, Walk, bck_word, bckend_word, end_word, find_match, fwd_word, starts_paragraph};
+use super::motion::{
+    MKind, MatchFrom, Walk, bck_word, bckend_word, end_word, find_match, fwd_word, starts_paragraph,
+};
 use super::op::Span;
-use super::Shape;
 
 /// What an object selected. For an operator, `start..end` with `inclusive`
 /// saying whether `end` is taken, or whole rows when `linewise`. In Visual,
@@ -106,7 +108,14 @@ fn back_in_line<B: TextBuf>(w: &mut Walk<B>, big: bool) {
 
 /// Vim's `current_word()`. `Err` holds where the walk stopped and, once
 /// the first word set it (Vim's `VIsual = start_pos`), the Visual anchor.
-fn word<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, count: usize, include: bool, big: bool) -> Result<Picked, Missed> {
+fn word<B: TextBuf>(
+    buf: &B,
+    caret: Pos,
+    vis: Option<Pos>,
+    count: usize,
+    include: bool,
+    big: bool,
+) -> Result<Picked, Missed> {
     let mut w = Walk::new(buf, caret);
     let mut count = count;
     let mut start = vis.unwrap_or(caret);
@@ -212,7 +221,8 @@ fn find_next_quote(line: &[char], mut col: usize, q: char, escape: bool) -> Opti
 fn find_prev_quote(line: &[char], mut col: usize, q: char, escape: bool) -> usize {
     while col > 0 {
         col -= 1;
-        let n = if escape { line[..col].iter().rev().take_while(|&&c| c == '\\').count() } else { 0 };
+        let n =
+            if escape { line[..col].iter().rev().take_while(|&&c| c == '\\').count() } else { 0 };
         if n % 2 == 1 {
             col -= n;
         } else if line[col] == q {
@@ -223,7 +233,14 @@ fn find_prev_quote(line: &[char], mut col: usize, q: char, escape: bool) -> usiz
 }
 
 /// Vim's `current_quote()` (within one line).
-fn quote<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, count: usize, include: bool, q: char) -> Option<Picked> {
+fn quote<B: TextBuf>(
+    buf: &B,
+    caret: Pos,
+    vis: Option<Pos>,
+    count: usize,
+    include: bool,
+    q: char,
+) -> Option<Picked> {
     let line: Vec<char> = buf.line(caret.row).into_owned();
     let at = |i: usize| line.get(i).copied();
     let mut vis_empty = true;
@@ -238,7 +255,8 @@ fn quote<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, count: usize, includ
         vis_empty = v == caret;
         if !vis_empty {
             let (lo, hi) = if vis_bef_curs { (v.col, caret.col) } else { (caret.col, v.col) };
-            inside_quotes = lo > 0 && at(lo - 1) == Some(q) && at(hi).is_some() && at(hi + 1) == Some(q);
+            inside_quotes =
+                lo > 0 && at(lo - 1) == Some(q) && at(hi).is_some() && at(hi + 1) == Some(q);
             selected_quote = (lo..=hi).take_while(|&i| i < line.len()).any(|i| line[i] == q);
         }
     }
@@ -318,7 +336,8 @@ fn quote<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, count: usize, includ
         let keep = !vis_empty
             && !(vis_bef_curs
                 && !selected_quote
-                && (inside_quotes || (at(v.col) != Some(q) && (v.col == 0 || at(v.col - 1) != Some(q)))));
+                && (inside_quotes
+                    || (at(v.col) != Some(q) && (v.col == 0 || at(v.col - 1) != Some(q)))));
         if keep {
             anchor = v;
         }
@@ -344,7 +363,9 @@ fn quote<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, count: usize, includ
         // selection an empty Visual area would have made.
         let mut head_anchor = v;
         if inside_quotes
-            || (!selected_quote && at(v.col) != Some(q) && (at(v.col).is_none() || at(v.col + 1) != Some(q)))
+            || (!selected_quote
+                && at(v.col) != Some(q)
+                && (at(v.col).is_none() || at(v.col + 1) != Some(q)))
         {
             head_anchor = Pos::new(row, end.saturating_sub(1));
         }
@@ -353,7 +374,14 @@ fn quote<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, count: usize, includ
 }
 
 /// Vim's `current_block()`: `open` is `(`, `[` or `{`.
-fn block<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, count: usize, include: bool, open: char) -> Option<Picked> {
+fn block<B: TextBuf>(
+    buf: &B,
+    caret: Pos,
+    vis: Option<Pos>,
+    count: usize,
+    include: bool,
+    open: char,
+) -> Option<Picked> {
     let close = match open {
         '(' => ')',
         '[' => ']',
@@ -463,7 +491,14 @@ fn line_white<B: TextBuf>(buf: &B, row: usize) -> bool {
 /// grows by whole paragraphs and keeps its shape; otherwise the paragraph
 /// becomes a linewise selection. Blank-only lines are blank here, while
 /// `{ }` stop only at empty ones (plan 3b Deviation 2).
-fn paragraph<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, line_mode: bool, count: usize, include: bool) -> Result<Picked, Missed> {
+fn paragraph<B: TextBuf>(
+    buf: &B,
+    caret: Pos,
+    vis: Option<Pos>,
+    line_mode: bool,
+    count: usize,
+    include: bool,
+) -> Result<Picked, Missed> {
     let last = buf.line_count() - 1;
     let white = |row: usize| line_white(buf, row);
     let starts = |row: usize| starts_paragraph(&buf.line(row));
@@ -490,7 +525,9 @@ fn paragraph<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, line_mode: bool,
                 }
                 while start != edge {
                     let next = step(start);
-                    if is_white != white(next) || (!is_white && starts(if back { start } else { next })) {
+                    if is_white != white(next)
+                        || (!is_white && starts(if back { start } else { next }))
+                    {
                         break;
                     }
                     start = next;
@@ -572,8 +609,20 @@ fn paragraph<B: TextBuf>(buf: &B, caret: Pos, vis: Option<Pos>, line_mode: bool,
         Some(anchor) if line_mode && start == caret.row => extend(start, anchor),
         Some(anchor) => {
             let anchor = if anchor.row == start { anchor } else { Pos::new(start, 0) };
-            Ok(Picked { start: anchor, end: Pos::new(end, 0), inclusive: false, linewise: true, shape: Some(Shape::Line) })
+            Ok(Picked {
+                start: anchor,
+                end: Pos::new(end, 0),
+                inclusive: false,
+                linewise: true,
+                shape: Some(Shape::Line),
+            })
         }
-        None => Ok(Picked { start: Pos::new(start, 0), end: Pos::new(end, 0), inclusive: false, linewise: true, shape: None }),
+        None => Ok(Picked {
+            start: Pos::new(start, 0),
+            end: Pos::new(end, 0),
+            inclusive: false,
+            linewise: true,
+            shape: None,
+        }),
     }
 }

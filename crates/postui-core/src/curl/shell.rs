@@ -217,9 +217,7 @@ impl Splitter<'_> {
     }
 
     fn unclosed(&self) -> ShellError {
-        ShellError::Unclosed {
-            command: self.commands.len() + 1,
-        }
+        ShellError::Unclosed { command: self.commands.len() + 1 }
     }
 
     fn push(&mut self, c: char) {
@@ -393,7 +391,8 @@ impl Splitter<'_> {
                                 && code.is_some_and(|c| (0xD800..0xDC00).contains(&c))
                                 && let Some(low) = self.low_surrogate()
                             {
-                                code = code.map(|h| 0x10000 + ((h - 0xD800) << 10) + (low - 0xDC00));
+                                code =
+                                    code.map(|h| 0x10000 + ((h - 0xD800) << 10) + (low - 0xDC00));
                             }
                             match code.and_then(char::from_u32) {
                                 Some(c) if !digits.is_empty() => {
@@ -643,7 +642,10 @@ mod tests {
 
     #[test]
     fn backslash_newline_continues_the_command() {
-        assert_eq!(words("curl \\\n  -X POST \\\r\n  https://x"), ["curl", "-X", "POST", "https://x"]);
+        assert_eq!(
+            words("curl \\\n  -X POST \\\r\n  https://x"),
+            ["curl", "-X", "POST", "https://x"]
+        );
     }
 
     #[test]
@@ -687,7 +689,10 @@ mod tests {
     fn a_command_is_alone_on_a_line_of_its_own_with_no_tail() {
         let alone = |t| split(t).unwrap().iter().map(|c| c.alone).collect::<Vec<_>>();
         assert_eq!(alone("a\\\n  b # note\n\nc\n"), [true, true]);
-        assert_eq!(alone("a; b\nc && d\ne || f\ng &\nh"), [false, false, false, false, false, false, false, true]);
+        assert_eq!(
+            alone("a; b\nc && d\ne || f\ng &\nh"),
+            [false, false, false, false, false, false, false, true]
+        );
         assert_eq!(alone("a | b\nc > f\nd"), [false, false, true]);
     }
 
@@ -729,14 +734,20 @@ mod tests {
     #[test]
     fn shell_variables_become_postui_variables() {
         let cmds = split(r#"curl -H "Authorization: Bearer $TOKEN" ${BASE}/x $TOKEN"#).unwrap();
-        assert_eq!(cmds[0].words, ["curl", "-H", "Authorization: Bearer {{TOKEN}}", "{{BASE}}/x", "{{TOKEN}}"]);
+        assert_eq!(
+            cmds[0].words,
+            ["curl", "-H", "Authorization: Bearer {{TOKEN}}", "{{BASE}}/x", "{{TOKEN}}"]
+        );
         assert_eq!(cmds[0].converted, ["TOKEN", "BASE"]);
     }
 
     #[test]
     fn specials_and_single_quotes_stay_literal() {
         let cmds = split(r#"curl "$1 $? $$ ${X:-y} $" '$NOT' $'$ALSO' -u 'me:p@$$w0rd'"#).unwrap();
-        assert_eq!(cmds[0].words, ["curl", "$1 $? $$ ${X:-y} $", "$NOT", "$ALSO", "-u", "me:p@$$w0rd"]);
+        assert_eq!(
+            cmds[0].words,
+            ["curl", "$1 $? $$ ${X:-y} $", "$NOT", "$ALSO", "-u", "me:p@$$w0rd"]
+        );
         assert!(cmds[0].converted.is_empty());
     }
 
@@ -777,7 +788,10 @@ mod tests {
     #[test]
     fn an_assignment_word_opens_with_an_unquoted_name_and_equals() {
         let m = |t| marks(t).into_iter().map(|(a, _)| a).collect::<Vec<_>>();
-        assert_eq!(m("A=1 B='x y' C= \"D\"=1 E\\=1 F$X=1 =1 1A=2"), [true, true, true, false, false, false, false, false]);
+        assert_eq!(
+            m("A=1 B='x y' C= \"D\"=1 E\\=1 F$X=1 =1 1A=2"),
+            [true, true, true, false, false, false, false, false]
+        );
         assert_eq!(m("A+=1 \"A\"+=1 A\\+=1 +=1 A++=1"), [true, false, false, false, false]);
         // Quotes after the `=` are part of the value.
         assert_eq!(m("A=\"$x\"=y"), [true]);

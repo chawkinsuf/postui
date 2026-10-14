@@ -48,11 +48,15 @@ pub(crate) fn list(disk: &mut Disk) -> (Vec<RequestListing>, Option<String>) {
         let slug = rel.strip_suffix(".toml").unwrap_or(rel).to_string();
         match crate::storage::space_of(&slug) {
             None => {
-                loose.push(format!("requests/{rel} is not in a space (move it into a space directory)"));
+                loose.push(format!(
+                    "requests/{rel} is not in a space (move it into a space directory)"
+                ));
                 continue;
             }
             Some(space) if crate::storage::validate_slug(space).is_err() => {
-                loose.push(format!("requests/{rel} is not in a valid space (space names are a-z 0-9 - _)"));
+                loose.push(format!(
+                    "requests/{rel} is not in a valid space (space names are a-z 0-9 - _)"
+                ));
                 continue;
             }
             Some(_) => {}
@@ -178,14 +182,9 @@ impl Project {
         // instead reports `Changed` on the next check, a harmless extra
         // prompt.
         let stamp = self.disk.stamp(&path);
-        let text = self
-            .disk
-            .read(&path)?
-            .ok_or_else(|| Error::NotFound(slug.to_string()))?;
-        let req = HttpRequest::from_toml_str(&text).map_err(|e| Error::Parse {
-            file: path.to_string(),
-            error: e.to_string(),
-        })?;
+        let text = self.disk.read(&path)?.ok_or_else(|| Error::NotFound(slug.to_string()))?;
+        let req = HttpRequest::from_toml_str(&text)
+            .map_err(|e| Error::Parse { file: path.to_string(), error: e.to_string() })?;
         self.open_requests.insert(slug.to_string(), Held { req, stamp });
         Ok(&self.open_requests[slug].req)
     }
@@ -198,14 +197,9 @@ impl Project {
     /// sidebar's Copy as curl on a request that is not open).
     pub fn read_request(&mut self, slug: &str) -> Result<HttpRequest, Error> {
         let path = request_rel(slug)?;
-        let text = self
-            .disk
-            .read(&path)?
-            .ok_or_else(|| Error::NotFound(slug.to_string()))?;
-        HttpRequest::from_toml_str(&text).map_err(|e| Error::Parse {
-            file: path.to_string(),
-            error: e.to_string(),
-        })
+        let text = self.disk.read(&path)?.ok_or_else(|| Error::NotFound(slug.to_string()))?;
+        HttpRequest::from_toml_str(&text)
+            .map_err(|e| Error::Parse { file: path.to_string(), error: e.to_string() })
     }
 
     /// Writes the request, refreshes the held copy and its listing row.
@@ -219,17 +213,8 @@ impl Project {
             // file before the rename), not a fresh stat: an outside write
             // landing in the window between the two would otherwise
             // become the seed and never be reported.
-            let stamp = self
-                .disk
-                .recorded(&path)
-                .unwrap_or_else(|| self.disk.stamp(&path));
-            self.open_requests.insert(
-                slug.to_string(),
-                Held {
-                    req: req.clone(),
-                    stamp,
-                },
-            );
+            let stamp = self.disk.recorded(&path).unwrap_or_else(|| self.disk.stamp(&path));
+            self.open_requests.insert(slug.to_string(), Held { req: req.clone(), stamp });
         }
         match self.listing.iter_mut().find(|l| l.slug == slug) {
             Some(row) => {
@@ -244,7 +229,12 @@ impl Project {
 
     /// Whether a request in `folder` already answers to `leaf_display`
     /// (case-insensitive; a legacy file's display name is its slug leaf).
-    pub fn sibling_name_taken(&self, folder: &str, leaf_display: &str, exclude: Option<&str>) -> bool {
+    pub fn sibling_name_taken(
+        &self,
+        folder: &str,
+        leaf_display: &str,
+        exclude: Option<&str>,
+    ) -> bool {
         let wanted = leaf_display.to_lowercase();
         self.listing.iter().any(|l| {
             if exclude == Some(l.slug.as_str()) {
@@ -308,7 +298,12 @@ impl Project {
         self.order_edit(space, |order| order::remove(space, order, rel))
     }
 
-    pub(super) fn order_rename(&mut self, space: &str, from: &str, to: &str) -> Result<Vec<OrderEdit>, Error> {
+    pub(super) fn order_rename(
+        &mut self,
+        space: &str,
+        from: &str,
+        to: &str,
+    ) -> Result<Vec<OrderEdit>, Error> {
         if order::level_of(from) == order::level_of(to) {
             return self.order_edit(space, |order| {
                 for e in order.iter_mut() {
@@ -316,7 +311,11 @@ impl Project {
                         *e = to.to_string();
                     }
                 }
-                vec![OrderEdit::Renamed { space: space.to_string(), from: from.to_string(), to: to.to_string() }]
+                vec![OrderEdit::Renamed {
+                    space: space.to_string(),
+                    from: from.to_string(),
+                    to: to.to_string(),
+                }]
             });
         }
         let mut edits = self.order_remove(space, from)?;
@@ -324,7 +323,12 @@ impl Project {
         Ok(edits)
     }
 
-    pub(super) fn order_insert_after(&mut self, space: &str, anchor: &str, rel: &str) -> Result<Vec<OrderEdit>, Error> {
+    pub(super) fn order_insert_after(
+        &mut self,
+        space: &str,
+        anchor: &str,
+        rel: &str,
+    ) -> Result<Vec<OrderEdit>, Error> {
         self.order_edit(space, |order| {
             if order.iter().any(|e| e == rel) {
                 return Vec::new();
@@ -337,7 +341,12 @@ impl Project {
 
     /// `order_insert_after`'s twin for a put *above* the anchor: the new
     /// entry takes the anchor's own index and pushes it down.
-    pub(super) fn order_insert_before(&mut self, space: &str, anchor: &str, rel: &str) -> Result<Vec<OrderEdit>, Error> {
+    pub(super) fn order_insert_before(
+        &mut self,
+        space: &str,
+        anchor: &str,
+        rel: &str,
+    ) -> Result<Vec<OrderEdit>, Error> {
         self.order_edit(space, |order| {
             if order.iter().any(|e| e == rel) {
                 return Vec::new();
@@ -363,7 +372,12 @@ impl Project {
     }
 
     /// One read-modify-write per space, however many requests moved.
-    pub(super) fn order_move_all(&mut self, from: &str, to: &str, moves: &[(String, String)]) -> Result<(), Error> {
+    pub(super) fn order_move_all(
+        &mut self,
+        from: &str,
+        to: &str,
+        moves: &[(String, String)],
+    ) -> Result<(), Error> {
         self.order_edit(from, |order| {
             moves.iter().flat_map(|(f, _)| order::remove(from, order, f)).collect()
         })?;
@@ -386,14 +400,15 @@ impl Project {
 
 impl Project {
     fn meta_for_moves(&self, moves: Vec<(String, String)>) -> EntryMeta {
-        EntryMeta {
-            moves,
-            active_env: None,
-        }
+        EntryMeta { moves, active_env: None }
     }
 
     /// Creates a request from a typed display path ("Folder/My Request!").
-    pub fn create_request(&mut self, display_path: &str, mut req: HttpRequest) -> Result<(String, String), Error> {
+    pub fn create_request(
+        &mut self,
+        display_path: &str,
+        mut req: HttpRequest,
+    ) -> Result<(String, String), Error> {
         let Some((folder, leaf)) = crate::storage::split_display_path(display_path) else {
             return Err(Error::BadName(display_path.to_string()));
         };
@@ -416,7 +431,11 @@ impl Project {
 
     /// Renames to a new typed display path; rewrites `name` when the file
     /// parses (a broken file just moves).
-    pub fn rename_request(&mut self, from_slug: &str, display_path: &str) -> Result<(String, String), Error> {
+    pub fn rename_request(
+        &mut self,
+        from_slug: &str,
+        display_path: &str,
+    ) -> Result<(String, String), Error> {
         let from_path = request_rel(from_slug)?;
         if !self.disk.is_file(&from_path) {
             return Err(Error::NotFound(from_slug.to_string()));
@@ -631,7 +650,12 @@ impl Project {
     /// outside the copy's space leaves the copy unlisted. A put always
     /// seeds a missing order array for the anchor's level; only
     /// `duplicate_request` never does.
-    pub fn duplicate_request_at(&mut self, slug: &str, anchor: &str, above: bool) -> Result<String, Error> {
+    pub fn duplicate_request_at(
+        &mut self,
+        slug: &str,
+        anchor: &str,
+        above: bool,
+    ) -> Result<String, Error> {
         self.duplicate_with(slug, anchor, above, true)
     }
 
@@ -663,22 +687,27 @@ impl Project {
 
     /// The shared body. `seed` says whether a missing order array is
     /// written (a put) or left alone (a plain duplicate).
-    fn duplicate_with(&mut self, slug: &str, anchor: &str, above: bool, seed: bool) -> Result<String, Error> {
+    fn duplicate_with(
+        &mut self,
+        slug: &str,
+        anchor: &str,
+        above: bool,
+        seed: bool,
+    ) -> Result<String, Error> {
         let source = request_rel(slug)?;
-        let bytes = self
-            .disk
-            .read_bytes(&source)?
-            .ok_or_else(|| Error::NotFound(slug.to_string()))?;
+        let bytes =
+            self.disk.read_bytes(&source)?.ok_or_else(|| Error::NotFound(slug.to_string()))?;
         let (src_folder, leaf) = slug.rsplit_once('/').unwrap_or(("", slug));
         let folder = match (Self::split_space(slug), Self::split_space(anchor)) {
-            (Some((src_space, _)), Some((a_space, _))) if anchor != slug && src_space == a_space => {
+            (Some((src_space, _)), Some((a_space, _)))
+                if anchor != slug && src_space == a_space =>
+            {
                 anchor.rsplit_once('/').map_or("", |(f, _)| f)
             }
             _ => src_folder,
         };
-        let parsed = std::str::from_utf8(&bytes)
-            .ok()
-            .and_then(|s| HttpRequest::from_toml_str(s).ok());
+        let parsed =
+            std::str::from_utf8(&bytes).ok().and_then(|s| HttpRequest::from_toml_str(s).ok());
         let (new_slug, text) = match parsed {
             Some(mut req) => {
                 let base = req.name.clone().unwrap_or_else(|| leaf.to_string());
@@ -693,7 +722,8 @@ impl Project {
                 (new_slug, req.to_toml_string().into_bytes())
             }
             None => {
-                let stem = if folder.is_empty() { leaf.to_string() } else { format!("{folder}/{leaf}") };
+                let stem =
+                    if folder.is_empty() { leaf.to_string() } else { format!("{folder}/{leaf}") };
                 let mut new_slug = format!("{stem}-copy");
                 let mut n = 2;
                 while self.request_exists(&new_slug) {
@@ -714,7 +744,9 @@ impl Project {
         let seed = seed
             .then_some(anchor)
             .and_then(Self::split_space)
-            .filter(|(a_space, a_rel)| !order::space_order(&self.meta, a_space).iter().any(|e| e == a_rel))
+            .filter(|(a_space, a_rel)| {
+                !order::space_order(&self.meta, a_space).iter().any(|e| e == a_rel)
+            })
             .map(|(a_space, a_rel)| {
                 let level = order::level_of(a_rel);
                 let shown = self.level_shown(a_space, level);
@@ -822,7 +854,10 @@ mod tests {
         assert_eq!((slug.as_str(), leaf.as_str()), ("main/my-ping", "My Ping!"));
         assert!(dir.path().join("requests/main/my-ping.toml").is_file());
         assert!(slugs(&p).contains(&"main/my-ping".to_string()));
-        assert!(matches!(p.create_request("main/my ping!", req("u")), Err(Error::AlreadyExists(_))));
+        assert!(matches!(
+            p.create_request("main/my ping!", req("u")),
+            Err(Error::AlreadyExists(_))
+        ));
         let (slug2, _) = p.create_request("main/My-Ping", req("u")).unwrap();
         assert_eq!(slug2, "main/my-ping-2");
         assert_eq!(p.journal_len(), 2);
@@ -870,7 +905,8 @@ mod tests {
             )
             .unwrap();
         }
-        std::fs::write(dir.path().join("requests/auth/r3.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
+        std::fs::write(dir.path().join("requests/auth/r3.toml"), "method = \"GET\"\nurl = \"u\"\n")
+            .unwrap();
         p.relist();
         let (moved, _) = p.move_all_requests("main", "auth").unwrap();
         assert_eq!(moved.len(), 6);
@@ -880,7 +916,9 @@ mod tests {
         assert_eq!(e.meta.moves.len(), 6);
         assert!(e.ops.iter().all(|o| matches!(o, Op::Renamed { .. } | Op::Text { .. })));
         assert!(
-            !e.ops.iter().any(|o| matches!(o, Op::Text { path, .. } if path.as_str().starts_with("requests/"))),
+            !e.ops.iter().any(
+                |o| matches!(o, Op::Text { path, .. } if path.as_str().starts_with("requests/"))
+            ),
             "no request text in the journal"
         );
     }
@@ -928,7 +966,11 @@ mod tests {
     #[test]
     fn move_all_leaves_a_non_slug_file_behind_with_a_warning() {
         let (dir, mut p) = fixture();
-        std::fs::write(dir.path().join("requests/main/Get User.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("requests/main/Get User.toml"),
+            "method = \"GET\"\nurl = \"u\"\n",
+        )
+        .unwrap();
         p.relist();
         let (moved, warnings) = p.move_all_requests("main", "auth").unwrap();
         assert_eq!(moved, vec![("main/ping".to_string(), "auth/ping".to_string())]);
@@ -950,8 +992,10 @@ mod tests {
     #[test]
     fn move_all_refuses_whole_when_a_source_is_missing() {
         let (dir, mut p) = fixture();
-        std::fs::write(dir.path().join("requests/main/r1.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
-        std::fs::write(dir.path().join("requests/main/r2.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
+        std::fs::write(dir.path().join("requests/main/r1.toml"), "method = \"GET\"\nurl = \"u\"\n")
+            .unwrap();
+        std::fs::write(dir.path().join("requests/main/r2.toml"), "method = \"GET\"\nurl = \"u\"\n")
+            .unwrap();
         p.relist();
         std::fs::remove_file(dir.path().join("requests/main/r1.toml")).unwrap();
         let r = p.move_all_requests("main", "auth");
@@ -982,7 +1026,9 @@ mod tests {
         let copy = p.duplicate_request("auth/login").unwrap();
         let e = p.journal.pop_undo().unwrap();
         assert_eq!(e.ops.len(), 1);
-        assert!(matches!(&e.ops[0], Op::Created { path } if path.as_str() == format!("requests/{copy}.toml")));
+        assert!(
+            matches!(&e.ops[0], Op::Created { path } if path.as_str() == format!("requests/{copy}.toml"))
+        );
     }
 
     /// Spec §5.2: a batch delete is one journal entry, refused whole on a
@@ -996,8 +1042,16 @@ mod tests {
             "spaces = [\"main\", \"auth\"]\n[space.main]\norder = [\"r1\", \"r2\", \"ping\"]\n",
         )
         .unwrap();
-        std::fs::write(dir.path().join("requests/main/r1.toml"), "method = \"GET\"\nurl = \"u1\"\n").unwrap();
-        std::fs::write(dir.path().join("requests/main/r2.toml"), "# kept\nmethod = \"GET\"\nurl = \"u2\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("requests/main/r1.toml"),
+            "method = \"GET\"\nurl = \"u1\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("requests/main/r2.toml"),
+            "# kept\nmethod = \"GET\"\nurl = \"u2\"\n",
+        )
+        .unwrap();
         let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         let before = (read(&dir, "requests/main/r1.toml"), read(&dir, "requests/main/r2.toml"));
         p.delete_requests(&["main/r1".into(), "main/r2".into()]).unwrap();
@@ -1019,7 +1073,8 @@ mod tests {
     #[test]
     fn delete_requests_refuses_whole_when_one_is_missing() {
         let (dir, mut p) = fixture();
-        std::fs::write(dir.path().join("requests/main/r1.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
+        std::fs::write(dir.path().join("requests/main/r1.toml"), "method = \"GET\"\nurl = \"u\"\n")
+            .unwrap();
         p.relist();
         let r = p.delete_requests(&["main/r1".into(), "main/nope".into()]);
         assert!(matches!(r, Err(Error::NotFound(_))), "{r:?}");
@@ -1032,7 +1087,8 @@ mod tests {
     #[test]
     fn delete_requests_refuses_whole_on_an_invalid_slug() {
         let (dir, mut p) = fixture();
-        std::fs::write(dir.path().join("requests/main/r1.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
+        std::fs::write(dir.path().join("requests/main/r1.toml"), "method = \"GET\"\nurl = \"u\"\n")
+            .unwrap();
         p.relist();
         let r = p.delete_requests(&["main/r1".into(), "main/Get User".into()]);
         assert!(matches!(r, Err(Error::BadName(_))), "{r:?}");
@@ -1043,7 +1099,8 @@ mod tests {
     #[test]
     fn delete_requests_dedupes() {
         let (dir, mut p) = fixture();
-        std::fs::write(dir.path().join("requests/main/r1.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
+        std::fs::write(dir.path().join("requests/main/r1.toml"), "method = \"GET\"\nurl = \"u\"\n")
+            .unwrap();
         p.relist();
         p.delete_requests(&["main/r1".into(), "main/r1".into()]).unwrap();
         assert_eq!(p.journal_len(), 1);
@@ -1053,7 +1110,8 @@ mod tests {
     #[test]
     fn a_nested_transaction_joins_the_outer_entry() {
         let (dir, mut p) = fixture();
-        std::fs::write(dir.path().join("requests/main/r1.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
+        std::fs::write(dir.path().join("requests/main/r1.toml"), "method = \"GET\"\nurl = \"u\"\n")
+            .unwrap();
         p.relist();
         p.transaction("outer", EntryMeta::default(), |p| {
             p.delete_request("main/r1")?;
@@ -1246,7 +1304,10 @@ mod tests {
         let before = read(&dir, "project.toml").unwrap();
         let copies = p.duplicate_requests_at("main/a", "main/b", false, 3).unwrap();
         assert_eq!(copies, ["main/a-copy", "main/a-copy-2", "main/a-copy-3"]);
-        assert_eq!(order::space_order(p.meta(), "main"), ["a", "b", "a-copy", "a-copy-2", "a-copy-3", "c"]);
+        assert_eq!(
+            order::space_order(p.meta(), "main"),
+            ["a", "b", "a-copy", "a-copy-2", "a-copy-3", "c"]
+        );
         p.undo().unwrap();
         for c in &copies {
             assert!(!p.request_exists(c), "{c}");
@@ -1259,7 +1320,10 @@ mod tests {
     fn a_counted_put_above_keeps_its_copies_in_order() {
         let (_dir, mut p) = unordered_fixture();
         p.duplicate_requests_at("main/a", "main/b", true, 3).unwrap();
-        assert_eq!(order::space_order(p.meta(), "main"), ["a", "a-copy", "a-copy-2", "a-copy-3", "b", "c"]);
+        assert_eq!(
+            order::space_order(p.meta(), "main"),
+            ["a", "a-copy", "a-copy-2", "a-copy-3", "b", "c"]
+        );
     }
 
     #[test]
@@ -1461,7 +1525,6 @@ mod tests {
             "\"deleted outside the app\" would be a lie, and would withhold Reload"
         );
     }
-
 
     #[test]
     fn a_display_name_only_rename_re_stamps_the_held_entry_it_rewrote() {

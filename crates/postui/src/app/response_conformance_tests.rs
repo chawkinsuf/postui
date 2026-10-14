@@ -81,12 +81,20 @@ fn run(head: &Value, case: &Value) -> Result<(), String> {
         crate::vim::engine::RegKind::Line => "V",
         crate::vim::engine::RegKind::Char => "v",
     };
-    check("reg", format!("{:?}/{kind}", reg.text), format!("{:?}/{}", want["reg"].as_str().unwrap(), want["regtype"].as_str().unwrap()));
+    check(
+        "reg",
+        format!("{:?}/{kind}", reg.text),
+        format!("{:?}/{}", want["reg"].as_str().unwrap(), want["regtype"].as_str().unwrap()),
+    );
     let (pattern, fwd) = match app.vim.search_memory.pattern() {
         Some((p, backward)) => (p.to_string(), if backward { 0 } else { 1 }),
         None => (String::new(), 1),
     };
-    check("search", format!("{pattern:?}/{fwd}"), format!("{:?}/{}", want["search"].as_str().unwrap(), want["fwd"]));
+    check(
+        "search",
+        format!("{pattern:?}/{fwd}"),
+        format!("{:?}/{}", want["search"].as_str().unwrap(), want["fwd"]),
+    );
     check("msg", format!("{:?}", app.toasts.last_message()), format!("{:?}", want["msg"].as_str()));
     if diffs.is_empty() { Ok(()) } else { Err(diffs.join("; ")) }
 }
@@ -103,9 +111,16 @@ fn the_response_matches_vim() {
         let diverges = DIVERGENCES.iter().any(|(d, _)| *d == id);
         match (run(&head, &case), diverges) {
             (Err(m), false) => failures.push(format!("{id}: {m}")),
-            (Ok(()), true) => failures.push(format!("{id}: listed as a divergence but matches Vim")),
+            (Ok(()), true) => {
+                failures.push(format!("{id}: listed as a divergence but matches Vim"))
+            }
             _ => {}
         }
     }
-    assert!(failures.is_empty(), "{} of {total} case(s) differ from Vim:\n{}", failures.len(), failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "{} of {total} case(s) differ from Vim:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
 }

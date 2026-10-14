@@ -127,11 +127,7 @@ impl Theme {
         let accent = seeds.accent;
         let accent_edge_light = lift(accent, 0.12);
         let accent_edge_dark = lift(accent, -0.12);
-        let on_accent = if oklab_l(accent) < 0.6 {
-            (0xff, 0xff, 0xff)
-        } else {
-            (0x11, 0x11, 0x11)
-        };
+        let on_accent = if oklab_l(accent) < 0.6 { (0xff, 0xff, 0xff) } else { (0x11, 0x11, 0x11) };
         let focus_ring = accent;
         // 35% accent over the background: visibly "the accent's" selection
         // without fighting the text drawn on top of it.
@@ -313,11 +309,7 @@ pub fn seeds_from_queried(q: &QueriedColors) -> Seeds {
 /// background, dark text on a light one, using the same built-in seeds
 /// `Theme::generate`'s contrast clamp would converge on anyway.
 fn derive_fg_from_bg(bg: (u8, u8, u8)) -> (u8, u8, u8) {
-    if oklab_l(bg) < 0.5 {
-        Seeds::dark().fg
-    } else {
-        Seeds::light().fg
-    }
+    if oklab_l(bg) < 0.5 { Seeds::dark().fg } else { Seeds::light().fg }
 }
 
 /// Whether `c` reads as a light color (Oklab lightness >= 0.5) — used to
@@ -413,20 +405,12 @@ pub(crate) fn rgb_of(c: Color) -> (u8, u8, u8) {
 
 fn srgb_to_linear(v: u8) -> f32 {
     let v = v as f32 / 255.0;
-    if v <= 0.04045 {
-        v / 12.92
-    } else {
-        ((v + 0.055) / 1.055).powf(2.4)
-    }
+    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
 }
 
 fn linear_to_srgb(v: f32) -> u8 {
     let v = v.clamp(0.0, 1.0);
-    let s = if v <= 0.0031308 {
-        v * 12.92
-    } else {
-        1.055 * v.powf(1.0 / 2.4) - 0.055
-    };
+    let s = if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
     (s.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
@@ -520,11 +504,7 @@ pub fn rgb_to_indexed(r: u8, g: u8, b: u8) -> u8 {
         let db = ab.abs_diff(b) as u32;
         dr * dr + dg * dg + db * db
     };
-    if dist(cube_rgb) <= dist((gray_val, gray_val, gray_val)) {
-        cube_idx
-    } else {
-        gray_idx
-    }
+    if dist(cube_rgb) <= dist((gray_val, gray_val, gray_val)) { cube_idx } else { gray_idx }
 }
 
 /// Inverse of [`rgb_to_indexed`]'s cube/gray math: maps an xterm-256 index
@@ -629,11 +609,7 @@ pub fn mix(a: Color, b: Color, t: f32) -> Color {
     };
     let (al, aa, ab_) = oklab((ar, ag, ab));
     let (bl, ba, bb_) = oklab((br, bg, bb));
-    let (r, g, b) = oklab_to_rgb((
-        al + (bl - al) * t,
-        aa + (ba - aa) * t,
-        ab_ + (bb_ - ab_) * t,
-    ));
+    let (r, g, b) = oklab_to_rgb((al + (bl - al) * t, aa + (ba - aa) * t, ab_ + (bb_ - ab_) * t));
     Color::Rgb(r, g, b)
 }
 
@@ -658,11 +634,7 @@ mod tests {
     /// allows — without touching a pair that already clears the bar.
     #[test]
     fn wcag_floor_lifts_soft_seeds_and_leaves_strong_pairs_alone() {
-        let soft = Seeds {
-            bg: (0x22, 0x28, 0x2c),
-            fg: (0x8a, 0x92, 0x96),
-            ..Seeds::dark()
-        };
+        let soft = Seeds { bg: (0x22, 0x28, 0x2c), fg: (0x8a, 0x92, 0x96), ..Seeds::dark() };
         let t = Theme::generate(&soft);
         let (page, text, muted) = (rgb_of(t.page), rgb_of(t.text), rgb_of(t.text_muted));
         let floor = MUTED_MIN_CONTRAST.min(wcag_contrast(text, page) / MUTED_TEXT_GAP);
@@ -691,10 +663,7 @@ mod tests {
             let page = l(t.page);
             let muted = (l(t.text_muted) - page).abs();
             let disabled = (l(t.text_disabled) - page).abs();
-            assert!(
-                disabled <= muted * 0.5,
-                "disabled {disabled} vs muted {muted}"
-            );
+            assert!(disabled <= muted * 0.5, "disabled {disabled} vs muted {muted}");
         }
     }
 
@@ -702,10 +671,7 @@ mod tests {
     fn dark_theme_tokens_are_rgb() {
         let t = Theme::dark();
         for c in [t.page, t.text, t.accent, t.edge_light, t.focus_ring] {
-            assert!(
-                matches!(c, Color::Rgb(..)),
-                "token must be truecolor: {c:?}"
-            );
+            assert!(matches!(c, Color::Rgb(..)), "token must be truecolor: {c:?}");
         }
     }
 
@@ -722,10 +688,7 @@ mod tests {
     fn variant_is_reported_and_survives_downgrade() {
         assert!(Theme::dark().is_dark());
         assert!(!Theme::light().is_dark());
-        assert!(
-            Theme::dark().downgrade_to_256().is_dark(),
-            "downgrade keeps the variant"
-        );
+        assert!(Theme::dark().downgrade_to_256().is_dark(), "downgrade keeps the variant");
     }
 
     #[test]
@@ -751,10 +714,7 @@ mod tests {
             t.edge_light,
             t.focus_ring,
         ] {
-            assert!(
-                matches!(c, Color::Indexed(_)),
-                "expected indexed, got {c:?}"
-            );
+            assert!(matches!(c, Color::Indexed(_)), "expected indexed, got {c:?}");
         }
     }
 
@@ -825,10 +785,7 @@ mod tests {
     #[test]
     fn text_contrast_is_clamped() {
         // pathological seeds: fg nearly equal to bg
-        let s = Seeds {
-            fg: (30, 30, 34),
-            ..Seeds::dark()
-        };
+        let s = Seeds { fg: (30, 30, 34), ..Seeds::dark() };
         let t = Theme::generate(&s);
         // Strict: the clamp's target overshoots quantization, so the
         // guarantee holds exactly.
@@ -921,19 +878,11 @@ mod tests {
     fn seeds_from_queried_uses_answer_and_falls_back_per_slot() {
         let mut ansi = [None; 16];
         ansi[4] = Some((1, 120, 212));
-        let s = seeds_from_queried(&QueriedColors {
-            bg: Some((16, 16, 20)),
-            fg: None,
-            ansi,
-        });
+        let s = seeds_from_queried(&QueriedColors { bg: Some((16, 16, 20)), fg: None, ansi });
         assert_eq!(s.bg, (16, 16, 20));
         assert_eq!(s.accent, (1, 120, 212));
         assert_eq!(s.fg, Seeds::dark().fg, "fg derived from the dark bg");
-        assert_eq!(
-            s.success,
-            Seeds::dark().success,
-            "missing slot: builtin seed"
-        );
+        assert_eq!(s.success, Seeds::dark().success, "missing slot: builtin seed");
     }
 
     #[test]

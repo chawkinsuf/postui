@@ -312,9 +312,7 @@ pub fn all_commands() -> Vec<Command> {
             id: "manage-spaces",
             name: "Manage: spaces",
             description: "Open the Manage screen's Spaces tab",
-            action: Action::OpenManage {
-                tab: Some(crate::components::manage::ManageTab::Spaces),
-            },
+            action: Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Spaces) },
         },
         Command {
             id: "vars-new-variable",
@@ -354,12 +352,7 @@ pub fn all_commands() -> Vec<Command> {
         },
         // A picked row, not the ctrl+c emergency exit: it meets the dirty
         // gate even when vim's `:` line opened over a dialog.
-        Command {
-            id: "quit",
-            name: "Quit",
-            description: "Exit postui",
-            action: Action::GatedQuit,
-        },
+        Command { id: "quit", name: "Quit", description: "Exit postui", action: Action::GatedQuit },
     ]
 }
 
@@ -543,7 +536,12 @@ impl PaletteState {
 
     /// The same palette opened by vim's `:` (spec §5.9), reading its query
     /// as a verb in `scope`, with the line's history to recall.
-    pub fn new_ex(usage: &crate::usage::UsageStore, now_secs: i64, scope: crate::keyroute::ex::Scope, history: &[String]) -> Self {
+    pub fn new_ex(
+        usage: &crate::usage::UsageStore,
+        now_secs: i64,
+        scope: crate::keyroute::ex::Scope,
+        history: &[String],
+    ) -> Self {
         Self { ex: Some(scope), history: history.to_vec(), ..Self::new(usage, now_secs) }
     }
 
@@ -716,7 +714,11 @@ impl PaletteState {
             // §5.9, Deviation 15); `App::box_claims` hands the key here
             // ahead of the engine. ctrl+p's palette keeps it inert.
             KeyCode::Backspace if self.ex.is_some() && self.input.text().is_empty() => {
-                return Some(super::modal::ModalResult { actions: vec![], close: true, usage: None });
+                return Some(super::modal::ModalResult {
+                    actions: vec![],
+                    close: true,
+                    usage: None,
+                });
             }
             KeyCode::Esc => {
                 return Some(super::modal::ModalResult {
@@ -727,8 +729,14 @@ impl PaletteState {
             }
             // Vim's `:<CR>`: nothing typed and nothing picked runs nothing,
             // though the frecency list shows under the line.
-            KeyCode::Enter if self.ex.is_some() && self.input.text().trim().is_empty() && !self.picked => {
-                return Some(super::modal::ModalResult { actions: vec![], close: true, usage: None });
+            KeyCode::Enter
+                if self.ex.is_some() && self.input.text().trim().is_empty() && !self.picked =>
+            {
+                return Some(super::modal::ModalResult {
+                    actions: vec![],
+                    close: true,
+                    usage: None,
+                });
             }
             KeyCode::Enter => return self.confirm(),
             // Vim's ↑ and ↓ on the `:` line recall its history (plan M5b
@@ -821,11 +829,7 @@ impl PaletteState {
     /// `redo`) and re-runs the filter, mirroring what typing that step
     /// forward did. Returns whether there was a step to take.
     pub(crate) fn undo_filter(&mut self, redo: bool) -> bool {
-        let stepped = if redo {
-            self.input.redo()
-        } else {
-            self.input.undo()
-        };
+        let stepped = if redo { self.input.redo() } else { self.input.undo() };
         if stepped {
             self.refilter();
         }
@@ -876,14 +880,13 @@ impl PaletteState {
             width: area.width.saturating_sub(2),
             height: FIELD_HEIGHT,
         };
-        let content = self
-            .input
-            .draw_line_windowed(true, theme, field_area.width.saturating_sub(2));
-        TextField {
-            content,
-            state: ControlState::Focused,
-        }
-        .paint(frame.buffer_mut(), field_area, theme);
+        let content =
+            self.input.draw_line_windowed(true, theme, field_area.width.saturating_sub(2));
+        TextField { content, state: ControlState::Focused }.paint(
+            frame.buffer_mut(),
+            field_area,
+            theme,
+        );
 
         let list_area = Rect {
             x: area.x + 1,
@@ -928,7 +931,11 @@ impl PaletteState {
                 (0, Some(row)) => (row.caption, "Ex command", Some(format!(":{}", row.name))),
                 _ => {
                     let c = &self.filtered[i - self.offset()];
-                    (c.name, c.description, keymap_action_name(c.id).and_then(|n| keymap.combo_for(n)))
+                    (
+                        c.name,
+                        c.description,
+                        keymap_action_name(c.id).and_then(|n| keymap.combo_for(n)),
+                    )
                 }
             };
             let title_row = list_area.y + ((i - self.scroll) as u16) * 2;
@@ -943,11 +950,7 @@ impl PaletteState {
                 RowHighlight::None
             };
             for row_y in [title_row, desc_row] {
-                ListRow {
-                    highlight,
-                    zebra: None,
-                }
-                .paint(
+                ListRow { highlight, zebra: None }.paint(
                     frame.buffer_mut(),
                     row_y,
                     list_area.x,
@@ -961,10 +964,7 @@ impl PaletteState {
 
             let right = list_area.x + list_area.width;
             let x = list_area.x + 1;
-            let combo_w = combo
-                .as_ref()
-                .map(|s| s.chars().count() as u16 + 1)
-                .unwrap_or(0);
+            let combo_w = combo.as_ref().map(|s| s.chars().count() as u16 + 1).unwrap_or(0);
             let title_right = right.saturating_sub(combo_w);
             paint::text(
                 frame.buffer_mut(),
@@ -997,12 +997,7 @@ impl PaletteState {
                 false,
             );
 
-            let row_rect = Rect {
-                x: list_area.x,
-                y: title_row,
-                width: list_area.width,
-                height: 2,
-            };
+            let row_rect = Rect { x: list_area.x, y: title_row, width: list_area.width, height: 2 };
             hits.register(row_rect, crate::hit::Hit::PaletteRow(i));
         }
     }
@@ -1196,10 +1191,7 @@ mod tests {
             "vars-new-variable",
             "vars-new-selector",
         ] {
-            assert!(
-                ids.contains(&expected),
-                "missing palette command {expected:?}"
-            );
+            assert!(ids.contains(&expected), "missing palette command {expected:?}");
         }
         let mut sorted = ids.clone();
         sorted.sort_unstable();
@@ -1207,27 +1199,15 @@ mod tests {
         assert_eq!(sorted.len(), ids.len(), "every command id must be unique");
 
         assert_eq!(
-            commands
-                .iter()
-                .find(|c| c.id == "response-search")
-                .unwrap()
-                .action,
+            commands.iter().find(|c| c.id == "response-search").unwrap().action,
             Action::OpenResponseSearch { backward: false }
         );
         assert_eq!(
-            commands
-                .iter()
-                .find(|c| c.id == "vars-new-variable")
-                .unwrap()
-                .action,
+            commands.iter().find(|c| c.id == "vars-new-variable").unwrap().action,
             Action::PromptNewVar
         );
         assert_eq!(
-            commands
-                .iter()
-                .find(|c| c.id == "vars-new-selector")
-                .unwrap()
-                .action,
+            commands.iter().find(|c| c.id == "vars-new-selector").unwrap().action,
             Action::PromptNewSelector
         );
     }
@@ -1269,9 +1249,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap, 1.0))
-            .unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap, 1.0)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(!content.contains("enter run"), "{content}");
         assert!(!content.contains("esc cancel"), "{content}");
@@ -1288,9 +1266,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap, 1.0))
-            .unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap, 1.0)).unwrap();
         let area = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
         let title_y = area.y + 1;
         let field_area = Rect {
@@ -1359,15 +1335,10 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap, 1.0))
-            .unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap, 1.0)).unwrap();
         let row0 = hits.rect_of(&crate::hit::Hit::PaletteRow(0)).unwrap();
         let row1 = hits.rect_of(&crate::hit::Hit::PaletteRow(1)).unwrap();
-        assert_eq!(
-            row0.height, 2,
-            "each option's hit box covers both its lines"
-        );
+        assert_eq!(row0.height, 2, "each option's hit box covers both its lines");
         assert_eq!(
             row1.y - row0.y,
             2,
@@ -1386,9 +1357,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap, 1.0))
-            .unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap, 1.0)).unwrap();
         let row0 = hits.rect_of(&crate::hit::Hit::PaletteRow(0)).unwrap();
         let buffer = terminal.backend().buffer();
         for dy in [0u16, 1] {
@@ -1414,9 +1383,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap, 1.0))
-            .unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap, 1.0)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         let first = p.filtered()[0].clone();
         assert!(content.contains(first.name), "{content}");
@@ -1438,9 +1405,7 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap, 1.0))
-            .unwrap();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap, 1.0)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(
             content.contains("^C"),
@@ -1461,7 +1426,10 @@ mod tests {
     }
 
     fn ex_scope() -> crate::keyroute::ex::Scope {
-        crate::keyroute::ex::Scope { surface: crate::keyroute::Surface::Sidebar, verbs: vec![crate::action::Verb::Add] }
+        crate::keyroute::ex::Scope {
+            surface: crate::keyroute::Surface::Sidebar,
+            verbs: vec![crate::action::Verb::Add],
+        }
     }
 
     fn ex() -> PaletteState {
@@ -1474,7 +1442,8 @@ mod tests {
     fn the_ex_line_recalls_its_history_as_vim_does() {
         let history = ["echo 1".to_string(), "let g:a=1".to_string(), "echo 22".to_string()];
         let run = |keys: &[KeyEvent]| {
-            let mut p = PaletteState::new_ex(&crate::usage::UsageStore::default(), 0, ex_scope(), &history);
+            let mut p =
+                PaletteState::new_ex(&crate::usage::UsageStore::default(), 0, ex_scope(), &history);
             for k in keys {
                 p.handle_key(*k);
             }
@@ -1494,10 +1463,18 @@ mod tests {
         assert_eq!(run(&[up, up, up, up, up]), "echo 1", "H8");
         assert_eq!(run(&[c('l'), up]), "let g:a=1", "H9a");
         assert_eq!(run(&[c('x'), up]), "x", "H9b: no match, no change");
-        assert_eq!(run(&[c('e'), up, c('x'), up]), "echo 22x", "H10: the typed text is the new prefix");
+        assert_eq!(
+            run(&[c('e'), up, c('x'), up]),
+            "echo 22x",
+            "H10: the typed text is the new prefix"
+        );
         assert_eq!(run(&[up, up, down]), "echo 22", "H17");
         assert_eq!(run(&[c('e'), up, up, down, down]), "e", "H18");
-        assert_eq!(run(&[c('e'), c('c'), up, bs, up]), "echo 2", "H21: the place in the list is kept");
+        assert_eq!(
+            run(&[c('e'), c('c'), up, bs, up]),
+            "echo 2",
+            "H21: the place in the list is kept"
+        );
         assert_eq!(run(&[ctrl('p')]), "", "ctrl+p moves the list (Deviation 14)");
         let mut p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
         p.handle_key(down);
@@ -1521,7 +1498,10 @@ mod tests {
         assert_eq!(p.selected(), 0);
         assert_eq!(p.len(), 1 + p.filtered().len());
         let res = p.confirm().unwrap();
-        assert_eq!(res.actions, vec![Action::CloseField, Action::CloseWindow { write: false, force: false }]);
+        assert_eq!(
+            res.actions,
+            vec![Action::CloseField, Action::CloseWindow { write: false, force: false }]
+        );
         assert!(res.close && res.usage.is_none());
         p.handle_key(ctrl('n'));
         assert_eq!(p.selected(), 1);
@@ -1544,7 +1524,9 @@ mod tests {
         type_in(&mut p, "zzzz");
         assert!(p.is_empty());
         let res = p.confirm().unwrap();
-        assert!(matches!(res.actions.as_slice(), [Action::ShowToast(t, _)] if t == "Not a command: :zzzz"));
+        assert!(
+            matches!(res.actions.as_slice(), [Action::ShowToast(t, _)] if t == "Not a command: :zzzz")
+        );
     }
 
     /// The second code review's second finding: typed text no verb spells
@@ -1558,7 +1540,9 @@ mod tests {
         assert!(!p.filtered().is_empty(), "the fuzzy rows show");
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert!(res.close && res.usage.is_none());
-        assert!(matches!(res.actions.as_slice(), [Action::ShowToast(t, _)] if t == "Not a command: :W"));
+        assert!(
+            matches!(res.actions.as_slice(), [Action::ShowToast(t, _)] if t == "Not a command: :W")
+        );
         p.handle_key(ctrl('n'));
         p.handle_key(ctrl('p'));
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
@@ -1566,11 +1550,19 @@ mod tests {
         let mut p = ex();
         type_in(&mut p, "W");
         p.select(0);
-        assert_eq!(p.confirm().unwrap().actions, vec![p.filtered()[0].action.clone()], "a clicked row runs");
+        assert_eq!(
+            p.confirm().unwrap().actions,
+            vec![p.filtered()[0].action.clone()],
+            "a clicked row runs"
+        );
         let mut plain = PaletteState::new(&crate::usage::UsageStore::default(), 0);
         type_in(&mut plain, "W");
         let res = plain.handle_key(key(KeyCode::Enter)).unwrap();
-        assert_eq!(res.actions, vec![plain.filtered()[0].action.clone()], "ctrl+p's Enter runs the top row");
+        assert_eq!(
+            res.actions,
+            vec![plain.filtered()[0].action.clone()],
+            "ctrl+p's Enter runs the top row"
+        );
     }
 
     /// Vim's open wildmenu back at the typed text chooses no match, and
@@ -1626,10 +1618,17 @@ mod tests {
         p.handle_key(ctrl('n'));
         p.handle_key(key(KeyCode::Backspace));
         assert!(p.input().is_empty());
-        assert!(p.handle_key(key(KeyCode::Enter)).unwrap().actions.is_empty(), "an edit drops the pick");
+        assert!(
+            p.handle_key(key(KeyCode::Enter)).unwrap().actions.is_empty(),
+            "an edit drops the pick"
+        );
         let mut plain = PaletteState::new(&crate::usage::UsageStore::default(), 0);
         let res = plain.handle_key(key(KeyCode::Enter)).unwrap();
-        assert_eq!(res.actions, vec![plain.filtered()[0].action.clone()], "ctrl+p's Enter runs row 0");
+        assert_eq!(
+            res.actions,
+            vec![plain.filtered()[0].action.clone()],
+            "ctrl+p's Enter runs row 0"
+        );
     }
 
     #[test]
@@ -1640,7 +1639,10 @@ mod tests {
         let res = p.handle_key(key(KeyCode::Backspace)).expect("closes");
         assert!(res.close && res.actions.is_empty());
         let mut plain = PaletteState::new(&crate::usage::UsageStore::default(), 0);
-        assert!(plain.handle_key(key(KeyCode::Backspace)).is_none(), "ctrl+p's palette keeps it inert");
+        assert!(
+            plain.handle_key(key(KeyCode::Backspace)).is_none(),
+            "ctrl+p's palette keeps it inert"
+        );
     }
 }
 

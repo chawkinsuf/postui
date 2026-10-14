@@ -104,20 +104,14 @@ impl<'de> Deserialize<'de> for Entry {
             where
                 E: de::Error,
             {
-                Ok(Entry {
-                    value: v.to_string(),
-                    enabled: true,
-                })
+                Ok(Entry { value: v.to_string(), enabled: true })
             }
 
             fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
             where
                 E: de::Error,
             {
-                Ok(Entry {
-                    value: v,
-                    enabled: true,
-                })
+                Ok(Entry { value: v, enabled: true })
             }
 
             fn visit_seq<A>(self, _seq: A) -> Result<Self::Value, A::Error>
@@ -155,10 +149,7 @@ impl<'de> Deserialize<'de> for Entry {
                     }
                 }
                 let value = value.ok_or_else(|| de::Error::missing_field("value"))?;
-                Ok(Entry {
-                    value,
-                    enabled: enabled.unwrap_or(true),
-                })
+                Ok(Entry { value, enabled: enabled.unwrap_or(true) })
             }
         }
 
@@ -294,28 +285,11 @@ mod tests {
 
     fn sample() -> HttpRequest {
         let mut params = IndexMap::new();
-        params.insert(
-            "page".into(),
-            Entry {
-                value: "2".into(),
-                enabled: true,
-            },
-        );
-        params.insert(
-            "verbose".into(),
-            Entry {
-                value: "1".into(),
-                enabled: false,
-            },
-        );
+        params.insert("page".into(), Entry { value: "2".into(), enabled: true });
+        params.insert("verbose".into(), Entry { value: "1".into(), enabled: false });
         let mut headers = IndexMap::new();
-        headers.insert(
-            "Authorization".into(),
-            Entry {
-                value: "Bearer abc123".into(),
-                enabled: true,
-            },
-        );
+        headers
+            .insert("Authorization".into(), Entry { value: "Bearer abc123".into(), enabled: true });
         HttpRequest {
             name: None,
             method: Method::Post,
@@ -327,9 +301,7 @@ mod tests {
             params,
             headers,
             variables: IndexMap::new(),
-            body: Some(Body::Json {
-                text: "{ \"broken\": ".into(),
-            }), // invalid JSON must round-trip
+            body: Some(Body::Json { text: "{ \"broken\": ".into() }), // invalid JSON must round-trip
         }
     }
 
@@ -338,10 +310,7 @@ mod tests {
         let mut req = sample();
         req.name = Some("Get user by ID!".into());
         let out = req.to_toml_string();
-        assert!(
-            out.starts_with("name = \"Get user by ID!\"\n"),
-            "name leads the file:\n{out}"
-        );
+        assert!(out.starts_with("name = \"Get user by ID!\"\n"), "name leads the file:\n{out}");
         let back = HttpRequest::from_toml_str(&out).unwrap();
         assert_eq!(back.name.as_deref(), Some("Get user by ID!"));
     }
@@ -367,14 +336,8 @@ mod tests {
     #[test]
     fn enabled_entries_serialize_as_plain_strings_disabled_as_inline_tables() {
         let out = sample().to_toml_string();
-        assert!(
-            out.contains(r#"page = "2""#),
-            "enabled entry is a plain string:\n{out}"
-        );
-        assert!(
-            out.contains("verbose = {"),
-            "disabled entry is an inline table:\n{out}"
-        );
+        assert!(out.contains(r#"page = "2""#), "enabled entry is a plain string:\n{out}");
+        assert!(out.contains("verbose = {"), "disabled entry is an inline table:\n{out}");
         assert!(
             !out.contains("[params.verbose]"),
             "no sub-table sections (they break ordering):\n{out}"
@@ -394,27 +357,9 @@ mod tests {
     "#,
         )
         .unwrap();
-        assert_eq!(
-            req.headers["A"],
-            Entry {
-                value: "1".into(),
-                enabled: true
-            }
-        );
-        assert_eq!(
-            req.headers["B"],
-            Entry {
-                value: "2".into(),
-                enabled: false
-            }
-        );
-        assert_eq!(
-            req.headers["C"],
-            Entry {
-                value: "3".into(),
-                enabled: true
-            }
-        );
+        assert_eq!(req.headers["A"], Entry { value: "1".into(), enabled: true });
+        assert_eq!(req.headers["B"], Entry { value: "2".into(), enabled: false });
+        assert_eq!(req.headers["C"], Entry { value: "3".into(), enabled: true });
     }
 
     #[test]
@@ -440,10 +385,7 @@ mod tests {
         id = ["1", "2"]"#,
         );
         let msg = arr.unwrap_err().to_string();
-        assert!(
-            msg.contains("reserved"),
-            "array rejection names the reservation: {msg}"
-        );
+        assert!(msg.contains("reserved"), "array rejection names the reservation: {msg}");
         assert!(
             HttpRequest::from_toml_str(
                 r#"url = "u"
@@ -502,9 +444,7 @@ mod tests {
         req.jq = Some(".data | length".into());
         let out = req.to_toml_string();
         let insecure_at = out.find("insecure = true").unwrap();
-        let jq_at = out
-            .find("jq = \".data | length\"")
-            .expect("jq line:\n{out}");
+        let jq_at = out.find("jq = \".data | length\"").expect("jq line:\n{out}");
         let params_at = out.find("[params]").unwrap_or(usize::MAX);
         assert!(insecure_at < jq_at && jq_at < params_at, "{out}");
         assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
@@ -516,23 +456,15 @@ mod tests {
         assert!(req.jq_enabled);
         req.jq_enabled = false;
         let out = req.to_toml_string();
-        assert!(
-            !out.contains("jq_enabled"),
-            "off without a filter is meaningless:\n{out}"
-        );
+        assert!(!out.contains("jq_enabled"), "off without a filter is meaningless:\n{out}");
         req.jq = Some(".a".into());
         let out = req.to_toml_string();
         let jq_at = out.find("jq = \".a\"").expect("jq line:\n{out}");
-        let enabled_at = out
-            .find("jq_enabled = false")
-            .expect("jq_enabled line:\n{out}");
+        let enabled_at = out.find("jq_enabled = false").expect("jq_enabled line:\n{out}");
         assert!(jq_at < enabled_at, "{out}");
         assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
         req.jq_enabled = true;
-        assert!(
-            !req.to_toml_string().contains("jq_enabled"),
-            "on is the default"
-        );
+        assert!(!req.to_toml_string().contains("jq_enabled"), "on is the default");
     }
 
     #[test]
@@ -550,32 +482,17 @@ mod tests {
         let mut req = sample();
         req.variables.insert(
             "base_url".into(),
-            Entry {
-                value: "http://override.test".into(),
-                enabled: true,
-            },
+            Entry { value: "http://override.test".into(), enabled: true },
         );
-        req.variables.insert(
-            "token".into(),
-            Entry {
-                value: "shh".into(),
-                enabled: false,
-            },
-        );
+        req.variables.insert("token".into(), Entry { value: "shh".into(), enabled: false });
         let out = req.to_toml_string();
 
         assert!(
             out.contains(r#"base_url = "http://override.test""#),
             "enabled entry is a plain string:\n{out}"
         );
-        assert!(
-            out.contains("token = {"),
-            "disabled entry is an inline table:\n{out}"
-        );
-        assert!(
-            !out.contains("[variables.token]"),
-            "no sub-table sections:\n{out}"
-        );
+        assert!(out.contains("token = {"), "disabled entry is an inline table:\n{out}");
+        assert!(!out.contains("[variables.token]"), "no sub-table sections:\n{out}");
 
         let headers_pos = out.find("[headers]").expect("headers section present");
         let variables_pos = out.find("[variables]").expect("variables section present");
@@ -592,10 +509,7 @@ mod tests {
     #[test]
     fn empty_variables_table_is_omitted() {
         let out = sample().to_toml_string();
-        assert!(
-            !out.contains("[variables]"),
-            "empty variables table is skipped:\n{out}"
-        );
+        assert!(!out.contains("[variables]"), "empty variables table is skipped:\n{out}");
     }
 
     #[test]
