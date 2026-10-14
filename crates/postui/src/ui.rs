@@ -457,9 +457,14 @@ fn draw_var_tooltip(
         None => Vec::new(),
     };
     let source = info.source.label();
-    // The descriptions stack, each starting a row of its own.
-    let mut desc_lines: Vec<String> =
-        info.descriptions.iter().flat_map(|d| wrap_words(d, wrap_w)).collect();
+    // The descriptions stack, each wrapped on its own and starting a row
+    // of its own.
+    let mut descs: Vec<Vec<String>> = info
+        .descriptions
+        .iter()
+        .map(|d| wrap_words(d, wrap_w))
+        .filter(|lines| !lines.is_empty())
+        .collect();
     // The name row: the name, two cells, then the source. With no value
     // it is the top row, beside the pills.
     let has_value = !value_lines.is_empty();
@@ -475,16 +480,25 @@ fn draw_var_tooltip(
     let above_room = tip.anchor.y.saturating_sub(screen.y);
     let side_room = below_room.max(above_room);
     // Top to bottom: the value (when there is one), the name row, the
-    // description (when written), a blank row between each, padding rows
-    // top and bottom. With too little room for it all, the value gives up
-    // rows first, then the description, the last surviving row of a cut
-    // section ellipsized to say so. Each keeps at least one row: with no
+    // descriptions (when written), a blank row between each part, padding
+    // rows top and bottom. With too little room for it all, the value
+    // gives up rows first, then the descriptions — the first in the stack
+    // before the later, more specific ones — the last surviving row of a
+    // cut one ellipsized to say so. Each keeps at least one row: with no
     // room for that, there is no tip at all.
-    let has_desc = !desc_lines.is_empty();
+    let has_desc = !descs.is_empty();
     let fixed = 3 + usize::from(has_value) + usize::from(has_desc);
     let room = (side_room as usize).saturating_sub(fixed);
-    cut_rows(&mut value_lines, room.saturating_sub(desc_lines.len()).max(1), top_w);
-    cut_rows(&mut desc_lines, room.saturating_sub(value_lines.len()).max(1), wrap_w);
+    let desc_len: usize = descs.iter().map(Vec::len).sum();
+    cut_rows(&mut value_lines, room.saturating_sub(desc_len).max(1), top_w);
+    let mut desc_room = room.saturating_sub(value_lines.len()).max(descs.len());
+    for (i, lines) in descs.iter_mut().enumerate().rev() {
+        // Leave a row for each description before this one.
+        let keep = lines.len().min(desc_room.saturating_sub(i));
+        cut_rows(lines, keep, wrap_w);
+        desc_room -= lines.len();
+    }
+    let desc_lines = descs.concat();
     // Display cells throughout (a wide glyph is one char but two cells).
     let widest = |lines: &[String]| lines.iter().map(|l| l.width()).max().unwrap_or(0);
     // At least one cell, as a mask always shows one dot: an empty value
@@ -917,6 +931,26 @@ mod tests {
             source: TokenSource::Env("qa".into()),
             descriptions: description.into_iter().map(str::to_string).collect(),
         }
+    }
+
+    /// Short of room, stacked descriptions each keep a row: the selector's
+    /// gives way before the option's, so the more specific one is never
+    /// cut away behind the other's ellipsis.
+    #[test]
+    fn a_cut_stack_keeps_a_row_of_each_description() {
+        let selector = "acting user for every request in this space, linked to a customer \
+                        record in the billing system";
+        let info = TokenInfo {
+            descriptions: vec![selector.into(), "the premium one".into()],
+            ..tip_info(Some("v"), None)
+        };
+        // 8 rows below the token: borders, the name row and two gaps take
+        // 5, the value 1, leaving 2 for the descriptions.
+        let rows = tip_rows(120, 9, &info);
+        assert_eq!(rows.len(), 6, "{rows:?}");
+        assert!(rows[4].starts_with("acting user"), "{rows:?}");
+        assert!(rows[4].ends_with('\u{2026}'), "the selector's is cut: {rows:?}");
+        assert_eq!(rows[5], "the premium one", "the option's survives: {rows:?}");
     }
 
     /// A selector field's two descriptions stack, each wrapped on its own:
