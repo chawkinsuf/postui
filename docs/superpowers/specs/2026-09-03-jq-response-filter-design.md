@@ -446,8 +446,10 @@ because they're easy to get wrong reading the code cold:
   and closes the bar. Esc, by contrast, ends the request and leaves the
   bar open. Otherwise the pressed button could not close the bar (my call
   in code review, not yours). The button's hint follows the paint:
-  pressed reads as the toggle ("Close the jq filter", `alt+shift+q`),
-  unpressed as `alt+q`, the way the Send button's hint flips to Cancel.
+  pressed reads as the toggle ("Close the jq filter"; the toggle is not a
+  palette command, so no key is named), unpressed as the palette's "Filter
+  the JSON with jq · alt+q", the way the Send button's hint flips to
+  Cancel.
 - **A run whose outputs are all `null` — every document `null`, or one
   array of nothing but nulls — or that produces no output at all does
   not replace the tree.** The full body shows, the chip dims as for an
