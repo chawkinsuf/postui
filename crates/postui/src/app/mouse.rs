@@ -908,34 +908,45 @@ impl App {
     }
 
     /// The open one-line field `field`'s input: the very cell or field
-    /// named, not another one under edit. A dialog's box is the one its
-    /// click focused (the file picker's path box included).
+    /// named, not another one under edit. A screen field's goes through
+    /// `line_buf`, the one map from a screen field to its input; a dialog's
+    /// box is its form field, or the file picker's path box.
     fn field_input_mut(&mut self, field: FieldId) -> Option<&mut LineInput> {
         match field {
-            FieldId::Url => Some(&mut self.editor.url),
             FieldId::Jq => Some(&mut self.session.response.jq_bar_mut().input),
-            FieldId::ModalInput(i) => self.modals.focus_input(i),
+            FieldId::ModalInput(0) if matches!(self.modals.top(), Some(Modal::FilePicker(_))) => {
+                self.modals.query_input_mut()
+            }
+            FieldId::ModalInput(i) => self.modals.text_input_mut(i),
+            _ if self.editing(field) => line_buf(
+                field,
+                &mut self.editor.url,
+                &mut self.editor.table,
+                &mut self.varmanager,
+                &mut self.settings,
+            ),
+            _ => None,
+        }
+    }
+
+    /// Whether the edit open on the screen is `field` itself: the cell or
+    /// form field named, not another one (the URL is always its own).
+    fn editing(&self, field: FieldId) -> bool {
+        match field {
             FieldId::TableCell { row, col } => self
                 .editor
                 .table
                 .editing
-                .as_mut()
-                .filter(|e| e.row == row && usize::from(e.col.index()) == col)
-                .map(|e| &mut e.input),
+                .as_ref()
+                .is_some_and(|e| e.row == row && usize::from(e.col.index()) == col),
             FieldId::VmForm(f) => {
-                self.varmanager.form.editing.as_mut().filter(|e| e.field == f).map(|e| &mut e.input)
+                self.varmanager.form.editing.as_ref().is_some_and(|e| e.field == f)
             }
-            FieldId::VmGrid { row, col } => self
-                .varmanager
-                .grid
-                .editing
-                .as_mut()
-                .filter(|e| e.row == row && e.col == col)
-                .map(|e| &mut e.input),
-            FieldId::Settings(f) => {
-                (self.settings.editing == Some(f)).then(|| self.settings.input_mut())
+            FieldId::VmGrid { row, col } => {
+                self.varmanager.grid.editing.as_ref().is_some_and(|e| e.row == row && e.col == col)
             }
-            _ => None,
+            FieldId::Settings(f) => self.settings.editing == Some(f),
+            _ => true,
         }
     }
 

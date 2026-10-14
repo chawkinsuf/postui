@@ -1258,6 +1258,13 @@ fn a_click_ends_visual_and_a_gui_key_selection_is_adopted_from_normal() {
         Settled::Click,
     );
     assert_eq!((f.engine.mode(), f.col()), (Mode::Normal, 4));
+    // A press off the text never adopts a GUI selection left behind.
+    f.input.select_all();
+    f.engine.settle(
+        Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },
+        Settled::Click,
+    );
+    assert_eq!((f.engine.mode(), f.input.selection()), (Mode::Normal, None));
     f.input.select_all();
     f.engine.settle(
         Target { buf: &mut OneLineBuf::new(&mut f.input), state: &mut f.state },

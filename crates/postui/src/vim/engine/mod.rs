@@ -738,9 +738,9 @@ impl Engine {
     /// Rests the caret and the mode after an event the engine did not
     /// handle: the mouse, a key piece 4 handled (spec §4.2). The mouse on
     /// the text makes Vim's selection from the pointer (`mouse.rs`). A GUI
-    /// selection (shift+arrow, select-all) is adopted as charwise Visual on
-    /// a `Click`, or a `Key` from Normal or Insert. A `Click` with no
-    /// selection ends Visual. A query box has no Visual layer, so its GUI
+    /// key's selection (shift+arrow, select-all) is adopted as charwise
+    /// Visual from Normal or Insert; any other GUI selection is dropped. A
+    /// `Click`, a press off the text, ends Visual. A query box has no Visual layer, so its GUI
     /// selection stays (typing replaces it). A press drops a half-typed
     /// command. In Insert, a caret the event moved splits the session as a
     /// cursor key does (Vim's `ins_mouse()`). Then the caret is clamped and
@@ -780,25 +780,27 @@ impl Engine {
             self.split_insert(from, caret, buf, state);
         }
         if !self.insert_only {
+            let visual = matches!(self.mode, Mode::Visual(_));
             match buf.gui_selection() {
-                Some(sel) if how == Settled::Click || !matches!(self.mode, Mode::Visual(_)) => {
+                // A GUI key's selection from Normal or Insert becomes Visual.
+                Some(sel) if how == Settled::Key && !visual => {
                     self.enter_visual_from(sel.anchor, buf, state);
                     buf.clear_gui_selection();
                     buf.set_cursor(sel.head);
                 }
-                // A GUI key in Visual: the engine's selection stands, and the
-                // GUI one goes, so a later settle does not adopt it stale.
+                // Any other goes (the engine's own selection stands), so a
+                // later settle does not adopt it stale.
                 Some(_) => buf.clear_gui_selection(),
-                None if how == Settled::Click && matches!(self.mode, Mode::Visual(_)) => {
-                    // The area as it was before the click moved the caret.
-                    let at = self.rested.unwrap_or(caret);
-                    self.end_visual(at, &*buf, state);
-                    // Visual opened inside `ctrl+o`: the click is the command.
-                    if matches!(self.mode, Mode::InsertNormal { .. }) {
-                        self.resume_after_ctrl_o(buf, state);
-                    }
-                }
                 None => {}
+            }
+            if how == Settled::Click && visual {
+                // The area as it was before the click moved the caret.
+                let at = self.rested.unwrap_or(caret);
+                self.end_visual(at, &*buf, state);
+                // Visual opened inside `ctrl+o`: the click is the command.
+                if matches!(self.mode, Mode::InsertNormal { .. }) {
+                    self.resume_after_ctrl_o(buf, state);
+                }
             }
         }
         self.rest(buf, state);
