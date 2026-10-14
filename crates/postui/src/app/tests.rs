@@ -24091,8 +24091,8 @@ async fn drain_ai(app: &mut App) -> Action {
     // The AI task is a tokio task; await its JoinHandle then read the action
     // it sent. Every jq run goes to the blocking pool too, so its finished
     // result may be queued ahead of the reply: apply anything else first.
-    let task = app.ai_task.take().expect("an AI request is in flight");
-    task.handle.await.unwrap();
+    let task = app.ai_task.as_mut().expect("an AI request is in flight");
+    (&mut task.handle).await.unwrap();
     loop {
         let action = app
             ._test_rx
@@ -24142,10 +24142,10 @@ async fn describe_a_filter_sends_the_shape_and_lands_the_reply_in_the_bar() {
     };
     type_str(&mut app, "just the total");
     submit_prompt(&mut app);
-    assert!(app.session.response.jq_bar().ai_pending);
+    assert!(app.session.response.jq_bar().ai_asking.is_some());
     let action = drain_ai(&mut app).await;
     app.update(action);
-    assert!(!app.session.response.jq_bar().ai_pending);
+    assert!(app.session.response.jq_bar().ai_asking.is_none());
     assert_eq!(app.session.response.jq_text(), ".data.total");
     settle_jq(&mut app).await;
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
@@ -24286,7 +24286,7 @@ async fn a_failing_command_toasts_its_stderr_and_leaves_the_bar_alone() {
     let a = drain_ai(&mut app).await;
     app.update(a);
     assert_eq!(app.session.response.jq_text(), ".data");
-    assert!(!app.session.response.jq_bar().ai_pending);
+    assert!(app.session.response.jq_bar().ai_asking.is_none());
     let last = app.toasts.last_message().expect("a toast"); // use the existing toast accessor
     assert!(last.contains("not logged in"), "{last}");
 }
@@ -24349,11 +24349,10 @@ async fn esc_while_asking_cancels_and_a_late_reply_is_dropped() {
     app.focus = PaneId::Response;
     app.session.response.set_jq_focus(true);
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(!app.session.response.jq_bar().ai_pending);
+    assert!(app.session.response.jq_bar().ai_asking.is_none());
     assert!(app.ai_task.is_none());
     // A reply for the cancelled request is ignored.
     let stale = Action::JqAiFinished {
-        generation: app.session.send_generation,
         request: 1,
         result: Ok(".x".into()),
     };
@@ -24374,11 +24373,61 @@ async fn ticks_keep_redrawing_while_the_ai_is_asked() {
         "idle: a tick has nothing to redraw"
     );
     app.update(Action::RunJqDescribe("x".into()));
-    assert!(app.session.response.jq_bar().ai_pending);
+    assert!(app.session.response.jq_bar().ai_asking.is_some());
     assert!(
         app.update(Action::Tick),
         "an outstanding AI request keeps ticks redrawing"
     );
+    app.update(Action::CancelJqDescribe);
+    assert!(!app.update(Action::Tick), "a cancelled request stops them");
+
+    stub_ai(&mut app, "echo .data.total");
+    app.update(Action::RunJqDescribe("x".into()));
+    let a = drain_ai(&mut app).await;
+    app.update(a);
+    settle_jq(&mut app).await;
+    assert!(!app.update(Action::Tick), "a landed reply stops them");
+}
+
+/// The request belongs to the view it was shaped from: opening another
+/// request ends it, and coming back shows no "asking…" left over from it.
+#[tokio::test]
+async fn opening_another_request_ends_the_ai_request() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/a", &req("https://x/a")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/b", &req("https://x/b")).unwrap();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("main/a".into()));
+    ready_response(&mut app, JQ_BODY);
+    stub_ai(&mut app, "sleep 5; echo .x");
+    app.update(Action::RunJqDescribe("x".into()));
+    assert!(app.session.response.jq_bar().ai_asking.is_some());
+
+    app.update(Action::OpenRequest("main/b".into()));
+    assert!(app.ai_task.is_none(), "the request is cancelled");
+
+    app.update(Action::OpenRequest("main/a".into()));
+    assert!(app.session.response.view().is_some(), "a's response is back");
+    assert!(
+        app.session.response.jq_bar().ai_asking.is_none(),
+        "no stale \"asking…\" on the restored response"
+    );
+}
+
+/// A send replaces the view the AI request was shaped from, so it ends it.
+#[tokio::test]
+async fn a_send_ends_the_ai_request() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9");
+    stub_ai(&mut app, "sleep 5; echo .x");
+    app.update(Action::RunJqDescribe("x".into()));
+    app.update(Action::Send);
+    assert!(!app.session.in_flight.is_empty(), "the send started");
+    assert!(app.ai_task.is_none());
+    assert!(app.session.response.jq_bar().ai_asking.is_none());
 }
 
 /// A big response that sat in the cache past `Session::KEEP_WARM` newer big

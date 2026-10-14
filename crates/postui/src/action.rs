@@ -1085,8 +1085,7 @@ pub enum Action {
     },
     /// Copies a tree line's jq path.
     CopyJqPath(String),
-    /// Esc in the jq bar while an AI request is pending, or a new send:
-    /// cancels the outstanding AI task and clears `ai_pending`.
+    /// Esc in the jq bar while an AI request is outstanding: cancels it.
     CancelJqDescribe,
     /// Palette/footer/AI button: opens the "Describe a filter" prompt
     /// (gated on the response being JSON and the configured `ai_cmd`'s
@@ -1102,12 +1101,11 @@ pub enum Action {
     /// The confirm modal's "Always send": persists `ai_confirmed = true`
     /// to config.toml so later requests skip the confirmation.
     SetAiConfirmed,
-    /// A `RunJqDescribe` background task finished: `generation` and
-    /// `request` must both still match the current view/task, or the
-    /// result is dropped (a superseded response, or a cancelled request).
-    /// `Err` is the whole message to show, whichever stage failed.
+    /// A `RunJqDescribe` background task finished: `request` must still be
+    /// the outstanding one, or the result is dropped (a superseded or
+    /// cancelled request, or one whose view left the screen). `Err` is the
+    /// whole message to show, whichever stage failed.
     JqAiFinished {
-        generation: u64,
         request: u64,
         result: Result<String, String>,
     },

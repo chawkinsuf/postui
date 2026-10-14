@@ -814,7 +814,7 @@ impl PaneChipArgs {
             })
             .flatten(),
             jq_bar: if response.jq_focused() {
-                if response.jq_bar().ai_pending {
+                if response.jq_bar().ai_asking.is_some() {
                     JqBarState::Describing
                 } else if response.jq_menu_open() {
                     JqBarState::Menu
