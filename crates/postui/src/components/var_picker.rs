@@ -51,9 +51,9 @@ pub struct VarEntry {
 
 /// Builds the Insert-mode picker's entries (spec §6: "autocomplete over
 /// all defined names") from every source that declares one: project
-/// variables (`model.vars`, minus names that are actually selector fields —
-/// a field may carry its own top-level table for a description, but it's
-/// listed once, as `Group`), selector fields (`model.selectors`), and the open
+/// variables (`model.vars`), selector fields (`model.selectors`, each
+/// described by its selector — the parser keeps fields and variables
+/// apart, so a field has no declaration of its own), and the open
 /// request's own `[variables]` (`request_vars`; `None`/disabled entries
 /// show as unset rather than being dropped). A name defined at more than
 /// one scope (a request entry shadowing a project variable) appears once,
@@ -63,15 +63,9 @@ pub fn insert_entries(
     resolved: &indexmap::IndexMap<String, String>,
     request_vars: &indexmap::IndexMap<String, postui_core::model::Entry>,
 ) -> Vec<VarEntry> {
-    let group_fields: std::collections::HashSet<&str> =
-        model.selectors.values().flat_map(|g| g.fields.iter().map(String::as_str)).collect();
-
     let mut entries: Vec<VarEntry> = Vec::new();
 
     for (name, decl) in &model.vars {
-        if group_fields.contains(name.as_str()) {
-            continue;
-        }
         entries.push(VarEntry {
             name: name.clone(),
             description: decl.description.clone(),
@@ -83,10 +77,9 @@ pub fn insert_entries(
 
     for selector in model.selectors.values() {
         for field in &selector.fields {
-            let description = model.vars.get(field).and_then(|d| d.description.clone());
             entries.push(VarEntry {
                 name: field.clone(),
-                description,
+                description: selector.description.clone(),
                 value: resolved.get(field).cloned(),
                 scope: VarScope::Group,
                 secret: false,
@@ -897,6 +890,27 @@ mod tests {
             "the request's own value wins, not the resolved project value"
         );
         assert!(!entry.secret);
+    }
+
+    /// A selector field's row carries its selector's description, the
+    /// same one the hover tooltip falls back to: a field has no
+    /// declaration of its own (the parser rejects a variable that is also
+    /// a field).
+    #[test]
+    fn insert_entries_describe_a_selector_field_by_its_selector() {
+        let model = postui_core::varmodel::parse_variables(
+            "[selectors.user]\ndescription = \"acting user\"\nfields = [\"uid\", \"cid\"]\n\n\
+             [selectors.page]\nfields = [\"page\"]\n",
+        )
+        .unwrap();
+        let entries =
+            insert_entries(&model, &indexmap::IndexMap::new(), &indexmap::IndexMap::new());
+        let desc = |name: &str| {
+            entries.iter().find(|e| e.name == name).and_then(|e| e.description.clone())
+        };
+        assert_eq!(desc("uid").as_deref(), Some("acting user"));
+        assert_eq!(desc("cid").as_deref(), Some("acting user"));
+        assert_eq!(desc("page"), None, "a selector without one: none");
     }
 
     #[test]
