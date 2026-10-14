@@ -436,6 +436,20 @@ because they're easy to get wrong reading the code cold:
   under a syntax error) starts from the right document. Enter does not "commit" anything separately;
   the filter is already live on every keystroke. The 󰈲 button paints
   pressed (inverted) while a filter is on.
+  *Amended 2026-10-14 (task #3, your request):* pressed means the bar is
+  showing (`jq_open`), so an empty bar just opened is pressed too, and a
+  pressed button always closes on click. Clicking the bar's own switch
+  (the 󰈲 button, the footer's `unfilter` chip) is not a click away from
+  a focused bar. Before this, the click blurred an empty bar first, which
+  hid it, and the toggle then opened it again. The bar shows while an AI
+  request is outstanding, so closing it (the toggle) now ends that request
+  and closes the bar. Esc, by contrast, ends the request and leaves the
+  bar open. Otherwise the pressed button could not close the bar (my call
+  in code review, not yours). The button's hint follows the paint:
+  pressed reads as the toggle ("Close the jq filter"; the toggle is not a
+  palette command, so no key is named), unpressed as the palette's "Filter
+  the JSON with jq · alt+q", the way the Send button's hint flips to
+  Cancel.
 - **A run whose outputs are all `null` — every document `null`, or one
   array of nothing but nulls — or that produces no output at all does
   not replace the tree.** The full body shows, the chip dims as for an

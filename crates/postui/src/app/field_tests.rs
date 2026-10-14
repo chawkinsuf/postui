@@ -1319,7 +1319,7 @@ fn typing_two_braces_opens_the_variable_picker() {
 
 use ratatui::style::Modifier;
 
-fn draw_buffer(app: &mut App) -> ratatui::buffer::Buffer {
+pub(super) fn draw_buffer(app: &mut App) -> ratatui::buffer::Buffer {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     app.anims.finish_all();

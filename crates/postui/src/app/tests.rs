@@ -20400,6 +20400,73 @@ fn the_toggle_closes_an_open_bar_whether_or_not_it_is_focused() {
     assert!(!app.editor.jq_enabled);
 }
 
+/// Whether the header's 󰈲 button is painted pressed (the accent fill),
+/// and its hint agrees: pressed reads as the toggle that closes it.
+fn jq_button_pressed(app: &mut App) -> bool {
+    let buf = super::field_tests::draw_buffer(app);
+    let r = app.hits.rect_of(&Hit::ResponseJqButton).expect("jq button registered");
+    let pressed = buf[(r.x, r.y)].bg == app.theme.accent;
+    assert_eq!(app.hint_ctx(&Hit::ResponseJqButton).on, pressed, "the hint reads the paint");
+    pressed
+}
+
+/// Task #3: the button is pressed exactly while the bar is showing —
+/// an empty bar the user just opened included — so pressed always means
+/// "clicking closes it".
+#[test]
+fn the_jq_button_is_pressed_while_the_bar_shows_even_when_empty() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    assert!(!jq_button_pressed(&mut app), "closed: not pressed");
+    app.update(Action::OpenJqBar);
+    assert!(app.session.response.jq_open() && app.session.response.jq_text().is_empty());
+    assert!(jq_button_pressed(&mut app), "open and empty: pressed");
+    app.update(Action::JqApply(".data.total".into()));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(!app.session.response.jq_focused());
+    assert!(jq_button_pressed(&mut app), "a filter on, unfocused: pressed");
+    app.update(Action::ToggleJqBar);
+    assert!(!jq_button_pressed(&mut app), "switched off: not pressed");
+}
+
+/// Task #3: clicking the bar's own switch — the header button, or the
+/// footer's `unfilter` chip — is not a click away from it. An empty bar
+/// hides the moment it blurs, so blurring first made the toggle read it
+/// as closed and open it straight back. A focused bar holding a filter
+/// closes the same way, switching the filter off.
+#[test]
+fn clicking_the_jq_switch_closes_a_focused_bar() {
+    for hit in [Hit::ResponseJqButton, Hit::FooterChip(Action::ToggleJqBar)] {
+        for text in ["", ".data.total"] {
+            let mut app = App::new_for_test();
+            ready_response(&mut app, JQ_BODY);
+            click_hit(&mut app, Hit::ResponseJqButton);
+            assert!(app.session.response.jq_focused(), "{hit:?}: the first click opens it");
+            type_chars(&mut app, text);
+            click_hit(&mut app, hit.clone());
+            assert!(!app.session.response.jq_open(), "{hit:?} {text:?}: the click closes it");
+            assert_eq!(app.editor.jq, text, "{hit:?}: the text is kept");
+            assert_eq!(app.editor.jq_enabled, text.is_empty(), "{hit:?} {text:?}: off if any");
+        }
+    }
+}
+
+/// The bar shows while an AI request is outstanding, so its pressed
+/// button must still close it: closing ends the request, as Esc does.
+#[tokio::test]
+async fn clicking_the_jq_button_while_asking_ends_the_request_and_closes() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    stub_ai(&mut app, "sleep 5; echo .x");
+    app.update(Action::RunJqDescribe("x".into()));
+    assert!(app.session.response.jq_bar().ai_asking.is_some());
+    assert!(jq_button_pressed(&mut app), "asking: pressed");
+    click_hit(&mut app, Hit::ResponseJqButton);
+    assert!(app.ai_task.is_none(), "the request is cancelled");
+    assert!(!app.session.response.jq_open(), "and the bar closed");
+    assert!(!jq_button_pressed(&mut app));
+}
+
 #[test]
 fn esc_on_an_empty_bar_just_hides_it() {
     let mut app = App::new_for_test();
