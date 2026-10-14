@@ -88,17 +88,17 @@ impl App {
         let Some(p) = self.project() else {
             return base.to_string();
         };
-        let Some((sub, leaf)) = postui_core::storage::split_display_path(base) else {
+        let path = format!("{folder}/{base}");
+        let Some((folder, leaf)) = postui_core::storage::split_display_path(&path) else {
             return base.to_string();
         };
-        let folder = if sub.is_empty() { folder.to_string() } else { format!("{folder}/{sub}") };
         if !p.sibling_name_taken(&folder, &leaf, None) {
             return base.to_string();
         }
         let n = (2..)
             .find(|n| !p.sibling_name_taken(&folder, &format!("{leaf} {n}"), None))
             .expect("some suffix is free");
-        format!("{base} {n}")
+        format!("{} {n}", base.trim_end())
     }
 
     /// `Action::ImportCurlCreate` (spec §4.2 step 4). A refused name toasts
