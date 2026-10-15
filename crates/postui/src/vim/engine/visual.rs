@@ -308,10 +308,11 @@ impl Engine {
                 at
             }
             VisualOp::Shift { right } => {
+                let sw = st.shiftwidth();
                 let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
                 // Vim's `op_shift()` saves the lines first, as above.
                 ed.save_rows(r.start, first, last);
-                shift_rows(&mut ed, first, last, right, count.max(1))
+                shift_rows(&mut ed, first, last, right, count.max(1), sw)
             }
         };
         self.land_caret(caret, buf, st);

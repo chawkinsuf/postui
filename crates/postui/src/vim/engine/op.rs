@@ -8,7 +8,7 @@ use super::history::{Ed, MarkMove};
 use super::keys::{CaseOp, Cmd, Op, Reach};
 use super::motion::{self, MKind, MotionCx};
 use super::register::{PLUS_PASTE_NOTE, RegKind, Register};
-use super::settings::{SHIFTWIDTH, TABSTOP};
+use super::settings::TABSTOP;
 use super::{BufState, Engine, Mode, Note, Outcome, ViewCtx, first_non_blank, first_non_blank_fix};
 use crate::components::line_input::flatten_paste;
 use crate::text::class::white;
@@ -187,17 +187,19 @@ pub(crate) fn recased_caret(line: &[char], how: CaseOp, r: Range) -> Pos {
     Pos::new(r.start.row, r.start.col + added)
 }
 
-/// Visual `>` `<` over rows `first..=last`, `amount` shiftwidths each;
-/// empty rows are skipped and the new indent is spaces (`expandtab`). The
-/// caret goes to the first row's first non-blank.
+/// Visual `>` `<` over rows `first..=last`, `amount` shiftwidths of `sw`
+/// each (the buffer's [`super::BufState::shiftwidth`]); empty rows are
+/// skipped and the new indent is spaces (`expandtab`). The caret goes to
+/// the first row's first non-blank.
 pub(crate) fn shift_rows<B: TextBuf>(
     ed: &mut Ed<'_, B>,
     first: usize,
     last: usize,
     right: bool,
     amount: usize,
+    sw: usize,
 ) -> Pos {
-    let step = SHIFTWIDTH * amount.max(1);
+    let step = sw * amount.max(1);
     for row in first..=last {
         let line = ed.buf.line(row).into_owned();
         if line.is_empty() {
@@ -376,13 +378,14 @@ impl Engine {
         }
         if let Op::Shift { right } = op {
             let (first, last) = (r.start.row, r.end.row);
+            let sw = st.shiftwidth();
             let mut ed = Ed { buf: &mut *buf, hist: &mut st.history };
             // Vim's `op_shift()`: the lines are saved first (so `<<` with no
             // indent is still an undo step), each non-empty line moves one
             // shiftwidth (an operator's count counts lines, not shifts), and
             // the caret goes to the first line's first non-blank.
             ed.save_rows(r.start, first, last);
-            let caret = shift_rows(&mut ed, first, last, right, 1);
+            let caret = shift_rows(&mut ed, first, last, right, 1, sw);
             self.land_caret(caret, buf, st);
             return true;
         }

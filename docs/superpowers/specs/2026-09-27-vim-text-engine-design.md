@@ -178,6 +178,8 @@ it (§6.4).
 | `nrformats=bin,hex` | `007` + `ctrl+a` is `008`, not octal (`mine`) |
 | `noshiftround nosmartindent nocindent textwidth=0 noignorecase notildeop matchpairs=(:),{:},[:] iskeyword=@,48-57,_,192-255` | Vim defaults, pinned so a distro vimrc can't change them |
 
+Amended 2026-10-15 (task #8, spec `2026-10-15-editor-indent-design.md` R11; you): the body's `shiftwidth` follows its space indent (detected, else `indent_width`), carried per buffer on `BufState`; a tab body and one-line fields keep `shiftwidth=2`. `expandtab tabstop=2 softtabstop=0` stay pinned until #26. The golden file still runs at the pinned values; other widths are pinned by engine unit tests probed from Vim.
+
 These are for the harness only and do not affect engine behaviour:
 `noesckeys notimeout ttimeout ttimeoutlen=0 nomore scrolloff=0 lines=24
 columns=80 nowrap`.

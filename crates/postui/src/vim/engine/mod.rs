@@ -199,6 +199,10 @@ pub struct BufState {
     pub(crate) history: history::History,
     /// Vim's window-local 'scroll': the half page a counted ctrl+d/ctrl+u set; None is half the height.
     pub(crate) scroll: Option<usize>,
+    /// Vim's buffer-local 'shiftwidth' (spec 2026-10-15 editor indent R11):
+    /// the body's space width, set by the glue before every call; `None` is
+    /// the pinned [`settings::SHIFTWIDTH`], which one-line fields keep.
+    shiftwidth: Option<usize>,
 }
 
 impl BufState {
@@ -228,6 +232,15 @@ impl BufState {
 
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The 'shiftwidth' `>`, `<` and Insert ctrl+t / ctrl+d step by.
+    pub fn shiftwidth(&self) -> usize {
+        self.shiftwidth.unwrap_or(settings::SHIFTWIDTH)
+    }
+
+    pub fn set_shiftwidth(&mut self, sw: usize) {
+        self.shiftwidth = Some(sw);
     }
 
     /// The buffer gets the caret with `text` in it: a history that no

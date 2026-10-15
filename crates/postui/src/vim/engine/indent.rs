@@ -6,7 +6,7 @@ use super::buf::{Pos, TextBuf};
 use super::history::Ed;
 use super::insert::InsertKey;
 use super::motion::vcol_of;
-use super::settings::{SHIFTWIDTH, TABSTOP};
+use super::settings::TABSTOP;
 use super::{BufState, Engine};
 use crate::text::class::white;
 
@@ -94,16 +94,18 @@ impl Engine {
         let new_indent = if zero_all {
             0
         } else {
-            // shift_line(left, round = TRUE, amount = 1)
+            // shift_line(left, round = TRUE, amount = 1), by the buffer's
+            // 'shiftwidth'.
+            let sw = st.shiftwidth();
             let count = lead.width;
-            let (i, j) = (count / SHIFTWIDTH, count % SHIFTWIDTH);
+            let (i, j) = (count / sw, count % sw);
             let i = if dec {
                 // With spaces left over, removing them is the whole step.
                 if j > 0 { i } else { i.saturating_sub(1) }
             } else {
                 i + 1
             };
-            i * SHIFTWIDTH
+            i * sw
         };
         let new_fnb =
             set_indent(&mut Ed { buf: &mut *buf, hist: &mut st.history }, row, &lead, new_indent);

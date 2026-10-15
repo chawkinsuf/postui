@@ -244,6 +244,7 @@ macro_rules! target {
                 $call
             }
             FieldBuf::Body(state, visual) => {
+                $glue.apply_body_shiftwidth();
                 let mut b = BodyBuf::new(state, visual);
                 let $t = Target { buf: &mut b, state: &mut $glue.body };
                 $call
@@ -269,9 +270,24 @@ pub struct Glue {
     /// The session is a query box's (piece 3 §4.2 `Start::InsertOnly`): a
     /// rebase re-enters it so (plan M3b Review Focus 5).
     insert_only: bool,
+    /// The body's 'shiftwidth', from the seam (spec 2026-10-15 editor
+    /// indent R11). Put onto the body's state inside every body target, so
+    /// a state reset (`rebase`, `own_body`) can't leave the pinned value in
+    /// for a key.
+    body_shiftwidth: Option<usize>,
 }
 
 impl Glue {
+    pub fn set_body_shiftwidth(&mut self, sw: usize) {
+        self.body_shiftwidth = Some(sw);
+    }
+
+    fn apply_body_shiftwidth(&mut self) {
+        if let Some(sw) = self.body_shiftwidth {
+            self.body.set_shiftwidth(sw);
+        }
+    }
+
     pub fn session(&self) -> FieldSession {
         self.session
     }
@@ -434,6 +450,8 @@ impl Glue {
     /// autoindent goes from the body itself, and the body's history still
     /// fits its text at the next visit.
     pub fn carry_from(&mut self, from: &mut FieldBuf<'_>, to: &mut FieldBuf<'_>) {
+        // It builds its body targets by hand, not through `target!`.
+        self.apply_body_shiftwidth();
         match (from, &mut *to) {
             (FieldBuf::Line(from), FieldBuf::Line(input)) => {
                 let mut old = std::mem::take(&mut self.line);
