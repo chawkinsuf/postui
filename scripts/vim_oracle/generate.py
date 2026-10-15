@@ -31,7 +31,8 @@ CLASSES_VIM = os.path.join(HERE, "classes.vim")
 CASES_VIM = os.path.join(HERE, "cases.vim")
 ENGINE = os.path.join(ROOT, "crates", "postui", "src", "vim", "engine")
 SETTINGS_RS = os.path.join(ENGINE, "settings.rs")
-CLASS_TABLE = os.path.join(ENGINE, "class_table.rs")
+# The profile-neutral text module: arrows' mouse words read it too.
+CLASS_TABLE = os.path.join(ROOT, "crates", "postui", "src", "text", "class_table.rs")
 CASE_TABLE = os.path.join(ENGINE, "case_table.rs")
 GOLDEN = os.path.join(ROOT, "crates", "postui", "tests", "vim_conformance", "golden.jsonl")
 

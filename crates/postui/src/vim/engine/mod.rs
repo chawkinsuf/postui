@@ -14,8 +14,6 @@
 pub mod buf;
 mod case;
 mod case_table;
-mod class;
-mod class_table;
 mod history;
 mod indent;
 mod insert;

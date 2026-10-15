@@ -4,7 +4,7 @@
 //! chain under `cpoptions` `c`. The golden file is the judge.
 
 use super::buf::{Pos, TextBuf};
-use super::class::{class, is_space};
+use crate::text::class::{class, is_space};
 use regex::Regex;
 use std::collections::HashMap;
 
