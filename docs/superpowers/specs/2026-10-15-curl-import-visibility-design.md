@@ -87,8 +87,11 @@ both:
   `Action::ImportCurl { folder: sidebar_import_folder() }`: the button's
   click, read for read, error for error (V6).
 - A terminal's bracketed paste *delivers text*, so `paste_text` gains one
-  arm, after the modal and response arms: `import_pasted_curl(text)`.
-  It leaves the button alone, and "no curl" says "paste" (V6, V7).
+  arm, `import_pasted_curl(text)`. It comes first, ahead of the empty
+  check (an empty paste there still says it holds no curl, round 8):
+  `sidebar_takes_paste()` already rules out every surface the later arms
+  serve (a modal, a live vim field, the response pane). It leaves the
+  button alone, and "no curl" says "paste" (V6, V7).
 
 Rounds 2–5 oscillated between making ctrl+v the button's click and
 routing it with the text paste; each shape lost a distinction the other
@@ -167,7 +170,7 @@ command"), V14.
 ## 6. Checklist
 
 1. Spec committed (d992d43); amended after review block 1.
-2. `read_clipboard_curl`, `import_parsed`, `check_clipboard`; the tests
+2. `read_clipboard_curl`, `import_with`, `check_clipboard`; the tests
    for V4–V7 and V14.
 3. The paste routing and `Sidebar::import_folder`; the tests for V1, V2.
 4. The sidebar split, the hit, the hint and the click; the tests for V3,
