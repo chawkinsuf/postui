@@ -720,7 +720,7 @@ pub struct ReadyView {
     /// The inclusive cell span of a double-clicked word: while set, drag
     /// sweeps extend by whole words from this span instead of by cells.
     /// Cleared by any single click (`clear_sel`).
-    sel_word_anchor: Option<((usize, usize), (usize, usize))>,
+    sel_word_anchor: Option<crate::text::mouse::Span>,
     /// While the selection is whole lines (vim's `V`, shift+↑/↓: the
     /// response's V surface, plan M5a Deviation 11), the buffer line it
     /// started on, so a fold a motion opens above it never moves it. A
@@ -1960,16 +1960,6 @@ impl ReadyView {
     /// The row the V anchor's buffer line shows on now.
     fn line_anchor_row(&self) -> Option<usize> {
         self.line_anchor.map(|line| self.line_to_row(line))
-    }
-
-    /// The inclusive cell span a double click at cell `(line, col)`
-    /// selects: the shared mouse word under `col` (spec 2026-10-14, align
-    /// the text mouse), a col past the line's end taking its last word, on
-    /// that one line. `None` on an empty line.
-    fn word_cells_at(&self, line: usize, col: usize) -> Option<((usize, usize), (usize, usize))> {
-        let chars: Vec<char> = self.display_line_text(line)?.chars().collect();
-        let (s, e) = crate::text::mouse::word_at(&chars, col)?;
-        Some(((line, s), (line, e)))
     }
 
     /// A line selection from buffer line `anchor` (the row showing it now)
@@ -3491,12 +3481,14 @@ impl Response {
         if width <= view.h_scroll {
             return false;
         }
-        let Some(span) = view.word_cells_at(line, col) else {
+        let chars: Vec<char> = text.chars().collect();
+        let Some((s, e)) = crate::text::mouse::word_at(&chars, col) else {
             return false;
         };
-        view.sel = Some(span);
-        view.sel_anchor = Some(span.0);
-        view.sel_word_anchor = Some(span);
+        view.sel = Some(((line, s), (line, e)));
+        view.sel_anchor = Some((line, s));
+        let at = |col| crate::text::Pos::new(line, col);
+        view.sel_word_anchor = Some(crate::text::mouse::Span { fixed: at(s), moving: at(e) });
         true
     }
 
@@ -3517,11 +3509,9 @@ impl Response {
         let Some(head) = view.cell_at(x, y, true) else {
             return false;
         };
-        if let Some((ws, we)) = view.sel_word_anchor {
-            use crate::text::{Pos, mouse};
-            let pos = |(row, col)| Pos::new(row, col);
-            let word = mouse::Span { fixed: pos(ws), moving: pos(we) };
-            let grown = mouse::grow_by_words(&*view, word, pos(head));
+        if let Some(word) = view.sel_word_anchor {
+            let at = crate::text::Pos::new(head.0, head.1);
+            let grown = crate::text::mouse::grow_by_words(&*view, word, at);
             view.sel =
                 Some(((grown.fixed.row, grown.fixed.col), (grown.moving.row, grown.moving.col)));
             return true;

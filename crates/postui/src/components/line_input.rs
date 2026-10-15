@@ -51,7 +51,7 @@ pub struct LineInput {
     /// sweep is live: [`Self::extend_mouse_selection_to`] keeps it covered
     /// and grows the selection word by word past it. Cleared by any plain
     /// caret placement or edit.
-    word_anchor: Option<crate::text::mouse::Span>,
+    click_span: Option<crate::text::mouse::Span>,
     /// The vim engine's Visual selection (piece 3 §3.3): its anchor, in
     /// chars, and its shape. Paint only, set by `OneLineBuf::show`; kept
     /// apart from the GUI `anchor` because the engine owns the Visual
@@ -108,7 +108,7 @@ impl LineInput {
             text: text.to_string(),
             cursor,
             anchor: None,
-            word_anchor: None,
+            click_span: None,
             vim_visual: None,
             undo: Vec::new(),
             redo: Vec::new(),
@@ -130,7 +130,7 @@ impl LineInput {
     pub fn set_cursor(&mut self, idx: usize) {
         self.cursor = idx.min(self.len_chars());
         self.anchor = None;
-        self.word_anchor = None;
+        self.click_span = None;
         self.break_run();
     }
 
@@ -172,7 +172,7 @@ impl LineInput {
         self.text.replace_range(bs..be, text);
         self.cursor = start + text.chars().count();
         self.anchor = None;
-        self.word_anchor = None;
+        self.click_span = None;
         self.run = None;
     }
 
@@ -207,7 +207,7 @@ impl LineInput {
             cursor: std::mem::replace(&mut self.cursor, snap.cursor),
         });
         self.anchor = None;
-        self.word_anchor = None;
+        self.click_span = None;
         self.run = None;
         true
     }
@@ -222,7 +222,7 @@ impl LineInput {
             cursor: std::mem::replace(&mut self.cursor, snap.cursor),
         });
         self.anchor = None;
-        self.word_anchor = None;
+        self.click_span = None;
         self.run = None;
         true
     }
@@ -276,7 +276,7 @@ impl LineInput {
         self.text = text.to_string();
         self.cursor = self.text.chars().count();
         self.anchor = None;
-        self.word_anchor = None;
+        self.click_span = None;
     }
 
     /// The selected char range as half-open `(start, end)` with
@@ -298,14 +298,14 @@ impl LineInput {
 
     pub fn clear_selection(&mut self) {
         self.anchor = None;
-        self.word_anchor = None;
+        self.click_span = None;
         self.break_run();
     }
 
     pub fn select_all(&mut self) {
         self.anchor = Some(0);
         self.cursor = self.len_chars();
-        self.word_anchor = None;
+        self.click_span = None;
         self.break_run();
     }
 
@@ -319,7 +319,7 @@ impl LineInput {
         match crate::text::mouse::double_click(&chars[..], crate::text::Pos::new(0, idx)) {
             Some(span) => {
                 self.select_span(span);
-                self.word_anchor = Some(span);
+                self.click_span = Some(span);
             }
             None => self.set_cursor(idx),
         }
@@ -333,18 +333,17 @@ impl LineInput {
             Some(last) => {
                 let span = Span { fixed: Pos::new(0, 0), moving: Pos::new(0, last) };
                 self.select_span(span);
-                self.word_anchor = Some(span);
+                self.click_span = Some(span);
             }
             None => self.set_cursor(0),
         }
     }
 
-    /// Selects an inclusive `span` as the GUI selection: half-open, the
-    /// caret the moving end (after its char, or on it when it comes first).
+    /// Selects an inclusive `span` as the GUI selection
+    /// (`text::mouse::Span::gui_ends`).
     fn select_span(&mut self, span: crate::text::mouse::Span) {
-        let (fixed, moving) = (span.fixed.col, span.moving.col);
-        (self.anchor, self.cursor) =
-            if moving < fixed { (Some(fixed + 1), moving) } else { (Some(fixed), moving + 1) };
+        let (anchor, caret) = span.gui_ends(|p| crate::text::Pos::new(p.row, p.col + 1));
+        (self.anchor, self.cursor) = (Some(anchor.col), caret.col);
         self.break_run();
     }
 
@@ -353,14 +352,14 @@ impl LineInput {
     /// drag point.
     pub fn begin_mouse_selection(&mut self) {
         self.anchor = Some(self.cursor);
-        self.word_anchor = None;
+        self.click_span = None;
         self.break_run();
     }
 
     /// A click planted the anchor ([`Self::begin_mouse_selection`]) and no
     /// drag has extended it yet.
     pub(crate) fn click_anchored(&self) -> bool {
-        self.anchor.is_some() && self.word_anchor.is_none() && self.selection().is_none()
+        self.anchor.is_some() && self.click_span.is_none() && self.selection().is_none()
     }
 
     /// Extends the live mouse selection to char index `idx`: after a double
@@ -368,7 +367,7 @@ impl LineInput {
     /// grows by the shared mouse words past it (`text::mouse::grow_by_words`);
     /// by character otherwise.
     pub fn extend_mouse_selection_to(&mut self, idx: usize) {
-        let Some(span) = self.word_anchor else {
+        let Some(span) = self.click_span else {
             self.set_cursor_extending(idx);
             return;
         };
@@ -397,7 +396,7 @@ impl LineInput {
         self.text.replace_range(bs..be, "");
         self.cursor = start;
         self.anchor = None;
-        self.word_anchor = None;
+        self.click_span = None;
         true
     }
 
@@ -449,7 +448,7 @@ impl LineInput {
         // `clear_selection`: that breaks the run, and a burst of
         // backspaces is one step.
         self.anchor = None;
-        self.word_anchor = None;
+        self.click_span = None;
         if self.cursor > target {
             self.record(EditKind::DeleteBack);
             let start = self.byte_offset(target);
@@ -468,7 +467,7 @@ impl LineInput {
         self.text.insert_str(at, s);
         self.cursor += s.chars().count();
         self.anchor = None;
-        self.word_anchor = None;
+        self.click_span = None;
     }
 
     /// Pastes `text` at the caret: a live selection is replaced (GUI
@@ -483,7 +482,7 @@ impl LineInput {
         self.text.insert_str(at, &flat);
         self.cursor += flat.chars().count();
         self.anchor = None;
-        self.word_anchor = None;
+        self.click_span = None;
     }
 
     /// Whether the text *before* the cursor ends with `suffix`. Used to spot
@@ -557,7 +556,7 @@ impl LineInput {
                     self.cursor = 0;
                 }
                 self.anchor = None;
-                self.word_anchor = None;
+                self.click_span = None;
                 true
             }
             // A physical ctrl+backspace reaches a legacy terminal as the
@@ -618,7 +617,7 @@ impl LineInput {
                     return true;
                 }
                 self.anchor = None;
-                self.word_anchor = None;
+                self.click_span = None;
                 if self.cursor < self.len_chars() {
                     self.record(EditKind::DeleteForward);
                     let start = self.byte_offset(self.cursor);

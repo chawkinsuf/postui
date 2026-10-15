@@ -8,7 +8,10 @@
 
 use super::buf::{Pos, TextBuf};
 use super::{BufState, Engine, Mode, Shape};
-use crate::text::mouse::{block_end, word_end, word_start};
+use crate::text::Lines;
+use crate::text::brackets::{MatchFrom, find_match};
+use crate::text::class::{is_word, white};
+use crate::text::mouse::{word_end, word_start};
 
 /// What the mouse did at a char of the text ([`super::Settled::Mouse`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,5 +176,33 @@ impl Engine {
         self.visual = Some(anchor);
         self.mode = Mode::Visual(shape);
         self.clamp(buf);
+    }
+}
+
+/// Where a double click's block ends: the `%` match from the pointer, if
+/// the first char from it that is not a blank is not a word char, so any
+/// punctuation with a bracket later on its line starts one (probed: `:` in
+/// `https://x.com/{{id}}` selects to the last `}`). Arrows' reach is only a
+/// bracket (`text::mouse::double_click`; the user, 2026-10-14).
+fn block_end<B: Lines + ?Sized>(buf: &B, at: Pos) -> Option<Pos> {
+    let line = buf.line(at.row);
+    if line.iter().skip(at.col).find(|&&c| !white(c)).is_some_and(|&c| is_word(c)) {
+        return None;
+    }
+    find_match(buf, at, MatchFrom::Percent, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bracket_or_punctuation_ends_at_its_match_and_a_word_has_no_block() {
+        let line: Vec<char> = "a {b c} d".chars().collect();
+        assert_eq!(block_end(&line[..], Pos::new(0, 2)), Some(Pos::new(0, 6)));
+        assert_eq!(block_end(&line[..], Pos::new(0, 1)), Some(Pos::new(0, 6)), "blanks");
+        assert_eq!(block_end(&line[..], Pos::new(0, 3)), None, "a word char");
+        let url: Vec<char> = "https://x.com/{{id}}".chars().collect();
+        assert_eq!(block_end(&url[..], Pos::new(0, 5)), Some(Pos::new(0, 19)), "Vim's reach");
     }
 }

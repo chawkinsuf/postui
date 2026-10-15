@@ -8536,6 +8536,28 @@ fn an_arrows_triple_click_drag_onto_an_empty_row_leaves_its_break_out() {
     assert_eq!(app.editor.body_text(), "X\nxyz", "typing replaces exactly what was selected");
 }
 
+/// Task #23 review round 8: a word drag onto an empty row, down or up,
+/// selects and replaces exactly what it highlights.
+#[test]
+fn an_arrows_word_drag_onto_an_empty_row_replaces_what_it_shows() {
+    for (text, press, onto, selected, typed) in
+        [("abc\n\nxyz", 0, 1, "abc\n", "X\nxyz"), ("xyz\n\nabc", 2, 1, "\nabc", "xyz\nX")]
+    {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Body;
+        app.editor.set_body_text(text);
+        render_once(&mut app);
+        let area = app.editor.last_body_area.expect("body area recorded");
+        app.handle_mouse(left_down(area.x + 2 + 1, area.y + press));
+        app.handle_mouse(left_down(area.x + 2 + 1, area.y + press));
+        app.handle_mouse(dragged(area.x + 2, area.y + onto));
+        assert_eq!(app.editor.body_selected_text().as_deref(), Some(selected), "{text:?}");
+        app.handle_mouse(left_up(area.x + 2, area.y + onto));
+        app.handle_key(plain('X'));
+        assert_eq!(app.editor.body_text(), typed, "{text:?}");
+    }
+}
+
 /// Task #23 review round 3: shift+arrow after a triple click or a bracket
 /// double click in the body keeps the selection's far end fixed, as a
 /// one-line field does.

@@ -988,26 +988,26 @@ impl Editor {
         let Some(click) = crate::text::mouse::double_click(&self.body.lines, at) else {
             return false;
         };
-        self.select_body_text_span(click);
+        self.select_body_span(click);
         self.body_word_anchor = Some(click);
         self.body_line_anchor = None;
         true
     }
 
-    /// A mouse gesture's selection, the cells `fixed` to `moving` inclusive
-    /// (either order), set whole: the caret rides the moving end (after it,
-    /// or on it when it comes first), and the anchor a shift motion extends
-    /// from sits on the fixed end's outer edge.
-    fn select_body_span(&mut self, fixed: edtui::Index2, moving: edtui::Index2) {
-        self.set_body_selection_cells(fixed, moving);
+    /// A mouse gesture's selection, the cells of `span` set whole, shown as
+    /// a GUI selection (`text::mouse::Span::gui_ends`): the caret on the
+    /// moving end, and the anchor a shift motion extends from on the fixed
+    /// end's outer edge.
+    fn select_body_span(&mut self, span: crate::text::mouse::Span) {
+        let cell = |p: crate::text::Pos| edtui::Index2::new(p.row, p.col);
+        self.set_body_selection_cells(cell(span.fixed), cell(span.moving));
         // The edge after a cell, which on an empty row is its only edge.
-        let after = |e: &Self, i: edtui::Index2| {
-            let len = e.body.lines.len_col(i.row).unwrap_or(0);
-            edtui::Index2::new(i.row, (i.col + 1).min(len))
-        };
-        let forward = (moving.row, moving.col) >= (fixed.row, fixed.col);
-        self.body.cursor = if forward { after(self, moving) } else { moving };
-        self.body_sel_anchor = Some(if forward { fixed } else { after(self, fixed) });
+        let lines = &self.body.lines;
+        let (anchor, caret) = span.gui_ends(|p| {
+            crate::text::Pos::new(p.row, (p.col + 1).min(lines.len_col(p.row).unwrap_or(0)))
+        });
+        self.body.cursor = cell(caret);
+        self.body_sel_anchor = Some(cell(anchor));
     }
 
     /// Triple-click line select: the clicked line's text without its break
@@ -1030,18 +1030,18 @@ impl Editor {
     /// moving end, where the caret goes), without the last row's break. An
     /// empty single row selects nothing.
     fn select_body_lines(&mut self, from: usize, to: usize) {
+        use crate::text::{Pos, mouse::Span};
         let (top, bottom) = (from.min(to), from.max(to));
         let end = self.body.lines.len_col(bottom).unwrap_or(0);
-        let (first, last) =
-            (edtui::Index2::new(top, 0), edtui::Index2::new(bottom, end.saturating_sub(1)));
+        let (first, last) = (Pos::new(top, 0), Pos::new(bottom, end.saturating_sub(1)));
         if top == bottom && end == 0 {
             self.body.selection = None;
-            self.body.cursor = first;
-            self.body_sel_anchor = Some(first);
+            self.body.cursor = edtui::Index2::new(top, 0);
+            self.body_sel_anchor = Some(self.body.cursor);
         } else if to >= from {
-            self.select_body_span(first, last);
+            self.select_body_span(Span { fixed: first, moving: last });
         } else {
-            self.select_body_span(last, first);
+            self.select_body_span(Span { fixed: last, moving: first });
         }
     }
 
@@ -1062,12 +1062,6 @@ impl Editor {
             self.body_cursor_for_click(x, y)?
         };
         Some((at.row, at.col))
-    }
-
-    /// [`Self::select_body_span`] for a shared-shape span.
-    fn select_body_text_span(&mut self, span: crate::text::mouse::Span) {
-        let cell = |p: crate::text::Pos| edtui::Index2::new(p.row, p.col);
-        self.select_body_span(cell(span.fixed), cell(span.moving));
     }
 
     /// Extends the body selection to the drag point `(x, y)`: the moving
@@ -1100,7 +1094,7 @@ impl Editor {
             let head = self.clamp_to_cell(cursor);
             let at = crate::text::Pos::new(head.row, head.col);
             let grown = crate::text::mouse::grow_by_words(&self.body.lines, span, at);
-            self.select_body_text_span(grown);
+            self.select_body_span(grown);
             return true;
         }
         let Some(anchor) = self.body_sel_anchor else {

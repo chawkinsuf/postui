@@ -40,6 +40,9 @@ move to a new profile-neutral module, `crate::text`:
   line(row))`, the only two things it reads.
 - `text/mouse.rs` holds `mouse_class`, `word_start`, `word_end` and `block_end` (from
   `vim/engine/mouse.rs`), plus `Pos`, which the engine re-exports from `buf.rs`.
+  **Amended after review round 8** (`mine`): once arrows' block became brackets only
+  (A2), `block_end`'s reach was vim's alone, so it went back to `vim/engine/mouse.rs`
+  and arrows' block lives in `text::mouse::double_click`.
 
 The engine imports all of these and behaves exactly as now; the probe-based engine
 tests and the Vim conformance tests pin that.
