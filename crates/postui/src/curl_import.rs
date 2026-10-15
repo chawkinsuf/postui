@@ -45,11 +45,24 @@ pub struct CurlVariables {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CurlReplace {
     pub import: CurlImport,
-    /// `CurlBatch::skipped_lines`.
-    pub skipped_lines: usize,
-    /// `CurlBatch::values_dropped`.
-    pub values_dropped: bool,
+    pub notes: PasteNotes,
     pub vars: CurlVariables,
+}
+
+/// What a paste says beside its commands (`CurlBatch`'s other fields),
+/// for the summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasteNotes {
+    pub skipped_lines: usize,
+    pub values_dropped: bool,
+}
+
+impl PasteNotes {
+    /// `batch`'s commands, and its notes.
+    pub fn split(batch: CurlBatch) -> (Vec<CurlImport>, Self) {
+        let CurlBatch { commands, skipped_lines, values_dropped } = batch;
+        (commands, Self { skipped_lines, values_dropped })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,9 +74,7 @@ pub struct CurlImportRun {
     /// The command the open prompt is for.
     pub index: usize,
     pub created: Vec<CreatedImport>,
-    pub skipped_lines: usize,
-    /// `CurlBatch::values_dropped`.
-    pub values_dropped: bool,
+    pub notes: PasteNotes,
     /// The environment the secrets went into, as its display name; `None`
     /// when none was active.
     pub secrets_env: Option<String>,
@@ -71,15 +82,8 @@ pub struct CurlImportRun {
 
 impl CurlImportRun {
     pub fn new(batch: CurlBatch, folder: Option<String>) -> Self {
-        Self {
-            folder,
-            commands: batch.commands,
-            index: 0,
-            created: Vec::new(),
-            skipped_lines: batch.skipped_lines,
-            values_dropped: batch.values_dropped,
-            secrets_env: None,
-        }
+        let (commands, notes) = PasteNotes::split(batch);
+        Self { folder, commands, index: 0, created: Vec::new(), notes, secrets_env: None }
     }
 
     pub fn current(&self) -> &CurlImport {
@@ -105,32 +109,22 @@ impl CurlImportRun {
         if total > 1 || self.created.len() < total {
             parts.push(format!("imported {} of {total}", self.created.len()));
         }
-        let pasted = Pasted {
-            skipped_lines: self.skipped_lines,
-            values_dropped: self.values_dropped,
-            secrets_env: self.secrets_env.as_deref(),
-        };
-        let (rest, kind) = summary_parts(&self.created, total > 1, &pasted);
+        let env = self.secrets_env.as_deref();
+        let (rest, kind) = summary_parts(&self.created, total > 1, &self.notes, env);
         parts.extend(rest);
         (!parts.is_empty()).then(|| (parts.join("; "), kind))
     }
 }
 
-/// What a paste says beside its commands, for [`summary_parts`].
-pub struct Pasted<'a> {
-    pub skipped_lines: usize,
-    pub values_dropped: bool,
-    /// The environment the secrets went into, as its display name.
-    pub secrets_env: Option<&'a str>,
-}
-
 /// The summary's parts after any count (spec §4.3), for an import's
 /// requests or a replace's one (`named`: prefix each ignored list with its
-/// request's name), and the toast's kind.
+/// request's name), and the toast's kind. `secrets_env` is the
+/// environment the secrets went into, as its display name.
 pub fn summary_parts(
     created: &[CreatedImport],
     named: bool,
-    pasted: &Pasted<'_>,
+    notes: &PasteNotes,
+    secrets_env: Option<&str>,
 ) -> (Vec<String>, ToastKind) {
     let mut parts = Vec::new();
     let ignored: Vec<String> = created
@@ -155,7 +149,7 @@ pub fn summary_parts(
     if !saved.is_empty() {
         let what = if saved.len() == 1 { "a secret" } else { "secrets" };
         let mut part = format!("saved {} as {what}", saved.join(", "));
-        if let Some(env) = pasted.secrets_env {
+        if let Some(env) = secrets_env {
             part.push_str(&format!(" in {env}"));
         }
         parts.push(part);
@@ -204,12 +198,12 @@ pub fn summary_parts(
         let why = if reserved.len() == 1 { "a reserved name" } else { "reserved names" };
         parts.push(format!("did not save {} ({why})", reserved.join(", ")));
     }
-    if pasted.values_dropped {
+    if notes.values_dropped {
         parts.push("saved no values: the paste has other shell lines".to_string());
     }
-    if pasted.skipped_lines > 0 {
-        let s = if pasted.skipped_lines == 1 { "" } else { "s" };
-        parts.push(format!("skipped {} non-curl line{s}", pasted.skipped_lines));
+    if notes.skipped_lines > 0 {
+        let s = if notes.skipped_lines == 1 { "" } else { "s" };
+        parts.push(format!("skipped {} non-curl line{s}", notes.skipped_lines));
     }
     let kind = if !ignored.is_empty()
         || !empty.is_empty()
@@ -217,7 +211,7 @@ pub fn summary_parts(
         || !changed.is_empty()
         || !unsaved.is_empty()
         || !reserved.is_empty()
-        || pasted.skipped_lines > 0
+        || notes.skipped_lines > 0
     {
         ToastKind::Warning
     } else {
@@ -401,7 +395,7 @@ mod tests {
     #[test]
     fn values_a_skipped_line_dropped_are_reported_before_the_skip() {
         let mut r = run("export T=1\nif x; then :; fi\ncurl -H \"A: $T\" https://x/a");
-        assert!(r.values_dropped);
+        assert!(r.notes.values_dropped);
         let mut a = created("GET a", &[], &["T"]);
         a.secrets = vec![("T".into(), None)];
         r.created.push(a);

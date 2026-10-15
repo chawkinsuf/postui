@@ -816,6 +816,8 @@ fn undo_restores_the_edits_first_then_the_declarations() {
     app.update(Action::Undo);
     assert!(!app.proj().variables().vars.contains_key("TOKEN"));
     assert_eq!(app.editor.current_request(), edited, "the editor stays as it was");
+    let msg = app.toasts.last_message().unwrap();
+    assert!(msg.contains("variable TOKEN"), "the toast names what it undid: {msg}");
 }
 
 #[test]

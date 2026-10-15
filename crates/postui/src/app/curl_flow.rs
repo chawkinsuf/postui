@@ -3,7 +3,7 @@
 //! Split from `app.rs`; every method here is `impl App`.
 
 use super::*;
-use crate::curl_import::{CreatedImport, CurlImportRun, CurlReplace, CurlVariables};
+use crate::curl_import::{CreatedImport, CurlImportRun, CurlReplace, CurlVariables, PasteNotes};
 use postui_core::curl::{CurlBatch, CurlImport};
 
 impl App {
@@ -241,9 +241,9 @@ impl App {
                 return true;
             }
         };
-        let CurlBatch { commands, skipped_lines, values_dropped } = batch;
+        let (commands, notes) = PasteNotes::split(batch);
         let import = commands.into_iter().next().expect("checked: one command");
-        let replace = CurlReplace { import, skipped_lines, values_dropped, vars };
+        let replace = CurlReplace { import, notes, vars };
         match other {
             Some(slug) if self.editor_holds_unsaved() => {
                 let replace = Box::new(replace);
@@ -277,18 +277,15 @@ impl App {
     /// are: the editor change is then the next `capture_undo`'s own step,
     /// so undoing it never reloads the request over unsaved work.
     fn apply_curl_replace(&mut self, replace: CurlReplace) {
-        let CurlReplace {
-            import,
-            skipped_lines,
-            values_dropped,
-            vars: CurlVariables { secrets, kept, reserved },
-        } = replace;
+        let CurlReplace { import, notes, vars: CurlVariables { secrets, kept, reserved } } =
+            replace;
         let current = self.editor.current_request();
         let env = self.project().and_then(|p| p.active_env().map(|e| p.env_name(e)));
         if !secrets.is_empty() {
+            // The variables' names, not the request's: the editor change is
+            // the next step, under its own toast.
             let names: Vec<&str> = secrets.iter().map(|(n, _)| n.as_str()).collect();
-            let label =
-                self.open_request_label(crate::undo::StepLabel::variable(&names.join(", ")));
+            let label = crate::undo::StepLabel::variable(&names.join(", "));
             let t = self.begin_op();
             let result = match self.project_mut() {
                 Some(p) => p.declare_secrets(&secrets).map_err(|e| e.to_string()),
@@ -328,12 +325,9 @@ impl App {
             kept,
             reserved,
         };
-        let pasted = crate::curl_import::Pasted {
-            skipped_lines,
-            values_dropped,
-            secrets_env: env.as_deref().filter(|_| saved_any),
-        };
-        let (parts, kind) = crate::curl_import::summary_parts(&[created], false, &pasted);
+        let secrets_env = env.as_deref().filter(|_| saved_any);
+        let (parts, kind) =
+            crate::curl_import::summary_parts(&[created], false, &notes, secrets_env);
         let head = if changed {
             format!("Replaced {name} from curl")
         } else {
