@@ -19,7 +19,10 @@ indexmap.workspace = true
 tempfile.workspace = true
 edtui = { version = "0.11", default-features = false, features = ["syntax-highlighting", "mouse-support"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
-arboard = "3"
+# `wayland-data-control`: on a Wayland session, read and write the Wayland
+# clipboard. Without it arboard is X11-only, and XWayland's clipboard never
+# sees what a Wayland-native terminal copied, so ctrl+v found nothing.
+arboard = { version = "3", features = ["wayland-data-control"] }
 base64 = "0.22"
 # Char display widths, for mapping body-editor clicks back onto buffer
 # columns exactly the way edtui lays the text out (it uses this same crate).
