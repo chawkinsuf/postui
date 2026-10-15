@@ -720,7 +720,7 @@ pub struct ReadyView {
     /// The inclusive cell span of a double-clicked word: while set, drag
     /// sweeps extend by whole words from this span instead of by cells.
     /// Cleared by any single click (`clear_sel`).
-    sel_word_anchor: Option<((usize, usize), (usize, usize))>,
+    sel_word_anchor: Option<crate::text::mouse::Span>,
     /// While the selection is whole lines (vim's `V`, shift+↑/↓: the
     /// response's V surface, plan M5a Deviation 11), the buffer line it
     /// started on, so a fold a motion opens above it never moves it. A
@@ -781,6 +781,17 @@ const SENT_DIVIDER: &str = "\u{2500}\u{2500} sent ";
 fn aligned_header_lines<'a>(rows: impl Iterator<Item = (&'a str, &'a str)> + Clone) -> Vec<String> {
     let width = rows.clone().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
     rows.map(|(k, v)| format!("{:<width$} {v}", format!("{k}:"), width = width + 1)).collect()
+}
+
+/// The visible lines as painted, for the shared mouse words.
+impl crate::text::Lines for ReadyView {
+    fn line_count(&self) -> usize {
+        self.visible_len().max(1)
+    }
+
+    fn line(&self, row: usize) -> std::borrow::Cow<'_, [char]> {
+        std::borrow::Cow::Owned(self.display_line_text(row).unwrap_or_default().chars().collect())
+    }
 }
 
 impl ReadyView {
@@ -1949,16 +1960,6 @@ impl ReadyView {
     /// The row the V anchor's buffer line shows on now.
     fn line_anchor_row(&self) -> Option<usize> {
         self.line_anchor.map(|line| self.line_to_row(line))
-    }
-
-    /// The inclusive cell span a double click at cell `(line, col)`
-    /// selects: the word/punctuation/whitespace run around `col` (see
-    /// [`word_nav::word_span_at`]), on that one line. `None` on an empty
-    /// line or a col past its last char.
-    fn word_cells_at(&self, line: usize, col: usize) -> Option<((usize, usize), (usize, usize))> {
-        let chars: Vec<char> = self.display_line_text(line)?.chars().collect();
-        let (s, e) = super::word_nav::word_span_at(&chars, col)?;
-        Some(((line, s), (line, e - 1)))
     }
 
     /// A line selection from buffer line `anchor` (the row showing it now)
@@ -3455,35 +3456,39 @@ impl Response {
         true
     }
 
-    /// Double-click word select: selects the character run under the click
-    /// (word, punctuation or whitespace — the same classes `word_nav` hops
-    /// by) and plants the word anchor a following drag extends from, whole
-    /// words at a time. A click past a line's last character selects
-    /// nothing (and returns `false`: no sweep to arm).
+    /// Double-click word select: selects the shared mouse word under the
+    /// click (as a field's double click does) and plants the word anchor a
+    /// following drag extends from, whole words at a time. A click past a
+    /// line's last character takes its last word. `false` (no sweep to arm)
+    /// off the text, on an empty line, or on a row scrolled right past all
+    /// its text.
     pub fn select_word_at(&mut self, x: u16, y: u16) -> bool {
         use unicode_width::UnicodeWidthChar;
         let Some(view) = self.view.as_mut() else {
             return false;
         };
         view.clear_sel();
+        // `cell_at` clamps a click past the line end onto its last char, so
+        // a double click there takes the last word, as in a field (spec
+        // 2026-10-14, align the text mouse, A3).
         let Some((line, col)) = view.cell_at(x, y, false) else {
             return false;
         };
-        // `cell_at` clamps a click past the line end onto its last char;
-        // a double click there should select nothing, so re-check the
-        // clicked display column against the line's width.
-        let area = view.last_area.expect("cell_at resolved through last_area");
-        let disp_col = view.h_scroll + usize::from(x.saturating_sub(area.x));
+        // A row scrolled right past all its text shows none of it, so there
+        // is no last word on screen to take.
         let text = view.display_line_text(line).unwrap_or_default();
-        if disp_col >= text.chars().map(|c| c.width().unwrap_or(0)).sum() {
+        let width: usize = text.chars().map(|c| c.width().unwrap_or(0)).sum();
+        if width <= view.h_scroll {
             return false;
         }
-        let Some(span) = view.word_cells_at(line, col) else {
+        let chars: Vec<char> = text.chars().collect();
+        let Some((s, e)) = crate::text::mouse::word_at(&chars, col) else {
             return false;
         };
-        view.sel = Some(span);
-        view.sel_anchor = Some(span.0);
-        view.sel_word_anchor = Some(span);
+        view.sel = Some(((line, s), (line, e)));
+        view.sel_anchor = Some((line, s));
+        let at = |col| crate::text::Pos::new(line, col);
+        view.sel_word_anchor = Some(crate::text::mouse::Span { fixed: at(s), moving: at(e) });
         true
     }
 
@@ -3495,8 +3500,8 @@ impl Response {
     /// start of the row below. Dragging back onto the anchor cell
     /// collapses the selection.
     /// After a double click (word anchor set) the sweep extends by whole
-    /// words instead: the selection is the union of the anchor word and
-    /// the run under the pointer, so the anchor word always stays covered.
+    /// words instead, as a field's does (`text::mouse::grow_by_words`), so
+    /// the anchor word always stays covered.
     pub fn drag_selection_to(&mut self, x: u16, y: u16) -> bool {
         let Some(view) = self.view.as_mut() else {
             return false;
@@ -3504,15 +3509,11 @@ impl Response {
         let Some(head) = view.cell_at(x, y, true) else {
             return false;
         };
-        if let Some((ws, we)) = view.sel_word_anchor {
-            let (hs, he) = view.word_cells_at(head.0, head.1).unwrap_or((head, head));
-            view.sel = Some(if head > we {
-                (ws, he)
-            } else if head < ws {
-                (hs, we)
-            } else {
-                (ws, we)
-            });
+        if let Some(word) = view.sel_word_anchor {
+            let at = crate::text::Pos::new(head.0, head.1);
+            let grown = crate::text::mouse::grow_by_words(&*view, word, at);
+            view.sel =
+                Some(((grown.fixed.row, grown.fixed.col), (grown.moving.row, grown.moving.col)));
             return true;
         }
         let Some(anchor) = view.sel_anchor else {
@@ -5383,11 +5384,37 @@ mod tests {
     }
 
     #[test]
-    fn double_click_past_the_line_end_selects_nothing() {
+    /// Task #23 (A3): past the end is the last word, as in a field.
+    fn double_click_past_the_line_end_selects_the_last_word() {
         let mut r = ready("ab\nlonger line");
         let (area, _) = render_buf(&mut r);
-        assert!(!r.select_word_at(area.x + 30, area.y));
+        assert!(r.select_word_at(area.x + 30, area.y + 1));
+        assert_eq!(r.selected_text().as_deref(), Some("line"));
+    }
+
+    /// Task #23 review round 7 (A3): a row scrolled right past all its text
+    /// shows none of it, so a double click there selects nothing.
+    #[test]
+    fn double_click_on_a_row_scrolled_past_its_text_selects_nothing() {
+        let mut r = ready(&format!("ab\n{}", "x".repeat(300)));
+        render_buf(&mut r);
+        r.view.as_mut().unwrap().h_scroll = 100;
+        let (area, _) = render_buf(&mut r);
+        assert_eq!(r.view.as_ref().unwrap().h_scroll, 100, "the long row keeps the scroll");
+        assert!(!r.select_word_at(area.x + 1, area.y));
         assert_eq!(r.selected_text(), None);
+        assert!(r.select_word_at(area.x + 1, area.y + 1), "a row still showing text");
+    }
+
+    /// Task #23 (A1): the response picks words as the fields do.
+    #[test]
+    fn double_click_takes_the_shared_mouse_word() {
+        let mut r = ready("https://x a->b");
+        let (area, _) = render_buf(&mut r);
+        assert!(r.select_word_at(area.x + 5, area.y));
+        assert_eq!(r.selected_text().as_deref(), Some(":"));
+        assert!(r.select_word_at(area.x + 12, area.y));
+        assert_eq!(r.selected_text().as_deref(), Some("->"));
     }
 
     #[test]

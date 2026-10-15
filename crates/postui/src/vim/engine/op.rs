@@ -4,7 +4,6 @@
 
 use super::buf::{Pos, TextBuf};
 use super::case;
-use super::class::white;
 use super::history::{Ed, MarkMove};
 use super::keys::{CaseOp, Cmd, Op, Reach};
 use super::motion::{self, MKind, MotionCx};
@@ -12,6 +11,7 @@ use super::register::{PLUS_PASTE_NOTE, RegKind, Register};
 use super::settings::{SHIFTWIDTH, TABSTOP};
 use super::{BufState, Engine, Mode, Note, Outcome, ViewCtx, first_non_blank, first_non_blank_fix};
 use crate::components::line_input::flatten_paste;
+use crate::text::class::white;
 use ratatui::crossterm::event::KeyEvent;
 
 /// A motion's or object's reach, `start <= end` in buffer order.

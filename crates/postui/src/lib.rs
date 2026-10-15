@@ -20,6 +20,7 @@ pub mod paint;
 pub mod session;
 pub mod setup;
 pub mod split;
+pub mod text;
 pub mod theme;
 pub mod ui;
 pub mod undo;

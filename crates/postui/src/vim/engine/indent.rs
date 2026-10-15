@@ -3,12 +3,12 @@
 //! (ops.c) under `expandtab`. The golden file is the judge.
 
 use super::buf::{Pos, TextBuf};
-use super::class::white;
 use super::history::Ed;
 use super::insert::InsertKey;
 use super::motion::vcol_of;
 use super::settings::{SHIFTWIDTH, TABSTOP};
 use super::{BufState, Engine};
+use crate::text::class::white;
 
 /// A line's leading blanks, measured in one pass (a deep indent is then
 /// cheap to shift again and again: `9999i<C-t><Esc>`).

@@ -10,7 +10,6 @@
 //! `ins_esc()` with `stop_insert()`. The golden file is the judge.
 
 use super::buf::{Pos, TextBuf};
-use super::class::{class, is_space, is_word, white};
 use super::history::{Ed, MarkMove, end_of};
 use super::keys::{Cmd, InsertHow, Key};
 use super::motion::{Want, col_for, vcol_of};
@@ -19,6 +18,7 @@ use super::register::{PLUS_PASTE_NOTE, RegKind};
 use super::settings::TABSTOP;
 use super::{BufState, Engine, Mode, Note, Outcome, Restart, Target, ViewCtx, first_non_blank};
 use crate::components::line_input::flatten_paste;
+use crate::text::class::{class, is_space, is_word, white};
 use ratatui::crossterm::event::KeyEvent;
 
 /// The `.` record of typing that did not start with an Insert command: a

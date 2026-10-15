@@ -6,15 +6,26 @@ use super::*;
 use crate::components::manage::ManageTab;
 use crate::keyroute::{FieldCaret, FieldId};
 
-/// A left press's click counts. `gui` is arrows' (same hit within 400 ms,
-/// a pair: a third press is a single), which lists and buttons read in both
-/// profiles. `vim` is Vim's (same cell within `'mousetime'`, 500 ms, up to
-/// four), which only vim's text takes (spec 2026-10-14 R12, Q1).
+/// A left press's click counts. `list` is a pair (same hit within 400 ms;
+/// a third press is a single, so a fast triple click never toggles a
+/// folder twice), which rows and buttons read in both profiles. `text`
+/// counts up to four on a field's text in both profiles (spec 2026-10-14,
+/// align the text mouse, A7; Vim's `'mousetime'` rule).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Clicks {
-    pub(super) gui: u8,
-    pub(super) vim: u8,
+    pub(super) list: u8,
+    pub(super) text: u8,
 }
+
+/// The window for a list click count: a pair on the same control.
+const LIST_WINDOW_MS: u64 = 400;
+
+/// A7's window for a click count on text, which also needs the same cell.
+/// On trial (the user, 2026-10-14: "don't make it too hard to go back"):
+/// arrows' text counted within [`LIST_WINDOW_MS`] on the same control
+/// anywhere. To go back for arrows, give [`count_clicks`] the profile, and
+/// there use that window and drop the cell check in the `text` arm.
+const TEXT_WINDOW_MS: u64 = 500;
 
 /// The last left press: what it hit, its cell, when, and its counts.
 #[derive(Debug, Clone)]
@@ -35,18 +46,20 @@ pub(super) fn count_clicks(
     use std::time::Duration;
     let within =
         |ms| last.is_some_and(|l| at.saturating_duration_since(l.at) < Duration::from_millis(ms));
-    let gui = match last {
-        Some(l) if l.hit == *hit && l.clicks.gui == 1 && within(400) => 2,
+    let list = match last {
+        Some(l) if l.hit == *hit && l.clicks.list == 1 && within(LIST_WINDOW_MS) => 2,
         _ => 1,
     };
-    let vim = match last {
-        // The cell, of the same control: a press can open a field under it.
-        Some(l) if l.hit == *hit && l.cell == cell && l.clicks.vim < 4 && within(500) => {
-            l.clicks.vim + 1
+    let text = match last {
+        // The same control too: a press can open a field under the cell.
+        Some(l)
+            if l.hit == *hit && l.cell == cell && l.clicks.text < 4 && within(TEXT_WINDOW_MS) =>
+        {
+            l.clicks.text + 1
         }
         _ => 1,
     };
-    LastClick { hit: hit.clone(), cell, at, clicks: Clicks { gui, vim } }
+    LastClick { hit: hit.clone(), cell, at, clicks: Clicks { list, text } }
 }
 
 /// The hit a text field is drawn under: the one map between the two.
@@ -353,10 +366,9 @@ impl App {
                 {
                     return false;
                 }
-                // Arrows' count pairs: a third click within the window is a
-                // single, rather than pairing with the second and
-                // double-firing (a fast triple-click toggling a folder
-                // twice, net reverting it).
+                // Both counts at once (`count_clicks`): rows and buttons read
+                // the list count, which pairs, so a fast triple click never
+                // toggles a folder twice; text reads the text count.
                 let press = count_clicks(
                     self.last_click.as_ref(),
                     &hit,
@@ -980,8 +992,10 @@ impl App {
 
     /// A left press on `field`'s text, which the field's arm has opened.
     /// Vim's mouse takes it in vim (spec 2026-10-14). Otherwise the caret
-    /// goes to the char and anchors a sweep, or a double click selects the
-    /// word and the sweep goes by words. A sweep is armed when the press
+    /// goes to the char and anchors a sweep, a double click selects the
+    /// word and the sweep goes by words, and a triple click selects the line
+    /// and the sweep goes by lines (spec 2026-10-14, align the text mouse,
+    /// the same shapes as vim's). A sweep is armed when the press
     /// maps to a char (the body arms one anyway; its own mouse code
     /// decides); a field that is not open, which a commit can leave so,
     /// places and arms nothing.
@@ -1002,23 +1016,27 @@ impl App {
             self.editor.sub_focus = SubFocus::Content;
         }
         if let Some(at) = at
-            && self.vim_text_press(field, at, clicks.vim)
+            && self.vim_text_press(field, at, clicks.text)
         {
             return;
         }
         if field == FieldId::Body {
             self.editor.handle_mouse(m);
-            if clicks.gui == 2 {
+            if clicks.text == 2 {
                 self.editor.body_select_word_at(m.column, m.row);
+            } else if clicks.text == 3 {
+                self.editor.body_select_line_at(m.column, m.row);
             }
             return;
         }
         let (Some(at), Some(input)) = (at, self.field_input_mut(field)) else { return };
-        if clicks.gui == 2 {
-            input.select_word_at(at.1);
-        } else {
-            input.set_cursor(at.1);
-            input.begin_mouse_selection();
+        match clicks.text {
+            2 => input.select_word_at(at.1),
+            3 => input.select_line(),
+            _ => {
+                input.set_cursor(at.1);
+                input.begin_mouse_selection();
+            }
         }
     }
 
@@ -1271,7 +1289,7 @@ impl App {
                 // A click on the response pane's bare content (Raw and
                 // Headers register no per-row hits) anchors a selection
                 // sweep, exactly like a JsonRow click does in Pretty.
-                if p == PaneId::Response && self.response_click_selection(clicks.gui, m) {
+                if p == PaneId::Response && self.response_click_selection(clicks.text, m) {
                     self.text_drag = Some(TextDrag::Response);
                 }
                 self.update(Action::FocusPane(p))
@@ -1458,7 +1476,7 @@ impl App {
                         self.update(Action::ShowRequestError(slug))
                     }
                     Some(Row::Folder { .. }) => {
-                        if clicks.gui == 2 {
+                        if clicks.list == 2 {
                             self.update(Action::ToggleSelectedFolder)
                         } else {
                             self.update(Action::Render)
@@ -1836,7 +1854,7 @@ impl App {
                 // semantics act on the row rather than the save prefill.
                 let was_selected = state.selected() == i;
                 state.select(i);
-                if was_selected || clicks.gui == 2 {
+                if was_selected || clicks.list == 2 {
                     let Some(res) = state.activate() else {
                         return self.update(Action::Render);
                     };
@@ -1866,7 +1884,7 @@ impl App {
                 let Some(Modal::Chooser(state)) = self.modals.top_mut() else {
                     return false;
                 };
-                if state.selected() == i || clicks.gui == 2 {
+                if state.selected() == i || clicks.list == 2 {
                     let Some(res) = state.confirm() else {
                         return false;
                     };
@@ -1881,7 +1899,7 @@ impl App {
                 let Some(Modal::VarPicker(state)) = self.modals.top_mut() else {
                     return false;
                 };
-                if state.selected() == i || clicks.gui == 2 {
+                if state.selected() == i || clicks.list == 2 {
                     let Some(res) = state.confirm() else {
                         return false;
                     };
@@ -1927,7 +1945,7 @@ impl App {
                 self.update(Action::FocusPane(PaneId::Response));
                 // The click also anchors a possible selection sweep (and
                 // collapses any previous selection), like any text click.
-                if self.response_click_selection(clicks.gui, m) {
+                if self.response_click_selection(clicks.text, m) {
                     self.text_drag = Some(TextDrag::Response);
                 }
                 self.update(Action::JsonRowClicked { row: i, toggle: false })

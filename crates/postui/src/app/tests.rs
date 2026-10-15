@@ -8448,6 +8448,266 @@ fn url_bar_drag_selects_and_double_click_selects_the_word() {
     assert_eq!(app.editor.url.selection(), None);
 }
 
+/// The URL line of a fresh arrows app holding `text`, drawn.
+fn arrows_url(text: &str) -> (App, ratatui::layout::Rect) {
+    let mut app = App::new_for_test();
+    app.editor.url = crate::components::line_input::LineInput::new(text);
+    render_once(&mut app);
+    let area = app.editor.last_url_text_area.expect("url area recorded");
+    (app, area)
+}
+
+/// Task #23 (spec A1–A3): arrows' double click takes the shared mouse
+/// words (each punctuation char alone but the operators, which go
+/// together), a bracket's block, and past the end the last word.
+#[test]
+fn an_arrows_double_click_selects_the_shared_word() {
+    for (text, col, want) in [
+        ("https://x", 5, ":"),
+        ("https://x", 6, "//"),
+        ("a->b", 1, "->"),
+        ("a {b c} d", 2, "{b c}"),
+        ("a {b c} d", 1, " {b c}"),
+        ("a {b c} d", 6, "{b c}"),
+        // Brackets only: Vim's reach from `:` to the `{{id}}` is vim's.
+        ("https://x.com/{{id}}", 5, ":"),
+        ("hello world", 20, "world"),
+        // Review round 7 (the user): past the end never starts a block.
+        ("a {b c}", 20, "}"),
+    ] {
+        let (mut app, area) = arrows_url(text);
+        app.handle_mouse(left_down(area.x + col, area.y));
+        app.handle_mouse(left_down(area.x + col, area.y));
+        assert_eq!(app.editor.url.selected_text().as_deref(), Some(want), "{text:?} at {col}");
+    }
+}
+
+/// Task #23 (spec A4): a drag after a double click grows by those words.
+#[test]
+fn an_arrows_double_click_drag_grows_by_the_shared_words() {
+    let (mut app, area) = arrows_url("https://x");
+    app.handle_mouse(left_down(area.x + 8, area.y));
+    app.handle_mouse(left_down(area.x + 8, area.y));
+    app.handle_mouse(dragged(area.x + 6, area.y));
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("//x"), "`//` is one word");
+}
+
+/// Task #23 (spec A5–A7): a triple click selects the line (the whole
+/// value of a one-line field; the body's line without its break), a drag
+/// after it goes by lines, and a click count on text needs one cell.
+#[test]
+fn an_arrows_triple_click_selects_the_line() {
+    let (mut app, area) = arrows_url("foo bar");
+    for _ in 0..3 {
+        app.handle_mouse(left_down(area.x + 1, area.y));
+    }
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("foo bar"));
+
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("alpha beta\nsecond\nthird");
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    // 3 lines -> a 2-cell gutter; content column 0 is at area.x + 2.
+    for _ in 0..3 {
+        app.handle_mouse(left_down(area.x + 2 + 1, area.y));
+    }
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("alpha beta"));
+    app.handle_mouse(dragged(area.x + 2 + 2, area.y + 1));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("alpha beta\nsecond"));
+}
+
+/// Task #23 review: a triple-click drag onto an empty row takes the rows
+/// above it whole, not the empty row's own break.
+#[test]
+fn an_arrows_triple_click_drag_onto_an_empty_row_leaves_its_break_out() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("abc\n\nxyz");
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    for _ in 0..3 {
+        app.handle_mouse(left_down(area.x + 2 + 1, area.y));
+    }
+    app.handle_mouse(dragged(area.x + 2, area.y + 1));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("abc\n"));
+    app.handle_mouse(left_up(area.x + 2, area.y + 1));
+    app.handle_key(plain('X'));
+    assert_eq!(app.editor.body_text(), "X\nxyz", "typing replaces exactly what was selected");
+}
+
+/// Task #23 review round 8: a word drag onto an empty row, down or up,
+/// selects and replaces exactly what it highlights.
+#[test]
+fn an_arrows_word_drag_onto_an_empty_row_replaces_what_it_shows() {
+    for (text, press, onto, selected, typed) in
+        [("abc\n\nxyz", 0, 1, "abc\n", "X\nxyz"), ("xyz\n\nabc", 2, 1, "\nabc", "xyz\nX")]
+    {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Body;
+        app.editor.set_body_text(text);
+        render_once(&mut app);
+        let area = app.editor.last_body_area.expect("body area recorded");
+        app.handle_mouse(left_down(area.x + 2 + 1, area.y + press));
+        app.handle_mouse(left_down(area.x + 2 + 1, area.y + press));
+        app.handle_mouse(dragged(area.x + 2, area.y + onto));
+        assert_eq!(app.editor.body_selected_text().as_deref(), Some(selected), "{text:?}");
+        app.handle_mouse(left_up(area.x + 2, area.y + onto));
+        app.handle_key(plain('X'));
+        assert_eq!(app.editor.body_text(), typed, "{text:?}");
+    }
+}
+
+/// Task #23 review round 3: shift+arrow after a triple click or a bracket
+/// double click in the body keeps the selection's far end fixed, as a
+/// one-line field does.
+#[test]
+fn shift_after_a_body_line_or_block_select_keeps_its_far_end() {
+    let shift = |code| KeyEvent::new(code, KeyModifiers::SHIFT);
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("hello world");
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    // 1 line -> a 2-cell gutter; content column 0 is at area.x + 2.
+    for _ in 0..3 {
+        app.handle_mouse(left_down(area.x + 2 + 5, area.y));
+    }
+    app.handle_key(shift(KeyCode::Left));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("hello worl"));
+
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("a {b c} d");
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    app.handle_mouse(left_down(area.x + 2 + 6, area.y));
+    app.handle_mouse(left_down(area.x + 2 + 6, area.y));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("{b c}"));
+    app.handle_key(shift(KeyCode::Right));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("{b c} "), "the clicked end moves");
+}
+
+/// Task #23 review round 6 (the user: the caret stays at the clicked
+/// bracket): a block's far match never moves the caret, so the view stays
+/// under the pointer, in the body and in a field.
+#[test]
+fn an_arrows_block_double_click_leaves_the_caret_at_the_clicked_end() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    let body = format!("{{\n{}}}", "  \"a\": 1,\n".repeat(80));
+    app.editor.set_body_text(&body);
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    // 82 lines -> a 3-cell gutter; content column 0 is at area.x + 3.
+    app.handle_mouse(left_down(area.x + 3, area.y));
+    app.handle_mouse(left_down(area.x + 3, area.y));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some(body.as_str()));
+    let caret = |app: &App| (app.editor.body.cursor.row, app.editor.body.cursor.col);
+    assert_eq!(caret(&app), (0, 0), "before the clicked opener");
+
+    for (col, want) in [(2, 2), (6, 7), (1, 1)] {
+        let (mut app, area) = arrows_url("a {b c} d");
+        app.handle_mouse(left_down(area.x + col, area.y));
+        app.handle_mouse(left_down(area.x + col, area.y));
+        assert_eq!(app.editor.url.cursor(), want, "double click at {col}");
+    }
+}
+
+/// Task #23 review round 4 (the user: arrows keeps the block): a drag after
+/// a bracket double click keeps the whole block and grows past it by words,
+/// in a field and across the body's rows.
+#[test]
+fn an_arrows_drag_after_a_block_double_click_keeps_the_block() {
+    let (mut app, area) = arrows_url("a {b c} d");
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    app.handle_mouse(dragged(area.x + 3, area.y));
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("{b c}"), "a twitch inside");
+    app.handle_mouse(dragged(area.x + 8, area.y));
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("{b c} d"), "past it by words");
+
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("{\n  \"a\": 1\n}");
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    app.handle_mouse(dragged(area.x + 3, area.y + 1));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("{\n  \"a\": 1\n}"));
+}
+
+/// Task #23 review round 5: a drag still inside what a double click
+/// selected leaves it exactly as clicked, its direction included, in a
+/// field and in the body.
+#[test]
+fn a_drag_inside_a_double_clicks_span_leaves_it_as_clicked() {
+    let (mut app, area) = arrows_url("x{{id}}");
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("{id}"));
+    app.handle_mouse(dragged(area.x + 5, area.y));
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("{id}"), "onto its closer");
+    app.handle_mouse(dragged(area.x + 2, area.y));
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("{id}"), "back onto its opener");
+
+    let shift = |code| KeyEvent::new(code, KeyModifiers::SHIFT);
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("a {b c} d");
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    app.handle_mouse(left_down(area.x + 2 + 6, area.y));
+    app.handle_mouse(left_down(area.x + 2 + 6, area.y));
+    app.handle_mouse(dragged(area.x + 2 + 5, area.y));
+    app.handle_mouse(left_up(area.x + 2 + 5, area.y));
+    app.handle_key(shift(KeyCode::Right));
+    assert_eq!(
+        app.editor.body_selected_text().as_deref(),
+        Some("{b c} "),
+        "still the opener fixed"
+    );
+}
+
+/// Task #23 review round 3: a double click on blanks before a closing
+/// bracket takes the whole block, the bracket the blanks lead to included.
+#[test]
+fn an_arrows_double_click_on_blanks_before_a_closer_takes_the_block() {
+    let (mut app, area) = arrows_url("{a  }");
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("{a  }"));
+}
+
+/// Task #23 (spec A7): presses on two cells of the same field are two
+/// single clicks.
+#[test]
+fn arrows_presses_on_two_cells_of_a_field_are_two_clicks() {
+    let (mut app, area) = arrows_url("foo bar");
+    app.handle_mouse(left_down(area.x + 1, area.y));
+    app.handle_mouse(left_down(area.x + 5, area.y));
+    assert_eq!((app.editor.url.selection(), app.editor.url.cursor()), (None, 5));
+}
+
+/// Task #23 (spec A2): the body's bracket block can span lines.
+#[test]
+fn an_arrows_double_click_on_a_body_bracket_selects_its_block() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("{\n  \"a\": 1\n}");
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("{\n  \"a\": 1\n}"));
+
+    // Review round 7 (the user): past the end is the last word, no block.
+    app.handle_mouse(left_down(area.x + 20, area.y + 2));
+    app.handle_mouse(left_down(area.x + 20, area.y + 2));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("}"));
+}
+
 #[test]
 fn dragging_in_the_response_selects_and_ctrl_c_copies_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -14300,7 +14560,9 @@ fn enter_and_esc_both_commit_a_field_edit() {
         "Esc keeps the typed text"
     );
 
-    // Enter commits.
+    // Enter commits. (A fresh single click: on the same cell this soon it
+    // would pair as a double click, which past the end takes the last word.)
+    app.last_click = None;
     let r = field_rect(&mut app, VmField::Description);
     app.handle_mouse(left_down(r.x + r.width - 2, r.y));
     app.handle_key(plain('!'));

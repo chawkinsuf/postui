@@ -464,9 +464,10 @@ fn click_at(app: &mut App, column: u16, row: u16) {
     }
 }
 
-/// Task #15 (spec R12, Q1 (b)): one record per press gives arrows' count
-/// (same hit, 400 ms, a pair), which lists and buttons read in both
-/// profiles, and Vim's (same cell, 500 ms, up to four) for vim's text.
+/// Task #15 (spec R12, Q1 (b)) and task #23 (A7): one record per press
+/// gives the list count (same hit, 400 ms, a pair), which rows and buttons
+/// read in both profiles, and the text count (same hit and cell, 500 ms,
+/// up to four), which every field's text reads in both profiles.
 #[test]
 fn a_press_counts_both_ways() {
     use super::mouse::{Clicks, count_clicks};
@@ -479,21 +480,21 @@ fn a_press_counts_both_ways() {
         last = Some(rec);
         clicks
     };
-    assert_eq!(press_on(Hit::SendButton, (5, 1), 0), Clicks { gui: 1, vim: 1 });
+    assert_eq!(press_on(Hit::SendButton, (5, 1), 0), Clicks { list: 1, text: 1 });
     assert_eq!(
         press_on(Hit::UrlBar, (5, 1), 50),
-        Clicks { gui: 1, vim: 1 },
+        Clicks { list: 1, text: 1 },
         "the same cell under another control: a first click"
     );
     let mut press = |cell: (u16, u16), ms: u64| press_on(Hit::UrlBar, cell, ms + 1000);
-    assert_eq!(press((5, 1), 0), Clicks { gui: 1, vim: 1 });
-    assert_eq!(press((5, 1), 100), Clicks { gui: 2, vim: 2 });
-    assert_eq!(press((5, 1), 200), Clicks { gui: 1, vim: 3 }, "arrows pairs, Vim counts on");
-    assert_eq!(press((5, 1), 300), Clicks { gui: 2, vim: 4 });
-    assert_eq!(press((5, 1), 400), Clicks { gui: 1, vim: 1 }, "after four Vim starts over");
-    assert_eq!(press((6, 1), 450), Clicks { gui: 2, vim: 1 }, "another cell, same hit");
-    assert_eq!(press((6, 1), 900), Clicks { gui: 1, vim: 2 }, "450 ms: past 400, inside 500");
-    assert_eq!(press((6, 1), 1500), Clicks { gui: 1, vim: 1 });
+    assert_eq!(press((5, 1), 0), Clicks { list: 1, text: 1 });
+    assert_eq!(press((5, 1), 100), Clicks { list: 2, text: 2 });
+    assert_eq!(press((5, 1), 200), Clicks { list: 1, text: 3 }, "lists pair, text counts on");
+    assert_eq!(press((5, 1), 300), Clicks { list: 2, text: 4 });
+    assert_eq!(press((5, 1), 400), Clicks { list: 1, text: 1 }, "after four text starts over");
+    assert_eq!(press((6, 1), 450), Clicks { list: 2, text: 1 }, "another cell, same hit");
+    assert_eq!(press((6, 1), 900), Clicks { list: 1, text: 2 }, "450 ms: past 400, inside 500");
+    assert_eq!(press((6, 1), 1500), Clicks { list: 1, text: 1 });
 }
 
 /// Task #15: a table cell's double click is Vim's word in vim (arrows

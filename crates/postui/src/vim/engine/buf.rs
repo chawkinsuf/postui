@@ -6,17 +6,19 @@ use crate::components::line_input::{LineInput, VisualShape};
 use edtui::{EditorMode, EditorState, Index2, RowIndex};
 use std::borrow::Cow;
 
-/// A position in chars, never bytes (spec §3.2). A one-line buffer always
-/// has `row == 0`. Ordered by row, then column.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Pos {
-    pub row: usize,
-    pub col: usize,
-}
+/// Positions are the profile-neutral text module's.
+pub use crate::text::Pos;
 
-impl Pos {
-    pub const fn new(row: usize, col: usize) -> Self {
-        Self { row, col }
+/// Every buffer is text by lines, as the shared shapes read it. Written
+/// through `TextBuf`'s own methods, so engine code that sees both traits
+/// still names one `line`.
+impl<B: TextBuf + ?Sized> crate::text::Lines for B {
+    fn line_count(&self) -> usize {
+        TextBuf::line_count(self)
+    }
+
+    fn line(&self, row: usize) -> Cow<'_, [char]> {
+        TextBuf::line(self, row)
     }
 }
 
@@ -187,11 +189,11 @@ impl TextBuf for BodyBuf<'_> {
     const MULTILINE: bool = true;
 
     fn line_count(&self) -> usize {
-        self.state.lines.len().max(1)
+        crate::text::Lines::line_count(&self.state.lines)
     }
 
     fn line(&self, row: usize) -> Cow<'_, [char]> {
-        Cow::Borrowed(self.state.lines.get(RowIndex::new(row)).map(Vec::as_slice).unwrap_or(&[]))
+        crate::text::Lines::line(&self.state.lines, row)
     }
 
     fn cursor(&self) -> Pos {

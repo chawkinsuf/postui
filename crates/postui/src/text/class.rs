@@ -2,8 +2,10 @@
 //! The table is Vim's own `charclass()` output under the pinned
 //! `iskeyword` (`class_table.rs`, generated), so NBSP is blank, all of
 //! 192–255 are word chars (× and ÷ included), CJK ideographs are their
-//! own class apart from Latin, and emoji are class 3. `word_nav::is_word`
-//! disagrees at those edges, which is why the engine does not use it.
+//! own class apart from Latin, and emoji are class 3. The engine and both
+//! profiles' mouse words (`text::mouse`) read it. Arrows' keyboard word
+//! motions (ctrl+←/→) keep `word_nav::is_word`, which disagrees at those
+//! edges (spec 2026-10-14, align the text mouse, §3: the keys stay arrows').
 
 use super::class_table::TABLE;
 
