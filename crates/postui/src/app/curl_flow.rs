@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::curl_import::{CreatedImport, CurlImportRun, CurlReplace, CurlVariables, PasteNotes};
-use postui_core::curl::{CurlBatch, CurlImport};
+use postui_core::curl::{CurlBatch, CurlError, CurlImport};
 
 impl App {
     /// Whether the clipboard holds curl the import would take: what the
@@ -22,31 +22,23 @@ impl App {
         self.sidebar.curl_ready != before
     }
 
-    /// The clipboard's curl commands, read as every import reads them; the
-    /// error says why there are none, a read failure naming its cause
-    /// (V14). With the setting on, every such read is a check too: a stale
-    /// button goes (V6).
-    fn read_clipboard_curl(&mut self) -> Result<CurlBatch, String> {
-        let parsed = match self.clipboard.read() {
-            Ok(text) => postui_core::curl::parse(&text).map_err(|e| e.to_string()),
-            Err(e) => Err(format!("clipboard read failed: {e}")),
-        };
-        self.note_curl(&parsed);
+    /// The clipboard's curl commands, read as every import reads them (a
+    /// clipboard that can't be read is empty, which holds none). With the
+    /// setting on, every such read is a check too: a stale button goes
+    /// (V6).
+    fn read_clipboard_curl(&mut self) -> Result<CurlBatch, CurlError> {
+        let text = self.clipboard.read().unwrap_or_default();
+        let parsed = postui_core::curl::parse(&text);
+        self.sidebar.curl_ready = self.ui_settings.curl_button && parsed.is_ok();
         parsed
     }
 
-    /// Records what the clipboard was found to hold, for the button: with
-    /// the setting on, whatever reads it is a check too (V4, V6).
-    fn note_curl(&mut self, parsed: &Result<CurlBatch, String>) {
-        self.sidebar.curl_ready = self.ui_settings.curl_button && parsed.is_ok();
-    }
-
     /// The commands of `parsed`, else a toast saying why there are none.
-    fn curl_or_toast(&mut self, parsed: Result<CurlBatch, String>) -> Option<CurlBatch> {
+    fn curl_or_toast(&mut self, parsed: Result<CurlBatch, CurlError>) -> Option<CurlBatch> {
         match parsed {
             Ok(batch) => Some(batch),
             Err(e) => {
-                self.toasts.push(e, ToastKind::Error);
+                self.toasts.push(e.to_string(), ToastKind::Error);
                 None
             }
         }
@@ -54,27 +46,18 @@ impl App {
 
     /// `Action::ImportCurl` (spec §4.2 steps 1–2): clipboard → parse →
     /// dirty gate → first prompt. A failure toasts and creates nothing.
+    /// The sidebar's Import curl button is this, into the cursor row's
+    /// folder (spec 2026-10-15 curl import visibility V2).
     pub(super) fn import_curl(&mut self, folder: Option<String>) -> bool {
         self.import_with(folder, Self::read_clipboard_curl)
     }
 
-    /// The sidebar's Import curl button (spec 2026-10-15 curl import
-    /// visibility V2): the clipboard's curl, into the cursor row's folder.
-    pub(super) fn import_curl_at_cursor(&mut self) -> bool {
-        let folder = self.sidebar.import_folder(&self.active_space());
-        self.import_curl(folder)
-    }
-
     /// A paste into the sidebar, which takes no text (V1, V2, V7): its curl
-    /// imports into the cursor row's folder. The text is the clipboard's
-    /// (ctrl+v, or the terminal's own paste of it), so it is a check too.
+    /// imports into the cursor row's folder. It leaves the button alone: a
+    /// terminal's paste need not be the clipboard's text.
     pub(super) fn import_pasted_curl(&mut self, text: &str) -> bool {
         let folder = self.sidebar.import_folder(&self.active_space());
-        self.import_with(folder, |app| {
-            let parsed = postui_core::curl::parse(text).map_err(|e| e.to_string());
-            app.note_curl(&parsed);
-            parsed
-        })
+        self.import_with(folder, |_| postui_core::curl::parse(text))
     }
 
     /// Every import's entry: a project to land in before anything is
@@ -83,7 +66,7 @@ impl App {
     fn import_with(
         &mut self,
         folder: Option<String>,
-        read: impl FnOnce(&mut Self) -> Result<CurlBatch, String>,
+        read: impl FnOnce(&mut Self) -> Result<CurlBatch, CurlError>,
     ) -> bool {
         if self.refuse_without_project() {
             return true;

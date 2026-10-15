@@ -40,7 +40,7 @@ setting, off by default, and the read after a copy goes. The paste
 | V3 | With the V13 setting on, while the clipboard holds a curl command, the sidebar's top row splits into "+ New" and "Import curl" buttons. Otherwise it is the full-width "+ New request", as today. The list never moves. | you |
 | V4 | With the setting on, the clipboard is checked at launch, when the terminal regains focus, when the setting is turned on, and on every import's or replace's own read. Not on a paste (it would parse every paste into a text field for nothing, round 1) and not after a copy (a read-back races an asynchronous `clipboard_cmd`, round 3). Never polled. With the setting off, postui never reads the clipboard unasked. | mine, the setting yours |
 | V5 | "Holds a curl command" means `postui_core::curl::parse` accepts the text: the button shows only when clicking it would get as far as the name prompt. | mine |
-| V6 | A click reads the clipboard fresh (it may have changed since the check). If the clipboard no longer parses, the click toasts the import's own error, as the palette command does, and the button goes away. A sidebar paste clears it the same way: its text is the clipboard's, so its parse is a check too (rounds 2 and 4). | mine |
+| V6 | A click reads the clipboard fresh (it may have changed since the check). If the clipboard no longer parses, the click toasts the import's own error, as the palette command does, and the button goes away. A paste does not touch the button: a terminal's paste need not be the clipboard's text (shift+Insert's PRIMARY, a paste history), and the footer chip no longer follows the button (round 5, replacing rounds 2 and 4). | mine |
 | V7 | A sidebar paste that holds no curl command toasts the import's error ("clipboard doesn't hold a curl command", or the parse error). Today it is silent. | mine |
 | V8 | Each button gets its label's width plus half the spare columns, a column apart. When "Import curl" will not fit, its label shortens to "curl". When even that will not fit, the row stays "+ New request" with no import button. | mine |
 | V9 | The sidebar's footer always lists `^V import curl`, last. With the setting off by default, the chip is what shows the paste; it no longer depends on the clipboard, so it needs no check. | mine |
@@ -48,13 +48,13 @@ setting, off by default, and the read after a copy goes. The paste
 | V11 | The button's hover hint is "Import curl from clipboard" (the palette row's wording). | mine |
 | V12 | The palette, `:import` and the folder menu are unchanged (the palette and `:import` still import into the space root). | mine |
 | V13 | A `curl_button` setting (`config.toml`, a checkbox row "Import curl button" on the Settings tab, before "Clipboard command"), default off, turns V3–V4 on. Turning it off hides the button at once. | you (opt-in, default off); the name and place mine |
-| V14 | A clipboard that can't be read toasts "clipboard read failed: …" (the cause, the words ctrl+v into a text field uses), not "clipboard doesn't hold a curl command". This covers import and replace from every entry point. No import reads the clipboard before its "no project" refusal (round 4). | mine (rounds 1, 3, 4) |
+| V14 | No import reads the clipboard before its "no project" refusal (round 4). *Reverted 2026-10-15 (you, round 5):* an unreadable clipboard naming its cause. arboard reports an empty or image clipboard as a read error, so it said "clipboard read failed: The clipboard contents were not available…" where main says "clipboard doesn't hold a curl command"; it says that again. | mine; the revert yours |
 
 ## 3. Design
 
 **App** owns the check. `read_clipboard_curl() -> Result<CurlBatch,
-String>` is the one clipboard read and parse: a read error is
-`clipboard read failed: {e}` (V14), a parse error its message. It
+CurlError>` is the one clipboard read and parse; a clipboard that can't
+be read counts as empty, which holds no curl. It
 records the answer in `self.sidebar.curl_ready`, but only while
 `curl_button` is on, so the import's own reads keep the button honest
 without ever showing it while the setting is off. `check_clipboard() ->
@@ -83,10 +83,12 @@ clipboard and hands the text to `paste_text`, as a bracketed paste
 does. `paste_text` gains one arm, after the modal and response arms:
 Main with the sidebar focused → `import_pasted_curl(text)`. No vim field
 is live there (`screen_field` is `None` on the sidebar), so the vim seam
-never claims the paste first. Its parse records the button's answer
-(`note_curl`), so a failing paste clears a stale button (V6). (Round 2
-made ctrl+v the button's click through a guard arm on `Action::Paste`;
-round 4 found that split the routing in two, so it went.)
+never claims the paste first. The paste leaves the button alone (V6).
+(Round 2 made ctrl+v the button's click through a guard arm on
+`Action::Paste`; round 4 found that split the routing in two, so it
+went; round 5 found the paste updating the button wrong for a
+terminal's PRIMARY paste, and the reason it did, the chip following the
+button, had gone with the amendment.)
 
 Every import enters through `import_with(folder, read)`: the project
 gate first, so nothing reads the clipboard for an import that will be
@@ -99,7 +101,9 @@ A test that pinned "a sidebar paste is unhandled"
 (`bracketed_paste_routes_to_the_focused_input`) now checks the method
 badge, which still takes no text.
 
-**Click.** `Hit::SidebarImportCurl` → `import_curl_at_cursor()`.
+**Click.** `Hit::SidebarImportCurl` →
+`Action::ImportCurl { folder: sidebar.import_folder(space) }`, through
+`update` as its siblings are.
 `hint.rs` maps it to V11's caption. (The palette row's description, the
 way "+ New request" gets its hint, is over the hints' 42-column limit.)
 
@@ -137,12 +141,14 @@ Contracts: `Hit` gains one variant, `Sidebar` one pub field plus
   broken curl and an unreadable clipboard; `on_focus_gained` rechecks.
   With it off, no check and no button, even after an import read curl.
   Turning it on checks; turning it off hides. A copy does not check.
-- V6: a click, and a ctrl+v, with the clipboard swapped to non-curl →
-  error toast, flag cleared, no prompt.
+- V6: a click with the clipboard swapped to non-curl → error toast, flag
+  cleared, no prompt. A sidebar paste of curl with a non-curl clipboard
+  imports and shows no button.
 - V7: a non-curl sidebar paste → the error toast.
-- V9: the sidebar footer lists the chip whatever the clipboard holds.
-- V14: an unreadable clipboard → "clipboard read failed: …" from the
-  palette import and from a sidebar ctrl+v.
+- V9: the sidebar footer lists the chip whatever the clipboard holds;
+  its hint on the sidebar is V11's.
+- V14: with no project, neither an import nor a sidebar paste reads the
+  clipboard for the button; an unreadable clipboard holds no curl.
 - Manual: tmux, the arrows profile: the paste at the root and in a
   folder; the Settings row; the button after a copy is not expected.
 

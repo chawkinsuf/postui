@@ -1232,15 +1232,13 @@ fn a_copy_does_not_check_the_clipboard() {
 }
 
 #[test]
-fn an_unreadable_clipboard_says_so() {
-    let top = crate::components::sidebar::RowKey::Request("main/top".into());
-    let mut app = on_sidebar("", &top);
+fn an_unreadable_clipboard_holds_no_curl() {
+    // Empty and image clipboards are read errors to arboard; the import
+    // says what main always said (spec V14, reverted by the user).
+    let mut app = app_with_clip("");
     app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536, false));
-    for run in [Action::ImportCurl { folder: None }, Action::Paste] {
-        app.update(run.clone());
-        let msg = app.toasts.last_message().unwrap();
-        assert!(msg.starts_with("clipboard read failed: "), "{run:?}: {msg}");
-    }
+    import(&mut app);
+    assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
 }
 
 #[test]
@@ -1268,15 +1266,16 @@ fn a_stale_import_button_says_why_and_goes_away() {
 }
 
 #[test]
-fn a_sidebar_ctrl_v_is_the_import_button() {
+fn a_sidebar_paste_leaves_the_button_to_its_checks() {
+    // A terminal's paste (shift+Insert's PRIMARY, a paste history) need
+    // not be the clipboard: what it holds says nothing about the button.
     let top = crate::components::sidebar::RowKey::Request("main/top".into());
-    let mut app = on_sidebar("curl https://x/users", &top);
+    let mut app = on_sidebar("hello", &top);
     app.ui_settings.curl_button = true;
     app.check_clipboard();
-    app.clipboard.set_read_for_test("hello");
-    app.update(Action::Paste);
-    assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
-    assert!(!app.sidebar.curl_ready, "the stale button and chip go, as on a click");
+    app.paste_text("curl https://x/users");
+    assert_eq!(prompt(&app).1, "GET users", "the paste imports");
+    assert!(!app.sidebar.curl_ready, "but shows no button for the clipboard");
 }
 
 #[test]
