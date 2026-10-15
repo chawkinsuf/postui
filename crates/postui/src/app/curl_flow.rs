@@ -170,11 +170,13 @@ impl App {
                 continue;
             }
             let request = request_vars.get(&n).filter(|e| e.enabled);
-            let exists = match self.project_mut() {
-                Some(p) => p.variable_exists(&n).map_err(|e| e.to_string())?,
-                None => false,
-            };
-            if request.is_none() && !exists {
+            // The request's own wins at send: the project's is not asked.
+            let exists = request.is_some()
+                || match self.project_mut() {
+                    Some(p) => p.variable_exists(&n).map_err(|e| e.to_string())?,
+                    None => false,
+                };
+            if !exists {
                 vars.secrets.push((n, v));
                 continue;
             }
@@ -207,6 +209,11 @@ impl App {
             self.toasts.push(msg, ToastKind::Error);
             return true;
         }
+        // The editor as it stands, as Copy as curl reads it: an open cell's
+        // text and an open field's keys land first, as their own step.
+        self.commit_table_edit();
+        self.capture_undo();
+        self.flush_field_session();
         let other = slug.filter(|s| self.editor.slug.as_deref() != Some(s.as_str()));
         // The variables the request will have once open: its file's, for a
         // row that is not open yet.
@@ -249,10 +256,6 @@ impl App {
             // The open failed and toasted why.
             return;
         }
-        // The open and the replace share an input event, and a capture
-        // that sees the slug change only re-seeds: seat the opened request
-        // as the shadow here, so the replace is a step of its own.
-        self.shadow = Some((self.editor.slug.clone(), self.editor.current_request()));
         self.apply_curl_replace(replace);
     }
 
@@ -262,10 +265,8 @@ impl App {
     /// so undoing it never reloads the request over unsaved work.
     fn apply_curl_replace(&mut self, replace: CurlReplace) {
         let CurlReplace { batch, vars: CurlVariables { secrets, kept, reserved } } = replace;
-        // An open field's keys become their own step first, and the fields
-        // the replace keeps are read after they land.
-        self.flush_field_session();
-        let import = batch.commands[0].clone();
+        let CurlBatch { commands, skipped_lines, values_dropped } = batch;
+        let import = commands.into_iter().next().expect("replace takes one command");
         let current = self.editor.current_request();
         let env = self.project().and_then(|p| p.active_env().map(|e| p.env_name(e)));
         if !secrets.is_empty() {
@@ -298,22 +299,25 @@ impl App {
             Some(slug) => self.request_display(&slug),
             None => "the unsaved request".to_string(),
         };
-        let mut run = CurlImportRun::new(batch, None);
-        if secrets.iter().any(|(_, v)| v.is_some()) {
-            run.secrets_env = env;
-        }
-        run.created.push(CreatedImport {
+        let saved_any = secrets.iter().any(|(_, v)| v.is_some());
+        let created = CreatedImport {
             name: name.clone(),
             ignored: import.ignored,
             converted: import.converted,
             secrets,
             kept,
             reserved,
-        });
-        let (text, kind) = match run.summary() {
-            Some((parts, kind)) => (format!("Replaced {name} from curl; {parts}"), kind),
-            None => (format!("Replaced {name} from curl"), ToastKind::Success),
         };
+        let pasted = crate::curl_import::Pasted {
+            skipped_lines,
+            values_dropped,
+            secrets_env: env.as_deref().filter(|_| saved_any),
+        };
+        let (parts, kind) = crate::curl_import::summary_parts(&[created], false, &pasted);
+        let mut text = format!("Replaced {name} from curl");
+        for part in parts {
+            text.push_str(&format!("; {part}"));
+        }
         self.toasts.push(format!("{text}{}", self.undo_hint()), kind);
     }
 

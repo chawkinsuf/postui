@@ -5249,6 +5249,7 @@ fn move_all_requests_keeps_the_source_arrangement_in_a_listed_destination() {
 fn move_all_requests_holding_a_dirty_open_request_gates_first() {
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.capture_undo(); // the main loop's capture after the open's event
     dirty_the_editor(&mut app);
     app.update(Action::MoveAllRequests { from: "main".into(), to: "auth".into() });
     let Some(Modal::Confirm { title, .. }) = app.modals.top() else { panic!("gate") };
@@ -5265,10 +5266,13 @@ fn move_all_requests_holding_a_dirty_open_request_gates_first() {
     assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
     assert!(!app.editor.is_dirty(), "reloaded clean from disk");
     assert!(!app.capture_undo(), "the move is not an edit");
+    // The URL's typing closes as its own step when the gate's answer
+    // flushes the field (undo brings the discarded edit back), then the
+    // move's file step; nothing after the reload.
     assert_eq!(
         app.history.undo_len(),
-        steps_before + 1,
-        "one file step for the move, no phantom edit step on top"
+        steps_before + 2,
+        "the typing's step and the move's, no phantom edit step on top"
     );
 }
 

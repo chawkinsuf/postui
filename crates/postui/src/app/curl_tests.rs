@@ -1004,3 +1004,30 @@ fn an_unreadable_environment_refuses_before_the_gate_or_the_open() {
     assert!(msg.starts_with("cannot replace: "), "{msg}");
     assert_eq!(*kind, crate::components::toast::ToastKind::Error);
 }
+
+#[test]
+fn an_open_cell_lands_before_the_variables_are_sorted() {
+    use crate::components::table_editor::{CellEdit, Col};
+    let mut app = kept_app("export v=9\ncurl -H \"A: $v\" https://x/new");
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = crate::components::editor::EditorTab::Vars;
+    app.editor.sub_focus = crate::components::editor::SubFocus::Content;
+    app.editor.table.selected = Some(0);
+    let input = LineInput::new("9");
+    app.editor.table.editing = Some(CellEdit { row: 0, col: Col::Value, input });
+    replace(&mut app, None);
+    assert_eq!(app.editor.variables["v"].value, "9", "the typed value is kept");
+    let msg = app.toasts.last_message().unwrap();
+    assert!(msg.contains("; kept the existing v \u{2014} "), "the paste's value: {msg}");
+}
+
+#[test]
+fn an_enabled_request_variable_needs_no_environment_read() {
+    let mut app = kept_app("export v=1\ncurl -H \"A: $v\" https://x/new");
+    std::fs::create_dir_all(app.proj().root().join("environments")).unwrap();
+    std::fs::write(app.proj().root().join("environments/qa.toml"), "").unwrap();
+    app.update(Action::ReloadProjectFiles);
+    std::fs::write(app.proj().root().join("environments/qa.toml"), "TOKEN = [").unwrap();
+    replace(&mut app, None);
+    assert_eq!(app.editor.url.text(), "https://x/new", "v is the request's own");
+}

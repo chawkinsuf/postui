@@ -510,9 +510,15 @@ impl App {
                     p.close_request(prev);
                 }
                 self.editor.load(Some(slug.clone()), req);
-                if let Some(buf) = buffer {
-                    self.editor.apply_snapshot(&buf);
-                    self.shadow = Some((Some(slug), *buf));
+                // What the editor now holds is the shadow: the open is no
+                // edit, and an edit after it in the same input event is a
+                // step of its own (a replace of a row not open yet).
+                match buffer {
+                    Some(buf) => {
+                        self.editor.apply_snapshot(&buf);
+                        self.shadow = Some((Some(slug), *buf));
+                    }
+                    None => self.shadow = Some((Some(slug), self.editor.current_request())),
                 }
                 // After the buffer: its method, not the saved one's, says
                 // whether Body can show.
