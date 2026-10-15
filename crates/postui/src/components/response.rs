@@ -3455,11 +3455,11 @@ impl Response {
         true
     }
 
-    /// Double-click word select: selects the character run under the click
-    /// (word, punctuation or whitespace — the same classes `word_nav` hops
-    /// by) and plants the word anchor a following drag extends from, whole
-    /// words at a time. A click past a line's last character selects
-    /// nothing (and returns `false`: no sweep to arm).
+    /// Double-click word select: selects the shared mouse word under the
+    /// click (as a field's double click does) and plants the word anchor a
+    /// following drag extends from, whole words at a time. A click past a
+    /// line's last character takes its last word. `false` (no sweep to arm)
+    /// off the text or on an empty line.
     pub fn select_word_at(&mut self, x: u16, y: u16) -> bool {
         let Some(view) = self.view.as_mut() else {
             return false;

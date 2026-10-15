@@ -8469,6 +8469,8 @@ fn an_arrows_double_click_selects_the_shared_word() {
         ("a {b c} d", 2, "{b c}"),
         ("a {b c} d", 1, " {b c}"),
         ("a {b c} d", 6, "{b c}"),
+        // Brackets only: Vim's reach from `:` to the `{{id}}` is vim's.
+        ("https://x.com/{{id}}", 5, ":"),
         ("hello world", 20, "world"),
     ] {
         let (mut app, area) = arrows_url(text);

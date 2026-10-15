@@ -16,12 +16,12 @@ behaves the same in both profiles and stays as it is.
 | # | Gesture | Arrows today | Both, after | Source |
 |---|---|---|---|---|
 | A1 | Double click | Selects a run: a whole run of punctuation is one word (`://`) | Vim's mouse word: blanks, word chars, the operator chars `-+*/%<>&|^!=` together (`->`, `!=`), and each other punctuation char alone | you (align) |
-| A2 | Double click on a bracket, or on blanks before one | That char's run | Through to the matching bracket (`{` selects `{…}`, and the body can cross lines). In vim's Insert there is no match, as in Vim | you (Q "Brackets") |
+| A2 | Double click on a bracket, or on blanks before one | That char's run | Through to the matching bracket (`{` selects `{…}`, and the body can cross lines). In vim's Insert there is no match, as in Vim. **Amended after review round 1:** Vim also starts a block from any punctuation with a bracket later on its line (probed: `:` in `https://x.com/{{id}}` selects to the last `}`). That reach stays vim's, and arrows starts a block only from a bracket or blanks before one (`you`, 2026-10-14). | you (Q "Brackets") |
 | A3 | Double click past the end of the text | Places the caret, selects nothing | The last word: the press counts as on the last char | you (Q "Past end") |
 | A4 | Drag after a double click | Grows by arrows' runs | Grows by A1's words, with Vim's rule for which end moves | you (align) |
 | A5 | Triple click | Acts as a single click | Selects the line: in a one-line field the whole value, in the body the line under the pointer | you (align) |
 | A6 | Drag after a triple click | — | Grows by whole lines | you (align) |
-| A7 | Click count on text | Same control, 0.4 s, a pair | Same control and cell, 0.5 s, up to three (a fourth starts over) | you (align), `mine` (the window) |
+| A7 | Click count on text | Same control, 0.4 s, a pair | Same control and cell, 0.5 s. The count goes to four, as Vim's does; a fourth acts as a single click (Vim's would be blockwise, which postui lacks), and a fifth starts over. Corrected after review round 1: this row said "up to three" | you (align), `mine` (the window) |
 | K1 | Drag width | Stops before the char under the pointer (bar caret) | **Unchanged in each**: vim takes that char, arrows stops before it | you (Q "Drag width") |
 | K2 | Right click on the edited field | Copy/Paste menu | **Unchanged in each**: arrows menu, vim extends | you (Q "Right click") |
 | K3 | Typing over a selection | Replaces it | **Unchanged**: vim's keys are commands | mode-inherent |

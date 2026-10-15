@@ -55,12 +55,26 @@ pub(crate) fn word_at(line: &[char], col: usize) -> Option<(usize, usize)> {
     Some((word_start(line, at).col, word_end(line, at).col.min(last)))
 }
 
-/// Where a double click's block ends: on a char that is not a word char
-/// (blanks skipped), the `%` match from the pointer, if any.
+/// Where Vim's double click's block ends: on a char that is not a word
+/// char (blanks skipped), the `%` match from the pointer, if any. That is
+/// any punctuation with a bracket later on its line (probed: `:` in
+/// `https://x.com/{{id}}` selects to the last `}`).
 pub(crate) fn block_end<B: Lines + ?Sized>(buf: &B, at: Pos) -> Option<Pos> {
     let line = buf.line(at.row);
     let first = line.iter().skip(at.col).find(|&&c| !white(c));
     if first.is_some_and(|&c| is_word(c)) {
+        return None;
+    }
+    find_match(buf, at, MatchFrom::Percent, true)
+}
+
+/// Where arrows' double click's block ends: only on a bracket, or on
+/// blanks before one, its match (the user, 2026-10-14: Vim's reach to a
+/// bracket later on the line stays vim's).
+pub(crate) fn bracket_block_end<B: Lines + ?Sized>(buf: &B, at: Pos) -> Option<Pos> {
+    let line = buf.line(at.row);
+    let first = line.iter().skip(at.col).find(|&&c| !white(c));
+    if !first.is_some_and(|c| "()[]{}".contains(*c)) {
         return None;
     }
     find_match(buf, at, MatchFrom::Percent, true)
@@ -100,5 +114,9 @@ mod tests {
         assert_eq!(block_end(&line[..], Pos::new(0, 2)), Some(Pos::new(0, 6)));
         assert_eq!(block_end(&line[..], Pos::new(0, 1)), Some(Pos::new(0, 6)), "blanks first");
         assert_eq!(block_end(&line[..], Pos::new(0, 3)), None, "a word char");
+        let url: Vec<char> = "https://x.com/{{id}}".chars().collect();
+        assert_eq!(block_end(&url[..], Pos::new(0, 5)), Some(Pos::new(0, 19)), "Vim's reach");
+        assert_eq!(bracket_block_end(&url[..], Pos::new(0, 5)), None, "arrows': brackets only");
+        assert_eq!(bracket_block_end(&line[..], Pos::new(0, 1)), Some(Pos::new(0, 6)));
     }
 }

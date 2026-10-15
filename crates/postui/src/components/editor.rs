@@ -1000,7 +1000,7 @@ impl Editor {
             return false;
         };
         let at = self.clamp_to_cell(cursor);
-        let block = crate::text::mouse::block_end(
+        let block = crate::text::mouse::bracket_block_end(
             &BodyLines(&self.body.lines),
             crate::text::Pos::new(at.row, at.col),
         );

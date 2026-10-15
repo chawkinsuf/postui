@@ -314,14 +314,14 @@ impl LineInput {
     /// to its match. Remembers the clicked word, so a following drag
     /// extends word by word. An empty text just takes the caret.
     pub fn select_word_at(&mut self, idx: usize) {
-        use crate::text::mouse::{block_end, word_at};
+        use crate::text::mouse::{bracket_block_end, word_at};
         let chars: Vec<char> = self.text.chars().collect();
         let Some((ws, we)) = word_at(&chars, idx) else {
             self.set_cursor(idx);
             return;
         };
         let at = idx.min(chars.len() - 1);
-        let (anchor, cursor) = match block_end(&chars[..], crate::text::Pos::new(0, at)) {
+        let (anchor, cursor) = match bracket_block_end(&chars[..], crate::text::Pos::new(0, at)) {
             // The match before the press: the caret goes to it.
             Some(end) if end.col < at => (at + 1, end.col),
             Some(end) => (at, end.col + 1),
