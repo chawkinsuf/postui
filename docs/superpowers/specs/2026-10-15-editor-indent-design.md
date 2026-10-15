@@ -40,7 +40,7 @@ Already true in the vim profile with no change: Format follows the body (R10 is 
 | R11 | Vim profile, body: `shiftwidth` is the body's width when its indent is `Spaces(n)`, and the pinned 2 for a tab body. So `>>`, `<<`, Visual `>` / `<` and Insert `ctrl+t` / `ctrl+d` step by it, exactly as Vim 9.1 does under `expandtab shiftwidth=n tabstop=2 softtabstop=0`. One-line fields keep `shiftwidth=2`. | you (the slice); Vim (behaviour, probed); tab bodies and one-line fields at 2: mine |
 | R12 | Unchanged by this task: vim's `expandtab`, Insert Tab's 2-column step (`tabstop=2 softtabstop=0`), and a `\t`'s 2-column display. All three move to the follow-up task. | you (split) |
 | R13 | Out of scope: smart (bracket-aware) indent; Backspace over a space indent (still deletes one space); converting a body's existing indentation; the response pane's tab width. | mine; offered as follow-up tasks |
-| R14 | Arrows, plain Enter in the body: the new line starts with the current line's leading whitespace, cut at the caret when the caret is inside it, and the text that moves down loses its own leading blanks. That's Vim's `autoindent`, so both profiles agree. It copies whatever the line has, tabs or spaces, so it needs no setting. Enter on a line that is only whitespace moves the whitespace down: the line left behind becomes empty, so repeated Enters leave no trailing blanks. A paste never auto-indents. | auto-indent: you (copy, not bracket-aware); the whitespace-only rule and paste: mine |
+| R14 | Arrows, plain Enter in the body, caret **after** the line's first non-blank: the new line starts with the line's leading whitespace, and the text that moves down loses its own leading blanks, as Vim's `autoindent` does (probed, Vim 9.1.0016: `    foo  \|bar` → `    foo  ` / `    bar`; `  a\|   b` → `  a` / `  b`). It copies whatever the line has, tabs or spaces, so it needs no setting. Caret **at or before** the first non-blank (anywhere in the indent, or on a line that is only whitespace): Enter opens an empty line above, and the line moves down whole, its indent untouched, the caret keeping its column. Repeated Enters therefore leave no trailing blanks behind, which is what Vim gets by removing an autoindent nothing followed (probed: `A<CR><CR>x` on `    a` leaves an empty middle line). Inside the indent this differs from Vim, which cuts the copied indent at the caret, so Enter at column 0 of `    }` gives `` / `}` (probed); arrows keeps the line's indent, as GUI editors do. A paste never auto-indents (`paste_body` inserts raw line breaks). Until #26, the vim profile's autoindent turns a copied tab indent into spaces (`expandtab`), while arrows copies tabs as tabs. | auto-indent: you (copy, not bracket-aware); inside the indent: you (open a line above, over Vim's cut); paste: mine |
 
 ## 4. Design
 
@@ -55,7 +55,7 @@ impl Indent {
 }
 ```
 
-**Config.** `UiSettings` gains `indent: Indent`, parsed from the two keys as R1, seeded (commented) in `config_seed`, and saved by the Settings rows through the existing `save_ui_string` / `save_ui_int`. `SettingsField` gains `Indent` and `IndentWidth`. Under `indent = "tabs"` the width is still stored and shown, ready for the follow-up, but nothing reads it yet.
+**Config.** `UiSettings` gains `indent_tabs: bool` and `indent_width: usize`, one per key (so each Settings row and its undo step writes one field), and `UiSettings::default_indent() -> Indent` combines them. They are parsed from the two keys as R1, seeded (commented) in `config_seed`, and saved by the Settings rows through the existing `save_ui_string` / `save_ui_int`. `SettingsField` gains `Indent` and `IndentWidth`. Under `indent = "tabs"` the width is still stored and shown, ready for the follow-up, but nothing reads it yet.
 
 **Editor (the owner).** `Editor` gains `body_detected: Option<Indent>` and `indent_default: Indent`. Its `body_indent()` is `body_detected.unwrap_or(indent_default)`, read on demand, so R6 needs no re-detection. `App` sets `indent_default` when settings load or change.
 
@@ -89,7 +89,7 @@ impl Indent {
 | R10 | `json.rs` `format_with` for `"\t"` and 4 spaces, keeping key order and number text; an app test that Format follows a 4-space body, in arrows and under a vim session. |
 | R11 | Engine unit tests at `shiftwidth=4`, probed from Vim: `>>`, `3>>`, `<<` on a 3-space line (rounds as Vim does), Visual `>` with a count, `ctrl+t`/`ctrl+d` in Insert, and `.` repeating `>>`. App tests: on a 4-space body, vim `>>` shifts by 4 and survives an `$EDITOR` replace (the `BufState` reset); a tab body and a URL `>>` still shift by 2. |
 | R12 | The vim conformance golden passes unchanged (the default is the pinned value). |
-| R14 | `editor.rs`: Enter at the end of a 4-space line → new line with 4 spaces; Enter with the caret inside the indent → cut there; Enter mid-text → the moved text's leading blanks go; tab indent copied as tabs; Enter on a whitespace-only line → that line becomes empty, the new one keeps the indent; Enter over a selection; a bracketed paste of several lines is not re-indented. An app test: undo treats the indented Enter as today's Enter (it coalesces with the typing burst as before), so one undo after an Enter alone restores the line whole, indent included, and the indent never takes an undo step of its own. |
+| R14 | `editor.rs`: Enter at the end of a 4-space line → new line with 4 spaces; Enter mid-text → the moved text's leading blanks go and the indent is copied; tab indent copied as tabs; Enter at column 0, inside the indent and at the first non-blank of `    }` → an empty line above and `    }` unchanged, caret keeping its column; Enter on a whitespace-only line → an empty line above it; Enter, Enter → no trailing blanks; Enter over a selection; a bracketed paste of several lines is not re-indented. An app test: undo treats the indented Enter as today's Enter (it coalesces with the typing burst as before), so one undo after an Enter alone restores the line whole, indent included, and the indent never takes an undo step of its own. |
 
 ## 6. `mine` choices, for veto
 
@@ -102,4 +102,4 @@ impl Indent {
 7. Vim `shiftwidth` stays 2 for tab bodies and one-line fields (R11).
 8. Vim at other widths is checked by probed unit tests, not a second golden file (§4).
 9. The out-of-scope list (R13), plus the vim follow-up task (R12).
-10. Auto-indent's whitespace-only-line rule, and that a paste never auto-indents (R14).
+10. A paste never auto-indents (R14).
