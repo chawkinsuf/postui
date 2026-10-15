@@ -1054,7 +1054,13 @@ impl App {
     fn reapply_ui_settings(&mut self, ui_settings: crate::config::UiSettings) {
         self.clipboard.reconfigure(&ui_settings);
         self.anims.set_enabled(ui_settings.animations);
+        let watch = ui_settings.curl_button != self.ui_settings.curl_button;
         self.finish_ui_settings(ui_settings);
+        // Turned on: look now rather than at the next focus gain. Turned
+        // off: the button goes (spec 2026-10-15 curl import visibility V13).
+        if watch {
+            self.check_clipboard();
+        }
     }
 
     /// The half both paths share: the jq tab and `ui_settings` itself.
@@ -2805,6 +2811,7 @@ impl App {
                 let redraw = self.apply_ui_write(saved, |ui| match key {
                     "animations" => ui.animations = value,
                     "hover_hints" => ui.hover_hints = value,
+                    "curl_button" => ui.curl_button = value,
                     "ai_confirmed" => ui.ai_confirmed = value,
                     // A key that writes to disk but applies to nothing is
                     // the "state that never landed" defect wearing the
@@ -9279,10 +9286,6 @@ impl App {
     fn copy_text_with_toast(&mut self, text: &str, success_msg: String) {
         match self.clipboard.copy(text) {
             crate::clipboard::CopyResult::Copied { .. } => {
-                // Read back rather than trust `text`: a copy that went out
-                // by OSC 52 or `clipboard_cmd` may be one the import's
-                // read can't see (spec 2026-10-15 curl import visibility V4).
-                self.check_clipboard();
                 self.toasts.push(success_msg, ToastKind::Success);
             }
             crate::clipboard::CopyResult::OscTooLarge => {
@@ -10424,6 +10427,7 @@ impl App {
         match key {
             "animations" => self.ui_settings.animations,
             "hover_hints" => self.ui_settings.hover_hints,
+            "curl_button" => self.ui_settings.curl_button,
             "ai_confirmed" => self.ui_settings.ai_confirmed,
             other => {
                 debug_assert!(false, "no boolean setting named {other:?}");
@@ -11088,6 +11092,7 @@ impl App {
                             UiValue::Flag(v) => match *key {
                                 "animations" => ui.animations = *v,
                                 "hover_hints" => ui.hover_hints = *v,
+                                "curl_button" => ui.curl_button = *v,
                                 "ai_confirmed" => ui.ai_confirmed = *v,
                                 _ => {}
                             },

@@ -7,46 +7,44 @@ use crate::curl_import::{CreatedImport, CurlImportRun, CurlReplace, CurlVariable
 use postui_core::curl::{CurlBatch, CurlImport};
 
 impl App {
-    /// Reads the clipboard to see whether it holds curl: what the
-    /// sidebar's Import curl button and footer chip show (spec 2026-10-15
-    /// curl import visibility V4): curl the import would take (V5), and
-    /// never one it can't read. Run at launch, on a focus gain and after a
-    /// copy; `true` when the answer changed.
+    /// Whether the clipboard holds curl the import would take: what the
+    /// sidebar's Import curl button shows (spec 2026-10-15 curl import
+    /// visibility V3–V5). Reads only while the `curl_button` setting is
+    /// on (V13); off, the button goes. Run at launch, on a focus gain and
+    /// when the setting changes; `true` when the answer changed.
     pub fn check_clipboard(&mut self) -> bool {
         let before = self.sidebar.curl_ready;
-        let _ = self.read_clipboard_curl();
+        if self.ui_settings.curl_button {
+            let _ = self.read_clipboard_curl();
+        } else {
+            self.sidebar.curl_ready = false;
+        }
         self.sidebar.curl_ready != before
     }
 
-    /// The clipboard's curl commands, read as every import reads them (a
-    /// clipboard that can't be read is empty, which holds none). Every
-    /// such read is a check: it records the answer for the button (V4–V6).
-    fn read_clipboard_curl(&mut self) -> Result<CurlBatch, postui_core::curl::CurlError> {
-        let text = self.clipboard.read().unwrap_or_default();
-        let parsed = postui_core::curl::parse(&text);
-        self.sidebar.curl_ready = parsed.is_ok();
+    /// The clipboard's curl commands, read as every import reads them; the
+    /// error says why there are none, a read failure naming its cause
+    /// (V14). With the setting on, every such read is a check too: a stale
+    /// button goes (V6).
+    fn read_clipboard_curl(&mut self) -> Result<CurlBatch, String> {
+        let parsed = match self.clipboard.read() {
+            Ok(text) => postui_core::curl::parse(&text).map_err(|e| e.to_string()),
+            Err(e) => Err(format!("clipboard read failed: {e}")),
+        };
+        self.sidebar.curl_ready = self.ui_settings.curl_button && parsed.is_ok();
         parsed
     }
 
     /// The commands of `parsed`, else a toast saying why there are none.
-    fn curl_or_toast(
-        &mut self,
-        parsed: Result<CurlBatch, postui_core::curl::CurlError>,
-    ) -> Option<CurlBatch> {
-        parsed.map_err(|e| self.toasts.push(e.to_string(), ToastKind::Error)).ok()
+    fn curl_or_toast(&mut self, parsed: Result<CurlBatch, String>) -> Option<CurlBatch> {
+        parsed.map_err(|e| self.toasts.push(e, ToastKind::Error)).ok()
     }
 
     /// `Action::ImportCurl` (spec §4.2 steps 1–2): clipboard → parse →
     /// dirty gate → first prompt. A failure toasts and creates nothing.
     pub(super) fn import_curl(&mut self, folder: Option<String>) -> bool {
-        if self.refuse_without_project() {
-            return true;
-        }
         let parsed = self.read_clipboard_curl();
-        if let Some(batch) = self.curl_or_toast(parsed) {
-            self.start_curl_import(batch, folder);
-        }
-        true
+        self.import_parsed(parsed, folder)
     }
 
     /// The sidebar's own import (spec 2026-10-15 curl import visibility
@@ -60,12 +58,18 @@ impl App {
     /// A terminal's paste into the sidebar, which takes no text: the
     /// pasted text's curl imports as the clipboard's would (V1, V7).
     pub(super) fn import_pasted_curl(&mut self, text: &str) -> bool {
+        let parsed = postui_core::curl::parse(text).map_err(|e| e.to_string());
+        let folder = self.sidebar.import_folder(&self.active_space());
+        self.import_parsed(parsed, folder)
+    }
+
+    /// Every import's entry: a project to land in, commands to import,
+    /// then the dirty gate and the first prompt. A refusal toasts.
+    fn import_parsed(&mut self, parsed: Result<CurlBatch, String>, folder: Option<String>) -> bool {
         if self.refuse_without_project() {
             return true;
         }
-        let parsed = postui_core::curl::parse(text);
         if let Some(batch) = self.curl_or_toast(parsed) {
-            let folder = self.sidebar.import_folder(&self.active_space());
             self.start_curl_import(batch, folder);
         }
         true

@@ -351,6 +351,11 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         } else {
             "Ask before sending to the AI command"
         }),
+        Hit::SettingsControl(SettingsField::CurlButton) => text(if ctx.on {
+            "Stop watching the clipboard for curl"
+        } else {
+            "Offer Import curl when it holds curl"
+        }),
         Hit::SettingsControl(SettingsField::AiCmd) => text("Edit the command the AI filter runs"),
         Hit::SettingsControl(SettingsField::ClipboardCmd) => {
             text("Edit the external clipboard command")
@@ -748,7 +753,6 @@ mod tests {
                                     row,
                                     jq,
                                     field_open,
-                                    true,
                                 );
                                 for (_, _, action) in chips {
                                     let Some(action) = action else { continue };

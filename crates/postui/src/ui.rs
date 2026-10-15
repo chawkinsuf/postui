@@ -296,7 +296,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         pane.table_row_selected,
         pane.jq_bar,
         pane.field_open,
-        pane.curl_ready,
         vm_chips,
         globals_live,
         plain_q_quits,
@@ -803,7 +802,6 @@ pub(crate) struct PaneChipArgs {
     pub table_row_selected: Option<(usize, bool)>,
     pub jq_bar: crate::components::footer::JqBarState,
     pub field_open: bool,
-    pub curl_ready: bool,
 }
 
 impl PaneChipArgs {
@@ -862,7 +860,6 @@ impl PaneChipArgs {
             },
             // A text field of this pane's own owns Esc: it says `esc done`.
             field_open: app.pane_field_open(focus),
-            curl_ready: app.sidebar.offers_import(),
         }
     }
 
@@ -880,7 +877,6 @@ impl PaneChipArgs {
             self.table_row_selected,
             self.jq_bar,
             self.field_open,
-            self.curl_ready,
         )
         .into_iter()
         .map(|(k, l, a)| (k, l.to_string(), a))

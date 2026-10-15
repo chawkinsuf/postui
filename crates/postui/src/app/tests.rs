@@ -1917,7 +1917,6 @@ fn the_footer_field_flag_is_pane_local() {
         None,
         crate::components::footer::JqBarState::Open,
         app.pane_field_open(PaneId::Response),
-        false,
     ));
     assert!(
         !chips.iter().any(|(k, l, _)| *k == "enter" && *l == "search"),
@@ -16207,7 +16206,6 @@ fn every_named_action_is_mouse_reachable() {
                 None,
                 crate::components::footer::JqBarState::Closed,
                 false,
-                true,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -16225,7 +16223,6 @@ fn every_named_action_is_mouse_reachable() {
                 None,
                 crate::components::footer::JqBarState::Closed,
                 false,
-                true,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -16243,7 +16240,6 @@ fn every_named_action_is_mouse_reachable() {
                 None,
                 crate::components::footer::JqBarState::Focused,
                 false,
-                true,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -20915,7 +20911,6 @@ fn the_focused_bar_advertises_enter_apply_and_esc_done() {
         None,
         crate::components::footer::JqBarState::Focused,
         false,
-        false,
     ));
     let keys: Vec<(&str, &str)> = chips.iter().map(|(k, l, _)| (k.as_str(), *l)).collect();
     assert_eq!(
@@ -21242,7 +21237,6 @@ fn the_footer_and_palette_reach_the_jq_bar() {
         None,
         crate::components::footer::JqBarState::Closed,
         false,
-        false,
     ));
     assert!(
         chips
@@ -21472,7 +21466,6 @@ fn the_response_footer_always_offers_alt_q_filter_and_close_only_while_open() {
             false,
             None,
             state,
-            false,
             false,
         ))
     };
@@ -24868,8 +24861,9 @@ fn hovering_a_button_shows_its_hint_between_the_chip_clusters() {
 fn footer_hint_ellipsizes_above_the_lower_bound_and_is_left_out_below_it() {
     let mut app = App::new_for_test();
     hover_env(&mut app);
-    // 134 columns: the sidebar chips + commands/quit leave ~26 cells.
-    let row = rendered_row(&mut app, 134, FOOTER_ROW);
+    // 153 columns: the sidebar chips (`import curl` last) + commands/quit
+    // leave ~26 cells.
+    let row = rendered_row(&mut app, 153, FOOTER_ROW);
     assert!(row.contains("Switch to another en"), "head shown: {row:?}");
     assert!(row.contains('\u{2026}'), "ellipsized: {row:?}");
     assert!(row.contains("reorder"), "chips stay: {row:?}");
@@ -24934,7 +24928,7 @@ fn hover_hints_can_be_turned_off_in_config() {
 fn an_ellipsized_hint_keeps_a_gap_before_the_commands_chip() {
     let mut app = App::new_for_test();
     hover_env(&mut app);
-    let row = rendered_row(&mut app, 134, FOOTER_ROW);
+    let row = rendered_row(&mut app, 153, FOOTER_ROW);
     let end = row.find('\u{2026}').unwrap() + '\u{2026}'.len_utf8();
     let palette = row.find("^P").unwrap();
     assert!(

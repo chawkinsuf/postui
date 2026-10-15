@@ -257,6 +257,11 @@ pub struct UiSettings {
     /// pointer -- the hints are a teaching aid, and a user who knows the
     /// app may prefer the chip row to stay put.
     pub hover_hints: bool,
+    /// Whether the sidebar watches the clipboard for curl and offers an
+    /// "Import curl" button while it holds some (spec 2026-10-15 curl
+    /// import visibility V13). Off by default: the watch reads the
+    /// clipboard unasked, which macOS's pasteboard privacy may alert on.
+    pub curl_button: bool,
     /// Per-transition durations, tunable via the optional `[animation_ms]`
     /// table; see [`AnimDurations`].
     pub anim_ms: AnimDurations,
@@ -284,6 +289,7 @@ impl Default for UiSettings {
             theme: "terminal".into(),
             animations: true,
             hover_hints: true,
+            curl_button: false,
             anim_ms: AnimDurations::default(),
             ai_cmd: "claude -p".into(),
             ai_confirmed: false,
@@ -303,7 +309,8 @@ impl UiSettings {
 
     /// Reads the top-level `clipboard_cmd` (string), `osc52_limit`
     /// (integer), `theme` (string), `animations` (bool), `hover_hints`
-    /// (bool), `ai_cmd` (string), `ai_confirmed` (bool), and `jq_tab`
+    /// (bool), `curl_button` (bool), `ai_cmd` (string), `ai_confirmed`
+    /// (bool), and `jq_tab`
     /// (string) keys out of
     /// `config.toml`'s text. Never errors: an empty string (the missing
     /// file) or a mistyped key degrades that piece to its default. Text
@@ -371,6 +378,13 @@ impl UiSettings {
             Some(v) => match v.as_bool() {
                 Some(b) => settings.hover_hints = b,
                 None => wrong_type("hover_hints", "a boolean"),
+            },
+        }
+        match value.get("curl_button") {
+            None => {}
+            Some(v) => match v.as_bool() {
+                Some(b) => settings.curl_button = b,
+                None => wrong_type("curl_button", "a boolean"),
             },
         }
         match value.get("ai_cmd") {
@@ -499,6 +513,10 @@ pub fn config_seed() -> String {
 # Whether a hovered control explains itself on the footer row.
 # hover_hints = {}
 
+# Whether the sidebar offers an \"Import curl\" button while the clipboard
+# holds a curl command. It reads the clipboard when postui regains focus.
+# curl_button = {}
+
 # What Tab does in the jq bar while a completion is showing:
 #   \"menu\"  - list the candidates below the bar, shell-style
 #   \"ghost\" - ghost the best one after the caret and step in place
@@ -519,7 +537,13 @@ pub fn config_seed() -> String {
 # The size in bytes above which OSC 52 copying is not attempted.
 # osc52_limit = {}
 ",
-        d.theme, d.animations, d.hover_hints, d.ai_cmd, d.ai_confirmed, d.osc52_limit,
+        d.theme,
+        d.animations,
+        d.hover_hints,
+        d.curl_button,
+        d.ai_cmd,
+        d.ai_confirmed,
+        d.osc52_limit,
     )
 }
 
@@ -905,6 +929,7 @@ impl Config {
                 "theme",
                 "animations",
                 "hover_hints",
+                "curl_button",
                 "jq_tab",
                 "ai_cmd",
                 "ai_confirmed",
@@ -1481,6 +1506,7 @@ mod tests {
         for key in [
             "animations",
             "hover_hints",
+            "curl_button",
             "jq_tab",
             "ai_cmd",
             "ai_confirmed",
@@ -1490,6 +1516,17 @@ mod tests {
         ] {
             assert!(seed.contains(key), "{key} missing from the seed");
         }
+    }
+
+    #[test]
+    fn curl_button_key_parses_and_defaults_off() {
+        let (s, warnings) = UiSettings::parse("curl_button = true\n");
+        assert!(s.curl_button);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(!UiSettings::default().curl_button);
+        let (s, warnings) = UiSettings::parse("curl_button = 1\n");
+        assert!(!s.curl_button);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
     }
 
     #[test]

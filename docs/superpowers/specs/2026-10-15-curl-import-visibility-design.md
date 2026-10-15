@@ -99,7 +99,9 @@ way "+ New request" gets its hint, is over the hints' 42-column limit.)
 
 **Footer.** The sidebar's static chip list ends with
 `(Key::Of(Action::Paste), "import curl", Some(Action::Paste))` (V9). The
-footer functions keep their signatures.
+footer functions keep their signatures. Two hover-hint layout tests
+sized their terminal to the sidebar's chip row; their 134 columns
+become 153, the same gap with the new chip in it.
 
 **Setting.** `UiSettings::curl_button` follows `hover_hints` through
 `config.rs` (parse, template, warnings), `SettingsField::CurlButton`

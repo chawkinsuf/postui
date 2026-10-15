@@ -381,9 +381,9 @@ impl Sidebar {
         (folder != space).then_some(folder)
     }
 
-    /// Whether the sidebar offers curl import: the clipboard holds curl and
-    /// a project is loaded for it to land in (spec 2026-10-15 curl import
-    /// visibility V3, V10). Its button and footer chip both ask this.
+    /// Whether the sidebar offers its Import curl button: the clipboard
+    /// holds curl and a project is loaded for it to land in (spec
+    /// 2026-10-15 curl import visibility V3, V10).
     pub fn offers_import(&self) -> bool {
         self.curl_ready && self.notice.is_none()
     }
