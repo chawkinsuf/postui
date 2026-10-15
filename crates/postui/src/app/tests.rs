@@ -17420,6 +17420,26 @@ mod undo_tests {
         assert_eq!(app.editor.body_text(), "{\n    \"a\": {\n        \"b\": 1\n    }\n}");
     }
 
+    /// Spec 2026-10-15 R14: the indented Enter undoes like today's bare
+    /// Enter: no step of its own for the indent.
+    #[test]
+    fn an_indented_enter_undoes_with_its_line_break() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("ent".into()));
+        app.update(Action::CycleMethod);
+        app.editor.set_body_text("{\n    \"a\": 1");
+        app.capture_undo();
+        app.focus = PaneId::Editor;
+        app.editor.active_tab = EditorTab::Body;
+        app.editor.sub_focus = SubFocus::Content;
+        app.editor.body.cursor = edtui::Index2::new(1, 10);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.capture_undo();
+        assert_eq!(app.editor.body_text(), "{\n    \"a\": 1\n    ");
+        app.update(Action::Undo);
+        assert_eq!(app.editor.body_text(), "{\n    \"a\": 1");
+    }
+
     #[test]
     fn body_clear_empties_the_body_and_undo_brings_it_back() {
         let mut app = App::new_for_test();

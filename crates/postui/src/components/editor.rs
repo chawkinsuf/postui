@@ -1406,6 +1406,37 @@ impl Editor {
         self.body.mode = EditorMode::Insert;
     }
 
+    /// Enter in the arrows body (spec 2026-10-15 R14). After the line's
+    /// first non-blank: the new line starts with the line's indent, and the
+    /// text that moves down loses its own leading blanks (Vim's
+    /// `autoindent`). At or before it (in the indent, or on a blank line):
+    /// an empty line opens above, and the line moves down whole with the
+    /// caret's column, so repeated Enters leave no trailing blanks.
+    fn body_line_break(&mut self) {
+        use edtui::actions::{Execute, LineBreak};
+        let blank = |c: &char| *c == ' ' || *c == '\t';
+        let at = self.body.cursor;
+        let line: Vec<char> =
+            self.body.lines.get(edtui::RowIndex::new(at.row)).cloned().unwrap_or_default();
+        let lead = line.iter().take_while(|c| blank(c)).count();
+        if at.col <= lead {
+            // A break at column 0 inserts the empty row above.
+            self.body.cursor = edtui::Index2::new(at.row, 0);
+            LineBreak(1).execute(&mut self.body);
+            self.body.cursor = edtui::Index2::new(at.row + 1, at.col);
+        } else {
+            LineBreak(1).execute(&mut self.body);
+            let row = self.body.cursor.row;
+            if let Some(moved) = self.body.lines.get_mut(edtui::RowIndex::new(row)) {
+                let strip = moved.iter().take_while(|c| blank(c)).count();
+                moved.drain(..strip);
+                moved.splice(0..0, line[..lead].iter().copied());
+            }
+            self.body.cursor = edtui::Index2::new(row, lead);
+        }
+        self.body.mode = EditorMode::Insert;
+    }
+
     /// Maps a screen click inside `last_body_area` to a body-buffer cursor,
     /// honouring `wrap(true)`, the line-number gutter and the vertical
     /// viewport offset — a port of edtui 0.11.6's
@@ -1850,6 +1881,12 @@ impl Component for Editor {
                         // normally.
                         _ => self.clear_body_selection(),
                     }
+                }
+                // Enter (spec 2026-10-15 R14): auto-indent, not edtui's bare
+                // line break. A selection was already deleted above.
+                if ev.code == KeyCode::Enter && ev.modifiers.is_empty() {
+                    self.body_line_break();
+                    return Some(Action::Render);
                 }
                 // Esc blurs the buffer (Enter must stay a newline in a
                 // multi-line editor); Up climbs out to the URL line only
@@ -6602,5 +6639,71 @@ mod body_click_tests {
         e.indent_default = Indent::Tabs;
         e.handle_key(pkey(KeyCode::Tab));
         assert_eq!(e.body_text(), "  \ta b");
+    }
+
+    fn enter_at(text: &str, row: usize, col: usize) -> Editor {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body(text);
+        e.body.cursor = Index2::new(row, col);
+        e.handle_key(pkey(KeyCode::Enter));
+        e
+    }
+
+    /// Spec 2026-10-15 R14: after the first non-blank, Enter copies the
+    /// line's indent and the moved text loses its own leading blanks
+    /// (Vim's autoindent, probed).
+    #[test]
+    fn enter_after_the_text_starts_copies_the_indent() {
+        let e = enter_at("    a", 0, 5);
+        assert_eq!((e.body_text(), e.body.cursor), ("    a\n    ".into(), Index2::new(1, 4)));
+        let e = enter_at("    foo  bar", 0, 9);
+        assert_eq!(e.body_text(), "    foo  \n    bar");
+        assert_eq!(e.body.cursor, Index2::new(1, 4));
+        let e = enter_at("\t\tk", 0, 3);
+        assert_eq!(e.body_text(), "\t\tk\n\t\t", "a tab indent is copied as tabs");
+        let e = enter_at("ab", 0, 1);
+        assert_eq!(e.body_text(), "a\nb", "no indent, nothing copied");
+    }
+
+    /// R14 (user ruling): at or before the first non-blank, Enter opens an
+    /// empty line above and the line keeps its indent and caret column.
+    #[test]
+    fn enter_inside_the_indent_opens_a_line_above() {
+        for col in [0, 2, 4] {
+            let e = enter_at("    }", 0, col);
+            assert_eq!(e.body_text(), "\n    }", "caret at {col}");
+            assert_eq!(e.body.cursor, Index2::new(1, col), "caret at {col}");
+        }
+        let e = enter_at("{\n    \n}", 1, 4);
+        assert_eq!(e.body_text(), "{\n\n    \n}", "a whitespace-only line moves down whole");
+    }
+
+    #[test]
+    fn enter_twice_leaves_no_trailing_blanks() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = enter_at("    a", 0, 5);
+        e.handle_key(pkey(KeyCode::Enter));
+        e.handle_key(pkey(KeyCode::Char('x')));
+        assert_eq!(e.body_text(), "    a\n\n    x");
+    }
+
+    #[test]
+    fn enter_on_an_empty_body_and_over_a_selection() {
+        use ratatui::crossterm::event::KeyCode;
+        let e = enter_at("", 0, 0);
+        assert_eq!((e.body_text(), e.body.cursor), ("\n".into(), Index2::new(1, 0)));
+        let mut e = editor_with_body("  ab cd");
+        e.set_body_selection_cells(Index2::new(0, 4), Index2::new(0, 4));
+        e.body.cursor = Index2::new(0, 4);
+        e.handle_key(pkey(KeyCode::Enter));
+        assert_eq!(e.body_text(), "  ab\n  cd", "the selection goes, then an indented break");
+    }
+
+    #[test]
+    fn a_paste_is_never_re_indented() {
+        let mut e = editor_with_body("    a");
+        e.body.cursor = Index2::new(0, 5);
+        e.paste_body("\nb\n  c");
+        assert_eq!(e.body_text(), "    a\nb\n  c");
     }
 }
