@@ -85,15 +85,14 @@ declare body inside its one transaction. Nothing else in core changes.
 - `palette.rs`: the command row after "Request: copy as curl".
   `app.rs`: the menu row after "Copy as curl".
 
-No contract changes beyond the new actions. `StepKind`, `View` and
-`after_replay` are untouched. One change in `land` (second review round,
-2026-10-14, mine): opening a request seats it as the undo shadow, as
-opening one with a buffer already did. The open is no edit, and an edit
-later in the same input event (a replace of a row not open yet) is a step
-of its own; before, a capture that saw the slug change only re-seeded, and
-the edit was lost from history. A test that dirtied the editor without the
-main loop's capture after the open (`move_all_requests_holding_a_dirty_open_request_gates_first`)
-now counts the URL typing's own step, which the real loop always recorded.
+No contract changes beyond the new actions. `StepKind`, `View`,
+`after_replay` and `land` are untouched. A replace of a row not open yet
+opens it and replaces it in one input event, and a capture that sees the
+slug change only re-seeds, so `open_and_replace` seats the opened request
+as the undo shadow itself, and the replace is a step of its own. (The
+second review round moved that into `land`'s open for every request; the
+fourth found it stopped recording a Discard that reopens the open
+request, so it is back in the one caller, mine.)
 
 ## 4. Tests
 

@@ -1053,3 +1053,22 @@ fn a_variable_declared_outside_the_app_is_kept() {
     let msg = app.toasts.last_message().unwrap();
     assert!(msg.contains("; kept the existing T"), "{msg}");
 }
+
+/// The shadow is seated by the replace, not by every open: reopening the
+/// open request through the gate's Discard is still an undo step.
+#[test]
+fn reopening_the_open_request_through_discard_is_undoable() {
+    let mut app = kept_app("");
+    // Two fields, so the Discard's step is not merged into the typing's
+    // as an instant same-field edit would be.
+    app.editor.url = LineInput::new("https://x/edited");
+    app.editor.method = postui_core::model::Method::Put;
+    app.capture_undo();
+    app.update(Action::OpenRequest("main/kept".into()));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    app.capture_undo();
+    assert_eq!(app.editor.url.text(), "https://x/old");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://x/edited", "undo brings the edit back");
+}
