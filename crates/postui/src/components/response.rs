@@ -783,6 +783,17 @@ fn aligned_header_lines<'a>(rows: impl Iterator<Item = (&'a str, &'a str)> + Clo
     rows.map(|(k, v)| format!("{:<width$} {v}", format!("{k}:"), width = width + 1)).collect()
 }
 
+/// The visible lines as painted, for the shared mouse words.
+impl crate::text::Lines for ReadyView {
+    fn line_count(&self) -> usize {
+        self.visible_len().max(1)
+    }
+
+    fn line(&self, row: usize) -> std::borrow::Cow<'_, [char]> {
+        std::borrow::Cow::Owned(self.display_line_text(row).unwrap_or_default().chars().collect())
+    }
+}
+
 impl ReadyView {
     fn new(data: &crate::http::ResponseData, generation: u64) -> Self {
         // A big body is parsed off-thread; until that lands there is no
@@ -3488,8 +3499,8 @@ impl Response {
     /// start of the row below. Dragging back onto the anchor cell
     /// collapses the selection.
     /// After a double click (word anchor set) the sweep extends by whole
-    /// words instead: the selection is the union of the anchor word and
-    /// the run under the pointer, so the anchor word always stays covered.
+    /// words instead, as a field's does (`text::mouse::grow_by_words`), so
+    /// the anchor word always stays covered.
     pub fn drag_selection_to(&mut self, x: u16, y: u16) -> bool {
         let Some(view) = self.view.as_mut() else {
             return false;
@@ -3498,14 +3509,12 @@ impl Response {
             return false;
         };
         if let Some((ws, we)) = view.sel_word_anchor {
-            let (hs, he) = view.word_cells_at(head.0, head.1).unwrap_or((head, head));
-            view.sel = Some(if head > we {
-                (ws, he)
-            } else if head < ws {
-                (hs, we)
-            } else {
-                (ws, we)
-            });
+            use crate::text::{Pos, mouse};
+            let pos = |(row, col)| Pos::new(row, col);
+            let word = mouse::Span { fixed: pos(ws), moving: pos(we) };
+            let grown = mouse::grow_by_words(&*view, word, pos(head));
+            view.sel =
+                Some(((grown.fixed.row, grown.fixed.col), (grown.moving.row, grown.moving.col)));
             return true;
         }
         let Some(anchor) = view.sel_anchor else {

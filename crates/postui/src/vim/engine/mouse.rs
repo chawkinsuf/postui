@@ -66,7 +66,7 @@ impl Engine {
         self.pressed = Some(Pressed { at, clicks });
         match clicks {
             2 => {
-                let block = if insert { None } else { block_end(buf, at, true) };
+                let block = if insert { None } else { block_end(buf, at) };
                 self.start_mouse_visual(Shape::Char, at, buf, st);
                 // Where the caret is now, should `ctrl+o` have stripped an
                 // unused autoindent under it.

@@ -55,21 +55,14 @@ pub(crate) fn word_at(line: &[char], col: usize) -> Option<(usize, usize)> {
     Some((word_start(line, at).col, word_end(line, at).col.min(last)))
 }
 
-/// Where a double click's block ends: the `%` match from the pointer, if
-/// the first char from it that is not a blank starts one. With
-/// `vim_reach`, as Vim: any char that is not a word char does, so any
-/// punctuation with a bracket later on its line (probed: `:` in
-/// `https://x.com/{{id}}` selects to the last `}`). Without it, for
-/// arrows, only a bracket (the user, 2026-10-14: that reach stays vim's).
-pub(crate) fn block_end<B: Lines + ?Sized>(buf: &B, at: Pos, vim_reach: bool) -> Option<Pos> {
+/// Where Vim's double click's block ends: the `%` match from the pointer,
+/// if the first char from it that is not a blank is not a word char, so
+/// any punctuation with a bracket later on its line starts one (probed:
+/// `:` in `https://x.com/{{id}}` selects to the last `}`). Arrows' reach
+/// is only a bracket ([`double_click`]; the user, 2026-10-14).
+pub(crate) fn block_end<B: Lines + ?Sized>(buf: &B, at: Pos) -> Option<Pos> {
     let line = buf.line(at.row);
-    let first = line.iter().skip(at.col).find(|&&c| !white(c));
-    let starts = if vim_reach {
-        !first.is_some_and(|&c| is_word(c))
-    } else {
-        first.is_some_and(|c| "()[]{}".contains(*c))
-    };
-    if !starts {
+    if line.iter().skip(at.col).find(|&&c| !white(c)).is_some_and(|&c| is_word(c)) {
         return None;
     }
     find_match(buf, at, MatchFrom::Percent, true)
@@ -90,14 +83,20 @@ pub(crate) struct Span {
 pub(crate) fn double_click<B: Lines + ?Sized>(buf: &B, at: Pos) -> Option<Span> {
     let line = buf.line(at.row);
     let at = Pos::new(at.row, at.col.min(line.len().checked_sub(1)?));
-    Some(match block_end(buf, at, false) {
-        // From blanks before a closer, the closer is the fixed end, so the
-        // block comes whole (Vim's stops at the press, the closer left out).
+    // Only a bracket starts a block (the user, 2026-10-14: Vim's reach from
+    // any punctuation stays vim's).
+    let bracket =
+        (at.col..line.len()).find(|&c| !white(line[c])).filter(|&c| "()[]{}".contains(line[c]));
+    // A block's match is its fixed end and the caret stays at the press, so
+    // a far match never scrolls the view away from the pointer (the user,
+    // 2026-10-14; Vim's cursor goes to the match).
+    Some(match bracket.and_then(|_| find_match(buf, at, MatchFrom::Percent, true)) {
+        // From blanks before a closer, the block takes the closer too (Vim's
+        // stops at the press, the closer left out).
         Some(end) if end < at => {
-            let closer = (at.col..line.len()).find(|&c| !white(line[c])).unwrap_or(at.col);
-            Span { fixed: Pos::new(at.row, closer), moving: end }
+            Span { fixed: end, moving: Pos::new(at.row, bracket.unwrap_or(at.col)) }
         }
-        Some(end) => Span { fixed: at, moving: end },
+        Some(end) => Span { fixed: end, moving: at },
         None => {
             let (s, e) = word_at(&line, at.col)?;
             Span { fixed: Pos::new(at.row, s), moving: Pos::new(at.row, e) }
@@ -153,13 +152,22 @@ mod tests {
     #[test]
     fn a_bracket_ends_at_its_match_and_a_word_has_no_block() {
         let line: Vec<char> = "a {b c} d".chars().collect();
-        assert_eq!(block_end(&line[..], Pos::new(0, 2), true), Some(Pos::new(0, 6)));
-        assert_eq!(block_end(&line[..], Pos::new(0, 1), true), Some(Pos::new(0, 6)), "blanks");
-        assert_eq!(block_end(&line[..], Pos::new(0, 3), true), None, "a word char");
+        assert_eq!(block_end(&line[..], Pos::new(0, 2)), Some(Pos::new(0, 6)));
+        assert_eq!(block_end(&line[..], Pos::new(0, 1)), Some(Pos::new(0, 6)), "blanks");
+        assert_eq!(block_end(&line[..], Pos::new(0, 3)), None, "a word char");
         let url: Vec<char> = "https://x.com/{{id}}".chars().collect();
-        assert_eq!(block_end(&url[..], Pos::new(0, 5), true), Some(Pos::new(0, 19)), "Vim's reach");
-        assert_eq!(block_end(&url[..], Pos::new(0, 5), false), None, "arrows': brackets only");
-        assert_eq!(block_end(&line[..], Pos::new(0, 1), false), Some(Pos::new(0, 6)));
+        assert_eq!(block_end(&url[..], Pos::new(0, 5)), Some(Pos::new(0, 19)), "Vim's reach");
+        let p = |c| Pos::new(0, c);
+        assert_eq!(
+            double_click(&url[..], p(5)),
+            Some(Span { fixed: p(5), moving: p(5) }),
+            "arrows': brackets only"
+        );
+        assert_eq!(
+            double_click(&line[..], p(1)),
+            Some(Span { fixed: p(6), moving: p(1) }),
+            "blanks: the caret stays at the press"
+        );
     }
 
     #[test]
@@ -168,8 +176,8 @@ mod tests {
         let p = |c| Pos::new(0, c);
         assert_eq!(
             double_click(&line[..], p(6)),
-            Some(Span { fixed: p(6), moving: p(2) }),
-            "on the closing brace: from it back to its opener"
+            Some(Span { fixed: p(2), moving: p(6) }),
+            "on the closing brace: its opener fixed, the caret at the press"
         );
         assert_eq!(double_click(&line[..], p(8)), Some(Span { fixed: p(8), moving: p(8) }));
         assert_eq!(double_click(&[][..], p(0)), None);

@@ -8561,7 +8561,33 @@ fn shift_after_a_body_line_or_block_select_keeps_its_far_end() {
     app.handle_mouse(left_down(area.x + 2 + 6, area.y));
     assert_eq!(app.editor.body_selected_text().as_deref(), Some("{b c}"));
     app.handle_key(shift(KeyCode::Right));
-    assert_eq!(app.editor.body_selected_text().as_deref(), Some("b c}"));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("{b c} "), "the clicked end moves");
+}
+
+/// Task #23 review round 6 (the user: the caret stays at the clicked
+/// bracket): a block's far match never moves the caret, so the view stays
+/// under the pointer, in the body and in a field.
+#[test]
+fn an_arrows_block_double_click_leaves_the_caret_at_the_clicked_end() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    let body = format!("{{\n{}}}", "  \"a\": 1,\n".repeat(80));
+    app.editor.set_body_text(&body);
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    // 82 lines -> a 3-cell gutter; content column 0 is at area.x + 3.
+    app.handle_mouse(left_down(area.x + 3, area.y));
+    app.handle_mouse(left_down(area.x + 3, area.y));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some(body.as_str()));
+    let caret = |app: &App| (app.editor.body.cursor.row, app.editor.body.cursor.col);
+    assert_eq!(caret(&app), (0, 0), "before the clicked opener");
+
+    for (col, want) in [(2, 2), (6, 7), (1, 1)] {
+        let (mut app, area) = arrows_url("a {b c} d");
+        app.handle_mouse(left_down(area.x + col, area.y));
+        app.handle_mouse(left_down(area.x + col, area.y));
+        assert_eq!(app.editor.url.cursor(), want, "double click at {col}");
+    }
 }
 
 /// Task #23 review round 4 (the user: arrows keeps the block): a drag after
@@ -8613,7 +8639,11 @@ fn a_drag_inside_a_double_clicks_span_leaves_it_as_clicked() {
     app.handle_mouse(dragged(area.x + 2 + 5, area.y));
     app.handle_mouse(left_up(area.x + 2 + 5, area.y));
     app.handle_key(shift(KeyCode::Right));
-    assert_eq!(app.editor.body_selected_text().as_deref(), Some("b c}"), "still the closer fixed");
+    assert_eq!(
+        app.editor.body_selected_text().as_deref(),
+        Some("{b c} "),
+        "still the opener fixed"
+    );
 }
 
 /// Task #23 review round 3: a double click on blanks before a closing

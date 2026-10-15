@@ -17,11 +17,14 @@ pub(super) struct Clicks {
     pub(super) text: u8,
 }
 
+/// The window for a list click count: a pair on the same control.
+const LIST_WINDOW_MS: u64 = 400;
+
 /// A7's window for a click count on text, which also needs the same cell.
 /// On trial (the user, 2026-10-14: "don't make it too hard to go back"):
-/// arrows' text counted within 400 ms on the same control anywhere. To go
-/// back for arrows, give [`count_clicks`] the profile, and there use 400 ms
-/// and drop the cell check in the `text` arm.
+/// arrows' text counted within [`LIST_WINDOW_MS`] on the same control
+/// anywhere. To go back for arrows, give [`count_clicks`] the profile, and
+/// there use that window and drop the cell check in the `text` arm.
 const TEXT_WINDOW_MS: u64 = 500;
 
 /// The last left press: what it hit, its cell, when, and its counts.
@@ -44,7 +47,7 @@ pub(super) fn count_clicks(
     let within =
         |ms| last.is_some_and(|l| at.saturating_duration_since(l.at) < Duration::from_millis(ms));
     let list = match last {
-        Some(l) if l.hit == *hit && l.clicks.list == 1 && within(400) => 2,
+        Some(l) if l.hit == *hit && l.clicks.list == 1 && within(LIST_WINDOW_MS) => 2,
         _ => 1,
     };
     let text = match last {
