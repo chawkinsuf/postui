@@ -78,10 +78,10 @@ motions in `word_nav` (ctrl+←/→) are not mouse and stay arrows'.
 
 - **A7's window, on trial** (`you`: "we can try 1 but don't make it too hard to go
   back"). Text uses 0.5 s and the same cell, as vim already does, so in arrows a slight
-  pointer move between the clicks now breaks a double click on text. The rule is two
-  named constants in `count_clicks` (`TEXT_WINDOW`, `TEXT_SAME_CELL`). To go back for
-  arrows, its text presses take arrows' window and no cell check: a profile argument to
-  `count_clicks` and nothing else.
+  pointer move between the clicks now breaks a double click on text. The rule is one
+  named constant, `TEXT_WINDOW_MS`, plus the cell check in `count_clicks`'s text arm.
+  To go back for arrows, give `count_clicks` the profile, and for arrows use 400 ms
+  and drop the cell check. That's one function, and nothing else changes.
 - **A5 in the body, accepted** (`you`). A triple click selects the line's text without
   its line break (the GUI convention); vim's V-LINE stays Vim's.
 

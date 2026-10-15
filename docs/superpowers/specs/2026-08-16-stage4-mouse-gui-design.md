@@ -136,9 +136,11 @@ double-click. Users: folder-name toggle, chooser confirm.
 
 Amended 2026-10-14 (tasks #15 and #23, `you`): this is now the list count, which
 rows and buttons read. Text in a field or the response counts separately: same hit
-and same cell within 500 ms, up to a triple click. A double click selects the shared
-mouse word (or a bracket's block) and a triple click selects the line, in both
-profiles. See `2026-10-14-align-text-mouse-design.md`.
+and same cell within 500 ms, counting to four (a fourth acts as a single click). In
+both profiles, a double click on a field's text selects the shared mouse word, or
+from a bracket its block, and a triple click selects the line. The response takes
+the word only: no block and no triple click. See
+`2026-10-14-align-text-mouse-design.md`.
 
 ## 4. Scrollbars
 

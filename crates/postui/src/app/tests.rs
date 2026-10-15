@@ -8515,6 +8515,22 @@ fn an_arrows_triple_click_selects_the_line() {
     assert_eq!(app.editor.body_selected_text().as_deref(), Some("alpha beta\nsecond"));
 }
 
+/// Task #23 review: a triple-click drag onto an empty row takes the rows
+/// above it whole, not the empty row's own break.
+#[test]
+fn an_arrows_triple_click_drag_onto_an_empty_row_leaves_its_break_out() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("abc\n\nxyz");
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    for _ in 0..3 {
+        app.handle_mouse(left_down(area.x + 2 + 1, area.y));
+    }
+    app.handle_mouse(dragged(area.x + 2, area.y + 1));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("abc\n"));
+}
+
 /// Task #23 (spec A7): presses on two cells of the same field are two
 /// single clicks.
 #[test]

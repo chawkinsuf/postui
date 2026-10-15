@@ -20,20 +20,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use std::time::Instant;
 
-/// The body's lines as the shared text shapes read them (a bracket's
-/// block can span rows).
-struct BodyLines<'a>(&'a Lines);
-
-impl crate::text::Lines for BodyLines<'_> {
-    fn line_count(&self) -> usize {
-        self.0.len().max(1)
-    }
-
-    fn line(&self, row: usize) -> std::borrow::Cow<'_, [char]> {
-        std::borrow::Cow::Borrowed(self.0.iter_row().nth(row).map_or(&[][..], |r| &r[..]))
-    }
-}
-
 /// Which editor tab is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorTab {
@@ -996,23 +982,17 @@ impl Editor {
         let Some(cursor) = self.body_cursor_for_click(x, y) else {
             return false;
         };
-        let Some(word) = self.body_word_cells(cursor) else {
+        let at = crate::text::Pos::new(cursor.row, cursor.col);
+        let Some(click) = crate::text::mouse::double_click(&self.body.lines, at) else {
             return false;
         };
-        let at = self.clamp_to_cell(cursor);
-        let block = crate::text::mouse::bracket_block_end(
-            &BodyLines(&self.body.lines),
-            crate::text::Pos::new(at.row, at.col),
-        );
-        let (a, b) = match block {
-            Some(end) => (at, edtui::Index2::new(end.row, end.col)),
-            None => word,
-        };
+        let cell = |p: crate::text::Pos| edtui::Index2::new(p.row, p.col);
+        let (a, b) = (cell(click.anchor), cell(click.caret));
         self.set_body_selection_cells(a, b);
         // The caret rides the far end: after it, or on it when it is first.
         self.body.cursor =
-            if (b.row, b.col) >= (a.row, a.col) { edtui::Index2::new(b.row, b.col + 1) } else { b };
-        self.body_word_anchor = Some(word);
+            if click.caret >= click.anchor { edtui::Index2::new(b.row, b.col + 1) } else { b };
+        self.body_word_anchor = Some((cell(click.word.0), cell(click.word.1)));
         self.body_line_anchor = None;
         true
     }

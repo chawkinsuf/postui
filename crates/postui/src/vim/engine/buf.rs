@@ -189,11 +189,11 @@ impl TextBuf for BodyBuf<'_> {
     const MULTILINE: bool = true;
 
     fn line_count(&self) -> usize {
-        self.state.lines.len().max(1)
+        crate::text::Lines::line_count(&self.state.lines)
     }
 
     fn line(&self, row: usize) -> Cow<'_, [char]> {
-        Cow::Borrowed(self.state.lines.get(RowIndex::new(row)).map(Vec::as_slice).unwrap_or(&[]))
+        crate::text::Lines::line(&self.state.lines, row)
     }
 
     fn cursor(&self) -> Pos {

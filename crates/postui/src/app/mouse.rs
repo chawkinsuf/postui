@@ -17,13 +17,12 @@ pub(super) struct Clicks {
     pub(super) text: u8,
 }
 
-/// A7's window for a click count on text, on trial (the user, 2026-10-14:
-/// "don't make it too hard to go back"). Arrows' text counted within 400 ms
-/// on the same control anywhere; to go back for arrows, give
-/// [`count_clicks`] the profile and use 400 ms and no cell check there.
+/// A7's window for a click count on text, which also needs the same cell.
+/// On trial (the user, 2026-10-14: "don't make it too hard to go back"):
+/// arrows' text counted within 400 ms on the same control anywhere. To go
+/// back for arrows, give [`count_clicks`] the profile, and there use 400 ms
+/// and drop the cell check in the `text` arm.
 const TEXT_WINDOW_MS: u64 = 500;
-/// A7: a text count also needs the same cell (see [`TEXT_WINDOW_MS`]).
-const TEXT_SAME_CELL: bool = true;
 
 /// The last left press: what it hit, its cell, when, and its counts.
 #[derive(Debug, Clone)]
@@ -51,10 +50,7 @@ pub(super) fn count_clicks(
     let text = match last {
         // The same control too: a press can open a field under the cell.
         Some(l)
-            if l.hit == *hit
-                && (l.cell == cell || !TEXT_SAME_CELL)
-                && l.clicks.text < 4
-                && within(TEXT_WINDOW_MS) =>
+            if l.hit == *hit && l.cell == cell && l.clicks.text < 4 && within(TEXT_WINDOW_MS) =>
         {
             l.clicks.text + 1
         }
@@ -367,10 +363,9 @@ impl App {
                 {
                     return false;
                 }
-                // Arrows' count pairs: a third click within the window is a
-                // single, rather than pairing with the second and
-                // double-firing (a fast triple-click toggling a folder
-                // twice, net reverting it).
+                // Both counts at once (`count_clicks`): rows and buttons read
+                // the list count, which pairs, so a fast triple click never
+                // toggles a folder twice; text reads the text count.
                 let press = count_clicks(
                     self.last_click.as_ref(),
                     &hit,

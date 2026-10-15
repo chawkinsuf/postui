@@ -31,6 +31,18 @@ pub trait Lines {
     fn line(&self, row: usize) -> Cow<'_, [char]>;
 }
 
+/// The request body's text: edtui's lines, read by the arrows body and by
+/// the vim engine's `BodyBuf` alike.
+impl Lines for edtui::Lines {
+    fn line_count(&self) -> usize {
+        self.len().max(1)
+    }
+
+    fn line(&self, row: usize) -> Cow<'_, [char]> {
+        Cow::Borrowed(self.get(edtui::RowIndex::new(row)).map(Vec::as_slice).unwrap_or(&[]))
+    }
+}
+
 /// A one-line field's text.
 impl Lines for [char] {
     fn line_count(&self) -> usize {
