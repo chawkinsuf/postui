@@ -187,7 +187,7 @@ pub struct Editor {
     /// or a bracket's block, which may span rows): while set, `body_drag_to`
     /// keeps it covered and extends by whole words past it instead of by
     /// cells. Cleared by any single click.
-    body_word_anchor: Option<(edtui::Index2, edtui::Index2)>,
+    body_word_anchor: Option<crate::text::mouse::Span>,
     /// The row a triple click selected: while set, `body_drag_to` extends
     /// by whole lines from it. Cleared by any single click.
     body_line_anchor: Option<usize>,
@@ -988,10 +988,8 @@ impl Editor {
         let Some(click) = crate::text::mouse::double_click(&self.body.lines, at) else {
             return false;
         };
-        let cell = |p: crate::text::Pos| edtui::Index2::new(p.row, p.col);
-        self.select_body_span(cell(click.anchor), cell(click.caret));
-        let (first, last) = (click.anchor.min(click.caret), click.anchor.max(click.caret));
-        self.body_word_anchor = Some((cell(first), cell(last)));
+        self.select_body_text_span(click);
+        self.body_word_anchor = Some(click);
         self.body_line_anchor = None;
         true
     }
@@ -1066,13 +1064,10 @@ impl Editor {
         Some((at.row, at.col))
     }
 
-    /// The inclusive cell span of the shared mouse word at caret `i` (a
-    /// caret past the line's end counts as on its last char). `None` on an
-    /// empty line.
-    fn body_word_cells(&self, i: edtui::Index2) -> Option<(edtui::Index2, edtui::Index2)> {
-        let line = self.body.lines.iter_row().nth(i.row)?;
-        let (s, e) = crate::text::mouse::word_at(line, i.col)?;
-        Some((edtui::Index2::new(i.row, s), edtui::Index2::new(i.row, e)))
+    /// [`Self::select_body_span`] for a shared-shape span.
+    fn select_body_text_span(&mut self, span: crate::text::mouse::Span) {
+        let cell = |p: crate::text::Pos| edtui::Index2::new(p.row, p.col);
+        self.select_body_span(cell(span.fixed), cell(span.moving));
     }
 
     /// Extends the body selection to the drag point `(x, y)`: the moving
@@ -1086,9 +1081,9 @@ impl Editor {
     /// Returns `false` only when there is no live anchor (or no rendered
     /// body area) — unlike a click, a sweep that leaves the box keeps
     /// selecting (see [`Self::body_cursor_for_drag`]).
-    /// After a double click (word anchor set) the sweep extends by whole
-    /// words instead: the selection is the union of the anchor word and
-    /// the run under the pointer, so the anchor word always stays covered.
+    /// After a double click (word anchor set) the sweep keeps what it
+    /// selected and grows by whole words past it
+    /// (`text::mouse::grow_by_words`); after a triple click, by whole lines.
     pub fn body_drag_to(&mut self, x: u16, y: u16) -> bool {
         if self.active_tab != EditorTab::Body {
             return false;
@@ -1101,16 +1096,11 @@ impl Editor {
             self.select_body_lines(row, cursor.row.min(last));
             return true;
         }
-        if let Some((ws, we)) = self.body_word_anchor {
+        if let Some(span) = self.body_word_anchor {
             let head = self.clamp_to_cell(cursor);
-            let (hs, he) = self.body_word_cells(head).unwrap_or((head, head));
-            let key = |i: edtui::Index2| (i.row, i.col);
-            // The caret rides the moving end, like a plain sweep's does.
-            if key(head) < key(ws) {
-                self.select_body_span(we, hs);
-            } else {
-                self.select_body_span(ws, if key(head) > key(we) { he } else { we });
-            }
+            let at = crate::text::Pos::new(head.row, head.col);
+            let grown = crate::text::mouse::grow_by_words(&self.body.lines, span, at);
+            self.select_body_text_span(grown);
             return true;
         }
         let Some(anchor) = self.body_sel_anchor else {

@@ -8588,6 +8588,34 @@ fn an_arrows_drag_after_a_block_double_click_keeps_the_block() {
     assert_eq!(app.editor.body_selected_text().as_deref(), Some("{\n  \"a\": 1\n}"));
 }
 
+/// Task #23 review round 5: a drag still inside what a double click
+/// selected leaves it exactly as clicked, its direction included, in a
+/// field and in the body.
+#[test]
+fn a_drag_inside_a_double_clicks_span_leaves_it_as_clicked() {
+    let (mut app, area) = arrows_url("x{{id}}");
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("{id}"));
+    app.handle_mouse(dragged(area.x + 5, area.y));
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("{id}"), "onto its closer");
+    app.handle_mouse(dragged(area.x + 2, area.y));
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("{id}"), "back onto its opener");
+
+    let shift = |code| KeyEvent::new(code, KeyModifiers::SHIFT);
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("a {b c} d");
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    app.handle_mouse(left_down(area.x + 2 + 6, area.y));
+    app.handle_mouse(left_down(area.x + 2 + 6, area.y));
+    app.handle_mouse(dragged(area.x + 2 + 5, area.y));
+    app.handle_mouse(left_up(area.x + 2 + 5, area.y));
+    app.handle_key(shift(KeyCode::Right));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("b c}"), "still the closer fixed");
+}
+
 /// Task #23 review round 3: a double click on blanks before a closing
 /// bracket takes the whole block, the bracket the blanks lead to included.
 #[test]
