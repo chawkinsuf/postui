@@ -1,11 +1,13 @@
 //! Text shapes both keyboard profiles share: Vim's character classes, its
-//! bracket matching and the mouse's words. Profile-neutral, so the arrows
-//! profile reads them without naming the vim engine, and the engine reads
-//! them from here (spec 2026-10-14, align the text mouse).
+//! bracket matching, the mouse's words and a body's indentation.
+//! Profile-neutral, so the arrows profile reads them without naming the vim
+//! engine, and the engine reads them from here (spec 2026-10-14, align the
+//! text mouse).
 
 pub mod brackets;
 pub mod class;
 mod class_table;
+pub mod indent;
 pub mod mouse;
 
 use std::borrow::Cow;
