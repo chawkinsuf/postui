@@ -78,13 +78,13 @@ pub(crate) fn block_end<B: Lines + ?Sized>(buf: &B, at: Pos, vim_reach: bool) ->
 /// What an arrows double click at `at` selects (spec 2026-10-14 A1–A4), in
 /// inclusive positions with the caret the moving end: a bracket's block,
 /// from the press (blanks before an opener included) or from a closer to
-/// its match, else the shared word. `word` is the clicked word either way,
-/// which a drag after it grows from.
+/// its match, else the shared word. A drag after it keeps all of it and
+/// grows by words (the user, 2026-10-14: arrows keeps the block, where
+/// Vim's drag regrows from the bracket).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DoubleClick {
     pub(crate) anchor: Pos,
     pub(crate) caret: Pos,
-    pub(crate) word: (Pos, Pos),
 }
 
 /// [`DoubleClick`] at `at`, a press past the line's end counting as on
@@ -92,7 +92,6 @@ pub(crate) struct DoubleClick {
 pub(crate) fn double_click<B: Lines + ?Sized>(buf: &B, at: Pos) -> Option<DoubleClick> {
     let line = buf.line(at.row);
     let (s, e) = word_at(&line, at.col)?;
-    let word = (Pos::new(at.row, s), Pos::new(at.row, e));
     // `word_at` found a char, so the line has a last one to clamp onto.
     let at = Pos::new(at.row, at.col.min(line.len() - 1));
     Some(match block_end(buf, at, false) {
@@ -100,10 +99,10 @@ pub(crate) fn double_click<B: Lines + ?Sized>(buf: &B, at: Pos) -> Option<Double
         // block comes whole (Vim's stops at the press, the closer left out).
         Some(end) if end < at => {
             let closer = (at.col..line.len()).find(|&c| !white(line[c])).unwrap_or(at.col);
-            DoubleClick { anchor: Pos::new(at.row, closer), caret: end, word }
+            DoubleClick { anchor: Pos::new(at.row, closer), caret: end }
         }
-        Some(end) => DoubleClick { anchor: at, caret: end, word },
-        None => DoubleClick { anchor: word.0, caret: word.1, word },
+        Some(end) => DoubleClick { anchor: at, caret: end },
+        None => DoubleClick { anchor: Pos::new(at.row, s), caret: Pos::new(at.row, e) },
     })
 }
 
@@ -153,13 +152,10 @@ mod tests {
         let p = |c| Pos::new(0, c);
         assert_eq!(
             double_click(&line[..], p(6)),
-            Some(DoubleClick { anchor: p(6), caret: p(2), word: (p(6), p(6)) }),
+            Some(DoubleClick { anchor: p(6), caret: p(2) }),
             "on the closing brace: from it back to its opener"
         );
-        assert_eq!(
-            double_click(&line[..], p(8)),
-            Some(DoubleClick { anchor: p(8), caret: p(8), word: (p(8), p(8)) })
-        );
+        assert_eq!(double_click(&line[..], p(8)), Some(DoubleClick { anchor: p(8), caret: p(8) }));
         assert_eq!(double_click(&[][..], p(0)), None);
     }
 }

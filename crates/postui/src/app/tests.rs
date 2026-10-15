@@ -8564,6 +8564,30 @@ fn shift_after_a_body_line_or_block_select_keeps_its_far_end() {
     assert_eq!(app.editor.body_selected_text().as_deref(), Some("b c}"));
 }
 
+/// Task #23 review round 4 (the user: arrows keeps the block): a drag after
+/// a bracket double click keeps the whole block and grows past it by words,
+/// in a field and across the body's rows.
+#[test]
+fn an_arrows_drag_after_a_block_double_click_keeps_the_block() {
+    let (mut app, area) = arrows_url("a {b c} d");
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    app.handle_mouse(dragged(area.x + 3, area.y));
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("{b c}"), "a twitch inside");
+    app.handle_mouse(dragged(area.x + 8, area.y));
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("{b c} d"), "past it by words");
+
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("{\n  \"a\": 1\n}");
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    app.handle_mouse(dragged(area.x + 3, area.y + 1));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("{\n  \"a\": 1\n}"));
+}
+
 /// Task #23 review round 3: a double click on blanks before a closing
 /// bracket takes the whole block, the bracket the blanks lead to included.
 #[test]

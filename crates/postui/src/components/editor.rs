@@ -183,9 +183,10 @@ pub struct Editor {
     /// `body_drag_to`/shifted motions to rebuild `body.selection` as the
     /// moving end travels. `None` when no selection gesture is live.
     body_sel_anchor: Option<edtui::Index2>,
-    /// The inclusive cell span of a double-clicked word in the body: while
-    /// set, `body_drag_to` extends by whole words from this span instead
-    /// of by cells. Cleared by any single click.
+    /// The inclusive cell span a double click selected in the body (a word,
+    /// or a bracket's block, which may span rows): while set, `body_drag_to`
+    /// keeps it covered and extends by whole words past it instead of by
+    /// cells. Cleared by any single click.
     body_word_anchor: Option<(edtui::Index2, edtui::Index2)>,
     /// The row a triple click selected: while set, `body_drag_to` extends
     /// by whole lines from it. Cleared by any single click.
@@ -989,7 +990,8 @@ impl Editor {
         };
         let cell = |p: crate::text::Pos| edtui::Index2::new(p.row, p.col);
         self.select_body_span(cell(click.anchor), cell(click.caret));
-        self.body_word_anchor = Some((cell(click.word.0), cell(click.word.1)));
+        let (first, last) = (click.anchor.min(click.caret), click.anchor.max(click.caret));
+        self.body_word_anchor = Some((cell(first), cell(last)));
         self.body_line_anchor = None;
         true
     }

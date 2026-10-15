@@ -46,10 +46,11 @@ pub struct LineInput {
     /// moving end is the cursor. `None` (or equal to the cursor) means no
     /// selection.
     anchor: Option<usize>,
-    /// The word span a double click selected, kept while its drag sweep is
-    /// live so [`Self::extend_mouse_selection_to`] grows the selection
-    /// word-by-word (the body editor's word-sweep behavior). Cleared by
-    /// any plain caret placement or edit.
+    /// The half-open span a double click (a word or a bracket's block) or a
+    /// triple click (the whole text) selected, kept while its drag sweep is
+    /// live: [`Self::extend_mouse_selection_to`] keeps it covered and grows
+    /// the selection word by word past it. Cleared by any plain caret
+    /// placement or edit.
     word_anchor: Option<(usize, usize)>,
     /// The vim engine's Visual selection (piece 3 §3.3): its anchor, in
     /// chars, and its shape. Paint only, set by `OneLineBuf::show`; kept
@@ -311,8 +312,8 @@ impl LineInput {
     /// The double-click gesture at char index `idx` (spec 2026-10-14, align
     /// the text mouse): the shared mouse word under it, a press past the end
     /// taking the last word; on a bracket (or blanks before one), the block
-    /// to its match. Remembers the clicked word, so a following drag
-    /// extends word by word. An empty text just takes the caret.
+    /// to its match. Remembers what it selected, so a following drag keeps
+    /// it and extends word by word. An empty text just takes the caret.
     pub fn select_word_at(&mut self, idx: usize) {
         let chars: Vec<char> = self.text.chars().collect();
         let Some(click) =
@@ -326,7 +327,7 @@ impl LineInput {
         let (anchor, caret) = (click.anchor.col, click.caret.col);
         (self.anchor, self.cursor) =
             if caret < anchor { (Some(anchor + 1), caret) } else { (Some(anchor), caret + 1) };
-        self.word_anchor = Some((click.word.0.col, click.word.1.col + 1));
+        self.word_anchor = Some((anchor.min(caret), anchor.max(caret) + 1));
         self.break_run();
     }
 
