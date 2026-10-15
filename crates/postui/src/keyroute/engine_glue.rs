@@ -271,15 +271,13 @@ pub struct Glue {
     /// The session is a query box's (piece 3 §4.2 `Start::InsertOnly`): a
     /// rebase re-enters it so (plan M3b Review Focus 5).
     insert_only: bool,
-    /// The configured indent (`UiSettings::default_indent`), from the seam;
-    /// `None` until it first lends a field, which leaves the body on the
-    /// pinned 'shiftwidth'.
-    body_default: Option<Indent>,
+    /// The configured indent (`UiSettings::default_indent`), from the seam.
+    body_default: Indent,
 }
 
 impl Glue {
     pub fn set_body_default(&mut self, indent: Indent) {
-        self.body_default = Some(indent);
+        self.body_default = indent;
     }
 
     /// Vim's buffer-local 'shiftwidth' for the body (spec 2026-10-15 editor
@@ -288,10 +286,7 @@ impl Glue {
     /// lines lent for the call, inside every body target, so it reads the
     /// text as it is and survives a state reset (`rebase`, `own_body`).
     fn apply_body_shiftwidth(&mut self, lines: &Lines) {
-        let Some(default) = self.body_default else {
-            return;
-        };
-        let sw = match crate::text::indent::effective(lines, default) {
+        let sw = match crate::text::indent::effective(lines, self.body_default) {
             Indent::Spaces(n) => n,
             Indent::Tabs => crate::vim::engine::settings::SHIFTWIDTH,
         };

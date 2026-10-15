@@ -426,13 +426,8 @@ impl UiSettings {
         match value.get("indent_width") {
             None => {}
             Some(v) => match v.as_integer().and_then(|n| usize::try_from(n).ok()) {
-                Some(w) if (1..=crate::text::indent::MAX_WIDTH).contains(&w) => {
-                    settings.indent_width = w
-                }
-                _ => wrong_type(
-                    "indent_width",
-                    &format!("an integer from 1 to {}", crate::text::indent::MAX_WIDTH),
-                ),
+                Some(w) if crate::text::indent::valid_width(w) => settings.indent_width = w,
+                _ => wrong_type("indent_width", &crate::text::indent::width_range_text()),
             },
         }
         match value.get("jq_tab") {
@@ -561,9 +556,9 @@ pub fn config_seed() -> String {
 
 # How a body with no indentation of its own indents: \"spaces\" or \"tabs\".
 # A body that is already indented keeps its own style.
-# indent = \"spaces\"
+# indent = {:?}
 
-# The spaces in one indent level, from 1 to 8.
+# The spaces in one indent level, from 1 to {}.
 # indent_width = {}
 
 # The shell command \"Describe a filter…\" pipes its prompt into.
@@ -582,6 +577,8 @@ pub fn config_seed() -> String {
         d.animations,
         d.hover_hints,
         d.curl_button,
+        if d.indent_tabs { "tabs" } else { "spaces" },
+        crate::text::indent::MAX_WIDTH,
         d.indent_width,
         d.ai_cmd,
         d.ai_confirmed,

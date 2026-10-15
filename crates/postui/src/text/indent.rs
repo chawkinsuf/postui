@@ -14,6 +14,23 @@ pub enum Indent {
 /// The widest space indent the setting accepts and detection reports.
 pub const MAX_WIDTH: usize = 8;
 
+impl Default for Indent {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// Whether `w` is a width `indent_width` accepts: 1 to [`MAX_WIDTH`].
+pub fn valid_width(w: usize) -> bool {
+    (1..=MAX_WIDTH).contains(&w)
+}
+
+/// The accepted widths, as `config.toml`'s warning and the Settings
+/// field's toast name them.
+pub fn width_range_text() -> String {
+    format!("a whole number from 1 to {MAX_WIDTH}")
+}
+
 impl Indent {
     /// `config.toml`'s defaults: `indent = "spaces"`, `indent_width = 2`.
     pub const DEFAULT: Indent = Indent::Spaces(2);

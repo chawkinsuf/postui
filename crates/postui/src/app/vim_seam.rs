@@ -114,7 +114,7 @@ impl App {
     pub(crate) fn session_parts(&mut self, id: FieldId) -> (&mut Glue, Option<FieldBuf<'_>>) {
         // The body's 'shiftwidth' follows its indent (spec 2026-10-15 R11):
         // the glue reads the text itself, and needs only the default.
-        self.vim.glue.set_body_default(self.editor.indent_default);
+        self.vim.glue.set_body_default(self.ui_settings.default_indent());
         match id {
             FieldId::Body => (
                 &mut self.vim.glue,

@@ -202,8 +202,8 @@ pub fn indent_spelling(tabs: bool) -> &'static str {
 /// rather than clamped, like `osc52_limit`.
 pub fn parse_indent_width(text: &str) -> Result<usize, String> {
     match text.trim().parse::<usize>() {
-        Ok(w) if (1..=crate::text::indent::MAX_WIDTH).contains(&w) => Ok(w),
-        _ => Err(format!("expected a whole number from 1 to {}", crate::text::indent::MAX_WIDTH)),
+        Ok(w) if crate::text::indent::valid_width(w) => Ok(w),
+        _ => Err(format!("expected {}", crate::text::indent::width_range_text())),
     }
 }
 

@@ -25638,6 +25638,8 @@ fn resetting_a_parseable_config_confirm_promises_and_keeps_the_project_list() {
         "a parseable file promises the project list is kept: {body:?}"
     );
     assert!(!body.contains("lost"), "must not also warn of loss: {body:?}");
+    // The confirm names what the reset removes (review round 3, #8).
+    assert!(body.contains("indent"), "the indent keys are reset too: {body:?}");
     let confirm = choices[0].2.clone();
     app.modals.pop();
     for action in confirm {

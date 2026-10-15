@@ -2731,9 +2731,9 @@ impl App {
                         // must say exactly what it destroys.
                         let body = if self.config_toml_recovers_projects() {
                             "Resets theme, animations, animation speeds, hover hints, \
-                             jq tab, the AI command, the AI confirmation, clipboard \
-                             command, and OSC 52 limit to their defaults. Your project \
-                             list is preserved."
+                             the curl button, jq tab, indent, indent width, the AI \
+                             command, the AI confirmation, clipboard command, and OSC 52 \
+                             limit to their defaults. Your project list is preserved."
                         } else {
                             "config.toml could not be read far enough to recover its \
                              [projects] table, so resetting replaces the whole file -- \
