@@ -31,44 +31,64 @@ impl App {
             Ok(text) => postui_core::curl::parse(&text).map_err(|e| e.to_string()),
             Err(e) => Err(format!("clipboard read failed: {e}")),
         };
-        self.sidebar.curl_ready = self.ui_settings.curl_button && parsed.is_ok();
+        self.note_curl(&parsed);
         parsed
+    }
+
+    /// Records what the clipboard was found to hold, for the button: with
+    /// the setting on, whatever reads it is a check too (V4, V6).
+    fn note_curl(&mut self, parsed: &Result<CurlBatch, String>) {
+        self.sidebar.curl_ready = self.ui_settings.curl_button && parsed.is_ok();
     }
 
     /// The commands of `parsed`, else a toast saying why there are none.
     fn curl_or_toast(&mut self, parsed: Result<CurlBatch, String>) -> Option<CurlBatch> {
-        parsed.map_err(|e| self.toasts.push(e, ToastKind::Error)).ok()
+        match parsed {
+            Ok(batch) => Some(batch),
+            Err(e) => {
+                self.toasts.push(e, ToastKind::Error);
+                None
+            }
+        }
     }
 
     /// `Action::ImportCurl` (spec §4.2 steps 1–2): clipboard → parse →
     /// dirty gate → first prompt. A failure toasts and creates nothing.
     pub(super) fn import_curl(&mut self, folder: Option<String>) -> bool {
-        let parsed = self.read_clipboard_curl();
-        self.import_parsed(parsed, folder)
+        self.import_with(folder, Self::read_clipboard_curl)
     }
 
-    /// The sidebar's own import (spec 2026-10-15 curl import visibility
-    /// V1, V2): the clipboard's curl, into the cursor row's folder. Its
-    /// Import curl button and a ctrl+v there.
+    /// The sidebar's Import curl button (spec 2026-10-15 curl import
+    /// visibility V2): the clipboard's curl, into the cursor row's folder.
     pub(super) fn import_curl_at_cursor(&mut self) -> bool {
         let folder = self.sidebar.import_folder(&self.active_space());
         self.import_curl(folder)
     }
 
-    /// A terminal's paste into the sidebar, which takes no text: the
-    /// pasted text's curl imports as the clipboard's would (V1, V7).
+    /// A paste into the sidebar, which takes no text (V1, V2, V7): its curl
+    /// imports into the cursor row's folder. The text is the clipboard's
+    /// (ctrl+v, or the terminal's own paste of it), so it is a check too.
     pub(super) fn import_pasted_curl(&mut self, text: &str) -> bool {
-        let parsed = postui_core::curl::parse(text).map_err(|e| e.to_string());
         let folder = self.sidebar.import_folder(&self.active_space());
-        self.import_parsed(parsed, folder)
+        self.import_with(folder, |app| {
+            let parsed = postui_core::curl::parse(text).map_err(|e| e.to_string());
+            app.note_curl(&parsed);
+            parsed
+        })
     }
 
-    /// Every import's entry: a project to land in, commands to import,
-    /// then the dirty gate and the first prompt. A refusal toasts.
-    fn import_parsed(&mut self, parsed: Result<CurlBatch, String>, folder: Option<String>) -> bool {
+    /// Every import's entry: a project to land in before anything is
+    /// read, then `read`'s commands, the dirty gate and the first prompt.
+    /// A refusal toasts.
+    fn import_with(
+        &mut self,
+        folder: Option<String>,
+        read: impl FnOnce(&mut Self) -> Result<CurlBatch, String>,
+    ) -> bool {
         if self.refuse_without_project() {
             return true;
         }
+        let parsed = read(self);
         if let Some(batch) = self.curl_or_toast(parsed) {
             self.start_curl_import(batch, folder);
         }

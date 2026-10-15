@@ -40,7 +40,7 @@ setting, off by default, and the read after a copy goes. The paste
 | V3 | With the V13 setting on, while the clipboard holds a curl command, the sidebar's top row splits into "+ New" and "Import curl" buttons. Otherwise it is the full-width "+ New request", as today. The list never moves. | you |
 | V4 | With the setting on, the clipboard is checked at launch, when the terminal regains focus, when the setting is turned on, and on every import's or replace's own read. Not on a paste (it would parse every paste into a text field for nothing, round 1) and not after a copy (a read-back races an asynchronous `clipboard_cmd`, round 3). Never polled. With the setting off, postui never reads the clipboard unasked. | mine, the setting yours |
 | V5 | "Holds a curl command" means `postui_core::curl::parse` accepts the text: the button shows only when clicking it would get as far as the name prompt. | mine |
-| V6 | A click reads the clipboard fresh (it may have changed since the check). If the clipboard no longer parses, the click toasts the import's own error, as the palette command does, and the button goes away. A sidebar ctrl+v is that same click (round 2). | mine |
+| V6 | A click reads the clipboard fresh (it may have changed since the check). If the clipboard no longer parses, the click toasts the import's own error, as the palette command does, and the button goes away. A sidebar paste clears it the same way: its text is the clipboard's, so its parse is a check too (rounds 2 and 4). | mine |
 | V7 | A sidebar paste that holds no curl command toasts the import's error ("clipboard doesn't hold a curl command", or the parse error). Today it is silent. | mine |
 | V8 | Each button gets its label's width plus half the spare columns, a column apart. When "Import curl" will not fit, its label shortens to "curl". When even that will not fit, the row stays "+ New request" with no import button. | mine |
 | V9 | The sidebar's footer always lists `^V import curl`, last. With the setting off by default, the chip is what shows the paste; it no longer depends on the clipboard, so it needs no check. | mine |
@@ -48,7 +48,7 @@ setting, off by default, and the read after a copy goes. The paste
 | V11 | The button's hover hint is "Import curl from clipboard" (the palette row's wording). | mine |
 | V12 | The palette, `:import` and the folder menu are unchanged (the palette and `:import` still import into the space root). | mine |
 | V13 | A `curl_button` setting (`config.toml`, a checkbox row "Import curl button" on the Settings tab, before "Clipboard command"), default off, turns V3–V4 on. Turning it off hides the button at once. | you (opt-in, default off); the name and place mine |
-| V14 | A clipboard that can't be read toasts "clipboard read failed: …" (the cause), as ctrl+v into a text field does, not "clipboard doesn't hold a curl command". This covers import and replace from every entry point. | mine (rounds 1 and 3) |
+| V14 | A clipboard that can't be read toasts "clipboard read failed: …" (the cause, the words ctrl+v into a text field uses), not "clipboard doesn't hold a curl command". This covers import and replace from every entry point. No import reads the clipboard before its "no project" refusal (round 4). | mine (rounds 1, 3, 4) |
 
 ## 3. Design
 
@@ -78,16 +78,22 @@ registers a new `Hit::SidebarImportCurl` on the right half.
 `Sidebar::import_folder(space)` maps the cursor row (V2); it returns
 `None` for the space root, so the prompt prefill is unchanged.
 
-**Paste routing.** `sidebar_has_paste()` (no modal, Main, sidebar
-focused) decides both paths; no vim field is live there (`screen_field`
-is `None` on the sidebar), so the vim seam never claims the paste
-first. A ctrl+v there is the button's click, `import_curl_at_cursor()`.
-A terminal's bracketed paste carries its own text, so `paste_text` gains
-one arm, after the modal and response arms: `import_pasted_curl(text)`.
-Both end in one `import_parsed(parsed, folder)`: the project gate, the
-error toast, then `start_curl_import` (today's dirty gate and prompt).
-`import_curl(folder)` (the palette, `:import`, the folder menu) is
-`read_clipboard_curl` then `import_parsed`.
+**Paste routing.** One path, as before this task: ctrl+v reads the
+clipboard and hands the text to `paste_text`, as a bracketed paste
+does. `paste_text` gains one arm, after the modal and response arms:
+Main with the sidebar focused → `import_pasted_curl(text)`. No vim field
+is live there (`screen_field` is `None` on the sidebar), so the vim seam
+never claims the paste first. Its parse records the button's answer
+(`note_curl`), so a failing paste clears a stale button (V6). (Round 2
+made ctrl+v the button's click through a guard arm on `Action::Paste`;
+round 4 found that split the routing in two, so it went.)
+
+Every import enters through `import_with(folder, read)`: the project
+gate first, so nothing reads the clipboard for an import that will be
+refused; then `read`; the error toast; `start_curl_import` (today's
+dirty gate and prompt). `import_curl(folder)` (the palette, `:import`,
+the folder menu, the button) reads with `read_clipboard_curl`;
+`import_pasted_curl` parses its text.
 
 A test that pinned "a sidebar paste is unhandled"
 (`bracketed_paste_routes_to_the_focused_input`) now checks the method
@@ -99,7 +105,9 @@ way "+ New request" gets its hint, is over the hints' 42-column limit.)
 
 **Footer.** The sidebar's static chip list ends with
 `(Key::Of(Action::Paste), "import curl", Some(Action::Paste))` (V9). The
-footer functions keep their signatures. Two hover-hint layout tests
+footer functions keep their signatures. Its hover hint, on the sidebar,
+is V11's "Import curl from clipboard", not the palette's "Paste
+clipboard text at the cursor" (round 4). Two hover-hint layout tests
 sized their terminal to the sidebar's chip row; their 134 columns
 become 153, the same gap with the new chip in it.
 

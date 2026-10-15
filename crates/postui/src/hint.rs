@@ -319,6 +319,14 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::FooterChip(Action::ToggleTableRow(_)) => {
             text(if ctx.on { "Disable this row" } else { "Enable this row" })
         }
+        // The sidebar takes no text: its paste chip imports (spec
+        // 2026-10-15 curl import visibility V9), so it says what its
+        // Import curl button does.
+        Hit::FooterChip(Action::Paste)
+            if ctx.spell.surface == crate::keyroute::Surface::Sidebar =>
+        {
+            text("Import curl from clipboard")
+        }
         Hit::FooterChip(action) => of(action.clone()),
 
         // -- Manage screen --
@@ -543,6 +551,18 @@ mod tests {
 
     fn ctx() -> HintCtx {
         HintCtx::default()
+    }
+
+    /// The sidebar's paste chip imports curl, so it says so; elsewhere a
+    /// paste is a paste.
+    #[test]
+    fn the_sidebar_paste_chip_names_the_import() {
+        let keymap = Keymap::default_bindings();
+        let chip = Hit::FooterChip(Action::Paste);
+        let mut sidebar = ctx();
+        sidebar.spell.surface = crate::keyroute::Surface::Sidebar;
+        assert_eq!(hint_for(&chip, &keymap, &sidebar).unwrap(), "Import curl from clipboard");
+        assert!(!hint_for(&chip, &keymap, &ctx()).unwrap().contains("curl"));
     }
 
     /// The Variable Manager's shared `[Rename]`/`[Delete]` buttons act on

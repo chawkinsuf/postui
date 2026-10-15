@@ -1208,6 +1208,17 @@ fn turning_the_setting_on_checks_and_off_hides() {
 }
 
 #[test]
+fn with_no_project_an_import_never_reads_the_clipboard() {
+    let mut app = watching("curl https://x/u");
+    app.project = None;
+    app.update(Action::FocusPane(PaneId::Sidebar));
+    for run in [Action::ImportCurl { folder: None }, Action::Paste] {
+        app.update(run.clone());
+        assert!(!app.sidebar.curl_ready, "{run:?}: a read would have found the curl");
+    }
+}
+
+#[test]
 fn a_copy_does_not_check_the_clipboard() {
     let (mut app, _dir, _out) = copy_app();
     app.ui_settings.curl_button = true;
