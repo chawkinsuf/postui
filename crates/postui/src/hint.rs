@@ -319,6 +319,14 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::FooterChip(Action::ToggleTableRow(_)) => {
             text(if ctx.on { "Disable this row" } else { "Enable this row" })
         }
+        // The sidebar takes no text: its paste chip imports (spec
+        // 2026-10-15 curl import visibility V9), so it says what its
+        // Import curl button does.
+        Hit::FooterChip(Action::Paste)
+            if ctx.spell.surface == crate::keyroute::Surface::Sidebar =>
+        {
+            text("Import curl from clipboard")
+        }
         Hit::FooterChip(action) => of(action.clone()),
 
         // -- Manage screen --
@@ -350,6 +358,11 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             "Stop asking before sending to the AI"
         } else {
             "Ask before sending to the AI command"
+        }),
+        Hit::SettingsControl(SettingsField::CurlButton) => text(if ctx.on {
+            "Stop watching the clipboard for curl"
+        } else {
+            "Watch the clipboard for curl"
         }),
         Hit::SettingsControl(SettingsField::AiCmd) => text("Edit the command the AI filter runs"),
         Hit::SettingsControl(SettingsField::ClipboardCmd) => {
@@ -385,6 +398,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
 
         // -- Sidebar --
         Hit::SidebarNewRequest => of(Action::PromptNewRequest),
+        Hit::SidebarImportCurl => text("Import curl from clipboard"),
         Hit::SidebarFolderArrow(_) => {
             text(if ctx.on { "Collapse this folder" } else { "Expand this folder" })
         }
@@ -537,6 +551,18 @@ mod tests {
 
     fn ctx() -> HintCtx {
         HintCtx::default()
+    }
+
+    /// The sidebar's paste chip imports curl, so it says so; elsewhere a
+    /// paste is a paste.
+    #[test]
+    fn the_sidebar_paste_chip_names_the_import() {
+        let keymap = Keymap::default_bindings();
+        let chip = Hit::FooterChip(Action::Paste);
+        let mut sidebar = ctx();
+        sidebar.spell.surface = crate::keyroute::Surface::Sidebar;
+        assert_eq!(hint_for(&chip, &keymap, &sidebar).unwrap(), "Import curl from clipboard");
+        assert!(!hint_for(&chip, &keymap, &ctx()).unwrap().contains("curl"));
     }
 
     /// The Variable Manager's shared `[Rename]`/`[Delete]` buttons act on
@@ -836,6 +862,7 @@ mod tests {
             Hit::SettingsControl(crate::components::settings::SettingsField::Animations),
             Hit::SettingsControl(crate::components::settings::SettingsField::HoverHints),
             Hit::SettingsControl(crate::components::settings::SettingsField::AiConfirmed),
+            Hit::SettingsControl(crate::components::settings::SettingsField::CurlButton),
         ] {
             let off = hint_for(&hit, &keymap, &ctx()).unwrap();
             let on = hint_for(&hit, &keymap, &HintCtx { on: true, ..ctx() }).unwrap();
@@ -921,12 +948,14 @@ mod tests {
             Hit::SaveBodyButton,
             Hit::CopyUrl,
             Hit::SidebarNewRequest,
+            Hit::SidebarImportCurl,
             Hit::MethodSelector,
             Hit::EditorTab(0),
             Hit::ResponseTab(crate::components::response::ViewMode::Pretty),
             Hit::ManageTab(0),
             Hit::SettingsControl(crate::components::settings::SettingsField::AiCmd),
             Hit::SettingsControl(crate::components::settings::SettingsField::Osc52Limit),
+            Hit::SettingsControl(crate::components::settings::SettingsField::CurlButton),
             Hit::SettingsJqTab(crate::config::JqTab::Menu),
             Hit::SettingsJqTab(crate::config::JqTab::Cycle),
             Hit::SettingsKeymap(crate::config::KeyProfile::Arrows),

@@ -4,7 +4,8 @@ use crate::anim::{AnimKey, ListId};
 use crate::hit::{self, Hit, HitMap, ScrollbarSpec};
 use crate::layout::PaneId;
 use crate::paint::{
-    BUTTON_HEIGHT, Button, ButtonKind, ControlState, ListRow, RowHighlight, fill, text,
+    BUTTON_HEIGHT, Button, ButtonKind, ControlState, ListRow, RowHighlight, button_min_width, fill,
+    text,
 };
 use crate::theme::Theme;
 use postui_core::model::Method;
@@ -68,6 +69,10 @@ pub struct Sidebar {
     /// explanation of why nothing is loaded (a project that refused to
     /// open). Paragraphs are separated by blank lines.
     pub notice: Option<String>,
+    /// The clipboard holds curl, so the top row offers "Import curl" (spec
+    /// 2026-10-15 curl import visibility V3). A display copy: only App's
+    /// clipboard reads write it.
+    pub curl_ready: bool,
     /// Index of the cursor/selected row. `None` only when there are no
     /// rows at all; whenever rows exist the cursor is on one of them (G5).
     /// A refresh preserves the selection by row identity, else hands it to
@@ -362,6 +367,25 @@ impl Sidebar {
             Row::Folder { path, .. } => Some(RowKey::Folder(path.clone())),
             Row::Request { slug, .. } => Some(RowKey::Request(slug.clone())),
         }
+    }
+
+    /// The folder an import from the sidebar lands in (spec 2026-10-15
+    /// curl import visibility V2): a folder row's own path, a request
+    /// row's folder, and `None` for the space root (a request directly in
+    /// `space`, or no row at all).
+    pub fn import_folder(&self, space: &str) -> Option<String> {
+        let folder = match self.selected_key()? {
+            RowKey::Folder(path) => path,
+            RowKey::Request(slug) => slug.rsplit_once('/')?.0.to_string(),
+        };
+        (folder != space).then_some(folder)
+    }
+
+    /// Whether the sidebar offers its Import curl button: the clipboard
+    /// holds curl and a project is loaded for it to land in (spec
+    /// 2026-10-15 curl import visibility V3, V10).
+    pub fn offers_import(&self) -> bool {
+        self.curl_ready && self.notice.is_none()
     }
 
     /// Selects the row `key` names, if it is visible. `true` when it did.
@@ -1027,17 +1051,28 @@ impl Component for Sidebar {
                 width: area.width.saturating_sub(2),
                 height: button_height,
             };
-            let state = if ctx.hovered == Some(&Hit::SidebarNewRequest) {
-                ControlState::Hover
-            } else {
-                ControlState::Normal
+            let state = |hit: &Hit| {
+                if ctx.hovered == Some(hit) { ControlState::Hover } else { ControlState::Normal }
             };
-            Button { label: "+ New request", kind: ButtonKind::Primary, state }.paint(
-                buf,
-                button_area,
-                theme,
-            );
-            hits.register(button_area, Hit::SidebarNewRequest);
+            let split = if self.offers_import() { split_button_row(button_area) } else { None };
+            let (new_area, new_label) = match split {
+                Some((new_area, import_area, import_label)) => {
+                    let hit = Hit::SidebarImportCurl;
+                    let button = Button {
+                        label: import_label,
+                        kind: ButtonKind::Secondary,
+                        state: state(&hit),
+                    };
+                    button.paint(buf, import_area, theme);
+                    hits.register(import_area, hit);
+                    (new_area, "+ New")
+                }
+                None => (button_area, "+ New request"),
+            };
+            let hit = Hit::SidebarNewRequest;
+            Button { label: new_label, kind: ButtonKind::Primary, state: state(&hit) }
+                .paint(buf, new_area, theme);
+            hits.register(new_area, hit);
         }
 
         // One blank spacer row below the button; the list starts after it.
@@ -1230,6 +1265,21 @@ impl Component for Sidebar {
             }
         }
     }
+}
+
+/// The top row split into "+ New" and the import button, a column apart:
+/// each gets its label's width and half the spare columns. The import's
+/// label shortens to "curl" when "Import curl" will not fit, and `None`
+/// means not even that does (spec 2026-10-15 curl import visibility V8).
+fn split_button_row(row: Rect) -> Option<(Rect, Rect, &'static str)> {
+    let new_w = button_min_width("+ New");
+    ["Import curl", "curl"].into_iter().find_map(|label| {
+        let spare = row.width.checked_sub(new_w + 1 + button_min_width(label))?;
+        let left = Rect { width: new_w + spare / 2, ..row };
+        let right_x = left.x + left.width + 1;
+        let right = Rect { x: right_x, width: row.x + row.width - right_x, ..row };
+        Some((left, right, label))
+    })
 }
 
 /// Column width of the request row's method tag field (text right-padded
@@ -1974,6 +2024,61 @@ mod tests {
             Some(&Hit::SidebarFolderArrow(1)),
             "arrow hit wins over the row hit underneath it"
         );
+    }
+
+    /// The top row at `width` columns: its text, and the two buttons' hits.
+    fn button_row(s: &mut Sidebar, width: u16) -> (String, Option<Rect>, Option<Rect>) {
+        let theme = Theme::dark();
+        let ctx = draw_ctx(&theme, None);
+        let backend = ratatui::backend::TestBackend::new(width, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        terminal.draw(|f| s.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+        let buf = terminal.backend().buffer();
+        let label: String = (0..width).map(|x| buf[(x, 1)].symbol().to_string()).collect();
+        (label, hits.rect_of(&Hit::SidebarNewRequest), hits.rect_of(&Hit::SidebarImportCurl))
+    }
+
+    #[test]
+    fn a_curl_on_the_clipboard_splits_the_button_row() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["top"]), "main", &expanded(&[]), &[]);
+        let (label, new, import) = button_row(&mut s, 34);
+        assert!(label.contains("+ New request"), "{label}");
+        assert_eq!(new.unwrap().width, 32);
+        assert_eq!(import, None);
+
+        s.curl_ready = true;
+        let (label, new, import) = button_row(&mut s, 34);
+        let (new, import) = (new.unwrap(), import.expect("the import button"));
+        assert!(label.contains("+ New") && !label.contains("request"), "{label}");
+        assert!(label.contains("Import curl"), "{label}");
+        // Each gets its label's width and half the spare columns, a
+        // column apart, across the whole row the one button had.
+        assert_eq!((new.x, new.width, import.x, import.width), (1, 12, 14, 19));
+        assert_eq!((new.y, new.height), (import.y, import.height));
+    }
+
+    #[test]
+    fn a_narrow_sidebar_shortens_then_drops_the_import_button() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["top"]), "main", &expanded(&[]), &[]);
+        s.curl_ready = true;
+        let (label, _, import) = button_row(&mut s, 22);
+        assert!(import.is_some());
+        assert!(label.contains("curl") && !label.contains("Import"), "{label}");
+        let (label, new, import) = button_row(&mut s, 19);
+        assert_eq!(import, None);
+        assert!(label.contains("+ New request"), "{label}");
+        assert_eq!(new.unwrap().width, 17);
+    }
+
+    #[test]
+    fn a_notice_shows_no_import_button() {
+        let mut s = Sidebar { notice: Some("nothing open".into()), ..Sidebar::default() };
+        s.curl_ready = true;
+        let (_, new, import) = button_row(&mut s, 34);
+        assert_eq!((new, import), (None, None));
     }
 
     #[test]

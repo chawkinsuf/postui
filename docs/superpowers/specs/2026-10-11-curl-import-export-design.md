@@ -69,6 +69,9 @@ Mine, approved with the design sections:
 - **R4** Export emits one flag per line with ` \` continuations and
   POSIX single-quote escaping.
 - **R5** No new keys. Palette commands and right-click rows only.
+  *Replaced 2026-10-15 (task #9, you):* a paste with the sidebar
+  focused imports, and an "Import curl" button shows while the
+  clipboard holds curl (spec `2026-10-15-curl-import-visibility-design.md`).
 
 Mine, proposed in the spec review (user may override):
 

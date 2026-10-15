@@ -742,6 +742,15 @@ impl App {
         live || lit
     }
 
+    /// The window has focus back: what changed while postui was away
+    /// shows — files edited outside it, and a curl another app copied
+    /// (spec 2026-10-15 curl import visibility V4). Returns whether a
+    /// repaint is needed.
+    pub fn on_focus_gained(&mut self) -> bool {
+        let clipboard = self.check_clipboard();
+        self.update(Action::ReloadProjectFiles) | clipboard
+    }
+
     /// Re-resolves `hovered`/`hovered_token` from the last known pointer
     /// position against the just-rebuilt frame's hit map. The move handler
     /// only hit-tests on actual motion, so without this a control that
@@ -1455,6 +1464,9 @@ impl App {
                 self.update(action)
             }
             Hit::SidebarNewRequest => self.update(Action::PromptNewRequest),
+            Hit::SidebarImportCurl => {
+                self.update(Action::ImportCurl { folder: self.sidebar_import_folder() })
+            }
             Hit::SidebarFolderArrow(i) => {
                 self.update(Action::FocusPane(PaneId::Sidebar));
                 self.set_sidebar_selected(i);

@@ -37,6 +37,7 @@ pub enum SettingsField {
     JqTab,
     AiCmd,
     AiConfirmed,
+    CurlButton,
     ClipboardCmd,
     Osc52Limit,
 }
@@ -60,6 +61,7 @@ impl SettingsField {
             SettingsField::JqTab => "jq_tab",
             SettingsField::AiCmd => "ai_cmd",
             SettingsField::AiConfirmed => "ai_confirmed",
+            SettingsField::CurlButton => "curl_button",
             SettingsField::ClipboardCmd => "clipboard_cmd",
             SettingsField::Osc52Limit => "osc52_limit",
         }
@@ -78,6 +80,7 @@ impl SettingsField {
             "jq_tab" => Some(SettingsField::JqTab),
             "ai_cmd" => Some(SettingsField::AiCmd),
             "ai_confirmed" => Some(SettingsField::AiConfirmed),
+            "curl_button" => Some(SettingsField::CurlButton),
             "clipboard_cmd" => Some(SettingsField::ClipboardCmd),
             "osc52_limit" => Some(SettingsField::Osc52Limit),
             _ => None,
@@ -92,6 +95,7 @@ impl SettingsField {
             SettingsField::JqTab => "jq Tab behavior",
             SettingsField::AiCmd => "AI command",
             SettingsField::AiConfirmed => "Ask before sending to AI",
+            SettingsField::CurlButton => "Import curl button",
             SettingsField::ClipboardCmd => "Clipboard command",
             SettingsField::Osc52Limit => "OSC 52 limit",
         }
@@ -106,6 +110,7 @@ impl SettingsField {
             SettingsField::Animations => Some(ui.animations),
             SettingsField::HoverHints => Some(ui.hover_hints),
             SettingsField::AiConfirmed => Some(!ui.ai_confirmed),
+            SettingsField::CurlButton => Some(ui.curl_button),
             _ => None,
         }
     }
@@ -186,6 +191,7 @@ impl SettingsTab {
             SettingsRow::Setting(JqTab),
             SettingsRow::Setting(AiCmd),
             SettingsRow::Setting(AiConfirmed),
+            SettingsRow::Setting(CurlButton),
             SettingsRow::Setting(ClipboardCmd),
             SettingsRow::Setting(Osc52Limit),
             SettingsRow::File(Config),

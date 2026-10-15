@@ -189,6 +189,7 @@ async fn run(
     app.shift_enter_send =
         matches!(ratatui::crossterm::terminal::supports_keyboard_enhancement(), Ok(true));
     let mut events = EventStream::new();
+    app.check_clipboard();
 
     app.update(Action::ShowToast("Welcome to postui".into(), ToastKind::Info));
     if debug_ai {
@@ -264,7 +265,7 @@ async fn run(
                                 redraw = true;
                             }
                             Event::FocusGained => {
-                                redraw |= app.update(Action::ReloadProjectFiles);
+                                redraw |= app.on_focus_gained();
                                 app.vim_catch_up();
                             }
                             // The window lost focus with a button possibly
@@ -279,6 +280,9 @@ async fn run(
                             // text in one event, routed to the live caret.
                             Event::Paste(text) => {
                                 redraw |= app.paste_text(&text);
+                                // A paste into the sidebar imports, which
+                                // can raise a prompt.
+                                app.vim_catch_up();
                             }
                             _ => {}
                         }

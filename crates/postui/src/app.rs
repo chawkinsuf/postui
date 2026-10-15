@@ -1054,7 +1054,13 @@ impl App {
     fn reapply_ui_settings(&mut self, ui_settings: crate::config::UiSettings) {
         self.clipboard.reconfigure(&ui_settings);
         self.anims.set_enabled(ui_settings.animations);
+        let watch = ui_settings.curl_button != self.ui_settings.curl_button;
         self.finish_ui_settings(ui_settings);
+        // Turned on: look now rather than at the next focus gain. Turned
+        // off: the button goes (spec 2026-10-15 curl import visibility V13).
+        if watch {
+            self.check_clipboard();
+        }
     }
 
     /// The half both paths share: the jq tab and `ui_settings` itself.
@@ -2805,6 +2811,7 @@ impl App {
                 let redraw = self.apply_ui_write(saved, |ui| match key {
                     "animations" => ui.animations = value,
                     "hover_hints" => ui.hover_hints = value,
+                    "curl_button" => ui.curl_button = value,
                     "ai_confirmed" => ui.ai_confirmed = value,
                     // A key that writes to disk but applies to nothing is
                     // the "state that never landed" defect wearing the
@@ -5494,6 +5501,13 @@ impl App {
                         .push("nowhere to insert — focus a text field first", ToastKind::Warning);
                 }
                 true
+            }
+            // The sidebar takes no text, so ctrl+v there imports the
+            // clipboard's curl: the Import curl button, read for read (spec
+            // 2026-10-15 curl import visibility V1, V6). A terminal's own
+            // paste brings its text instead (`paste_text`).
+            Action::Paste if self.sidebar_takes_paste() => {
+                self.update(Action::ImportCurl { folder: self.sidebar_import_folder() })
             }
             Action::Paste => {
                 match self.clipboard.read() {
@@ -9181,6 +9195,14 @@ impl App {
         }
     }
 
+    /// A paste reaches the sidebar: it has focus and no modal is above it.
+    /// No field is live there (`screen_field` is `None`), so no vim field
+    /// claims the paste first. The sidebar takes no text: a paste there
+    /// is a curl import (spec 2026-10-15 curl import visibility V1).
+    fn sidebar_takes_paste(&self) -> bool {
+        self.modals.is_empty() && self.screen == Screen::Main && self.focus == PaneId::Sidebar
+    }
+
     /// Routes pasted text — read from the OS clipboard by `Action::Paste`
     /// (ctrl+v), or delivered whole by a terminal bracketed paste
     /// (`Event::Paste`: cmd+V on macOS, ctrl+shift+V on Linux) — to
@@ -9193,8 +9215,15 @@ impl App {
     /// selection is replaced (GUI semantics);
     /// single-line surfaces flatten line breaks (`LineInput::paste`),
     /// the body takes them verbatim. Returns `false` when nothing
-    /// focused accepts text.
+    /// focused accepts text. The sidebar takes none, but imports the
+    /// paste's curl (spec 2026-10-15 curl import visibility V1).
     pub fn paste_text(&mut self, text: &str) -> bool {
+        // First, as no modal, field or response surface can be up when it
+        // holds; and before the empty check, as an empty paste there still
+        // says it holds no curl (V7).
+        if self.sidebar_takes_paste() {
+            return self.import_pasted_curl(text);
+        }
         if text.is_empty() {
             return false;
         }
@@ -10405,6 +10434,7 @@ impl App {
         match key {
             "animations" => self.ui_settings.animations,
             "hover_hints" => self.ui_settings.hover_hints,
+            "curl_button" => self.ui_settings.curl_button,
             "ai_confirmed" => self.ui_settings.ai_confirmed,
             other => {
                 debug_assert!(false, "no boolean setting named {other:?}");
@@ -11069,6 +11099,7 @@ impl App {
                             UiValue::Flag(v) => match *key {
                                 "animations" => ui.animations = *v,
                                 "hover_hints" => ui.hover_hints = *v,
+                                "curl_button" => ui.curl_button = *v,
                                 "ai_confirmed" => ui.ai_confirmed = *v,
                                 _ => {}
                             },

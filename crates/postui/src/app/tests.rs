@@ -1498,8 +1498,10 @@ fn bracketed_paste_routes_to_the_focused_input() {
     assert!(app.paste_text("http://host/a b"));
     assert_eq!(app.editor.url.text(), "http://host/a b");
 
-    // Nothing focused that takes text: the paste reports unhandled.
-    app.focus = PaneId::Sidebar;
+    // Nothing focused that takes text: the paste reports unhandled. (The
+    // sidebar takes none either, but imports a paste's curl: spec
+    // 2026-10-15 curl import visibility V1, `curl_tests`.)
+    app.focus = PaneId::Editor;
     app.editor.sub_focus = crate::components::editor::SubFocus::Method;
     assert!(!app.paste_text("ignored"));
 }
@@ -24859,8 +24861,9 @@ fn hovering_a_button_shows_its_hint_between_the_chip_clusters() {
 fn footer_hint_ellipsizes_above_the_lower_bound_and_is_left_out_below_it() {
     let mut app = App::new_for_test();
     hover_env(&mut app);
-    // 134 columns: the sidebar chips + commands/quit leave ~26 cells.
-    let row = rendered_row(&mut app, 134, FOOTER_ROW);
+    // 153 columns: the sidebar chips (`import curl` last) + commands/quit
+    // leave ~26 cells.
+    let row = rendered_row(&mut app, 153, FOOTER_ROW);
     assert!(row.contains("Switch to another en"), "head shown: {row:?}");
     assert!(row.contains('\u{2026}'), "ellipsized: {row:?}");
     assert!(row.contains("reorder"), "chips stay: {row:?}");
@@ -24925,7 +24928,7 @@ fn hover_hints_can_be_turned_off_in_config() {
 fn an_ellipsized_hint_keeps_a_gap_before_the_commands_chip() {
     let mut app = App::new_for_test();
     hover_env(&mut app);
-    let row = rendered_row(&mut app, 134, FOOTER_ROW);
+    let row = rendered_row(&mut app, 153, FOOTER_ROW);
     let end = row.find('\u{2026}').unwrap() + '\u{2026}'.len_utf8();
     let palette = row.find("^P").unwrap();
     assert!(

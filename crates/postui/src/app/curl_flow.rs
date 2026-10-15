@@ -4,20 +4,41 @@
 
 use super::*;
 use crate::curl_import::{CreatedImport, CurlImportRun, CurlReplace, CurlVariables, PasteNotes};
-use postui_core::curl::{CurlBatch, CurlImport};
+use postui_core::curl::{CurlBatch, CurlError, CurlErrorKind, CurlImport};
 
 impl App {
-    /// The clipboard's curl commands; a clipboard that can't be read or
-    /// does not parse toasts why and gives `None`.
-    fn clipboard_curl(&mut self) -> Option<CurlBatch> {
-        let Ok(text) = self.clipboard.read() else {
-            self.toasts.push("clipboard doesn't hold a curl command", ToastKind::Error);
-            return None;
-        };
-        match postui_core::curl::parse(&text) {
-            Ok(b) => Some(b),
+    /// Whether the clipboard holds curl the import would take: what the
+    /// sidebar's Import curl button shows (spec 2026-10-15 curl import
+    /// visibility V3–V5). Reads only while the `curl_button` setting is
+    /// on (V13); off, the button goes. Run at launch, on a focus gain and
+    /// when the setting changes; `true` when the answer changed.
+    pub fn check_clipboard(&mut self) -> bool {
+        let before = self.sidebar.curl_ready;
+        if self.ui_settings.curl_button {
+            let _ = self.read_clipboard_curl();
+        } else {
+            self.sidebar.curl_ready = false;
+        }
+        self.sidebar.curl_ready != before
+    }
+
+    /// The clipboard's curl commands, read as every import reads them (a
+    /// clipboard that can't be read is empty, which holds none). With the
+    /// setting on, every such read is a check too: a stale button goes
+    /// (V6).
+    fn read_clipboard_curl(&mut self) -> Result<CurlBatch, CurlError> {
+        let text = self.clipboard.read().unwrap_or_default();
+        let parsed = postui_core::curl::parse(&text);
+        self.sidebar.curl_ready = self.ui_settings.curl_button && parsed.is_ok();
+        parsed
+    }
+
+    /// The commands of `parsed`, else a toast saying why there are none.
+    fn curl_or_toast(&mut self, parsed: Result<CurlBatch, String>) -> Option<CurlBatch> {
+        match parsed {
+            Ok(batch) => Some(batch),
             Err(e) => {
-                self.toasts.push(e.to_string(), ToastKind::Error);
+                self.toasts.push(e, ToastKind::Error);
                 None
             }
         }
@@ -25,13 +46,52 @@ impl App {
 
     /// `Action::ImportCurl` (spec §4.2 steps 1–2): clipboard → parse →
     /// dirty gate → first prompt. A failure toasts and creates nothing.
+    /// The sidebar's Import curl button and a ctrl+v there are this, into
+    /// the cursor row's folder (spec 2026-10-15 curl import visibility V1,
+    /// V2, V6).
     pub(super) fn import_curl(&mut self, folder: Option<String>) -> bool {
+        self.import_with(folder, |app| app.read_clipboard_curl().map_err(|e| e.to_string()))
+    }
+
+    /// The folder a sidebar import lands in: the cursor row's (V2).
+    pub(super) fn sidebar_import_folder(&self) -> Option<String> {
+        self.sidebar.import_folder(&self.active_space())
+    }
+
+    /// A terminal's paste into the sidebar, which takes no text (V1, V7):
+    /// its text's curl imports into the cursor row's folder. That text
+    /// need not be the clipboard's (shift+Insert's PRIMARY, a paste
+    /// history), so it leaves the button alone and its error says "paste".
+    pub(super) fn import_pasted_curl(&mut self, text: &str) -> bool {
+        let folder = self.sidebar_import_folder();
+        self.import_with(folder, |_| {
+            postui_core::curl::parse(text).map_err(|e| match e.kind {
+                CurlErrorKind::NotCurl => "the paste holds no curl command".to_string(),
+                _ => e.to_string(),
+            })
+        })
+    }
+
+    /// Every import's entry: a project to land in before anything is
+    /// read, then `read`'s commands, the dirty gate and the first prompt.
+    /// A refusal toasts.
+    fn import_with(
+        &mut self,
+        folder: Option<String>,
+        read: impl FnOnce(&mut Self) -> Result<CurlBatch, String>,
+    ) -> bool {
         if self.refuse_without_project() {
             return true;
         }
-        let Some(batch) = self.clipboard_curl() else {
-            return true;
-        };
+        let parsed = read(self);
+        if let Some(batch) = self.curl_or_toast(parsed) {
+            self.start_curl_import(batch, folder);
+        }
+        true
+    }
+
+    /// The import's dirty gate, then its first prompt.
+    fn start_curl_import(&mut self, batch: CurlBatch, folder: Option<String>) {
         let run = Box::new(CurlImportRun::new(batch, folder));
         // Each create opens its request, replacing the editor: ask once,
         // up front. Discard discards there and then, so skipping every
@@ -45,7 +105,6 @@ impl App {
         } else {
             self.push_curl_prompt(*run);
         }
-        true
     }
 
     /// `Action::BeginCurlImport`: the dirty gate's answer, then the first
@@ -202,7 +261,8 @@ impl App {
         if self.refuse_without_project() {
             return true;
         }
-        let Some(batch) = self.clipboard_curl() else {
+        let parsed = self.read_clipboard_curl().map_err(|e| e.to_string());
+        let Some(batch) = self.curl_or_toast(parsed) else {
             return true;
         };
         if batch.commands.len() > 1 {

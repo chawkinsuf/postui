@@ -107,6 +107,9 @@ pub(crate) fn footer_chips(
                 Some(Action::PromptMoveSelectedRequestToSpace),
             ),
             (Key::Named("alt+\u{2191}\u{2193}"), "reorder", None),
+            // The sidebar takes no text: a paste there imports its curl
+            // (spec 2026-10-15 curl import visibility V9).
+            (Key::Of(Action::Paste), "import curl", Some(Action::Paste)),
         ],
         PaneId::Editor => {
             let mut chips: Vec<(Key, &'static str, Option<Action>)> = Vec::new();

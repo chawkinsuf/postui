@@ -1075,3 +1075,257 @@ fn reopening_the_open_request_through_discard_is_undoable() {
     app.update(Action::Undo);
     assert_eq!(app.editor.url.text(), "https://x/edited", "undo brings the edit back");
 }
+
+// Curl import visibility (spec 2026-10-15-curl-import-visibility-design.md).
+
+/// `app_with_clip` with the sidebar focused and its cursor on `key`.
+fn on_sidebar(clip: &str, key: &crate::components::sidebar::RowKey) -> App {
+    use crate::components::sidebar::RowKey;
+    let mut app = app_with_clip(clip);
+    app.update(Action::FocusPane(PaneId::Sidebar));
+    if let RowKey::Request(slug) = key {
+        app.sidebar.select_slug(slug);
+        app.update(Action::RefreshSidebar);
+    }
+    assert!(app.sidebar.select_key(key), "{key:?} is a row");
+    app
+}
+
+#[test]
+fn a_sidebar_paste_imports_into_the_cursor_rows_folder() {
+    use crate::components::sidebar::RowKey;
+    for (key, prefill) in [
+        (RowKey::Folder("main/api".into()), "api/GET users"),
+        (RowKey::Request("main/api/ping".into()), "api/GET users"),
+        (RowKey::Request("main/top".into()), "GET users"),
+    ] {
+        let mut app = on_sidebar("curl https://x/users", &key);
+        app.update(Action::Paste);
+        assert_eq!(prompt(&app).1, prefill, "{key:?}");
+    }
+}
+
+#[test]
+fn a_bracketed_paste_into_the_sidebar_imports_the_pasted_text() {
+    let top = crate::components::sidebar::RowKey::Request("main/top".into());
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = on_sidebar("not curl", &top);
+        app.use_profile(profile);
+        draw(&mut app);
+        // As the event loop runs an `Event::Paste`.
+        assert!(app.paste_text("curl https://x/users"));
+        app.vim_catch_up();
+        draw(&mut app);
+        assert_eq!(prompt(&app).1, "GET users", "{profile:?}");
+        if profile == KeyProfile::Vim {
+            assert_eq!(app.mode_indicator(), Some("INSERT"), "the prompt opens in Insert");
+        }
+    }
+}
+
+#[test]
+fn ctrl_v_on_the_sidebar_imports_in_both_profiles() {
+    let top = crate::components::sidebar::RowKey::Request("main/top".into());
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = on_sidebar("curl https://x/users", &top);
+        app.use_profile(profile);
+        draw(&mut app);
+        feed(&mut app, "<C-v>");
+        assert_eq!(prompt(&app).1, "GET users", "{profile:?}");
+    }
+}
+
+#[test]
+fn a_curl_pasted_into_a_text_field_is_text() {
+    let mut app = app_with_clip("curl https://x/users");
+    app.update(Action::FocusUrl);
+    app.update(Action::Paste);
+    assert!(app.modals.is_empty());
+    assert!(app.editor.url.text().contains("curl https://x/users"), "{}", app.editor.url.text());
+}
+
+#[test]
+fn a_sidebar_paste_without_curl_says_so() {
+    let top = crate::components::sidebar::RowKey::Request("main/top".into());
+    let mut app = on_sidebar("hello", &top);
+    app.update(Action::Paste);
+    assert!(app.modals.is_empty());
+    assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
+    app.paste_text("curl 'https://x");
+    assert!(app.modals.is_empty());
+    assert_eq!(app.toasts.last_message(), Some("unclosed quote"));
+    // A terminal's paste need not be the clipboard's: it says "paste",
+    // an empty one too.
+    for text in ["hello", ""] {
+        app.toasts = Default::default();
+        app.paste_text(text);
+        assert_eq!(app.toasts.last_message(), Some("the paste holds no curl command"));
+    }
+}
+
+#[test]
+fn a_sidebar_ctrl_v_is_the_import_button() {
+    let top = crate::components::sidebar::RowKey::Request("main/top".into());
+    let mut app = on_sidebar("curl https://x/users", &top);
+    app.ui_settings.curl_button = true;
+    app.check_clipboard();
+    // Its read is the button's: a stale button goes, as on a click.
+    app.clipboard.set_read_for_test("hello");
+    app.update(Action::Paste);
+    assert!(!app.sidebar.curl_ready);
+    // An empty clipboard and one that can't be read say what the button
+    // says, not nothing and not the text field's read failure.
+    app.clipboard.set_read_for_test("");
+    app.update(Action::Paste);
+    assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
+    app.toasts = Default::default();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536, false));
+    app.update(Action::Paste);
+    assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
+}
+
+/// `app_with_clip` with the `curl_button` setting on (V13).
+fn watching(clip: &str) -> App {
+    let mut app = app_with_clip(clip);
+    app.ui_settings.curl_button = true;
+    app
+}
+
+#[test]
+fn the_import_button_shows_only_while_the_clipboard_parses_as_curl() {
+    let mut app = watching("");
+    for (clip, ready) in [
+        ("curl https://x/u", true),
+        ("hello", false),
+        ("curl 'https://x", false),
+        ("# @name A\ncurl https://x/a\ncurl https://x/b", true),
+    ] {
+        app.clipboard.set_read_for_test(clip);
+        app.check_clipboard();
+        assert_eq!(app.sidebar.curl_ready, ready, "{clip:?}");
+    }
+    // A clipboard that can't be read holds no curl.
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536, false));
+    app.check_clipboard();
+    assert!(!app.sidebar.curl_ready);
+}
+
+#[test]
+fn the_terminal_regaining_focus_rechecks_the_clipboard() {
+    let mut app = watching("hello");
+    app.check_clipboard();
+    app.clipboard.set_read_for_test("curl https://x/u");
+    assert!(app.on_focus_gained(), "the button appearing is a repaint");
+    assert!(app.sidebar.curl_ready);
+}
+
+#[test]
+fn with_the_setting_off_nothing_reads_the_clipboard_for_the_button() {
+    let mut app = app_with_clip("curl https://x/u");
+    assert!(!app.check_clipboard());
+    assert!(!app.on_focus_gained());
+    assert!(!app.sidebar.curl_ready);
+    // The import's own read found curl, but the setting is off.
+    import(&mut app);
+    assert!(app.modals.top().is_some(), "the import ran");
+    assert!(!app.sidebar.curl_ready);
+}
+
+#[test]
+fn turning_the_setting_on_checks_and_off_hides() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_with_clip("curl https://x/u");
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.update(Action::SetUiFlag { key: "curl_button", value: true });
+    assert!(app.sidebar.curl_ready, "on: checked at once");
+    app.update(Action::SetUiFlag { key: "curl_button", value: false });
+    assert!(!app.sidebar.curl_ready, "off: the button goes");
+    app.update(Action::Undo);
+    assert!(app.ui_settings.curl_button);
+    assert!(app.sidebar.curl_ready, "undo turns it back on, and checks");
+}
+
+#[test]
+fn with_no_project_an_import_never_reads_the_clipboard() {
+    let mut app = watching("curl https://x/u");
+    app.project = None;
+    app.update(Action::FocusPane(PaneId::Sidebar));
+    for run in [Action::ImportCurl { folder: None }, Action::Paste] {
+        app.update(run.clone());
+        assert!(!app.sidebar.curl_ready, "{run:?}: a read would have found the curl");
+    }
+}
+
+#[test]
+fn a_copy_does_not_check_the_clipboard() {
+    let (mut app, _dir, _out) = copy_app();
+    app.ui_settings.curl_button = true;
+    let mut c =
+        crate::clipboard::Clipboard::new_for_test(Some("cat > /dev/null".into()), 65536, false);
+    c.set_read_for_test("curl https://x/u");
+    app.set_clipboard_for_test(c);
+    app.update(Action::CopyAsCurl(Some("main/top".into())));
+    assert!(app.toasts.last_message().unwrap().starts_with("Copied"));
+    assert!(!app.sidebar.curl_ready);
+}
+
+#[test]
+fn an_unreadable_clipboard_holds_no_curl() {
+    // Empty and image clipboards are read errors to arboard; the import
+    // says what main always said (spec V14, reverted by the user).
+    let mut app = app_with_clip("");
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536, false));
+    import(&mut app);
+    assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
+}
+
+#[test]
+fn the_import_button_imports_into_the_cursor_rows_folder() {
+    let api = crate::components::sidebar::RowKey::Folder("main/api".into());
+    let mut app = on_sidebar("curl https://x/users", &api);
+    app.ui_settings.curl_button = true;
+    app.check_clipboard();
+    click(&mut app, Hit::SidebarImportCurl);
+    assert_eq!(prompt(&app).1, "api/GET users");
+}
+
+#[test]
+fn a_stale_import_button_says_why_and_goes_away() {
+    let mut app = watching("curl https://x/users");
+    app.check_clipboard();
+    draw(&mut app);
+    app.clipboard.set_read_for_test("hello");
+    click(&mut app, Hit::SidebarImportCurl);
+    assert!(app.modals.is_empty());
+    assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
+    assert!(!app.sidebar.curl_ready);
+    draw(&mut app);
+    assert!(app.hits.rect_of(&Hit::SidebarImportCurl).is_none());
+}
+
+#[test]
+fn a_sidebar_paste_leaves_the_button_to_its_checks() {
+    // A terminal's paste (shift+Insert's PRIMARY, a paste history) need
+    // not be the clipboard: what it holds says nothing about the button.
+    let top = crate::components::sidebar::RowKey::Request("main/top".into());
+    let mut app = on_sidebar("hello", &top);
+    app.ui_settings.curl_button = true;
+    app.check_clipboard();
+    app.paste_text("curl https://x/users");
+    assert_eq!(prompt(&app).1, "GET users", "the paste imports");
+    assert!(!app.sidebar.curl_ready, "but shows no button for the clipboard");
+}
+
+#[test]
+fn the_sidebar_footer_always_advertises_the_paste() {
+    let top = crate::components::sidebar::RowKey::Request("main/top".into());
+    let mut app = on_sidebar("hello", &top);
+    let has_chip = |app: &App| {
+        crate::ui::footer_chips_of(app)
+            .iter()
+            .any(|(_, l, a)| l == "import curl" && *a == Some(Action::Paste))
+    };
+    assert!(has_chip(&app), "whatever the clipboard holds, unchecked");
+    app.update(Action::FocusPane(PaneId::Editor));
+    assert!(!has_chip(&app), "the sidebar's chip only");
+}
