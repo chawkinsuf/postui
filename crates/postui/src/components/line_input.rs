@@ -329,14 +329,11 @@ impl LineInput {
     /// drag. An empty text just takes the caret.
     pub fn select_line(&mut self) {
         use crate::text::{Pos, mouse::Span};
-        match self.len_chars().checked_sub(1) {
-            Some(last) => {
-                let span = Span { fixed: Pos::new(0, 0), moving: Pos::new(0, last) };
-                self.select_span(span);
-                self.click_span = Some(span);
-            }
-            None => self.set_cursor(0),
-        }
+        self.select_all();
+        self.click_span = self
+            .len_chars()
+            .checked_sub(1)
+            .map(|last| Span { fixed: Pos::new(0, 0), moving: Pos::new(0, last) });
     }
 
     /// Selects an inclusive `span` as the GUI selection

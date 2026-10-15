@@ -5,10 +5,9 @@
 use super::Shape;
 use super::buf::{Pos, TextBuf};
 use super::keys::Object;
-use super::motion::{
-    MKind, MatchFrom, Walk, bck_word, bckend_word, end_word, find_match, fwd_word, starts_paragraph,
-};
+use super::motion::{MKind, Walk, bck_word, bckend_word, end_word, fwd_word, starts_paragraph};
 use super::op::Span;
+use crate::text::brackets::{MatchFrom, find_match};
 use crate::text::class::white;
 
 /// What an object selected. For an operator, `start..end` with `inclusive`

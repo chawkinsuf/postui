@@ -12,6 +12,7 @@ use super::view::View;
 use super::{
     BufState, Engine, LastSearch, Mode, Note, ViewCtx, first_non_blank, first_non_blank_fix,
 };
+use crate::text::brackets::{MatchFrom, find_match};
 use crate::text::class::class;
 use unicode_width::UnicodeWidthChar;
 
@@ -781,10 +782,6 @@ fn find<B: TextBuf>(
     }
     Some(Pos::new(from.row, col as usize))
 }
-
-/// The bracket matcher lives in the profile-neutral text module, which a
-/// double click in either profile reads too.
-pub(crate) use crate::text::brackets::{MatchFrom, find_match};
 
 impl Engine {
     /// A bare motion in Normal or Visual.

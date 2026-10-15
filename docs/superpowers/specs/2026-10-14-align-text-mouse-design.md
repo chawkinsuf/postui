@@ -39,7 +39,8 @@ move to a new profile-neutral module, `crate::text`:
 - `text/brackets.rs` holds `find_match` and `MatchFrom`, taking the text as `(line_count,
   line(row))`, the only two things it reads.
 - `text/mouse.rs` holds `mouse_class`, `word_start`, `word_end` and `block_end` (from
-  `vim/engine/mouse.rs`), plus `Pos`, which the engine re-exports from `buf.rs`.
+  `vim/engine/mouse.rs`). `text/mod.rs` holds `Pos`, which the engine re-exports from
+  `buf.rs`, and the `Lines` trait the shapes read text through.
   **Amended after review round 8** (`mine`): once arrows' block became brackets only
   (A2), `block_end`'s reach was vim's alone, so it went back to `vim/engine/mouse.rs`
   and arrows' block lives in `text::mouse::double_click`.
