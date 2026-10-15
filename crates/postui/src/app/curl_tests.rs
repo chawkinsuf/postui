@@ -1166,13 +1166,18 @@ fn the_import_button_shows_only_while_the_clipboard_parses_as_curl() {
 }
 
 #[test]
-fn postuis_own_clipboard_traffic_rechecks_it() {
-    // A paste's read.
-    let mut app = app_with_clip("curl https://x/u");
-    app.update(Action::Paste);
-    assert!(app.sidebar.curl_ready, "the paste read a curl");
-    // A copy reads the clipboard back. Here the copy goes to a command the
-    // read can't see (as OSC 52 would): the read is what counts.
+fn the_terminal_regaining_focus_rechecks_the_clipboard() {
+    let mut app = app_with_clip("hello");
+    app.check_clipboard();
+    app.clipboard.set_read_for_test("curl https://x/u");
+    assert!(app.on_focus_gained(), "the button appearing is a repaint");
+    assert!(app.sidebar.curl_ready);
+}
+
+#[test]
+fn a_copy_rechecks_the_clipboard_by_reading_it_back() {
+    // Here the copy goes to a command the read can't see (as OSC 52
+    // would): the read is what counts.
     let (mut app, _dir, _out) = copy_app();
     app.update(Action::CopyAsCurl(Some("main/top".into())));
     assert!(app.toasts.last_message().unwrap().starts_with("Copied"));
@@ -1222,4 +1227,8 @@ fn the_sidebar_footer_advertises_the_paste_while_the_clipboard_holds_curl() {
     assert!(has_chip(&app));
     app.update(Action::FocusPane(PaneId::Editor));
     assert!(!has_chip(&app), "the sidebar's chip only");
+    // With nothing loaded there is no button, and no chip either.
+    app.update(Action::FocusPane(PaneId::Sidebar));
+    app.sidebar.notice = Some("nothing open".into());
+    assert!(!has_chip(&app));
 }

@@ -70,8 +70,8 @@ pub struct Sidebar {
     /// open). Paragraphs are separated by blank lines.
     pub notice: Option<String>,
     /// The clipboard holds curl, so the top row offers "Import curl" (spec
-    /// 2026-10-15 curl import visibility V3). A display copy: only
-    /// `App::note_clipboard` writes it.
+    /// 2026-10-15 curl import visibility V3). A display copy: only App's
+    /// clipboard reads write it.
     pub curl_ready: bool,
     /// Index of the cursor/selected row. `None` only when there are no
     /// rows at all; whenever rows exist the cursor is on one of them (G5).
@@ -379,6 +379,13 @@ impl Sidebar {
             RowKey::Request(slug) => slug.rsplit_once('/')?.0.to_string(),
         };
         (folder != space).then_some(folder)
+    }
+
+    /// Whether the sidebar offers curl import: the clipboard holds curl and
+    /// a project is loaded for it to land in (spec 2026-10-15 curl import
+    /// visibility V3, V10). Its button and footer chip both ask this.
+    pub fn offers_import(&self) -> bool {
+        self.curl_ready && self.notice.is_none()
     }
 
     /// Selects the row `key` names, if it is visible. `true` when it did.
@@ -1047,7 +1054,7 @@ impl Component for Sidebar {
             let state = |hit: &Hit| {
                 if ctx.hovered == Some(hit) { ControlState::Hover } else { ControlState::Normal }
             };
-            let split = if self.curl_ready { split_button_row(button_area) } else { None };
+            let split = if self.offers_import() { split_button_row(button_area) } else { None };
             let (new_area, new_label) = match split {
                 Some((new_area, import_area, import_label)) => {
                     let hit = Hit::SidebarImportCurl;

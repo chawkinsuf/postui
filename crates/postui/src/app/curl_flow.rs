@@ -9,19 +9,14 @@ use postui_core::curl::{CurlBatch, CurlImport};
 impl App {
     /// Reads the clipboard to see whether it holds curl: what the
     /// sidebar's Import curl button and footer chip show (spec 2026-10-15
-    /// curl import visibility V4). Run at launch and on a focus gain;
-    /// `true` when the answer changed.
+    /// curl import visibility V4): curl the import would take (V5), and
+    /// never one it can't read. Run at launch, on a focus gain and after a
+    /// copy; `true` when the answer changed.
     pub fn check_clipboard(&mut self) -> bool {
         let before = self.sidebar.curl_ready;
         let text = self.clipboard.read().unwrap_or_default();
-        self.note_clipboard(&text);
+        self.sidebar.curl_ready = postui_core::curl::parse(&text).is_ok();
         self.sidebar.curl_ready != before
-    }
-
-    /// Records whether `text`, what the clipboard now holds (empty when it
-    /// can't be read), is curl the import would take (V5).
-    pub(super) fn note_clipboard(&mut self, text: &str) {
-        self.sidebar.curl_ready = postui_core::curl::parse(text).is_ok();
     }
 
     /// The clipboard's curl commands; a clipboard that can't be read or

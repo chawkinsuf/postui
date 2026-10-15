@@ -265,10 +265,7 @@ async fn run(
                                 redraw = true;
                             }
                             Event::FocusGained => {
-                                // Back from another app, which may have
-                                // copied a curl command.
-                                redraw |= app.check_clipboard();
-                                redraw |= app.update(Action::ReloadProjectFiles);
+                                redraw |= app.on_focus_gained();
                                 app.vim_catch_up();
                             }
                             // The window lost focus with a button possibly

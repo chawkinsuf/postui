@@ -5498,11 +5498,9 @@ impl App {
             Action::Paste => {
                 match self.clipboard.read() {
                     Ok(text) => {
-                        self.note_clipboard(&text);
                         self.paste_text(&text);
                     }
                     Err(e) => {
-                        self.note_clipboard("");
                         self.toasts.push(format!("clipboard read failed: {e}"), ToastKind::Warning);
                     }
                 }

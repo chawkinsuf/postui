@@ -862,7 +862,7 @@ impl PaneChipArgs {
             },
             // A text field of this pane's own owns Esc: it says `esc done`.
             field_open: app.pane_field_open(focus),
-            curl_ready: app.sidebar.curl_ready,
+            curl_ready: app.sidebar.offers_import(),
         }
     }
 
