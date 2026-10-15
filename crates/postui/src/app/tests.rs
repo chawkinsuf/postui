@@ -17408,6 +17408,18 @@ mod undo_tests {
         assert!(steps >= 2, "format must not merge into the typing step");
     }
 
+    /// Spec 2026-10-15 R10: Format writes the body's own indent.
+    #[test]
+    fn format_follows_a_four_space_body() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("fmt4".into()));
+        app.update(Action::CycleMethod);
+        app.editor.set_body_text("{\n    \"a\": 1\n}");
+        app.editor.set_body_text("{\"a\":{\"b\":1}}");
+        app.update(Action::FormatBody);
+        assert_eq!(app.editor.body_text(), "{\n    \"a\": {\n        \"b\": 1\n    }\n}");
+    }
+
     #[test]
     fn body_clear_empties_the_body_and_undo_brings_it_back() {
         let mut app = App::new_for_test();

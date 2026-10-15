@@ -3337,7 +3337,9 @@ impl App {
             },
             Action::FormatBody => {
                 self.no_coalesce = true;
-                self.transform_body(postui_core::json::format)
+                // The body's own indent (spec 2026-10-15 R10).
+                let unit = self.editor.body_indent().unit();
+                self.transform_body(|text| postui_core::json::format_with(text, &unit))
             }
             Action::MinifyBody => {
                 self.no_coalesce = true;
@@ -9171,7 +9173,7 @@ impl App {
     /// user typed it, reporting the parse position in a toast.
     fn transform_body(
         &mut self,
-        transform: fn(&str) -> Result<String, postui_core::json::JsonError>,
+        transform: impl FnOnce(&str) -> Result<String, postui_core::json::JsonError>,
     ) -> bool {
         let text = self.editor.body_text();
         if text.is_empty() {

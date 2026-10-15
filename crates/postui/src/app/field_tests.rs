@@ -1143,6 +1143,17 @@ fn a_format_with_the_body_open_is_one_engine_step() {
     assert_eq!(body(&app), "{\"a\":1}", "u takes the format back");
 }
 
+/// Spec 2026-10-15 R10: Format under a vim session writes the body's indent
+/// too.
+#[test]
+fn a_format_with_the_body_open_follows_its_indent() {
+    let mut app = vim(Fixture::Body);
+    app.editor.set_body_text("{\n\t\"a\": 1\n}");
+    app.editor.set_body_text("{\"a\":1}");
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT));
+    assert_eq!(body(&app), "{\n\t\"a\": 1\n}");
+}
+
 /// Final review triage (T6): a clear with the body open is one engine
 /// step, as a format is.
 #[test]
