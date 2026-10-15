@@ -9210,15 +9210,20 @@ impl App {
     /// capture order: the top modal's text surface first (a filter-query
     /// modal's query — palette/chooser/var picker — or the focused
     /// `LineInput`), then the response pane's jq bar or live search input,
-    /// then the sidebar, which takes no text but imports the paste's curl
-    /// (spec 2026-10-15 curl import visibility V1),
     /// then the `LineInput` behind the screen field (the editor's cell edit
     /// or URL bar, a Settings or Variables edit), then the body. A live
     /// selection is replaced (GUI semantics);
     /// single-line surfaces flatten line breaks (`LineInput::paste`),
     /// the body takes them verbatim. Returns `false` when nothing
-    /// focused accepts text.
+    /// focused accepts text. The sidebar takes none, but imports the
+    /// paste's curl (spec 2026-10-15 curl import visibility V1).
     pub fn paste_text(&mut self, text: &str) -> bool {
+        // First, as no modal, field or response surface can be up when it
+        // holds; and before the empty check, as an empty paste there still
+        // says it holds no curl (V7).
+        if self.sidebar_takes_paste() {
+            return self.import_pasted_curl(text);
+        }
         if text.is_empty() {
             return false;
         }
@@ -9263,9 +9268,6 @@ impl App {
                 return self.update(Action::Render);
             }
             return self.session.response.paste_into_search(text) && self.update(Action::Render);
-        }
-        if self.sidebar_takes_paste() {
-            return self.import_pasted_curl(text);
         }
         // Every other field is the `LineInput` `screen_field` names, through
         // the one map `open_text_field_mut` reads: the editor's cell edit or

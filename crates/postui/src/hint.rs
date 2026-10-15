@@ -862,6 +862,7 @@ mod tests {
             Hit::SettingsControl(crate::components::settings::SettingsField::Animations),
             Hit::SettingsControl(crate::components::settings::SettingsField::HoverHints),
             Hit::SettingsControl(crate::components::settings::SettingsField::AiConfirmed),
+            Hit::SettingsControl(crate::components::settings::SettingsField::CurlButton),
         ] {
             let off = hint_for(&hit, &keymap, &ctx()).unwrap();
             let on = hint_for(&hit, &keymap, &HintCtx { on: true, ..ctx() }).unwrap();
@@ -954,6 +955,7 @@ mod tests {
             Hit::ManageTab(0),
             Hit::SettingsControl(crate::components::settings::SettingsField::AiCmd),
             Hit::SettingsControl(crate::components::settings::SettingsField::Osc52Limit),
+            Hit::SettingsControl(crate::components::settings::SettingsField::CurlButton),
             Hit::SettingsJqTab(crate::config::JqTab::Menu),
             Hit::SettingsJqTab(crate::config::JqTab::Cycle),
             Hit::SettingsKeymap(crate::config::KeyProfile::Arrows),

@@ -1154,9 +1154,13 @@ fn a_sidebar_paste_without_curl_says_so() {
     app.paste_text("curl 'https://x");
     assert!(app.modals.is_empty());
     assert_eq!(app.toasts.last_message(), Some("unclosed quote"));
-    // A terminal's paste need not be the clipboard's: it says "paste".
-    app.paste_text("hello");
-    assert_eq!(app.toasts.last_message(), Some("the paste holds no curl command"));
+    // A terminal's paste need not be the clipboard's: it says "paste",
+    // an empty one too.
+    for text in ["hello", ""] {
+        app.toasts = Default::default();
+        app.paste_text(text);
+        assert_eq!(app.toasts.last_message(), Some("the paste holds no curl command"));
+    }
 }
 
 #[test]
