@@ -1040,6 +1040,7 @@ fn a_curl_the_request_already_matches_offers_no_undo() {
     let (msg, kind) = *app.toasts.entries().last().unwrap();
     assert_eq!(msg, "Nothing to replace: Kept already matches the curl");
     assert_eq!(*kind, crate::components::toast::ToastKind::Success);
+    assert!(!app.no_coalesce, "the event's capture clears the flag the no-op set");
     app.update(Action::Undo);
     assert_eq!(app.editor.url.text(), "https://x/old", "the one undo is the first replace's");
 }

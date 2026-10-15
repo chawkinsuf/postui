@@ -121,7 +121,9 @@ impl App {
             match self.curl_variables(&import, &Default::default()) {
                 Ok(v) => v,
                 Err(e) => {
-                    self.toasts.push(format!("could not save {name}: {e}"), ToastKind::Error);
+                    // In create_request_from's words, which said it before.
+                    let path = format!("{}/{}", self.active_space(), name.trim_start_matches('/'));
+                    self.toasts.push(format!("could not save {path}: {e}"), ToastKind::Error);
                     self.last_action_failed = true;
                     return true;
                 }
