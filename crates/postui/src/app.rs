@@ -2848,7 +2848,10 @@ impl App {
                             crate::config::JqTab::Cycle
                         }
                     }
-                    "indent" => ui.indent_tabs = value == "tabs",
+                    "indent" => {
+                        ui.indent =
+                            crate::config::IndentKind::from_spelling(&value).unwrap_or_default()
+                    }
                     other => debug_assert!(false, "no string setting named {other:?}"),
                 });
                 if landed {
@@ -10318,9 +10321,7 @@ impl App {
     /// out of a broken `config.toml`; every other row is a no-op while
     /// it will not parse.
     pub(crate) fn activate_settings_row(&mut self) -> bool {
-        use crate::components::settings::{
-            SettingsField, SettingsRow, indent_spelling, jq_tab_spelling,
-        };
+        use crate::components::settings::{SettingsField, SettingsRow, jq_tab_spelling};
         match self.settings.row() {
             SettingsRow::File(file) => {
                 let action = if self.settings.file_button == 0 {
@@ -10348,10 +10349,16 @@ impl App {
                     value: jq_tab_spelling(next).to_string(),
                 })
             }
-            SettingsRow::Setting(SettingsField::Indent) => self.update(Action::SetUiString {
-                key: SettingsField::Indent.key(),
-                value: indent_spelling(!self.ui_settings.indent_tabs).to_string(),
-            }),
+            SettingsRow::Setting(SettingsField::Indent) => {
+                let next = match self.ui_settings.indent {
+                    crate::config::IndentKind::Spaces => crate::config::IndentKind::Tabs,
+                    crate::config::IndentKind::Tabs => crate::config::IndentKind::Spaces,
+                };
+                self.update(Action::SetUiString {
+                    key: SettingsField::Indent.key(),
+                    value: next.spelling().to_string(),
+                })
+            }
             SettingsRow::Setting(field) => {
                 if let Some(on) = field.checkbox(&self.ui_settings) {
                     // The tick is what the user sees, so the tick is what
@@ -10467,8 +10474,7 @@ impl App {
                 crate::components::settings::jq_tab_spelling(self.ui_settings.jq_tab).to_string()
             }
             "keymap" => self.ui_settings.keymap.map_or(String::new(), |p| p.spelling().to_string()),
-            "indent" => crate::components::settings::indent_spelling(self.ui_settings.indent_tabs)
-                .to_string(),
+            "indent" => self.ui_settings.indent.spelling().to_string(),
             other => {
                 debug_assert!(false, "no string setting named {other:?}");
                 String::new()
@@ -11139,7 +11145,10 @@ impl App {
                                     // answer replaced.
                                     ui.keymap = crate::config::KeyProfile::from_spelling(v)
                                 }
-                                "indent" => ui.indent_tabs = v == "tabs",
+                                "indent" => {
+                                    ui.indent = crate::config::IndentKind::from_spelling(v)
+                                        .unwrap_or_default()
+                                }
                                 _ => {}
                             },
                             UiValue::Int(v) => match *key {

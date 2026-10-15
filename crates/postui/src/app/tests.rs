@@ -17438,7 +17438,7 @@ mod undo_tests {
         app.capture_undo();
         app.update(Action::Undo);
         assert_eq!(app.editor.body_text(), "{\"a\":{\"b\":1}}");
-        app.ui_settings.indent_tabs = true;
+        app.ui_settings.indent = crate::config::IndentKind::Tabs;
         app.update(Action::Render);
         assert_eq!(app.editor.body_indent(), Indent::Tabs, "the setting still reaches it");
     }
@@ -26894,11 +26894,12 @@ fn the_keyboard_profile_row_switches_profiles_and_undo_switches_back() {
 #[test]
 fn the_indent_settings_write_apply_and_undo() {
     use crate::components::settings::SettingsField;
+    use crate::config::IndentKind;
     let mut app = App::new_for_test();
     let dir = config_at_tempdir(&mut app);
     app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
-    click_hit(&mut app, Hit::SettingsIndent(true));
-    assert!(app.ui_settings.indent_tabs);
+    click_hit(&mut app, Hit::SettingsIndent(IndentKind::Tabs));
+    assert_eq!(app.ui_settings.indent, IndentKind::Tabs);
     app.settings.begin_edit(SettingsField::IndentWidth, "9");
     app.commit_settings_edit();
     assert_eq!(app.ui_settings.indent_width, 2, "9 is refused");
@@ -26912,7 +26913,7 @@ fn the_indent_settings_write_apply_and_undo() {
     app.update(Action::Undo);
     assert_eq!(app.ui_settings.indent_width, 2);
     app.update(Action::Undo);
-    assert!(!app.ui_settings.indent_tabs);
+    assert_eq!(app.ui_settings.indent, IndentKind::Spaces);
 }
 
 /// Spec R6, plan Review Focus 1: the configured default reaches the editor
@@ -26931,7 +26932,7 @@ fn the_configured_indent_reaches_fresh_and_detected_bodies() {
     assert_eq!(app.editor.body_indent(), Indent::Spaces(4), "a fresh scratch has it");
     app.editor.set_body_text("{\n  \"a\": 1\n}");
     app.editor.mark_saved();
-    app.ui_settings.indent_tabs = true;
+    app.ui_settings.indent = crate::config::IndentKind::Tabs;
     app.update(Action::Render);
     assert_eq!(app.editor.body_indent(), Indent::Spaces(2), "a detected body keeps its own");
 }
@@ -26944,7 +26945,7 @@ fn an_indent_setting_and_its_undo_reach_the_open_body() {
     let mut app = App::new_for_test();
     let _dir = config_at_tempdir(&mut app);
     app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
-    click_hit(&mut app, Hit::SettingsIndent(true));
+    click_hit(&mut app, Hit::SettingsIndent(crate::config::IndentKind::Tabs));
     assert_eq!(app.editor.body_indent(), Indent::Tabs, "an undetected body follows at once");
     app.update(Action::Undo);
     assert_eq!(app.editor.body_indent(), Indent::Spaces(2), "and follows the undo");

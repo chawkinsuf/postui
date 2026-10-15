@@ -384,8 +384,10 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::SettingsKeymap(crate::config::KeyProfile::Vim) => text("Use vim keys"),
         // Same as the jq Tab row: only the segments register hits.
         Hit::SettingsControl(SettingsField::Indent) => text("Choose how new indents are made"),
-        Hit::SettingsIndent(false) => text("Indent new levels with spaces"),
-        Hit::SettingsIndent(true) => text("Indent new levels with tabs"),
+        Hit::SettingsIndent(crate::config::IndentKind::Spaces) => {
+            text("Indent new levels with spaces")
+        }
+        Hit::SettingsIndent(crate::config::IndentKind::Tabs) => text("Indent new levels with tabs"),
         Hit::SettingsControl(SettingsField::IndentWidth) => {
             text("Edit the spaces in one indent level")
         }
@@ -967,8 +969,8 @@ mod tests {
             Hit::SettingsJqTab(crate::config::JqTab::Cycle),
             Hit::SettingsKeymap(crate::config::KeyProfile::Arrows),
             Hit::SettingsKeymap(crate::config::KeyProfile::Vim),
-            Hit::SettingsIndent(false),
-            Hit::SettingsIndent(true),
+            Hit::SettingsIndent(crate::config::IndentKind::Spaces),
+            Hit::SettingsIndent(crate::config::IndentKind::Tabs),
             Hit::SettingsControl(crate::components::settings::SettingsField::IndentWidth),
             Hit::KeymapChoice(crate::config::KeyProfile::Arrows),
             Hit::KeymapChoice(crate::config::KeyProfile::Vim),

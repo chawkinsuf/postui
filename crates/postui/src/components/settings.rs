@@ -19,7 +19,7 @@ use ratatui::text::Line;
 
 use crate::action::{Action, ConfigFile};
 use crate::components::line_input::LineInput;
-use crate::config::{JqTab, KeyProfile, UiSettings};
+use crate::config::{IndentKind, JqTab, KeyProfile, UiSettings};
 use crate::hit::{Hit, HitMap};
 use crate::keyroute::spell::{Key, Nav};
 use crate::paint::{
@@ -189,14 +189,9 @@ pub fn jq_tab_spelling(mode: JqTab) -> &'static str {
 const KEYMAP_SEGMENTS: [(&str, KeyProfile); 2] =
     [("Arrows", KeyProfile::Arrows), ("Vim", KeyProfile::Vim)];
 
-/// The two segments of the `indent` control, in painted order: `true` is
-/// tabs.
-const INDENT_SEGMENTS: [(&str, bool); 2] = [("Spaces", false), ("Tabs", true)];
-
-/// The `indent` value written for each segment.
-pub fn indent_spelling(tabs: bool) -> &'static str {
-    if tabs { "tabs" } else { "spaces" }
-}
+/// The two segments of the `indent` control, in painted order.
+const INDENT_SEGMENTS: [(&str, IndentKind); 2] =
+    [("Spaces", IndentKind::Spaces), ("Tabs", IndentKind::Tabs)];
 
 /// `indent_width`'s validator (spec 2026-10-15 R1): 1 to 8, rejected
 /// rather than clamped, like `osc52_limit`.
@@ -688,7 +683,7 @@ fn draw_setting_control(
             theme,
             slot,
             &INDENT_SEGMENTS,
-            ui.indent_tabs,
+            ui.indent,
             Hit::SettingsIndent,
             focused,
             editable,
@@ -990,8 +985,8 @@ mod tests {
                     }
                 }
                 SettingsRow::Setting(SettingsField::Indent) => {
-                    for (_, tabs) in INDENT_SEGMENTS {
-                        assert!(hits.rect_of(&Hit::SettingsIndent(tabs)).is_some());
+                    for (_, kind) in INDENT_SEGMENTS {
+                        assert!(hits.rect_of(&Hit::SettingsIndent(kind)).is_some());
                     }
                 }
                 SettingsRow::Setting(f) => assert!(

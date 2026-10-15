@@ -237,6 +237,30 @@ impl KeyProfile {
     }
 }
 
+/// What a body with no indentation of its own indents with (`indent` in
+/// `config.toml`, spec 2026-10-15 R1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IndentKind {
+    #[default]
+    Spaces,
+    Tabs,
+}
+
+impl IndentKind {
+    /// The `indent` value written for this kind.
+    pub fn spelling(self) -> &'static str {
+        match self {
+            IndentKind::Spaces => "spaces",
+            IndentKind::Tabs => "tabs",
+        }
+    }
+
+    /// The kind an `indent` value names, or `None` for anything else.
+    pub fn from_spelling(s: &str) -> Option<Self> {
+        [IndentKind::Spaces, IndentKind::Tabs].into_iter().find(|k| k.spelling() == s)
+    }
+}
+
 /// Mouse-first-GUI UI settings stored at the top level of `config.toml`:
 /// the tiered clipboard's optional external command and the OSC 52 size
 /// threshold.
@@ -276,9 +300,9 @@ pub struct UiSettings {
     /// Tab's job in the jq bar while a completion ghost shows; see
     /// [`JqTab`].
     pub jq_tab: JqTab,
-    /// Whether a body with no indentation of its own indents with tabs
-    /// (`indent = "tabs"`) rather than spaces (spec 2026-10-15 R1).
-    pub indent_tabs: bool,
+    /// What a body with no indentation of its own indents with (`indent`,
+    /// spec 2026-10-15 R1).
+    pub indent: IndentKind,
     /// The spaces in one level of a space indent, 1..=8 (`indent_width`).
     /// Kept under `indent = "tabs"` too: a tab still displays 2 wide.
     pub indent_width: usize,
@@ -300,7 +324,7 @@ impl Default for UiSettings {
             ai_cmd: "claude -p".into(),
             ai_confirmed: false,
             jq_tab: JqTab::Menu,
-            indent_tabs: false,
+            indent: IndentKind::Spaces,
             indent_width: 2,
             keymap: None,
         }
@@ -311,7 +335,10 @@ impl UiSettings {
     /// The indent a body with none of its own uses (spec R1, R3).
     pub fn default_indent(&self) -> crate::text::indent::Indent {
         use crate::text::indent::Indent;
-        if self.indent_tabs { Indent::Tabs } else { Indent::Spaces(self.indent_width) }
+        match self.indent {
+            IndentKind::Spaces => Indent::Spaces(self.indent_width),
+            IndentKind::Tabs => Indent::Tabs,
+        }
     }
 
     /// The key profile these settings run: the chosen one, or arrows while
@@ -417,10 +444,9 @@ impl UiSettings {
         }
         match value.get("indent") {
             None => {}
-            Some(v) => match v.as_str() {
-                Some("spaces") => settings.indent_tabs = false,
-                Some("tabs") => settings.indent_tabs = true,
-                _ => wrong_type("indent", "\"spaces\" or \"tabs\""),
+            Some(v) => match v.as_str().and_then(IndentKind::from_spelling) {
+                Some(kind) => settings.indent = kind,
+                None => wrong_type("indent", "\"spaces\" or \"tabs\""),
             },
         }
         match value.get("indent_width") {
@@ -577,7 +603,7 @@ pub fn config_seed() -> String {
         d.animations,
         d.hover_hints,
         d.curl_button,
-        if d.indent_tabs { "tabs" } else { "spaces" },
+        d.indent.spelling(),
         crate::text::indent::MAX_WIDTH,
         d.indent_width,
         d.ai_cmd,
@@ -1565,7 +1591,7 @@ mod tests {
     fn indent_keys_parse_and_combine() {
         let (ui, warnings) = UiSettings::parse("indent = \"tabs\"\nindent_width = 4\n");
         assert!(warnings.is_empty(), "{warnings:?}");
-        assert!(ui.indent_tabs);
+        assert_eq!(ui.indent, IndentKind::Tabs);
         assert_eq!(ui.indent_width, 4);
         assert_eq!(ui.default_indent(), crate::text::indent::Indent::Tabs);
         let (ui, _) = UiSettings::parse("indent = \"spaces\"\nindent_width = 4\n");
@@ -1586,7 +1612,7 @@ mod tests {
         ] {
             let (ui, warnings) = UiSettings::parse(text);
             assert_eq!(warnings.len(), 1, "{text}: {warnings:?}");
-            assert!(!ui.indent_tabs, "{text}");
+            assert_eq!(ui.indent, IndentKind::Spaces, "{text}");
             assert_eq!(ui.indent_width, 2, "{text}");
         }
     }

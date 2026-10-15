@@ -1421,15 +1421,15 @@ impl App {
                 self.settings.focus_field(SettingsField::Keymap);
                 self.update(Action::SetKeyProfile(profile))
             }
-            Hit::SettingsIndent(tabs) => {
-                use crate::components::settings::{SettingsField, indent_spelling};
+            Hit::SettingsIndent(kind) => {
+                use crate::components::settings::SettingsField;
                 if !self.commit_settings_edit_for_click() {
                     return true;
                 }
                 self.settings.focus_field(SettingsField::Indent);
                 self.update(Action::SetUiString {
                     key: SettingsField::Indent.key(),
-                    value: indent_spelling(tabs).to_string(),
+                    value: kind.spelling().to_string(),
                 })
             }
             Hit::SettingsFile { file, reset } => {

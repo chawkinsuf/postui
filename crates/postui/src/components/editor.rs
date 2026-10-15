@@ -6677,11 +6677,11 @@ mod body_click_tests {
         assert_eq!(e.body_text(), "  a b", "column 0 takes a whole level");
         assert_eq!(e.body.cursor, Index2::new(0, 2));
         e.handle_key(pkey(KeyCode::Tab));
-        assert_eq!(e.body_text(), "    a b", "the text's own 2 now, whatever the default");
+        assert_eq!(e.body_text(), "    a b", "column 2 to the stop at 4");
         let mut e = editor_with_body("ab");
         e.indent_default = Indent::Tabs;
         e.handle_key(pkey(KeyCode::Tab));
-        assert_eq!(e.body_text(), "\tab", "flat text: the default");
+        assert_eq!(e.body_text(), "\tab", "nothing saved: the default's tab");
     }
 
     fn enter_at(text: &str, row: usize, col: usize) -> Editor {
