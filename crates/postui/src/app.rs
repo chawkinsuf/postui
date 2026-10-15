@@ -5495,6 +5495,9 @@ impl App {
                 }
                 true
             }
+            // The sidebar takes no text: ctrl+v there is its Import curl
+            // button (spec 2026-10-15 curl import visibility V1).
+            Action::Paste if self.sidebar_has_paste() => self.import_curl_at_cursor(),
             Action::Paste => {
                 match self.clipboard.read() {
                     Ok(text) => {
@@ -9181,6 +9184,13 @@ impl App {
         }
     }
 
+    /// A paste reaches the sidebar: it has focus and no modal sits above
+    /// it. The sidebar takes no text, so a paste there is a curl import
+    /// (spec 2026-10-15 curl import visibility V1).
+    fn sidebar_has_paste(&self) -> bool {
+        self.modals.is_empty() && self.screen == Screen::Main && self.focus == PaneId::Sidebar
+    }
+
     /// Routes pasted text — read from the OS clipboard by `Action::Paste`
     /// (ctrl+v), or delivered whole by a terminal bracketed paste
     /// (`Event::Paste`: cmd+V on macOS, ctrl+shift+V on Linux) — to
@@ -9242,7 +9252,7 @@ impl App {
             }
             return self.session.response.paste_into_search(text) && self.update(Action::Render);
         }
-        if self.screen == Screen::Main && self.focus == PaneId::Sidebar {
+        if self.sidebar_has_paste() {
             return self.import_pasted_curl(text);
         }
         // Every other field is the `LineInput` `screen_field` names, through

@@ -14,30 +14,26 @@ impl App {
     /// copy; `true` when the answer changed.
     pub fn check_clipboard(&mut self) -> bool {
         let before = self.sidebar.curl_ready;
-        let text = self.clipboard.read().unwrap_or_default();
-        self.sidebar.curl_ready = postui_core::curl::parse(&text).is_ok();
+        let _ = self.read_clipboard_curl();
         self.sidebar.curl_ready != before
     }
 
-    /// The clipboard's curl commands; a clipboard that can't be read or
-    /// does not parse toasts why and gives `None`. The read is a check
-    /// too (V6): a stale Import curl button goes away.
-    fn clipboard_curl(&mut self) -> Option<CurlBatch> {
+    /// The clipboard's curl commands, read as every import reads them (a
+    /// clipboard that can't be read is empty, which holds none). Every
+    /// such read is a check: it records the answer for the button (V4–V6).
+    fn read_clipboard_curl(&mut self) -> Result<CurlBatch, postui_core::curl::CurlError> {
         let text = self.clipboard.read().unwrap_or_default();
-        let batch = self.curl_from_text(&text);
-        self.sidebar.curl_ready = batch.is_some();
-        batch
+        let parsed = postui_core::curl::parse(&text);
+        self.sidebar.curl_ready = parsed.is_ok();
+        parsed
     }
 
-    /// `text`'s curl commands, else a toast saying why there are none.
-    fn curl_from_text(&mut self, text: &str) -> Option<CurlBatch> {
-        match postui_core::curl::parse(text) {
-            Ok(b) => Some(b),
-            Err(e) => {
-                self.toasts.push(e.to_string(), ToastKind::Error);
-                None
-            }
-        }
+    /// The commands of `parsed`, else a toast saying why there are none.
+    fn curl_or_toast(
+        &mut self,
+        parsed: Result<CurlBatch, postui_core::curl::CurlError>,
+    ) -> Option<CurlBatch> {
+        parsed.map_err(|e| self.toasts.push(e.to_string(), ToastKind::Error)).ok()
     }
 
     /// `Action::ImportCurl` (spec §4.2 steps 1–2): clipboard → parse →
@@ -46,20 +42,29 @@ impl App {
         if self.refuse_without_project() {
             return true;
         }
-        if let Some(batch) = self.clipboard_curl() {
+        let parsed = self.read_clipboard_curl();
+        if let Some(batch) = self.curl_or_toast(parsed) {
             self.start_curl_import(batch, folder);
         }
         true
     }
 
-    /// A paste into the sidebar, which takes no text: its curl commands
-    /// import into the cursor row's folder (spec 2026-10-15 curl import
-    /// visibility V1, V2, V7).
+    /// The sidebar's own import (spec 2026-10-15 curl import visibility
+    /// V1, V2): the clipboard's curl, into the cursor row's folder. Its
+    /// Import curl button and a ctrl+v there.
+    pub(super) fn import_curl_at_cursor(&mut self) -> bool {
+        let folder = self.sidebar.import_folder(&self.active_space());
+        self.import_curl(folder)
+    }
+
+    /// A terminal's paste into the sidebar, which takes no text: the
+    /// pasted text's curl imports as the clipboard's would (V1, V7).
     pub(super) fn import_pasted_curl(&mut self, text: &str) -> bool {
         if self.refuse_without_project() {
             return true;
         }
-        if let Some(batch) = self.curl_from_text(text) {
+        let parsed = postui_core::curl::parse(text);
+        if let Some(batch) = self.curl_or_toast(parsed) {
             let folder = self.sidebar.import_folder(&self.active_space());
             self.start_curl_import(batch, folder);
         }
@@ -237,7 +242,8 @@ impl App {
         if self.refuse_without_project() {
             return true;
         }
-        let Some(batch) = self.clipboard_curl() else {
+        let parsed = self.read_clipboard_curl();
+        let Some(batch) = self.curl_or_toast(parsed) else {
             return true;
         };
         if batch.commands.len() > 1 {

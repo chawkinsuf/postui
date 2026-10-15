@@ -1464,10 +1464,7 @@ impl App {
                 self.update(action)
             }
             Hit::SidebarNewRequest => self.update(Action::PromptNewRequest),
-            Hit::SidebarImportCurl => {
-                let folder = self.sidebar.import_folder(&self.active_space());
-                self.update(Action::ImportCurl { folder })
-            }
+            Hit::SidebarImportCurl => self.import_curl_at_cursor(),
             Hit::SidebarFolderArrow(i) => {
                 self.update(Action::FocusPane(PaneId::Sidebar));
                 self.set_sidebar_selected(i);

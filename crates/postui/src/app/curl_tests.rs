@@ -1214,6 +1214,17 @@ fn a_stale_import_button_says_why_and_goes_away() {
 }
 
 #[test]
+fn a_sidebar_ctrl_v_is_the_import_button() {
+    let top = crate::components::sidebar::RowKey::Request("main/top".into());
+    let mut app = on_sidebar("curl https://x/users", &top);
+    app.check_clipboard();
+    app.clipboard.set_read_for_test("hello");
+    app.update(Action::Paste);
+    assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
+    assert!(!app.sidebar.curl_ready, "the stale button and chip go, as on a click");
+}
+
+#[test]
 fn the_sidebar_footer_advertises_the_paste_while_the_clipboard_holds_curl() {
     let top = crate::components::sidebar::RowKey::Request("main/top".into());
     let mut app = on_sidebar("curl https://x/users", &top);

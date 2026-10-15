@@ -47,8 +47,8 @@ says whether the answer changed (a redraw). It runs from:
   `Event::FocusGained`;
 - `copy_text_with_toast`, after a successful copy, as a read-back.
 
-`clipboard_curl` (every import or replace read) sets the flag from the
-parse it already does.
+Every import or replace read (`read_clipboard_curl`) sets the flag from
+the parse it already does.
 
 Cost: a 5 MB clipboard that is not curl parses in 42 ms in a release
 build (measured in review round 1); a clipboard of a few KB is well
@@ -59,18 +59,21 @@ as the jq bar's `ai_asking` is. `draw` splits the button row when it is
 set (V3, V8) and registers a new `Hit::SidebarImportCurl` on the right
 half.
 
-**Paste routing.** `paste_text` gains one arm, after the modal and
-response arms: `screen == Main && focus == Sidebar` →
-`self.import_curl_text(text, self.sidebar_import_folder())`. `import_curl`
+**Paste routing.** `sidebar_has_paste()` (no modal, Main, sidebar
+focused) decides both paths. A ctrl+v there is the button's click,
+`import_curl_at_cursor()`: the clipboard read, its error and the stale
+button's clearing are the click's (review round 2). A terminal's
+bracketed paste carries its own text, so `paste_text` gains one arm,
+after the modal and response arms: `import_pasted_curl(text)`. `import_curl`
 is split so that parsing works on given text:
 
-- `curl_from_text(text) -> Option<CurlBatch>` holds today's parse-and-toast.
-  `clipboard_curl` becomes read + `curl_from_text`, recording the result
-  as the check.
-- `import_curl(folder)` = `clipboard_curl` then `start_curl_import(batch,
-  folder)` (today's dirty gate and prompt). The paste arm,
-  `import_pasted_curl(text)`, calls `curl_from_text(text)` then
-  `start_curl_import`.
+- `read_clipboard_curl() -> Result<CurlBatch, CurlError>` is the one
+  clipboard read and parse; it records the answer as the check.
+  `check_clipboard`, import and replace all use it.
+- `curl_or_toast(parsed)` toasts a parse error.
+- `import_curl(folder)` = `read_clipboard_curl` then
+  `start_curl_import(batch, folder)` (today's dirty gate and prompt).
+  `import_pasted_curl(text)` parses `text` then calls `start_curl_import`.
 
 A test that pinned "a sidebar paste is unhandled"
 (`bracketed_paste_routes_to_the_focused_input`) now checks the method
