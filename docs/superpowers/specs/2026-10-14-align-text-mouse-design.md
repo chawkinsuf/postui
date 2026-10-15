@@ -1,6 +1,7 @@
 # The text mouse, aligned between arrows and vim: design
 
-Task #23, branch `align-text-mouse`. Status: **draft for your approval.**
+Task #23, branch `align-text-mouse`. Status: **approved** (`you`, 2026-10-14). §5's
+first call is "try it, but don't make it too hard to go back"; the second is accepted.
 It follows task #15 (`2026-10-14-vim-mouse-selection-design.md`, merged `731ec3f`).
 
 ## 1. The ask
@@ -68,12 +69,16 @@ motions in `word_nav` (ctrl+←/→) are not mouse and stay arrows'.
   you asked for, and each changed expectation is listed in the commit.
 - The engine and conformance suites pass unchanged after the move.
 
-## 5. Mine, for your veto
+## 5. Decisions on my calls
 
-- **A7's window:** text uses 0.5 s and the same cell, as vim already does. In arrows a
-  slight pointer move between the clicks now breaks a double click on text.
-- **A5 in the body:** a triple click selects the line's text without its line break
-  (the GUI convention); vim's V-LINE stays Vim's.
+- **A7's window, on trial** (`you`: "we can try 1 but don't make it too hard to go
+  back"). Text uses 0.5 s and the same cell, as vim already does, so in arrows a slight
+  pointer move between the clicks now breaks a double click on text. The rule is two
+  named constants in `count_clicks` (`TEXT_WINDOW`, `TEXT_SAME_CELL`). To go back for
+  arrows, its text presses take arrows' window and no cell check: a profile argument to
+  `count_clicks` and nothing else.
+- **A5 in the body, accepted** (`you`). A triple click selects the line's text without
+  its line break (the GUI convention); vim's V-LINE stays Vim's.
 
 ## 6. Plan
 
