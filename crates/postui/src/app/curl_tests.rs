@@ -1108,9 +1108,19 @@ fn a_sidebar_paste_imports_into_the_cursor_rows_folder() {
 #[test]
 fn a_bracketed_paste_into_the_sidebar_imports_the_pasted_text() {
     let top = crate::components::sidebar::RowKey::Request("main/top".into());
-    let mut app = on_sidebar("not curl", &top);
-    assert!(app.paste_text("curl https://x/users"));
-    assert_eq!(prompt(&app).1, "GET users");
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = on_sidebar("not curl", &top);
+        app.use_profile(profile);
+        draw(&mut app);
+        // As the event loop runs an `Event::Paste`.
+        assert!(app.paste_text("curl https://x/users"));
+        app.vim_catch_up();
+        draw(&mut app);
+        assert_eq!(prompt(&app).1, "GET users", "{profile:?}");
+        if profile == KeyProfile::Vim {
+            assert_eq!(app.mode_indicator(), Some("INSERT"), "the prompt opens in Insert");
+        }
+    }
 }
 
 #[test]

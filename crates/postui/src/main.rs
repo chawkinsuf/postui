@@ -280,6 +280,9 @@ async fn run(
                             // text in one event, routed to the live caret.
                             Event::Paste(text) => {
                                 redraw |= app.paste_text(&text);
+                                // A paste into the sidebar imports, which
+                                // can raise a prompt.
+                                app.vim_catch_up();
                             }
                             _ => {}
                         }

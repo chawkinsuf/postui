@@ -362,7 +362,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::SettingsControl(SettingsField::CurlButton) => text(if ctx.on {
             "Stop watching the clipboard for curl"
         } else {
-            "Offer Import curl when it holds curl"
+            "Watch the clipboard for curl"
         }),
         Hit::SettingsControl(SettingsField::AiCmd) => text("Edit the command the AI filter runs"),
         Hit::SettingsControl(SettingsField::ClipboardCmd) => {
