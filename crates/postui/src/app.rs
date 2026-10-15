@@ -1068,7 +1068,6 @@ impl App {
     /// wired into startup and forgotten on reload (or the reverse).
     fn finish_ui_settings(&mut self, ui_settings: crate::config::UiSettings) {
         self.session.response.set_jq_tab(ui_settings.jq_tab);
-        self.editor.indent_default = ui_settings.default_indent();
         self.ui_settings = ui_settings;
     }
 

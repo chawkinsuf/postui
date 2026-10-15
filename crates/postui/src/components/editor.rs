@@ -733,7 +733,7 @@ impl Editor {
     /// amendment). Read from the text each time, so nothing can go stale:
     /// an undo gives back exactly the indent it had.
     pub fn body_indent(&self) -> Indent {
-        crate::text::indent::detect(&self.body.lines).unwrap_or(self.indent_default)
+        crate::text::indent::effective(&self.body.lines, self.indent_default)
     }
 
     /// Whether the body parses as JSON. An empty body is vacuously valid:

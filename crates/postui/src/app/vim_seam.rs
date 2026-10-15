@@ -112,7 +112,9 @@ impl App {
     /// or no buffer when that field is not open. A dialog's field lends the
     /// dialog engine and the top dialog's input (plan M3b Deviation 1).
     pub(crate) fn session_parts(&mut self, id: FieldId) -> (&mut Glue, Option<FieldBuf<'_>>) {
-        self.vim.glue.set_body_shiftwidth(body_shiftwidth(self.editor.body_indent()));
+        // The body's 'shiftwidth' follows its indent (spec 2026-10-15 R11):
+        // the glue reads the text itself, and needs only the default.
+        self.vim.glue.set_body_default(self.editor.indent_default);
         match id {
             FieldId::Body => (
                 &mut self.vim.glue,
@@ -151,7 +153,6 @@ impl App {
     /// The glue, the body and `to`'s buffer at once, for a carry out of the
     /// body (amendment C3).
     fn body_and(&mut self, to: FieldId) -> (&mut Glue, FieldBuf<'_>, Option<FieldBuf<'_>>) {
-        self.vim.glue.set_body_shiftwidth(body_shiftwidth(self.editor.body_indent()));
         let body = FieldBuf::Body(&mut self.editor.body, &mut self.editor.body_visual);
         let to = line_buf(
             to,
@@ -917,16 +918,6 @@ impl App {
                     )
             }
         }
-    }
-}
-
-/// The body's 'shiftwidth' (spec 2026-10-15 editor indent R11): a space
-/// body's width; a tab body keeps the pinned step until `noexpandtab`
-/// lands (#26).
-fn body_shiftwidth(indent: crate::text::indent::Indent) -> usize {
-    match indent {
-        crate::text::indent::Indent::Spaces(n) => n,
-        crate::text::indent::Indent::Tabs => crate::vim::engine::settings::SHIFTWIDTH,
     }
 }
 

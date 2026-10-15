@@ -50,6 +50,8 @@ Review round 1 found that the remembered `body_detected` broke "undo restores ex
 - R6 is unchanged in effect: a body whose text has no indented lines follows a Settings change at once; one with indented lines keeps its own.
 - Cost (mine, accepted with the choice): one scan of the body's lines each time the indent is asked for (arrows Tab/shift+Tab, Format, and each key the vim seam lends the body for). It reads the edtui lines in place, with no copy of the text.
 
+Round 2 (mine, following the round-1 choice): the seam hands the glue only the configured default, and the glue works out the body's `shiftwidth` from the body lines it is lent, inside each body target (`text::indent::effective`, the rule the editor uses too). So the scan runs only for body calls, not for every field's, and nothing derived from the text is pushed across the seam. A carry sets no width: it never shifts, and the next key goes through a body target.
+
 Also from round 1 (you): dropping an unused auto-indent when the caret leaves the line (Vim's behaviour, VS Code's `trimAutoWhitespace`) is a follow-up task, not #8.
 
 ## 4. Design

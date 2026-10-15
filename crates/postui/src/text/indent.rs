@@ -68,6 +68,12 @@ pub fn detect(text: &(impl Lines + ?Sized)) -> Option<Indent> {
     }
 }
 
+/// A body's effective indent (spec R3): what its text uses now, else
+/// `default`. The one rule the arrows body, Format and the vim glue share.
+pub fn effective(text: &(impl Lines + ?Sized), default: Indent) -> Indent {
+    detect(text).unwrap_or(default)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
