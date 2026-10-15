@@ -40,11 +40,15 @@ pub struct CurlVariables {
 }
 
 /// A replace decided before the dirty gate (replace-with-curl U7): the
-/// one command and its sorted variables, so nothing past the gate can
-/// refuse what the gate's answer already did.
+/// paste's one command and its sorted variables, so nothing past the gate
+/// can refuse what the gate's answer already did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CurlReplace {
-    pub batch: CurlBatch,
+    pub import: CurlImport,
+    /// `CurlBatch::skipped_lines`.
+    pub skipped_lines: usize,
+    /// `CurlBatch::values_dropped`.
+    pub values_dropped: bool,
     pub vars: CurlVariables,
 }
 

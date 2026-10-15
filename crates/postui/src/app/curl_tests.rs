@@ -1031,3 +1031,25 @@ fn an_enabled_request_variable_needs_no_environment_read() {
     replace(&mut app, None);
     assert_eq!(app.editor.url.text(), "https://x/new", "v is the request's own");
 }
+
+#[test]
+fn a_curl_the_request_already_matches_offers_no_undo() {
+    let mut app = kept_app("curl https://x/new");
+    replace(&mut app, None);
+    replace(&mut app, None);
+    let (msg, kind) = *app.toasts.entries().last().unwrap();
+    assert_eq!(msg, "Nothing to replace: Kept already matches the curl");
+    assert_eq!(*kind, crate::components::toast::ToastKind::Success);
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://x/old", "the one undo is the first replace's");
+}
+
+#[test]
+fn a_variable_declared_outside_the_app_is_kept() {
+    let mut app = kept_app("export T=1\ncurl -H \"A: $T\" https://x/new");
+    std::fs::write(app.proj().root().join("variables.toml"), "[T]\ndefault = \"1\"\n").unwrap();
+    replace(&mut app, None);
+    assert!(!app.proj().variables().vars["T"].secret, "not declared over the file's");
+    let msg = app.toasts.last_message().unwrap();
+    assert!(msg.contains("; kept the existing T"), "{msg}");
+}

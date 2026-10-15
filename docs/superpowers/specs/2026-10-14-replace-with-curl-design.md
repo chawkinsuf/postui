@@ -44,7 +44,7 @@ Two facts shape the design:
 | U8 | Replacing the open request needs no gate: its unsaved edits are replaced in place and undo brings them back (U5). No confirm (delete-never-confirms: undo is the net). | mine |
 | U9 | `# @name` (D18) is ignored: replace never renames. | mine |
 | U10 | A curl variable named like one of the request's own **enabled** variables counts as kept: the request variable wins at send, so nothing is declared over it. A disabled one sends nothing, so the name is sorted as if it were absent (first review round). | mine |
-| U11 | Toast: `Replaced {name} from curl`, then import's summary parts (§4.3: ignored flags, converted, saved, declared with no value, kept, reserved, values dropped, skipped lines) after `; `, then the undo hint (` — ^Z undoes`). A scratch is named `the unsaved request`. Its kind is the summary's (warning or success); success when the summary is empty. | mine |
+| U11 | Toast: `Replaced {name} from curl`, then import's summary parts (§4.3: ignored flags, converted, saved, declared with no value, kept, reserved, values dropped, skipped lines) after `; `, then the undo hint (` — ^Z undoes`). A scratch is named `the unsaved request`. Its kind is the summary's (warning or success); success when the summary is empty. A curl the request already matches reads `Nothing to replace: {name} already matches the curl`, with the undo hint only when it declared something (third review round). | mine |
 | U12 | Errors as import: unreadable clipboard, `CurlError`, no project, and a refused declaration (an unreadable environment file) each toast and change nothing. | mine |
 
 ## 3. Design
@@ -64,7 +64,9 @@ declare body inside its one transaction. Nothing else in core changes.
   the `CurlReplace` (the batch and its sorted variables) read before the
   gate.
 - `curl_flow.rs`: `replace_with_curl`. It reads and parses the clipboard
-  (`clipboard_curl`, shared with import); refuses U4; sorts the variables
+  (`clipboard_curl`, shared with import); refuses U4; commits an open
+  cell, flushes an open field and reloads the project files, as Copy as
+  curl does (third review round); sorts the variables
   against the target's own variables (U10); then gates, opens, or applies
   (U7). `apply_curl_replace`:
   1. flushes the open field session, then reads the fields it keeps.

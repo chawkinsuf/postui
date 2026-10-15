@@ -214,6 +214,9 @@ impl App {
         self.commit_table_edit();
         self.capture_undo();
         self.flush_field_session();
+        // The variables are sorted against the files as they are now, as
+        // Send and Copy as curl read them (plan P6).
+        self.apply(Action::ReloadProjectFiles);
         let other = slug.filter(|s| self.editor.slug.as_deref() != Some(s.as_str()));
         // The variables the request will have once open: its file's, for a
         // row that is not open yet.
@@ -236,7 +239,9 @@ impl App {
                 return true;
             }
         };
-        let replace = CurlReplace { batch, vars };
+        let CurlBatch { commands, skipped_lines, values_dropped } = batch;
+        let import = commands.into_iter().next().expect("checked: one command");
+        let replace = CurlReplace { import, skipped_lines, values_dropped, vars };
         match other {
             Some(slug) if self.editor_holds_unsaved() => {
                 let replace = Box::new(replace);
@@ -264,9 +269,12 @@ impl App {
     /// are: the editor change is then the next `capture_undo`'s own step,
     /// so undoing it never reloads the request over unsaved work.
     fn apply_curl_replace(&mut self, replace: CurlReplace) {
-        let CurlReplace { batch, vars: CurlVariables { secrets, kept, reserved } } = replace;
-        let CurlBatch { commands, skipped_lines, values_dropped } = batch;
-        let import = commands.into_iter().next().expect("replace takes one command");
+        let CurlReplace {
+            import,
+            skipped_lines,
+            values_dropped,
+            vars: CurlVariables { secrets, kept, reserved },
+        } = replace;
         let current = self.editor.current_request();
         let env = self.project().and_then(|p| p.active_env().map(|e| p.env_name(e)));
         if !secrets.is_empty() {
@@ -286,19 +294,23 @@ impl App {
             }
         }
         let replaced = postui_core::model::HttpRequest {
-            name: current.name,
-            jq: current.jq,
+            name: current.name.clone(),
+            jq: current.jq.clone(),
             jq_enabled: current.jq_enabled,
-            variables: current.variables,
+            variables: current.variables.clone(),
             ..import.request
         };
         self.no_coalesce = true;
         self.editor.apply_snapshot(&replaced);
         self.sync_active_tab();
+        let changed = self.editor.current_request() != current;
         let name = match self.editor.slug.clone() {
             Some(slug) => self.request_display(&slug),
             None => "the unsaved request".to_string(),
         };
+        // The hint only when there is a step to undo: a curl the request
+        // already matches changes nothing in the editor.
+        let undoable = changed || !secrets.is_empty();
         let saved_any = secrets.iter().any(|(_, v)| v.is_some());
         let created = CreatedImport {
             name: name.clone(),
@@ -314,11 +326,14 @@ impl App {
             secrets_env: env.as_deref().filter(|_| saved_any),
         };
         let (parts, kind) = crate::curl_import::summary_parts(&[created], false, &pasted);
-        let mut text = format!("Replaced {name} from curl");
-        for part in parts {
-            text.push_str(&format!("; {part}"));
-        }
-        self.toasts.push(format!("{text}{}", self.undo_hint()), kind);
+        let head = if changed {
+            format!("Replaced {name} from curl")
+        } else {
+            format!("Nothing to replace: {name} already matches the curl")
+        };
+        let text = std::iter::once(head).chain(parts).collect::<Vec<_>>().join("; ");
+        let hint = if undoable { self.undo_hint() } else { String::new() };
+        self.toasts.push(format!("{text}{hint}"), kind);
     }
 
     /// The next command's prompt, or, past the last, the summary toast
