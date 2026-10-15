@@ -43,7 +43,8 @@ pub(crate) fn find_match<B: Lines + ?Sized>(
 ) -> Option<Pos> {
     let last = buf.line_count() - 1;
     let mut row = from.row;
-    let mut line: Vec<char> = buf.line(row).into_owned();
+    // Borrowed where the text allows: an unmatched bracket walks every line.
+    let mut line = buf.line(row);
     let mut col = from.col.min(line.len());
     let (initc, findc, backwards, match_escaped) = match how {
         MatchFrom::Percent => {
@@ -76,7 +77,7 @@ pub(crate) fn find_match<B: Lines + ?Sized>(
                     return None;
                 }
                 row -= 1;
-                line = buf.line(row).into_owned();
+                line = buf.line(row);
                 col = line.len();
                 do_quotes = -1;
             } else {
@@ -87,7 +88,7 @@ pub(crate) fn find_match<B: Lines + ?Sized>(
                 return None;
             }
             row += 1;
-            line = buf.line(row).into_owned();
+            line = buf.line(row);
             col = 0;
             do_quotes = -1;
         } else {

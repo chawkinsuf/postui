@@ -1019,11 +1019,11 @@ impl App {
         }
         if field == FieldId::Body {
             self.editor.handle_mouse(m);
-            match clicks.text {
-                2 => self.editor.body_select_word_at(m.column, m.row),
-                3 => self.editor.body_select_line_at(m.column, m.row),
-                _ => false,
-            };
+            if clicks.text == 2 {
+                self.editor.body_select_word_at(m.column, m.row);
+            } else if clicks.text == 3 {
+                self.editor.body_select_line_at(m.column, m.row);
+            }
             return;
         }
         let (Some(at), Some(input)) = (at, self.field_input_mut(field)) else { return };

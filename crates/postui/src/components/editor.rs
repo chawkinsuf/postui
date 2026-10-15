@@ -973,8 +973,9 @@ impl Editor {
     /// taking its last word; on a bracket (or blanks before one), the block
     /// to its match, across lines. Plants the clicked word as the anchor a
     /// following drag extends from, whole words at a time. An empty line
-    /// (or below the buffer) only places the caret, which the preceding
-    /// [`Self::handle_mouse`] already did.
+    /// only places the caret, which the preceding [`Self::handle_mouse`]
+    /// already did; a click below the buffer counts as on the last line's
+    /// end, as a single click does.
     pub fn body_select_word_at(&mut self, x: u16, y: u16) -> bool {
         if self.active_tab != EditorTab::Body {
             return false;
@@ -987,14 +988,26 @@ impl Editor {
             return false;
         };
         let cell = |p: crate::text::Pos| edtui::Index2::new(p.row, p.col);
-        let (a, b) = (cell(click.anchor), cell(click.caret));
-        self.set_body_selection_cells(a, b);
-        // The caret rides the far end: after it, or on it when it is first.
-        self.body.cursor =
-            if click.caret >= click.anchor { edtui::Index2::new(b.row, b.col + 1) } else { b };
+        self.select_body_span(cell(click.anchor), cell(click.caret));
         self.body_word_anchor = Some((cell(click.word.0), cell(click.word.1)));
         self.body_line_anchor = None;
         true
+    }
+
+    /// A mouse gesture's selection, the cells `fixed` to `moving` inclusive
+    /// (either order), set whole: the caret rides the moving end (after it,
+    /// or on it when it comes first), and the anchor a shift motion extends
+    /// from sits on the fixed end's outer edge.
+    fn select_body_span(&mut self, fixed: edtui::Index2, moving: edtui::Index2) {
+        self.set_body_selection_cells(fixed, moving);
+        // The edge after a cell, which on an empty row is its only edge.
+        let after = |e: &Self, i: edtui::Index2| {
+            let len = e.body.lines.len_col(i.row).unwrap_or(0);
+            edtui::Index2::new(i.row, (i.col + 1).min(len))
+        };
+        let forward = (moving.row, moving.col) >= (fixed.row, fixed.col);
+        self.body.cursor = if forward { after(self, moving) } else { moving };
+        self.body_sel_anchor = Some(if forward { fixed } else { after(self, fixed) });
     }
 
     /// Triple-click line select: the clicked line's text without its break
@@ -1019,17 +1032,17 @@ impl Editor {
     fn select_body_lines(&mut self, from: usize, to: usize) {
         let (top, bottom) = (from.min(to), from.max(to));
         let end = self.body.lines.len_col(bottom).unwrap_or(0);
+        let (first, last) =
+            (edtui::Index2::new(top, 0), edtui::Index2::new(bottom, end.saturating_sub(1)));
         if top == bottom && end == 0 {
             self.body.selection = None;
+            self.body.cursor = first;
+            self.body_sel_anchor = Some(first);
+        } else if to >= from {
+            self.select_body_span(first, last);
         } else {
-            self.set_body_selection_cells(
-                edtui::Index2::new(top, 0),
-                edtui::Index2::new(bottom, end.saturating_sub(1)),
-            );
+            self.select_body_span(last, first);
         }
-        self.body.cursor =
-            if to >= from { edtui::Index2::new(bottom, end) } else { edtui::Index2::new(top, 0) };
-        self.body.mode = EditorMode::Insert;
     }
 
     /// The char at screen cell `(x, y)` in the body, as `(row, col)`: a
@@ -1090,18 +1103,12 @@ impl Editor {
             let head = self.clamp_to_cell(cursor);
             let (hs, he) = self.body_word_cells(head).unwrap_or((head, head));
             let key = |i: edtui::Index2| (i.row, i.col);
-            let (a, b) = if key(head) > key(we) {
-                (ws, he)
-            } else if key(head) < key(ws) {
-                (hs, we)
-            } else {
-                (ws, we)
-            };
-            self.set_body_selection_cells(a, b);
             // The caret rides the moving end, like a plain sweep's does.
-            self.body.cursor =
-                if key(head) < key(ws) { a } else { edtui::Index2::new(b.row, b.col + 1) };
-            self.body.mode = EditorMode::Insert;
+            if key(head) < key(ws) {
+                self.select_body_span(we, hs);
+            } else {
+                self.select_body_span(ws, if key(head) > key(we) { he } else { we });
+            }
             return true;
         }
         let Some(anchor) = self.body_sel_anchor else {

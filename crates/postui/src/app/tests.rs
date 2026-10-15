@@ -8529,6 +8529,49 @@ fn an_arrows_triple_click_drag_onto_an_empty_row_leaves_its_break_out() {
     }
     app.handle_mouse(dragged(area.x + 2, area.y + 1));
     assert_eq!(app.editor.body_selected_text().as_deref(), Some("abc\n"));
+    app.handle_mouse(left_up(area.x + 2, area.y + 1));
+    app.handle_key(plain('X'));
+    assert_eq!(app.editor.body_text(), "X\nxyz", "typing replaces exactly what was selected");
+}
+
+/// Task #23 review round 3: shift+arrow after a triple click or a bracket
+/// double click in the body keeps the selection's far end fixed, as a
+/// one-line field does.
+#[test]
+fn shift_after_a_body_line_or_block_select_keeps_its_far_end() {
+    let shift = |code| KeyEvent::new(code, KeyModifiers::SHIFT);
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("hello world");
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    // 1 line -> a 2-cell gutter; content column 0 is at area.x + 2.
+    for _ in 0..3 {
+        app.handle_mouse(left_down(area.x + 2 + 5, area.y));
+    }
+    app.handle_key(shift(KeyCode::Left));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("hello worl"));
+
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("a {b c} d");
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    app.handle_mouse(left_down(area.x + 2 + 6, area.y));
+    app.handle_mouse(left_down(area.x + 2 + 6, area.y));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("{b c}"));
+    app.handle_key(shift(KeyCode::Right));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("b c}"));
+}
+
+/// Task #23 review round 3: a double click on blanks before a closing
+/// bracket takes the whole block, the bracket the blanks lead to included.
+#[test]
+fn an_arrows_double_click_on_blanks_before_a_closer_takes_the_block() {
+    let (mut app, area) = arrows_url("{a  }");
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("{a  }"));
 }
 
 /// Task #23 (spec A7): presses on two cells of the same field are two

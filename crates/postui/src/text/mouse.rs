@@ -77,8 +77,9 @@ pub(crate) fn block_end<B: Lines + ?Sized>(buf: &B, at: Pos, vim_reach: bool) ->
 
 /// What an arrows double click at `at` selects (spec 2026-10-14 A1–A4), in
 /// inclusive positions with the caret the moving end: a bracket's block,
-/// from the press to its match, else the shared word. `word` is the clicked
-/// word either way, which a drag after it grows from.
+/// from the press (blanks before an opener included) or from a closer to
+/// its match, else the shared word. `word` is the clicked word either way,
+/// which a drag after it grows from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DoubleClick {
     pub(crate) anchor: Pos,
@@ -95,6 +96,12 @@ pub(crate) fn double_click<B: Lines + ?Sized>(buf: &B, at: Pos) -> Option<Double
     // `word_at` found a char, so the line has a last one to clamp onto.
     let at = Pos::new(at.row, at.col.min(line.len() - 1));
     Some(match block_end(buf, at, false) {
+        // From blanks before a closer, the closer is the fixed end, so the
+        // block comes whole (Vim's stops at the press, the closer left out).
+        Some(end) if end < at => {
+            let closer = (at.col..line.len()).find(|&c| !white(line[c])).unwrap_or(at.col);
+            DoubleClick { anchor: Pos::new(at.row, closer), caret: end, word }
+        }
         Some(end) => DoubleClick { anchor: at, caret: end, word },
         None => DoubleClick { anchor: word.0, caret: word.1, word },
     })
