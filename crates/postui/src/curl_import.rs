@@ -28,6 +28,43 @@ pub struct CreatedImport {
     pub reserved: Vec<String>,
 }
 
+/// A curl command's variables, sorted (spec curl R7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurlVariables {
+    /// To declare as secrets, each with the paste's value if it has one.
+    pub secrets: Vec<(String, Option<String>)>,
+    /// Names already there, and whether their value is the paste's.
+    pub kept: Vec<(String, bool)>,
+    /// Names no variable may have.
+    pub reserved: Vec<String>,
+}
+
+/// A replace decided before the dirty gate (replace-with-curl U7): the
+/// paste's one command and its sorted variables, so nothing past the gate
+/// can refuse what the gate's answer already did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurlReplace {
+    pub import: CurlImport,
+    pub notes: PasteNotes,
+    pub vars: CurlVariables,
+}
+
+/// What a paste says beside its commands (`CurlBatch`'s other fields),
+/// for the summary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasteNotes {
+    pub skipped_lines: usize,
+    pub values_dropped: bool,
+}
+
+impl PasteNotes {
+    /// `batch`'s commands, and its notes.
+    pub fn split(batch: CurlBatch) -> (Vec<CurlImport>, Self) {
+        let CurlBatch { commands, skipped_lines, values_dropped } = batch;
+        (commands, Self { skipped_lines, values_dropped })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CurlImportRun {
     /// The folder slug the requests go into (`main/api`); `None` is the
@@ -37,9 +74,7 @@ pub struct CurlImportRun {
     /// The command the open prompt is for.
     pub index: usize,
     pub created: Vec<CreatedImport>,
-    pub skipped_lines: usize,
-    /// `CurlBatch::values_dropped`.
-    pub values_dropped: bool,
+    pub notes: PasteNotes,
     /// The environment the secrets went into, as its display name; `None`
     /// when none was active.
     pub secrets_env: Option<String>,
@@ -47,15 +82,8 @@ pub struct CurlImportRun {
 
 impl CurlImportRun {
     pub fn new(batch: CurlBatch, folder: Option<String>) -> Self {
-        Self {
-            folder,
-            commands: batch.commands,
-            index: 0,
-            created: Vec::new(),
-            skipped_lines: batch.skipped_lines,
-            values_dropped: batch.values_dropped,
-            secrets_env: None,
-        }
+        let (commands, notes) = PasteNotes::split(batch);
+        Self { folder, commands, index: 0, created: Vec::new(), notes, secrets_env: None }
     }
 
     pub fn current(&self) -> &CurlImport {
@@ -81,102 +109,115 @@ impl CurlImportRun {
         if total > 1 || self.created.len() < total {
             parts.push(format!("imported {} of {total}", self.created.len()));
         }
-        let ignored: Vec<String> = self
-            .created
-            .iter()
-            .filter(|c| !c.ignored.is_empty())
-            .map(|c| {
-                let flags = c.ignored.join(", ");
-                if total > 1 { format!("{}: {flags}", c.name) } else { flags }
-            })
-            .collect();
-        if !ignored.is_empty() {
-            parts.push(format!("ignored: {}", ignored.join("; ")));
-        }
-        let converted = unique(self.created.iter().flat_map(|c| &c.converted));
-        if !converted.is_empty() {
-            let list: Vec<String> =
-                converted.iter().map(|n| format!("${n} \u{2192} {{{{{n}}}}}")).collect();
-            parts.push(format!("converted {}", list.join(", ")));
-        }
-        let secrets = || self.created.iter().flat_map(|c| &c.secrets);
-        let saved = unique(secrets().filter(|(_, v)| v.is_some()).map(|(n, _)| n));
-        if !saved.is_empty() {
-            let what = if saved.len() == 1 { "a secret" } else { "secrets" };
-            let mut part = format!("saved {} as {what}", saved.join(", "));
-            if let Some(env) = &self.secrets_env {
-                part.push_str(&format!(" in {env}"));
-            }
-            parts.push(part);
-        }
-        // Send refuses these until someone fills them in.
-        let empty = unique(secrets().filter(|(_, v)| v.is_none()).map(|(n, _)| n));
-        if !empty.is_empty() {
-            let what = if empty.len() == 1 { "a secret" } else { "secrets" };
-            parts.push(format!("declared {} as {what} with no value", empty.join(", ")));
-        }
-        // A name an earlier command of this run saved is no news when the
-        // later command gave it the same value. Given another, or when the
-        // project's own value is not the paste's, the request sends
-        // something other than what the curl sent.
-        let by_this_run = unique(secrets().map(|(n, _)| n));
-        let all_kept: Vec<&(String, bool)> = self.created.iter().flat_map(|c| &c.kept).collect();
-        let kept_where = |same: bool, by_run: bool| {
-            unique(
-                all_kept
-                    .iter()
-                    .filter(|(n, s)| *s == same && by_this_run.contains(&n.as_str()) == by_run)
-                    .map(|(n, _)| n),
-            )
-        };
-        let differs = kept_where(false, false);
-        let mut kept = kept_where(true, false);
-        kept.retain(|n| !differs.contains(n));
-        if !kept.is_empty() {
-            parts.push(format!("kept the existing {}", kept.join(", ")));
-        }
-        if !differs.is_empty() {
-            parts.push(format!("kept the existing {}, not the paste's value", differs.join(", ")));
-        }
-        let (unsaved, changed): (Vec<&str>, Vec<&str>) =
-            kept_where(false, true).into_iter().partition(|n| empty.contains(n));
-        if !changed.is_empty() {
-            parts.push(format!("kept the first value of {}", changed.join(", ")));
-        }
-        // An earlier command declared it with no value: the later value
-        // went nowhere.
-        if !unsaved.is_empty() {
-            parts.push(format!("did not save a later value of {}", unsaved.join(", ")));
-        }
-        let reserved = unique(self.created.iter().flat_map(|c| &c.reserved));
-        if !reserved.is_empty() {
-            let why = if reserved.len() == 1 { "a reserved name" } else { "reserved names" };
-            parts.push(format!("did not save {} ({why})", reserved.join(", ")));
-        }
-        if self.values_dropped {
-            parts.push("saved no values: the paste has other shell lines".to_string());
-        }
-        if self.skipped_lines > 0 {
-            let s = if self.skipped_lines == 1 { "" } else { "s" };
-            parts.push(format!("skipped {} non-curl line{s}", self.skipped_lines));
-        }
-        if parts.is_empty() {
-            return None;
-        }
-        let kind = if !ignored.is_empty()
-            || !empty.is_empty()
-            || !differs.is_empty()
-            || !changed.is_empty()
-            || !unsaved.is_empty()
-            || !reserved.is_empty()
-            || self.skipped_lines > 0
-        {
-            ToastKind::Warning
-        } else {
-            ToastKind::Success
-        };
-        Some((parts.join("; "), kind))
+        let env = self.secrets_env.as_deref();
+        let (rest, kind) = summary_parts(&self.created, total > 1, &self.notes, env);
+        parts.extend(rest);
+        (!parts.is_empty()).then(|| (parts.join("; "), kind))
     }
+}
+
+/// The summary's parts after any count (spec §4.3), for an import's
+/// requests or a replace's one (`named`: prefix each ignored list with its
+/// request's name), and the toast's kind. `secrets_env` is the
+/// environment the secrets went into, as its display name.
+pub fn summary_parts(
+    created: &[CreatedImport],
+    named: bool,
+    notes: &PasteNotes,
+    secrets_env: Option<&str>,
+) -> (Vec<String>, ToastKind) {
+    let mut parts = Vec::new();
+    let ignored: Vec<String> = created
+        .iter()
+        .filter(|c| !c.ignored.is_empty())
+        .map(|c| {
+            let flags = c.ignored.join(", ");
+            if named { format!("{}: {flags}", c.name) } else { flags }
+        })
+        .collect();
+    if !ignored.is_empty() {
+        parts.push(format!("ignored: {}", ignored.join("; ")));
+    }
+    let converted = unique(created.iter().flat_map(|c| &c.converted));
+    if !converted.is_empty() {
+        let list: Vec<String> =
+            converted.iter().map(|n| format!("${n} \u{2192} {{{{{n}}}}}")).collect();
+        parts.push(format!("converted {}", list.join(", ")));
+    }
+    let secrets = || created.iter().flat_map(|c| &c.secrets);
+    let saved = unique(secrets().filter(|(_, v)| v.is_some()).map(|(n, _)| n));
+    if !saved.is_empty() {
+        let what = if saved.len() == 1 { "a secret" } else { "secrets" };
+        let mut part = format!("saved {} as {what}", saved.join(", "));
+        if let Some(env) = secrets_env {
+            part.push_str(&format!(" in {env}"));
+        }
+        parts.push(part);
+    }
+    // Send refuses these until someone fills them in.
+    let empty = unique(secrets().filter(|(_, v)| v.is_none()).map(|(n, _)| n));
+    if !empty.is_empty() {
+        let what = if empty.len() == 1 { "a secret" } else { "secrets" };
+        parts.push(format!("declared {} as {what} with no value", empty.join(", ")));
+    }
+    // A name an earlier command of this run saved is no news when the
+    // later command gave it the same value. Given another, or when the
+    // project's own value is not the paste's, the request sends
+    // something other than what the curl sent.
+    let by_this_run = unique(secrets().map(|(n, _)| n));
+    let all_kept: Vec<&(String, bool)> = created.iter().flat_map(|c| &c.kept).collect();
+    let kept_where = |same: bool, by_run: bool| {
+        unique(
+            all_kept
+                .iter()
+                .filter(|(n, s)| *s == same && by_this_run.contains(&n.as_str()) == by_run)
+                .map(|(n, _)| n),
+        )
+    };
+    let differs = kept_where(false, false);
+    let mut kept = kept_where(true, false);
+    kept.retain(|n| !differs.contains(n));
+    if !kept.is_empty() {
+        parts.push(format!("kept the existing {}", kept.join(", ")));
+    }
+    if !differs.is_empty() {
+        parts.push(format!("kept the existing {}, not the paste's value", differs.join(", ")));
+    }
+    let (unsaved, changed): (Vec<&str>, Vec<&str>) =
+        kept_where(false, true).into_iter().partition(|n| empty.contains(n));
+    if !changed.is_empty() {
+        parts.push(format!("kept the first value of {}", changed.join(", ")));
+    }
+    // An earlier command declared it with no value: the later value
+    // went nowhere.
+    if !unsaved.is_empty() {
+        parts.push(format!("did not save a later value of {}", unsaved.join(", ")));
+    }
+    let reserved = unique(created.iter().flat_map(|c| &c.reserved));
+    if !reserved.is_empty() {
+        let why = if reserved.len() == 1 { "a reserved name" } else { "reserved names" };
+        parts.push(format!("did not save {} ({why})", reserved.join(", ")));
+    }
+    if notes.values_dropped {
+        parts.push("saved no values: the paste has other shell lines".to_string());
+    }
+    if notes.skipped_lines > 0 {
+        let s = if notes.skipped_lines == 1 { "" } else { "s" };
+        parts.push(format!("skipped {} non-curl line{s}", notes.skipped_lines));
+    }
+    let kind = if !ignored.is_empty()
+        || !empty.is_empty()
+        || !differs.is_empty()
+        || !changed.is_empty()
+        || !unsaved.is_empty()
+        || !reserved.is_empty()
+        || notes.skipped_lines > 0
+    {
+        ToastKind::Warning
+    } else {
+        ToastKind::Success
+    };
+    (parts, kind)
 }
 
 /// `names` in first-seen order, each once.
@@ -354,7 +395,7 @@ mod tests {
     #[test]
     fn values_a_skipped_line_dropped_are_reported_before_the_skip() {
         let mut r = run("export T=1\nif x; then :; fi\ncurl -H \"A: $T\" https://x/a");
-        assert!(r.values_dropped);
+        assert!(r.notes.values_dropped);
         let mut a = created("GET a", &[], &["T"]);
         a.secrets = vec![("T".into(), None)];
         r.created.push(a);

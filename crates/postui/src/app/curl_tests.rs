@@ -743,3 +743,335 @@ fn the_request_menu_offers_copy_as_curl_after_duplicate() {
     assert_eq!(labels[dup + 1], "Copy as curl");
     assert_eq!(items[dup + 1].action, Some(Action::CopyAsCurl(Some("main/other".into()))));
 }
+
+// Replace a request with curl (spec
+// `docs/superpowers/specs/2026-10-14-replace-with-curl-design.md`).
+
+fn replace(app: &mut App, slug: Option<&str>) {
+    app.update(Action::ReplaceWithCurl(slug.map(str::to_string)));
+    app.capture_undo();
+}
+
+/// `app_with_clip`, with `main/kept` open: a named request with params,
+/// headers, a body, a jq filter and a request variable.
+fn kept_app(clip: &str) -> App {
+    let mut app = app_with_clip(clip);
+    let kept = postui_core::model::HttpRequest::from_toml_str(
+        "name = \"Kept\"\nurl = \"https://x/old\"\njq = \".a\"\n\
+         [params]\np = \"1\"\n[headers]\nX-Old = \"1\"\n[variables]\nv = \"1\"\n",
+    )
+    .unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), "main/kept", &kept).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/kept".into()));
+    app.capture_undo();
+    app
+}
+
+#[test]
+fn replace_puts_the_curl_in_the_editor_and_keeps_name_jq_and_request_variables() {
+    let mut app = kept_app(r#"curl -X POST -k 'https://x/new?q=1' -H 'X-New: 2' -d '{"b":2}'"#);
+    let before = app.editor.current_request();
+    replace(&mut app, None);
+    let now = app.editor.current_request();
+    assert_eq!(now.method, postui_core::model::Method::Post);
+    assert_eq!(now.url, "https://x/new?q=1");
+    assert!(now.params.is_empty(), "the query rides in the URL");
+    assert_eq!(now.headers.keys().collect::<Vec<_>>(), ["X-New"]);
+    assert_eq!(now.body, Some(postui_core::model::Body::Json { text: r#"{"b":2}"#.into() }));
+    assert!(now.insecure);
+    assert_eq!(now.name.as_deref(), Some("Kept"));
+    assert_eq!(now.jq.as_deref(), Some(".a"));
+    assert_eq!(now.variables.keys().collect::<Vec<_>>(), ["v"]);
+    assert!(app.editor_holds_unsaved(), "unsaved until Save");
+    let saved = postui_core::fixtures::load_request(app.proj().root(), "main/kept").unwrap();
+    assert_eq!(saved.url, "https://x/old", "the file is untouched");
+    let (msg, kind) = *app.toasts.entries().last().unwrap();
+    assert!(msg.starts_with("Replaced Kept from curl"), "{msg}");
+    assert!(msg.contains("undoes"), "{msg}");
+    assert_eq!(*kind, crate::components::toast::ToastKind::Success);
+    app.update(Action::Undo);
+    assert_eq!(app.editor.current_request(), before, "one undo restores it");
+    assert!(!app.editor_holds_unsaved());
+}
+
+#[test]
+fn undo_restores_the_edits_first_then_the_declarations() {
+    let mut app = kept_app("export TOKEN=abc\ncurl -H \"A: $TOKEN\" https://x/new");
+    app.editor.url = LineInput::new("https://x/edited");
+    app.capture_undo();
+    let edited = app.editor.current_request();
+    replace(&mut app, None);
+    assert_eq!(app.editor.url.text(), "https://x/new");
+    assert!(app.proj().variables().vars["TOKEN"].secret);
+    assert_eq!(app.proj().resolved().values.get("TOKEN").map(String::as_str), Some("abc"));
+    let msg = app.toasts.last_message().unwrap();
+    assert!(
+        msg.contains("; converted $TOKEN \u{2192} {{TOKEN}}; saved TOKEN as a secret"),
+        "{msg}"
+    );
+    app.update(Action::Undo);
+    assert_eq!(app.editor.current_request(), edited, "the unsaved edit is back");
+    assert!(app.proj().variables().vars.contains_key("TOKEN"), "declarations are the next step");
+    app.update(Action::Undo);
+    assert!(!app.proj().variables().vars.contains_key("TOKEN"));
+    assert_eq!(app.editor.current_request(), edited, "the editor stays as it was");
+    let msg = app.toasts.last_message().unwrap();
+    assert!(msg.contains("variable TOKEN"), "the toast names what it undid: {msg}");
+}
+
+#[test]
+fn several_commands_refuse_and_change_nothing() {
+    let mut app = kept_app("curl https://x/a\ncurl https://x/b");
+    let before = app.editor.current_request();
+    replace(&mut app, None);
+    assert_eq!(app.editor.current_request(), before);
+    let (msg, kind) = *app.toasts.entries().last().unwrap();
+    assert_eq!(msg, "clipboard holds 2 curl commands; replace takes one");
+    assert_eq!(*kind, crate::components::toast::ToastKind::Error);
+    let mut app = kept_app("hello there");
+    replace(&mut app, None);
+    assert_eq!(app.editor.current_request(), before);
+    assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
+}
+
+#[test]
+fn a_row_that_is_not_open_is_opened_through_the_dirty_gate_then_replaced() {
+    let mut app = kept_app("curl https://x/new");
+    app.editor.url = LineInput::new("https://x/edited");
+    app.capture_undo();
+    replace(&mut app, Some("main/top"));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { title, .. }) if title == "Unsaved changes")
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    app.capture_undo();
+    assert!(app.modals.is_empty());
+    assert_eq!(app.editor.slug.as_deref(), Some("main/top"));
+    assert_eq!(app.editor.url.text(), "https://x/new");
+    assert!(app.toasts.last_message().unwrap().starts_with("Replaced top from curl"));
+    // A clean editor goes straight through.
+    app.update(Action::DiscardChanges);
+    app.capture_undo();
+    replace(&mut app, Some("main/api/ping"));
+    assert!(app.modals.is_empty());
+    assert_eq!(app.editor.slug.as_deref(), Some("main/api/ping"));
+    assert_eq!(app.editor.url.text(), "https://x/new");
+    // The open and the replace share one input event; the replace is
+    // still its own undo step.
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/api/ping"));
+    assert_eq!(app.editor.url.text(), "https://x/ping");
+    assert!(!app.editor_holds_unsaved());
+}
+
+#[test]
+fn undo_after_replacing_a_row_that_was_not_open_restores_it_before_the_declarations() {
+    let mut app = kept_app("export TOKEN=abc\ncurl -H \"A: $TOKEN\" https://x/new");
+    replace(&mut app, Some("main/top"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/top"));
+    assert_eq!(app.editor.url.text(), "https://x/new");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://x/top", "the editor change first");
+    assert!(app.proj().variables().vars.contains_key("TOKEN"));
+    app.update(Action::Undo);
+    assert!(!app.proj().variables().vars.contains_key("TOKEN"));
+    assert_eq!(app.editor.url.text(), "https://x/top");
+}
+
+#[test]
+fn a_clipboard_without_curl_toasts_before_the_dirty_gate() {
+    let mut app = kept_app("hello there");
+    app.editor.url = LineInput::new("https://x/edited");
+    app.capture_undo();
+    replace(&mut app, Some("main/top"));
+    assert!(app.modals.is_empty());
+    assert_eq!(app.editor.slug.as_deref(), Some("main/kept"));
+    assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
+}
+
+#[test]
+fn a_request_variable_counts_as_kept() {
+    let mut app = kept_app("export v=2\ncurl -H \"A: $v\" https://x/new");
+    replace(&mut app, None);
+    assert!(!app.proj().variables().vars.contains_key("v"), "not declared over it");
+    let msg = app.toasts.last_message().unwrap();
+    assert!(msg.contains("kept the existing v"), "{msg}");
+}
+
+#[test]
+fn ignored_flags_make_the_replace_toast_a_warning() {
+    let mut app = kept_app("curl --compressed https://x/new");
+    replace(&mut app, None);
+    let (msg, kind) = *app.toasts.entries().last().unwrap();
+    assert!(msg.starts_with("Replaced Kept from curl"), "{msg}");
+    assert!(msg.contains("from curl; ignored: --compressed \u{2014} "), "{msg}");
+    assert!(msg.ends_with(" undoes"), "{msg}");
+    assert_eq!(*kind, crate::components::toast::ToastKind::Warning);
+}
+
+#[test]
+fn a_scratch_request_is_replaced_in_place() {
+    let mut app = app_with_clip("curl https://x/new");
+    replace(&mut app, None);
+    assert_eq!(app.editor.slug, None);
+    assert_eq!(app.editor.url.text(), "https://x/new");
+    assert!(
+        app.toasts.last_message().unwrap().starts_with("Replaced the unsaved request from curl")
+    );
+}
+
+#[test]
+fn an_unreadable_environment_refuses_the_replace() {
+    let mut app = kept_app("curl -H \"A: $OTHER\" https://x/new");
+    let before = app.editor.current_request();
+    std::fs::create_dir_all(app.proj().root().join("environments")).unwrap();
+    std::fs::write(app.proj().root().join("environments/qa.toml"), "").unwrap();
+    app.update(Action::ReloadProjectFiles);
+    std::fs::write(app.proj().root().join("environments/qa.toml"), "TOKEN = [").unwrap();
+    replace(&mut app, None);
+    assert_eq!(app.editor.current_request(), before, "nothing changed");
+    assert!(!app.proj().variables().vars.contains_key("OTHER"));
+    let (_, kind) = *app.toasts.entries().last().unwrap();
+    assert_eq!(*kind, crate::components::toast::ToastKind::Error);
+}
+
+#[test]
+fn the_request_menu_offers_replace_after_copy_as_curl_and_the_palette_lists_it() {
+    let (mut app, _dir, _out) = copy_app();
+    let i = app.sidebar.row_of("main/other").expect("row");
+    let items = app.context_menu_for(&Hit::SidebarRow(i)).expect("menu");
+    let labels: Vec<&str> = items.iter().map(|m| m.label.as_str()).collect();
+    let copy = labels.iter().position(|l| *l == "Copy as curl").unwrap();
+    assert_eq!(labels[copy + 1], "Replace with curl");
+    assert_eq!(items[copy + 1].action, Some(Action::ReplaceWithCurl(Some("main/other".into()))));
+    let cmd = crate::components::palette::all_commands()
+        .into_iter()
+        .find(|c| c.id == "request-replace-curl")
+        .expect("palette command");
+    assert_eq!(cmd.name, "Request: replace with curl from clipboard");
+    assert_eq!(cmd.action, Action::ReplaceWithCurl(None));
+}
+
+#[test]
+fn a_broken_row_offers_no_replace() {
+    let (mut app, _dir, _out) = copy_app();
+    std::fs::write(app.proj().root().join("requests/main/broken.toml"), "url = [").unwrap();
+    app.update(Action::RefreshSidebar);
+    let i = app.sidebar.row_of("main/broken").expect("row");
+    let items = app.context_menu_for(&Hit::SidebarRow(i)).expect("menu");
+    assert!(items.iter().all(|m| m.label != "Replace with curl"));
+}
+
+#[test]
+fn a_disabled_request_variable_is_declared_as_a_secret() {
+    let mut app = kept_app("export v=2\ncurl -H \"A: $v\" https://x/new");
+    app.editor.variables.get_mut("v").unwrap().enabled = false;
+    app.capture_undo();
+    replace(&mut app, None);
+    assert!(app.proj().variables().vars["v"].secret, "a disabled one sends nothing");
+    assert_eq!(app.proj().resolved().values.get("v").map(String::as_str), Some("2"));
+}
+
+#[test]
+fn what_the_gate_answers_is_the_paste_read_before_it() {
+    let mut app = kept_app("curl https://x/new");
+    app.editor.url = LineInput::new("https://x/edited");
+    app.capture_undo();
+    replace(&mut app, Some("main/top"));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    let mut c = crate::clipboard::Clipboard::new_for_test(None, 65536, false);
+    c.set_read_for_test("not curl any more");
+    app.set_clipboard_for_test(c);
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    app.capture_undo();
+    assert_eq!(app.editor.slug.as_deref(), Some("main/top"));
+    assert_eq!(app.editor.url.text(), "https://x/new");
+}
+
+#[test]
+fn an_unreadable_environment_refuses_before_the_gate_or_the_open() {
+    let mut app = kept_app("curl -H \"A: $OTHER\" https://x/new");
+    std::fs::create_dir_all(app.proj().root().join("environments")).unwrap();
+    std::fs::write(app.proj().root().join("environments/qa.toml"), "").unwrap();
+    app.update(Action::ReloadProjectFiles);
+    app.editor.url = LineInput::new("https://x/edited");
+    app.capture_undo();
+    std::fs::write(app.proj().root().join("environments/qa.toml"), "TOKEN = [").unwrap();
+    replace(&mut app, Some("main/top"));
+    assert!(app.modals.is_empty(), "no gate for a replace that can't happen");
+    assert_eq!(app.editor.slug.as_deref(), Some("main/kept"));
+    assert_eq!(app.editor.url.text(), "https://x/edited");
+    let (msg, kind) = *app.toasts.entries().last().unwrap();
+    assert!(msg.starts_with("cannot replace: "), "{msg}");
+    assert_eq!(*kind, crate::components::toast::ToastKind::Error);
+}
+
+#[test]
+fn an_open_cell_lands_before_the_variables_are_sorted() {
+    use crate::components::table_editor::{CellEdit, Col};
+    let mut app = kept_app("export v=9\ncurl -H \"A: $v\" https://x/new");
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = crate::components::editor::EditorTab::Vars;
+    app.editor.sub_focus = crate::components::editor::SubFocus::Content;
+    app.editor.table.selected = Some(0);
+    let input = LineInput::new("9");
+    app.editor.table.editing = Some(CellEdit { row: 0, col: Col::Value, input });
+    replace(&mut app, None);
+    assert_eq!(app.editor.variables["v"].value, "9", "the typed value is kept");
+    let msg = app.toasts.last_message().unwrap();
+    assert!(msg.contains("; kept the existing v \u{2014} "), "the paste's value: {msg}");
+}
+
+#[test]
+fn an_enabled_request_variable_needs_no_environment_read() {
+    let mut app = kept_app("export v=1\ncurl -H \"A: $v\" https://x/new");
+    std::fs::create_dir_all(app.proj().root().join("environments")).unwrap();
+    std::fs::write(app.proj().root().join("environments/qa.toml"), "").unwrap();
+    app.update(Action::ReloadProjectFiles);
+    std::fs::write(app.proj().root().join("environments/qa.toml"), "TOKEN = [").unwrap();
+    replace(&mut app, None);
+    assert_eq!(app.editor.url.text(), "https://x/new", "v is the request's own");
+}
+
+#[test]
+fn a_curl_the_request_already_matches_offers_no_undo() {
+    let mut app = kept_app("curl https://x/new");
+    replace(&mut app, None);
+    replace(&mut app, None);
+    let (msg, kind) = *app.toasts.entries().last().unwrap();
+    assert_eq!(msg, "Nothing to replace: Kept already matches the curl");
+    assert_eq!(*kind, crate::components::toast::ToastKind::Success);
+    assert!(!app.no_coalesce, "the event's capture clears the flag the no-op set");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://x/old", "the one undo is the first replace's");
+}
+
+#[test]
+fn a_variable_declared_outside_the_app_is_kept() {
+    let mut app = kept_app("export T=1\ncurl -H \"A: $T\" https://x/new");
+    std::fs::write(app.proj().root().join("variables.toml"), "[T]\ndefault = \"1\"\n").unwrap();
+    replace(&mut app, None);
+    assert!(!app.proj().variables().vars["T"].secret, "not declared over the file's");
+    let msg = app.toasts.last_message().unwrap();
+    assert!(msg.contains("; kept the existing T"), "{msg}");
+}
+
+/// The shadow is seated by the replace, not by every open: reopening the
+/// open request through the gate's Discard is still an undo step.
+#[test]
+fn reopening_the_open_request_through_discard_is_undoable() {
+    let mut app = kept_app("");
+    // Two fields, so the Discard's step is not merged into the typing's
+    // as an instant same-field edit would be.
+    app.editor.url = LineInput::new("https://x/edited");
+    app.editor.method = postui_core::model::Method::Put;
+    app.capture_undo();
+    app.update(Action::OpenRequest("main/kept".into()));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    app.capture_undo();
+    assert_eq!(app.editor.url.text(), "https://x/old");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://x/edited", "undo brings the edit back");
+}

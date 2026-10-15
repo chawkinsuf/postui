@@ -381,6 +381,18 @@ pub enum Action {
     /// the live editor when it is the open request, its saved file
     /// otherwise.
     CopyAsCurl(Option<String>),
+    /// "Replace with curl" (spec 2026-10-14 replace-with-curl U6): the
+    /// clipboard's one curl command replaces a request in the editor.
+    /// `None` is what the editor holds (the palette); `Some(slug)` is a
+    /// sidebar row, opened first through the dirty gate when it is not
+    /// the open one (U7).
+    ReplaceWithCurl(Option<String>),
+    /// Past the dirty gate: opens `slug`, then replaces it with what was
+    /// read and sorted before the gate.
+    ForceReplaceWithCurl {
+        slug: String,
+        replace: Box<crate::curl_import::CurlReplace>,
+    },
     /// Create a fresh request at `name` (a slug), then open it. If the
     /// editor is dirty this is intercepted into a `Modal::Confirm` rather
     /// than applied directly; see `App::update`.

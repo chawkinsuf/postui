@@ -107,6 +107,12 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::CopyAsCurl(None),
         },
         Command {
+            id: "request-replace-curl",
+            name: "Request: replace with curl from clipboard",
+            description: "Replace the open request with the curl command on the clipboard",
+            action: Action::ReplaceWithCurl(None),
+        },
+        Command {
             id: "request-delete",
             name: "Request: delete",
             description: "Delete the open request (undo restores it)",
