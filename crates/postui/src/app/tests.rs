@@ -26832,6 +26832,32 @@ fn the_keyboard_profile_row_switches_profiles_and_undo_switches_back() {
     assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), Some(Action::Quit));
 }
 
+/// Spec 2026-10-15 R2, R6: the Indent row flips spaces/tabs and the width
+/// row commits 1..=8; both write config.toml, apply live, and undo.
+#[test]
+fn the_indent_settings_write_apply_and_undo() {
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    click_hit(&mut app, Hit::SettingsIndent(true));
+    assert!(app.ui_settings.indent_tabs);
+    app.settings.begin_edit(SettingsField::IndentWidth, "9");
+    app.commit_settings_edit();
+    assert_eq!(app.ui_settings.indent_width, 2, "9 is refused");
+    assert_eq!(app.settings.editing, Some(SettingsField::IndentWidth));
+    app.settings.begin_edit(SettingsField::IndentWidth, "4");
+    app.commit_settings_edit();
+    assert_eq!(app.ui_settings.indent_width, 4);
+    let written = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(written.contains("indent = \"tabs\""), "{written}");
+    assert!(written.contains("indent_width = 4"), "{written}");
+    app.update(Action::Undo);
+    assert_eq!(app.ui_settings.indent_width, 2);
+    app.update(Action::Undo);
+    assert!(!app.ui_settings.indent_tabs);
+}
+
 #[test]
 fn enter_on_the_keyboard_row_flips_the_profile() {
     use crate::components::settings::{SettingsField, SettingsRow, SettingsTab};

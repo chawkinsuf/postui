@@ -2844,6 +2844,7 @@ impl App {
                             crate::config::JqTab::Cycle
                         }
                     }
+                    "indent" => ui.indent_tabs = value == "tabs",
                     other => debug_assert!(false, "no string setting named {other:?}"),
                 });
                 if landed {
@@ -2858,6 +2859,7 @@ impl App {
                 let landed = saved.is_ok();
                 let redraw = self.apply_ui_write(saved, |ui| match key {
                     "osc52_limit" => ui.osc52_limit = value,
+                    "indent_width" => ui.indent_width = value,
                     other => debug_assert!(false, "no integer setting named {other:?}"),
                 });
                 if landed {
@@ -10310,7 +10312,9 @@ impl App {
     /// out of a broken `config.toml`; every other row is a no-op while
     /// it will not parse.
     pub(crate) fn activate_settings_row(&mut self) -> bool {
-        use crate::components::settings::{SettingsField, SettingsRow, jq_tab_spelling};
+        use crate::components::settings::{
+            SettingsField, SettingsRow, indent_spelling, jq_tab_spelling,
+        };
         match self.settings.row() {
             SettingsRow::File(file) => {
                 let action = if self.settings.file_button == 0 {
@@ -10338,6 +10342,10 @@ impl App {
                     value: jq_tab_spelling(next).to_string(),
                 })
             }
+            SettingsRow::Setting(SettingsField::Indent) => self.update(Action::SetUiString {
+                key: SettingsField::Indent.key(),
+                value: indent_spelling(!self.ui_settings.indent_tabs).to_string(),
+            }),
             SettingsRow::Setting(field) => {
                 if let Some(on) = field.checkbox(&self.ui_settings) {
                     // The tick is what the user sees, so the tick is what
@@ -10360,26 +10368,28 @@ impl App {
     }
 
     /// Esc and Enter in a live Settings field edit — the field rule, both
-    /// commit. `osc52_limit` is validated here and *rejected* rather than
-    /// coerced: the edit stays open with what was typed, the stored value
-    /// stands, and a toast says what was expected.
+    /// commit. `osc52_limit` and `indent_width` are validated here and
+    /// *rejected* rather than coerced: the edit stays open with what was
+    /// typed, the stored value stands, and a toast says what was expected.
     pub(crate) fn commit_settings_edit(&mut self) -> bool {
-        use crate::components::settings::{SettingsField, parse_osc52_limit};
+        use crate::components::settings::{SettingsField, parse_indent_width, parse_osc52_limit};
         let Some(field) = self.settings.editing else {
             return false;
         };
         let text = self.settings.field_text().to_string();
-        if field == SettingsField::Osc52Limit {
-            return match parse_osc52_limit(&text) {
+        let int = match field {
+            SettingsField::Osc52Limit => Some(parse_osc52_limit(&text)),
+            SettingsField::IndentWidth => Some(parse_indent_width(&text)),
+            _ => None,
+        };
+        if let Some(parsed) = int {
+            return match parsed {
                 Ok(value) => {
                     self.settings.end_edit();
                     self.update(Action::SetUiInt { key: field.key(), value })
                 }
                 Err(why) => {
-                    self.toasts.push(
-                        format!("{}: {why}", SettingsField::Osc52Limit.label()),
-                        ToastKind::Error,
-                    );
+                    self.toasts.push(format!("{}: {why}", field.label()), ToastKind::Error);
                     true
                 }
             };
@@ -10451,6 +10461,8 @@ impl App {
                 crate::components::settings::jq_tab_spelling(self.ui_settings.jq_tab).to_string()
             }
             "keymap" => self.ui_settings.keymap.map_or(String::new(), |p| p.spelling().to_string()),
+            "indent" => crate::components::settings::indent_spelling(self.ui_settings.indent_tabs)
+                .to_string(),
             other => {
                 debug_assert!(false, "no string setting named {other:?}");
                 String::new()
@@ -10461,6 +10473,7 @@ impl App {
     fn ui_int(&self, key: &'static str) -> usize {
         match key {
             "osc52_limit" => self.ui_settings.osc52_limit,
+            "indent_width" => self.ui_settings.indent_width,
             other => {
                 debug_assert!(false, "no integer setting named {other:?}");
                 0
@@ -11120,13 +11133,14 @@ impl App {
                                     // answer replaced.
                                     ui.keymap = crate::config::KeyProfile::from_spelling(v)
                                 }
+                                "indent" => ui.indent_tabs = v == "tabs",
                                 _ => {}
                             },
-                            UiValue::Int(v) => {
-                                if *key == "osc52_limit" {
-                                    ui.osc52_limit = *v;
-                                }
-                            }
+                            UiValue::Int(v) => match *key {
+                                "osc52_limit" => ui.osc52_limit = *v,
+                                "indent_width" => ui.indent_width = *v,
+                                _ => {}
+                            },
                         }
                         self.reapply_ui_settings(ui);
                         if *key == "keymap" {

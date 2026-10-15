@@ -34,6 +34,8 @@ pub enum SettingsField {
     Animations,
     HoverHints,
     Keymap,
+    Indent,
+    IndentWidth,
     JqTab,
     AiCmd,
     AiConfirmed,
@@ -58,6 +60,8 @@ impl SettingsField {
             SettingsField::Animations => "animations",
             SettingsField::HoverHints => "hover_hints",
             SettingsField::Keymap => "keymap",
+            SettingsField::Indent => "indent",
+            SettingsField::IndentWidth => "indent_width",
             SettingsField::JqTab => "jq_tab",
             SettingsField::AiCmd => "ai_cmd",
             SettingsField::AiConfirmed => "ai_confirmed",
@@ -77,6 +81,8 @@ impl SettingsField {
             "animations" => Some(SettingsField::Animations),
             "hover_hints" => Some(SettingsField::HoverHints),
             "keymap" => Some(SettingsField::Keymap),
+            "indent" => Some(SettingsField::Indent),
+            "indent_width" => Some(SettingsField::IndentWidth),
             "jq_tab" => Some(SettingsField::JqTab),
             "ai_cmd" => Some(SettingsField::AiCmd),
             "ai_confirmed" => Some(SettingsField::AiConfirmed),
@@ -92,6 +98,8 @@ impl SettingsField {
             SettingsField::Animations => "Animations",
             SettingsField::HoverHints => "Hover hints",
             SettingsField::Keymap => "Keyboard profile",
+            SettingsField::Indent => "Indent",
+            SettingsField::IndentWidth => "Indent width",
             SettingsField::JqTab => "jq Tab behavior",
             SettingsField::AiCmd => "AI command",
             SettingsField::AiConfirmed => "Ask before sending to AI",
@@ -123,6 +131,7 @@ impl SettingsField {
             SettingsField::AiCmd => Some(ui.ai_cmd.clone()),
             SettingsField::ClipboardCmd => Some(ui.clipboard_cmd.clone().unwrap_or_default()),
             SettingsField::Osc52Limit => Some(ui.osc52_limit.to_string()),
+            SettingsField::IndentWidth => Some(ui.indent_width.to_string()),
             _ => None,
         }
     }
@@ -180,6 +189,24 @@ pub fn jq_tab_spelling(mode: JqTab) -> &'static str {
 const KEYMAP_SEGMENTS: [(&str, KeyProfile); 2] =
     [("Arrows", KeyProfile::Arrows), ("Vim", KeyProfile::Vim)];
 
+/// The two segments of the `indent` control, in painted order: `true` is
+/// tabs.
+const INDENT_SEGMENTS: [(&str, bool); 2] = [("Spaces", false), ("Tabs", true)];
+
+/// The `indent` value written for each segment.
+pub fn indent_spelling(tabs: bool) -> &'static str {
+    if tabs { "tabs" } else { "spaces" }
+}
+
+/// `indent_width`'s validator (spec 2026-10-15 R1): 1 to 8, rejected
+/// rather than clamped, like `osc52_limit`.
+pub fn parse_indent_width(text: &str) -> Result<usize, String> {
+    match text.trim().parse::<usize>() {
+        Ok(w) if (1..=crate::text::indent::MAX_WIDTH).contains(&w) => Ok(w),
+        _ => Err("expected a whole number from 1 to 8".to_string()),
+    }
+}
+
 impl SettingsTab {
     pub fn rows() -> &'static [SettingsRow] {
         use ConfigFile::*;
@@ -188,6 +215,8 @@ impl SettingsTab {
             SettingsRow::Setting(Animations),
             SettingsRow::Setting(HoverHints),
             SettingsRow::Setting(Keymap),
+            SettingsRow::Setting(Indent),
+            SettingsRow::Setting(IndentWidth),
             SettingsRow::Setting(JqTab),
             SettingsRow::Setting(AiCmd),
             SettingsRow::Setting(AiConfirmed),
@@ -447,6 +476,7 @@ pub fn draw_settings(
             Some(Hit::SettingsControl(f)) => *row == SettingsRow::Setting(*f),
             Some(Hit::SettingsJqTab(_)) => *row == SettingsRow::Setting(SettingsField::JqTab),
             Some(Hit::SettingsKeymap(_)) => *row == SettingsRow::Setting(SettingsField::Keymap),
+            Some(Hit::SettingsIndent(_)) => *row == SettingsRow::Setting(SettingsField::Indent),
             Some(Hit::SettingsFile { file, .. }) => *row == SettingsRow::File(*file),
             _ => false,
         };
@@ -644,6 +674,22 @@ fn draw_setting_control(
             &KEYMAP_SEGMENTS,
             current,
             Hit::SettingsKeymap,
+            focused,
+            editable,
+        );
+        return;
+    }
+    if field == SettingsField::Indent {
+        let focused = tab.focused && tab.cursor == row;
+        paint_segments(
+            buf,
+            hits,
+            hovered,
+            theme,
+            slot,
+            &INDENT_SEGMENTS,
+            ui.indent_tabs,
+            Hit::SettingsIndent,
             focused,
             editable,
         );
@@ -943,6 +989,11 @@ mod tests {
                         assert!(hits.rect_of(&Hit::SettingsKeymap(profile)).is_some());
                     }
                 }
+                SettingsRow::Setting(SettingsField::Indent) => {
+                    for (_, tabs) in INDENT_SEGMENTS {
+                        assert!(hits.rect_of(&Hit::SettingsIndent(tabs)).is_some());
+                    }
+                }
                 SettingsRow::Setting(f) => assert!(
                     hits.rect_of(&Hit::SettingsControl(*f)).is_some(),
                     "{f:?} has no control hit"
@@ -1208,6 +1259,24 @@ mod tests {
         }
         assert_eq!(KeyProfile::from_spelling("emacs"), None);
         assert!(SettingsTab::rows().contains(&SettingsRow::Setting(SettingsField::Keymap)));
+    }
+
+    #[test]
+    fn the_indent_rows_follow_the_keyboard_profile() {
+        let rows = SettingsTab::rows();
+        let at = |f| rows.iter().position(|r| *r == SettingsRow::Setting(f)).unwrap();
+        assert_eq!(at(SettingsField::Indent), at(SettingsField::Keymap) + 1);
+        assert_eq!(at(SettingsField::IndentWidth), at(SettingsField::Indent) + 1);
+        assert_eq!(SettingsField::from_key("indent"), Some(SettingsField::Indent));
+        assert_eq!(SettingsField::from_key("indent_width"), Some(SettingsField::IndentWidth));
+    }
+
+    #[test]
+    fn indent_width_accepts_one_to_eight_only() {
+        assert_eq!(parse_indent_width(" 4 "), Ok(4));
+        for bad in ["0", "9", "-1", "four", ""] {
+            assert!(parse_indent_width(bad).is_err(), "{bad}");
+        }
     }
 
     /// A File row registers its own row hit *and* the Reset pill sitting
