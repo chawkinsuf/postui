@@ -1068,6 +1068,7 @@ impl App {
     /// wired into startup and forgotten on reload (or the reverse).
     fn finish_ui_settings(&mut self, ui_settings: crate::config::UiSettings) {
         self.session.response.set_jq_tab(ui_settings.jq_tab);
+        self.editor.indent_default = ui_settings.default_indent();
         self.ui_settings = ui_settings;
     }
 
@@ -2042,6 +2043,10 @@ impl App {
         self.editor.sending = editor_in_flight.is_some();
         self.editor.send_started = editor_in_flight.map(|f| f.started);
         self.editor.table_collapsed = self.table_collapsed;
+        // A copy, like the others: a fresh scratch replaces the whole
+        // editor, so the default is mirrored in on every update (spec
+        // 2026-10-15 R6).
+        self.editor.indent_default = self.ui_settings.default_indent();
         // Display copies for the panes' split clusters — the app state
         // stays the authority, the components only light segments from it.
         self.editor.split = self.split_state();

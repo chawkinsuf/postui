@@ -26858,6 +26858,40 @@ fn the_indent_settings_write_apply_and_undo() {
     assert!(!app.ui_settings.indent_tabs);
 }
 
+/// Spec R6, plan Review Focus 1: the configured default reaches the editor
+/// on every update, so a fresh scratch (which replaces the whole `Editor`)
+/// has it, and a detected body keeps its own.
+#[test]
+fn the_configured_indent_reaches_fresh_and_detected_bodies() {
+    use crate::text::indent::Indent;
+    let mut app = App::new_for_test();
+    app.ui_settings.indent_width = 4;
+    app.update(Action::Render);
+    assert_eq!(app.editor.body_indent(), Indent::Spaces(4));
+    // What `fresh_scratch` does to the editor.
+    app.editor = crate::components::editor::Editor::default();
+    app.update(Action::Render);
+    assert_eq!(app.editor.body_indent(), Indent::Spaces(4), "a fresh scratch has it");
+    app.editor.set_body_text("{\n  \"a\": 1\n}");
+    app.ui_settings.indent_tabs = true;
+    app.update(Action::Render);
+    assert_eq!(app.editor.body_indent(), Indent::Spaces(2), "a detected body keeps its own");
+}
+
+/// Plan Review Focus 5: a Settings change, and its undo, reach the open
+/// undetected body at once.
+#[test]
+fn an_indent_setting_and_its_undo_reach_the_open_body() {
+    use crate::text::indent::Indent;
+    let mut app = App::new_for_test();
+    let _dir = config_at_tempdir(&mut app);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    click_hit(&mut app, Hit::SettingsIndent(true));
+    assert_eq!(app.editor.body_indent(), Indent::Tabs, "an undetected body follows at once");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.body_indent(), Indent::Spaces(2), "and follows the undo");
+}
+
 #[test]
 fn enter_on_the_keyboard_row_flips_the_profile() {
     use crate::components::settings::{SettingsField, SettingsRow, SettingsTab};
