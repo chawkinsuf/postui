@@ -1150,14 +1150,27 @@ fn a_format_with_the_body_open_is_one_engine_step() {
 fn shifts_follow_a_space_bodys_width() {
     let mut app = vim(Fixture::Body);
     app.editor.set_body_text("{\n    \"a\": 1\n}");
+    app.editor.mark_saved();
     feed(&mut app, "gg>>");
     assert_eq!(body(&app), "    {\n    \"a\": 1\n}");
     app.editor.set_body_text("{\n    \"b\": 1\n}");
     feed(&mut app, "gg>>");
     assert_eq!(body(&app), "    {\n    \"b\": 1\n}", "a replaced body's fresh state");
     app.editor.set_body_text("{\n\t\"c\": 1\n}");
+    app.editor.mark_saved();
     feed(&mut app, "gg>>");
     assert_eq!(body(&app), "  {\n\t\"c\": 1\n}", "a tab body keeps 2");
+}
+
+/// Review round 4: `>>` never feeds the next one's width, so repeated
+/// shifts of a body's only indented line step 2, 4, 6, as Vim's do.
+#[test]
+fn repeated_shifts_step_by_a_fixed_width() {
+    let mut app = vim(Fixture::Body);
+    app.editor.set_body_text("a\n  b");
+    app.editor.mark_saved();
+    feed(&mut app, "G>>>>");
+    assert_eq!(body(&app), "a\n      b");
 }
 
 /// R11: one-line fields keep `shiftwidth=2` whatever the body uses.
@@ -1175,6 +1188,7 @@ fn the_url_line_shifts_by_two_under_a_four_space_body() {
 fn a_format_with_the_body_open_follows_its_indent() {
     let mut app = vim(Fixture::Body);
     app.editor.set_body_text("{\n\t\"a\": [1]\n}");
+    app.editor.mark_saved();
     app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT));
     assert_eq!(body(&app), "{\n\t\"a\": [\n\t\t1\n\t]\n}");
 }

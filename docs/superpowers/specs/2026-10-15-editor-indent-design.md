@@ -52,6 +52,14 @@ Review round 1 found that the remembered `body_detected` broke "undo restores ex
 
 Round 2 (mine, following the round-1 choice): the seam hands the glue only the configured default, and the glue works out the body's `shiftwidth` from the body lines it is lent, inside each body target (`text::indent::effective`, the rule the editor uses too). So the scan runs only for body calls, not for every field's, and nothing derived from the text is pushed across the seam. A carry sets no width: it never shifts, and the next key goes through a body target.
 
+### Amendment 2026-10-15, review round 4 (you): the indent is read from the text as last saved
+
+Round 4 found that reading the live text was self-reinforcing: on a body with few indented lines, each indent changed what was detected, so repeated Tab, indent or vim `>>` doubled (2, 4, 8) instead of stepping by a fixed width. Rounds 1 and 4 flagged opposite shapes: a remembered value was stable but not undo-exact, the live text undo-exact but unstable. You chose the shape that keeps both: **a body's effective indent is `detect(the body as last opened or saved)`, else the configured default.** That text is the editor's existing dirty baseline (`Editor::saved`), which only opening, saving and the curl import's discard replace (`Editor::set_saved`, the one writer, detects with it).
+
+- Supersedes the round-1 amendment and its round-2 note. Undo never changes the saved text, so it restores the indent exactly; Format, Minify, Clear, paste and typing never move it, in either profile; Minify then Format gives the body's own indent back (R5's original intent); an indent never feeds the next one's width.
+- Until a save, a style that arrives in the editor (pasted into a new or flat request, or brought by `$EDITOR` or replace-with-curl) gives way to the saved text's indent, or to the default when that is flat. A scratch request that was never saved uses the default.
+- Detection runs once per open or save, so no key scans the body. The vim seam hands the glue the editor's ready indent, and the glue puts its width on the body's state inside each body target.
+
 Also from round 1 (you): dropping an unused auto-indent when the caret leaves the line (Vim's behaviour, VS Code's `trimAutoWhitespace`) is a follow-up task, not #8.
 
 ## 4. Design

@@ -192,6 +192,11 @@ pub struct Editor {
     /// The row a triple click selected: while set, `body_drag_to` extends
     /// by whole lines from it. Cleared by any single click.
     body_line_anchor: Option<usize>,
+    /// What [`crate::text::indent::detect`] found in `saved`'s body: the
+    /// body's own indent (spec 2026-10-15, round-4 amendment). Set only
+    /// with `saved` ([`Editor::set_saved`]), so editing, Format and undo
+    /// never move it.
+    saved_indent: Option<Indent>,
     /// The configured indent (`UiSettings::default_indent`), mirrored in by
     /// `App` on every update so even a fresh scratch has it (R1, R6).
     pub indent_default: Indent,
@@ -321,6 +326,7 @@ impl Default for Editor {
             body_sel_anchor: None,
             body_word_anchor: None,
             body_line_anchor: None,
+            saved_indent: None,
             indent_default: Indent::DEFAULT,
             active_tab: EditorTab::Headers,
             preferred_tab: EditorTab::Headers,
@@ -449,7 +455,7 @@ impl Editor {
             Some(Body::Json { text }) => text,
             None => "",
         });
-        self.saved = Some(req);
+        self.set_saved(Some(req));
         self.computed.revealed = false;
     }
 
@@ -622,7 +628,19 @@ impl Editor {
     }
 
     pub fn mark_saved(&mut self) {
-        self.saved = Some(self.current_request());
+        self.set_saved(Some(self.current_request()));
+    }
+
+    /// Replaces the dirty baseline, and the indent detected from its body
+    /// with it (spec 2026-10-15, round-4 amendment): the one writer of both.
+    pub fn set_saved(&mut self, req: Option<HttpRequest>) {
+        self.saved_indent = match req.as_ref().and_then(|r| r.body.as_ref()) {
+            Some(Body::Json { text }) => {
+                crate::text::indent::detect(&edtui::Lines::from(text.as_str()))
+            }
+            None => None,
+        };
+        self.saved = req;
     }
 
     /// A request that was typed but never saved at all: no slug, no saved
@@ -728,12 +746,13 @@ impl Editor {
         self.body_hl_overlays.clear();
     }
 
-    /// The indent the body's keys and Format use: what its text uses now,
-    /// else the configured default (spec 2026-10-15 R3, round-1
-    /// amendment). Read from the text each time, so nothing can go stale:
-    /// an undo gives back exactly the indent it had.
+    /// The indent the body's keys and Format use: what its text as last
+    /// opened or saved uses, else the configured default (spec 2026-10-15
+    /// R3, round-4 amendment). Undo never changes the saved text, so it
+    /// gives back exactly the indent it had; and an indent never feeds the
+    /// width of the next.
     pub fn body_indent(&self) -> Indent {
-        crate::text::indent::effective(&self.body.lines, self.indent_default)
+        self.saved_indent.unwrap_or(self.indent_default)
     }
 
     /// Whether the body parses as JSON. An empty body is vacuously valid:
@@ -6569,11 +6588,29 @@ mod body_click_tests {
         assert_eq!(e.body_text(), "  a\nb");
     }
 
+    /// A Body-tab editor holding a POST request opened with `text` as its
+    /// saved body, which the body's indent is detected from (spec round-4
+    /// amendment).
+    fn loaded_body(text: &str) -> Editor {
+        let mut e = editor_with_body("");
+        e.load(None, json_request(text));
+        render_body(&mut e);
+        e
+    }
+
+    fn json_request(text: &str) -> HttpRequest {
+        HttpRequest {
+            method: Method::Post,
+            body: Some(Body::Json { text: text.into() }),
+            ..Default::default()
+        }
+    }
+
     /// Spec R9: indent and dedent use the body's own detected indent.
     #[test]
     fn indent_and_dedent_follow_a_four_space_body() {
         use ratatui::crossterm::event::KeyCode;
-        let mut e = editor_with_body("{\n    \"a\": 1\n}");
+        let mut e = loaded_body("{\n    \"a\": 1\n}");
         e.set_body_selection_cells(Index2::new(0, 0), Index2::new(2, 0));
         e.handle_key(pkey(KeyCode::Tab));
         assert_eq!(e.body_text(), "    {\n        \"a\": 1\n    }");
@@ -6584,7 +6621,7 @@ mod body_click_tests {
     #[test]
     fn indent_and_dedent_follow_a_tab_body() {
         use ratatui::crossterm::event::KeyCode;
-        let mut e = editor_with_body("{\n\t\"a\": 1\n}");
+        let mut e = loaded_body("{\n\t\"a\": 1\n}");
         e.set_body_selection_cells(Index2::new(0, 0), Index2::new(2, 0));
         e.handle_key(pkey(KeyCode::Tab));
         assert_eq!(e.body_text(), "\t{\n\t\t\"a\": 1\n\t}");
@@ -6592,22 +6629,37 @@ mod body_click_tests {
         assert_eq!(e.body_text(), "{\n\t\"a\": 1\n}");
     }
 
-    /// Spec R3 and the round-1 amendment: the indent is read from the text
-    /// as it is now, else the default; nothing is remembered.
+    /// Spec round-4 amendment: the indent is detected from the text as last
+    /// opened or saved, else the default. Editing (a replacement, a paste)
+    /// never moves it; a save re-reads it.
     #[test]
-    fn the_body_indent_follows_the_text() {
+    fn the_body_indent_follows_the_saved_text() {
         use crate::text::indent::Indent;
         let mut e = editor_with_body("");
-        assert_eq!(e.body_indent(), Indent::Spaces(2), "nothing indented: the default");
-        e.set_body_text("{\n    \"a\": 1\n}");
+        assert_eq!(e.body_indent(), Indent::Spaces(2), "nothing saved: the default");
+        e.load(None, json_request("{\n    \"a\": 1\n}"));
         assert_eq!(e.body_indent(), Indent::Spaces(4));
         e.set_body_text("{\"a\":1}");
-        assert_eq!(e.body_indent(), Indent::Spaces(2), "flat text has no indent of its own");
+        assert_eq!(e.body_indent(), Indent::Spaces(4), "Minify keeps the saved indent");
         e.paste_body("\n\t\tx\n\t\ty");
-        assert_eq!(e.body_indent(), Indent::Tabs, "pasted indented lines count");
+        assert_eq!(e.body_indent(), Indent::Spaces(4), "a paste never moves it");
+        e.mark_saved();
+        assert_eq!(e.body_indent(), Indent::Tabs, "a save reads the text again");
+        e.load(None, json_request("{}"));
         e.indent_default = Indent::Spaces(4);
-        e.set_body_text("{}");
-        assert_eq!(e.body_indent(), Indent::Spaces(4), "the default, read when asked");
+        assert_eq!(e.body_indent(), Indent::Spaces(4), "a flat saved body: the default");
+    }
+
+    /// Review round 4: an indent never feeds the next one's width, so
+    /// repeated presses on a body's only indented line step 2, 4, 6.
+    #[test]
+    fn repeated_indents_step_by_a_fixed_width() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = loaded_body("{\n  \"a\": 1\n}");
+        e.set_body_selection_cells(Index2::new(1, 0), Index2::new(1, 0));
+        e.handle_key(pkey(KeyCode::Tab));
+        e.handle_key(pkey(KeyCode::Tab));
+        assert_eq!(e.body_text(), "{\n      \"a\": 1\n}");
     }
 
     /// Spec 2026-10-15 R8: plain Tab steps to the next indent stop with

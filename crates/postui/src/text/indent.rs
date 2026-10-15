@@ -50,8 +50,6 @@ impl Indent {
 /// non-tab content lines' indents (from a virtual unindented line before
 /// the first; steps over [`MAX_WIDTH`] are not widths; a tie goes to the
 /// smaller width). `None` when it can't say: a tie, or no indented line.
-/// Reads the lines in place: the body asks on every key that needs it
-/// (spec amendment, review round 1).
 pub fn detect(text: &(impl Lines + ?Sized)) -> Option<Indent> {
     let (mut tab_led, mut space_led) = (0usize, 0usize);
     let mut steps = [0usize; MAX_WIDTH + 1];
@@ -83,12 +81,6 @@ pub fn detect(text: &(impl Lines + ?Sized)) -> Option<Indent> {
             (steps[width] > 0).then_some(Indent::Spaces(width))
         }
     }
-}
-
-/// A body's effective indent (spec R3): what its text uses now, else
-/// `default`. The one rule the arrows body, Format and the vim glue share.
-pub fn effective(text: &(impl Lines + ?Sized), default: Indent) -> Indent {
-    detect(text).unwrap_or(default)
 }
 
 #[cfg(test)]

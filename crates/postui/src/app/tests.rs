@@ -17414,7 +17414,10 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("fmt4".into()));
         app.update(Action::CycleMethod);
-        app.editor.set_body_text("{\n    \"a\": {\"b\":1}\n}");
+        app.editor.set_body_text("{\n    \"a\": 1\n}");
+        app.editor.mark_saved();
+        // Minify, then Format: the saved text's indent comes back.
+        app.editor.set_body_text("{\"a\":{\"b\":1}}");
         app.update(Action::FormatBody);
         assert_eq!(app.editor.body_text(), "{\n    \"a\": {\n        \"b\": 1\n    }\n}");
     }
@@ -26927,6 +26930,7 @@ fn the_configured_indent_reaches_fresh_and_detected_bodies() {
     app.update(Action::Render);
     assert_eq!(app.editor.body_indent(), Indent::Spaces(4), "a fresh scratch has it");
     app.editor.set_body_text("{\n  \"a\": 1\n}");
+    app.editor.mark_saved();
     app.ui_settings.indent_tabs = true;
     app.update(Action::Render);
     assert_eq!(app.editor.body_indent(), Indent::Spaces(2), "a detected body keeps its own");
