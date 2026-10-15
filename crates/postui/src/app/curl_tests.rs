@@ -1144,6 +1144,30 @@ fn a_sidebar_paste_without_curl_says_so() {
     app.paste_text("curl 'https://x");
     assert!(app.modals.is_empty());
     assert_eq!(app.toasts.last_message(), Some("unclosed quote"));
+    // A terminal's paste need not be the clipboard's: it says "paste".
+    app.paste_text("hello");
+    assert_eq!(app.toasts.last_message(), Some("the paste holds no curl command"));
+}
+
+#[test]
+fn a_sidebar_ctrl_v_is_the_import_button() {
+    let top = crate::components::sidebar::RowKey::Request("main/top".into());
+    let mut app = on_sidebar("curl https://x/users", &top);
+    app.ui_settings.curl_button = true;
+    app.check_clipboard();
+    // Its read is the button's: a stale button goes, as on a click.
+    app.clipboard.set_read_for_test("hello");
+    app.update(Action::Paste);
+    assert!(!app.sidebar.curl_ready);
+    // An empty clipboard and one that can't be read say what the button
+    // says, not nothing and not the text field's read failure.
+    app.clipboard.set_read_for_test("");
+    app.update(Action::Paste);
+    assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
+    app.toasts = Default::default();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536, false));
+    app.update(Action::Paste);
+    assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
 }
 
 /// `app_with_clip` with the `curl_button` setting on (V13).

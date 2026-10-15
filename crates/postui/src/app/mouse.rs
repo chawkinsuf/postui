@@ -1465,8 +1465,7 @@ impl App {
             }
             Hit::SidebarNewRequest => self.update(Action::PromptNewRequest),
             Hit::SidebarImportCurl => {
-                let folder = self.sidebar.import_folder(&self.active_space());
-                self.update(Action::ImportCurl { folder })
+                self.update(Action::ImportCurl { folder: self.sidebar_import_folder() })
             }
             Hit::SidebarFolderArrow(i) => {
                 self.update(Action::FocusPane(PaneId::Sidebar));
