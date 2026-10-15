@@ -17414,10 +17414,30 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("fmt4".into()));
         app.update(Action::CycleMethod);
-        app.editor.set_body_text("{\n    \"a\": 1\n}");
-        app.editor.set_body_text("{\"a\":{\"b\":1}}");
+        app.editor.set_body_text("{\n    \"a\": {\"b\":1}\n}");
         app.update(Action::FormatBody);
         assert_eq!(app.editor.body_text(), "{\n    \"a\": {\n        \"b\": 1\n    }\n}");
+    }
+
+    /// Review round 1 (the user's "undo restores exactly"): a Format and
+    /// its undo leave the body following the default exactly as before, so
+    /// a later Settings change still reaches it.
+    #[test]
+    fn undoing_a_format_leaves_the_body_on_the_default() {
+        use crate::text::indent::Indent;
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("fmtu".into()));
+        app.update(Action::CycleMethod);
+        app.capture_undo();
+        app.editor.set_body_text("{\"a\":{\"b\":1}}");
+        app.capture_undo();
+        app.update(Action::FormatBody);
+        app.capture_undo();
+        app.update(Action::Undo);
+        assert_eq!(app.editor.body_text(), "{\"a\":{\"b\":1}}");
+        app.ui_settings.indent_tabs = true;
+        app.update(Action::Render);
+        assert_eq!(app.editor.body_indent(), Indent::Tabs, "the setting still reaches it");
     }
 
     /// Spec 2026-10-15 R14: the indented Enter undoes like today's bare

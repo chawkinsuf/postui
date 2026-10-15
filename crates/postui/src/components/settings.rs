@@ -203,7 +203,7 @@ pub fn indent_spelling(tabs: bool) -> &'static str {
 pub fn parse_indent_width(text: &str) -> Result<usize, String> {
     match text.trim().parse::<usize>() {
         Ok(w) if (1..=crate::text::indent::MAX_WIDTH).contains(&w) => Ok(w),
-        _ => Err("expected a whole number from 1 to 8".to_string()),
+        _ => Err(format!("expected a whole number from 1 to {}", crate::text::indent::MAX_WIDTH)),
     }
 }
 

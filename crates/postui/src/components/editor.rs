@@ -192,10 +192,6 @@ pub struct Editor {
     /// The row a triple click selected: while set, `body_drag_to` extends
     /// by whole lines from it. Cleared by any single click.
     body_line_anchor: Option<usize>,
-    /// What [`crate::text::indent::detect`] last found in the body (spec
-    /// 2026-10-15 R3, R5): cleared when a request opens, replaced by any
-    /// wholesale replacement that finds something, never by typing.
-    body_detected: Option<Indent>,
     /// The configured indent (`UiSettings::default_indent`), mirrored in by
     /// `App` on every update so even a fresh scratch has it (R1, R6).
     pub indent_default: Indent,
@@ -325,7 +321,6 @@ impl Default for Editor {
             body_sel_anchor: None,
             body_word_anchor: None,
             body_line_anchor: None,
-            body_detected: None,
             indent_default: Indent::DEFAULT,
             active_tab: EditorTab::Headers,
             preferred_tab: EditorTab::Headers,
@@ -450,9 +445,6 @@ impl Editor {
         self.params = req.params.clone();
         self.headers = req.headers.clone();
         self.variables = req.variables.clone();
-        // A request detects afresh: nothing found falls back to the
-        // default, never to the last request's indent (spec R5).
-        self.body_detected = None;
         self.set_body_text(match &req.body {
             Some(Body::Json { text }) => text,
             None => "",
@@ -734,17 +726,14 @@ impl Editor {
         self.body_hl_text.clear();
         self.body_hl_marker = None;
         self.body_hl_overlays.clear();
-        // Every wholesale replacement detects again, and keeps the indent
-        // when the new text has none of its own (Minify, Clear) (spec R5).
-        if let Some(found) = crate::text::indent::detect(s) {
-            self.body_detected = Some(found);
-        }
     }
 
-    /// The indent the body's keys and Format use: its own, else the
-    /// configured default (spec 2026-10-15 R3).
+    /// The indent the body's keys and Format use: what its text uses now,
+    /// else the configured default (spec 2026-10-15 R3, round-1
+    /// amendment). Read from the text each time, so nothing can go stale:
+    /// an undo gives back exactly the indent it had.
     pub fn body_indent(&self) -> Indent {
-        self.body_detected.unwrap_or(self.indent_default)
+        crate::text::indent::detect(&self.body.lines).unwrap_or(self.indent_default)
     }
 
     /// Whether the body parses as JSON. An empty body is vacuously valid:
@@ -6603,23 +6592,22 @@ mod body_click_tests {
         assert_eq!(e.body_text(), "{\n\t\"a\": 1\n}");
     }
 
-    /// Spec R3, R5: open detects afresh; other replacements detect or keep;
-    /// typing never re-detects.
+    /// Spec R3 and the round-1 amendment: the indent is read from the text
+    /// as it is now, else the default; nothing is remembered.
     #[test]
-    fn the_body_indent_is_detected_on_load_and_kept_through_flat_text() {
+    fn the_body_indent_follows_the_text() {
         use crate::text::indent::Indent;
         let mut e = editor_with_body("");
-        assert_eq!(e.body_indent(), Indent::Spaces(2), "nothing detected: the default");
+        assert_eq!(e.body_indent(), Indent::Spaces(2), "nothing indented: the default");
         e.set_body_text("{\n    \"a\": 1\n}");
         assert_eq!(e.body_indent(), Indent::Spaces(4));
         e.set_body_text("{\"a\":1}");
-        assert_eq!(e.body_indent(), Indent::Spaces(4), "flat text keeps it (Minify)");
+        assert_eq!(e.body_indent(), Indent::Spaces(2), "flat text has no indent of its own");
         e.paste_body("\n\t\tx\n\t\ty");
-        assert_eq!(e.body_indent(), Indent::Spaces(4), "a paste never re-detects");
-        let req =
-            HttpRequest { body: Some(Body::Json { text: "{}".into() }), ..Default::default() };
-        e.load(None, req);
-        assert_eq!(e.body_indent(), Indent::Spaces(2), "opening a request detects afresh");
+        assert_eq!(e.body_indent(), Indent::Tabs, "pasted indented lines count");
+        e.indent_default = Indent::Spaces(4);
+        e.set_body_text("{}");
+        assert_eq!(e.body_indent(), Indent::Spaces(4), "the default, read when asked");
     }
 
     /// Spec 2026-10-15 R8: plain Tab steps to the next indent stop with
@@ -6636,9 +6624,12 @@ mod body_click_tests {
         e.handle_key(pkey(KeyCode::Tab));
         assert_eq!(e.body_text(), "  a b", "column 0 takes a whole level");
         assert_eq!(e.body.cursor, Index2::new(0, 2));
+        e.handle_key(pkey(KeyCode::Tab));
+        assert_eq!(e.body_text(), "    a b", "the text's own 2 now, whatever the default");
+        let mut e = editor_with_body("ab");
         e.indent_default = Indent::Tabs;
         e.handle_key(pkey(KeyCode::Tab));
-        assert_eq!(e.body_text(), "  \ta b");
+        assert_eq!(e.body_text(), "\tab", "flat text: the default");
     }
 
     fn enter_at(text: &str, row: usize, col: usize) -> Editor {

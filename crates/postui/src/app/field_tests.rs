@@ -1174,10 +1174,9 @@ fn the_url_line_shifts_by_two_under_a_four_space_body() {
 #[test]
 fn a_format_with_the_body_open_follows_its_indent() {
     let mut app = vim(Fixture::Body);
-    app.editor.set_body_text("{\n\t\"a\": 1\n}");
-    app.editor.set_body_text("{\"a\":1}");
+    app.editor.set_body_text("{\n\t\"a\": [1]\n}");
     app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT));
-    assert_eq!(body(&app), "{\n\t\"a\": 1\n}");
+    assert_eq!(body(&app), "{\n\t\"a\": [\n\t\t1\n\t]\n}");
 }
 
 /// Final review triage (T6): a clear with the body open is one engine

@@ -429,7 +429,10 @@ impl UiSettings {
                 Some(w) if (1..=crate::text::indent::MAX_WIDTH).contains(&w) => {
                     settings.indent_width = w
                 }
-                _ => wrong_type("indent_width", "an integer from 1 to 8"),
+                _ => wrong_type(
+                    "indent_width",
+                    &format!("an integer from 1 to {}", crate::text::indent::MAX_WIDTH),
+                ),
             },
         }
         match value.get("jq_tab") {

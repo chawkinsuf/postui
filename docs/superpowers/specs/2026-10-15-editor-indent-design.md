@@ -42,6 +42,16 @@ Already true in the vim profile with no change: Format follows the body (R10 is 
 | R13 | Out of scope: smart (bracket-aware) indent; Backspace over a space indent (still deletes one space); converting a body's existing indentation; the response pane's tab width. | mine; offered as follow-up tasks |
 | R14 | Arrows, plain Enter in the body, caret **after** the line's first non-blank: the new line starts with the line's leading whitespace, and the text that moves down loses its own leading blanks, as Vim's `autoindent` does (probed, Vim 9.1.0016: `    foo  \|bar` → `    foo  ` / `    bar`; `  a\|   b` → `  a` / `  b`). It copies whatever the line has, tabs or spaces, so it needs no setting. Caret **at or before** the first non-blank (anywhere in the indent, or on a line that is only whitespace): Enter opens an empty line above, and the line moves down whole, its indent untouched, the caret keeping its column. Repeated Enters therefore leave no trailing blanks behind, which is what Vim gets by removing an autoindent nothing followed (probed: `A<CR><CR>x` on `    a` leaves an empty middle line). Inside the indent this differs from Vim, which cuts the copied indent at the caret, so Enter at column 0 of `    }` gives `` / `}` (probed); arrows keeps the line's indent, as GUI editors do. A paste never auto-indents (`paste_body` inserts raw line breaks). Until #26, the vim profile's autoindent turns a copied tab indent into spaces (`expandtab`), while arrows copies tabs as tabs. | auto-indent: you (copy, not bracket-aware); inside the indent: you (open a line above, over Vim's cut); paste: mine |
 
+### Amendment 2026-10-15, review round 1 (you): the indent is read from the text
+
+Review round 1 found that the remembered `body_detected` broke "undo restores exactly": Format on a flat body pinned the default as detected, undoing the Format kept the pin, and a later Settings change then missed that body. The same root made Format pin in arrows but not under a vim session, and let an unrelated undo after a paste switch the indent. You chose to drop the memory: **a body's effective indent is `detect(its current text)`, else the configured default**, computed when a key, Format or the vim seam asks. This replaces R3's "comes from detection" with "from detection of the text as it is now" and replaces R5 entirely:
+
+- R5 (new): there is no detection event. Opening, Format, Minify, Clear, `$EDITOR`, undo/redo, replace-with-curl, typing and pasting all just change the text, and the indent follows the text. So Minify then Format formats with the configured default (the flat text has no indent of its own), and typing or pasting indented lines can change the body's indent. Undo restores it exactly, and both profiles agree, by construction.
+- R6 is unchanged in effect: a body whose text has no indented lines follows a Settings change at once; one with indented lines keeps its own.
+- Cost (mine, accepted with the choice): one scan of the body's lines each time the indent is asked for (arrows Tab/shift+Tab, Format, and each key the vim seam lends the body for). It reads the edtui lines in place, with no copy of the text.
+
+Also from round 1 (you): dropping an unused auto-indent when the caret leaves the line (Vim's behaviour, VS Code's `trimAutoWhitespace`) is a follow-up task, not #8.
+
 ## 4. Design
 
 **One value, one owner.** A new `crate::text::indent` module (shared code, outside the vim seam, like `text::class`) holds:
@@ -57,7 +67,7 @@ impl Indent {
 
 **Config.** `UiSettings` gains `indent_tabs: bool` and `indent_width: usize`, one per key (so each Settings row and its undo step writes one field), and `UiSettings::default_indent() -> Indent` combines them. They are parsed from the two keys as R1, seeded (commented) in `config_seed`, and saved by the Settings rows through the existing `save_ui_string` / `save_ui_int`. `SettingsField` gains `Indent` and `IndentWidth`. Under `indent = "tabs"` the width is still stored and shown, ready for the follow-up, but nothing reads it yet.
 
-**Editor (the owner).** `Editor` gains `body_detected: Option<Indent>` and `indent_default: Indent`. Its `body_indent()` is `body_detected.unwrap_or(indent_default)`, read on demand, so R6 needs no re-detection. `App` sets `indent_default` when settings load or change.
+**Editor (the owner).** (The `body_detected` memory and its three bullets below are superseded by the round-1 amendment above: `body_indent()` is `detect(lines).unwrap_or(indent_default)`, and neither `load` nor `set_body_text` detects.) `Editor` gains `body_detected: Option<Indent>` and `indent_default: Indent`. Its `body_indent()` is `body_detected.unwrap_or(indent_default)`, read on demand, so R6 needs no re-detection. `App` sets `indent_default` when settings load or change.
 
 - `Editor::load` clears `body_detected` before it sets the text.
 - `set_body_text`, the one path every wholesale replacement in R5 takes, runs `detect` and keeps the old value on `None`. Replace-with-curl reaches it through `apply_snapshot`.
