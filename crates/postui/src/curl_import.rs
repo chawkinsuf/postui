@@ -28,6 +28,26 @@ pub struct CreatedImport {
     pub reserved: Vec<String>,
 }
 
+/// A curl command's variables, sorted (spec curl R7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurlVariables {
+    /// To declare as secrets, each with the paste's value if it has one.
+    pub secrets: Vec<(String, Option<String>)>,
+    /// Names already there, and whether their value is the paste's.
+    pub kept: Vec<(String, bool)>,
+    /// Names no variable may have.
+    pub reserved: Vec<String>,
+}
+
+/// A replace decided before the dirty gate (replace-with-curl U7): the
+/// one command and its sorted variables, so nothing past the gate can
+/// refuse what the gate's answer already did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurlReplace {
+    pub batch: CurlBatch,
+    pub vars: CurlVariables,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CurlImportRun {
     /// The folder slug the requests go into (`main/api`); `None` is the

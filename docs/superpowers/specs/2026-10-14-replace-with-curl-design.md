@@ -40,10 +40,10 @@ Two facts shape the design:
 | U4 | A clipboard with more than one curl command refuses: error toast `clipboard holds 3 curl commands; replace takes one`. Nothing changes. | you |
 | U5 | Undo: the declarations are one `Project` step and the editor change is the next one, an `EditorDelta`, as extract-to-variable does. The first undo puts the request back exactly as it was (unsaved edits included); the second removes the declarations. Discard reverts the request and leaves the declarations. Replace without new declarations is one step. | you (accepted with "same as import") |
 | U6 | Entry points: request row right-click **"Replace with curl"** directly after "Copy as curl" (not on broken rows); palette **"Request: replace with curl from clipboard"** for what the editor holds, scratch included. No new key, no new vim ex verb: vim's `:` line already reaches palette rows. | mine (as curl R5) |
-| U7 | Replacing a row that is not open opens it first. Unsaved work in the editor meets the usual dirty gate (`open`), then the replace runs. The clipboard is parsed **before** the gate, so a non-curl clipboard just toasts. | mine |
+| U7 | Replacing a row that is not open opens it first. Unsaved work in the editor meets the usual dirty gate (`open`), then the replace runs. Everything that can refuse runs **before** the gate: the clipboard read, the parse, reading the row's file, and sorting the variables (an unreadable environment file). A refusal only toasts, and the gate's follow-on carries what was read, so the clipboard is never read twice (first review round, 2026-10-14). | mine |
 | U8 | Replacing the open request needs no gate: its unsaved edits are replaced in place and undo brings them back (U5). No confirm (delete-never-confirms: undo is the net). | mine |
 | U9 | `# @name` (D18) is ignored: replace never renames. | mine |
-| U10 | A curl variable named like one of the request's own variables counts as kept: the request variable wins at send, so nothing is declared over it. | mine |
+| U10 | A curl variable named like one of the request's own **enabled** variables counts as kept: the request variable wins at send, so nothing is declared over it. A disabled one sends nothing, so the name is sorted as if it were absent (first review round). | mine |
 | U11 | Toast: `Replaced {name} from curl`, then import's summary parts (§4.3: ignored flags, converted, saved, declared with no value, kept, reserved, values dropped, skipped lines) after `; `, then the undo hint (` — ^Z undoes`). A scratch is named `the unsaved request`. Its kind is the summary's (warning or success); success when the summary is empty. | mine |
 | U12 | Errors as import: unreadable clipboard, `CurlError`, no project, and a refused declaration (an unreadable environment file) each toast and change nothing. | mine |
 
@@ -59,13 +59,18 @@ declare body inside its one transaction. Nothing else in core changes.
 **App**:
 
 - `Action::ReplaceWithCurl(Option<String>)`: `None` is what the editor
-  holds, as with `CopyAsCurl`. Then `Action::ForceReplaceWithCurl(String)`,
-  the dirty gate's follow-on: open that slug, then replace.
-- `curl_flow.rs`: `replace_with_curl`. It reads the clipboard and parses;
-  refuses U4; opens or gates for U7; then runs `apply_curl_replace`:
-  1. partitions the variables. Import's partition moves into one helper,
-     `curl_variables(&import, request_vars)`, used by both flows; U10
-     passes the open request's variables.
+  holds, as with `CopyAsCurl`. Then `Action::ForceReplaceWithCurl { slug,
+  replace }`, the dirty gate's follow-on: open that slug, then replace with
+  the `CurlReplace` (the batch and its sorted variables) read before the
+  gate.
+- `curl_flow.rs`: `replace_with_curl`. It reads and parses the clipboard
+  (`clipboard_curl`, shared with import); refuses U4; sorts the variables
+  against the target's own variables (U10); then gates, opens, or applies
+  (U7). `apply_curl_replace`:
+  1. flushes the open field session, then reads the fields it keeps.
+     Import's partition is one helper, `curl_variables(&import,
+     request_vars)`, used by both flows. An unreadable environment file is
+     its error.
   2. When there are secrets: `begin_op`, then `declare_secrets`, then
      `record_project_step` (label: change to {request}), recorded before
      the editor change, as extract does.

@@ -960,3 +960,47 @@ fn a_broken_row_offers_no_replace() {
     let items = app.context_menu_for(&Hit::SidebarRow(i)).expect("menu");
     assert!(items.iter().all(|m| m.label != "Replace with curl"));
 }
+
+#[test]
+fn a_disabled_request_variable_is_declared_as_a_secret() {
+    let mut app = kept_app("export v=2\ncurl -H \"A: $v\" https://x/new");
+    app.editor.variables.get_mut("v").unwrap().enabled = false;
+    app.capture_undo();
+    replace(&mut app, None);
+    assert!(app.proj().variables().vars["v"].secret, "a disabled one sends nothing");
+    assert_eq!(app.proj().resolved().values.get("v").map(String::as_str), Some("2"));
+}
+
+#[test]
+fn what_the_gate_answers_is_the_paste_read_before_it() {
+    let mut app = kept_app("curl https://x/new");
+    app.editor.url = LineInput::new("https://x/edited");
+    app.capture_undo();
+    replace(&mut app, Some("main/top"));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    let mut c = crate::clipboard::Clipboard::new_for_test(None, 65536, false);
+    c.set_read_for_test("not curl any more");
+    app.set_clipboard_for_test(c);
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    app.capture_undo();
+    assert_eq!(app.editor.slug.as_deref(), Some("main/top"));
+    assert_eq!(app.editor.url.text(), "https://x/new");
+}
+
+#[test]
+fn an_unreadable_environment_refuses_before_the_gate_or_the_open() {
+    let mut app = kept_app("curl -H \"A: $OTHER\" https://x/new");
+    std::fs::create_dir_all(app.proj().root().join("environments")).unwrap();
+    std::fs::write(app.proj().root().join("environments/qa.toml"), "").unwrap();
+    app.update(Action::ReloadProjectFiles);
+    app.editor.url = LineInput::new("https://x/edited");
+    app.capture_undo();
+    std::fs::write(app.proj().root().join("environments/qa.toml"), "TOKEN = [").unwrap();
+    replace(&mut app, Some("main/top"));
+    assert!(app.modals.is_empty(), "no gate for a replace that can't happen");
+    assert_eq!(app.editor.slug.as_deref(), Some("main/kept"));
+    assert_eq!(app.editor.url.text(), "https://x/edited");
+    let (msg, kind) = *app.toasts.entries().last().unwrap();
+    assert!(msg.starts_with("cannot replace: "), "{msg}");
+    assert_eq!(*kind, crate::components::toast::ToastKind::Error);
+}

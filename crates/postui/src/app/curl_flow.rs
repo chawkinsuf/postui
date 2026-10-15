@@ -3,36 +3,34 @@
 //! Split from `app.rs`; every method here is `impl App`.
 
 use super::*;
-use crate::curl_import::{CreatedImport, CurlImportRun};
+use crate::curl_import::{CreatedImport, CurlImportRun, CurlReplace, CurlVariables};
 use postui_core::curl::{CurlBatch, CurlImport};
 
-/// A curl command's variables, sorted (spec curl R7).
-struct CurlVariables {
-    /// To declare as secrets, each with the paste's value if it has one.
-    secrets: Vec<(String, Option<String>)>,
-    /// Names already there, and whether their value is the paste's.
-    kept: Vec<(String, bool)>,
-    /// Names no variable may have.
-    reserved: Vec<String>,
-}
-
 impl App {
+    /// The clipboard's curl commands; a clipboard that can't be read or
+    /// does not parse toasts why and gives `None`.
+    fn clipboard_curl(&mut self) -> Option<CurlBatch> {
+        let Ok(text) = self.clipboard.read() else {
+            self.toasts.push("clipboard doesn't hold a curl command", ToastKind::Error);
+            return None;
+        };
+        match postui_core::curl::parse(&text) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                self.toasts.push(e.to_string(), ToastKind::Error);
+                None
+            }
+        }
+    }
+
     /// `Action::ImportCurl` (spec §4.2 steps 1–2): clipboard → parse →
     /// dirty gate → first prompt. A failure toasts and creates nothing.
     pub(super) fn import_curl(&mut self, folder: Option<String>) -> bool {
         if self.refuse_without_project() {
             return true;
         }
-        let Ok(text) = self.clipboard.read() else {
-            self.toasts.push("clipboard doesn't hold a curl command", ToastKind::Error);
+        let Some(batch) = self.clipboard_curl() else {
             return true;
-        };
-        let batch = match postui_core::curl::parse(&text) {
-            Ok(b) => b,
-            Err(e) => {
-                self.toasts.push(e.to_string(), ToastKind::Error);
-                return true;
-            }
         };
         let run = Box::new(CurlImportRun::new(batch, folder));
         // Each create opens its request, replacing the editor: ask once,
@@ -120,7 +118,14 @@ impl App {
     pub(super) fn import_curl_create(&mut self, mut run: CurlImportRun, name: &str) -> bool {
         let import = run.current().clone();
         let CurlVariables { secrets, kept, reserved } =
-            self.curl_variables(&import, &Default::default());
+            match self.curl_variables(&import, &Default::default()) {
+                Ok(v) => v,
+                Err(e) => {
+                    self.toasts.push(format!("could not save {name}: {e}"), ToastKind::Error);
+                    self.last_action_failed = true;
+                    return true;
+                }
+            };
         let env = self.project().and_then(|p| p.active_env().map(|e| p.env_name(e)));
         let name = match self.create_request_from(name, |_| import.request, &secrets) {
             CreateOutcome::Refused => return true,
@@ -149,102 +154,119 @@ impl App {
     /// `import`'s variables sorted as spec R7 says: the paste's values go
     /// in as secrets, never over a variable the project (or, for a
     /// replace, the request itself, `request_vars`) already has, nor under
-    /// a reserved name.
+    /// a reserved name. Only an enabled request variable counts: a
+    /// disabled one sends nothing (U10). An environment file that can't be
+    /// read is an error: what it sets is unknown.
     fn curl_variables(
         &mut self,
         import: &CurlImport,
         request_vars: &indexmap::IndexMap<String, postui_core::model::Entry>,
-    ) -> CurlVariables {
-        let (reserved, variables): (Vec<_>, Vec<_>) = import
-            .variables
-            .iter()
-            .cloned()
-            .partition(|(n, _)| postui_core::varmodel::is_reserved(n));
-        // An environment file that can't be read leaves the name to the
-        // write, which refuses it and says why.
-        let (secrets, kept): (Vec<_>, Vec<_>) = variables.into_iter().partition(|(n, _)| {
-            !request_vars.contains_key(n)
-                && !self.project_mut().is_some_and(|p| p.variable_exists(n).unwrap_or(false))
-        });
-        // A paste's value not known is no news against the project's.
-        let kept = kept
-            .into_iter()
-            .map(|(n, v)| {
-                let same = v.as_ref().is_none_or(|v| match request_vars.get(&n) {
-                    Some(e) => e.value == *v,
-                    None => self.project().is_some_and(|p| p.resolved().values.get(&n) == Some(v)),
-                });
-                (n, same)
-            })
-            .collect();
-        CurlVariables { secrets, kept, reserved: reserved.into_iter().map(|(n, _)| n).collect() }
+    ) -> Result<CurlVariables, String> {
+        let mut vars =
+            CurlVariables { secrets: Vec::new(), kept: Vec::new(), reserved: Vec::new() };
+        for (n, v) in import.variables.iter().cloned() {
+            if postui_core::varmodel::is_reserved(&n) {
+                vars.reserved.push(n);
+                continue;
+            }
+            let request = request_vars.get(&n).filter(|e| e.enabled);
+            let exists = match self.project_mut() {
+                Some(p) => p.variable_exists(&n).map_err(|e| e.to_string())?,
+                None => false,
+            };
+            if request.is_none() && !exists {
+                vars.secrets.push((n, v));
+                continue;
+            }
+            // A paste's value not known is no news against the project's.
+            let same = v.as_ref().is_none_or(|v| match request {
+                Some(e) => e.value == *v,
+                None => self.project().is_some_and(|p| p.resolved().values.get(&n) == Some(v)),
+            });
+            vars.kept.push((n, same));
+        }
+        Ok(vars)
     }
 
-    /// `Action::ReplaceWithCurl` / `ForceReplaceWithCurl` (spec
-    /// 2026-10-14 replace-with-curl): the clipboard's one curl command
-    /// replaces the request in the editor. `slug` names a sidebar row,
-    /// opened first, through the dirty gate unless `gated` says it ran
-    /// (U7). The clipboard is read before the gate, so a paste that is no
-    /// curl only toasts.
-    pub(super) fn replace_with_curl(&mut self, slug: Option<String>, gated: bool) -> bool {
+    /// `Action::ReplaceWithCurl` (spec 2026-10-14 replace-with-curl): the
+    /// clipboard's one curl command replaces the request in the editor.
+    /// `slug` names a sidebar row, opened first, through the dirty gate
+    /// (U7). Everything that can refuse (the clipboard, the parse, the
+    /// target's file, the variables' sort) runs before the gate, so a
+    /// refusal only toasts and the gate's answer is never left undone.
+    pub(super) fn replace_with_curl(&mut self, slug: Option<String>) -> bool {
         if self.refuse_without_project() {
             return true;
         }
-        let Some(batch) = self.one_curl_command() else {
+        let Some(batch) = self.clipboard_curl() else {
             return true;
         };
-        if let Some(slug) = slug.filter(|s| self.editor.slug.as_deref() != Some(s.as_str())) {
-            if !gated && self.editor_holds_unsaved() {
-                self.dirty_gate("open", Action::ForceReplaceWithCurl(slug));
-                return true;
-            }
-            self.apply(Action::ForceOpenRequest(slug.clone()));
-            if self.editor.slug.as_deref() != Some(slug.as_str()) {
-                // The open failed and toasted why.
-                return true;
-            }
-            // Re-seed the shadow for the newly opened request: the open and
-            // the replace share an input event, and a capture that sees the
-            // slug change only re-seeds, so the replace would be no step.
-            self.capture_undo();
+        if batch.commands.len() > 1 {
+            let n = batch.commands.len();
+            let msg = format!("clipboard holds {n} curl commands; replace takes one");
+            self.toasts.push(msg, ToastKind::Error);
+            return true;
         }
-        self.apply_curl_replace(batch);
+        let other = slug.filter(|s| self.editor.slug.as_deref() != Some(s.as_str()));
+        // The variables the request will have once open: its file's, for a
+        // row that is not open yet.
+        let request_vars = match &other {
+            None => self.editor.variables.clone(),
+            Some(s) => match self.project_mut().map(|p| p.read_request(s)) {
+                Some(Ok(r)) => r.variables,
+                Some(Err(e)) => {
+                    let msg = format!("could not read {}: {e}", self.request_display(s));
+                    self.toasts.push(msg, ToastKind::Error);
+                    return true;
+                }
+                None => return true,
+            },
+        };
+        let vars = match self.curl_variables(&batch.commands[0], &request_vars) {
+            Ok(v) => v,
+            Err(e) => {
+                self.toasts.push(format!("cannot replace: {e}"), ToastKind::Error);
+                return true;
+            }
+        };
+        let replace = CurlReplace { batch, vars };
+        match other {
+            Some(slug) if self.editor_holds_unsaved() => {
+                let replace = Box::new(replace);
+                self.dirty_gate("open", Action::ForceReplaceWithCurl { slug, replace });
+            }
+            Some(slug) => self.open_and_replace(slug, replace),
+            None => self.apply_curl_replace(replace),
+        }
         true
     }
 
-    /// The clipboard's curl, when it holds exactly one command (U4);
-    /// otherwise toasts why and gives `None`.
-    fn one_curl_command(&mut self) -> Option<CurlBatch> {
-        let Ok(text) = self.clipboard.read() else {
-            self.toasts.push("clipboard doesn't hold a curl command", ToastKind::Error);
-            return None;
-        };
-        match postui_core::curl::parse(&text) {
-            Ok(b) if b.commands.len() == 1 => Some(b),
-            Ok(b) => {
-                let msg = format!(
-                    "clipboard holds {} curl commands; replace takes one",
-                    b.commands.len()
-                );
-                self.toasts.push(msg, ToastKind::Error);
-                None
-            }
-            Err(e) => {
-                self.toasts.push(e.to_string(), ToastKind::Error);
-                None
-            }
+    /// `Action::ForceReplaceWithCurl`, and a clean editor's way there:
+    /// opens `slug`, then replaces it.
+    pub(super) fn open_and_replace(&mut self, slug: String, replace: CurlReplace) {
+        self.apply(Action::ForceOpenRequest(slug.clone()));
+        if self.editor.slug.as_deref() != Some(slug.as_str()) {
+            // The open failed and toasted why.
+            return;
         }
+        // The open and the replace share an input event, and a capture
+        // that sees the slug change only re-seeds: seat the opened request
+        // as the shadow here, so the replace is a step of its own.
+        self.shadow = Some((self.editor.slug.clone(), self.editor.current_request()));
+        self.apply_curl_replace(replace);
     }
 
     /// The replace itself (U2, U3, U5, U11). The declarations are a project
     /// step recorded before the editor changes, as extract-to-variable's
     /// are: the editor change is then the next `capture_undo`'s own step,
     /// so undoing it never reloads the request over unsaved work.
-    fn apply_curl_replace(&mut self, batch: CurlBatch) {
+    fn apply_curl_replace(&mut self, replace: CurlReplace) {
+        let CurlReplace { batch, vars: CurlVariables { secrets, kept, reserved } } = replace;
+        // An open field's keys become their own step first, and the fields
+        // the replace keeps are read after they land.
+        self.flush_field_session();
         let import = batch.commands[0].clone();
         let current = self.editor.current_request();
-        let CurlVariables { secrets, kept, reserved } =
-            self.curl_variables(&import, &current.variables);
         let env = self.project().and_then(|p| p.active_env().map(|e| p.env_name(e)));
         if !secrets.is_empty() {
             let names: Vec<&str> = secrets.iter().map(|(n, _)| n.as_str()).collect();
@@ -258,12 +280,10 @@ impl App {
             self.sync_varmanager();
             self.record_project_step(t, label);
             if let Err(msg) = result {
-                self.toasts.push(msg, ToastKind::Error);
-                self.last_action_failed = true;
+                self.toasts.push(format!("cannot replace: {msg}"), ToastKind::Error);
                 return;
             }
         }
-        self.flush_field_session();
         let replaced = postui_core::model::HttpRequest {
             name: current.name,
             jq: current.jq,

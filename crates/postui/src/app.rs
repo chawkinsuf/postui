@@ -3478,8 +3478,11 @@ impl App {
                 true
             }
             Action::CopyAsCurl(slug) => self.copy_as_curl(slug),
-            Action::ReplaceWithCurl(slug) => self.replace_with_curl(slug, false),
-            Action::ForceReplaceWithCurl(slug) => self.replace_with_curl(Some(slug), true),
+            Action::ReplaceWithCurl(slug) => self.replace_with_curl(slug),
+            Action::ForceReplaceWithCurl { slug, replace } => {
+                self.open_and_replace(slug, *replace);
+                true
+            }
             Action::PromptNewRequestIn(folder) => {
                 if self.refuse_without_project() {
                     return true;
