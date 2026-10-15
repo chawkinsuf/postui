@@ -612,6 +612,31 @@ impl Project {
         if secrets.is_empty() {
             return self.create_request(display_path, req);
         }
+        self.check_new_secrets(secrets)?;
+        self.transaction("create request", EntryMeta::default(), |p| {
+            let created = p.create_request(display_path, req)?;
+            p.write_new_secrets(secrets)?;
+            Ok(created)
+        })
+    }
+
+    /// Each of `secrets` declared as a secret variable holding its value,
+    /// if it has one, in the active environment, as one undo entry (curl
+    /// replace spec U3/U5). Refuses as `create_request_with_secrets`
+    /// does, before anything lands; with no secrets it does nothing.
+    pub fn declare_secrets(&mut self, secrets: &[(String, Option<String>)]) -> Result<(), Error> {
+        if secrets.is_empty() {
+            return Ok(());
+        }
+        self.check_new_secrets(secrets)?;
+        self.transaction("declare variables", EntryMeta::default(), |p| {
+            p.write_new_secrets(secrets)
+        })
+    }
+
+    /// Refuses a name that is not a valid variable name, is reserved, or
+    /// that the project has (`variable_exists`).
+    fn check_new_secrets(&mut self, secrets: &[(String, Option<String>)]) -> Result<(), Error> {
         for (name, _) in secrets {
             if !is_valid_var_name(name) {
                 return Err(edit(format!("\"{name}\" is not a valid variable name")));
@@ -622,36 +647,37 @@ impl Project {
                 return Err(edit(format!("a variable named \"{name}\" already exists")));
             }
         }
+        Ok(())
+    }
+
+    /// The writes of a checked `secrets`, inside the caller's transaction.
+    fn write_new_secrets(&mut self, secrets: &[(String, Option<String>)]) -> Result<(), Error> {
         let env = self.env_key();
-        self.transaction("create request", EntryMeta::default(), |p| {
-            let created = p.create_request(display_path, req)?;
-            // A value an earlier declaration of the name left in the
-            // secrets file is not the paste's: the new secret holds the
-            // paste's value or none, in every environment.
-            let mut changed = false;
-            for values in p.secrets.values_mut() {
-                for (name, _) in secrets {
-                    changed |= values.shift_remove(name).is_some();
-                }
+        // A value an earlier declaration of the name left in the secrets
+        // file is not the paste's: the new secret holds the paste's value
+        // or none, in every environment.
+        let mut changed = false;
+        for values in self.secrets.values_mut() {
+            for (name, _) in secrets {
+                changed |= values.shift_remove(name).is_some();
             }
-            for (name, value) in secrets {
-                if let Some(value) = value {
-                    p.secrets.entry(env.clone()).or_default().insert(name.clone(), value.clone());
-                    changed = true;
-                }
+        }
+        for (name, value) in secrets {
+            if let Some(value) = value {
+                self.secrets.entry(env.clone()).or_default().insert(name.clone(), value.clone());
+                changed = true;
             }
-            // One write of each file; declaring re-resolves with the
-            // secrets already in place.
-            if changed {
-                p.write_secrets_journaled()?;
-            }
-            p.edit_variables(|doc| {
-                secrets.iter().try_fold(doc.to_string(), |doc, (name, _)| {
-                    let declared = varedit::upsert_var(&doc, name, None, None)?;
-                    varedit::set_secret_flag(&declared, name, true)
-                })
-            })?;
-            Ok(created)
+        }
+        // One write of each file; declaring re-resolves with the secrets
+        // already in place.
+        if changed {
+            self.write_secrets_journaled()?;
+        }
+        self.edit_variables(|doc| {
+            secrets.iter().try_fold(doc.to_string(), |doc, (name, _)| {
+                let declared = varedit::upsert_var(&doc, name, None, None)?;
+                varedit::set_secret_flag(&declared, name, true)
+            })
         })
     }
 }
@@ -844,6 +870,36 @@ mod tests {
             assert_eq!(p.secrets()[env].get("KEY").map(String::as_str), Some("old"), "{env}");
             assert_eq!(p.secrets()[env].get("TOKEN").map(String::as_str), Some("old"), "{env}");
         }
+    }
+
+    #[test]
+    fn secrets_declared_alone_are_one_entry_and_refuse_a_taken_name() {
+        let (dir, mut p) = vars_fixture();
+        p.set_active_env(Some("dev".into()));
+        p.set_secret_for("qa", "KEY", "old".into()).unwrap();
+        let before = p.journal_len();
+        let secrets =
+            vec![("TOKEN".to_string(), Some("abc123".to_string())), ("KEY".to_string(), None)];
+        p.declare_secrets(&secrets).unwrap();
+        assert_eq!(p.journal_len(), before + 1, "one undo entry");
+        assert!(p.variables().vars["TOKEN"].secret && p.variables().vars["KEY"].secret);
+        assert_eq!(p.secrets()["dev"]["TOKEN"], "abc123");
+        assert!(!p.secrets()["qa"].contains_key("KEY"), "a leftover value is not the paste's");
+        assert_eq!(p.resolved().meta.get("KEY"), Some(&varmodel::VarMeta::MissingSecret));
+        assert!(!read(&dir, "variables.toml").unwrap().contains("abc123"));
+        p.undo().unwrap();
+        assert!(!p.variables().vars.contains_key("TOKEN"));
+        assert!(!p.variables().vars.contains_key("KEY"));
+        assert_eq!(p.secrets()["qa"].get("KEY").map(String::as_str), Some("old"));
+        // Taken, reserved and invalid names refuse before anything lands.
+        let len = p.journal_len();
+        for name in ["base_url", "entries", "bad name"] {
+            let err = p.declare_secrets(&[(name.to_string(), None)]).unwrap_err();
+            assert!(matches!(err, Error::Edit(_)), "{name}: {err:?}");
+        }
+        assert_eq!(p.journal_len(), len);
+        p.declare_secrets(&[]).unwrap();
+        assert_eq!(p.journal_len(), len, "nothing to declare journals nothing");
     }
 
     #[test]

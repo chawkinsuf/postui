@@ -5372,6 +5372,7 @@ fn request_context_menu_offers_one_move_row_that_opens_the_space_chooser() {
             "Open",
             "Duplicate",
             "Copy as curl",
+            "Replace with curl",
             "Move up",
             "Move down",
             "Rename\u{2026}",
@@ -5379,7 +5380,7 @@ fn request_context_menu_offers_one_move_row_that_opens_the_space_chooser() {
             "Delete"
         ]
     );
-    let move_row = d.items[6].action.clone();
+    let move_row = d.items[7].action.clone();
     assert_eq!(move_row, Some(Action::PromptMoveRequestToSpace("main/alpha".into())));
     app.update(Action::Close);
     app.update(move_row.unwrap());

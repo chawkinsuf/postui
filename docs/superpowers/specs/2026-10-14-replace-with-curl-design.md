@@ -1,6 +1,7 @@
 # Replace a request with curl — design
 
-Date: 2026-10-14. Task #10. Status: draft for the user's review.
+Date: 2026-10-14. Task #10. Status: reviewed in chat and approved by
+the user (2026-10-14), `mine` choices included.
 
 ## 1. Problem
 
@@ -43,7 +44,7 @@ Two facts shape the design:
 | U8 | Replacing the open request needs no gate: its unsaved edits are replaced in place and undo brings them back (U5). No confirm (delete-never-confirms: undo is the net). | mine |
 | U9 | `# @name` (D18) is ignored: replace never renames. | mine |
 | U10 | A curl variable named like one of the request's own variables counts as kept: the request variable wins at send, so nothing is declared over it. | mine |
-| U11 | Toast: `Replaced {name} from curl — ^Z undoes`, then import's summary parts (§4.3: ignored flags, converted, saved, declared with no value, kept, reserved, values dropped, skipped lines) after `; `. Its kind is the summary's (warning or success); success when the summary is empty. | mine |
+| U11 | Toast: `Replaced {name} from curl`, then import's summary parts (§4.3: ignored flags, converted, saved, declared with no value, kept, reserved, values dropped, skipped lines) after `; `, then the undo hint (` — ^Z undoes`). A scratch is named `the unsaved request`. Its kind is the summary's (warning or success); success when the summary is empty. | mine |
 | U12 | Errors as import: unreadable clipboard, `CurlError`, no project, and a refused declaration (an unreadable environment file) each toast and change nothing. | mine |
 
 ## 3. Design

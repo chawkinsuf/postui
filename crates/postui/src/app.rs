@@ -3478,6 +3478,8 @@ impl App {
                 true
             }
             Action::CopyAsCurl(slug) => self.copy_as_curl(slug),
+            Action::ReplaceWithCurl(slug) => self.replace_with_curl(slug, false),
+            Action::ForceReplaceWithCurl(slug) => self.replace_with_curl(Some(slug), true),
             Action::PromptNewRequestIn(folder) => {
                 if self.refuse_without_project() {
                     return true;
@@ -8880,6 +8882,7 @@ impl App {
                     MenuItem::new("Open", Action::OpenRequest(slug.clone())),
                     MenuItem::new("Duplicate", Action::DuplicateRequest),
                     MenuItem::new("Copy as curl", Action::CopyAsCurl(Some(slug.clone()))),
+                    MenuItem::new("Replace with curl", Action::ReplaceWithCurl(Some(slug.clone()))),
                     if first {
                         MenuItem::disabled("Move up")
                     } else {
