@@ -203,6 +203,10 @@ impl App {
                 // The open failed and toasted why.
                 return true;
             }
+            // Re-seed the shadow for the newly opened request: the open and
+            // the replace share an input event, and a capture that sees the
+            // slug change only re-seeds, so the replace would be no step.
+            self.capture_undo();
         }
         self.apply_curl_replace(batch);
         true

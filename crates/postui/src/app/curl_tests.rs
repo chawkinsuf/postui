@@ -855,6 +855,26 @@ fn a_row_that_is_not_open_is_opened_through_the_dirty_gate_then_replaced() {
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.slug.as_deref(), Some("main/api/ping"));
     assert_eq!(app.editor.url.text(), "https://x/new");
+    // The open and the replace share one input event; the replace is
+    // still its own undo step.
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/api/ping"));
+    assert_eq!(app.editor.url.text(), "https://x/ping");
+    assert!(!app.editor_holds_unsaved());
+}
+
+#[test]
+fn undo_after_replacing_a_row_that_was_not_open_restores_it_before_the_declarations() {
+    let mut app = kept_app("export TOKEN=abc\ncurl -H \"A: $TOKEN\" https://x/new");
+    replace(&mut app, Some("main/top"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/top"));
+    assert_eq!(app.editor.url.text(), "https://x/new");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://x/top", "the editor change first");
+    assert!(app.proj().variables().vars.contains_key("TOKEN"));
+    app.update(Action::Undo);
+    assert!(!app.proj().variables().vars.contains_key("TOKEN"));
+    assert_eq!(app.editor.url.text(), "https://x/top");
 }
 
 #[test]
