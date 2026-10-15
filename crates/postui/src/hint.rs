@@ -385,6 +385,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
 
         // -- Sidebar --
         Hit::SidebarNewRequest => of(Action::PromptNewRequest),
+        Hit::SidebarImportCurl => text("Import curl from clipboard"),
         Hit::SidebarFolderArrow(_) => {
             text(if ctx.on { "Collapse this folder" } else { "Expand this folder" })
         }
@@ -747,6 +748,7 @@ mod tests {
                                     row,
                                     jq,
                                     field_open,
+                                    true,
                                 );
                                 for (_, _, action) in chips {
                                     let Some(action) = action else { continue };
@@ -921,6 +923,7 @@ mod tests {
             Hit::SaveBodyButton,
             Hit::CopyUrl,
             Hit::SidebarNewRequest,
+            Hit::SidebarImportCurl,
             Hit::MethodSelector,
             Hit::EditorTab(0),
             Hit::ResponseTab(crate::components::response::ViewMode::Pretty),

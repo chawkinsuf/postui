@@ -80,34 +80,45 @@ pub(crate) fn footer_chips(
     // cancel`. On the response pane it also picks out the search box's own
     // pair, the field the jq bar isn't.
     field_open: bool,
+    // The clipboard holds curl (`Sidebar::curl_ready`): the sidebar
+    // advertises that a paste imports it (spec 2026-10-15 curl import
+    // visibility V9).
+    curl_ready: bool,
 ) -> Vec<(Key, &'static str, Option<Action>)> {
     let chips: Vec<(Key, &'static str, Option<Action>)> = match focus {
-        PaneId::Sidebar => vec![
-            (Key::Named("enter"), "open", None),
-            // The keycaps spell the router's verb rows (`a`, `dd`/`d`, …);
-            // each action is what `Sidebar::verb_action` resolves on a
-            // request row (plan M2 Deviation 3).
-            (Key::Of(Action::OnSelection(Verb::Add)), "new", Some(Action::PromptNewRequest)),
-            (
-                Key::Of(Action::OnSelection(Verb::Rename)),
-                "rename",
-                Some(Action::PromptRenameRequest),
-            ),
-            (
-                Key::Of(Action::OnSelection(Verb::Delete { count: 1 })),
-                "delete",
-                Some(Action::DeleteSelectedRequest),
-            ),
-            // Space *switching* is the header's job (its space pill and
-            // cycle pill); the sidebar's own space action is moving the
-            // selected request into another one.
-            (
-                Key::Of(Action::OnSelection(Verb::Move)),
-                "move",
-                Some(Action::PromptMoveSelectedRequestToSpace),
-            ),
-            (Key::Named("alt+\u{2191}\u{2193}"), "reorder", None),
-        ],
+        PaneId::Sidebar => {
+            let mut chips = vec![
+                (Key::Named("enter"), "open", None),
+                // The keycaps spell the router's verb rows (`a`, `dd`/`d`, …);
+                // each action is what `Sidebar::verb_action` resolves on a
+                // request row (plan M2 Deviation 3).
+                (Key::Of(Action::OnSelection(Verb::Add)), "new", Some(Action::PromptNewRequest)),
+                (
+                    Key::Of(Action::OnSelection(Verb::Rename)),
+                    "rename",
+                    Some(Action::PromptRenameRequest),
+                ),
+                (
+                    Key::Of(Action::OnSelection(Verb::Delete { count: 1 })),
+                    "delete",
+                    Some(Action::DeleteSelectedRequest),
+                ),
+                // Space *switching* is the header's job (its space pill and
+                // cycle pill); the sidebar's own space action is moving the
+                // selected request into another one.
+                (
+                    Key::Of(Action::OnSelection(Verb::Move)),
+                    "move",
+                    Some(Action::PromptMoveSelectedRequestToSpace),
+                ),
+                (Key::Named("alt+\u{2191}\u{2193}"), "reorder", None),
+            ];
+            // Last, so nothing shifts as it comes and goes.
+            if curl_ready {
+                chips.push((Key::Of(Action::Paste), "import curl", Some(Action::Paste)));
+            }
+            chips
+        }
         PaneId::Editor => {
             let mut chips: Vec<(Key, &'static str, Option<Action>)> = Vec::new();
             // Shift+Enter is only reportable under the kitty keyboard
@@ -340,6 +351,8 @@ pub fn draw_footer(
     // See `footer_chips`: this pane's own text field owns the caret, so
     // Esc is its.
     field_open: bool,
+    // See `footer_chips`: the clipboard holds curl.
+    curl_ready: bool,
     // Replaces the per-pane chips wholesale when `Some` — a modal's own
     // chip set, or the Variable Manager screen's
     // (`VarManager::footer_chips`), whose actions target
@@ -456,6 +469,7 @@ pub fn draw_footer(
             table_row_selected,
             jq_bar,
             field_open,
+            curl_ready,
         )
         .into_iter()
         .map(|(k, l, a)| {
@@ -676,6 +690,7 @@ mod tests {
                 table_row_selected,
                 jq_bar,
                 field_open,
+                false,
             ),
         )
     }
@@ -752,6 +767,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     false,
                     None,
                     true,
@@ -959,6 +975,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     false,
                     None,
                     true,
@@ -1379,6 +1396,7 @@ mod tests {
                     None,
                     JqBarState::Closed,
                     false,
+                    false,
                     None,
                     true,
                     true,
@@ -1419,6 +1437,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     false,
                     None,
                     true,
@@ -1468,6 +1487,7 @@ mod tests {
                     None,
                     JqBarState::Closed,
                     false,
+                    false,
                     None,
                     true,
                     true,
@@ -1510,6 +1530,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     false,
                     None,
                     true,
@@ -1588,6 +1609,7 @@ mod tests {
                     None,
                     JqBarState::Closed,
                     false,
+                    false,
                     None,
                     true,
                     true,
@@ -1647,6 +1669,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     false,
                     None,
                     true,
@@ -1748,6 +1771,7 @@ mod tests {
                     None,
                     JqBarState::Closed,
                     false,
+                    false,
                     None,
                     true,
                     true,
@@ -1803,6 +1827,7 @@ mod tests {
                         false,
                         None,
                         JqBarState::Closed,
+                        false,
                         false,
                         None,
                         true,

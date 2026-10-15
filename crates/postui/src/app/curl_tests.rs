@@ -1075,3 +1075,151 @@ fn reopening_the_open_request_through_discard_is_undoable() {
     app.update(Action::Undo);
     assert_eq!(app.editor.url.text(), "https://x/edited", "undo brings the edit back");
 }
+
+// Curl import visibility (spec 2026-10-15-curl-import-visibility-design.md).
+
+/// `app_with_clip` with the sidebar focused and its cursor on `key`.
+fn on_sidebar(clip: &str, key: &crate::components::sidebar::RowKey) -> App {
+    use crate::components::sidebar::RowKey;
+    let mut app = app_with_clip(clip);
+    app.update(Action::FocusPane(PaneId::Sidebar));
+    if let RowKey::Request(slug) = key {
+        app.sidebar.select_slug(slug);
+        app.update(Action::RefreshSidebar);
+    }
+    assert!(app.sidebar.select_key(key), "{key:?} is a row");
+    app
+}
+
+#[test]
+fn a_sidebar_paste_imports_into_the_cursor_rows_folder() {
+    use crate::components::sidebar::RowKey;
+    for (key, prefill) in [
+        (RowKey::Folder("main/api".into()), "api/GET users"),
+        (RowKey::Request("main/api/ping".into()), "api/GET users"),
+        (RowKey::Request("main/top".into()), "GET users"),
+    ] {
+        let mut app = on_sidebar("curl https://x/users", &key);
+        app.update(Action::Paste);
+        assert_eq!(prompt(&app).1, prefill, "{key:?}");
+    }
+}
+
+#[test]
+fn a_bracketed_paste_into_the_sidebar_imports_the_pasted_text() {
+    let top = crate::components::sidebar::RowKey::Request("main/top".into());
+    let mut app = on_sidebar("not curl", &top);
+    assert!(app.paste_text("curl https://x/users"));
+    assert_eq!(prompt(&app).1, "GET users");
+}
+
+#[test]
+fn ctrl_v_on_the_sidebar_imports_in_both_profiles() {
+    let top = crate::components::sidebar::RowKey::Request("main/top".into());
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = on_sidebar("curl https://x/users", &top);
+        app.use_profile(profile);
+        draw(&mut app);
+        feed(&mut app, "<C-v>");
+        assert_eq!(prompt(&app).1, "GET users", "{profile:?}");
+    }
+}
+
+#[test]
+fn a_curl_pasted_into_a_text_field_is_text() {
+    let mut app = app_with_clip("curl https://x/users");
+    app.update(Action::FocusUrl);
+    app.update(Action::Paste);
+    assert!(app.modals.is_empty());
+    assert!(app.editor.url.text().contains("curl https://x/users"), "{}", app.editor.url.text());
+}
+
+#[test]
+fn a_sidebar_paste_without_curl_says_so() {
+    let top = crate::components::sidebar::RowKey::Request("main/top".into());
+    let mut app = on_sidebar("hello", &top);
+    app.update(Action::Paste);
+    assert!(app.modals.is_empty());
+    assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
+    app.paste_text("curl 'https://x");
+    assert!(app.modals.is_empty());
+    assert_eq!(app.toasts.last_message(), Some("unclosed quote"));
+}
+
+#[test]
+fn the_import_button_shows_only_while_the_clipboard_parses_as_curl() {
+    let mut app = app_with_clip("");
+    for (clip, ready) in [
+        ("curl https://x/u", true),
+        ("hello", false),
+        ("curl 'https://x", false),
+        ("# @name A\ncurl https://x/a\ncurl https://x/b", true),
+    ] {
+        app.clipboard.set_read_for_test(clip);
+        app.check_clipboard();
+        assert_eq!(app.sidebar.curl_ready, ready, "{clip:?}");
+    }
+    // A clipboard that can't be read holds no curl.
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536, false));
+    app.check_clipboard();
+    assert!(!app.sidebar.curl_ready);
+}
+
+#[test]
+fn postuis_own_clipboard_traffic_rechecks_it() {
+    // A paste's read.
+    let mut app = app_with_clip("curl https://x/u");
+    app.update(Action::Paste);
+    assert!(app.sidebar.curl_ready, "the paste read a curl");
+    // A copy reads the clipboard back. Here the copy goes to a command the
+    // read can't see (as OSC 52 would): the read is what counts.
+    let (mut app, _dir, _out) = copy_app();
+    app.update(Action::CopyAsCurl(Some("main/top".into())));
+    assert!(app.toasts.last_message().unwrap().starts_with("Copied"));
+    assert!(!app.sidebar.curl_ready, "a curl the import can't read back");
+    let mut c =
+        crate::clipboard::Clipboard::new_for_test(Some("cat > /dev/null".into()), 65536, false);
+    c.set_read_for_test("curl https://x/u");
+    app.set_clipboard_for_test(c);
+    app.update(Action::CopyAsCurl(Some("main/top".into())));
+    assert!(app.sidebar.curl_ready, "a curl it can");
+}
+
+#[test]
+fn the_import_button_imports_into_the_cursor_rows_folder() {
+    let api = crate::components::sidebar::RowKey::Folder("main/api".into());
+    let mut app = on_sidebar("curl https://x/users", &api);
+    app.check_clipboard();
+    click(&mut app, Hit::SidebarImportCurl);
+    assert_eq!(prompt(&app).1, "api/GET users");
+}
+
+#[test]
+fn a_stale_import_button_says_why_and_goes_away() {
+    let mut app = app_with_clip("curl https://x/users");
+    app.check_clipboard();
+    draw(&mut app);
+    app.clipboard.set_read_for_test("hello");
+    click(&mut app, Hit::SidebarImportCurl);
+    assert!(app.modals.is_empty());
+    assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
+    assert!(!app.sidebar.curl_ready);
+    draw(&mut app);
+    assert!(app.hits.rect_of(&Hit::SidebarImportCurl).is_none());
+}
+
+#[test]
+fn the_sidebar_footer_advertises_the_paste_while_the_clipboard_holds_curl() {
+    let top = crate::components::sidebar::RowKey::Request("main/top".into());
+    let mut app = on_sidebar("curl https://x/users", &top);
+    let has_chip = |app: &App| {
+        crate::ui::footer_chips_of(app)
+            .iter()
+            .any(|(_, l, a)| l == "import curl" && *a == Some(Action::Paste))
+    };
+    assert!(!has_chip(&app), "not checked yet");
+    app.check_clipboard();
+    assert!(has_chip(&app));
+    app.update(Action::FocusPane(PaneId::Editor));
+    assert!(!has_chip(&app), "the sidebar's chip only");
+}

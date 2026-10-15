@@ -69,6 +69,9 @@ pub enum Hit {
     /// A footer hint chip that dispatches its action on click.
     FooterChip(crate::action::Action),
     SidebarNewRequest,
+    /// The "Import curl" half of the sidebar's top row, there while the
+    /// clipboard holds curl (spec 2026-10-15 curl import visibility V3).
+    SidebarImportCurl,
     /// Index into `sidebar.rows`.
     SidebarRow(usize),
     SidebarFolderArrow(usize),

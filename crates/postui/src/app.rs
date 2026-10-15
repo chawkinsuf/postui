@@ -5498,9 +5498,11 @@ impl App {
             Action::Paste => {
                 match self.clipboard.read() {
                     Ok(text) => {
+                        self.note_clipboard(&text);
                         self.paste_text(&text);
                     }
                     Err(e) => {
+                        self.note_clipboard("");
                         self.toasts.push(format!("clipboard read failed: {e}"), ToastKind::Warning);
                     }
                 }
@@ -9188,6 +9190,8 @@ impl App {
     /// capture order: the top modal's text surface first (a filter-query
     /// modal's query — palette/chooser/var picker — or the focused
     /// `LineInput`), then the response pane's jq bar or live search input,
+    /// then the sidebar, which takes no text but imports the paste's curl
+    /// (spec 2026-10-15 curl import visibility V1),
     /// then the `LineInput` behind the screen field (the editor's cell edit
     /// or URL bar, a Settings or Variables edit), then the body. A live
     /// selection is replaced (GUI semantics);
@@ -9240,6 +9244,9 @@ impl App {
             }
             return self.session.response.paste_into_search(text) && self.update(Action::Render);
         }
+        if self.screen == Screen::Main && self.focus == PaneId::Sidebar {
+            return self.import_pasted_curl(text);
+        }
         // Every other field is the `LineInput` `screen_field` names, through
         // the one map `open_text_field_mut` reads: the editor's cell edit or
         // URL bar, a Settings or Variables edit. The map is tab-gated on
@@ -9264,6 +9271,10 @@ impl App {
     fn copy_text_with_toast(&mut self, text: &str, success_msg: String) {
         match self.clipboard.copy(text) {
             crate::clipboard::CopyResult::Copied { .. } => {
+                // Read back rather than trust `text`: a copy that went out
+                // by OSC 52 or `clipboard_cmd` may be one the import's
+                // read can't see (spec 2026-10-15 curl import visibility V4).
+                self.check_clipboard();
                 self.toasts.push(success_msg, ToastKind::Success);
             }
             crate::clipboard::CopyResult::OscTooLarge => {

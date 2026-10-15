@@ -189,6 +189,7 @@ async fn run(
     app.shift_enter_send =
         matches!(ratatui::crossterm::terminal::supports_keyboard_enhancement(), Ok(true));
     let mut events = EventStream::new();
+    app.check_clipboard();
 
     app.update(Action::ShowToast("Welcome to postui".into(), ToastKind::Info));
     if debug_ai {
@@ -264,6 +265,9 @@ async fn run(
                                 redraw = true;
                             }
                             Event::FocusGained => {
+                                // Back from another app, which may have
+                                // copied a curl command.
+                                redraw |= app.check_clipboard();
                                 redraw |= app.update(Action::ReloadProjectFiles);
                                 app.vim_catch_up();
                             }

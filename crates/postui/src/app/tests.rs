@@ -1498,8 +1498,10 @@ fn bracketed_paste_routes_to_the_focused_input() {
     assert!(app.paste_text("http://host/a b"));
     assert_eq!(app.editor.url.text(), "http://host/a b");
 
-    // Nothing focused that takes text: the paste reports unhandled.
-    app.focus = PaneId::Sidebar;
+    // Nothing focused that takes text: the paste reports unhandled. (The
+    // sidebar takes none either, but imports a paste's curl: spec
+    // 2026-10-15 curl import visibility V1, `curl_tests`.)
+    app.focus = PaneId::Editor;
     app.editor.sub_focus = crate::components::editor::SubFocus::Method;
     assert!(!app.paste_text("ignored"));
 }
@@ -1915,6 +1917,7 @@ fn the_footer_field_flag_is_pane_local() {
         None,
         crate::components::footer::JqBarState::Open,
         app.pane_field_open(PaneId::Response),
+        false,
     ));
     assert!(
         !chips.iter().any(|(k, l, _)| *k == "enter" && *l == "search"),
@@ -16204,6 +16207,7 @@ fn every_named_action_is_mouse_reachable() {
                 None,
                 crate::components::footer::JqBarState::Closed,
                 false,
+                true,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -16221,6 +16225,7 @@ fn every_named_action_is_mouse_reachable() {
                 None,
                 crate::components::footer::JqBarState::Closed,
                 false,
+                true,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -16238,6 +16243,7 @@ fn every_named_action_is_mouse_reachable() {
                 None,
                 crate::components::footer::JqBarState::Focused,
                 false,
+                true,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -20909,6 +20915,7 @@ fn the_focused_bar_advertises_enter_apply_and_esc_done() {
         None,
         crate::components::footer::JqBarState::Focused,
         false,
+        false,
     ));
     let keys: Vec<(&str, &str)> = chips.iter().map(|(k, l, _)| (k.as_str(), *l)).collect();
     assert_eq!(
@@ -21235,6 +21242,7 @@ fn the_footer_and_palette_reach_the_jq_bar() {
         None,
         crate::components::footer::JqBarState::Closed,
         false,
+        false,
     ));
     assert!(
         chips
@@ -21464,6 +21472,7 @@ fn the_response_footer_always_offers_alt_q_filter_and_close_only_while_open() {
             false,
             None,
             state,
+            false,
             false,
         ))
     };
