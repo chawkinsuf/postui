@@ -1952,13 +1952,13 @@ impl ReadyView {
     }
 
     /// The inclusive cell span a double click at cell `(line, col)`
-    /// selects: the word/punctuation/whitespace run around `col` (see
-    /// [`word_nav::word_span_at`]), on that one line. `None` on an empty
-    /// line or a col past its last char.
+    /// selects: the shared mouse word under `col` (spec 2026-10-14, align
+    /// the text mouse), a col past the line's end taking its last word, on
+    /// that one line. `None` on an empty line.
     fn word_cells_at(&self, line: usize, col: usize) -> Option<((usize, usize), (usize, usize))> {
         let chars: Vec<char> = self.display_line_text(line)?.chars().collect();
-        let (s, e) = super::word_nav::word_span_at(&chars, col)?;
-        Some(((line, s), (line, e - 1)))
+        let (s, e) = crate::text::mouse::word_at(&chars, col)?;
+        Some(((line, s), (line, e)))
     }
 
     /// A line selection from buffer line `anchor` (the row showing it now)
@@ -3461,23 +3461,16 @@ impl Response {
     /// words at a time. A click past a line's last character selects
     /// nothing (and returns `false`: no sweep to arm).
     pub fn select_word_at(&mut self, x: u16, y: u16) -> bool {
-        use unicode_width::UnicodeWidthChar;
         let Some(view) = self.view.as_mut() else {
             return false;
         };
         view.clear_sel();
+        // `cell_at` clamps a click past the line end onto its last char, so
+        // a double click there takes the last word, as in a field (spec
+        // 2026-10-14, align the text mouse, A3).
         let Some((line, col)) = view.cell_at(x, y, false) else {
             return false;
         };
-        // `cell_at` clamps a click past the line end onto its last char;
-        // a double click there should select nothing, so re-check the
-        // clicked display column against the line's width.
-        let area = view.last_area.expect("cell_at resolved through last_area");
-        let disp_col = view.h_scroll + usize::from(x.saturating_sub(area.x));
-        let text = view.display_line_text(line).unwrap_or_default();
-        if disp_col >= text.chars().map(|c| c.width().unwrap_or(0)).sum() {
-            return false;
-        }
         let Some(span) = view.word_cells_at(line, col) else {
             return false;
         };
@@ -5383,11 +5376,23 @@ mod tests {
     }
 
     #[test]
-    fn double_click_past_the_line_end_selects_nothing() {
+    /// Task #23 (A3): past the end is the last word, as in a field.
+    fn double_click_past_the_line_end_selects_the_last_word() {
         let mut r = ready("ab\nlonger line");
         let (area, _) = render_buf(&mut r);
-        assert!(!r.select_word_at(area.x + 30, area.y));
-        assert_eq!(r.selected_text(), None);
+        assert!(r.select_word_at(area.x + 30, area.y + 1));
+        assert_eq!(r.selected_text().as_deref(), Some("line"));
+    }
+
+    /// Task #23 (A1): the response picks words as the fields do.
+    #[test]
+    fn double_click_takes_the_shared_mouse_word() {
+        let mut r = ready("https://x a->b");
+        let (area, _) = render_buf(&mut r);
+        assert!(r.select_word_at(area.x + 5, area.y));
+        assert_eq!(r.selected_text().as_deref(), Some(":"));
+        assert!(r.select_word_at(area.x + 12, area.y));
+        assert_eq!(r.selected_text().as_deref(), Some("->"));
     }
 
     #[test]

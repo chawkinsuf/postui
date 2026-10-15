@@ -134,6 +134,12 @@ While dragging, other motion handling is suspended.
 Store last click `(Hit, Instant)`; second Down on the same `Hit` within 400 ms is a
 double-click. Users: folder-name toggle, chooser confirm.
 
+Amended 2026-10-14 (tasks #15 and #23, `you`): this is now the list count, which
+rows and buttons read. Text in a field or the response counts separately: same hit
+and same cell within 500 ms, up to a triple click. A double click selects the shared
+mouse word (or a bracket's block) and a triple click selects the line, in both
+profiles. See `2026-10-14-align-text-mouse-design.md`.
+
 ## 4. Scrollbars
 
 Visible in scrollable panes (sidebar, response, body) whenever content overflows.

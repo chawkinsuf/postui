@@ -308,21 +308,38 @@ impl LineInput {
         self.break_run();
     }
 
-    /// Selects the word under char index `idx` — the double-click gesture,
-    /// matching the body editor's word select — and remembers its span so
-    /// a following drag extends the selection word-by-word. On a gap
-    /// (whitespace, or past the end) it just places the caret there
-    /// instead.
+    /// The double-click gesture at char index `idx` (spec 2026-10-14, align
+    /// the text mouse): the shared mouse word under it, a press past the end
+    /// taking the last word; on a bracket (or blanks before one), the block
+    /// to its match. Remembers the clicked word, so a following drag
+    /// extends word by word. An empty text just takes the caret.
     pub fn select_word_at(&mut self, idx: usize) {
+        use crate::text::mouse::{block_end, word_at};
         let chars: Vec<char> = self.text.chars().collect();
-        let idx = idx.min(chars.len());
-        if let Some((start, end)) = super::word_nav::word_span_at(&chars, idx) {
-            self.anchor = Some(start);
-            self.cursor = end;
-            self.word_anchor = Some((start, end));
-        } else {
+        let Some((ws, we)) = word_at(&chars, idx) else {
             self.set_cursor(idx);
-        }
+            return;
+        };
+        let at = idx.min(chars.len() - 1);
+        let (anchor, cursor) = match block_end(&chars[..], crate::text::Pos::new(0, at)) {
+            // The match before the press: the caret goes to it.
+            Some(end) if end.col < at => (at + 1, end.col),
+            Some(end) => (at, end.col + 1),
+            None => (ws, we + 1),
+        };
+        self.anchor = Some(anchor);
+        self.cursor = cursor;
+        self.word_anchor = Some((ws, we + 1));
+        self.break_run();
+    }
+
+    /// The triple-click gesture: the whole text, kept whole by a following
+    /// drag.
+    pub fn select_line(&mut self) {
+        let len = self.len_chars();
+        self.anchor = Some(0);
+        self.cursor = len;
+        self.word_anchor = Some((0, len));
         self.break_run();
     }
 
@@ -342,9 +359,9 @@ impl LineInput {
     }
 
     /// Extends the live mouse selection to char index `idx`: word-wise
-    /// when the sweep began with a double-click word select (the selection
-    /// is the union of the anchored word and the word under the pointer —
-    /// the body editor's word-sweep behavior), by character otherwise.
+    /// when the sweep began with a double click (the selection is the
+    /// union of the anchored word and the shared mouse word under the
+    /// pointer), whole after a triple click, by character otherwise.
     pub fn extend_mouse_selection_to(&mut self, idx: usize) {
         let Some((ws, we)) = self.word_anchor else {
             self.set_cursor_extending(idx);
@@ -352,7 +369,8 @@ impl LineInput {
         };
         let chars: Vec<char> = self.text.chars().collect();
         let idx = idx.min(chars.len());
-        let (s, e) = super::word_nav::word_span_at(&chars, idx).unwrap_or((idx, idx));
+        let (s, e) =
+            crate::text::mouse::word_at(&chars, idx).map_or((idx, idx), |(s, e)| (s, e + 1));
         if s < ws {
             // Sweeping left: the anchored word's end stays fixed.
             self.anchor = Some(we);

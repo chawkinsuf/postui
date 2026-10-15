@@ -8448,6 +8448,94 @@ fn url_bar_drag_selects_and_double_click_selects_the_word() {
     assert_eq!(app.editor.url.selection(), None);
 }
 
+/// The URL line of a fresh arrows app holding `text`, drawn.
+fn arrows_url(text: &str) -> (App, ratatui::layout::Rect) {
+    let mut app = App::new_for_test();
+    app.editor.url = crate::components::line_input::LineInput::new(text);
+    render_once(&mut app);
+    let area = app.editor.last_url_text_area.expect("url area recorded");
+    (app, area)
+}
+
+/// Task #23 (spec A1–A3): arrows' double click takes the shared mouse
+/// words (each punctuation char alone but the operators, which go
+/// together), a bracket's block, and past the end the last word.
+#[test]
+fn an_arrows_double_click_selects_the_shared_word() {
+    for (text, col, want) in [
+        ("https://x", 5, ":"),
+        ("https://x", 6, "//"),
+        ("a->b", 1, "->"),
+        ("a {b c} d", 2, "{b c}"),
+        ("a {b c} d", 1, " {b c}"),
+        ("a {b c} d", 6, "{b c}"),
+        ("hello world", 20, "world"),
+    ] {
+        let (mut app, area) = arrows_url(text);
+        app.handle_mouse(left_down(area.x + col, area.y));
+        app.handle_mouse(left_down(area.x + col, area.y));
+        assert_eq!(app.editor.url.selected_text().as_deref(), Some(want), "{text:?} at {col}");
+    }
+}
+
+/// Task #23 (spec A4): a drag after a double click grows by those words.
+#[test]
+fn an_arrows_double_click_drag_grows_by_the_shared_words() {
+    let (mut app, area) = arrows_url("https://x");
+    app.handle_mouse(left_down(area.x + 8, area.y));
+    app.handle_mouse(left_down(area.x + 8, area.y));
+    app.handle_mouse(dragged(area.x + 6, area.y));
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("//x"), "`//` is one word");
+}
+
+/// Task #23 (spec A5–A7): a triple click selects the line (the whole
+/// value of a one-line field; the body's line without its break), a drag
+/// after it goes by lines, and a click count on text needs one cell.
+#[test]
+fn an_arrows_triple_click_selects_the_line() {
+    let (mut app, area) = arrows_url("foo bar");
+    for _ in 0..3 {
+        app.handle_mouse(left_down(area.x + 1, area.y));
+    }
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("foo bar"));
+
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("alpha beta\nsecond\nthird");
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    // 3 lines -> a 2-cell gutter; content column 0 is at area.x + 2.
+    for _ in 0..3 {
+        app.handle_mouse(left_down(area.x + 2 + 1, area.y));
+    }
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("alpha beta"));
+    app.handle_mouse(dragged(area.x + 2 + 2, area.y + 1));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("alpha beta\nsecond"));
+}
+
+/// Task #23 (spec A7): presses on two cells of the same field are two
+/// single clicks.
+#[test]
+fn arrows_presses_on_two_cells_of_a_field_are_two_clicks() {
+    let (mut app, area) = arrows_url("foo bar");
+    app.handle_mouse(left_down(area.x + 1, area.y));
+    app.handle_mouse(left_down(area.x + 5, area.y));
+    assert_eq!((app.editor.url.selection(), app.editor.url.cursor()), (None, 5));
+}
+
+/// Task #23 (spec A2): the body's bracket block can span lines.
+#[test]
+fn an_arrows_double_click_on_a_body_bracket_selects_its_block() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("{\n  \"a\": 1\n}");
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("{\n  \"a\": 1\n}"));
+}
+
 #[test]
 fn dragging_in_the_response_selects_and_ctrl_c_copies_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -14300,7 +14388,9 @@ fn enter_and_esc_both_commit_a_field_edit() {
         "Esc keeps the typed text"
     );
 
-    // Enter commits.
+    // Enter commits. (A fresh single click: on the same cell this soon it
+    // would pair as a double click, which past the end takes the last word.)
+    app.last_click = None;
     let r = field_rect(&mut app, VmField::Description);
     app.handle_mouse(left_down(r.x + r.width - 2, r.y));
     app.handle_key(plain('!'));

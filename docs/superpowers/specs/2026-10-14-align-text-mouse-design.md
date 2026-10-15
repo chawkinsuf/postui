@@ -57,6 +57,11 @@ tests and the Vim conformance tests pin that.
 A7's count, which every field's press reads in both profiles; `list` is the pair count
 for rows and buttons.
 
+**The response pane takes the same words** (amended 2026-10-14, `you`: "same rule
+everywhere"). §1 left the response alone, but it shares `word_span_at`, so its double
+click and word drag move to A1, A3 and A4 too, counted as text (A7). Its bracket block
+and triple click stay out for now.
+
 **Removed:** `word_nav::word_span_at` (its last mouse users go). The keyboard word
 motions in `word_nav` (ctrl+←/→) are not mouse and stay arrows'.
 
