@@ -79,14 +79,17 @@ pub(crate) struct Span {
 /// What an arrows double click at `at` selects (spec 2026-10-14 A1–A3): a
 /// bracket's block, from the press (blanks before an opener included) or
 /// from a closer to its match, else the shared word. A press past the
-/// line's end counts as on its last char. `None` on an empty line.
+/// line's end takes the last word, never a block. `None` on an empty line.
 pub(crate) fn double_click<B: Lines + ?Sized>(buf: &B, at: Pos) -> Option<Span> {
     let line = buf.line(at.row);
+    let past_end = at.col >= line.len();
     let at = Pos::new(at.row, at.col.min(line.len().checked_sub(1)?));
-    // Only a bracket starts a block (the user, 2026-10-14: Vim's reach from
-    // any punctuation stays vim's).
-    let bracket =
-        (at.col..line.len()).find(|&c| !white(line[c])).filter(|&c| "()[]{}".contains(line[c]));
+    // Only a bracket starts a block, and never from past the end (the user,
+    // 2026-10-14: Vim's reach from any punctuation stays vim's; past the
+    // end is the last word).
+    let bracket = (at.col..line.len())
+        .find(|&c| !white(line[c]))
+        .filter(|&c| !past_end && "()[]{}".contains(line[c]));
     // A block's match is its fixed end and the caret stays at the press, so
     // a far match never scrolls the view away from the pointer (the user,
     // 2026-10-14; Vim's cursor goes to the match).
@@ -180,6 +183,12 @@ mod tests {
             "on the closing brace: its opener fixed, the caret at the press"
         );
         assert_eq!(double_click(&line[..], p(8)), Some(Span { fixed: p(8), moving: p(8) }));
+        let closes: Vec<char> = "a {b c}".chars().collect();
+        assert_eq!(
+            double_click(&closes[..], p(9)),
+            Some(Span { fixed: p(6), moving: p(6) }),
+            "past the end: the last word, never a block"
+        );
         assert_eq!(double_click(&[][..], p(0)), None);
     }
 

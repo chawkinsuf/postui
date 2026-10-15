@@ -3470,8 +3470,10 @@ impl Response {
     /// click (as a field's double click does) and plants the word anchor a
     /// following drag extends from, whole words at a time. A click past a
     /// line's last character takes its last word. `false` (no sweep to arm)
-    /// off the text or on an empty line.
+    /// off the text, on an empty line, or on a row scrolled right past all
+    /// its text.
     pub fn select_word_at(&mut self, x: u16, y: u16) -> bool {
+        use unicode_width::UnicodeWidthChar;
         let Some(view) = self.view.as_mut() else {
             return false;
         };
@@ -3482,6 +3484,13 @@ impl Response {
         let Some((line, col)) = view.cell_at(x, y, false) else {
             return false;
         };
+        // A row scrolled right past all its text shows none of it, so there
+        // is no last word on screen to take.
+        let text = view.display_line_text(line).unwrap_or_default();
+        let width: usize = text.chars().map(|c| c.width().unwrap_or(0)).sum();
+        if width <= view.h_scroll {
+            return false;
+        }
         let Some(span) = view.word_cells_at(line, col) else {
             return false;
         };
@@ -5391,6 +5400,20 @@ mod tests {
         let (area, _) = render_buf(&mut r);
         assert!(r.select_word_at(area.x + 30, area.y + 1));
         assert_eq!(r.selected_text().as_deref(), Some("line"));
+    }
+
+    /// Task #23 review round 7 (A3): a row scrolled right past all its text
+    /// shows none of it, so a double click there selects nothing.
+    #[test]
+    fn double_click_on_a_row_scrolled_past_its_text_selects_nothing() {
+        let mut r = ready(&format!("ab\n{}", "x".repeat(300)));
+        render_buf(&mut r);
+        r.view.as_mut().unwrap().h_scroll = 100;
+        let (area, _) = render_buf(&mut r);
+        assert_eq!(r.view.as_ref().unwrap().h_scroll, 100, "the long row keeps the scroll");
+        assert!(!r.select_word_at(area.x + 1, area.y));
+        assert_eq!(r.selected_text(), None);
+        assert!(r.select_word_at(area.x + 1, area.y + 1), "a row still showing text");
     }
 
     /// Task #23 (A1): the response picks words as the fields do.

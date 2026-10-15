@@ -8472,6 +8472,8 @@ fn an_arrows_double_click_selects_the_shared_word() {
         // Brackets only: Vim's reach from `:` to the `{{id}}` is vim's.
         ("https://x.com/{{id}}", 5, ":"),
         ("hello world", 20, "world"),
+        // Review round 7 (the user): past the end never starts a block.
+        ("a {b c}", 20, "}"),
     ] {
         let (mut app, area) = arrows_url(text);
         app.handle_mouse(left_down(area.x + col, area.y));
@@ -8677,6 +8679,11 @@ fn an_arrows_double_click_on_a_body_bracket_selects_its_block() {
     app.handle_mouse(left_down(area.x + 2, area.y));
     app.handle_mouse(left_down(area.x + 2, area.y));
     assert_eq!(app.editor.body_selected_text().as_deref(), Some("{\n  \"a\": 1\n}"));
+
+    // Review round 7 (the user): past the end is the last word, no block.
+    app.handle_mouse(left_down(area.x + 20, area.y + 2));
+    app.handle_mouse(left_down(area.x + 20, area.y + 2));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("}"));
 }
 
 #[test]
