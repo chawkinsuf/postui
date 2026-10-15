@@ -276,6 +276,12 @@ pub struct UiSettings {
     /// Tab's job in the jq bar while a completion ghost shows; see
     /// [`JqTab`].
     pub jq_tab: JqTab,
+    /// Whether a body with no indentation of its own indents with tabs
+    /// (`indent = "tabs"`) rather than spaces (spec 2026-10-15 R1).
+    pub indent_tabs: bool,
+    /// The spaces in one level of a space indent, 1..=8 (`indent_width`).
+    /// Kept under `indent = "tabs"` too: a tab still displays 2 wide.
+    pub indent_width: usize,
     /// The chosen key profile, or `None` while `config.toml` has never
     /// carried a `keymap` (the first-launch question's trigger).
     pub keymap: Option<KeyProfile>,
@@ -294,12 +300,20 @@ impl Default for UiSettings {
             ai_cmd: "claude -p".into(),
             ai_confirmed: false,
             jq_tab: JqTab::Menu,
+            indent_tabs: false,
+            indent_width: 2,
             keymap: None,
         }
     }
 }
 
 impl UiSettings {
+    /// The indent a body with none of its own uses (spec R1, R3).
+    pub fn default_indent(&self) -> crate::text::indent::Indent {
+        use crate::text::indent::Indent;
+        if self.indent_tabs { Indent::Tabs } else { Indent::Spaces(self.indent_width) }
+    }
+
     /// The key profile these settings run: the chosen one, or arrows while
     /// `keymap` is unset, until the first-launch question is raised (plan
     /// M1 Deviation 2; M3 raises it). The one place that rule lives.
@@ -310,7 +324,7 @@ impl UiSettings {
     /// Reads the top-level `clipboard_cmd` (string), `osc52_limit`
     /// (integer), `theme` (string), `animations` (bool), `hover_hints`
     /// (bool), `curl_button` (bool), `ai_cmd` (string), `ai_confirmed`
-    /// (bool), and `jq_tab`
+    /// (bool), `indent` (string), `indent_width` (integer), and `jq_tab`
     /// (string) keys out of
     /// `config.toml`'s text. Never errors: an empty string (the missing
     /// file) or a mistyped key degrades that piece to its default. Text
@@ -399,6 +413,23 @@ impl UiSettings {
             Some(v) => match v.as_bool() {
                 Some(b) => settings.ai_confirmed = b,
                 None => wrong_type("ai_confirmed", "a boolean"),
+            },
+        }
+        match value.get("indent") {
+            None => {}
+            Some(v) => match v.as_str() {
+                Some("spaces") => settings.indent_tabs = false,
+                Some("tabs") => settings.indent_tabs = true,
+                _ => wrong_type("indent", "\"spaces\" or \"tabs\""),
+            },
+        }
+        match value.get("indent_width") {
+            None => {}
+            Some(v) => match v.as_integer().and_then(|n| usize::try_from(n).ok()) {
+                Some(w) if (1..=crate::text::indent::MAX_WIDTH).contains(&w) => {
+                    settings.indent_width = w
+                }
+                _ => wrong_type("indent_width", "an integer from 1 to 8"),
             },
         }
         match value.get("jq_tab") {
@@ -525,6 +556,13 @@ pub fn config_seed() -> String {
 # Which keys the app runs on: \"arrows\" (arrows and Enter) or \"vim\".
 # keymap = \"arrows\"
 
+# How a body with no indentation of its own indents: \"spaces\" or \"tabs\".
+# A body that is already indented keeps its own style.
+# indent = \"spaces\"
+
+# The spaces in one indent level, from 1 to 8.
+# indent_width = {}
+
 # The shell command \"Describe a filter…\" pipes its prompt into.
 # ai_cmd = {:?}
 
@@ -541,6 +579,7 @@ pub fn config_seed() -> String {
         d.animations,
         d.hover_hints,
         d.curl_button,
+        d.indent_width,
         d.ai_cmd,
         d.ai_confirmed,
         d.osc52_limit,
@@ -931,6 +970,8 @@ impl Config {
                 "hover_hints",
                 "curl_button",
                 "jq_tab",
+                "indent",
+                "indent_width",
                 "ai_cmd",
                 "ai_confirmed",
                 "clipboard_cmd",
@@ -1513,9 +1554,48 @@ mod tests {
             "clipboard_cmd",
             "osc52_limit",
             "theme",
+            "indent",
+            "indent_width",
         ] {
             assert!(seed.contains(key), "{key} missing from the seed");
         }
+    }
+
+    #[test]
+    fn indent_keys_parse_and_combine() {
+        let (ui, warnings) = UiSettings::parse("indent = \"tabs\"\nindent_width = 4\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(ui.indent_tabs);
+        assert_eq!(ui.indent_width, 4);
+        assert_eq!(ui.default_indent(), crate::text::indent::Indent::Tabs);
+        let (ui, _) = UiSettings::parse("indent = \"spaces\"\nindent_width = 4\n");
+        assert_eq!(ui.default_indent(), crate::text::indent::Indent::Spaces(4));
+        let (ui, _) = UiSettings::parse("");
+        assert_eq!(ui.default_indent(), crate::text::indent::Indent::Spaces(2));
+    }
+
+    #[test]
+    fn bad_indent_values_warn_and_default() {
+        for text in [
+            "indent = 3",
+            "indent = \"tab\"",
+            "indent_width = \"4\"",
+            "indent_width = 0",
+            "indent_width = 9",
+            "indent_width = -1",
+        ] {
+            let (ui, warnings) = UiSettings::parse(text);
+            assert_eq!(warnings.len(), 1, "{text}: {warnings:?}");
+            assert!(!ui.indent_tabs, "{text}");
+            assert_eq!(ui.indent_width, 2, "{text}");
+        }
+    }
+
+    #[test]
+    fn the_seed_documents_the_indent_keys() {
+        let seed = config_seed();
+        assert!(seed.contains("# indent = \"spaces\""), "{seed}");
+        assert!(seed.contains("# indent_width = 2"), "{seed}");
     }
 
     #[test]
