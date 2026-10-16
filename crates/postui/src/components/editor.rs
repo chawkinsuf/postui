@@ -737,8 +737,10 @@ impl Editor {
     }
 
     /// Settles the untouched auto-indent after an event (spec 2026-10-16):
-    /// an edit on its line makes it ordinary text (R4); the caret leaving
-    /// the line, or `caret_in_body` false, drops it from the screen (R3),
+    /// an edit on its line makes it ordinary text (R4); anything but the
+    /// caret resting on the line with nothing selected drops it from the
+    /// screen (R3: the caret leaving the line or the body, or a selection,
+    /// so nothing that acts on a selection sees blanks the request lacks),
     /// moving selection ends and anchors on it to column 0 (R8). The
     /// request never held the blanks, so neither changes `body_text`.
     /// Answers whether the screen changed.
@@ -747,7 +749,7 @@ impl Editor {
             self.auto_indent = None;
             return false;
         };
-        if caret_in_body && self.body.cursor.row == row {
+        if caret_in_body && self.body.cursor.row == row && self.body.selection.is_none() {
             return false;
         }
         self.auto_indent = None;
@@ -770,12 +772,14 @@ impl Editor {
         if let Some(anchor) = self.body_sel_anchor.as_mut() {
             to_start(anchor);
         }
-        if let Some(span) = self.body_word_anchor.as_mut() {
-            for p in [&mut span.fixed, &mut span.moving] {
-                if p.row == row {
-                    p.col = 0;
-                }
-            }
+        // A selection wholly inside the blanks has nothing left to select,
+        // and a double click's span there named them.
+        if self.body.selection.as_ref().is_some_and(|s| s.start.row == row && s.end.row == row) {
+            self.clear_body_selection();
+        }
+        if self.body_word_anchor.as_ref().is_some_and(|s| s.fixed.row == row || s.moving.row == row)
+        {
+            self.body_word_anchor = None;
         }
         true
     }
@@ -6908,10 +6912,6 @@ mod body_click_tests {
     fn a_selection_on_the_dropped_line_clamps_to_its_start() {
         use ratatui::crossterm::event::KeyCode;
         let mut e = enter_at("    a\nb", 0, 5);
-        e.handle_key(skey(KeyCode::Left));
-        e.handle_key(skey(KeyCode::Left));
-        e.settle_auto_indent(true);
-        assert_eq!(e.body_sel_anchor, Some(Index2::new(1, 4)));
         e.handle_key(skey(KeyCode::Down));
         e.settle_auto_indent(true);
         assert_eq!(screen(&e), "    a\n\nb");
@@ -6920,6 +6920,27 @@ mod body_click_tests {
         assert_eq!(sel.start().row, 1);
         assert_eq!(sel.start().col, 0);
         assert_eq!(e.body_selected_text().as_deref(), Some("\nb"), "the emptied row through b");
+    }
+
+    /// R3, review round 3: a selection is leaving too, so what acts on a
+    /// selection (copy, Tab, cut) never sees blanks the request lacks.
+    #[test]
+    fn a_selection_drops_the_untouched_indent() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = enter_at("    a", 0, 5);
+        e.body_select_all();
+        e.settle_auto_indent(true);
+        assert_eq!(screen(&e), "    a\n", "the caret stayed on the row, the blanks went");
+        assert_eq!(e.body_selected_text().as_deref(), Some("    a\n"), "copy matches the body");
+        e.handle_key(pkey(KeyCode::Tab));
+        assert_eq!(e.body_text(), "      a\n", "Tab skips the empty line");
+        // A selection inside the blanks leaves nothing to select.
+        let mut e = enter_at("    a", 0, 5);
+        e.handle_key(skey(KeyCode::Left));
+        e.settle_auto_indent(true);
+        assert_eq!(screen(&e), "    a\n");
+        assert_eq!(e.body.cursor, Index2::new(1, 0));
+        assert!(e.body.selection.is_none() && e.body_sel_anchor.is_none());
     }
 
     /// R14 (user ruling): at or before the first non-blank, Enter opens an

@@ -2368,8 +2368,7 @@ impl App {
         // itself.
         let in_body = !off_screen
             && self.focus == PaneId::Editor
-            && self.editor.sub_focus == SubFocus::Content
-            && self.editor.active_tab == EditorTab::Body
+            && matches!(self.editor.caret(), crate::components::editor::Caret::Body { .. })
             && !self.vim_owns_body();
         let dropped = self.editor.settle_auto_indent(in_body);
         // The jq bar keeps its caret across a screen change (the pane is

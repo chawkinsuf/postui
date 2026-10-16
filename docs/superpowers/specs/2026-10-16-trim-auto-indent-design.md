@@ -61,6 +61,14 @@ Every request reader (`current_request`, `is_scratch_dirty`, send, Format, `$EDI
 - **Arrows to vim drops the blanks inside the seam** (`sync_session`, when `switched_in`), before the engine takes the body. `capture_undo` runs too late for this, because the engine has already opened Insert on the blanks by then.
 - **`settle_auto_indent` answers whether it changed the screen**, and `capture_undo` returns that as a redraw. The request didn't change, so nothing else asks for one.
 
+### Amendment 2026-10-16, review round 3 (mine)
+
+Rounds 1–3 kept finding the same design point. The buffer and the request disagree on one row, so any operation that reads the buffer as content has to pick a view: copy (rounds 1–3) and Tab over a select-all (round 3). A selection is how those operations reach the untouched row while the caret stays on it.
+
+Instead of patching each reader, **R3 now counts a selection as leaving.** The untouched indent lives only while the caret rests on its line with nothing selected. So a select-all, or shift+arrow inside the blanks, drops them first, and copy, cut, Tab and delete only ever see the request's text.
+
+This removes the copy cost accepted at the design walk-through ("a select-all copy while the caret is on the line includes the blanks"). A selection left wholly inside the emptied row is cleared, along with a double-click span that named the blanks. R8's clamp still applies when a shift motion carries the selection off the row.
+
 ## 4. Tests
 
 | Rule | Test |
@@ -69,6 +77,7 @@ Every request reader (`current_request`, `is_scratch_dirty`, send, Format, `$EDI
 | R2 | app test: open a saved `    a`, Enter at the end, save → the file's body is `"    a\n"` and the caret is still at row 1 col 4 with the blanks on screen. After that, the request is not dirty. |
 | R3 | `editor.rs`: settle with the caret moved off the row → the row is empty and the mark is gone. Settle with `caret_in_body = false` → the same. App tests: Enter then Up; Enter then Esc; Enter then a click on another pane. Each leaves the row empty, records no extra undo step, and one undo restores `    a` exactly. |
 | R4 | `editor.rs`: Enter, type `x`, settle → `body_text()` has `    x`. Enter, type `x`, Backspace, settle, move away, settle → the row keeps `    `. Round 1: on `    a` / `    `, Enter, Home, Backspace → the user's `    ` line stays in the body and on screen. |
+| R3 (round 3) | `editor.rs`: Enter, select-all → the blanks drop, the copy is `    a\n`, and Tab leaves the empty line alone. shift+Left inside the blanks → dropped, caret at column 0, nothing selected. |
 | R3 (round 1) | app: switching to vim drops the blanks before `vim_catch_up` returns, and `x` then types at column 0. A drop makes `capture_undo` answer true (repaint) with no new undo step. |
 | R5 | app test: Enter, open the palette, close it → the row still has the blanks and is still marked. |
 | R6 | `editor.rs`: Enter, Enter → row 1 empty, row 2 `    ` and marked, `body_text()` `"    a\n\n"`. |
