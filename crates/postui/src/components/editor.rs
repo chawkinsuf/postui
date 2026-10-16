@@ -711,14 +711,14 @@ impl Editor {
     /// (spec 2026-10-16 R2). Save, send, dirty, undo, Format and `$EDITOR`
     /// all read this; only drawing reads the buffer itself.
     pub fn body_text(&self) -> String {
+        let text = self.body.lines.to_string();
         let Some(end) = self.untouched_indent_end() else {
-            return self.body.lines.to_string();
+            return text;
         };
-        let mut lines = self.body.lines.clone();
-        if let Some(line) = lines.get_mut(edtui::RowIndex::new(end.row)) {
-            line.clear();
-        }
-        lines.to_string()
+        // No row holds a `\n`, so splitting on it gives back the rows.
+        let rows: Vec<&str> =
+            text.split('\n').enumerate().map(|(i, r)| if i == end.row { "" } else { r }).collect();
+        rows.join("\n")
     }
 
     /// Where the untouched auto-indent ends (its row, after its last
