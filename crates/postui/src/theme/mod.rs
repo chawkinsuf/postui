@@ -79,7 +79,7 @@ impl Seeds {
         let n = n as f32;
         let set_l = |c: (u8, u8, u8), l: f32| {
             let (_, a, b) = oklab(c);
-            oklab_to_rgb((l.clamp(0.0, 1.0), a, b))
+            oklab_to_rgb_in_gamut((l.clamp(0.0, 1.0), a, b))
         };
 
         let bg_l = oklab_l(self.bg);
@@ -108,24 +108,12 @@ impl Seeds {
         let l = fg_l + side * (CONTRAST_GAP_STEP * n - page_share);
         let fg = set_l(self.fg, if side > 0.0 { l.max(new_bg_l) } else { l.min(new_bg_l) });
 
+        // A raise goes only as far as the gamut allows (Gruvbox's warning
+        // yellow already sits on its edge): see `oklab_to_rgb_in_gamut`.
         let factor = 1.0 + CONTRAST_CHROMA_STEP * n;
-        // Raising chroma past the sRGB gamut would clip a channel, which
-        // shifts the hue and can even *lower* the chroma (Gruvbox's
-        // warning yellow already sits on the edge). So a raise goes only
-        // as far as the gamut allows: the largest factor up to the target
-        // that stays inside it.
         let saturate = |c: (u8, u8, u8)| {
             let (l, a, b) = oklab(c);
-            let scaled = |f: f32| (l, a * f, b * f);
-            if factor <= 1.0 || in_gamut(scaled(factor)) {
-                return oklab_to_rgb(scaled(factor));
-            }
-            let (mut inside, mut outside) = (1.0, factor);
-            for _ in 0..16 {
-                let mid = (inside + outside) / 2.0;
-                if in_gamut(scaled(mid)) { inside = mid } else { outside = mid }
-            }
-            oklab_to_rgb(scaled(inside))
+            oklab_to_rgb_in_gamut((l, a * factor, b * factor))
         };
         Self {
             bg,
@@ -560,11 +548,32 @@ fn oklab_to_rgb(lab: (f32, f32, f32)) -> (u8, u8, u8) {
     (linear_to_srgb(r), linear_to_srgb(g), linear_to_srgb(b))
 }
 
+/// [`oklab_to_rgb`] for a colour that may lie outside sRGB: keeps its
+/// lightness and hue and trims its chroma (`a`, `b` scaled down together)
+/// to the most that fits. Clamping each channel instead, as `oklab_to_rgb`
+/// does, turns the hue and can even leave less chroma than a fitted colour
+/// has. Lightness in 0..1 always fits at zero chroma, a grey.
+fn oklab_to_rgb_in_gamut(lab: (f32, f32, f32)) -> (u8, u8, u8) {
+    if in_gamut(lab) {
+        return oklab_to_rgb(lab);
+    }
+    let (l, a, b) = lab;
+    let scaled = |t: f32| (l, a * t, b * t);
+    let (mut inside, mut outside) = (0.0, 1.0);
+    for _ in 0..16 {
+        let mid = (inside + outside) / 2.0;
+        if in_gamut(scaled(mid)) { inside = mid } else { outside = mid }
+    }
+    oklab_to_rgb(scaled(inside))
+}
+
 /// Whether an Oklab color lies inside the sRGB gamut, i.e. converts back
 /// without clamping a channel.
 fn in_gamut(lab: (f32, f32, f32)) -> bool {
+    // A hair of slack: an sRGB colour on the gamut's edge (a 0 or 255
+    // channel) round-trips through Oklab a float error past it.
     let (r, g, b) = oklab_to_linear(lab);
-    [r, g, b].iter().all(|v| (0.0..=1.0).contains(v))
+    [r, g, b].iter().all(|v| (-1e-4..=1.0 + 1e-4).contains(v))
 }
 
 /// Converts Oklab `(L, a, b)` to unclamped linear sRGB.
@@ -848,6 +857,31 @@ mod tests {
         let s = Seeds::dark();
         let t = s.with_contrast(level(1), true);
         assert!((gap(&t) - gap(&s) - CONTRAST_GAP_STEP).abs() < 0.01);
+    }
+
+    /// Review round 4: a step changes lightness, not hue. Moving a tinted
+    /// colour toward its end (Gruvbox Dark's cream text toward white) while
+    /// keeping its whole tint leaves sRGB, and clipping each channel there
+    /// turns the hue; the tint is trimmed to fit instead.
+    #[test]
+    fn contrast_keeps_the_page_s_and_text_s_hue() {
+        let hue = |c: (u8, u8, u8)| {
+            let (_, a, b) = oklab(c);
+            (b.atan2(a), (a * a + b * b).sqrt())
+        };
+        for (name, s) in builtin_seeds() {
+            for n in [Contrast::MIN, Contrast::MAX] {
+                let t = s.with_contrast(level(n), false);
+                for (what, before, after) in [("page", s.bg, t.bg), ("text", s.fg, t.fg)] {
+                    let ((h0, c0), (h1, c1)) = (hue(before), hue(after));
+                    // Hue is noise on a near-grey; only a visible tint has one.
+                    if c0 > 0.02 && c1 > 0.02 {
+                        let turn = (h1 - h0).sin().abs();
+                        assert!(turn < 0.1, "{name} {n} {what}: hue turned {turn:.2}");
+                    }
+                }
+            }
+        }
     }
 
     /// Review round 3: softening a pair that sits close together never

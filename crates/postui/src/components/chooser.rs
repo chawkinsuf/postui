@@ -69,8 +69,10 @@ impl ChooserStepper {
     /// after it, the meter, the `+` button and then the level, read at
     /// its widest end.
     fn layout(&self) -> StepperLayout {
-        let cells = (self.max - self.min).max(0) as usize + 1;
-        let minus = self.label.chars().count() as u16 + 3;
+        use unicode_width::UnicodeWidthStr;
+        // In i16: an i8 range's span can overflow i8 (-100..=100 is 200).
+        let cells = (i16::from(self.max) - i16::from(self.min)).max(0) as usize + 1;
+        let minus = self.label.width() as u16 + 3;
         let meter = minus + 4;
         let plus = meter + cells as u16 + 1;
         let level = plus + 5;
@@ -659,7 +661,7 @@ impl ChooserState {
         for i in 0..cells {
             // The glyphs rise across the meter whatever its length.
             let glyph = METER[i * (METER.len() - 1) / (cells - 1).max(1)];
-            let lit = s.min + i as i8 <= s.level;
+            let lit = i16::from(s.min) + i as i16 <= i16::from(s.level);
             let fg = if lit { theme.accent } else { theme.text_disabled };
             paint::text(buf, meter_x + i as u16, y, glyph, fg, theme.panel, false);
         }
@@ -1159,6 +1161,12 @@ mod tests {
         assert_eq!(long - short, 4, "four more label cells, four cells along");
         let row: String = (0..80).map(|x| buf[(x, down.y)].symbol().to_string()).collect();
         assert!(row.contains("Indent width"), "{row:?}");
+        // Review round 4: measured in cells, not chars (a wide glyph is
+        // two), and a wide range's span does not overflow i8.
+        let (wide, _, _) = draw("对比度");
+        assert_eq!(wide, 6 + 3, "three two-cell glyphs, then the gap");
+        let span = ChooserStepper { min: -100, max: 100, ..stepper(0) }.layout();
+        assert_eq!(span.cells, 201);
     }
 
     /// A chooser without a stepper keeps today's shape and no step hits.

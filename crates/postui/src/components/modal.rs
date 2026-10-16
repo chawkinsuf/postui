@@ -1788,7 +1788,8 @@ impl ModalStack {
                 // The stepper's `-`/`+`, named by its own row's label (the
                 // theme picker's "Contrast"); its buttons are their mouse
                 // twin. A runtime label, so this arm builds its chips owned.
-                if let Some(label) = state.stepper_label() {
+                // Only where the keys step: a filter box would type them.
+                if let Some(label) = state.stepper_label().filter(|_| !state.has_filter()) {
                     chips.push((Key::Named("-/+"), label.to_lowercase(), None));
                 }
                 chips.push((Key::Named("enter"), "select".to_string(), None));
@@ -4245,6 +4246,12 @@ mod tests {
             crate::config::KeyProfile::Arrows,
         );
         assert!(!plain.iter().any(|c| c.ends_with("contrast")), "{plain:?}");
+        // Review round 4: a filter box types `-`/`+`, so it is not offered.
+        let filtered = spell(
+            ChooserState::new("Pick", vec![]).with_stepper(stepper.clone()),
+            crate::config::KeyProfile::Arrows,
+        );
+        assert!(!filtered.iter().any(|c| c.ends_with("contrast")), "{filtered:?}");
     }
 
     /// The SelectOption picker has no filter, so its footer must not

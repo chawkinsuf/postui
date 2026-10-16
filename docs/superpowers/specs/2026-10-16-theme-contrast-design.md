@@ -69,6 +69,11 @@ level `n` (`n = c.level()`) in Oklab:
 - `fg` makes the page–text gap's change a whole 0.055 per step: it moves
   whatever the page did not, out toward its own end or back, clamped to
   0..1, and it never crosses the page.
+- *(Review round 4:)* every adjusted colour keeps its hue. A tinted page or
+  text pushed toward its end, such as Gruvbox Dark's cream toward white,
+  would leave sRGB with its whole tint, and a per-channel clip there turns
+  the hue. One `oklab_to_rgb_in_gamut` trims the chroma to the most that
+  fits, for the page, the text, and the four colours' saturation alike.
 - `accent`, `success`, `warning`, `error`: chroma scaled by `1 + 0.10·n`,
   lightness and hue kept, a raise stopping at the sRGB gamut's edge.
 - `n = 0` returns `self` untouched (C7).
