@@ -714,16 +714,11 @@ impl Editor {
         let Some(row) = self.untouched_indent_row() else {
             return self.body.lines.to_string();
         };
-        let mut text = String::new();
-        for (i, line) in self.body.lines.iter_row().enumerate() {
-            if i > 0 {
-                text.push('\n');
-            }
-            if i != row {
-                text.extend(line.iter());
-            }
+        let mut lines = self.body.lines.clone();
+        if let Some(line) = lines.get_mut(edtui::RowIndex::new(row)) {
+            line.clear();
         }
-        text
+        lines.to_string()
     }
 
     /// The row of the untouched auto-indent, while the buffer still has the
@@ -738,18 +733,22 @@ impl Editor {
 
     /// Settles the untouched auto-indent after an event (spec 2026-10-16):
     /// an edit on its line makes it ordinary text (R4); anything but the
-    /// caret resting on the line with nothing selected drops it from the
-    /// screen (R3: the caret leaving the line or the body, or a selection,
-    /// so nothing that acts on a selection sees blanks the request lacks),
-    /// moving selection ends and anchors on it to column 0 (R8). The
-    /// request never held the blanks, so neither changes `body_text`.
-    /// Answers whether the screen changed.
+    /// caret resting right after it with nothing selected drops it from
+    /// the screen (R3: the caret moving into the blanks or off the line,
+    /// leaving the body, or a selection, so nothing that acts on a
+    /// selection sees blanks the request lacks), moving selection ends and
+    /// anchors on it to column 0 (R8). The request never held the blanks,
+    /// so neither changes `body_text`. Answers whether the screen changed.
     pub fn settle_auto_indent(&mut self, caret_in_body: bool) -> bool {
         let Some(row) = self.untouched_indent_row() else {
             self.auto_indent = None;
             return false;
         };
-        if caret_in_body && self.body.cursor.row == row && self.body.selection.is_none() {
+        let end = self.auto_indent.as_ref().map_or(0, |m| m.indent.len());
+        if caret_in_body
+            && self.body.cursor == edtui::Index2::new(row, end)
+            && self.body.selection.is_none()
+        {
             return false;
         }
         self.auto_indent = None;
@@ -772,14 +771,18 @@ impl Editor {
         if let Some(anchor) = self.body_sel_anchor.as_mut() {
             to_start(anchor);
         }
-        // A selection wholly inside the blanks has nothing left to select,
-        // and a double click's span there named them.
-        if self.body.selection.as_ref().is_some_and(|s| s.start.row == row && s.end.row == row) {
-            self.clear_body_selection();
+        if let Some(span) = self.body_word_anchor.as_mut() {
+            for p in [&mut span.fixed, &mut span.moving] {
+                if p.row == row {
+                    p.col = 0;
+                }
+            }
         }
-        if self.body_word_anchor.as_ref().is_some_and(|s| s.fixed.row == row || s.moving.row == row)
-        {
-            self.body_word_anchor = None;
+        // A selection wholly inside the blanks has nothing left to select.
+        // Its anchor stays, as a collapsed selection's does, so a drag
+        // through the blanks goes on selecting.
+        if self.body.selection.as_ref().is_some_and(|s| s.start.row == row && s.end.row == row) {
+            self.body.selection = None;
         }
         true
     }
@@ -6934,13 +6937,43 @@ mod body_click_tests {
         assert_eq!(e.body_selected_text().as_deref(), Some("    a\n"), "copy matches the body");
         e.handle_key(pkey(KeyCode::Tab));
         assert_eq!(e.body_text(), "      a\n", "Tab skips the empty line");
-        // A selection inside the blanks leaves nothing to select.
+        // A selection inside the blanks leaves nothing to select; its
+        // anchor stays, at the row's start, as a collapsed one does.
         let mut e = enter_at("    a", 0, 5);
         e.handle_key(skey(KeyCode::Left));
         e.settle_auto_indent(true);
         assert_eq!(screen(&e), "    a\n");
         assert_eq!(e.body.cursor, Index2::new(1, 0));
-        assert!(e.body.selection.is_none() && e.body_sel_anchor.is_none());
+        assert!(e.body.selection.is_none());
+        assert_eq!(e.body_sel_anchor, Some(Index2::new(1, 0)));
+    }
+
+    /// R3, review round 4: the indent rests only with the caret right after
+    /// it. A click inside the blanks drops them, so the next key types on
+    /// the empty line the request holds, never between leftover blanks.
+    #[test]
+    fn a_caret_inside_the_blanks_drops_them() {
+        let mut e = enter_at("    a", 0, 5);
+        e.handle_mouse(left_down(4, 1));
+        e.settle_auto_indent(true);
+        assert_eq!((screen(&e), e.body.cursor), ("    a\n".into(), Index2::new(1, 0)));
+        e.handle_key(pkey(ratatui::crossterm::event::KeyCode::Char('x')));
+        assert_eq!(e.body_text(), "    a\nx");
+    }
+
+    /// Review round 4: a drag that starts on the untouched indent and
+    /// moves into it drops the blanks and goes on selecting.
+    #[test]
+    fn a_drag_through_the_blanks_keeps_selecting() {
+        let mut e = enter_at("    a", 0, 5);
+        e.handle_mouse(left_down(6, 1));
+        e.settle_auto_indent(true);
+        assert_eq!(screen(&e), "    a\n    ", "pressed at the indent's end: kept");
+        assert!(e.body_drag_to(4, 1));
+        e.settle_auto_indent(true);
+        assert_eq!(screen(&e), "    a\n");
+        assert!(e.body_drag_to(3, 0), "the drag goes on");
+        assert_eq!(e.body_selected_text().as_deref(), Some("   a\n"));
     }
 
     /// R14 (user ruling): at or before the first non-blank, Enter opens an
