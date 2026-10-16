@@ -711,24 +711,25 @@ impl Editor {
     /// (spec 2026-10-16 R2). Save, send, dirty, undo, Format and `$EDITOR`
     /// all read this; only drawing reads the buffer itself.
     pub fn body_text(&self) -> String {
-        let Some(row) = self.untouched_indent_row() else {
+        let Some(end) = self.untouched_indent_end() else {
             return self.body.lines.to_string();
         };
         let mut lines = self.body.lines.clone();
-        if let Some(line) = lines.get_mut(edtui::RowIndex::new(row)) {
+        if let Some(line) = lines.get_mut(edtui::RowIndex::new(end.row)) {
             line.clear();
         }
         lines.to_string()
     }
 
-    /// The row of the untouched auto-indent, while the buffer still has the
-    /// rows Enter left and the line still holds exactly that indent: an
-    /// edit is never hidden by a mark the next settle has yet to forget.
-    fn untouched_indent_row(&self) -> Option<usize> {
+    /// Where the untouched auto-indent ends (its row, after its last
+    /// blank), while the buffer still has the rows Enter left and the line
+    /// still holds exactly that indent: an edit is never hidden by a mark
+    /// the next settle has yet to forget.
+    fn untouched_indent_end(&self) -> Option<edtui::Index2> {
         let mark = self.auto_indent.as_ref()?;
         (self.body.lines.len() == mark.lines
             && self.body.lines.get(edtui::RowIndex::new(mark.row)) == Some(&mark.indent))
-        .then_some(mark.row)
+        .then(|| edtui::Index2::new(mark.row, mark.indent.len()))
     }
 
     /// Settles the untouched auto-indent after an event (spec 2026-10-16):
@@ -740,42 +741,37 @@ impl Editor {
     /// anchors on it to column 0 (R8). The request never held the blanks,
     /// so neither changes `body_text`. Answers whether the screen changed.
     pub fn settle_auto_indent(&mut self, caret_in_body: bool) -> bool {
-        let Some(row) = self.untouched_indent_row() else {
+        let Some(end) = self.untouched_indent_end() else {
             self.auto_indent = None;
             return false;
         };
-        let end = self.auto_indent.as_ref().map_or(0, |m| m.indent.len());
-        if caret_in_body
-            && self.body.cursor == edtui::Index2::new(row, end)
-            && self.body.selection.is_none()
-        {
+        if caret_in_body && self.body.cursor == end && self.body.selection.is_none() {
             return false;
         }
+        let row = end.row;
         self.auto_indent = None;
         if let Some(line) = self.body.lines.get_mut(edtui::RowIndex::new(row)) {
             line.clear();
         }
-        let to_start = |p: &mut edtui::Index2| {
-            if p.row == row {
-                p.col = 0;
+        // Every position on the emptied row moves to its start.
+        let to_start = |r: usize, col: &mut usize| {
+            if r == row {
+                *col = 0;
             }
         };
-        to_start(&mut self.body.cursor);
+        let cursor = &mut self.body.cursor;
+        to_start(cursor.row, &mut cursor.col);
         if let Some(sel) = self.body.selection.as_mut() {
-            to_start(&mut sel.start);
-            to_start(&mut sel.end);
-            if let Some(anchor) = sel.anchor.as_mut() {
-                to_start(anchor);
+            for p in [&mut sel.start, &mut sel.end].into_iter().chain(sel.anchor.as_mut()) {
+                to_start(p.row, &mut p.col);
             }
         }
-        if let Some(anchor) = self.body_sel_anchor.as_mut() {
-            to_start(anchor);
+        if let Some(p) = self.body_sel_anchor.as_mut() {
+            to_start(p.row, &mut p.col);
         }
         if let Some(span) = self.body_word_anchor.as_mut() {
             for p in [&mut span.fixed, &mut span.moving] {
-                if p.row == row {
-                    p.col = 0;
-                }
+                to_start(p.row, &mut p.col);
             }
         }
         // A selection wholly inside the blanks has nothing left to select.
@@ -1524,7 +1520,7 @@ impl Editor {
         let lead = line.iter().take_while(|c| blank(c)).count();
         if at.col <= lead {
             // An untouched indent moves down with its line (spec 2026-10-16 R6).
-            let carried = self.untouched_indent_row() == Some(at.row);
+            let carried = self.untouched_indent_end().is_some_and(|end| end.row == at.row);
             // A break at column 0 inserts the empty row above.
             self.body.cursor = edtui::Index2::new(at.row, 0);
             LineBreak(1).execute(&mut self.body);
