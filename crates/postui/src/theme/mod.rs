@@ -406,20 +406,47 @@ const TEXT_FLOOR: f32 = 0.405;
 /// this too, so a level moves the text that is drawn, not a seed the floor
 /// would override.
 fn readable_text(fg: (u8, u8, u8), page: (u8, u8, u8)) -> (u8, u8, u8) {
-    let (text_l, page_l) = (oklab_l(fg), oklab_l(page));
-    if (text_l - page_l).abs() >= 0.4 {
+    push_apart(fg, page, 0.4, TEXT_FLOOR)
+}
+
+/// `fg` itself when it sits at least `floor` from `page` in Oklab
+/// lightness, else `fg` moved away from `page` to `aim` (>= `floor`),
+/// keeping its hue (spec 2026-10-16, task #31). The drawn pair always
+/// clears `floor`:
+/// - a tint that doesn't fit sRGB at the new lightness is trimmed to the
+///   most that does, not clipped per channel, which would cost lightness
+///   and turn the hue;
+/// - where rounding to u8 lands short (next to black one unit is up to
+///   0.067), the target walks further out until it clears;
+/// - a walk that reaches either end draws black or white, the only
+///   colour there.
+fn push_apart(fg: (u8, u8, u8), page: (u8, u8, u8), floor: f32, aim: f32) -> (u8, u8, u8) {
+    let (text_l, a, b) = oklab(fg);
+    let page_l = oklab_l(page);
+    let clears = |c: (u8, u8, u8)| (oklab_l(c) - page_l).abs() >= floor;
+    if clears(fg) {
         return fg;
     }
-    let direction = if text_l >= page_l { 1.0 } else { -1.0 };
-    let mut target_l = page_l + direction * TEXT_FLOOR;
+    let mut direction = if text_l >= page_l { 1.0 } else { -1.0 };
     // A very dark (or very light) page leaves no room on the text's
     // natural side — a darker-than-bg text on a near-black page would
     // clamp at black and never reach the floor. Flip to the side that has
-    // the room (0.405 < 0.5, so one always does).
-    if !(0.0..=1.0).contains(&target_l) {
-        target_l = page_l - direction * TEXT_FLOOR;
+    // the room (every aim is under 0.5, so one always does).
+    if !(0.0..=1.0).contains(&(page_l + direction * aim)) {
+        direction = -direction;
     }
-    lift(fg, target_l.clamp(0.0, 1.0) - text_l)
+    let mut target_l = page_l + direction * aim;
+    loop {
+        let end = target_l.clamp(0.0, 1.0);
+        if end != target_l {
+            return oklab_to_rgb((end, 0.0, 0.0));
+        }
+        let text = oklab_to_rgb_in_gamut((target_l, a, b));
+        if clears(text) {
+            return text;
+        }
+        target_l += direction * 0.005;
+    }
 }
 
 /// Builds a seed palette from a terminal's OSC query answer: the queried
@@ -456,27 +483,15 @@ fn derive_fg_from_bg(bg: (u8, u8, u8)) -> (u8, u8, u8) {
 /// key-pill's fill), rather than assuming the fill is always dark the way
 /// most of this dark-first theme's surfaces are.
 /// Returns `fg` with its Oklab lightness pushed away from `bg` until
-/// |ΔL| >= `min_delta`, keeping hue/chroma. The push continues in `fg`'s
-/// natural direction (lighter stays lighter) unless that side lacks the
-/// room, in which case it flips — mirroring `Theme::generate`'s text
-/// clamp. Non-RGB colors pass through unchanged. Used by chip painting,
-/// where a dim pill color (`text_muted` on a soft palette) can land
-/// within a whisper of its own tinted fill.
+/// |ΔL| >= `min_delta`, keeping its hue: [`push_apart`], the same push as
+/// `Theme::generate`'s text clamp. Non-RGB colors pass through unchanged.
+/// Used by chip painting, where a dim pill color (`text_muted` on a soft
+/// palette) can land within a whisper of its own tinted fill.
 pub(crate) fn ensure_min_contrast(fg: Color, bg: Color, min_delta: f32) -> Color {
     let (Color::Rgb(fr, fgc, fb), Color::Rgb(br, bgc, bb)) = (fg, bg) else {
         return fg;
     };
-    let fg_l = oklab_l((fr, fgc, fb));
-    let bg_l = oklab_l((br, bgc, bb));
-    if (fg_l - bg_l).abs() >= min_delta {
-        return fg;
-    }
-    let direction = if fg_l >= bg_l { 1.0 } else { -1.0 };
-    let mut target = bg_l + direction * min_delta;
-    if !(0.0..=1.0).contains(&target) {
-        target = bg_l - direction * min_delta;
-    }
-    let (r, g, b) = lift((fr, fgc, fb), target.clamp(0.0, 1.0) - fg_l);
+    let (r, g, b) = push_apart((fr, fgc, fb), (br, bgc, bb), min_delta, min_delta);
     Color::Rgb(r, g, b)
 }
 
@@ -948,18 +963,6 @@ mod tests {
                             fg: colour(text_l, chroma, hue + 2.0),
                             ..Seeds::dark()
                         };
-                        // The invariants assume `generate`'s own floor holds
-                        // at level 0. For a tinted text clamped out of gamut
-                        // it does not (task #31, on main too: `lift` clips,
-                        // so the clamp lands short of 0.4 and is not
-                        // idempotent); those seeds are #31's to fix, not a
-                        // level's, so they sit this sweep out.
-                        let floored = readable_text(s.fg, s.bg);
-                        if (oklab_l(floored) - oklab_l(s.bg)).abs() < 0.4
-                            || readable_text(floored, s.bg) != floored
-                        {
-                            continue;
-                        }
                         for keep_bg in [false, true] {
                             let at = |n: i8| Theme::generate(&s.with_contrast(level(n), keep_bg));
                             let drawn: Vec<Theme> =
@@ -1027,8 +1030,7 @@ mod tests {
                 }
             }
         }
-        // 2016 seeds × 2; #31's 98 sit out, so the sweep still covers most.
-        assert!(checked >= 3800, "the sweep shrank to {checked}");
+        assert_eq!(checked, 2016 * 2, "the sweep shrank");
     }
 
     /// Review round 9: Catppuccin Latte has 0.117 of room above the floor,
@@ -1450,5 +1452,86 @@ mod tests {
         let s = seeds_from_queried(&QueriedColors::default());
         assert_eq!(s.bg, Seeds::dark().bg);
         assert_eq!(s.accent, Seeds::dark().accent);
+    }
+
+    /// An Oklab colour at lightness `l`, tinted `chroma` at angle `hue`,
+    /// fitted into sRGB.
+    fn tinted(l: f32, chroma: f32, hue: f32) -> (u8, u8, u8) {
+        oklab_to_rgb_in_gamut((l, chroma * hue.cos(), chroma * hue.sin()))
+    }
+
+    /// Seed pairs for the floor sweeps: pages in fine steps (next to
+    /// black one u8 unit is a big lightness step, task #31), texts across
+    /// the range, grey and tinted at six hues.
+    fn floor_sweep() -> impl Iterator<Item = ((u8, u8, u8), (u8, u8, u8), String)> {
+        (0..=200).flat_map(|p| {
+            (0..=20).flat_map(move |t| {
+                [0.0, 0.04, 0.08, 0.12].into_iter().flat_map(move |chroma| {
+                    (0..6).map(move |h| {
+                        let (page_l, text_l) = (p as f32 / 200.0, t as f32 / 20.0);
+                        let hue = h as f32 * std::f32::consts::TAU / 6.0;
+                        let tag = format!("page {page_l} text {text_l} chroma {chroma} hue {h}");
+                        (tinted(page_l, chroma, hue), tinted(text_l, chroma, hue + 2.0), tag)
+                    })
+                })
+            })
+        })
+    }
+
+    /// Task #31 (spec 2026-10-16 F1–F3): the text `generate` draws sits
+    /// at least 0.4 from the page for every seed, tinted or grey, near
+    /// black or white; clamping it again changes nothing; and a pushed
+    /// tint keeps its hue. `lift` used to clip each channel, which cost
+    /// lightness and turned the hue, and rounding next to black overshot
+    /// the 0.005 slack.
+    #[test]
+    fn readable_text_holds_the_floor_and_the_hue_for_every_seed() {
+        for (page, fg, tag) in floor_sweep() {
+            let text = readable_text(fg, page);
+            let gap = (oklab_l(text) - oklab_l(page)).abs();
+            assert!(gap >= 0.4, "{tag}: {fg:?} on {page:?} drew {text:?}, gap {gap}");
+            assert_eq!(readable_text(text, page), text, "{tag}: not idempotent");
+            let ((h0, c0), (h1, c1)) = (hue_and_chroma(fg), hue_and_chroma(text));
+            // Same bounds as the contrast sweep: hue is noise on a
+            // near-grey, and next to black or white one u8 unit sets it.
+            if c0 > 0.02 && c1 > 0.02 && (0.15..0.95).contains(&oklab_l(text)) {
+                assert!((h1 - h0).sin().abs() < 0.1, "{tag}: hue turned {fg:?} -> {text:?}");
+            }
+        }
+    }
+
+    /// #31's own example: a tinted page at L 0.45 with dark tinted text,
+    /// pushed down next to black where its tint doesn't fit and one u8
+    /// unit is a big lightness step.
+    #[test]
+    fn readable_text_holds_the_floor_for_31_s_example() {
+        let page = tinted(0.45, 0.04, 1.0 * std::f32::consts::TAU / 6.0);
+        let fg = tinted(0.1, 0.04, 1.0 * std::f32::consts::TAU / 6.0 + 2.0);
+        let text = readable_text(fg, page);
+        assert!((oklab_l(text) - oklab_l(page)).abs() >= 0.4, "{text:?}");
+    }
+
+    /// Spec 2026-10-16 F6: a push that walks all the way to the end draws
+    /// black (or white), the only colour at that lightness, rather than a
+    /// tinted u8 step that rounds back toward the page.
+    #[test]
+    fn readable_text_at_the_dark_end_is_black() {
+        let page = tinted(0.415, 0.0, 0.0);
+        for h in 0..6 {
+            let fg = tinted(0.3, 0.08, h as f32);
+            assert_eq!(readable_text(fg, page), (0, 0, 0), "hue {h}");
+        }
+    }
+
+    /// Spec 2026-10-16 F4: chip text sits at least its `min_delta` from
+    /// its fill, under the same push as the text floor.
+    #[test]
+    fn chip_contrast_holds_its_floor_for_every_seed() {
+        let rgb = |(r, g, b): (u8, u8, u8)| Color::Rgb(r, g, b);
+        for (fill, fg, tag) in floor_sweep() {
+            let text = rgb_of(ensure_min_contrast(rgb(fg), rgb(fill), 0.35));
+            let gap = (oklab_l(text) - oklab_l(fill)).abs();
+            assert!(gap >= 0.35, "{tag}: {fg:?} on {fill:?} drew {text:?}, gap {gap}");
+        }
     }
 }

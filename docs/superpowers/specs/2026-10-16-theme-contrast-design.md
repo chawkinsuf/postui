@@ -102,6 +102,9 @@ level `n` (`n = c.level()`) in Oklab:
 
   98 seeds sit out: tinted texts whose level 0 already breaks `generate`'s
   floor. That's a pre-existing `lift` clip, on main too, filed as **#31**.
+  *(2026-10-16, task #31:)* the floor now holds for every seed
+  (`push_apart`, spec 2026-10-16-theme-text-floor-gamut), so the skip is
+  gone and all 2,016 seeds run.
 - *(Review round 4:)* every adjusted colour keeps its hue. A tinted page or
   text pushed toward its end, such as Gruvbox Dark's cream toward white,
   would leave sRGB with its whole tint, and a per-channel clip there turns
