@@ -1516,12 +1516,13 @@ impl Editor {
             self.body.lines.get(edtui::RowIndex::new(at.row)).cloned().unwrap_or_default();
         let lead = line.iter().take_while(|c| blank(c)).count();
         if at.col <= lead {
+            // An untouched indent moves down with its line (spec 2026-10-16 R6).
+            let carried = self.untouched_indent_row() == Some(at.row);
             // A break at column 0 inserts the empty row above.
             self.body.cursor = edtui::Index2::new(at.row, 0);
             LineBreak(1).execute(&mut self.body);
             self.body.cursor = edtui::Index2::new(at.row + 1, at.col);
-            // An untouched indent moves down with its line (spec 2026-10-16 R6).
-            if let Some(mark) = self.auto_indent.as_mut().filter(|m| m.row == at.row) {
+            if let Some(mark) = self.auto_indent.as_mut().filter(|_| carried) {
                 mark.row += 1;
                 mark.lines += 1;
             }
