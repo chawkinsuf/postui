@@ -3254,3 +3254,58 @@ fn second_wave_commands_survive_the_largest_count() {
         }
     }
 }
+
+/// A body at shiftwidth 4 (spec 2026-10-15 editor indent R11).
+fn sw4(text: &str, row: usize, col: usize) -> Body {
+    let mut b = Body::new(text, row, col);
+    b.state.set_shiftwidth(4);
+    b
+}
+
+/// Probed, Vim 9.1.0016 (`expandtab shiftwidth=4 tabstop=2 softtabstop=0
+/// noshiftround`, `:normal` on each text from column 1).
+#[test]
+fn shifts_step_by_the_buffer_shiftwidth() {
+    let mut b = sw4("  a", 0, 0);
+    b.keys(">>");
+    assert_eq!(b.text(), "      a");
+    let mut b = sw4("a\nb\nc\nd", 0, 0);
+    b.keys("3>>");
+    assert_eq!(b.text(), "    a\n    b\n    c\nd");
+    let mut b = sw4("   a", 0, 0);
+    b.keys("<<");
+    assert_eq!(b.text(), "a", "noshiftround: 3 - 4 floors at 0");
+    let mut b = sw4("      a", 0, 0);
+    b.keys("<<");
+    assert_eq!(b.text(), "  a");
+    let mut b = sw4("   a", 0, 0);
+    b.keys(">>");
+    assert_eq!(b.text(), "       a", "noshiftround: 3 + 4");
+    let mut b = sw4("a\nb", 0, 0);
+    b.keys("Vj2>");
+    assert_eq!(b.text(), "        a\n        b");
+    let mut b = sw4("a\nb", 0, 0);
+    b.keys(">>j.");
+    assert_eq!(b.text(), "    a\n    b");
+}
+
+/// Probed (as above): Insert ctrl+t / ctrl+d round to the buffer's
+/// shiftwidth.
+#[test]
+fn insert_ctrl_t_and_ctrl_d_use_the_buffer_shiftwidth() {
+    let mut b = sw4("  a", 0, 2);
+    b.keys("A");
+    b.key(ctrl('t'));
+    b.key(esc());
+    assert_eq!(b.text(), "    a");
+    let mut b = sw4("      a", 0, 6);
+    b.keys("A");
+    b.key(ctrl('d'));
+    b.key(esc());
+    assert_eq!(b.text(), "    a");
+}
+
+#[test]
+fn a_fresh_buffer_state_keeps_the_pinned_shiftwidth() {
+    assert_eq!(BufState::new().shiftwidth(), super::settings::SHIFTWIDTH);
+}

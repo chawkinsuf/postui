@@ -1143,6 +1143,56 @@ fn a_format_with_the_body_open_is_one_engine_step() {
     assert_eq!(body(&app), "{\"a\":1}", "u takes the format back");
 }
 
+/// Spec 2026-10-15 R11: vim `>>` steps by a 4-space body's width, still
+/// does after the body's text is replaced under the session (its engine
+/// state resets, as after `$EDITOR`), and a tab body keeps 2.
+#[test]
+fn shifts_follow_a_space_bodys_width() {
+    let mut app = vim(Fixture::Body);
+    app.editor.set_body_text("{\n    \"a\": 1\n}");
+    app.editor.mark_saved();
+    feed(&mut app, "gg>>");
+    assert_eq!(body(&app), "    {\n    \"a\": 1\n}");
+    app.editor.set_body_text("{\n    \"b\": 1\n}");
+    feed(&mut app, "gg>>");
+    assert_eq!(body(&app), "    {\n    \"b\": 1\n}", "a replaced body's fresh state");
+    app.editor.set_body_text("{\n\t\"c\": 1\n}");
+    app.editor.mark_saved();
+    feed(&mut app, "gg>>");
+    assert_eq!(body(&app), "  {\n\t\"c\": 1\n}", "a tab body keeps 2");
+}
+
+/// Review round 4: `>>` never feeds the next one's width, so repeated
+/// shifts of a body's only indented line step 2, 4, 6, as Vim's do.
+#[test]
+fn repeated_shifts_step_by_a_fixed_width() {
+    let mut app = vim(Fixture::Body);
+    app.editor.set_body_text("a\n  b");
+    app.editor.mark_saved();
+    feed(&mut app, "G>>>>");
+    assert_eq!(body(&app), "a\n      b");
+}
+
+/// R11: one-line fields keep `shiftwidth=2` whatever the body uses.
+#[test]
+fn the_url_line_shifts_by_two_under_a_four_space_body() {
+    let mut app = url_line("x");
+    app.editor.set_body_text("{\n    \"a\": 1\n}");
+    feed(&mut app, "<CR>>>");
+    assert_eq!(url(&app).0, "  x");
+}
+
+/// Spec 2026-10-15 R10: Format under a vim session writes the body's indent
+/// too.
+#[test]
+fn a_format_with_the_body_open_follows_its_indent() {
+    let mut app = vim(Fixture::Body);
+    app.editor.set_body_text("{\n\t\"a\": [1]\n}");
+    app.editor.mark_saved();
+    app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::ALT));
+    assert_eq!(body(&app), "{\n\t\"a\": [\n\t\t1\n\t]\n}");
+}
+
 /// Final review triage (T6): a clear with the body open is one engine
 /// step, as a format is.
 #[test]

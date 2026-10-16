@@ -7,6 +7,7 @@
 use super::ctx::{EngineKind, EngineView, FieldId};
 use crate::components::line_input::LineInput;
 use crate::config::KeyProfile;
+use crate::text::indent::Indent;
 pub use crate::vim::engine::{
     AppRequest, Dir, Mode, Mouse, Note, Outcome, Pos, SearchLine, Seat, Settled, Shape, Start,
     ViewCtx,
@@ -244,6 +245,7 @@ macro_rules! target {
                 $call
             }
             FieldBuf::Body(state, visual) => {
+                $glue.apply_body_shiftwidth();
                 let mut b = BodyBuf::new(state, visual);
                 let $t = Target { buf: &mut b, state: &mut $glue.body };
                 $call
@@ -269,9 +271,27 @@ pub struct Glue {
     /// The session is a query box's (piece 3 §4.2 `Start::InsertOnly`): a
     /// rebase re-enters it so (plan M3b Review Focus 5).
     insert_only: bool,
+    /// The body's effective indent (`Editor::body_indent`), from the seam.
+    body_indent: Indent,
 }
 
 impl Glue {
+    pub fn set_body_indent(&mut self, indent: Indent) {
+        self.body_indent = indent;
+    }
+
+    /// Vim's buffer-local 'shiftwidth' for the body (spec 2026-10-15 editor
+    /// indent R11): its indent's width when that is spaces, the pinned step
+    /// for a tab body (until #26). Put on inside every body target, so it
+    /// survives a state reset (`rebase`, `own_body`).
+    fn apply_body_shiftwidth(&mut self) {
+        let sw = match self.body_indent {
+            Indent::Spaces(n) => n,
+            Indent::Tabs => crate::vim::engine::settings::SHIFTWIDTH,
+        };
+        self.body.set_shiftwidth(sw);
+    }
+
     pub fn session(&self) -> FieldSession {
         self.session
     }

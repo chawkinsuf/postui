@@ -1275,6 +1275,7 @@ impl App {
                     | Hit::SettingsControl(_)
                     | Hit::SettingsJqTab(_)
                     | Hit::SettingsKeymap(_)
+                    | Hit::SettingsIndent(_)
                     | Hit::SettingsFile { .. }
             );
         if !keeps_settings_focus {
@@ -1419,6 +1420,17 @@ impl App {
                 }
                 self.settings.focus_field(SettingsField::Keymap);
                 self.update(Action::SetKeyProfile(profile))
+            }
+            Hit::SettingsIndent(kind) => {
+                use crate::components::settings::SettingsField;
+                if !self.commit_settings_edit_for_click() {
+                    return true;
+                }
+                self.settings.focus_field(SettingsField::Indent);
+                self.update(Action::SetUiString {
+                    key: SettingsField::Indent.key(),
+                    value: kind.spelling().to_string(),
+                })
             }
             Hit::SettingsFile { file, reset } => {
                 use crate::components::settings::{SettingsRow, SettingsTab};

@@ -120,7 +120,7 @@ impl App {
                 self.flush_field_session();
                 self.no_coalesce = true;
                 self.reseed_editor(None, postui_core::model::HttpRequest::default());
-                self.editor.saved = None;
+                self.editor.set_saved(None);
                 self.vim_drop_body();
                 self.toasts.push(format!("Request discarded{}", self.undo_hint()), ToastKind::Info);
             }

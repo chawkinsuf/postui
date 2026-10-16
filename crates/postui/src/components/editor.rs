@@ -5,6 +5,7 @@ use super::{Component, DrawCtx, pane_surface};
 use crate::action::{Action, Verb};
 use crate::hit::ScrollbarSpec;
 use crate::layout::PaneId;
+use crate::text::indent::Indent;
 use crate::theme::Theme;
 use crate::vim::engine::BodyVisual;
 use edtui::{
@@ -191,6 +192,14 @@ pub struct Editor {
     /// The row a triple click selected: while set, `body_drag_to` extends
     /// by whole lines from it. Cleared by any single click.
     body_line_anchor: Option<usize>,
+    /// What [`crate::text::indent::detect`] found in `saved`'s body: the
+    /// body's own indent (spec 2026-10-15, round-4 amendment). Set only
+    /// with `saved` ([`Editor::set_saved`]), so editing, Format and undo
+    /// never move it.
+    saved_indent: Option<Indent>,
+    /// The configured indent (`UiSettings::default_indent`), mirrored in by
+    /// `App` on every update so even a fresh scratch has it (R1, R6).
+    pub indent_default: Indent,
     pub active_tab: EditorTab,
     /// The last tab the user explicitly chose (click, alt+number, or
     /// arrow-cycling) — where `active_tab` returns whenever it can.
@@ -317,6 +326,8 @@ impl Default for Editor {
             body_sel_anchor: None,
             body_word_anchor: None,
             body_line_anchor: None,
+            saved_indent: None,
+            indent_default: Indent::DEFAULT,
             active_tab: EditorTab::Headers,
             preferred_tab: EditorTab::Headers,
             sub_focus: SubFocus::Url,
@@ -444,7 +455,7 @@ impl Editor {
             Some(Body::Json { text }) => text,
             None => "",
         });
-        self.saved = Some(req);
+        self.set_saved(Some(req));
         self.computed.revealed = false;
     }
 
@@ -617,7 +628,19 @@ impl Editor {
     }
 
     pub fn mark_saved(&mut self) {
-        self.saved = Some(self.current_request());
+        self.set_saved(Some(self.current_request()));
+    }
+
+    /// Replaces the dirty baseline, and the indent detected from its body
+    /// with it (spec 2026-10-15, round-4 amendment): the one writer of both.
+    pub fn set_saved(&mut self, req: Option<HttpRequest>) {
+        self.saved_indent = match req.as_ref().and_then(|r| r.body.as_ref()) {
+            Some(Body::Json { text }) => {
+                crate::text::indent::detect(&edtui::Lines::from(text.as_str()))
+            }
+            None => None,
+        };
+        self.saved = req;
     }
 
     /// A request that was typed but never saved at all: no slug, no saved
@@ -721,6 +744,15 @@ impl Editor {
         self.body_hl_text.clear();
         self.body_hl_marker = None;
         self.body_hl_overlays.clear();
+    }
+
+    /// The indent the body's keys and Format use: what its text as last
+    /// opened or saved uses, else the configured default (spec 2026-10-15
+    /// R3, round-4 amendment). Undo never changes the saved text, so it
+    /// gives back exactly the indent it had; and an indent never feeds the
+    /// width of the next.
+    pub fn body_indent(&self) -> Indent {
+        self.saved_indent.unwrap_or(self.indent_default)
     }
 
     /// Whether the body parses as JSON. An empty body is vacuously valid:
@@ -1300,34 +1332,43 @@ impl Editor {
     }
 
     /// Shifts the body lines the selection spans (the caret's line when
-    /// nothing is selected) one tab stop right (`indent`) or left: Tab /
-    /// shift+Tab on selected JSON. Indent prepends [`BODY_TAB_WIDTH`]
-    /// spaces (empty lines are skipped — indenting them would only plant
-    /// trailing whitespace); dedent strips up to one tab stop of leading
-    /// whitespace, where a single `\t` counts as a full stop. The
-    /// selection, its anchor, and the caret ride along with their lines'
-    /// shifts, so repeated presses keep working on the same text.
-    fn indent_body_lines(&mut self, indent: bool) {
+    /// nothing is selected) one level of the body's indent ([`Self::body_indent`])
+    /// right or left: Tab / shift+Tab on selected JSON (spec 2026-10-15 R9).
+    /// Indent prepends one level, `width` spaces or a `\t` (empty lines are
+    /// skipped — indenting them would only plant trailing whitespace);
+    /// dedent strips one leading `\t`, or else up to one level of leading
+    /// spaces. The selection, its anchor, and the caret ride along with
+    /// their lines' shifts, so repeated presses keep working on the same
+    /// text.
+    fn indent_body_lines(&mut self, right: bool) {
         let (first, last) = match self.body.selection.as_ref() {
             Some(sel) => (sel.start().row, sel.end().row),
             None => (self.body.cursor.row, self.body.cursor.row),
+        };
+        let indent = self.body_indent();
+        let unit: Vec<char> = indent.unit().chars().collect();
+        // A dedent strips one leading tab, or up to one level of spaces: a
+        // tab body's space-indented line gives back a tab's display width.
+        let spaces = match indent {
+            Indent::Spaces(n) => n,
+            Indent::Tabs => BODY_TAB_WIDTH,
         };
         let mut shifts = vec![0isize; last - first + 1];
         for row in first..=last {
             let Some(line) = self.body.lines.get_mut(edtui::RowIndex::new(row)) else {
                 continue;
             };
-            shifts[row - first] = if indent {
+            shifts[row - first] = if right {
                 if line.is_empty() {
                     continue;
                 }
-                line.splice(0..0, [' '; BODY_TAB_WIDTH]);
-                BODY_TAB_WIDTH as isize
+                line.splice(0..0, unit.iter().copied());
+                unit.len() as isize
             } else {
                 let n = if line.first() == Some(&'\t') {
                     1
                 } else {
-                    line.iter().take(BODY_TAB_WIDTH).take_while(|c| **c == ' ').count()
+                    line.iter().take(spaces).take_while(|c| **c == ' ').count()
                 };
                 line.drain(0..n);
                 -(n as isize)
@@ -1349,6 +1390,59 @@ impl Editor {
         if let Some(sel) = self.body.selection.take() {
             self.set_body_selection_cells(sel.start, sel.end);
         }
+    }
+
+    /// Plain Tab in the arrows body (spec 2026-10-15 R8): under spaces,
+    /// spaces up to the next multiple of the width by display column; under
+    /// tabs, one tab.
+    fn insert_body_tab(&mut self) {
+        use edtui::actions::{Execute, InsertChar};
+        let text = match self.body_indent() {
+            Indent::Tabs => "\t".to_string(),
+            Indent::Spaces(n) => {
+                let at = self.body.cursor;
+                let line = self.body.lines.get(edtui::RowIndex::new(at.row));
+                let col: usize = line
+                    .map(|l| l.iter().take(at.col).map(|&c| body_char_width(c)).sum())
+                    .unwrap_or(0);
+                " ".repeat(n - col % n)
+            }
+        };
+        for c in text.chars() {
+            InsertChar(c).execute(&mut self.body);
+        }
+        self.body.mode = EditorMode::Insert;
+    }
+
+    /// Enter in the arrows body (spec 2026-10-15 R14). After the line's
+    /// first non-blank: the new line starts with the line's indent, and the
+    /// text that moves down loses its own leading blanks (Vim's
+    /// `autoindent`). At or before it (in the indent, or on a blank line):
+    /// an empty line opens above, and the line moves down whole with the
+    /// caret's column, so repeated Enters leave no trailing blanks.
+    fn body_line_break(&mut self) {
+        use edtui::actions::{Execute, LineBreak};
+        let blank = |c: &char| *c == ' ' || *c == '\t';
+        let at = self.body.cursor;
+        let line: Vec<char> =
+            self.body.lines.get(edtui::RowIndex::new(at.row)).cloned().unwrap_or_default();
+        let lead = line.iter().take_while(|c| blank(c)).count();
+        if at.col <= lead {
+            // A break at column 0 inserts the empty row above.
+            self.body.cursor = edtui::Index2::new(at.row, 0);
+            LineBreak(1).execute(&mut self.body);
+            self.body.cursor = edtui::Index2::new(at.row + 1, at.col);
+        } else {
+            LineBreak(1).execute(&mut self.body);
+            let row = self.body.cursor.row;
+            if let Some(moved) = self.body.lines.get_mut(edtui::RowIndex::new(row)) {
+                let strip = moved.iter().take_while(|c| blank(c)).count();
+                moved.drain(..strip);
+                moved.splice(0..0, line[..lead].iter().copied());
+            }
+            self.body.cursor = edtui::Index2::new(row, lead);
+        }
+        self.body.mode = EditorMode::Insert;
     }
 
     /// Maps a screen click inside `last_body_area` to a body-buffer cursor,
@@ -1740,12 +1834,13 @@ impl Component for Editor {
                     self.body.mode = EditorMode::Insert;
                     return Some(Action::Render);
                 }
-                // Tab / shift+tab adjust indentation: with a selection Tab
-                // shifts the selected lines a tab stop right instead of
-                // replacing them, and shift+tab always shifts left.
-                // shift+tab is consumed unconditionally — crossterm's
-                // BackTab has no edtui KeyCode conversion (it panics
-                // `unimplemented!()`), so it must never reach the handler.
+                // Tab / shift+tab adjust indentation by the body's indent:
+                // with a selection Tab shifts the selected lines a level
+                // right instead of replacing them, and shift+tab always
+                // shifts left. shift+tab is consumed unconditionally —
+                // crossterm's BackTab has no edtui KeyCode conversion (it
+                // panics `unimplemented!()`), so it must never reach the
+                // handler.
                 if ev.code == KeyCode::BackTab {
                     self.indent_body_lines(false);
                     return Some(Action::Render);
@@ -1755,6 +1850,13 @@ impl Component for Editor {
                     && self.body.selection.is_some()
                 {
                     self.indent_body_lines(true);
+                    return Some(Action::Render);
+                }
+                // Plain Tab (spec 2026-10-15 R8): spaces to the next stop of
+                // the body's indent, or one tab. edtui's own Tab would insert
+                // a literal tab whatever the body uses.
+                if ev.code == KeyCode::Tab && ev.modifiers.is_empty() {
+                    self.insert_body_tab();
                     return Some(Action::Render);
                 }
                 if self.body.selection.is_some() {
@@ -1787,6 +1889,12 @@ impl Component for Editor {
                         // normally.
                         _ => self.clear_body_selection(),
                     }
+                }
+                // Enter (spec 2026-10-15 R14): auto-indent, not edtui's bare
+                // line break. A selection was already deleted above.
+                if ev.code == KeyCode::Enter && ev.modifiers.is_empty() {
+                    self.body_line_break();
+                    return Some(Action::Render);
                 }
                 // Esc blurs the buffer (Enter must stay a newline in a
                 // multi-line editor); Up climbs out to the URL line only
@@ -6480,12 +6588,165 @@ mod body_click_tests {
         assert_eq!(e.body_text(), "  a\nb");
     }
 
+    /// A Body-tab editor holding a POST request opened with `text` as its
+    /// saved body, which the body's indent is detected from (spec round-4
+    /// amendment).
+    fn loaded_body(text: &str) -> Editor {
+        let mut e = editor_with_body("");
+        e.load(None, json_request(text));
+        render_body(&mut e);
+        e
+    }
+
+    fn json_request(text: &str) -> HttpRequest {
+        HttpRequest {
+            method: Method::Post,
+            body: Some(Body::Json { text: text.into() }),
+            ..Default::default()
+        }
+    }
+
+    /// Spec R9: indent and dedent use the body's own detected indent.
     #[test]
-    fn tab_without_a_selection_still_inserts() {
+    fn indent_and_dedent_follow_a_four_space_body() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = loaded_body("{\n    \"a\": 1\n}");
+        e.set_body_selection_cells(Index2::new(0, 0), Index2::new(2, 0));
+        e.handle_key(pkey(KeyCode::Tab));
+        assert_eq!(e.body_text(), "    {\n        \"a\": 1\n    }");
+        e.handle_key(backtab());
+        assert_eq!(e.body_text(), "{\n    \"a\": 1\n}");
+    }
+
+    #[test]
+    fn indent_and_dedent_follow_a_tab_body() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = loaded_body("{\n\t\"a\": 1\n}");
+        e.set_body_selection_cells(Index2::new(0, 0), Index2::new(2, 0));
+        e.handle_key(pkey(KeyCode::Tab));
+        assert_eq!(e.body_text(), "\t{\n\t\t\"a\": 1\n\t}");
+        e.handle_key(backtab());
+        assert_eq!(e.body_text(), "{\n\t\"a\": 1\n}");
+    }
+
+    /// Spec round-4 amendment: the indent is detected from the text as last
+    /// opened or saved, else the default. Editing (a replacement, a paste)
+    /// never moves it; a save re-reads it.
+    #[test]
+    fn the_body_indent_follows_the_saved_text() {
+        use crate::text::indent::Indent;
+        let mut e = editor_with_body("");
+        assert_eq!(e.body_indent(), Indent::Spaces(2), "nothing saved: the default");
+        e.load(None, json_request("{\n    \"a\": 1\n}"));
+        assert_eq!(e.body_indent(), Indent::Spaces(4));
+        e.set_body_text("{\"a\":1}");
+        assert_eq!(e.body_indent(), Indent::Spaces(4), "Minify keeps the saved indent");
+        e.paste_body("\n\t\tx\n\t\ty");
+        assert_eq!(e.body_indent(), Indent::Spaces(4), "a paste never moves it");
+        e.mark_saved();
+        assert_eq!(e.body_indent(), Indent::Tabs, "a save reads the text again");
+        e.load(None, json_request("{}"));
+        e.indent_default = Indent::Spaces(4);
+        assert_eq!(e.body_indent(), Indent::Spaces(4), "a flat saved body: the default");
+    }
+
+    /// Review round 4: an indent never feeds the next one's width, so
+    /// repeated presses on a body's only indented line step 2, 4, 6.
+    #[test]
+    fn repeated_indents_step_by_a_fixed_width() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = loaded_body("{\n  \"a\": 1\n}");
+        e.set_body_selection_cells(Index2::new(1, 0), Index2::new(1, 0));
+        e.handle_key(pkey(KeyCode::Tab));
+        e.handle_key(pkey(KeyCode::Tab));
+        assert_eq!(e.body_text(), "{\n      \"a\": 1\n}");
+    }
+
+    /// Spec 2026-10-15 R8: plain Tab steps to the next indent stop with
+    /// spaces, or inserts one tab under a tab indent.
+    #[test]
+    fn tab_without_a_selection_steps_to_the_next_stop() {
+        use crate::text::indent::Indent;
         use ratatui::crossterm::event::KeyCode;
         let mut e = editor_with_body("ab");
         e.body.cursor = Index2::new(0, 1);
         e.handle_key(pkey(KeyCode::Tab));
-        assert_eq!(e.body_text(), "a\tb", "plain Tab keeps edtui's insert");
+        assert_eq!(e.body_text(), "a b", "column 1 to the stop at 2");
+        e.body.cursor = Index2::new(0, 0);
+        e.handle_key(pkey(KeyCode::Tab));
+        assert_eq!(e.body_text(), "  a b", "column 0 takes a whole level");
+        assert_eq!(e.body.cursor, Index2::new(0, 2));
+        e.handle_key(pkey(KeyCode::Tab));
+        assert_eq!(e.body_text(), "    a b", "column 2 to the stop at 4");
+        let mut e = editor_with_body("ab");
+        e.indent_default = Indent::Tabs;
+        e.handle_key(pkey(KeyCode::Tab));
+        assert_eq!(e.body_text(), "\tab", "nothing saved: the default's tab");
+    }
+
+    fn enter_at(text: &str, row: usize, col: usize) -> Editor {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body(text);
+        e.body.cursor = Index2::new(row, col);
+        e.handle_key(pkey(KeyCode::Enter));
+        e
+    }
+
+    /// Spec 2026-10-15 R14: after the first non-blank, Enter copies the
+    /// line's indent and the moved text loses its own leading blanks
+    /// (Vim's autoindent, probed).
+    #[test]
+    fn enter_after_the_text_starts_copies_the_indent() {
+        let e = enter_at("    a", 0, 5);
+        assert_eq!((e.body_text(), e.body.cursor), ("    a\n    ".into(), Index2::new(1, 4)));
+        let e = enter_at("    foo  bar", 0, 9);
+        assert_eq!(e.body_text(), "    foo  \n    bar");
+        assert_eq!(e.body.cursor, Index2::new(1, 4));
+        let e = enter_at("\t\tk", 0, 3);
+        assert_eq!(e.body_text(), "\t\tk\n\t\t", "a tab indent is copied as tabs");
+        let e = enter_at("ab", 0, 1);
+        assert_eq!(e.body_text(), "a\nb", "no indent, nothing copied");
+    }
+
+    /// R14 (user ruling): at or before the first non-blank, Enter opens an
+    /// empty line above and the line keeps its indent and caret column.
+    #[test]
+    fn enter_inside_the_indent_opens_a_line_above() {
+        for col in [0, 2, 4] {
+            let e = enter_at("    }", 0, col);
+            assert_eq!(e.body_text(), "\n    }", "caret at {col}");
+            assert_eq!(e.body.cursor, Index2::new(1, col), "caret at {col}");
+        }
+        let e = enter_at("{\n    \n}", 1, 4);
+        assert_eq!(e.body_text(), "{\n\n    \n}", "a whitespace-only line moves down whole");
+    }
+
+    #[test]
+    fn enter_twice_leaves_no_trailing_blanks() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = enter_at("    a", 0, 5);
+        e.handle_key(pkey(KeyCode::Enter));
+        e.handle_key(pkey(KeyCode::Char('x')));
+        assert_eq!(e.body_text(), "    a\n\n    x");
+    }
+
+    #[test]
+    fn enter_on_an_empty_body_and_over_a_selection() {
+        use ratatui::crossterm::event::KeyCode;
+        let e = enter_at("", 0, 0);
+        assert_eq!((e.body_text(), e.body.cursor), ("\n".into(), Index2::new(1, 0)));
+        let mut e = editor_with_body("  ab cd");
+        e.set_body_selection_cells(Index2::new(0, 4), Index2::new(0, 4));
+        e.body.cursor = Index2::new(0, 4);
+        e.handle_key(pkey(KeyCode::Enter));
+        assert_eq!(e.body_text(), "  ab\n  cd", "the selection goes, then an indented break");
+    }
+
+    #[test]
+    fn a_paste_is_never_re_indented() {
+        let mut e = editor_with_body("    a");
+        e.body.cursor = Index2::new(0, 5);
+        e.paste_body("\nb\n  c");
+        assert_eq!(e.body_text(), "    a\nb\n  c");
     }
 }

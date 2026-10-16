@@ -58,6 +58,8 @@ pub enum Hit {
     SettingsJqTab(crate::config::JqTab),
     /// One segment of the Settings tab's `Keyboard profile` control.
     SettingsKeymap(crate::config::KeyProfile),
+    /// One segment of the Settings tab's `Indent` control.
+    SettingsIndent(crate::config::IndentKind),
     /// A Files row's button: `reset` false is Edit…, true is Reset.
     SettingsFile {
         file: crate::action::ConfigFile,

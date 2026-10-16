@@ -10,7 +10,9 @@
 /// Vim's case mapping depends on).
 pub const SETTINGS_LINE: &str = "expandtab shiftwidth=2 autoindent selection=inclusive tabstop=2 softtabstop=0 backspace=indent,eol,start whichwrap=b,s startofline nojoinspaces nrformats=bin,hex noshiftround nosmartindent nocindent textwidth=0 noignorecase notildeop matchpairs=(:),{:},[:] iskeyword=@,48-57,_,192-255 cpoptions=aABceFs formatoptions=tcq virtualedit= wrapscan magic nosmartcase casemap=internal,keepascii paragraphs=IPLPPPQPP\\ TPHPLIPpLpItpplpipbp sections=SHNHH\\ HUnhsh";
 
-/// `shiftwidth`: one `>` step and the autoindent unit.
+/// The pinned `shiftwidth`: one-line fields' and a fresh buffer's `>`
+/// step. A body's follows its space indent (`BufState::shiftwidth`, spec
+/// 2026-10-15 editor indent R11).
 pub const SHIFTWIDTH: usize = 2;
 /// `tabstop`: a tab's width in virtual columns; Insert `Tab` (with
 /// `expandtab`) fills spaces to the next multiple.

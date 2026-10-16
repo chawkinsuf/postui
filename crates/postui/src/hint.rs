@@ -382,6 +382,15 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::SettingsControl(SettingsField::Keymap) => text("Choose the app's keyboard profile"),
         Hit::SettingsKeymap(crate::config::KeyProfile::Arrows) => text("Use arrows and Enter"),
         Hit::SettingsKeymap(crate::config::KeyProfile::Vim) => text("Use vim keys"),
+        // Same as the jq Tab row: only the segments register hits.
+        Hit::SettingsControl(SettingsField::Indent) => text("Choose how new indents are made"),
+        Hit::SettingsIndent(crate::config::IndentKind::Spaces) => {
+            text("Indent new levels with spaces")
+        }
+        Hit::SettingsIndent(crate::config::IndentKind::Tabs) => text("Indent new levels with tabs"),
+        Hit::SettingsControl(SettingsField::IndentWidth) => {
+            text("Edit the spaces in one indent level")
+        }
         Hit::SettingsFile { file, reset: false } => {
             Some(Source::Text(format!("Open {} in your editor", file.name())))
         }
@@ -960,6 +969,9 @@ mod tests {
             Hit::SettingsJqTab(crate::config::JqTab::Cycle),
             Hit::SettingsKeymap(crate::config::KeyProfile::Arrows),
             Hit::SettingsKeymap(crate::config::KeyProfile::Vim),
+            Hit::SettingsIndent(crate::config::IndentKind::Spaces),
+            Hit::SettingsIndent(crate::config::IndentKind::Tabs),
+            Hit::SettingsControl(crate::components::settings::SettingsField::IndentWidth),
             Hit::KeymapChoice(crate::config::KeyProfile::Arrows),
             Hit::KeymapChoice(crate::config::KeyProfile::Vim),
             Hit::SettingsFile { file: crate::action::ConfigFile::Config, reset: false },

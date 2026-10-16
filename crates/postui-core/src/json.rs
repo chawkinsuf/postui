@@ -27,11 +27,21 @@ pub fn validate(text: &str) -> Result<(), JsonError> {
     serde_json::from_str::<serde_json::Value>(text).map(|_| ()).map_err(JsonError::from)
 }
 
-/// Formats JSON text into pretty-printed format (2-space indentation).
+/// Formats JSON text pretty-printed with `unit` as one indent level.
 /// Preserves key order and number precision with arbitrary_precision feature.
-pub fn format(text: &str) -> Result<String, JsonError> {
+pub fn format_with(text: &str, unit: &str) -> Result<String, JsonError> {
+    use serde::Serialize;
     let value = serde_json::from_str::<serde_json::Value>(text).map_err(JsonError::from)?;
-    serde_json::to_string_pretty(&value).map_err(JsonError::from)
+    let mut out = Vec::new();
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(unit.as_bytes());
+    let mut ser = serde_json::Serializer::with_formatter(&mut out, formatter);
+    value.serialize(&mut ser).map_err(JsonError::from)?;
+    Ok(String::from_utf8(out).expect("serde_json writes UTF-8"))
+}
+
+/// [`format_with`] two spaces.
+pub fn format(text: &str) -> Result<String, JsonError> {
+    format_with(text, "  ")
 }
 
 /// Minifies JSON text into compact form (no extra whitespace).
@@ -43,6 +53,20 @@ pub fn minify(text: &str) -> Result<String, JsonError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_with_indents_by_the_unit() {
+        assert_eq!(format_with("{\"a\":[1]}", "\t").unwrap(), "{\n\t\"a\": [\n\t\t1\n\t]\n}");
+        assert_eq!(format_with("{\"a\":1}", "    ").unwrap(), "{\n    \"a\": 1\n}");
+        let text = "{\"z\":1,\"a\":{\"n\":1e3,\"m\":1.50}}";
+        assert_eq!(format_with(text, "  ").unwrap(), format(text).unwrap());
+        assert_eq!(
+            format(text).unwrap(),
+            serde_json::to_string_pretty(&serde_json::from_str::<serde_json::Value>(text).unwrap())
+                .unwrap(),
+            "format is byte-identical to before"
+        );
+    }
 
     #[test]
     fn validate_reports_position() {

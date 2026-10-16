@@ -17408,6 +17408,61 @@ mod undo_tests {
         assert!(steps >= 2, "format must not merge into the typing step");
     }
 
+    /// Spec 2026-10-15 R10: Format writes the body's own indent.
+    #[test]
+    fn format_follows_a_four_space_body() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("fmt4".into()));
+        app.update(Action::CycleMethod);
+        app.editor.set_body_text("{\n    \"a\": 1\n}");
+        app.editor.mark_saved();
+        // Minify, then Format: the saved text's indent comes back.
+        app.editor.set_body_text("{\"a\":{\"b\":1}}");
+        app.update(Action::FormatBody);
+        assert_eq!(app.editor.body_text(), "{\n    \"a\": {\n        \"b\": 1\n    }\n}");
+    }
+
+    /// Review round 1 (the user's "undo restores exactly"): a Format and
+    /// its undo leave the body following the default exactly as before, so
+    /// a later Settings change still reaches it.
+    #[test]
+    fn undoing_a_format_leaves_the_body_on_the_default() {
+        use crate::text::indent::Indent;
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("fmtu".into()));
+        app.update(Action::CycleMethod);
+        app.capture_undo();
+        app.editor.set_body_text("{\"a\":{\"b\":1}}");
+        app.capture_undo();
+        app.update(Action::FormatBody);
+        app.capture_undo();
+        app.update(Action::Undo);
+        assert_eq!(app.editor.body_text(), "{\"a\":{\"b\":1}}");
+        app.ui_settings.indent = crate::config::IndentKind::Tabs;
+        app.update(Action::Render);
+        assert_eq!(app.editor.body_indent(), Indent::Tabs, "the setting still reaches it");
+    }
+
+    /// Spec 2026-10-15 R14: the indented Enter undoes like today's bare
+    /// Enter: no step of its own for the indent.
+    #[test]
+    fn an_indented_enter_undoes_with_its_line_break() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("ent".into()));
+        app.update(Action::CycleMethod);
+        app.editor.set_body_text("{\n    \"a\": 1");
+        app.capture_undo();
+        app.focus = PaneId::Editor;
+        app.editor.active_tab = EditorTab::Body;
+        app.editor.sub_focus = SubFocus::Content;
+        app.editor.body.cursor = edtui::Index2::new(1, 10);
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.capture_undo();
+        assert_eq!(app.editor.body_text(), "{\n    \"a\": 1\n    ");
+        app.update(Action::Undo);
+        assert_eq!(app.editor.body_text(), "{\n    \"a\": 1");
+    }
+
     #[test]
     fn body_clear_empties_the_body_and_undo_brings_it_back() {
         let mut app = App::new_for_test();
@@ -25586,6 +25641,8 @@ fn resetting_a_parseable_config_confirm_promises_and_keeps_the_project_list() {
         "a parseable file promises the project list is kept: {body:?}"
     );
     assert!(!body.contains("lost"), "must not also warn of loss: {body:?}");
+    // The confirm names what the reset removes (review round 3, #8).
+    assert!(body.contains("indent"), "the indent keys are reset too: {body:?}");
     let confirm = choices[0].2.clone();
     app.modals.pop();
     for action in confirm {
@@ -26830,6 +26887,68 @@ fn the_keyboard_profile_row_switches_profiles_and_undo_switches_back() {
     app.update(Action::Undo);
     assert_eq!(app.profile(), KeyProfile::Arrows, "one config undo step");
     assert_eq!(app.keymap.lookup(&KeyCombo::parse("q").unwrap()), Some(Action::Quit));
+}
+
+/// Spec 2026-10-15 R2, R6: the Indent row flips spaces/tabs and the width
+/// row commits 1..=8; both write config.toml, apply live, and undo.
+#[test]
+fn the_indent_settings_write_apply_and_undo() {
+    use crate::components::settings::SettingsField;
+    use crate::config::IndentKind;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    click_hit(&mut app, Hit::SettingsIndent(IndentKind::Tabs));
+    assert_eq!(app.ui_settings.indent, IndentKind::Tabs);
+    app.settings.begin_edit(SettingsField::IndentWidth, "9");
+    app.commit_settings_edit();
+    assert_eq!(app.ui_settings.indent_width, 2, "9 is refused");
+    assert_eq!(app.settings.editing, Some(SettingsField::IndentWidth));
+    app.settings.begin_edit(SettingsField::IndentWidth, "4");
+    app.commit_settings_edit();
+    assert_eq!(app.ui_settings.indent_width, 4);
+    let written = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(written.contains("indent = \"tabs\""), "{written}");
+    assert!(written.contains("indent_width = 4"), "{written}");
+    app.update(Action::Undo);
+    assert_eq!(app.ui_settings.indent_width, 2);
+    app.update(Action::Undo);
+    assert_eq!(app.ui_settings.indent, IndentKind::Spaces);
+}
+
+/// Spec R6, plan Review Focus 1: the configured default reaches the editor
+/// on every update, so a fresh scratch (which replaces the whole `Editor`)
+/// has it, and a detected body keeps its own.
+#[test]
+fn the_configured_indent_reaches_fresh_and_detected_bodies() {
+    use crate::text::indent::Indent;
+    let mut app = App::new_for_test();
+    app.ui_settings.indent_width = 4;
+    app.update(Action::Render);
+    assert_eq!(app.editor.body_indent(), Indent::Spaces(4));
+    // What `fresh_scratch` does to the editor.
+    app.editor = crate::components::editor::Editor::default();
+    app.update(Action::Render);
+    assert_eq!(app.editor.body_indent(), Indent::Spaces(4), "a fresh scratch has it");
+    app.editor.set_body_text("{\n  \"a\": 1\n}");
+    app.editor.mark_saved();
+    app.ui_settings.indent = crate::config::IndentKind::Tabs;
+    app.update(Action::Render);
+    assert_eq!(app.editor.body_indent(), Indent::Spaces(2), "a detected body keeps its own");
+}
+
+/// Plan Review Focus 5: a Settings change, and its undo, reach the open
+/// undetected body at once.
+#[test]
+fn an_indent_setting_and_its_undo_reach_the_open_body() {
+    use crate::text::indent::Indent;
+    let mut app = App::new_for_test();
+    let _dir = config_at_tempdir(&mut app);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    click_hit(&mut app, Hit::SettingsIndent(crate::config::IndentKind::Tabs));
+    assert_eq!(app.editor.body_indent(), Indent::Tabs, "an undetected body follows at once");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.body_indent(), Indent::Spaces(2), "and follows the undo");
 }
 
 #[test]

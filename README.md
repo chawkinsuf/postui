@@ -102,3 +102,7 @@ e.g. `~/.config/postui/config.toml` on Linux):
   and stepping through them (`"accept"` is an older name for it);
   `"cycle"` ghosts the best candidate after the caret and steps through
   the rest in place, `Right` and `End` accepting it.
+- `indent` — how a request body with no indentation of its own indents:
+  `"spaces"` (the default) or `"tabs"`. A body that is already indented
+  keeps its own style: Tab, Enter, indent/dedent and Format follow it.
+- `indent_width` — the spaces in one indent level, from 1 to 8. Default: `2`.

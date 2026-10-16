@@ -112,6 +112,9 @@ impl App {
     /// or no buffer when that field is not open. A dialog's field lends the
     /// dialog engine and the top dialog's input (plan M3b Deviation 1).
     pub(crate) fn session_parts(&mut self, id: FieldId) -> (&mut Glue, Option<FieldBuf<'_>>) {
+        // The body's 'shiftwidth' follows its indent (spec 2026-10-15 R11),
+        // which the editor holds ready: no scan here.
+        self.vim.glue.set_body_indent(self.editor.body_indent());
         match id {
             FieldId::Body => (
                 &mut self.vim.glue,

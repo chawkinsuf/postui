@@ -2042,6 +2042,10 @@ impl App {
         self.editor.sending = editor_in_flight.is_some();
         self.editor.send_started = editor_in_flight.map(|f| f.started);
         self.editor.table_collapsed = self.table_collapsed;
+        // A copy, like the others: a fresh scratch replaces the whole
+        // editor, so the default is mirrored in on every update (spec
+        // 2026-10-15 R6).
+        self.editor.indent_default = self.ui_settings.default_indent();
         // Display copies for the panes' split clusters — the app state
         // stays the authority, the components only light segments from it.
         self.editor.split = self.split_state();
@@ -2727,9 +2731,9 @@ impl App {
                         // must say exactly what it destroys.
                         let body = if self.config_toml_recovers_projects() {
                             "Resets theme, animations, animation speeds, hover hints, \
-                             jq tab, the AI command, the AI confirmation, clipboard \
-                             command, and OSC 52 limit to their defaults. Your project \
-                             list is preserved."
+                             the curl button, jq tab, indent, indent width, the AI \
+                             command, the AI confirmation, clipboard command, and OSC 52 \
+                             limit to their defaults. Your project list is preserved."
                         } else {
                             "config.toml could not be read far enough to recover its \
                              [projects] table, so resetting replaces the whole file -- \
@@ -2844,6 +2848,10 @@ impl App {
                             crate::config::JqTab::Cycle
                         }
                     }
+                    "indent" => {
+                        ui.indent =
+                            crate::config::IndentKind::from_spelling(&value).unwrap_or_default()
+                    }
                     other => debug_assert!(false, "no string setting named {other:?}"),
                 });
                 if landed {
@@ -2858,6 +2866,7 @@ impl App {
                 let landed = saved.is_ok();
                 let redraw = self.apply_ui_write(saved, |ui| match key {
                     "osc52_limit" => ui.osc52_limit = value,
+                    "indent_width" => ui.indent_width = value,
                     other => debug_assert!(false, "no integer setting named {other:?}"),
                 });
                 if landed {
@@ -3330,7 +3339,9 @@ impl App {
             },
             Action::FormatBody => {
                 self.no_coalesce = true;
-                self.transform_body(postui_core::json::format)
+                // The body's own indent (spec 2026-10-15 R10).
+                let unit = self.editor.body_indent().unit();
+                self.transform_body(|text| postui_core::json::format_with(text, &unit))
             }
             Action::MinifyBody => {
                 self.no_coalesce = true;
@@ -9164,7 +9175,7 @@ impl App {
     /// user typed it, reporting the parse position in a toast.
     fn transform_body(
         &mut self,
-        transform: fn(&str) -> Result<String, postui_core::json::JsonError>,
+        transform: impl FnOnce(&str) -> Result<String, postui_core::json::JsonError>,
     ) -> bool {
         let text = self.editor.body_text();
         if text.is_empty() {
@@ -10338,6 +10349,16 @@ impl App {
                     value: jq_tab_spelling(next).to_string(),
                 })
             }
+            SettingsRow::Setting(SettingsField::Indent) => {
+                let next = match self.ui_settings.indent {
+                    crate::config::IndentKind::Spaces => crate::config::IndentKind::Tabs,
+                    crate::config::IndentKind::Tabs => crate::config::IndentKind::Spaces,
+                };
+                self.update(Action::SetUiString {
+                    key: SettingsField::Indent.key(),
+                    value: next.spelling().to_string(),
+                })
+            }
             SettingsRow::Setting(field) => {
                 if let Some(on) = field.checkbox(&self.ui_settings) {
                     // The tick is what the user sees, so the tick is what
@@ -10360,26 +10381,28 @@ impl App {
     }
 
     /// Esc and Enter in a live Settings field edit — the field rule, both
-    /// commit. `osc52_limit` is validated here and *rejected* rather than
-    /// coerced: the edit stays open with what was typed, the stored value
-    /// stands, and a toast says what was expected.
+    /// commit. `osc52_limit` and `indent_width` are validated here and
+    /// *rejected* rather than coerced: the edit stays open with what was
+    /// typed, the stored value stands, and a toast says what was expected.
     pub(crate) fn commit_settings_edit(&mut self) -> bool {
-        use crate::components::settings::{SettingsField, parse_osc52_limit};
+        use crate::components::settings::{SettingsField, parse_indent_width, parse_osc52_limit};
         let Some(field) = self.settings.editing else {
             return false;
         };
         let text = self.settings.field_text().to_string();
-        if field == SettingsField::Osc52Limit {
-            return match parse_osc52_limit(&text) {
+        let int = match field {
+            SettingsField::Osc52Limit => Some(parse_osc52_limit(&text)),
+            SettingsField::IndentWidth => Some(parse_indent_width(&text)),
+            _ => None,
+        };
+        if let Some(parsed) = int {
+            return match parsed {
                 Ok(value) => {
                     self.settings.end_edit();
                     self.update(Action::SetUiInt { key: field.key(), value })
                 }
                 Err(why) => {
-                    self.toasts.push(
-                        format!("{}: {why}", SettingsField::Osc52Limit.label()),
-                        ToastKind::Error,
-                    );
+                    self.toasts.push(format!("{}: {why}", field.label()), ToastKind::Error);
                     true
                 }
             };
@@ -10451,6 +10474,7 @@ impl App {
                 crate::components::settings::jq_tab_spelling(self.ui_settings.jq_tab).to_string()
             }
             "keymap" => self.ui_settings.keymap.map_or(String::new(), |p| p.spelling().to_string()),
+            "indent" => self.ui_settings.indent.spelling().to_string(),
             other => {
                 debug_assert!(false, "no string setting named {other:?}");
                 String::new()
@@ -10461,6 +10485,7 @@ impl App {
     fn ui_int(&self, key: &'static str) -> usize {
         match key {
             "osc52_limit" => self.ui_settings.osc52_limit,
+            "indent_width" => self.ui_settings.indent_width,
             other => {
                 debug_assert!(false, "no integer setting named {other:?}");
                 0
@@ -11120,13 +11145,17 @@ impl App {
                                     // answer replaced.
                                     ui.keymap = crate::config::KeyProfile::from_spelling(v)
                                 }
+                                "indent" => {
+                                    ui.indent = crate::config::IndentKind::from_spelling(v)
+                                        .unwrap_or_default()
+                                }
                                 _ => {}
                             },
-                            UiValue::Int(v) => {
-                                if *key == "osc52_limit" {
-                                    ui.osc52_limit = *v;
-                                }
-                            }
+                            UiValue::Int(v) => match *key {
+                                "osc52_limit" => ui.osc52_limit = *v,
+                                "indent_width" => ui.indent_width = *v,
+                                _ => {}
+                            },
                         }
                         self.reapply_ui_settings(ui);
                         if *key == "keymap" {
