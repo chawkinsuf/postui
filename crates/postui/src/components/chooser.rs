@@ -55,6 +55,7 @@ pub struct ChooserStepper {
 /// and the width the whole row needs. The panel's height and the paint
 /// both read it, so a row that does not fit is neither drawn nor given
 /// its line.
+#[derive(Clone, Copy)]
 struct StepperLayout {
     minus: u16,
     meter: u16,
@@ -468,11 +469,16 @@ impl ChooserState {
         // it; the keys still step.
         let above: u16 = if self.has_filter() { 3 + FIELD_HEIGHT + 2 } else { 3 };
         // A screen no taller than that chrome has no line to give it either
-        // (review round 5).
-        let stepper_fits = self.stepper.as_ref().is_some_and(|s| {
-            s.layout().width <= width.saturating_sub(4) && screen.height > above + 3
-        });
-        let below: u16 = if stepper_fits { 3 } else { 2 };
+        // (review round 5), and a chooser with a filter box has no row at
+        // all: its keys would type there, as its footer chip knows (review
+        // round 8). The one layout here is the one the row paints with.
+        let stepper_at = self
+            .stepper
+            .as_ref()
+            .filter(|_| !self.has_filter())
+            .map(|s| s.layout())
+            .filter(|at| at.width <= width.saturating_sub(4) && screen.height > above + 3);
+        let below: u16 = if stepper_at.is_some() { 3 } else { 2 };
         let chrome = above + below;
         let content_rows = (self.filtered.len() as u16).clamp(1, 10);
         let height = (chrome + content_rows).max(chrome + 3).min(screen.height);
@@ -603,27 +609,24 @@ impl ChooserState {
         }
 
         // The stepper row sits above the bottom pad, a gap under the list,
-        // whenever the panel was given its line (`stepper_fits`).
-        if stepper_fits {
+        // whenever the panel was given its line.
+        if let Some(at) = stepper_at {
             // Inside the panel's two-column margins, as the title row is.
-            let row = Rect {
-                x: area.x + 2,
-                y: area.y + area.height - 2,
-                width: area.width.saturating_sub(4),
-                height: 1,
-            };
-            self.draw_stepper(frame.buffer_mut(), row, theme, hits, hovered);
+            let x = area.x + 2;
+            let y = area.y + area.height - 2;
+            self.draw_stepper(frame.buffer_mut(), (x, y), at, theme, hits, hovered);
         }
     }
 
-    /// Paints the stepper row into `row`, if one is attached:
-    /// `Contrast   -  ▁▂▃▄▅▆▇  +   +1`. Each button is three cells (its
-    /// glyph padded) so the hover fill reads as a key; one at its end paints
-    /// in the disabled tone and registers no hit.
+    /// Paints the stepper row at `(x, y)` with the layout the panel was
+    /// sized by: `Contrast   -  ▁▂▃▄▅▆▇  +   +1`. Each button is three cells
+    /// (its glyph padded) so the hover fill reads as a key; one at its end
+    /// paints in the disabled tone and registers no hit.
     fn draw_stepper(
         &self,
         buf: &mut ratatui::buffer::Buffer,
-        row: Rect,
+        (x, y): (u16, u16),
+        at: StepperLayout,
         theme: &Theme,
         hits: &mut crate::hit::HitMap,
         hovered: Option<&crate::hit::Hit>,
@@ -631,8 +634,6 @@ impl ChooserState {
         let Some(s) = &self.stepper else {
             return;
         };
-        let (x, y) = (row.x, row.y);
-        let at = s.layout();
         let (minus_x, meter_x, plus_x, level_x) =
             (x + at.minus, x + at.meter, x + at.plus, x + at.level);
         let cells = at.cells;
@@ -1213,6 +1214,20 @@ mod tests {
         assert_eq!(wide, 6 + 3, "three two-cell glyphs, then the gap");
         let span = ChooserStepper { min: -100, max: 100, ..stepper(0) }.layout();
         assert_eq!(span.cells, 201);
+    }
+
+    /// Review round 8: a chooser with a filter box gets no stepper row, as
+    /// its `-`/`+` type into the box and its footer offers no step keys, so
+    /// the mouse cannot step what the keys do not.
+    #[test]
+    fn a_filtered_chooser_paints_no_stepper_row() {
+        let theme = Theme::dark();
+        let mut c = ChooserState::new("Pick", items(&["a"])).with_stepper(stepper(0));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+        assert!(hits.rect_of(&crate::hit::Hit::ChooserStepUp).is_none());
+        assert!(!format!("{:?}", terminal.backend().buffer()).contains("Contrast"));
     }
 
     /// A chooser without a stepper keeps today's shape and no step hits.

@@ -56,13 +56,14 @@ impl Seeds {
     }
 
     /// These seeds at contrast `contrast` (spec 2026-10-16): each step up
-    /// deepens `bg` toward its own end (black for a dark theme, white for
-    /// a light one), pushes `fg` out toward its own end and saturates the
-    /// four colours; each step down moves `bg` and `fg` back by the same
-    /// fixed distances and desaturates. `bg` never crosses to the other
-    /// polarity. `keep_bg` leaves `bg` as it is (the Terminal
-    /// theme, whose background must match the terminal's own). Level 0
-    /// returns the seeds untouched.
+    /// widens the drawn page–text gap by one fixed amount and saturates
+    /// the four colours; each step down narrows it by the same amount, as
+    /// far as the readability floor, and desaturates. `bg` takes its share
+    /// by moving away from the text (for the usual pair, deeper: toward
+    /// black on a dark theme, white on a light one) or back toward it, and
+    /// never crosses to the other polarity; `fg` moves the rest. `keep_bg`
+    /// leaves `bg` as it is (the Terminal theme, whose background must
+    /// match the terminal's own). Level 0 returns the seeds untouched.
     pub fn with_contrast(self, contrast: Contrast, keep_bg: bool) -> Self {
         let n = contrast.level();
         if n == 0 {
