@@ -34,7 +34,7 @@ pub struct ChooserToggle {
 }
 
 /// An optional stepped level on a chooser (the theme picker's Contrast row,
-/// spec 2026-10-16): painted as a row under the list — `label`, a `−`
+/// spec 2026-10-16): painted as a row under the list — `label`, a `-`
 /// button, a meter with one cell per level, a `+` button and the level as
 /// text. On a chooser without a filter box `-` fires `down` and `+`/`=`
 /// fire `up`, without closing; the buttons fire the same. The actions'
@@ -65,7 +65,7 @@ struct StepperLayout {
 }
 
 impl ChooserStepper {
-    /// The row laid out from its own label: the `−` button three cells
+    /// The row laid out from its own label: the `-` button three cells
     /// after it, the meter, the `+` button and then the level, read at
     /// its widest end.
     fn layout(&self) -> StepperLayout {
@@ -88,12 +88,13 @@ impl ChooserStepper {
     }
 }
 
-/// A stepper level as the row shows it: `+1`, `0`, `−2`.
+/// A stepper level as the row shows it: `+1`, `0`, `-2`. Plain ASCII, as
+/// the `-` button is: U+2212 is East-Asian-ambiguous width, two cells in a
+/// terminal set for CJK, which would run the row past its own layout.
 fn level_text(n: i8) -> String {
     match n {
         n if n > 0 => format!("+{n}"),
-        n if n < 0 => format!("−{}", n.unsigned_abs()),
-        _ => "0".into(),
+        n => n.to_string(),
     }
 }
 
@@ -616,7 +617,7 @@ impl ChooserState {
     }
 
     /// Paints the stepper row into `row`, if one is attached:
-    /// `Contrast   −  ▁▂▃▄▅▆▇  +   +1`. Each button is three cells (its
+    /// `Contrast   -  ▁▂▃▄▅▆▇  +   +1`. Each button is three cells (its
     /// glyph padded) so the hover fill reads as a key; one at its end paints
     /// in the disabled tone and registers no hit.
     fn draw_stepper(
@@ -661,7 +662,7 @@ impl ChooserState {
                 );
             }
         };
-        button(minus_x, "−", crate::hit::Hit::ChooserStepDown, s.level > s.min);
+        button(minus_x, "-", crate::hit::Hit::ChooserStepDown, s.level > s.min);
         button(plus_x, "+", crate::hit::Hit::ChooserStepUp, s.level < s.max);
         for i in 0..cells {
             // The glyphs rise across the meter whatever its length.
@@ -1075,7 +1076,7 @@ mod tests {
     }
 
     /// Spec C4: the stepper row sits under the list, one row taller than
-    /// the chooser without it, with clickable `−`/`+`, a meter lit up to the
+    /// the chooser without it, with clickable `-`/`+`, a meter lit up to the
     /// level and the level as text; an end's button paints disabled and
     /// takes no click (C9).
     #[test]
@@ -1100,7 +1101,7 @@ mod tests {
         let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
         let plain = plain_hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
         assert_eq!(body.height, plain.height + 1, "the row adds one line");
-        let down = hits.rect_of(&crate::hit::Hit::ChooserStepDown).expect("− is clickable");
+        let down = hits.rect_of(&crate::hit::Hit::ChooserStepDown).expect("- is clickable");
         let up = hits.rect_of(&crate::hit::Hit::ChooserStepUp).expect("+ is clickable");
         assert_eq!(down.y, up.y);
         assert_eq!(down.y, body.y + body.height - 2, "the row above the bottom pad");
@@ -1109,7 +1110,10 @@ mod tests {
         let line = row_text(&buf, down.y);
         assert!(line.contains("Contrast"), "{line:?}");
         assert!(line.contains("+1"), "{line:?}");
-        assert!(line.contains('−') && line.contains('+'), "{line:?}");
+        // ASCII, one cell wide everywhere (review round 7: U+2212 is
+        // ambiguous width).
+        assert!(line.contains(" - ") && line.contains(" + "), "{line:?}");
+        assert!(!line.contains('−'), "{line:?}");
         // The meter: one cell per level, lit in accent up to the level.
         let meter: Vec<_> = (down.x + down.width..up.x)
             .filter(|&x| "▁▂▃▄▅▆▇".contains(buf[(x, down.y)].symbol()))
