@@ -131,8 +131,8 @@ Text contrast at −3..+3:
 - Light: 6.2, 7.6, 9.3, **11.2**, 13.3, 15.7, 17.5
 - Gruvbox Dark: 6.1 → **10.7** → 17.0
 
-Light's page reaches white at +3, Gruvbox Light's at +2 (no longer, task
-#32: see the amendment below). Themes already on
+Light's page reaches white at +3, Gruvbox Light's and Solarized Light's at
++2 (no longer, task #32: see the amendment below). Themes already on
 the text floor at 0 (Solarized, Catppuccin Latte) cannot go softer; they
 only go crisper. A black page lifts in Oklab but rounds to `#000000` until
 −3, because sRGB's first step above black is already L 0.067, so a stark

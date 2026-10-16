@@ -622,7 +622,7 @@ fn oklab_to_rgb_in_gamut(lab: (f32, f32, f32)) -> (u8, u8, u8) {
 /// fits sRGB: how far a light page can rise and keep its colour. At least
 /// `c`'s own lightness, give or take float error. (Above L 0.5 the
 /// lightnesses a tint fits at form one range, so the search can't land in
-/// a gap: checked for every hue at chroma up to 0.2.)
+/// a gap: checked for every hue at chroma up to 0.4, past any sRGB colour.)
 fn tint_ceiling(c: (u8, u8, u8)) -> f32 {
     let (l, a, b) = oklab(c);
     last_in_gamut(l, 1.0 + 1e-3, |t| (t, a, b))
@@ -929,7 +929,12 @@ mod tests {
                         c1 >= c0 - LIGHT_TINT_SLACK,
                         "{name} {n} {what}: tint {c0:.4} -> {c1:.4}"
                     );
-                    assert!((h1 - h0).cos() > 0.995, "{name} {n} {what}: hue turned {after:?}");
+                    // A near-grey's hue is u8 noise (Light's, Latte's); only
+                    // a visible tint has one.
+                    if c0 > 0.02 {
+                        let turn = (h1 - h0).cos();
+                        assert!(turn > 0.995, "{name} {n} {what}: hue turned {after:?}");
+                    }
                 }
             }
         }
