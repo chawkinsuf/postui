@@ -479,8 +479,9 @@ fn derive_fg_from_bg(bg: (u8, u8, u8)) -> (u8, u8, u8) {
 }
 
 /// Returns `fg` with its Oklab lightness pushed away from `bg` until
-/// |ΔL| >= `min_delta`, keeping its hue: [`push_apart`], the same push as
-/// `Theme::generate`'s text clamp. Non-RGB colors pass through unchanged.
+/// |ΔL| >= `min_delta` (under 0.5, so one side always has the room),
+/// keeping its hue: [`push_apart`], the same push as `Theme::generate`'s
+/// text clamp. Non-RGB colors pass through unchanged.
 /// Used by chip painting, where a dim pill color (`text_muted` on a soft
 /// palette) can land within a whisper of its own tinted fill.
 pub(crate) fn ensure_min_contrast(fg: Color, bg: Color, min_delta: f32) -> Color {
@@ -1451,6 +1452,8 @@ mod tests {
         assert_eq!(s.accent, Seeds::dark().accent);
     }
 
+    type Rgb = (u8, u8, u8);
+
     /// An Oklab colour at lightness `l`, tinted `chroma` at angle `hue`,
     /// fitted into sRGB.
     fn tinted(l: f32, chroma: f32, hue: f32) -> (u8, u8, u8) {
@@ -1459,16 +1462,17 @@ mod tests {
 
     /// Seed pairs for the floor sweeps: pages in fine steps (next to
     /// black one u8 unit is a big lightness step, task #31), texts across
-    /// the range, grey and tinted at six hues.
-    fn floor_sweep() -> impl Iterator<Item = ((u8, u8, u8), (u8, u8, u8), String)> {
+    /// the range, grey and tinted at six hues. The last field is the
+    /// seed's `(page L, text L, chroma, hue index)`, for failure messages.
+    fn floor_sweep() -> impl Iterator<Item = (Rgb, Rgb, (f32, f32, f32, i32))> {
         (0..=200).flat_map(|p| {
             (0..=20).flat_map(move |t| {
                 [0.0, 0.04, 0.08, 0.12].into_iter().flat_map(move |chroma| {
                     (0..6).map(move |h| {
                         let (page_l, text_l) = (p as f32 / 200.0, t as f32 / 20.0);
                         let hue = h as f32 * std::f32::consts::TAU / 6.0;
-                        let tag = format!("page {page_l} text {text_l} chroma {chroma} hue {h}");
-                        (tinted(page_l, chroma, hue), tinted(text_l, chroma, hue + 2.0), tag)
+                        let seed = (page_l, text_l, chroma, h);
+                        (tinted(page_l, chroma, hue), tinted(text_l, chroma, hue + 2.0), seed)
                     })
                 })
             })
@@ -1483,17 +1487,17 @@ mod tests {
     /// the 0.005 slack.
     #[test]
     fn readable_text_holds_the_floor_and_the_hue_for_every_seed() {
-        for (page, fg, tag) in floor_sweep() {
+        for (page, fg, seed) in floor_sweep() {
             let text = readable_text(fg, page);
             let gap = (oklab_l(text) - oklab_l(page)).abs();
-            assert!(gap >= 0.4, "{tag}: {fg:?} on {page:?} drew {text:?}, gap {gap}");
-            assert_eq!(readable_text(text, page), text, "{tag}: not idempotent");
+            assert!(gap >= 0.4, "{seed:?}: {fg:?} on {page:?} drew {text:?}, gap {gap}");
+            assert_eq!(readable_text(text, page), text, "{seed:?}: not idempotent");
             let ((h0, c0), (h1, c1)) = (hue_and_chroma(fg), hue_and_chroma(text));
             // Same bounds as the contrast sweep: hue is noise on a
             // near-grey, and next to black or white one u8 unit sets it.
             // `cos`, not `sin`, so a flip to the opposite hue fails too.
             if c0 > 0.02 && c1 > 0.02 && (0.15..0.95).contains(&oklab_l(text)) {
-                assert!((h1 - h0).cos() > 0.995, "{tag}: hue turned {fg:?} -> {text:?}");
+                assert!((h1 - h0).cos() > 0.995, "{seed:?}: hue turned {fg:?} -> {text:?}");
             }
         }
     }
@@ -1531,13 +1535,13 @@ mod tests {
     #[test]
     fn chip_contrast_holds_its_floor_for_every_seed() {
         let rgb = |(r, g, b): (u8, u8, u8)| Color::Rgb(r, g, b);
-        for (fill, fg, tag) in floor_sweep() {
+        for (fill, fg, seed) in floor_sweep() {
             let text = rgb_of(ensure_min_contrast(rgb(fg), rgb(fill), 0.35));
             let gap = (oklab_l(text) - oklab_l(fill)).abs();
-            assert!(gap >= 0.35, "{tag}: {fg:?} on {fill:?} drew {text:?}, gap {gap}");
+            assert!(gap >= 0.35, "{seed:?}: {fg:?} on {fill:?} drew {text:?}, gap {gap}");
             let ((h0, c0), (h1, c1)) = (hue_and_chroma(fg), hue_and_chroma(text));
             if c0 > 0.02 && c1 > 0.02 && (0.15..0.95).contains(&oklab_l(text)) {
-                assert!((h1 - h0).cos() > 0.995, "{tag}: hue turned {fg:?} -> {text:?}");
+                assert!((h1 - h0).cos() > 0.995, "{seed:?}: hue turned {fg:?} -> {text:?}");
             }
         }
     }
