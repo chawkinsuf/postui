@@ -98,24 +98,33 @@ impl Seeds {
             -(CONTRAST_GAP_STEP * -n).min(((fg_l - bg_l).abs() - TEXT_FLOOR).max(0.0))
         };
 
-        // The page takes its share of that change first, moving away from
-        // the text to widen and toward it to narrow. It never crosses the
-        // middle, so the theme keeps its polarity; and a page authored
-        // close to the middle is held, never pushed the other way.
-        let bg = if keep_bg {
-            self.bg
+        // The page takes a fixed share of that change (its 0.025 of each
+        // 0.055), moving away from the text to widen and toward it to
+        // narrow. A share of the change itself, not of the level, so when
+        // softening stops at the floor the page stops with it (review
+        // round 9: a share of the level went on lifting the page, and the
+        // text drifted back to hold the gap). It never crosses the middle,
+        // so the theme keeps its polarity; and a page authored close to
+        // the middle is held, never pushed the other way.
+        let new_bg_l = if keep_bg {
+            bg_l
         } else {
             let toward = if n > 0.0 { -side } else { side };
-            let l = bg_l + toward * CONTRAST_BG_STEP.min(change.abs() / n.abs()) * n.abs();
-            let dark = bg_l < 0.5;
-            set_l(self.bg, if dark { l.min(bg_l.max(0.49)) } else { l.max(bg_l.min(0.51)) })
+            let l = bg_l + toward * change.abs() * (CONTRAST_BG_STEP / CONTRAST_GAP_STEP);
+            let l = if bg_l < 0.5 { l.min(bg_l.max(0.49)) } else { l.max(bg_l.min(0.51)) };
+            l.clamp(0.0, 1.0)
         };
+        let bg = if keep_bg { self.bg } else { set_l(self.bg, new_bg_l) };
 
-        // The text moves the rest, measured on the page as it rounded: a
-        // near-white page has little room left, so on a light theme the
-        // text does most of the work. The floor keeps the pair well apart,
-        // so it never comes near crossing.
-        let page_share = (bg_l - oklab_l(bg)) * side;
+        // The text moves the rest: a near-white page has little room left,
+        // so on a light theme the text does most of the work. Measured on
+        // the page's lightness before it rounds to sRGB, so both moves are
+        // fixed functions of the one change and neither ever turns back:
+        // next to black, rounding holds a page at #000000 for two steps
+        // and then jumps it to #010101 (L 0.067), and text that made up for
+        // the rounded page went back on the jump (the sweep found it). The
+        // floor keeps the pair well apart, so it never comes near crossing.
+        let page_share = (bg_l - new_bg_l) * side;
         let fg = set_l(fg0, fg_l + side * (change - page_share));
 
         // A raise goes only as far as the gamut allows (Gruvbox's warning
@@ -892,6 +901,143 @@ mod tests {
         let s = Seeds::dark();
         let step = drawn_gap(&s.with_contrast(level(1), true)) - drawn_gap(&s);
         assert!((step - CONTRAST_GAP_STEP).abs() < 0.012, "{step:.3}");
+    }
+
+    /// Every invariant of a contrast level, swept over a grid of synthetic
+    /// themes rather than the built-ins alone: pages and texts from black
+    /// to white, grey and tinted at six hues, near the floor, near the
+    /// middle and at the ends, with and without a kept page (Terminal).
+    /// Nine review rounds each found one more corner of `with_contrast`
+    /// by example (round 9: the page kept moving after softening stopped,
+    /// so the text drifted back); this checks them all at once, on the
+    /// drawn theme, at every level:
+    /// - level 0 draws exactly what `generate` draws from the seeds;
+    /// - the drawn gap never narrows on a step up;
+    /// - the page only ever moves away from the text on a step up, and
+    ///   the text only away from the page, so neither drifts back;
+    /// - the text stays on its side of the page, and the theme keeps its
+    ///   polarity;
+    /// - a tinted page or text keeps its hue.
+    #[test]
+    fn contrast_invariants_hold_across_a_sweep_of_themes() {
+        // Rounding to u8 moves Oklab L by up to ~0.004 mid-range, but right
+        // next to black sRGB's first step is already L 0.067 (#010101), so
+        // a check finer than that there measures one u8 unit, not the rule.
+        let tol = |ls: &[f32]| if ls.iter().any(|&l| l < 0.1) { 0.07 } else { 0.008 };
+        let colour = |l: f32, chroma: f32, hue: f32| {
+            oklab_to_rgb_in_gamut((l, chroma * hue.cos(), chroma * hue.sin()))
+        };
+        let hue_of = |c: (u8, u8, u8)| {
+            let (_, a, b) = oklab(c);
+            (b.atan2(a), (a * a + b * b).sqrt())
+        };
+        let pages =
+            [0.0, 0.05, 0.15, 0.25, 0.35, 0.45, 0.49, 0.51, 0.55, 0.65, 0.75, 0.85, 0.95, 1.0];
+        let texts = [0.0, 0.1, 0.3, 0.45, 0.55, 0.7, 0.9, 1.0];
+        let mut checked = 0;
+        for &page_l in &pages {
+            for &text_l in &texts {
+                for chroma in [0.0, 0.04, 0.08] {
+                    for h in 0..6 {
+                        let hue = h as f32 * std::f32::consts::TAU / 6.0;
+                        let s = Seeds {
+                            bg: colour(page_l, chroma, hue),
+                            fg: colour(text_l, chroma, hue + 2.0),
+                            ..Seeds::dark()
+                        };
+                        // The invariants assume `generate`'s own floor holds
+                        // at level 0. For a tinted text clamped out of gamut
+                        // it does not (task #31, on main too: `lift` clips,
+                        // so the clamp lands short of 0.4 and is not
+                        // idempotent); those seeds are #31's to fix, not a
+                        // level's, so they sit this sweep out.
+                        let floored = readable_text(s.fg, s.bg);
+                        if (oklab_l(floored) - oklab_l(s.bg)).abs() < 0.4
+                            || readable_text(floored, s.bg) != floored
+                        {
+                            continue;
+                        }
+                        for keep_bg in [false, true] {
+                            let at = |n: i8| Theme::generate(&s.with_contrast(level(n), keep_bg));
+                            let drawn: Vec<Theme> =
+                                (Contrast::MIN..=Contrast::MAX).map(at).collect();
+                            let base = &drawn[(-Contrast::MIN) as usize];
+                            let plain = Theme::generate(&s);
+                            assert_eq!((base.page, base.text), (plain.page, plain.text));
+                            let l = |c: Color| oklab_l(rgb_of(c));
+                            let side = if l(base.text) >= l(base.page) { 1.0 } else { -1.0 };
+                            let tag = format!(
+                                "page {page_l} text {text_l} chroma {chroma} hue {h} keep {keep_bg}"
+                            );
+                            for (i, pair) in drawn.windows(2).enumerate() {
+                                let (lo, hi) = (&pair[0], &pair[1]);
+                                let n = Contrast::MIN + i as i8;
+                                let gap = |t: &Theme| (l(t.text) - l(t.page)).abs();
+                                let tol = tol(&[l(lo.page), l(lo.text), l(hi.page), l(hi.text)]);
+                                assert!(
+                                    gap(hi) >= gap(lo) - tol,
+                                    "{tag} {n}: gap narrowed on a step up"
+                                );
+                                assert!(
+                                    (l(hi.page) - l(lo.page)) * side <= tol,
+                                    "{tag} {n}: page moved toward the text on a step up"
+                                );
+                                assert!(
+                                    (l(hi.text) - l(lo.text)) * side >= -tol,
+                                    "{tag} {n}: text drifted back toward the page on a step up"
+                                );
+                            }
+                            for (i, t) in drawn.iter().enumerate() {
+                                let n = Contrast::MIN + i as i8;
+                                assert_eq!(
+                                    (l(t.text) - l(t.page)).signum(),
+                                    side,
+                                    "{tag} {n}: text crossed"
+                                );
+                                assert_eq!(
+                                    t.is_dark(),
+                                    base.is_dark(),
+                                    "{tag} {n}: polarity flipped"
+                                );
+                                for (what, before, after) in
+                                    [("page", base.page, t.page), ("text", base.text, t.text)]
+                                {
+                                    let ((h0, c0), (h1, c1)) =
+                                        (hue_of(rgb_of(before)), hue_of(rgb_of(after)));
+                                    // Only where sRGB can hold a hue: next to black or
+                                    // white a single u8 unit of one channel sets it
+                                    // (#000002 -> #000105 "turns"), which is noise.
+                                    let holds = |c: Color| (0.15..0.95).contains(&l(c));
+                                    if c0 > 0.02 && c1 > 0.02 && holds(before) && holds(after) {
+                                        assert!(
+                                            (h1 - h0).sin().abs() < 0.1,
+                                            "{tag} {n}: {what} hue turned {before:?} -> {after:?}"
+                                        );
+                                    }
+                                }
+                            }
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        // 2016 seeds × 2; #31's 98 sit out, so the sweep still covers most.
+        assert!(checked >= 3800, "the sweep shrank to {checked}");
+    }
+
+    /// Review round 9: Catppuccin Latte has 0.117 of room above the floor,
+    /// less than three steps' worth. Its text used to darken again from -2
+    /// to -3, as the page went on lifting after the gap had stopped.
+    #[test]
+    fn catppuccin_latte_s_last_softening_steps_do_not_drift_back() {
+        let (_, s) =
+            builtin_seeds().into_iter().find(|(n, _)| *n == "catppuccin-latte").expect("built-in");
+        let text = |n: i8| oklab_l(rgb_of(Theme::generate(&s.with_contrast(level(n), false)).text));
+        // Light theme: softer text is lighter, so each step down never darkens it.
+        for n in (Contrast::MIN + 1)..=0 {
+            assert!(text(n - 1) >= text(n) - 0.003, "{}..{n}: text darkened", n - 1);
+        }
     }
 
     /// Review round 6: on a theme whose text already sits on the

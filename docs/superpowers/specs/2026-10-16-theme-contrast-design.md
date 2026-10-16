@@ -71,14 +71,37 @@ level `n` (`n = c.level()`) in Oklab:
     already on the floor (Solarized Dark) doesn't soften at all. Before,
     the page lifted and the floor dragged the text up after it, so "softer"
     drew brighter text.
-- `bg` (unless `keep_bg`) takes up to 0.025 per step of that change. It
-  moves away from the text to widen and toward it to narrow, clamped to
-  0..1. It never crosses 0.5 (C14), and a page authored within 0.01 of the
-  middle is held where it is.
-- `fg` moves the rest, measured on the page as it rounded, clamped to 0..1.
-  The floor keeps the pair at least 0.4 apart, so the round 3/5
-  never-cross guard and its 0.02 margin were removed: the floor subsumes
-  them.
+- `bg` (unless `keep_bg`) takes a fixed 25/55 share of that change, the
+  0.025 of each 0.055. It moves away from the text to widen and toward it
+  to narrow, clamped to 0..1. It never crosses 0.5 (C14), and a page
+  authored within 0.01 of the middle is held where it is.
+  *(Review round 9:)* the share is of the *change*, not of the level.
+  Taken as `min(0.025·|n|, |change|)`, the page went on lifting after
+  softening stopped at the floor, and the text drifted back to hold the
+  gap. Catppuccin Latte's text darkened again from −2 to −3.
+- `fg` moves the rest, measured on the page's lightness *before* it rounds
+  to sRGB, and is clamped to 0..1. Both moves are then fixed functions of
+  one monotone change, so neither turns back. Next to black, rounding holds
+  a page at `#000000` for two steps and then jumps it to `#010101` (L
+  0.067); text measured on the rounded page went back on that jump. The
+  floor keeps the pair at least 0.4 apart, so the round 3/5 never-cross
+  guard and its 0.02 margin were removed: the floor subsumes them.
+- *Checked by sweep (after round 9, `you` chose "fix + property test"):*
+  `contrast_invariants_hold_across_a_sweep_of_themes` generates 2016
+  synthetic seeds and checks each at every level, with and without a kept
+  page. The seeds cover pages and texts from L 0 to 1, grey and tinted at
+  six hues, near the floor, the middle and the ends. On the drawn theme it
+  checks:
+  - level 0 equals `generate`;
+  - the gap never narrows on a step up;
+  - the page only moves away from the text, and the text only away from
+    the page;
+  - no crossing;
+  - the polarity is kept;
+  - the hue is kept.
+
+  98 seeds sit out: tinted texts whose level 0 already breaks `generate`'s
+  floor. That's a pre-existing `lift` clip, on main too, filed as **#31**.
 - *(Review round 4:)* every adjusted colour keeps its hue. A tinted page or
   text pushed toward its end, such as Gruvbox Dark's cream toward white,
   would leave sRGB with its whole tint, and a per-channel clip there turns
