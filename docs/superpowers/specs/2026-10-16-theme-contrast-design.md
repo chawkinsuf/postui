@@ -167,7 +167,9 @@ the saturated blue accents were all that was left.
 The ruling: dark themes stay as they are, and a light page rises only as
 far as its tint still fits (`tint_ceiling`, the top of the seed's `a`, `b`
 in sRGB). The text makes up the rest, as it already did for a page with no
-room. A softening step darkens a light page as before. At +3 the pages are
+room. The cap holds whenever a light page would rise, which on the usual
+pair (dark text) is a raise; a softening step there darkens the page as
+before. At +3 the pages are
 now Light `#fff9f5` (from +2), Gruvbox Light `#fff5cb` (from +1),
 Solarized Light `#fff8e5` (from +1) and Catppuccin Latte `#f9fbff`; text
 contrast at +3 is Light 17.8, Gruvbox Light 16.9, Solarized Light 8.3,

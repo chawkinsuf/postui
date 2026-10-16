@@ -906,22 +906,37 @@ mod tests {
     /// Task #32 (you, 2026-10-16): a light page rises only while its tint
     /// still fits sRGB, so a warm (or cool) light theme keeps its colour
     /// when raised. Before, Light, Gruvbox Light and Solarized Light went
-    /// to pure white, and the whole surface ladder to neutral grey.
+    /// to pure white, and the whole surface ladder to neutral grey. The
+    /// page, panel and control keep the tint; the surfaces drawn lighter
+    /// than the page can't hold all of it at the ceiling.
     #[test]
     fn raising_a_light_theme_keeps_its_page_s_tint() {
         for (name, s) in builtin_seeds() {
             if oklab_l(s.bg) < 0.5 {
                 continue;
             }
-            let (h0, c0) = hue_and_chroma(s.bg);
+            let base = Theme::generate(&s);
             for n in 1..=Contrast::MAX {
-                let page = rgb_of(Theme::generate(&s.with_contrast(level(n), false)).page);
-                let (h1, c1) = hue_and_chroma(page);
-                assert!(c1 >= c0 - 0.003, "{name} {n}: tint {c0:.4} -> {c1:.4} ({page:?})");
-                assert!((h1 - h0).cos() > 0.995, "{name} {n}: hue turned ({page:?})");
+                let t = Theme::generate(&s.with_contrast(level(n), false));
+                for (what, before, after) in [
+                    ("page", base.page, t.page),
+                    ("panel", base.panel, t.panel),
+                    ("control", base.control, t.control),
+                ] {
+                    let ((h0, c0), (h1, c1)) =
+                        (hue_and_chroma(rgb_of(before)), hue_and_chroma(rgb_of(after)));
+                    assert!(
+                        c1 >= c0 - LIGHT_TINT_SLACK,
+                        "{name} {n} {what}: tint {c0:.4} -> {c1:.4}"
+                    );
+                    assert!((h1 - h0).cos() > 0.995, "{name} {n} {what}: hue turned {after:?}");
+                }
             }
         }
     }
+
+    /// How much chroma rounding to u8 can cost a light page near white.
+    const LIGHT_TINT_SLACK: f32 = 0.004;
 
     /// Spec C2: the Terminal theme keeps its background; text still moves.
     #[test]
@@ -1057,7 +1072,7 @@ mod tests {
                                         hue_and_chroma(rgb_of(t.page)).1,
                                     );
                                     assert!(
-                                        c1 >= c0 - 0.004,
+                                        c1 >= c0 - LIGHT_TINT_SLACK,
                                         "{tag} {n}: page lost its tint {c0:.4} -> {c1:.4}"
                                     );
                                 }
