@@ -615,23 +615,25 @@ fn oklab_to_rgb_in_gamut(lab: (f32, f32, f32)) -> (u8, u8, u8) {
     }
     let (l, a, b) = lab;
     let scaled = |t: f32| (l, a * t, b * t);
-    let (mut inside, mut outside) = (0.0, 1.0);
-    for _ in 0..16 {
-        let mid = (inside + outside) / 2.0;
-        if in_gamut(scaled(mid)) { inside = mid } else { outside = mid }
-    }
-    oklab_to_rgb(scaled(inside))
+    oklab_to_rgb(scaled(last_in_gamut(0.0, 1.0, scaled)))
 }
 
 /// The highest Oklab lightness at which `c`'s tint (its `a`, `b`) still
 /// fits sRGB: how far a light page can rise and keep its colour. At least
-/// `c`'s own lightness, give or take float error.
+/// `c`'s own lightness, give or take float error. (Above L 0.5 the
+/// lightnesses a tint fits at form one range, so the search can't land in
+/// a gap: checked for every hue at chroma up to 0.2.)
 fn tint_ceiling(c: (u8, u8, u8)) -> f32 {
     let (l, a, b) = oklab(c);
-    let (mut inside, mut outside) = (l, 1.0 + 1e-3);
+    last_in_gamut(l, 1.0 + 1e-3, |t| (t, a, b))
+}
+
+/// Bisects `inside..outside` for the last `t` whose colour `at(t)` is in
+/// gamut, `at(inside)` being in and `at(outside)` out.
+fn last_in_gamut(mut inside: f32, mut outside: f32, at: impl Fn(f32) -> (f32, f32, f32)) -> f32 {
     for _ in 0..16 {
         let mid = (inside + outside) / 2.0;
-        if in_gamut((mid, a, b)) { inside = mid } else { outside = mid }
+        if in_gamut(at(mid)) { inside = mid } else { outside = mid }
     }
     inside
 }
@@ -916,7 +918,7 @@ mod tests {
                 let page = rgb_of(Theme::generate(&s.with_contrast(level(n), false)).page);
                 let (h1, c1) = hue_and_chroma(page);
                 assert!(c1 >= c0 - 0.003, "{name} {n}: tint {c0:.4} -> {c1:.4} ({page:?})");
-                assert!((h1 - h0).sin().abs() < 0.1, "{name} {n}: hue turned ({page:?})");
+                assert!((h1 - h0).cos() > 0.995, "{name} {n}: hue turned ({page:?})");
             }
         }
     }
