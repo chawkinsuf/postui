@@ -1869,6 +1869,16 @@ impl App {
                 };
                 self.update(action)
             }
+            step @ (Hit::ChooserStepDown | Hit::ChooserStepUp) => {
+                let Some(Modal::Chooser(state)) = self.modals.top() else {
+                    return false;
+                };
+                let up = step == Hit::ChooserStepUp;
+                let Some(action) = state.step_action(up).cloned() else {
+                    return false;
+                };
+                self.update(action)
+            }
             Hit::PickerRow(i) => {
                 let Some(Modal::FilePicker(state)) = self.modals.top_mut() else {
                     return false;

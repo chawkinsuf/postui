@@ -554,8 +554,13 @@ pub enum Action {
     /// Flip the open theme picker between its dark and light theme sets
     /// (the chooser toggle's action; Left/Right or a click on the label).
     ToggleThemePickerPolarity,
-    /// Apply the named theme, persist it as the config `theme` key, and
-    /// record it as the session's theme. Dispatched by the picker's Enter.
+    /// Step the live theme contrast level by the given delta (the theme
+    /// picker's Contrast row: `-`/`+` or its buttons), previewed until
+    /// the picker commits or reverts. Inert past either end.
+    StepThemeContrast(i8),
+    /// Apply the named theme, persist it and the live contrast level as
+    /// the config `theme` and `theme_contrast` keys, and record it as the
+    /// session's theme. Dispatched by the picker's Enter.
     ApplyTheme(String),
     /// `alt+z` / `alt+shift+z`: switch to the next (`1`) or previous
     /// (`-1`) registered project, wrapping; toasts "only one project

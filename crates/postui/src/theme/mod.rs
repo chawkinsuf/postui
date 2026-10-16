@@ -54,6 +54,115 @@ impl Seeds {
             error: (0xa3, 0x59, 0x54),
         }
     }
+
+    /// These seeds at contrast `contrast` (spec 2026-10-16): each step up
+    /// deepens `bg` toward its own end (black for a dark theme, white for
+    /// a light one), pushes `fg` out toward its own end and saturates the
+    /// four colours; each step down moves `bg` and `fg` back toward the
+    /// middle by the same distances and desaturates. `bg` never crosses
+    /// to the other polarity. `keep_bg` leaves `bg` as it is (the Terminal
+    /// theme, whose background must match the terminal's own). Level 0
+    /// returns the seeds untouched.
+    pub fn with_contrast(self, contrast: Contrast, keep_bg: bool) -> Self {
+        let n = contrast.level();
+        if n == 0 {
+            return self;
+        }
+        let steps = n.unsigned_abs() as i32;
+        // Moves lightness `l` by a share of the room between it and `end`
+        // (compounded per step): out toward `end` stepping up, back the
+        // same distance stepping down. Both directions measure the same
+        // room, so a step down undoes about what a step up does. Easing
+        // down by a share of the room toward the other colour instead
+        // made one step down outweigh all three up, and greyed a light
+        // page (far from the middle) far faster than a dark one.
+        let swing = |l: f32, end: f32, share: f32| {
+            let shift = (end - l) * (1.0 - (1.0 - share).powi(steps));
+            if n > 0 { l + shift } else { l - shift }
+        };
+        let set_l = |c: (u8, u8, u8), l: f32| {
+            let (_, a, b) = oklab(c);
+            oklab_to_rgb((l, a, b))
+        };
+
+        let bg_l = oklab_l(self.bg);
+        let dark = bg_l < 0.5;
+        let bg = if keep_bg {
+            self.bg
+        } else {
+            let l = swing(bg_l, if dark { 0.0 } else { 1.0 }, CONTRAST_BG_SHARE);
+            // Never across the middle: the theme keeps its polarity.
+            set_l(self.bg, if dark { l.min(0.49) } else { l.max(0.51) })
+        };
+
+        let fg_l = oklab_l(self.fg);
+        let fg_end = if fg_l >= oklab_l(bg) { 1.0 } else { 0.0 };
+        let fg = set_l(self.fg, swing(fg_l, fg_end, CONTRAST_FG_SHARE));
+
+        let factor = 1.0 + CONTRAST_CHROMA_STEP * n as f32;
+        // Raising chroma past the sRGB gamut would clip a channel, which
+        // shifts the hue and can even *lower* the chroma (Gruvbox's
+        // warning yellow already sits on the edge). So a raise goes only
+        // as far as the gamut allows: the largest factor up to the target
+        // that stays inside it.
+        let saturate = |c: (u8, u8, u8)| {
+            let (l, a, b) = oklab(c);
+            let scaled = |f: f32| (l, a * f, b * f);
+            if factor <= 1.0 || in_gamut(scaled(factor)) {
+                return oklab_to_rgb(scaled(factor));
+            }
+            let (mut inside, mut outside) = (1.0, factor);
+            for _ in 0..16 {
+                let mid = (inside + outside) / 2.0;
+                if in_gamut(scaled(mid)) { inside = mid } else { outside = mid }
+            }
+            oklab_to_rgb(scaled(inside))
+        };
+        Self {
+            bg,
+            fg,
+            accent: saturate(self.accent),
+            success: saturate(self.success),
+            warning: saturate(self.warning),
+            error: saturate(self.error),
+        }
+    }
+}
+
+/// The share of the room between the background and its own end that one
+/// contrast step moves the background's lightness, either way.
+const CONTRAST_BG_SHARE: f32 = 0.12;
+
+/// The share of the room between the text and its own end that one
+/// contrast step moves the text's lightness, either way.
+const CONTRAST_FG_SHARE: f32 = 0.25;
+
+/// How much one contrast step scales the four colours' Oklab chroma.
+const CONTRAST_CHROMA_STEP: f32 = 0.1;
+
+/// A theme's contrast level (spec 2026-10-16): `MIN..=MAX`, 0 being the
+/// theme as authored. One global level applies to whichever theme is
+/// active; [`Seeds::with_contrast`] is what a level does.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Contrast(i8);
+
+impl Contrast {
+    pub const MIN: i8 = -3;
+    pub const MAX: i8 = 3;
+
+    /// The level `level`, or `None` outside `MIN..=MAX`.
+    pub fn new(level: i8) -> Option<Self> {
+        (Self::MIN..=Self::MAX).contains(&level).then_some(Self(level))
+    }
+
+    pub fn level(self) -> i8 {
+        self.0
+    }
+
+    /// The level `delta` steps away, or `None` past either end.
+    pub fn step(self, delta: i8) -> Option<Self> {
+        Self::new(self.0.checked_add(delta)?)
+    }
 }
 
 pub struct Theme {
@@ -437,7 +546,20 @@ fn oklab((r, g, b): (u8, u8, u8)) -> (f32, f32, f32) {
 }
 
 /// Converts Oklab `(L, a, b)` back to srgb (0..=255).
-fn oklab_to_rgb((l, a, b): (f32, f32, f32)) -> (u8, u8, u8) {
+fn oklab_to_rgb(lab: (f32, f32, f32)) -> (u8, u8, u8) {
+    let (r, g, b) = oklab_to_linear(lab);
+    (linear_to_srgb(r), linear_to_srgb(g), linear_to_srgb(b))
+}
+
+/// Whether an Oklab color lies inside the sRGB gamut, i.e. converts back
+/// without clamping a channel.
+fn in_gamut(lab: (f32, f32, f32)) -> bool {
+    let (r, g, b) = oklab_to_linear(lab);
+    [r, g, b].iter().all(|v| (0.0..=1.0).contains(v))
+}
+
+/// Converts Oklab `(L, a, b)` to unclamped linear sRGB.
+fn oklab_to_linear((l, a, b): (f32, f32, f32)) -> (f32, f32, f32) {
     let l_ = l + 0.396_337_78 * a + 0.215_803_76 * b;
     let m_ = l - 0.105_561_346 * a - 0.063_854_17 * b;
     let s_ = l - 0.089_484_18 * a - 1.291_485_5 * b;
@@ -450,7 +572,7 @@ fn oklab_to_rgb((l, a, b): (f32, f32, f32)) -> (u8, u8, u8) {
     let g = -1.268_438 * l_ + 2.609_757_4 * m_ - 0.341_319_38 * s_;
     let b = -0.0041960863 * l_ - 0.703_418_6 * m_ + 1.707_614_7 * s_;
 
-    (linear_to_srgb(r), linear_to_srgb(g), linear_to_srgb(b))
+    (r, g, b)
 }
 
 /// Oklab lightness of an srgb color; used by the generator ladder math and
@@ -616,6 +738,103 @@ pub fn mix(a: Color, b: Color, t: f32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every built-in's seeds, for the contrast tests below.
+    fn builtin_seeds() -> Vec<(&'static str, Seeds)> {
+        builtin::builtin_themes().into_iter().map(|b| (b.name, b.seeds)).collect()
+    }
+
+    fn chroma(c: (u8, u8, u8)) -> f32 {
+        let (_, a, b) = oklab(c);
+        (a * a + b * b).sqrt()
+    }
+
+    fn level(n: i8) -> Contrast {
+        Contrast::new(n).expect("in range")
+    }
+
+    /// Spec 2026-10-16 C7: level 0 is the theme as authored, bit for bit.
+    #[test]
+    fn contrast_zero_leaves_every_builtin_untouched() {
+        for (name, s) in builtin_seeds() {
+            for keep_bg in [false, true] {
+                let t = s.with_contrast(Contrast::default(), keep_bg);
+                assert_eq!(
+                    (t.bg, t.fg, t.accent, t.success, t.warning, t.error),
+                    (s.bg, s.fg, s.accent, s.success, s.warning, s.error),
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    /// Spec C1: each step up deepens the page, pushes text further from
+    /// it and saturates the colours; each step down does the reverse.
+    #[test]
+    fn contrast_steps_deepen_the_page_widen_the_text_gap_and_saturate() {
+        for (name, s) in builtin_seeds() {
+            let dark = oklab_l(s.bg) < 0.5;
+            let at = |n: i8| s.with_contrast(level(n), false);
+            for n in Contrast::MIN..Contrast::MAX {
+                let (lo, hi) = (at(n), at(n + 1));
+                let depth = |x: &Seeds| if dark { -oklab_l(x.bg) } else { oklab_l(x.bg) };
+                assert!(depth(&hi) > depth(&lo), "{name} {n}: page did not deepen");
+                let gap = |x: &Seeds| (oklab_l(x.fg) - oklab_l(x.bg)).abs();
+                assert!(gap(&hi) > gap(&lo), "{name} {n}: text gap did not widen");
+                for (a, b) in [
+                    (lo.accent, hi.accent),
+                    (lo.success, hi.success),
+                    (lo.warning, hi.warning),
+                    (lo.error, hi.error),
+                ] {
+                    assert!(chroma(b) >= chroma(a), "{name} {n}: chroma fell {a:?} -> {b:?}");
+                }
+                // A colour already on the gamut's edge stays put (all four
+                // of Gruvbox Light's are); the pastel defaults, the
+                // washed-out case, have room and must saturate.
+                if matches!(name, "dark" | "light") {
+                    assert!(chroma(hi.accent) > chroma(lo.accent), "{name} {n}: accent flat");
+                }
+            }
+        }
+    }
+
+    /// Spec C2: the Terminal theme keeps its background; text still moves.
+    #[test]
+    fn contrast_with_keep_bg_moves_text_but_not_the_page() {
+        let s = Seeds::dark();
+        for n in [Contrast::MIN, Contrast::MAX] {
+            let t = s.with_contrast(level(n), true);
+            assert_eq!(t.bg, s.bg);
+            assert_ne!(t.fg, s.fg);
+        }
+    }
+
+    /// Spec C13 and C14: the lowest level still clears both text floors,
+    /// and no level flips a theme's polarity.
+    #[test]
+    fn contrast_extremes_keep_text_readable_and_polarity_fixed() {
+        for (name, s) in builtin_seeds() {
+            for n in [Contrast::MIN, Contrast::MAX] {
+                let t = Theme::generate(&s.with_contrast(level(n), false));
+                assert_eq!(t.is_dark(), Theme::generate(&s).is_dark(), "{name} {n}");
+                let (page, text, muted) = (rgb_of(t.page), rgb_of(t.text), rgb_of(t.text_muted));
+                assert!((oklab_l(text) - oklab_l(page)).abs() >= 0.4, "{name} {n}: text");
+                let floor = MUTED_MIN_CONTRAST.min(wcag_contrast(text, page) / MUTED_TEXT_GAP);
+                assert!(wcag_contrast(muted, page) >= floor, "{name} {n}: muted");
+            }
+        }
+    }
+
+    #[test]
+    fn contrast_range_and_steps_stop_at_the_ends() {
+        assert!(Contrast::new(Contrast::MAX + 1).is_none());
+        assert!(Contrast::new(Contrast::MIN - 1).is_none());
+        assert_eq!(Contrast::default().level(), 0);
+        assert_eq!(level(2).step(1).map(Contrast::level), Some(3));
+        assert!(level(Contrast::MAX).step(1).is_none());
+        assert!(level(Contrast::MIN).step(-1).is_none());
+    }
 
     #[test]
     fn mix_endpoints_and_midpoint() {

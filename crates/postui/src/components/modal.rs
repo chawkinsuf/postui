@@ -1785,6 +1785,11 @@ impl ModalStack {
                 if state.has_toggle() {
                     chips.push((flip, "toggle", None));
                 }
+                // The stepper's `-`/`+` (the theme picker's Contrast row;
+                // its buttons are their mouse twin).
+                if state.has_stepper() {
+                    chips.push((Key::Named("−+"), "contrast", None));
+                }
                 chips.push((Key::Named("enter"), "select", None));
                 chips.push((Key::Named("esc"), "close", None));
                 chips
@@ -4194,6 +4199,49 @@ mod tests {
         .collect();
         assert!(vim.contains(&"j/k navigate".to_string()), "{vim:?}");
         assert!(vim.contains(&"h/l toggle".to_string()), "{vim:?}");
+    }
+
+    /// Spec 2026-10-16 C4: a chooser with a stepper (the theme picker's
+    /// Contrast row) advertises `−+ contrast`, in both profiles; one
+    /// without says nothing of it.
+    #[test]
+    fn chooser_stepper_chip_names_its_keys() {
+        use crate::components::chooser::{ChooserState, ChooserStepper};
+        let stepper = ChooserStepper {
+            label: "Contrast".into(),
+            level: 0,
+            min: -3,
+            max: 3,
+            down: Action::Render,
+            up: Action::Render,
+        };
+        let spell = |c: ChooserState, profile| {
+            let mut m = ModalStack::default();
+            m.push(Modal::Chooser(c));
+            let at = crate::keyroute::SpellCtx {
+                profile,
+                surface: crate::keyroute::Surface::Picker,
+                ..Default::default()
+            };
+            crate::keyroute::spell::resolve(
+                m.footer_chips().unwrap(),
+                at,
+                &crate::keys::Keymap::default_bindings(),
+            )
+            .into_iter()
+            .map(|(k, l, _)| format!("{k} {l}"))
+            .collect::<Vec<_>>()
+        };
+        for profile in [crate::config::KeyProfile::Arrows, crate::config::KeyProfile::Vim] {
+            let theme = ChooserState::new("Theme", vec![]).without_filter();
+            let shown = spell(theme.with_stepper(stepper.clone()), profile);
+            assert!(shown.contains(&"−+ contrast".to_string()), "{profile:?}: {shown:?}");
+        }
+        let plain = spell(
+            ChooserState::new("Theme", vec![]).without_filter(),
+            crate::config::KeyProfile::Arrows,
+        );
+        assert!(!plain.iter().any(|c| c.ends_with("contrast")), "{plain:?}");
     }
 
     /// The SelectOption picker has no filter, so its footer must not

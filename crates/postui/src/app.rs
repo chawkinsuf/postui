@@ -170,9 +170,14 @@ pub struct App {
     pub terminal_colors: crate::theme::QueriedColors,
     /// The currently-applied theme's registry name.
     pub theme_name: String,
-    /// While the theme picker is open: the theme name to restore if the
-    /// picker closes without a commit. `None` whenever the picker isn't up.
-    theme_preview: Option<String>,
+    /// The contrast level the applied theme is resolved at (spec
+    /// 2026-10-16): live, so the picker's preview moves it before a commit
+    /// writes it to `ui_settings`.
+    pub theme_contrast: crate::theme::Contrast,
+    /// While the theme picker is open: the theme name and contrast level
+    /// to restore if the picker closes without a commit. `None` whenever
+    /// the picker isn't up.
+    theme_preview: Option<(String, crate::theme::Contrast)>,
     /// The theme picker's polarity filter: `true` shows dark themes,
     /// `false` light ones. Set from the applied theme when the picker
     /// opens; flipped by `Action::ToggleThemePickerPolarity`. Meaningless
@@ -566,15 +571,17 @@ impl App {
             use crate::theme::TerminalPalette;
             crate::theme::OscQuery.query()
         };
-        let (theme_name, theme) = match themes.resolve(&ui_settings.theme, &terminal_colors) {
-            Some(t) => (ui_settings.theme.clone(), t),
-            None => (
-                "terminal".to_string(),
-                themes
-                    .resolve("terminal", &terminal_colors)
-                    .expect("terminal is always registered"),
-            ),
-        };
+        let contrast = ui_settings.theme_contrast;
+        let (theme_name, theme) =
+            match themes.resolve(&ui_settings.theme, &terminal_colors, contrast) {
+                Some(t) => (ui_settings.theme.clone(), t),
+                None => (
+                    "terminal".to_string(),
+                    themes
+                        .resolve("terminal", &terminal_colors, contrast)
+                        .expect("terminal is always registered"),
+                ),
+            };
         if theme_name != ui_settings.theme {
             warnings.push(format!(
                 "unknown theme {:?} in config.toml; using terminal",
@@ -1038,6 +1045,7 @@ impl App {
         self.anims = Anims::new(ui_settings.animations);
         self.theme = theme;
         self.theme_name = theme_name;
+        self.theme_contrast = ui_settings.theme_contrast;
         self.finish_ui_settings(ui_settings);
     }
 
@@ -1078,7 +1086,7 @@ impl App {
     /// the app, so callers that have a user to tell can tell them without
     /// hand-rolling the fallback again.
     fn set_theme_by_name(&mut self, name: &str) -> Option<String> {
-        match self.themes.resolve(name, &self.terminal_colors) {
+        match self.themes.resolve(name, &self.terminal_colors, self.theme_contrast) {
             Some(theme) => {
                 self.theme = theme;
                 self.theme_name = name.to_string();
@@ -1087,11 +1095,21 @@ impl App {
             None => {
                 self.theme = self
                     .themes
-                    .resolve("terminal", &self.terminal_colors)
+                    .resolve("terminal", &self.terminal_colors, self.theme_contrast)
                     .expect("terminal is always registered");
                 self.theme_name = "terminal".to_string();
                 Some(format!("theme {name:?} is no longer available; using terminal"))
             }
+        }
+    }
+
+    /// The theme picker closed without a commit: puts back the theme and
+    /// the contrast level it opened with, and disarms the preview. A no-op
+    /// while the picker isn't up.
+    fn revert_theme_preview(&mut self) {
+        if let Some((name, contrast)) = self.theme_preview.take() {
+            self.theme_contrast = contrast;
+            self.set_theme_by_name(&name);
         }
     }
 
@@ -1646,6 +1664,7 @@ impl App {
             themes: crate::theme::ThemeRegistry::builtin(),
             terminal_colors: crate::theme::QueriedColors::default(),
             theme_name: "terminal".into(),
+            theme_contrast: crate::theme::Contrast::default(),
             theme_preview: None,
             theme_picker_dark: true,
             anims: Anims::new(crate::config::UiSettings::default().animations),
@@ -3021,10 +3040,8 @@ impl App {
                 // binding) that never reaches `apply_modal_result`. A click
                 // outside the picker is an accept instead (see `on_hit`'s
                 // `ModalOutside` arm).
-                if matches!(popped_modal, Some(Modal::Chooser(_)))
-                    && let Some(prior) = self.theme_preview.take()
-                {
-                    self.set_theme_by_name(&prior);
+                if matches!(popped_modal, Some(Modal::Chooser(_))) {
+                    self.revert_theme_preview();
                 }
                 // A click off the `:` line abandons it, as Esc does —
                 // same rule as `apply_modal_result`'s.
@@ -4373,7 +4390,7 @@ impl App {
                 true
             }
             Action::OpenThemeChooser => {
-                use crate::components::chooser::ChooserState;
+                use crate::components::chooser::{ChooserState, ChooserStepper};
                 // Rescan the themes dir so a custom file edited or added since
                 // startup shows up without a restart (spec: rescan on picker open).
                 let (themes, warnings) = self.config.reload_themes();
@@ -4401,12 +4418,22 @@ impl App {
                     .with_toggle(
                         theme_picker_toggle_label(self.theme_picker_dark),
                         Action::ToggleThemePickerPolarity,
-                    );
+                    )
+                    // The Contrast row (spec 2026-10-16 C4): `-`/`+` and
+                    // its buttons step the global level, previewed live.
+                    .with_stepper(ChooserStepper {
+                        label: "Contrast".into(),
+                        level: self.theme_contrast.level(),
+                        min: crate::theme::Contrast::MIN,
+                        max: crate::theme::Contrast::MAX,
+                        down: Action::StepThemeContrast(-1),
+                        up: Action::StepThemeContrast(1),
+                    });
                 // Open on the currently-applied theme, not row 0 — the
                 // highlight drives the live preview, so starting anywhere
                 // else would instantly re-theme the app on open.
                 state.select_id(&self.theme_name.clone());
-                self.theme_preview = Some(self.theme_name.clone());
+                self.theme_preview = Some((self.theme_name.clone(), self.theme_contrast));
                 self.push_modal(Modal::Chooser(state));
                 // Settle the toggle label for the opening highlight (hidden
                 // when the current theme is unpaired, e.g. Terminal).
@@ -4440,10 +4467,25 @@ impl App {
                 self.sync_theme_preview();
                 true
             }
+            Action::StepThemeContrast(delta) => {
+                // Inert past either end (spec C9): the button paints
+                // disabled there too.
+                let Some(level) = self.theme_contrast.step(delta) else {
+                    return false;
+                };
+                self.theme_contrast = level;
+                let name = self.theme_name.clone();
+                self.set_theme_by_name(&name);
+                if let Some(Modal::Chooser(state)) = self.modals.top_mut() {
+                    state.set_stepper_level(level.level());
+                }
+                true
+            }
             Action::ApplyTheme(name) => {
                 self.set_theme_by_name(&name);
                 self.ui_settings.theme = self.theme_name.clone();
-                if let Err(e) = self.config.save_ui_theme(&self.theme_name) {
+                self.ui_settings.theme_contrast = self.theme_contrast;
+                if let Err(e) = self.config.save_ui_theme(&self.theme_name, self.theme_contrast) {
                     self.toasts.push(format!("could not save theme: {e}"), ToastKind::Error);
                 }
                 true
@@ -5232,6 +5274,9 @@ impl App {
                 let from_config = ui.is_some();
                 let wanted =
                     ui.as_ref().map(|u| u.theme.clone()).unwrap_or_else(|| self.theme_name.clone());
+                if let Some(u) = &ui {
+                    self.theme_contrast = u.theme_contrast;
+                }
                 let theme_warning = self.set_theme_by_name(&wanted).map(|gone| {
                     if from_config {
                         // The name came out of the config.toml just read,
@@ -10895,13 +10940,16 @@ impl App {
                     self.sidebar.selected = prev;
                 }
             }
-            // Closing the theme picker restores the pre-preview theme; a
-            // committed choice (Enter → ApplyTheme in `res.actions`)
-            // re-applies over this.
-            if matches!(popped, Some(Modal::Chooser(_)))
-                && let Some(prior) = self.theme_preview.take()
-            {
-                self.set_theme_by_name(&prior);
+            // Closing the theme picker without a commit restores the theme
+            // and contrast it opened with. A commit (Enter → ApplyTheme in
+            // `res.actions`) keeps what is showing — the live contrast
+            // level included, which ApplyTheme then saves.
+            if matches!(popped, Some(Modal::Chooser(_))) {
+                if res.actions.is_empty() {
+                    self.revert_theme_preview();
+                } else {
+                    self.theme_preview = None;
+                }
             }
             // A field the modal parked has the caret again: its session goes
             // live before the actions run, so an Undo, Redo or Paste reaches

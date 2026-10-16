@@ -159,6 +159,12 @@ pub enum Hit {
     /// dark/light filter): click dispatches the toggle's action without
     /// closing the modal.
     ChooserToggle,
+    /// The chooser's optional stepper row (the theme picker's Contrast,
+    /// spec 2026-10-16): its `−` and `+` buttons, which dispatch the
+    /// stepper's down/up action without closing the modal. Not registered
+    /// on a button whose end the level is at.
+    ChooserStepDown,
+    ChooserStepUp,
     /// Row `i` of the file picker's list (the parent link or an entry):
     /// click selects, a click on the selected row (or a double click)
     /// acts on it exactly as Enter does.

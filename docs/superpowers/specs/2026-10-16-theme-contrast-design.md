@@ -59,17 +59,28 @@ impl Contrast {
 ```
 
 `Seeds::with_contrast(self, c: Contrast, keep_bg: bool) -> Seeds` applies
-one step `n` (`n = c.level()`) in Oklab:
+level `n` (`n = c.level()`) in Oklab:
 
-- `bg` (unless `keep_bg`): lightness moves `0.02·n` toward its own end
-  (down for a dark background, up for a light one), clamped to its side of
-  0.5 (C14).
-- `fg`: lightness moves `0.03·n` away from the (adjusted) `bg`.
+- `bg` (unless `keep_bg`) and `fg` each move by a share of the room
+  between them and their *own* end (black for a dark page, white for its
+  light text, and the reverse on a light theme), compounded per step: out
+  toward that end at `n > 0`, back by the same distance at `n < 0`.
+  Shares: 0.12 for `bg`, 0.25 for `fg`. `bg` is clamped to its side of 0.5
+  (C14).
 - `accent`, `success`, `warning`, `error`: chroma scaled by `1 + 0.10·n`,
-  lightness and hue kept.
+  lightness and hue kept, a raise stopping at the sRGB gamut's edge.
 - `n = 0` returns `self` untouched (C7).
 
-The constants are a starting point and are tuned in the real TUI.
+*Tuned 2026-10-16 (step 6):* the first draft moved by fixed amounts, and
+then eased a step down toward the *other* colour by a share of the whole
+gap. That made one step down outweigh all three up and greyed a light page
+far faster than a dark one, since a light page sits further from the middle.
+Measuring both directions against the same room makes the levels even.
+Text contrast for the defaults at −3..+3: Dark 7.3, 8.3, 9.7, **11.6**,
+13.7, 15.3, 16.7; Light 5.2, 6.3, 8.2, **11.2**, 14.4, 16.4, 17.6. Themes
+already on the text floor at 0 (Solarized, Catppuccin Latte) cannot go
+softer; they only go crisper.
+
 `Theme::generate` does not change, so its clamps run on the result (C13).
 
 ### 3.2 The registry (`theme/registry.rs`)
@@ -99,6 +110,10 @@ The contract changes:
 - `theme_preview: Option<String>` becomes `Option<(String, Contrast)>`, the
   snapshot both revert sites (`Action::Close` and `apply_modal_result`)
   restore (C8).
+- `apply_modal_result` used to revert on every close and let the commit's
+  `ApplyTheme` re-apply over it. That would reset the live level before
+  `ApplyTheme` saved it, so a close that carries actions (a commit) now just
+  disarms the preview, and only a close without actions reverts.
 - New `Action::StepThemeContrast(i8)`: steps the level (no-op at an end),
   re-resolves the current theme and updates the picker's Contrast row.
 - `Action::ApplyTheme(name)` saves both values in one edit.
@@ -127,7 +142,9 @@ pub struct ChooserStepper {
   button at its end paints disabled (C9).
 - Footer: the chooser's chips add `−+  contrast` while a stepper is
   attached.
-- Hover hints: "Less contrast" / "More contrast".
+- Hover hints: "Lower the theme's contrast" / "Raise the theme's contrast"
+  (imperative, the hints' house shape, which `hints_share_one_shape`
+  enforces; "Less/More contrast" was the draft wording).
 
 Nothing is removed. No other chooser attaches a stepper, so they are
 unchanged.
@@ -160,9 +177,11 @@ unchanged.
 6. A bad value warns and uses 0 (C11).
 7. Reset settings clears the level (C12).
 8. A step never flips polarity (C14).
-9. The step sizes in §3.1 (0.02 / 0.03 / 10% chroma), tuned in the TUI.
+9. The step sizes in §3.1 (shares 0.12 page / 0.25 text, 10% chroma),
+   tuned against the contrast table.
 10. The contrast control lives only in the picker, not in the Settings tab.
-11. The hit and hint names (`ChooserStepDown/Up`, "Less/More contrast").
+11. The hit and hint names (`ChooserStepDown/Up`, "Lower/Raise the
+    theme's contrast").
 
 ## 6. Risks and costs
 
@@ -173,7 +192,11 @@ unchanged.
 - At the extremes a step has no room: near-white text on a near-black page
   cannot get brighter, so +2 and +3 may look the same on a crisp theme.
 - High chroma can leave the sRGB gamut. `oklab_to_rgb` clamps per channel,
-  which can shift the hue slightly at +3. This is checked in the TUI.
+  which shifts the hue and can even lower the chroma. *Found in step 1:*
+  so a raise goes only as far as the gamut allows (the largest scale up to
+  the target that stays inside it). A colour already on the edge does not
+  saturate at all: all four of Gruvbox Light's are, so contrast moves only
+  its page and text.
 
 ## 7. Plan
 

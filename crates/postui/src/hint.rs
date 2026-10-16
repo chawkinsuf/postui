@@ -475,6 +475,8 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         } else {
             "Show the dark themes instead"
         }),
+        Hit::ChooserStepDown => text("Lower the theme's contrast"),
+        Hit::ChooserStepUp => text("Raise the theme's contrast"),
         Hit::PickerPrimary => {
             text(if ctx.on { "Save under the typed name" } else { "Open the shown folder" })
         }
@@ -937,6 +939,8 @@ mod tests {
             Hit::ManageEnvTls(Some(postui_core::project::TlsPolicy::Insecure)),
             Hit::AutoHeaderReveal,
             Hit::ChooserToggle,
+            Hit::ChooserStepDown,
+            Hit::ChooserStepUp,
             Hit::ModalSharedToggle,
             Hit::ModalRevealToggle,
             Hit::ModalRowToggle(0),

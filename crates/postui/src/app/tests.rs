@@ -18700,6 +18700,136 @@ mod undo_tests {
         assert_eq!(c.input(), "");
     }
 
+    /// The theme `name` at contrast `n`, straight from the registry.
+    fn theme_at(app: &App, name: &str, n: i8) -> crate::theme::Theme {
+        let level = crate::theme::Contrast::new(n).unwrap();
+        app.themes.resolve(name, &app.terminal_colors, level).unwrap()
+    }
+
+    fn press(app: &mut App, c: char) {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+
+    /// Spec 2026-10-16 C5, C6: in the theme picker `+` and `=` raise the
+    /// contrast and `-` lowers it, previewing live (C8).
+    #[test]
+    fn theme_picker_plus_equals_and_minus_step_the_contrast_live() {
+        let mut app = App::new_for_test();
+        app.update(Action::ApplyTheme("gruvbox-dark".into()));
+        app.update(Action::OpenThemeChooser);
+        press(&mut app, '+');
+        assert_eq!(app.theme_contrast.level(), 1);
+        assert_eq!(app.theme.page, theme_at(&app, "gruvbox-dark", 1).page);
+        press(&mut app, '=');
+        assert_eq!(app.theme_contrast.level(), 2);
+        press(&mut app, '-');
+        press(&mut app, '-');
+        press(&mut app, '-');
+        assert_eq!(app.theme_contrast.level(), -1);
+        assert_eq!(app.theme.text, theme_at(&app, "gruvbox-dark", -1).text);
+        assert!(matches!(app.modals.top(), Some(crate::components::modal::Modal::Chooser(_))));
+    }
+
+    /// Spec C9: past either end the key does nothing.
+    #[test]
+    fn theme_picker_contrast_stops_at_its_ends() {
+        let mut app = App::new_for_test();
+        app.update(Action::OpenThemeChooser);
+        for _ in 0..5 {
+            press(&mut app, '+');
+        }
+        assert_eq!(app.theme_contrast.level(), crate::theme::Contrast::MAX);
+        for _ in 0..9 {
+            press(&mut app, '-');
+        }
+        assert_eq!(app.theme_contrast.level(), crate::theme::Contrast::MIN);
+    }
+
+    /// Spec C3: the level is global, so moving the highlight to another
+    /// theme previews that theme at the same level.
+    #[test]
+    fn theme_picker_contrast_carries_across_themes() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new_for_test();
+        app.update(Action::OpenThemeChooser);
+        press(&mut app, '+');
+        press(&mut app, '+');
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // "dark"
+        assert_eq!(app.theme_name, "dark");
+        assert_eq!(app.theme.page, theme_at(&app, "dark", 2).page);
+    }
+
+    /// Spec C8: Esc puts back both the theme and the level the picker
+    /// opened with; so does a bare `Close`.
+    #[test]
+    fn theme_picker_esc_and_close_revert_the_contrast() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new_for_test();
+        app.update(Action::ApplyTheme("dark".into()));
+        let original = app.theme.page;
+        app.update(Action::OpenThemeChooser);
+        press(&mut app, '+');
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!((app.theme_name.as_str(), app.theme_contrast.level()), ("dark", 0));
+        assert_eq!(app.theme.page, original);
+
+        app.update(Action::OpenThemeChooser);
+        press(&mut app, '-');
+        app.update(Action::Close);
+        assert_eq!(app.theme_contrast.level(), 0);
+        assert_eq!(app.theme.page, original);
+    }
+
+    /// Spec C8, C10: Enter and a click off the picker keep the level, and
+    /// it lands in config.toml beside the theme.
+    #[test]
+    fn theme_picker_enter_and_click_off_keep_the_contrast() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new_for_test();
+        let dir = config_at_tempdir(&mut app);
+        app.update(Action::OpenThemeChooser);
+        press(&mut app, '+');
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.theme_contrast.level(), 1);
+        assert_eq!(app.ui_settings.theme_contrast.level(), 1);
+        let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(text.contains("theme_contrast = 1"), "{text}");
+
+        app.update(Action::OpenThemeChooser);
+        press(&mut app, '+');
+        click_hit(&mut app, Hit::ModalOutside);
+        assert_eq!(app.ui_settings.theme_contrast.level(), 2);
+        assert!(app.theme_preview.is_none());
+    }
+
+    /// Spec C4: the Contrast row's buttons step the level like the keys,
+    /// and the row shows the new level.
+    #[test]
+    fn theme_picker_contrast_buttons_step_the_level() {
+        let mut app = App::new_for_test();
+        app.update(Action::OpenThemeChooser);
+        click_hit(&mut app, Hit::ChooserStepUp);
+        click_hit(&mut app, Hit::ChooserStepUp);
+        assert_eq!(app.theme_contrast.level(), 2);
+        click_hit(&mut app, Hit::ChooserStepDown);
+        assert_eq!(app.theme_contrast.level(), 1);
+        assert!(app.modals.top().is_some(), "clicking a step keeps the picker open");
+        let screen = rendered_text_at(&mut app, 120, 40);
+        assert!(screen.contains("Contrast") && screen.contains("+1"), "{screen}");
+    }
+
+    /// The `-`/`+` keys belong to the theme picker alone: any other
+    /// chooser leaves the level where it is.
+    #[test]
+    fn contrast_keys_do_nothing_outside_the_theme_picker() {
+        let mut app = App::new_for_test();
+        app.update(Action::OpenProjectChooser);
+        press(&mut app, '+');
+        assert_eq!(app.theme_contrast.level(), 0);
+    }
+
     fn sidebar_on(app: &mut App, slug: &str) {
         app.focus = PaneId::Sidebar;
         app.sidebar.select_slug(slug);
@@ -24350,6 +24480,22 @@ fn reload_from_disk_applies_a_theme_named_in_config_toml() {
         "{:?}",
         app.toasts.messages()
     );
+}
+
+/// Spec 2026-10-16: a reload picks up `theme_contrast` with the theme.
+#[test]
+fn reload_from_disk_applies_the_theme_contrast() {
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("config.toml"), "theme = \"dark\"\ntheme_contrast = -2\n")
+        .unwrap();
+
+    app.update(Action::ReloadFromDisk);
+
+    assert_eq!(app.theme_contrast.level(), -2);
+    let level = crate::theme::Contrast::new(-2).unwrap();
+    let expected = app.themes.resolve("dark", &app.terminal_colors, level).unwrap();
+    assert_eq!(app.theme.page, expected.page);
 }
 
 #[test]
