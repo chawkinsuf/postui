@@ -61,25 +61,38 @@ impl Contrast {
 `Seeds::with_contrast(self, c: Contrast, keep_bg: bool) -> Seeds` applies
 level `n` (`n = c.level()`) in Oklab:
 
-- `bg` (unless `keep_bg`) and `fg` each move by a share of the room
-  between them and their *own* end (black for a dark page, white for its
-  light text, and the reverse on a light theme), compounded per step: out
-  toward that end at `n > 0`, back by the same distance at `n < 0`.
-  Shares: 0.12 for `bg`, 0.25 for `fg`. `bg` is clamped to its side of 0.5
-  (C14).
+- `bg` (unless `keep_bg`) and `fg` each move a fixed Oklab lightness per
+  step, out toward their *own* end (black for a dark page, white for its
+  light text, and the reverse on a light theme) at `n > 0` and back at
+  `n < 0`, clamped to 0..1: 0.025 per step for `bg`, 0.03 for `fg`. `bg`
+  never crosses 0.5 (C14), and a page authored within 0.01 of the middle
+  is held where it is rather than pushed away from it.
 - `accent`, `success`, `warning`, `error`: chroma scaled by `1 + 0.10·n`,
   lightness and hue kept, a raise stopping at the sRGB gamut's edge.
 - `n = 0` returns `self` untouched (C7).
 
-*Tuned 2026-10-16 (step 6):* the first draft moved by fixed amounts, and
-then eased a step down toward the *other* colour by a share of the whole
-gap. That made one step down outweigh all three up and greyed a light page
-far faster than a dark one, since a light page sits further from the middle.
-Measuring both directions against the same room makes the levels even.
-Text contrast for the defaults at −3..+3: Dark 7.3, 8.3, 9.7, **11.6**,
-13.7, 15.3, 16.7; Light 5.2, 6.3, 8.2, **11.2**, 14.4, 16.4, 17.6. Themes
-already on the text floor at 0 (Solarized, Catppuccin Latte) cannot go
-softer; they only go crisper.
+*Tuned 2026-10-16 (step 6, then review round 1):* two easing rules were
+tried and dropped.
+
+- Easing a step down toward the *other* colour by a share of the whole gap
+  made one step down outweigh all three up, and greyed a light page
+  (further from the middle) far faster than a dark one.
+- Easing by a share of the room to a colour's *own* end froze colours
+  already at their end. Terminal's usual white text and a stark black/white
+  theme could not be softened at all (review round 1).
+
+Fixed amounts are symmetric by construction and move whatever has room.
+Text contrast at −3..+3:
+
+- Dark: 6.7, 8.2, 9.8, **11.6**, 13.5, 15.6, 17.7
+- Light: 6.2, 7.6, 9.3, **11.2**, 13.3, 15.7, 17.5
+- Gruvbox Dark: 6.1 → **10.7** → 17.0
+
+Light's page reaches white at +3, Gruvbox Light's at +2. Themes already on
+the text floor at 0 (Solarized, Catppuccin Latte) cannot go softer; they
+only go crisper. A black page lifts in Oklab but rounds to `#000000` until
+−3, because sRGB's first step above black is already L 0.067, so a stark
+theme softens mostly through its text.
 
 `Theme::generate` does not change, so its clamps run on the result (C13).
 
@@ -100,7 +113,9 @@ The contract changes:
   `config_seed()`'s comments.
 - `save_ui_theme(name)` becomes `save_ui_theme(name, contrast)`: one edit
   that sets `theme` and sets or removes `theme_contrast` (C10).
-- `reset_ui_settings` removes `theme_contrast` (C12).
+- `reset_ui_settings` removes `theme_contrast` (C12), and the Reset
+  confirm, which names every key it removes, now says "theme contrast"
+  (review round 1).
 
 ### 3.4 App (`app.rs`, `app/mouse.rs`)
 
@@ -131,7 +146,17 @@ pub struct ChooserStepper {
 }
 ```
 
+- *As built (amended 2026-10-16, review round 1, `mine`):* the stepper
+  holds two plain actions, `down: Action` and `up: Action`, instead of
+  `action: fn(i8) -> Action`. That's simpler to clone and compare in tests,
+  and the delta never needs to be anything but ±1. The chooser stores it
+  boxed, because two inline `Action`s made every `Modal` large enough for
+  clippy's `large_enum_variant`. This was a free choice, not a conflict;
+  the user is told at handoff.
 - `with_stepper(..)` builds it, and `set_stepper_level(n)` updates it.
+- A panel too narrow for the whole row (under ~34 columns) paints none of
+  it and registers no hit, so no button lands outside the panel; the keys
+  still step (review round 1).
 - `handle_key`: on a chooser with a stepper and no filter box, `-` fires
   `action(-1)`, and `+`/`=` fire `action(+1)`, without closing, like the
   toggle (C5, C6).
@@ -177,7 +202,7 @@ unchanged.
 6. A bad value warns and uses 0 (C11).
 7. Reset settings clears the level (C12).
 8. A step never flips polarity (C14).
-9. The step sizes in §3.1 (shares 0.12 page / 0.25 text, 10% chroma),
+9. The step sizes in §3.1 (0.025 page / 0.03 text per step, 10% chroma),
    tuned against the contrast table.
 10. The contrast control lives only in the picker, not in the Settings tab.
 11. The hit and hint names (`ChooserStepDown/Up`, "Lower/Raise the

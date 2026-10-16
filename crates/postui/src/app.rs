@@ -2759,7 +2759,7 @@ impl App {
                         // is named: a destructive action behind a confirm
                         // must say exactly what it destroys.
                         let body = if self.config_toml_recovers_projects() {
-                            "Resets theme, animations, animation speeds, hover hints, \
+                            "Resets theme, theme contrast, animations, animation speeds, hover hints, \
                              the curl button, jq tab, indent, indent width, the AI \
                              command, the AI confirmation, clipboard command, and OSC 52 \
                              limit to their defaults. Your project list is preserved."

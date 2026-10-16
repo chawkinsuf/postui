@@ -551,20 +551,25 @@ impl ChooserState {
         // The stepper row sits above the bottom pad, a gap under the list;
         // a panel squeezed shorter than its chrome has no room for it.
         if area.height > chrome {
-            let y = area.y + area.height - 2;
-            self.draw_stepper(frame.buffer_mut(), area.x + 2, y, theme, hits, hovered);
+            // Inside the panel's two-column margins, as the title row is.
+            let row = Rect {
+                x: area.x + 2,
+                y: area.y + area.height - 2,
+                width: area.width.saturating_sub(4),
+                height: 1,
+            };
+            self.draw_stepper(frame.buffer_mut(), row, theme, hits, hovered);
         }
     }
 
-    /// Paints the stepper row at `(x, y)`, if one is attached:
+    /// Paints the stepper row into `row`, if one is attached:
     /// `Contrast   −  ▁▂▃▄▅▆▇  +   +1`. Each button is three cells (its
     /// glyph padded) so the hover fill reads as a key; one at its end paints
     /// in the disabled tone and registers no hit.
     fn draw_stepper(
         &self,
         buf: &mut ratatui::buffer::Buffer,
-        x: u16,
-        y: u16,
+        row: Rect,
         theme: &Theme,
         hits: &mut crate::hit::HitMap,
         hovered: Option<&crate::hit::Hit>,
@@ -572,6 +577,18 @@ impl ChooserState {
         let Some(s) = &self.stepper else {
             return;
         };
+        let (x, y, right) = (row.x, row.y, row.x + row.width);
+        let cells = (s.max - s.min).max(0) as usize + 1;
+        let minus_x = x + 11;
+        let meter_x = minus_x + 4;
+        let plus_x = meter_x + cells as u16 + 1;
+        let level_x = plus_x + 5;
+        // The level reads at most two cells (`+3`, `−3`). A panel too
+        // narrow for the whole row paints none of it, so no button lands
+        // (or takes a click) outside it; the keys still step.
+        if level_x + 2 > right {
+            return;
+        }
         paint::text(buf, x, y, &s.label, theme.text, theme.panel, false);
         let mut button = |bx: u16, glyph: &str, hit: crate::hit::Hit, live: bool| {
             let rect = Rect { x: bx, y, width: 3, height: 1 };
@@ -598,10 +615,6 @@ impl ChooserState {
                 );
             }
         };
-        let cells = (s.max - s.min).max(0) as usize + 1;
-        let minus_x = x + 11;
-        let meter_x = minus_x + 4;
-        let plus_x = meter_x + cells as u16 + 1;
         button(minus_x, "−", crate::hit::Hit::ChooserStepDown, s.level > s.min);
         button(plus_x, "+", crate::hit::Hit::ChooserStepUp, s.level < s.max);
         for i in 0..cells {
@@ -616,7 +629,7 @@ impl ChooserState {
             n if n < 0 => format!("−{}", n.unsigned_abs()),
             _ => "0".into(),
         };
-        paint::text(buf, plus_x + 5, y, &level, theme.text_muted, theme.panel, false);
+        paint::text(buf, level_x, y, &level, theme.text_muted, theme.panel, false);
     }
 }
 
@@ -1058,6 +1071,29 @@ mod tests {
         let plus_x =
             (down.x..body.x + body.width).find(|&x| buf[(x, down.y)].symbol() == "+").unwrap();
         assert_eq!(buf[(plus_x, down.y)].fg, theme.text_disabled);
+    }
+
+    /// Review round 1: a panel too narrow for the whole row paints none of
+    /// it, so no button lands (or takes a click) outside the panel.
+    #[test]
+    fn a_stepper_row_too_wide_for_the_panel_is_left_out() {
+        let theme = Theme::dark();
+        let mut c =
+            ChooserState::new("Theme", items(&["a"])).without_filter().with_stepper(stepper(0));
+        let mut terminal = Terminal::new(TestBackend::new(30, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+        assert!(hits.rect_of(&crate::hit::Hit::ChooserStepDown).is_none());
+        assert!(hits.rect_of(&crate::hit::Hit::ChooserStepUp).is_none());
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(!content.contains("Contrast"), "{content}");
+        // At a width with room, the same row is whole.
+        let mut terminal = Terminal::new(TestBackend::new(36, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+        let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        let up = hits.rect_of(&crate::hit::Hit::ChooserStepUp).expect("fits at 36");
+        assert!(up.x + up.width <= body.x + body.width, "inside the panel");
     }
 
     /// A chooser without a stepper keeps today's shape and no step hits.

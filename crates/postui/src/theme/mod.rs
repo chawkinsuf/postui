@@ -58,9 +58,9 @@ impl Seeds {
     /// These seeds at contrast `contrast` (spec 2026-10-16): each step up
     /// deepens `bg` toward its own end (black for a dark theme, white for
     /// a light one), pushes `fg` out toward its own end and saturates the
-    /// four colours; each step down moves `bg` and `fg` back toward the
-    /// middle by the same distances and desaturates. `bg` never crosses
-    /// to the other polarity. `keep_bg` leaves `bg` as it is (the Terminal
+    /// four colours; each step down moves `bg` and `fg` back by the same
+    /// fixed distances and desaturates. `bg` never crosses to the other
+    /// polarity. `keep_bg` leaves `bg` as it is (the Terminal
     /// theme, whose background must match the terminal's own). Level 0
     /// returns the seeds untouched.
     pub fn with_contrast(self, contrast: Contrast, keep_bg: bool) -> Self {
@@ -68,21 +68,18 @@ impl Seeds {
         if n == 0 {
             return self;
         }
-        let steps = n.unsigned_abs() as i32;
-        // Moves lightness `l` by a share of the room between it and `end`
-        // (compounded per step): out toward `end` stepping up, back the
-        // same distance stepping down. Both directions measure the same
-        // room, so a step down undoes about what a step up does. Easing
-        // down by a share of the room toward the other colour instead
-        // made one step down outweigh all three up, and greyed a light
-        // page (far from the middle) far faster than a dark one.
-        let swing = |l: f32, end: f32, share: f32| {
-            let shift = (end - l) * (1.0 - (1.0 - share).powi(steps));
-            if n > 0 { l + shift } else { l - shift }
-        };
+        // Every step moves lightness by the same fixed amount, out toward
+        // a colour's own end (black for a dark page, white for its text)
+        // or back, clamped at the end. Fixed amounts make a step down
+        // undo exactly what a step up did, and a colour already at its
+        // end (white text, a black page) still moves the way that has
+        // room. Easing by a share of some room instead either made one
+        // step down outweigh all three up (the room toward the other
+        // colour) or froze colours at their ends (the room to their own).
+        let n = n as f32;
         let set_l = |c: (u8, u8, u8), l: f32| {
             let (_, a, b) = oklab(c);
-            oklab_to_rgb((l, a, b))
+            oklab_to_rgb((l.clamp(0.0, 1.0), a, b))
         };
 
         let bg_l = oklab_l(self.bg);
@@ -90,16 +87,19 @@ impl Seeds {
         let bg = if keep_bg {
             self.bg
         } else {
-            let l = swing(bg_l, if dark { 0.0 } else { 1.0 }, CONTRAST_BG_SHARE);
-            // Never across the middle: the theme keeps its polarity.
-            set_l(self.bg, if dark { l.min(0.49) } else { l.max(0.51) })
+            let out = if dark { -1.0 } else { 1.0 };
+            let l = bg_l + out * CONTRAST_BG_STEP * n;
+            // Never across the middle, so the theme keeps its polarity;
+            // and a page authored close to it is held where it is, never
+            // pushed the other way.
+            set_l(self.bg, if dark { l.min(bg_l.max(0.49)) } else { l.max(bg_l.min(0.51)) })
         };
 
         let fg_l = oklab_l(self.fg);
-        let fg_end = if fg_l >= oklab_l(bg) { 1.0 } else { 0.0 };
-        let fg = set_l(self.fg, swing(fg_l, fg_end, CONTRAST_FG_SHARE));
+        let out = if fg_l >= oklab_l(bg) { 1.0 } else { -1.0 };
+        let fg = set_l(self.fg, fg_l + out * CONTRAST_FG_STEP * n);
 
-        let factor = 1.0 + CONTRAST_CHROMA_STEP * n as f32;
+        let factor = 1.0 + CONTRAST_CHROMA_STEP * n;
         // Raising chroma past the sRGB gamut would clip a channel, which
         // shifts the hue and can even *lower* the chroma (Gruvbox's
         // warning yellow already sits on the edge). So a raise goes only
@@ -129,13 +129,11 @@ impl Seeds {
     }
 }
 
-/// The share of the room between the background and its own end that one
-/// contrast step moves the background's lightness, either way.
-const CONTRAST_BG_SHARE: f32 = 0.12;
+/// How far one contrast step moves the background's Oklab lightness.
+const CONTRAST_BG_STEP: f32 = 0.025;
 
-/// The share of the room between the text and its own end that one
-/// contrast step moves the text's lightness, either way.
-const CONTRAST_FG_SHARE: f32 = 0.25;
+/// How far one contrast step moves the text's Oklab lightness.
+const CONTRAST_FG_STEP: f32 = 0.03;
 
 /// How much one contrast step scales the four colours' Oklab chroma.
 const CONTRAST_CHROMA_STEP: f32 = 0.1;
@@ -778,7 +776,14 @@ mod tests {
             for n in Contrast::MIN..Contrast::MAX {
                 let (lo, hi) = (at(n), at(n + 1));
                 let depth = |x: &Seeds| if dark { -oklab_l(x.bg) } else { oklab_l(x.bg) };
-                assert!(depth(&hi) > depth(&lo), "{name} {n}: page did not deepen");
+                // Strictly deeper while a whole step of room is left; a
+                // page that reaches its end (Gruvbox Light's white) stays.
+                let room = if dark { oklab_l(lo.bg) } else { 1.0 - oklab_l(lo.bg) };
+                if room > CONTRAST_BG_STEP {
+                    assert!(depth(&hi) > depth(&lo), "{name} {n}: page did not deepen");
+                } else {
+                    assert!(depth(&hi) >= depth(&lo) - 0.002, "{name} {n}: page went back");
+                }
                 let gap = |x: &Seeds| (oklab_l(x.fg) - oklab_l(x.bg)).abs();
                 assert!(gap(&hi) > gap(&lo), "{name} {n}: text gap did not widen");
                 for (a, b) in [
@@ -807,6 +812,39 @@ mod tests {
             let t = s.with_contrast(level(n), true);
             assert_eq!(t.bg, s.bg);
             assert_ne!(t.fg, s.fg);
+        }
+    }
+
+    /// Review round 1: a colour already at its end (white text, a black
+    /// page) must still move the way that has room. White text is the
+    /// usual Terminal answer, and stark themes are the ones most worth
+    /// softening.
+    #[test]
+    fn contrast_moves_colours_already_at_their_ends() {
+        let stark = Seeds { bg: (0, 0, 0), fg: (255, 255, 255), ..Seeds::dark() };
+        let soft = stark.with_contrast(level(-1), false);
+        assert!(oklab_l(soft.fg) < oklab_l(stark.fg), "white text dims");
+        // sRGB's first step above black (#010101) is already Oklab L
+        // 0.067, so a black page shows its lift from the third step.
+        let softest = stark.with_contrast(level(Contrast::MIN), false);
+        assert!(oklab_l(softest.bg) > oklab_l(stark.bg), "a black page lifts");
+        let terminal = stark.with_contrast(level(-1), true);
+        assert!(oklab_l(terminal.fg) < oklab_l(stark.fg), "Terminal's white text dims");
+        let crisp = stark.with_contrast(level(3), false);
+        assert_eq!((crisp.bg, crisp.fg), (stark.bg, stark.fg), "no room to go further");
+    }
+
+    /// Review round 1: the polarity guard never pushes a page the wrong
+    /// way. A dark page just under the middle stays put when softened
+    /// rather than being dragged darker.
+    #[test]
+    fn contrast_never_moves_a_page_against_its_step() {
+        let near_mid = Seeds { bg: (0x61, 0x61, 0x61), ..Seeds::dark() };
+        assert!((0.48..0.5).contains(&oklab_l(near_mid.bg)), "fixture");
+        for n in [-1, -3] {
+            let t = near_mid.with_contrast(level(n), false);
+            assert!(oklab_l(t.bg) >= oklab_l(near_mid.bg) - 0.002, "{n}: page darkened");
+            assert!(oklab_l(t.bg) < 0.5, "{n}: crossed the middle");
         }
     }
 
