@@ -464,8 +464,11 @@ impl ChooserState {
         // row nor its line, so no button lands (or takes a click) outside
         // it; the keys still step.
         let above: u16 = if self.has_filter() { 3 + FIELD_HEIGHT + 2 } else { 3 };
-        let stepper_fits =
-            self.stepper.as_ref().is_some_and(|s| s.layout().width <= width.saturating_sub(4));
+        // A screen no taller than that chrome has no line to give it either
+        // (review round 5).
+        let stepper_fits = self.stepper.as_ref().is_some_and(|s| {
+            s.layout().width <= width.saturating_sub(4) && screen.height > above + 3
+        });
         let below: u16 = if stepper_fits { 3 } else { 2 };
         let chrome = above + below;
         let content_rows = (self.filtered.len() as u16).clamp(1, 10);
@@ -596,9 +599,9 @@ impl ChooserState {
             hits.register(row_rect, crate::hit::Hit::ChooserRow(i));
         }
 
-        // The stepper row sits above the bottom pad, a gap under the list;
-        // a panel squeezed shorter than its chrome has no room for it.
-        if stepper_fits && area.height > chrome {
+        // The stepper row sits above the bottom pad, a gap under the list,
+        // whenever the panel was given its line (`stepper_fits`).
+        if stepper_fits {
             // Inside the panel's two-column margins, as the title row is.
             let row = Rect {
                 x: area.x + 2,
@@ -1138,6 +1141,30 @@ mod tests {
         let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
         let up = hits.rect_of(&crate::hit::Hit::ChooserStepUp).expect("fits at 36");
         assert!(up.x + up.width <= body.x + body.width, "inside the panel");
+    }
+
+    /// Review round 5: on a screen too short for the row, it takes no line
+    /// either, so the list keeps every row the plain chooser would show.
+    #[test]
+    fn a_stepper_row_on_a_short_screen_is_left_out() {
+        let theme = Theme::dark();
+        let draw = |c: &mut ChooserState| {
+            // 6 rows: the chrome with the row (3 + 3) and nothing left over.
+            let mut terminal = Terminal::new(TestBackend::new(80, 6)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+            hits
+        };
+        let many = ["a", "b", "c", "d", "e", "f"];
+        let hits = draw(
+            &mut ChooserState::new("T", items(&many)).without_filter().with_stepper(stepper(0)),
+        );
+        let plain = draw(&mut ChooserState::new("T", items(&many)).without_filter());
+        assert!(hits.rect_of(&crate::hit::Hit::ChooserStepUp).is_none(), "no room for the row");
+        let rows = |h: &crate::hit::HitMap| {
+            (0..6).filter(|&i| h.rect_of(&crate::hit::Hit::ChooserRow(i)).is_some()).count()
+        };
+        assert_eq!(rows(&hits), rows(&plain), "no list row lost to a row not drawn");
     }
 
     /// Review round 3: the row is laid out from its own label, so a longer

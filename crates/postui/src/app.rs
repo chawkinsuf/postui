@@ -4473,8 +4473,13 @@ impl App {
                 true
             }
             Action::StepThemeContrast(delta) => {
-                // Inert past either end (spec C9): the one gate, which the
-                // row's disabled button only shows.
+                // A step is a preview: only the open theme picker takes one,
+                // so Esc can always put it back. Inert past either end too
+                // (spec C9): the one gate, which the row's disabled button
+                // only shows.
+                if self.theme_preview.is_none() {
+                    return false;
+                }
                 let Some(level) = self.theme_contrast.step(delta) else {
                     return false;
                 };

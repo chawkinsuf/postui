@@ -106,7 +106,15 @@ impl Seeds {
         let side = if fg_l >= bg_l { 1.0 } else { -1.0 };
         let page_share = (bg_l - new_bg_l) * side;
         let l = fg_l + side * (CONTRAST_GAP_STEP * n - page_share);
-        let fg = set_l(self.fg, if side > 0.0 { l.max(new_bg_l) } else { l.min(new_bg_l) });
+        // Stop short of the page by a margin rounding to sRGB cannot cross
+        // (review round 5: an exact meeting point rounded a hair past),
+        // or by the authored gap when that is already closer, so a pair
+        // never moves apart on a step meant to soften it.
+        let margin = CONTRAST_TEXT_MARGIN.min((fg_l - bg_l).abs());
+        let fg = set_l(
+            self.fg,
+            if side > 0.0 { l.max(new_bg_l + margin) } else { l.min(new_bg_l - margin) },
+        );
 
         // A raise goes only as far as the gamut allows (Gruvbox's warning
         // yellow already sits on its edge): see `oklab_to_rgb_in_gamut`.
@@ -133,6 +141,11 @@ const CONTRAST_BG_STEP: f32 = 0.025;
 /// between the page and its text, on every theme: the page moves its
 /// [`CONTRAST_BG_STEP`] of it where it has room, the text the rest.
 const CONTRAST_GAP_STEP: f32 = 0.055;
+
+/// How close softened text may come to its page, in Oklab lightness: wider
+/// than the drift rounding back to sRGB can add, so `Theme::generate` never
+/// reads the text as on the page's other side.
+const CONTRAST_TEXT_MARGIN: f32 = 0.02;
 
 /// How much one contrast step scales the four colours' Oklab chroma.
 const CONTRAST_CHROMA_STEP: f32 = 0.1;
@@ -894,6 +907,31 @@ mod tests {
         for n in Contrast::MIN..=0 {
             let t = Theme::generate(&close.with_contrast(level(n), false));
             assert!(oklab_l(rgb_of(t.text)) > oklab_l(rgb_of(t.page)), "{n}: text flipped");
+        }
+    }
+
+    /// Review round 5: the guard holds for tinted pairs too, whose rounding
+    /// back to sRGB can land the text a hair past an exact meeting point.
+    /// Swept over hues and near-middle pairs on both polarities.
+    #[test]
+    fn softened_tinted_text_never_crosses_the_page() {
+        let tinted =
+            |l: f32, hue: f32| oklab_to_rgb_in_gamut((l, 0.06 * hue.cos(), 0.06 * hue.sin()));
+        for step in 0..24 {
+            let hue = step as f32 * std::f32::consts::TAU / 24.0;
+            for (bg_l, fg_l) in [(0.45, 0.55), (0.47, 0.53), (0.55, 0.45), (0.53, 0.47)] {
+                let s =
+                    Seeds { bg: tinted(bg_l, hue), fg: tinted(fg_l, hue + 1.0), ..Seeds::dark() };
+                let light_text = oklab_l(s.fg) > oklab_l(s.bg);
+                for n in Contrast::MIN..=0 {
+                    let t = Theme::generate(&s.with_contrast(level(n), false));
+                    let above = oklab_l(rgb_of(t.text)) > oklab_l(rgb_of(t.page));
+                    assert_eq!(
+                        above, light_text,
+                        "hue {step} bg {bg_l} fg {fg_l} at {n}: text flipped"
+                    );
+                }
+            }
         }
     }
 

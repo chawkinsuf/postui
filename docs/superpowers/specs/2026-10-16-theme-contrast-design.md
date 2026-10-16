@@ -68,7 +68,10 @@ level `n` (`n = c.level()`) in Oklab:
   pushed away from it.
 - `fg` makes the page–text gap's change a whole 0.055 per step: it moves
   whatever the page did not, out toward its own end or back, clamped to
-  0..1, and it never crosses the page.
+  0..1, and it never crosses the page. *(Review round 5:)* softening stops
+  0.02 short of the page, or at the authored gap if that is already
+  closer, because an exact meeting point could round to sRGB a hair past
+  it. A sweep over hues and near-middle pairs pins it.
 - *(Review round 4:)* every adjusted colour keeps its hue. A tinted page or
   text pushed toward its end, such as Gruvbox Dark's cream toward white,
   would leave sRGB with its whole tint, and a per-channel clip there turns
@@ -194,7 +197,8 @@ pub struct ChooserStepper {
 - A panel too narrow for the whole row (under ~34 columns) paints none of
   it and registers no hit, so no button lands outside the panel; the keys
   still step (review round 1). It also drops the row's line, so no blank
-  row is left (review round 3). One `ChooserStepper::layout`, laid out from
+  row is left (review round 3). A screen no taller than the chooser's
+  chrome with the row has no line to give it either (review round 5). One `ChooserStepper::layout`, laid out from
   the row's own label, gives both the positions and the width the panel
   height checks.
 - The footer chip names the keys by the stepper's label (`-/+ contrast`
