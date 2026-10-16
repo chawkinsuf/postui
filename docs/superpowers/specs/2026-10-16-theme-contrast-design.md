@@ -235,7 +235,13 @@ pub struct ChooserStepper {
   from "Contrast"). The hover hints stay the theme picker's wording, "Lower
   the theme's contrast", as the dark/light toggle's hint names themes too:
   a label-driven hint would need new `HintCtx` state for a second stepper
-  that does not exist (kept by choice, review round 3).
+  that does not exist (kept by choice, review round 3; *`you`, 2026-10-16,
+  at handoff: keep the wording*).
+- The stepper's display copy of the level, refreshed by
+  `sync_theme_preview` after every key or click, stays: it follows the
+  toggle label's pattern, and the only stale path the reviews cited (a
+  reload while the picker is open) cannot run (*`you`, 2026-10-16, at
+  handoff: keep it*).
 - `handle_key`: on a chooser with a stepper and no filter box, `-` fires
   `action(-1)`, and `+`/`=` fire `action(+1)`, without closing, like the
   toggle (C5, C6).
