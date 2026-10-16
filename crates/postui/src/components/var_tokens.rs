@@ -47,9 +47,9 @@ impl TokenSource {
     pub fn label(&self) -> String {
         match self {
             TokenSource::Request => "this request".to_string(),
-            TokenSource::Env(env) => format!("env = {env}"),
-            TokenSource::Default => "default".to_string(),
-            TokenSource::Selector { selected, .. } => format!("option = {selected}"),
+            TokenSource::Env(env) => env.clone(),
+            TokenSource::Default => "default value".to_string(),
+            TokenSource::Selector { selected, .. } => selected.clone(),
             TokenSource::NeedsSelection => "needs selection".to_string(),
             TokenSource::MissingSecret => "missing secret".to_string(),
             TokenSource::Undefined => "not defined".to_string(),
@@ -238,7 +238,8 @@ impl VarView {
         }
     }
 
-    /// `env <name>` for the active environment, or [`TokenSource::Undefined`]
+    /// The active environment, named by its slug (which can't hold the
+    /// space in [`TokenSource::Default`]'s `default value`), or [`TokenSource::Undefined`]
     /// when there is none (nothing to name as the source).
     fn env_source(&self) -> TokenSource {
         match &self.env_label {
@@ -424,7 +425,25 @@ mod tests {
             "uid".into(),
             VarMeta::SelectorMember { selector: "user".into(), selected: "user 2".into() },
         );
-        assert_eq!(v.describe("uid").source.label(), "option = user 2");
+        assert_eq!(v.describe("uid").source.label(), "user 2");
+    }
+
+    /// Task #33 (the user's rulings): an env and an option are named bare,
+    /// and a declaration's default says `default value`, so it can't be
+    /// read as an environment called `default`.
+    #[test]
+    fn source_labels_name_the_env_and_option_bare() {
+        let label = |s: TokenSource| s.label();
+        assert_eq!(label(TokenSource::Request), "this request");
+        assert_eq!(label(TokenSource::Env("default".into())), "default");
+        assert_eq!(label(TokenSource::Default), "default value");
+        assert_eq!(
+            label(TokenSource::Selector { selector: "user".into(), selected: "user 2".into() }),
+            "user 2"
+        );
+        assert_eq!(label(TokenSource::NeedsSelection), "needs selection");
+        assert_eq!(label(TokenSource::MissingSecret), "missing secret");
+        assert_eq!(label(TokenSource::Undefined), "not defined");
     }
 
     #[test]

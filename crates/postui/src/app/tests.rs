@@ -23288,7 +23288,7 @@ fn tooltip_lays_out_the_value_then_the_name_then_the_description() {
     assert_eq!(panel_row(&mut app, panel, panel.y + 2), line(""));
     assert_eq!(
         panel_row(&mut app, panel, panel.y + 3),
-        line("base_url  env = qa"),
+        line("base_url  qa"),
         "the name and where its value came from"
     );
     assert_eq!(panel_row(&mut app, panel, panel.y + 4), line(""));
@@ -23347,7 +23347,7 @@ fn tooltip_stacks_the_selectors_description_then_the_selected_options() {
     app.update(Action::ReloadProjectFiles);
     hover_token(&mut app, "user");
     let text = tooltip_text(&mut app);
-    assert!(text.contains("option = alice"), "{text}");
+    assert!(text.contains("user  alice"), "{text}");
     let selector = text.find("acting user").unwrap_or_else(|| panic!("selector's: {text}"));
     let option = text.find("the premium one").unwrap_or_else(|| panic!("option's: {text}"));
     assert!(selector < option, "the selector's first: {text}");
@@ -23356,7 +23356,7 @@ fn tooltip_stacks_the_selectors_description_then_the_selected_options() {
     app.update(Action::ReloadProjectFiles);
     hover_token(&mut app, "user");
     let text = tooltip_text(&mut app);
-    assert!(text.contains("option = bob"), "{text}");
+    assert!(text.contains("user  bob"), "{text}");
     assert!(text.contains("acting user"), "no option description: the selector's: {text}");
 }
 
@@ -23378,7 +23378,7 @@ fn tooltip_shows_a_shared_selectors_option_description() {
     app.update(Action::ReloadProjectFiles);
     hover_token(&mut app, "user");
     let text = tooltip_text(&mut app);
-    assert!(text.contains("option = carol"), "{text}");
+    assert!(text.contains("user  carol"), "{text}");
     assert!(text.contains("acting user"), "{text}");
     assert!(text.contains("the shared one"), "{text}");
 }

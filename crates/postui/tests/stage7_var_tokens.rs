@@ -153,14 +153,14 @@ fn hovering_a_token_shows_its_value_and_scope_and_leaving_drops_the_tooltip() {
     assert_eq!(tip.name, "base_url");
     let frame = dump(&mut app);
     assert!(frame.contains("http://qa.test"), "the tooltip shows the value: {frame}");
-    assert!(frame.contains("env = qa"), "...and the scope it came from: {frame}");
+    assert!(frame.contains("base_url  qa"), "...and the scope it came from: {frame}");
 
     // Moving off the token drops it on the very next motion event.
     let away = app.hits.rect_of(&Hit::UrlBar).unwrap();
     app.handle_mouse(moved(away.right() - 1, away.y));
     assert!(app.var_token_tip().is_none(), "no lingering tooltip");
     let frame = dump(&mut app);
-    assert!(!frame.contains("env = qa"), "tooltip is gone: {frame}");
+    assert!(!frame.contains("base_url  qa"), "tooltip is gone: {frame}");
 }
 
 /// A press moves the pointer too. Without that, a terminal that reports no
@@ -179,7 +179,7 @@ fn a_click_elsewhere_drops_a_tooltip_even_with_no_motion_event() {
     app.handle_mouse(left_down(away.x + 1, away.y));
     assert!(app.var_token_tip().is_none(), "the tip belongs to where the pointer is now");
     let frame = dump(&mut app);
-    assert!(!frame.contains("env = qa"), "and it is off the screen: {frame}");
+    assert!(!frame.contains("base_url  qa"), "and it is off the screen: {frame}");
 }
 
 #[test]
@@ -190,7 +190,7 @@ fn the_scope_line_names_default_group_request_and_missing_secret() {
     set_url(&mut app, "{{page}}");
     hover_token(&mut app, "page");
     let frame = dump(&mut app);
-    assert!(frame.contains("default"), "{frame}");
+    assert!(frame.contains("page  default value"), "{frame}");
 
     // A group field, once its group has a selection.
     app.proj_mut().set_selection("user", "user 2");
@@ -199,7 +199,7 @@ fn the_scope_line_names_default_group_request_and_missing_secret() {
     hover_token(&mut app, "uid");
     let frame = dump(&mut app);
     assert!(frame.contains("1001"), "{frame}");
-    assert!(frame.contains("option = user 2"), "the selected option by name: {frame}");
+    assert!(frame.contains("uid  user 2"), "the selected option by name: {frame}");
 
     // The request's own `[variables]` overlay outranks everything.
     app.editor
