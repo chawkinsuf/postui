@@ -27,7 +27,7 @@ Today the only lever is writing a custom `themes/*.toml`.
 
 | # | Rule | Source |
 |---|---|---|
-| C1 | One contrast step moves the theme's text away from its background, deepens the background, and saturates the four colours (accent, success, warning, error). A negative step does the reverse. | `you` (text vs background + washed-out look) |
+| C1 | One contrast step moves the theme's text away from its background, deepens the background, and saturates the four colours (accent, success, warning, error). A negative step does the reverse. The page–text gap widens by the same amount on every theme; where the page has no room (near white), the text makes up the difference. Colours change in saturation only. | `you` (text vs background + washed-out look; equal on light themes, colours not shifted, 2026-10-16) |
 | C2 | The background moves for built-in and custom themes. The Terminal colors theme keeps the terminal's own background (no seam at the window padding); its text and colours still move. | `you` |
 | C3 | One global level, applied to whichever theme is active; switching themes keeps it. | `you` |
 | C4 | The theme picker has a Contrast row under the list: a `−` button, a level meter, a `+` button, and the level as text. | `you` (preview picked) |
@@ -61,12 +61,14 @@ impl Contrast {
 `Seeds::with_contrast(self, c: Contrast, keep_bg: bool) -> Seeds` applies
 level `n` (`n = c.level()`) in Oklab:
 
-- `bg` (unless `keep_bg`) and `fg` each move a fixed Oklab lightness per
-  step, out toward their *own* end (black for a dark page, white for its
-  light text, and the reverse on a light theme) at `n > 0` and back at
-  `n < 0`, clamped to 0..1: 0.025 per step for `bg`, 0.03 for `fg`. `bg`
-  never crosses 0.5 (C14), and a page authored within 0.01 of the middle
-  is held where it is rather than pushed away from it.
+- `bg` (unless `keep_bg`) moves 0.025 Oklab lightness per step toward its
+  own end (black for a dark page, white for a light one) at `n > 0`, and
+  back at `n < 0`, clamped to 0..1. It never crosses 0.5 (C14), and a page
+  authored within 0.01 of the middle is held where it is rather than
+  pushed away from it.
+- `fg` makes the page–text gap's change a whole 0.055 per step: it moves
+  whatever the page did not, out toward its own end or back, clamped to
+  0..1, and it never crosses the page.
 - `accent`, `success`, `warning`, `error`: chroma scaled by `1 + 0.10·n`,
   lightness and hue kept, a raise stopping at the sRGB gamut's edge.
 - `n = 0` returns `self` untouched (C7).
@@ -93,6 +95,24 @@ the text floor at 0 (Solarized, Catppuccin Latte) cannot go softer; they
 only go crisper. A black page lifts in Oklab but rounds to `#000000` until
 −3, because sRGB's first step above black is already L 0.067, so a stark
 theme softens mostly through its text.
+
+*Amended 2026-10-16 (`you`, after "the contrast adjustment seems to work
+better in the dark themes"):* each step widens the page–text gap by the
+same 0.055 on every theme. The page moves first, 0.025 as far as it has
+room. The text makes up the rest, then never crosses the page (review
+round 3: a near-middle pair crossed when softened, and `generate`'s clamp
+then flipped the text to the page's other side). The colours stay as they
+were, with saturation only and no lightness shift (`you`: "i would prefer
+not to shift the colors much").
+
+Measured before the change, at +3 against 0, light themes lagged:
+
+- The page moved 0.021–0.062, against dark pages' 0.068–0.077, because a
+  light page sits close to white.
+- The gap grew +0.11–0.15, against dark themes' +0.14–0.16.
+
+A Terminal theme that keeps its background now gets the whole widening
+through its text.
 
 `Theme::generate` does not change, so its clamps run on the result (C13).
 
@@ -168,7 +188,15 @@ pub struct ChooserStepper {
 - `with_stepper(..)` builds it, and `set_stepper_level(n)` updates it.
 - A panel too narrow for the whole row (under ~34 columns) paints none of
   it and registers no hit, so no button lands outside the panel; the keys
-  still step (review round 1).
+  still step (review round 1). It also drops the row's line, so no blank
+  row is left (review round 3). One `ChooserStepper::layout`, laid out from
+  the row's own label, gives both the positions and the width the panel
+  height checks.
+- The footer chip names the keys by the stepper's label (`-/+ contrast`
+  from "Contrast"). The hover hints stay the theme picker's wording, "Lower
+  the theme's contrast", as the dark/light toggle's hint names themes too:
+  a label-driven hint would need new `HintCtx` state for a second stepper
+  that does not exist (kept by choice, review round 3).
 - `handle_key`: on a chooser with a stepper and no filter box, `-` fires
   `action(-1)`, and `+`/`=` fire `action(+1)`, without closing, like the
   toggle (C5, C6).

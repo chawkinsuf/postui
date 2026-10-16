@@ -95,9 +95,18 @@ impl Seeds {
             set_l(self.bg, if dark { l.min(bg_l.max(0.49)) } else { l.max(bg_l.min(0.51)) })
         };
 
+        // The text makes the gap's step whole: whatever the page moved
+        // away from it counts, and the text moves the rest. A near-white
+        // page has little room left, so on a light theme the text does
+        // most of the work, and every theme's gap widens alike (you,
+        // 2026-10-16). Then it never crosses the page: crossed,
+        // `generate`'s clamp would flip it to the page's other side.
         let fg_l = oklab_l(self.fg);
-        let out = if fg_l >= oklab_l(bg) { 1.0 } else { -1.0 };
-        let fg = set_l(self.fg, fg_l + out * CONTRAST_FG_STEP * n);
+        let new_bg_l = oklab_l(bg);
+        let side = if fg_l >= bg_l { 1.0 } else { -1.0 };
+        let page_share = (bg_l - new_bg_l) * side;
+        let l = fg_l + side * (CONTRAST_GAP_STEP * n - page_share);
+        let fg = set_l(self.fg, if side > 0.0 { l.max(new_bg_l) } else { l.min(new_bg_l) });
 
         let factor = 1.0 + CONTRAST_CHROMA_STEP * n;
         // Raising chroma past the sRGB gamut would clip a channel, which
@@ -132,8 +141,10 @@ impl Seeds {
 /// How far one contrast step moves the background's Oklab lightness.
 const CONTRAST_BG_STEP: f32 = 0.025;
 
-/// How far one contrast step moves the text's Oklab lightness.
-const CONTRAST_FG_STEP: f32 = 0.03;
+/// How far one contrast step widens (or narrows) the Oklab lightness gap
+/// between the page and its text, on every theme: the page moves its
+/// [`CONTRAST_BG_STEP`] of it where it has room, the text the rest.
+const CONTRAST_GAP_STEP: f32 = 0.055;
 
 /// How much one contrast step scales the four colours' Oklab chroma.
 const CONTRAST_CHROMA_STEP: f32 = 0.1;
@@ -812,6 +823,43 @@ mod tests {
             let t = s.with_contrast(level(n), true);
             assert_eq!(t.bg, s.bg);
             assert_ne!(t.fg, s.fg);
+        }
+    }
+
+    /// Spec C1 as amended (you, 2026-10-16): every step widens the
+    /// page–text gap by the same amount on every built-in, light or dark.
+    /// The text makes up what a near-white page has no room for.
+    #[test]
+    fn every_step_widens_the_text_gap_equally_on_every_theme() {
+        let gap = |x: &Seeds| (oklab_l(x.fg) - oklab_l(x.bg)).abs();
+        for (name, s) in builtin_seeds() {
+            for n in Contrast::MIN..Contrast::MAX {
+                let (lo, hi) =
+                    (s.with_contrast(level(n), false), s.with_contrast(level(n + 1), false));
+                let step = gap(&hi) - gap(&lo);
+                assert!(
+                    (step - CONTRAST_GAP_STEP).abs() < 0.01,
+                    "{name} {n}->{}: the gap moved {step:.3}",
+                    n + 1
+                );
+            }
+        }
+        // A theme that keeps its page (Terminal) widens by its text alone.
+        let s = Seeds::dark();
+        let t = s.with_contrast(level(1), true);
+        assert!((gap(&t) - gap(&s) - CONTRAST_GAP_STEP).abs() < 0.01);
+    }
+
+    /// Review round 3: softening a pair that sits close together never
+    /// takes the text past the page. Crossed, `generate`'s clamp would
+    /// flip it to the page's other side: dark text on a dark page.
+    #[test]
+    fn softened_text_never_crosses_the_page() {
+        let close = Seeds { bg: (0x55, 0x55, 0x55), fg: (0x72, 0x72, 0x72), ..Seeds::dark() };
+        assert!(oklab_l(close.bg) < 0.5 && oklab_l(close.fg) > oklab_l(close.bg), "fixture");
+        for n in Contrast::MIN..=0 {
+            let t = Theme::generate(&close.with_contrast(level(n), false));
+            assert!(oklab_l(rgb_of(t.text)) > oklab_l(rgb_of(t.page)), "{n}: text flipped");
         }
     }
 

@@ -1781,18 +1781,20 @@ impl ModalStack {
                 } else {
                     (Key::Nav(Nav::UpDown), Key::Nav(Nav::LeftRight))
                 };
-                let mut chips = vec![(moves, "navigate", None)];
+                let mut chips = vec![(moves, "navigate".to_string(), None)];
                 if state.has_toggle() {
-                    chips.push((flip, "toggle", None));
+                    chips.push((flip, "toggle".to_string(), None));
                 }
-                // The stepper's `-`/`+` (the theme picker's Contrast row;
-                // its buttons are their mouse twin).
-                if state.has_stepper() {
-                    chips.push((Key::Named("-/+"), "contrast", None));
+                // The stepper's `-`/`+`, named by its own row's label (the
+                // theme picker's "Contrast"); its buttons are their mouse
+                // twin. A runtime label, so this arm builds its chips owned.
+                if let Some(label) = state.stepper_label() {
+                    chips.push((Key::Named("-/+"), label.to_lowercase(), None));
                 }
-                chips.push((Key::Named("enter"), "select", None));
-                chips.push((Key::Named("esc"), "close", None));
-                chips
+                chips.push((Key::Named("enter"), "select".to_string(), None));
+                chips.push((Key::Named("esc"), "close".to_string(), None));
+                // Not a form, so nothing below has a chip to add.
+                return Some(chips);
             }
             // Only the Insert-mode picker has a typed filter to advertise;
             // SelectOption mode is arrow-and-click only.
@@ -4203,8 +4205,8 @@ mod tests {
 
     /// Spec 2026-10-16 C4: a chooser with a stepper (the theme picker's
     /// Contrast row) advertises `-/+ contrast`, in both profiles, spelled
-    /// with the ASCII keys typed (review round 2); one without says
-    /// nothing of it.
+    /// with the ASCII keys typed (review round 2) and named by the row's
+    /// own label (review round 3); one without says nothing of it.
     #[test]
     fn chooser_stepper_chip_names_its_keys() {
         use crate::components::chooser::{ChooserState, ChooserStepper};
