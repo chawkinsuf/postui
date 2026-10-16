@@ -2361,6 +2361,15 @@ impl App {
         if off_screen || self.focus != PaneId::Editor || !self.editor.url_open() {
             self.editor.url.end_edit();
         }
+        // The same for an untouched auto-indent (spec 2026-10-16 R3): the
+        // screen drops it once the caret is off its line or out of the
+        // arrows body. A modal over the body is not leaving (R5).
+        let in_body = !off_screen
+            && self.focus == PaneId::Editor
+            && self.editor.sub_focus == SubFocus::Content
+            && self.editor.active_tab == EditorTab::Body
+            && !self.vim_owns_body();
+        self.editor.settle_auto_indent(in_body);
         // The jq bar keeps its caret across a screen change (the pane is
         // still the focused one underneath), so only its session closes.
         if off_screen {

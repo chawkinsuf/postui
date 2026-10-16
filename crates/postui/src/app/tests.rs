@@ -17458,7 +17458,7 @@ mod undo_tests {
         app.editor.body.cursor = edtui::Index2::new(1, 10);
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.capture_undo();
-        assert_eq!(app.editor.body_text(), "{\n    \"a\": 1\n    ");
+        assert_eq!(app.editor.body.lines.to_string(), "{\n    \"a\": 1\n    ");
         app.update(Action::Undo);
         assert_eq!(app.editor.body_text(), "{\n    \"a\": 1");
     }
@@ -28523,4 +28523,85 @@ fn option_rename_starts_on_a_shared_selector_without_an_environment() {
     app.varmanager.grid.cursor = (0, 0);
     app.update(Action::StartOptionNameEdit { row: 0 });
     assert!(app.varmanager.grid.editing.is_some());
+}
+
+/// The arrows body open on a saved POST `main/ai` whose body is `    a`,
+/// the caret at the end of the line (spec 2026-10-16).
+fn app_at_an_indented_line_end() -> App {
+    let mut app = App::new_for_test();
+    let mut r = req("https://x/ai");
+    r.method = postui_core::model::Method::Post;
+    r.body = Some(postui_core::model::Body::Json { text: "    a".into() });
+    postui_core::fixtures::save_request(app.proj().root(), "main/ai", &r).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::OpenRequest("main/ai".into()));
+    app.capture_undo();
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.body.cursor = edtui::Index2::new(0, 5);
+    app
+}
+
+/// One key as the main loop takes it: the key, then the capture.
+fn key_and_capture(app: &mut App, code: KeyCode) -> bool {
+    app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    app.capture_undo()
+}
+
+/// Spec 2026-10-16 R2: saving with the caret still on an untouched
+/// auto-indent writes no trailing blanks, keeps the caret and the blanks on
+/// screen, and leaving afterwards leaves the request clean.
+#[test]
+fn saving_on_an_untouched_auto_indent_writes_no_blanks() {
+    let mut app = app_at_an_indented_line_end();
+    key_and_capture(&mut app, KeyCode::Enter);
+    app.handle_key(ctrl('s'));
+    app.capture_undo();
+    let saved = postui_core::fixtures::load_request(app.proj().root(), "main/ai").unwrap();
+    assert_eq!(
+        saved.body,
+        Some(postui_core::model::Body::Json { text: "    a\n".into() }),
+        "the file has no trailing blanks"
+    );
+    assert_eq!(app.editor.body.lines.to_string(), "    a\n    ", "the screen keeps them");
+    assert_eq!(app.editor.body.cursor, edtui::Index2::new(1, 4), "the caret stays put");
+    assert!(!app.editor.is_dirty());
+    key_and_capture(&mut app, KeyCode::Up);
+    assert_eq!(app.editor.body.lines.to_string(), "    a\n");
+    assert!(!app.editor.is_dirty(), "leaving changes nothing the request holds");
+}
+
+/// R3: Up, Esc, or focus moving to another pane drops the blanks with no
+/// undo step of its own, and one undo restores the line exactly.
+#[test]
+fn leaving_an_untouched_auto_indent_drops_it_with_no_undo_step() {
+    let leaves: [fn(&mut App) -> bool; 3] = [
+        |app| app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+        |app| app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        |app| app.update(Action::FocusPane(PaneId::Sidebar)),
+    ];
+    for (i, leave) in leaves.iter().enumerate() {
+        let mut app = app_at_an_indented_line_end();
+        assert!(key_and_capture(&mut app, KeyCode::Enter), "leave {i}: Enter is a step");
+        leave(&mut app);
+        assert!(!app.capture_undo(), "leave {i}: dropping the blanks is no step");
+        assert_eq!(app.editor.body.lines.to_string(), "    a\n", "leave {i}");
+        app.update(Action::Undo);
+        assert_eq!(app.editor.body.lines.to_string(), "    a", "leave {i}: undo is exact");
+    }
+}
+
+/// R5: a modal over the body is not leaving the line.
+#[test]
+fn a_modal_over_an_untouched_auto_indent_keeps_it() {
+    let mut app = app_at_an_indented_line_end();
+    key_and_capture(&mut app, KeyCode::Enter);
+    app.update(Action::OpenPalette);
+    app.capture_undo();
+    key_and_capture(&mut app, KeyCode::Esc);
+    assert!(app.modals.is_empty(), "the palette closed");
+    assert_eq!(app.editor.body.lines.to_string(), "    a\n    ");
+    key_and_capture(&mut app, KeyCode::Char('x'));
+    assert_eq!(app.editor.body_text(), "    a\n    x", "still on the line, indent in use");
 }
