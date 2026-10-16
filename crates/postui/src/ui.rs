@@ -389,7 +389,7 @@ const TOOLTIP_MAX_TEXT_W: usize = 56;
 ///   truncated so the whole value is readable;
 /// - the **name** row: the variable's name in the token's own tint, and
 ///   the scope its value came from in muted text (`this request`,
-///   the environment's name (`qa`), `default value`, the selected
+///   the environment's display name (`qa`), `default value`, the selected
 ///   option's name (`user 2`), `needs selection`,
 ///   `missing secret`, `not defined`);
 /// - the **descriptions**, when written, each word-wrapped in muted text

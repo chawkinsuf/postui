@@ -23304,6 +23304,21 @@ fn tooltip_lays_out_the_value_then_the_name_then_the_description() {
     );
 }
 
+/// An environment's source names it as the header does, by its display
+/// name, never its slug (#33: the name stands bare, so a slug would match
+/// nothing on screen).
+#[test]
+fn tooltip_names_the_env_by_its_display_name() {
+    let (mut app, dir, _out) = tooltip_app("base_url");
+    let toml = dir.path().join("project.toml");
+    let meta = std::fs::read_to_string(&toml).unwrap();
+    std::fs::write(&toml, format!("{meta}\n[environment.qa]\nname = \"QA Tenant\"\n")).unwrap();
+    app.update(Action::ReloadProjectFiles);
+    hover_token(&mut app, "base_url");
+    let text = tooltip_text(&mut app);
+    assert!(text.contains("base_url  QA Tenant"), "{text}");
+}
+
 /// A secret's pills run reveal, copy, edit: reveal is the rare, dynamic
 /// one and sits in the drop-first slot at the far left, so copy and edit
 /// stay put whether or not it is offered.

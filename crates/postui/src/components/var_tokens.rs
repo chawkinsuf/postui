@@ -29,7 +29,7 @@ use unicode_width::UnicodeWidthChar;
 pub enum TokenSource {
     /// The open request's own `[variables]` overlay (highest precedence).
     Request,
-    /// A flat value in the active environment.
+    /// A flat value in the active environment, named for display.
     Env(String),
     /// The variable declaration's `default`.
     Default,
@@ -117,7 +117,8 @@ pub struct VarView {
     env_names: HashSet<String>,
     /// Names whose declaration carries a `default`.
     default_names: HashSet<String>,
-    /// The active environment's name, when one is active.
+    /// The active environment's display name (as the header shows it),
+    /// when one is active.
     env_label: Option<String>,
     /// Declared descriptions: a variable's own, or — for a selector field —
     /// the owning selector's.
@@ -149,7 +150,7 @@ impl VarView {
                 .filter(|(_, d)| d.default.is_some())
                 .map(|(n, _)| n.clone())
                 .collect(),
-            env_label: project.active_env().map(str::to_string),
+            env_label: project.active_env().map(|env| project.env_name(env)),
             descriptions: {
                 let mut d: IndexMap<String, String> = project
                     .variables()
@@ -238,8 +239,7 @@ impl VarView {
         }
     }
 
-    /// The active environment, named by its slug (which can't hold the
-    /// space in [`TokenSource::Default`]'s `default value`), or [`TokenSource::Undefined`]
+    /// The active environment, by its display name, or [`TokenSource::Undefined`]
     /// when there is none (nothing to name as the source).
     fn env_source(&self) -> TokenSource {
         match &self.env_label {
