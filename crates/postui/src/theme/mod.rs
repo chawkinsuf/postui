@@ -794,8 +794,13 @@ mod tests {
     }
 
     fn chroma(c: (u8, u8, u8)) -> f32 {
+        hue_and_chroma(c).1
+    }
+
+    /// A colour's Oklab hue angle and chroma, for the hue-keeping checks.
+    fn hue_and_chroma(c: (u8, u8, u8)) -> (f32, f32) {
         let (_, a, b) = oklab(c);
-        (a * a + b * b).sqrt()
+        (b.atan2(a), (a * a + b * b).sqrt())
     }
 
     fn level(n: i8) -> Contrast {
@@ -927,10 +932,6 @@ mod tests {
         let colour = |l: f32, chroma: f32, hue: f32| {
             oklab_to_rgb_in_gamut((l, chroma * hue.cos(), chroma * hue.sin()))
         };
-        let hue_of = |c: (u8, u8, u8)| {
-            let (_, a, b) = oklab(c);
-            (b.atan2(a), (a * a + b * b).sqrt())
-        };
         let pages =
             [0.0, 0.05, 0.15, 0.25, 0.35, 0.45, 0.49, 0.51, 0.55, 0.65, 0.75, 0.85, 0.95, 1.0];
         let texts = [0.0, 0.1, 0.3, 0.45, 0.55, 0.7, 0.9, 1.0];
@@ -1002,8 +1003,10 @@ mod tests {
                                 for (what, before, after) in
                                     [("page", base.page, t.page), ("text", base.text, t.text)]
                                 {
-                                    let ((h0, c0), (h1, c1)) =
-                                        (hue_of(rgb_of(before)), hue_of(rgb_of(after)));
+                                    let ((h0, c0), (h1, c1)) = (
+                                        hue_and_chroma(rgb_of(before)),
+                                        hue_and_chroma(rgb_of(after)),
+                                    );
                                     // Only where sRGB can hold a hue: next to black or
                                     // white a single u8 unit of one channel sets it
                                     // (#000002 -> #000105 "turns"), which is noise.
@@ -1061,15 +1064,11 @@ mod tests {
     /// turns the hue; the tint is trimmed to fit instead.
     #[test]
     fn contrast_keeps_the_page_s_and_text_s_hue() {
-        let hue = |c: (u8, u8, u8)| {
-            let (_, a, b) = oklab(c);
-            (b.atan2(a), (a * a + b * b).sqrt())
-        };
         for (name, s) in builtin_seeds() {
             for n in [Contrast::MIN, Contrast::MAX] {
                 let t = s.with_contrast(level(n), false);
                 for (what, before, after) in [("page", s.bg, t.bg), ("text", s.fg, t.fg)] {
-                    let ((h0, c0), (h1, c1)) = (hue(before), hue(after));
+                    let ((h0, c0), (h1, c1)) = (hue_and_chroma(before), hue_and_chroma(after));
                     // Hue is noise on a near-grey; only a visible tint has one.
                     if c0 > 0.02 && c1 > 0.02 {
                         let turn = (h1 - h0).sin().abs();

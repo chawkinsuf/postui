@@ -1113,9 +1113,6 @@ impl App {
         }
     }
 
-    /// Live preview: while the theme picker is open, keep the applied theme
-    /// in lockstep with the picker's highlighted row. Called after any key
-    /// or click that may have moved the chooser's selection.
     /// Builds the theme picker's rows for the current polarity filter
     /// (`theme_picker_dark`): one row per registry option whose seed
     /// background matches, in registry order.
@@ -1142,6 +1139,10 @@ impl App {
             .collect()
     }
 
+    /// Live preview: while the theme picker is open, keep the applied theme
+    /// in lockstep with the picker's highlighted row, and the Contrast row
+    /// in step with the live level. Called after any key or click that may
+    /// have moved the chooser's selection or the level.
     fn sync_theme_preview(&mut self) {
         if self.theme_preview.is_none() {
             return;
