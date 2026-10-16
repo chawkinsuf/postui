@@ -423,8 +423,7 @@ fn readable_text(fg: (u8, u8, u8), page: (u8, u8, u8)) -> (u8, u8, u8) {
 fn push_apart(fg: (u8, u8, u8), page: (u8, u8, u8), floor: f32, aim: f32) -> (u8, u8, u8) {
     let (text_l, a, b) = oklab(fg);
     let page_l = oklab_l(page);
-    let clears = |c: (u8, u8, u8)| (oklab_l(c) - page_l).abs() >= floor;
-    if clears(fg) {
+    if (text_l - page_l).abs() >= floor {
         return fg;
     }
     let mut direction = if text_l >= page_l { 1.0 } else { -1.0 };
@@ -442,7 +441,7 @@ fn push_apart(fg: (u8, u8, u8), page: (u8, u8, u8), floor: f32, aim: f32) -> (u8
             return oklab_to_rgb((end, 0.0, 0.0));
         }
         let text = oklab_to_rgb_in_gamut((target_l, a, b));
-        if clears(text) {
+        if (oklab_l(text) - page_l).abs() >= floor {
             return text;
         }
         target_l += direction * 0.005;
@@ -478,10 +477,6 @@ fn derive_fg_from_bg(bg: (u8, u8, u8)) -> (u8, u8, u8) {
     if oklab_l(bg) < 0.5 { Seeds::dark().fg } else { Seeds::light().fg }
 }
 
-/// Whether `c` reads as a light color (Oklab lightness >= 0.5) — used to
-/// pick a legible text color for content painted directly on `c` (e.g. a
-/// key-pill's fill), rather than assuming the fill is always dark the way
-/// most of this dark-first theme's surfaces are.
 /// Returns `fg` with its Oklab lightness pushed away from `bg` until
 /// |ΔL| >= `min_delta`, keeping its hue: [`push_apart`], the same push as
 /// `Theme::generate`'s text clamp. Non-RGB colors pass through unchanged.
@@ -543,6 +538,10 @@ fn ensure_wcag_contrast(fg: (u8, u8, u8), bg: (u8, u8, u8), min_ratio: f32) -> (
     best
 }
 
+/// Whether `c` reads as a light color (Oklab lightness >= 0.5) — used to
+/// pick a legible text color for content painted directly on `c` (e.g. a
+/// key-pill's fill), rather than assuming the fill is always dark the way
+/// most of this dark-first theme's surfaces are.
 pub(crate) fn is_light(c: Color) -> bool {
     oklab_l(rgb_of(c)) >= 0.5
 }
@@ -1494,8 +1493,9 @@ mod tests {
             let ((h0, c0), (h1, c1)) = (hue_and_chroma(fg), hue_and_chroma(text));
             // Same bounds as the contrast sweep: hue is noise on a
             // near-grey, and next to black or white one u8 unit sets it.
+            // `cos`, not `sin`, so a flip to the opposite hue fails too.
             if c0 > 0.02 && c1 > 0.02 && (0.15..0.95).contains(&oklab_l(text)) {
-                assert!((h1 - h0).sin().abs() < 0.1, "{tag}: hue turned {fg:?} -> {text:?}");
+                assert!((h1 - h0).cos() > 0.995, "{tag}: hue turned {fg:?} -> {text:?}");
             }
         }
     }
