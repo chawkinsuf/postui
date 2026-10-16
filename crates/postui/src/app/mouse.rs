@@ -1212,6 +1212,8 @@ impl App {
                 | Hit::DropdownRow(_)
                 | Hit::ChooserRow(_)
                 | Hit::ChooserToggle
+                | Hit::ChooserStepDown
+                | Hit::ChooserStepUp
                 | Hit::PickerRow(_)
                 | Hit::PickerPrimary
                 | Hit::PickerHidden
@@ -1865,6 +1867,16 @@ impl App {
                     return false;
                 };
                 let Some(action) = state.toggle_action().cloned() else {
+                    return false;
+                };
+                self.update(action)
+            }
+            step @ (Hit::ChooserStepDown | Hit::ChooserStepUp) => {
+                let Some(Modal::Chooser(state)) = self.modals.top() else {
+                    return false;
+                };
+                let up = step == Hit::ChooserStepUp;
+                let Some(action) = state.step_action(up).cloned() else {
                     return false;
                 };
                 self.update(action)

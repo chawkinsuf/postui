@@ -3,7 +3,7 @@
 
 use super::builtin::builtin_themes;
 use super::osc::QueriedColors;
-use super::{Seeds, Theme, seeds_from_queried};
+use super::{Contrast, Seeds, Theme, seeds_from_queried};
 
 /// Where a registry entry's seeds come from.
 pub enum ThemeSource {
@@ -135,11 +135,21 @@ impl ThemeRegistry {
         crate::theme::oklab_l(self.seeds_of(entry, queried).bg) < 0.5
     }
 
-    /// Generates the full theme for `name`, or `None` for an unknown name
-    /// (the caller warns and falls back).
-    pub fn resolve(&self, name: &str, queried: &QueriedColors) -> Option<Theme> {
+    /// Generates the full theme for `name` at `contrast`, or `None` for an
+    /// unknown name (the caller warns and falls back). The Terminal theme
+    /// keeps the background the terminal reported at every level: moving
+    /// it would show a seam at the window's padding (spec 2026-10-16 C2).
+    /// A terminal that reported none gets postui's fallback page, which is
+    /// no seam's business, so that one moves like any theme's.
+    pub fn resolve(
+        &self,
+        name: &str,
+        queried: &QueriedColors,
+        contrast: Contrast,
+    ) -> Option<Theme> {
         let entry = self.get(name)?;
-        Some(Theme::generate(&self.seeds_of(entry, queried)))
+        let keep_bg = matches!(entry.source, ThemeSource::Terminal) && queried.bg.is_some();
+        Some(Theme::generate(&self.seeds_of(entry, queried).with_contrast(contrast, keep_bg)))
     }
 }
 
@@ -272,9 +282,41 @@ mod tests {
     fn resolve_builtin_matches_direct_generation_and_unknown_is_none() {
         let r = ThemeRegistry::builtin();
         let q = QueriedColors::default();
-        let t = r.resolve("gruvbox-dark", &q).unwrap();
+        let t = r.resolve("gruvbox-dark", &q, Contrast::default()).unwrap();
         assert_eq!(t.page, Color::Rgb(0x28, 0x28, 0x28));
-        assert!(r.resolve("sepia", &q).is_none());
+        assert!(r.resolve("sepia", &q, Contrast::default()).is_none());
+    }
+
+    /// Spec 2026-10-16 C2: contrast moves a built-in's page but keeps the
+    /// Terminal theme's (the terminal's own background); both texts move.
+    /// The dark/light classification ignores the level (C14).
+    #[test]
+    fn resolve_applies_contrast_and_terminal_keeps_its_page() {
+        let r = ThemeRegistry::builtin();
+        let q = QueriedColors { bg: Some((16, 16, 20)), fg: None, ansi: [None; 16] };
+        let up = Contrast::new(Contrast::MAX).unwrap();
+        for name in ["gruvbox-dark", "terminal"] {
+            let base = r.resolve(name, &q, Contrast::default()).unwrap();
+            let high = r.resolve(name, &q, up).unwrap();
+            assert_ne!(high.text, base.text, "{name}: text moves");
+            if name == "terminal" {
+                assert_eq!(high.page, base.page, "terminal keeps its page");
+            } else {
+                assert_ne!(high.page, base.page, "{name}: page deepens");
+            }
+        }
+    }
+
+    /// Review round 2: a terminal that never answered the background query
+    /// paints postui's own fallback page, not the terminal's, so there is
+    /// no seam to protect and contrast deepens it like any theme's.
+    #[test]
+    fn a_silent_terminal_s_fallback_page_moves_with_contrast() {
+        let r = ThemeRegistry::builtin();
+        let silent = QueriedColors::default();
+        let up = Contrast::new(Contrast::MAX).unwrap();
+        let base = r.resolve("terminal", &silent, Contrast::default()).unwrap();
+        assert_ne!(r.resolve("terminal", &silent, up).unwrap().page, base.page);
     }
 
     #[test]
@@ -283,10 +325,10 @@ mod tests {
         let mut ansi = [None; 16];
         ansi[4] = Some((1, 120, 212));
         let q = QueriedColors { bg: Some((16, 16, 20)), fg: None, ansi };
-        let t = r.resolve("terminal", &q).unwrap();
+        let t = r.resolve("terminal", &q, Contrast::default()).unwrap();
         assert_eq!(t.page, Color::Rgb(16, 16, 20));
         assert_eq!(t.accent, Color::Rgb(1, 120, 212));
-        let silent = r.resolve("terminal", &QueriedColors::default()).unwrap();
+        let silent = r.resolve("terminal", &QueriedColors::default(), Contrast::default()).unwrap();
         assert_eq!(silent.page, crate::theme::Theme::dark().page);
     }
 
@@ -316,7 +358,7 @@ mod tests {
         assert_eq!(customs, vec!["aardvark", "zebra"], "customs after builtins, sorted");
         assert_eq!(r.get("aardvark").unwrap().label, "Aard Vark", "name key overrides the stem");
         assert_eq!(r.get("zebra").unwrap().label, "zebra", "label defaults to the stem");
-        let t = r.resolve("zebra", &QueriedColors::default()).unwrap();
+        let t = r.resolve("zebra", &QueriedColors::default(), Contrast::default()).unwrap();
         assert_eq!(t.page, Color::Rgb(0x10, 0x14, 0x18));
     }
 
@@ -353,7 +395,7 @@ mod tests {
         assert!(warnings.is_empty(), "shadowing is deliberate, no warning: {warnings:?}");
         assert_eq!(r.entries().len(), 9, "shadow replaces, not appends");
         assert_eq!(r.entries()[1].name, "dark", "position preserved");
-        let t = r.resolve("dark", &QueriedColors::default()).unwrap();
+        let t = r.resolve("dark", &QueriedColors::default(), Contrast::default()).unwrap();
         assert_eq!(t.page, Color::Rgb(0, 0, 0));
     }
 

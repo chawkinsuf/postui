@@ -1781,13 +1781,21 @@ impl ModalStack {
                 } else {
                     (Key::Nav(Nav::UpDown), Key::Nav(Nav::LeftRight))
                 };
-                let mut chips = vec![(moves, "navigate", None)];
+                let mut chips = vec![(moves, "navigate".to_string(), None)];
                 if state.has_toggle() {
-                    chips.push((flip, "toggle", None));
+                    chips.push((flip, "toggle".to_string(), None));
                 }
-                chips.push((Key::Named("enter"), "select", None));
-                chips.push((Key::Named("esc"), "close", None));
-                chips
+                // The stepper's `-`/`+`, named by its own row's label (the
+                // theme picker's "Contrast"); its buttons are their mouse
+                // twin. A runtime label, so this arm builds its chips owned.
+                // Only where the keys step: a filter box would type them.
+                if let Some(label) = state.stepper_label().filter(|_| !state.has_filter()) {
+                    chips.push((Key::Named("-/+"), label.to_lowercase(), None));
+                }
+                chips.push((Key::Named("enter"), "select".to_string(), None));
+                chips.push((Key::Named("esc"), "close".to_string(), None));
+                // Not a form, so nothing below has a chip to add.
+                return Some(chips);
             }
             // Only the Insert-mode picker has a typed filter to advertise;
             // SelectOption mode is arrow-and-click only.
@@ -4194,6 +4202,56 @@ mod tests {
         .collect();
         assert!(vim.contains(&"j/k navigate".to_string()), "{vim:?}");
         assert!(vim.contains(&"h/l toggle".to_string()), "{vim:?}");
+    }
+
+    /// Spec 2026-10-16 C4: a chooser with a stepper (the theme picker's
+    /// Contrast row) advertises `-/+ contrast`, in both profiles, spelled
+    /// with the ASCII keys typed (review round 2) and named by the row's
+    /// own label (review round 3); one without says nothing of it.
+    #[test]
+    fn chooser_stepper_chip_names_its_keys() {
+        use crate::components::chooser::{ChooserState, ChooserStepper};
+        let stepper = ChooserStepper {
+            label: "Contrast".into(),
+            level: 0,
+            min: -3,
+            max: 3,
+            down: Action::Render,
+            up: Action::Render,
+        };
+        let spell = |c: ChooserState, profile| {
+            let mut m = ModalStack::default();
+            m.push(Modal::Chooser(c));
+            let at = crate::keyroute::SpellCtx {
+                profile,
+                surface: crate::keyroute::Surface::Picker,
+                ..Default::default()
+            };
+            crate::keyroute::spell::resolve(
+                m.footer_chips().unwrap(),
+                at,
+                &crate::keys::Keymap::default_bindings(),
+            )
+            .into_iter()
+            .map(|(k, l, _)| format!("{k} {l}"))
+            .collect::<Vec<_>>()
+        };
+        for profile in [crate::config::KeyProfile::Arrows, crate::config::KeyProfile::Vim] {
+            let theme = ChooserState::new("Theme", vec![]).without_filter();
+            let shown = spell(theme.with_stepper(stepper.clone()), profile);
+            assert!(shown.contains(&"-/+ contrast".to_string()), "{profile:?}: {shown:?}");
+        }
+        let plain = spell(
+            ChooserState::new("Theme", vec![]).without_filter(),
+            crate::config::KeyProfile::Arrows,
+        );
+        assert!(!plain.iter().any(|c| c.ends_with("contrast")), "{plain:?}");
+        // Review round 4: a filter box types `-`/`+`, so it is not offered.
+        let filtered = spell(
+            ChooserState::new("Pick", vec![]).with_stepper(stepper.clone()),
+            crate::config::KeyProfile::Arrows,
+        );
+        assert!(!filtered.iter().any(|c| c.ends_with("contrast")), "{filtered:?}");
     }
 
     /// The SelectOption picker has no filter, so its footer must not

@@ -461,6 +461,25 @@ fn the_theme_picker_has_no_search_box_and_its_arrows_flip() {
     assert_eq!(vim.theme_name, "solarized-dark", "G goes to the last row");
 }
 
+/// Spec 2026-10-16 C5, C6: the theme picker's `-`, `+` and `=` step the
+/// contrast in both profiles. Vim's table claims none of them on a picker,
+/// so they reach the chooser as they do in arrows.
+#[test]
+fn the_theme_picker_steps_contrast_with_minus_and_plus_in_both_profiles() {
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = app_in(Fixture::SidebarThree, profile);
+        app.update(Action::OpenThemeChooser);
+        draw(&mut app);
+        feed(&mut app, "+");
+        assert_eq!(app.theme_contrast.level(), 1, "{profile:?}: + raises");
+        feed(&mut app, "=");
+        assert_eq!(app.theme_contrast.level(), 2, "{profile:?}: = raises");
+        feed(&mut app, "-");
+        assert_eq!(app.theme_contrast.level(), 1, "{profile:?}: - lowers");
+        assert!(matches!(app.modals.top(), Some(Modal::Chooser(_))), "{profile:?}: still open");
+    }
+}
+
 /// Review Focus 5, plan M3b Deviation 5. Enter on a filtered folder
 /// rebuilds the filter from "inn" to "": the session rebases on the new
 /// text, and must stay Insert-only so Esc is still the picker's.

@@ -33,6 +33,69 @@ pub struct ChooserToggle {
     pub action: Action,
 }
 
+/// An optional stepped level on a chooser (the theme picker's Contrast row,
+/// spec 2026-10-16): painted as a row under the list — `label`, a `-`
+/// button, a meter with one cell per level, a `+` button and the level as
+/// text. On a chooser without a filter box `-` fires `down` and `+`/`=`
+/// fire `up`, without closing; the buttons fire the same. The actions'
+/// handler owns the level: it refuses a step past either end, and reports
+/// the level back through [`ChooserState::set_stepper_level`], which only
+/// paints it — the meter, and the end's button disabled.
+#[derive(Clone)]
+pub struct ChooserStepper {
+    pub label: String,
+    pub level: i8,
+    pub min: i8,
+    pub max: i8,
+    pub down: Action,
+    pub up: Action,
+}
+
+/// Where the stepper row's pieces sit, as columns from the row's start,
+/// and the width the whole row needs. The panel's height and the paint
+/// both read it, so a row that does not fit is neither drawn nor given
+/// its line.
+#[derive(Clone, Copy)]
+struct StepperLayout {
+    minus: u16,
+    meter: u16,
+    cells: usize,
+    plus: u16,
+    level: u16,
+    width: u16,
+}
+
+impl ChooserStepper {
+    /// The row laid out from its own label: the `-` button three cells
+    /// after it, the meter, the `+` button and then the level, read at
+    /// its widest end.
+    fn layout(&self) -> StepperLayout {
+        use unicode_width::UnicodeWidthStr;
+        // In i16: an i8 range's span can overflow i8 (-100..=100 is 200).
+        let cells = (i16::from(self.max) - i16::from(self.min)).max(0) as usize + 1;
+        let minus = self.label.width() as u16 + 3;
+        let meter = minus + 4;
+        let plus = meter + cells as u16 + 1;
+        let level = plus + 5;
+        let widest = level_text(self.min).len().max(level_text(self.max).len());
+        StepperLayout { minus, meter, cells, plus, level, width: level + widest as u16 }
+    }
+}
+
+/// A stepper level as the row shows it: `+1`, `0`, `-2`. Plain ASCII, as
+/// the `-` button is: U+2212 is East-Asian-ambiguous width, two cells in a
+/// terminal set for CJK, which would run the row past its own layout.
+fn level_text(n: i8) -> String {
+    match n {
+        n if n > 0 => format!("+{n}"),
+        n => n.to_string(),
+    }
+}
+
+/// The stepper row's meter glyphs, lowest to highest; the meter has one
+/// cell per level and spreads these across them.
+const METER: [&str; 7] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇"];
+
 /// A generic fuzzy-filterable chooser modal. Structure mirrors
 /// `PaletteState`: typed input filters `items` by fuzzy-matching against
 /// `label + " " + detail`; arrows move the selection; `Enter` dispatches the
@@ -48,6 +111,8 @@ pub struct ChooserState {
     pub(crate) items: Vec<ChooserItem>,
     filtered: Vec<usize>,
     toggle: Option<ChooserToggle>,
+    /// Boxed: its two actions would otherwise make every `Modal` larger.
+    stepper: Option<Box<ChooserStepper>>,
     /// First visible row's index into `filtered`. Kept in view of `selected`
     /// on the next `draw` whenever `ensure_visible` is set; free to roam
     /// otherwise (wheel scrolling).
@@ -74,8 +139,37 @@ impl ChooserState {
             scroll: 0,
             ensure_visible: true,
             toggle: None,
+            stepper: None,
             previewing: false,
         }
+    }
+
+    /// Attaches a [`ChooserStepper`] (builder-style, for construction).
+    pub fn with_stepper(mut self, stepper: ChooserStepper) -> Self {
+        self.stepper = Some(Box::new(stepper));
+        self
+    }
+
+    /// The attached stepper row's label, which the footer names its keys
+    /// by; `None` without a stepper.
+    pub fn stepper_label(&self) -> Option<&str> {
+        self.stepper.as_ref().map(|s| s.label.as_str())
+    }
+
+    /// Updates the stepper's level after its action moved it. A no-op when
+    /// no stepper is attached.
+    pub fn set_stepper_level(&mut self, level: i8) {
+        if let Some(s) = &mut self.stepper {
+            s.level = level;
+        }
+    }
+
+    /// The stepper's action one step up (or down), or `None` without a
+    /// stepper. Refusing a step past an end is the action's handler's
+    /// business; the row only shows it, by disabling that button.
+    pub fn step_action(&self, up: bool) -> Option<&Action> {
+        let s = self.stepper.as_ref()?;
+        Some(if up { &s.up } else { &s.down })
     }
 
     /// The toggle while it is live: attached with a label showing.
@@ -275,6 +369,17 @@ impl ChooserState {
             KeyCode::Left | KeyCode::Right if !self.has_filter() => {
                 return if key.modifiers.is_empty() { self.fire_toggle() } else { None };
             }
+            // The stepper's keys, on a chooser with no box to type them
+            // into. A shifted `+` is how most layouts deliver it; `=` is
+            // the same key unshifted.
+            // No other modifier: a chord like cmd+- (a terminal's font zoom,
+            // which the kitty protocol can deliver as SUPER) is not a step.
+            KeyCode::Char(c @ ('-' | '+' | '='))
+                if !self.has_filter()
+                    && key.modifiers.difference(KeyModifiers::SHIFT).is_empty() =>
+            {
+                return self.step_action(c != '-').map(keep_open);
+            }
             KeyCode::Home if !self.has_filter() => self.select(0),
             KeyCode::End if !self.has_filter() => {
                 self.select(self.filtered.len().saturating_sub(1))
@@ -315,11 +420,7 @@ impl ChooserState {
     /// The live toggle's action as a result that keeps the chooser open —
     /// `None` when no toggle is live.
     fn fire_toggle(&self) -> Option<super::modal::ModalResult> {
-        self.toggle_action().map(|a| super::modal::ModalResult {
-            actions: vec![a.clone()],
-            close: false,
-            ..Default::default()
-        })
+        self.toggle_action().map(keep_open)
     }
 
     /// Whether the filter box has keystrokes of its own to step — what
@@ -354,9 +455,24 @@ impl ChooserState {
         let width = 60.min(screen.width);
         // Chrome (everything but the list): above it, 1 pad + 1 title + 1
         // gap, then with a filter box its 3-row field + 2 gap rows; below
-        // it, 2 bottom pad rows.
+        // it, 2 bottom pad rows — the stepper row, when there is one and it
+        // fits inside the panel's two-column margins, taking the second of
+        // them over a third. A panel too narrow for the row has neither the
+        // row nor its line, so no button lands (or takes a click) outside
+        // it; the keys still step.
         let above: u16 = if self.has_filter() { 3 + FIELD_HEIGHT + 2 } else { 3 };
-        let chrome = above + 2;
+        // A screen no taller than that chrome has no line to give it either
+        // (review round 5), and a chooser with a filter box has no row at
+        // all: its keys would type there, as its footer chip knows (review
+        // round 8). The one layout here is the one the row paints with.
+        let stepper_at = self
+            .stepper
+            .as_ref()
+            .filter(|_| !self.has_filter())
+            .map(|s| s.layout())
+            .filter(|at| at.width <= width.saturating_sub(4) && screen.height > above + 3);
+        let below: u16 = if stepper_at.is_some() { 3 } else { 2 };
+        let chrome = above + below;
         let content_rows = (self.filtered.len() as u16).clamp(1, 10);
         let height = (chrome + content_rows).max(chrome + 3).min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
@@ -484,7 +600,80 @@ impl ChooserState {
             let row_rect = Rect { x: list_area.x, y: text_row, width: list_area.width, height: 1 };
             hits.register(row_rect, crate::hit::Hit::ChooserRow(i));
         }
+
+        // The stepper row sits above the bottom pad, a gap under the list,
+        // whenever the panel was given its line.
+        if let Some(at) = stepper_at {
+            // Inside the panel's two-column margins, as the title row is.
+            let x = area.x + 2;
+            let y = area.y + area.height - 2;
+            self.draw_stepper(frame.buffer_mut(), (x, y), at, theme, hits, hovered);
+        }
     }
+
+    /// Paints the stepper row at `(x, y)` with the layout the panel was
+    /// sized by: `Contrast   -  ▁▂▃▄▅▆▇  +   +1`. Each button is three cells
+    /// (its glyph padded) so the hover fill reads as a key; one at its end
+    /// paints in the disabled tone and registers no hit.
+    fn draw_stepper(
+        &self,
+        buf: &mut ratatui::buffer::Buffer,
+        (x, y): (u16, u16),
+        at: StepperLayout,
+        theme: &Theme,
+        hits: &mut crate::hit::HitMap,
+        hovered: Option<&crate::hit::Hit>,
+    ) {
+        let Some(s) = &self.stepper else {
+            return;
+        };
+        let (minus_x, meter_x, plus_x, level_x) =
+            (x + at.minus, x + at.meter, x + at.plus, x + at.level);
+        let cells = at.cells;
+        paint::text(buf, x, y, &s.label, theme.text, theme.panel, false);
+        let mut button = |bx: u16, glyph: &str, hit: crate::hit::Hit, live: bool| {
+            let rect = Rect { x: bx, y, width: 3, height: 1 };
+            if live {
+                paint::action(
+                    buf,
+                    rect,
+                    &format!(" {glyph} "),
+                    hit.clone(),
+                    hovered,
+                    theme.panel,
+                    theme,
+                );
+                hits.register(rect, hit);
+            } else {
+                paint::text(
+                    buf,
+                    bx,
+                    y,
+                    &format!(" {glyph} "),
+                    theme.text_disabled,
+                    theme.panel,
+                    false,
+                );
+            }
+        };
+        button(minus_x, "-", crate::hit::Hit::ChooserStepDown, s.level > s.min);
+        button(plus_x, "+", crate::hit::Hit::ChooserStepUp, s.level < s.max);
+        for i in 0..cells {
+            // The glyphs rise across the meter whatever its length.
+            let glyph = METER[i * (METER.len() - 1) / (cells - 1).max(1)];
+            let lit = i16::from(s.min) + i as i16 <= i16::from(s.level);
+            let fg = if lit { theme.accent } else { theme.text_disabled };
+            paint::text(buf, meter_x + i as u16, y, glyph, fg, theme.panel, false);
+        }
+        let level = level_text(s.level);
+        paint::text(buf, level_x, y, &level, theme.text_muted, theme.panel, false);
+    }
+}
+
+/// `action` as a result that keeps the chooser open: what the toggle's and
+/// the stepper's keys hand back.
+fn keep_open(action: &Action) -> super::modal::ModalResult {
+    super::modal::ModalResult { actions: vec![action.clone()], close: false, ..Default::default() }
 }
 
 /// Clips `s` to at most `width` columns on a char boundary.
@@ -822,6 +1011,228 @@ mod tests {
             hits.rect_of(&crate::hit::Hit::ChooserToggle).is_none(),
             "hidden toggle must not be clickable"
         );
+    }
+
+    fn stepper(level: i8) -> ChooserStepper {
+        ChooserStepper {
+            label: "Contrast".into(),
+            level,
+            min: -3,
+            max: 3,
+            down: Action::StepThemeContrast(-1),
+            up: Action::StepThemeContrast(1),
+        }
+    }
+
+    /// Spec 2026-10-16 C5, C6: on a filterless chooser `-` fires the
+    /// stepper's down action and `+`/`=` its up action, keeping the modal
+    /// open. At an end the key still fires: refusing the step is the
+    /// handler's (App's `Contrast::step`, review round 2), so there is
+    /// one gate.
+    #[test]
+    fn minus_plus_and_equals_fire_the_stepper() {
+        let mut c =
+            ChooserState::new("Theme", items(&["a"])).without_filter().with_stepper(stepper(0));
+        let fired = |c: &mut ChooserState, ch: char| {
+            c.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)).map(|r| {
+                assert!(!r.close, "{ch}: stepping keeps the picker open");
+                r.actions
+            })
+        };
+        assert_eq!(fired(&mut c, '-'), Some(vec![Action::StepThemeContrast(-1)]));
+        assert_eq!(fired(&mut c, '+'), Some(vec![Action::StepThemeContrast(1)]));
+        assert_eq!(fired(&mut c, '='), Some(vec![Action::StepThemeContrast(1)]));
+        // A shifted `+` (how most layouts deliver it) still steps.
+        let shifted = KeyEvent::new(KeyCode::Char('+'), KeyModifiers::SHIFT);
+        assert!(c.handle_key(shifted).is_some());
+        // Review round 6: any other modifier is a chord, not a step.
+        for mods in [
+            KeyModifiers::SUPER,
+            KeyModifiers::META,
+            KeyModifiers::HYPER,
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+        ] {
+            for ch in ['-', '+', '='] {
+                let chord = KeyEvent::new(KeyCode::Char(ch), mods);
+                assert!(c.handle_key(chord).is_none(), "{mods:?}+{ch} stepped");
+            }
+        }
+        c.set_stepper_level(3);
+        assert_eq!(fired(&mut c, '+'), Some(vec![Action::StepThemeContrast(1)]), "the app gates");
+        // No stepper: the keys do nothing on a filterless chooser...
+        let mut plain = ChooserState::new("t", items(&["a"])).without_filter();
+        assert!(fired(&mut plain, '+').is_none());
+        // ...and type into a filter box as ever.
+        let mut filtered = ChooserState::new("t", items(&["a"])).with_stepper(stepper(0));
+        assert!(fired(&mut filtered, '-').is_none());
+        assert_eq!(filtered.input(), "-");
+    }
+
+    /// Spec C4: the stepper row sits under the list, one row taller than
+    /// the chooser without it, with clickable `-`/`+`, a meter lit up to the
+    /// level and the level as text; an end's button paints disabled and
+    /// takes no click (C9).
+    #[test]
+    fn the_stepper_row_paints_under_the_list_with_buttons_meter_and_level() {
+        let theme = Theme::dark();
+        let draw = |c: &mut ChooserState| {
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+            (terminal.backend().buffer().clone(), hits)
+        };
+        let row_text = |buf: &ratatui::buffer::Buffer, y: u16| {
+            (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()
+        };
+
+        let (_, plain_hits) =
+            draw(&mut ChooserState::new("Theme", items(&["a", "b"])).without_filter());
+        let mut c = ChooserState::new("Theme", items(&["a", "b"]))
+            .without_filter()
+            .with_stepper(stepper(1));
+        let (buf, hits) = draw(&mut c);
+        let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        let plain = plain_hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        assert_eq!(body.height, plain.height + 1, "the row adds one line");
+        let down = hits.rect_of(&crate::hit::Hit::ChooserStepDown).expect("- is clickable");
+        let up = hits.rect_of(&crate::hit::Hit::ChooserStepUp).expect("+ is clickable");
+        assert_eq!(down.y, up.y);
+        assert_eq!(down.y, body.y + body.height - 2, "the row above the bottom pad");
+        let last_row = hits.rect_of(&crate::hit::Hit::ChooserRow(1)).unwrap();
+        assert!(down.y > last_row.y + 1, "a gap between the list and the row");
+        let line = row_text(&buf, down.y);
+        assert!(line.contains("Contrast"), "{line:?}");
+        assert!(line.contains("+1"), "{line:?}");
+        // ASCII, one cell wide everywhere (review round 7: U+2212 is
+        // ambiguous width).
+        assert!(line.contains(" - ") && line.contains(" + "), "{line:?}");
+        assert!(!line.contains('−'), "{line:?}");
+        // The meter: one cell per level, lit in accent up to the level.
+        let meter: Vec<_> = (down.x + down.width..up.x)
+            .filter(|&x| "▁▂▃▄▅▆▇".contains(buf[(x, down.y)].symbol()))
+            .map(|x| buf[(x, down.y)].fg)
+            .collect();
+        assert_eq!(meter.len(), 7, "{line:?}");
+        assert_eq!(meter.iter().filter(|&&fg| fg == theme.accent).count(), 5, "-3..=1 lit");
+
+        c.set_stepper_level(3);
+        let (buf, hits) = draw(&mut c);
+        assert!(hits.rect_of(&crate::hit::Hit::ChooserStepUp).is_none(), "+ dead at the top");
+        let down = hits.rect_of(&crate::hit::Hit::ChooserStepDown).unwrap();
+        let plus_x =
+            (down.x..body.x + body.width).find(|&x| buf[(x, down.y)].symbol() == "+").unwrap();
+        assert_eq!(buf[(plus_x, down.y)].fg, theme.text_disabled);
+    }
+
+    /// Review round 1: a panel too narrow for the whole row paints none of
+    /// it, so no button lands (or takes a click) outside the panel.
+    #[test]
+    fn a_stepper_row_too_wide_for_the_panel_is_left_out() {
+        let theme = Theme::dark();
+        let mut c =
+            ChooserState::new("Theme", items(&["a"])).without_filter().with_stepper(stepper(0));
+        let mut terminal = Terminal::new(TestBackend::new(30, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+        assert!(hits.rect_of(&crate::hit::Hit::ChooserStepDown).is_none());
+        assert!(hits.rect_of(&crate::hit::Hit::ChooserStepUp).is_none());
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(!content.contains("Contrast"), "{content}");
+        // Review round 3: nor is its line kept, blank.
+        let narrow = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        let mut plain = ChooserState::new("Theme", items(&["a"])).without_filter();
+        let mut terminal = Terminal::new(TestBackend::new(30, 24)).unwrap();
+        let mut plain_hits = crate::hit::HitMap::default();
+        terminal.draw(|f| plain.draw(f, f.area(), &theme, &mut plain_hits, None, 1.0)).unwrap();
+        let plain_body = plain_hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        assert_eq!(narrow.height, plain_body.height, "no blank line for a row left out");
+        // At a width with room, the same row is whole.
+        let mut terminal = Terminal::new(TestBackend::new(36, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+        let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        let up = hits.rect_of(&crate::hit::Hit::ChooserStepUp).expect("fits at 36");
+        assert!(up.x + up.width <= body.x + body.width, "inside the panel");
+    }
+
+    /// Review round 5: on a screen too short for the row, it takes no line
+    /// either, so the list keeps every row the plain chooser would show.
+    #[test]
+    fn a_stepper_row_on_a_short_screen_is_left_out() {
+        let theme = Theme::dark();
+        let draw = |c: &mut ChooserState| {
+            // 6 rows: the chrome with the row (3 + 3) and nothing left over.
+            let mut terminal = Terminal::new(TestBackend::new(80, 6)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+            hits
+        };
+        let many = ["a", "b", "c", "d", "e", "f"];
+        let hits = draw(
+            &mut ChooserState::new("T", items(&many)).without_filter().with_stepper(stepper(0)),
+        );
+        let plain = draw(&mut ChooserState::new("T", items(&many)).without_filter());
+        assert!(hits.rect_of(&crate::hit::Hit::ChooserStepUp).is_none(), "no room for the row");
+        let rows = |h: &crate::hit::HitMap| {
+            (0..6).filter(|&i| h.rect_of(&crate::hit::Hit::ChooserRow(i)).is_some()).count()
+        };
+        assert_eq!(rows(&hits), rows(&plain), "no list row lost to a row not drawn");
+    }
+
+    /// Review round 3: the row is laid out from its own label, so a longer
+    /// one pushes the buttons along rather than being painted over.
+    #[test]
+    fn the_stepper_row_lays_out_from_its_label() {
+        let theme = Theme::dark();
+        let draw = |label: &str| {
+            let mut c = ChooserState::new("T", items(&["a"]))
+                .without_filter()
+                .with_stepper(ChooserStepper { label: label.into(), ..stepper(0) });
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+            let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+            let down = hits.rect_of(&crate::hit::Hit::ChooserStepDown).unwrap();
+            (down.x - (body.x + 2), terminal.backend().buffer().clone(), down)
+        };
+        let (short, _, _) = draw("Contrast");
+        let (long, buf, down) = draw("Indent width");
+        assert_eq!(long - short, 4, "four more label cells, four cells along");
+        let row: String = (0..80).map(|x| buf[(x, down.y)].symbol().to_string()).collect();
+        assert!(row.contains("Indent width"), "{row:?}");
+        // Review round 4: measured in cells, not chars (a wide glyph is
+        // two), and a wide range's span does not overflow i8.
+        let (wide, _, _) = draw("对比度");
+        assert_eq!(wide, 6 + 3, "three two-cell glyphs, then the gap");
+        let span = ChooserStepper { min: -100, max: 100, ..stepper(0) }.layout();
+        assert_eq!(span.cells, 201);
+    }
+
+    /// Review round 8: a chooser with a filter box gets no stepper row, as
+    /// its `-`/`+` type into the box and its footer offers no step keys, so
+    /// the mouse cannot step what the keys do not.
+    #[test]
+    fn a_filtered_chooser_paints_no_stepper_row() {
+        let theme = Theme::dark();
+        let mut c = ChooserState::new("Pick", items(&["a"])).with_stepper(stepper(0));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+        assert!(hits.rect_of(&crate::hit::Hit::ChooserStepUp).is_none());
+        assert!(!format!("{:?}", terminal.backend().buffer()).contains("Contrast"));
+    }
+
+    /// A chooser without a stepper keeps today's shape and no step hits.
+    #[test]
+    fn a_chooser_without_a_stepper_registers_no_step_hits() {
+        let theme = Theme::dark();
+        let mut c = ChooserState::new("Theme", items(&["a"])).without_filter();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+        assert!(hits.rect_of(&crate::hit::Hit::ChooserStepDown).is_none());
+        assert!(hits.rect_of(&crate::hit::Hit::ChooserStepUp).is_none());
     }
 
     #[test]

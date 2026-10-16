@@ -273,6 +273,9 @@ pub struct UiSettings {
     /// validity is the registry's business at resolve time, not this
     /// loader's.
     pub theme: String,
+    /// The global contrast level every theme is resolved at
+    /// (`theme_contrast`, spec 2026-10-16).
+    pub theme_contrast: crate::theme::Contrast,
     /// Whether eased transitions (tab underline, hover, modal open, ...)
     /// play, or every animated value jumps straight to its target.
     pub animations: bool,
@@ -317,6 +320,7 @@ impl Default for UiSettings {
             clipboard_cmd: None,
             osc52_limit: 65536,
             theme: "terminal".into(),
+            theme_contrast: crate::theme::Contrast::default(),
             animations: true,
             hover_hints: true,
             curl_button: false,
@@ -405,6 +409,24 @@ impl UiSettings {
             Some(v) => match v.as_str() {
                 Some(raw) => settings.theme = raw.to_string(),
                 None => wrong_type("theme", "a string"),
+            },
+        }
+        match value.get("theme_contrast") {
+            None => {}
+            Some(v) => match v
+                .as_integer()
+                .and_then(|n| i8::try_from(n).ok())
+                .and_then(crate::theme::Contrast::new)
+            {
+                Some(c) => settings.theme_contrast = c,
+                None => wrong_type(
+                    "theme_contrast",
+                    &format!(
+                        "an integer from {} to {}",
+                        crate::theme::Contrast::MIN,
+                        crate::theme::Contrast::MAX
+                    ),
+                ),
             },
         }
         match value.get("animations") {
@@ -562,6 +584,10 @@ pub fn config_seed() -> String {
 # The theme's name: a built-in, or the file stem of a themes/*.toml.
 # theme = {:?}
 
+# The theme's contrast, from {} (softer) to {} (crisper); 0 is the theme as
+# made. Also set from the theme picker's Contrast row.
+# theme_contrast = {}
+
 # Whether eased transitions play at all (tab underline, hover, modals).
 # animations = {}
 
@@ -600,6 +626,9 @@ pub fn config_seed() -> String {
 # osc52_limit = {}
 ",
         d.theme,
+        crate::theme::Contrast::MIN,
+        crate::theme::Contrast::MAX,
+        d.theme_contrast.level(),
         d.animations,
         d.hover_hints,
         d.curl_button,
@@ -921,9 +950,25 @@ impl Config {
         self.edit(CONFIG_TOML, |doc| registry.write_into(doc))
     }
 
-    /// Persists the top-level `theme` key of `config.toml`.
-    pub fn save_ui_theme(&mut self, name: &str) -> Result<(), String> {
-        self.edit(CONFIG_TOML, |doc| doc["theme"] = toml_edit::value(name))
+    /// Persists the top-level `theme` and `theme_contrast` keys of
+    /// `config.toml` in one edit, so the two are never half-saved. Level 0
+    /// removes `theme_contrast` rather than writing it, so picking a theme
+    /// adds no line to a config that never chose a level (spec 2026-10-16
+    /// C10).
+    pub fn save_ui_theme(
+        &mut self,
+        name: &str,
+        contrast: crate::theme::Contrast,
+    ) -> Result<(), String> {
+        self.edit(CONFIG_TOML, |doc| {
+            doc["theme"] = toml_edit::value(name);
+            match contrast.level() {
+                0 => {
+                    doc.remove("theme_contrast");
+                }
+                n => doc["theme_contrast"] = toml_edit::value(i64::from(n)),
+            }
+        })
     }
 
     /// Writes `text` to `name` verbatim and atomically, replacing whatever
@@ -992,6 +1037,7 @@ impl Config {
         self.edit(CONFIG_TOML, |doc| {
             for key in [
                 "theme",
+                "theme_contrast",
                 "animations",
                 "hover_hints",
                 "curl_button",
@@ -1255,7 +1301,7 @@ mod tests {
         let mut r = r;
         r.register(PathBuf::from("/tmp/b"));
         assert!(cfg.save_registry(&r).is_err(), "the registry save refuses");
-        assert!(cfg.save_ui_theme("light").is_err());
+        assert!(cfg.save_ui_theme("light", crate::theme::Contrast::default()).is_err());
         assert!(cfg.save_ui_flag("ai_confirmed", true).is_err());
         assert_eq!(
             std::fs::read_to_string(&p).unwrap(),
@@ -1283,7 +1329,7 @@ mod tests {
     fn config_none_saves_nothing_and_succeeds() {
         let mut cfg = Config::none();
         assert!(cfg.save_registry(&ProjectsRegistry::default()).is_ok());
-        assert!(cfg.save_ui_theme("dusk").is_ok());
+        assert!(cfg.save_ui_theme("dusk", crate::theme::Contrast::default()).is_ok());
         assert!(cfg.save_ui_flag("ai_confirmed", true).is_ok());
         assert!(cfg.save_usage(&crate::usage::UsageStore::default()).is_ok());
         let (themes, warnings) = cfg.reload_themes();
@@ -1469,22 +1515,59 @@ mod tests {
         let p = dir.path().join("config.toml");
         std::fs::write(&p, "clipboard_cmd = \"xclip\"\n\n[projects]\nknown = []\n").unwrap();
         let mut cfg = Config { disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())) };
-        cfg.save_ui_theme("catppuccin-mocha").unwrap();
+        let zero = crate::theme::Contrast::default();
+        cfg.save_ui_theme("catppuccin-mocha", zero).unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(text.contains("theme = \"catppuccin-mocha\""), "{text}");
         assert!(text.contains("clipboard_cmd = \"xclip\""), "{text}");
         assert!(text.contains("[projects]"), "{text}");
         assert_eq!(UiSettings::parse(&text).0.theme, "catppuccin-mocha");
-        cfg.save_ui_theme("dark").unwrap();
+        cfg.save_ui_theme("dark", zero).unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         assert_eq!(UiSettings::parse(&text).0.theme, "dark", "overwrites an existing key");
+    }
+
+    /// Spec 2026-10-16 C11: an integer from -3 to 3; anything else warns
+    /// and keeps the default 0.
+    #[test]
+    fn theme_contrast_parses_in_range_and_warns_otherwise() {
+        let (s, warnings) = UiSettings::parse("theme_contrast = -2\n");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(s.theme_contrast.level(), -2);
+        for bad in ["9", "-4", "\"high\"", "1.5"] {
+            let (s, warnings) = UiSettings::parse(&format!("theme_contrast = {bad}\n"));
+            assert_eq!(s.theme_contrast, crate::theme::Contrast::default(), "{bad}");
+            assert_eq!(warnings.len(), 1, "{bad}: {warnings:?}");
+            assert!(warnings[0].contains("theme_contrast"), "{warnings:?}");
+            assert!(warnings[0].contains("-3 to 3"), "{warnings:?}");
+        }
+    }
+
+    /// Spec C10: theme and level land in one edit, and level 0 removes
+    /// the key rather than writing it.
+    #[test]
+    fn save_ui_theme_writes_the_contrast_and_removes_it_at_zero() {
+        use crate::theme::Contrast;
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, "animations = false\n").unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+        cfg.save_ui_theme("dark", Contrast::new(2).unwrap()).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        let (s, _) = UiSettings::parse(&text);
+        assert_eq!((s.theme.as_str(), s.theme_contrast.level()), ("dark", 2), "{text}");
+        cfg.save_ui_theme("light", Contrast::default()).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(!text.contains("theme_contrast"), "{text}");
+        assert!(text.contains("animations = false"), "{text}");
+        assert_eq!(UiSettings::parse(&text).0.theme, "light");
     }
 
     #[test]
     fn save_ui_theme_creates_a_missing_file() {
         let dir = tempdir().unwrap();
         let mut cfg = Config { disk: Some(postui_core::disk::Disk::new(dir.path().join("sub"))) };
-        cfg.save_ui_theme("light").unwrap();
+        cfg.save_ui_theme("light", crate::theme::Contrast::default()).unwrap();
         let text = std::fs::read_to_string(dir.path().join("sub").join("config.toml")).unwrap();
         assert_eq!(UiSettings::parse(&text).0.theme, "light");
     }
@@ -1497,7 +1580,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.toml"),
-            "animations = false\nai_confirmed = true\n\n[projects]\nknown = [\"/tmp/a\"]\nlast = \"/tmp/a\"\n",
+            "animations = false\nai_confirmed = true\ntheme_contrast = 2\n\n[projects]\nknown = [\"/tmp/a\"]\nlast = \"/tmp/a\"\n",
         )
         .unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
@@ -1580,6 +1663,7 @@ mod tests {
             "clipboard_cmd",
             "osc52_limit",
             "theme",
+            "theme_contrast",
             "indent",
             "indent_width",
         ] {
