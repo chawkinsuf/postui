@@ -35,6 +35,9 @@ highlighting the shortcut instead of the action.
 - **Brightness setting: deferred.** Theme selection/editing provides the
   same lever. If muted text still reads too dark on macOS after the
   inversion and a theme the user likes, revisit contrast (or a knob) then.
+  *Revisited 2026-10-16 (task #17, `you`): a global contrast level (−3..+3)
+  now lives in the theme picker; see
+  `2026-10-16-theme-contrast-design.md`.*
 
 ## Architecture
 
@@ -199,6 +202,6 @@ Follows existing patterns (TestBackend paint tests, pure unit tests):
 
 - In-app color editing UI.
 - Brightness/contrast knob (revisit after this ships if macOS muted text
-  still reads too dark).
+  still reads too dark). *Done 2026-10-16, task #17.*
 - Watching theme files for changes (rescan happens on picker open only).
 - Per-project themes.
