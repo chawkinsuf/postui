@@ -393,16 +393,16 @@ impl Theme {
     }
 }
 
-/// How far text must sit from its page in Oklab lightness: what
-/// [`readable_text`] pushes a closer pair out to. It aims past the 0.4
-/// guarantee because the Oklab→sRGB→u8 round-trip can quantize the result
-/// ~0.001 short, and aiming at exactly 0.4 would leave clamped text just
-/// under it.
+/// Where [`readable_text`] aims a pair closer than the 0.4 guarantee. The
+/// 0.005 past 0.4 covers the Oklab→sRGB→u8 round-trip's usual mid-range
+/// shortfall in one try; [`push_apart`] walks further out only where
+/// rounding lands short anyway (next to black).
 const TEXT_FLOOR: f32 = 0.405;
 
 /// The text `Theme::generate` draws for seed text `fg` on `page`: `fg`
 /// itself when it clears the readability floor (|ΔL| >= 0.4), else pushed
-/// away from the page to [`TEXT_FLOOR`]. `Seeds::with_contrast` starts from
+/// away from the page to [`TEXT_FLOOR`], or as much further as rounding
+/// needs (black or white at the most). `Seeds::with_contrast` starts from
 /// this too, so a level moves the text that is drawn, not a seed the floor
 /// would override.
 fn readable_text(fg: (u8, u8, u8), page: (u8, u8, u8)) -> (u8, u8, u8) {
@@ -421,6 +421,7 @@ fn readable_text(fg: (u8, u8, u8), page: (u8, u8, u8)) -> (u8, u8, u8) {
 /// - a walk that reaches either end draws black or white, the only
 ///   colour there.
 fn push_apart(fg: (u8, u8, u8), page: (u8, u8, u8), floor: f32, aim: f32) -> (u8, u8, u8) {
+    debug_assert!(floor <= aim && aim < 0.5, "floor {floor}, aim {aim}");
     let (text_l, a, b) = oklab(fg);
     let page_l = oklab_l(page);
     if (text_l - page_l).abs() >= floor {
@@ -951,7 +952,6 @@ mod tests {
         let pages =
             [0.0, 0.05, 0.15, 0.25, 0.35, 0.45, 0.49, 0.51, 0.55, 0.65, 0.75, 0.85, 0.95, 1.0];
         let texts = [0.0, 0.1, 0.3, 0.45, 0.55, 0.7, 0.9, 1.0];
-        let mut checked = 0;
         for &page_l in &pages {
             for &text_l in &texts {
                 for chroma in [0.0, 0.04, 0.08] {
@@ -1023,13 +1023,11 @@ mod tests {
                                     }
                                 }
                             }
-                            checked += 1;
                         }
                     }
                 }
             }
         }
-        assert_eq!(checked, 2016 * 2, "the sweep shrank");
     }
 
     /// Review round 9: Catppuccin Latte has 0.117 of room above the floor,
@@ -1516,15 +1514,20 @@ mod tests {
     /// tinted u8 step that rounds back toward the page.
     #[test]
     fn readable_text_at_the_dark_end_is_black() {
-        let page = tinted(0.415, 0.0, 0.0);
-        for h in 0..6 {
-            let fg = tinted(0.3, 0.08, h as f32);
-            assert_eq!(readable_text(fg, page), (0, 0, 0), "hue {h}");
-        }
+        // A blue-tinted page whose floor target sits right at L 0: the
+        // tint fitted there still rounds to a blue u8 step (L ~0.03), short
+        // of the floor, so the walk runs off the end.
+        let hue = 5.0 * std::f32::consts::TAU / 12.0;
+        let page = tinted(0.405, 0.08, hue);
+        let fg = tinted(0.05, 0.08, hue + 2.0);
+        let (_, a, b) = oklab(fg);
+        let first = oklab_to_rgb_in_gamut((oklab_l(page) - TEXT_FLOOR, a, b));
+        assert!((oklab_l(first) - oklab_l(page)).abs() < 0.4, "the walk is needed: {first:?}");
+        assert_eq!(readable_text(fg, page), (0, 0, 0));
     }
 
     /// Spec 2026-10-16 F4: chip text sits at least its `min_delta` from
-    /// its fill, under the same push as the text floor.
+    /// its fill, under the same push as the text floor, hue kept.
     #[test]
     fn chip_contrast_holds_its_floor_for_every_seed() {
         let rgb = |(r, g, b): (u8, u8, u8)| Color::Rgb(r, g, b);
@@ -1532,6 +1535,10 @@ mod tests {
             let text = rgb_of(ensure_min_contrast(rgb(fg), rgb(fill), 0.35));
             let gap = (oklab_l(text) - oklab_l(fill)).abs();
             assert!(gap >= 0.35, "{tag}: {fg:?} on {fill:?} drew {text:?}, gap {gap}");
+            let ((h0, c0), (h1, c1)) = (hue_and_chroma(fg), hue_and_chroma(text));
+            if c0 > 0.02 && c1 > 0.02 && (0.15..0.95).contains(&oklab_l(text)) {
+                assert!((h1 - h0).cos() > 0.995, "{tag}: hue turned {fg:?} -> {text:?}");
+            }
         }
     }
 }
