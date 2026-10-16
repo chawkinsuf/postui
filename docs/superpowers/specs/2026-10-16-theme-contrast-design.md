@@ -31,7 +31,7 @@ Today the only lever is writing a custom `themes/*.toml`.
 | C2 | The background moves for built-in and custom themes. The Terminal colors theme keeps the terminal's own background (no seam at the window padding); its text and colours still move. | `you` |
 | C3 | One global level, applied to whichever theme is active; switching themes keeps it. | `you` |
 | C4 | The theme picker has a Contrast row under the list: a `−` button, a level meter, a `+` button, and the level as text. | `you` (preview picked) |
-| C5 | Keys: `-` lowers, `+` raises, in both profiles. Alt+arrows are not used. | `you` ("plus and minus are better than alt arrows") |
+| C5 | Keys: `-` lowers, `+` raises, in both profiles. Alt+arrows are not used. No modifier but Shift: a chord such as cmd+- (a terminal's font zoom, deliverable as SUPER) is not a step (review round 6). | `you` ("plus and minus are better than alt arrows") |
 | C6 | `=` also raises (the `+` key unshifted), and the keypad's `-`/`+` work (they arrive as the same characters). | `mine` |
 | C7 | The level runs from −3 to +3, default 0. Level 0 is today's theme exactly, bit for bit. | `mine` |
 | C8 | The level previews live, like the highlighted theme. Enter (or a click outside, today's accept) keeps theme and level; Esc reverts both to what they were when the picker opened. | `mine`, following the picker's existing preview rule |
@@ -61,17 +61,24 @@ impl Contrast {
 `Seeds::with_contrast(self, c: Contrast, keep_bg: bool) -> Seeds` applies
 level `n` (`n = c.level()`) in Oklab:
 
-- `bg` (unless `keep_bg`) moves 0.025 Oklab lightness per step toward its
-  own end (black for a dark page, white for a light one) at `n > 0`, and
-  back at `n < 0`, clamped to 0..1. It never crosses 0.5 (C14), and a page
-  authored within 0.01 of the middle is held where it is rather than
-  pushed away from it.
-- `fg` makes the page–text gap's change a whole 0.055 per step: it moves
-  whatever the page did not, out toward its own end or back, clamped to
-  0..1, and it never crosses the page. *(Review round 5:)* softening stops
-  0.02 short of the page, or at the authored gap if that is already
-  closer, because an exact meeting point could round to sRGB a hair past
-  it. A sweep over hues and near-middle pairs pins it.
+- *(Reshaped in review round 6.)* A level changes the page–text gap by
+  0.055 per step, **measured from the text `generate` draws**. A seed under
+  the readability floor is drawn at the floor (0.405), so that's where a
+  level starts. One `readable_text` function is `generate`'s clamp, and
+  `with_contrast` calls it too.
+  - Raising widens the gap by the whole step.
+  - Lowering narrows it by the step, or only down to the floor. A theme
+    already on the floor (Solarized Dark) doesn't soften at all. Before,
+    the page lifted and the floor dragged the text up after it, so "softer"
+    drew brighter text.
+- `bg` (unless `keep_bg`) takes up to 0.025 per step of that change. It
+  moves away from the text to widen and toward it to narrow, clamped to
+  0..1. It never crosses 0.5 (C14), and a page authored within 0.01 of the
+  middle is held where it is.
+- `fg` moves the rest, measured on the page as it rounded, clamped to 0..1.
+  The floor keeps the pair at least 0.4 apart, so the round 3/5
+  never-cross guard and its 0.02 margin were removed: the floor subsumes
+  them.
 - *(Review round 4:)* every adjusted colour keeps its hue. A tinted page or
   text pushed toward its end, such as Gruvbox Dark's cream toward white,
   would leave sRGB with its whole tint, and a per-channel clip there turns

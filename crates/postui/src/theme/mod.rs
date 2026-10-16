@@ -82,39 +82,40 @@ impl Seeds {
             oklab_to_rgb_in_gamut((l.clamp(0.0, 1.0), a, b))
         };
 
-        let bg_l = oklab_l(self.bg);
-        let dark = bg_l < 0.5;
+        // A step changes the page–text gap by one amount on every theme
+        // (you, 2026-10-16), measured from the text `generate` draws: a
+        // seed under the readability floor is drawn at the floor, so that
+        // is where a level starts (review round 6). Softening stops at the
+        // floor: going past it, the floor would drag the text along
+        // behind the page and draw it brighter, not softer.
+        let fg0 = readable_text(self.fg, self.bg);
+        let (fg_l, bg_l) = (oklab_l(fg0), oklab_l(self.bg));
+        let side = if fg_l >= bg_l { 1.0 } else { -1.0 };
+        let change = if n > 0.0 {
+            CONTRAST_GAP_STEP * n
+        } else {
+            -(CONTRAST_GAP_STEP * -n).min(((fg_l - bg_l).abs() - TEXT_FLOOR).max(0.0))
+        };
+
+        // The page takes its share of that change first, moving away from
+        // the text to widen and toward it to narrow. It never crosses the
+        // middle, so the theme keeps its polarity; and a page authored
+        // close to the middle is held, never pushed the other way.
         let bg = if keep_bg {
             self.bg
         } else {
-            let out = if dark { -1.0 } else { 1.0 };
-            let l = bg_l + out * CONTRAST_BG_STEP * n;
-            // Never across the middle, so the theme keeps its polarity;
-            // and a page authored close to it is held where it is, never
-            // pushed the other way.
+            let toward = if n > 0.0 { -side } else { side };
+            let l = bg_l + toward * CONTRAST_BG_STEP.min(change.abs() / n.abs()) * n.abs();
+            let dark = bg_l < 0.5;
             set_l(self.bg, if dark { l.min(bg_l.max(0.49)) } else { l.max(bg_l.min(0.51)) })
         };
 
-        // The text makes the gap's step whole: whatever the page moved
-        // away from it counts, and the text moves the rest. A near-white
-        // page has little room left, so on a light theme the text does
-        // most of the work, and every theme's gap widens alike (you,
-        // 2026-10-16). Then it never crosses the page: crossed,
-        // `generate`'s clamp would flip it to the page's other side.
-        let fg_l = oklab_l(self.fg);
-        let new_bg_l = oklab_l(bg);
-        let side = if fg_l >= bg_l { 1.0 } else { -1.0 };
-        let page_share = (bg_l - new_bg_l) * side;
-        let l = fg_l + side * (CONTRAST_GAP_STEP * n - page_share);
-        // Stop short of the page by a margin rounding to sRGB cannot cross
-        // (review round 5: an exact meeting point rounded a hair past),
-        // or by the authored gap when that is already closer, so a pair
-        // never moves apart on a step meant to soften it.
-        let margin = CONTRAST_TEXT_MARGIN.min((fg_l - bg_l).abs());
-        let fg = set_l(
-            self.fg,
-            if side > 0.0 { l.max(new_bg_l + margin) } else { l.min(new_bg_l - margin) },
-        );
+        // The text moves the rest, measured on the page as it rounded: a
+        // near-white page has little room left, so on a light theme the
+        // text does most of the work. The floor keeps the pair well apart,
+        // so it never comes near crossing.
+        let page_share = (bg_l - oklab_l(bg)) * side;
+        let fg = set_l(fg0, fg_l + side * (change - page_share));
 
         // A raise goes only as far as the gamut allows (Gruvbox's warning
         // yellow already sits on its edge): see `oklab_to_rgb_in_gamut`.
@@ -141,11 +142,6 @@ const CONTRAST_BG_STEP: f32 = 0.025;
 /// between the page and its text, on every theme: the page moves its
 /// [`CONTRAST_BG_STEP`] of it where it has room, the text the rest.
 const CONTRAST_GAP_STEP: f32 = 0.055;
-
-/// How close softened text may come to its page, in Oklab lightness: wider
-/// than the drift rounding back to sRGB can add, so `Theme::generate` never
-/// reads the text as on the page's other side.
-const CONTRAST_TEXT_MARGIN: f32 = 0.02;
 
 /// How much one contrast step scales the four colours' Oklab chroma.
 const CONTRAST_CHROMA_STEP: f32 = 0.1;
@@ -252,24 +248,7 @@ impl Theme {
         // without fighting the text drawn on top of it.
         let selection = blend(bg, accent, 0.35);
 
-        let mut text = fg;
-        // Contrast clamp: push text away from bg until |ΔL| >= 0.4. The
-        // target overshoots to 0.405 because the Oklab→sRGB→u8 round-trip
-        // can quantize the result ~0.001 short — aiming at exactly 0.4
-        // would leave clamped text just under the guarantee.
-        let page_l = oklab_l(page);
-        if (oklab_l(text) - page_l).abs() < 0.4 {
-            let direction = if oklab_l(text) >= page_l { 1.0 } else { -1.0 };
-            let mut target_l = page_l + direction * 0.405;
-            // A very dark (or very light) page leaves no room on the
-            // text's natural side — a darker-than-bg text on a near-black
-            // page would clamp at black and never reach the floor. Flip to
-            // the side that has the room (0.405 < 0.5, so one always does).
-            if !(0.0..=1.0).contains(&target_l) {
-                target_l = page_l - direction * 0.405;
-            }
-            text = lift(text, target_l.clamp(0.0, 1.0) - oklab_l(text));
-        }
+        let text = readable_text(fg, page);
 
         // Muted text carries real content (ghost-row labels, inactive tab
         // names, response status/placeholder copy), so it has to clear a
@@ -400,6 +379,35 @@ impl Theme {
             error: f(self.error),
         }
     }
+}
+
+/// How far text must sit from its page in Oklab lightness: what
+/// [`readable_text`] pushes a closer pair out to. It aims past the 0.4
+/// guarantee because the Oklab→sRGB→u8 round-trip can quantize the result
+/// ~0.001 short, and aiming at exactly 0.4 would leave clamped text just
+/// under it.
+const TEXT_FLOOR: f32 = 0.405;
+
+/// The text `Theme::generate` draws for seed text `fg` on `page`: `fg`
+/// itself when it clears the readability floor (|ΔL| >= 0.4), else pushed
+/// away from the page to [`TEXT_FLOOR`]. `Seeds::with_contrast` starts from
+/// this too, so a level moves the text that is drawn, not a seed the floor
+/// would override.
+fn readable_text(fg: (u8, u8, u8), page: (u8, u8, u8)) -> (u8, u8, u8) {
+    let (text_l, page_l) = (oklab_l(fg), oklab_l(page));
+    if (text_l - page_l).abs() >= 0.4 {
+        return fg;
+    }
+    let direction = if text_l >= page_l { 1.0 } else { -1.0 };
+    let mut target_l = page_l + direction * TEXT_FLOOR;
+    // A very dark (or very light) page leaves no room on the text's
+    // natural side — a darker-than-bg text on a near-black page would
+    // clamp at black and never reach the floor. Flip to the side that has
+    // the room (0.405 < 0.5, so one always does).
+    if !(0.0..=1.0).contains(&target_l) {
+        target_l = page_l - direction * TEXT_FLOOR;
+    }
+    lift(fg, target_l.clamp(0.0, 1.0) - text_l)
 }
 
 /// Builds a seed palette from a terminal's OSC query answer: the queried
@@ -799,10 +807,11 @@ mod tests {
         }
     }
 
-    /// Spec C1: each step up deepens the page, pushes text further from
-    /// it and saturates the colours; each step down does the reverse.
+    /// Spec C1: each step up deepens the page and saturates the colours;
+    /// each step down does the reverse. (The text gap's own steps are
+    /// `every_step_moves_the_drawn_gap_equally_on_every_theme`'s.)
     #[test]
-    fn contrast_steps_deepen_the_page_widen_the_text_gap_and_saturate() {
+    fn contrast_steps_deepen_the_page_and_saturate() {
         for (name, s) in builtin_seeds() {
             let dark = oklab_l(s.bg) < 0.5;
             let at = |n: i8| s.with_contrast(level(n), false);
@@ -810,15 +819,16 @@ mod tests {
                 let (lo, hi) = (at(n), at(n + 1));
                 let depth = |x: &Seeds| if dark { -oklab_l(x.bg) } else { oklab_l(x.bg) };
                 // Strictly deeper while a whole step of room is left; a
-                // page that reaches its end (Gruvbox Light's white) stays.
+                // page that reaches its end (Gruvbox Light's white) stays,
+                // and so does one softening has stopped at the readability
+                // floor (Solarized Dark below 0).
                 let room = if dark { oklab_l(lo.bg) } else { 1.0 - oklab_l(lo.bg) };
-                if room > CONTRAST_BG_STEP {
+                let softening_stopped = n < 0 && drawn_gap(&lo) <= TEXT_FLOOR + 0.01;
+                if room > CONTRAST_BG_STEP && !softening_stopped {
                     assert!(depth(&hi) > depth(&lo), "{name} {n}: page did not deepen");
                 } else {
                     assert!(depth(&hi) >= depth(&lo) - 0.002, "{name} {n}: page went back");
                 }
-                let gap = |x: &Seeds| (oklab_l(x.fg) - oklab_l(x.bg)).abs();
-                assert!(gap(&hi) > gap(&lo), "{name} {n}: text gap did not widen");
                 for (a, b) in [
                     (lo.accent, hi.accent),
                     (lo.success, hi.success),
@@ -848,28 +858,54 @@ mod tests {
         }
     }
 
-    /// Spec C1 as amended (you, 2026-10-16): every step widens the
-    /// page–text gap by the same amount on every built-in, light or dark.
-    /// The text makes up what a near-white page has no room for.
+    /// The page–text gap as drawn: after `generate`'s readability clamp.
+    fn drawn_gap(s: &Seeds) -> f32 {
+        let t = Theme::generate(s);
+        (oklab_l(rgb_of(t.text)) - oklab_l(rgb_of(t.page))).abs()
+    }
+
+    /// Spec C1 as amended (you, 2026-10-16), measured on the drawn theme
+    /// (review round 6): every step up widens the gap by the same amount
+    /// on every built-in, light or dark, the text making up what a
+    /// near-white page has no room for; every step down narrows it by the
+    /// same amount until the readability floor, where softening stops.
     #[test]
-    fn every_step_widens_the_text_gap_equally_on_every_theme() {
-        let gap = |x: &Seeds| (oklab_l(x.fg) - oklab_l(x.bg)).abs();
+    fn every_step_moves_the_drawn_gap_equally_on_every_theme() {
         for (name, s) in builtin_seeds() {
             for n in Contrast::MIN..Contrast::MAX {
-                let (lo, hi) =
-                    (s.with_contrast(level(n), false), s.with_contrast(level(n + 1), false));
-                let step = gap(&hi) - gap(&lo);
-                assert!(
-                    (step - CONTRAST_GAP_STEP).abs() < 0.01,
-                    "{name} {n}->{}: the gap moved {step:.3}",
-                    n + 1
-                );
+                let lo = drawn_gap(&s.with_contrast(level(n), false));
+                let hi = drawn_gap(&s.with_contrast(level(n + 1), false));
+                let step = hi - lo;
+                if n >= 0 || lo > TEXT_FLOOR + 0.01 {
+                    assert!(
+                        (step - CONTRAST_GAP_STEP).abs() < 0.012,
+                        "{name} {n}->{}: the gap moved {step:.3}",
+                        n + 1
+                    );
+                } else {
+                    assert!(step >= -0.005, "{name} {n}->{}: softer was wider", n + 1);
+                }
             }
         }
         // A theme that keeps its page (Terminal) widens by its text alone.
         let s = Seeds::dark();
-        let t = s.with_contrast(level(1), true);
-        assert!((gap(&t) - gap(&s) - CONTRAST_GAP_STEP).abs() < 0.01);
+        let step = drawn_gap(&s.with_contrast(level(1), true)) - drawn_gap(&s);
+        assert!((step - CONTRAST_GAP_STEP).abs() < 0.012, "{step:.3}");
+    }
+
+    /// Review round 6: on a theme whose text already sits on the
+    /// readability floor (Solarized Dark), softening moves nothing. It
+    /// used to lift the page, and the floor dragged the text up with it:
+    /// "softer" drew brighter text.
+    #[test]
+    fn softening_a_theme_on_the_floor_changes_neither_page_nor_text() {
+        let (_, s) =
+            builtin_seeds().into_iter().find(|(n, _)| *n == "solarized-dark").expect("built-in");
+        let base = Theme::generate(&s);
+        for n in Contrast::MIN..0 {
+            let t = Theme::generate(&s.with_contrast(level(n), false));
+            assert_eq!((t.page, t.text), (base.page, base.text), "{n}");
+        }
     }
 
     /// Review round 4: a step changes lightness, not hue. Moving a tinted

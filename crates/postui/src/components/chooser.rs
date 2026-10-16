@@ -377,9 +377,11 @@ impl ChooserState {
             // The stepper's keys, on a chooser with no box to type them
             // into. A shifted `+` is how most layouts deliver it; `=` is
             // the same key unshifted.
+            // No other modifier: a chord like cmd+- (a terminal's font zoom,
+            // which the kitty protocol can deliver as SUPER) is not a step.
             KeyCode::Char(c @ ('-' | '+' | '='))
                 if !self.has_filter()
-                    && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    && key.modifiers.difference(KeyModifiers::SHIFT).is_empty() =>
             {
                 return self.step_action(c != '-').map(keep_open);
             }
@@ -1048,6 +1050,19 @@ mod tests {
         // A shifted `+` (how most layouts deliver it) still steps.
         let shifted = KeyEvent::new(KeyCode::Char('+'), KeyModifiers::SHIFT);
         assert!(c.handle_key(shifted).is_some());
+        // Review round 6: any other modifier is a chord, not a step.
+        for mods in [
+            KeyModifiers::SUPER,
+            KeyModifiers::META,
+            KeyModifiers::HYPER,
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+        ] {
+            for ch in ['-', '+', '='] {
+                let chord = KeyEvent::new(KeyCode::Char(ch), mods);
+                assert!(c.handle_key(chord).is_none(), "{mods:?}+{ch} stepped");
+            }
+        }
         c.set_stepper_level(3);
         assert_eq!(fired(&mut c, '+'), Some(vec![Action::StepThemeContrast(1)]), "the app gates");
         // No stepper: the keys do nothing on a filterless chooser...
