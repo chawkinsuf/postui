@@ -114,7 +114,9 @@ impl Seeds {
             let l = if bg_l < 0.5 { l.min(bg_l.max(0.49)) } else { l.max(bg_l.min(0.51)) };
             l.clamp(0.0, 1.0)
         };
-        let bg = if keep_bg { self.bg } else { set_l(self.bg, new_bg_l) };
+        // A page that doesn't move (kept, or held at the middle) stays its
+        // exact seed, not an Oklab round trip of it.
+        let bg = if new_bg_l == bg_l { self.bg } else { set_l(self.bg, new_bg_l) };
 
         // The text moves the rest: a near-white page has little room left,
         // so on a light theme the text does most of the work. Measured on
@@ -1145,8 +1147,7 @@ mod tests {
         assert!((0.48..0.5).contains(&oklab_l(near_mid.bg)), "fixture");
         for n in [-1, -3] {
             let t = near_mid.with_contrast(level(n), false);
-            assert!(oklab_l(t.bg) >= oklab_l(near_mid.bg) - 0.002, "{n}: page darkened");
-            assert!(oklab_l(t.bg) < 0.5, "{n}: crossed the middle");
+            assert_eq!(t.bg, near_mid.bg, "{n}: a held page moved");
         }
     }
 

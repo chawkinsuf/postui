@@ -77,15 +77,8 @@ impl ChooserStepper {
         let meter = minus + 4;
         let plus = meter + cells as u16 + 1;
         let level = plus + 5;
-        let widest = [self.min, self.max].map(|n| level_text(n).chars().count()).into_iter().max();
-        StepperLayout {
-            minus,
-            meter,
-            cells,
-            plus,
-            level,
-            width: level + widest.unwrap_or(1) as u16,
-        }
+        let widest = level_text(self.min).len().max(level_text(self.max).len());
+        StepperLayout { minus, meter, cells, plus, level, width: level + widest as u16 }
     }
 }
 

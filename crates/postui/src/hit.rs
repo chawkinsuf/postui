@@ -160,7 +160,7 @@ pub enum Hit {
     /// closing the modal.
     ChooserToggle,
     /// The chooser's optional stepper row (the theme picker's Contrast,
-    /// spec 2026-10-16): its `−` and `+` buttons, which dispatch the
+    /// spec 2026-10-16): its ASCII `-` and `+` buttons, which dispatch the
     /// stepper's down/up action without closing the modal. Not registered
     /// on a button whose end the level is at.
     ChooserStepDown,

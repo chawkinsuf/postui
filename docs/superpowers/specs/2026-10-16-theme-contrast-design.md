@@ -30,7 +30,7 @@ Today the only lever is writing a custom `themes/*.toml`.
 | C1 | One contrast step moves the theme's text away from its background, deepens the background, and saturates the four colours (accent, success, warning, error). A negative step does the reverse. The page–text gap widens by the same amount on every theme; where the page has no room (near white), the text makes up the difference. Colours change in saturation only. | `you` (text vs background + washed-out look; equal on light themes, colours not shifted, 2026-10-16) |
 | C2 | The background moves for built-in and custom themes. The Terminal colors theme keeps the terminal's own background (no seam at the window padding); its text and colours still move. | `you` |
 | C3 | One global level, applied to whichever theme is active; switching themes keeps it. | `you` |
-| C4 | The theme picker has a Contrast row under the list: a `−` button, a level meter, a `+` button, and the level as text. | `you` (preview picked) |
+| C4 | The theme picker has a Contrast row under the list: a `-` button, a level meter, a `+` button, and the level as text. The minus and the level's sign are ASCII, not U+2212, which takes two cells on a CJK-width terminal (review round 7). | `you` (preview picked) |
 | C5 | Keys: `-` lowers, `+` raises, in both profiles. Alt+arrows are not used. No modifier but Shift: a chord such as cmd+- (a terminal's font zoom, deliverable as SUPER) is not a step (review round 6). | `you` ("plus and minus are better than alt arrows") |
 | C6 | `=` also raises (the `+` key unshifted), and the keypad's `-`/`+` work (they arrive as the same characters). | `mine` |
 | C7 | The level runs from −3 to +3, default 0. Level 0 is today's theme exactly, bit for bit. | `mine` |
@@ -246,8 +246,8 @@ pub struct ChooserStepper {
   `action(-1)`, and `+`/`=` fire `action(+1)`, without closing, like the
   toggle (C5, C6).
 - `draw`: when a stepper is attached, the panel grows one row. The row is
-  `Contrast   [−]  ▁▂▃▄▅▆▇  [+]   +1`. The meter has one cell per level,
-  lit in accent up to the current level and quiet beyond it. The `−`/`+`
+  `Contrast   [-]  ▁▂▃▄▅▆▇  [+]   +1`. The meter has one cell per level,
+  lit in accent up to the current level and quiet beyond it. The `-`/`+`
   buttons register `Hit::ChooserStepDown` / `Hit::ChooserStepUp`, and a
   button at its end paints disabled (C9).
 - Footer: the chooser's chips add `-/+ contrast` while a stepper is
