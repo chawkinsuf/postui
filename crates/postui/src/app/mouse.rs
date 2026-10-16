@@ -1212,6 +1212,8 @@ impl App {
                 | Hit::DropdownRow(_)
                 | Hit::ChooserRow(_)
                 | Hit::ChooserToggle
+                | Hit::ChooserStepDown
+                | Hit::ChooserStepUp
                 | Hit::PickerRow(_)
                 | Hit::PickerPrimary
                 | Hit::PickerHidden

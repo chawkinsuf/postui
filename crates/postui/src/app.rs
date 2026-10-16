@@ -1146,9 +1146,14 @@ impl App {
         if self.theme_preview.is_none() {
             return;
         }
-        let Some(Modal::Chooser(c)) = self.modals.top() else {
+        // The one place the picker learns the app's state: the Contrast
+        // row shows the live level from here, as the toggle shows its
+        // label, so nothing that moves the level has to update the row.
+        let level = self.theme_contrast.level();
+        let Some(Modal::Chooser(c)) = self.modals.top_mut() else {
             return;
         };
+        c.set_stepper_level(level);
         // Nothing highlighted (an empty set): keep the last previewed theme
         // (and the toggle label — the highlight hasn't moved anywhere).
         let Some(id) = c.selected_id().map(str::to_string) else {
@@ -4468,17 +4473,15 @@ impl App {
                 true
             }
             Action::StepThemeContrast(delta) => {
-                // Inert past either end (spec C9): the button paints
-                // disabled there too.
+                // Inert past either end (spec C9): the one gate, which the
+                // row's disabled button only shows.
                 let Some(level) = self.theme_contrast.step(delta) else {
                     return false;
                 };
                 self.theme_contrast = level;
                 let name = self.theme_name.clone();
                 self.set_theme_by_name(&name);
-                if let Some(Modal::Chooser(state)) = self.modals.top_mut() {
-                    state.set_stepper_level(level.level());
-                }
+                self.sync_theme_preview();
                 true
             }
             Action::ApplyTheme(name) => {
@@ -10945,10 +10948,10 @@ impl App {
             // `res.actions`) keeps what is showing — the live contrast
             // level included, which ApplyTheme then saves.
             if matches!(popped, Some(Modal::Chooser(_))) {
-                if res.actions.is_empty() {
-                    self.revert_theme_preview();
-                } else {
+                if res.actions.iter().any(|a| matches!(a, Action::ApplyTheme(_))) {
                     self.theme_preview = None;
+                } else {
+                    self.revert_theme_preview();
                 }
             }
             // A field the modal parked has the caret again: its session goes

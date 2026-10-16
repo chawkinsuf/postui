@@ -105,6 +105,10 @@ The contract changes:
 
 `resolve` applies `with_contrast` to `seeds_of(entry)`, with
 `keep_bg = matches!(entry.source, ThemeSource::Terminal)` (C2).
+*Refined 2026-10-16 (review round 2, `mine`):* `keep_bg` also requires that
+the terminal reported a background (`queried.bg.is_some()`). A silent
+terminal gets postui's fallback page, which is not the terminal's, so it
+has no seam to protect and moves like any theme's.
 `seeds_of` and `entry_is_dark` stay on the unadjusted seeds (C14).
 
 ### 3.3 Config (`config.rs`)
@@ -129,6 +133,14 @@ The contract changes:
   `ApplyTheme` re-apply over it. That would reset the live level before
   `ApplyTheme` saved it, so a close that carries actions (a commit) now just
   disarms the preview, and only a close without actions reverts.
+  *(Review round 2:* the test is now that the actions include `ApplyTheme`,
+  so only the real commit keeps the preview.)*
+- *(Review round 2:)* `sync_theme_preview`, which already pushes the
+  toggle's label after every key or click that reaches the picker, also
+  pushes the stepper's level. It is the one place the picker learns app
+  state, and `StepThemeContrast` calls it. `Contrast::step` is the only
+  gate at the ends: the chooser's keys fire at an end too, and the row's
+  disabled button only shows the refusal.
 - New `Action::StepThemeContrast(i8)`: steps the level (no-op at an end),
   re-resolves the current theme and updates the picker's Contrast row.
 - `Action::ApplyTheme(name)` saves both values in one edit.
@@ -165,8 +177,9 @@ pub struct ChooserStepper {
   lit in accent up to the current level and quiet beyond it. The `−`/`+`
   buttons register `Hit::ChooserStepDown` / `Hit::ChooserStepUp`, and a
   button at its end paints disabled (C9).
-- Footer: the chooser's chips add `−+  contrast` while a stepper is
-  attached.
+- Footer: the chooser's chips add `-/+ contrast` while a stepper is
+  attached, spelled with the ASCII keys actually typed (review round 2;
+  the draft had U+2212).
 - Hover hints: "Lower the theme's contrast" / "Raise the theme's contrast"
   (imperative, the hints' house shape, which `hints_share_one_shape`
   enforces; "Less/More contrast" was the draft wording).

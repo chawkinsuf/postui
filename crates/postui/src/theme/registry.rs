@@ -137,9 +137,10 @@ impl ThemeRegistry {
 
     /// Generates the full theme for `name` at `contrast`, or `None` for an
     /// unknown name (the caller warns and falls back). The Terminal theme
-    /// keeps its background at every level: it is the terminal's own, and
-    /// moving it would show a seam at the window's padding (spec
-    /// 2026-10-16 C2).
+    /// keeps the background the terminal reported at every level: moving
+    /// it would show a seam at the window's padding (spec 2026-10-16 C2).
+    /// A terminal that reported none gets postui's fallback page, which is
+    /// no seam's business, so that one moves like any theme's.
     pub fn resolve(
         &self,
         name: &str,
@@ -147,7 +148,7 @@ impl ThemeRegistry {
         contrast: Contrast,
     ) -> Option<Theme> {
         let entry = self.get(name)?;
-        let keep_bg = matches!(entry.source, ThemeSource::Terminal);
+        let keep_bg = matches!(entry.source, ThemeSource::Terminal) && queried.bg.is_some();
         Some(Theme::generate(&self.seeds_of(entry, queried).with_contrast(contrast, keep_bg)))
     }
 }
@@ -304,6 +305,18 @@ mod tests {
                 assert_ne!(high.page, base.page, "{name}: page deepens");
             }
         }
+    }
+
+    /// Review round 2: a terminal that never answered the background query
+    /// paints postui's own fallback page, not the terminal's, so there is
+    /// no seam to protect and contrast deepens it like any theme's.
+    #[test]
+    fn a_silent_terminal_s_fallback_page_moves_with_contrast() {
+        let r = ThemeRegistry::builtin();
+        let silent = QueriedColors::default();
+        let up = Contrast::new(Contrast::MAX).unwrap();
+        let base = r.resolve("terminal", &silent, Contrast::default()).unwrap();
+        assert_ne!(r.resolve("terminal", &silent, up).unwrap().page, base.page);
     }
 
     #[test]

@@ -18820,6 +18820,26 @@ mod undo_tests {
         assert!(screen.contains("Contrast") && screen.contains("+1"), "{screen}");
     }
 
+    /// Review round 2: the Contrast buttons are inside the picker, so a
+    /// click on one is not a click away. It keeps the table selection
+    /// under the picker, as the dark/light toggle's click does.
+    #[test]
+    fn theme_picker_contrast_buttons_are_not_a_click_away() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Params;
+        app.editor
+            .params
+            .insert("page".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+        app.editor.table.selected = Some(0);
+        app.update(Action::ApplyTheme("dark".into()));
+        app.update(Action::OpenThemeChooser);
+        click_hit(&mut app, Hit::ChooserStepUp);
+        assert_eq!(app.theme_contrast.level(), 1);
+        assert_eq!(app.editor.table.selected, Some(0), "the step kept the selection");
+        click_hit(&mut app, Hit::ChooserToggle);
+        assert_eq!(app.editor.table.selected, Some(0), "as the toggle does");
+    }
+
     /// The `-`/`+` keys belong to the theme picker alone: any other
     /// chooser leaves the level where it is.
     #[test]

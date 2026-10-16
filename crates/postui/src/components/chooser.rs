@@ -37,10 +37,10 @@ pub struct ChooserToggle {
 /// spec 2026-10-16): painted as a row under the list — `label`, a `−`
 /// button, a meter with one cell per level, a `+` button and the level as
 /// text. On a chooser without a filter box `-` fires `down` and `+`/`=`
-/// fire `up`, without closing; the buttons fire the same. Past either end
-/// the key fires nothing and that button paints disabled. The actions'
-/// handler is expected to report the new level through
-/// [`ChooserState::set_stepper_level`].
+/// fire `up`, without closing; the buttons fire the same. The actions'
+/// handler owns the level: it refuses a step past either end, and reports
+/// the level back through [`ChooserState::set_stepper_level`], which only
+/// paints it — the meter, and the end's button disabled.
 #[derive(Clone)]
 pub struct ChooserStepper {
     pub label: String,
@@ -124,14 +124,11 @@ impl ChooserState {
     }
 
     /// The stepper's action one step up (or down), or `None` without a
-    /// stepper or with the level already at that end.
+    /// stepper. Refusing a step past an end is the action's handler's
+    /// business; the row only shows it, by disabling that button.
     pub fn step_action(&self, up: bool) -> Option<&Action> {
         let s = self.stepper.as_ref()?;
-        match up {
-            true if s.level < s.max => Some(&s.up),
-            false if s.level > s.min => Some(&s.down),
-            _ => None,
-        }
+        Some(if up { &s.up } else { &s.down })
     }
 
     /// The toggle while it is live: attached with a label showing.
@@ -987,11 +984,13 @@ mod tests {
         }
     }
 
-    /// Spec 2026-10-16 C5, C6, C9: on a filterless chooser `-` fires the
+    /// Spec 2026-10-16 C5, C6: on a filterless chooser `-` fires the
     /// stepper's down action and `+`/`=` its up action, keeping the modal
-    /// open; past an end the key fires nothing.
+    /// open. At an end the key still fires: refusing the step is the
+    /// handler's (App's `Contrast::step`, review round 2), so there is
+    /// one gate.
     #[test]
-    fn minus_plus_and_equals_fire_the_stepper_and_stop_at_its_ends() {
+    fn minus_plus_and_equals_fire_the_stepper() {
         let mut c =
             ChooserState::new("Theme", items(&["a"])).without_filter().with_stepper(stepper(0));
         let fired = |c: &mut ChooserState, ch: char| {
@@ -1007,10 +1006,7 @@ mod tests {
         let shifted = KeyEvent::new(KeyCode::Char('+'), KeyModifiers::SHIFT);
         assert!(c.handle_key(shifted).is_some());
         c.set_stepper_level(3);
-        assert_eq!(fired(&mut c, '+'), None, "at the top");
-        assert_eq!(fired(&mut c, '-'), Some(vec![Action::StepThemeContrast(-1)]));
-        c.set_stepper_level(-3);
-        assert_eq!(fired(&mut c, '-'), None, "at the bottom");
+        assert_eq!(fired(&mut c, '+'), Some(vec![Action::StepThemeContrast(1)]), "the app gates");
         // No stepper: the keys do nothing on a filterless chooser...
         let mut plain = ChooserState::new("t", items(&["a"])).without_filter();
         assert!(fired(&mut plain, '+').is_none());
