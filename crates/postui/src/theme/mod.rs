@@ -105,13 +105,20 @@ impl Seeds {
         // round 9: a share of the level went on lifting the page, and the
         // text drifted back to hold the gap). It never crosses the middle,
         // so the theme keeps its polarity; and a page authored close to
-        // the middle is held, never pushed the other way.
+        // the middle is held, never pushed the other way. A light page
+        // rises only while its tint still fits (you, 2026-10-16, task
+        // #32): near white sRGB holds almost no colour, and a warm page
+        // went on to pure white, its tint trimmed away.
         let new_bg_l = if keep_bg {
             bg_l
         } else {
             let toward = if n > 0.0 { -side } else { side };
             let l = bg_l + toward * change.abs() * (CONTRAST_BG_STEP / CONTRAST_GAP_STEP);
-            let l = if bg_l < 0.5 { l.min(bg_l.max(0.49)) } else { l.max(bg_l.min(0.51)) };
+            let l = if bg_l < 0.5 {
+                l.min(bg_l.max(0.49))
+            } else {
+                l.max(bg_l.min(0.51)).min(tint_ceiling(self.bg).max(bg_l))
+            };
             l.clamp(0.0, 1.0)
         };
         // A page that doesn't move (kept, or held at the middle) stays its
@@ -608,12 +615,27 @@ fn oklab_to_rgb_in_gamut(lab: (f32, f32, f32)) -> (u8, u8, u8) {
     }
     let (l, a, b) = lab;
     let scaled = |t: f32| (l, a * t, b * t);
-    let (mut inside, mut outside) = (0.0, 1.0);
+    oklab_to_rgb(scaled(last_in_gamut(0.0, 1.0, scaled)))
+}
+
+/// The highest Oklab lightness at which `c`'s tint (its `a`, `b`) still
+/// fits sRGB: how far a light page can rise and keep its colour. At least
+/// `c`'s own lightness, give or take float error. (Above L 0.5 the
+/// lightnesses a tint fits at form one range, so the search can't land in
+/// a gap: checked for every hue at chroma up to 0.4, past any sRGB colour.)
+fn tint_ceiling(c: (u8, u8, u8)) -> f32 {
+    let (l, a, b) = oklab(c);
+    last_in_gamut(l, 1.0 + 1e-3, |t| (t, a, b))
+}
+
+/// Bisects `inside..outside` for the last `t` whose colour `at(t)` is in
+/// gamut, `at(inside)` being in and `at(outside)` out.
+fn last_in_gamut(mut inside: f32, mut outside: f32, at: impl Fn(f32) -> (f32, f32, f32)) -> f32 {
     for _ in 0..16 {
         let mid = (inside + outside) / 2.0;
-        if in_gamut(scaled(mid)) { inside = mid } else { outside = mid }
+        if in_gamut(at(mid)) { inside = mid } else { outside = mid }
     }
-    oklab_to_rgb(scaled(inside))
+    inside
 }
 
 /// Whether an Oklab color lies inside the sRGB gamut, i.e. converts back
@@ -852,10 +874,11 @@ mod tests {
                 let (lo, hi) = (at(n), at(n + 1));
                 let depth = |x: &Seeds| if dark { -oklab_l(x.bg) } else { oklab_l(x.bg) };
                 // Strictly deeper while a whole step of room is left; a
-                // page that reaches its end (Gruvbox Light's white) stays,
-                // and so does one softening has stopped at the readability
-                // floor (Solarized Dark below 0).
-                let room = if dark { oklab_l(lo.bg) } else { 1.0 - oklab_l(lo.bg) };
+                // page that reaches its end stays (a light page's end is
+                // where its tint stops fitting, task #32: Gruvbox Light's
+                // is just above its seed), and so does one softening has
+                // stopped at the readability floor (Solarized Dark below 0).
+                let room = if dark { oklab_l(lo.bg) } else { tint_ceiling(s.bg) - oklab_l(lo.bg) };
                 let softening_stopped = n < 0 && drawn_gap(&lo) <= TEXT_FLOOR + 0.01;
                 if room > CONTRAST_BG_STEP && !softening_stopped {
                     assert!(depth(&hi) > depth(&lo), "{name} {n}: page did not deepen");
@@ -879,6 +902,46 @@ mod tests {
             }
         }
     }
+
+    /// Task #32 (you, 2026-10-16): a light page rises only while its tint
+    /// still fits sRGB, so a warm (or cool) light theme keeps its colour
+    /// when raised. Before, Light, Gruvbox Light and Solarized Light went
+    /// to pure white, and the whole surface ladder to neutral grey. The
+    /// page, panel and control keep the tint; the surfaces drawn lighter
+    /// than the page can't hold all of it at the ceiling.
+    #[test]
+    fn raising_a_light_theme_keeps_its_page_s_tint() {
+        for (name, s) in builtin_seeds() {
+            if oklab_l(s.bg) < 0.5 {
+                continue;
+            }
+            let base = Theme::generate(&s);
+            for n in 1..=Contrast::MAX {
+                let t = Theme::generate(&s.with_contrast(level(n), false));
+                for (what, before, after) in [
+                    ("page", base.page, t.page),
+                    ("panel", base.panel, t.panel),
+                    ("control", base.control, t.control),
+                ] {
+                    let ((h0, c0), (h1, c1)) =
+                        (hue_and_chroma(rgb_of(before)), hue_and_chroma(rgb_of(after)));
+                    assert!(
+                        c1 >= c0 - LIGHT_TINT_SLACK,
+                        "{name} {n} {what}: tint {c0:.4} -> {c1:.4}"
+                    );
+                    // A near-grey's hue is u8 noise (Light's, Latte's); only
+                    // a visible tint has one.
+                    if c0 > 0.02 {
+                        let turn = (h1 - h0).cos();
+                        assert!(turn > 0.995, "{name} {n} {what}: hue turned {after:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// How much chroma rounding to u8 can cost a light page near white.
+    const LIGHT_TINT_SLACK: f32 = 0.004;
 
     /// Spec C2: the Terminal theme keeps its background; text still moves.
     #[test]
@@ -1005,6 +1068,19 @@ mod tests {
                                     base.is_dark(),
                                     "{tag} {n}: polarity flipped"
                                 );
+                                // Task #32: a light page keeps its tint, even
+                                // next to white where the hue check below can't
+                                // look.
+                                if !base.is_dark() {
+                                    let (c0, c1) = (
+                                        hue_and_chroma(rgb_of(base.page)).1,
+                                        hue_and_chroma(rgb_of(t.page)).1,
+                                    );
+                                    assert!(
+                                        c1 >= c0 - LIGHT_TINT_SLACK,
+                                        "{tag} {n}: page lost its tint {c0:.4} -> {c1:.4}"
+                                    );
+                                }
                                 for (what, before, after) in
                                     [("page", base.page, t.page), ("text", base.text, t.text)]
                                 {

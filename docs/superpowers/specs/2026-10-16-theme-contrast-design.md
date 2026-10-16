@@ -27,7 +27,7 @@ Today the only lever is writing a custom `themes/*.toml`.
 
 | # | Rule | Source |
 |---|---|---|
-| C1 | One contrast step moves the theme's text away from its background, deepens the background, and saturates the four colours (accent, success, warning, error). A negative step does the reverse. The page–text gap widens by the same amount on every theme; where the page has no room (near white), the text makes up the difference. Colours change in saturation only. | `you` (text vs background + washed-out look; equal on light themes, colours not shifted, 2026-10-16) |
+| C1 | One contrast step moves the theme's text away from its background, deepens the background, and saturates the four colours (accent, success, warning, error). A negative step does the reverse. The page–text gap widens by the same amount on every theme; where the page has no room (near white), the text makes up the difference. A light page rises only while its tint still fits sRGB, so it keeps its colour (task #32). Colours change in saturation only. | `you` (text vs background + washed-out look; equal on light themes, colours not shifted, 2026-10-16; light page keeps its tint, dark themes unchanged, task #32) |
 | C2 | The background moves for built-in and custom themes. The Terminal colors theme keeps the terminal's own background (no seam at the window padding); its text and colours still move. | `you` |
 | C3 | One global level, applied to whichever theme is active; switching themes keeps it. | `you` |
 | C4 | The theme picker has a Contrast row under the list: a `-` button, a level meter, a `+` button, and the level as text. The minus and the level's sign are ASCII, not U+2212, which takes two cells on a CJK-width terminal (review round 7). | `you` (preview picked) |
@@ -131,7 +131,8 @@ Text contrast at −3..+3:
 - Light: 6.2, 7.6, 9.3, **11.2**, 13.3, 15.7, 17.5
 - Gruvbox Dark: 6.1 → **10.7** → 17.0
 
-Light's page reaches white at +3, Gruvbox Light's at +2. Themes already on
+Light's page reaches white at +3, Gruvbox Light's and Solarized Light's at
++2 (no longer, task #32: see the amendment below). Themes already on
 the text floor at 0 (Solarized, Catppuccin Latte) cannot go softer; they
 only go crisper. A black page lifts in Oklab but rounds to `#000000` until
 −3, because sRGB's first step above black is already L 0.067, so a stark
@@ -154,6 +155,27 @@ Measured before the change, at +3 against 0, light themes lagged:
 
 A Terminal theme that keeps its background now gets the whole widening
 through its text.
+
+*Amended 2026-10-16 (task #32, `you`):* the warm light themes went
+blue-shifted when raised. Their pages sit at L 0.93–0.97, and near white
+sRGB holds almost no chroma, so the page's 0.025 a step had its tint
+trimmed away: Light's page reached `#ffffff` at +3, Gruvbox Light's and
+Solarized Light's at +2, and the surface ladder built from it went neutral
+grey (`#f5f5f5`, `#ebebeb`). With the warm ground gone, the cool text and
+the saturated blue accents were all that was left.
+
+The ruling: dark themes stay as they are, and a light page rises only as
+far as its tint still fits (`tint_ceiling`, the top of the seed's `a`, `b`
+in sRGB). The text makes up the rest, as it already did for a page with no
+room. The cap holds whenever a light page would rise, which on the usual
+pair (dark text) is a raise; a softening step there darkens the page as
+before. At +3 the pages are
+now Light `#fff9f5` (from +2), Gruvbox Light `#fff5cb` (from +1),
+Solarized Light `#fff8e5` (from +1) and Catppuccin Latte `#f9fbff`; text
+contrast at +3 is Light 17.8, Gruvbox Light 16.9, Solarized Light 8.3,
+Latte 13.2. The sweep now also checks that a light page keeps its chroma
+at every level: its hue check skips colours above L 0.95, which is how the
+white page got through.
 
 `Theme::generate` does not change, so its clamps run on the result (C13).
 
