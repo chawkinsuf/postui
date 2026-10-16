@@ -53,6 +53,14 @@ Every request reader (`current_request`, `is_scratch_dirty`, send, Format, `$EDI
 
 **Contract change.** `body_text()`'s meaning, as above. No enum, seam or History change.
 
+### Amendment 2026-10-16, review round 1 (mine)
+
+- **The mark also remembers the buffer's line count** (`AutoIndent::lines`). It holds only while the count is the one Enter left; R6 counts its own new line.
+  - Before this, an edit that moved rows (Home, then Backspace joining the untouched line up) left the mark naming a row the user's own `    ` line had slid into. The settle then emptied that line, which lost data.
+  - Now any edit that moves rows forgets the mark, which is R4 again: the blanks are ordinary text from then on.
+- **Arrows to vim drops the blanks inside the seam** (`sync_session`, when `switched_in`), before the engine takes the body. `capture_undo` runs too late for this, because the engine has already opened Insert on the blanks by then.
+- **`settle_auto_indent` answers whether it changed the screen**, and `capture_undo` returns that as a redraw. The request didn't change, so nothing else asks for one.
+
 ## 4. Tests
 
 | Rule | Test |
@@ -60,7 +68,8 @@ Every request reader (`current_request`, `is_scratch_dirty`, send, Format, `$EDI
 | R1 | `editor.rs`: Enter at the end of `    a` → the buffer's row 1 is `    `, `body_text()` is `"    a\n"`. Enter at the end of `a` (no indent) → no mark. Enter mid-text (`    a\|b`) → row 1 is `    b` and `body_text()` includes it. Enter with only blanks after the caret (`    a\|  `) → marked. A tab indent is marked the same way. |
 | R2 | app test: open a saved `    a`, Enter at the end, save → the file's body is `"    a\n"` and the caret is still at row 1 col 4 with the blanks on screen. After that, the request is not dirty. |
 | R3 | `editor.rs`: settle with the caret moved off the row → the row is empty and the mark is gone. Settle with `caret_in_body = false` → the same. App tests: Enter then Up; Enter then Esc; Enter then a click on another pane. Each leaves the row empty, records no extra undo step, and one undo restores `    a` exactly. |
-| R4 | `editor.rs`: Enter, type `x`, settle → `body_text()` has `    x`. Enter, type `x`, Backspace, settle, move away, settle → the row keeps `    `. |
+| R4 | `editor.rs`: Enter, type `x`, settle → `body_text()` has `    x`. Enter, type `x`, Backspace, settle, move away, settle → the row keeps `    `. Round 1: on `    a` / `    `, Enter, Home, Backspace → the user's `    ` line stays in the body and on screen. |
+| R3 (round 1) | app: switching to vim drops the blanks before `vim_catch_up` returns, and `x` then types at column 0. A drop makes `capture_undo` answer true (repaint) with no new undo step. |
 | R5 | app test: Enter, open the palette, close it → the row still has the blanks and is still marked. |
 | R6 | `editor.rs`: Enter, Enter → row 1 empty, row 2 `    ` and marked, `body_text()` `"    a\n\n"`. |
 | R7 | `editor.rs`: Enter, then `set_body_text` → no mark, `body_text()` equals the buffer. |

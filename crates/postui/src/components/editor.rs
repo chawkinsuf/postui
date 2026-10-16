@@ -98,11 +98,14 @@ pub enum Caret {
 }
 
 /// An untouched auto-indent (spec 2026-10-16): body row `row` holds only
-/// the `indent` arrows Enter copied onto it.
+/// the `indent` arrows Enter copied onto it, in a buffer of `lines` rows.
+/// Any edit that moves rows changes the count, so the mark never names a
+/// row some other line has slid into (R4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AutoIndent {
     row: usize,
     indent: Vec<char>,
+    lines: usize,
 }
 
 /// Which sub-region of the editor pane has keyboard focus: the method
@@ -711,23 +714,26 @@ impl Editor {
         let Some(row) = self.untouched_indent_row() else {
             return self.body.lines.to_string();
         };
-        let rows: Vec<String> = self
-            .body
-            .lines
-            .iter_row()
-            .enumerate()
-            .map(|(i, line)| if i == row { String::new() } else { line.iter().collect() })
-            .collect();
-        rows.join("\n")
+        let mut text = String::new();
+        for (i, line) in self.body.lines.iter_row().enumerate() {
+            if i > 0 {
+                text.push('\n');
+            }
+            if i != row {
+                text.extend(line.iter());
+            }
+        }
+        text
     }
 
-    /// The row of the untouched auto-indent, while its line still holds
-    /// exactly that indent: an edit is never hidden by a mark the next
-    /// settle has yet to forget.
+    /// The row of the untouched auto-indent, while the buffer still has the
+    /// rows Enter left and the line still holds exactly that indent: an
+    /// edit is never hidden by a mark the next settle has yet to forget.
     fn untouched_indent_row(&self) -> Option<usize> {
         let mark = self.auto_indent.as_ref()?;
-        (self.body.lines.get(edtui::RowIndex::new(mark.row)) == Some(&mark.indent))
-            .then_some(mark.row)
+        (self.body.lines.len() == mark.lines
+            && self.body.lines.get(edtui::RowIndex::new(mark.row)) == Some(&mark.indent))
+        .then_some(mark.row)
     }
 
     /// Settles the untouched auto-indent after an event (spec 2026-10-16):
@@ -735,13 +741,14 @@ impl Editor {
     /// the line, or `caret_in_body` false, drops it from the screen (R3),
     /// moving selection ends and anchors on it to column 0 (R8). The
     /// request never held the blanks, so neither changes `body_text`.
-    pub fn settle_auto_indent(&mut self, caret_in_body: bool) {
+    /// Answers whether the screen changed.
+    pub fn settle_auto_indent(&mut self, caret_in_body: bool) -> bool {
         let Some(row) = self.untouched_indent_row() else {
             self.auto_indent = None;
-            return;
+            return false;
         };
         if caret_in_body && self.body.cursor.row == row {
-            return;
+            return false;
         }
         self.auto_indent = None;
         if let Some(line) = self.body.lines.get_mut(edtui::RowIndex::new(row)) {
@@ -770,6 +777,7 @@ impl Editor {
                 }
             }
         }
+        true
     }
 
     /// Feeds each char of `s` through the body's key handler as a
@@ -1515,17 +1523,20 @@ impl Editor {
             // An untouched indent moves down with its line (spec 2026-10-16 R6).
             if let Some(mark) = self.auto_indent.as_mut().filter(|m| m.row == at.row) {
                 mark.row += 1;
+                mark.lines += 1;
             }
         } else {
             LineBreak(1).execute(&mut self.body);
             let row = self.body.cursor.row;
+            let lines = self.body.lines.len();
             if let Some(moved) = self.body.lines.get_mut(edtui::RowIndex::new(row)) {
                 let strip = moved.iter().take_while(|c| blank(c)).count();
                 moved.drain(..strip);
                 moved.splice(0..0, line[..lead].iter().copied());
                 // Nothing followed the indent down: it is untouched (R1).
                 if lead > 0 && moved.len() == lead {
-                    self.auto_indent = Some(AutoIndent { row, indent: line[..lead].to_vec() });
+                    self.auto_indent =
+                        Some(AutoIndent { row, indent: line[..lead].to_vec(), lines });
                 }
             }
             self.body.cursor = edtui::Index2::new(row, lead);
@@ -6851,6 +6862,21 @@ mod body_click_tests {
         e.handle_key(pkey(KeyCode::Up));
         e.settle_auto_indent(true);
         assert_eq!(screen(&e), "    a\n    ");
+    }
+
+    /// R4, review round 1: an edit that moves rows (Backspace joining the
+    /// untouched line up) forgets the mark, so a line of the user's own
+    /// that slides into its row is never taken for it.
+    #[test]
+    fn an_edit_that_moves_rows_forgets_the_mark() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = enter_at("    a\n    ", 0, 5);
+        e.handle_key(pkey(KeyCode::Home));
+        e.handle_key(pkey(KeyCode::Backspace));
+        assert_eq!(e.body_text(), "    a    \n    ", "the user's line is in the body");
+        e.settle_auto_indent(true);
+        assert_eq!(screen(&e), "    a    \n    ", "and stays on screen");
+        assert!(e.auto_indent.is_none());
     }
 
     /// R6: Enter on the untouched line moves it down, still untouched.

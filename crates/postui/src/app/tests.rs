@@ -28573,7 +28573,8 @@ fn saving_on_an_untouched_auto_indent_writes_no_blanks() {
 }
 
 /// R3: Up, Esc, or focus moving to another pane drops the blanks with no
-/// undo step of its own, and one undo restores the line exactly.
+/// undo step of its own, and one undo restores the line exactly. The drop
+/// asks for a redraw (review round 1).
 #[test]
 fn leaving_an_untouched_auto_indent_drops_it_with_no_undo_step() {
     let leaves: [fn(&mut App) -> bool; 3] = [
@@ -28584,12 +28585,32 @@ fn leaving_an_untouched_auto_indent_drops_it_with_no_undo_step() {
     for (i, leave) in leaves.iter().enumerate() {
         let mut app = app_at_an_indented_line_end();
         assert!(key_and_capture(&mut app, KeyCode::Enter), "leave {i}: Enter is a step");
+        let steps = app.history.undo_len();
         leave(&mut app);
-        assert!(!app.capture_undo(), "leave {i}: dropping the blanks is no step");
+        assert!(app.capture_undo(), "leave {i}: the drop repaints");
+        assert_eq!(app.history.undo_len(), steps, "leave {i}: dropping the blanks is no step");
         assert_eq!(app.editor.body.lines.to_string(), "    a\n", "leave {i}");
         app.update(Action::Undo);
         assert_eq!(app.editor.body.lines.to_string(), "    a", "leave {i}: undo is exact");
     }
+}
+
+/// R3, review round 1: switching to vim drops the blanks before the
+/// engine takes the body, so its Insert opens on the empty line and the
+/// next key types where the screen shows the caret.
+#[test]
+fn switching_to_vim_drops_an_untouched_auto_indent_first() {
+    use crate::config::KeyProfile;
+    let mut app = app_at_an_indented_line_end();
+    config_at_tempdir(&mut app);
+    key_and_capture(&mut app, KeyCode::Enter);
+    app.update(Action::SetKeyProfile(KeyProfile::Vim));
+    app.vim_catch_up();
+    assert_eq!(app.editor.body.lines.to_string(), "    a\n", "dropped before the engine");
+    assert_eq!(app.editor.body.cursor, edtui::Index2::new(1, 0));
+    app.capture_undo();
+    key_and_capture(&mut app, KeyCode::Char('x'));
+    assert_eq!(app.editor.body_text(), "    a\nx");
 }
 
 /// R5: a modal over the body is not leaving the line.

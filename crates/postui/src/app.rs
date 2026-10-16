@@ -2364,12 +2364,14 @@ impl App {
         // The same for an untouched auto-indent (spec 2026-10-16 R3): the
         // screen drops it once the caret is off its line or out of the
         // arrows body. A modal over the body is not leaving (R5).
+        // The drop changes only the screen, so it asks for the repaint
+        // itself.
         let in_body = !off_screen
             && self.focus == PaneId::Editor
             && self.editor.sub_focus == SubFocus::Content
             && self.editor.active_tab == EditorTab::Body
             && !self.vim_owns_body();
-        self.editor.settle_auto_indent(in_body);
+        let dropped = self.editor.settle_auto_indent(in_body);
         // The jq bar keeps its caret across a screen change (the pane is
         // still the focused one underneath), so only its session closes.
         if off_screen {
@@ -2379,7 +2381,7 @@ impl App {
             // A wholesale change taken mid-field (`no_coalesce`, e.g. alt+j
             // format) is still pending here: it joins the close as one step.
             self.field_gate_was_on = true;
-            return false;
+            return dropped;
         }
         let closing = std::mem::take(&mut self.field_gate_was_on);
         match &self.shadow {
@@ -2408,7 +2410,7 @@ impl App {
         }
         self.no_coalesce = false;
         self.shadow = Some((current_slug, self.editor.current_request()));
-        false
+        dropped
     }
 
     /// Closes the open field's edit session (URL line, jq bar) in place
