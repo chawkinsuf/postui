@@ -62,6 +62,8 @@ Round 4 found that reading the live text was self-reinforcing: on a body with fe
 
 Also from round 1 (you): dropping an unused auto-indent when the caret leaves the line (Vim's behaviour, VS Code's `trimAutoWhitespace`) is a follow-up task, not #8.
 
+Amendment 2026-10-16 (task #27, you): an indent R14's Enter leaves alone on its line is never part of the request, and the screen drops it when the caret leaves the line. See `2026-10-16-trim-auto-indent-design.md`.
+
 ## 4. Design
 
 **One value, one owner.** A new `crate::text::indent` module (shared code, outside the vim seam, like `text::class`) holds:

@@ -238,6 +238,12 @@ impl App {
             }
             return;
         }
+        // Arrows to vim leaves an untouched auto-indent (spec 2026-10-16
+        // R3): its blanks go before the engine takes the body, or its
+        // Insert would open on text the request never held.
+        if switched_in {
+            self.editor.settle_auto_indent(false);
+        }
         self.vim.glue.own_body(self.editor.slug.as_deref(), &mut self.vim.search_memory);
         let now = self.engine_field();
         let mouse = matches!(cause, Cause::Mouse(_));
