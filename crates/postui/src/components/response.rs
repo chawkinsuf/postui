@@ -4569,7 +4569,9 @@ fn body_lines(
                 // One plain cell between the value and the pill, so the
                 // pill's hover fill never touches the text.
                 let value_piece = format!("{value} ");
-                let text_len = name_piece.chars().count() + value_piece.chars().count();
+                // In cells, as painted and as `h_scroll` counts: a received
+                // value can hold wide text.
+                let text_len = crate::ui::cells(&name_piece) + crate::ui::cells(&value_piece);
                 let glyph_hovered = hovered == Some(&crate::hit::Hit::HeaderCopy(i));
                 let glyph_style = if glyph_hovered {
                     Style::default().bg(t.accent).fg(t.on_accent)
@@ -6223,6 +6225,37 @@ mod tests {
             pill,
             vec![" ", "\u{F018F}", " "],
             "the hovered pill is odd-width with the glyph in its center"
+        );
+    }
+
+    /// A received value with wide text (`日本語`, 3 chars, 6 cells) still
+    /// gets its copy pill's click rect on the painted pill.
+    #[test]
+    fn header_copy_rect_lands_on_the_pill_after_wide_text() {
+        let theme = Theme::dark();
+        let mut d = data("{}");
+        d.headers = vec![("x-title".into(), "日本語".into())];
+        let mut r = Pane::default();
+        r.set_state(ResponseState::Ready(Box::new(d)), 0);
+        r.set_view_mode(ViewMode::Headers);
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            pointer: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+        let buf = terminal.backend().buffer();
+        let rect = hits.rect_of(&crate::hit::Hit::HeaderCopy(0)).expect("the pill is registered");
+        assert_eq!(
+            buf[(rect.x + 1, rect.y)].symbol(),
+            crate::glyph::COPY_PILL.trim(),
+            "the rect's middle cell is the painted copy glyph"
         );
     }
 
