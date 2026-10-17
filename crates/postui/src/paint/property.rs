@@ -70,13 +70,14 @@ pub const HOVER_WASH: f32 = 0.2;
 /// two columns of gutter, clamped to [`LABEL_W_MIN`]..=[`LABEL_W_MAX`].
 ///
 /// A pane computes this once and hands it to every row it paints, so
-/// its controls line up and no label is truncated. A fixed constant
+/// its controls line up and no label is truncated short of the ceiling
+/// ([`PropertyRow`] cuts one past it at the column). A fixed constant
 /// could not do both: Settings' longest label is "Ask before sending to
 /// AI" while the Variables pane's is "Value in <env>", whose width
 /// depends on the environment's display name.
 pub fn label_column(labels: &[&str]) -> u16 {
-    let widest = labels.iter().map(|l| l.chars().count() as u16).max().unwrap_or(0);
-    widest.saturating_add(2).clamp(LABEL_W_MIN, LABEL_W_MAX)
+    let widest = labels.iter().map(|l| crate::ui::cells(l)).max().unwrap_or(0);
+    widest.saturating_add(2).clamp(LABEL_W_MIN.into(), LABEL_W_MAX.into()) as u16
 }
 
 /// The narrowest a [`Pill`] can be painted with `label` intact.
@@ -132,7 +133,12 @@ impl PropertyRow<'_> {
         };
         fill(buf, area, bg);
         let label_fg = if self.disabled { theme.text_disabled } else { theme.text };
-        text(buf, area.x, area.y, self.label, label_fg, bg, false);
+        // Cut at the column in cells: a label past the ceiling would
+        // otherwise run under the control, and a wide glyph straddling
+        // the column's edge would cross into it. A row narrower than
+        // its column cuts it at the row's own edge.
+        let label = crate::ui::clip(self.label, self.label_w.min(area.width));
+        text(buf, area.x, area.y, label, label_fg, bg, false);
 
         // Trailing pills first, right-to-left from the row's right edge:
         // the slot is measured against where they stopped, so a long
@@ -423,6 +429,43 @@ mod tests {
         );
     }
 
+    /// The column is measured in cells, not chars: a wide env name in
+    /// `Value in <env>` (15 chars, 21 cells) gets the room it paints in,
+    /// so the well beside it does not cover its last glyphs.
+    #[test]
+    fn the_label_column_measures_a_wide_label_in_cells() {
+        assert_eq!(label_column(&["Value in 本番環境本番"]), 23);
+    }
+
+    /// A label past the column's ceiling is cut at the column in cells:
+    /// `Value in` + 12 wide glyphs is 33 cells against a 32-cell column,
+    /// so the last glyph, which would straddle into the control, is left
+    /// out rather than painted half under the well.
+    #[test]
+    fn a_label_past_the_ceiling_is_cut_at_the_column_in_cells() {
+        let theme = Theme::dark();
+        let label = "Value in 本番環境本番環境本番環境";
+        let label_w = label_column(&[label]);
+        assert_eq!(label_w, LABEL_W_MAX, "precondition: the ceiling holds it");
+        let mut term = Terminal::new(TestBackend::new(60, 1)).unwrap();
+        let mut hits = HitMap::default();
+        term.draw(|f| {
+            PropertyRow { label, label_w, hovered: false, disabled: false, trailing: &[] }.paint(
+                f.buffer_mut(),
+                &mut hits,
+                Rect::new(0, 0, 60, 1),
+                &theme,
+            );
+        })
+        .unwrap();
+        for x in (0..60).filter(|x| buf_cell(&term, *x, 0).symbol() != " ") {
+            let cell = buf_cell(&term, x, 0);
+            let w = unicode_width::UnicodeWidthStr::width(cell.symbol()) as u16;
+            assert!(x + w <= label_w, "{:?} at {x} reaches past the column at {label_w}", cell);
+        }
+        assert_eq!(buf_cell(&term, 29, 0).symbol(), "環", "the glyphs that fit are kept");
+    }
+
     /// Disabled content blends toward the control's own fill, the same
     /// treatment `Button` and `TextField` already use.
     #[test]
@@ -444,9 +487,10 @@ mod tests {
     }
 
     /// A pane too narrow for its label column hands out a slot of one
-    /// or zero columns. Neither control may paint or register a single
-    /// cell outside the row it was given: a hit registered past the
-    /// right edge is a click target the row does not own.
+    /// or zero columns. Neither control, nor a label longer than the
+    /// row, may paint or register a single cell outside the row it was
+    /// given: a hit registered past the right edge is a click target the
+    /// row does not own.
     #[test]
     fn a_starved_slot_keeps_both_controls_inside_the_row() {
         let theme = Theme::dark();
@@ -457,7 +501,7 @@ mod tests {
             let mut toggle_rect = None;
             term.draw(|f| {
                 let slot = PropertyRow {
-                    label: "Secret",
+                    label: "Value in production",
                     label_w,
                     hovered: false,
                     disabled: false,

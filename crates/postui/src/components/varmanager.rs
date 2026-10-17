@@ -19,8 +19,8 @@ use crate::keyroute::spell::Key;
 use crate::layout::PaneId;
 use crate::paint::{
     Button, ButtonKind, ControlSlot, ControlState, ListRow, PROPERTY_MAX_W, Pill, PropertyRow,
-    RowHighlight, TALL_PILL_H, Toggle, TrailingPill, Well, button_min_width, fill, label_column,
-    pill_min_width, text,
+    RowHighlight, TALL_PILL_H, TitleButtons, Toggle, TrailingPill, Well, button_min_width, fill,
+    label_column, pill_min_width, text,
 };
 use crate::theme::Theme;
 use indexmap::IndexMap;
@@ -1733,7 +1733,6 @@ impl VarManager {
         if y + TALL_PILL_H <= bottom {
             let label = format!("Selector: {selector}");
             text(buf, x0, y, &label, theme.text, theme.page, true);
-            let mut bx = right.x + right.width;
             // Painted right to left, so the array runs that way too: the
             // two option-level verbs hold the right edge — `+ Option`, the
             // primary, on the edge itself — and the three selector-level
@@ -1745,6 +1744,7 @@ impl VarManager {
             // the other begins — two columns of air so the eye reads two
             // groups rather than five loose buttons.
             let can_paste = self.can_paste(selector);
+            let mut row = TitleButtons::new(x0, &label, right.x + right.width, y);
             for (lbl, kind, hit, gap) in [
                 ("+ Option", ButtonKind::Primary, Hit::VmNewOption, 1),
                 ("Paste", ButtonKind::Secondary, Hit::VmPasteOption, 1),
@@ -1752,12 +1752,7 @@ impl VarManager {
                 ("Rename", ButtonKind::Secondary, Hit::VmRename, 1),
                 ("Delete", ButtonKind::Secondary, Hit::VmDelete, 1),
             ] {
-                let w = button_min_width(lbl);
-                if bx < x0 + label.chars().count() as u16 + w + gap + 2 {
-                    break;
-                }
-                bx -= w + gap;
-                let rect = Rect { x: bx, y: y - 1, width: w, height: TALL_PILL_H };
+                let Some(rect) = row.next(lbl, gap) else { break };
                 // Paste stands there greyed with nothing copied — the one
                 // control that says the pair exists before it is used —
                 // and takes no clicks and no hover while it does.
@@ -2052,14 +2047,9 @@ impl VarManager {
         if y + 2 <= bottom {
             let label = if secret { format!("{name}  {GLYPH_LOCK}") } else { name.to_string() };
             text(buf, x0, y, &label, theme.text, theme.page, true);
-            let mut bx = right.x + right.width;
+            let mut row = TitleButtons::new(x0, &label, right.x + right.width, y);
             for (lbl, hit) in [("Delete", Hit::VmDelete), ("Rename", Hit::VmRename)] {
-                let w = button_min_width(lbl);
-                if bx < x0 + label.chars().count() as u16 + w + 3 {
-                    break;
-                }
-                bx -= w + 1;
-                let rect = Rect { x: bx, y: y - 1, width: w, height: TALL_PILL_H };
+                let Some(rect) = row.next(lbl, 1) else { break };
                 let painted =
                     Button { label: lbl, kind: ButtonKind::Secondary, state: state_of(&hit) }
                         .paint(buf, rect, theme);

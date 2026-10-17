@@ -36,6 +36,42 @@ pub fn button_min_width(label: &str) -> u16 {
     label.chars().count() as u16 + 4
 }
 
+/// The buttons on a Manage detail pane's title row, laid out from the
+/// pane's right edge inward. Each block straddles the title's row
+/// (`y - 1 ..= y + 1`), and one that would come within two columns of
+/// the title — measured in the cells the title paints — is dropped
+/// rather than painted over it, and so is every button after it. A
+/// dropped button stays reachable by its key.
+pub struct TitleButtons {
+    /// The right edge of the next button's gap.
+    x: u16,
+    /// The first column a button may start at.
+    clear: u16,
+    /// The title's row.
+    y: u16,
+}
+
+impl TitleButtons {
+    pub fn new(title_x: u16, title: &str, right_edge: u16, y: u16) -> Self {
+        let w = u16::try_from(crate::ui::cells(title)).unwrap_or(u16::MAX);
+        Self { x: right_edge, clear: title_x.saturating_add(w).saturating_add(2), y }
+    }
+
+    /// The block for a button showing `label`, with `gap` columns between
+    /// it and whatever is to its right; `None` once there is no room.
+    pub fn next(&mut self, label: &str, gap: u16) -> Option<Rect> {
+        let w = button_min_width(label);
+        let x = self.x.saturating_sub(w + gap);
+        if x < self.clear {
+            // Sticky: a later, narrower button must not jump the queue.
+            self.x = 0;
+            return None;
+        }
+        self.x = x;
+        Some(Rect { x, y: self.y.saturating_sub(1), width: w, height: BUTTON_HEIGHT })
+    }
+}
+
 impl Button<'_> {
     /// Paints this button into `area`, which must be exactly
     /// [`BUTTON_HEIGHT`] rows tall. The label is centered bold on the
@@ -89,6 +125,37 @@ mod tests {
         })
         .unwrap();
         term
+    }
+
+    /// Buttons come off the right edge one gap apart, and the title is
+    /// measured in the cells it paints: `本番` at 10 takes 4, so a button
+    /// may start at 16 and no further left.
+    #[test]
+    fn title_buttons_stop_two_cells_past_the_painted_title() {
+        let mut row = TitleButtons::new(10, "本番", 40, 1);
+        // "Delete" is 10 wide: 40 - 11.
+        assert_eq!(row.next("Delete", 1), Some(Rect::new(29, 0, 10, BUTTON_HEIGHT)));
+        assert_eq!(row.next("Rename", 1), Some(Rect::new(18, 0, 10, BUTTON_HEIGHT)));
+        assert_eq!(row.next("Move", 1), None, "8 wide would start at 9, inside the title");
+        let mut exact = TitleButtons::new(10, "本番", 27, 1);
+        assert_eq!(exact.next("Delete", 1).map(|r| r.x), Some(16), "two cells of air exactly");
+    }
+
+    /// Once a button is dropped, every one after it is too: a narrower
+    /// one further down the list must not take the slot out of order.
+    #[test]
+    fn title_buttons_stay_dropped_after_the_first_that_does_not_fit() {
+        let mut row = TitleButtons::new(10, "ab", 40, 1);
+        assert_eq!(row.next("a button label far too long to fit", 1), None);
+        assert_eq!(row.next("OK", 1), None, "OK alone would fit at 33");
+    }
+
+    /// A title past the edge of a `u16` saturates rather than wrapping
+    /// into a small width that would let the buttons over it.
+    #[test]
+    fn title_buttons_saturate_on_a_runaway_title() {
+        let mut row = TitleButtons::new(u16::MAX - 1, "abc", u16::MAX, 1);
+        assert_eq!(row.next("OK", 1), None);
     }
 
     #[test]

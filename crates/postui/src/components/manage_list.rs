@@ -11,7 +11,7 @@ use crate::hit::{Hit, HitMap};
 use crate::keyroute::spell::{Key, Nav};
 use crate::paint::{
     Button, ButtonKind, ControlState, ListRow, PROPERTY_MAX_W, Pill, PropertyRow, RowHighlight,
-    TALL_PILL_H, button_min_width, fill, label_column, pill_min_width, text,
+    TALL_PILL_H, TitleButtons, fill, label_column, pill_min_width, text,
 };
 use crate::theme::Theme;
 use postui_core::project::Project;
@@ -916,15 +916,10 @@ impl ManageList {
             };
             text(buf, x0, y, &title, theme.text, theme.page, true);
             let buttons = Self::buttons(tab);
-            let mut bx = right.x + right.width;
+            let mut row = TitleButtons::new(x0, &title, right.x + right.width, y);
             for (col, button) in buttons.iter().enumerate().rev() {
                 let (label, hit) = (button.label(), button.hit());
-                let w = button_min_width(label);
-                if bx < x0 + title.chars().count() as u16 + w + 3 {
-                    break;
-                }
-                bx -= w + 1;
-                let rect = Rect { x: bx, y: y - 1, width: w, height: TALL_PILL_H };
+                let Some(rect) = row.next(label, 1) else { break };
                 let state = if self.focus == ListFocus::Detail
                     && self.detail_row == DetailRow::Buttons
                     && self.detail_col == col
@@ -1600,6 +1595,45 @@ mod tests {
             "the overflow line, in the request column"
         );
         assert_eq!(label_y + 6, 9, "and on the pane's last row");
+    }
+
+    /// A wide display name (8 CJK chars, 16 cells) is budgeted by the
+    /// cells its title paints: at every pane width each title-row button
+    /// starts clear of the title, and a button with no room is dropped
+    /// rather than painted over the name's last glyphs.
+    #[test]
+    fn title_row_buttons_stay_clear_of_a_wide_name() {
+        let (mut ctx, _dir) = ctx();
+        let wide = "本番環境本番環境";
+        let env = ctx.environments()[0].clone();
+        let env = ctx.rename_environment(&env, wide).unwrap();
+        let space = ctx.rename_space("main", wide).unwrap();
+        for (tab, slug, title) in [
+            (ManageTab::Environments, env, format!("Environment: {wide}")),
+            (ManageTab::Spaces, space, format!("Space: {wide}")),
+        ] {
+            let items = if tab == ManageTab::Spaces { ctx.spaces() } else { ctx.environments() };
+            let cursor = items.iter().position(|s| *s == slug).unwrap();
+            let title_end = LEFT_W + 2 + crate::ui::cells(&title) as u16;
+            let (mut kept, mut dropped) = (0, 0);
+            for w in LEFT_W + 20..=LEFT_W + 90 {
+                let mut l = ManageList { cursor, ..Default::default() };
+                let hits = draw_at(&mut l, tab, &ctx, w);
+                for button in ManageList::buttons(tab) {
+                    match hits.rect_of(&button.hit()) {
+                        Some(r) => {
+                            kept += 1;
+                            assert!(
+                                r.x >= title_end + 2,
+                                "{tab:?} at {w}: {button:?} at {r:?} reaches the title, which ends at {title_end}"
+                            );
+                        }
+                        None => dropped += 1,
+                    }
+                }
+            }
+            assert!(kept > 0 && dropped > 0, "{tab:?}: the widths cross the cutoff");
+        }
     }
 
     /// A space with nothing in it says `(none)` in the control column,
