@@ -651,7 +651,7 @@ fn cut_rows(lines: &mut Vec<String>, rows: usize, max: usize) {
     if lines.len() > rows {
         lines.truncate(rows);
         if let Some(last) = lines.last_mut() {
-            *last = take_cells(last, max.saturating_sub(1)) + "\u{2026}";
+            *last = format!("{}\u{2026}", take_cells(last, max.saturating_sub(1)));
         }
     }
 }
@@ -662,23 +662,41 @@ pub(crate) fn ellipsize(s: &str, max: usize) -> String {
     if s.width() <= max {
         return s.to_string();
     }
-    take_cells(s, max.saturating_sub(1)) + "\u{2026}"
+    format!("{}\u{2026}", take_cells(s, max.saturating_sub(1)))
 }
 
-/// The longest prefix of `s` that fits in `max` display cells.
-pub(crate) fn take_cells(s: &str, max: usize) -> String {
-    use unicode_width::UnicodeWidthChar;
-    let mut out = String::new();
+/// `ellipsize` from the other end: `s` cut to at most `max` display
+/// cells, the first of which becomes `…`, so its end stays in view.
+pub(crate) fn ellipsize_start(s: &str, max: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if s.width() <= max {
+        return s.to_string();
+    }
+    let room = max.saturating_sub(1);
     let mut w = 0;
-    for c in s.chars() {
-        let cw = c.width().unwrap_or(0);
-        if w + cw > max {
+    let mut start = s.len();
+    for (i, c) in s.char_indices().rev() {
+        w += c.width().unwrap_or(0);
+        if w > room {
             break;
         }
-        out.push(c);
-        w += cw;
+        start = i;
     }
-    out
+    format!("\u{2026}{}", &s[start..])
+}
+
+/// The longest prefix of `s` that fits in `max` display cells. A wide
+/// glyph that would straddle the edge is left out.
+pub(crate) fn take_cells(s: &str, max: usize) -> &str {
+    use unicode_width::UnicodeWidthChar;
+    let mut w = 0;
+    for (i, c) in s.char_indices() {
+        w += c.width().unwrap_or(0);
+        if w > max {
+            return &s[..i];
+        }
+    }
+    s
 }
 
 /// Marks the focused pane with a half-block accent bar down its left
@@ -929,6 +947,28 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, app)).unwrap();
         format!("{:?}", terminal.backend().buffer())
+    }
+
+    /// A cut is measured in cells: a 2-cell glyph that would straddle the
+    /// edge is left out, so the cut never paints past its room.
+    #[test]
+    fn take_cells_cuts_in_cells_and_leaves_out_a_straddling_glyph() {
+        assert_eq!(take_cells("本番環境", 5), "本番");
+        assert_eq!(take_cells("本番環境", 4), "本番");
+        assert_eq!(take_cells("本番環境", 0), "");
+        assert_eq!(take_cells("abcdef", 4), "abcd");
+        assert_eq!(take_cells("abc", 10), "abc");
+    }
+
+    /// The mirror of `ellipsize`: the end survives behind a leading `…`,
+    /// within `max` cells.
+    #[test]
+    fn ellipsize_start_keeps_the_end_within_its_cells() {
+        assert_eq!(ellipsize_start("/home/user/project", 30), "/home/user/project");
+        assert_eq!(ellipsize_start("/home/user/project", 8), "\u{2026}project");
+        let cut = ellipsize_start("/home/本番環境/作業", 8);
+        assert!(cut.width() <= 8, "{cut:?} is {} cells", cut.width());
+        assert_eq!(cut, "\u{2026}境/作業");
     }
 
     /// A plain token's info, its value from the `qa` environment.

@@ -4225,13 +4225,7 @@ fn draw_header_strip(
         let right = pill_x.saturating_sub(1);
         if right > x + 2 {
             let avail = (right - x - 1) as usize;
-            let s = if data.url.chars().count() > avail {
-                let mut cut: String = data.url.chars().take(avail.saturating_sub(1)).collect();
-                cut.push('\u{2026}');
-                cut
-            } else {
-                data.url.clone()
-            };
+            let s = crate::ui::ellipsize(&data.url, avail);
             crate::paint::text(buf, x + 1, area.y, &s, t.text_muted, t.panel, false);
         }
     }
@@ -6015,6 +6009,44 @@ mod tests {
             out.contains("https://") && out.contains('\u{2026}'),
             "a clipped URL ends in an ellipsis: {out}"
         );
+    }
+
+    /// A URL in 2-cell glyphs is ellipsized in cells: it stops a cell
+    /// short of the step pill instead of painting over it.
+    #[test]
+    fn a_wide_url_is_cut_short_of_the_step_pill() {
+        let mut d = data(r#"{"a": 1}"#);
+        d.url = format!("https://例え.jp/{}", "本番環境".repeat(20));
+        let mut r = Response::default();
+        r.set_state(ResponseState::Ready(Box::new(d)), 0);
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            pointer: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+        let buf = terminal.backend().buffer();
+        let pill = [-1, 1]
+            .into_iter()
+            .filter_map(|d| hits.rect_of(&crate::hit::Hit::SplitStep(d)))
+            .min_by_key(|r| r.x)
+            .expect("the step pill is drawn");
+        let row: String = (0..80).map(|x| buf[(x, pill.y)].symbol()).collect();
+        assert!(row.contains('\u{2026}'), "the URL is ellipsized: {row}");
+        for x in pill.x.saturating_sub(1)..80 {
+            let s = buf[(x, pill.y)].symbol();
+            assert!(
+                s.is_empty() || !"例え本番環境".contains(s),
+                "the URL ran on to column {x}: {row}"
+            );
+        }
     }
 
     #[test]

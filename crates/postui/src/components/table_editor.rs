@@ -779,6 +779,7 @@ impl TableEditorState {
         ghost_label: Option<&str>,
     ) {
         use super::chooser::clip;
+        use unicode_width::UnicodeWidthStr;
         let theme = ctx.theme;
         let cols = columns(area.x, area.width);
         let editing_col = self.editing.as_ref().filter(|e| e.row == i).map(|e| e.col);
@@ -839,7 +840,7 @@ impl TableEditorState {
             // is a note about that value, so it reads where the value
             // ends rather than on a row of its own.
             if let Some(hint) = hint {
-                let used = shown.chars().count() as u16;
+                let used = shown.width() as u16;
                 let hint_x = cols.value_x + used + 3;
                 let room = value_right.saturating_sub(hint_x);
                 if room > 0 {
@@ -854,11 +855,11 @@ impl TableEditorState {
             // where the clip did rather than run on across empty cells
             // (and, on a narrow pane, into whatever is drawn beside it).
             if editing_col != Some(Col::Key) {
-                let len = (key.chars().count() as u16).min(name_w);
+                let len = clip(key, name_w).width() as u16;
                 Self::strike_cells(buf, cols.name_x, y, len);
             }
             if editing_col != Some(Col::Value) {
-                let len = (entry.value.chars().count() as u16).min(value_w);
+                let len = clip(&entry.value, value_w).width() as u16;
                 Self::strike_cells(buf, cols.value_x, y, len);
             }
         }
@@ -2039,6 +2040,79 @@ mod tests {
                 "the strike ran past the table's own area, at column {x}"
             );
         }
+    }
+
+    /// Draws `map` into the left `width` columns of a 40-wide terminal.
+    fn draw_narrow(
+        map: &IndexMap<String, Entry>,
+        width: u16,
+        shadow: Option<&IndexMap<String, String>>,
+        hits: &mut HitMap,
+    ) -> Terminal<TestBackend> {
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let area = Rect::new(0, 0, width, 10);
+        let t = TableEditorState::default();
+        terminal
+            .draw(|f| {
+                t.draw(
+                    f,
+                    area,
+                    map,
+                    &ctx(&theme, None),
+                    "+ Add param",
+                    hits,
+                    shadow,
+                    &VarView::default(),
+                )
+            })
+            .unwrap();
+        terminal
+    }
+
+    /// A value in 2-cell glyphs is cut in cells: on a narrow pane it stops
+    /// at the table's edge instead of painting twice its room past it.
+    #[test]
+    fn a_wide_value_stops_at_the_table_s_edge() {
+        let value = "本番環境".repeat(5);
+        let map = map_of(&[("a", value.as_str())]);
+        let mut hits = HitMap::default();
+        let terminal = draw_narrow(&map, 24, None, &mut hits);
+        let buf = terminal.backend().buffer();
+        let y = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap().y;
+        for x in 24..40 {
+            assert_eq!(buf[(x, y)].symbol(), " ", "the value ran past the table, at column {x}");
+        }
+    }
+
+    /// The shadow hint trails the value by 3 cells, counted from where
+    /// the value's cells end, so it never lands on a wide value's glyphs.
+    #[test]
+    fn the_shadow_hint_trails_a_wide_value_s_cells() {
+        let map = map_of(&[("a", "本番")]);
+        let shadow: IndexMap<String, String> = [("a".to_string(), "qa: 1".to_string())].into();
+        let mut hits = HitMap::default();
+        let terminal = draw_narrow(&map, 40, Some(&shadow), &mut hits);
+        let buf = terminal.backend().buffer();
+        let v = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
+        assert_eq!(buf[(v.x + 2, v.y)].symbol(), "番", "the value keeps its second glyph");
+        assert_eq!(buf[(v.x + 7, v.y)].symbol(), "o", "the hint starts 3 cells past the value");
+    }
+
+    /// A disabled wide value is struck across exactly the cells it fills.
+    /// A wide glyph's style lives on its first cell (the terminal draws
+    /// it across both), so those are the cells to check.
+    #[test]
+    fn a_disabled_wide_value_is_struck_across_its_cells() {
+        let mut map = map_of(&[("a", "本番")]);
+        map["a"].enabled = false;
+        let mut hits = HitMap::default();
+        let terminal = draw_narrow(&map, 40, None, &mut hits);
+        let buf = terminal.backend().buffer();
+        let v = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
+        let struck = |x: u16| buf[(x, v.y)].modifier.contains(Modifier::CROSSED_OUT);
+        assert!(struck(v.x) && struck(v.x + 2), "both glyphs of the value are struck");
+        assert!(!struck(v.x + 4), "the strike stops where the value does");
     }
 
     /// Selecting a row must not move anything: rows edit in place on their

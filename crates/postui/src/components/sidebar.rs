@@ -1,3 +1,4 @@
+use super::chooser::clip;
 use super::{Component, DrawCtx};
 use crate::action::{Action, FoldOp, Verb};
 use crate::anim::{AnimKey, ListId};
@@ -1326,18 +1327,6 @@ impl Sidebar {
         })
     }
 
-    /// Clips `s` to at most `max` chars (char-count width, matching the
-    /// paint layer's char-count convention elsewhere).
-    fn clip(s: &str, max: u16) -> &str {
-        if max == 0 {
-            return "";
-        }
-        match s.char_indices().nth(max as usize) {
-            Some((idx, _)) => &s[..idx],
-            None => s,
-        }
-    }
-
     /// Paints one row's text-row content (method tag/disclosure + name) at
     /// `text_row`, on top of the fill already painted there (by `ListRow`
     /// or the travel band). `row_fill` is that fill — the surface the tag
@@ -1383,7 +1372,7 @@ impl Sidebar {
                         buf,
                         name_x,
                         text_row,
-                        Self::clip(&label, right - name_x),
+                        clip(&label, right - name_x),
                         theme.text_muted,
                         row_fill,
                         false,
@@ -1405,7 +1394,7 @@ impl Sidebar {
                             buf,
                             x,
                             text_row,
-                            Self::clip(&label, right.saturating_sub(x)),
+                            clip(&label, right.saturating_sub(x)),
                             theme.method_color(*m),
                             row_fill,
                             true,
@@ -1452,7 +1441,7 @@ impl Sidebar {
                     buf,
                     name_x,
                     text_row,
-                    Self::clip(basename, right - name_x),
+                    clip(basename, right - name_x),
                     name_fg,
                     row_fill,
                     open,
@@ -2024,6 +2013,36 @@ mod tests {
             Some(&Hit::SidebarFolderArrow(1)),
             "arrow hit wins over the row hit underneath it"
         );
+    }
+
+    /// A request name in 2-cell glyphs is cut in cells: it stops at the
+    /// sidebar's edge instead of painting into the pane beside it.
+    #[test]
+    fn a_wide_request_name_stops_at_the_sidebar_s_edge() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["本番環境本番環境本番環境本番環境"]), "main", &expanded(&[]), &[]);
+        let theme = Theme::dark();
+        let ctx = draw_ctx(&theme, None);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        let mut hits = HitMap::default();
+        let area = Rect::new(0, 0, 20, 12);
+        terminal.draw(|f| s.draw(f, area, &ctx, &mut hits)).unwrap();
+        let buf = terminal.backend().buffer();
+        let painted: String = (0..20)
+            .flat_map(|x| (0..12).map(move |y| (x, y)))
+            .map(|p| buf[p].symbol().to_string())
+            .collect();
+        assert!(painted.contains('本'), "the name is drawn: {painted}");
+        for y in 0..12 {
+            for x in 20..40 {
+                assert_eq!(
+                    buf[(x, y)].symbol(),
+                    " ",
+                    "the sidebar painted past its edge at ({x}, {y})"
+                );
+            }
+        }
     }
 
     /// The top row at `width` columns: its text, and the two buttons' hits.
