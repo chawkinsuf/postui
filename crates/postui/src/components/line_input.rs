@@ -495,13 +495,32 @@ impl LineInput {
     /// have changed) or `false` if the caller should treat it as unhandled.
     /// The char index a word-left/word-right motion from the cursor lands
     /// on (ctrl+arrow, or alt+arrow for macOS muscle memory).
+    /// Graphemes hop as their first chars do, so a mark stays in its word.
     fn word_target(&self, forward: bool) -> usize {
-        let chars: Vec<char> = self.text.chars().collect();
-        if forward {
-            super::word_nav::next_word_boundary(&chars, self.cursor)
+        let glyphs = glyphs(&self.text);
+        let firsts: Vec<char> =
+            glyphs.iter().filter_map(|g| self.text[g.byte..].chars().next()).collect();
+        let at = glyph_at(&glyphs, self.cursor);
+        let to = if forward {
+            super::word_nav::next_word_boundary(&firsts, at)
         } else {
-            super::word_nav::prev_word_boundary(&chars, self.cursor)
-        }
+            super::word_nav::prev_word_boundary(&firsts, at)
+        };
+        glyph_char(&glyphs, to)
+    }
+
+    /// The grapheme edge a one-step move back from char `idx` lands on:
+    /// the start of the grapheme before it (or the one it is inside), so
+    /// what looks like one thing on screen takes one press.
+    fn edge_before(&self, idx: usize) -> usize {
+        glyphs(&self.text).iter().rev().map(|g| g.char).find(|&c| c < idx).unwrap_or(0)
+    }
+
+    /// The grapheme edge a one-step move forward from char `idx` lands on:
+    /// the end of the grapheme it starts (or is inside).
+    fn edge_after(&self, idx: usize) -> usize {
+        let glyphs = glyphs(&self.text);
+        glyphs.iter().map(|g| g.char + g.chars).find(|&e| e > idx).unwrap_or(idx)
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
@@ -604,7 +623,7 @@ impl LineInput {
                 // ctrl/alt+backspace removes the whole word behind the
                 // caret, the same hop word-left would make.
                 let target =
-                    if word { self.word_target(false) } else { self.cursor.saturating_sub(1) };
+                    if word { self.word_target(false) } else { self.edge_before(self.cursor) };
                 self.delete_back_from(target);
                 true
             }
@@ -619,7 +638,7 @@ impl LineInput {
                 if self.cursor < self.len_chars() {
                     self.record(EditKind::DeleteForward);
                     let start = self.byte_offset(self.cursor);
-                    let end = self.byte_offset(self.cursor + 1);
+                    let end = self.byte_offset(self.edge_after(self.cursor));
                     self.text.replace_range(start..end, "");
                 }
                 true
@@ -629,14 +648,14 @@ impl LineInput {
                 if shift {
                     self.anchor.get_or_insert(self.cursor);
                     self.cursor =
-                        if word { self.word_target(false) } else { self.cursor.saturating_sub(1) };
+                        if word { self.word_target(false) } else { self.edge_before(self.cursor) };
                 } else if !word && let Some((start, _)) = self.selection() {
                     self.cursor = start;
                     self.anchor = None;
                 } else {
                     self.anchor = None;
                     self.cursor =
-                        if word { self.word_target(false) } else { self.cursor.saturating_sub(1) };
+                        if word { self.word_target(false) } else { self.edge_before(self.cursor) };
                 }
                 true
             }
@@ -644,21 +663,15 @@ impl LineInput {
                 self.break_run();
                 if shift {
                     self.anchor.get_or_insert(self.cursor);
-                    self.cursor = if word {
-                        self.word_target(true)
-                    } else {
-                        (self.cursor + 1).min(self.len_chars())
-                    };
+                    self.cursor =
+                        if word { self.word_target(true) } else { self.edge_after(self.cursor) };
                 } else if !word && let Some((_, end)) = self.selection() {
                     self.cursor = end;
                     self.anchor = None;
                 } else {
                     self.anchor = None;
-                    self.cursor = if word {
-                        self.word_target(true)
-                    } else {
-                        (self.cursor + 1).min(self.len_chars())
-                    };
+                    self.cursor =
+                        if word { self.word_target(true) } else { self.edge_after(self.cursor) };
                 }
                 true
             }
@@ -1833,6 +1846,86 @@ mod tests {
         assert_eq!(unfocused, heart.repeat(2), "a third would take cells 5 and 6");
     }
 
+    const HEART: &str = "\u{2764}\u{fe0f}";
+    const FAMILY: &str = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+
+    /// What looks like one thing is one press: ←/→ cross a whole grapheme.
+    #[test]
+    fn arrows_step_over_a_whole_grapheme() {
+        let mut input = LineInput::new(&format!("a{HEART}{FAMILY}b"));
+        input.handle_key(code(KeyCode::Home));
+        let mut stops = Vec::new();
+        for _ in 0..4 {
+            input.handle_key(code(KeyCode::Right));
+            stops.push(input.cursor());
+        }
+        assert_eq!(stops, [1, 3, 8, 9]);
+        input.handle_key(code(KeyCode::Left));
+        input.handle_key(code(KeyCode::Left));
+        assert_eq!(input.cursor(), 3);
+    }
+
+    /// shift+→ selects the whole grapheme, so what is highlighted is what
+    /// a copy takes.
+    #[test]
+    fn shift_arrows_select_whole_graphemes() {
+        let mut input = LineInput::new(&format!("e\u{301}{HEART}"));
+        input.handle_key(code(KeyCode::Home));
+        input.handle_key(shifted(KeyCode::Right));
+        assert_eq!(input.selected_text().as_deref(), Some("e\u{301}"));
+        input.handle_key(shifted(KeyCode::Right));
+        assert_eq!(input.selected_text().unwrap(), format!("e\u{301}{HEART}"));
+    }
+
+    /// Backspace and Delete remove the whole grapheme, an accent with its
+    /// letter (user, 2026-10-17).
+    #[test]
+    fn backspace_and_delete_remove_a_whole_grapheme() {
+        let mut input = LineInput::new(&format!("ae\u{301}{HEART}"));
+        input.handle_key(code(KeyCode::Backspace));
+        assert_eq!(input.text(), "ae\u{301}");
+        input.handle_key(code(KeyCode::Backspace));
+        assert_eq!(input.text(), "a");
+        let mut input = LineInput::new(&format!("a{FAMILY}b"));
+        input.set_cursor(1);
+        input.handle_key(code(KeyCode::Delete));
+        assert_eq!(input.text(), "ab");
+    }
+
+    /// A word hop treats a grapheme as its first char: a decomposed `é`
+    /// stays inside its word.
+    #[test]
+    fn word_motions_keep_graphemes_whole() {
+        let mut input = LineInput::new("cafe\u{301} bar");
+        input.handle_key(word_key(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(input.cursor(), 6);
+        input.handle_key(word_key(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(input.cursor(), 0);
+        let mut input = LineInput::new("x cafe\u{301}");
+        input.handle_key(word_key(KeyCode::Backspace, KeyModifiers::CONTROL));
+        assert_eq!(input.text(), "x ");
+    }
+
+    /// A double click's word widens to whole graphemes.
+    #[test]
+    fn a_double_click_word_keeps_its_marks() {
+        let mut input = LineInput::new("cafe\u{301} bar");
+        input.select_word_at(1);
+        assert_eq!(input.selected_text().as_deref(), Some("cafe\u{301}"));
+    }
+
+    /// A cursor the vim engine left inside a grapheme steps to its edges.
+    #[test]
+    fn a_cursor_inside_a_grapheme_steps_to_its_edges() {
+        let mut input = LineInput::new(&format!("a{HEART}b"));
+        input.set_cursor(2);
+        input.handle_key(code(KeyCode::Right));
+        assert_eq!(input.cursor(), 3);
+        input.set_cursor(2);
+        input.handle_key(code(KeyCode::Left));
+        assert_eq!(input.cursor(), 1);
+    }
+
     /// The caret keeps a cell of its own even on a grapheme that takes
     /// none (a zero-width space), so its column stays inside the field.
     #[test]
@@ -1843,13 +1936,14 @@ mod tests {
         assert_eq!(input.window_start(true, 5), 1);
     }
 
-    /// A selection that covers part of a grapheme paints all of it, so the
-    /// mark is never split off its letter into a span of its own.
+    /// A selection that covers part of a grapheme (the vim engine's Visual
+    /// goes by its own chars) paints all of it, so the mark is never split
+    /// off its letter into a span of its own.
     #[test]
     fn a_selection_paints_every_grapheme_it_touches() {
         let mut input = LineInput::new("e\u{301}x");
-        input.handle_key(code(KeyCode::Home));
-        input.handle_key(shifted(KeyCode::Right));
+        input.set_cursor(0);
+        input.set_visual(Some((0, VisualShape::Char)));
         let line = input.draw_line(true, &Theme::dark());
         assert_eq!(line.spans[0].content, "e\u{301}");
         assert!(line.spans[0].style.add_modifier.contains(Modifier::REVERSED));
