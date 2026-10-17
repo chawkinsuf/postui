@@ -5002,8 +5002,9 @@ fn draw_jq_bar(
                 && text.is_char_boundary(start_byte)
                 && text.is_char_boundary(end_byte)
             {
-                let start = text[..start_byte].chars().count() as u16;
-                let len = text[start_byte..end_byte].chars().count().max(1) as u16;
+                // In cells, as `LineInput` lays the text out.
+                let start = crate::ui::cells(&text[..start_byte]) as u16;
+                let len = crate::ui::cells(&text[start_byte..end_byte]).max(1) as u16;
                 let x0 = row.x + 3 + start; // after "jq "
                 for x in x0..(x0 + len).min(row.right()) {
                     frame.buffer_mut()[(x, row.y)]
@@ -9269,6 +9270,47 @@ mod tests {
         // Must not panic despite the leading whitespace + multibyte char
         // ahead of the span in the untrimmed bar text.
         render(&mut r);
+    }
+
+    /// The bar text is laid out in cells, so the error span's underline is
+    /// placed and sized in cells: a wide glyph ahead of the span doesn't
+    /// pull it left, and one inside it doesn't cut it short of the glyphs
+    /// after it. The backend only sees a wide glyph's leading cell (the
+    /// terminal draws the whole glyph in its style), so each glyph of the
+    /// span is underlined at its leading cell.
+    #[test]
+    fn the_error_underline_sits_under_its_span_past_wide_glyphs() {
+        // jaq's spans: `)` after a wide string key, and the `本x` token.
+        for code in [".a 本x", r#"."本番" )"#] {
+            let mut r = ready(ITEMS);
+            r.open_jq();
+            r.set_jq_text(code);
+            r.apply_jq(code, SYNC_PRETTY_BYTES);
+            let err = r.jq_bar().error.clone().expect("syntax error recorded");
+            let span = err.span().expect("the error has a span");
+            let (_, buf) = render_buf(&mut r);
+            let y = (0..buf.area.height)
+                .find(|&y| {
+                    (0..buf.area.width).any(|x| {
+                        buf[(x, y)].modifier.contains(Modifier::UNDERLINED)
+                            && buf[(x, y)].fg == Theme::dark().error
+                    })
+                })
+                .expect("an underlined row");
+            let underlined: Vec<u16> = (0..buf.area.width)
+                .filter(|&x| buf[(x, y)].modifier.contains(Modifier::UNDERLINED))
+                .collect();
+            let chip_x = (0..buf.area.width - 1)
+                .find(|&x| buf[(x, y)].symbol() == "j" && buf[(x + 1, y)].symbol() == "q")
+                .expect("the `jq` chip on the bar row");
+            let mut x = chip_x + 3 + crate::ui::cells(&code[..span.start]) as u16;
+            let mut leading = Vec::new();
+            for c in code[span.clone()].chars() {
+                leading.push(x);
+                x += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) as u16;
+            }
+            assert_eq!(underlined, leading, "{code:?}: span {span:?} is underlined in cells");
+        }
     }
 
     /// A stale error (and its span) from a filter typed against one
