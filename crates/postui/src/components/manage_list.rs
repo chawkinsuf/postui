@@ -11,7 +11,7 @@ use crate::hit::{Hit, HitMap};
 use crate::keyroute::spell::{Key, Nav};
 use crate::paint::{
     Button, ButtonKind, ControlState, ListRow, PROPERTY_MAX_W, Pill, PropertyRow, RowHighlight,
-    TALL_PILL_H, button_min_width, fill, label_column, pill_min_width, text, title_clear_x,
+    TALL_PILL_H, TitleButtons, fill, label_column, pill_min_width, text,
 };
 use crate::theme::Theme;
 use postui_core::project::Project;
@@ -916,16 +916,10 @@ impl ManageList {
             };
             text(buf, x0, y, &title, theme.text, theme.page, true);
             let buttons = Self::buttons(tab);
-            let clear = title_clear_x(x0, &title);
-            let mut bx = right.x + right.width;
+            let mut row = TitleButtons::new(x0, &title, right.x + right.width, y);
             for (col, button) in buttons.iter().enumerate().rev() {
                 let (label, hit) = (button.label(), button.hit());
-                let w = button_min_width(label);
-                if bx.saturating_sub(w + 1) < clear {
-                    break;
-                }
-                bx -= w + 1;
-                let rect = Rect { x: bx, y: y - 1, width: w, height: TALL_PILL_H };
+                let Some(rect) = row.next(label, 1) else { break };
                 let state = if self.focus == ListFocus::Detail
                     && self.detail_row == DetailRow::Buttons
                     && self.detail_col == col
@@ -1630,7 +1624,7 @@ mod tests {
                         Some(r) => {
                             kept += 1;
                             assert!(
-                                r.x > title_end,
+                                r.x >= title_end + 2,
                                 "{tab:?} at {w}: {button:?} at {r:?} reaches the title, which ends at {title_end}"
                             );
                         }

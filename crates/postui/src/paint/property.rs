@@ -76,8 +76,8 @@ pub const HOVER_WASH: f32 = 0.2;
 /// AI" while the Variables pane's is "Value in <env>", whose width
 /// depends on the environment's display name.
 pub fn label_column(labels: &[&str]) -> u16 {
-    let widest = labels.iter().map(|l| crate::ui::cells(l) as u16).max().unwrap_or(0);
-    widest.saturating_add(2).clamp(LABEL_W_MIN, LABEL_W_MAX)
+    let widest = labels.iter().map(|l| crate::ui::cells(l)).max().unwrap_or(0);
+    widest.saturating_add(2).clamp(LABEL_W_MIN.into(), LABEL_W_MAX.into()) as u16
 }
 
 /// The narrowest a [`Pill`] can be painted with `label` intact.
@@ -135,8 +135,9 @@ impl PropertyRow<'_> {
         let label_fg = if self.disabled { theme.text_disabled } else { theme.text };
         // Cut at the column in cells: a label past the ceiling would
         // otherwise run under the control, and a wide glyph straddling
-        // the column's edge would cross into it.
-        let label = crate::ui::clip(self.label, self.label_w);
+        // the column's edge would cross into it. A row narrower than
+        // its column cuts it at the row's own edge.
+        let label = crate::ui::clip(self.label, self.label_w.min(area.width));
         text(buf, area.x, area.y, label, label_fg, bg, false);
 
         // Trailing pills first, right-to-left from the row's right edge:
@@ -486,9 +487,10 @@ mod tests {
     }
 
     /// A pane too narrow for its label column hands out a slot of one
-    /// or zero columns. Neither control may paint or register a single
-    /// cell outside the row it was given: a hit registered past the
-    /// right edge is a click target the row does not own.
+    /// or zero columns. Neither control, nor a label longer than the
+    /// row, may paint or register a single cell outside the row it was
+    /// given: a hit registered past the right edge is a click target the
+    /// row does not own.
     #[test]
     fn a_starved_slot_keeps_both_controls_inside_the_row() {
         let theme = Theme::dark();
@@ -499,7 +501,7 @@ mod tests {
             let mut toggle_rect = None;
             term.draw(|f| {
                 let slot = PropertyRow {
-                    label: "Secret",
+                    label: "Value in production",
                     label_w,
                     hovered: false,
                     disabled: false,
