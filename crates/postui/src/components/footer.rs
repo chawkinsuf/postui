@@ -607,16 +607,8 @@ pub fn paint_chip_row(
             None => {
                 let key_text = format!(" {key}");
                 let label_text = format!(" {label}  ");
-                text(buf, x, y, &key_text, theme.text_muted, theme.panel, true);
-                text(
-                    buf,
-                    x + crate::ui::cells(&key_text) as u16,
-                    y,
-                    &label_text,
-                    theme.text,
-                    theme.panel,
-                    false,
-                );
+                let label_x = text(buf, x, y, &key_text, theme.text_muted, theme.panel, true);
+                text(buf, label_x, y, &label_text, theme.text, theme.panel, false);
             }
         }
         x += width + 2;

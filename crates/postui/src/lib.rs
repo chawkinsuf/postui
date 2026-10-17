@@ -44,7 +44,7 @@ mod fs_lint_test {
 /// through the seam's `vim_*` methods (`app/vim_seam.rs`).
 #[cfg(test)]
 mod vim_boundary_test {
-    use std::path::{Path, PathBuf};
+    use super::source_scan::{code_lines, sources};
 
     /// The vim side: the engine, the key router that hosts its glue, and
     /// the App's seam.
@@ -64,6 +64,68 @@ mod vim_boundary_test {
     const SEAM: [&str; 5] =
         [".vim.", "glue_of(", "live_engine_field(", "session_parts(", "sync_session("];
 
+    #[test]
+    fn only_the_vim_side_names_the_engine_or_the_seam_internals() {
+        let mut hits = Vec::new();
+        for (rel, text) in sources() {
+            if vim_side(&rel) {
+                continue;
+            }
+            let banned: Vec<&str> = if ENGINE_USERS.contains(&rel.as_str()) {
+                SEAM.to_vec()
+            } else {
+                ENGINE.iter().chain(SEAM.iter()).copied().collect()
+            };
+            for (n, line) in code_lines(&text) {
+                if let Some(word) = banned.iter().find(|w| line.contains(*w)) {
+                    hits.push(format!("{rel}:{n}: `{word}` in {}", line.trim()));
+                }
+            }
+        }
+        assert!(hits.is_empty(), "vim reached outside its seam:\n{}", hits.join("\n"));
+    }
+}
+
+/// Text is measured one way: `ui::cells` and its helpers, by grapheme, as
+/// ratatui paints it. Only the places that must count per char like
+/// another program may measure for themselves. (ratatui's own
+/// `Span::width` / `Line::width` measure by `unicode-width` too; they
+/// are not caught here, so don't size with them either.)
+#[cfg(test)]
+mod width_measure_test {
+    use super::source_scan::{code_lines, sources};
+
+    /// Files that may measure text themselves: `ui.rs` is the measure;
+    /// the body editor maps clicks the way edtui lays text out; the vim
+    /// engine counts columns as Vim does; the response view and its JSON
+    /// tree still count per char (task #45 decides which of theirs move).
+    const MEASURERS: [&str; 4] =
+        ["ui.rs", "components/editor.rs", "components/response.rs", "components/json_tree.rs"];
+
+    const MEASURES: [&str; 3] = ["unicode_width", "unicode_segmentation", "CellWidth"];
+
+    #[test]
+    fn only_the_measurers_measure_text_themselves() {
+        let mut hits = Vec::new();
+        for (rel, text) in sources() {
+            if rel.starts_with("vim/") || MEASURERS.contains(&rel.as_str()) {
+                continue;
+            }
+            for (n, line) in code_lines(&text) {
+                if let Some(word) = MEASURES.iter().find(|w| line.contains(*w)) {
+                    hits.push(format!("{rel}:{n}: `{word}` in {}", line.trim()));
+                }
+            }
+        }
+        assert!(hits.is_empty(), "measure text with `ui::cells`:\n{}", hits.join("\n"));
+    }
+}
+
+/// The crate's own source, for the tests that hold it to a rule.
+#[cfg(test)]
+mod source_scan {
+    use std::path::{Path, PathBuf};
+
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         for e in std::fs::read_dir(dir).unwrap().flatten() {
             let p = e.path();
@@ -75,40 +137,50 @@ mod vim_boundary_test {
         }
     }
 
-    #[test]
-    fn only_the_vim_side_names_the_engine_or_the_seam_internals() {
+    /// Every source file but test files and this one, by its path under
+    /// `src/`, with its text. Test code is left out on purpose: it reaches
+    /// in to check what the code did.
+    pub fn sources() -> Vec<(String, String)> {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut files = Vec::new();
         walk(&src, &mut files);
-        let mut hits = Vec::new();
-        for file in files {
-            let rel = file.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
-            // Test code reaches in on purpose: it checks what the seam did.
-            if vim_side(&rel) || rel.ends_with("tests.rs") || rel == "lib.rs" {
-                continue;
+        files
+            .into_iter()
+            .map(|f| {
+                let rel = f.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
+                (rel, f)
+            })
+            .filter(|(rel, _)| !rel.ends_with("tests.rs") && rel != "lib.rs")
+            .map(|(rel, f)| (rel, std::fs::read_to_string(f).unwrap()))
+            .collect()
+    }
+
+    /// The code lines of a file's `text`, numbered from 1: comments are
+    /// skipped, and an inline test module (`mod tests {`) ends the code —
+    /// clippy's `items_after_test_module` keeps it at the bottom. A
+    /// declared one (`mod tests;`) is a file of its own, so the code goes
+    /// on past it.
+    pub fn code_lines(text: &str) -> Vec<(usize, &str)> {
+        let inline_mod =
+            |n: &&str| n.trim_start().starts_with("mod ") && n.trim_end().ends_with('{');
+        let lines: Vec<&str> = text.lines().collect();
+        let mut code = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            if line.trim() == "#[cfg(test)]" && lines.get(i + 1).is_some_and(inline_mod) {
+                break;
             }
-            let banned: Vec<&str> = if ENGINE_USERS.contains(&rel.as_str()) {
-                SEAM.to_vec()
-            } else {
-                ENGINE.iter().chain(SEAM.iter()).copied().collect()
-            };
-            let text = std::fs::read_to_string(&file).unwrap();
-            let lines: Vec<&str> = text.lines().collect();
-            for (i, line) in lines.iter().enumerate() {
-                // A test module at the bottom of a file ends the code.
-                if line.trim() == "#[cfg(test)]"
-                    && lines.get(i + 1).is_some_and(|n| n.trim_start().starts_with("mod "))
-                {
-                    break;
-                }
-                if line.trim_start().starts_with("//") {
-                    continue;
-                }
-                if let Some(word) = banned.iter().find(|w| line.contains(*w)) {
-                    hits.push(format!("{rel}:{}: `{word}` in {}", i + 1, line.trim()));
-                }
+            if !line.trim_start().starts_with("//") {
+                code.push((i + 1, *line));
             }
         }
-        assert!(hits.is_empty(), "vim reached outside its seam:\n{}", hits.join("\n"));
+        code
+    }
+
+    /// A declared test module is skipped over; an inline one ends the code.
+    #[test]
+    fn only_an_inline_test_module_ends_the_code() {
+        let text = "a\n#[cfg(test)]\nmod t;\n// c\nb\n#[cfg(test)]\nmod tests {\nx\n}";
+        let lines: Vec<&str> = code_lines(text).into_iter().map(|(_, l)| l).collect();
+        assert_eq!(lines, ["a", "#[cfg(test)]", "mod t;", "b"]);
     }
 }

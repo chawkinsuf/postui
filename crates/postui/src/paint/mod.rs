@@ -233,8 +233,10 @@ pub fn rule(buf: &mut Buffer, row: Rect, fg: Color, bg: Color) {
     }
 }
 
-/// Paints `s` starting at `(x, y)` with the given fg/bg, optionally bold.
-pub fn text(buf: &mut Buffer, x: u16, y: u16, s: &str, fg: Color, bg: Color, bold: bool) {
+/// Paints `s` starting at `(x, y)` with the given fg/bg, optionally bold,
+/// and answers where the next piece of a row goes: `x` plus the cells
+/// `s` takes, whether or not the buffer's edge cut it.
+pub fn text(buf: &mut Buffer, x: u16, y: u16, s: &str, fg: Color, bg: Color, bold: bool) -> u16 {
     use ratatui::style::{Modifier, Style};
     let mut style = Style::default().fg(fg).bg(bg);
     if bold {
@@ -242,11 +244,13 @@ pub fn text(buf: &mut Buffer, x: u16, y: u16, s: &str, fg: Color, bg: Color, bol
     }
     // `Buffer::set_string` panics on a cell outside the buffer; a caller
     // laying out for a tiny terminal can legitimately land there.
+    let end = x.saturating_add(crate::ui::cells(s).min(u16::MAX as usize) as u16);
     if y < buf.area.top() || y >= buf.area.bottom() || x < buf.area.left() || x >= buf.area.right()
     {
-        return;
+        return end;
     }
     buf.set_string(x, y, s, style);
+    end
 }
 
 /// A plain (unbracketed) clickable text action painted on `surface`:
@@ -277,6 +281,18 @@ mod tests {
 
     fn lum(c: Color) -> f32 {
         oklab_l(rgb_of(c))
+    }
+
+    /// `text` answers `x` plus the cells its text takes, painted whole, cut
+    /// by the buffer's edge, or off the buffer altogether.
+    #[test]
+    fn text_answers_where_the_next_piece_goes() {
+        let mut buf = Buffer::empty(ratatui::layout::Rect::new(0, 0, 6, 1));
+        let (fg, bg) = (Color::White, Color::Black);
+        assert_eq!(text(&mut buf, 1, 0, "本番", fg, bg, false), 5);
+        assert_eq!(buf[(1, 0)].symbol(), "本");
+        assert_eq!(text(&mut buf, 3, 0, "本番環境", fg, bg, false), 11);
+        assert_eq!(text(&mut buf, 2, 3, "ab", fg, bg, false), 4);
     }
 
     /// A resting keycap is `Chip`'s usual muted tint over `control`; a

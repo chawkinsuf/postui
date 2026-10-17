@@ -4218,14 +4218,11 @@ fn draw_header_strip(
     let timing = format!("{} → {}", human_elapsed(data.ttfb), human_elapsed(data.elapsed));
     for label in [timing, human_size(data.size)] {
         let s = format!(" {label} ");
-        let w = crate::ui::cells(&s) as u16;
-        crate::paint::text(buf, x, area.y, &s, t.text_muted, t.panel, false);
-        x += w + 1;
+        x = crate::paint::text(buf, x, area.y, &s, t.text_muted, t.panel, false) + 1;
     }
     if let Some(ct) = &data.content_type {
         let s = format!(" {ct}");
-        crate::paint::text(buf, x, area.y, &s, t.text_muted, t.panel, false);
-        x += crate::ui::cells(&s) as u16 + 1;
+        x = crate::paint::text(buf, x, area.y, &s, t.text_muted, t.panel, false) + 1;
     }
 
     // The rendered URL this response actually came from — `{{vars}}`

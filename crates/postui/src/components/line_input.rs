@@ -770,13 +770,12 @@ impl LineInput {
     /// the terminal's own cursor for a field drawn with
     /// [`Self::draw_line_windowed_no_caret`].
     pub fn caret_column(&self, width: u16) -> u16 {
-        let glyphs = glyphs(&self.text);
-        let start = window_glyph(&glyphs, self.cursor, true, width);
+        let layout = self.layout(true, Some(width));
         // Cells, not chars: a wide glyph before the caret occupies two
         // columns on screen, and the terminal's cursor must land after it.
         // Inside a grapheme, the caret stands where the grapheme starts.
-        let caret = glyph_at(&glyphs, self.cursor);
-        glyphs[start..caret].iter().map(|g| g.width as u16).sum()
+        let caret = glyph_at(&layout.glyphs, self.cursor);
+        layout.glyphs[layout.start..caret].iter().map(|g| g.width as u16).sum()
     }
 
     /// The char a click on column `col` of the `width`-column window lands
@@ -784,17 +783,15 @@ impl LineInput {
     /// wide one or a code), or past the drawn cells the first char the
     /// window left out — the end of the text when it drew all of it.
     pub fn char_at_column(&self, focused: bool, width: u16, col: u16) -> usize {
-        let glyphs = glyphs(&self.text);
-        let start = window_glyph(&glyphs, self.cursor, focused, width);
-        let cells = drawn(&glyphs, start, width.max(1) as usize);
+        let layout = self.layout(focused, Some(width));
         let mut x = 0;
-        for (g, w) in glyphs[start..].iter().zip(&cells) {
+        for (g, w) in layout.drawn() {
             x += w;
             if usize::from(col) < x {
                 return g.char;
             }
         }
-        glyph_char(&glyphs, start + cells.len())
+        glyph_char(&layout.glyphs, layout.end())
     }
 
     /// The columns, within the `width`-column window
@@ -820,14 +817,11 @@ impl LineInput {
         focused: bool,
         width: u16,
     ) -> impl Fn(Range<usize>) -> Option<Range<u16>> + '_ {
-        let glyphs = glyphs(&self.text);
-        let start = window_glyph(&glyphs, self.cursor, focused, width);
-        let cells = drawn(&glyphs, start, width.max(1) as usize);
         // Each drawn grapheme's bytes and the columns it takes.
         let mut x = 0u16;
-        let laid: Vec<(Range<usize>, Range<u16>)> = glyphs[start..]
-            .iter()
-            .zip(cells)
+        let laid: Vec<(Range<usize>, Range<u16>)> = self
+            .layout(focused, Some(width))
+            .drawn()
             .map(|(g, w)| {
                 let cols = x..x + w as u16;
                 x = cols.end;
@@ -868,18 +862,15 @@ impl LineInput {
     /// [`Self::char_at_column`], which measure it as the draw does.
     #[cfg(test)]
     pub fn window_start(&self, focused: bool, width: u16) -> usize {
-        let glyphs = glyphs(&self.text);
-        glyph_char(&glyphs, window_glyph(&glyphs, self.cursor, focused, width))
+        let layout = self.layout(focused, Some(width));
+        glyph_char(&layout.glyphs, layout.start)
     }
 
     /// The exact text [`Self::draw_line_windowed`] puts on screen for a
     /// `width`-column window (unmasked; a masked field shows no tokens to
     /// highlight).
     pub fn visible_window(&self, focused: bool, width: u16) -> String {
-        let glyphs = glyphs(&self.text);
-        let start = window_glyph(&glyphs, self.cursor, focused, width);
-        let cells = drawn(&glyphs, start, width.max(1) as usize);
-        glyphs[start..].iter().zip(cells).map(|(g, w)| g.face(&self.text, w)).collect()
+        self.layout(focused, Some(width)).drawn().map(|(g, w)| g.face(&self.text, w)).collect()
     }
 
     /// The field as a value at rest draws it — unfocused, windowed to
@@ -887,7 +878,7 @@ impl LineInput {
     /// same at rest and in edit, and the click that opens it lands where it
     /// points ([`Self::char_at_column`] reads this same layout).
     pub fn draw_line_at_rest(&self, theme: &Theme, fg: Color, width: u16) -> Line<'static> {
-        self.render(false, theme, fg, Some(width.max(1) as usize), false, false)
+        self.render(false, theme, fg, Some(width), false, false)
     }
 
     /// Paints [`Self::draw_line_at_rest`] into the one-row `area` on `bg`
@@ -913,7 +904,21 @@ impl LineInput {
         mask: bool,
         caret: bool,
     ) -> Line<'static> {
-        self.render(focused, theme, theme.text, Some(width.max(1) as usize), mask, caret)
+        self.render(focused, theme, theme.text, Some(width), mask, caret)
+    }
+
+    /// How the text lays out: in a `width`-column window (scrolled to keep
+    /// the cursor visible when `focused`), or whole when `width` is `None`.
+    fn layout(&self, focused: bool, width: Option<u16>) -> Layout {
+        let glyphs = glyphs(&self.text);
+        let (start, cells) = match width {
+            Some(w) => {
+                let start = window_glyph(&glyphs, self.cursor, focused, w);
+                (start, drawn(&glyphs, start, w.max(1) as usize))
+            }
+            None => (0, drawn(&glyphs, 0, usize::MAX)),
+        };
+        Layout { glyphs, start, cells }
     }
 
     /// The single renderer behind all the `draw_line*` variants: optionally
@@ -925,7 +930,7 @@ impl LineInput {
         focused: bool,
         theme: &Theme,
         fg: Color,
-        width: Option<usize>,
+        width: Option<u16>,
         mask: bool,
         caret: bool,
     ) -> Line<'static> {
@@ -934,21 +939,13 @@ impl LineInput {
         // the text in the terminal's default foreground.
         let base = Style::default().fg(fg);
         let code = Style::default().fg(theme.text_muted);
-        let glyphs = glyphs(&self.text);
+        let layout = self.layout(focused, width);
         // Masked, each grapheme shows a dot per cell it shows, so the
         // masked line lays out exactly as the value it hides.
         let show = |out: &mut String, g: &Glyph, cells: usize| match mask {
             true => out.extend(std::iter::repeat_n('\u{25cf}', cells)),
             false => out.push_str(g.face(&self.text, cells)),
         };
-        // Smallest window start that keeps the cursor visible; 0 when the
-        // whole text is drawn, or unfocused.
-        let start = match width {
-            Some(w) => window_glyph(&glyphs, self.cursor, focused, w.min(u16::MAX as usize) as u16),
-            None => 0,
-        };
-        let cells = drawn(&glyphs, start, width.unwrap_or(usize::MAX));
-        let end = start + cells.len();
         let reversed = base.add_modifier(Modifier::REVERSED);
         let selection = self.paint_span().filter(|_| focused);
         let caret = caret && focused;
@@ -973,7 +970,7 @@ impl LineInput {
         let mut spans: Vec<Span<'static>> = Vec::new();
         let mut run = String::new();
         let mut run_style = base;
-        for (g, w) in glyphs[start..end].iter().zip(cells) {
+        for (g, w) in layout.drawn() {
             let style = style_of(g);
             if style != run_style && !run.is_empty() {
                 spans.push(Span::styled(std::mem::take(&mut run), run_style));
@@ -986,7 +983,7 @@ impl LineInput {
         }
         // The trailing caret cell when the cursor sits past the drawn text
         // — suppressed like the in-text caret while a selection is live.
-        if caret && selection.is_none() && self.cursor >= glyph_char(&glyphs, end) {
+        if caret && selection.is_none() && self.cursor >= glyph_char(&layout.glyphs, layout.end()) {
             spans.push(Span::styled(" ", reversed));
         }
         Line::from(spans)
@@ -1019,6 +1016,30 @@ impl Glyph {
             Some(code) => &code[..cells.min(code.len())],
             None => &text[self.byte..self.byte + self.len],
         }
+    }
+}
+
+/// How a field lays its text out in a window: the one layout the draw,
+/// the clicks, the painted spans and [`LineInput::visible_window`] all
+/// read.
+struct Layout {
+    glyphs: Vec<Glyph>,
+    /// The first grapheme drawn ([`window_glyph`]).
+    start: usize,
+    /// The cells each grapheme from `start` shows, one per grapheme drawn
+    /// ([`drawn`]).
+    cells: Vec<usize>,
+}
+
+impl Layout {
+    /// Each drawn grapheme with the cells it shows.
+    fn drawn(&self) -> impl Iterator<Item = (&Glyph, usize)> {
+        self.glyphs[self.start..].iter().zip(self.cells.iter().copied())
+    }
+
+    /// The grapheme after the last one drawn.
+    fn end(&self) -> usize {
+        self.start + self.cells.len()
     }
 }
 
@@ -1079,8 +1100,7 @@ fn window_glyph(glyphs: &[Glyph], cursor: usize, focused: bool, width: u16) -> u
 }
 
 /// The cells each grapheme from `start` shows in a `width`-column window,
-/// one entry per grapheme drawn: the one layout the draw, the clicks, the
-/// painted spans and [`LineInput::visible_window`] all read. A grapheme
+/// one entry per grapheme drawn ([`Layout::cells`]). A grapheme
 /// shows all its cells while they fit; a code the window's edge cuts shows
 /// the cells left (it is ASCII), so the caret on a code wider than a
 /// narrow field is still drawn; a wide glyph the edge would split is left

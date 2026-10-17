@@ -3,7 +3,7 @@ use super::palette::fuzzy_match;
 use crate::action::Action;
 use crate::paint::{self, ControlState, FIELD_HEIGHT, ListRow, RowHighlight, TextField};
 use crate::theme::Theme;
-use crate::ui::{cells, clip, one_line};
+use crate::ui::{clip, one_line};
 use indexmap::IndexMap;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -587,7 +587,7 @@ impl VarPickerState {
                     x += ORIGIN_COL_W;
                     if entry.secret {
                         let lock = format!("{} ", crate::glyph::LOCK);
-                        paint::text(
+                        x = paint::text(
                             frame.buffer_mut(),
                             x,
                             text_row,
@@ -596,33 +596,28 @@ impl VarPickerState {
                             row_fill,
                             false,
                         );
-                        x += crate::ui::cells(&lock) as u16;
                     }
-                    let name = clip(&entry.name, right.saturating_sub(x));
-                    paint::text(
+                    x = paint::text(
                         frame.buffer_mut(),
                         x,
                         text_row,
-                        name,
+                        clip(&entry.name, right.saturating_sub(x)),
                         theme.text,
                         row_fill,
                         selected,
                     );
-                    x += cells(name) as u16;
                     if let Some(desc) = &entry.description {
                         let desc = format!(" {}", one_line(desc));
                         let w = right.saturating_sub(x);
-                        let clipped = clip(&desc, w);
-                        paint::text(
+                        x = paint::text(
                             frame.buffer_mut(),
                             x,
                             text_row,
-                            clipped,
+                            clip(&desc, w),
                             theme.text_muted,
                             row_fill,
                             false,
                         );
-                        x += cells(clipped) as u16;
                     }
                     if entry.secret {
                         // Secret VALUES never render, per whether or not one
@@ -685,17 +680,15 @@ impl VarPickerState {
                     x += 2;
                     // Option names are free text, so a wide key is cut
                     // and measured in cells like the rest of the row.
-                    let key = clip(&entry.key, right.saturating_sub(x));
-                    paint::text(
+                    x = paint::text(
                         frame.buffer_mut(),
                         x,
                         text_row,
-                        key,
+                        clip(&entry.key, right.saturating_sub(x)),
                         theme.text,
                         row_fill,
                         selected,
                     );
-                    x += cells(key) as u16;
                     // Rows stay lean — key plus muted description. The
                     // option's values live in the detail pane below, which
                     // follows the highlight.

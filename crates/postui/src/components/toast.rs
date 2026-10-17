@@ -3,7 +3,6 @@ use crate::paint::{fill, text};
 use crate::theme::{self, Theme};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::text::Span;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,12 +220,12 @@ impl Toasts {
         let shown = self.entries.len() - skip;
         let mut y = bottom.saturating_sub(shown as u16 * TOAST_HEIGHT);
         for toast in self.entries.iter().skip(skip) {
-            // Use display-width instead of char count to handle double-width chars (emoji, CJK)
-            let display_width = Span::raw(toast.message.as_str()).width();
-            // Clamp to usize before arithmetic to prevent overflow on very long messages
+            // Display cells, not chars, for double-width chars (emoji, CJK).
+            let display_width = crate::ui::cells(&toast.message);
+            // Clamp in usize before narrowing, so a very long message can't wrap.
             let padding_width: usize = 6; // 1 bar col + 1 gap col + 4 right margin
             let clamped_width = display_width.saturating_add(padding_width);
-            let width = (clamped_width as u16).min(screen.width);
+            let width = clamped_width.min(screen.width as usize) as u16;
             let rest_x = screen.right().saturating_sub(width.saturating_add(1));
 
             let t = anims.value_or(AnimKey::ToastFade(toast.id), now, 1.0);
