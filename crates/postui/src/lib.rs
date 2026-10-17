@@ -161,11 +161,11 @@ mod source_scan {
     /// declared one (`mod tests;`) is a file of its own, so the code goes
     /// on past it.
     pub fn code_lines(text: &str) -> Vec<(usize, &str)> {
+        let inline_mod =
+            |n: &&str| n.trim_start().starts_with("mod ") && n.trim_end().ends_with('{');
         let lines: Vec<&str> = text.lines().collect();
         let mut code = Vec::new();
         for (i, line) in lines.iter().enumerate() {
-            let inline_mod =
-                |n: &&str| n.trim_start().starts_with("mod ") && n.trim_end().ends_with('{');
             if line.trim() == "#[cfg(test)]" && lines.get(i + 1).is_some_and(inline_mod) {
                 break;
             }
