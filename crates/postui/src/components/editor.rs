@@ -3272,8 +3272,14 @@ impl Editor {
                     buf.set_style(row, style);
                     let text = format!("{}{}", line.dir.delim(), line.text);
                     buf.set_stringn(row.x, y, &text, usize::from(row.width), style);
-                    let before: usize =
-                        line.text.chars().take(line.cursor).map(body_char_width).sum();
+                    // The cells painted before the caret's grapheme, by
+                    // the measure `set_stringn` paints with.
+                    let at =
+                        line.text.char_indices().nth(line.cursor).map_or(line.text.len(), |c| c.0);
+                    let before: usize = crate::ui::graphemes(&line.text)
+                        .take_while(|(b, g, _)| b + g.len() <= at)
+                        .map(|(_, _, w)| w)
+                        .sum();
                     let x = row
                         .x
                         .saturating_add(1)
