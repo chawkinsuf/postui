@@ -3272,18 +3272,20 @@ impl Editor {
                     buf.set_style(row, style);
                     let text = format!("{}{}", line.dir.delim(), line.text);
                     buf.set_stringn(row.x, y, &text, usize::from(row.width), style);
-                    // The cells painted before the caret's grapheme, by
-                    // the measure `set_stringn` paints with.
-                    let at =
-                        line.text.char_indices().nth(line.cursor).map_or(line.text.len(), |c| c.0);
-                    let before: usize = crate::ui::graphemes(&line.text)
+                    // The cells painted before the caret's grapheme, the
+                    // delimiter's included, measured on the painted string
+                    // as `set_stringn` segments it.
+                    let at = text.len() - line.text.len()
+                        + line
+                            .text
+                            .char_indices()
+                            .nth(line.cursor)
+                            .map_or(line.text.len(), |c| c.0);
+                    let before: usize = crate::ui::graphemes(&text)
                         .take_while(|(b, g, _)| b + g.len() <= at)
                         .map(|(_, _, w)| w)
                         .sum();
-                    let x = row
-                        .x
-                        .saturating_add(1)
-                        .saturating_add(u16::try_from(before).unwrap_or(u16::MAX));
+                    let x = row.x.saturating_add(u16::try_from(before).unwrap_or(u16::MAX));
                     if x < row.right() {
                         buf[(x, y)].set_style(style.add_modifier(Modifier::REVERSED));
                     }
