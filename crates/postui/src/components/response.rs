@@ -3051,11 +3051,9 @@ impl Response {
     }
 
     /// Shows a finished run's result: the filtered tree, or the full body
-    /// with a note or an error.
+    /// with a note or an error. Both callers hold the view it ran for.
     fn land_jq_result(&mut self, result: Result<JqRunOutput, JqError>) {
-        let Some(view) = self.view.as_mut() else {
-            return;
-        };
+        let view = self.view.as_mut().expect("a jq result lands on a ready view");
         self.jq.pending = None;
         view.awaiting_filter = false;
         match result {
@@ -9463,11 +9461,16 @@ mod tests {
         r.set_jq_text(".data");
         assert!(r.apply_jq(".data", 0).is_none(), "already applied");
         assert!(late(&mut r, &req), "its run still lands");
-        // A new response waits on no run.
+        // A new response waits on no run, and its own first run is not
+        // mistaken for the old view's (same run id, other generation).
         let mut r = ready(ITEMS);
-        r.apply_jq(".data", 0).expect("background run");
+        let old = r.apply_jq(".data", 0).expect("background run");
         r.set_state(ResponseState::Ready(Box::new(data(ITEMS))), 9);
         assert!(r.jq_bar().pending.is_none());
+        let new = r.apply_jq(".data.items", 0).expect("background run");
+        assert_eq!(new.run, old.run, "run ids restart with the view");
+        assert!(!late(&mut r, &old), "the old view's result is dropped");
+        assert!(r.jq_bar().pending.is_some(), "the new run is still awaited");
     }
 
     #[test]
