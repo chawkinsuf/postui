@@ -779,11 +779,13 @@ pub enum HeaderRow {
 /// pane's width.
 const SENT_DIVIDER: &str = "\u{2500}\u{2500} sent ";
 
-/// Where a header row's ` 󰆏 ` copy pill starts, in cells as ratatui
-/// paints them: the row's text, then one plain cell so the pill's hover
-/// fill never touches the text.
-fn header_pill_col(line: &str) -> usize {
-    crate::ui::cells(line) + 1
+/// The columns a header row's ` 󰆏 ` copy pill paints on, in cells as
+/// ratatui paints them: past the row's text and one plain cell that keeps
+/// the pill's hover fill off it. (`crop_cols` still counts per char, so
+/// scrolled past an emoji sequence the two part: #45.)
+fn header_pill_cols(line: &str) -> std::ops::Range<usize> {
+    let start = crate::ui::cells(line) + 1;
+    start..start + crate::ui::cells(crate::glyph::COPY_PILL)
 }
 
 /// `name: value` rows with the values aligned past the widest name.
@@ -990,9 +992,9 @@ impl ReadyView {
         let w = match self.mode {
             ViewMode::Pretty => self.active_tree().map_or(0, JsonTree::visible_width),
             ViewMode::Raw => self.raw_lines.iter().map(|l| l.width()).max().unwrap_or(0),
-            // + 3 for the ` 󰆏 ` copy pill appended to each rendered row.
+            // To the end of the copy pill appended to each rendered row.
             ViewMode::Headers => {
-                self.header_lines.iter().map(|l| header_pill_col(l) + 3).max().unwrap_or(0)
+                self.header_lines.iter().map(|l| header_pill_cols(l).end).max().unwrap_or(0)
             }
         };
         self.content_width = Some((key.0, key.1, key.2, w));
@@ -4575,12 +4577,8 @@ fn body_lines(
                 let text = if matches!(row, HeaderRow::Sent(_)) { dim } else { text };
                 let (name, value) = line.split_once(':').unwrap_or((line.as_str(), ""));
                 let name_piece = format!("{name}:");
-                // The plain cell `header_pill_col` counts before the pill.
+                // The plain cell `header_pill_cols` counts before the pill.
                 let value_piece = format!("{value} ");
-                // A received value can hold wide text. (`crop_cols` still
-                // counts per char, so scrolled past an emoji sequence the
-                // two part: #45.)
-                let text_len = header_pill_col(line);
                 let glyph_hovered = hovered == Some(&crate::hit::Hit::HeaderCopy(i));
                 let glyph_style = if glyph_hovered {
                     Style::default().bg(t.accent).fg(t.on_accent)
@@ -4598,19 +4596,18 @@ fn body_lines(
                 push(i, i, pieces, true, (0, view.h_scroll));
 
                 let y = area.y.saturating_add((i - start) as u16);
-                if y < area.y.saturating_add(area.height) {
-                    // The glyph's on-screen column shifts left with the
-                    // horizontal scroll; once the pill itself is cropped
-                    // away there is nothing left to click.
-                    let glyph_col = text_len.saturating_sub(view.h_scroll) as u16;
-                    let glyph_x = area.x.saturating_add(glyph_col);
-                    let glyph_w = area.width.saturating_sub(glyph_col).min(3);
-                    if glyph_w > 0 && text_len + 3 > view.h_scroll {
-                        hits.register(
-                            Rect::new(glyph_x, y, glyph_w, 1),
-                            crate::hit::Hit::HeaderCopy(i),
-                        );
-                    }
+                // Only the pill's cells inside the scrolled viewport are
+                // clickable; cut off at either edge, it keeps what shows.
+                let pill = header_pill_cols(line);
+                let shown = pill.start.max(view.h_scroll)
+                    ..pill.end.min(view.h_scroll + area.width as usize);
+                if y < area.y.saturating_add(area.height) && !shown.is_empty() {
+                    // Both fit in u16: `shown` lies within the viewport.
+                    let x = area.x + (shown.start - view.h_scroll) as u16;
+                    hits.register(
+                        Rect::new(x, y, shown.len() as u16, 1),
+                        crate::hit::Hit::HeaderCopy(i),
+                    );
                 }
             }
         }
@@ -6302,6 +6299,69 @@ mod tests {
             .map(|x| buf[(x, rect.y)].symbol().to_string())
             .collect();
         assert_eq!(pill, vec![" ", "\u{F018F}", " "], "the hover fill is not cut");
+    }
+
+    /// A pill half scrolled off the left edge keeps only its painted
+    /// cells clickable: the rect never reaches past the pill.
+    #[test]
+    fn a_pill_scrolled_half_off_the_left_edge_registers_only_its_shown_cells() {
+        let theme = Theme::dark();
+        let mut d = data("{}");
+        // Aligned past `x-long:`, the short row reads `a:      b` (9
+        // cells), so its pill spans columns 10..13.
+        d.headers = vec![("x-long".into(), "v".repeat(120)), ("a".into(), "b".into())];
+        let mut r = Pane::default();
+        r.set_state(ResponseState::Ready(Box::new(d)), 0);
+        r.set_view_mode(ViewMode::Headers);
+        let hovered = crate::hit::Hit::HeaderCopy(1);
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: Some(&hovered),
+            pointer: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+        r.set_scroll_h(11);
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+        let rect = hits.rect_of(&hovered).expect("the pill's tail is registered");
+        let buf = terminal.backend().buffer();
+        let filled: Vec<u16> =
+            (0..buf.area.width).filter(|&x| buf[(x, rect.y)].bg == theme.accent).collect();
+        assert_eq!(filled, vec![rect.x, rect.x + 1], "two pill cells are shown");
+        assert_eq!(rect.width, 2, "the rect covers only the shown cells: {rect:?}");
+    }
+
+    /// A pill past column 65535 is far off screen; its column must not
+    /// wrap into the viewport as a rect over the value text.
+    #[test]
+    fn a_pill_past_u16_columns_registers_no_rect() {
+        let theme = Theme::dark();
+        let mut d = data("{}");
+        // `x-big: ` + value + the spacer puts the pill at column 65546,
+        // which a bare `as u16` wraps to 10.
+        d.headers = vec![("x-big".into(), "v".repeat(65_538))];
+        let mut r = Pane::default();
+        r.set_state(ResponseState::Ready(Box::new(d)), 0);
+        r.set_view_mode(ViewMode::Headers);
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            pointer: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+        assert_eq!(hits.rect_of(&crate::hit::Hit::HeaderCopy(0)), None);
     }
 
     #[test]
