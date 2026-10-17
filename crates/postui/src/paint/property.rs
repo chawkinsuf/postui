@@ -75,7 +75,7 @@ pub const HOVER_WASH: f32 = 0.2;
 /// AI" while the Variables pane's is "Value in <env>", whose width
 /// depends on the environment's display name.
 pub fn label_column(labels: &[&str]) -> u16 {
-    let widest = labels.iter().map(|l| l.chars().count() as u16).max().unwrap_or(0);
+    let widest = labels.iter().map(|l| crate::ui::cells(l) as u16).max().unwrap_or(0);
     widest.saturating_add(2).clamp(LABEL_W_MIN, LABEL_W_MAX)
 }
 
@@ -421,6 +421,14 @@ mod tests {
             LABEL_W_MAX,
             "and a runaway one clamps down rather than eating the row"
         );
+    }
+
+    /// The column is measured in cells, not chars: a wide env name in
+    /// `Value in <env>` (15 chars, 21 cells) gets the room it paints in,
+    /// so the well beside it does not cover its last glyphs.
+    #[test]
+    fn the_label_column_measures_a_wide_label_in_cells() {
+        assert_eq!(label_column(&["Value in 本番環境本番"]), 23);
     }
 
     /// Disabled content blends toward the control's own fill, the same
