@@ -744,27 +744,30 @@ impl LineInput {
     }
 
     /// The columns, within the `width`-column window
-    /// [`Self::draw_line_windowed`] draws, that the chars in `range` take
-    /// on screen, clipped to what the window shows: `None` when none of
-    /// them is in view. An empty range answers its position, an empty
-    /// range of columns. Where a caller paints over part of the drawn
-    /// text (the jq bar underlines an error's span).
+    /// [`Self::draw_line_windowed`] draws, that the text's bytes `range`
+    /// take on screen, clipped to what the window shows: `None` when none
+    /// of it is on screen, or `range` is not a slice of the text. Where a
+    /// caller paints over part of the drawn text (the jq bar underlines an
+    /// error's span).
     pub fn span_columns(
         &self,
         focused: bool,
         width: u16,
         range: Range<usize>,
     ) -> Option<Range<u16>> {
+        let span = self.text.get(range.clone())?;
+        let first = self.text[..range.start].chars().count();
+        let last = first + span.chars().count();
         let chars: Vec<char> = self.text.chars().collect();
         let start = self.window_start(focused, width);
         let end = fit_cells(&chars, start, width.max(1) as usize);
-        let lo = range.start.max(start);
-        let hi = range.end.min(end);
-        if lo > hi || (lo == hi && !range.is_empty()) {
+        let (lo, hi) = (first.max(start), last.min(end));
+        if lo >= hi {
             return None;
         }
         let col = |i: usize| chars[start..i].iter().map(|&c| cell_width(c) as u16).sum::<u16>();
-        Some(col(lo)..col(hi))
+        let cols = col(lo)..col(hi);
+        (!cols.is_empty()).then_some(cols)
     }
 
     /// [`Self::draw_line_windowed`] and [`Self::draw_line_masked`] combined
@@ -1702,22 +1705,29 @@ mod tests {
 
     #[test]
     fn span_columns_are_cells_in_the_drawn_window() {
+        // Bytes: `日` 0..3, `本` 3..6, `x` 6, `y` 7, `z` 8.
         // Unfocused, drawn from char 0: wide chars count two cells.
         let mut input = LineInput::new("日本xyz");
-        assert_eq!(input.span_columns(false, 20, 2..3), Some(4..5));
-        assert_eq!(input.span_columns(false, 20, 1..3), Some(2..5));
-        // An empty range is its position, for the caller to mark one cell.
-        assert_eq!(input.span_columns(false, 20, 3..3), Some(5..5));
+        assert_eq!(input.span_columns(false, 20, 6..7), Some(4..5));
+        assert_eq!(input.span_columns(false, 20, 3..7), Some(2..5));
+        // Nothing to underline: empty, off a char boundary, past the end.
+        assert_eq!(input.span_columns(false, 20, 6..6), None);
+        assert_eq!(input.span_columns(false, 20, 1..3), None);
+        assert_eq!(input.span_columns(false, 20, 8..10), None);
         // Clipped to the window: `日本x` fills 5 cells, `y` is cut off.
-        assert_eq!(input.span_columns(false, 5, 2..4), Some(4..5));
-        assert_eq!(input.span_columns(false, 5, 3..5), None);
+        assert_eq!(input.span_columns(false, 5, 6..8), Some(4..5));
+        assert_eq!(input.span_columns(false, 5, 7..9), None);
         // Focused at the end, the window scrolls: `本xyz` + the caret's
         // blank fill 6 cells, so `日` is out of view and `x` sits at 2.
         input.set_cursor(5);
         assert_eq!(input.window_start(true, 6), 1);
-        assert_eq!(input.span_columns(true, 6, 2..3), Some(2..3));
-        assert_eq!(input.span_columns(true, 6, 0..3), Some(0..3));
-        assert_eq!(input.span_columns(true, 6, 0..1), None);
+        assert_eq!(input.span_columns(true, 6, 6..7), Some(2..3));
+        assert_eq!(input.span_columns(true, 6, 0..7), Some(0..3));
+        assert_eq!(input.span_columns(true, 6, 0..3), None);
+        // A combining mark takes no cell of its own.
+        let input = LineInput::new("e\u{301}x");
+        assert_eq!(input.span_columns(false, 20, 1..3), None);
+        assert_eq!(input.span_columns(false, 20, 0..4), Some(0..2));
     }
 
     #[test]

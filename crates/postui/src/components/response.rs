@@ -4993,30 +4993,20 @@ fn draw_jq_bar(
         //
         // The span is a byte range into `code.trim()` (what was actually
         // compiled), not the untrimmed bar text — offset it by the leading
-        // whitespace `trim()` stripped, and bail out defensively rather
-        // than index: a stale span from a filter compiled before the bar
-        // text last shrank can point past the end, or (once shifted) land
-        // off a char boundary.
+        // whitespace `trim()` stripped. A stale span from a filter compiled
+        // before the bar text last shrank can point past the end, or (once
+        // shifted) land off a char boundary; `span_columns` answers `None`
+        // for those.
         if let (Some(span), Some(w)) = (err.span(), text_window) {
             let text = bar.input.text();
             let leading_ws = text.len() - text.trim_start().len();
-            let start_byte = span.start.saturating_add(leading_ws);
-            let end_byte = span.end.saturating_add(leading_ws);
-            if end_byte <= text.len()
-                && start_byte <= end_byte
-                && text.is_char_boundary(start_byte)
-                && text.is_char_boundary(end_byte)
-            {
-                let start = text[..start_byte].chars().count();
-                let end = start + text[start_byte..end_byte].chars().count();
-                if let Some(cols) = bar.input.span_columns(bar.focused, w, start..end) {
-                    let x0 = row.x + 3 + cols.start; // after "jq "
-                    let len = cols.len().max(1) as u16;
-                    for x in x0..(x0 + len).min(row.right()) {
-                        frame.buffer_mut()[(x, row.y)].set_style(
-                            Style::default().add_modifier(Modifier::UNDERLINED).fg(t.error),
-                        );
-                    }
+            let bytes = span.start.saturating_add(leading_ws)..span.end.saturating_add(leading_ws);
+            if let Some(cols) = bar.input.span_columns(bar.focused, w, bytes) {
+                // After "jq ", and on the row even when it is too narrow
+                // for the chip (`w` 0 still windows one column).
+                for x in row.x + 3 + cols.start..(row.x + 3 + cols.end).min(row.right()) {
+                    frame.buffer_mut()[(x, row.y)]
+                        .set_style(Style::default().add_modifier(Modifier::UNDERLINED).fg(t.error));
                 }
             }
         }
@@ -9341,13 +9331,16 @@ mod tests {
     /// underlined columns, and the row's cell symbols.
     fn jq_bar_underline(r: &mut Response) -> (u16, Vec<u16>, Vec<String>) {
         let (_, buf) = render_buf(r);
-        let (chip_x, y) = (0..buf.area.height)
-            .find_map(|y| {
+        let chips: Vec<(u16, u16)> = (0..buf.area.height)
+            .filter_map(|y| {
                 (0..buf.area.width - 1)
                     .find(|&x| buf[(x, y)].symbol() == "j" && buf[(x + 1, y)].symbol() == "q")
                     .map(|x| (x, y))
             })
-            .expect("the jq bar's chip");
+            .collect();
+        let [(chip_x, y)] = chips[..] else {
+            panic!("one `jq` chip on screen, the bar's: {chips:?}");
+        };
         let underlined = (0..buf.area.width)
             .filter(|&x| buf[(x, y)].modifier.contains(Modifier::UNDERLINED))
             .collect();
