@@ -859,7 +859,7 @@ impl LineInput {
         let glyphs = glyphs(&self.text);
         let start = window_glyph(&glyphs, self.cursor, focused, width);
         let end = fit_glyphs(&glyphs, start, width.max(1) as usize);
-        glyphs[start..end].iter().map(|g| &self.text[g.byte..g.byte + g.len]).collect()
+        glyphs[start..end].iter().map(|g| g.face(&self.text)).collect()
     }
 
     fn render_windowed(
@@ -885,13 +885,17 @@ impl LineInput {
         mask: bool,
         caret: bool,
     ) -> Line<'static> {
+        // The color rides on the spans, not the `Line`: callers that lift
+        // `line.spans` into their own row (the jq bar) would otherwise draw
+        // the text in the terminal's default foreground.
         let base = Style::default().fg(theme.text);
+        let code = Style::default().fg(theme.text_muted);
         let glyphs = glyphs(&self.text);
         // Masked, each grapheme shows a dot per cell it takes, so the
         // masked line lays out exactly as the value it hides.
         let show = |out: &mut String, g: &Glyph| match mask {
             true => out.extend(std::iter::repeat_n('\u{25cf}', g.width)),
-            false => out.push_str(&self.text[g.byte..g.byte + g.len]),
+            false => out.push_str(g.face(&self.text)),
         };
         // Smallest window start that keeps the cursor visible; 0 when the
         // whole text is drawn, or unfocused.
@@ -903,22 +907,15 @@ impl LineInput {
             Some(w) => fit_glyphs(&glyphs, start, w),
             None => glyphs.len(),
         };
-        if !focused {
-            // The color rides on the span, not the `Line`: callers that
-            // lift `line.spans` into their own row (the jq bar) would
-            // otherwise draw the text in the terminal's default
-            // foreground.
-            let mut visible = String::new();
-            glyphs[..end].iter().for_each(|g| show(&mut visible, g));
-            return Line::from(Span::styled(visible, base));
-        }
         let reversed = base.add_modifier(Modifier::REVERSED);
-        let selection = self.paint_span();
+        let selection = self.paint_span().filter(|_| focused);
+        let caret = caret && focused;
         // While a selection is live the reversed range *is* the visual
         // focus; the caret cell hides so it can't dangle outside the
         // selection's edge as a stray reversed cell. Both style whole
         // graphemes: the one holding the cursor, every one a selection
-        // touches.
+        // touches. A code stands out muted until either reverses it, but
+        // not masked: its dots say nothing of what they hide.
         let style_of = |g: &Glyph| {
             let chars = g.char..g.char + g.chars;
             if caret && selection.is_none() && chars.contains(&self.cursor) {
@@ -926,6 +923,7 @@ impl LineInput {
             }
             match selection {
                 Some((s, e)) if chars.start < e && s < chars.end => reversed,
+                _ if g.code.is_some() && !mask => code,
                 _ => base,
             }
         };
@@ -963,8 +961,19 @@ struct Glyph {
     /// Its byte offset and length in the text.
     byte: usize,
     len: usize,
-    /// The cells it takes, by [`crate::ui::cells`]'s measure.
+    /// What a grapheme that takes no cell shows instead: its
+    /// [`vim_code`].
+    code: Option<String>,
+    /// The cells it takes as shown: [`crate::ui::cells`]'s measure, or
+    /// its code's.
     width: usize,
+}
+
+impl Glyph {
+    /// What the field paints for it: its code, or its own text.
+    fn face<'a>(&'a self, text: &'a str) -> &'a str {
+        self.code.as_deref().unwrap_or(&text[self.byte..self.byte + self.len])
+    }
 }
 
 /// `text`'s graphemes, in order.
@@ -974,7 +983,23 @@ fn glyphs(text: &str) -> Vec<Glyph> {
         .map(|(byte, g, width)| {
             let chars = g.chars().count();
             char += chars;
-            Glyph { char: char - chars, chars, byte, len: g.len(), width }
+            let code = (width == 0).then(|| vim_code(g));
+            let width = code.as_ref().map_or(width, String::len);
+            Glyph { char: char - chars, chars, byte, len: g.len(), code, width }
+        })
+        .collect()
+}
+
+/// How Vim shows `g`'s chars where they would take no cell (its
+/// `strtrans`): `^I` for a control char, `^?` for DEL, `<200b>` for the
+/// rest. A field shows a zero-width space or a tab this way, so nothing
+/// in it is invisible.
+fn vim_code(g: &str) -> String {
+    g.chars()
+        .map(|c| match c {
+            '\0'..='\x1f' => format!("^{}", char::from(c as u8 + 0x40)),
+            '\x7f' => "^?".to_string(),
+            _ => format!("<{:x}>", c as u32),
         })
         .collect()
 }
@@ -1001,16 +1026,15 @@ fn glyph_start(glyphs: &[Glyph], i: usize) -> usize {
 /// with the caret scrolled right. Counted in cells, so the caret's column
 /// (the cells from the window start up to the cursor) always fits: the
 /// caret's own grapheme — or a one-cell blank at end-of-text — takes its
-/// room first (a cell at least, even on a grapheme that paints none),
-/// then graphemes before it are admitted from the right while they still
-/// fit.
+/// room first, then graphemes before it are admitted from the right
+/// while they still fit.
 fn window_glyph(glyphs: &[Glyph], cursor: usize, focused: bool, width: u16) -> usize {
     if !focused {
         return 0;
     }
     let width = width.max(1) as usize;
     let mut start = glyph_at(glyphs, cursor);
-    let mut used = glyphs.get(start).map_or(1, |g| g.width.max(1));
+    let mut used = glyphs.get(start).map_or(1, |g| g.width);
     while start > 0 {
         let w = glyphs[start - 1].width;
         if used + w > width {
@@ -1972,14 +1996,57 @@ mod tests {
         assert_eq!(input.text(), format!("ayz{HEART}b"));
     }
 
-    /// The caret keeps a cell of its own even on a grapheme that takes
-    /// none (a zero-width space), so its column stays inside the field.
+    /// A grapheme that takes no cell (a zero-width space, a control char)
+    /// shows as Vim's muted code for it, so nothing in a field is
+    /// invisible (user, 2026-10-17).
     #[test]
-    fn a_caret_on_a_zero_width_grapheme_still_fits_the_window() {
+    fn a_zero_width_grapheme_shows_its_vim_code() {
+        let theme = Theme::dark();
+        let shown = |text: &str| line_text(&LineInput::new(text).draw_line(false, &theme));
+        assert_eq!(shown("abc\u{200b}def"), "abc<200b>def");
+        assert_eq!(shown("a\tb"), "a^Ib");
+        assert_eq!(shown("a\u{7f}\u{85}b"), "a^?<85>b");
+        assert_eq!(shown("a\r\nb"), "a^M^Jb");
+        let line = LineInput::new("a\u{200b}b").draw_line(false, &theme);
+        let code = line.spans.iter().find(|s| s.content == "<200b>").expect("its own span");
+        assert_eq!(code.style.fg, Some(theme.text_muted));
+    }
+
+    /// The caret on a zero-width grapheme reverses its whole code, and →
+    /// crosses the code in one press.
+    #[test]
+    fn the_caret_on_a_zero_width_grapheme_reverses_its_code() {
+        let theme = Theme::dark();
+        let mut input = LineInput::new("abc\u{200b}def");
+        input.set_cursor(3);
+        let line = input.draw_line(true, &theme);
+        let reversed: Vec<&str> = line
+            .spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::REVERSED))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(reversed, ["<200b>"]);
+        assert_eq!(input.caret_column(20), 3);
+        input.handle_key(code(KeyCode::Right));
+        assert_eq!((input.cursor(), input.caret_column(20)), (4, 9));
+    }
+
+    /// The code lays out as drawn: the window, clicks and the text a
+    /// painter reads all count its cells, and a mask hides each of them.
+    #[test]
+    fn a_zero_width_code_takes_its_cells_in_the_layout() {
         let mut input = LineInput::new("abcde\u{200b}");
         input.set_cursor(5);
-        assert_eq!(input.caret_column(5), 4);
-        assert_eq!(input.window_start(true, 5), 1);
+        assert_eq!(input.window_start(true, 10), 1, "the code's 6 cells and 4 letters");
+        assert_eq!(input.caret_column(10), 4);
+        assert_eq!(input.visible_window(true, 10), "bcde<200b>");
+        let input = LineInput::new("a\u{200b}b");
+        let at = |col| input.char_at_column(false, 20, col);
+        assert_eq!([at(0), at(1), at(6), at(7)], [0, 1, 1, 2]);
+        assert_eq!(input.span_columns(false, 20, 1..4), Some(1..7));
+        let masked = line_text(&input.draw_line_masked(false, &Theme::dark()));
+        assert_eq!(masked, "\u{25cf}".repeat(8));
     }
 
     /// A selection that covers part of a grapheme (the vim engine's Visual
