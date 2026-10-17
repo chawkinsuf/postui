@@ -6182,11 +6182,7 @@ impl App {
                     Ok(()) => {
                         self.set_selection_for(&env, &owner, &key);
                         self.record_project_step(t, crate::undo::StepLabel::variable(&owner));
-                        let where_label = if shared {
-                            "all environments".to_string()
-                        } else {
-                            self.env_name(&env)
-                        };
+                        let where_label = self.selection_scope(&owner, &env);
                         self.toasts.push(
                             format!("{owner} \u{2192} {key} ({where_label})"),
                             ToastKind::Success,
@@ -7474,9 +7470,7 @@ impl App {
         } else {
             self.selections_for(&env_key).get(&selector).cloned()
         };
-        // A shared selector's choice holds in every environment.
-        let where_label =
-            if shared { "all environments".to_string() } else { self.env_name(&env_key) };
+        let where_label = self.selection_scope(&selector, &env_key);
         let options: Vec<SelectOption> =
             varmodel::options_of(self.variables(), self.env_data(), &selector)
                 .map(|options| {
@@ -8115,6 +8109,17 @@ impl App {
     /// global selection) live in `variables.toml`, not per environment.
     fn selector_is_shared(&self, selector: &str) -> bool {
         self.variables().selectors.get(selector).is_some_and(|d| d.shared)
+    }
+
+    /// Where a choice of `selector`'s option holds, as the selection
+    /// toasts name it: every environment for a shared selector, else
+    /// `env` by its display name.
+    fn selection_scope(&self, selector: &str, env: &str) -> String {
+        if self.selector_is_shared(selector) {
+            "all environments".to_string()
+        } else {
+            self.env_name(env)
+        }
     }
 
     /// `selector`'s options as they currently stand, from wherever they
