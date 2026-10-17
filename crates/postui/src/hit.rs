@@ -346,9 +346,10 @@ pub enum Hit {
 /// enhancement everywhere else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerShape {
-    /// The terminal's own cursor: background, chrome the mouse can't act on,
-    /// and modal-dismiss regions (`ModalOutside`/`ModalBody`, which behave
-    /// like background rather than a button).
+    /// The terminal's own cursor: background, chrome the mouse can't act on
+    /// (the variable tooltip's `TipPanel` among it), and modal-dismiss
+    /// regions (`ModalOutside`/`ModalBody`, which behave like background
+    /// rather than a button).
     Default,
     /// The hand cursor: anything `on_hit` actually dispatches a click
     /// through — buttons, tabs, chips, rows, cells, scrollbars, dropdown
@@ -398,7 +399,11 @@ impl PointerShape {
             // The response pane's bare content is selectable text (a click
             // anchors a selection sweep), so it I-beams like the editors.
             Some(Hit::Pane(PaneId::Response)) => PointerShape::Text,
-            Some(Hit::Pane(_) | Hit::ModalOutside | Hit::ModalBody) => PointerShape::Default,
+            // The variable tooltip's panel between its pills: a click there
+            // is only swallowed, so it is chrome, not a button.
+            Some(Hit::Pane(_) | Hit::ModalOutside | Hit::ModalBody | Hit::TipPanel(_)) => {
+                PointerShape::Default
+            }
             Some(_) => PointerShape::Pointer,
         }
     }
@@ -783,6 +788,13 @@ mod tests {
         assert_eq!(PointerShape::for_hit(Some(&Hit::Pane(PaneId::Sidebar))), PointerShape::Default);
         assert_eq!(PointerShape::for_hit(Some(&Hit::ModalOutside)), PointerShape::Default);
         assert_eq!(PointerShape::for_hit(Some(&Hit::ModalBody)), PointerShape::Default);
+        // Task #33: the variable tooltip's panel is an arrow; its pills
+        // (the tip's buttons) keep the hand.
+        assert_eq!(PointerShape::for_hit(Some(&Hit::TipPanel("x".into()))), PointerShape::Default);
+        for pill in [Hit::TipCopy("x".into()), Hit::TipReveal("x".into()), Hit::TipEdit("x".into())]
+        {
+            assert_eq!(PointerShape::for_hit(Some(&pill)), PointerShape::Pointer, "{pill:?}");
+        }
     }
 
     #[test]

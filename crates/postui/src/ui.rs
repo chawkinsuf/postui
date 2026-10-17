@@ -389,7 +389,8 @@ const TOOLTIP_MAX_TEXT_W: usize = 56;
 ///   truncated so the whole value is readable;
 /// - the **name** row: the variable's name in the token's own tint, and
 ///   the scope its value came from in muted text (`this request`,
-///   `env = qa`, `default`, `option = user 2`, `needs selection`,
+///   the environment's display name (`qa`), `default value`, the selected
+///   option's name (`user 2`), `needs selection`,
 ///   `missing secret`, `not defined`);
 /// - the **descriptions**, when written, each word-wrapped in muted text
 ///   and stacked (a selector field's selector's, then its selected
@@ -930,7 +931,7 @@ mod tests {
         format!("{:?}", terminal.backend().buffer())
     }
 
-    /// A plain `env = qa` token's info.
+    /// A plain token's info, its value from the `qa` environment.
     fn tip_info(value: Option<&str>, description: Option<&str>) -> TokenInfo {
         TokenInfo {
             value: value.map(str::to_string),
@@ -1054,7 +1055,7 @@ mod tests {
     #[test]
     fn a_tooltip_without_a_description_ends_at_its_name() {
         let rows = tip_rows(120, 40, &tip_info(Some("v"), None));
-        assert_eq!(rows, ["v", "", "x  env = qa"]);
+        assert_eq!(rows, ["v", "", "x  qa"]);
     }
 
     /// Description only (no value): the name row on top, a blank row, the
@@ -1062,7 +1063,7 @@ mod tests {
     #[test]
     fn a_tooltip_without_a_value_tops_with_its_name() {
         let rows = tip_rows(120, 40, &tip_info(None, Some("about x")));
-        assert_eq!(rows, ["x  env = qa", "", "about x"]);
+        assert_eq!(rows, ["x  qa", "", "about x"]);
     }
 
     /// On a terminal narrower than the max width, value and description
@@ -1075,7 +1076,7 @@ mod tests {
         let rows = tip_rows(30, 40, &tip_info(Some(value), Some(desc)));
         let gap = rows.iter().position(String::is_empty).unwrap();
         assert_eq!(rows[..gap].concat(), value, "{rows:?}");
-        assert_eq!(rows[gap + 1], "x  env = qa");
+        assert_eq!(rows[gap + 1], "x  qa");
         assert_eq!(rows[gap + 3..].join(" "), desc, "{rows:?}");
         for row in &rows[..gap] {
             // 25 cells inside the 30-wide screen, less a gap and two pills.
@@ -1101,7 +1102,7 @@ mod tests {
         let rows = tip_rows(120, 9, &info);
         assert_eq!(rows.len(), 6, "{rows:?}");
         assert!(rows[0].ends_with('\u{2026}'), "the value is cut: {rows:?}");
-        assert_eq!(rows[2], "x  env = qa");
+        assert_eq!(rows[2], "x  qa");
         assert_eq!(rows[4..].join(" "), desc, "the description is whole: {rows:?}");
         // Two rows left: the value keeps one, the description the other.
         let rows = tip_rows(120, 8, &info);
@@ -1132,7 +1133,7 @@ mod tests {
         assert_eq!(rows, {
             let mut v = vec!["a".repeat(value_w); 3];
             v.push("a".repeat(value_w - 1) + "\u{2026}");
-            v.extend(["", "x  env = qa", "", "about x"].map(String::from));
+            v.extend(["", "x  qa", "", "about x"].map(String::from));
             v
         });
         // Token on row 9: 9 above, 10 below — the tip goes below.
