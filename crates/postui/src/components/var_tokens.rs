@@ -309,14 +309,21 @@ pub fn paint_var_tokens(
 
 /// Reconstructs the text drawn on one buffer row, so already-rendered
 /// content (the body editor, which paints through edtui) can be scanned for
-/// tokens after the fact. Wide characters leave their trailing cells empty,
-/// which concatenate to nothing — keeping the string's display widths in
-/// step with the columns [`paint_var_tokens`] computes.
+/// tokens after the fact. A wide glyph's trailing cells hold no text of
+/// their own (ratatui reads them back as a blank), so they are skipped —
+/// keeping the string's display widths in step with the columns
+/// [`paint_var_tokens`] computes.
 pub fn row_text(buf: &Buffer, row: Rect) -> String {
     let mut out = String::new();
+    let mut hidden = 0;
     for x in row.x..row.right() {
         if let Some(cell) = buf.cell((x, row.y)) {
+            if hidden > 0 {
+                hidden -= 1;
+                continue;
+            }
             out.push_str(cell.symbol());
+            hidden = crate::ui::cells(cell.symbol()).saturating_sub(1);
         }
     }
     out
@@ -498,5 +505,20 @@ mod tests {
         let hit = hits.rect_of(&Hit::VarToken("base_url".into())).unwrap();
         assert_eq!(hit.x, 8, "6 display columns of text after the origin");
         assert_eq!(hit.width, 12);
+    }
+
+    /// A wide glyph's trailing cell is not text: the row reads back as it
+    /// was painted, so a token after the glyph is tinted where it sits.
+    #[test]
+    fn row_text_skips_a_wide_glyphs_trailing_cell() {
+        let theme = Theme::dark();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 24, 1));
+        crate::paint::text(&mut buf, 0, 0, "日{{base_url}}", theme.text, theme.page, false);
+        let row = Rect::new(0, 0, 24, 1);
+        let text = row_text(&buf, row);
+        assert!(text.starts_with("日{{"), "{text:?}");
+        let mut hits = HitMap::default();
+        paint_var_tokens(&mut buf, row, &text, 0, &view(), &theme, &mut hits);
+        assert_eq!(hits.rect_of(&Hit::VarToken("base_url".into())).unwrap().x, 2);
     }
 }
