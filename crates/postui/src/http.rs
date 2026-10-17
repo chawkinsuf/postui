@@ -182,16 +182,13 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
     let response = result.map_err(|e| error_chain(&e, req))?;
 
     let status = response.status().as_u16();
-    let headers: Vec<(String, String)> = response
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+    // Lossy UTF-8, like the body: `to_str` refuses any byte past ASCII, and
+    // a value shown with a U+FFFD beats one silently shown as empty.
+    let text =
+        |v: &reqwest::header::HeaderValue| String::from_utf8_lossy(v.as_bytes()).into_owned();
+    let headers: Vec<(String, String)> =
+        response.headers().iter().map(|(k, v)| (k.to_string(), text(v))).collect();
+    let content_type = response.headers().get(reqwest::header::CONTENT_TYPE).map(text);
     let bytes = response.bytes().await.map_err(|e| error_chain(&e, req))?;
     let elapsed = started.elapsed();
     let size = bytes.len();
@@ -465,6 +462,44 @@ mod tests {
                 assert_eq!(h.display, h.value, "no secrets here, so display = value");
             }
         }
+    }
+
+    /// A received header value with bytes past ASCII is shown, not
+    /// dropped: UTF-8 decodes as text and an invalid byte (a Latin-1 `é`)
+    /// as U+FFFD, the same lossy decode the body gets. Content-Type too.
+    #[tokio::test]
+    async fn received_non_ascii_header_values_decode_lossily() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let _ = sock.read(&mut buf).await.unwrap();
+            let mut head = b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n".to_vec();
+            head.extend_from_slice("x-title: 日本語\r\n".as_bytes());
+            head.extend_from_slice(b"x-legacy: caf\xe9\r\n");
+            head.extend_from_slice("content-type: text/plain; name=ü\r\n\r\n".as_bytes());
+            sock.write_all(&head).await.unwrap();
+        });
+        let url = format!("http://127.0.0.1:{port}/");
+        let req = PreparedRequest {
+            method: postui_core::model::Method::Get,
+            url: url.clone(),
+            display_url: url,
+            headers: vec![],
+            display_headers: vec![],
+            body: None,
+            insecure: false,
+        };
+        let data = send(&client(), &req).await.unwrap();
+        server.await.unwrap();
+        let value =
+            |name: &str| data.headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        assert_eq!(value("x-title"), Some("日本語"));
+        assert_eq!(value("x-legacy"), Some("caf\u{fffd}"));
+        assert_eq!(value("content-type"), Some("text/plain; name=ü"));
+        assert_eq!(data.content_type.as_deref(), Some("text/plain; name=ü"));
     }
 
     /// The masked twins travel with the wire rows: a secret in a prepared
