@@ -757,9 +757,12 @@ impl LineInput {
         range: Range<usize>,
     ) -> Option<Range<u16>> {
         self.text.get(range.clone())?;
+        let chars: Vec<char> = self.text.chars().collect();
         let start = self.window_start(focused, width);
-        let from = self.text.char_indices().nth(start).map_or(self.text.len(), |(b, _)| b);
-        let to = from + self.visible_window(focused, width).len();
+        let end = fit_cells(&chars, start, width.max(1) as usize);
+        let bytes = |cs: &[char]| cs.iter().map(|c| c.len_utf8()).sum::<usize>();
+        let from = bytes(&chars[..start]);
+        let to = from + bytes(&chars[start..end]);
         let (lo, hi) = (range.start.max(from), range.end.min(to));
         if lo >= hi {
             return None;

@@ -5002,8 +5002,8 @@ fn draw_jq_bar(
             let leading_ws = text.len() - text.trim_start().len();
             let bytes = span.start.saturating_add(leading_ws)..span.end.saturating_add(leading_ws);
             if let Some(cols) = bar.input.span_columns(bar.focused, w, bytes) {
-                // After "jq ", and on the row even when it is too narrow
-                // for the chip (`w` 0 still windows one column).
+                // After "jq ", clipped to the row: one too narrow for the
+                // chip has no text, so no underline.
                 for x in row.x + 3 + cols.start..(row.x + 3 + cols.end).min(row.right()) {
                     frame.buffer_mut()[(x, row.y)]
                         .set_style(Style::default().add_modifier(Modifier::UNDERLINED).fg(t.error));
