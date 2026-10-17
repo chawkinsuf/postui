@@ -2966,7 +2966,8 @@ impl ModalStack {
                         Rect {
                             x: area.x + 2,
                             y: toggle_y,
-                            width: (label.chars().count() as u16).min(area.width.saturating_sub(4)),
+                            width: (crate::ui::cells(&label) as u16)
+                                .min(area.width.saturating_sub(4)),
                             height: 1,
                         },
                         toggle_hit,
@@ -3328,7 +3329,7 @@ impl ModalStack {
                         } else {
                             Style::default().bg(theme.panel).fg(theme.accent)
                         };
-                        let w = label.chars().count() as u16;
+                        let w = crate::ui::cells(label) as u16;
                         let rect = Rect {
                             x: (field_x + field_w).saturating_sub(w),
                             y: title_y + 2,

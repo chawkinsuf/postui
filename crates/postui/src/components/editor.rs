@@ -2332,7 +2332,7 @@ impl Editor {
         // lifts on hover/focus rather than just its text row.
         cap::capped(buf, method_area, method_fill, bar_surface);
         let method_label = format!("{} ▾", self.method.as_str());
-        let label_w = method_label.chars().count() as u16;
+        let label_w = crate::ui::cells(&method_label) as u16;
         let start_x = method_area.x + method_area.width.saturating_sub(label_w) / 2;
         text(buf, start_x, text_y, &method_label, theme.on_accent, method_fill, true);
         hits.register(method_area, crate::hit::Hit::MethodSelector);
@@ -2387,7 +2387,7 @@ impl Editor {
         // A request with no file behind it looks exactly like a saved one
         // otherwise. All or nothing: a well too narrow to hold the whole
         // word shows no marker rather than a clipped " unsav".
-        let marker_w = UNSAVED_MARKER.chars().count() as u16;
+        let marker_w = crate::ui::cells(UNSAVED_MARKER) as u16;
         let unsaved_w = if self.slug.is_none()
             && url_area.width.saturating_sub(chip_w + lock_w) >= marker_w + URL_PAD
         {
@@ -2570,7 +2570,7 @@ impl Editor {
         // keeps its caps too, and dropping them here would make Send
         // change shape rather than just colour when it greys out.
         cap::capped(buf, send_area, send_fill, bar_surface);
-        let send_label_w = label.chars().count() as u16;
+        let send_label_w = crate::ui::cells(&label) as u16;
         let send_start_x = send_area.x + send_area.width.saturating_sub(send_label_w) / 2;
         text(buf, send_start_x, text_y, &label, label_fg, send_fill, bold);
         if !disabled {
@@ -2865,7 +2865,7 @@ impl Editor {
         let (pill_color, pill_on) =
             crate::paint::keycap_face(theme, ctx.hovered == Some(&cycle_hit), ctx.hover_t());
         let pill_label = " alt+w ";
-        let pill_w = pill_label.chars().count() as u16;
+        let pill_w = crate::ui::cells(pill_label) as u16;
         let pill_x = control_x.saturating_sub(pill_w + 1);
         // On a pane too narrow to fit it clear of the tab strip (and the
         // "vars" badge), the pill drops — the control itself stays.
@@ -3313,7 +3313,7 @@ impl Editor {
         ctx: &DrawCtx,
         hits: &mut crate::hit::HitMap,
     ) {
-        use unicode_width::UnicodeWidthStr;
+        use crate::ui::cells;
         if area.height == 0 || area.width == 0 {
             return;
         }
@@ -3323,7 +3323,7 @@ impl Editor {
         let max_y = area.y.saturating_add(area.height);
 
         let prefix = "\u{2500}\u{2500} referenced ";
-        let dash_w = area.width.saturating_sub(prefix.chars().count() as u16);
+        let dash_w = area.width.saturating_sub(cells(prefix) as u16);
         frame.render_widget(
             Paragraph::new(Line::styled(
                 format!("{prefix}{}", "\u{2500}".repeat(dash_w as usize)),
@@ -3369,10 +3369,10 @@ impl Editor {
             let value = info.display_value();
             let label = info.source.label();
             let (value_room, source_room) =
-                split_room(room as usize, value.width(), label.width() + 2);
+                split_room(room as usize, cells(&value), cells(&label) + 2);
             if source_room > 0 {
                 let source = format!("({})", crate::ui::ellipsize(&label, source_room - 2));
-                let source_x = area.right().saturating_sub(source.width() as u16 + 1);
+                let source_x = area.right().saturating_sub(cells(&source) as u16 + 1);
                 crate::paint::text(buf, source_x, y, &source, theme.text_muted, theme.page, false);
             }
             crate::paint::text(
@@ -3413,9 +3413,9 @@ impl Editor {
                 format!("{} reveal", crate::glyph::EYE)
             };
             let show_toggle = self.computed.has_secret;
-            let toggle_w = if show_toggle { toggle_label.chars().count() as u16 + 1 } else { 0 };
+            let toggle_w = if show_toggle { crate::ui::cells(&toggle_label) as u16 + 1 } else { 0 };
             let prefix = "\u{2500}\u{2500} auto ";
-            let dash_w = area.width.saturating_sub(prefix.chars().count() as u16 + toggle_w);
+            let dash_w = area.width.saturating_sub(crate::ui::cells(prefix) as u16 + toggle_w);
             let mut spans =
                 vec![Span::styled(format!("{prefix}{}", "\u{2500}".repeat(dash_w as usize)), dim)];
             if show_toggle {
@@ -3426,7 +3426,7 @@ impl Editor {
                     Style::default().fg(theme.accent)
                 };
                 spans.push(Span::styled(format!(" {toggle_label}"), toggle_style));
-                let toggle_w = toggle_label.chars().count() as u16;
+                let toggle_w = crate::ui::cells(&toggle_label) as u16;
                 let toggle_x = area.x.saturating_add(area.width.saturating_sub(toggle_w));
                 hits.register(
                     Rect::new(toggle_x, y, toggle_w, 1),
@@ -3457,11 +3457,11 @@ impl Editor {
                 value_style = value_style.add_modifier(Modifier::CROSSED_OUT);
             }
             let name_piece = format!("  {}: ", row.name);
-            let value_x = area.x.saturating_add(name_piece.chars().count() as u16);
+            let value_x = area.x.saturating_add(crate::ui::cells(&name_piece) as u16);
             // One plain cell between the value and the pill, so the pill's
             // hover fill never touches the text.
             let value_piece = format!("{} ", row.value);
-            let text_len = name_piece.chars().count() + value_piece.chars().count();
+            let text_len = crate::ui::cells(&name_piece) + crate::ui::cells(&value_piece);
             let glyph_hovered = ctx.hovered == Some(&crate::hit::Hit::AutoHeaderCopy(i));
             let glyph_style = if glyph_hovered {
                 Style::default().bg(theme.accent).fg(theme.on_accent)

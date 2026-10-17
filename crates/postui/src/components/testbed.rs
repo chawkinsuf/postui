@@ -419,7 +419,7 @@ fn draw_motion_section(buf: &mut Buffer, area: Rect, x0: u16, y: &mut u16, ctx: 
         let rect = Rect::new(x0 + MOTION_LABEL_COL, *y + 1, 16, BUTTON_HEIGHT);
         let mid = paint::capped(buf, rect, fill, theme.page);
         let label = "Send";
-        let lw = label.chars().count() as u16;
+        let lw = crate::ui::cells(label) as u16;
         let sx = rect.x + rect.width.saturating_sub(lw) / 2;
         paint::text(buf, sx, mid.y, label, theme.on_accent, fill, true);
     }

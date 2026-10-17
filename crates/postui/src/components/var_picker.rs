@@ -8,7 +8,6 @@ use indexmap::IndexMap;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::text::Span;
 
 /// Which of the three name sources an Insert-mode [`VarEntry`] comes from
 /// (spec §6: "scope-badged (request / project / selector member)"). A name
@@ -597,7 +596,7 @@ impl VarPickerState {
                             row_fill,
                             false,
                         );
-                        x += Span::raw(&lock).width() as u16;
+                        x += crate::ui::cells(&lock) as u16;
                     }
                     let name = clip(&entry.name, right.saturating_sub(x));
                     paint::text(
@@ -766,8 +765,9 @@ impl VarPickerState {
                     Some(values) => {
                         // Values align in a column two cells past the
                         // longest member name.
-                        let name_w =
-                            values.keys().map(|k| k.chars().count()).max().unwrap_or(0) as u16 + 2;
+                        let name_w = values.keys().map(|k| crate::ui::cells(k)).max().unwrap_or(0)
+                            as u16
+                            + 2;
                         for (member, value) in values.iter().take(pane_h as usize) {
                             line(y, member, name_w, value);
                             y += 1;

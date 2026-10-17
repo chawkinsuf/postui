@@ -14244,6 +14244,25 @@ fn dragging_across_a_scrolled_cell_edit_selects_what_is_under_the_pointer() {
     );
 }
 
+/// A click reads the cells the field drew, not one per char: past two
+/// wide glyphs (four cells), column 4 is the third char, and either cell
+/// of a wide glyph lands on it.
+#[test]
+fn clicking_past_wide_glyphs_puts_the_caret_on_the_char_drawn_there() {
+    let mut app = app_with_one_param();
+    app.editor.params.get_index_mut(0).unwrap().1.value = "日本xyz".into();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    render_once(&mut app);
+    let area = app.hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
+    for (col, char) in [(4, 2), (3, 1), (2, 1)] {
+        app.last_click = None;
+        app.handle_mouse(left_down(area.x + col, area.y));
+        app.handle_mouse(left_up(area.x + col, area.y));
+        let cursor = app.editor.table.editing.as_ref().unwrap().input.cursor();
+        assert_eq!(cursor, char, "column {col}");
+    }
+}
+
 /// The value cell is registered at the width it was drawn at: on a row
 /// showing its actions the value stops short of them, and the caret
 /// arithmetic reads that width back off the hit rect.

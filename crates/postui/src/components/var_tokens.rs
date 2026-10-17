@@ -22,7 +22,6 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use std::collections::HashSet;
-use unicode_width::UnicodeWidthChar;
 
 /// Where a token's value comes from — the tooltip's second line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -286,9 +285,8 @@ pub fn paint_var_tokens(
         return;
     }
     for token in postui_core::vars::find_tokens(text) {
-        let before: usize = text[..token.start].chars().map(|c| c.width().unwrap_or(0)).sum();
-        let width: usize =
-            text[token.start..token.end].chars().map(|c| c.width().unwrap_or(0)).sum();
+        let before = crate::ui::cells(&text[..token.start]);
+        let width = crate::ui::cells(&text[token.start..token.end]);
         let start = text_origin_col as usize + before;
         let end = (start + width).min(row.right() as usize);
         let start = start.max(row.x as usize);

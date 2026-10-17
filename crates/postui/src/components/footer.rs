@@ -320,7 +320,7 @@ pub type FooterChip = (Key, String, Option<Action>);
 /// A `paint_chip_row` entry's total footprint: ` key ` pill + ` label `
 /// (see its own layout comment — 4 columns beyond key+label either way).
 fn chip_width((key, label, _): &(&str, &str, Option<Action>)) -> u16 {
-    (key.chars().count() + label.chars().count() + 4) as u16
+    (crate::ui::cells(key) + crate::ui::cells(label) + 4) as u16
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -481,7 +481,7 @@ pub fn draw_footer(
     // bottom right. Never truncated: it paints only when it fits whole
     // past the chips, and the hint takes what is left to its left.
     if let Some(status) = vim_status {
-        let w = unicode_width::UnicodeWidthStr::width(status) as u16;
+        let w = crate::ui::cells(status) as u16;
         if hint_end >= chips_end && hint_end - chips_end >= w {
             let x = hint_end - w;
             text(buf, x, mid_y, status, theme.text_muted, theme.panel, false);
@@ -530,7 +530,7 @@ fn paint_hint(buf: &mut Buffer, y: u16, start_x: u16, end_x: u16, hint: &str, th
         return;
     }
     let shown = crate::ui::ellipsize(hint, free as usize);
-    let w = unicode_width::UnicodeWidthStr::width(shown.as_str()) as u16;
+    let w = crate::ui::cells(&shown) as u16;
     let x = start_x + (free - w) / 2;
     text(buf, x, y, &shown, theme.text_muted, theme.panel, false);
 }
@@ -570,13 +570,14 @@ pub fn paint_chip_row(
     hover_t: f32,
 ) -> u16 {
     let mut x = start_x;
-    for (key, label, action) in chips {
+    for chip in chips {
+        let (key, label, action) = chip;
         // Total footprint is the same either way — 4 extra columns beyond
         // key+label — so layout math never has to branch on `action`: a
         // clickable chip is `" key "` (the tinted pill, +2) + `" label "`,
         // and a plain entry is `" key"` + `" label "` with one trailing pad
         // column making up the difference.
-        let width = key.chars().count() as u16 + label.chars().count() as u16 + 4;
+        let width = chip_width(chip);
         if x + width > right_limit {
             break;
         }
@@ -610,7 +611,7 @@ pub fn paint_chip_row(
                 text(buf, x, y, &key_text, theme.text_muted, theme.panel, true);
                 text(
                     buf,
-                    x + key_text.chars().count() as u16,
+                    x + crate::ui::cells(&key_text) as u16,
                     y,
                     &label_text,
                     theme.text,

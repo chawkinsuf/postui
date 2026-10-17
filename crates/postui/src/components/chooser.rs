@@ -71,10 +71,9 @@ impl ChooserStepper {
     /// after it, the meter, the `+` button and then the level, read at
     /// its widest end.
     fn layout(&self) -> StepperLayout {
-        use unicode_width::UnicodeWidthStr;
         // In i16: an i8 range's span can overflow i8 (-100..=100 is 200).
         let cells = (i16::from(self.max) - i16::from(self.min)).max(0) as usize + 1;
-        let minus = self.label.width() as u16 + 3;
+        let minus = crate::ui::cells(&self.label) as u16 + 3;
         let meter = minus + 4;
         let plus = meter + cells as u16 + 1;
         let level = plus + 5;
@@ -505,7 +504,7 @@ impl ChooserState {
         if let Some(t) = self.live_toggle() {
             // Right-aligned on the title row, clickable and flippable with
             // the keys `handle_key` gives it.
-            let w = t.label.chars().count() as u16;
+            let w = crate::ui::cells(&t.label) as u16;
             let x = (area.x + area.width).saturating_sub(w + 2);
             paint::text(frame.buffer_mut(), x, title_y, &t.label, theme.accent, theme.panel, false);
             hits.register(

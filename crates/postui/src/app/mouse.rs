@@ -995,8 +995,7 @@ impl App {
             true => x.clamp(left, left + width - 1) - left,
             false => x.saturating_sub(left),
         };
-        let start = self.field_input_mut(field)?.window_start(open, width.max(1));
-        Some((0, start + usize::from(col)))
+        Some((0, self.field_input_mut(field)?.char_at_column(open, width.max(1), col)))
     }
 
     /// A left press on `field`'s text, which the field's arm has opened.

@@ -727,20 +727,35 @@ impl LineInput {
     }
 
     /// The column, within a focused `width`-column window, the caret sits
-    /// in: `cursor - window_start`, always in `[0, width)` because the
-    /// window scrolls to keep the cursor visible. Where a caller places
+    /// in: the cells from the window's start to the caret's grapheme,
+    /// always in `[0, width)` because the window scrolls to keep the
+    /// cursor visible. Where a caller places
     /// the terminal's own cursor for a field drawn with
     /// [`Self::draw_line_windowed_no_caret`].
     pub fn caret_column(&self, width: u16) -> u16 {
-        let start = self.window_start(true, width);
-        // Cells, not chars: a wide character before the caret occupies two
+        let glyphs = glyphs(&self.text);
+        let start = window_glyph(&glyphs, self.cursor, true, width);
+        // Cells, not chars: a wide glyph before the caret occupies two
         // columns on screen, and the terminal's cursor must land after it.
-        self.text
-            .chars()
-            .skip(start)
-            .take(self.cursor.saturating_sub(start))
-            .map(|c| cell_width(c) as u16)
-            .sum()
+        // Inside a grapheme, the caret stands where the grapheme starts.
+        let caret = glyph_at(&glyphs, self.cursor);
+        glyphs[start..caret].iter().map(|g| g.width as u16).sum()
+    }
+
+    /// The char a click on column `col` of the `width`-column window lands
+    /// on: the first char of the grapheme painted there (either cell of a
+    /// wide one), or the end of the text past it.
+    pub fn char_at_column(&self, focused: bool, width: u16, col: u16) -> usize {
+        let glyphs = glyphs(&self.text);
+        let start = window_glyph(&glyphs, self.cursor, focused, width);
+        let mut x = 0;
+        for g in &glyphs[start..] {
+            x += g.width;
+            if usize::from(col) < x {
+                return g.char;
+            }
+        }
+        self.len_chars()
     }
 
     /// The columns, within the `width`-column window
@@ -757,19 +772,23 @@ impl LineInput {
         range: Range<usize>,
     ) -> Option<Range<u16>> {
         self.text.get(range.clone())?;
-        let chars: Vec<char> = self.text.chars().collect();
-        let start = self.window_start(focused, width);
-        let end = fit_cells(&chars, start, width.max(1) as usize);
-        let bytes = |cs: &[char]| cs.iter().map(|c| c.len_utf8()).sum::<usize>();
-        let from = bytes(&chars[..start]);
-        let to = from + bytes(&chars[start..end]);
-        let (lo, hi) = (range.start.max(from), range.end.min(to));
-        if lo >= hi {
+        if range.is_empty() {
             return None;
         }
-        let col = |b: usize| crate::ui::cells(&self.text[from..b]) as u16;
-        let cols = col(lo)..col(hi);
-        (!cols.is_empty()).then_some(cols)
+        let glyphs = glyphs(&self.text);
+        let start = window_glyph(&glyphs, self.cursor, focused, width);
+        let end = fit_glyphs(&glyphs, start, width.max(1) as usize);
+        // The cells of every drawn grapheme the bytes touch.
+        let mut x = 0u16;
+        let mut cols: Option<Range<u16>> = None;
+        for g in &glyphs[start..end] {
+            let next = x + g.width as u16;
+            if g.byte < range.end && range.start < g.byte + g.len {
+                cols = Some(cols.map_or(x, |c| c.start)..next);
+            }
+            x = next;
+        }
+        cols.filter(|c| !c.is_empty())
     }
 
     /// [`Self::draw_line_windowed`] and [`Self::draw_line_masked`] combined
@@ -791,37 +810,18 @@ impl LineInput {
     /// drawn text (inline `{{token}}` highlighting, spec §7) use this to
     /// slice the same visible window the draw used.
     pub fn window_start(&self, focused: bool, width: u16) -> usize {
-        if !focused {
-            return 0;
-        }
-        // Counted in cells, not chars, so the caret's column (the cells
-        // from the window start up to the cursor) always fits: the cursor
-        // cell itself — the char under it, or a one-cell blank at
-        // end-of-text — takes its room first, then chars before the
-        // cursor are admitted from the right while they still fit.
-        let width = width.max(1) as usize;
-        let chars: Vec<char> = self.text.chars().collect();
-        let mut used = chars.get(self.cursor).map(|&c| cell_width(c)).unwrap_or(1);
-        let mut start = self.cursor.min(chars.len());
-        while start > 0 {
-            let w = cell_width(chars[start - 1]);
-            if used + w > width {
-                break;
-            }
-            used += w;
-            start -= 1;
-        }
-        start
+        let glyphs = glyphs(&self.text);
+        glyph_char(&glyphs, window_glyph(&glyphs, self.cursor, focused, width))
     }
 
     /// The exact text [`Self::draw_line_windowed`] puts on screen for a
     /// `width`-column window (unmasked; a masked field shows no tokens to
     /// highlight).
     pub fn visible_window(&self, focused: bool, width: u16) -> String {
-        let start = self.window_start(focused, width);
-        let chars: Vec<char> = self.text.chars().collect();
-        let end = fit_cells(&chars, start, width.max(1) as usize);
-        chars[start..end].iter().collect()
+        let glyphs = glyphs(&self.text);
+        let start = window_glyph(&glyphs, self.cursor, focused, width);
+        let end = fit_glyphs(&glyphs, start, width.max(1) as usize);
+        glyphs[start..end].iter().map(|g| &self.text[g.byte..g.byte + g.len]).collect()
     }
 
     fn render_windowed(
@@ -848,85 +848,145 @@ impl LineInput {
         caret: bool,
     ) -> Line<'static> {
         let base = Style::default().fg(theme.text);
-        let chars: Vec<char> = if mask {
-            self.text.chars().map(|_| '\u{25cf}').collect()
-        } else {
-            self.text.chars().collect()
+        let glyphs = glyphs(&self.text);
+        // Masked, each grapheme shows a dot per cell it takes, so the
+        // masked line lays out exactly as the value it hides.
+        let shown = |g: &Glyph| match mask {
+            true => "\u{25cf}".repeat(g.width),
+            false => self.text[g.byte..g.byte + g.len].to_string(),
+        };
+        // Smallest window start that keeps the cursor visible; 0 when the
+        // whole text is drawn, or unfocused.
+        let start = match width {
+            Some(w) => window_glyph(&glyphs, self.cursor, focused, w.min(u16::MAX as usize) as u16),
+            None => 0,
+        };
+        let end = match width {
+            Some(w) => fit_glyphs(&glyphs, start, w),
+            None => glyphs.len(),
         };
         if !focused {
-            let visible: String = match width {
-                Some(w) => chars[..fit_cells(&chars, 0, w)].iter().collect(),
-                None => chars.iter().collect(),
-            };
             // The color rides on the span, not the `Line`: callers that
             // lift `line.spans` into their own row (the jq bar) would
             // otherwise draw the text in the terminal's default
             // foreground.
-            return Line::from(Span::styled(visible, base));
+            return Line::from(Span::styled(
+                glyphs[..end].iter().map(shown).collect::<String>(),
+                base,
+            ));
         }
-        // Smallest window start that keeps the cursor visible; 0 when the
-        // whole text is drawn.
-        let start = match width {
-            Some(w) => self.window_start(true, w.min(u16::MAX as usize) as u16),
-            None => 0,
-        };
-        let end = match width {
-            Some(w) => fit_cells(&chars, start, w),
-            None => chars.len(),
-        };
         let reversed = base.add_modifier(Modifier::REVERSED);
         let selection = self.paint_span();
         // While a selection is live the reversed range *is* the visual
         // focus; the caret cell hides so it can't dangle outside the
-        // selection's edge as a stray reversed cell.
-        let style_at = |i: usize| {
-            if caret && selection.is_none() && i == self.cursor {
+        // selection's edge as a stray reversed cell. Both style whole
+        // graphemes: the one holding the cursor, every one a selection
+        // touches.
+        let style_of = |g: &Glyph| {
+            let chars = g.char..g.char + g.chars;
+            if caret && selection.is_none() && chars.contains(&self.cursor) {
                 return reversed;
             }
             match selection {
-                Some((s, e)) if i >= s && i < e => reversed,
+                Some((s, e)) if chars.start < e && s < chars.end => reversed,
                 _ => base,
             }
         };
-        // Group consecutive same-styled cells into spans.
+        // Group consecutive same-styled graphemes into spans.
         let mut spans: Vec<Span<'static>> = Vec::new();
         let mut run = String::new();
         let mut run_style = base;
-        for (i, &ch) in chars.iter().enumerate().take(end).skip(start) {
-            let style = style_at(i);
+        for g in &glyphs[start..end] {
+            let style = style_of(g);
             if style != run_style && !run.is_empty() {
                 spans.push(Span::styled(std::mem::take(&mut run), run_style));
             }
             run_style = style;
-            run.push(ch);
+            run.push_str(&shown(g));
         }
         if !run.is_empty() {
             spans.push(Span::styled(run, run_style));
         }
         // The trailing caret cell when the cursor sits past the drawn text
         // — suppressed like the in-text caret while a selection is live.
-        if caret && selection.is_none() && self.cursor >= end {
+        if caret && selection.is_none() && self.cursor >= glyph_char(&glyphs, end) {
             spans.push(Span::styled(" ", reversed));
         }
         Line::from(spans)
     }
 }
 
-/// A character's width in terminal cells (zero for combining marks).
-fn cell_width(c: char) -> usize {
-    use unicode_width::UnicodeWidthChar;
-    c.width().unwrap_or(0)
+/// One grapheme of a field's text as the field lays it out: ratatui
+/// paints a grapheme into its cells as one, so the window, the caret and
+/// a selection all go by graphemes, while the cursor is a char index.
+struct Glyph {
+    /// The char index it starts at, and how many chars it holds.
+    char: usize,
+    chars: usize,
+    /// Its byte offset and length in the text.
+    byte: usize,
+    len: usize,
+    /// The cells it takes, by [`crate::ui::cells`]'s measure.
+    width: usize,
 }
 
-/// The end (exclusive) of the longest run of `chars` from `start` whose
-/// cells fit in `width` columns — the char-based clip a windowed field
-/// draws, which must agree with the cell-based window `window_start`
-/// picks or wide characters spill past the field.
-fn fit_cells(chars: &[char], start: usize, width: usize) -> usize {
+/// `text`'s graphemes, in order.
+fn glyphs(text: &str) -> Vec<Glyph> {
+    let mut char = 0;
+    crate::ui::graphemes(text)
+        .map(|(byte, g, width)| {
+            let chars = g.chars().count();
+            char += chars;
+            Glyph { char: char - chars, chars, byte, len: g.len(), width }
+        })
+        .collect()
+}
+
+/// The index of the grapheme holding char `cursor`, or `glyphs.len()` at
+/// (or past) the end of the text.
+fn glyph_at(glyphs: &[Glyph], cursor: usize) -> usize {
+    glyphs.partition_point(|g| g.char + g.chars <= cursor)
+}
+
+/// The char index grapheme `i` starts at; the text's char count at
+/// `glyphs.len()`.
+fn glyph_char(glyphs: &[Glyph], i: usize) -> usize {
+    glyphs.get(i).map_or_else(|| glyphs.last().map_or(0, |g| g.char + g.chars), |g| g.char)
+}
+
+/// The first grapheme a `width`-column window draws: 0 unless `focused`
+/// with the caret scrolled right. Counted in cells, so the caret's column
+/// (the cells from the window start up to the cursor) always fits: the
+/// caret's own grapheme — or a one-cell blank at end-of-text — takes its
+/// room first, then graphemes before it are admitted from the right while
+/// they still fit.
+fn window_glyph(glyphs: &[Glyph], cursor: usize, focused: bool, width: u16) -> usize {
+    if !focused {
+        return 0;
+    }
+    let width = width.max(1) as usize;
+    let mut start = glyph_at(glyphs, cursor);
+    let mut used = glyphs.get(start).map_or(1, |g| g.width);
+    while start > 0 {
+        let w = glyphs[start - 1].width;
+        if used + w > width {
+            break;
+        }
+        used += w;
+        start -= 1;
+    }
+    start
+}
+
+/// The end (exclusive) of the longest run of graphemes from `start` whose
+/// cells fit in `width` columns — the clip a windowed field draws, which
+/// must agree with the window [`window_glyph`] picks or wide glyphs spill
+/// past the field.
+fn fit_glyphs(glyphs: &[Glyph], start: usize, width: usize) -> usize {
     let mut used = 0;
-    let mut end = start.min(chars.len());
-    while end < chars.len() {
-        let w = cell_width(chars[end]);
+    let mut end = start.min(glyphs.len());
+    while end < glyphs.len() {
+        let w = glyphs[end].width;
         if used + w > width {
             break;
         }
@@ -1726,11 +1786,89 @@ mod tests {
         assert_eq!(input.span_columns(true, 6, 6..7), Some(2..3));
         assert_eq!(input.span_columns(true, 6, 0..7), Some(0..3));
         assert_eq!(input.span_columns(true, 6, 0..3), None);
-        // Measured per char, as the field is laid out (graphemes are
-        // #39's): a combining mark takes no cell of its own.
+        // Measured by grapheme, as the field is laid out: a combining mark
+        // has no cell of its own, so a span of it alone underlines the
+        // glyph it sits on.
         let input = LineInput::new("本\u{301}x");
         assert_eq!(input.span_columns(false, 20, 0..6), Some(0..3));
-        assert_eq!(input.span_columns(false, 20, 3..5), None);
+        assert_eq!(input.span_columns(false, 20, 3..5), Some(0..2));
+        assert_eq!(input.span_columns(false, 20, 5..6), Some(2..3));
+    }
+
+    /// The caret is a whole grapheme: on either char of `❤️` (the heart
+    /// and its presentation selector) it reverses both cells, and its
+    /// column is where the emoji starts.
+    #[test]
+    fn a_caret_inside_a_grapheme_paints_the_whole_grapheme() {
+        let theme = Theme::dark();
+        let mut input = LineInput::new("a\u{2764}\u{fe0f}b");
+        for cursor in [1, 2] {
+            input.set_cursor(cursor);
+            let line = input.draw_line(true, &theme);
+            let reversed: Vec<&str> = line
+                .spans
+                .iter()
+                .filter(|s| s.style.add_modifier.contains(Modifier::REVERSED))
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert_eq!(reversed, ["\u{2764}\u{fe0f}"], "cursor {cursor}");
+            assert_eq!(input.caret_column(20), 1, "cursor {cursor}");
+        }
+        input.set_cursor(3);
+        assert_eq!(input.caret_column(20), 3, "past the emoji's two cells");
+    }
+
+    /// The window scrolls by grapheme cells: three `❤️` (two cells each)
+    /// and the caret's blank in five cells keep the last two whole.
+    #[test]
+    fn the_window_measures_graphemes_in_cells() {
+        let theme = Theme::dark();
+        let heart = "\u{2764}\u{fe0f}";
+        let input = LineInput::new(&heart.repeat(3));
+        assert_eq!(input.window_start(true, 5), 2);
+        assert_eq!(input.visible_window(true, 5), heart.repeat(2));
+        assert_eq!(input.caret_column(5), 4);
+        let unfocused = line_text(&input.draw_line_windowed(false, &theme, 5));
+        assert_eq!(unfocused, heart.repeat(2), "a third would take cells 5 and 6");
+    }
+
+    /// A selection that covers part of a grapheme paints all of it, so the
+    /// mark is never split off its letter into a span of its own.
+    #[test]
+    fn a_selection_paints_every_grapheme_it_touches() {
+        let mut input = LineInput::new("e\u{301}x");
+        input.handle_key(code(KeyCode::Home));
+        input.handle_key(shifted(KeyCode::Right));
+        let line = input.draw_line(true, &Theme::dark());
+        assert_eq!(line.spans[0].content, "e\u{301}");
+        assert!(line.spans[0].style.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(line.spans[1].content, "x");
+    }
+
+    /// A masked field shows a dot per cell, so it lays out as the value
+    /// it hides would: the same window, caret and clicks.
+    #[test]
+    fn a_masked_field_shows_a_dot_per_cell() {
+        let input = LineInput::new("日e\u{301}");
+        let masked = line_text(&input.draw_line_masked(false, &Theme::dark()));
+        assert_eq!(masked, "\u{25cf}".repeat(3));
+    }
+
+    /// A column maps to the grapheme painted there: either cell of a wide
+    /// glyph lands on its first char, past the text on its end.
+    #[test]
+    fn char_at_column_reads_the_drawn_cells() {
+        let input = LineInput::new("日本x");
+        let at = |col| input.char_at_column(false, 20, col);
+        assert_eq!([at(0), at(1), at(2), at(3), at(4), at(5), at(9)], [0, 0, 1, 1, 2, 3, 3]);
+        let input = LineInput::new("\u{2764}\u{fe0f}b");
+        let at = |col| input.char_at_column(false, 20, col);
+        assert_eq!([at(0), at(1), at(2)], [0, 0, 2]);
+        // Focused at the end, from the window's first char.
+        let input = LineInput::new("日本語日本語");
+        assert_eq!(input.window_start(true, 5), 4);
+        assert_eq!(input.char_at_column(true, 5, 0), 4);
+        assert_eq!(input.char_at_column(true, 5, 2), 5);
     }
 
     #[test]

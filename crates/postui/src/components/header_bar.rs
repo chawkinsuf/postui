@@ -137,11 +137,11 @@ pub fn draw_header(
     // the left cluster's keycaps yield to whatever the right cluster
     // must show.
     let manage_label = " Manage ";
-    let manage_label_w = manage_label.chars().count() as u16;
+    let manage_label_w = crate::ui::cells(manage_label) as u16;
     let manage_pill = crate::paint::Chip { label: "alt+r", color: theme.text_muted };
     let theme_label = " Theme ";
     let theme_pill = crate::paint::Chip { label: "alt+t", color: theme.text_muted };
-    let theme_w = theme_label.chars().count() as u16 + theme_pill.width();
+    let theme_w = crate::ui::cells(theme_label) as u16 + theme_pill.width();
     // What the right cluster needs at minimum, margin included: the bare
     // Manage name, plus whichever of the save group (dirty) or the
     // Reload chip (Manage screen) occupies the slot beside it, with its
@@ -331,9 +331,9 @@ pub fn draw_header(
         use crate::action::Action;
         let save_hit = Hit::FooterChip(Action::SaveRequest);
         let discard_hit = Hit::FooterChip(Action::DiscardChanges);
-        let save_w = SAVE_LABEL.chars().count() as u16 + save_key.chars().count() as u16 + 2;
-        let discard_w =
-            DISCARD_LABEL.chars().count() as u16 + discard_key.chars().count() as u16 + 2;
+        use crate::ui::cells;
+        let save_w = (cells(SAVE_LABEL) + cells(save_key) + 2) as u16;
+        let discard_w = (cells(DISCARD_LABEL) + cells(discard_key) + 2) as u16;
         let group_right = manage_x.saturating_sub(SAVE_GROUP_GAP);
         let save_x = group_right.saturating_sub(save_w);
         // Discard sits left of save so save keeps its anchored spot.
