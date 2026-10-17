@@ -4892,6 +4892,8 @@ fn draw_jq_bar(
         "jq ".to_string()
     };
     let mut spans = vec![Span::styled(chip, Style::default().fg(chip_color))];
+    // The filter text's window, past the chip.
+    let w = text_w.saturating_sub(3);
     if let Some(started) = bar.ai_asking {
         let frame_i =
             (ctx.now.saturating_duration_since(started).as_millis() / 100) as usize % SPINNER.len();
@@ -4901,7 +4903,6 @@ fn draw_jq_bar(
         ));
         frame.render_widget(Paragraph::new(Line::from(spans)), row);
     } else {
-        let w = text_w.saturating_sub(3);
         // The focused bar's caret is the terminal's own cursor (a bar, set
         // once at startup) rather than the painted reversed cell every
         // other input uses: a completion ghost trails the caret, and a
@@ -4983,29 +4984,27 @@ fn draw_jq_bar(
             ))),
             err_row,
         );
-        // Underline the span in the bar text when known. Ignores
-        // horizontal windowing of a very long filter — acceptable.
+        // Underline the span in the bar text when known, over the columns
+        // `LineInput` drew it in (the window a focused bar scrolls), and
+        // only the part of it on screen; while AI is asking the row shows
+        // the spinner instead, so there is none.
         //
         // The span is a byte range into `code.trim()` (what was actually
         // compiled), not the untrimmed bar text — offset it by the leading
-        // whitespace `trim()` stripped, and bail out defensively rather
-        // than index: a stale span from a filter compiled before the bar
-        // text last shrank can point past the end, or (once shifted) land
-        // off a char boundary.
-        if let Some(span) = err.span() {
+        // whitespace `trim()` stripped. A stale span from a filter compiled
+        // before the bar text last shrank can point past the end, or (once
+        // shifted) land off a char boundary; `span_columns` answers `None`
+        // for those.
+        if let Some(span) = err.span()
+            && bar.ai_asking.is_none()
+        {
             let text = bar.input.text();
             let leading_ws = text.len() - text.trim_start().len();
-            let start_byte = span.start.saturating_add(leading_ws);
-            let end_byte = span.end.saturating_add(leading_ws);
-            if end_byte <= text.len()
-                && start_byte <= end_byte
-                && text.is_char_boundary(start_byte)
-                && text.is_char_boundary(end_byte)
-            {
-                let start = text[..start_byte].chars().count() as u16;
-                let len = text[start_byte..end_byte].chars().count().max(1) as u16;
-                let x0 = row.x + 3 + start; // after "jq "
-                for x in x0..(x0 + len).min(row.right()) {
+            let bytes = span.start.saturating_add(leading_ws)..span.end.saturating_add(leading_ws);
+            if let Some(cols) = bar.input.span_columns(bar.focused, w, bytes) {
+                // After "jq ", clipped to the row: one too narrow for the
+                // chip has no text, so no underline.
+                for x in row.x + 3 + cols.start..(row.x + 3 + cols.end).min(row.right()) {
                     frame.buffer_mut()[(x, row.y)]
                         .set_style(Style::default().add_modifier(Modifier::UNDERLINED).fg(t.error));
                 }
@@ -9269,6 +9268,84 @@ mod tests {
         // Must not panic despite the leading whitespace + multibyte char
         // ahead of the span in the untrimmed bar text.
         render(&mut r);
+    }
+
+    /// The bar text is laid out in cells, so the error span's underline is
+    /// placed and sized in cells: a wide glyph ahead of the span doesn't
+    /// pull it left, and one inside it doesn't cut it short of the glyphs
+    /// after it. The backend only sees a wide glyph's leading cell (the
+    /// terminal draws the whole glyph in its style), so each glyph of the
+    /// span is underlined at its leading cell.
+    #[test]
+    fn the_error_underline_sits_under_its_span_past_wide_glyphs() {
+        // jaq's spans: `)` after a wide string key, and the `本x` token.
+        for code in [".a 本x", r#"."本番" )"#] {
+            let mut r = ready(ITEMS);
+            r.open_jq();
+            r.set_jq_text(code);
+            r.apply_jq(code, SYNC_PRETTY_BYTES);
+            let err = r.jq_bar().error.clone().expect("syntax error recorded");
+            let span = err.span().expect("the error has a span");
+            let (chip_x, underlined, _) = jq_bar_underline(&mut r);
+            let text_x = chip_x + 3;
+            let leading: Vec<u16> = code[span.clone()]
+                .char_indices()
+                .map(|(i, _)| text_x + crate::ui::cells(&code[..span.start + i]) as u16)
+                .collect();
+            assert_eq!(underlined, leading, "{code:?}: span {span:?} is underlined in cells");
+        }
+    }
+
+    /// A focused filter longer than the bar scrolls to keep the caret in
+    /// view, and the underline scrolls with it: it sits under the error
+    /// on screen, not where the error would be in an unscrolled bar.
+    #[test]
+    fn the_error_underline_follows_a_scrolled_bar() {
+        let mut r = ready(ITEMS);
+        r.open_jq();
+        let code = format!("{}.a )", ".a | ".repeat(20));
+        r.set_jq_text(&code);
+        r.apply_jq(&code, SYNC_PRETTY_BYTES);
+        let span = r.jq_bar().error.clone().and_then(|e| e.span()).expect("a span");
+        assert_eq!(&code[span], ")");
+        let (_, underlined, row) = jq_bar_underline(&mut r);
+        let paren = row.iter().rposition(|s| s == ")").expect("`)` on screen") as u16;
+        assert_eq!(underlined, vec![paren]);
+    }
+
+    /// While AI is asking, the bar row shows the spinner in place of the
+    /// filter text, so there is no span on screen to underline.
+    #[test]
+    fn no_error_underline_while_ai_is_asking() {
+        let mut r = ready(ITEMS);
+        r.open_jq();
+        r.set_jq_text(".a )");
+        r.apply_jq(".a )", SYNC_PRETTY_BYTES);
+        assert!(r.jq_bar().error.as_ref().is_some_and(|e| e.span().is_some()));
+        r.jq_bar_mut().ai_asking = Some(std::time::Instant::now());
+        let (_, underlined, _) = jq_bar_underline(&mut r);
+        assert_eq!(underlined, Vec::<u16>::new());
+    }
+
+    /// Renders `r` and reads its jq bar row: the `jq` chip's column, the
+    /// underlined columns, and the row's cell symbols.
+    fn jq_bar_underline(r: &mut Response) -> (u16, Vec<u16>, Vec<String>) {
+        let (_, buf) = render_buf(r);
+        let chips: Vec<(u16, u16)> = (0..buf.area.height)
+            .filter_map(|y| {
+                (0..buf.area.width - 1)
+                    .find(|&x| buf[(x, y)].symbol() == "j" && buf[(x + 1, y)].symbol() == "q")
+                    .map(|x| (x, y))
+            })
+            .collect();
+        let [(chip_x, y)] = chips[..] else {
+            panic!("one `jq` chip on screen, the bar's: {chips:?}");
+        };
+        let underlined = (0..buf.area.width)
+            .filter(|&x| buf[(x, y)].modifier.contains(Modifier::UNDERLINED))
+            .collect();
+        let row = (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect();
+        (chip_x, underlined, row)
     }
 
     /// A stale error (and its span) from a filter typed against one

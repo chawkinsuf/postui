@@ -2,6 +2,7 @@ use crate::theme::Theme;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::ops::Range;
 
 thread_local! {
     /// Set while a key the vim engine handed back is routed on to a dialog
@@ -740,6 +741,35 @@ impl LineInput {
             .take(self.cursor.saturating_sub(start))
             .map(|c| cell_width(c) as u16)
             .sum()
+    }
+
+    /// The columns, within the `width`-column window
+    /// [`Self::draw_line_windowed`] draws, that the text's bytes `range`
+    /// take on screen, clipped to the text the window shows
+    /// ([`Self::visible_window`]) and measured as it lays that text out:
+    /// `None` when none of it takes a cell there, or `range` is not a
+    /// slice of the text. Where a caller paints over part of the drawn
+    /// text (the jq bar underlines an error's span).
+    pub fn span_columns(
+        &self,
+        focused: bool,
+        width: u16,
+        range: Range<usize>,
+    ) -> Option<Range<u16>> {
+        self.text.get(range.clone())?;
+        let chars: Vec<char> = self.text.chars().collect();
+        let start = self.window_start(focused, width);
+        let end = fit_cells(&chars, start, width.max(1) as usize);
+        let bytes = |cs: &[char]| cs.iter().map(|c| c.len_utf8()).sum::<usize>();
+        let from = bytes(&chars[..start]);
+        let to = from + bytes(&chars[start..end]);
+        let (lo, hi) = (range.start.max(from), range.end.min(to));
+        if lo >= hi {
+            return None;
+        }
+        let col = |b: usize| crate::ui::cells(&self.text[from..b]) as u16;
+        let cols = col(lo)..col(hi);
+        (!cols.is_empty()).then_some(cols)
     }
 
     /// [`Self::draw_line_windowed`] and [`Self::draw_line_masked`] combined
@@ -1673,6 +1703,34 @@ mod tests {
         assert_eq!(input.caret_column(20), 5);
         input.set_cursor(0);
         assert_eq!(input.caret_column(20), 0);
+    }
+
+    #[test]
+    fn span_columns_are_cells_in_the_drawn_window() {
+        // Bytes: `日` 0..3, `本` 3..6, `x` 6, `y` 7, `z` 8.
+        // Unfocused, drawn from char 0: wide chars count two cells.
+        let mut input = LineInput::new("日本xyz");
+        assert_eq!(input.span_columns(false, 20, 6..7), Some(4..5));
+        assert_eq!(input.span_columns(false, 20, 3..7), Some(2..5));
+        // Nothing to underline: empty, off a char boundary, past the end.
+        assert_eq!(input.span_columns(false, 20, 6..6), None);
+        assert_eq!(input.span_columns(false, 20, 1..3), None);
+        assert_eq!(input.span_columns(false, 20, 8..10), None);
+        // Clipped to the window: `日本x` fills 5 cells, `y` is cut off.
+        assert_eq!(input.span_columns(false, 5, 6..8), Some(4..5));
+        assert_eq!(input.span_columns(false, 5, 7..9), None);
+        // Focused at the end, the window scrolls: `本xyz` + the caret's
+        // blank fill 6 cells, so `日` is out of view and `x` sits at 2.
+        input.set_cursor(5);
+        assert_eq!(input.window_start(true, 6), 1);
+        assert_eq!(input.span_columns(true, 6, 6..7), Some(2..3));
+        assert_eq!(input.span_columns(true, 6, 0..7), Some(0..3));
+        assert_eq!(input.span_columns(true, 6, 0..3), None);
+        // Measured per char, as the field is laid out (graphemes are
+        // #39's): a combining mark takes no cell of its own.
+        let input = LineInput::new("本\u{301}x");
+        assert_eq!(input.span_columns(false, 20, 0..6), Some(0..3));
+        assert_eq!(input.span_columns(false, 20, 3..5), None);
     }
 
     #[test]
