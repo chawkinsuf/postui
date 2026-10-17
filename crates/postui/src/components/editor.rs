@@ -2412,11 +2412,11 @@ impl Editor {
         buf.set_line(url_text_area.x, text_y, &url_line, url_text_area.width);
         // Token tinting paints over the text just drawn, and registers its
         // spans on top of `UrlBar` so a click lands on the token.
-        crate::components::var_tokens::paint_var_tokens(
+        crate::components::var_tokens::paint_field_tokens(
             buf,
             Rect::new(url_text_area.x, text_y, url_text_area.width, 1),
-            &self.url.visible_window(url_caret_live, url_text_area.width),
-            url_text_area.x,
+            &self.url,
+            url_caret_live,
             &self.vars,
             theme,
             hits,

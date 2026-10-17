@@ -729,7 +729,9 @@ fn draw_setting_control(
             // span it is handed, so a second disabled colour here would
             // never reach the screen.
             v if v.is_empty() => Line::styled("(not set)", Style::default().fg(theme.text_muted)),
-            v => Line::raw(v),
+            // Drawn as its field draws at rest, so a click that opens the
+            // field lands on the char it points at.
+            v => LineInput::new(&v).draw_line_at_rest(theme, theme.text, inner),
         }
     };
     Well { content, state: well_state }.paint(buf, rect, theme);
