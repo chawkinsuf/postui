@@ -708,6 +708,11 @@ pub(crate) fn clip(s: &str, width: u16) -> &str {
 /// The display cells `s` takes on screen: the crate's one width measure,
 /// for sizing a label and placing what follows it.
 pub(crate) fn cells(s: &str) -> usize {
+    // ASCII graphemes are one byte each (`\r\n` aside, two controls): a
+    // cell apiece, none for a control.
+    if s.is_ascii() {
+        return s.bytes().filter(|b| !b.is_ascii_control()).count();
+    }
     graphemes(s).map(|(_, _, w)| w).sum()
 }
 
@@ -987,7 +992,8 @@ mod tests {
     /// Text the crate measures by grapheme, as ratatui paints it: an emoji
     /// with a presentation selector, combining marks, ZWJ sequences, wide
     /// and halfwidth glyphs, and a control char (which paints nothing).
-    const GRAPHEME_SAMPLES: [&str; 8] = [
+    const GRAPHEME_SAMPLES: [&str; 9] = [
+        "a\r\nb\u{7f}c",
         "\u{2764}\u{fe0f}",
         "e\u{301}\u{302}",
         "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}",

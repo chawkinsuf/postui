@@ -852,9 +852,9 @@ impl LineInput {
         let glyphs = glyphs(&self.text);
         // Masked, each grapheme shows a dot per cell it takes, so the
         // masked line lays out exactly as the value it hides.
-        let shown = |g: &Glyph| match mask {
-            true => "\u{25cf}".repeat(g.width),
-            false => self.text[g.byte..g.byte + g.len].to_string(),
+        let show = |out: &mut String, g: &Glyph| match mask {
+            true => out.extend(std::iter::repeat_n('\u{25cf}', g.width)),
+            false => out.push_str(&self.text[g.byte..g.byte + g.len]),
         };
         // Smallest window start that keeps the cursor visible; 0 when the
         // whole text is drawn, or unfocused.
@@ -871,10 +871,9 @@ impl LineInput {
             // lift `line.spans` into their own row (the jq bar) would
             // otherwise draw the text in the terminal's default
             // foreground.
-            return Line::from(Span::styled(
-                glyphs[..end].iter().map(shown).collect::<String>(),
-                base,
-            ));
+            let mut visible = String::new();
+            glyphs[..end].iter().for_each(|g| show(&mut visible, g));
+            return Line::from(Span::styled(visible, base));
         }
         let reversed = base.add_modifier(Modifier::REVERSED);
         let selection = self.paint_span();
@@ -903,7 +902,7 @@ impl LineInput {
                 spans.push(Span::styled(std::mem::take(&mut run), run_style));
             }
             run_style = style;
-            run.push_str(&shown(g));
+            show(&mut run, g);
         }
         if !run.is_empty() {
             spans.push(Span::styled(run, run_style));
