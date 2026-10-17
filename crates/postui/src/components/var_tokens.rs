@@ -295,7 +295,8 @@ pub fn paint_var_tokens(
 /// ([`LineInput::draw_line_at_rest`]) when not:
 /// the tokens are the ones in the field's own text — what a send
 /// substitutes — placed where the field drew them, so a char the field
-/// shows as a code (`^I`) neither hides a token nor shifts one.
+/// shows as a code (`^I`) neither hides a token nor shifts one. A token
+/// the window cuts is left alone, as one cut off the drawn text was.
 pub fn paint_field_tokens(
     buf: &mut Buffer,
     row: Rect,
@@ -307,6 +308,9 @@ pub fn paint_field_tokens(
 ) {
     let measure = input.span_measure(focused, row.width);
     let columns = |bytes: Range<usize>| {
+        // Drawn whole: both its outer braces are on screen.
+        measure(bytes.start..bytes.start + 1)?;
+        measure(bytes.end - 1..bytes.end)?;
         let cols = measure(bytes)?;
         let x = row.x as usize;
         Some(x + cols.start as usize..x + cols.end as usize)
@@ -545,6 +549,23 @@ mod tests {
         let hit = hits.rect_of(&Hit::VarToken("base_url".into())).expect("still a token");
         assert_eq!((hit.x, hit.width), (5, 14), "after `^I`, and `{{base_url^I}}` is 14 cells");
         assert_eq!(buf[(5, 0)].fg, theme.accent);
+    }
+
+    /// A token the field's window cuts, at either edge, is not a token on
+    /// screen: no tint and no hover, as when the painter read the window.
+    #[test]
+    fn a_token_the_window_cuts_is_left_alone() {
+        let theme = Theme::dark();
+        let row = Rect::new(0, 0, 10, 1);
+        let mut cut_left = LineInput::new("{{base_url}}abcdef");
+        cut_left.set_cursor(18);
+        let cut_right = LineInput::new("abcdef{{base_url}}");
+        for (input, focused) in [(&cut_left, true), (&cut_right, false)] {
+            let mut buf = Buffer::empty(row);
+            let mut hits = HitMap::default();
+            paint_field_tokens(&mut buf, row, input, focused, &view(), &theme, &mut hits);
+            assert_eq!(hits.rect_of(&Hit::VarToken("base_url".into())), None, "{:?}", input.text());
+        }
     }
 
     #[test]

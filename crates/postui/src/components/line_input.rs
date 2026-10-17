@@ -781,7 +781,8 @@ impl LineInput {
 
     /// The char a click on column `col` of the `width`-column window lands
     /// on: the first char of the grapheme painted there (either cell of a
-    /// wide one), or the end of the text past it.
+    /// wide one or a code), or past the drawn cells the first char the
+    /// window left out — the end of the text when it drew all of it.
     pub fn char_at_column(&self, focused: bool, width: u16, col: u16) -> usize {
         let glyphs = glyphs(&self.text);
         let start = window_glyph(&glyphs, self.cursor, focused, width);
@@ -887,6 +888,21 @@ impl LineInput {
     /// points ([`Self::char_at_column`] reads this same layout).
     pub fn draw_line_at_rest(&self, theme: &Theme, fg: Color, width: u16) -> Line<'static> {
         self.render(false, theme, fg, Some(width.max(1) as usize), false, false)
+    }
+
+    /// Paints [`Self::draw_line_at_rest`] into the one-row `area` on `bg`
+    /// (a table or grid cell at rest) and answers the cells it drew.
+    pub fn paint_at_rest(
+        &self,
+        buf: &mut ratatui::buffer::Buffer,
+        area: ratatui::layout::Rect,
+        theme: &Theme,
+        fg: Color,
+        bg: Color,
+    ) -> u16 {
+        let mut line = self.draw_line_at_rest(theme, fg, area.width);
+        line.style = Style::default().bg(bg);
+        buf.set_line(area.x, area.y, &line, area.width).0 - area.x
     }
 
     fn render_windowed(

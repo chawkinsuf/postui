@@ -825,21 +825,16 @@ impl TableEditorState {
         // field draws at rest: it looks the same once open, and the click
         // that opens it lands on the char it points at. The strike below
         // covers exactly what it drew.
-        let rest = |text: &str| LineInput::new(text);
-        let (key_rest, value_rest) = (rest(ghost_label.unwrap_or(key)), rest(&entry.value));
-        // Paints a cell at rest and answers the cells it drew.
-        let paint_rest = |buf: &mut ratatui::buffer::Buffer, x, w, input: &LineInput, bg| {
-            let mut line = input.draw_line_at_rest(theme, fg, w);
-            line.style = Style::default().bg(bg);
-            buf.set_line(x, y, &line, w).0 - x
-        };
+        let key_rest = LineInput::new(ghost_label.unwrap_or(key));
+        let value_rest = LineInput::new(&entry.value);
 
         let mut key_drew = 0;
         if editing_col == Some(Col::Key) {
             let edit = self.editing.as_ref().expect("editing_col implies editing");
             Self::paint_cell_edit(buf, cols.name_x, y, name_w, &edit.input, bg, theme);
         } else {
-            key_drew = paint_rest(buf, cols.name_x, name_w, &key_rest, name_bg);
+            let cell = Rect::new(cols.name_x, y, name_w, 1);
+            key_drew = key_rest.paint_at_rest(buf, cell, theme, fg, name_bg);
         }
 
         let mut value_drew = 0;
@@ -847,7 +842,8 @@ impl TableEditorState {
             let edit = self.editing.as_ref().expect("editing_col implies editing");
             Self::paint_cell_edit(buf, cols.value_x, y, value_w, &edit.input, bg, theme);
         } else {
-            value_drew = paint_rest(buf, cols.value_x, value_w, &value_rest, value_bg);
+            let cell = Rect::new(cols.value_x, y, value_w, 1);
+            value_drew = value_rest.paint_at_rest(buf, cell, theme, fg, value_bg);
             // The shadow hint trails the value on the same line, dim: it
             // is a note about that value, so it reads where the value
             // ends rather than on a row of its own.

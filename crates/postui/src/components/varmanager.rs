@@ -1955,9 +1955,13 @@ impl VarManager {
                     };
                     // Drawn as its field draws at rest, so a click that
                     // opens the cell lands on the char it points at.
-                    let mut line = LineInput::new(shown).draw_line_at_rest(theme, fg, cw);
-                    line.style = Style::default().bg(bg);
-                    buf.set_line(cx, ry, &line, cw);
+                    LineInput::new(shown).paint_at_rest(
+                        buf,
+                        Rect::new(cx, ry, cw, 1),
+                        theme,
+                        fg,
+                        bg,
+                    );
                 }
                 hits.register(Rect::new(cx, ry, cw, 1), Hit::VmEntryCell { row: i, col });
             }
