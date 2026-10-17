@@ -6061,6 +6061,15 @@ impl App {
             }
 
             // -- Task 17: in-context flows (spec §6) --
+            Action::PickOption { selector, option } => {
+                // In the environment active now (a shared selector's
+                // selection ignores it).
+                let env = self.active_env().map(str::to_string).unwrap_or_default();
+                let toast = self.selection_toast(&selector, &option);
+                self.apply(Action::VarEdit(VarEditOp::SelectOption { env, selector, option }));
+                self.toasts.push(toast, ToastKind::Success);
+                true
+            }
             Action::OpenNewOptionInlinePrompt { owner } => {
                 use crate::components::modal::{NEW_OPTION_FIELD, PromptField};
                 // One input per selector field, so the option is whole
@@ -6182,11 +6191,7 @@ impl App {
                     Ok(()) => {
                         self.set_selection_for(&env, &owner, &key);
                         self.record_project_step(t, crate::undo::StepLabel::variable(&owner));
-                        let where_label = self.selection_scope(&owner, &env);
-                        self.toasts.push(
-                            format!("{owner} \u{2192} {key} ({where_label})"),
-                            ToastKind::Success,
-                        );
+                        self.toasts.push(self.selection_toast(&owner, &key), ToastKind::Success);
                     }
                     Err(msg) => self.toasts.push(msg, ToastKind::Error),
                 }
@@ -7464,13 +7469,11 @@ impl App {
         use postui_core::varmodel;
 
         let env_key = self.active_env().map(str::to_string).unwrap_or_default();
-        let shared = self.selector_is_shared(&selector);
-        let selected_key = if shared {
+        let selected_key = if self.selector_is_shared(&selector) {
             self.shared_selections().get(&selector).cloned()
         } else {
             self.selections_for(&env_key).get(&selector).cloned()
         };
-        let where_label = self.selection_scope(&selector, &env_key);
         let options: Vec<SelectOption> =
             varmodel::options_of(self.variables(), self.env_data(), &selector)
                 .map(|options| {
@@ -7489,13 +7492,7 @@ impl App {
         // With no options yet the picker opens on its "add new option…"
         // ghost row alone — the user chooses to create, never gets walked
         // into a prompt.
-        self.push_modal(Modal::VarPicker(VarPickerState::new_select(
-            options,
-            name,
-            selector,
-            env_key,
-            where_label,
-        )));
+        self.push_modal(Modal::VarPicker(VarPickerState::new_select(options, name, selector)));
         true
     }
 
@@ -8111,15 +8108,13 @@ impl App {
         self.variables().selectors.get(selector).is_some_and(|d| d.shared)
     }
 
-    /// Where a choice of `selector`'s option holds, as the selection
-    /// toasts name it: every environment for a shared selector, else
-    /// `env` by its display name.
-    fn selection_scope(&self, selector: &str, env: &str) -> String {
-        if self.selector_is_shared(selector) {
-            "all environments".to_string()
-        } else {
-            self.env_name(env)
-        }
+    /// The `selector → option (where)` toast a selection made here says.
+    fn selection_toast(&self, selector: &str, option: &str) -> String {
+        let scope = self
+            .project()
+            .map(|p| crate::components::varmanager::selection_scope(p, selector))
+            .unwrap_or_default();
+        format!("{selector} \u{2192} {option} ({scope})")
     }
 
     /// `selector`'s options as they currently stand, from wherever they

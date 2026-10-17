@@ -559,6 +559,17 @@ fn is_shared(ctx: &Project, selector: &str) -> bool {
     ctx.variables().selectors.get(selector).is_some_and(|d| d.shared)
 }
 
+/// Where a choice of `selector`'s option holds, as the grid's legend and
+/// the selection toasts say it: every environment for a shared selector,
+/// else the active environment by its display name (`no env` without one).
+pub(crate) fn selection_scope(ctx: &Project, selector: &str) -> String {
+    if is_shared(ctx, selector) {
+        "all environments".to_string()
+    } else {
+        ctx.active_env().map_or_else(|| "no env".to_string(), |e| ctx.env_name(e))
+    }
+}
+
 /// The `env` an option op on `selector` should carry: the active
 /// environment — or, for a shared selector (whose ops ignore it), the
 /// active env's name if any, else `""`. `None` only when a non-shared
@@ -1981,14 +1992,7 @@ impl VarManager {
 
         // --- legend --------------------------------------------------------
         if rows_bottom < bottom {
-            let scope = if shared {
-                "all environments".to_string()
-            } else {
-                match ctx.active_env() {
-                    Some(e) => e.to_string(),
-                    None => "no env".to_string(),
-                }
-            };
+            let scope = selection_scope(ctx, selector);
             text(
                 buf,
                 x0,
@@ -3755,6 +3759,23 @@ fields = ["user_id", "customer_id"]
         render(vm, ctx); // populates left_rows
         let i = vm.left_rows.iter().position(|r| r == &VmRow::Group(name.into())).unwrap();
         vm.select_row(i);
+    }
+
+    /// #35: the legend names the environment as the header does.
+    #[test]
+    fn the_grid_legend_names_the_env_by_its_display_name() {
+        let (dir, _) = fixture();
+        let toml = dir.path().join("project.toml");
+        let meta = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(&toml, format!("{meta}\n[environment.qa]\nname = \"QA Tenant\"\n")).unwrap();
+        let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        let (content, _) = render(&mut vm, &ctx);
+        assert!(
+            content.contains(&format!("{GLYPH_RADIO_ON} = selected for QA Tenant")),
+            "legend: {content}"
+        );
     }
 
     #[test]
