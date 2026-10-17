@@ -292,7 +292,9 @@ pub struct JqBar {
     /// leaving it up. Drawn as a red "invalid filter" under the bar (the
     /// distinction is kept for tests and a future, wordier message).
     pub note: Option<&'static str>,
-    /// A background run is outstanding (its per-view counter).
+    /// The background run the bar is waiting on (its per-view id), and the
+    /// only one whose result `attach_jq_result` accepts: whatever moves the
+    /// bar on (a new filter, run or not, or a reset) clears it.
     pub pending: Option<u64>,
     /// When `pending`'s run was started, so the bar can hold its spinner
     /// back for `JQ_SPINNER_AFTER` and then animate it.
@@ -745,9 +747,9 @@ pub struct ReadyView {
     /// How many outputs the last successful filter produced (1 when no
     /// filter is applied, or the filter emits exactly one document).
     jq_outputs: usize,
-    /// Counts every `apply_jq` run started for this view, so a background
-    /// result can be matched to the run it was started for (and only that
-    /// one — a superseded run's result is dropped).
+    /// Counts the background runs `apply_jq` has started for this view:
+    /// each run's id, so its result can be matched to the run the bar is
+    /// waiting on (`JqBar::pending`).
     jq_runs: u64,
     /// Bumped whenever the tree on screen is swapped for another (a
     /// filter's output landing, or the body tree coming back) — what the
@@ -2295,6 +2297,8 @@ impl Response {
             _ => None,
         };
         self.state = state;
+        // The new view waits on no run: the old view's is dropped on arrival.
+        self.jq.pending = None;
         // The bar's text survives a new response, but nothing derived from
         // the old document does: the cached keys are for a body that is
         // gone, and an in-flight pool fetch will be dropped on arrival, so
@@ -2384,11 +2388,11 @@ impl Response {
         // The text just changed underneath any previous error/stale span —
         // `apply_jq` re-derives both against the new text right after this
         // call, so a leftover from before must not linger if it bails
-        // early (e.g. the new response isn't JSON).
+        // early (e.g. the new response isn't JSON). A run in flight is
+        // `apply_jq`'s to supersede: only a new filter does.
         self.jq.error = None;
         self.jq.stale = false;
         self.jq.note = None;
-        self.jq.pending = None;
     }
 
     /// Sets the bar's text and cursor together (a tee-up from elsewhere —
@@ -2728,7 +2732,8 @@ impl Response {
     /// the caller for the blocking pool when it's not. `None` means either
     /// nothing to do (already applied, or nothing to filter yet) or that
     /// the run finished inline; `Some` is work the app must complete with
-    /// [`Response::attach_jq_result`].
+    /// [`Response::attach_jq_result`]. Any new filter supersedes a run
+    /// still in flight.
     pub fn apply_jq(&mut self, code: &str, sync_limit: usize) -> Option<JqRunRequest> {
         let Some(view) = self.view.as_mut() else {
             // No ready view at all: jq is disabled, not merely stale —
@@ -2753,6 +2758,10 @@ impl Response {
         if view.jq_applied.as_deref() == Some(code) {
             return None;
         }
+        // A new filter supersedes the run in flight, whether or not it
+        // starts one of its own: an error or a cleared bar must not be
+        // overwritten by the earlier filter's result.
+        self.jq.pending = None;
         let code_trim = code.trim();
         if code_trim.is_empty() {
             view.awaiting_filter = false;
@@ -2763,7 +2772,6 @@ impl Response {
             self.jq.error = None;
             self.jq.stale = false;
             self.jq.note = None;
-            self.jq.pending = None;
             view.clear_sel();
             view.clamp_cursor();
             view.follow_cursor();
@@ -2776,7 +2784,6 @@ impl Response {
             self.jq.error = Some(e);
             self.jq.stale = true;
             self.jq.note = None;
-            self.jq.pending = None;
             view.jq_applied = Some(code.to_string());
             return None;
         }
@@ -2797,19 +2804,17 @@ impl Response {
             }
         }
         view.jq_applied = Some(code.to_string());
-        view.jq_runs += 1;
-        let run = view.jq_runs;
         if body_len <= sync_limit {
             let doc = view.jq_doc.clone().expect("parsed above");
             // Already cached on `view.jq_doc` above: no document to hand
             // back, just the outputs.
             let result = postui_core::jq::run(code_trim, &doc)
                 .map(|outputs| JqRunOutput::from_outputs(None, outputs));
-            self.jq.pending = None;
-            let generation = view.generation;
-            self.attach_jq_result(generation, run, result);
+            self.land_jq_result(result);
             return None;
         }
+        view.jq_runs += 1;
+        let run = view.jq_runs;
         self.jq.pending = Some(run);
         self.jq.pending_since = Instant::now();
         let doc = view.jq_doc.clone();
@@ -3012,9 +3017,10 @@ impl Response {
         self.jq.edited = true;
     }
 
-    /// Accepts (or drops) the result of a background jq run. Dropped when
-    /// the view it was started for is gone, or a later run for the same
-    /// view has since started (superseded). Returns whether it was
+    /// Accepts (or drops) the result of a background jq run. Only the run
+    /// the bar is waiting on (`JqBar::pending`) is accepted: dropped when
+    /// the view it was started for is gone, or the bar has since moved on
+    /// (a later filter, run or not, or a reset). Returns whether it was
     /// accepted.
     pub fn attach_jq_result(
         &mut self,
@@ -3028,18 +3034,26 @@ impl Response {
         if view.generation != generation {
             return false;
         }
-        // Adopt the parsed document even from a superseded run (a stale
-        // `run` counter): the parse itself is still good for this view, and
-        // caching it here means the next `apply_jq` doesn't have to ask the
-        // worker to re-parse a body that may be huge, on every keystroke.
+        // Adopt the parsed document even from a superseded run: the parse
+        // itself is still good for this view, and caching it here means
+        // the next `apply_jq` doesn't have to ask the worker to re-parse a
+        // body that may be huge, on every keystroke.
         if let Ok(JqRunOutput { doc: Some(doc), .. }) = &result
             && view.jq_doc.is_none()
         {
             view.jq_doc = Some(doc.clone());
         }
-        if view.jq_runs != run {
+        if self.jq.pending != Some(run) {
             return false;
         }
+        self.land_jq_result(result);
+        true
+    }
+
+    /// Shows a finished run's result: the filtered tree, or the full body
+    /// with a note or an error. Both callers hold the view it ran for.
+    fn land_jq_result(&mut self, result: Result<JqRunOutput, JqError>) {
+        let view = self.view.as_mut().expect("a jq result lands on a ready view");
         self.jq.pending = None;
         view.awaiting_filter = false;
         match result {
@@ -3090,7 +3104,6 @@ impl Response {
                 self.jq.note = None;
             }
         }
-        true
     }
 
     /// Pastes into the in-pane search's live input (the bracketed-paste/
@@ -9410,6 +9423,54 @@ mod tests {
             ),
             "wrong generation is dropped"
         );
+    }
+
+    #[test]
+    fn a_filter_that_never_runs_still_supersedes_the_run_in_flight() {
+        let late = |r: &mut Response, req: &JqRunRequest| {
+            r.attach_jq_result(
+                req.generation,
+                req.run,
+                Ok(JqRunOutput::from_outputs(None, vec!["2".into()])),
+            )
+        };
+        // A syntax error typed before the valid prefix's run returns.
+        let mut r = ready(ITEMS);
+        let req = r.apply_jq(".data", 0).expect("background run");
+        assert!(r.apply_jq(".data )", 0).is_none());
+        assert!(r.jq_bar().error.is_some());
+        assert!(!late(&mut r, &req), "the earlier filter's result is dropped");
+        assert!(r.jq_bar().error.is_some(), "the syntax error stays");
+        assert!(r.jq_tree_code().is_none(), "and the body tree with it");
+        // The bar cleared before the run returns.
+        let mut r = ready(ITEMS);
+        let req = r.apply_jq(".data", 0).expect("background run");
+        assert!(r.apply_jq("", 0).is_none());
+        assert!(!late(&mut r, &req), "the earlier filter's result is dropped");
+        assert!(r.jq_tree_code().is_none(), "the body tree stays");
+        assert!(r.jq_bar().note.is_none());
+        // A stash forgets the run; the reconcile on its return starts afresh.
+        let mut r = ready(ITEMS);
+        let req = r.apply_jq(".data", 0).expect("background run");
+        r.drop_pending_jq();
+        assert!(!late(&mut r, &req), "the forgotten run's result is dropped");
+        assert!(r.apply_jq(".data", 0).is_some(), "the filter runs again");
+        // The editor writing back the filter already applied moves nothing on.
+        let mut r = ready(ITEMS);
+        let req = r.apply_jq(".data", 0).expect("background run");
+        r.set_jq_text(".data");
+        assert!(r.apply_jq(".data", 0).is_none(), "already applied");
+        assert!(late(&mut r, &req), "its run still lands");
+        // A new response waits on no run, and its own first run is not
+        // mistaken for the old view's (same run id, other generation).
+        let mut r = ready(ITEMS);
+        let old = r.apply_jq(".data", 0).expect("background run");
+        r.set_state(ResponseState::Ready(Box::new(data(ITEMS))), 9);
+        assert!(r.jq_bar().pending.is_none());
+        let new = r.apply_jq(".data.items", 0).expect("background run");
+        assert_eq!(new.run, old.run, "run ids restart with the view");
+        assert!(!late(&mut r, &old), "the old view's result is dropped");
+        assert!(r.jq_bar().pending.is_some(), "the new run is still awaited");
     }
 
     #[test]
