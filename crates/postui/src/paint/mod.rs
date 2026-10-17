@@ -192,7 +192,7 @@ pub fn keycap_button(
     let (color, on) = keycap_face(theme, hovered, hover_t);
     let chip = Chip { label: keycap, color };
     let key_w = chip.width();
-    let width = key_w + label.chars().count() as u16;
+    let width = key_w + crate::ui::cells(label) as u16;
     let label_bg = hover_surface(theme, theme.panel, hovered, hover_t);
 
     let block = cap::chip_block(buf, bounds, y, x, width, label_bg, theme);

@@ -970,7 +970,7 @@ impl PaletteState {
 
             let right = list_area.x + list_area.width;
             let x = list_area.x + 1;
-            let combo_w = combo.as_ref().map(|s| s.chars().count() as u16 + 1).unwrap_or(0);
+            let combo_w = combo.as_ref().map(|s| crate::ui::cells(s) as u16 + 1).unwrap_or(0);
             let title_right = right.saturating_sub(combo_w);
             paint::text(
                 frame.buffer_mut(),
@@ -982,7 +982,7 @@ impl PaletteState {
                 true,
             );
             if let Some(combo) = &combo {
-                let combo_x = right.saturating_sub(combo.chars().count() as u16);
+                let combo_x = right.saturating_sub(crate::ui::cells(combo) as u16);
                 paint::text(
                     frame.buffer_mut(),
                     combo_x,

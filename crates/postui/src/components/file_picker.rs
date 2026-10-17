@@ -679,7 +679,7 @@ impl FilePickerState {
         );
         // Title-row toggle, mirrored by alt+h.
         let toggle = if self.show_hidden { "hidden \u{25CF}" } else { "hidden \u{25CB}" };
-        let tw = toggle.chars().count() as u16;
+        let tw = crate::ui::cells(toggle) as u16;
         let tx = right.saturating_sub(tw + 2);
         let toggle_fg = if hovered == Some(&Hit::PickerHidden) { theme.text } else { theme.accent };
         paint::text(frame.buffer_mut(), tx, title_y, toggle, toggle_fg, theme.panel, false);
@@ -791,7 +791,7 @@ impl FilePickerState {
             let x = list_area.x + 1;
             paint::text(frame.buffer_mut(), x, y, icon, theme.text_muted, fill, false);
             let label_x = x + 2;
-            let tag_w = tag.map_or(0, |(s, _)| s.chars().count() as u16 + 1);
+            let tag_w = tag.map_or(0, |(s, _)| crate::ui::cells(s) as u16 + 1);
             let label_w = (list_area.x + list_area.width).saturating_sub(label_x + tag_w + 1);
             paint::text(
                 frame.buffer_mut(),

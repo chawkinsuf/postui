@@ -1630,6 +1630,22 @@ fn the_search_prompt_draws_on_the_bodys_bottom_row() {
     assert!(!row_text(&buf, area, area.bottom() - 1).starts_with("/fo"), "Esc closes the prompt");
 }
 
+/// The prompt's caret stands past the cells its text paints: `❤️` (a
+/// heart and its presentation selector) takes two.
+#[test]
+fn the_search_prompts_caret_follows_the_painted_cells() {
+    let mut app = vim(Fixture::Body);
+    app.editor.set_body_text("foo");
+    feed(&mut app, "/\u{2764}\u{fe0f}x");
+    let buf = draw_buffer(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    let y = area.bottom() - 1;
+    let reversed: Vec<u16> = (area.x..area.right())
+        .filter(|&x| buf[(x, y)].modifier.contains(Modifier::REVERSED))
+        .collect();
+    assert_eq!(reversed, [area.x + 4], "after `/`, the heart's two cells and `x`");
+}
+
 /// Final review M-4: the prompt covers the bottom row, so a `{{token}}`
 /// under it registers no hit a click could find.
 #[test]

@@ -33,7 +33,7 @@ pub const BUTTON_HEIGHT: u16 = cap::CAP_H;
 /// The minimum width a button needs to show `label` without truncation: the
 /// label plus 2 columns of padding on each side.
 pub fn button_min_width(label: &str) -> u16 {
-    label.chars().count() as u16 + 4
+    crate::ui::cells(label) as u16 + 4
 }
 
 /// The buttons on a Manage detail pane's title row, laid out from the
@@ -93,7 +93,7 @@ impl Button<'_> {
             return Rect { height: 0, ..area };
         }
 
-        let width = self.label.chars().count() as u16;
+        let width = crate::ui::cells(self.label) as u16;
         let start_x = area.x + area.width.saturating_sub(width) / 2;
         text(buf, start_x, mid.y, self.label, label_fg, face, true);
         area

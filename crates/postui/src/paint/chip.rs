@@ -17,7 +17,7 @@ impl Chip<'_> {
     /// The width [`Chip::paint`] will paint, without painting it — for
     /// layouts that must know whether a chip fits before committing to it.
     pub fn width(&self) -> u16 {
-        crate::keys::display_keycap(self.label).chars().count() as u16 + 2
+        crate::ui::cells(&crate::keys::display_keycap(self.label)) as u16 + 2
     }
 
     /// Paints `" label "` at `(x, y)` on top of surface `on`. Returns the
@@ -35,7 +35,7 @@ impl Chip<'_> {
         // single paint funnel, so the chip data tuples (and the actions
         // keyed off them) keep the canonical `alt+` strings.
         let s = format!(" {} ", crate::keys::display_keycap(self.label));
-        let width = s.chars().count() as u16;
+        let width = crate::ui::cells(&s) as u16;
         let bg = theme.tint(self.color, on);
         // A dark lift of the fill itself, rather than `theme.page`, so
         // this stays correct in a light theme too — `theme.page` is
@@ -89,7 +89,7 @@ impl TabStrip<'_> {
         let mut x = 0u16;
         let mut spans = Vec::with_capacity(tabs.len());
         for (label, badge) in tabs {
-            let label_w = label.chars().count() as u16;
+            let label_w = crate::ui::cells(label) as u16;
             let width = label_w + 2 + badge.map_or(0, |_| 2);
             spans.push((x, width));
             x += width + 2; // 2-column gap between tabs
@@ -160,7 +160,7 @@ impl TabStrip<'_> {
             } else {
                 theme.text_muted
             };
-            let label_w = label.chars().count() as u16;
+            let label_w = crate::ui::cells(label) as u16;
 
             text(buf, x + 1, labels_y, label, fg, on, active);
             if let Some((glyph, color)) = badge {

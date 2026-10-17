@@ -426,7 +426,6 @@ fn draw_var_tooltip(
 ) {
     use crate::hit::Hit;
     use ratatui::layout::Rect;
-    use unicode_width::UnicodeWidthStr;
     // The icon pills: three cells each (` 󰆏 `) so the hover fill
     // surrounds the glyph.
     let mut pills: Vec<(&str, Hit)> = Vec::new();
@@ -454,7 +453,7 @@ fn draw_var_tooltip(
     let mut value_lines: Vec<String> = match &info.value {
         Some(value) => wrap_cells(value, top_w)
             .into_iter()
-            .map(|row| if masked { "\u{25cf}".repeat(row.width().max(1)) } else { row })
+            .map(|row| if masked { "\u{25cf}".repeat(cells(&row).max(1)) } else { row })
             .collect(),
         None => Vec::new(),
     };
@@ -471,7 +470,7 @@ fn draw_var_tooltip(
     // it is the top row, beside the pills.
     let has_value = !value_lines.is_empty();
     let name_w =
-        (tip.name.width() + 2 + source.width()).min(if has_value { wrap_w } else { top_w });
+        (cells(&tip.name) + 2 + cells(&source)).min(if has_value { wrap_w } else { top_w });
     // The tip goes below its token when it fits there, else above when
     // there is more room above; it is cut to the roomier side, so it
     // never covers the token it describes. It sits flush against the
@@ -502,7 +501,7 @@ fn draw_var_tooltip(
     }
     let desc_lines = descs.concat();
     // Display cells throughout (a wide glyph is one char but two cells).
-    let widest = |lines: &[String]| lines.iter().map(|l| l.width()).max().unwrap_or(0);
+    let widest = |lines: &[String]| lines.iter().map(|l| cells(l)).max().unwrap_or(0);
     // At least one cell, as a mask always shows one dot: an empty value
     // revealed keeps its masked footprint (and the guard below its tip).
     let top_text_w = if has_value { widest(&value_lines) } else { name_w }.max(1);
@@ -545,7 +544,7 @@ fn draw_var_tooltip(
                 // that token's), the source muted after it — cut from the
                 // source first, the name last.
                 let name = ellipsize(&tip.name, room);
-                let source_room = room.saturating_sub(name.width() + 2);
+                let source_room = room.saturating_sub(cells(&name) + 2);
                 crate::paint::text(
                     buf,
                     x + 2,
@@ -558,7 +557,7 @@ fn draw_var_tooltip(
                 if source_room > 0 {
                     crate::paint::text(
                         buf,
-                        x + 2 + name.width() as u16 + 2,
+                        x + 2 + cells(&name) as u16 + 2,
                         row,
                         &ellipsize(&source, source_room),
                         theme.text_muted,
@@ -597,21 +596,20 @@ enum TipRow {
 /// `s` hard-wrapped into lines of at most `max` display cells — values
 /// are often unbroken URLs or tokens, so there is no word boundary to
 /// prefer. Cells, not chars: a wide glyph takes two, so a masked secret
-/// (one dot per cell) and its revealed value wrap identically. Always
-/// yields at least one (possibly empty) line.
+/// (one dot per cell) and its revealed value wrap identically. Breaks
+/// only between graphemes. Always yields at least one (possibly empty)
+/// line.
 fn wrap_cells(s: &str, max: usize) -> Vec<String> {
-    use unicode_width::UnicodeWidthChar;
     let max = max.max(1);
     let mut lines = vec![String::new()];
     let mut w = 0;
-    for c in s.chars() {
-        let cw = c.width().unwrap_or(0);
-        if w + cw > max && w > 0 {
+    for (_, g, gw) in graphemes(s) {
+        if w + gw > max && w > 0 {
             lines.push(String::new());
             w = 0;
         }
-        lines.last_mut().unwrap().push(c);
-        w += cw;
+        lines.last_mut().unwrap().push_str(g);
+        w += gw;
     }
     lines
 }
@@ -628,11 +626,10 @@ pub(crate) fn one_line(s: &str) -> String {
 /// than a line is hard-broken as [`wrap_cells`] does. A blank `s` yields
 /// no lines at all.
 fn wrap_words(s: &str, max: usize) -> Vec<String> {
-    use unicode_width::UnicodeWidthStr;
     let mut lines = Vec::new();
     let mut line = String::new();
     for piece in s.split_whitespace().flat_map(|word| wrap_cells(word, max)) {
-        if !line.is_empty() && line.width() + 1 + piece.width() > max {
+        if !line.is_empty() && cells(&line) + 1 + cells(&piece) > max {
             lines.push(std::mem::take(&mut line));
         }
         if !line.is_empty() {
@@ -659,8 +656,7 @@ fn cut_rows(lines: &mut Vec<String>, rows: usize, max: usize) {
 
 /// `s` cut to at most `max` display cells, the last of which becomes `…`.
 pub(crate) fn ellipsize(s: &str, max: usize) -> String {
-    use unicode_width::UnicodeWidthStr;
-    if s.width() <= max {
+    if cells(s) <= max {
         return s.to_string();
     }
     if max == 0 {
@@ -672,8 +668,7 @@ pub(crate) fn ellipsize(s: &str, max: usize) -> String {
 /// `ellipsize` from the other end: `s` cut to at most `max` display
 /// cells, the first of which becomes `…`, so its end stays in view.
 pub(crate) fn ellipsize_start(s: &str, max: usize) -> String {
-    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-    if s.width() <= max {
+    if cells(s) <= max {
         return s.to_string();
     }
     if max == 0 {
@@ -681,8 +676,8 @@ pub(crate) fn ellipsize_start(s: &str, max: usize) -> String {
     }
     let mut w = 0;
     let mut start = s.len();
-    for (i, c) in s.char_indices().rev() {
-        w += c.width().unwrap_or(0);
+    for (i, _, gw) in graphemes(s).rev() {
+        w += gw;
         if w > max - 1 {
             break;
         }
@@ -691,17 +686,13 @@ pub(crate) fn ellipsize_start(s: &str, max: usize) -> String {
     format!("\u{2026}{}", &s[start..])
 }
 
-/// The longest prefix of `s` that fits in `max` display cells. A wide
-/// glyph that would straddle the edge is left out.
-///
-/// Widths are per char, the convention `LineInput` and [`wrap_cells`]
-/// share; an emoji with a presentation selector or a combining mark is
-/// measured the same way in all of them.
+/// The longest prefix of `s` that fits in `max` display cells, cut
+/// between graphemes. A wide glyph that would straddle the edge is left
+/// out.
 pub(crate) fn take_cells(s: &str, max: usize) -> &str {
-    use unicode_width::UnicodeWidthChar;
     let mut w = 0;
-    for (i, c) in s.char_indices() {
-        w += c.width().unwrap_or(0);
+    for (i, _, gw) in graphemes(s) {
+        w += gw;
         if w > max {
             return &s[..i];
         }
@@ -714,11 +705,27 @@ pub(crate) fn clip(s: &str, width: u16) -> &str {
     take_cells(s, width as usize)
 }
 
-/// The cells `s` takes by [`take_cells`]'s measure, for placing what
-/// follows a cut.
+/// The display cells `s` takes on screen: the crate's one width measure,
+/// for sizing a label and placing what follows it.
 pub(crate) fn cells(s: &str) -> usize {
-    use unicode_width::UnicodeWidthChar;
-    s.chars().map(|c| c.width().unwrap_or(0)).sum()
+    // ASCII graphemes are one byte each (`\r\n` aside, two controls): a
+    // cell apiece, none for a control.
+    if s.is_ascii() {
+        return s.bytes().filter(|b| !b.is_ascii_control()).count();
+    }
+    graphemes(s).map(|(_, _, w)| w).sum()
+}
+
+/// `s`'s graphemes, each with its byte offset and the cells it takes —
+/// the unit ratatui paints in: its own width for the grapheme, and none
+/// for one holding a control char, which it skips.
+pub(crate) fn graphemes(s: &str) -> impl DoubleEndedIterator<Item = (usize, &str, usize)> {
+    use ratatui::buffer::CellWidth;
+    use unicode_segmentation::UnicodeSegmentation;
+    s.grapheme_indices(true).map(|(i, g)| {
+        let w = if g.contains(char::is_control) { 0 } else { g.cell_width() as usize };
+        (i, g, w)
+    })
 }
 
 /// Marks the focused pane with a half-block accent bar down its left
@@ -761,7 +768,7 @@ fn draw_manage_without_a_project(
     use crate::paint::{fill, text};
     fill(frame.buffer_mut(), body, theme.page);
     const MSG: &str = "no project is open \u{2014} open or create one first";
-    let x = body.x + body.width.saturating_sub(MSG.chars().count() as u16) / 2;
+    let x = body.x + body.width.saturating_sub(cells(MSG) as u16) / 2;
     let y = body.y + body.height / 3;
     text(frame.buffer_mut(), x, y, MSG, theme.text_muted, theme.page, false);
 }
@@ -980,6 +987,65 @@ mod tests {
         assert_eq!(take_cells("本番環境", 0), "");
         assert_eq!(take_cells("abcdef", 4), "abcd");
         assert_eq!(take_cells("abc", 10), "abc");
+    }
+
+    /// Text the crate measures by grapheme, as ratatui paints it: an emoji
+    /// with a presentation selector, combining marks, ZWJ sequences, wide
+    /// and halfwidth glyphs, and a control char (which paints nothing).
+    const GRAPHEME_SAMPLES: [&str; 9] = [
+        "a\r\nb\u{7f}c",
+        "\u{2764}\u{fe0f}",
+        "e\u{301}\u{302}",
+        "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}",
+        "本番",
+        "\u{ff76}\u{ff9e}",
+        "a\tb",
+        "\u{1f1fa}\u{1f1f8}",
+        "x\u{200b}y",
+    ];
+
+    /// `cells` is the paint's measure: what `set_stringn` advances by.
+    #[test]
+    fn cells_measures_what_ratatui_paints() {
+        for s in GRAPHEME_SAMPLES {
+            let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 40, 1));
+            let (end, _) = buf.set_stringn(0, 0, s, 40, ratatui::style::Style::default());
+            assert_eq!(cells(s), end as usize, "{s:?}");
+        }
+        assert_eq!(cells("\u{2764}\u{fe0f}"), 2);
+        assert_eq!(cells("e\u{301}"), 1);
+    }
+
+    /// A cut keeps whole graphemes: a presentation-selector emoji is two
+    /// cells, and a mark stays with its letter.
+    #[test]
+    fn take_cells_keeps_whole_graphemes() {
+        let hearts = "\u{2764}\u{fe0f}\u{2764}\u{fe0f}\u{2764}\u{fe0f}";
+        assert_eq!(take_cells(hearts, 3), "\u{2764}\u{fe0f}");
+        assert_eq!(take_cells("e\u{301}x", 1), "e\u{301}");
+        assert_eq!(take_cells("ae\u{301}", 1), "a");
+        let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+        assert_eq!(take_cells(&format!("{family}{family}"), 3), family);
+    }
+
+    /// The front cut keeps whole graphemes too: a mark never survives
+    /// without the glyph it sits on.
+    #[test]
+    fn ellipsize_start_never_keeps_a_mark_without_its_base() {
+        assert_eq!(ellipsize_start("x本\u{301}", 2), "\u{2026}");
+        assert_eq!(ellipsize_start("xye\u{301}", 2), "\u{2026}e\u{301}");
+        assert_eq!(ellipsize("\u{2764}\u{fe0f}\u{2764}\u{fe0f}", 3), "\u{2764}\u{fe0f}\u{2026}");
+    }
+
+    /// A hard wrap breaks between graphemes, never inside a ZWJ sequence,
+    /// and measures a presentation-selector emoji as its two cells.
+    #[test]
+    fn wrap_cells_breaks_between_graphemes() {
+        let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+        assert_eq!(wrap_cells(&format!("{family}{family}"), 3), vec![family, family]);
+        let heart = "\u{2764}\u{fe0f}";
+        assert_eq!(wrap_cells(&heart.repeat(3), 3), vec![heart; 3]);
+        assert_eq!(wrap_words(&format!("{heart} {heart}"), 4), vec![heart, heart]);
     }
 
     /// No room, no text: not even the `…`, which would take a cell the

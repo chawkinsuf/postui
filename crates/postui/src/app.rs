@@ -8884,11 +8884,7 @@ impl App {
                     let rel_path = render_path(&rel);
                     let array_path = tree.jq_path_of(array_line);
                     let key_label = rel_path.trim_start_matches('.').to_string();
-                    let shown = if value.chars().count() > 24 {
-                        format!("{}…", value.chars().take(23).collect::<String>())
-                    } else {
-                        value.to_string()
-                    };
+                    let shown = crate::ui::ellipsize(value, 24);
                     items.push(gated(
                         &format!("Only items where {key_label} == {shown}"),
                         Action::JqApply(compose(

@@ -4218,14 +4218,14 @@ fn draw_header_strip(
     let timing = format!("{} → {}", human_elapsed(data.ttfb), human_elapsed(data.elapsed));
     for label in [timing, human_size(data.size)] {
         let s = format!(" {label} ");
-        let w = s.chars().count() as u16;
+        let w = crate::ui::cells(&s) as u16;
         crate::paint::text(buf, x, area.y, &s, t.text_muted, t.panel, false);
         x += w + 1;
     }
     if let Some(ct) = &data.content_type {
         let s = format!(" {ct}");
         crate::paint::text(buf, x, area.y, &s, t.text_muted, t.panel, false);
-        x += s.chars().count() as u16 + 1;
+        x += crate::ui::cells(&s) as u16 + 1;
     }
 
     // The rendered URL this response actually came from — `{{vars}}`
@@ -4381,7 +4381,6 @@ fn draw_header_actions(
     jq_open: bool,
     ctx: &DrawCtx,
 ) {
-    use unicode_width::UnicodeWidthStr;
     let y = area.y + 2;
     let mut x = area.x + 1;
     let buf = frame.buffer_mut();
@@ -4391,7 +4390,7 @@ fn draw_header_actions(
             continue;
         }
         // Display width, not char count, so the labels' padding is honoured.
-        let w = label.width() as u16;
+        let w = crate::ui::cells(label) as u16;
         let rect = Rect::new(x, y, w, 1);
         let pressed = jq_open && hit == crate::hit::Hit::ResponseJqButton;
         crate::paint::action(
@@ -4886,7 +4885,7 @@ fn draw_jq_bar(
     }
     let mut caret = None;
     const AI: &str = crate::glyph::CREATION_PILL;
-    let ai_w = AI.chars().count() as u16;
+    let ai_w = crate::ui::cells(AI) as u16;
     let text_w = area.width.saturating_sub(ai_w + 1);
     let row = Rect { height: 1, width: text_w, ..area };
     let chip_color = if bar.stale { t.text_muted } else { t.accent };
@@ -5054,7 +5053,7 @@ fn draw_jq_menu(
     let mut selected = (0u16, 0u16);
     for (label, is_selected) in chips.iter().map(|(l, sel)| (l.as_str(), *sel)) {
         let chip = format!(" {label} ");
-        let w = chip.chars().count() as u16;
+        let w = crate::ui::cells(&chip) as u16;
         if is_selected {
             selected = (col, col + w);
         }
@@ -5106,7 +5105,7 @@ fn draw_search_footer(
 
     const PREV: &str = " ▲ ";
     const NEXT: &str = " ▼ ";
-    let step_w = PREV.chars().count() as u16;
+    let step_w = crate::ui::cells(PREV) as u16;
     let buttons_w = step_w * 2 + 1;
     let text_w = area.width.saturating_sub(buttons_w + 1);
     frame.render_widget(

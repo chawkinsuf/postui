@@ -82,7 +82,7 @@ pub fn label_column(labels: &[&str]) -> u16 {
 
 /// The narrowest a [`Pill`] can be painted with `label` intact.
 pub fn pill_min_width(label: &str) -> u16 {
-    label.chars().count() as u16 + PILL_PAD * 2
+    crate::ui::cells(label) as u16 + PILL_PAD * 2
 }
 
 /// A [`Pill`] pinned to a row's right edge, with the hit it registers.
