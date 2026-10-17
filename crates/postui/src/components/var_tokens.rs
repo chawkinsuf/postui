@@ -213,7 +213,8 @@ impl VarView {
                 TokenSource::Selector { selector: selector.clone(), selected: selected.clone() }
             }
             // A secret's value only ever comes from `.local/secrets.toml`,
-            // which is per-environment.
+            // kept per environment (under no environment when none is
+            // active, which `env_source` names `no env`).
             Some(VarMeta::Secret) => self.env_source(),
             Some(VarMeta::Simple) | None => {
                 if value.is_none() {

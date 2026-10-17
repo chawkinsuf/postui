@@ -2032,8 +2032,8 @@ impl App {
             }
             None => crate::components::var_tokens::VarView::default(),
         };
+        self.editor.shadowed = self.compute_shadowed(&vars);
         self.editor.vars = vars;
-        self.editor.shadowed = self.compute_shadowed();
         // The response pane always shows the open request's response;
         // whenever an action changed which request is open (any route),
         // swap in that request's cached response — or an empty one. The
@@ -2220,12 +2220,15 @@ impl App {
     /// the shadowed value's own, labelled as its tooltip labels it (#37),
     /// and a secret is masked (spec §3: secrets are masked everywhere by
     /// default) rather than shown.
-    fn compute_shadowed(&self) -> indexmap::IndexMap<String, String> {
+    fn compute_shadowed(
+        &self,
+        vars: &crate::components::var_tokens::VarView,
+    ) -> indexmap::IndexMap<String, String> {
         self.editor
             .variables
             .keys()
             .filter_map(|name| {
-                let info = self.editor.vars.describe_project(name);
+                let info = vars.describe_project(name);
                 let value = info.value.as_deref()?;
                 let display = if info.secret { "\u{25cf}\u{25cf}\u{25cf}\u{25cf}" } else { value };
                 Some((name.clone(), format!("{}: {display}", info.source.label())))
