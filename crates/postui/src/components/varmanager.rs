@@ -20,7 +20,7 @@ use crate::layout::PaneId;
 use crate::paint::{
     Button, ButtonKind, ControlSlot, ControlState, ListRow, PROPERTY_MAX_W, Pill, PropertyRow,
     RowHighlight, TALL_PILL_H, Toggle, TrailingPill, Well, button_min_width, fill, label_column,
-    pill_min_width, text,
+    pill_min_width, text, title_clear_x,
 };
 use crate::theme::Theme;
 use indexmap::IndexMap;
@@ -1745,6 +1745,7 @@ impl VarManager {
             // the other begins — two columns of air so the eye reads two
             // groups rather than five loose buttons.
             let can_paste = self.can_paste(selector);
+            let clear = title_clear_x(x0, &label);
             for (lbl, kind, hit, gap) in [
                 ("+ Option", ButtonKind::Primary, Hit::VmNewOption, 1),
                 ("Paste", ButtonKind::Secondary, Hit::VmPasteOption, 1),
@@ -1753,7 +1754,7 @@ impl VarManager {
                 ("Delete", ButtonKind::Secondary, Hit::VmDelete, 1),
             ] {
                 let w = button_min_width(lbl);
-                if bx < x0 + label.chars().count() as u16 + w + gap + 2 {
+                if bx.saturating_sub(w + gap) < clear {
                     break;
                 }
                 bx -= w + gap;
@@ -2052,10 +2053,11 @@ impl VarManager {
         if y + 2 <= bottom {
             let label = if secret { format!("{name}  {GLYPH_LOCK}") } else { name.to_string() };
             text(buf, x0, y, &label, theme.text, theme.page, true);
+            let clear = title_clear_x(x0, &label);
             let mut bx = right.x + right.width;
             for (lbl, hit) in [("Delete", Hit::VmDelete), ("Rename", Hit::VmRename)] {
                 let w = button_min_width(lbl);
-                if bx < x0 + label.chars().count() as u16 + w + 3 {
+                if bx.saturating_sub(w + 1) < clear {
                     break;
                 }
                 bx -= w + 1;

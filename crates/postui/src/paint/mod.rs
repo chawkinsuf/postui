@@ -25,7 +25,7 @@ pub mod ring;
 pub mod rows;
 pub mod split_control;
 
-pub use button::{BUTTON_HEIGHT, Button, ButtonKind, button_min_width};
+pub use button::{BUTTON_HEIGHT, Button, ButtonKind, button_min_width, title_clear_x};
 pub use cap::{CAP_H, capped};
 pub use chip::{Chip, TabStrip};
 pub use field::{FIELD_HEIGHT, FIELD_PAD, TextField};

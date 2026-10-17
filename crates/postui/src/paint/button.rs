@@ -36,6 +36,16 @@ pub fn button_min_width(label: &str) -> u16 {
     label.chars().count() as u16 + 4
 }
 
+/// The first column a title-row button may start at: two columns of air
+/// after `title` painted at `title_x`, measured in the cells it paints.
+/// The Manage screen's detail panes lay their title-row buttons out from
+/// the right edge inward and drop one that would start left of this,
+/// rather than paint it over the title.
+pub fn title_clear_x(title_x: u16, title: &str) -> u16 {
+    let w = u16::try_from(crate::ui::cells(title)).unwrap_or(u16::MAX);
+    title_x.saturating_add(w).saturating_add(2)
+}
+
 impl Button<'_> {
     /// Paints this button into `area`, which must be exactly
     /// [`BUTTON_HEIGHT`] rows tall. The label is centered bold on the
@@ -89,6 +99,16 @@ mod tests {
         })
         .unwrap();
         term
+    }
+
+    /// The title is measured in the cells it paints, so a wide name (2
+    /// glyphs, 4 cells) pushes the first free column as far as it reaches;
+    /// a title past the edge of a `u16` saturates rather than wrapping.
+    #[test]
+    fn a_title_row_button_starts_two_cells_past_the_painted_title() {
+        assert_eq!(title_clear_x(10, "ab"), 14);
+        assert_eq!(title_clear_x(10, "本番"), 16);
+        assert_eq!(title_clear_x(u16::MAX - 1, "abc"), u16::MAX);
     }
 
     #[test]

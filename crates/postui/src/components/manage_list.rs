@@ -11,7 +11,7 @@ use crate::hit::{Hit, HitMap};
 use crate::keyroute::spell::{Key, Nav};
 use crate::paint::{
     Button, ButtonKind, ControlState, ListRow, PROPERTY_MAX_W, Pill, PropertyRow, RowHighlight,
-    TALL_PILL_H, button_min_width, fill, label_column, pill_min_width, text,
+    TALL_PILL_H, button_min_width, fill, label_column, pill_min_width, text, title_clear_x,
 };
 use crate::theme::Theme;
 use postui_core::project::Project;
@@ -916,11 +916,12 @@ impl ManageList {
             };
             text(buf, x0, y, &title, theme.text, theme.page, true);
             let buttons = Self::buttons(tab);
+            let clear = title_clear_x(x0, &title);
             let mut bx = right.x + right.width;
             for (col, button) in buttons.iter().enumerate().rev() {
                 let (label, hit) = (button.label(), button.hit());
                 let w = button_min_width(label);
-                if bx < x0 + crate::ui::cells(&title) as u16 + w + 3 {
+                if bx.saturating_sub(w + 1) < clear {
                     break;
                 }
                 bx -= w + 1;

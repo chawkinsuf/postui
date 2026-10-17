@@ -70,7 +70,8 @@ pub const HOVER_WASH: f32 = 0.2;
 /// two columns of gutter, clamped to [`LABEL_W_MIN`]..=[`LABEL_W_MAX`].
 ///
 /// A pane computes this once and hands it to every row it paints, so
-/// its controls line up and no label is truncated. A fixed constant
+/// its controls line up and no label is truncated short of the ceiling
+/// ([`PropertyRow`] cuts one past it at the column). A fixed constant
 /// could not do both: Settings' longest label is "Ask before sending to
 /// AI" while the Variables pane's is "Value in <env>", whose width
 /// depends on the environment's display name.
@@ -132,7 +133,11 @@ impl PropertyRow<'_> {
         };
         fill(buf, area, bg);
         let label_fg = if self.disabled { theme.text_disabled } else { theme.text };
-        text(buf, area.x, area.y, self.label, label_fg, bg, false);
+        // Cut at the column in cells: a label past the ceiling would
+        // otherwise run under the control, and a wide glyph straddling
+        // the column's edge would cross into it.
+        let label = crate::ui::clip(self.label, self.label_w);
+        text(buf, area.x, area.y, label, label_fg, bg, false);
 
         // Trailing pills first, right-to-left from the row's right edge:
         // the slot is measured against where they stopped, so a long
@@ -429,6 +434,35 @@ mod tests {
     #[test]
     fn the_label_column_measures_a_wide_label_in_cells() {
         assert_eq!(label_column(&["Value in 本番環境本番"]), 23);
+    }
+
+    /// A label past the column's ceiling is cut at the column in cells:
+    /// `Value in` + 12 wide glyphs is 33 cells against a 32-cell column,
+    /// so the last glyph, which would straddle into the control, is left
+    /// out rather than painted half under the well.
+    #[test]
+    fn a_label_past_the_ceiling_is_cut_at_the_column_in_cells() {
+        let theme = Theme::dark();
+        let label = "Value in 本番環境本番環境本番環境";
+        let label_w = label_column(&[label]);
+        assert_eq!(label_w, LABEL_W_MAX, "precondition: the ceiling holds it");
+        let mut term = Terminal::new(TestBackend::new(60, 1)).unwrap();
+        let mut hits = HitMap::default();
+        term.draw(|f| {
+            PropertyRow { label, label_w, hovered: false, disabled: false, trailing: &[] }.paint(
+                f.buffer_mut(),
+                &mut hits,
+                Rect::new(0, 0, 60, 1),
+                &theme,
+            );
+        })
+        .unwrap();
+        for x in (0..60).filter(|x| buf_cell(&term, *x, 0).symbol() != " ") {
+            let cell = buf_cell(&term, x, 0);
+            let w = unicode_width::UnicodeWidthStr::width(cell.symbol()) as u16;
+            assert!(x + w <= label_w, "{:?} at {x} reaches past the column at {label_w}", cell);
+        }
+        assert_eq!(buf_cell(&term, 29, 0).symbol(), "環", "the glyphs that fit are kept");
     }
 
     /// Disabled content blends toward the control's own fill, the same
