@@ -152,13 +152,13 @@ pub struct Editor {
     /// Request-scoped `[variables]`, edited by the Vars tab (shares the
     /// Params/Headers table editor) and carried through load/save.
     pub variables: IndexMap<String, Entry>,
-    /// `name → "overrides <env>: <value>"`, already formatted (masked for
-    /// secrets) by `App` out of `Project::resolved` — one entry per
+    /// `name → "<source>: <value>"`, already formatted (masked for secrets)
+    /// by `App` out of `VarView::describe_project` — one entry per
     /// project variable that a request-scope entry with the same name
     /// shadows. Synced by `App` on every `update()` alongside
     /// `inherited_headers`. Draw-only: consumed by the Vars tab's table draw
-    /// to show the dim "overrides" hint under a shadowing row's expanded
-    /// form; never itself edited here.
+    /// to show the dim "overrides" hint trailing a shadowing row's value;
+    /// never itself edited here.
     pub shadowed: IndexMap<String, String>,
     /// Enabled default headers inherited from the project, synced by `App`
     /// on every `update()` alongside `open_slug`. Draw-only: rendered above

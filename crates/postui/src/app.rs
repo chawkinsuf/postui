@@ -2023,16 +2023,18 @@ impl App {
         self.sidebar.in_flight =
             self.session.in_flight.iter().filter_map(|f| f.slug.clone()).collect();
         self.editor.inherited_headers = self.meta().default_headers.clone();
-        self.editor.shadowed = self.compute_shadowed();
         // The token-highlighting/tooltip snapshot, kept in lockstep with the
-        // project's resolved values and the open request's own `[variables]`
-        // the same way `shadowed` is.
+        // project's resolved values and the open request's own `[variables]`;
+        // `shadowed` is read from it.
         let vars = match self.project() {
-            Some(p) => {
-                crate::components::var_tokens::VarView::from_context(p, &self.editor.variables)
-            }
+            Some(p) => crate::components::var_tokens::VarView::from_context(
+                p,
+                &self.editor.variables,
+                self.env_label_display(),
+            ),
             None => crate::components::var_tokens::VarView::default(),
         };
+        self.editor.shadowed = self.compute_shadowed(&vars);
         self.editor.vars = vars;
         // The response pane always shows the open request's response;
         // whenever an action changed which request is open (any route),
@@ -2214,28 +2216,24 @@ impl App {
         );
     }
 
-    /// Builds the Vars tab's shadow hint map: `name → "overrides <env>:
-    /// <value>"` for every open-request `[variables]` option that shares a
-    /// name with a resolved project variable — masked (spec §3: secrets are
-    /// masked everywhere by default) rather than the real value when the
-    /// project variable is a secret.
-    fn compute_shadowed(&self) -> indexmap::IndexMap<String, String> {
-        use postui_core::varmodel::VarMeta;
-        let env_label = self.env_label_display();
+    /// Builds the Vars tab's shadow hint map: `name → "<source>: <value>"`
+    /// (drawn as `overrides …`) for every open-request `[variables]` option
+    /// that shares a name with a resolved project variable. The source is
+    /// the shadowed value's own, labelled as its tooltip labels it (#37),
+    /// and a secret shows `SECRET_MASK` (spec §3: secrets are masked
+    /// everywhere by default), as the tab's referenced list does.
+    fn compute_shadowed(
+        &self,
+        vars: &crate::components::var_tokens::VarView,
+    ) -> indexmap::IndexMap<String, String> {
         self.editor
             .variables
             .keys()
             .filter_map(|name| {
-                let value = self.resolved().values.get(name)?;
-                let display = if matches!(
-                    self.resolved().meta.get(name),
-                    Some(VarMeta::Secret) | Some(VarMeta::MissingSecret)
-                ) {
-                    "\u{25cf}\u{25cf}\u{25cf}\u{25cf}"
-                } else {
-                    value.as_str()
-                };
-                Some((name.clone(), format!("{env_label}: {display}")))
+                let info = vars.describe_project(name);
+                info.resolved().then(|| {
+                    (name.clone(), format!("{}: {}", info.source.label(), info.display_value()))
+                })
             })
             .collect()
     }

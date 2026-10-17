@@ -29,7 +29,9 @@ use unicode_width::UnicodeWidthChar;
 pub enum TokenSource {
     /// The open request's own `[variables]` overlay (highest precedence).
     Request,
-    /// A flat value in the active environment, named for display.
+    /// A flat value in the active environment, or a secret kept for it,
+    /// named as the header chip names the environment (`no env` for a
+    /// secret kept under no environment).
     Env(String),
     /// The variable declaration's `default`.
     Default,
@@ -117,9 +119,10 @@ pub struct VarView {
     env_names: HashSet<String>,
     /// Names whose declaration carries a `default`.
     default_names: HashSet<String>,
-    /// The active environment's display name (as the header shows it),
-    /// when one is active.
-    env_label: Option<String>,
+    /// The environment as the header chip names it (`App::env_label_display`):
+    /// the active one's display name, or `no env` (#37: a secret still
+    /// resolves then, from the secrets kept under no environment).
+    env_label: String,
     /// Declared descriptions: a variable's own, or — for a selector field —
     /// the owning selector's.
     descriptions: IndexMap<String, String>,
@@ -130,10 +133,12 @@ pub struct VarView {
 }
 
 impl VarView {
-    /// Snapshots `project` plus the open request's `[variables]` overlay.
+    /// Snapshots `project` plus the open request's `[variables]` overlay;
+    /// `env_label` is the header chip's environment label.
     pub fn from_context(
         project: &postui_core::project::Project,
         request: &IndexMap<String, Entry>,
+        env_label: String,
     ) -> Self {
         Self {
             resolved: project.resolved().clone(),
@@ -150,7 +155,7 @@ impl VarView {
                 .filter(|(_, d)| d.default.is_some())
                 .map(|(n, _)| n.clone())
                 .collect(),
-            env_label: project.active_env().map(|env| project.env_name(env)),
+            env_label,
             descriptions: {
                 let mut d: IndexMap<String, String> = project
                     .variables()
@@ -198,6 +203,13 @@ impl VarView {
                 descriptions: self.descriptions.get(name).cloned().into_iter().collect(),
             };
         }
+        self.describe_project(name)
+    }
+
+    /// [`describe`](Self::describe) beneath the request overlay: what the
+    /// project resolves `name` to, and from where. A request override
+    /// shadows this, so the Vars tab's `overrides` hint names it.
+    pub fn describe_project(&self, name: &str) -> TokenInfo {
         let value = self.resolved.values.get(name).cloned();
         let source = match self.resolved.meta.get(name) {
             Some(VarMeta::MissingSecret) => TokenSource::MissingSecret,
@@ -206,7 +218,8 @@ impl VarView {
                 TokenSource::Selector { selector: selector.clone(), selected: selected.clone() }
             }
             // A secret's value only ever comes from `.local/secrets.toml`,
-            // which is per-environment.
+            // kept per environment (under no environment when none is
+            // active, which the chip's label names `no env`).
             Some(VarMeta::Secret) => self.env_source(),
             Some(VarMeta::Simple) | None => {
                 if value.is_none() {
@@ -239,13 +252,9 @@ impl VarView {
         }
     }
 
-    /// The active environment, by its display name, or [`TokenSource::Undefined`]
-    /// when there is none (nothing to name as the source).
+    /// The environment, named as the header chip names it.
     fn env_source(&self) -> TokenSource {
-        match &self.env_label {
-            Some(env) => TokenSource::Env(env.clone()),
-            None => TokenSource::Undefined,
-        }
+        TokenSource::Env(self.env_label.clone())
     }
 }
 
@@ -332,7 +341,7 @@ mod tests {
             request: IndexMap::new(),
             env_names: ["base_url".to_string()].into_iter().collect(),
             default_names: HashSet::new(),
-            env_label: Some("qa".into()),
+            env_label: "qa".into(),
             descriptions: IndexMap::new(),
             option_descriptions: IndexMap::new(),
         }
@@ -401,6 +410,11 @@ mod tests {
         let info = v.describe("base_url");
         assert_eq!(info.source, TokenSource::Request);
         assert_eq!(info.value.as_deref(), Some("http://local"));
+        // Beneath it, the project's value and source stand (#37: what the
+        // Vars tab's `overrides` hint names).
+        let beneath = v.describe_project("base_url");
+        assert_eq!(beneath.source, TokenSource::Env("qa".to_string()));
+        assert_eq!(beneath.value.as_deref(), Some("http://x"));
     }
 
     #[test]

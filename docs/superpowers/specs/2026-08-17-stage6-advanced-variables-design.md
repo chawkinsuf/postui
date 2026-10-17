@@ -224,7 +224,19 @@ secret prompt flow instead of blocking.
   delete-confirm, ghost + Add row — with its count in the tab label. This is
   the day-to-day edit surface for request scope.
 - **Shadowing is visible:** a row shadowing a project variable shows the
-  shadowed value inline (dim "overrides qa: 1001").
+  shadowed value inline (dim "overrides qa: 1001"). *Amended 2026-10-17
+  (task #37):* the hint names the shadowed value's own source, with the
+  variable tooltip's labels: the environment's display name, the selected
+  option (`overrides alice: 1001`), or `default value` (the task's ask).
+  The user's ruling: a secret resolved with no environment active names
+  `no env`, as the header chip does, in the hint and in the tooltip (which
+  said `not defined` before), and so in the tab's referenced list too. The
+  implementer's choices: the hint and the tooltip share one source rule
+  (`VarView::describe_project`), with the environment named by the chip's
+  own label; a disabled override row still shows the hint; a secret is
+  masked as the referenced list masks it (six dots, was four); and a name
+  the project leaves without a value (needs selection, missing secret)
+  still gets no hint.
 - **Promote / demote (Manager):** promote moves a request entry into
   `variables.toml`, a small modal asking where the value lands (declaration
   `default` or the active environment). Demote writes the currently resolved
