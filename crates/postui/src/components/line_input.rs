@@ -915,7 +915,7 @@ impl LineInput {
         // selection's edge as a stray reversed cell. Both style whole
         // graphemes: the one holding the cursor, every one a selection
         // touches. A code stands out muted until either reverses it, but
-        // not masked: its dots say nothing of what they hide.
+        // not masked: muted dots would mark where such a char hides.
         let style_of = |g: &Glyph| {
             let chars = g.char..g.char + g.chars;
             if caret && selection.is_none() && chars.contains(&self.cursor) {

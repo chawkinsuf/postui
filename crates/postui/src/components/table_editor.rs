@@ -1,6 +1,6 @@
 use super::DrawCtx;
 use super::line_input::LineInput;
-use super::var_tokens::{VarView, paint_var_tokens};
+use super::var_tokens::{VarView, paint_field_tokens, paint_var_tokens};
 use crate::hit::{Hit, HitMap};
 use crate::paint::{fill, text};
 use crate::theme::Theme;
@@ -873,33 +873,25 @@ impl TableEditorState {
         hits.register(Rect::new(area.x, y, area.width, 1), Hit::TableRow(i));
         Self::register_cells(hits, cols_span(&cols, value_right), y, i);
         // Token treatment over whatever each cell drew: the stored text,
-        // or for the cell under edit the live input's visible window —
-        // the URL bar's rule, so a token stays a token while it is being
-        // typed. A left click resolves past `VarToken` spans, so the
-        // caret move underneath is undisturbed. The ghost's add label is
-        // not a value, so it gets none.
-        let edited = |col: Col, w: u16| {
-            (editing_col == Some(col))
-                .then(|| self.editing.as_ref().map(|e| e.input.visible_window(true, w)))
-                .flatten()
+        // or for the cell under edit the live input — the URL bar's rule,
+        // so a token stays a token while it is being typed. A left click
+        // resolves past `VarToken` spans, so the caret move underneath is
+        // undisturbed. The ghost's add label is not a value, so it gets
+        // none.
+        let edited = |col: Col| {
+            self.editing
+                .as_ref()
+                .filter(|_| editing_col == Some(col))
+                .map(|e| CellText::Edit(&e.input))
         };
-        let key_window = edited(Col::Key, name_w);
-        let value_window = edited(Col::Value, value_w);
         paint_cell_tokens(
             buf,
             hits,
             &cols,
             value_right,
             y,
-            match &key_window {
-                Some(k) => k.as_str(),
-                None if real => key,
-                None => "",
-            },
-            match &value_window {
-                Some(v) => v.as_str(),
-                None => entry.value.as_str(),
-            },
+            edited(Col::Key).unwrap_or(CellText::Stored(if real { key } else { "" })),
+            edited(Col::Value).unwrap_or(CellText::Stored(&entry.value)),
             vars,
             theme,
         );
@@ -948,18 +940,29 @@ fn paint_cell_tokens(
     cols: &Columns,
     value_right: u16,
     y: u16,
-    key: &str,
-    value: &str,
+    key: CellText,
+    value: CellText,
     vars: &VarView,
     theme: &Theme,
 ) {
     let (name_x, name_w, value_x, value_w) = cols_span(cols, value_right);
+    let mut paint = |cell: Rect, text: CellText| match text {
+        CellText::Stored(text) => paint_var_tokens(buf, cell, text, cell.x, vars, theme, hits),
+        CellText::Edit(input) => paint_field_tokens(buf, cell, input, true, vars, theme, hits),
+    };
     if name_w > 0 {
-        paint_var_tokens(buf, Rect::new(name_x, y, name_w, 1), key, name_x, vars, theme, hits);
+        paint(Rect::new(name_x, y, name_w, 1), key);
     }
     if value_w > 0 {
-        paint_var_tokens(buf, Rect::new(value_x, y, value_w, 1), value, value_x, vars, theme, hits);
+        paint(Rect::new(value_x, y, value_w, 1), value);
     }
+}
+
+/// What a cell drew, for its token treatment: its stored text, or the
+/// field editing it (drawn focused, windowed to the cell).
+enum CellText<'a> {
+    Stored(&'a str),
+    Edit(&'a LineInput),
 }
 
 /// `(name_x, name_w, value_x, value_w)` for a row's two clickable cells:

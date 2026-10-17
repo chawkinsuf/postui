@@ -12,6 +12,7 @@
 //! `[variables]` overlay wins over everything the environment resolved —
 //! so what the tooltip shows is what a send would substitute.
 
+use crate::components::line_input::LineInput;
 use crate::hit::{Hit, HitMap};
 use crate::theme::Theme;
 use indexmap::IndexMap;
@@ -22,6 +23,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use std::collections::HashSet;
+use std::ops::Range;
 
 /// Where a token's value comes from — the tooltip's second line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,15 +283,54 @@ pub fn paint_var_tokens(
     theme: &Theme,
     hits: &mut HitMap,
 ) {
+    let columns = |bytes: Range<usize>| {
+        let start = text_origin_col as usize + crate::ui::cells(&text[..bytes.start]);
+        Some(start..start + crate::ui::cells(&text[bytes]))
+    };
+    paint_tokens(buf, row, text, columns, vars, theme, hits);
+}
+
+/// [`paint_var_tokens`] for a field drawn
+/// [`LineInput::draw_line_windowed`]`(focused, _, row.width)` at `row.x`:
+/// the tokens are the ones in the field's own text — what a send
+/// substitutes — placed where the field drew them, so a char the field
+/// shows as a code (`^I`) neither hides a token nor shifts one.
+pub fn paint_field_tokens(
+    buf: &mut Buffer,
+    row: Rect,
+    input: &LineInput,
+    focused: bool,
+    vars: &VarView,
+    theme: &Theme,
+    hits: &mut HitMap,
+) {
+    let columns = |bytes: Range<usize>| {
+        let cols = input.span_columns(focused, row.width, bytes)?;
+        Some((row.x + cols.start) as usize..(row.x + cols.end) as usize)
+    };
+    paint_tokens(buf, row, input.text(), columns, vars, theme, hits);
+}
+
+/// Tints and registers each token in `text` at the buffer columns
+/// `columns` gives its bytes (`None`: not drawn), clipped to `row`.
+fn paint_tokens(
+    buf: &mut Buffer,
+    row: Rect,
+    text: &str,
+    columns: impl Fn(Range<usize>) -> Option<Range<usize>>,
+    vars: &VarView,
+    theme: &Theme,
+    hits: &mut HitMap,
+) {
     if row.width == 0 || row.height == 0 {
         return;
     }
     for token in postui_core::vars::find_tokens(text) {
-        let before = crate::ui::cells(&text[..token.start]);
-        let width = crate::ui::cells(&text[token.start..token.end]);
-        let start = text_origin_col as usize + before;
-        let end = (start + width).min(row.right() as usize);
-        let start = start.max(row.x as usize);
+        let Some(cols) = columns(token.start..token.end) else {
+            continue;
+        };
+        let end = cols.end.min(row.right() as usize);
+        let start = cols.start.max(row.x as usize);
         if end <= start {
             continue;
         }
@@ -483,6 +524,24 @@ mod tests {
         let user = hits.rect_of(&Hit::VarToken("user".into())).unwrap();
         assert_eq!(user.x, 13);
         assert_eq!(user.right(), 20, "clipped to the row's right edge");
+    }
+
+    /// A field's tokens are the ones a send substitutes, found in its own
+    /// text, and sit where the field drew them: a tab the field shows as
+    /// `^I` inside the braces still trims away, and one before a token
+    /// shifts it by the code's cells.
+    #[test]
+    fn field_tokens_come_from_the_text_and_sit_where_drawn() {
+        let theme = Theme::dark();
+        let row = Rect::new(3, 0, 30, 1);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 1));
+        let mut hits = HitMap::default();
+        let input = LineInput::new("\t{{base_url\t}}");
+        buf.set_line(row.x, 0, &input.draw_line_windowed(false, &theme, row.width), row.width);
+        paint_field_tokens(&mut buf, row, &input, false, &view(), &theme, &mut hits);
+        let hit = hits.rect_of(&Hit::VarToken("base_url".into())).expect("still a token");
+        assert_eq!((hit.x, hit.width), (5, 14), "after `^I`, and `{{base_url^I}}` is 14 cells");
+        assert_eq!(buf[(5, 0)].fg, theme.accent);
     }
 
     #[test]
