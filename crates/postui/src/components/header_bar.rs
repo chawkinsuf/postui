@@ -1057,10 +1057,14 @@ mod tests {
     #[test]
     fn a_wide_env_name_yields_the_cycle_pills_before_manage_moves() {
         let theme = Theme::dark();
+        let (mut yielded, mut shown) = (0, 0);
         for width in 70..=160 {
             let (_term, hits) =
                 render_wide(&theme, "alpha", "本番環境本番環境", false, None, width);
-            if hits.rect_of(&Hit::HeaderSpaceCycle).is_some() {
+            if hits.rect_of(&Hit::HeaderSpaceCycle).is_none() {
+                yielded += 1;
+            } else {
+                shown += 1;
                 // Theme holds the margin when it shows, Manage otherwise.
                 let last = hits
                     .rect_of(&Hit::HeaderTheme)
@@ -1073,6 +1077,7 @@ mod tests {
                 );
             }
         }
+        assert!(yielded > 0 && shown > 0, "the widths cross the cutoff: {yielded} / {shown}");
     }
 
     /// Last to yield: with a long project name at 78 columns the Manage
