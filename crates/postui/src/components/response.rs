@@ -745,9 +745,10 @@ pub struct ReadyView {
     /// How many outputs the last successful filter produced (1 when no
     /// filter is applied, or the filter emits exactly one document).
     jq_outputs: usize,
-    /// Counts every `apply_jq` run started for this view, so a background
-    /// result can be matched to the run it was started for (and only that
-    /// one — a superseded run's result is dropped).
+    /// Counts every filter `apply_jq` takes up for this view, so a
+    /// background result can be matched to the run it was started for (and
+    /// only that one — a result for a filter since replaced, run or not, is
+    /// dropped).
     jq_runs: u64,
     /// Bumped whenever the tree on screen is swapped for another (a
     /// filter's output landing, or the body tree coming back) — what the
@@ -2753,6 +2754,10 @@ impl Response {
         if view.jq_applied.as_deref() == Some(code) {
             return None;
         }
+        // A new filter supersedes the run in flight, whether or not it
+        // starts one of its own: an error or a cleared bar must not be
+        // overwritten by the earlier filter's result.
+        view.jq_runs += 1;
         let code_trim = code.trim();
         if code_trim.is_empty() {
             view.awaiting_filter = false;
@@ -2797,7 +2802,6 @@ impl Response {
             }
         }
         view.jq_applied = Some(code.to_string());
-        view.jq_runs += 1;
         let run = view.jq_runs;
         if body_len <= sync_limit {
             let doc = view.jq_doc.clone().expect("parsed above");
@@ -9410,6 +9414,32 @@ mod tests {
             ),
             "wrong generation is dropped"
         );
+    }
+
+    #[test]
+    fn a_filter_that_never_runs_still_supersedes_the_run_in_flight() {
+        let late = |r: &mut Response, req: &JqRunRequest| {
+            r.attach_jq_result(
+                req.generation,
+                req.run,
+                Ok(JqRunOutput::from_outputs(None, vec!["2".into()])),
+            )
+        };
+        // A syntax error typed before the valid prefix's run returns.
+        let mut r = ready(ITEMS);
+        let req = r.apply_jq(".data", 0).expect("background run");
+        assert!(r.apply_jq(".data )", 0).is_none());
+        assert!(r.jq_bar().error.is_some());
+        assert!(!late(&mut r, &req), "the earlier filter's result is dropped");
+        assert!(r.jq_bar().error.is_some(), "the syntax error stays");
+        assert!(r.jq_tree_code().is_none(), "and the body tree with it");
+        // The bar cleared before the run returns.
+        let mut r = ready(ITEMS);
+        let req = r.apply_jq(".data", 0).expect("background run");
+        assert!(r.apply_jq("", 0).is_none());
+        assert!(!late(&mut r, &req), "the earlier filter's result is dropped");
+        assert!(r.jq_tree_code().is_none(), "the body tree stays");
+        assert!(r.jq_bar().note.is_none());
     }
 
     #[test]
