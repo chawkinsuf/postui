@@ -2,6 +2,7 @@ use crate::theme::Theme;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::ops::Range;
 
 thread_local! {
     /// Set while a key the vim engine handed back is routed on to a dialog
@@ -740,6 +741,30 @@ impl LineInput {
             .take(self.cursor.saturating_sub(start))
             .map(|c| cell_width(c) as u16)
             .sum()
+    }
+
+    /// The columns, within the `width`-column window
+    /// [`Self::draw_line_windowed`] draws, that the chars in `range` take
+    /// on screen, clipped to what the window shows: `None` when none of
+    /// them is in view. An empty range answers its position, an empty
+    /// range of columns. Where a caller paints over part of the drawn
+    /// text (the jq bar underlines an error's span).
+    pub fn span_columns(
+        &self,
+        focused: bool,
+        width: u16,
+        range: Range<usize>,
+    ) -> Option<Range<u16>> {
+        let chars: Vec<char> = self.text.chars().collect();
+        let start = self.window_start(focused, width);
+        let end = fit_cells(&chars, start, width.max(1) as usize);
+        let lo = range.start.max(start);
+        let hi = range.end.min(end);
+        if lo > hi || (lo == hi && !range.is_empty()) {
+            return None;
+        }
+        let col = |i: usize| chars[start..i].iter().map(|&c| cell_width(c) as u16).sum::<u16>();
+        Some(col(lo)..col(hi))
     }
 
     /// [`Self::draw_line_windowed`] and [`Self::draw_line_masked`] combined
@@ -1673,6 +1698,26 @@ mod tests {
         assert_eq!(input.caret_column(20), 5);
         input.set_cursor(0);
         assert_eq!(input.caret_column(20), 0);
+    }
+
+    #[test]
+    fn span_columns_are_cells_in_the_drawn_window() {
+        // Unfocused, drawn from char 0: wide chars count two cells.
+        let mut input = LineInput::new("日本xyz");
+        assert_eq!(input.span_columns(false, 20, 2..3), Some(4..5));
+        assert_eq!(input.span_columns(false, 20, 1..3), Some(2..5));
+        // An empty range is its position, for the caller to mark one cell.
+        assert_eq!(input.span_columns(false, 20, 3..3), Some(5..5));
+        // Clipped to the window: `日本x` fills 5 cells, `y` is cut off.
+        assert_eq!(input.span_columns(false, 5, 2..4), Some(4..5));
+        assert_eq!(input.span_columns(false, 5, 3..5), None);
+        // Focused at the end, the window scrolls: `本xyz` + the caret's
+        // blank fill 6 cells, so `日` is out of view and `x` sits at 2.
+        input.set_cursor(5);
+        assert_eq!(input.window_start(true, 6), 1);
+        assert_eq!(input.span_columns(true, 6, 2..3), Some(2..3));
+        assert_eq!(input.span_columns(true, 6, 0..3), Some(0..3));
+        assert_eq!(input.span_columns(true, 6, 0..1), None);
     }
 
     #[test]

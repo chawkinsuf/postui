@@ -4892,6 +4892,9 @@ fn draw_jq_bar(
         "jq ".to_string()
     };
     let mut spans = vec![Span::styled(chip, Style::default().fg(chip_color))];
+    // The filter text's window width, once it is drawn: an error span is
+    // underlined only over text that is on screen.
+    let mut text_window = None;
     if let Some(started) = bar.ai_asking {
         let frame_i =
             (ctx.now.saturating_duration_since(started).as_millis() / 100) as usize % SPINNER.len();
@@ -4911,6 +4914,7 @@ fn draw_jq_bar(
         // has decided nothing covers the bar.
         let line = bar.input.draw_line_windowed_no_caret(bar.focused, t, w);
         spans.extend(line.spans);
+        text_window = Some(w);
         if bar.focused && w > 0 {
             let col = bar.input.caret_column(w);
             caret = Some(Position::new(row.x + 3 + col, row.y));
@@ -4983,8 +4987,9 @@ fn draw_jq_bar(
             ))),
             err_row,
         );
-        // Underline the span in the bar text when known. Ignores
-        // horizontal windowing of a very long filter — acceptable.
+        // Underline the span in the bar text when known, over the columns
+        // `LineInput` drew it in (the window a focused bar scrolls), and
+        // only the part of it on screen.
         //
         // The span is a byte range into `code.trim()` (what was actually
         // compiled), not the untrimmed bar text — offset it by the leading
@@ -4992,7 +4997,7 @@ fn draw_jq_bar(
         // than index: a stale span from a filter compiled before the bar
         // text last shrank can point past the end, or (once shifted) land
         // off a char boundary.
-        if let Some(span) = err.span() {
+        if let (Some(span), Some(w)) = (err.span(), text_window) {
             let text = bar.input.text();
             let leading_ws = text.len() - text.trim_start().len();
             let start_byte = span.start.saturating_add(leading_ws);
@@ -5002,13 +5007,16 @@ fn draw_jq_bar(
                 && text.is_char_boundary(start_byte)
                 && text.is_char_boundary(end_byte)
             {
-                // In cells, as `LineInput` lays the text out.
-                let start = crate::ui::cells(&text[..start_byte]) as u16;
-                let len = crate::ui::cells(&text[start_byte..end_byte]).max(1) as u16;
-                let x0 = row.x + 3 + start; // after "jq "
-                for x in x0..(x0 + len).min(row.right()) {
-                    frame.buffer_mut()[(x, row.y)]
-                        .set_style(Style::default().add_modifier(Modifier::UNDERLINED).fg(t.error));
+                let start = text[..start_byte].chars().count();
+                let end = start + text[start_byte..end_byte].chars().count();
+                if let Some(cols) = bar.input.span_columns(bar.focused, w, start..end) {
+                    let x0 = row.x + 3 + cols.start; // after "jq "
+                    let len = cols.len().max(1) as u16;
+                    for x in x0..(x0 + len).min(row.right()) {
+                        frame.buffer_mut()[(x, row.y)].set_style(
+                            Style::default().add_modifier(Modifier::UNDERLINED).fg(t.error),
+                        );
+                    }
                 }
             }
         }
@@ -9288,29 +9296,63 @@ mod tests {
             r.apply_jq(code, SYNC_PRETTY_BYTES);
             let err = r.jq_bar().error.clone().expect("syntax error recorded");
             let span = err.span().expect("the error has a span");
-            let (_, buf) = render_buf(&mut r);
-            let y = (0..buf.area.height)
-                .find(|&y| {
-                    (0..buf.area.width).any(|x| {
-                        buf[(x, y)].modifier.contains(Modifier::UNDERLINED)
-                            && buf[(x, y)].fg == Theme::dark().error
-                    })
-                })
-                .expect("an underlined row");
-            let underlined: Vec<u16> = (0..buf.area.width)
-                .filter(|&x| buf[(x, y)].modifier.contains(Modifier::UNDERLINED))
+            let (chip_x, underlined, _) = jq_bar_underline(&mut r);
+            let text_x = chip_x + 3;
+            let leading: Vec<u16> = code[span.clone()]
+                .char_indices()
+                .map(|(i, _)| text_x + crate::ui::cells(&code[..span.start + i]) as u16)
                 .collect();
-            let chip_x = (0..buf.area.width - 1)
-                .find(|&x| buf[(x, y)].symbol() == "j" && buf[(x + 1, y)].symbol() == "q")
-                .expect("the `jq` chip on the bar row");
-            let mut x = chip_x + 3 + crate::ui::cells(&code[..span.start]) as u16;
-            let mut leading = Vec::new();
-            for c in code[span.clone()].chars() {
-                leading.push(x);
-                x += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) as u16;
-            }
             assert_eq!(underlined, leading, "{code:?}: span {span:?} is underlined in cells");
         }
+    }
+
+    /// A focused filter longer than the bar scrolls to keep the caret in
+    /// view, and the underline scrolls with it: it sits under the error
+    /// on screen, not where the error would be in an unscrolled bar.
+    #[test]
+    fn the_error_underline_follows_a_scrolled_bar() {
+        let mut r = ready(ITEMS);
+        r.open_jq();
+        let code = format!("{}.a )", ".a | ".repeat(20));
+        r.set_jq_text(&code);
+        r.apply_jq(&code, SYNC_PRETTY_BYTES);
+        let span = r.jq_bar().error.clone().and_then(|e| e.span()).expect("a span");
+        assert_eq!(&code[span], ")");
+        let (_, underlined, row) = jq_bar_underline(&mut r);
+        let paren = row.iter().rposition(|s| s == ")").expect("`)` on screen") as u16;
+        assert_eq!(underlined, vec![paren]);
+    }
+
+    /// While AI is asking, the bar row shows the spinner in place of the
+    /// filter text, so there is no span on screen to underline.
+    #[test]
+    fn no_error_underline_while_ai_is_asking() {
+        let mut r = ready(ITEMS);
+        r.open_jq();
+        r.set_jq_text(".a )");
+        r.apply_jq(".a )", SYNC_PRETTY_BYTES);
+        assert!(r.jq_bar().error.as_ref().is_some_and(|e| e.span().is_some()));
+        r.jq_bar_mut().ai_asking = Some(std::time::Instant::now());
+        let (_, underlined, _) = jq_bar_underline(&mut r);
+        assert_eq!(underlined, Vec::<u16>::new());
+    }
+
+    /// Renders `r` and reads its jq bar row: the `jq` chip's column, the
+    /// underlined columns, and the row's cell symbols.
+    fn jq_bar_underline(r: &mut Response) -> (u16, Vec<u16>, Vec<String>) {
+        let (_, buf) = render_buf(r);
+        let (chip_x, y) = (0..buf.area.height)
+            .find_map(|y| {
+                (0..buf.area.width - 1)
+                    .find(|&x| buf[(x, y)].symbol() == "j" && buf[(x + 1, y)].symbol() == "q")
+                    .map(|x| (x, y))
+            })
+            .expect("the jq bar's chip");
+        let underlined = (0..buf.area.width)
+            .filter(|&x| buf[(x, y)].modifier.contains(Modifier::UNDERLINED))
+            .collect();
+        let row = (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect();
+        (chip_x, underlined, row)
     }
 
     /// A stale error (and its span) from a filter typed against one
