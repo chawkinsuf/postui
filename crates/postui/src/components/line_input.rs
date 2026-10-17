@@ -344,7 +344,7 @@ impl LineInput {
         let (anchor, caret) = span.gui_ends(|p| crate::text::Pos::new(p.row, p.col + 1));
         let (anchor, caret) = (anchor.col, caret.col);
         let glyphs = glyphs(&self.text);
-        let down = |i: usize| glyph_char(&glyphs, glyph_at(&glyphs, i));
+        let down = |i: usize| glyph_start(&glyphs, i);
         let up = |i: usize| match glyphs.get(glyph_at(&glyphs, i)) {
             Some(g) if g.char < i => g.char + g.chars,
             _ => i,
@@ -535,9 +535,8 @@ impl LineInput {
     /// and edit after it works between whole graphemes.
     fn snap_to_graphemes(&mut self) {
         let glyphs = glyphs(&self.text);
-        let snap = |i: usize| glyph_char(&glyphs, glyph_at(&glyphs, i)).min(i);
-        self.cursor = snap(self.cursor);
-        self.anchor = self.anchor.map(snap);
+        self.cursor = glyph_start(&glyphs, self.cursor);
+        self.anchor = self.anchor.map(|a| glyph_start(&glyphs, a));
     }
 
     /// The grapheme edge a one-step move forward from char `idx` lands on:
@@ -990,6 +989,12 @@ fn glyph_at(glyphs: &[Glyph], cursor: usize) -> usize {
 /// `glyphs.len()`.
 fn glyph_char(glyphs: &[Glyph], i: usize) -> usize {
     glyphs.get(i).map_or_else(|| glyphs.last().map_or(0, |g| g.char + g.chars), |g| g.char)
+}
+
+/// The char the grapheme holding char `i` starts at (`i` itself on a
+/// grapheme edge; the text's end past it).
+fn glyph_start(glyphs: &[Glyph], i: usize) -> usize {
+    glyph_char(glyphs, glyph_at(glyphs, i))
 }
 
 /// The first grapheme a `width`-column window draws: 0 unless `focused`
