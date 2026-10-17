@@ -441,6 +441,7 @@ impl LineInput {
     /// jq bar's fallback when there is no path segment to delete (plan
     /// M3b Deviation 5).
     pub fn delete_word_back(&mut self) {
+        self.snap_to_graphemes();
         if self.selection().is_some() {
             self.record(EditKind::Whole);
             self.delete_selection();
@@ -472,6 +473,7 @@ impl LineInput {
     /// variable token) in one shot, rather than one `handle_key` per char.
     pub fn insert_str(&mut self, s: &str) {
         self.record(EditKind::Whole);
+        self.snap_to_graphemes();
         let at = self.byte_offset(self.cursor);
         self.text.insert_str(at, s);
         self.cursor += s.chars().count();
@@ -485,6 +487,7 @@ impl LineInput {
     /// into a one-line field.
     pub fn paste(&mut self, text: &str) {
         self.record(EditKind::Whole);
+        self.snap_to_graphemes();
         self.delete_selection();
         let flat = flatten_paste(text);
         let at = self.byte_offset(self.cursor);
@@ -527,26 +530,14 @@ impl LineInput {
         glyphs(&self.text).iter().rev().map(|g| g.char).find(|&c| c < idx).unwrap_or(0)
     }
 
-    /// The chars of the grapheme `idx` sits strictly inside, or `None` on
-    /// a grapheme edge.
-    fn grapheme_around(&self, idx: usize) -> Option<(usize, usize)> {
+    /// Moves a cursor (and anchor) the vim engine left inside a grapheme
+    /// to that grapheme's start, where its caret is drawn, so every key
+    /// and edit after it works between whole graphemes.
+    fn snap_to_graphemes(&mut self) {
         let glyphs = glyphs(&self.text);
-        let g = glyphs.get(glyph_at(&glyphs, idx))?;
-        (g.char < idx).then_some((g.char, g.char + g.chars))
-    }
-
-    /// One delete key's removal of chars `start..end`, leaving the caret
-    /// at `start` and dropping any click anchor; records only when there
-    /// is something to remove, so a burst of the same key is one step.
-    fn remove(&mut self, kind: EditKind, start: usize, end: usize) {
-        self.anchor = None;
-        self.click_span = None;
-        if start < end {
-            self.record(kind);
-            let (bs, be) = (self.byte_offset(start), self.byte_offset(end));
-            self.text.replace_range(bs..be, "");
-            self.cursor = start;
-        }
+        let snap = |i: usize| glyph_char(&glyphs, glyph_at(&glyphs, i)).min(i);
+        self.cursor = snap(self.cursor);
+        self.anchor = self.anchor.map(snap);
     }
 
     /// The grapheme edge a one-step move forward from char `idx` lands on:
@@ -565,6 +556,7 @@ impl LineInput {
         // End/word-hop keys matched below on every platform; only ^A is
         // platform-split (mac: Home, Linux: falls through to select-all).
         let key = crate::keys::fold_text_nav_bytes(key, cfg!(target_os = "macos"));
+        self.snap_to_graphemes();
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         // ctrl+arrow skips words; alt+arrow is the same gesture as macOS
         // terminals deliver it (option+arrow), so both spellings work on
@@ -654,16 +646,10 @@ impl LineInput {
                     return true;
                 }
                 // ctrl/alt+backspace removes the whole word behind the
-                // caret, the same hop word-left would make. From inside a
-                // grapheme (where the vim engine can leave the caret), the
-                // grapheme goes whole.
-                if word {
-                    self.delete_back_from(self.word_target(false));
-                } else if let Some((start, end)) = self.grapheme_around(self.cursor) {
-                    self.remove(EditKind::DeleteBack, start, end);
-                } else {
-                    self.delete_back_from(self.edge_before(self.cursor));
-                }
+                // caret, the same hop word-left would make.
+                let target =
+                    if word { self.word_target(false) } else { self.edge_before(self.cursor) };
+                self.delete_back_from(target);
                 true
             }
             KeyCode::Delete => {
@@ -672,10 +658,14 @@ impl LineInput {
                     self.delete_selection();
                     return true;
                 }
-                let (start, end) = self
-                    .grapheme_around(self.cursor)
-                    .unwrap_or((self.cursor, self.edge_after(self.cursor)));
-                self.remove(EditKind::DeleteForward, start, end);
+                self.anchor = None;
+                self.click_span = None;
+                if self.cursor < self.len_chars() {
+                    self.record(EditKind::DeleteForward);
+                    let start = self.byte_offset(self.cursor);
+                    let end = self.byte_offset(self.edge_after(self.cursor));
+                    self.text.replace_range(start..end, "");
+                }
                 true
             }
             KeyCode::Left => {
@@ -1952,23 +1942,29 @@ mod tests {
         assert_eq!(input.selected_text().as_deref(), Some(FAMILY));
     }
 
-    /// A cursor the vim engine left inside a grapheme steps to its edges.
+    /// A cursor the vim engine left inside a grapheme works from the
+    /// grapheme's start, where its caret is drawn: no key or edit splits
+    /// the grapheme.
     #[test]
-    fn a_cursor_inside_a_grapheme_steps_to_its_edges() {
-        let mut input = LineInput::new(&format!("a{HEART}b"));
-        input.set_cursor(2);
-        input.handle_key(code(KeyCode::Right));
-        assert_eq!(input.cursor(), 3);
-        input.set_cursor(2);
-        input.handle_key(code(KeyCode::Left));
-        assert_eq!(input.cursor(), 1);
-        // A delete from inside removes the grapheme whole, either way.
-        for key in [KeyCode::Backspace, KeyCode::Delete] {
+    fn a_cursor_inside_a_grapheme_works_from_its_start() {
+        let inside = || {
             let mut input = LineInput::new(&format!("a{HEART}b"));
             input.set_cursor(2);
+            input
+        };
+        let after = |key| {
+            let mut input = inside();
             input.handle_key(code(key));
-            assert_eq!((input.text(), input.cursor()), ("ab", 1), "{key:?}");
-        }
+            (input.text().to_string(), input.cursor())
+        };
+        assert_eq!(after(KeyCode::Right), (format!("a{HEART}b"), 3));
+        assert_eq!(after(KeyCode::Left), (format!("a{HEART}b"), 0));
+        assert_eq!(after(KeyCode::Backspace), (format!("{HEART}b"), 0));
+        assert_eq!(after(KeyCode::Delete), ("ab".to_string(), 1));
+        assert_eq!(after(KeyCode::Char('x')), (format!("ax{HEART}b"), 2));
+        let mut input = inside();
+        input.paste("yz");
+        assert_eq!(input.text(), format!("ayz{HEART}b"));
     }
 
     /// The caret keeps a cell of its own even on a grapheme that takes
