@@ -163,7 +163,7 @@ pub fn draw_header(
     // disambiguate they have nothing to separate. The labels are in both
     // measurements: they never yield. Each measurement is the column
     // just past the cluster's last chip.
-    let labels_w: u16 = chips.iter().map(|(label, _, _, _)| label.chars().count() as u16).sum();
+    let labels_w: u16 = chips.iter().map(|(label, _, _, _)| crate::ui::cells(label) as u16).sum();
     let pills_w: u16 = chips.iter().map(|(_, _, pill, _)| pill.width() + 1).sum();
     let margin = x - area.x;
     let cluster_full = margin + labels_w + pills_w + CHIP_GROUP_GAP * (chips.len() as u16 - 1);
@@ -203,7 +203,7 @@ pub fn draw_header(
         }
 
         // Then the chip that opens the picker.
-        let w = label.chars().count() as u16;
+        let w = crate::ui::cells(label) as u16;
         let bg = crate::paint::hover_surface(theme, theme.control, hovered == Some(hit), hover_t);
         let block = crate::paint::cap::chip_block(buf, area, mid_y, x, w, bg, theme);
         text(buf, x, mid_y, label, theme.text, bg, true);
@@ -1030,6 +1030,49 @@ mod tests {
         assert!(hits.rect_of(&Hit::HeaderSpaceCycle).is_some());
         assert!(hits.rect_of(&Hit::HeaderEnvCycle).is_some());
         assert!(hits.rect_of(&Hit::HeaderProjectCycle).is_some());
+    }
+
+    /// A wide env name (8 CJK chars, 16 cells) gets a chip as wide as the
+    /// cells it paints, so the Space chip after it starts clear of it.
+    #[test]
+    fn a_wide_env_name_gets_a_chip_as_wide_as_its_cells() {
+        let theme = Theme::dark();
+        let name = "本番環境本番環境";
+        let (term, hits) = render_wide(&theme, "alpha", name, false, None, 140);
+        let env = hits.rect_of(&Hit::HeaderEnv).unwrap();
+        let label = format!(" Environment: {name} \u{25be} ");
+        assert_eq!(env.width, crate::ui::cells(&label) as u16, "the chip spans the label's cells");
+        assert_eq!(
+            cell(&term, env.x + env.width - 2, mid_of(&env)).symbol(),
+            "\u{25be}",
+            "the label ends inside its chip"
+        );
+        let space_cycle = hits.rect_of(&Hit::HeaderSpaceCycle).expect("space cycle hit");
+        assert_eq!(space_cycle.x, env.x + env.width + 4, "a group gap after the painted label");
+    }
+
+    /// The cluster budget measures the labels in cells too: with a wide
+    /// env name the cycle pills yield whenever keeping them would push
+    /// Manage off its place at the right margin.
+    #[test]
+    fn a_wide_env_name_yields_the_cycle_pills_before_manage_moves() {
+        let theme = Theme::dark();
+        for width in 70..=160 {
+            let (_term, hits) =
+                render_wide(&theme, "alpha", "本番環境本番環境", false, None, width);
+            if hits.rect_of(&Hit::HeaderSpaceCycle).is_some() {
+                // Theme holds the margin when it shows, Manage otherwise.
+                let last = hits
+                    .rect_of(&Hit::HeaderTheme)
+                    .or_else(|| hits.rect_of(&Hit::HeaderManage))
+                    .unwrap();
+                assert_eq!(
+                    last.x + last.width,
+                    width - 3,
+                    "at {width} columns the pills stayed and pushed the right cluster {last:?}"
+                );
+            }
+        }
     }
 
     /// Last to yield: with a long project name at 78 columns the Manage
