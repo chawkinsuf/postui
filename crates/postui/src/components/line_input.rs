@@ -735,12 +735,8 @@ impl LineInput {
         let start = self.window_start(true, width);
         // Cells, not chars: a wide character before the caret occupies two
         // columns on screen, and the terminal's cursor must land after it.
-        self.text
-            .chars()
-            .skip(start)
-            .take(self.cursor.saturating_sub(start))
-            .map(|c| cell_width(c) as u16)
-            .sum()
+        let chars: Vec<char> = self.text.chars().collect();
+        cells_of(&chars[start..self.cursor.min(chars.len())])
     }
 
     /// The columns, within the `width`-column window
@@ -765,9 +761,14 @@ impl LineInput {
         if lo >= hi {
             return None;
         }
-        let col = |i: usize| chars[start..i].iter().map(|&c| cell_width(c) as u16).sum::<u16>();
-        let cols = col(lo)..col(hi);
-        (!cols.is_empty()).then_some(cols)
+        let cols = cells_of(&chars[start..lo])..cells_of(&chars[start..hi]);
+        if !cols.is_empty() {
+            return Some(cols);
+        }
+        // Only zero-width chars (combining marks): they are drawn in the
+        // cell of the glyph before them, so that cell is the span's.
+        let base = start + chars[start..lo].iter().rposition(|&c| cell_width(c) > 0)?;
+        Some(cells_of(&chars[start..base])..cols.start)
     }
 
     /// [`Self::draw_line_windowed`] and [`Self::draw_line_masked`] combined
@@ -914,6 +915,11 @@ impl LineInput {
 fn cell_width(c: char) -> usize {
     use unicode_width::UnicodeWidthChar;
     c.width().unwrap_or(0)
+}
+
+/// The columns `chars` take on screen, laid out from a window's start.
+fn cells_of(chars: &[char]) -> u16 {
+    chars.iter().map(|&c| cell_width(c) as u16).sum()
 }
 
 /// The end (exclusive) of the longest run of `chars` from `start` whose
@@ -1724,10 +1730,14 @@ mod tests {
         assert_eq!(input.span_columns(true, 6, 6..7), Some(2..3));
         assert_eq!(input.span_columns(true, 6, 0..7), Some(0..3));
         assert_eq!(input.span_columns(true, 6, 0..3), None);
-        // A combining mark takes no cell of its own.
-        let input = LineInput::new("e\u{301}x");
-        assert_eq!(input.span_columns(false, 20, 1..3), None);
-        assert_eq!(input.span_columns(false, 20, 0..4), Some(0..2));
+        // A combining mark takes no cell of its own: it is drawn in its
+        // base glyph's, so a span of marks alone is that cell.
+        let input = LineInput::new("本\u{301}x");
+        assert_eq!(input.span_columns(false, 20, 3..5), Some(0..2));
+        assert_eq!(input.span_columns(false, 20, 0..6), Some(0..3));
+        // With no glyph before it in the window, there is no cell.
+        let input = LineInput::new("\u{301}x");
+        assert_eq!(input.span_columns(false, 20, 0..2), None);
     }
 
     #[test]
