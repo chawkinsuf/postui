@@ -3334,7 +3334,10 @@ impl Editor {
         y += 1;
 
         let cols = super::table_editor::columns(area.x, area.width);
-        let clip = |s: &str, avail: u16| -> String { s.chars().take(avail as usize).collect() };
+        let name_w = cols.divider_x.saturating_sub(cols.name_x);
+        // From the value column to the pane's last cell, less the 2-cell
+        // gap between the value and the right-aligned source.
+        let room = area.right().saturating_sub(1).saturating_sub(cols.value_x).saturating_sub(2);
         let buf = frame.buffer_mut();
         for name in names {
             if y >= max_y {
@@ -3342,12 +3345,11 @@ impl Editor {
             }
             let info = self.vars.describe(name);
             let token_piece = format!("{{{{{name}}}}}");
-            let name_w = cols.divider_x.saturating_sub(cols.name_x);
             crate::paint::text(
                 buf,
                 cols.name_x,
                 y,
-                &clip(&token_piece, name_w),
+                &crate::ui::take_cells(&token_piece, name_w as usize),
                 theme.text_muted,
                 theme.page,
                 false,
@@ -3362,22 +3364,23 @@ impl Editor {
                 theme,
                 hits,
             );
-            // Source label right-aligned; the value gets what's between
-            // the value column and the source, with a 2-cell gap. An
-            // environment's display name is free-form, so the source is
-            // cut to half the value column's room (in cells), never more.
-            let room = area.right().saturating_sub(1).saturating_sub(cols.value_x) as usize;
-            let label = crate::ui::ellipsize(&info.source.label(), (room / 2).saturating_sub(2));
-            let source = format!("({label})");
-            let source_w = source.width() as u16;
-            let source_x = area.right().saturating_sub(source_w + 1);
-            crate::paint::text(buf, source_x, y, &source, theme.text_muted, theme.page, false);
-            let value_avail = source_x.saturating_sub(2).saturating_sub(cols.value_x);
+            // The value at the value column, its source right-aligned in
+            // parentheses; they share the room ([`split_room`]), measured
+            // in cells — an environment's display name is free-form.
+            let value = info.display_value();
+            let label = info.source.label();
+            let (value_room, source_room) =
+                split_room(room as usize, value.width(), label.width() + 2);
+            if source_room > 0 {
+                let source = format!("({})", crate::ui::ellipsize(&label, source_room - 2));
+                let source_x = area.right().saturating_sub(source.width() as u16 + 1);
+                crate::paint::text(buf, source_x, y, &source, theme.text_muted, theme.page, false);
+            }
             crate::paint::text(
                 buf,
                 cols.value_x,
                 y,
-                &clip(&info.display_value(), value_avail),
+                &crate::ui::take_cells(&value, value_room),
                 theme.text_muted,
                 theme.page,
                 false,
@@ -3587,6 +3590,27 @@ fn json_body_highlights(lines: &Lines, theme: &Theme) -> Vec<edtui::Highlight> {
         c += 1;
     }
     out
+}
+
+/// How a Vars-tab referenced row's `room` (in cells) splits between a
+/// value `value_w` wide and its `(source)` `source_w` wide: both whole
+/// when they fit; otherwise a side no wider than half keeps its width and
+/// the other takes the rest, else half each (the value the odd cell). A
+/// source left fewer than 3 cells can't show `(x)`, so it is dropped and
+/// the value takes the room. Returns `(value, source)` budgets.
+fn split_room(room: usize, value_w: usize, source_w: usize) -> (usize, usize) {
+    if value_w + source_w <= room {
+        return (value_w, source_w);
+    }
+    let half = room / 2;
+    let source = if source_w <= half {
+        source_w
+    } else if value_w <= room - half {
+        room - value_w
+    } else {
+        half
+    };
+    if source < 3 { (room, 0) } else { (room - source, source) }
 }
 
 #[cfg(test)]
@@ -5895,6 +5919,21 @@ url = "https://api.example.com/users""#,
         terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("body_var"), "{content}");
+    }
+
+    /// A referenced row's room splits between the value and its source:
+    /// both whole when they fit; else a side shorter than half keeps its
+    /// width and the other takes the rest; else half each. A source with
+    /// no room for `(x)` is dropped, and the value takes it all.
+    #[test]
+    fn a_referenced_rows_room_is_shared_by_value_and_source() {
+        assert_eq!(split_room(30, 10, 12), (10, 12), "both fit: both whole");
+        assert_eq!(split_room(30, 1, 40), (1, 29), "a short value: the source takes the rest");
+        assert_eq!(split_room(30, 40, 6), (24, 6), "a short source keeps its width");
+        assert_eq!(split_room(30, 40, 40), (15, 15), "both long: half each");
+        assert_eq!(split_room(31, 40, 40), (16, 15), "the value takes the odd cell");
+        assert_eq!(split_room(4, 40, 40), (4, 0), "no room for `(x)`: no source");
+        assert_eq!(split_room(0, 5, 5), (0, 0));
     }
 
     #[test]

@@ -23320,8 +23320,8 @@ fn tooltip_names_the_env_by_its_display_name() {
 }
 
 /// A display name is free-form, long or wide: the Vars tab's referenced
-/// row cuts the source to half the value column's room (in cells, so wide
-/// glyphs measure true), and the value keeps the rest.
+/// row shares its room between the value and the source (in cells, so
+/// wide glyphs measure true), and the source is the one cut here.
 #[test]
 fn a_long_env_name_leaves_the_referenced_value_its_room() {
     let (mut app, dir, _out) = tooltip_app("base_url");
