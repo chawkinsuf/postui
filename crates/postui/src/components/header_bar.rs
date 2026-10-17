@@ -1048,7 +1048,11 @@ mod tests {
             "the label ends inside its chip"
         );
         let space_cycle = hits.rect_of(&Hit::HeaderSpaceCycle).expect("space cycle hit");
-        assert_eq!(space_cycle.x, env.x + env.width + 4, "a group gap after the painted label");
+        assert_eq!(
+            space_cycle.x,
+            env.x + env.width + CHIP_GROUP_GAP,
+            "a group gap after the painted label"
+        );
     }
 
     /// The cluster budget measures the labels in cells too: with a wide
