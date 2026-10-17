@@ -4892,9 +4892,8 @@ fn draw_jq_bar(
         "jq ".to_string()
     };
     let mut spans = vec![Span::styled(chip, Style::default().fg(chip_color))];
-    // The filter text's window width, once it is drawn: an error span is
-    // underlined only over text that is on screen.
-    let mut text_window = None;
+    // The filter text's window, past the chip.
+    let w = text_w.saturating_sub(3);
     if let Some(started) = bar.ai_asking {
         let frame_i =
             (ctx.now.saturating_duration_since(started).as_millis() / 100) as usize % SPINNER.len();
@@ -4904,7 +4903,6 @@ fn draw_jq_bar(
         ));
         frame.render_widget(Paragraph::new(Line::from(spans)), row);
     } else {
-        let w = text_w.saturating_sub(3);
         // The focused bar's caret is the terminal's own cursor (a bar, set
         // once at startup) rather than the painted reversed cell every
         // other input uses: a completion ghost trails the caret, and a
@@ -4914,7 +4912,6 @@ fn draw_jq_bar(
         // has decided nothing covers the bar.
         let line = bar.input.draw_line_windowed_no_caret(bar.focused, t, w);
         spans.extend(line.spans);
-        text_window = Some(w);
         if bar.focused && w > 0 {
             let col = bar.input.caret_column(w);
             caret = Some(Position::new(row.x + 3 + col, row.y));
@@ -4989,7 +4986,8 @@ fn draw_jq_bar(
         );
         // Underline the span in the bar text when known, over the columns
         // `LineInput` drew it in (the window a focused bar scrolls), and
-        // only the part of it on screen.
+        // only the part of it on screen; while AI is asking the row shows
+        // the spinner instead, so there is none.
         //
         // The span is a byte range into `code.trim()` (what was actually
         // compiled), not the untrimmed bar text — offset it by the leading
@@ -4997,7 +4995,9 @@ fn draw_jq_bar(
         // before the bar text last shrank can point past the end, or (once
         // shifted) land off a char boundary; `span_columns` answers `None`
         // for those.
-        if let (Some(span), Some(w)) = (err.span(), text_window) {
+        if let Some(span) = err.span()
+            && bar.ai_asking.is_none()
+        {
             let text = bar.input.text();
             let leading_ws = text.len() - text.trim_start().len();
             let bytes = span.start.saturating_add(leading_ws)..span.end.saturating_add(leading_ws);
