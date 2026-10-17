@@ -6,13 +6,12 @@ use crate::components::toast::ToastKind;
 use crate::components::varmanager::VarEditOp;
 use crate::paint::{self, ControlState, FIELD_HEIGHT, ListRow, RowHighlight, TextField};
 use crate::theme::Theme;
-use crate::ui::one_line;
+use crate::ui::{cells, one_line};
 use indexmap::IndexMap;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::text::Span;
-use unicode_width::UnicodeWidthStr;
 
 /// Which of the three name sources an Insert-mode [`VarEntry`] comes from
 /// (spec §6: "scope-badged (request / project / selector member)"). A name
@@ -622,17 +621,17 @@ impl VarPickerState {
                         );
                         x += Span::raw(&lock).width() as u16;
                     }
-                    let name_w = (entry.name.chars().count() as u16).min(right.saturating_sub(x));
+                    let name = clip(&entry.name, right.saturating_sub(x));
                     paint::text(
                         frame.buffer_mut(),
                         x,
                         text_row,
-                        &entry.name,
+                        name,
                         theme.text,
                         row_fill,
                         selected,
                     );
-                    x += name_w;
+                    x += cells(name) as u16;
                     if let Some(desc) = &entry.description {
                         let desc = format!(" {}", one_line(desc));
                         let w = right.saturating_sub(x);
@@ -646,7 +645,7 @@ impl VarPickerState {
                             row_fill,
                             false,
                         );
-                        x += clipped.width() as u16;
+                        x += cells(clipped) as u16;
                     }
                     if entry.secret {
                         // Secret VALUES never render, per whether or not one
@@ -719,7 +718,7 @@ impl VarPickerState {
                         row_fill,
                         selected,
                     );
-                    x += key.width() as u16;
+                    x += cells(key) as u16;
                     // Rows stay lean — key plus muted description. The
                     // option's values live in the detail pane below, which
                     // follows the highlight.
@@ -1350,6 +1349,25 @@ mod tests {
         let at = find_on_row(buf, row, "本");
         assert_eq!(buf[(at + 2, row.y)].symbol(), "番", "the key keeps its second glyph");
         assert_eq!(buf[(at + 5, row.y)].symbol(), "a", "the description follows the key's 4 cells");
+    }
+
+    /// A variable name too long for its row is cut at the row's edge, like
+    /// the option keys, instead of running on over the panel's margin.
+    #[test]
+    fn a_long_variable_name_is_cut_at_its_row_s_edge() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let name = "n".repeat(120);
+        let mut p = VarPickerState::new(vec![var_entry(&name, None, Some("v"))], false);
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+        let row = hits.rect_of(&crate::hit::Hit::VarPickerRow(0)).unwrap();
+        let buf = terminal.backend().buffer();
+        for x in row.right()..buf.area.right() {
+            assert_ne!(buf[(x, row.y)].symbol(), "n", "the name ran on to column {x}");
+        }
     }
 
     /// A description in 2-cell glyphs is measured in cells: the value

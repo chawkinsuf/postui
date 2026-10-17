@@ -539,8 +539,8 @@ fn draw_broken_config_banner(
     if y >= bottom {
         return y;
     }
-    let shown: String = err.chars().take(w).collect();
-    text(buf, x0, y, &shown, theme.text_muted, theme.page, false);
+    let shown = crate::ui::take_cells(err, w);
+    text(buf, x0, y, shown, theme.text_muted, theme.page, false);
     y + 2
 }
 
@@ -1099,6 +1099,28 @@ mod tests {
             "the cursor still lifts the active segment"
         );
         assert_ne!(painted, theme.accent_edge_light, "the pointer must not paint over the cursor");
+    }
+
+    /// A config error in 2-cell glyphs is cut in cells, so it stays on the
+    /// settings pane instead of painting twice its room past it.
+    #[test]
+    fn a_wide_config_error_stays_on_the_pane() {
+        let theme = Theme::dark();
+        let ui = UiSettings::default();
+        let tab = SettingsTab::default();
+        let err = "本番環境".repeat(20);
+        let mut hits = HitMap::default();
+        let mut term = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        term.draw(|f| {
+            let body = Rect::new(0, 0, 40, 30);
+            draw_settings(f, body, &theme, &tab, &ui, Some(&err), &mut hits, None);
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let y = (0..30).find(|&y| buf[(2, y)].symbol() == "本").expect("the error is drawn");
+        for x in 40..80 {
+            assert_eq!(buf[(x, y)].symbol(), " ", "the error ran past the pane, at column {x}");
+        }
     }
 
     /// The same ordering in the one ladder that is a plain function: the

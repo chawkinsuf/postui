@@ -779,7 +779,7 @@ impl TableEditorState {
         ghost_label: Option<&str>,
     ) {
         use super::chooser::clip;
-        use unicode_width::UnicodeWidthStr;
+        use crate::ui::cells;
         let theme = ctx.theme;
         let cols = columns(area.x, area.width);
         let editing_col = self.editing.as_ref().filter(|e| e.row == i).map(|e| e.col);
@@ -840,7 +840,7 @@ impl TableEditorState {
             // is a note about that value, so it reads where the value
             // ends rather than on a row of its own.
             if let Some(hint) = hint {
-                let used = shown.width() as u16;
+                let used = cells(shown) as u16;
                 let hint_x = cols.value_x + used + 3;
                 let room = value_right.saturating_sub(hint_x);
                 if room > 0 {
@@ -855,11 +855,11 @@ impl TableEditorState {
             // where the clip did rather than run on across empty cells
             // (and, on a narrow pane, into whatever is drawn beside it).
             if editing_col != Some(Col::Key) {
-                let len = clip(key, name_w).width() as u16;
+                let len = cells(clip(key, name_w)) as u16;
                 Self::strike_cells(buf, cols.name_x, y, len);
             }
             if editing_col != Some(Col::Value) {
-                let len = clip(&entry.value, value_w).width() as u16;
+                let len = cells(clip(&entry.value, value_w)) as u16;
                 Self::strike_cells(buf, cols.value_x, y, len);
             }
         }

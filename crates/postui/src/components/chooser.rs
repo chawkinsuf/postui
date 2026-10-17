@@ -580,7 +580,7 @@ impl ChooserState {
             let mut x = text_x;
             let right = list_area.x + list_area.width;
             let label = clip(item.label.as_str(), right.saturating_sub(x));
-            let label_w = unicode_width::UnicodeWidthStr::width(label) as u16;
+            let label_w = crate::ui::cells(label) as u16;
             paint::text(frame.buffer_mut(), x, text_row, label, theme.text, row_fill, selected);
             x += label_w;
             if let Some(detail) = &item.detail {

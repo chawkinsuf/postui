@@ -658,8 +658,7 @@ fn cut_rows(lines: &mut Vec<String>, rows: usize, max: usize) {
 
 /// `s` cut to at most `max` display cells, the last of which becomes `…`.
 pub(crate) fn ellipsize(s: &str, max: usize) -> String {
-    use unicode_width::UnicodeWidthStr;
-    if s.width() <= max {
+    if cells(s) <= max {
         return s.to_string();
     }
     format!("{}\u{2026}", take_cells(s, max.saturating_sub(1)))
@@ -668,15 +667,15 @@ pub(crate) fn ellipsize(s: &str, max: usize) -> String {
 /// `ellipsize` from the other end: `s` cut to at most `max` display
 /// cells, the first of which becomes `…`, so its end stays in view.
 pub(crate) fn ellipsize_start(s: &str, max: usize) -> String {
-    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-    if s.width() <= max {
+    use unicode_segmentation::UnicodeSegmentation;
+    if cells(s) <= max {
         return s.to_string();
     }
     let room = max.saturating_sub(1);
     let mut w = 0;
     let mut start = s.len();
-    for (i, c) in s.char_indices().rev() {
-        w += c.width().unwrap_or(0);
+    for (i, g) in s.grapheme_indices(true).rev() {
+        w += grapheme_cells(g);
         if w > room {
             break;
         }
@@ -688,15 +687,28 @@ pub(crate) fn ellipsize_start(s: &str, max: usize) -> String {
 /// The longest prefix of `s` that fits in `max` display cells. A wide
 /// glyph that would straddle the edge is left out.
 pub(crate) fn take_cells(s: &str, max: usize) -> &str {
-    use unicode_width::UnicodeWidthChar;
+    use unicode_segmentation::UnicodeSegmentation;
     let mut w = 0;
-    for (i, c) in s.char_indices() {
-        w += c.width().unwrap_or(0);
+    for (i, g) in s.grapheme_indices(true) {
+        w += grapheme_cells(g);
         if w > max {
             return &s[..i];
         }
     }
     s
+}
+
+/// The cells `s` takes when painted: [`take_cells`]'s measure.
+pub(crate) fn cells(s: &str) -> usize {
+    use unicode_segmentation::UnicodeSegmentation;
+    s.graphemes(true).map(grapheme_cells).sum()
+}
+
+/// One grapheme's cells as the buffer paints it (`Buffer::set_stringn`):
+/// ratatui's own width, and none for a control grapheme, which it skips.
+fn grapheme_cells(g: &str) -> usize {
+    use ratatui::buffer::CellWidth;
+    if g.contains(char::is_control) { 0 } else { g.cell_width() as usize }
 }
 
 /// Marks the focused pane with a half-block accent bar down its left
@@ -958,6 +970,21 @@ mod tests {
         assert_eq!(take_cells("本番環境", 0), "");
         assert_eq!(take_cells("abcdef", 4), "abcd");
         assert_eq!(take_cells("abc", 10), "abc");
+    }
+
+    /// Cuts and measures go by grapheme, the way the buffer paints: an
+    /// emoji with its presentation selector is one 2-cell glyph, and a
+    /// combining mark stays with the letter it sits on.
+    #[test]
+    fn cuts_and_measures_go_by_grapheme() {
+        let heart = "\u{2764}\u{fe0f}";
+        assert_eq!(cells(heart), 2);
+        assert_eq!(take_cells(&heart.repeat(3), 3), heart);
+        let cafe = "/x/cafe\u{301}";
+        assert_eq!(cells(cafe), 7);
+        assert_eq!(take_cells(cafe, 6), "/x/caf");
+        assert_eq!(ellipsize_start(cafe, 2), "\u{2026}e\u{301}");
+        assert_eq!(ellipsize(cafe, 6), "/x/ca\u{2026}");
     }
 
     /// The mirror of `ellipsize`: the end survives behind a leading `…`,

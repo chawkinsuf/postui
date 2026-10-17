@@ -4919,10 +4919,10 @@ fn draw_jq_bar(
             // The ghost starts in the caret's own cell (the bar cursor sits
             // on that cell's left edge) and gets what is left of the row;
             // it is clipped, never the text.
-            let used = bar.input.visible_window(true, w).chars().count() as u16;
+            let used = crate::ui::cells(&bar.input.visible_window(true, w)) as u16;
             let room = w.saturating_sub(used) as usize;
             if room > 0 {
-                let shown: String = ghost.chars().take(room).collect();
+                let shown = crate::ui::take_cells(ghost, room).to_string();
                 spans.push(Span::styled(shown, Style::default().fg(t.text_muted)));
             }
         }
