@@ -1076,13 +1076,10 @@ fn shadowed_var_shows_masked_hint_when_project_var_is_secret() {
 
     let hint = app.editor.shadowed.get("token").expect("token shadows the project secret");
     assert!(!hint.contains("s3cr3t"), "the secret's real value must never appear: {hint}");
-    assert!(
-        hint.contains("\u{25cf}\u{25cf}\u{25cf}\u{25cf}"),
-        "expected a masked secret hint, got: {hint}"
-    );
     // #37 (the user's ruling): with no environment the secret's source is
-    // `no env`, as the header chip says, in the hint and the tooltip alike.
-    assert_eq!(hint, "no env: \u{25cf}\u{25cf}\u{25cf}\u{25cf}");
+    // `no env`, as the header chip says, in the hint and the tooltip alike;
+    // the mask is the one the tab's referenced list shows.
+    assert_eq!(hint, &format!("no env: {}", postui_core::prepare::SECRET_MASK));
     assert_eq!(app.editor.vars.describe("token").source.label(), "this request");
     assert_eq!(app.editor.vars.describe_project("token").source.label(), "no env");
 }

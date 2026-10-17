@@ -2027,9 +2027,11 @@ impl App {
         // project's resolved values and the open request's own `[variables]`;
         // `shadowed` is read from it.
         let vars = match self.project() {
-            Some(p) => {
-                crate::components::var_tokens::VarView::from_context(p, &self.editor.variables)
-            }
+            Some(p) => crate::components::var_tokens::VarView::from_context(
+                p,
+                &self.editor.variables,
+                self.env_label_display(),
+            ),
             None => crate::components::var_tokens::VarView::default(),
         };
         self.editor.shadowed = self.compute_shadowed(&vars);
@@ -2218,8 +2220,8 @@ impl App {
     /// (drawn as `overrides …`) for every open-request `[variables]` option
     /// that shares a name with a resolved project variable. The source is
     /// the shadowed value's own, labelled as its tooltip labels it (#37),
-    /// and a secret is masked (spec §3: secrets are masked everywhere by
-    /// default) rather than shown.
+    /// and a secret shows `SECRET_MASK` (spec §3: secrets are masked
+    /// everywhere by default), as the tab's referenced list does.
     fn compute_shadowed(
         &self,
         vars: &crate::components::var_tokens::VarView,
@@ -2229,9 +2231,9 @@ impl App {
             .keys()
             .filter_map(|name| {
                 let info = vars.describe_project(name);
-                let value = info.value.as_deref()?;
-                let display = if info.secret { "\u{25cf}\u{25cf}\u{25cf}\u{25cf}" } else { value };
-                Some((name.clone(), format!("{}: {display}", info.source.label())))
+                info.resolved().then(|| {
+                    (name.clone(), format!("{}: {}", info.source.label(), info.display_value()))
+                })
             })
             .collect()
     }

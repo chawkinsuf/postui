@@ -117,9 +117,10 @@ pub struct VarView {
     env_names: HashSet<String>,
     /// Names whose declaration carries a `default`.
     default_names: HashSet<String>,
-    /// The active environment's display name (as the header shows it),
-    /// when one is active.
-    env_label: Option<String>,
+    /// The environment as the header chip names it (`App::env_label_display`):
+    /// the active one's display name, or `no env` (#37: a secret still
+    /// resolves then, from the secrets kept under no environment).
+    env_label: String,
     /// Declared descriptions: a variable's own, or — for a selector field —
     /// the owning selector's.
     descriptions: IndexMap<String, String>,
@@ -130,10 +131,12 @@ pub struct VarView {
 }
 
 impl VarView {
-    /// Snapshots `project` plus the open request's `[variables]` overlay.
+    /// Snapshots `project` plus the open request's `[variables]` overlay;
+    /// `env_label` is the header chip's environment label.
     pub fn from_context(
         project: &postui_core::project::Project,
         request: &IndexMap<String, Entry>,
+        env_label: String,
     ) -> Self {
         Self {
             resolved: project.resolved().clone(),
@@ -150,7 +153,7 @@ impl VarView {
                 .filter(|(_, d)| d.default.is_some())
                 .map(|(n, _)| n.clone())
                 .collect(),
-            env_label: project.active_env().map(|env| project.env_name(env)),
+            env_label,
             descriptions: {
                 let mut d: IndexMap<String, String> = project
                     .variables()
@@ -214,7 +217,7 @@ impl VarView {
             }
             // A secret's value only ever comes from `.local/secrets.toml`,
             // kept per environment (under no environment when none is
-            // active, which `env_source` names `no env`).
+            // active, which the chip's label names `no env`).
             Some(VarMeta::Secret) => self.env_source(),
             Some(VarMeta::Simple) | None => {
                 if value.is_none() {
@@ -247,11 +250,9 @@ impl VarView {
         }
     }
 
-    /// The active environment, by its display name, or `no env` as the
-    /// header chip says when there is none (#37: a secret still resolves
-    /// then, from the secrets kept under no environment).
+    /// The environment, named as the header chip names it.
     fn env_source(&self) -> TokenSource {
-        TokenSource::Env(self.env_label.clone().unwrap_or_else(|| "no env".to_string()))
+        TokenSource::Env(self.env_label.clone())
     }
 }
 
@@ -338,7 +339,7 @@ mod tests {
             request: IndexMap::new(),
             env_names: ["base_url".to_string()].into_iter().collect(),
             default_names: HashSet::new(),
-            env_label: Some("qa".into()),
+            env_label: "qa".into(),
             descriptions: IndexMap::new(),
             option_descriptions: IndexMap::new(),
         }
@@ -412,17 +413,6 @@ mod tests {
         let beneath = v.describe_project("base_url");
         assert_eq!(beneath.source, TokenSource::Env("qa".to_string()));
         assert_eq!(beneath.value.as_deref(), Some("http://x"));
-    }
-
-    /// #37 (the user's ruling): a secret resolved with no environment
-    /// active names `no env`, as the header chip does, not `not defined`.
-    #[test]
-    fn a_secret_with_no_environment_names_no_env() {
-        let mut v = view();
-        v.env_label = None;
-        let info = v.describe("api_key");
-        assert!(info.resolved());
-        assert_eq!(info.source.label(), "no env");
     }
 
     #[test]

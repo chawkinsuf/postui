@@ -230,9 +230,11 @@ secret prompt flow instead of blocking.
   option (`overrides alice: 1001`), or `default value` (the task's ask).
   The user's ruling: a secret resolved with no environment active names
   `no env`, as the header chip does, in the hint and in the tooltip (which
-  said `not defined` before). The implementer's choices: the hint and the
-  tooltip share one source rule (`VarView::describe_project`); a disabled
-  override row still shows the hint; the mask stays four dots; and a name
+  said `not defined` before), and so in the tab's referenced list too. The
+  implementer's choices: the hint and the tooltip share one source rule
+  (`VarView::describe_project`), with the environment named by the chip's
+  own label; a disabled override row still shows the hint; a secret is
+  masked as the referenced list masks it (six dots, was four); and a name
   the project leaves without a value (needs selection, missing secret)
   still gets no hint.
 - **Promote / demote (Manager):** promote moves a request entry into
