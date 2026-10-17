@@ -809,24 +809,42 @@ impl LineInput {
         width: u16,
         range: Range<usize>,
     ) -> Option<Range<u16>> {
-        self.text.get(range.clone())?;
-        if range.is_empty() {
-            return None;
-        }
+        self.span_measure(focused, width)(range)
+    }
+
+    /// [`Self::span_columns`] for many ranges against one layout of the
+    /// window, for a painter that places several spans (every token).
+    pub fn span_measure(
+        &self,
+        focused: bool,
+        width: u16,
+    ) -> impl Fn(Range<usize>) -> Option<Range<u16>> + '_ {
         let glyphs = glyphs(&self.text);
         let start = window_glyph(&glyphs, self.cursor, focused, width);
         let cells = drawn(&glyphs, start, width.max(1) as usize);
-        // The cells of every drawn grapheme the bytes touch.
+        // Each drawn grapheme's bytes and the columns it takes.
         let mut x = 0u16;
-        let mut cols: Option<Range<u16>> = None;
-        for (g, w) in glyphs[start..].iter().zip(&cells) {
-            let next = x + *w as u16;
-            if g.byte < range.end && range.start < g.byte + g.len {
-                cols = Some(cols.map_or(x, |c| c.start)..next);
+        let laid: Vec<(Range<usize>, Range<u16>)> = glyphs[start..]
+            .iter()
+            .zip(cells)
+            .map(|(g, w)| {
+                let cols = x..x + w as u16;
+                x = cols.end;
+                (g.byte..g.byte + g.len, cols)
+            })
+            .collect();
+        move |range: Range<usize>| {
+            self.text.get(range.clone())?;
+            if range.is_empty() {
+                return None;
             }
-            x = next;
+            // The cells of every drawn grapheme the bytes touch.
+            let mut touched =
+                laid.iter().filter(|(b, _)| b.start < range.end && range.start < b.end);
+            let first = touched.next()?.1.clone();
+            let end = touched.next_back().map_or(first.end, |(_, c)| c.end);
+            Some(first.start..end).filter(|c| !c.is_empty())
         }
-        cols.filter(|c| !c.is_empty())
     }
 
     /// [`Self::draw_line_windowed`] and [`Self::draw_line_masked`] combined

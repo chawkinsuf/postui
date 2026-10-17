@@ -305,8 +305,9 @@ pub fn paint_field_tokens(
     theme: &Theme,
     hits: &mut HitMap,
 ) {
+    let measure = input.span_measure(focused, row.width);
     let columns = |bytes: Range<usize>| {
-        let cols = input.span_columns(focused, row.width, bytes)?;
+        let cols = measure(bytes)?;
         let x = row.x as usize;
         Some(x + cols.start as usize..x + cols.end as usize)
     };

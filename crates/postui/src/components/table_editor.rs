@@ -778,7 +778,7 @@ impl TableEditorState {
         real: bool,
         ghost_label: Option<&str>,
     ) {
-        use crate::ui::{cells, clip};
+        use crate::ui::clip;
         let theme = ctx.theme;
         let cols = columns(area.x, area.width);
         let editing_col = self.editing.as_ref().filter(|e| e.row == i).map(|e| e.col);
@@ -827,31 +827,32 @@ impl TableEditorState {
         // covers exactly what it drew.
         let rest = |text: &str| LineInput::new(text);
         let (key_rest, value_rest) = (rest(ghost_label.unwrap_or(key)), rest(&entry.value));
-        let drew = |input: &LineInput, w| cells(&input.visible_window(false, w)) as u16;
+        // Paints a cell at rest and answers the cells it drew.
         let paint_rest = |buf: &mut ratatui::buffer::Buffer, x, w, input: &LineInput, bg| {
             let mut line = input.draw_line_at_rest(theme, fg, w);
             line.style = Style::default().bg(bg);
-            buf.set_line(x, y, &line, w);
+            buf.set_line(x, y, &line, w).0 - x
         };
 
+        let mut key_drew = 0;
         if editing_col == Some(Col::Key) {
             let edit = self.editing.as_ref().expect("editing_col implies editing");
             Self::paint_cell_edit(buf, cols.name_x, y, name_w, &edit.input, bg, theme);
         } else {
-            paint_rest(buf, cols.name_x, name_w, &key_rest, name_bg);
+            key_drew = paint_rest(buf, cols.name_x, name_w, &key_rest, name_bg);
         }
 
+        let mut value_drew = 0;
         if editing_col == Some(Col::Value) {
             let edit = self.editing.as_ref().expect("editing_col implies editing");
             Self::paint_cell_edit(buf, cols.value_x, y, value_w, &edit.input, bg, theme);
         } else {
-            paint_rest(buf, cols.value_x, value_w, &value_rest, value_bg);
+            value_drew = paint_rest(buf, cols.value_x, value_w, &value_rest, value_bg);
             // The shadow hint trails the value on the same line, dim: it
             // is a note about that value, so it reads where the value
             // ends rather than on a row of its own.
             if let Some(hint) = hint {
-                let used = drew(&value_rest, value_w);
-                let hint_x = cols.value_x + used + 3;
+                let hint_x = cols.value_x + value_drew + 3;
                 let room = value_right.saturating_sub(hint_x);
                 if room > 0 {
                     text(buf, hint_x, y, clip(hint, room), theme.text_muted, value_bg, false);
@@ -864,12 +865,8 @@ impl TableEditorState {
             // too long for its cell was clipped, and the line has to stop
             // where the clip did rather than run on across empty cells
             // (and, on a narrow pane, into whatever is drawn beside it).
-            if editing_col != Some(Col::Key) {
-                Self::strike_cells(buf, cols.name_x, y, drew(&key_rest, name_w));
-            }
-            if editing_col != Some(Col::Value) {
-                Self::strike_cells(buf, cols.value_x, y, drew(&value_rest, value_w));
-            }
+            Self::strike_cells(buf, cols.name_x, y, key_drew);
+            Self::strike_cells(buf, cols.value_x, y, value_drew);
         }
 
         if cols.divider_x < area.right() {
@@ -884,13 +881,11 @@ impl TableEditorState {
         // resolves past `VarToken` spans, so the caret move underneath is
         // undisturbed. The ghost's add label is not a value, so it gets
         // none.
-        let no_key = LineInput::default();
-        let cell = |col: Col, at_rest| match &self.editing {
-            Some(e) if editing_col == Some(col) => (&e.input, true),
-            _ => (at_rest, false),
+        let open = |col| {
+            self.editing.as_ref().filter(|_| editing_col == Some(col)).map(|e| (&e.input, true))
         };
-        let key_cell = cell(Col::Key, if real { &key_rest } else { &no_key });
-        let value_cell = cell(Col::Value, &value_rest);
+        let key_cell = open(Col::Key).or(real.then_some((&key_rest, false)));
+        let value_cell = open(Col::Value).or(Some((&value_rest, false)));
         paint_cell_tokens(buf, hits, &cols, value_right, y, key_cell, value_cell, vars, theme);
         // The toggle owns the left gutter on every real row; the actions
         // are revealed by hover or the cursor. Both paint (and register)
@@ -930,7 +925,7 @@ impl TableEditorState {
 /// Tints the `{{tokens}}` in one drawn row's key and value cells (spec §7),
 /// registering each span over the `TableCell` hit beneath it. Each cell is
 /// the field that drew it and whether it is open (drawn focused) or at
-/// rest, so an empty field paints nothing.
+/// rest; `None` for a cell whose text is not a value (the ghost's label).
 #[allow(clippy::too_many_arguments)]
 fn paint_cell_tokens(
     buf: &mut ratatui::buffer::Buffer,
@@ -938,14 +933,16 @@ fn paint_cell_tokens(
     cols: &Columns,
     value_right: u16,
     y: u16,
-    key: (&LineInput, bool),
-    value: (&LineInput, bool),
+    key: Option<(&LineInput, bool)>,
+    value: Option<(&LineInput, bool)>,
     vars: &VarView,
     theme: &Theme,
 ) {
     let (name_x, name_w, value_x, value_w) = cols_span(cols, value_right);
-    let mut paint = |cell: Rect, (input, open): (&LineInput, bool)| {
-        paint_field_tokens(buf, cell, input, open, vars, theme, hits)
+    let mut paint = |cell: Rect, field: Option<(&LineInput, bool)>| {
+        if let Some((input, open)) = field {
+            paint_field_tokens(buf, cell, input, open, vars, theme, hits)
+        }
     };
     if name_w > 0 {
         paint(Rect::new(name_x, y, name_w, 1), key);
@@ -2113,6 +2110,23 @@ mod tests {
         let struck = |x: u16| buf[(x, v.y)].modifier.contains(Modifier::CROSSED_OUT);
         assert!(struck(v.x) && struck(v.x + 2), "both glyphs of the value are struck");
         assert!(!struck(v.x + 4), "the strike stops where the value does");
+    }
+
+    /// The strike covers what the cell drew at rest, a code's cells too:
+    /// `a^Ib` is four.
+    #[test]
+    fn a_disabled_value_is_struck_across_its_codes() {
+        let mut map = map_of(&[("a", "a\tb")]);
+        map["a"].enabled = false;
+        let mut hits = HitMap::default();
+        let terminal = draw_narrow(&map, 40, None, &mut hits);
+        let buf = terminal.backend().buffer();
+        let v = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
+        let struck = |x: u16| buf[(x, v.y)].modifier.contains(Modifier::CROSSED_OUT);
+        assert_eq!(
+            (0..6).map(|dx| struck(v.x + dx)).collect::<Vec<_>>(),
+            [true, true, true, true, false, false]
+        );
     }
 
     /// Selecting a row must not move anything: rows edit in place on their
