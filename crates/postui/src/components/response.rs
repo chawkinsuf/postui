@@ -779,12 +779,16 @@ pub enum HeaderRow {
 /// pane's width.
 const SENT_DIVIDER: &str = "\u{2500}\u{2500} sent ";
 
+/// The plain cell between a header row's text and its copy pill, so the
+/// pill's hover fill never touches the text.
+const HEADER_PILL_GAP: &str = " ";
+
 /// The columns a header row's ` 󰆏 ` copy pill paints on, in cells as
-/// ratatui paints them: past the row's text and one plain cell that keeps
-/// the pill's hover fill off it. (`crop_cols` still counts per char, so
-/// scrolled past an emoji sequence the two part: #45.)
+/// ratatui paints them: past the row's text and [`HEADER_PILL_GAP`].
+/// (`crop_cols` still counts per char, so scrolled past an emoji sequence
+/// the two part: #45.)
 fn header_pill_cols(line: &str) -> std::ops::Range<usize> {
-    let start = crate::ui::cells(line) + 1;
+    let start = crate::ui::cells(line) + crate::ui::cells(HEADER_PILL_GAP);
     start..start + crate::ui::cells(crate::glyph::COPY_PILL)
 }
 
@@ -992,10 +996,17 @@ impl ReadyView {
         let w = match self.mode {
             ViewMode::Pretty => self.active_tree().map_or(0, JsonTree::visible_width),
             ViewMode::Raw => self.raw_lines.iter().map(|l| l.width()).max().unwrap_or(0),
-            // To the end of the copy pill appended to each rendered row.
-            ViewMode::Headers => {
-                self.header_lines.iter().map(|l| header_pill_cols(l).end).max().unwrap_or(0)
-            }
+            // A header row runs to the end of its copy pill.
+            ViewMode::Headers => self
+                .header_lines
+                .iter()
+                .enumerate()
+                .map(|(i, l)| match self.header_row(i) {
+                    Some(HeaderRow::Received(_) | HeaderRow::Sent(_)) => header_pill_cols(l).end,
+                    _ => crate::ui::cells(l),
+                })
+                .max()
+                .unwrap_or(0),
         };
         self.content_width = Some((key.0, key.1, key.2, w));
         w
@@ -4575,10 +4586,9 @@ fn body_lines(
                 // A sent row reads dim, like the editor's computed rows: the
                 // record of the send, not the answer.
                 let text = if matches!(row, HeaderRow::Sent(_)) { dim } else { text };
-                let (name, value) = line.split_once(':').unwrap_or((line.as_str(), ""));
-                let name_piece = format!("{name}:");
-                // The plain cell `header_pill_cols` counts before the pill.
-                let value_piece = format!("{value} ");
+                // Split after the colon, so the pieces are the line that
+                // `header_pill_cols` measures.
+                let (name, value) = line.split_at(line.find(':').map_or(0, |c| c + 1));
                 let glyph_hovered = hovered == Some(&crate::hit::Hit::HeaderCopy(i));
                 let glyph_style = if glyph_hovered {
                     Style::default().bg(t.accent).fg(t.on_accent)
@@ -4589,8 +4599,8 @@ fn body_lines(
                 // highlight surrounds it symmetrically instead of leaving a
                 // blank highlighted cell on one side.
                 let pieces = vec![
-                    (name_piece, Style::default().fg(t.accent)),
-                    (value_piece, text),
+                    (name.to_string(), Style::default().fg(t.accent)),
+                    (format!("{value}{HEADER_PILL_GAP}"), text),
                     (crate::glyph::COPY_PILL.to_string(), glyph_style),
                 ];
                 push(i, i, pieces, true, (0, view.h_scroll));
@@ -6335,6 +6345,20 @@ mod tests {
             (0..buf.area.width).filter(|&x| buf[(x, rect.y)].bg == theme.accent).collect();
         assert_eq!(filled, vec![rect.x, rect.x + 1], "two pill cells are shown");
         assert_eq!(rect.width, 2, "the rect covers only the shown cells: {rect:?}");
+    }
+
+    /// Only rows with a copy pill count it in the scroll extent: with no
+    /// headers either way, the widest row is the bare `(no headers)` note.
+    #[test]
+    fn header_notes_measure_without_a_pill() {
+        let mut d = data("{}");
+        d.headers = vec![];
+        d.sent_headers = vec![];
+        let mut r = Pane::default();
+        r.set_state(ResponseState::Ready(Box::new(d)), 0);
+        r.set_view_mode(ViewMode::Headers);
+        render_sized(&mut r, 60, 20);
+        assert_eq!(r.view().unwrap().measured_width(), Some("(no headers)".len()));
     }
 
     /// A pill past column 65535 is far off screen; its column must not
