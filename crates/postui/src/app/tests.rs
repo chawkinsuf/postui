@@ -23319,6 +23319,64 @@ fn tooltip_names_the_env_by_its_display_name() {
     assert!(text.contains("base_url  QA Tenant"), "{text}");
 }
 
+/// A display name is free-form, long or wide: the Vars tab's referenced
+/// row cuts the source to half the value column's room (in cells, so wide
+/// glyphs measure true), and the value keeps the rest.
+#[test]
+fn a_long_env_name_leaves_the_referenced_value_its_room() {
+    let (mut app, dir, _out) = tooltip_app("base_url");
+    let toml = dir.path().join("project.toml");
+    let meta = std::fs::read_to_string(&toml).unwrap();
+    let name = "本番環境 Production EU West Customer Tenant";
+    std::fs::write(&toml, format!("{meta}\n[environment.qa]\nname = \"{name}\"\n")).unwrap();
+    app.update(Action::ReloadProjectFiles);
+    app.update(Action::EditorTabSelect(2));
+    assert_eq!(app.editor.active_tab, EditorTab::Vars);
+    let text = tooltip_text(&mut app);
+    // The last row naming the token: the referenced section, under the URL.
+    let row = text.lines().rev().find(|l| l.contains("{{base_url}}")).unwrap();
+    let value = row.find("https://qa").unwrap_or_else(|| panic!("the value shows: {row}"));
+    let source = row.find("(本番環境").unwrap_or_else(|| panic!("the source shows: {row}"));
+    assert!(value < source, "{row}");
+    assert!(row.contains("\u{2026})"), "the source is cut, and says so: {row}");
+    assert!(!row.contains("Tenant"), "{row}");
+}
+
+/// #33 (folding in #34, the user's call): every place that names the
+/// active environment to the user says its display name; the slug stays a
+/// key.
+#[test]
+fn every_user_facing_env_name_is_the_display_name() {
+    use postui_core::model::Entry;
+    use postui_core::prepare::UnresolvedCause;
+    let (mut app, dir, _out) = tooltip_app("api_key");
+    let toml = dir.path().join("project.toml");
+    let meta = std::fs::read_to_string(&toml).unwrap();
+    std::fs::write(&toml, format!("{meta}\n[environment.qa]\nname = \"QA Tenant\"\n")).unwrap();
+    app.update(Action::ReloadProjectFiles);
+
+    // The Vars tab's shadow hint.
+    app.editor
+        .variables
+        .insert("base_url".into(), Entry { value: "http://x".into(), enabled: true });
+    app.update(Action::Render);
+    assert_eq!(app.editor.shadowed["base_url"], "QA Tenant: https://qa.example.com");
+
+    // The unresolved-variables toast.
+    let causes = [("user".to_string(), UnresolvedCause::NeedsSelection)].into_iter().collect();
+    assert!(app.unresolved_message(&causes).contains("(QA Tenant)"));
+
+    // The send-time secret prompt: titled by name, keyed by slug.
+    app.proj_mut().remove_secret_for("qa", "api_key").unwrap();
+    app.update(Action::ReloadProjectFiles);
+    app.update(Action::ForceSend);
+    let Some(Modal::Prompt { title, kind, .. }) = app.modals.top() else {
+        panic!("expected a secret prompt");
+    };
+    assert!(title.contains("env `QA Tenant`"), "{title}");
+    assert!(matches!(kind, PromptKind::SecretValue { env, .. } if env == "qa"), "{kind:?}");
+}
+
 /// A secret's pills run reveal, copy, edit: reveal is the rare, dynamic
 /// one and sits in the drop-first slot at the far left, so copy and edit
 /// stay put whether or not it is offered.

@@ -1384,7 +1384,7 @@ impl App {
         &self,
         causes: &std::collections::BTreeMap<String, postui_core::prepare::UnresolvedCause>,
     ) -> String {
-        let label = self.env_label();
+        let label = self.env_label_display();
         let mut msg =
             format!("{} ({label})", postui_core::prepare::PrepareError::Unresolved(causes.clone()));
         // Name the first (alphabetically — `causes` is a `BTreeMap`)
@@ -2221,7 +2221,7 @@ impl App {
     /// project variable is a secret.
     fn compute_shadowed(&self) -> indexmap::IndexMap<String, String> {
         use postui_core::varmodel::VarMeta;
-        let env_label = self.env_label();
+        let env_label = self.env_label_display();
         self.editor
             .variables
             .keys()
@@ -4152,7 +4152,7 @@ impl App {
                             self.push_modal(Modal::Prompt {
                                 title: format!(
                                     "Value for `{name}` (secret, env `{}`)",
-                                    self.env_label()
+                                    self.env_label_display()
                                 ),
                                 input: LineInput::new(""),
                                 kind: PromptKind::SecretValue {

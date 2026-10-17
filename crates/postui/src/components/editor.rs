@@ -3313,6 +3313,7 @@ impl Editor {
         ctx: &DrawCtx,
         hits: &mut crate::hit::HitMap,
     ) {
+        use unicode_width::UnicodeWidthStr;
         if area.height == 0 || area.width == 0 {
             return;
         }
@@ -3362,9 +3363,13 @@ impl Editor {
                 hits,
             );
             // Source label right-aligned; the value gets what's between
-            // the value column and the source, with a 2-cell gap.
-            let source = format!("({})", info.source.label());
-            let source_w = (source.chars().count() as u16).min(area.width);
+            // the value column and the source, with a 2-cell gap. An
+            // environment's display name is free-form, so the source is
+            // cut to half the value column's room (in cells), never more.
+            let room = area.right().saturating_sub(1).saturating_sub(cols.value_x) as usize;
+            let label = crate::ui::ellipsize(&info.source.label(), (room / 2).saturating_sub(2));
+            let source = format!("({label})");
+            let source_w = source.width() as u16;
             let source_x = area.right().saturating_sub(source_w + 1);
             crate::paint::text(buf, source_x, y, &source, theme.text_muted, theme.page, false);
             let value_avail = source_x.saturating_sub(2).saturating_sub(cols.value_x);
