@@ -88,7 +88,9 @@ mod vim_boundary_test {
 
 /// Text is measured one way: `ui::cells` and its helpers, by grapheme, as
 /// ratatui paints it. Only the places that must count per char like
-/// another program may measure for themselves.
+/// another program may measure for themselves. (ratatui's own
+/// `Span::width` / `Line::width` measure by `unicode-width` too; they
+/// are not caught here, so don't size with them either.)
 #[cfg(test)]
 mod width_measure_test {
     use super::source_scan::{code_lines, sources};
@@ -154,14 +156,16 @@ mod source_scan {
     }
 
     /// The code lines of a file's `text`, numbered from 1: comments are
-    /// skipped, and a test module at the bottom ends the code.
+    /// skipped, and an inline test module (`mod tests {`) at the bottom
+    /// ends the code. A declared one (`mod tests;`) is a file of its own,
+    /// so the code goes on past it.
     pub fn code_lines(text: &str) -> Vec<(usize, &str)> {
         let lines: Vec<&str> = text.lines().collect();
         let mut code = Vec::new();
         for (i, line) in lines.iter().enumerate() {
-            if line.trim() == "#[cfg(test)]"
-                && lines.get(i + 1).is_some_and(|n| n.trim_start().starts_with("mod "))
-            {
+            let inline_mod =
+                |n: &&str| n.trim_start().starts_with("mod ") && n.trim_end().ends_with('{');
+            if line.trim() == "#[cfg(test)]" && lines.get(i + 1).is_some_and(inline_mod) {
                 break;
             }
             if !line.trim_start().starts_with("//") {
@@ -169,5 +173,13 @@ mod source_scan {
             }
         }
         code
+    }
+
+    /// A declared test module is skipped over; an inline one ends the code.
+    #[test]
+    fn only_an_inline_test_module_ends_the_code() {
+        let text = "a\n#[cfg(test)]\nmod t;\n// c\nb\n#[cfg(test)]\nmod tests {\nx\n}";
+        let lines: Vec<&str> = code_lines(text).into_iter().map(|(_, l)| l).collect();
+        assert_eq!(lines, ["a", "#[cfg(test)]", "mod t;", "b"]);
     }
 }
