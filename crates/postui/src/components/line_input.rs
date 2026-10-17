@@ -806,9 +806,10 @@ impl LineInput {
 
     /// The first char index [`Self::draw_line_windowed`] would render at a
     /// `width`-column window: 0 unless the input is focused and the caret
-    /// has scrolled the window right. Callers that need to paint *over* the
-    /// drawn text (inline `{{token}}` highlighting, spec §7) use this to
-    /// slice the same visible window the draw used.
+    /// has scrolled the window right. For tests: a painter reads the
+    /// window through [`Self::visible_window`], [`Self::span_columns`] or
+    /// [`Self::char_at_column`], which measure it as the draw does.
+    #[cfg(test)]
     pub fn window_start(&self, focused: bool, width: u16) -> usize {
         let glyphs = glyphs(&self.text);
         glyph_char(&glyphs, window_glyph(&glyphs, self.cursor, focused, width))
@@ -958,15 +959,16 @@ fn glyph_char(glyphs: &[Glyph], i: usize) -> usize {
 /// with the caret scrolled right. Counted in cells, so the caret's column
 /// (the cells from the window start up to the cursor) always fits: the
 /// caret's own grapheme — or a one-cell blank at end-of-text — takes its
-/// room first, then graphemes before it are admitted from the right while
-/// they still fit.
+/// room first (a cell at least, even on a grapheme that paints none),
+/// then graphemes before it are admitted from the right while they still
+/// fit.
 fn window_glyph(glyphs: &[Glyph], cursor: usize, focused: bool, width: u16) -> usize {
     if !focused {
         return 0;
     }
     let width = width.max(1) as usize;
     let mut start = glyph_at(glyphs, cursor);
-    let mut used = glyphs.get(start).map_or(1, |g| g.width);
+    let mut used = glyphs.get(start).map_or(1, |g| g.width.max(1));
     while start > 0 {
         let w = glyphs[start - 1].width;
         if used + w > width {
@@ -1830,6 +1832,16 @@ mod tests {
         assert_eq!(input.caret_column(5), 4);
         let unfocused = line_text(&input.draw_line_windowed(false, &theme, 5));
         assert_eq!(unfocused, heart.repeat(2), "a third would take cells 5 and 6");
+    }
+
+    /// The caret keeps a cell of its own even on a grapheme that takes
+    /// none (a zero-width space), so its column stays inside the field.
+    #[test]
+    fn a_caret_on_a_zero_width_grapheme_still_fits_the_window() {
+        let mut input = LineInput::new("abcde\u{200b}");
+        input.set_cursor(5);
+        assert_eq!(input.caret_column(5), 4);
+        assert_eq!(input.window_start(true, 5), 1);
     }
 
     /// A selection that covers part of a grapheme paints all of it, so the
