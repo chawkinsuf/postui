@@ -29,7 +29,9 @@ use unicode_width::UnicodeWidthChar;
 pub enum TokenSource {
     /// The open request's own `[variables]` overlay (highest precedence).
     Request,
-    /// A flat value in the active environment, named for display.
+    /// A flat value in the active environment, or a secret kept for it,
+    /// named as the header chip names the environment (`no env` for a
+    /// secret kept under no environment).
     Env(String),
     /// The variable declaration's `default`.
     Default,
