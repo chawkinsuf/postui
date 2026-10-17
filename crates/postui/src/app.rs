@@ -5488,7 +5488,10 @@ impl App {
                                         crate::undo::StepLabel::variable(&name),
                                     );
                                     self.toasts.push(
-                                        format!("removed {name}'s value for env {env}"),
+                                        format!(
+                                            "removed {name}'s value for env {}",
+                                            self.env_name(&env)
+                                        ),
                                         ToastKind::Success,
                                     );
                                 }
@@ -5507,7 +5510,7 @@ impl App {
                                     crate::undo::StepLabel::variable(&name),
                                 );
                                 self.toasts.push(
-                                    format!("removed {name} from env {env}"),
+                                    format!("removed {name} from env {}", self.env_name(&env)),
                                     ToastKind::Success,
                                 );
                             }
@@ -5895,10 +5898,10 @@ impl App {
                         target: postui_core::varedit::PromoteTarget::Default,
                     })],
                 )];
-                if let Some(env) = self.active_env().map(str::to_string) {
+                if let Some(env) = self.active_env() {
                     choices.push((
                         'e',
-                        format!("Env value ({env})"),
+                        format!("Env value ({})", self.env_name(env)),
                         vec![Action::VarStruct(VarStructOp::Promote {
                             name: name.clone(),
                             target: postui_core::varedit::PromoteTarget::Env,
@@ -6179,7 +6182,11 @@ impl App {
                     Ok(()) => {
                         self.set_selection_for(&env, &owner, &key);
                         self.record_project_step(t, crate::undo::StepLabel::variable(&owner));
-                        let where_label = if shared { "all environments" } else { &env };
+                        let where_label = if shared {
+                            "all environments".to_string()
+                        } else {
+                            self.env_name(&env)
+                        };
                         self.toasts.push(
                             format!("{owner} \u{2192} {key} ({where_label})"),
                             ToastKind::Success,
@@ -7461,11 +7468,15 @@ impl App {
         use postui_core::varmodel;
 
         let env_key = self.active_env().map(str::to_string).unwrap_or_default();
-        let selected_key = if self.selector_is_shared(&selector) {
+        let shared = self.selector_is_shared(&selector);
+        let selected_key = if shared {
             self.shared_selections().get(&selector).cloned()
         } else {
             self.selections_for(&env_key).get(&selector).cloned()
         };
+        // A shared selector's choice holds in every environment.
+        let where_label =
+            if shared { "all environments".to_string() } else { self.env_name(&env_key) };
         let options: Vec<SelectOption> =
             varmodel::options_of(self.variables(), self.env_data(), &selector)
                 .map(|options| {
@@ -7485,7 +7496,11 @@ impl App {
         // ghost row alone — the user chooses to create, never gets walked
         // into a prompt.
         self.push_modal(Modal::VarPicker(VarPickerState::new_select(
-            options, name, selector, env_key,
+            options,
+            name,
+            selector,
+            env_key,
+            where_label,
         )));
         true
     }
@@ -7621,7 +7636,7 @@ impl App {
             let mut lines: Vec<String> = Vec::new();
             for env in self.environments().to_vec() {
                 if let Some(v) = self.secrets().get(&env).and_then(|m| m.get(&name)) {
-                    lines.push(format!("{env}: {v}"));
+                    lines.push(format!("{}: {v}", self.env_name(&env)));
                 }
             }
             let body = if lines.is_empty() {
@@ -7649,7 +7664,7 @@ impl App {
             for env in self.environments().to_vec() {
                 let env_data = self.env_data_for(&env);
                 if env_data.values.contains_key(&name) {
-                    envs_with_values.push(env);
+                    envs_with_values.push(self.env_name(&env));
                 }
             }
             let body = if envs_with_values.is_empty() {

@@ -160,10 +160,14 @@ pub struct VarPickerState {
     filtered: Vec<usize>,
     pub completing: bool,
     pub mode: PickerMode,
-    /// The active environment's name, captured at open — `SelectOption`
-    /// mode's target for `VarEditOp::SelectOption` and its toast. Unused (empty)
-    /// in `Insert` mode.
+    /// The active environment's slug, captured at open — `SelectOption`
+    /// mode's target for `VarEditOp::SelectOption`. Unused (empty) in
+    /// `Insert` mode.
     env: String,
+    /// Where `SelectOption` mode's pick toast says the choice holds: the
+    /// environment's display name, or `all environments` for a shared
+    /// selector. Unused (empty) in `Insert` mode.
+    where_label: String,
     /// First visible row's index into `filtered`. See `ChooserState` for the
     /// `ensure_visible` contract this mirrors.
     scroll: usize,
@@ -182,15 +186,12 @@ impl VarPickerState {
             completing,
             mode: PickerMode::Insert,
             env: String::new(),
+            where_label: String::new(),
             scroll: 0,
             ensure_visible: true,
         }
     }
 
-    /// Opens `SelectOption` mode: `entries` are `selector`'s entries in the
-    /// active environment (`name` is the token that led here — see
-    /// [`PickerMode`]), with the env's current selection already marked.
-    /// `env` is the active environment, captured for the `Enter` action.
     /// The current filter text (test-visible: the click-a-token flow seeds
     /// it, spec §7).
     pub fn input(&self) -> &str {
@@ -229,11 +230,17 @@ impl VarPickerState {
         self.refilter();
     }
 
+    /// Opens `SelectOption` mode: `entries` are `selector`'s entries in the
+    /// active environment (`name` is the token that led here — see
+    /// [`PickerMode`]), with the env's current selection already marked.
+    /// `env` is the active environment's slug, captured for the `Enter`
+    /// action; `where_label` is what its toast names (see the field).
     pub fn new_select(
         entries: Vec<SelectOption>,
         name: String,
         selector: String,
         env: String,
+        where_label: String,
     ) -> Self {
         let filtered = (0..entries.len()).collect();
         // Open with the cursor on the env's current option (the row already
@@ -248,6 +255,7 @@ impl VarPickerState {
             completing: false,
             mode: PickerMode::SelectOption { name, selector },
             env,
+            where_label,
             scroll: 0,
             ensure_visible: true,
         }
@@ -323,7 +331,7 @@ impl VarPickerState {
                 // (the picker's title).
                 let owner = selector.clone();
                 let key = self.select_entries[idx].key.clone();
-                let toast = format!("{owner} \u{2192} {key} ({})", self.env);
+                let toast = format!("{owner} \u{2192} {key} ({})", self.where_label);
                 Some(super::modal::ModalResult {
                     actions: vec![
                         Action::VarEdit(VarEditOp::SelectOption {
@@ -1121,7 +1129,13 @@ mod tests {
                 values: None,
             },
         ];
-        let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
+        let mut p = VarPickerState::new_select(
+            entries,
+            "user".into(),
+            "user".into(),
+            "qa".into(),
+            "qa".into(),
+        );
         // The cursor opens on the env's current option (bob), not row 0.
         assert_eq!(p.selected(), 1);
         p.handle_key(key(KeyCode::Up));
@@ -1149,8 +1163,13 @@ mod tests {
             selected: false,
             values: None,
         }];
-        let mut p =
-            VarPickerState::new_select(entries, "user_id".into(), "identity".into(), "qa".into());
+        let mut p = VarPickerState::new_select(
+            entries,
+            "user_id".into(),
+            "identity".into(),
+            "qa".into(),
+            "qa".into(),
+        );
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(
             res.actions,
@@ -1174,7 +1193,13 @@ mod tests {
             selected: false,
             values: None,
         }];
-        let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
+        let mut p = VarPickerState::new_select(
+            entries,
+            "user".into(),
+            "user".into(),
+            "qa".into(),
+            "qa".into(),
+        );
         let res = p.handle_key(key(KeyCode::Esc)).unwrap();
         assert!(res.close && res.actions.is_empty());
     }
@@ -1185,6 +1210,7 @@ mod tests {
             identity_options(),
             "user_id".into(),
             "identity".into(),
+            "qa".into(),
             "qa".into(),
         );
         let (content, _) = draw_select(&mut p);
@@ -1268,7 +1294,13 @@ mod tests {
             selected: false,
             values: None,
         }];
-        let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
+        let mut p = VarPickerState::new_select(
+            entries,
+            "user".into(),
+            "user".into(),
+            "qa".into(),
+            "qa".into(),
+        );
         // Down once lands on the ghost row (row 1, one past the one entry).
         p.handle_key(key(KeyCode::Down));
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
@@ -1285,8 +1317,13 @@ mod tests {
             selected: false,
             values: Some(IndexMap::new()),
         }];
-        let mut p =
-            VarPickerState::new_select(entries, "user_id".into(), "identity".into(), "qa".into());
+        let mut p = VarPickerState::new_select(
+            entries,
+            "user_id".into(),
+            "identity".into(),
+            "qa".into(),
+            "qa".into(),
+        );
         p.handle_key(key(KeyCode::Down));
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(
@@ -1307,7 +1344,13 @@ mod tests {
             selected: false,
             values: None,
         }];
-        let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
+        let mut p = VarPickerState::new_select(
+            entries,
+            "user".into(),
+            "user".into(),
+            "qa".into(),
+            "qa".into(),
+        );
         let theme = Theme::dark();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1338,7 +1381,13 @@ mod tests {
             selected: false,
             values: None,
         }];
-        let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
+        let mut p = VarPickerState::new_select(
+            entries,
+            "user".into(),
+            "user".into(),
+            "qa".into(),
+            "qa".into(),
+        );
         let theme = Theme::dark();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let mut hits = crate::hit::HitMap::default();
@@ -1435,6 +1484,7 @@ mod tests {
             "user_id".into(),
             "identity".into(),
             "qa".into(),
+            "qa".into(),
         );
         let (content, hits) = draw_select(&mut p);
         assert!(
@@ -1453,6 +1503,7 @@ mod tests {
             identity_options(),
             "user_id".into(),
             "identity".into(),
+            "qa".into(),
             "qa".into(),
         );
         assert_eq!(p.selected(), 1, "opens on bob, the env's current option");
@@ -1481,6 +1532,7 @@ mod tests {
             identity_options(),
             "user_id".into(),
             "identity".into(),
+            "qa".into(),
             "qa".into(),
         );
         assert_eq!(p.selected(), 1, "opens on bob");
@@ -1511,6 +1563,7 @@ mod tests {
             "user_id".into(),
             "identity".into(),
             "qa".into(),
+            "qa".into(),
         );
         // bob is highlighted: his member values render (in the pane), and
         // alice's don't render anywhere — rows no longer carry a preview tail.
@@ -1529,6 +1582,7 @@ mod tests {
             "user_id".into(),
             "identity".into(),
             "qa".into(),
+            "qa".into(),
         );
         p.handle_key(key(KeyCode::Up));
         let (content, _) = draw_select(&mut p);
@@ -1545,7 +1599,13 @@ mod tests {
             selected: true,
             values: None,
         }];
-        let mut p = VarPickerState::new_select(entries, "host".into(), "host".into(), "qa".into());
+        let mut p = VarPickerState::new_select(
+            entries,
+            "host".into(),
+            "host".into(),
+            "qa".into(),
+            "qa".into(),
+        );
         let (content, _) = draw_select(&mut p);
         assert!(
             content.contains("https://stg.example.com"),
@@ -1562,6 +1622,7 @@ mod tests {
             identity_options(),
             "user_id".into(),
             "identity".into(),
+            "qa".into(),
             "qa".into(),
         );
         // Down from bob (row 1) lands on the ghost row.
