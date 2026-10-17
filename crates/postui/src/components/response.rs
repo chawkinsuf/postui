@@ -779,6 +779,13 @@ pub enum HeaderRow {
 /// pane's width.
 const SENT_DIVIDER: &str = "\u{2500}\u{2500} sent ";
 
+/// Where a header row's ` 󰆏 ` copy pill starts, in cells as ratatui
+/// paints them: the row's text, then one plain cell so the pill's hover
+/// fill never touches the text.
+fn header_pill_col(line: &str) -> usize {
+    crate::ui::cells(line) + 1
+}
+
 /// `name: value` rows with the values aligned past the widest name.
 fn aligned_header_lines<'a>(rows: impl Iterator<Item = (&'a str, &'a str)> + Clone) -> Vec<String> {
     let width = rows.clone().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
@@ -984,7 +991,9 @@ impl ReadyView {
             ViewMode::Pretty => self.active_tree().map_or(0, JsonTree::visible_width),
             ViewMode::Raw => self.raw_lines.iter().map(|l| l.width()).max().unwrap_or(0),
             // + 3 for the ` 󰆏 ` copy pill appended to each rendered row.
-            ViewMode::Headers => self.header_lines.iter().map(|l| l.width() + 3).max().unwrap_or(0),
+            ViewMode::Headers => {
+                self.header_lines.iter().map(|l| header_pill_col(l) + 3).max().unwrap_or(0)
+            }
         };
         self.content_width = Some((key.0, key.1, key.2, w));
         w
@@ -4566,13 +4575,12 @@ fn body_lines(
                 let text = if matches!(row, HeaderRow::Sent(_)) { dim } else { text };
                 let (name, value) = line.split_once(':').unwrap_or((line.as_str(), ""));
                 let name_piece = format!("{name}:");
-                // One plain cell between the value and the pill, so the
-                // pill's hover fill never touches the text.
+                // The plain cell `header_pill_col` counts before the pill.
                 let value_piece = format!("{value} ");
-                // In cells, as ratatui paints the row: a received value can
-                // hold wide text. (`crop_cols` still counts per char, so
-                // scrolled past an emoji sequence the two part: #45.)
-                let text_len = crate::ui::cells(&name_piece) + crate::ui::cells(&value_piece);
+                // A received value can hold wide text. (`crop_cols` still
+                // counts per char, so scrolled past an emoji sequence the
+                // two part: #45.)
+                let text_len = header_pill_col(line);
                 let glyph_hovered = hovered == Some(&crate::hit::Hit::HeaderCopy(i));
                 let glyph_style = if glyph_hovered {
                     Style::default().bg(t.accent).fg(t.on_accent)
@@ -6258,6 +6266,42 @@ mod tests {
             crate::glyph::COPY_PILL.trim(),
             "the rect's middle cell is the painted copy glyph"
         );
+    }
+
+    /// Scrolled fully right, the widest header row's copy pill shows whole:
+    /// the scroll extent counts the plain spacer cell before the pill.
+    #[test]
+    fn headers_scrolled_to_the_end_show_the_whole_copy_pill() {
+        let theme = Theme::dark();
+        let mut d = data("{}");
+        d.headers = vec![("x-long".into(), "v".repeat(120))];
+        let mut r = Pane::default();
+        r.set_state(ResponseState::Ready(Box::new(d)), 0);
+        r.set_view_mode(ViewMode::Headers);
+        let hovered = crate::hit::Hit::HeaderCopy(0);
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: Some(&hovered),
+            pointer: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+        r.handle_scroll_h(i16::MAX);
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+        let rect = hits.rect_of(&hovered).expect("the pill is registered");
+        assert_eq!(rect.width, 3, "the whole pill is on screen: {rect:?}");
+        let buf = terminal.backend().buffer();
+        let pill: Vec<String> = (0..buf.area.width)
+            .filter(|&x| buf[(x, rect.y)].bg == theme.accent)
+            .map(|x| buf[(x, rect.y)].symbol().to_string())
+            .collect();
+        assert_eq!(pill, vec![" ", "\u{F018F}", " "], "the hover fill is not cut");
     }
 
     #[test]
