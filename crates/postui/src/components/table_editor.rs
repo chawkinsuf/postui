@@ -571,9 +571,9 @@ impl TableEditorState {
     /// ghost row (an empty row labelled by `add_label` until it is typed
     /// into), and a closing `▔` edge. Every cell registers a
     /// `Hit::TableCell`, so a click lands straight in that cell's editor.
-    /// `shadow` is `Some` only on the Vars tab: `name → "overrides <env>:
+    /// `shadow` is `Some` only on the Vars tab: `name → "<source>:
     /// <value>"`, already formatted (masked for secrets) by the caller. A
-    /// row whose key is present shows that note, dim, trailing its value on
+    /// row whose key is present shows it as `overrides …`, dim, trailing its value on
     /// the same line. `None` on Params/Headers, which have no shadowing
     /// concept.
     /// `vars` is the variable snapshot every drawn cell's `{{tokens}}` are
@@ -761,7 +761,7 @@ impl TableEditorState {
     /// `LineInput` in place, right where the text was, the way the
     /// Variable Manager's grid edits its own cells: nothing opens up, and
     /// no row below the cursor moves. `hint` is the Vars tab's
-    /// "overrides <env>: <value>" shadow, trailing the value dim.
+    /// "overrides <source>: <value>" shadow, trailing the value dim.
     #[allow(clippy::too_many_arguments)]
     fn draw_row(
         &self,

@@ -198,6 +198,13 @@ impl VarView {
                 descriptions: self.descriptions.get(name).cloned().into_iter().collect(),
             };
         }
+        self.describe_project(name)
+    }
+
+    /// [`describe`](Self::describe) beneath the request overlay: what the
+    /// project resolves `name` to, and from where. A request override
+    /// shadows this, so the Vars tab's `overrides` hint names it.
+    pub fn describe_project(&self, name: &str) -> TokenInfo {
         let value = self.resolved.values.get(name).cloned();
         let source = match self.resolved.meta.get(name) {
             Some(VarMeta::MissingSecret) => TokenSource::MissingSecret,
@@ -239,13 +246,11 @@ impl VarView {
         }
     }
 
-    /// The active environment, by its display name, or [`TokenSource::Undefined`]
-    /// when there is none (nothing to name as the source).
+    /// The active environment, by its display name, or `no env` as the
+    /// header chip says when there is none (#37: a secret still resolves
+    /// then, from the secrets kept under no environment).
     fn env_source(&self) -> TokenSource {
-        match &self.env_label {
-            Some(env) => TokenSource::Env(env.clone()),
-            None => TokenSource::Undefined,
-        }
+        TokenSource::Env(self.env_label.clone().unwrap_or_else(|| "no env".to_string()))
     }
 }
 
@@ -401,6 +406,22 @@ mod tests {
         let info = v.describe("base_url");
         assert_eq!(info.source, TokenSource::Request);
         assert_eq!(info.value.as_deref(), Some("http://local"));
+        // Beneath it, the project's value and source stand (#37: what the
+        // Vars tab's `overrides` hint names).
+        let beneath = v.describe_project("base_url");
+        assert_eq!(beneath.source, TokenSource::Env("qa".to_string()));
+        assert_eq!(beneath.value.as_deref(), Some("http://x"));
+    }
+
+    /// #37 (the user's ruling): a secret resolved with no environment
+    /// active names `no env`, as the header chip does, not `not defined`.
+    #[test]
+    fn a_secret_with_no_environment_names_no_env() {
+        let mut v = view();
+        v.env_label = None;
+        let info = v.describe("api_key");
+        assert!(info.resolved());
+        assert_eq!(info.source.label(), "no env");
     }
 
     #[test]

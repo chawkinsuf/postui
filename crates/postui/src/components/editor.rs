@@ -152,8 +152,8 @@ pub struct Editor {
     /// Request-scoped `[variables]`, edited by the Vars tab (shares the
     /// Params/Headers table editor) and carried through load/save.
     pub variables: IndexMap<String, Entry>,
-    /// `name → "overrides <env>: <value>"`, already formatted (masked for
-    /// secrets) by `App` out of `Project::resolved` — one entry per
+    /// `name → "<source>: <value>"`, already formatted (masked for secrets)
+    /// by `App` out of `VarView::describe_project` — one entry per
     /// project variable that a request-scope entry with the same name
     /// shadows. Synced by `App` on every `update()` alongside
     /// `inherited_headers`. Draw-only: consumed by the Vars tab's table draw

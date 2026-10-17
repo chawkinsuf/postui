@@ -1080,6 +1080,45 @@ fn shadowed_var_shows_masked_hint_when_project_var_is_secret() {
         hint.contains("\u{25cf}\u{25cf}\u{25cf}\u{25cf}"),
         "expected a masked secret hint, got: {hint}"
     );
+    // #37 (the user's ruling): with no environment the secret's source is
+    // `no env`, as the header chip says, in the hint and the tooltip alike.
+    assert_eq!(hint, "no env: \u{25cf}\u{25cf}\u{25cf}\u{25cf}");
+    assert_eq!(app.editor.vars.describe("token").source.label(), "this request");
+    assert_eq!(app.editor.vars.describe_project("token").source.label(), "no env");
+}
+
+/// #37: the Vars tab's `overrides` hint names where the shadowed value
+/// came from, with the tooltip's labels: the env, the selected option, or
+/// `default value`. It used to name the env whatever the source.
+#[test]
+fn shadow_hint_names_the_shadowed_values_own_source() {
+    use postui_core::model::Entry;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let picks = [("user".to_string(), "alice".to_string())].into_iter().collect();
+    postui_core::fixtures::save_local_state(
+        dir.path(),
+        &postui_core::project::LocalState {
+            environment: Some("qa".into()),
+            selections: [("qa".to_string(), picks)].into_iter().collect(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    for name in ["base_url", "user"] {
+        app.editor.variables.insert(name.into(), Entry { value: "x".into(), enabled: true });
+    }
+    app.update(Action::Render);
+    assert_eq!(app.editor.shadowed["base_url"], "qa: https://qa.example.com");
+    assert_eq!(app.editor.shadowed["user"], "alice: 1001");
+
+    // dev has no `base_url`, so the declaration's default fills it, and no
+    // option is selected there, so `user` has nothing to shadow.
+    app.update(Action::SwitchEnv(Some("dev".into())));
+    assert_eq!(app.editor.shadowed["base_url"], "default value: http://localhost:8080");
+    assert!(!app.editor.shadowed.contains_key("user"), "{:?}", app.editor.shadowed);
 }
 
 #[test]
