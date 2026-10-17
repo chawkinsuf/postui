@@ -233,8 +233,10 @@ pub fn rule(buf: &mut Buffer, row: Rect, fg: Color, bg: Color) {
     }
 }
 
-/// Paints `s` starting at `(x, y)` with the given fg/bg, optionally bold.
-pub fn text(buf: &mut Buffer, x: u16, y: u16, s: &str, fg: Color, bg: Color, bold: bool) {
+/// Paints `s` starting at `(x, y)` with the given fg/bg, optionally bold,
+/// and answers the column after what it painted, where the next piece of
+/// a row goes.
+pub fn text(buf: &mut Buffer, x: u16, y: u16, s: &str, fg: Color, bg: Color, bold: bool) -> u16 {
     use ratatui::style::{Modifier, Style};
     let mut style = Style::default().fg(fg).bg(bg);
     if bold {
@@ -244,9 +246,9 @@ pub fn text(buf: &mut Buffer, x: u16, y: u16, s: &str, fg: Color, bg: Color, bol
     // laying out for a tiny terminal can legitimately land there.
     if y < buf.area.top() || y >= buf.area.bottom() || x < buf.area.left() || x >= buf.area.right()
     {
-        return;
+        return x;
     }
-    buf.set_string(x, y, s, style);
+    buf.set_stringn(x, y, s, usize::MAX, style).0
 }
 
 /// A plain (unbracketed) clickable text action painted on `surface`:

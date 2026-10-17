@@ -577,12 +577,17 @@ impl ChooserState {
             let row_fill = ListRow::resolve_fill(theme, highlight, theme.panel, hover_t);
 
             let text_x = list_area.x + 1;
-            let mut x = text_x;
             let right = list_area.x + list_area.width;
-            let label = clip(item.label.as_str(), right.saturating_sub(x));
-            let label_w = crate::ui::cells(label) as u16;
-            paint::text(frame.buffer_mut(), x, text_row, label, theme.text, row_fill, selected);
-            x += label_w;
+            let label = clip(item.label.as_str(), right.saturating_sub(text_x));
+            let x = paint::text(
+                frame.buffer_mut(),
+                text_x,
+                text_row,
+                label,
+                theme.text,
+                row_fill,
+                selected,
+            );
             if let Some(detail) = &item.detail {
                 let detail = format!(" {detail}");
                 let w = right.saturating_sub(x);

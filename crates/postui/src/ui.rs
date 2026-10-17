@@ -545,7 +545,7 @@ fn draw_var_tooltip(
                 // source first, the name last.
                 let name = ellipsize(&tip.name, room);
                 let source_room = room.saturating_sub(cells(&name) + 2);
-                crate::paint::text(
+                let name_end = crate::paint::text(
                     buf,
                     x + 2,
                     row,
@@ -557,7 +557,7 @@ fn draw_var_tooltip(
                 if source_room > 0 {
                     crate::paint::text(
                         buf,
-                        x + 2 + cells(&name) as u16 + 2,
+                        name_end + 2,
                         row,
                         &ellipsize(&source, source_room),
                         theme.text_muted,
@@ -705,8 +705,12 @@ pub(crate) fn clip(s: &str, width: u16) -> &str {
     take_cells(s, width as usize)
 }
 
-/// The display cells `s` takes on screen: the crate's one width measure,
-/// for sizing a label and placing what follows it.
+/// The display cells `s` takes on screen, for sizing a label and placing
+/// what follows it: the crate's width measure, by grapheme as ratatui
+/// paints. Only code that must count per char like another program
+/// measures for itself — the body editor as edtui lays text out, the vim
+/// engine as Vim counts columns — plus the response view, which task #45
+/// decides; `lib.rs`'s `width_measure_test` holds the rest to this.
 pub(crate) fn cells(s: &str) -> usize {
     // ASCII graphemes are one byte each (`\r\n` aside, two controls): a
     // cell apiece, none for a control.
