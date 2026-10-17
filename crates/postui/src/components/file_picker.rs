@@ -689,20 +689,7 @@ impl FilePickerState {
         // part (what the user just chose) stays visible.
         let folder_y = title_y + 1;
         let folder_w = area.width.saturating_sub(4) as usize;
-        let shown = self.dir_label();
-        let shown: String = if shown.chars().count() > folder_w {
-            let tail: String = shown
-                .chars()
-                .rev()
-                .take(folder_w.saturating_sub(1))
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect();
-            format!("\u{2026}{tail}")
-        } else {
-            shown
-        };
+        let shown = crate::ui::ellipsize_start(&self.dir_label(), folder_w);
         paint::text(
             frame.buffer_mut(),
             area.x + 2,
@@ -749,7 +736,7 @@ impl FilePickerState {
                 frame.buffer_mut(),
                 list_area.x + 1,
                 list_area.y,
-                super::chooser::clip(err, list_area.width.saturating_sub(2)),
+                crate::ui::clip(err, list_area.width.saturating_sub(2)),
                 theme.warning,
                 theme.panel,
                 false,
@@ -810,7 +797,7 @@ impl FilePickerState {
                 frame.buffer_mut(),
                 label_x,
                 y,
-                super::chooser::clip(&label, label_w),
+                crate::ui::clip(&label, label_w),
                 theme.text,
                 fill,
                 selected,
@@ -1376,6 +1363,33 @@ mod tests {
         assert!(hits.rect_of(&crate::hit::Hit::ModalCancel).is_some());
         assert!(hits.rect_of(&crate::hit::Hit::PickerHidden).is_some());
         assert!(hits.rect_of(&crate::hit::Hit::ModalInput(0)).is_some());
+    }
+
+    /// A folder path in 2-cell glyphs is cut in cells: the line keeps its
+    /// deepest part behind `…` and stops inside the panel's margin.
+    #[test]
+    fn a_wide_folder_path_is_cut_in_cells() {
+        let dir = tree();
+        let deep = dir.path().join("本番環境".repeat(15));
+        std::fs::create_dir(&deep).unwrap();
+        let mut p = FilePickerState::new("Open project", PickerTarget::OpenProject, &deep, "");
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+        let area = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        let buf = terminal.backend().buffer();
+        let y = (area.y..area.bottom())
+            .find(|&y| buf[(area.x + 2, y)].symbol() == "\u{2026}")
+            .expect("the folder line is cut from the left");
+        // Every 2-cell glyph ends inside the margin's edge.
+        let edge = area.right().saturating_sub(2);
+        for x in 0..buf.area.right() {
+            let s = buf[(x, y)].symbol();
+            if !s.is_empty() && "本番環境".contains(s) {
+                assert!(x + 2 <= edge, "{s} at column {x} runs past {edge}");
+            }
+        }
     }
 
     #[test]

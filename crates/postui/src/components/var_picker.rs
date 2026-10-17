@@ -1,4 +1,3 @@
-use super::chooser::clip;
 use super::line_input::LineInput;
 use super::palette::fuzzy_match;
 use crate::action::Action;
@@ -6,7 +5,7 @@ use crate::components::toast::ToastKind;
 use crate::components::varmanager::VarEditOp;
 use crate::paint::{self, ControlState, FIELD_HEIGHT, ListRow, RowHighlight, TextField};
 use crate::theme::Theme;
-use crate::ui::one_line;
+use crate::ui::{cells, clip, one_line};
 use indexmap::IndexMap;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -621,17 +620,17 @@ impl VarPickerState {
                         );
                         x += Span::raw(&lock).width() as u16;
                     }
-                    let name_w = (entry.name.chars().count() as u16).min(right.saturating_sub(x));
+                    let name = clip(&entry.name, right.saturating_sub(x));
                     paint::text(
                         frame.buffer_mut(),
                         x,
                         text_row,
-                        &entry.name,
+                        name,
                         theme.text,
                         row_fill,
                         selected,
                     );
-                    x += name_w;
+                    x += cells(name) as u16;
                     if let Some(desc) = &entry.description {
                         let desc = format!(" {}", one_line(desc));
                         let w = right.saturating_sub(x);
@@ -645,7 +644,7 @@ impl VarPickerState {
                             row_fill,
                             false,
                         );
-                        x += clipped.chars().count() as u16;
+                        x += cells(clipped) as u16;
                     }
                     if entry.secret {
                         // Secret VALUES never render, per whether or not one
@@ -706,17 +705,19 @@ impl VarPickerState {
                         false,
                     );
                     x += 2;
-                    let key_w = (entry.key.chars().count() as u16).min(right.saturating_sub(x));
+                    // Option names are free text, so a wide key is cut
+                    // and measured in cells like the rest of the row.
+                    let key = clip(&entry.key, right.saturating_sub(x));
                     paint::text(
                         frame.buffer_mut(),
                         x,
                         text_row,
-                        &entry.key,
+                        key,
                         theme.text,
                         row_fill,
                         selected,
                     );
-                    x += key_w;
+                    x += cells(key) as u16;
                     // Rows stay lean — key plus muted description. The
                     // option's values live in the detail pane below, which
                     // follows the highlight.
@@ -1314,6 +1315,80 @@ mod tests {
         terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("add new option"), "{content}");
+    }
+
+    /// The x of the first `glyph` cell on `row`'s line, so a test can
+    /// check what sits at a cell offset from it.
+    fn find_on_row(buf: &ratatui::buffer::Buffer, row: Rect, glyph: &str) -> u16 {
+        (row.x..row.right())
+            .find(|&x| buf[(x, row.y)].symbol() == glyph)
+            .unwrap_or_else(|| panic!("{glyph} is not on the row"))
+    }
+
+    /// An option key in 2-cell glyphs is measured in cells: its
+    /// description starts after the key's cells, not on its second half.
+    #[test]
+    fn a_wide_option_key_s_description_starts_after_its_cells() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let entries = vec![SelectOption {
+            key: "本番".into(),
+            description: Some("admin".into()),
+            value: Some("x".into()),
+            selected: false,
+            values: None,
+        }];
+        let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+        let row = hits.rect_of(&crate::hit::Hit::VarPickerRow(0)).unwrap();
+        let buf = terminal.backend().buffer();
+        let at = find_on_row(buf, row, "本");
+        assert_eq!(buf[(at + 2, row.y)].symbol(), "番", "the key keeps its second glyph");
+        assert_eq!(buf[(at + 5, row.y)].symbol(), "a", "the description follows the key's 4 cells");
+    }
+
+    /// A variable name too long for its row is cut at the row's edge, like
+    /// the option keys, instead of running on over the panel's margin.
+    #[test]
+    fn a_long_variable_name_is_cut_at_its_row_s_edge() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let name = "n".repeat(120);
+        let mut p = VarPickerState::new(vec![var_entry(&name, None, Some("v"))], false);
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+        let row = hits.rect_of(&crate::hit::Hit::VarPickerRow(0)).unwrap();
+        let buf = terminal.backend().buffer();
+        for x in row.right()..buf.area.right() {
+            assert_ne!(buf[(x, row.y)].symbol(), "n", "the name ran on to column {x}");
+        }
+    }
+
+    /// A description in 2-cell glyphs is measured in cells: the value
+    /// after it starts where its cells end.
+    #[test]
+    fn a_wide_description_s_value_starts_after_its_cells() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut p = VarPickerState::new(vec![var_entry("host", Some("本番"), Some("v"))], false);
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+        let row = hits.rect_of(&crate::hit::Hit::VarPickerRow(0)).unwrap();
+        let buf = terminal.backend().buffer();
+        let at = find_on_row(buf, row, "本");
+        assert_eq!(buf[(at + 2, row.y)].symbol(), "番", "the description keeps its second glyph");
+        assert_eq!(
+            buf[(at + 5, row.y)].symbol(),
+            "=",
+            "the value follows the description's 4 cells"
+        );
     }
 
     /// Two selector options carrying member values, bob pre-selected —

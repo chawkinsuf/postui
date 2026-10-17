@@ -1,9 +1,9 @@
-use super::chooser::clip;
 use super::line_input::LineInput;
 use crate::action::{Action, CopyTarget};
 use crate::layout::PaneId;
 use crate::paint::{self, ControlState, FIELD_HEIGHT, ListRow, RowHighlight, TextField};
 use crate::theme::Theme;
+use crate::ui::clip;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;

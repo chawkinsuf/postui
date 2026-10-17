@@ -3,6 +3,7 @@ use super::palette::fuzzy_match;
 use crate::action::Action;
 use crate::paint::{self, ControlState, FIELD_HEIGHT, ListRow, RowHighlight, TextField};
 use crate::theme::Theme;
+use crate::ui::clip;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
@@ -580,7 +581,7 @@ impl ChooserState {
             let mut x = text_x;
             let right = list_area.x + list_area.width;
             let label = clip(item.label.as_str(), right.saturating_sub(x));
-            let label_w = (label.chars().count() as u16).min(right.saturating_sub(x));
+            let label_w = crate::ui::cells(label) as u16;
             paint::text(frame.buffer_mut(), x, text_row, label, theme.text, row_fill, selected);
             x += label_w;
             if let Some(detail) = &item.detail {
@@ -674,14 +675,6 @@ impl ChooserState {
 /// the stepper's keys hand back.
 fn keep_open(action: &Action) -> super::modal::ModalResult {
     super::modal::ModalResult { actions: vec![action.clone()], close: false, ..Default::default() }
-}
-
-/// Clips `s` to at most `width` columns on a char boundary.
-pub(super) fn clip(s: &str, width: u16) -> &str {
-    match s.char_indices().nth(width as usize) {
-        Some((byte, _)) => &s[..byte],
-        None => s,
-    }
 }
 
 #[cfg(test)]
@@ -881,6 +874,62 @@ mod tests {
         assert!(content.contains("svc"), "first label should render");
         assert!(content.contains("web"), "second label should render");
         assert!(content.contains("/tmp/svc"), "detail should render");
+    }
+
+    /// A label in 2-cell glyphs takes twice its chars in cells: the detail
+    /// starts where the label's cells end, not on its second half.
+    #[test]
+    fn a_wide_label_s_detail_starts_after_its_cells() {
+        let mut c = ChooserState::new(
+            "Projects",
+            vec![ChooserItem {
+                label: "本番".into(),
+                detail: Some("x".into()),
+                actions: vec![Action::Quit],
+                ..Default::default()
+            }],
+        );
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+        let row = hits.rect_of(&crate::hit::Hit::ChooserRow(0)).unwrap();
+        let buf = terminal.backend().buffer();
+        let text_x = row.x + 1;
+        assert_eq!(buf[(text_x + 2, row.y)].symbol(), "番", "the label keeps its second glyph");
+        assert_eq!(
+            buf[(text_x + 5, row.y)].symbol(),
+            "x",
+            "the detail follows the label's 4 cells"
+        );
+    }
+
+    /// A label too wide for its row is cut in cells, so it stops at the
+    /// row's right edge instead of running over the panel beside it.
+    #[test]
+    fn a_wide_label_is_cut_at_its_row_s_edge() {
+        let mut c = ChooserState::new(
+            "Projects",
+            vec![ChooserItem {
+                label: "本番環境".repeat(20),
+                actions: vec![Action::Quit],
+                ..Default::default()
+            }],
+        );
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+        let row = hits.rect_of(&crate::hit::Hit::ChooserRow(0)).unwrap();
+        let buf = terminal.backend().buffer();
+        // Every 2-cell glyph ends by the row's edge: one straddling it
+        // would leave only a blank cell past it.
+        for x in 0..buf.area.right() {
+            let s = buf[(x, row.y)].symbol();
+            if !s.is_empty() && "本番環境".contains(s) {
+                assert!(x + 2 <= row.right(), "{s} at column {x} runs past {}", row.right());
+            }
+        }
     }
 
     #[test]

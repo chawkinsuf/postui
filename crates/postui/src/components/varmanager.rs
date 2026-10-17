@@ -1793,7 +1793,7 @@ impl VarManager {
                     buf,
                     x0,
                     y - 1,
-                    super::chooser::clip(badge, inner_w),
+                    crate::ui::clip(badge, inner_w),
                     theme.text_muted,
                     theme.page,
                     false,
@@ -1807,7 +1807,7 @@ impl VarManager {
                     buf,
                     x0,
                     y,
-                    super::chooser::clip(NO_ENV_HINT, inner_w),
+                    crate::ui::clip(NO_ENV_HINT, inner_w),
                     theme.text_muted,
                     theme.page,
                     false,
@@ -1834,15 +1834,7 @@ impl VarManager {
             let (Some(cx), Some(cw)) = (cols.x.get(i), cols.w.get(i)) else {
                 break;
             };
-            text(
-                buf,
-                *cx,
-                y,
-                super::chooser::clip(&label, *cw),
-                theme.text_muted,
-                theme.panel,
-                true,
-            );
+            text(buf, *cx, y, crate::ui::clip(&label, *cw), theme.text_muted, theme.panel, true);
         }
         y += 1;
 
@@ -1924,7 +1916,7 @@ impl VarManager {
                             buf,
                             cx,
                             ry,
-                            super::chooser::clip(GHOST_LABEL, cw),
+                            crate::ui::clip(GHOST_LABEL, cw),
                             theme.text_muted,
                             bg,
                             false,
@@ -1955,7 +1947,7 @@ impl VarManager {
                     } else {
                         cw
                     };
-                    text(buf, cx, ry, super::chooser::clip(shown, cw), fg, bg, false);
+                    text(buf, cx, ry, crate::ui::clip(shown, cw), fg, bg, false);
                 }
                 hits.register(Rect::new(cx, ry, cw, 1), Hit::VmEntryCell { row: i, col });
             }
@@ -2006,7 +1998,7 @@ impl VarManager {
                 buf,
                 x0,
                 rows_bottom,
-                super::chooser::clip(&format!("{GLYPH_RADIO_ON} = selected for {scope}"), inner_w),
+                crate::ui::clip(&format!("{GLYPH_RADIO_ON} = selected for {scope}"), inner_w),
                 theme.text_muted,
                 theme.page,
                 false,
@@ -2225,15 +2217,7 @@ impl VarManager {
             } else {
                 format!("used by: {}", usage.join(", "))
             };
-            text(
-                buf,
-                x0,
-                y,
-                super::chooser::clip(&line, row_w),
-                theme.text_muted,
-                theme.page,
-                false,
-            );
+            text(buf, x0, y, crate::ui::clip(&line, row_w), theme.text_muted, theme.page, false);
         }
     }
 
@@ -2493,7 +2477,7 @@ fn paint_left_row(
             if is_unresolved(ctx, name) {
                 label_w = label_w.saturating_sub(2);
             }
-            text(buf, x, y, super::chooser::clip(name, label_w), theme.text, bg, false);
+            text(buf, x, y, crate::ui::clip(name, label_w), theme.text, bg, false);
             let mut badge_x = list.x + list.width;
             if is_unresolved(ctx, name) {
                 badge_x = badge_x.saturating_sub(2);
@@ -2513,7 +2497,7 @@ fn paint_left_row(
             // something stale) is selected here.
             let unresolved = active_selection(ctx, name).is_none();
             let label_w = if unresolved { width.saturating_sub(2) } else { width };
-            text(buf, x, y, super::chooser::clip(name, label_w), theme.text, bg, false);
+            text(buf, x, y, crate::ui::clip(name, label_w), theme.text, bg, false);
             if unresolved {
                 let badge_x = (list.x + list.width).saturating_sub(2);
                 text(buf, badge_x, y, GLYPH_UNRESOLVED, theme.error, bg, false);
@@ -2533,7 +2517,7 @@ fn draw_detail_placeholder(frame: &mut Frame, right: Rect, theme: &Theme) {
         buf,
         right.x + 2,
         right.y + 1,
-        super::chooser::clip("select a variable or selector", right.width.saturating_sub(3)),
+        crate::ui::clip("select a variable or selector", right.width.saturating_sub(3)),
         theme.text_muted,
         theme.page,
         false,
