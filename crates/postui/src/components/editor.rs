@@ -3335,9 +3335,8 @@ impl Editor {
 
         let cols = super::table_editor::columns(area.x, area.width);
         let name_w = cols.divider_x.saturating_sub(cols.name_x);
-        // From the value column to the pane's last cell, less the 2-cell
-        // gap between the value and the right-aligned source.
-        let room = area.right().saturating_sub(1).saturating_sub(cols.value_x).saturating_sub(2);
+        // From the value column to the pane's last cell.
+        let room = area.right().saturating_sub(1).saturating_sub(cols.value_x);
         let buf = frame.buffer_mut();
         for name in names {
             if y >= max_y {
@@ -3593,24 +3592,26 @@ fn json_body_highlights(lines: &Lines, theme: &Theme) -> Vec<edtui::Highlight> {
 }
 
 /// How a Vars-tab referenced row's `room` (in cells) splits between a
-/// value `value_w` wide and its `(source)` `source_w` wide: both whole
-/// when they fit; otherwise a side no wider than half keeps its width and
-/// the other takes the rest, else half each (the value the odd cell). A
-/// source left fewer than 3 cells can't show `(x)`, so it is dropped and
-/// the value takes the room. Returns `(value, source)` budgets.
+/// value `value_w` wide and its `(source)` `source_w` wide, with a 2-cell
+/// gap between them: both whole when they fit; otherwise a side no wider
+/// than half keeps its width and the other takes the rest, else half each
+/// (the value the odd cell). A source left fewer than 3 cells can't show
+/// `(x)`, so it is dropped, gap and all, and the value takes the whole
+/// room. Returns `(value, source)` budgets.
 fn split_room(room: usize, value_w: usize, source_w: usize) -> (usize, usize) {
-    if value_w + source_w <= room {
+    let shared = room.saturating_sub(2);
+    if value_w + source_w <= shared {
         return (value_w, source_w);
     }
-    let half = room / 2;
+    let half = shared / 2;
     let source = if source_w <= half {
         source_w
-    } else if value_w <= room - half {
-        room - value_w
+    } else if value_w <= shared - half {
+        shared - value_w
     } else {
         half
     };
-    if source < 3 { (room, 0) } else { (room - source, source) }
+    if source < 3 { (room, 0) } else { (shared - source, source) }
 }
 
 #[cfg(test)]
@@ -5927,12 +5928,13 @@ url = "https://api.example.com/users""#,
     /// no room for `(x)` is dropped, and the value takes it all.
     #[test]
     fn a_referenced_rows_room_is_shared_by_value_and_source() {
-        assert_eq!(split_room(30, 10, 12), (10, 12), "both fit: both whole");
-        assert_eq!(split_room(30, 1, 40), (1, 29), "a short value: the source takes the rest");
-        assert_eq!(split_room(30, 40, 6), (24, 6), "a short source keeps its width");
-        assert_eq!(split_room(30, 40, 40), (15, 15), "both long: half each");
-        assert_eq!(split_room(31, 40, 40), (16, 15), "the value takes the odd cell");
-        assert_eq!(split_room(4, 40, 40), (4, 0), "no room for `(x)`: no source");
+        // `room` includes the 2-cell gap kept between the two.
+        assert_eq!(split_room(32, 10, 12), (10, 12), "both fit: both whole");
+        assert_eq!(split_room(32, 1, 40), (1, 29), "a short value: the source takes the rest");
+        assert_eq!(split_room(32, 40, 6), (24, 6), "a short source keeps its width");
+        assert_eq!(split_room(32, 40, 40), (15, 15), "both long: half each");
+        assert_eq!(split_room(33, 40, 40), (16, 15), "the value takes the odd cell");
+        assert_eq!(split_room(6, 40, 40), (6, 0), "no room for `(x)`: no source, nor its gap");
         assert_eq!(split_room(0, 5, 5), (0, 0));
     }
 
