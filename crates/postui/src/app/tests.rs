@@ -14207,6 +14207,21 @@ fn clicking_a_scrolled_cell_edit_puts_the_caret_under_the_pointer() {
     );
 }
 
+/// A cell at rest shows a tab as its field does (`^I`, task #43), so the
+/// click that opens it lands on the char under the pointer: the `{` after
+/// the tab, not two chars early.
+#[test]
+fn a_cell_at_rest_shows_codes_so_its_opening_click_lands_under_the_pointer() {
+    let mut app = app_with_one_param();
+    app.editor.params.get_index_mut(0).unwrap().1.value = "a\tb{{x}}".into();
+    let screen = rendered_text(&mut app);
+    assert!(screen.contains("a^Ib{{x}}"), "the rest cell shows the tab's code");
+    let area = app.hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
+    app.handle_mouse(left_down(area.x + 4, area.y));
+    let edit = app.editor.table.editing.as_ref().expect("the click opened the cell");
+    assert_eq!(edit.input.cursor(), 3, "`a`, `^I` and `b` take the first four cells");
+}
+
 /// And the sweep that follows that click reads the same window: dragging
 /// across a scrolled cell selects the characters under the pointer.
 #[test]

@@ -961,8 +961,8 @@ struct Glyph {
     /// Its byte offset and length in the text.
     byte: usize,
     len: usize,
-    /// What a grapheme that takes no cell shows instead: its
-    /// [`vim_code`].
+    /// What a grapheme that takes no cell shows instead, so nothing in a
+    /// field is invisible: its [`crate::ui::code_of`].
     code: Option<String>,
     /// The cells it takes as shown: [`crate::ui::cells`]'s measure, or
     /// its code's.
@@ -983,23 +983,9 @@ fn glyphs(text: &str) -> Vec<Glyph> {
         .map(|(byte, g, width)| {
             let chars = g.chars().count();
             char += chars;
-            let code = (width == 0).then(|| vim_code(g));
+            let code = crate::ui::code_of(g, width);
             let width = code.as_ref().map_or(width, String::len);
             Glyph { char: char - chars, chars, byte, len: g.len(), code, width }
-        })
-        .collect()
-}
-
-/// How Vim shows `g`'s chars where they would take no cell (its
-/// `strtrans`): `^I` for a control char, `^?` for DEL, `<200b>` for the
-/// rest. A field shows a zero-width space or a tab this way, so nothing
-/// in it is invisible.
-fn vim_code(g: &str) -> String {
-    g.chars()
-        .map(|c| match c {
-            '\0'..='\x1f' => format!("^{}", char::from(c as u8 + 0x40)),
-            '\x7f' => "^?".to_string(),
-            _ => format!("<{:x}>", c as u32),
         })
         .collect()
 }

@@ -290,6 +290,27 @@ pub fn paint_var_tokens(
     paint_tokens(buf, row, text, columns, vars, theme, hits);
 }
 
+/// [`paint_var_tokens`] for a value drawn at `row.x` as [`crate::ui::shown`]
+/// shows it (a cell at rest that a click opens into a field): the tokens
+/// are the ones in `text` itself — what a send substitutes — measured as
+/// shown, so a char drawn as a code (`^I`) neither hides a token nor
+/// shifts one.
+pub fn paint_shown_tokens(
+    buf: &mut Buffer,
+    row: Rect,
+    text: &str,
+    vars: &VarView,
+    theme: &Theme,
+    hits: &mut HitMap,
+) {
+    use crate::ui::{cells, shown};
+    let columns = |bytes: Range<usize>| {
+        let start = row.x as usize + cells(&shown(&text[..bytes.start]));
+        Some(start..start + cells(&shown(&text[bytes])))
+    };
+    paint_tokens(buf, row, text, columns, vars, theme, hits);
+}
+
 /// [`paint_var_tokens`] for a field drawn
 /// [`LineInput::draw_line_windowed`]`(focused, _, row.width)` at `row.x`:
 /// the tokens are the ones in the field's own text — what a send
@@ -306,7 +327,8 @@ pub fn paint_field_tokens(
 ) {
     let columns = |bytes: Range<usize>| {
         let cols = input.span_columns(focused, row.width, bytes)?;
-        Some((row.x + cols.start) as usize..(row.x + cols.end) as usize)
+        let x = row.x as usize;
+        Some(x + cols.start as usize..x + cols.end as usize)
     };
     paint_tokens(buf, row, input.text(), columns, vars, theme, hits);
 }
@@ -542,6 +564,24 @@ mod tests {
         let hit = hits.rect_of(&Hit::VarToken("base_url".into())).expect("still a token");
         assert_eq!((hit.x, hit.width), (5, 14), "after `^I`, and `{{base_url^I}}` is 14 cells");
         assert_eq!(buf[(5, 0)].fg, theme.accent);
+    }
+
+    /// A value at rest, drawn as `ui::shown` shows it, has the same tokens
+    /// placed the same way as the field it opens into.
+    #[test]
+    fn shown_tokens_match_the_field_they_open_into() {
+        let theme = Theme::dark();
+        let row = Rect::new(3, 0, 30, 1);
+        let text = "\t{{base_url\t}}";
+        let mut rest = HitMap::default();
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 1));
+        paint_shown_tokens(&mut buf, row, text, &view(), &theme, &mut rest);
+        let mut field = HitMap::default();
+        let input = LineInput::new(text);
+        paint_field_tokens(&mut buf, row, &input, false, &view(), &theme, &mut field);
+        let hit = |hits: &HitMap| hits.rect_of(&Hit::VarToken("base_url".into()));
+        assert_eq!(hit(&rest), hit(&field));
+        assert_eq!(hit(&rest).map(|r| r.x), Some(5));
     }
 
     #[test]

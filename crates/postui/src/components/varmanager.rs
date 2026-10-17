@@ -1953,7 +1953,10 @@ impl VarManager {
                     } else {
                         cw
                     };
-                    text(buf, cx, ry, crate::ui::clip(shown, cw), fg, bg, false);
+                    // As its field shows it, so a click that opens the
+                    // cell lands on the char it points at.
+                    let shown = crate::ui::shown(shown);
+                    text(buf, cx, ry, crate::ui::clip(&shown, cw), fg, bg, false);
                 }
                 hits.register(Rect::new(cx, ry, cw, 1), Hit::VmEntryCell { row: i, col });
             }
@@ -2291,9 +2294,11 @@ impl VarManager {
                 input.draw_line_windowed(true, theme, inner_w)
             }
         } else {
-            let text_value = field_seed_text(ctx, name, field);
+            // As its field shows it, masked or not, so a click that opens
+            // the field lands on the char it points at: a dot per cell.
+            let text_value = crate::ui::shown(&field_seed_text(ctx, name, field)).into_owned();
             if masked {
-                Line::raw(text_value.chars().map(|_| '\u{25cf}').collect::<String>())
+                Line::raw("\u{25cf}".repeat(crate::ui::cells(&text_value)))
             } else if text_value.is_empty() {
                 Line::styled("(not set)", Style::default().fg(theme.text_muted))
             } else {
@@ -3394,6 +3399,29 @@ fields = ["user_id", "customer_id"]
         vm.form.revealed = true;
         let (content, _) = render(&mut vm, &ctx);
         assert!(content.contains("sk-live-secret"), "{content}");
+    }
+
+    /// At rest a secret is masked as its field masks it, a dot per cell of
+    /// what the field shows (a tab is `^I`, two), so a click that opens it
+    /// lands under the pointer; revealed, it shows the code (task #43).
+    #[test]
+    fn a_masked_secret_at_rest_has_a_dot_per_cell_its_field_shows() {
+        let (dir, _ctx) = fixture();
+        let mut secrets = IndexMap::new();
+        let mut qa_secrets = IndexMap::new();
+        qa_secrets.insert("api_key".to_string(), "sk\t日".to_string());
+        secrets.insert("qa".to_string(), qa_secrets);
+        fixtures::save_secrets(dir.path(), &secrets).unwrap();
+        let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "api_key");
+        let (content, _) = render(&mut vm, &ctx);
+        let dots = format!(" {} ", "\u{25cf}".repeat(6));
+        assert!(content.contains(&dots), "sk, ^I and a wide 日: {content}");
+        vm.form.revealed = true;
+        let (content, _) = render(&mut vm, &ctx);
+        assert!(content.contains("sk^I日"), "{content}");
     }
 
     #[test]

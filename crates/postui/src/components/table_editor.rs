@@ -1,6 +1,6 @@
 use super::DrawCtx;
 use super::line_input::LineInput;
-use super::var_tokens::{VarView, paint_field_tokens, paint_var_tokens};
+use super::var_tokens::{VarView, paint_field_tokens, paint_shown_tokens};
 use crate::hit::{Hit, HitMap};
 use crate::paint::{fill, text};
 use crate::theme::Theme;
@@ -778,7 +778,7 @@ impl TableEditorState {
         real: bool,
         ghost_label: Option<&str>,
     ) {
-        use crate::ui::{cells, clip};
+        use crate::ui::{cells, clip, shown};
         let theme = ctx.theme;
         let cols = columns(area.x, area.width);
         let editing_col = self.editing.as_ref().filter(|e| e.row == i).map(|e| e.col);
@@ -822,9 +822,11 @@ impl TableEditorState {
         }
 
         // What each cell shows at rest, cut to its room; the strike below
-        // covers exactly these.
-        let key_shown = clip(ghost_label.unwrap_or(key), name_w);
-        let value_shown = clip(&entry.value, value_w);
+        // covers exactly these. Shown as its field shows it, so a click
+        // that opens the cell lands on the char it points at.
+        let (key_text, value_text) = (shown(ghost_label.unwrap_or(key)), shown(&entry.value));
+        let key_shown = clip(&key_text, name_w);
+        let value_shown = clip(&value_text, value_w);
 
         if editing_col == Some(Col::Key) {
             let edit = self.editing.as_ref().expect("editing_col implies editing");
@@ -947,7 +949,7 @@ fn paint_cell_tokens(
 ) {
     let (name_x, name_w, value_x, value_w) = cols_span(cols, value_right);
     let mut paint = |cell: Rect, text: CellText| match text {
-        CellText::Stored(text) => paint_var_tokens(buf, cell, text, cell.x, vars, theme, hits),
+        CellText::Stored(text) => paint_shown_tokens(buf, cell, text, vars, theme, hits),
         CellText::Edit(input) => paint_field_tokens(buf, cell, input, true, vars, theme, hits),
     };
     if name_w > 0 {
@@ -958,8 +960,9 @@ fn paint_cell_tokens(
     }
 }
 
-/// What a cell drew, for its token treatment: its stored text, or the
-/// field editing it (drawn focused, windowed to the cell).
+/// What a cell drew, for its token treatment: its stored text (drawn as
+/// [`crate::ui::shown`] shows it), or the field editing it (drawn focused,
+/// windowed to the cell).
 enum CellText<'a> {
     Stored(&'a str),
     Edit(&'a LineInput),
