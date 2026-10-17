@@ -1,6 +1,6 @@
 use super::DrawCtx;
 use super::line_input::LineInput;
-use super::var_tokens::{VarView, paint_field_tokens, paint_shown_tokens};
+use super::var_tokens::{VarView, paint_field_tokens};
 use crate::hit::{Hit, HitMap};
 use crate::paint::{fill, text};
 use crate::theme::Theme;
@@ -778,7 +778,7 @@ impl TableEditorState {
         real: bool,
         ghost_label: Option<&str>,
     ) {
-        use crate::ui::{cells, clip, shown};
+        use crate::ui::{cells, clip};
         let theme = ctx.theme;
         let cols = columns(area.x, area.width);
         let editing_col = self.editing.as_ref().filter(|e| e.row == i).map(|e| e.col);
@@ -821,30 +821,36 @@ impl TableEditorState {
             None => {}
         }
 
-        // What each cell shows at rest, cut to its room; the strike below
-        // covers exactly these. Shown as its field shows it, so a click
-        // that opens the cell lands on the char it points at.
-        let (key_text, value_text) = (shown(ghost_label.unwrap_or(key)), shown(&entry.value));
-        let key_shown = clip(&key_text, name_w);
-        let value_shown = clip(&value_text, value_w);
+        // Each cell at rest is drawn by a field holding its text, as that
+        // field draws at rest: it looks the same once open, and the click
+        // that opens it lands on the char it points at. The strike below
+        // covers exactly what it drew.
+        let rest = |text: &str| LineInput::new(text);
+        let (key_rest, value_rest) = (rest(ghost_label.unwrap_or(key)), rest(&entry.value));
+        let drew = |input: &LineInput, w| cells(&input.visible_window(false, w)) as u16;
+        let paint_rest = |buf: &mut ratatui::buffer::Buffer, x, w, input: &LineInput, bg| {
+            let mut line = input.draw_line_at_rest(theme, fg, w);
+            line.style = Style::default().bg(bg);
+            buf.set_line(x, y, &line, w);
+        };
 
         if editing_col == Some(Col::Key) {
             let edit = self.editing.as_ref().expect("editing_col implies editing");
             Self::paint_cell_edit(buf, cols.name_x, y, name_w, &edit.input, bg, theme);
         } else {
-            text(buf, cols.name_x, y, key_shown, fg, name_bg, false);
+            paint_rest(buf, cols.name_x, name_w, &key_rest, name_bg);
         }
 
         if editing_col == Some(Col::Value) {
             let edit = self.editing.as_ref().expect("editing_col implies editing");
             Self::paint_cell_edit(buf, cols.value_x, y, value_w, &edit.input, bg, theme);
         } else {
-            text(buf, cols.value_x, y, value_shown, fg, value_bg, false);
+            paint_rest(buf, cols.value_x, value_w, &value_rest, value_bg);
             // The shadow hint trails the value on the same line, dim: it
             // is a note about that value, so it reads where the value
             // ends rather than on a row of its own.
             if let Some(hint) = hint {
-                let used = cells(value_shown) as u16;
+                let used = drew(&value_rest, value_w);
                 let hint_x = cols.value_x + used + 3;
                 let room = value_right.saturating_sub(hint_x);
                 if room > 0 {
@@ -859,12 +865,10 @@ impl TableEditorState {
             // where the clip did rather than run on across empty cells
             // (and, on a narrow pane, into whatever is drawn beside it).
             if editing_col != Some(Col::Key) {
-                let len = cells(key_shown) as u16;
-                Self::strike_cells(buf, cols.name_x, y, len);
+                Self::strike_cells(buf, cols.name_x, y, drew(&key_rest, name_w));
             }
             if editing_col != Some(Col::Value) {
-                let len = cells(value_shown) as u16;
-                Self::strike_cells(buf, cols.value_x, y, len);
+                Self::strike_cells(buf, cols.value_x, y, drew(&value_rest, value_w));
             }
         }
 
@@ -874,29 +878,20 @@ impl TableEditorState {
 
         hits.register(Rect::new(area.x, y, area.width, 1), Hit::TableRow(i));
         Self::register_cells(hits, cols_span(&cols, value_right), y, i);
-        // Token treatment over whatever each cell drew: the stored text,
+        // Token treatment over whatever each cell drew: the field at rest,
         // or for the cell under edit the live input — the URL bar's rule,
         // so a token stays a token while it is being typed. A left click
         // resolves past `VarToken` spans, so the caret move underneath is
         // undisturbed. The ghost's add label is not a value, so it gets
         // none.
-        let edited = |col: Col| {
-            self.editing
-                .as_ref()
-                .filter(|_| editing_col == Some(col))
-                .map(|e| CellText::Edit(&e.input))
+        let no_key = LineInput::default();
+        let cell = |col: Col, at_rest| match &self.editing {
+            Some(e) if editing_col == Some(col) => (&e.input, true),
+            _ => (at_rest, false),
         };
-        paint_cell_tokens(
-            buf,
-            hits,
-            &cols,
-            value_right,
-            y,
-            edited(Col::Key).unwrap_or(CellText::Stored(if real { key } else { "" })),
-            edited(Col::Value).unwrap_or(CellText::Stored(&entry.value)),
-            vars,
-            theme,
-        );
+        let key_cell = cell(Col::Key, if real { &key_rest } else { &no_key });
+        let value_cell = cell(Col::Value, &value_rest);
+        paint_cell_tokens(buf, hits, &cols, value_right, y, key_cell, value_cell, vars, theme);
         // The toggle owns the left gutter on every real row; the actions
         // are revealed by hover or the cursor. Both paint (and register)
         // last so they win over the cells underneath.
@@ -933,8 +928,9 @@ impl TableEditorState {
 }
 
 /// Tints the `{{tokens}}` in one drawn row's key and value cells (spec §7),
-/// registering each span over the `TableCell` hit beneath it. Both texts are
-/// whatever that row actually drew, so an empty string paints nothing.
+/// registering each span over the `TableCell` hit beneath it. Each cell is
+/// the field that drew it and whether it is open (drawn focused) or at
+/// rest, so an empty field paints nothing.
 #[allow(clippy::too_many_arguments)]
 fn paint_cell_tokens(
     buf: &mut ratatui::buffer::Buffer,
@@ -942,15 +938,14 @@ fn paint_cell_tokens(
     cols: &Columns,
     value_right: u16,
     y: u16,
-    key: CellText,
-    value: CellText,
+    key: (&LineInput, bool),
+    value: (&LineInput, bool),
     vars: &VarView,
     theme: &Theme,
 ) {
     let (name_x, name_w, value_x, value_w) = cols_span(cols, value_right);
-    let mut paint = |cell: Rect, text: CellText| match text {
-        CellText::Stored(text) => paint_shown_tokens(buf, cell, text, vars, theme, hits),
-        CellText::Edit(input) => paint_field_tokens(buf, cell, input, true, vars, theme, hits),
+    let mut paint = |cell: Rect, (input, open): (&LineInput, bool)| {
+        paint_field_tokens(buf, cell, input, open, vars, theme, hits)
     };
     if name_w > 0 {
         paint(Rect::new(name_x, y, name_w, 1), key);
@@ -958,14 +953,6 @@ fn paint_cell_tokens(
     if value_w > 0 {
         paint(Rect::new(value_x, y, value_w, 1), value);
     }
-}
-
-/// What a cell drew, for its token treatment: its stored text (drawn as
-/// [`crate::ui::shown`] shows it), or the field editing it (drawn focused,
-/// windowed to the cell).
-enum CellText<'a> {
-    Stored(&'a str),
-    Edit(&'a LineInput),
 }
 
 /// `(name_x, name_w, value_x, value_w)` for a row's two clickable cells:

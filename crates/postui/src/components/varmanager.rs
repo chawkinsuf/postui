@@ -1953,10 +1953,11 @@ impl VarManager {
                     } else {
                         cw
                     };
-                    // As its field shows it, so a click that opens the
-                    // cell lands on the char it points at.
-                    let shown = crate::ui::shown(shown);
-                    text(buf, cx, ry, crate::ui::clip(&shown, cw), fg, bg, false);
+                    // Drawn as its field draws at rest, so a click that
+                    // opens the cell lands on the char it points at.
+                    let mut line = LineInput::new(shown).draw_line_at_rest(theme, fg, cw);
+                    line.style = Style::default().bg(bg);
+                    buf.set_line(cx, ry, &line, cw);
                 }
                 hits.register(Rect::new(cx, ry, cw, 1), Hit::VmEntryCell { row: i, col });
             }
@@ -2294,15 +2295,15 @@ impl VarManager {
                 input.draw_line_windowed(true, theme, inner_w)
             }
         } else {
-            // As its field shows it, masked or not, so a click that opens
-            // the field lands on the char it points at: a dot per cell.
-            let text_value = crate::ui::shown(&field_seed_text(ctx, name, field)).into_owned();
+            // Drawn as its field draws at rest, masked or not, so a click
+            // that opens it lands on the char it points at.
+            let rest = LineInput::new(&field_seed_text(ctx, name, field));
             if masked {
-                Line::raw("\u{25cf}".repeat(crate::ui::cells(&text_value)))
-            } else if text_value.is_empty() {
+                rest.draw_line_windowed_masked(false, theme, inner_w)
+            } else if rest.text().is_empty() {
                 Line::styled("(not set)", Style::default().fg(theme.text_muted))
             } else {
-                Line::raw(text_value)
+                rest.draw_line_at_rest(theme, theme.text, inner_w)
             }
         };
         // The row is already clamped to `PROPERTY_MAX_W` before the slot

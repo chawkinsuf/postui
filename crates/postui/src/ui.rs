@@ -728,41 +728,6 @@ pub(crate) fn graphemes(s: &str) -> impl DoubleEndedIterator<Item = (usize, &str
     })
 }
 
-/// How Vim shows a grapheme's chars where they would take no cell (its
-/// `strtrans`): `^I` for a control char, `^?` for DEL, `<200b>` for the
-/// rest. `None` for a grapheme that takes a cell, which shows as itself.
-pub(crate) fn code_of(g: &str, cells: usize) -> Option<String> {
-    let code = |c: char| match c {
-        '\0'..='\x1f' => format!("^{}", char::from(c as u8 + 0x40)),
-        '\x7f' => "^?".to_string(),
-        _ => format!("<{:x}>", c as u32),
-    };
-    (cells == 0).then(|| g.chars().map(code).collect())
-}
-
-/// `s` as a field shows it, so nothing in it is invisible: each grapheme
-/// that takes no cell (a zero-width space, a tab) is replaced by its
-/// [`code_of`]. Where a value is painted that a click opens into a field,
-/// so it looks the same at rest and in edit.
-pub(crate) fn shown(s: &str) -> std::borrow::Cow<'_, str> {
-    use std::borrow::Cow;
-    let printable = match s.is_ascii() {
-        true => !s.bytes().any(|b| b.is_ascii_control()),
-        false => graphemes(s).all(|(_, _, w)| w > 0),
-    };
-    if printable {
-        return Cow::Borrowed(s);
-    }
-    let mut out = String::with_capacity(s.len());
-    for (_, g, w) in graphemes(s) {
-        match code_of(g, w) {
-            Some(code) => out.push_str(&code),
-            None => out.push_str(g),
-        }
-    }
-    Cow::Owned(out)
-}
-
 /// Marks the focused pane with a half-block accent bar down its left
 /// padding column, so Tab's current target is always visible at a glance.
 /// Painted after the pane's own draw, and glyph/fg only — each cell keeps
@@ -1049,17 +1014,6 @@ mod tests {
         }
         assert_eq!(cells("\u{2764}\u{fe0f}"), 2);
         assert_eq!(cells("e\u{301}"), 1);
-    }
-
-    /// `shown` replaces what takes no cell with Vim's code for it, and
-    /// leaves the rest alone (borrowed, with nothing to replace).
-    #[test]
-    fn shown_codes_only_what_takes_no_cell() {
-        assert_eq!(shown("a\tb\u{200b}c\u{7f}\u{85}"), "a^Ib<200b>c^?<85>");
-        assert_eq!(shown("x\r\ny"), "x^M^Jy");
-        for s in ["plain", "日本e\u{301}\u{2764}\u{fe0f}"] {
-            assert!(matches!(shown(s), std::borrow::Cow::Borrowed(t) if t == s), "{s:?}");
-        }
     }
 
     /// A cut keeps whole graphemes: a presentation-selector emoji is two
