@@ -156,9 +156,10 @@ mod source_scan {
     }
 
     /// The code lines of a file's `text`, numbered from 1: comments are
-    /// skipped, and an inline test module (`mod tests {`) at the bottom
-    /// ends the code. A declared one (`mod tests;`) is a file of its own,
-    /// so the code goes on past it.
+    /// skipped, and an inline test module (`mod tests {`) ends the code —
+    /// clippy's `items_after_test_module` keeps it at the bottom. A
+    /// declared one (`mod tests;`) is a file of its own, so the code goes
+    /// on past it.
     pub fn code_lines(text: &str) -> Vec<(usize, &str)> {
         let lines: Vec<&str> = text.lines().collect();
         let mut code = Vec::new();
