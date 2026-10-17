@@ -4569,8 +4569,9 @@ fn body_lines(
                 // One plain cell between the value and the pill, so the
                 // pill's hover fill never touches the text.
                 let value_piece = format!("{value} ");
-                // In cells, as painted and as `h_scroll` counts: a received
-                // value can hold wide text.
+                // In cells, as ratatui paints the row: a received value can
+                // hold wide text. (`crop_cols` still counts per char, so
+                // scrolled past an emoji sequence the two part: #45.)
                 let text_len = crate::ui::cells(&name_piece) + crate::ui::cells(&value_piece);
                 let glyph_hovered = hovered == Some(&crate::hit::Hit::HeaderCopy(i));
                 let glyph_style = if glyph_hovered {
