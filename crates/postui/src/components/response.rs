@@ -2297,6 +2297,8 @@ impl Response {
             _ => None,
         };
         self.state = state;
+        // The new view waits on no run: the old view's is dropped on arrival.
+        self.jq.pending = None;
         // The bar's text survives a new response, but nothing derived from
         // the old document does: the cached keys are for a body that is
         // gone, and an in-flight pool fetch will be dropped on arrival, so
@@ -2386,11 +2388,11 @@ impl Response {
         // The text just changed underneath any previous error/stale span —
         // `apply_jq` re-derives both against the new text right after this
         // call, so a leftover from before must not linger if it bails
-        // early (e.g. the new response isn't JSON).
+        // early (e.g. the new response isn't JSON). A run in flight is
+        // `apply_jq`'s to supersede: only a new filter does.
         self.jq.error = None;
         self.jq.stale = false;
         self.jq.note = None;
-        self.jq.pending = None;
     }
 
     /// Sets the bar's text and cursor together (a tee-up from elsewhere —
@@ -9455,6 +9457,17 @@ mod tests {
         r.drop_pending_jq();
         assert!(!late(&mut r, &req), "the forgotten run's result is dropped");
         assert!(r.apply_jq(".data", 0).is_some(), "the filter runs again");
+        // The editor writing back the filter already applied moves nothing on.
+        let mut r = ready(ITEMS);
+        let req = r.apply_jq(".data", 0).expect("background run");
+        r.set_jq_text(".data");
+        assert!(r.apply_jq(".data", 0).is_none(), "already applied");
+        assert!(late(&mut r, &req), "its run still lands");
+        // A new response waits on no run.
+        let mut r = ready(ITEMS);
+        r.apply_jq(".data", 0).expect("background run");
+        r.set_state(ResponseState::Ready(Box::new(data(ITEMS))), 9);
+        assert!(r.jq_bar().pending.is_none());
     }
 
     #[test]
