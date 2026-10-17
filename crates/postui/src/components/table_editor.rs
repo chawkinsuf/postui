@@ -822,25 +822,28 @@ impl TableEditorState {
             None => {}
         }
 
+        // What each cell shows at rest, cut to its room; the strike below
+        // covers exactly these.
+        let key_shown = clip(ghost_label.unwrap_or(key), name_w);
+        let value_shown = clip(&entry.value, value_w);
+
         if editing_col == Some(Col::Key) {
             let edit = self.editing.as_ref().expect("editing_col implies editing");
             Self::paint_cell_edit(buf, cols.name_x, y, name_w, &edit.input, bg, theme);
         } else {
-            let shown = ghost_label.unwrap_or(key);
-            text(buf, cols.name_x, y, clip(shown, name_w), fg, name_bg, false);
+            text(buf, cols.name_x, y, key_shown, fg, name_bg, false);
         }
 
         if editing_col == Some(Col::Value) {
             let edit = self.editing.as_ref().expect("editing_col implies editing");
             Self::paint_cell_edit(buf, cols.value_x, y, value_w, &edit.input, bg, theme);
         } else {
-            let shown = clip(&entry.value, value_w);
-            text(buf, cols.value_x, y, shown, fg, value_bg, false);
+            text(buf, cols.value_x, y, value_shown, fg, value_bg, false);
             // The shadow hint trails the value on the same line, dim: it
             // is a note about that value, so it reads where the value
             // ends rather than on a row of its own.
             if let Some(hint) = hint {
-                let used = cells(shown) as u16;
+                let used = cells(value_shown) as u16;
                 let hint_x = cols.value_x + used + 3;
                 let room = value_right.saturating_sub(hint_x);
                 if room > 0 {
@@ -855,11 +858,11 @@ impl TableEditorState {
             // where the clip did rather than run on across empty cells
             // (and, on a narrow pane, into whatever is drawn beside it).
             if editing_col != Some(Col::Key) {
-                let len = cells(clip(key, name_w)) as u16;
+                let len = cells(key_shown) as u16;
                 Self::strike_cells(buf, cols.name_x, y, len);
             }
             if editing_col != Some(Col::Value) {
-                let len = cells(clip(&entry.value, value_w)) as u16;
+                let len = cells(value_shown) as u16;
                 Self::strike_cells(buf, cols.value_x, y, len);
             }
         }

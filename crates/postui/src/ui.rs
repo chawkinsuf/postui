@@ -658,25 +658,31 @@ fn cut_rows(lines: &mut Vec<String>, rows: usize, max: usize) {
 
 /// `s` cut to at most `max` display cells, the last of which becomes `…`.
 pub(crate) fn ellipsize(s: &str, max: usize) -> String {
-    if cells(s) <= max {
+    use unicode_width::UnicodeWidthStr;
+    if s.width() <= max {
         return s.to_string();
     }
-    format!("{}\u{2026}", take_cells(s, max.saturating_sub(1)))
+    if max == 0 {
+        return String::new();
+    }
+    format!("{}\u{2026}", take_cells(s, max - 1))
 }
 
 /// `ellipsize` from the other end: `s` cut to at most `max` display
 /// cells, the first of which becomes `…`, so its end stays in view.
 pub(crate) fn ellipsize_start(s: &str, max: usize) -> String {
-    use unicode_segmentation::UnicodeSegmentation;
-    if cells(s) <= max {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if s.width() <= max {
         return s.to_string();
     }
-    let room = max.saturating_sub(1);
+    if max == 0 {
+        return String::new();
+    }
     let mut w = 0;
     let mut start = s.len();
-    for (i, g) in s.grapheme_indices(true).rev() {
-        w += grapheme_cells(g);
-        if w > room {
+    for (i, c) in s.char_indices().rev() {
+        w += c.width().unwrap_or(0);
+        if w > max - 1 {
             break;
         }
         start = i;
@@ -686,11 +692,15 @@ pub(crate) fn ellipsize_start(s: &str, max: usize) -> String {
 
 /// The longest prefix of `s` that fits in `max` display cells. A wide
 /// glyph that would straddle the edge is left out.
+///
+/// Widths are per char, the convention `LineInput` and [`wrap_cells`]
+/// share; an emoji with a presentation selector or a combining mark is
+/// measured the same way in all of them.
 pub(crate) fn take_cells(s: &str, max: usize) -> &str {
-    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthChar;
     let mut w = 0;
-    for (i, g) in s.grapheme_indices(true) {
-        w += grapheme_cells(g);
+    for (i, c) in s.char_indices() {
+        w += c.width().unwrap_or(0);
         if w > max {
             return &s[..i];
         }
@@ -698,17 +708,11 @@ pub(crate) fn take_cells(s: &str, max: usize) -> &str {
     s
 }
 
-/// The cells `s` takes when painted: [`take_cells`]'s measure.
+/// The cells `s` takes by [`take_cells`]'s measure, for placing what
+/// follows a cut.
 pub(crate) fn cells(s: &str) -> usize {
-    use unicode_segmentation::UnicodeSegmentation;
-    s.graphemes(true).map(grapheme_cells).sum()
-}
-
-/// One grapheme's cells as the buffer paints it (`Buffer::set_stringn`):
-/// ratatui's own width, and none for a control grapheme, which it skips.
-fn grapheme_cells(g: &str) -> usize {
-    use ratatui::buffer::CellWidth;
-    if g.contains(char::is_control) { 0 } else { g.cell_width() as usize }
+    use unicode_width::UnicodeWidthChar;
+    s.chars().map(|c| c.width().unwrap_or(0)).sum()
 }
 
 /// Marks the focused pane with a half-block accent bar down its left
@@ -972,19 +976,13 @@ mod tests {
         assert_eq!(take_cells("abc", 10), "abc");
     }
 
-    /// Cuts and measures go by grapheme, the way the buffer paints: an
-    /// emoji with its presentation selector is one 2-cell glyph, and a
-    /// combining mark stays with the letter it sits on.
+    /// No room, no text: not even the `…`, which would take a cell the
+    /// caller doesn't have.
     #[test]
-    fn cuts_and_measures_go_by_grapheme() {
-        let heart = "\u{2764}\u{fe0f}";
-        assert_eq!(cells(heart), 2);
-        assert_eq!(take_cells(&heart.repeat(3), 3), heart);
-        let cafe = "/x/cafe\u{301}";
-        assert_eq!(cells(cafe), 7);
-        assert_eq!(take_cells(cafe, 6), "/x/caf");
-        assert_eq!(ellipsize_start(cafe, 2), "\u{2026}e\u{301}");
-        assert_eq!(ellipsize(cafe, 6), "/x/ca\u{2026}");
+    fn ellipsizing_to_zero_cells_gives_nothing() {
+        assert_eq!(ellipsize("abc", 0), "");
+        assert_eq!(ellipsize_start("abc", 0), "");
+        assert_eq!(cells("本番ab"), 6);
     }
 
     /// The mirror of `ellipsize`: the end survives behind a leading `…`,
