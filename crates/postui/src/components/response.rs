@@ -6362,9 +6362,10 @@ mod tests {
     }
 
     /// A pill past column 65535 is far off screen; its column must not
-    /// wrap into the viewport as a rect over the value text.
+    /// wrap into the viewport as a rect over the value text, and scrolled
+    /// to, its rect lands on the painted pill.
     #[test]
-    fn a_pill_past_u16_columns_registers_no_rect() {
+    fn a_pill_past_u16_columns_registers_only_where_it_shows() {
         let theme = Theme::dark();
         let mut d = data("{}");
         // `x-big: ` + value + the spacer puts the pill at column 65546,
@@ -6386,6 +6387,16 @@ mod tests {
         let mut hits = crate::hit::HitMap::default();
         terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         assert_eq!(hits.rect_of(&crate::hit::Hit::HeaderCopy(0)), None);
+
+        // Scrolled to it, the pill shows 10 columns in and its rect sits
+        // on the painted glyph.
+        r.set_scroll_h(65_536);
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+        let rect = hits.rect_of(&crate::hit::Hit::HeaderCopy(0)).expect("the pill is registered");
+        assert_eq!(rect.width, 3, "{rect:?}");
+        let buf = terminal.backend().buffer();
+        assert_eq!(buf[(rect.x + 1, rect.y)].symbol(), crate::glyph::COPY_PILL.trim());
     }
 
     #[test]
