@@ -570,8 +570,7 @@ pub fn paint_chip_row(
     hover_t: f32,
 ) -> u16 {
     let mut x = start_x;
-    for chip in chips {
-        let (key, label, action) = chip;
+    for chip @ (key, label, action) in chips {
         // Total footprint is the same either way — 4 extra columns beyond
         // key+label — so layout math never has to branch on `action`: a
         // clickable chip is `" key "` (the tinted pill, +2) + `" label "`,

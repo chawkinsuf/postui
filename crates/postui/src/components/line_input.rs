@@ -338,10 +338,21 @@ impl LineInput {
     }
 
     /// Selects an inclusive `span` as the GUI selection
-    /// (`text::mouse::Span::gui_ends`).
+    /// (`text::mouse::Span::gui_ends`), widened to whole graphemes: the
+    /// mouse words go by chars, and a ZWJ emoji is several.
     fn select_span(&mut self, span: crate::text::mouse::Span) {
         let (anchor, caret) = span.gui_ends(|p| crate::text::Pos::new(p.row, p.col + 1));
-        (self.anchor, self.cursor) = (Some(anchor.col), caret.col);
+        let (anchor, caret) = (anchor.col, caret.col);
+        let glyphs = glyphs(&self.text);
+        let down = |i: usize| glyph_char(&glyphs, glyph_at(&glyphs, i));
+        let up = |i: usize| match glyphs.get(glyph_at(&glyphs, i)) {
+            Some(g) if g.char < i => g.char + g.chars,
+            _ => i,
+        };
+        (self.anchor, self.cursor) = match anchor <= caret {
+            true => (Some(down(anchor)), up(caret)),
+            false => (Some(up(anchor)), down(caret)),
+        };
         self.break_run();
     }
 
@@ -1912,6 +1923,9 @@ mod tests {
         let mut input = LineInput::new("cafe\u{301} bar");
         input.select_word_at(1);
         assert_eq!(input.selected_text().as_deref(), Some("cafe\u{301}"));
+        let mut input = LineInput::new(&format!("a {FAMILY} b"));
+        input.select_word_at(2);
+        assert_eq!(input.selected_text().as_deref(), Some(FAMILY));
     }
 
     /// A cursor the vim engine left inside a grapheme steps to its edges.
