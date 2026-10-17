@@ -5488,7 +5488,10 @@ impl App {
                                         crate::undo::StepLabel::variable(&name),
                                     );
                                     self.toasts.push(
-                                        format!("removed {name}'s value for env {env}"),
+                                        format!(
+                                            "removed {name}'s value for env {}",
+                                            self.env_name(&env)
+                                        ),
                                         ToastKind::Success,
                                     );
                                 }
@@ -5507,7 +5510,7 @@ impl App {
                                     crate::undo::StepLabel::variable(&name),
                                 );
                                 self.toasts.push(
-                                    format!("removed {name} from env {env}"),
+                                    format!("removed {name} from env {}", self.env_name(&env)),
                                     ToastKind::Success,
                                 );
                             }
@@ -5895,10 +5898,10 @@ impl App {
                         target: postui_core::varedit::PromoteTarget::Default,
                     })],
                 )];
-                if let Some(env) = self.active_env().map(str::to_string) {
+                if let Some(env) = self.active_env() {
                     choices.push((
                         'e',
-                        format!("Env value ({env})"),
+                        format!("Env value ({})", self.env_name(env)),
                         vec![Action::VarStruct(VarStructOp::Promote {
                             name: name.clone(),
                             target: postui_core::varedit::PromoteTarget::Env,
@@ -6058,6 +6061,15 @@ impl App {
             }
 
             // -- Task 17: in-context flows (spec §6) --
+            Action::PickOption { selector, option } => {
+                // In the environment active now (a shared selector's
+                // selection ignores it).
+                let env = self.active_env().map(str::to_string).unwrap_or_default();
+                let toast = self.selection_toast(&selector, &option);
+                self.apply(Action::VarEdit(VarEditOp::SelectOption { env, selector, option }));
+                self.toasts.push(toast, ToastKind::Success);
+                true
+            }
             Action::OpenNewOptionInlinePrompt { owner } => {
                 use crate::components::modal::{NEW_OPTION_FIELD, PromptField};
                 // One input per selector field, so the option is whole
@@ -6179,11 +6191,7 @@ impl App {
                     Ok(()) => {
                         self.set_selection_for(&env, &owner, &key);
                         self.record_project_step(t, crate::undo::StepLabel::variable(&owner));
-                        let where_label = if shared { "all environments" } else { &env };
-                        self.toasts.push(
-                            format!("{owner} \u{2192} {key} ({where_label})"),
-                            ToastKind::Success,
-                        );
+                        self.toasts.push(self.selection_toast(&owner, &key), ToastKind::Success);
                     }
                     Err(msg) => self.toasts.push(msg, ToastKind::Error),
                 }
@@ -7484,9 +7492,7 @@ impl App {
         // With no options yet the picker opens on its "add new option…"
         // ghost row alone — the user chooses to create, never gets walked
         // into a prompt.
-        self.push_modal(Modal::VarPicker(VarPickerState::new_select(
-            options, name, selector, env_key,
-        )));
+        self.push_modal(Modal::VarPicker(VarPickerState::new_select(options, name, selector)));
         true
     }
 
@@ -7621,7 +7627,7 @@ impl App {
             let mut lines: Vec<String> = Vec::new();
             for env in self.environments().to_vec() {
                 if let Some(v) = self.secrets().get(&env).and_then(|m| m.get(&name)) {
-                    lines.push(format!("{env}: {v}"));
+                    lines.push(format!("{}: {v}", self.env_name(&env)));
                 }
             }
             let body = if lines.is_empty() {
@@ -7649,7 +7655,7 @@ impl App {
             for env in self.environments().to_vec() {
                 let env_data = self.env_data_for(&env);
                 if env_data.values.contains_key(&name) {
-                    envs_with_values.push(env);
+                    envs_with_values.push(self.env_name(&env));
                 }
             }
             let body = if envs_with_values.is_empty() {
@@ -8100,6 +8106,15 @@ impl App {
     /// global selection) live in `variables.toml`, not per environment.
     fn selector_is_shared(&self, selector: &str) -> bool {
         self.variables().selectors.get(selector).is_some_and(|d| d.shared)
+    }
+
+    /// The `selector → option (where)` toast a selection made here says.
+    fn selection_toast(&self, selector: &str, option: &str) -> String {
+        let scope = self
+            .project()
+            .map(|p| crate::components::varmanager::selection_scope(p, selector))
+            .unwrap_or_default();
+        format!("{selector} \u{2192} {option} ({scope})")
     }
 
     /// `selector`'s options as they currently stand, from wherever they

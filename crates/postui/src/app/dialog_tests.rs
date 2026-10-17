@@ -692,7 +692,6 @@ fn g_and_gg_move_the_variable_pickers_option_cursor() {
         vec![option("alice", false), option("bob", true), option("carol", false)],
         "user".into(),
         "identity".into(),
-        "qa".into(),
     )));
     draw(&mut app);
     let selected = |app: &App| match app.modals.top() {

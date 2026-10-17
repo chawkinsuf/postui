@@ -998,6 +998,13 @@ pub enum Action {
     OpenNewOptionInlinePrompt {
         owner: String,
     },
+    /// `Enter` on a `SelectOption` picker row: selects `option` of
+    /// `selector` in the active environment (in every one, for a shared
+    /// selector) and toasts where the choice holds.
+    PickOption {
+        selector: String,
+        option: String,
+    },
     /// `e` on a highlighted `SelectOption` row: opens the value(s)/
     /// description edit prompt, prefilled from the option's current
     /// content — `values` is `{"value": ...}` for a plain variable option,

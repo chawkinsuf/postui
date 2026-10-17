@@ -23377,6 +23377,94 @@ fn every_user_facing_env_name_is_the_display_name() {
     assert!(matches!(kind, PromptKind::SecretValue { env, .. } if env == "qa"), "{kind:?}");
 }
 
+/// #35: the toasts and dialogs #33 left say the display name too — the
+/// removal toasts, the promote choice, both secret-flip bodies and the
+/// two selection toasts. The slug stays the key each one writes under.
+#[test]
+fn the_remaining_env_names_are_the_display_name() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let toml = dir.path().join("project.toml");
+    let meta = std::fs::read_to_string(&toml).unwrap();
+    std::fs::write(&toml, format!("{meta}\n[environment.qa]\nname = \"QA Tenant\"\n")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let toast = |app: &App| app.toasts.last_message().unwrap_or_default().to_string();
+    let confirm_body = |app: &App| match app.modals.top() {
+        Some(Modal::Confirm { body, .. }) => body.clone(),
+        _ => panic!("expected a Confirm modal"),
+    };
+
+    // The selector pick toast, written under the slug.
+    focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
+    app.update(Action::OpenVarPicker { completing: false });
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(toast(&app), "user \u{2192} alice (QA Tenant)");
+    assert_eq!(app.proj().selections_for("qa")["user"], "alice");
+
+    // The add-new-option toast.
+    app.update(Action::ConfirmNewOptionInline {
+        owner: "user".into(),
+        key: "carol".into(),
+        values: indexmap::IndexMap::from([("user".to_string(), "3003".to_string())]),
+        description: None,
+    });
+    assert_eq!(toast(&app), "user \u{2192} carol (QA Tenant)");
+
+    // The promote choice.
+    app.update(Action::PromptPromoteVar { name: "base_url".into() });
+    let Some(Modal::Confirm { choices, .. }) = app.modals.top() else {
+        panic!("expected the promote choice");
+    };
+    assert!(choices.iter().any(|(_, label, _)| label == "Env value (QA Tenant)"), "{choices:?}");
+    app.modals.pop();
+
+    // Marking secret lists the environments whose values move.
+    app.update(Action::ToggleSecretVar { name: "base_url".into() });
+    assert!(confirm_body(&app).ends_with("env files: QA Tenant."), "{}", confirm_body(&app));
+    app.modals.pop();
+
+    // Un-marking lists each environment's value to copy.
+    app.update(Action::VarEdit(VarEditOp::SetSecretValue {
+        env: "qa".into(),
+        name: "api_key".into(),
+        value: "sk-live".into(),
+    }));
+    app.update(Action::ToggleSecretVar { name: "api_key".into() });
+    assert!(confirm_body(&app).ends_with("\nQA Tenant: sk-live"), "{}", confirm_body(&app));
+    app.modals.pop();
+
+    // The removal toasts, for a secret and for a plain value.
+    let remove = |name: &str| Action::RemoveVarValue {
+        name: name.into(),
+        destination: crate::action::ExtractDestination::ActiveEnv,
+    };
+    app.update(remove("api_key"));
+    assert_eq!(toast(&app), "removed api_key's value for env QA Tenant");
+    app.update(remove("base_url"));
+    assert_eq!(toast(&app), "removed base_url from env QA Tenant");
+}
+
+/// #35 (the user's call): a shared selector's choice holds in every
+/// environment, so its pick toast says so, as the add-new-option toast
+/// already did — with or without an active environment.
+#[test]
+fn a_shared_selector_pick_toasts_all_environments() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = shared_locale_app(dir.path());
+    for env in [Some("qa"), None] {
+        app.update(Action::SwitchEnv(env.map(str::to_string)));
+        focus_url_with_cursor_on(&mut app, "https://x/{{lang}}", "{{lang}}");
+        app.update(Action::OpenVarPicker { completing: false });
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            app.toasts.last_message(),
+            Some("locale \u{2192} en (all environments)"),
+            "env {env:?}"
+        );
+    }
+}
+
 /// A secret's pills run reveal, copy, edit: reveal is the rare, dynamic
 /// one and sits in the drop-first slot at the far left, so copy and edit
 /// stay put whether or not it is offered.

@@ -4270,7 +4270,6 @@ mod tests {
             }],
             "user".into(),
             "user".into(),
-            "qa".into(),
         )));
         let chips = spelled(m.footer_chips().expect("the picker supplies chips"));
         assert!(
