@@ -736,7 +736,7 @@ impl FilePickerState {
                 frame.buffer_mut(),
                 list_area.x + 1,
                 list_area.y,
-                super::chooser::clip(err, list_area.width.saturating_sub(2)),
+                crate::ui::clip(err, list_area.width.saturating_sub(2)),
                 theme.warning,
                 theme.panel,
                 false,
@@ -797,7 +797,7 @@ impl FilePickerState {
                 frame.buffer_mut(),
                 label_x,
                 y,
-                super::chooser::clip(&label, label_w),
+                crate::ui::clip(&label, label_w),
                 theme.text,
                 fill,
                 selected,
@@ -1382,12 +1382,13 @@ mod tests {
         let y = (area.y..area.bottom())
             .find(|&y| buf[(area.x + 2, y)].symbol() == "\u{2026}")
             .expect("the folder line is cut from the left");
-        for x in area.right().saturating_sub(2)..buf.area.right() {
+        // Every 2-cell glyph ends inside the margin's edge.
+        let edge = area.right().saturating_sub(2);
+        for x in 0..buf.area.right() {
             let s = buf[(x, y)].symbol();
-            assert!(
-                s.is_empty() || !"本番環境".contains(s),
-                "the path ran on to column {x}: {s:?}"
-            );
+            if !s.is_empty() && "本番環境".contains(s) {
+                assert!(x + 2 <= edge, "{s} at column {x} runs past {edge}");
+            }
         }
     }
 

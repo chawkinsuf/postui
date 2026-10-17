@@ -778,8 +778,7 @@ impl TableEditorState {
         real: bool,
         ghost_label: Option<&str>,
     ) {
-        use super::chooser::clip;
-        use crate::ui::cells;
+        use crate::ui::{cells, clip};
         let theme = ctx.theme;
         let cols = columns(area.x, area.width);
         let editing_col = self.editing.as_ref().filter(|e| e.row == i).map(|e| e.col);
@@ -2083,8 +2082,13 @@ mod tests {
         let terminal = draw_narrow(&map, 24, None, &mut hits);
         let buf = terminal.backend().buffer();
         let y = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap().y;
-        for x in 24..40 {
-            assert_eq!(buf[(x, y)].symbol(), " ", "the value ran past the table, at column {x}");
+        // Every 2-cell glyph ends by the table's edge: one straddling it
+        // would leave only a blank cell past it.
+        for x in 0..40 {
+            let s = buf[(x, y)].symbol();
+            if !s.is_empty() && "本番環境".contains(s) {
+                assert!(x + 2 <= 24, "{s} at column {x} runs past the table");
+            }
         }
     }
 

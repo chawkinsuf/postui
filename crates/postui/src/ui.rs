@@ -708,6 +708,11 @@ pub(crate) fn take_cells(s: &str, max: usize) -> &str {
     s
 }
 
+/// [`take_cells`] for a `u16` room, the width a layout hands a painter.
+pub(crate) fn clip(s: &str, width: u16) -> &str {
+    take_cells(s, width as usize)
+}
+
 /// The cells `s` takes by [`take_cells`]'s measure, for placing what
 /// follows a cut.
 pub(crate) fn cells(s: &str) -> usize {

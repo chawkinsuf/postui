@@ -6040,12 +6040,13 @@ mod tests {
             .expect("the step pill is drawn");
         let row: String = (0..80).map(|x| buf[(x, pill.y)].symbol()).collect();
         assert!(row.contains('\u{2026}'), "the URL is ellipsized: {row}");
-        for x in pill.x.saturating_sub(1)..80 {
+        // Every 2-cell glyph ends a cell short of the pill.
+        let edge = pill.x.saturating_sub(1);
+        for x in 0..80 {
             let s = buf[(x, pill.y)].symbol();
-            assert!(
-                s.is_empty() || !"例え本番環境".contains(s),
-                "the URL ran on to column {x}: {row}"
-            );
+            if !s.is_empty() && "例え本番環境".contains(s) {
+                assert!(x + 2 <= edge, "{s} at column {x} runs past {edge}: {row}");
+            }
         }
     }
 

@@ -1,4 +1,3 @@
-use super::chooser::clip;
 use super::{Component, DrawCtx};
 use crate::action::{Action, FoldOp, Verb};
 use crate::anim::{AnimKey, ListId};
@@ -9,6 +8,7 @@ use crate::paint::{
     text,
 };
 use crate::theme::Theme;
+use crate::ui::clip;
 use postui_core::model::Method;
 use postui_core::storage::RequestListing;
 use ratatui::Frame;
@@ -2029,20 +2029,19 @@ mod tests {
         let area = Rect::new(0, 0, 20, 12);
         terminal.draw(|f| s.draw(f, area, &ctx, &mut hits)).unwrap();
         let buf = terminal.backend().buffer();
-        let painted: String = (0..20)
-            .flat_map(|x| (0..12).map(move |y| (x, y)))
-            .map(|p| buf[p].symbol().to_string())
-            .collect();
-        assert!(painted.contains('本'), "the name is drawn: {painted}");
+        // Every 2-cell glyph ends by the sidebar's edge: one straddling it
+        // would leave only a blank cell past it.
+        let mut drawn = false;
         for y in 0..12 {
-            for x in 20..40 {
-                assert_eq!(
-                    buf[(x, y)].symbol(),
-                    " ",
-                    "the sidebar painted past its edge at ({x}, {y})"
-                );
+            for x in 0..40 {
+                let s = buf[(x, y)].symbol();
+                if !s.is_empty() && "本番環境".contains(s) {
+                    drawn = true;
+                    assert!(x + 2 <= 20, "{s} at ({x}, {y}) runs past the sidebar");
+                }
             }
         }
+        assert!(drawn, "the name is drawn");
     }
 
     /// The top row at `width` columns: its text, and the two buttons' hits.

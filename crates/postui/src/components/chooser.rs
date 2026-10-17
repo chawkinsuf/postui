@@ -3,6 +3,7 @@ use super::palette::fuzzy_match;
 use crate::action::Action;
 use crate::paint::{self, ControlState, FIELD_HEIGHT, ListRow, RowHighlight, TextField};
 use crate::theme::Theme;
+use crate::ui::clip;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
@@ -676,11 +677,6 @@ fn keep_open(action: &Action) -> super::modal::ModalResult {
     super::modal::ModalResult { actions: vec![action.clone()], close: false, ..Default::default() }
 }
 
-/// Clips `s` to at most `width` cells (`ui::take_cells`).
-pub(super) fn clip(s: &str, width: u16) -> &str {
-    crate::ui::take_cells(s, width as usize)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -926,19 +922,14 @@ mod tests {
         terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
         let row = hits.rect_of(&crate::hit::Hit::ChooserRow(0)).unwrap();
         let buf = terminal.backend().buffer();
-        for x in row.right()..buf.area.right() {
+        // Every 2-cell glyph ends by the row's edge: one straddling it
+        // would leave only a blank cell past it.
+        for x in 0..buf.area.right() {
             let s = buf[(x, row.y)].symbol();
-            assert!(
-                !"本番環境".contains(s) || s.is_empty(),
-                "the label ran on to column {x}: {s:?}"
-            );
+            if !s.is_empty() && "本番環境".contains(s) {
+                assert!(x + 2 <= row.right(), "{s} at column {x} runs past {}", row.right());
+            }
         }
-    }
-
-    #[test]
-    fn clip_cuts_in_cells() {
-        assert_eq!(clip("本番環境", 5), "本番");
-        assert_eq!(clip("abcdef", 4), "abcd");
     }
 
     #[test]

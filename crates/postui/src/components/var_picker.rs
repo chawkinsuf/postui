@@ -1,4 +1,3 @@
-use super::chooser::clip;
 use super::line_input::LineInput;
 use super::palette::fuzzy_match;
 use crate::action::Action;
@@ -6,7 +5,7 @@ use crate::components::toast::ToastKind;
 use crate::components::varmanager::VarEditOp;
 use crate::paint::{self, ControlState, FIELD_HEIGHT, ListRow, RowHighlight, TextField};
 use crate::theme::Theme;
-use crate::ui::{cells, one_line};
+use crate::ui::{cells, clip, one_line};
 use indexmap::IndexMap;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
