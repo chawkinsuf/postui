@@ -3484,7 +3484,7 @@ fn draw_dropdown(
     state: &DropdownState,
 ) {
     let max_label =
-        state.items.iter().map(|item| item.label.chars().count() as u16).max().unwrap_or(0);
+        state.items.iter().map(|item| crate::ui::cells(&item.label) as u16).max().unwrap_or(0);
     // The popup floats over undimmed live content, so it needs real
     // breathing room: 2 columns of panel each side of the rows and a blank
     // margin row above and below, on top of the 1-cell panel edge —
@@ -3603,7 +3603,7 @@ fn draw_dropdown(
             frame.buffer_mut(),
             row_area.x,
             row_area.y,
-            &format!("{marker}{label}"),
+            crate::ui::clip(&format!("{marker}{label}"), row_area.width),
             fg,
             row_fill,
             selected,
@@ -4933,6 +4933,59 @@ mod tests {
             (0..5).map(|i| hits.rect_of(&crate::hit::Hit::DropdownRow(i)).unwrap()).collect();
         for w in rows.windows(2) {
             assert_eq!(w[1].y, w[0].y + 1, "rows sit on a dense, consecutive 1-line pitch");
+        }
+    }
+
+    #[test]
+    fn dropdown_sizes_its_rows_by_the_cells_a_wide_label_takes() {
+        // 14 CJK chars take 28 cells: a popup sized by its char count
+        // gives the row 20 and the name paints past the panel.
+        let label = "本番環境本番環境本番環境本番";
+        let screen = Rect::new(0, 0, 80, 24);
+        let state = DropdownState {
+            anchor: Rect::new(10, 5, 8, 1),
+            items: vec![MenuItem::new(label, Action::Render)],
+            selected: 0,
+            current: Some(0),
+        };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| draw_dropdown(f, screen, &Theme::dark(), &mut hits, None, &state))
+            .unwrap();
+        let row = hits.rect_of(&crate::hit::Hit::DropdownRow(0)).unwrap();
+        assert!(row.width >= 2 + 28, "the marker and all 28 cells fit, got {}", row.width);
+        let last = &terminal.backend().buffer()[(row.x + 2 + 26, row.y)];
+        assert_eq!(last.symbol(), "番", "the name's last glyph is painted inside its row");
+    }
+
+    #[test]
+    fn dropdown_cuts_a_row_that_does_not_fit_at_its_right_edge() {
+        // A screen too narrow for the label: the popup clamps to the
+        // screen, and the row must stop at its own edge rather than
+        // paint over the padding, the ring and the page.
+        let screen = Rect::new(0, 0, 20, 24);
+        let state = DropdownState {
+            anchor: Rect::new(2, 5, 8, 1),
+            items: vec![MenuItem::new("abcdefghijklmnopqrstuvwxyz", Action::Render)],
+            selected: 0,
+            current: None,
+        };
+        let backend = TestBackend::new(20, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| draw_dropdown(f, screen, &Theme::dark(), &mut hits, None, &state))
+            .unwrap();
+        let row = hits.rect_of(&crate::hit::Hit::DropdownRow(0)).unwrap();
+        let buffer = terminal.backend().buffer();
+        for x in row.right()..screen.right() {
+            let symbol = buffer[(x, row.y)].symbol();
+            assert!(
+                !symbol.chars().any(|c| c.is_ascii_lowercase()),
+                "column {x} past the row's edge shows label text {symbol:?}"
+            );
         }
     }
 
