@@ -46,7 +46,9 @@ enum Host {
     Real(Option<Result<arboard::Clipboard, String>>),
     /// A test's clipboard: no OS clipboard, and OSC 52 sequences collect
     /// here instead of reaching the terminal that runs the tests, which
-    /// would put the test's value on the developer's clipboard.
+    /// would put the test's value on the developer's clipboard. A
+    /// `clipboard_cmd` still runs: it is a command the test configured
+    /// itself, usually a `cat >` into a temp file it reads back.
     #[cfg(any(test, feature = "test-util"))]
     Offline(Vec<u8>),
 }
@@ -60,7 +62,11 @@ impl Clipboard {
             // test can't reach the host whichever path built its App. Keyed
             // on `cfg(test)`, not the `test-util` feature: `cargo test`
             // builds the real binary with `test-util` on too, and that
-            // binary must keep its clipboard.
+            // binary must keep its clipboard. What that gives up:
+            // integration tests (no `cfg(test)`) get the real host here, and
+            // no test constructor can fix that for them, because most build
+            // their App through `App::with_root`, the production path. One
+            // that copies installs `Self::new_for_test` first.
             #[cfg(test)]
             host: Host::Offline(Vec::new()),
             #[cfg(not(test))]
@@ -100,11 +106,15 @@ impl Clipboard {
     }
 
     /// The OSC 52 bytes a test's clipboard collected in place of the
-    /// terminal; empty for a real one.
+    /// terminal. Panics on a real clipboard, which wrote them to the
+    /// terminal: an empty answer there would pass a "nothing was sent"
+    /// check that is false.
     #[cfg(any(test, feature = "test-util"))]
     pub fn osc52_sent(&self) -> &[u8] {
         match &self.host {
-            Host::Real(_) => &[],
+            Host::Real(_) => {
+                panic!("a real clipboard sends OSC 52 to the terminal; install new_for_test")
+            }
             Host::Offline(sent) => sent,
         }
     }
