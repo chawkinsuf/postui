@@ -3465,14 +3465,18 @@ impl Editor {
                 name_style = name_style.add_modifier(Modifier::CROSSED_OUT);
                 value_style = value_style.add_modifier(Modifier::CROSSED_OUT);
             }
-            let name_piece = format!("  {name}: ");
+            // The indent is its own span, so a strike starts on the name's
+            // first char, not on the blanks in front of it.
+            let indent = "  ";
+            let name_piece = format!("{name}: ");
             // One plain cell between the value and the pill, so the pill's
             // hover fill never touches the text.
             let value_piece = format!("{value} ");
             // Columns stay usize (the token painter and `register_cols`
             // clip them to the row): a long name or value would wrap a bare
             // `as u16` back over the text.
-            let value_col = usize::from(area.x) + crate::ui::cells(&name_piece);
+            let value_col =
+                usize::from(area.x) + crate::ui::cells(indent) + crate::ui::cells(&name_piece);
             let pill_col = value_col + crate::ui::cells(&value_piece);
             let glyph_hovered = ctx.hovered == Some(&crate::hit::Hit::AutoHeaderCopy(i));
             let glyph_style = if glyph_hovered {
@@ -3481,6 +3485,7 @@ impl Editor {
                 Style::default().fg(theme.accent)
             };
             let mut spans = vec![
+                Span::styled(indent, base),
                 Span::styled(name_piece, name_style),
                 Span::styled(value_piece, value_style),
                 Span::styled(crate::glyph::COPY_PILL, glyph_style),
@@ -6362,6 +6367,34 @@ url = "https://api.example.com/users""#,
         assert!(format!("{buf:?}").contains("Accept: text/html"), "the default is drawn");
         assert!(!buffer_has_crossed_out(buf, "text/html"), "and sent");
         assert!(buffer_has_crossed_out(buf, "*/*"), "the client's Accept it replaces");
+    }
+
+    /// A struck auto row's strike starts on the name's first char: the
+    /// indent in front of it is not struck.
+    #[test]
+    fn a_struck_auto_row_strikes_from_the_names_first_char() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.url = LineInput::new("https://example.com/p");
+        app.editor
+            .headers
+            .insert("Accept".into(), Entry { value: "text/plain".into(), enabled: true });
+        app.update(Action::Render);
+
+        let mut terminal = Terminal::new(TestBackend::new(140, 70)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let struck =
+            |x: u16, y: u16| buf.cell((x, y)).unwrap().modifier.contains(Modifier::CROSSED_OUT);
+        let width = buf.area.width;
+        let (x, y) = (0..buf.area.height)
+            .find_map(|y| {
+                let line: String = (0..width).map(|x| buf.cell((x, y)).unwrap().symbol()).collect();
+                line.find("Accept: */*").map(|i| (line[..i].chars().count() as u16, y))
+            })
+            .expect("the client's Accept row is drawn");
+        assert!(struck(x, y), "the name's first char is struck");
+        assert!(!struck(x - 1, y) && !struck(x - 2, y), "the indent is not");
     }
 
     /// A struck URL `Authorization` masks a secret in the userinfo like a
