@@ -2,8 +2,8 @@
 
 Task #21 (tidy): work out the headers a send carries in one place, used
 both by the editor's display and by the send itself. It comes before #20
-(promote an auto header, strike through overridden ones) and #22 (a
-header the client adds on its own, such as URL userinfo's
+(promote an auto header; striking overridden ones moved to #57, see R5)
+and #22 (a header the client adds on its own, such as URL userinfo's
 `Authorization`, belongs in the auto section).
 
 ## 1. Findings
@@ -116,8 +116,8 @@ pub fn header_rows(req: &HttpRequest, ctx: &PrepareContext) -> Vec<HeaderRow>
 - `HeaderRow.sent: bool` becomes `unsent: Option<Unsent>`, which says
   why a row isn't sent: `Replaced`, `Duplicate`, or
   `ClientOwned { header, client_sends }`. The editor reads the reason
-  instead of calling `client_owned` on the name again (`mine`). #20 gets
-  the reason it needs to strike overridden rows.
+  instead of calling `client_owned` on the name again (`mine`). It is
+  the reason #57 strikes overridden rows by.
 - R3b's note names the client's row only when the client sends one:
   `not sent · the client sets Host`, else
   `not sent · set by the client only`. A GET has no `Content-Length`,

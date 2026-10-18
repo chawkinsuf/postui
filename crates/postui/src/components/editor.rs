@@ -279,9 +279,9 @@ pub struct Editor {
     /// everything that will actually be sent beyond the editable request
     /// rows above — default headers, the auto Content-Type, and the
     /// client-generated rows (the URL's Authorization, Accept, Host,
-    /// Content-Length), each struck through when not sent. Recomputed every draw by `recompute_computed_headers` (cheap,
-    /// small N) so an env switch or a body edit shows up live; never
-    /// itself edited here.
+    /// Content-Length), each struck through when not sent. Recomputed
+    /// every draw by `recompute_computed_headers` (cheap, small N) so an
+    /// env switch or a body edit shows up live; never itself edited here.
     pub computed: ComputedHeadersView,
     /// The variable snapshot inline `{{token}}` highlighting and the hover
     /// tooltip resolve against (spec §7), synced by `App::update` on every
@@ -298,8 +298,8 @@ pub struct Editor {
 pub struct ComputedHeadersView {
     /// The auto section's rows, in `header_rows` order: every row other
     /// than the request's own (the editable table shows those), sent or
-    /// not; one that isn't sent draws struck through (task #57).
-    /// `Hit::AutoHeaderCopy(i)` is `rows[i]`.
+    /// not; one that isn't sent sits where it would have gone and draws
+    /// struck through (task #57). `Hit::AutoHeaderCopy(i)` is `rows[i]`.
     pub rows: Vec<postui_core::prepare::HeaderRow>,
     /// The request table's notes, one per row (the Headers table's
     /// `notes`): a row kept off the wire (spec 2026-10-18 R3a) carries the
@@ -632,7 +632,9 @@ impl Editor {
                 // so the user sees what is overridden (task #57): a
                 // default, the auto `Content-Type`, the client's `Accept`
                 // or the URL's `Authorization`, whether a typed row or a
-                // default replaced it.
+                // default replaced it. A struck `Authorization` shows its
+                // credential no more than the URL bar shows the userinfo,
+                // and masks the same way when a secret is in it.
                 HeaderOrigin::Default | HeaderOrigin::ContentType | HeaderOrigin::Client => {
                     auto.push(r)
                 }
@@ -3378,10 +3380,11 @@ impl Editor {
     /// user's #4 complaint: see everything that will actually be sent): a
     /// dim divider, then one dim row per `self.computed.rows` entry. A row
     /// that isn't sent (a default, auto or client row something overrides,
-    /// or a duplicate default) renders struck through; an unresolved `{{token}}` is tinted span-level. Each row
-    /// gets a trailing `󰆏` copy icon (`Hit::AutoHeaderCopy`, indexed into
-    /// `rows`); the divider carries a `👁 reveal`/`hide` toggle
-    /// (`Hit::AutoHeaderReveal`) whenever a row has a secret to reveal.
+    /// or a duplicate default) renders struck through; an unresolved
+    /// `{{token}}` is tinted span-level. Each row gets a trailing `󰆏` copy
+    /// icon (`Hit::AutoHeaderCopy`, indexed into `rows`); the divider
+    /// carries a `👁 reveal`/`hide` toggle (`Hit::AutoHeaderReveal`)
+    /// whenever a row has a secret to reveal.
     fn draw_computed_headers(
         &self,
         frame: &mut Frame,
@@ -6336,8 +6339,13 @@ url = "https://api.example.com/users""#,
         assert!(buffer_has_crossed_out(buf, "*/*"), "the client's Accept");
         assert!(buffer_has_crossed_out(buf, "application/json"), "the auto Content-Type");
         assert!(buffer_has_crossed_out(buf, "Basic dTpwdw=="), "the URL's Authorization");
-        assert!(format!("{buf:?}").contains("Host: example.com"), "the client's Host is drawn");
+        let content = format!("{buf:?}");
+        assert!(content.contains("Host: example.com"), "the client's Host is drawn");
         assert!(!buffer_has_crossed_out(buf, "example.com"), "and sent, so not struck");
+        for typed in ["text/plain", "text/csv", "Bearer t"] {
+            assert!(content.contains(typed), "{typed} is drawn in the table");
+            assert!(!buffer_has_crossed_out(buf, typed), "{typed} is sent");
+        }
 
         // A project default replaces the client's Accept just the same.
         let root = app.proj().root().to_path_buf();
@@ -6348,7 +6356,8 @@ url = "https://api.example.com/users""#,
         app.update(Action::Render);
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
         let buf = terminal.backend().buffer();
-        assert!(!buffer_has_crossed_out(buf, "text/html"), "the default is sent");
+        assert!(format!("{buf:?}").contains("Accept: text/html"), "the default is drawn");
+        assert!(!buffer_has_crossed_out(buf, "text/html"), "and sent");
         assert!(buffer_has_crossed_out(buf, "*/*"), "the client's Accept it replaces");
     }
 
