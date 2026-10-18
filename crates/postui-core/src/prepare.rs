@@ -528,16 +528,11 @@ fn rows(
     // URL so `header_rows` needs no assembly: the two share an authority,
     // since merging `[params]` only rewrites what follows `?` and `#`.
     if let Some(host) = authority(&quiet(&req.url)) {
-        // Decided from the URL as written, never by comparing the real Host
-        // with a masked one after the fact: a secret's value can move where
-        // the client splits the URL (a `/` in a password), so once a secret
-        // is written anywhere in it, the real Host is never shown. Its
-        // display follows string rules on the masked URL — and with no host
-        // there, the bare mask. The price is cosmetic: with a secret only in
-        // the path, an IDN host shows unpunycoded rather than as sent.
-        let display = if secret_in(&req.url, secrets) {
-            let masked = substitute_masked(&req.url, vars, secrets, &mut BTreeSet::new());
-            masked_authority(&masked).unwrap_or_else(|| SECRET_MASK.to_string())
+        // Shown exactly as sent unless a secret can change it; then the
+        // bare mask, since no account of which part of it is the secret's
+        // can be trusted to be the parser's.
+        let display = if secret_shapes_host(&req.url, vars, secrets, &host) {
+            SECRET_MASK.to_string()
         } else {
             host.clone()
         };
@@ -551,7 +546,11 @@ fn rows(
     }
 
     // Now the client's rows are known, a row naming a client-owned header
-    // says whether the client sends its own.
+    // says whether the client sends its own. Read off the rows just built
+    // on purpose, not predicted up front by name (`Host` when there's a
+    // host, `Content-Length` when there's a body): a prediction is a
+    // second statement of when the client sends each row, free to drift
+    // from the code above that builds them.
     let client: Vec<String> = rows
         .iter()
         .filter(|r| r.origin == HeaderOrigin::Client && r.sent())
@@ -580,61 +579,62 @@ fn secret_names(ctx: &PrepareContext) -> BTreeSet<String> {
         .collect()
 }
 
-/// Whether a secret's `{{token}}` is written anywhere in `template`. The
-/// whole URL, not just the part before its path: where the client splits a
-/// URL into host and path is the parser's call (it takes `https:/host`,
-/// and a `/` inside a secret's value moves the split), and every attempt to
-/// find the host part by string rules has missed a case. Asking about the
-/// whole URL can't.
-fn secret_in(template: &str, secrets: &BTreeSet<String>) -> bool {
-    !secrets.is_empty()
-        && crate::vars::find_tokens(template).iter().any(|t| secrets.contains(&t.name))
-}
-
-/// `url`'s scheme and its host and port as written (no userinfo), or
-/// `None` while that is empty or still holds a `{{token}}`.
-fn host_port(url: &str) -> Option<(&str, &str)> {
-    let (scheme, after_scheme) = url.split_once("://").unwrap_or(("", url));
-    let segment = after_scheme.split(['/', '?', '#']).next().unwrap_or_default();
-    let host_port = segment.rsplit_once('@').map_or(segment, |(_, host_port)| host_port);
-    (!host_port.is_empty() && !host_port.contains("{{")).then_some((scheme, host_port))
+/// Whether a secret's value can change the Host the client derives from
+/// `template`, whose real Host is `real`. Asked of the parser, never
+/// answered by string rules about where a URL's host sits (every such rule
+/// missed one of the parser's cases: `https:/host`, `127.1`, a `/` inside a
+/// password moving the split): the URL is parsed with every secret's value
+/// as `1`, then as `2`. If those two give one Host and it is the real one,
+/// nothing of any secret is in the real Host, so it can be shown as sent.
+/// `1` and `2` fit wherever a value can sit — host label, port, userinfo,
+/// path — so a secret that reaches the Host gives two different ones.
+fn secret_shapes_host(
+    template: &str,
+    vars: &IndexMap<String, String>,
+    secrets: &BTreeSet<String>,
+    real: &str,
+) -> bool {
+    let tokens = crate::vars::find_tokens(template);
+    if !tokens.iter().any(|t| secrets.contains(&t.name)) {
+        return false;
+    }
+    let with = |stand_in: &str| {
+        let mut vars = vars.clone();
+        for name in secrets {
+            if let Some(value) = vars.get_mut(name) {
+                *value = stand_in.to_string();
+            }
+        }
+        authority(&crate::vars::substitute(template, &vars, &mut BTreeSet::new()))
+    };
+    let one = with("1");
+    one != with("2") || one.as_deref() != Some(real)
 }
 
 /// The `Host` value the client derives from `url`: the host, lowercased
 /// (and punycoded), plus the port when it isn't the scheme's default — no
-/// userinfo. A URL the parser refuses keeps its host and port as written
-/// (the send itself will report that URL).
+/// userinfo. `None` while the host is empty or still a `{{token}}`. A URL
+/// the parser refuses keeps its host and port as written (the send itself
+/// will report that URL).
 fn authority(url: &str) -> Option<String> {
-    let (_, written) = host_port(url)?;
-    let parsed = url::Url::parse(url).ok();
-    let Some(host) = parsed.as_ref().and_then(|u| u.host_str()) else {
-        return Some(written.to_string());
-    };
-    Some(match parsed.as_ref().and_then(|u| u.port()) {
-        Some(port) => format!("{host}:{port}"),
-        None => host.to_string(),
-    })
-}
-
-/// [`authority`] for a masked URL, by plain string rules rather than the
-/// parser, which can't take the mask's glyphs (it would punycode them
-/// into `xn--…`): the host and port as written, ASCII-lowercased, the
-/// scheme's default port dropped, no userinfo. It matches the real one
-/// for an ASCII host; a non-ASCII host shows unpunycoded, which reads
-/// better on screen anyway. The real value is never consulted, so the
-/// secret can't leak through it.
-fn masked_authority(url: &str) -> Option<String> {
-    let (scheme, written) = host_port(url)?;
-    let default_port = match scheme.to_ascii_lowercase().as_str() {
-        "https" => ":443",
-        "http" => ":80",
-        _ => "",
-    };
-    let host = written.to_ascii_lowercase();
-    Some(match host.strip_suffix(default_port) {
-        Some(bare) if !default_port.is_empty() => bare.to_string(),
-        _ => host,
-    })
+    if let Ok(u) = url::Url::parse(url)
+        && let Some(host) = u.host_str()
+    {
+        // The parser takes braces in a host as they are (or escaped), so
+        // a host that is still a token is ruled out here too.
+        let lower = host.to_ascii_lowercase();
+        if host.is_empty() || host.contains('{') || lower.contains("%7b") {
+            return None;
+        }
+        return Some(match u.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_string(),
+        });
+    }
+    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let segment = after_scheme.split(['/', '?', '#']).next().unwrap_or_default();
+    let written = segment.rsplit_once('@').map_or(segment, |(_, host_port)| host_port);
+    (!written.is_empty() && !written.contains("{{")).then(|| written.to_string())
 }
 
 #[cfg(test)]
@@ -1337,27 +1337,35 @@ mod tests {
         }
     }
 
-    /// A masked host follows plain string rules, never the real value: an
-    /// IDN host stays readable and a secret port stays masked.
+    /// The Host shows exactly as sent unless a secret can change it, then
+    /// as the bare mask. "Can change it" is the parser's answer, not a
+    /// string rule's: a secret only in the path leaves odd URL shapes, IP
+    /// shorthands, IDN hosts and padded ports as the client sends them,
+    /// and draws no reveal toggle for them.
     #[test]
-    fn masked_host_string_rules() {
+    fn the_host_shows_as_sent_unless_a_secret_can_change_it() {
         let mut c = ctx(&[("t", "acme"), ("port", "8443"), ("k", "s3cret")], &[]);
         for name in ["t", "port", "k"] {
             c.meta.insert(name.into(), varmodel::VarMeta::Secret);
         }
-        let host = |url: &str| client(&header_rows(&base(url), &c), "Host").clone();
-        let idn = host("https://{{t}}café.com/p");
-        assert_eq!(idn.header.display, format!("{SECRET_MASK}café.com"));
-        assert!(!idn.header.display.contains("acme"));
-        assert_eq!(
-            host("https://Api.example.com:{{port}}/p").header.display,
-            format!("api.example.com:{SECRET_MASK}")
-        );
-        // A secret anywhere in the URL takes the string rules (the real
-        // Host is never shown then): the same host, written unpunycoded.
-        let elsewhere = host("https://Bücher.example/p?key={{k}}");
-        assert_eq!(elsewhere.header.value, "xn--bcher-kva.example");
-        assert_eq!(elsewhere.header.display, "bücher.example");
+        let host = |url: &str| client(&header_rows(&base(url), &c), "Host").header.clone();
+        for (url, sent) in [
+            ("https:/example.com/v1?k={{k}}", "example.com"),
+            ("https://example.com:0443/{{k}}", "example.com"),
+            ("http://127.1/{{k}}", "127.0.0.1"),
+            ("https://Bücher.example/p?key={{k}}", "xn--bcher-kva.example"),
+            ("http://example.com\\{{k}}", "example.com"),
+            ("https://user:{{k}}@example.com/p", "example.com"),
+        ] {
+            let h = host(url);
+            assert_eq!((h.value.as_str(), h.display.as_str()), (sent, sent), "{url}");
+            assert!(!h.is_masked(), "{url}: nothing to reveal");
+        }
+        for url in ["https://{{t}}café.com/p", "https://Api.example.com:{{port}}/p"] {
+            let h = host(url);
+            assert_eq!(h.display, SECRET_MASK, "{url}");
+            assert!(!h.display.contains("acme") && !h.display.contains("8443"));
+        }
     }
 
     /// The parser takes `https:/host` and `https:///host` for `https://host`
@@ -1393,10 +1401,7 @@ mod tests {
             let rows = header_rows(&base("https://user:{{pw}}@example.com/p"), &c);
             let host = client(&rows, "Host");
             assert_ne!(host.header.value, "example.com", "{pw}: the split really did move");
-            assert_eq!(
-                host.header.display, "example.com",
-                "{pw}: the masked URL's host, not the real one"
-            );
+            assert_eq!(host.header.display, SECRET_MASK, "{pw}: the secret changed the Host");
         }
     }
 
@@ -1435,12 +1440,15 @@ mod tests {
 
         let rows = header_rows(&req, &ctx);
         let host = client(&rows, "Host");
-        assert_eq!(host.header.display, "●●●●●●.api.example.com");
+        assert_eq!(
+            host.header.display, SECRET_MASK,
+            "the secret shapes the Host: all of it masked"
+        );
         assert_eq!(host.header.value, "s3cret.api.example.com");
     }
 
-    /// A masked host goes through the same derivation as the real one: no
-    /// userinfo, no default port, lowercased — only the secret is masked.
+    /// A secret in the userinfo leaves the Host as sent (no userinfo, no
+    /// default port, lowercased); one in a host label masks all of it.
     #[test]
     fn header_rows_masked_host_follows_the_same_rule_as_the_real_one() {
         let mut c = ctx(&[("pw", "hunter2"), ("tenant", "Acme")], &[]);
@@ -1457,7 +1465,7 @@ mod tests {
         let rows = header_rows(&base("https://{{tenant}}.Example.com:443/v1"), &c);
         let host = client(&rows, "Host");
         assert_eq!(host.header.value, "acme.example.com");
-        assert_eq!(host.header.display, format!("{SECRET_MASK}.example.com"));
+        assert_eq!(host.header.display, SECRET_MASK);
     }
 
     /// A token left in the userinfo doesn't hide a host that is known.

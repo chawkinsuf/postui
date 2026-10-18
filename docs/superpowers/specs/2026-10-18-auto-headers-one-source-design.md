@@ -46,7 +46,7 @@ Two more findings:
 | R3 | The auto `Content-Type` and the client's `Accept` are not sent when a sent request or default row has their name. Unchanged. | stage7 §6 |
 | R3a | `Host` and `Content-Length` belong to the client and can't be overridden. A request or default row with either name (matched after substitution, ignoring case) is allowed but never sent, and the send doesn't fail over it. The client's row is always sent and never struck through. This holds with no body too: a typed `Content-Length` on a GET is dropped. | `you` (the rule); "always, even with no body" is `mine (approved)` |
 | R3b | An enabled request row R3a drops is drawn in the error colour, with a trailing note in the table's note slot (where the Vars tab writes "overrides …"): `not sent · the client sets Host`. A project default the rule drops is struck through in the auto section, like any other unsent default (R5). *Amended 2026-10-18 after review round 1:* the struck default also reads as an error and carries the same note, so it can't be taken for one a request row overrides (`you`, "add a note"; the reviewer raised it). | `you` ("highlight the row as an error"); the note and its wording are `mine (approved)`, landing in #21 rather than #20 |
-| R4 | `Host` is the URL's authority the way the client sends it: host lowercased, default port dropped, no userinfo. A masked host goes through the same rule with its mask kept (amended after review round 1; see the §3 amendments). | stage7 §6; the derivation moves from `http.rs` |
+| R4 | `Host` is the URL's authority the way the client sends it: host lowercased, default port dropped, no userinfo. On screen it shows exactly as sent unless a secret can change it, and then as the bare mask (amended after review round 8; see the §3 amendments). | stage7 §6; the derivation moves from `http.rs` |
 | R5 | The auto section draws every non-request row that is sent, plus every unsent **default** row (struck through). Unsent auto and client rows stay hidden, as `Accept` and `Content-Type` are today. #20 will change this to strike them through. | today's rule kept |
 | R6 | The muted `✓ name value (status)` lines above the Headers table are removed. The auto section's strike-through is the one indicator. | `mine (approved)` |
 | R7 | The auto section's copy pill copies the real value, masked or not, like the sent section's pill and the variable tooltip. | `mine (approved)` |
@@ -180,6 +180,19 @@ pub fn header_rows(req: &HttpRequest, ctx: &PrepareContext) -> Vec<HeaderRow>
 - Also verified but predating this branch, recorded on #22: a body that
   is empty on the wire sends no `content-length`, though the list shows
   `content-length: 0`.
+
+*Amended 2026-10-18 after review round 8:* this replaces the
+masked-`Host` rules from rounds 1–7. Each of those described the masked
+host with rules of my own (verbatim, a parser stand-in, string rules),
+and each disagreed with the parser somewhere: it leaked, or it showed a
+`Host` that is never sent (`https:` for `https:/host`, `127.1` for
+`127.0.0.1`, `:0443`). The new rule asks the parser a yes/no question
+instead. The URL is parsed with every secret's value as `1`, as `2` and
+as itself. If all three give one `Host`, no secret is in it, and it
+shows exactly as sent with no reveal toggle. Otherwise it shows as the
+bare mask. A host with a secret label now shows `●●●●●●` rather than
+`●●●●●●.api.example.com` (`mine`). `authority` also asks the parser
+first, so `https:///host` has a `Host` row like the wire does.
 
 **Binary**
 - `http::send` puts only the non-`Client` rows on the request.

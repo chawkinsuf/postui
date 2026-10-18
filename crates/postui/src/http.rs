@@ -463,7 +463,7 @@ mod tests {
         assert_eq!(auth.display, format!("Bearer {mask}"));
         let host = rows.iter().find(|r| r.name == "host").unwrap();
         assert_eq!(host.value, "s3cret.example.com:8443");
-        assert_eq!(host.display, format!("{mask}.example.com:8443"));
+        assert_eq!(host.display, mask, "a secret shapes the Host: all of it masked");
     }
 
     /// The rows the editor lists as sent (`header_rows`) and the
