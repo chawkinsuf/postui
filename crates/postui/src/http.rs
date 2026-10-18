@@ -19,7 +19,7 @@ pub struct ResponseData {
     pub headers: Vec<(String, String)>,
     /// The headers this request went out with, in send order — a snapshot
     /// taken at send time, so it still says what was sent after the
-    /// request has been edited (`PreparedRequest::wire_headers`). Shown
+    /// request has been edited (`PreparedRequest::wire`). Shown
     /// under the response headers as the Headers tab's `sent` section.
     pub sent_headers: Vec<SentHeader>,
     pub body: String,
@@ -125,7 +125,7 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
         status,
         url: req.display_url.clone(),
         headers,
-        sent_headers: req.wire_headers(),
+        sent_headers: req.wire.clone(),
         body,
         ttfb,
         elapsed,
@@ -255,7 +255,7 @@ mod tests {
             url: "https://x.test".into(),
             display_url: "https://x.test".into(),
             headers: vec![],
-            client_headers: vec![],
+            wire: vec![],
             body: None,
             insecure: false,
         };
@@ -290,7 +290,7 @@ mod tests {
             url: "http://127.0.0.1:1/v1/items?key=sk-live-REAL".into(),
             display_url: "http://127.0.0.1:1/v1/items?key=•••••".into(),
             headers: vec![],
-            client_headers: vec![],
+            wire: vec![],
             body: None,
             insecure: false,
         };
@@ -321,7 +321,7 @@ mod tests {
             url: format!("http://{addr}/"),
             display_url: format!("http://{addr}/"),
             headers: vec![],
-            client_headers: vec![],
+            wire: vec![],
             body: None,
             insecure: false,
         };
@@ -355,6 +355,7 @@ mod tests {
         let typed: &[(&str, &str)] =
             &[("Host", "other.test"), ("content-LENGTH", "99"), ("Transfer-Encoding", "chunked")];
         let auth: &[(&str, &str)] = &[("Authorization", "Bearer typed")];
+        let twice: &[(&str, &str)] = &[("X-B", "2"), ("x-one", "3")];
         let json = Some("{\"a\":1}");
         let empty = Some("");
         let (get, post) = (Method::Get, Method::Post);
@@ -377,6 +378,8 @@ mod tests {
             ("u:p%FF@", get, None, plain),
             ("u%FF:p@", get, None, plain),
             ("u:pw@", get, None, auth),
+            ("", get, None, twice),
+            ("u:pw@", get, None, twice),
         ] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -411,17 +414,8 @@ mod tests {
                 })
                 .collect();
             assert!(wire.len() >= 3, "the probe saw the client's own rows: {raw}");
-            let mut sent: Vec<(String, String)> =
+            let sent: Vec<(String, String)> =
                 data.sent_headers.iter().map(|h| (h.name.clone(), h.value.clone())).collect();
-            if extra == auth {
-                // The one accepted gap (spec 2026-10-18 R1b): a typed
-                // Authorization takes the URL's place, first on the wire,
-                // but is listed where it is typed.
-                assert_ne!(sent[0].0, "authorization", "listed where typed");
-                let at = sent.iter().position(|(k, _)| k == "authorization").unwrap();
-                let typed_row = sent.remove(at);
-                sent.insert(0, typed_row);
-            }
             assert_eq!(sent, wire, "the snapshot is what went on the wire:\n{raw}");
             assert!(
                 wire.iter().any(|(k, v)| k == "host" && v == &format!("127.0.0.1:{port}")),
@@ -462,7 +456,7 @@ mod tests {
             url: url.clone(),
             display_url: url,
             headers: vec![],
-            client_headers: vec![],
+            wire: vec![],
             body: None,
             insecure: false,
         };
@@ -495,7 +489,7 @@ mod tests {
         ctx.vars.insert("key".into(), "s3cret".into());
         ctx.meta.insert("key".into(), VarMeta::Secret);
         let (req, _) = prepare(&req, &ctx).unwrap();
-        let rows = req.wire_headers();
+        let rows = req.wire;
         let auth = rows.iter().find(|r| r.name == "authorization").unwrap();
         assert_eq!(auth.value, "Bearer s3cret");
         assert_eq!(auth.display, format!("Bearer {mask}"));
@@ -505,8 +499,10 @@ mod tests {
     }
 
     /// The rows the editor lists as sent (`header_rows`) and the
-    /// response's sent section (`PreparedRequest::wire_headers`) describe the same
-    /// send: same names, same values, same order — including the shapes
+    /// response's sent section (`PreparedRequest::wire`) describe the same
+    /// send: same names, same values, same order while the names are
+    /// distinct (the editor keeps table order where the wire groups a
+    /// name's values, core's `wire_order`) — including the shapes
     /// where they once disagreed (spec 2026-10-18 §1 and task #22): a
     /// default port, userinfo, a typed `Host`, `Content-Length` or
     /// `Transfer-Encoding`, and an empty body.
@@ -555,7 +551,7 @@ mod tests {
                 .collect();
             let (prepared, _) = prepare(&req, &ctx).unwrap();
             let sent: Vec<(String, String)> =
-                prepared.wire_headers().into_iter().map(|h| (h.name, h.value)).collect();
+                prepared.wire.into_iter().map(|h| (h.name, h.value)).collect();
             assert_eq!(auto, sent, "{}", req.url);
         }
     }

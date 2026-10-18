@@ -3517,18 +3517,18 @@ impl Editor {
 /// `Transfer-Encoding`; spec 2026-10-18 R3a/R3b/R3d), carried by a typed
 /// row and a project default alike. It names the client's own row only
 /// when the client sends one. When it doesn't (a GET or an empty body has
-/// no `Content-Length`; no send has a `Transfer-Encoding`), "set by the
-/// client only" says who owns the header, not that one goes out: the row
-/// is refused either way, and naming a row the wire lacks would be wrong.
-/// A replaced or duplicate row needs none: its strike is the whole story.
+/// no `Content-Length`; no send has a `Transfer-Encoding`), the note says
+/// who may set the header and nothing about what goes out, since nothing
+/// does (task #22, `mine (approved)`). A replaced or duplicate row needs
+/// none: its strike is the whole story.
 fn unsent_note(unsent: postui_core::prepare::Unsent) -> Option<String> {
     use postui_core::prepare::Unsent;
     match unsent {
         Unsent::ClientOwned { header, client_sends: true } => {
             Some(format!("not sent · the client sets {header}"))
         }
-        Unsent::ClientOwned { header: _, client_sends: false } => {
-            Some("not sent · set by the client only".to_string())
+        Unsent::ClientOwned { header, client_sends: false } => {
+            Some(format!("not sent · only the client may set {header}"))
         }
         Unsent::Replaced | Unsent::Duplicate => None,
     }
@@ -5834,7 +5834,7 @@ url = "https://api.example.com/users""#,
     /// On a GET the client sends no `Content-Length`, so a typed one's note
     /// doesn't point at a client row that isn't there.
     #[test]
-    fn a_typed_content_length_on_a_get_says_only_the_client_sets_it() {
+    fn a_typed_content_length_on_a_get_says_only_the_client_may_set_it() {
         let mut app = App::new_for_test();
         app.editor.active_tab = EditorTab::Headers;
         app.editor.url = LineInput::new("https://example.com/foo");
@@ -5843,10 +5843,10 @@ url = "https://api.example.com/users""#,
             .insert("Content-Length".into(), Entry { value: "5".into(), enabled: true });
         app.update(Action::Render);
 
-        let mut terminal = Terminal::new(TestBackend::new(100, 70)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(140, 70)).unwrap();
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
-        assert!(content.contains("not sent · set by the client only"), "{content}");
+        assert!(content.contains("not sent · only the client may set Content-Length"), "{content}");
         assert!(!content.contains("the client sets"), "{content}");
     }
 
