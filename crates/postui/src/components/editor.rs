@@ -3504,7 +3504,9 @@ impl Editor {
                 hits,
             );
             // The pill's cells inside the pane; cut off at the right edge,
-            // it keeps what shows.
+            // it keeps what shows. Its spacer cells are part of the button
+            // (the hover fill covers them), so even a one-cell sliver is a
+            // live edge of it, as on the response Headers tab (#50).
             let pill_end = (pill_col + crate::ui::cells(crate::glyph::COPY_PILL)).min(right);
             if pill_col < pill_end {
                 // Both fit in u16: they lie within the pane.
