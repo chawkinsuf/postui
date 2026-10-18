@@ -3066,7 +3066,10 @@ impl Editor {
                 // editable data — and the computed section only gets
                 // whatever's left after that, clamped to what it asked
                 // for; under real space pressure the auto section shrinks
-                // (or disappears) rather than eating into the table.
+                // (or disappears) rather than eating into the table. Since
+                // the status lines above the table went (spec 2026-10-18
+                // R6), the project defaults live only in that section, so
+                // they give way too; the pane split brings them back.
                 let auto_rows = self.computed_row_count();
                 let rows = self.table_len();
                 let table_h = table_height(rows).min(area.height);
@@ -3092,6 +3095,8 @@ impl Editor {
                 };
                 // A row naming a header the client sets itself is kept but
                 // never sent (spec 2026-10-18 R3a), so it reads as an error.
+                // Like the auto section, the verdict follows the committed
+                // key: a name still being typed is judged once it lands.
                 let mut notes: Vec<Option<RowNote>> = vec![None; self.headers.len()];
                 for (row, text) in &self.computed.dropped {
                     if let Some(note) = notes.get_mut(*row) {

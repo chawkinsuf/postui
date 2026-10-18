@@ -250,10 +250,10 @@ pub fn prepare(
     // as an error where it is written, and the send goes as the user asked
     // it not to fail (spec 2026-10-18 R3a/R3b; a send-time notice was
     // weighed in review and declined).
-    let (client_headers, headers): (Vec<HeaderRow>, Vec<HeaderRow>) = rows(req, ctx, &mut warnings)
-        .into_iter()
-        .filter(HeaderRow::sent)
-        .partition(|r| r.origin == HeaderOrigin::Client);
+    let body_len = body.as_ref().map(String::len);
+    let rows = rows(req, ctx, &vars, &secret_names, body_len, &mut warnings);
+    let (client_headers, headers): (Vec<HeaderRow>, Vec<HeaderRow>) =
+        rows.into_iter().filter(HeaderRow::sent).partition(|r| r.origin == HeaderOrigin::Client);
     missing.extend(headers.iter().flat_map(|r| r.unresolved.iter().cloned()));
 
     if !missing.is_empty() {
@@ -365,46 +365,48 @@ pub fn client_owned(name: &str) -> Option<&'static str> {
 /// rows, and the editor's auto section draws the rest of the story.
 /// Never errors: unresolved tokens stay literal and are listed per row.
 pub fn header_rows(req: &HttpRequest, ctx: &PrepareContext) -> Vec<HeaderRow> {
-    rows(req, ctx, &mut Vec::new())
+    let vars = overlaid_vars(req, ctx);
+    let body_len = sent_body(req).map(|body| match req.substitute_body {
+        true => substitute_masked(body, &vars, &BTreeSet::new(), &mut BTreeSet::new()).len(),
+        false => body.len(),
+    });
+    rows(req, ctx, &vars, &secret_names(ctx), body_len, &mut Vec::new())
 }
 
-/// [`header_rows`], also reporting duplicate defaults to `warnings`.
+/// The rows of [`header_rows`], from what the caller already worked out:
+/// the overlaid `vars`, the `secrets` to mask, and the byte length of the
+/// body the send carries — so [`prepare`] substitutes nothing twice.
+/// Duplicate defaults are reported to `warnings`.
 fn rows(
     req: &HttpRequest,
     ctx: &PrepareContext,
+    vars: &IndexMap<String, String>,
+    secrets: &BTreeSet<String>,
+    body_len: Option<usize>,
     warnings: &mut Vec<PrepareWarning>,
 ) -> Vec<HeaderRow> {
-    let vars = overlaid_vars(req, ctx);
-    let secrets = secret_names(ctx);
     let no_mask = BTreeSet::new();
-    let quiet = |s: &str| substitute_masked(s, &vars, &no_mask, &mut BTreeSet::new());
+    let quiet = |s: &str| substitute_masked(s, vars, &no_mask, &mut BTreeSet::new());
     // The screens' version of `text`: the real one when no secret is in
     // play, which is most projects, on every frame the Headers tab shows.
     let masked = |text: &str, real: &String| {
         if secrets.is_empty() {
             real.clone()
         } else {
-            substitute_masked(text, &vars, &secrets, &mut BTreeSet::new())
+            substitute_masked(text, vars, secrets, &mut BTreeSet::new())
         }
     };
-    // What the client derives on its own, worked out first so a row naming
-    // a client-owned header can say whether the client sends one.
-    let url = quiet(&req.url);
-    let host = authority(&url);
-    let body = sent_body(req);
-    let client_sends = |header: &str| match header {
-        "Host" => host.is_some(),
-        _ => body.is_some(),
-    };
     // Substitutes name and value together, so a row reports the
-    // unresolved tokens of both halves.
+    // unresolved tokens of both halves. Whether the client sends its own
+    // row for a client-owned name is filled in at the end, from the
+    // client's rows themselves.
     let row = |name: &str, value: &str, origin: HeaderOrigin| {
         let mut unresolved = BTreeSet::new();
-        let real_name = substitute_masked(name, &vars, &no_mask, &mut unresolved);
-        let real = substitute_masked(value, &vars, &no_mask, &mut unresolved);
+        let real_name = substitute_masked(name, vars, &no_mask, &mut unresolved);
+        let real = substitute_masked(value, vars, &no_mask, &mut unresolved);
         HeaderRow {
             unsent: client_owned(&real_name)
-                .map(|header| Unsent::ClientOwned { header, client_sends: client_sends(header) }),
+                .map(|header| Unsent::ClientOwned { header, client_sends: false }),
             display_name: masked(name, &real_name),
             name: real_name,
             display: masked(value, &real),
@@ -413,11 +415,12 @@ fn rows(
             unresolved: unresolved.into_iter().collect(),
         }
     };
-    let fixed = |name: &str, value: String, display: String, unsent: Option<Unsent>| HeaderRow {
+    // A row the client adds: shown as it is sent, nothing to mask.
+    let fixed = |name: &str, value: String, unsent: Option<Unsent>| HeaderRow {
         name: name.to_string(),
         display_name: name.to_string(),
+        display: value.clone(),
         value,
-        display,
         origin: HeaderOrigin::Client,
         unsent,
         unresolved: Vec::new(),
@@ -456,38 +459,48 @@ fn rows(
             .any(|r| r.sent() && r.name.eq_ignore_ascii_case(name))
             .then_some(Unsent::Replaced)
     };
-    if body.is_some() {
-        let json = "application/json".to_string();
+    if body_len.is_some() {
         let unsent = replaced(&rows, "content-type");
         rows.push(HeaderRow {
             origin: HeaderOrigin::ContentType,
-            ..fixed("Content-Type", json.clone(), json, unsent)
+            ..fixed("Content-Type", "application/json".into(), unsent)
         });
     }
 
     // The client's own rows, in the order it sends them. `Accept: */*` is
     // its default unless a sent row names `accept`.
     let unsent = replaced(&rows, "accept");
-    rows.push(fixed("Accept", "*/*".into(), "*/*".into(), unsent));
+    rows.push(fixed("Accept", "*/*".into(), unsent));
     // `Host` is the URL's authority as the client derives it, real and
     // masked. A URL whose host is still a `{{token}}` has none yet.
-    if let Some(host) = host {
+    if let Some(host) = authority(&quiet(&req.url)) {
         let display = if secrets.is_empty() {
             host.clone()
         } else {
-            let masked = substitute_masked(&req.url, &vars, &secrets, &mut BTreeSet::new());
+            let masked = substitute_masked(&req.url, vars, secrets, &mut BTreeSet::new());
             // Never the real host: it may hold the secret. A masked URL
             // always has a host where the real one does, so this is only
             // the safe answer for a case that doesn't arise.
             authority(&masked).unwrap_or_else(|| SECRET_MASK.to_string())
         };
-        rows.push(fixed("Host", host, display, None));
+        rows.push(HeaderRow { display, ..fixed("Host", host, None) });
     }
-    if let Some(body) = body {
-        // The byte length of what goes on the wire: the substituted body
-        // when the request opts in, never the masked one.
-        let len = if req.substitute_body { quiet(body).len() } else { body.len() };
-        rows.push(fixed("Content-Length", len.to_string(), len.to_string(), None));
+    // The byte length of what goes on the wire, never the masked body.
+    if let Some(len) = body_len {
+        rows.push(fixed("Content-Length", len.to_string(), None));
+    }
+
+    // Now the client's rows are known, a row naming a client-owned header
+    // says whether the client sends its own.
+    let client: Vec<String> = rows
+        .iter()
+        .filter(|r| r.origin == HeaderOrigin::Client && r.sent())
+        .map(|r| r.name.clone())
+        .collect();
+    for r in &mut rows {
+        if let Some(Unsent::ClientOwned { header, client_sends }) = &mut r.unsent {
+            *client_sends = client.iter().any(|name| name.eq_ignore_ascii_case(header));
+        }
     }
     rows
 }
@@ -528,9 +541,10 @@ fn authority(url: &str) -> Option<String> {
     if host_port.is_empty() || host_port.contains("{{") {
         return None;
     }
-    // Only a masked URL makes the round trip, so a real host that happens
-    // to hold the stand-in is left as it is.
-    let masked = url.contains(SECRET_MASK);
+    // Only a masked host makes the round trip (a mask elsewhere in the URL
+    // doesn't), so a real host that happens to hold the stand-in is left
+    // as it is.
+    let masked = host_port.contains(SECRET_MASK);
     let parsed = if masked {
         url::Url::parse(&url.replace(SECRET_MASK, MASK_STAND_IN)).ok()
     } else {
@@ -1369,5 +1383,10 @@ mod tests {
         let rows =
             header_rows(&base("https://postui-secret-mask.internal/x"), &PrepareContext::default());
         assert_eq!(client(&rows, "Host").value, "postui-secret-mask.internal");
+        // Nor does a secret elsewhere in the URL mask it on screen.
+        let mut c = ctx(&[("k", "s3cret")], &[]);
+        c.meta.insert("k".into(), varmodel::VarMeta::Secret);
+        let rows = header_rows(&base("https://postui-secret-mask.internal/x?key={{k}}"), &c);
+        assert_eq!(client(&rows, "Host").display, "postui-secret-mask.internal");
     }
 }
