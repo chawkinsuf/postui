@@ -279,7 +279,8 @@ pub struct Editor {
     /// everything that will actually be sent beyond the editable request
     /// rows above — default headers, the auto Content-Type, and the
     /// client-generated rows (the URL's Authorization, Accept, Host,
-    /// Content-Length), each struck through when not sent. Recomputed
+    /// Content-Length). A row something overrides is struck through;
+    /// Host and Content-Length never are (spec R3a). Recomputed
     /// every draw by `recompute_computed_headers` (cheap, small N) so an
     /// env switch or a body edit shows up live; never itself edited here.
     pub computed: ComputedHeadersView,
@@ -3380,7 +3381,9 @@ impl Editor {
     /// user's #4 complaint: see everything that will actually be sent): a
     /// dim divider, then one dim row per `self.computed.rows` entry. A row
     /// that isn't sent (a default, auto or client row something overrides,
-    /// or a duplicate default) renders struck through; an unresolved
+    /// a duplicate default, or a default naming a client-owned header,
+    /// which also reads as an error with its note) renders struck through;
+    /// an unresolved
     /// `{{token}}` is tinted span-level. Each row gets a trailing `󰆏` copy
     /// icon (`Hit::AutoHeaderCopy`, indexed into `rows`); the divider
     /// carries a `👁 reveal`/`hide` toggle (`Hit::AutoHeaderReveal`)
@@ -6359,6 +6362,29 @@ url = "https://api.example.com/users""#,
         assert!(format!("{buf:?}").contains("Accept: text/html"), "the default is drawn");
         assert!(!buffer_has_crossed_out(buf, "text/html"), "and sent");
         assert!(buffer_has_crossed_out(buf, "*/*"), "the client's Accept it replaces");
+    }
+
+    /// A struck URL `Authorization` masks a secret in the userinfo like a
+    /// sent one does: never sent, still never shown in the clear.
+    #[test]
+    fn a_struck_url_authorization_keeps_its_secret_masked() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.url = LineInput::new("https://u:{{pw}}@example.com/p");
+        app.editor
+            .headers
+            .insert("Authorization".into(), Entry { value: "Bearer t".into(), enabled: true });
+        let mut ctx = postui_core::prepare::PrepareContext::default();
+        ctx.vars.insert("pw".into(), "hunter2".into());
+        ctx.meta.insert("pw".into(), postui_core::varmodel::VarMeta::Secret);
+        app.editor.recompute_computed_headers(&ctx);
+
+        let auth = app.editor.computed.rows.iter().find(|r| r.header.name == "Authorization");
+        let auth = auth.expect("the URL's Authorization is listed");
+        assert!(!auth.sent());
+        let mask = postui_core::prepare::SECRET_MASK;
+        assert_eq!(auth.header.display, format!("Basic {mask}"));
+        assert!(app.editor.computed.has_secret(), "so the reveal toggle shows");
     }
 
     #[test]
