@@ -21,7 +21,7 @@ fn app_with_clip(clip: &str) -> App {
     postui_core::fixtures::save_request(app.proj().root(), "main/api/ping", &req("https://x/ping"))
         .unwrap();
     app.update(Action::RefreshSidebar);
-    let mut c = crate::clipboard::Clipboard::new_for_test(None, 65536, false);
+    let mut c = crate::clipboard::Clipboard::new_for_test(None, 65536);
     c.set_read_for_test(clip);
     app.set_clipboard_for_test(c);
     app
@@ -614,7 +614,7 @@ fn copy_app() -> (App, tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("clip.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
     (app, dir, out)
 }
 
@@ -717,7 +717,7 @@ fn a_resolved_secret_is_noted_on_the_toast() {
     }));
     let out = dir.path().join("clip.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
     app.update(Action::CopyAsCurl(Some("main/sec".into())));
     assert!(copied(&out).unwrap().contains("Bearer sk-1"), "fully resolved (D2)");
     assert_eq!(app.toasts.last_message(), Some("Copied as curl \u{2014} includes secret values"));
@@ -980,7 +980,7 @@ fn what_the_gate_answers_is_the_paste_read_before_it() {
     app.capture_undo();
     replace(&mut app, Some("main/top"));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
-    let mut c = crate::clipboard::Clipboard::new_for_test(None, 65536, false);
+    let mut c = crate::clipboard::Clipboard::new_for_test(None, 65536);
     c.set_read_for_test("not curl any more");
     app.set_clipboard_for_test(c);
     app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
@@ -1179,7 +1179,7 @@ fn a_sidebar_ctrl_v_is_the_import_button() {
     app.update(Action::Paste);
     assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
     app.toasts = Default::default();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536));
     app.update(Action::Paste);
     assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
 }
@@ -1205,7 +1205,7 @@ fn the_import_button_shows_only_while_the_clipboard_parses_as_curl() {
         assert_eq!(app.sidebar.curl_ready, ready, "{clip:?}");
     }
     // A clipboard that can't be read holds no curl.
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536));
     app.check_clipboard();
     assert!(!app.sidebar.curl_ready);
 }
@@ -1260,8 +1260,7 @@ fn with_no_project_an_import_never_reads_the_clipboard() {
 fn a_copy_does_not_check_the_clipboard() {
     let (mut app, _dir, _out) = copy_app();
     app.ui_settings.curl_button = true;
-    let mut c =
-        crate::clipboard::Clipboard::new_for_test(Some("cat > /dev/null".into()), 65536, false);
+    let mut c = crate::clipboard::Clipboard::new_for_test(Some("cat > /dev/null".into()), 65536);
     c.set_read_for_test("curl https://x/u");
     app.set_clipboard_for_test(c);
     app.update(Action::CopyAsCurl(Some("main/top".into())));
@@ -1274,7 +1273,7 @@ fn an_unreadable_clipboard_holds_no_curl() {
     // Empty and image clipboards are read errors to arboard; the import
     // says what main always said (spec V14, reverted by the user).
     let mut app = app_with_clip("");
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536));
     import(&mut app);
     assert_eq!(app.toasts.last_message(), Some("clipboard doesn't hold a curl command"));
 }

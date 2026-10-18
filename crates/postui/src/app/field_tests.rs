@@ -1497,7 +1497,7 @@ fn with_clipboard_file(mut app: App) -> (App, tempfile::TempDir, std::path::Path
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
     (app, dir, out)
 }
 

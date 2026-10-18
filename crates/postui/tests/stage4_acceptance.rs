@@ -119,7 +119,7 @@ async fn stage4_mouse_only_acceptance_flow() {
 
     let out = dir.path().join("clipboard-out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
-    app.set_clipboard_for_test(Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(Clipboard::new_for_test(Some(cmd), 65536));
 
     // --- step 2: click SidebarNewRequest -> prompt opens; name via keys --
     click(&mut app, Hit::SidebarNewRequest);

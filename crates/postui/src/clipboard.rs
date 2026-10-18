@@ -26,17 +26,29 @@ pub enum CopyResult {
 }
 
 /// A tiered clipboard writer. Holds the configured external command (if
-/// any), the OSC 52 size threshold, and a lazily-initialized native
-/// clipboard handle.
+/// any), the OSC 52 size threshold, and where the native and OSC 52 tiers
+/// go.
 pub struct Clipboard {
     cmd: Option<String>,
     osc52_limit: usize,
-    allow_arboard: bool,
-    arboard: Option<Result<arboard::Clipboard, String>>,
+    host: Host,
     /// Test-injected `read()` result, so paste flows are testable without
     /// a real OS clipboard. See [`Clipboard::set_read_for_test`].
     #[cfg(any(test, feature = "test-util"))]
     test_read: Option<String>,
+}
+
+/// Where the native and OSC 52 tiers go.
+enum Host {
+    /// The OS clipboard through `arboard` (the handle is created on first
+    /// use) and the real terminal on stdout.
+    #[cfg_attr(test, expect(dead_code, reason = "no unit test may reach the host"))]
+    Real(Option<Result<arboard::Clipboard, String>>),
+    /// A test's clipboard: no OS clipboard, and OSC 52 sequences collect
+    /// here instead of reaching the terminal that runs the tests, which
+    /// would put the test's value on the developer's clipboard.
+    #[cfg(any(test, feature = "test-util"))]
+    Offline(Vec<u8>),
 }
 
 impl Clipboard {
@@ -44,8 +56,15 @@ impl Clipboard {
         Self {
             cmd: settings.clipboard_cmd.clone(),
             osc52_limit: settings.osc52_limit,
-            allow_arboard: true,
-            arboard: None,
+            // Every test App is built through here (`App::bare`), so a unit
+            // test can't reach the host whichever path built its App. Keyed
+            // on `cfg(test)`, not the `test-util` feature: `cargo test`
+            // builds the real binary with `test-util` on too, and that
+            // binary must keep its clipboard.
+            #[cfg(test)]
+            host: Host::Offline(Vec::new()),
+            #[cfg(not(test))]
+            host: Host::Real(None),
             #[cfg(any(test, feature = "test-util"))]
             test_read: None,
         }
@@ -63,18 +82,31 @@ impl Clipboard {
         self.osc52_limit = settings.osc52_limit;
     }
 
-    /// Test-only constructor that lets tests disable the arboard tier so
-    /// the cmd and OSC 52 tiers can be exercised deterministically without
-    /// touching a real OS clipboard. Gated on the `test-util` feature
-    /// (rather than plain `#[cfg(test)]`) because integration tests under
-    /// `tests/` link against the crate as an ordinary dependency — `cfg(test)`
-    /// never applies there. The crate's own `[dev-dependencies]` pulls
-    /// itself back in with `test-util` enabled so `cargo test` gets this for
-    /// free; a plain `cargo build`/`cargo build --release` does not enable
-    /// the feature, so this stays unreachable outside tests.
+    /// Test-only constructor for a clipboard that never touches the host:
+    /// no OS clipboard, and OSC 52 sequences land in [`Self::osc52_sent`],
+    /// so the cmd and OSC 52 tiers can be exercised deterministically.
+    /// Gated on the `test-util` feature (rather than plain `#[cfg(test)]`)
+    /// because integration tests under `tests/` link against the crate as
+    /// an ordinary dependency — `cfg(test)` never applies there, so
+    /// [`Self::new`] reaches the real host in them, and an integration test
+    /// that copies must install this first. The crate's own
+    /// `[dev-dependencies]` pulls itself back in with `test-util` enabled so
+    /// `cargo test` gets this for free; a plain `cargo build`/`cargo build
+    /// --release` does not enable the feature, so this stays unreachable
+    /// outside tests.
     #[cfg(any(test, feature = "test-util"))]
-    pub fn new_for_test(cmd: Option<String>, limit: usize, allow_arboard: bool) -> Self {
-        Self { cmd, osc52_limit: limit, allow_arboard, arboard: None, test_read: None }
+    pub fn new_for_test(cmd: Option<String>, limit: usize) -> Self {
+        Self { cmd, osc52_limit: limit, host: Host::Offline(Vec::new()), test_read: None }
+    }
+
+    /// The OSC 52 bytes a test's clipboard collected in place of the
+    /// terminal; empty for a real one.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn osc52_sent(&self) -> &[u8] {
+        match &self.host {
+            Host::Real(_) => &[],
+            Host::Offline(sent) => sent,
+        }
     }
 
     /// Makes the next `read()` calls return `text` (tests only).
@@ -92,15 +124,10 @@ impl Clipboard {
         if let Some(text) = self.test_read.clone() {
             return Ok(text);
         }
-        if !self.allow_arboard {
-            return Err("no OS clipboard available".to_string());
-        }
-        let handle = self
-            .arboard
-            .get_or_insert_with(|| arboard::Clipboard::new().map_err(|e| e.to_string()));
-        match handle {
-            Ok(clipboard) => clipboard.get_text().map_err(|e| e.to_string()),
-            Err(e) => Err(e.clone()),
+        match self.native() {
+            Some(Ok(clipboard)) => clipboard.get_text().map_err(|e| e.to_string()),
+            Some(Err(e)) => Err(e.clone()),
+            None => Err("no OS clipboard available".to_string()),
         }
     }
 
@@ -109,18 +136,25 @@ impl Clipboard {
             return Self::copy_via_cmd(&cmd, text);
         }
 
-        if self.allow_arboard {
-            let handle = self
-                .arboard
-                .get_or_insert_with(|| arboard::Clipboard::new().map_err(|e| e.to_string()));
-            if let Ok(clipboard) = handle
-                && clipboard.set_text(text).is_ok()
-            {
-                return CopyResult::Copied { via: "clipboard" };
-            }
+        if let Some(Ok(clipboard)) = self.native()
+            && clipboard.set_text(text).is_ok()
+        {
+            return CopyResult::Copied { via: "clipboard" };
         }
 
-        Self::copy_via_osc52(text, self.osc52_limit)
+        self.copy_via_osc52(text)
+    }
+
+    /// The native clipboard handle, created on first use; `None` for a
+    /// test's clipboard, which has no OS clipboard to reach.
+    fn native(&mut self) -> Option<&mut Result<arboard::Clipboard, String>> {
+        match &mut self.host {
+            Host::Real(handle) => Some(
+                handle.get_or_insert_with(|| arboard::Clipboard::new().map_err(|e| e.to_string())),
+            ),
+            #[cfg(any(test, feature = "test-util"))]
+            Host::Offline(_) => None,
+        }
     }
 
     fn copy_via_cmd(cmd: &str, text: &str) -> CopyResult {
@@ -161,15 +195,25 @@ impl Clipboard {
         }
     }
 
-    fn copy_via_osc52(text: &str, limit: usize) -> CopyResult {
-        if text.len() >= limit {
+    fn copy_via_osc52(&mut self, text: &str) -> CopyResult {
+        if text.len() >= self.osc52_limit {
             return CopyResult::OscTooLarge;
         }
 
         let encoded = base64::engine::general_purpose::STANDARD.encode(text);
         let sequence = format!("\x1b]52;c;{encoded}\x07");
-        let mut stdout = std::io::stdout();
-        match stdout.write_all(sequence.as_bytes()).and_then(|()| stdout.flush()) {
+        let written = match &mut self.host {
+            Host::Real(_) => {
+                let mut stdout = std::io::stdout();
+                stdout.write_all(sequence.as_bytes()).and_then(|()| stdout.flush())
+            }
+            #[cfg(any(test, feature = "test-util"))]
+            Host::Offline(sent) => {
+                sent.extend_from_slice(sequence.as_bytes());
+                Ok(())
+            }
+        };
+        match written {
             Ok(()) => CopyResult::Copied { via: "terminal (OSC 52)" },
             Err(e) => CopyResult::Failed(e.to_string()),
         }
@@ -186,7 +230,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let out = dir.path().join("out.txt");
         let cmd = format!("cat > {}", out.to_string_lossy());
-        let mut clipboard = Clipboard::new_for_test(Some(cmd), 65536, false);
+        let mut clipboard = Clipboard::new_for_test(Some(cmd), 65536);
 
         let result = clipboard.copy("hello");
 
@@ -196,7 +240,7 @@ mod tests {
 
     #[test]
     fn failing_cmd_fails_without_falling_through() {
-        let mut clipboard = Clipboard::new_for_test(Some("false".to_string()), 65536, true);
+        let mut clipboard = Clipboard::new_for_test(Some("false".to_string()), 65536);
 
         let result = clipboard.copy("hello");
 
@@ -204,6 +248,7 @@ mod tests {
             matches!(result, CopyResult::Failed(_)),
             "cmd is authoritative when set: {result:?}"
         );
+        assert!(clipboard.osc52_sent().is_empty(), "nothing went to the terminal tier");
     }
 
     #[test]
@@ -218,7 +263,7 @@ mod tests {
         // a unit test (no access to the child's pid); verified by
         // inspection of the kill()+wait() added on the error path.
         let big = "x".repeat(4 * 1024 * 1024);
-        let mut clipboard = Clipboard::new_for_test(Some("exit 0".to_string()), 65536, true);
+        let mut clipboard = Clipboard::new_for_test(Some("exit 0".to_string()), 65536);
 
         let result = clipboard.copy(&big);
 
@@ -228,21 +273,39 @@ mod tests {
         );
     }
 
+    /// `App::bare` builds this one, so every test App starts with it: in a
+    /// test it must reach neither the OS clipboard nor the terminal.
+    #[test]
+    fn the_settings_clipboard_stays_off_the_host_in_tests() {
+        let mut clipboard = Clipboard::new(&UiSettings::default());
+
+        let result = clipboard.copy("x");
+
+        assert!(
+            matches!(result, CopyResult::Copied { via: "terminal (OSC 52)" }),
+            "skips the OS clipboard: {result:?}"
+        );
+        assert_eq!(clipboard.osc52_sent(), b"\x1b]52;c;eA==\x07", "and the terminal");
+        assert!(clipboard.read().is_err(), "and never reads it");
+    }
+
     #[test]
     fn osc52_threshold_boundary_at_limit_is_too_large() {
-        let mut clipboard = Clipboard::new_for_test(None, 8, false);
+        let mut clipboard = Clipboard::new_for_test(None, 8);
 
         let result = clipboard.copy("12345678"); // 8 bytes, at the limit
 
         assert!(matches!(result, CopyResult::OscTooLarge));
+        assert!(clipboard.osc52_sent().is_empty(), "nothing is sent");
     }
 
     #[test]
     fn osc52_threshold_boundary_below_limit_copies_via_terminal() {
-        let mut clipboard = Clipboard::new_for_test(None, 8, false);
+        let mut clipboard = Clipboard::new_for_test(None, 8);
 
         let result = clipboard.copy("1234567"); // 7 bytes, below the limit
 
         assert!(matches!(result, CopyResult::Copied { via: "terminal (OSC 52)" }));
+        assert_eq!(clipboard.osc52_sent(), b"\x1b]52;c;MTIzNDU2Nw==\x07");
     }
 }

@@ -300,7 +300,7 @@ fn ctrl_c_copies_the_url_selection_instead_of_quitting() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
     app.editor.url = crate::components::line_input::LineInput::new("https://example.com");
     app.editor.open_url_from_app();
     app.editor.url.select_all();
@@ -326,7 +326,7 @@ fn ctrl_c_copies_the_jq_bar_selection_instead_of_quitting() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
     ready_response(&mut app, r#"{"data":{"items":[{"id":1}]}}"#);
     app.update(Action::FocusPane(PaneId::Response));
     assert!(app.session.response.set_jq_focus(true), "a JSON body: the bar can focus");
@@ -352,7 +352,7 @@ fn ctrl_c_copies_the_response_search_selection_instead_of_quitting() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
     ready_response(&mut app, r#"{"data":{"items":[{"id":1}]}}"#);
     app.focus = PaneId::Response;
     app.handle_key(plain('/'));
@@ -373,7 +373,7 @@ fn ctrl_c_copies_a_modal_prompt_selection_and_keeps_the_modal_open() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
     let mut input = crate::components::line_input::LineInput::new("my-request");
     input.select_all();
     app.modals.push(Modal::Prompt {
@@ -1259,7 +1259,7 @@ fn clicking_the_row_delete_affordance_deletes_the_row() {
 /// A test app whose clipboard read returns `text` (no OS clipboard).
 fn app_with_clipboard_text(text: &str) -> App {
     let mut app = App::new_for_test();
-    let mut clip = crate::clipboard::Clipboard::new_for_test(None, 65536, false);
+    let mut clip = crate::clipboard::Clipboard::new_for_test(None, 65536);
     clip.set_read_for_test(text);
     app.set_clipboard_for_test(clip);
     app
@@ -3404,7 +3404,7 @@ fn dragging_in_the_body_selects_and_ctrl_c_copies_it() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
     app.editor.active_tab = EditorTab::Body;
     app.editor.set_body_text("hello\nworld");
     render_once(&mut app);
@@ -8422,7 +8422,7 @@ fn ctrl_c_copies_a_table_cell_selection_and_keeps_the_edit_live() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
     let mut input = crate::components::line_input::LineInput::new("page");
     input.select_all();
     app.editor.table.editing = Some(CellEdit { row: 0, col: Col::Key, input });
@@ -8441,7 +8441,7 @@ fn ctrl_c_copies_a_var_form_selection_on_the_varmanager_screen() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
     app.screen = Screen::Manage;
     let mut edit = form_edit(VmField::Default, "token value");
     edit.input.select_all();
@@ -8753,7 +8753,7 @@ fn dragging_in_the_response_selects_and_ctrl_c_copies_it() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
     ready_response(&mut app, "plain text body"); // not JSON -> Raw view
     render_once(&mut app);
     let area = app.session.response.view().unwrap().last_area.expect("body area recorded");
@@ -9577,7 +9577,7 @@ fn copy_body_writes_via_clipboard_cmd_and_toasts_copied() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
     ready_response(&mut app, r#"{"a": 1}"#);
 
     app.update(Action::CopyToClipboard(CopyTarget::ResponseBody));
@@ -9594,7 +9594,7 @@ fn toolbar_copy_follows_the_headers_tab() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
     ready_response(&mut app, r#"{"a": 1}"#);
     app.update(Action::ResponseViewMode(crate::components::response::ViewMode::Headers));
 
@@ -9615,7 +9615,7 @@ fn toolbar_copy_follows_the_headers_tab() {
 #[test]
 fn copy_body_over_osc52_threshold_toasts_too_large() {
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 8, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 8));
     ready_response(&mut app, "12345678"); // 8 bytes, at the threshold
 
     app.update(Action::CopyToClipboard(CopyTarget::ResponseBody));
@@ -9776,7 +9776,7 @@ fn header_copy_click_and_key_parity_both_copy_the_header() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
     ready_response(&mut app, r#"{"a": 1}"#);
     app.update(Action::ResponseViewMode(crate::components::response::ViewMode::Headers));
     render_once(&mut app);
@@ -9816,7 +9816,7 @@ fn sent_header_copy_yields_the_real_value_behind_the_mask() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
     ready_response(&mut app, r#"{"a": 1}"#);
     app.update(Action::ResponseViewMode(crate::components::response::ViewMode::Headers));
     render_once(&mut app);
@@ -9841,7 +9841,7 @@ fn copy_body_with_no_response_toasts_nothing_to_copy_and_leaves_clipboard_untouc
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
 
     app.update(Action::CopyToClipboard(CopyTarget::ResponseBody));
 
@@ -9899,7 +9899,7 @@ fn address_bar_copy_chip_is_clickable_and_copies_url() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
     app.editor.url = crate::components::line_input::LineInput::new("https://example.com/x");
 
     render_once(&mut app);
@@ -14138,7 +14138,7 @@ fn auto_header_copy_pill_keeps_a_cell_of_padding_from_the_value() {
 #[test]
 fn auto_header_copy_icon_puts_the_resolved_value_on_the_clipboard() {
     let mut app = App::new_for_test();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536));
     app.editor.active_tab = EditorTab::Headers;
     app.editor.url = LineInput::new("https://example.com/foo");
     app.update(Action::Render);
@@ -14162,7 +14162,7 @@ fn auto_header_copy_icon_puts_the_resolved_value_on_the_clipboard() {
 #[test]
 fn the_table_rows_copy_button_puts_its_value_on_the_clipboard() {
     let mut app = app_with_one_param();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536));
     hover_row_then_click(&mut app, Hit::TableRow(0), Hit::TableCopy(0));
     assert!(rendered_text(&mut app).contains("Copied page"), "the toast names the row it copied");
 }
@@ -14172,7 +14172,7 @@ fn the_table_rows_copy_button_puts_its_value_on_the_clipboard() {
 #[test]
 fn copying_a_row_leaves_the_table_selection_where_it_was() {
     let mut app = app_with_one_param();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536));
     app.editor.table.selected = Some(0);
     click_hit(&mut app, Hit::TableCopy(0));
     assert_eq!(app.editor.table.selected, Some(0), "the row stays selected through a copy");
@@ -14301,7 +14301,7 @@ fn copying_the_row_under_edit_takes_the_typed_value() {
     let out = dir.path().join("out.txt");
     let cmd = format!("cat > {}", out.to_string_lossy());
     let mut app = app_with_one_param();
-    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false));
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536));
     click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
     type_chars(&mut app, "23");
 
@@ -19963,7 +19963,7 @@ mod undo_tests {
 /// A clipboard whose writes land in `out` and whose reads return `read`.
 fn file_clipboard(out: &std::path::Path, read: &str) -> crate::clipboard::Clipboard {
     let cmd = format!("cat > {}", out.to_string_lossy());
-    let mut clipboard = crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false);
+    let mut clipboard = crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536);
     clipboard.set_read_for_test(read);
     clipboard
 }
@@ -23244,7 +23244,6 @@ fn tooltip_app(token: &str) -> (App, tempfile::TempDir, std::path::PathBuf) {
     app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
         Some(format!("cat > {}", out.to_string_lossy())),
         65536,
-        false,
     ));
     app.editor.url = crate::components::line_input::LineInput::new(&format!("{{{{{token}}}}}/x"));
     app.update(Action::Render);
