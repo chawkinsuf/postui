@@ -100,7 +100,7 @@ mod tests {
                 value: v.to_string(),
                 display: v.to_string(),
                 origin: HeaderOrigin::Request { row },
-                sent: true,
+                unsent: None,
                 unresolved: Vec::new(),
             })
             .collect();

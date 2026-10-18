@@ -112,6 +112,22 @@ pub fn header_rows(req: &HttpRequest, ctx: &PrepareContext) -> Vec<HeaderRow>
   it, and the user kept the Headers tab as the only signal
   (`mine (approved)`).
 
+*Amended 2026-10-18 after review round 3:*
+- `HeaderRow.sent: bool` becomes `unsent: Option<Unsent>`, which says
+  why a row isn't sent: `Replaced`, `Duplicate`, or
+  `ClientOwned { header, client_sends }`. The editor reads the reason
+  instead of calling `client_owned` on the name again (`mine`). #20 gets
+  the reason it needs to strike overridden rows.
+- R3b's note names the client's row only when the client sends one:
+  `not sent · the client sets Host`, else
+  `not sent · set by the client only`. A GET has no `Content-Length`,
+  and a `{{token}}` host has no `Host` yet. The user picked this from
+  the options (`mine (approved)`).
+- If the masked URL has no host, the masked `Host` falls back to the
+  mask, never to the real host. A secret port, or a label pushed past 63
+  characters, shows the authority as written, still masked. That
+  cosmetic gap is accepted rather than chased further.
+
 **Binary**
 - `http::send` puts only the non-`Client` rows on the request.
   `SentHeader::wire` becomes a map over `PreparedRequest.headers`,

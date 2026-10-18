@@ -537,7 +537,7 @@ mod tests {
         ] {
             let auto: Vec<(String, String)> = header_rows(&req, &ctx)
                 .into_iter()
-                .filter(|r| r.sent)
+                .filter(|r| r.sent())
                 .map(|r| (r.name.to_ascii_lowercase(), r.value))
                 .collect();
             let (prepared, _) = prepare(&req, &ctx).unwrap();

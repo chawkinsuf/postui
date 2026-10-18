@@ -252,7 +252,7 @@ pub fn prepare(
     // weighed in review and declined).
     let (client_headers, headers): (Vec<HeaderRow>, Vec<HeaderRow>) = rows(req, ctx, &mut warnings)
         .into_iter()
-        .filter(|r| r.sent)
+        .filter(HeaderRow::sent)
         .partition(|r| r.origin == HeaderOrigin::Client);
     missing.extend(headers.iter().flat_map(|r| r.unresolved.iter().cloned()));
 
@@ -318,12 +318,33 @@ pub struct HeaderRow {
     /// `display_name`, what screens show while secrets are hidden.
     pub display: String,
     pub origin: HeaderOrigin,
-    /// Whether it goes on the wire. A row that doesn't is still listed:
-    /// an overridden or duplicate default, a row naming a
-    /// [`CLIENT_OWNED`] header, an auto row a sent row already names.
-    pub sent: bool,
+    /// Why the row doesn't go on the wire, or `None` when it does. A row
+    /// that isn't sent is still listed, so screens can say why.
+    pub unsent: Option<Unsent>,
     /// Names of `{{tokens}}` in the name or value that didn't resolve.
     pub unresolved: Vec<String>,
+}
+
+impl HeaderRow {
+    /// Whether the row goes on the wire.
+    pub fn sent(&self) -> bool {
+        self.unsent.is_none()
+    }
+}
+
+/// Why a listed [`HeaderRow`] isn't sent: recorded where the rule is
+/// applied, so no screen has to work it out again from the row's name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unsent {
+    /// A row that goes out names it instead: the request's own (enabled or
+    /// disabled) over a default, or a sent row over an auto or client row.
+    Replaced,
+    /// A default whose name an earlier default already sends.
+    Duplicate,
+    /// It names a [`CLIENT_OWNED`] header (R3a). `client_sends`: whether
+    /// the client sends its own row for it in this send — not without a
+    /// body for `Content-Length`, nor while the host is a `{{token}}`.
+    ClientOwned { header: &'static str, client_sends: bool },
 }
 
 /// Headers the HTTP client sets from the URL and the body, and which
@@ -366,6 +387,15 @@ fn rows(
             substitute_masked(text, &vars, &secrets, &mut BTreeSet::new())
         }
     };
+    // What the client derives on its own, worked out first so a row naming
+    // a client-owned header can say whether the client sends one.
+    let url = quiet(&req.url);
+    let host = authority(&url);
+    let body = sent_body(req);
+    let client_sends = |header: &str| match header {
+        "Host" => host.is_some(),
+        _ => body.is_some(),
+    };
     // Substitutes name and value together, so a row reports the
     // unresolved tokens of both halves.
     let row = |name: &str, value: &str, origin: HeaderOrigin| {
@@ -373,7 +403,8 @@ fn rows(
         let real_name = substitute_masked(name, &vars, &no_mask, &mut unresolved);
         let real = substitute_masked(value, &vars, &no_mask, &mut unresolved);
         HeaderRow {
-            sent: client_owned(&real_name).is_none(),
+            unsent: client_owned(&real_name)
+                .map(|header| Unsent::ClientOwned { header, client_sends: client_sends(header) }),
             display_name: masked(name, &real_name),
             name: real_name,
             display: masked(value, &real),
@@ -382,13 +413,13 @@ fn rows(
             unresolved: unresolved.into_iter().collect(),
         }
     };
-    let fixed = |name: &str, value: String, display: String, sent: bool| HeaderRow {
+    let fixed = |name: &str, value: String, display: String, unsent: Option<Unsent>| HeaderRow {
         name: name.to_string(),
         display_name: name.to_string(),
         value,
         display,
         origin: HeaderOrigin::Client,
-        sent,
+        unsent,
         unresolved: Vec::new(),
     };
 
@@ -406,11 +437,12 @@ fn rows(
     for (k, e) in ctx.default_headers.iter().filter(|(_, e)| e.enabled) {
         let mut r = row(k, &e.value, HeaderOrigin::Default);
         let lower = r.name.to_ascii_lowercase();
-        if request_names.iter().any(|n| n.eq_ignore_ascii_case(&r.name)) {
-            r.sent = false;
-        } else if r.sent && !claimed.insert(lower.clone()) {
+        // A client-owned default is already unsent, whatever else names it.
+        if r.sent() && request_names.iter().any(|n| n.eq_ignore_ascii_case(&r.name)) {
+            r.unsent = Some(Unsent::Replaced);
+        } else if r.sent() && !claimed.insert(lower.clone()) {
             warnings.push(PrepareWarning::DuplicateDefaultHeader { name: lower });
-            r.sent = false;
+            r.unsent = Some(Unsent::Duplicate);
         }
         rows.push(r);
     }
@@ -418,40 +450,44 @@ fn rows(
         rows.push(row(k, &e.value, HeaderOrigin::Request { row: i }));
     }
 
-    let sends = |rows: &[HeaderRow], name: &str| {
-        rows.iter().any(|r| r.sent && r.name.eq_ignore_ascii_case(name))
+    // An auto or client row stands aside for a sent row naming it.
+    let replaced = |rows: &[HeaderRow], name: &str| {
+        rows.iter()
+            .any(|r| r.sent() && r.name.eq_ignore_ascii_case(name))
+            .then_some(Unsent::Replaced)
     };
-    let body = sent_body(req);
     if body.is_some() {
         let json = "application/json".to_string();
-        let sent = !sends(&rows, "content-type");
+        let unsent = replaced(&rows, "content-type");
         rows.push(HeaderRow {
             origin: HeaderOrigin::ContentType,
-            ..fixed("Content-Type", json.clone(), json, sent)
+            ..fixed("Content-Type", json.clone(), json, unsent)
         });
     }
 
     // The client's own rows, in the order it sends them. `Accept: */*` is
     // its default unless a sent row names `accept`.
-    let sent = !sends(&rows, "accept");
-    rows.push(fixed("Accept", "*/*".into(), "*/*".into(), sent));
+    let unsent = replaced(&rows, "accept");
+    rows.push(fixed("Accept", "*/*".into(), "*/*".into(), unsent));
     // `Host` is the URL's authority as the client derives it, real and
     // masked. A URL whose host is still a `{{token}}` has none yet.
-    let url = quiet(&req.url);
-    if let Some(host) = authority(&url) {
+    if let Some(host) = host {
         let display = if secrets.is_empty() {
             host.clone()
         } else {
             let masked = substitute_masked(&req.url, &vars, &secrets, &mut BTreeSet::new());
-            authority(&masked).unwrap_or_else(|| host.clone())
+            // Never the real host: it may hold the secret. A masked URL
+            // always has a host where the real one does, so this is only
+            // the safe answer for a case that doesn't arise.
+            authority(&masked).unwrap_or_else(|| SECRET_MASK.to_string())
         };
-        rows.push(fixed("Host", host, display, true));
+        rows.push(fixed("Host", host, display, None));
     }
     if let Some(body) = body {
         // The byte length of what goes on the wire: the substituted body
         // when the request opts in, never the masked one.
         let len = if req.substitute_body { quiet(body).len() } else { body.len() };
-        rows.push(fixed("Content-Length", len.to_string(), len.to_string(), true));
+        rows.push(fixed("Content-Length", len.to_string(), len.to_string(), None));
     }
     rows
 }
@@ -481,7 +517,10 @@ const MASK_STAND_IN: &str = "postui-secret-mask";
 /// userinfo. A masked URL goes through the same rule, its mask kept.
 /// `None` while the host is empty or still holds a `{{token}}`. A URL the
 /// parser refuses keeps its host and port as written (the send itself
-/// will report that URL).
+/// will report that URL); so does a masked one whose mask the parser
+/// can't take in place of the secret (a secret port, a label pushed past
+/// 63 characters) — still masked, just not in the client's exact form.
+/// That cosmetic gap is accepted rather than chased further.
 fn authority(url: &str) -> Option<String> {
     let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
     let segment = after_scheme.split(['/', '?', '#']).next().unwrap_or_default();
@@ -675,7 +714,7 @@ mod tests {
         ctx.vars.insert("auth_hdr".into(), "Authorization".into());
         ctx.default_headers.insert("Authorization".into(), on("Bearer default"));
         let rows = header_rows(&req, &ctx);
-        assert!(rows.iter().any(|r| r.origin == HeaderOrigin::Default && !r.sent), "{rows:?}");
+        assert!(rows.iter().any(|r| r.origin == HeaderOrigin::Default && !r.sent()), "{rows:?}");
     }
 
     #[test]
@@ -985,10 +1024,10 @@ mod tests {
         let rows = header_rows(&req, &ctx);
         let auth: Vec<_> = rows.iter().filter(|r| r.name.eq_ignore_ascii_case("x-auth")).collect();
         assert!(auth.iter().any(|r| r.origin == HeaderOrigin::Request { row: 0 }
-            && r.sent
+            && r.sent()
             && r.value == "s3cret"
             && r.display == SECRET_MASK));
-        assert!(auth.iter().any(|r| r.origin == HeaderOrigin::Default && !r.sent));
+        assert!(auth.iter().any(|r| r.origin == HeaderOrigin::Default && !r.sent()));
         assert_eq!(client(&rows, "Host").value, "api.example.com");
     }
 
@@ -1000,7 +1039,7 @@ mod tests {
         ctx.default_headers.insert("X-Off".into(), off("nope"));
         let rows = header_rows(&req, &ctx);
         assert_eq!(row(&rows, "X-Trace").origin, HeaderOrigin::Default);
-        assert!(row(&rows, "X-Trace").sent);
+        assert!(row(&rows, "X-Trace").sent());
         assert!(
             !rows.iter().any(|r| r.name == "X-Off"),
             "a disabled default is not part of the send at all"
@@ -1023,12 +1062,12 @@ mod tests {
         let auto = row(&rows, "content-type");
         assert_eq!(auto.origin, HeaderOrigin::ContentType);
         assert_eq!(auto.value, "application/json");
-        assert!(auto.sent);
+        assert!(auto.sent());
 
         req.headers.insert("content-TYPE".into(), on("application/vnd.x+json"));
         let rows = header_rows(&req, &PrepareContext::default());
         let auto = rows.iter().find(|r| r.origin == HeaderOrigin::ContentType).unwrap();
-        assert!(!auto.sent, "an explicit content-type wins case-insensitively");
+        assert!(!auto.sent(), "an explicit content-type wins case-insensitively");
     }
 
     #[test]
@@ -1087,14 +1126,14 @@ mod tests {
         let rows = header_rows(&req, &c);
         for r in rows.iter().filter(|r| r.origin != HeaderOrigin::Client) {
             if client_owned(&r.name).is_some() {
-                assert!(!r.sent, "{r:?}");
+                assert!(!r.sent(), "{r:?}");
             }
         }
-        assert!(rows.iter().any(|r| r.origin == HeaderOrigin::Request { row: 0 } && !r.sent));
-        assert!(rows.iter().any(|r| r.origin == HeaderOrigin::Request { row: 1 } && !r.sent));
-        assert!(client(&rows, "Host").sent);
+        assert!(rows.iter().any(|r| r.origin == HeaderOrigin::Request { row: 0 } && !r.sent()));
+        assert!(rows.iter().any(|r| r.origin == HeaderOrigin::Request { row: 1 } && !r.sent()));
+        assert!(client(&rows, "Host").sent());
         assert_eq!(client(&rows, "Host").value, "example.com");
-        assert!(client(&rows, "Content-Length").sent);
+        assert!(client(&rows, "Content-Length").sent());
         assert_eq!(client(&rows, "Content-Length").value, "2");
 
         let (p, _) = prepare(&req, &c).unwrap();
@@ -1108,9 +1147,39 @@ mod tests {
         let mut req = base("http://example.com/p");
         req.headers.insert("Content-Length".into(), on("5"));
         let rows = header_rows(&req, &PrepareContext::default());
-        assert!(!row(&rows, "Content-Length").sent);
+        assert!(!row(&rows, "Content-Length").sent());
         let (p, _) = prepare(&req, &PrepareContext::default()).unwrap();
         assert!(!p.headers.iter().any(|h| h.name.eq_ignore_ascii_case("content-length")));
+    }
+
+    /// Each unsent row records why, so screens never work it out again —
+    /// including whether the client sends its own row for a client-owned
+    /// name (not without a body, nor while the host is a `{{token}}`).
+    #[test]
+    fn unsent_rows_record_why() {
+        let mut req = base("http://example.com/p");
+        req.headers.insert("Content-Length".into(), on("5"));
+        req.headers.insert("Host".into(), on("other.test"));
+        req.headers.insert("X-A".into(), on("mine"));
+        let mut c = ctx(&[], &[("X-A", "dflt", true), ("X-B", "1", true), ("x-b", "2", true)]);
+        let why = |rows: &[HeaderRow], origin: HeaderOrigin| {
+            rows.iter().find(|r| r.origin == origin).unwrap().unsent
+        };
+        let rows = header_rows(&req, &c);
+        let owned = |header, client_sends| Some(Unsent::ClientOwned { header, client_sends });
+        assert_eq!(why(&rows, HeaderOrigin::Request { row: 0 }), owned("Content-Length", false));
+        assert_eq!(why(&rows, HeaderOrigin::Request { row: 1 }), owned("Host", true));
+        assert_eq!(rows[0].unsent, Some(Unsent::Replaced), "X-A default, replaced");
+        assert_eq!(rows[1].unsent, None, "the first X-B goes out");
+        assert_eq!(rows[2].unsent, Some(Unsent::Duplicate), "the second doesn't");
+
+        req.method = Method::Post;
+        req.body = Some(Body::Json { text: "{}".into() });
+        req.url = "http://{{host}}/p".into();
+        c.default_headers.clear();
+        let rows = header_rows(&req, &c);
+        assert_eq!(why(&rows, HeaderOrigin::Request { row: 0 }), owned("Content-Length", true));
+        assert_eq!(why(&rows, HeaderOrigin::Request { row: 1 }), owned("Host", false));
     }
 
     /// Only what is sent has to resolve (R8): a row that is listed but not
@@ -1137,24 +1206,27 @@ mod tests {
         let rows = header_rows(&req, &PrepareContext::default());
         let accept = client(&rows, "Accept");
         assert_eq!(accept.value, "*/*");
-        assert!(accept.sent);
+        assert!(accept.sent());
         let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, ["Accept", "Host"], "wire order");
 
         let mut req = base("https://api.example.com/v1");
         req.headers.insert("accept".into(), on("text/plain"));
         let rows = header_rows(&req, &PrepareContext::default());
-        assert!(!client(&rows, "Accept").sent, "a request row named accept replaces the client's");
+        assert!(
+            !client(&rows, "Accept").sent(),
+            "a request row named accept replaces the client's"
+        );
 
         // A sent default names it too — and so does the request row that
         // keeps that default from being sent.
         let req = base("https://api.example.com/v1");
         let with_default = ctx(&[], &[("Accept", "text/plain", true)]);
-        assert!(!client(&header_rows(&req, &with_default), "Accept").sent);
+        assert!(!client(&header_rows(&req, &with_default), "Accept").sent());
         let mut req = base("https://api.example.com/v1");
         req.headers.insert("Accept".into(), on("x"));
         assert!(
-            !client(&header_rows(&req, &with_default), "Accept").sent,
+            !client(&header_rows(&req, &with_default), "Accept").sent(),
             "the request row still names it even though the default is not sent"
         );
     }
@@ -1274,7 +1346,7 @@ mod tests {
         let names = |rows: &[HeaderRow]| rows.iter().map(|h| h.name.clone()).collect::<Vec<_>>();
         assert_eq!(names(&p.headers), ["Accept", "Content-Type"]);
         assert_eq!(names(&p.client_headers), ["Host", "Content-Length"]);
-        assert!(p.headers.iter().chain(&p.client_headers).all(|h| h.sent));
+        assert!(p.headers.iter().chain(&p.client_headers).all(|h| h.sent()));
     }
 
     /// A secret in a header's name is masked on screen like one in its

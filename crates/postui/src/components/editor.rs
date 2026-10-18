@@ -302,10 +302,9 @@ pub struct ComputedHeadersView {
     /// row a sent row replaces is left out. `Hit::AutoHeaderCopy(i)` is
     /// `rows[i]`.
     pub rows: Vec<postui_core::prepare::HeaderRow>,
-    /// Request-table rows the client-owned rule keeps off the wire
-    /// (spec 2026-10-18 R3a), with the header each one names: the table
-    /// draws them as errors.
-    pub dropped: Vec<(usize, &'static str)>,
+    /// Request-table rows kept off the wire (spec 2026-10-18 R3a), each
+    /// with the note saying why: the table draws them as errors.
+    pub dropped: Vec<(usize, String)>,
     /// Whether secrets show in the clear (each row's `value`) rather than
     /// masked (its `display`).
     pub revealed: bool,
@@ -614,22 +613,22 @@ impl Editor {
     /// `header_rows`, the list the send itself is built from, split into
     /// the auto section's rows and the request rows it keeps off the wire.
     pub fn recompute_computed_headers(&mut self, ctx: &postui_core::prepare::PrepareContext) {
-        use postui_core::prepare::{HeaderOrigin, client_owned};
+        use postui_core::prepare::HeaderOrigin;
         let rows = postui_core::prepare::header_rows(&self.current_request(), ctx);
         let mut dropped = Vec::new();
         let mut auto = Vec::new();
         for r in rows {
             match r.origin {
                 HeaderOrigin::Request { row } => {
-                    if let (false, Some(name)) = (r.sent, client_owned(&r.name)) {
-                        dropped.push((row, name));
+                    if let Some(note) = r.unsent.and_then(unsent_note) {
+                        dropped.push((row, note));
                     }
                 }
-                // An unsent default is struck through: it is what the
-                // request's own row replaced. An unsent auto or client
-                // row just isn't part of the send.
+                // An unsent default is struck through: a request row
+                // replaced it, or the client owns its name. An unsent
+                // auto or client row just isn't part of the send.
                 HeaderOrigin::Default => auto.push(r),
-                _ if r.sent => auto.push(r),
+                _ if r.sent() => auto.push(r),
                 _ => {}
             }
         }
@@ -3094,9 +3093,9 @@ impl Editor {
                 // A row naming a header the client sets itself is kept but
                 // never sent (spec 2026-10-18 R3a), so it reads as an error.
                 let mut notes: Vec<Option<RowNote>> = vec![None; self.headers.len()];
-                for &(row, name) in &self.computed.dropped {
-                    if let Some(note) = notes.get_mut(row) {
-                        *note = Some(RowNote::error(client_owned_note(name)));
+                for (row, text) in &self.computed.dropped {
+                    if let Some(note) = notes.get_mut(*row) {
+                        *note = Some(RowNote::error(text.clone()));
                     }
                 }
                 self.table.draw(
@@ -3434,7 +3433,7 @@ impl Editor {
             if y >= max_y {
                 break;
             }
-            let suppressed = !row.sent;
+            let suppressed = !row.sent();
             let (name, value) = if self.computed.revealed {
                 (&row.name, &row.value)
             } else {
@@ -3444,13 +3443,8 @@ impl Editor {
             // says why, as a typed row naming the same header does (spec
             // 2026-10-18 R3b): struck alone, it would look overridden by a
             // request row that isn't there.
-            let owner = match row.origin {
-                postui_core::prepare::HeaderOrigin::Default if suppressed => {
-                    postui_core::prepare::client_owned(&row.name)
-                }
-                _ => None,
-            };
-            let base = if owner.is_some() { Style::default().fg(theme.error) } else { dim };
+            let note = row.unsent.and_then(unsent_note);
+            let base = if note.is_some() { Style::default().fg(theme.error) } else { dim };
             let mut name_style = base;
             // The value draws dim throughout; an unresolved `{{token}}` in
             // it is tinted span-level by `paint_var_tokens` below (Task 12
@@ -3481,9 +3475,8 @@ impl Editor {
                 Span::styled(value_piece, value_style),
                 Span::styled(crate::glyph::COPY_PILL, glyph_style),
             ];
-            if let Some(owner) = owner {
-                let note = format!("  {}", client_owned_note(owner));
-                spans.push(Span::styled(note, Style::default().fg(theme.error)));
+            if let Some(note) = note {
+                spans.push(Span::styled(format!("  {note}"), Style::default().fg(theme.error)));
             }
             let line = Line::from(spans);
             let row_rect = Rect::new(area.x, y, area.width, 1);
@@ -3516,11 +3509,23 @@ impl Editor {
     }
 }
 
-/// Why a row naming a client-owned header (`Host`, `Content-Length`) is
-/// kept off the wire (spec 2026-10-18 R3a): the note a typed row and a
-/// project default both carry.
-fn client_owned_note(header: &str) -> String {
-    format!("not sent · the client sets {header}")
+/// The error note for a row kept off the wire for a reason the user has to
+/// act on — one naming a client-owned header (`Host`, `Content-Length`;
+/// spec 2026-10-18 R3a/R3b), carried by a typed row and a project default
+/// alike. It names the client's own row only when the client sends one (a
+/// GET has no `Content-Length`). A replaced or duplicate row needs none:
+/// its strike is the whole story.
+fn unsent_note(unsent: postui_core::prepare::Unsent) -> Option<String> {
+    use postui_core::prepare::Unsent;
+    match unsent {
+        Unsent::ClientOwned { header, client_sends: true } => {
+            Some(format!("not sent · the client sets {header}"))
+        }
+        Unsent::ClientOwned { header: _, client_sends: false } => {
+            Some("not sent · set by the client only".to_string())
+        }
+        Unsent::Replaced | Unsent::Duplicate => None,
+    }
 }
 
 /// Context-aware JSON token highlights for the body buffer, matching the
@@ -5820,6 +5825,25 @@ url = "https://api.example.com/users""#,
         assert_eq!(buf[(vx, vy)].fg, app.theme.error, "and the row reads as an error");
     }
 
+    /// On a GET the client sends no `Content-Length`, so a typed one's note
+    /// doesn't point at a client row that isn't there.
+    #[test]
+    fn a_typed_content_length_on_a_get_says_only_the_client_sets_it() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.url = LineInput::new("https://example.com/foo");
+        app.editor
+            .headers
+            .insert("Content-Length".into(), Entry { value: "5".into(), enabled: true });
+        app.update(Action::Render);
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 70)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("not sent · set by the client only"), "{content}");
+        assert!(!content.contains("the client sets"), "{content}");
+    }
+
     /// A request row naming `Host` is kept but never sent (spec 2026-10-18
     /// R3a/R3b): it draws error-red with a note saying why, and the
     /// client's own `Host` row in the auto section stays, not struck.
@@ -6363,7 +6387,7 @@ url = "https://api.example.com/users""#,
             value: value.into(),
             display: value.into(),
             origin: postui_core::prepare::HeaderOrigin::Client,
-            sent: true,
+            unsent: None,
             unresolved: Vec::new(),
         }
     }
