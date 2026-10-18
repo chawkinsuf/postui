@@ -131,6 +131,28 @@ fn hovered_row(ctx: &DrawCtx) -> Option<usize> {
     }
 }
 
+/// A note trailing one row's value on its line, given to
+/// [`TableEditorState::draw`] per row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowNote {
+    pub text: String,
+    /// The row is wrong as written: the note and the row's text draw in
+    /// the error colour (a header row that is never sent).
+    pub error: bool,
+}
+
+impl RowNote {
+    /// A dim note about the value, such as the Vars tab's `overrides …`.
+    pub fn dim(text: String) -> Self {
+        Self { text, error: false }
+    }
+
+    /// A note saying the row is wrong as written.
+    pub fn error(text: String) -> Self {
+        Self { text, error: true }
+    }
+}
+
 /// Shared cursor/edit state for a key/value table (Params, Headers or Vars).
 /// One instance is reused across the tabs; the caller passes in whichever
 /// `IndexMap` is currently active.
@@ -571,11 +593,9 @@ impl TableEditorState {
     /// ghost row (an empty row labelled by `add_label` until it is typed
     /// into), and a closing `▔` edge. Every cell registers a
     /// `Hit::TableCell`, so a click lands straight in that cell's editor.
-    /// `shadow` is `Some` only on the Vars tab: `name → "<source>:
-    /// <value>"`, already formatted (masked for secrets) by the caller. A
-    /// row whose key is present shows it as `overrides …`, dim, trailing its value on
-    /// the same line. `None` on Params/Headers, which have no shadowing
-    /// concept.
+    /// `notes[i]` trails row `i`'s value on the same line (rows past the
+    /// end have none): the Vars tab's dim `overrides …`, or the Headers
+    /// tab's error note on a row that is never sent.
     /// `vars` is the variable snapshot every drawn cell's `{{tokens}}` are
     /// tinted and registered against (spec §7).
     #[allow(clippy::too_many_arguments)] // signature is the produced interface, verbatim
@@ -587,7 +607,7 @@ impl TableEditorState {
         ctx: &DrawCtx,
         add_label: &str,
         hits: &mut HitMap,
-        shadow: Option<&IndexMap<String, String>>,
+        notes: &[Option<RowNote>],
         vars: &VarView,
     ) {
         let theme = ctx.theme;
@@ -614,8 +634,8 @@ impl TableEditorState {
             if y >= bottom {
                 break;
             }
-            let hint = shadow.and_then(|s| s.get(k)).map(|s| format!("overrides {s}"));
-            self.draw_row(buf, hits, area, y, i, k, e, ctx, hint.as_deref(), vars, true, None);
+            let note = notes.get(i).and_then(Option::as_ref);
+            self.draw_row(buf, hits, area, y, i, k, e, ctx, note, vars, true, None);
             y += 1;
         }
 
@@ -760,8 +780,9 @@ impl TableEditorState {
     /// One painter, one row height. A row being edited draws its
     /// `LineInput` in place, right where the text was, the way the
     /// Variable Manager's grid edits its own cells: nothing opens up, and
-    /// no row below the cursor moves. `hint` is the Vars tab's
-    /// "overrides <source>: <value>" shadow, trailing the value dim.
+    /// no row below the cursor moves. `note` trails the value (see
+    /// [`RowNote`]); an error note turns an enabled row's text error-red
+    /// too.
     #[allow(clippy::too_many_arguments)]
     fn draw_row(
         &self,
@@ -773,7 +794,7 @@ impl TableEditorState {
         key: &str,
         entry: &Entry,
         ctx: &DrawCtx,
-        hint: Option<&str>,
+        note: Option<&RowNote>,
         vars: &VarView,
         real: bool,
         ghost_label: Option<&str>,
@@ -798,9 +819,11 @@ impl TableEditorState {
             if show_actions { area.right().saturating_sub(ACTIONS_W) } else { area.right() };
         let value_w = value_right.saturating_sub(cols.value_x);
         let name_w = cols.divider_x.saturating_sub(cols.name_x);
+        let error = note.is_some_and(|n| n.error);
         let fg = match (real, entry.enabled, lit) {
             (false, _, true) => theme.text,
             (false, _, false) => theme.text_muted,
+            (true, true, _) if error => theme.error,
             (true, true, _) => theme.text,
             (true, false, _) => theme.text_muted,
         };
@@ -844,14 +867,15 @@ impl TableEditorState {
         } else {
             let cell = Rect::new(cols.value_x, y, value_w, 1);
             value_drew = value_rest.paint_at_rest(buf, cell, theme, fg, value_bg);
-            // The shadow hint trails the value on the same line, dim: it
-            // is a note about that value, so it reads where the value
-            // ends rather than on a row of its own.
-            if let Some(hint) = hint {
-                let hint_x = cols.value_x + value_drew + 3;
-                let room = value_right.saturating_sub(hint_x);
+            // The note trails the value on the same line: it is about
+            // that value, so it reads where the value ends rather than on
+            // a row of its own.
+            if let Some(note) = note {
+                let note_x = cols.value_x + value_drew + 3;
+                let room = value_right.saturating_sub(note_x);
+                let color = if note.error { theme.error } else { theme.text_muted };
                 if room > 0 {
-                    text(buf, hint_x, y, clip(hint, room), theme.text_muted, value_bg, false);
+                    text(buf, note_x, y, clip(&note.text, room), color, value_bg, false);
                 }
             }
         }
@@ -1859,7 +1883,7 @@ mod tests {
     ) -> Terminal<TestBackend> {
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
         terminal
-            .draw(|f| t.draw(f, f.area(), map, ctx, "+ Add param", hits, None, &VarView::default()))
+            .draw(|f| t.draw(f, f.area(), map, ctx, "+ Add param", hits, &[], &VarView::default()))
             .unwrap();
         terminal
     }
@@ -2015,7 +2039,7 @@ mod tests {
                     &ctx(&theme, None),
                     "+ Add param",
                     &mut hits,
-                    None,
+                    &[],
                     &VarView::default(),
                 )
             })
@@ -2034,7 +2058,7 @@ mod tests {
     fn draw_narrow(
         map: &IndexMap<String, Entry>,
         width: u16,
-        shadow: Option<&IndexMap<String, String>>,
+        notes: &[Option<RowNote>],
         hits: &mut HitMap,
     ) -> Terminal<TestBackend> {
         let theme = Theme::dark();
@@ -2050,7 +2074,7 @@ mod tests {
                     &ctx(&theme, None),
                     "+ Add param",
                     hits,
-                    shadow,
+                    notes,
                     &VarView::default(),
                 )
             })
@@ -2065,7 +2089,7 @@ mod tests {
         let value = "本番環境".repeat(5);
         let map = map_of(&[("a", value.as_str())]);
         let mut hits = HitMap::default();
-        let terminal = draw_narrow(&map, 24, None, &mut hits);
+        let terminal = draw_narrow(&map, 24, &[], &mut hits);
         let buf = terminal.backend().buffer();
         let y = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap().y;
         // Every 2-cell glyph ends by the table's edge: one straddling it
@@ -2083,13 +2107,35 @@ mod tests {
     #[test]
     fn the_shadow_hint_trails_a_wide_value_s_cells() {
         let map = map_of(&[("a", "本番")]);
-        let shadow: IndexMap<String, String> = [("a".to_string(), "qa: 1".to_string())].into();
+        let notes = [Some(RowNote::dim("overrides qa: 1".into()))];
         let mut hits = HitMap::default();
-        let terminal = draw_narrow(&map, 40, Some(&shadow), &mut hits);
+        let terminal = draw_narrow(&map, 40, &notes, &mut hits);
         let buf = terminal.backend().buffer();
         let v = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
         assert_eq!(buf[(v.x + 2, v.y)].symbol(), "番", "the value keeps its second glyph");
         assert_eq!(buf[(v.x + 7, v.y)].symbol(), "o", "the hint starts 3 cells past the value");
+        assert_eq!(buf[(v.x + 7, v.y)].fg, Theme::dark().text_muted, "a dim note");
+    }
+
+    /// An error note (a header row that is never sent) turns the enabled
+    /// row's name and value error-red and trails the value in red too; a
+    /// row without a note keeps the plain text colour.
+    #[test]
+    fn an_error_note_draws_its_row_and_itself_in_the_error_colour() {
+        let theme = Theme::dark();
+        let map = map_of(&[("Host", "other.test"), ("X-A", "1")]);
+        let notes = [Some(RowNote::error("not sent".into()))];
+        let mut hits = HitMap::default();
+        let terminal = draw_narrow(&map, 40, &notes, &mut hits);
+        let buf = terminal.backend().buffer();
+        let cell = |row, col| hits.rect_of(&Hit::TableCell { row, col }).unwrap();
+        let (k, v) = (cell(0, 0), cell(0, 1));
+        assert_eq!(buf[(k.x, k.y)].fg, theme.error, "the name");
+        assert_eq!(buf[(v.x, v.y)].fg, theme.error, "the value");
+        assert_eq!(buf[(v.x + 13, v.y)].symbol(), "n", "the note, 3 cells past the value");
+        assert_eq!(buf[(v.x + 13, v.y)].fg, theme.error);
+        let plain = cell(1, 0);
+        assert_eq!(buf[(plain.x, plain.y)].fg, theme.text, "a row with no note is plain");
     }
 
     /// A disabled wide value is struck across exactly the cells it fills.
@@ -2100,7 +2146,7 @@ mod tests {
         let mut map = map_of(&[("a", "本番")]);
         map["a"].enabled = false;
         let mut hits = HitMap::default();
-        let terminal = draw_narrow(&map, 40, None, &mut hits);
+        let terminal = draw_narrow(&map, 40, &[], &mut hits);
         let buf = terminal.backend().buffer();
         let v = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
         let struck = |x: u16| buf[(x, v.y)].modifier.contains(Modifier::CROSSED_OUT);
@@ -2115,7 +2161,7 @@ mod tests {
         let mut map = map_of(&[("a", "a\tb")]);
         map["a"].enabled = false;
         let mut hits = HitMap::default();
-        let terminal = draw_narrow(&map, 40, None, &mut hits);
+        let terminal = draw_narrow(&map, 40, &[], &mut hits);
         let buf = terminal.backend().buffer();
         let v = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
         let struck = |x: u16| buf[(x, v.y)].modifier.contains(Modifier::CROSSED_OUT);

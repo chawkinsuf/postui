@@ -134,9 +134,9 @@ pub enum Hit {
     ResponseSearchPrev,
     /// Copy icon on row `i` of the response Headers view.
     HeaderCopy(usize),
-    /// Copy icon on row `i` (index into the computed-headers section's own
-    /// display order — the request table's rows are excluded and have no
-    /// hit of this kind) of the request Headers tab's computed section.
+    /// Copy icon on row `i` of the request Headers tab's computed section:
+    /// `ComputedHeadersView::rows[i]`, used as is (the view already holds
+    /// only the rows the section draws).
     AutoHeaderCopy(usize),
     /// The single "reveal"/"hide" toggle shown above the computed-headers
     /// section when at least one row would otherwise show a masked secret.

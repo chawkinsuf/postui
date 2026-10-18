@@ -841,7 +841,7 @@ impl ReadyView {
             header_rows.push(HeaderRow::Note);
         }
         header_lines.extend(aligned_header_lines(
-            data.sent_headers.iter().map(|h| (h.name.as_str(), h.display.as_str())),
+            data.sent_headers.iter().map(|h| (h.display_name.as_str(), h.display.as_str())),
         ));
         header_rows.extend((0..data.sent_headers.len()).map(HeaderRow::Sent));
         let mut view = Self {
@@ -5340,8 +5340,9 @@ mod tests {
             status: 200,
             url: "https://api.example.com/things?page=2".into(),
             headers: vec![("content-type".into(), "application/json".into())],
-            sent_headers: vec![crate::http::SentHeader {
+            sent_headers: vec![postui_core::prepare::SentHeader {
                 name: "authorization".into(),
+                display_name: "authorization".into(),
                 value: "Bearer s3cret".into(),
                 display: format!("Bearer {}", postui_core::prepare::SECRET_MASK),
             }],

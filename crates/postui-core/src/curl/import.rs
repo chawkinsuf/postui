@@ -1230,7 +1230,8 @@ mod tests {
             let back = one(&to_curl(&p));
             assert_eq!(back.request.method, p.method, "{toml}");
             assert_eq!(back.request.url, p.url, "{toml}");
-            let mut sent = p.headers.clone();
+            let mut sent: Vec<(String, String)> =
+                p.headers.iter().map(|h| (h.name.clone(), h.value.clone())).collect();
             sent.sort();
             let mut got: Vec<(String, String)> =
                 back.request.headers.iter().map(|(k, e)| (k.clone(), e.value.clone())).collect();

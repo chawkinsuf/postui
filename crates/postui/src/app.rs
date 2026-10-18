@@ -2030,7 +2030,6 @@ impl App {
         self.sidebar.open_dirty = self.editor.is_dirty();
         self.sidebar.in_flight =
             self.session.in_flight.iter().filter_map(|f| f.slug.clone()).collect();
-        self.editor.inherited_headers = self.meta().default_headers.clone();
         // The token-highlighting/tooltip snapshot, kept in lockstep with the
         // project's resolved values and the open request's own `[variables]`;
         // `shadowed` is read from it.
@@ -9500,7 +9499,7 @@ impl App {
                     HeaderRow::Sent(j) => d
                         .sent_headers
                         .get(j)
-                        .map(|h| (h.value.clone(), format!("Copied {}", h.name))),
+                        .map(|h| (h.value.clone(), format!("Copied {}", h.display_name))),
                     HeaderRow::Divider | HeaderRow::Note => None,
                 }
             }
@@ -9509,14 +9508,17 @@ impl App {
                 .editor
                 .table_row_at(*i)
                 .map(|(key, value)| (value.to_string(), format!("Copied {key}"))),
-            CopyTarget::ComputedHeader(i) => self
-                .editor
-                .computed
-                .rows
-                .iter()
-                .filter(|r| r.origin != postui_core::prepare::HeaderOrigin::Request)
-                .nth(*i)
-                .map(|r| (r.value.clone(), format!("Copied {}", r.name))),
+            // The real value even while the row shows masked, as the sent
+            // section's pill and the tooltip's copy do (spec 2026-10-18 R7);
+            // the toast names the row as the screen shows it.
+            CopyTarget::ComputedHeader(i) => {
+                let computed = &self.editor.computed;
+                computed.rows.get(*i).map(|r| {
+                    let h = &r.header;
+                    let name = if computed.revealed { &h.name } else { &h.display_name };
+                    (h.value.clone(), format!("Copied {name}"))
+                })
+            }
         }
     }
 

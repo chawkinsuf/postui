@@ -21,6 +21,7 @@ toml_edit.workspace = true
 tempfile.workspace = true
 directories.workspace = true
 form_urlencoded.workspace = true
+url.workspace = true
 base64 = "0.22"
 jaq-core.workspace = true
 jaq-std.workspace = true

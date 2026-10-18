@@ -2,7 +2,7 @@
 //! command carries a secret (§5.4).
 
 use crate::model::{Body, HttpRequest, Method};
-use crate::prepare::{PrepareContext, PreparedRequest};
+use crate::prepare::{PrepareContext, PreparedRequest, SentHeader};
 use crate::varmodel::VarMeta;
 
 /// `req` as a bash/zsh command line: one flag per line joined with ` \`
@@ -30,7 +30,10 @@ pub fn to_curl(req: &PreparedRequest) -> String {
         head.push_str(" -k");
     }
     let mut lines = vec![head];
-    for (name, value) in &req.headers {
+    // Only the rows the request sets: the ones the client adds itself
+    // (`client_headers`: `Host`, `Accept`, …) are curl's to add too.
+    for h in &req.headers {
+        let (name, value) = (&h.name, &h.value);
         // `Name:` with only blanks after it tells curl to drop the header;
         // `Name;` is curl's spelling of an empty value, and HTTP trims a
         // blank one to empty anyway.
@@ -53,14 +56,14 @@ fn quote(s: &str) -> String {
 
 /// Whether a secret variable's value went into `prepared` — what the
 /// "includes secret values" note on the copy toast reports (spec §5.4).
-/// The URL and headers carry a masked twin to compare against; the body
-/// has none, so its `{{…}}` tokens are checked by name.
+/// The URL and each header carry a masked twin to compare against; the
+/// body has none, so its `{{…}}` tokens are checked by name.
 pub fn includes_secrets(
     req: &HttpRequest,
     ctx: &PrepareContext,
     prepared: &PreparedRequest,
 ) -> bool {
-    if prepared.url != prepared.display_url || prepared.headers != prepared.display_headers {
+    if prepared.url != prepared.display_url || prepared.headers.iter().any(SentHeader::is_masked) {
         return true;
     }
     let Some(Body::Json { text }) = &req.body else {
@@ -77,7 +80,7 @@ pub fn includes_secrets(
 mod tests {
     use super::*;
     use crate::model::{HttpRequest, Method};
-    use crate::prepare::{PrepareContext, PreparedRequest, prepare};
+    use crate::prepare::{PrepareContext, PreparedRequest, SentHeader, prepare};
     use crate::varmodel::VarMeta;
 
     fn prepared(
@@ -86,17 +89,39 @@ mod tests {
         headers: &[(&str, &str)],
         body: Option<&str>,
     ) -> PreparedRequest {
-        let headers: Vec<(String, String)> =
-            headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let headers = headers
+            .iter()
+            .map(|(k, v)| SentHeader {
+                name: k.to_string(),
+                display_name: k.to_string(),
+                value: v.to_string(),
+                display: v.to_string(),
+            })
+            .collect();
         PreparedRequest {
             method,
             url: url.into(),
             display_url: url.into(),
-            display_headers: headers.clone(),
             headers,
+            client_headers: Vec::new(),
             body: body.map(str::to_string),
             insecure: false,
         }
+    }
+
+    /// The client's own rows are curl's to add, and a typed `Host` is not
+    /// sent at all (spec 2026-10-18 R3a), so neither is exported.
+    #[test]
+    fn client_rows_and_a_typed_host_are_not_exported() {
+        let req = HttpRequest::from_toml_str(
+            "method = \"POST\"\nurl = \"https://x.test/a\"\n[headers]\nHost = \"other.test\"\nX-A = \"1\"\n[body]\ntype = \"json\"\ntext = \"{}\"\n",
+        )
+        .unwrap();
+        let (p, _) = prepare(&req, &PrepareContext::default()).unwrap();
+        assert_eq!(
+            to_curl(&p),
+            "curl -X POST 'https://x.test/a' \\\n  -H 'X-A: 1' \\\n  -H 'Content-Type: application/json' \\\n  --data-raw '{}'"
+        );
     }
 
     #[test]

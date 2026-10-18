@@ -123,6 +123,8 @@ Applies to params/headers/request-vars tables and the new entries tables. The se
 
 The editor's Headers tab gains a read-only **auto section** below the editable rows, separated by a divider, showing exactly what `prepare` + the HTTP client will send: project `[default_headers]` (struck through when suppressed by an override), the auto-added `Content-Type: application/json`, and client-generated headers (`Host`, `Content-Length`). Values render with `{{vars}}` resolved against the current environment (secrets masked, existing reveal toggle applies); unresolved tokens show red as in §7. Rows are greyed/dimmed and uneditable; a per-row copy icon matches the response headers tab. The section recomputes live as the request or environment changes.
 
+*Amended 2026-10-18 (task #21, `2026-10-18-auto-headers-one-source-design.md`):* the section, `prepare`, the response's sent section and curl export now all read one list, core's `header_rows`, so they can't disagree. Before, `Host` kept a default port and userinfo the wire drops, and the client's `Host`/`Content-Length` showed beside a typed one. The user's rule (R3a): `Host` and `Content-Length` are the client's. A request or default row naming either is allowed but never sent, the client's row always is and is never struck through, and the request row draws in the error colour with `not sent · the client sets Host` (the highlight is the user's; its form and wording are `mine (approved)`). The copy icon copies the real value even while the row shows masked, as the response tab's does (`mine (approved)`).
+
 ## 7. Inline variable value preview
 
 - Every `{{token}}` in the URL bar, table cells, and body editor is highlighted: tinted when it resolves, red when unresolved/needs-selection/missing-secret.

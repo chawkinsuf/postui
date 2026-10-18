@@ -1,5 +1,5 @@
 use super::line_input::LineInput;
-use super::table_editor::{Col, TableEditorState, TableOutcome, table_height};
+use super::table_editor::{Col, RowNote, TableEditorState, TableOutcome, table_height};
 use super::toast::ToastKind;
 use super::{Component, DrawCtx, pane_surface};
 use crate::action::{Action, Verb};
@@ -155,15 +155,10 @@ pub struct Editor {
     /// `name → "<source>: <value>"`, already formatted (masked for secrets)
     /// by `App` out of `VarView::describe_project` — one entry per
     /// project variable that a request-scope entry with the same name
-    /// shadows. Synced by `App` on every `update()` alongside
-    /// `inherited_headers`. Draw-only: consumed by the Vars tab's table draw
-    /// to show the dim "overrides" hint trailing a shadowing row's value;
-    /// never itself edited here.
+    /// shadows. Synced by `App` on every `update()`. Draw-only: consumed
+    /// by the Vars tab's table draw to show the dim "overrides" hint
+    /// trailing a shadowing row's value; never itself edited here.
     pub shadowed: IndexMap<String, String>,
-    /// Enabled default headers inherited from the project, synced by `App`
-    /// on every `update()` alongside `open_slug`. Draw-only: rendered above
-    /// the request headers table but never edited directly here.
-    pub inherited_headers: IndexMap<String, Entry>,
     /// The request body buffer. edtui owns the text, cursor and undo stack;
     /// it is only ever rewritten wholesale by an explicit user action
     /// (load / format / minify / external editor), so half-typed JSON
@@ -296,21 +291,32 @@ pub struct Editor {
     pub vars: crate::components::var_tokens::VarView,
 }
 
-/// State for [`Editor::draw_computed_headers`]. `rows` is the full result
-/// of `postui_core::prepare::computed_headers` (request-origin rows
-/// included, so `Hit::AutoHeaderCopy`'s index can be mapped back to the
-/// same non-`Request` subsequence the draw filtered); `revealed` is
-/// whether secrets currently show in the clear; `has_secret` is whether
-/// any row *would* be masked at the current values, independent of
-/// `revealed` — this is what keeps the reveal/hide toggle visible after
-/// revealing (a masked probe recomputed alongside `rows`, since `rows`
-/// itself no longer carries [`postui_core::prepare::SECRET_MASK`] once
-/// revealed).
+/// State for [`Editor::draw_computed_headers`], read off
+/// `postui_core::prepare::header_rows` by
+/// [`Editor::recompute_computed_headers`].
 #[derive(Debug, Default)]
 pub struct ComputedHeadersView {
-    pub rows: Vec<postui_core::prepare::ComputedHeader>,
+    /// The auto section's rows, in wire order: every row that is sent
+    /// other than the request's own (the editable table shows those),
+    /// and every default that isn't, struck through. An auto or client
+    /// row a sent row replaces is left out. `Hit::AutoHeaderCopy(i)` is
+    /// `rows[i]`.
+    pub rows: Vec<postui_core::prepare::HeaderRow>,
+    /// The request table's notes, one per row (the Headers table's
+    /// `notes`): a row kept off the wire (spec 2026-10-18 R3a) carries the
+    /// error note saying why, and the table draws it as an error.
+    pub notes: Vec<Option<RowNote>>,
+    /// Whether secrets show in the clear (each row's `value`) rather than
+    /// masked (its `display`).
     pub revealed: bool,
-    pub has_secret: bool,
+}
+
+impl ComputedHeadersView {
+    /// Whether any row has a secret to reveal — independent of
+    /// `revealed`, so the toggle that hides it again stays on screen.
+    pub fn has_secret(&self) -> bool {
+        self.rows.iter().any(|r| r.header.is_masked())
+    }
 }
 
 impl Default for Editor {
@@ -331,7 +337,6 @@ impl Default for Editor {
             variables: IndexMap::new(),
             shadowed: IndexMap::new(),
             vars: Default::default(),
-            inherited_headers: IndexMap::new(),
             body: new_body_state(""),
             body_hl_text: String::new(),
             body_hl_marker: None,
@@ -605,25 +610,35 @@ impl Editor {
 
     /// Recomputes `self.computed` from the editor's current fields against
     /// `ctx` — cheap (small N), so callers run it on every draw rather than
-    /// trying to track exactly which edits invalidate it. `rows` uses the
-    /// live `revealed` flag (masked unless the user has toggled reveal on);
-    /// `has_secret` is a second, always-masked pass used only to decide
-    /// whether the reveal/hide toggle should draw at all — it must stay
-    /// independent of `revealed`, or revealing would make the toggle that
-    /// un-reveals it disappear. It counts only the rows the section draws
-    /// (`draw_computed_headers` skips `Request`-origin rows: the editable
-    /// table above already shows those, as typed), so a secret used only
-    /// in the request's own headers never offers a toggle with nothing to
-    /// reveal.
+    /// trying to track exactly which edits invalidate it. One pass of
+    /// `header_rows`, the list the send itself is built from, split into
+    /// the auto section's rows and the request rows it keeps off the wire.
     pub fn recompute_computed_headers(&mut self, ctx: &postui_core::prepare::PrepareContext) {
         use postui_core::prepare::HeaderOrigin;
-        let req = self.current_request();
-        self.computed.rows =
-            postui_core::prepare::computed_headers(&req, ctx, !self.computed.revealed);
-        self.computed.has_secret = postui_core::prepare::computed_headers(&req, ctx, true)
-            .iter()
-            .filter(|r| r.origin != HeaderOrigin::Request)
-            .any(|r| r.value.contains(postui_core::prepare::SECRET_MASK));
+        let rows = postui_core::prepare::header_rows(&self.current_request(), ctx);
+        let mut notes = vec![None; self.headers.len()];
+        let mut auto = Vec::new();
+        for r in rows {
+            match r.origin {
+                // Like the auto section, the verdict follows the committed
+                // key: a name still being typed is judged once it lands.
+                HeaderOrigin::Request { row } => {
+                    if let (Some(note), Some(text)) =
+                        (notes.get_mut(row), r.unsent.and_then(unsent_note))
+                    {
+                        *note = Some(RowNote::error(text));
+                    }
+                }
+                // An unsent default is struck through: a request row
+                // replaced it, or the client owns its name. An unsent
+                // auto or client row just isn't part of the send.
+                HeaderOrigin::Default => auto.push(r),
+                _ if r.sent() => auto.push(r),
+                _ => {}
+            }
+        }
+        self.computed.rows = auto;
+        self.computed.notes = notes;
     }
 
     /// A never-loaded (fresh scratch) editor is not dirty even though it has
@@ -2096,26 +2111,26 @@ impl Component for Editor {
             EditorTab::Body => Constraint::Min(0),
             EditorTab::Params | EditorTab::Headers | EditorTab::Vars => {
                 let rows = self.table_len();
-                let (inherited, computed_extra) = match self.active_tab {
+                let computed_extra = match self.active_tab {
                     EditorTab::Headers => {
                         let auto_rows = self.computed_row_count();
                         let divider = if auto_rows > 0 { 1 } else { 0 };
-                        (self.inherited_header_lines(ctx.theme).len() as u16, auto_rows + divider)
+                        auto_rows + divider
                     }
                     // The referenced-vars section: one row per token the
                     // request references, plus its divider.
                     EditorTab::Vars => {
                         let refs = self.referenced_var_names().len() as u16;
-                        (0, if refs > 0 { refs + 1 } else { 0 })
+                        if refs > 0 { refs + 1 } else { 0 }
                     }
-                    _ => (0, 0),
+                    _ => 0,
                 };
                 // Capped to what's left after the fixed address bar and tab
                 // bar rows, never the other way around: those two must never
                 // be squeezed to make room for a table that wants more
                 // height than the pane has.
                 let available = inner.height.saturating_sub(CHROME_HEIGHT);
-                Constraint::Length((inherited + table_height(rows) + computed_extra).min(available))
+                Constraint::Length((table_height(rows) + computed_extra).min(available))
             }
         };
 
@@ -2876,16 +2891,10 @@ impl Editor {
         }
     }
 
-    /// Rows the computed-headers section will draw: every `self.computed`
-    /// row that isn't `Request`-origin (those are already the editable
-    /// table above). Shared by the height math in `draw` and the draw
-    /// itself so they can never disagree.
+    /// Rows the computed-headers section will draw. Shared by the height
+    /// math in `draw` and the draw itself so they can never disagree.
     fn computed_row_count(&self) -> u16 {
-        self.computed
-            .rows
-            .iter()
-            .filter(|r| r.origin != postui_core::prepare::HeaderOrigin::Request)
-            .count() as u16
+        self.computed.rows.len() as u16
     }
 
     /// Every `{{variable}}` the request references, deduped in first-seen
@@ -2922,30 +2931,6 @@ impl Editor {
             scan(&self.body_text());
         }
         names
-    }
-
-    /// Builds the muted status lines for enabled inherited (project-default)
-    /// headers, shown above the request headers table. Each line notes
-    /// whether the name is untouched by the request (`project`), overridden
-    /// by an enabled request header (`overridden`), or shadowed by a
-    /// disabled request header (`disabled`); the match against `self.headers`
-    /// is case-insensitive.
-    fn inherited_header_lines(&self, theme: &Theme) -> Vec<Line<'static>> {
-        self.inherited_headers
-            .iter()
-            .filter(|(_, entry)| entry.enabled)
-            .map(|(name, entry)| {
-                let status = match self.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)) {
-                    Some((_, req_entry)) if req_entry.enabled => "overridden",
-                    Some(_) => "disabled",
-                    None => "project",
-                };
-                Line::styled(
-                    format!("  ✓ {name}  {}  ({status})", entry.value),
-                    Style::default().fg(theme.text_muted),
-                )
-            })
-            .collect()
     }
 
     /// Paints the Body tab's toolbar chip row: `format`/`minify`/
@@ -3027,7 +3012,7 @@ impl Editor {
                     &table_ctx,
                     "+ Add param",
                     hits,
-                    None,
+                    &[],
                     &self.vars,
                 );
             }
@@ -3059,6 +3044,11 @@ impl Editor {
                     anims: ctx.anims,
                     now: ctx.now,
                 };
+                let notes: Vec<Option<RowNote>> = self
+                    .variables
+                    .keys()
+                    .map(|k| self.shadowed.get(k).map(|s| RowNote::dim(format!("overrides {s}"))))
+                    .collect();
                 self.table.draw(
                     frame,
                     table_area,
@@ -3066,7 +3056,7 @@ impl Editor {
                     &table_ctx,
                     "+ Add variable",
                     hits,
-                    Some(&self.shadowed),
+                    &notes,
                     &self.vars,
                 );
                 if let Some(refs_area) = refs_area {
@@ -3077,39 +3067,29 @@ impl Editor {
                 if self.table_collapsed {
                     return;
                 }
-                let inherited_lines = self.inherited_header_lines(theme);
-                let table_area = if inherited_lines.is_empty() {
-                    area
-                } else {
-                    let split = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([
-                            Constraint::Length(inherited_lines.len() as u16),
-                            Constraint::Min(0),
-                        ])
-                        .split(area);
-                    frame.render_widget(Paragraph::new(inherited_lines), split[0]);
-                    split[1]
-                };
                 // The table keeps its own full height first — it's the
                 // editable data — and the computed section only gets
                 // whatever's left after that, clamped to what it asked
                 // for; under real space pressure the auto section shrinks
-                // (or disappears) rather than eating into the table.
+                // (or disappears) rather than eating into the table. Since
+                // the status lines above the table went (spec 2026-10-18
+                // R6), the project defaults live only in that section, so
+                // they give way too; the pane split brings them back, and
+                // #56 is the task that makes the tab scroll to them.
                 let auto_rows = self.computed_row_count();
                 let rows = self.table_len();
-                let table_h = table_height(rows).min(table_area.height);
+                let table_h = table_height(rows).min(area.height);
                 let computed_h = if auto_rows == 0 {
                     0
                 } else {
-                    (auto_rows + 1).min(table_area.height.saturating_sub(table_h))
+                    (auto_rows + 1).min(area.height.saturating_sub(table_h))
                 };
                 let computed_area = (computed_h > 0).then(|| Rect {
-                    y: table_area.y + table_h,
+                    y: area.y + table_h,
                     height: computed_h,
-                    ..table_area
+                    ..area
                 });
-                let table_area = Rect { height: table_h, ..table_area };
+                let table_area = Rect { height: table_h, ..area };
                 let table_ctx = DrawCtx {
                     theme,
                     focused,
@@ -3119,6 +3099,8 @@ impl Editor {
                     anims: ctx.anims,
                     now: ctx.now,
                 };
+                // A row naming a header the client sets itself is kept but
+                // never sent (spec 2026-10-18 R3a), so it reads as an error.
                 self.table.draw(
                     frame,
                     table_area,
@@ -3126,7 +3108,7 @@ impl Editor {
                     &table_ctx,
                     "+ Add header",
                     hits,
-                    None,
+                    &self.computed.notes,
                     &self.vars,
                 );
                 if let Some(computed_area) = computed_area {
@@ -3300,17 +3282,6 @@ impl Editor {
         }
     }
 
-    /// Paints the Headers tab's computed-headers section (spec §6, the
-    /// user's #4 complaint: see everything that will actually be sent): a
-    /// dim divider, then one dim row per `self.computed.rows` entry that
-    /// isn't `Request`-origin — those are already the editable table
-    /// above. A `DefaultHeader { suppressed: true }` row (overridden, or a
-    /// duplicate default) renders struck through; a row with unresolved
-    /// `{{tokens}}` tints its whole value `theme.error` (span-level tinting
-    /// is Task 12). Each row gets a trailing `󰆏` copy icon
-    /// (`Hit::AutoHeaderCopy`, indexed by its position in this filtered
-    /// list); the divider carries a `👁 reveal`/`hide` toggle
-    /// (`Hit::AutoHeaderReveal`) whenever `self.computed.has_secret`.
     /// The Vars tab's read-only "referenced" section: one row per
     /// `{{variable}}` the request references (see
     /// [`Self::referenced_var_names`]), laid out on the editable table's
@@ -3402,6 +3373,14 @@ impl Editor {
         }
     }
 
+    /// Paints the Headers tab's computed-headers section (spec §6, the
+    /// user's #4 complaint: see everything that will actually be sent): a
+    /// dim divider, then one dim row per `self.computed.rows` entry. A row
+    /// that isn't sent (an overridden or duplicate default) renders struck
+    /// through; an unresolved `{{token}}` is tinted span-level. Each row
+    /// gets a trailing `󰆏` copy icon (`Hit::AutoHeaderCopy`, indexed into
+    /// `rows`); the divider carries a `👁 reveal`/`hide` toggle
+    /// (`Hit::AutoHeaderReveal`) whenever a row has a secret to reveal.
     fn draw_computed_headers(
         &self,
         frame: &mut Frame,
@@ -3409,7 +3388,6 @@ impl Editor {
         ctx: &DrawCtx,
         hits: &mut crate::hit::HitMap,
     ) {
-        use postui_core::prepare::HeaderOrigin;
         if area.height == 0 || area.width == 0 {
             return;
         }
@@ -3426,7 +3404,7 @@ impl Editor {
             } else {
                 format!("{} reveal", crate::glyph::EYE)
             };
-            let show_toggle = self.computed.has_secret;
+            let show_toggle = self.computed.has_secret();
             let toggle_w = if show_toggle { crate::ui::cells(&toggle_label) as u16 + 1 } else { 0 };
             let prefix = "\u{2500}\u{2500} auto ";
             let dash_w = area.width.saturating_sub(crate::ui::cells(prefix) as u16 + toggle_w);
@@ -3454,26 +3432,36 @@ impl Editor {
             y += 1;
         }
 
-        let auto = self.computed.rows.iter().filter(|r| r.origin != HeaderOrigin::Request);
-        for (i, row) in auto.enumerate() {
+        for (i, row) in self.computed.rows.iter().enumerate() {
             if y >= max_y {
                 break;
             }
-            let suppressed = matches!(row.origin, HeaderOrigin::DefaultHeader { suppressed: true });
-            let mut name_style = dim;
+            let suppressed = !row.sent();
+            let (name, value) = if self.computed.revealed {
+                (&row.header.name, &row.header.value)
+            } else {
+                (&row.header.display_name, &row.header.display)
+            };
+            // A default the client-owned rule drops reads as an error and
+            // says why, as a typed row naming the same header does (spec
+            // 2026-10-18 R3b): struck alone, it would look overridden by a
+            // request row that isn't there.
+            let note = row.unsent.and_then(unsent_note);
+            let base = if note.is_some() { Style::default().fg(theme.error) } else { dim };
+            let mut name_style = base;
             // The value draws dim throughout; an unresolved `{{token}}` in
             // it is tinted span-level by `paint_var_tokens` below (Task 12
             // replaces Task 10's whole-value error tint, which coloured the
             // resolved parts of the value red too).
-            let mut value_style = dim;
+            let mut value_style = base;
             if suppressed {
                 name_style = name_style.add_modifier(Modifier::CROSSED_OUT);
                 value_style = value_style.add_modifier(Modifier::CROSSED_OUT);
             }
-            let name_piece = format!("  {}: ", row.name);
+            let name_piece = format!("  {name}: ");
             // One plain cell between the value and the pill, so the pill's
             // hover fill never touches the text.
-            let value_piece = format!("{} ", row.value);
+            let value_piece = format!("{value} ");
             // Columns stay usize (the token painter and `register_cols`
             // clip them to the row): a long name or value would wrap a bare
             // `as u16` back over the text.
@@ -3485,19 +3473,26 @@ impl Editor {
             } else {
                 Style::default().fg(theme.accent)
             };
-            let line = Line::from(vec![
+            let mut spans = vec![
                 Span::styled(name_piece, name_style),
                 Span::styled(value_piece, value_style),
                 Span::styled(crate::glyph::COPY_PILL, glyph_style),
-            ]);
+            ];
+            if let Some(note) = note {
+                spans.push(Span::styled(format!("  {note}"), Style::default().fg(theme.error)));
+            }
+            let line = Line::from(spans);
             let row_rect = Rect::new(area.x, y, area.width, 1);
             frame.render_widget(Paragraph::new(line), row_rect);
             // The tokens all lie in the value, so clipping them to the
-            // whole row keeps them off the name.
+            // whole row keeps them off the name. A struck (unsent) row's
+            // tokens are tinted too, as a disabled table row's are: the
+            // tint says whether the token resolves, while the strike is
+            // what says the row won't block or reach the send.
             crate::components::var_tokens::paint_var_tokens(
                 frame.buffer_mut(),
                 row_rect,
-                &row.value,
+                value,
                 value_col,
                 &self.vars,
                 theme,
@@ -3514,6 +3509,25 @@ impl Editor {
             );
             y += 1;
         }
+    }
+}
+
+/// The error note for a row kept off the wire for a reason the user has to
+/// act on — one naming a client-owned header (`Host`, `Content-Length`;
+/// spec 2026-10-18 R3a/R3b), carried by a typed row and a project default
+/// alike. It names the client's own row only when the client sends one (a
+/// GET has no `Content-Length`). A replaced or duplicate row needs none:
+/// its strike is the whole story.
+fn unsent_note(unsent: postui_core::prepare::Unsent) -> Option<String> {
+    use postui_core::prepare::Unsent;
+    match unsent {
+        Unsent::ClientOwned { header, client_sends: true } => {
+            Some(format!("not sent · the client sets {header}"))
+        }
+        Unsent::ClientOwned { header: _, client_sends: false } => {
+            Some("not sent · set by the client only".to_string())
+        }
+        Unsent::Replaced | Unsent::Duplicate => None,
     }
 }
 
@@ -5758,34 +5772,103 @@ url = "https://api.example.com/users""#,
         assert_eq!(corner.symbol(), " ", "no ring glyph around the bar");
     }
 
+    /// Project defaults show once, in the auto section — struck through
+    /// when a request row (enabled or disabled) replaces them — with no
+    /// status lines above the table (spec 2026-10-18 R6).
     #[test]
-    fn headers_tab_shows_inherited_rows_with_status() {
-        let mut e = Editor { active_tab: EditorTab::Headers, ..Editor::default() };
-        e.inherited_headers
-            .insert("accept".into(), Entry { value: "application/json".into(), enabled: true });
-        e.inherited_headers.insert("x-a".into(), Entry { value: "1".into(), enabled: true });
-        e.inherited_headers.insert("x-b".into(), Entry { value: "2".into(), enabled: true });
-        e.headers.insert("X-A".into(), Entry { value: "9".into(), enabled: true });
-        e.headers.insert("X-B".into(), Entry { value: "n".into(), enabled: false });
-        let theme = Theme::dark();
-        let ctx = DrawCtx {
-            theme: &theme,
-            focused: true,
-            hovered: None,
-            pointer: None,
-            dragging: false,
-            anims: test_anims(),
-            now: std::time::Instant::now(),
-        };
-        let backend = TestBackend::new(70, 14);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+    fn headers_tab_shows_defaults_only_in_the_auto_section() {
+        let mut app = App::new_for_test();
+        let root = app.proj().root().to_path_buf();
+        std::fs::write(
+            root.join("project.toml"),
+            "[default_headers]\naccept = \"application/json\"\nx-a = \"dflt-a\"\nx-b = \"dflt-b\"\n",
+        )
+        .unwrap();
+        app.resync_project();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.headers.insert("X-A".into(), Entry { value: "9".into(), enabled: true });
+        app.editor.headers.insert("X-B".into(), Entry { value: "n".into(), enabled: false });
+        app.update(Action::Render);
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 70)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let content = format!("{buf:?}");
+        for gone in ["(project)", "(overridden)", "(disabled)", "\u{2713} "] {
+            assert!(!content.contains(gone), "no status lines ({gone}): {content}");
+        }
+        assert_eq!(content.matches("application/json").count(), 1, "{content}");
+        assert!(!buffer_has_crossed_out(buf, "application/json"), "a sent default");
+        assert!(buffer_has_crossed_out(buf, "dflt-a"), "replaced by an enabled row");
+        assert!(buffer_has_crossed_out(buf, "dflt-b"), "replaced by a disabled row");
+    }
+
+    /// A project default naming `Host` is dropped by the same rule as a
+    /// typed row, so its struck auto row says why with the same note
+    /// (spec 2026-10-18 R3b).
+    #[test]
+    fn a_default_host_is_struck_with_the_client_owned_note() {
+        let mut app = App::new_for_test();
+        let root = app.proj().root().to_path_buf();
+        std::fs::write(root.join("project.toml"), "[default_headers]\nHost = \"internal.test\"\n")
+            .unwrap();
+        app.resync_project();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.url = LineInput::new("https://example.com/foo");
+        app.update(Action::Render);
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 70)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_has_crossed_out(buf, "internal.test"), "the default is not sent");
+        let (x, y) = find_text(buf, "not sent · the client sets Host").expect("the note");
+        assert_eq!(buf[(x, y)].fg, app.theme.error, "the note reads as an error");
+        let (vx, vy) = find_text(buf, "internal.test").unwrap();
+        assert_eq!(vy, y, "the note trails the default's own row");
+        assert_eq!(buf[(vx, vy)].fg, app.theme.error, "and the row reads as an error");
+    }
+
+    /// On a GET the client sends no `Content-Length`, so a typed one's note
+    /// doesn't point at a client row that isn't there.
+    #[test]
+    fn a_typed_content_length_on_a_get_says_only_the_client_sets_it() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.url = LineInput::new("https://example.com/foo");
+        app.editor
+            .headers
+            .insert("Content-Length".into(), Entry { value: "5".into(), enabled: true });
+        app.update(Action::Render);
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 70)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
-        assert!(content.contains("(project)"), "{content}");
-        assert!(content.contains("(overridden)"), "{content}");
-        assert!(content.contains("(disabled)"), "{content}");
-        assert!(content.contains("application/json"));
+        assert!(content.contains("not sent · set by the client only"), "{content}");
+        assert!(!content.contains("the client sets"), "{content}");
+    }
+
+    /// A request row naming `Host` is kept but never sent (spec 2026-10-18
+    /// R3a/R3b): it draws error-red with a note saying why, and the
+    /// client's own `Host` row in the auto section stays, not struck.
+    #[test]
+    fn a_typed_host_row_reads_as_an_error_and_the_clients_host_stays() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.url = LineInput::new("https://example.com/foo");
+        app.editor
+            .headers
+            .insert("host".into(), Entry { value: "other.test".into(), enabled: true });
+        app.update(Action::Render);
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 70)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let content = format!("{buf:?}");
+        assert!(content.contains("not sent · the client sets Host"), "{content}");
+        let key = app.hits.rect_of(&Hit::TableCell { row: 0, col: 0 }).unwrap();
+        assert_eq!(buf[(key.x, key.y)].fg, app.theme.error, "the row reads as an error");
+        assert!(content.contains("Host: example.com"), "the client's Host row: {content}");
+        assert!(!buffer_has_crossed_out(buf, "example.com"), "and it is not struck");
     }
 
     /// Regression test for a bug where the synthesized scroll events landed
@@ -6157,6 +6240,20 @@ url = "https://api.example.com/users""#,
 
     // --- computed request-headers section (Task 10, spec §6) ---------
 
+    /// The cell where `needle` starts, counted in cells (a row's earlier
+    /// glyphs may be wider than a byte).
+    fn find_text(buf: &ratatui::buffer::Buffer, needle: &str) -> Option<(u16, u16)> {
+        for y in 0..buf.area.height {
+            let cells: Vec<&str> = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            for x in 0..cells.len() {
+                if cells[x..].concat().starts_with(needle) {
+                    return Some((x as u16, y));
+                }
+            }
+        }
+        None
+    }
+
     fn buffer_has_crossed_out(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
         for y in 0..buf.area.height {
             let line: String = (0..buf.area.width)
@@ -6286,11 +6383,16 @@ url = "https://api.example.com/users""#,
         (hits, terminal.backend().buffer().clone())
     }
 
-    fn auto_header(name: &str, value: &str) -> postui_core::prepare::ComputedHeader {
-        postui_core::prepare::ComputedHeader {
-            name: name.into(),
-            value: value.into(),
+    fn auto_header(name: &str, value: &str) -> postui_core::prepare::HeaderRow {
+        postui_core::prepare::HeaderRow {
+            header: postui_core::prepare::SentHeader {
+                name: name.into(),
+                display_name: name.into(),
+                value: value.into(),
+                display: value.into(),
+            },
             origin: postui_core::prepare::HeaderOrigin::Client,
+            unsent: None,
             unresolved: Vec::new(),
         }
     }
