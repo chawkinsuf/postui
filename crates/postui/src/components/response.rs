@@ -3603,21 +3603,28 @@ impl Response {
         // In between, the head cell is the sweep's leading edge and is
         // included: down-drags take the char under the pointer, up-drags
         // landing on a row start take its first char.
+        let area = view.last_area.expect("cell_at resolved through last_area");
+        let xx = x.clamp(area.x, area.x + area.width.max(1) - 1);
+        let disp_col = view.h_scroll + usize::from(xx - area.x);
         if head.1 == 0 && head.0 > anchor.0 {
-            let row = head.0 - 1;
-            // The row's last grapheme, as `cell_at` clamps a click past it.
-            let last = view.display_line_text(row).map_or(0, |t| last_grapheme(&t));
-            view.sel = Some((anchor, (row, last)));
-            return true;
+            // The first *cell*, not the first grapheme: on the right half
+            // of a wide first glyph (`❤️`, `日`) the pointer is on that
+            // glyph, so the sweep takes it. Past a row's end (an empty row,
+            // or one glyph short of the pointer) is still the boundary.
+            let text = view.display_line_text(head.0).unwrap_or_default();
+            if disp_col == 0 || view.grapheme_at(head.0, &text, disp_col).is_none() {
+                let row = head.0 - 1;
+                // The row's last grapheme, as `cell_at` clamps a click past it.
+                let last = view.display_line_text(row).map_or(0, |t| last_grapheme(&t));
+                view.sel = Some((anchor, (row, last)));
+                return true;
+            }
         }
         if head.0 < anchor.0 {
             // `cell_at` clamped a pointer past the row's end onto its
             // last grapheme; re-check the pointed display column against the
             // row to tell the two apart (a row that paints no cells has no
             // last char to spuriously grab — it stays in the sweep).
-            let area = view.last_area.expect("cell_at resolved through last_area");
-            let xx = x.clamp(area.x, area.x + area.width.max(1) - 1);
-            let disp_col = view.h_scroll + usize::from(xx - area.x);
             let text = view.display_line_text(head.0).unwrap_or_default();
             let paints = grapheme_at_col(&text, 0, (0, 0, 0)).is_some();
             if paints && view.grapheme_at(head.0, &text, disp_col).is_none() {
@@ -4565,17 +4572,13 @@ fn body_lines(
         } else {
             LineMatches { ranges: Vec::new(), current: None }
         };
-        // Highlights cover whole graphemes, read off the row's own text:
-        // the window starts on a grapheme, and an all-ASCII row has none
-        // to widen (empty text stands for it), so it skips building it.
+        // Highlights cover whole graphemes, read off the row's own text
+        // (the window starts on a grapheme), built only for a row that has
+        // a highlight.
         let mut sel = None;
         let in_sel = view.sel_rows().is_some_and(|rows| rows.contains(&i));
         if !hits.ranges.is_empty() || in_sel {
-            let row: String = if pieces.iter().all(|(s, _)| s.is_ascii()) {
-                String::new()
-            } else {
-                pieces.iter().map(|(s, _)| s.as_str()).collect()
-            };
+            let row: String = pieces.iter().map(|(s, _)| s.as_str()).collect();
             // Search hits widen here rather than where they are found: the
             // matcher's char ranges also place the cursor on a match, by
             // Vim's per-char model in the vim profile (#44), and the paint
@@ -10415,6 +10418,22 @@ mod tests {
         let (area, _) = render_buf(&mut r);
         assert!(r.select_word_at(area.x + 1, area.y));
         assert_eq!(r.selected_text().as_deref(), Some("ab"));
+    }
+
+    /// Task #45 review: a downward sweep stops above a row only on the
+    /// row's first *cell*; on the right half of a wide first glyph the
+    /// pointer is on that glyph, and the sweep takes it.
+    #[test]
+    fn a_downward_drag_onto_a_wide_first_glyph_takes_it() {
+        for first in [HEART, "\u{65E5}"] {
+            let mut r = ready(&format!("abc\n{first}x"));
+            let (area, _) = render_buf(&mut r);
+            r.begin_selection_at(area.x, area.y);
+            r.drag_selection_to(area.x + 1, area.y + 1);
+            assert_eq!(r.selected_text(), Some(format!("abc\n{first}")), "right half of {first}");
+            r.drag_selection_to(area.x, area.y + 1);
+            assert_eq!(r.selected_text().as_deref(), Some("abc"), "first cell of {first}");
+        }
     }
 
     /// Task #45: an upward sweep onto a row of hearts reads the pointer
