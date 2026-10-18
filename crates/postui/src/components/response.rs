@@ -4224,45 +4224,50 @@ fn draw_header_strip(
     let buf = frame.buffer_mut();
     crate::paint::fill(buf, area, t.panel);
 
-    // Row 0 (right): the ▲/▼ step pill. Painted first so the URL below
-    // knows where to stop.
+    // Row 0 (right): the ▲/▼ step pill. Painted first so every fact on
+    // the row knows where to stop: a cell short of it.
     let pill_x = draw_step_pill(buf, hits, area, split, ctx);
+    let right = pill_x.saturating_sub(1);
 
     // Row 0 (left): the status chip, e.g. " 200 ", then timing + size,
     // plain muted text (not clickable, so no control fill — chip fill
-    // means clickability), then content type. Every fact stops a cell
-    // short of the pill: the figures are shown whole or not at all (and
-    // the row ends there), the content type is truncated like the URL.
-    let chip_w =
-        crate::paint::Chip { label: &data.status.to_string(), color: t.status_color(data.status) }
-            .paint(buf, area.x, area.y, t.panel, t);
-
-    let right = pill_x.saturating_sub(1);
-    let mut x = area.x + chip_w + 1;
-    // One combined timing figure — ttfb → total — rather than two chips.
-    let timing = format!("{} → {}", human_elapsed(data.ttfb), human_elapsed(data.elapsed));
-    for label in [timing, human_size(data.size)] {
-        let s = format!(" {label} ");
-        if x as usize + crate::ui::cells(&s) > right as usize {
-            x = right;
-            break;
+    // means clickability), then content type and URL. The chip and the
+    // figures are shown whole or the row ends there (by design: on a
+    // strip too tight for both, the pill wins, as on the pending strip);
+    // the content type and URL are truncated to the room left.
+    'row: {
+        let chip = crate::paint::Chip {
+            label: &data.status.to_string(),
+            color: t.status_color(data.status),
+        };
+        if area.x + chip.width() > right {
+            break 'row;
         }
-        x = crate::paint::text(buf, x, area.y, &s, t.text_muted, t.panel, false) + 1;
-    }
-
-    // Then the content type and the rendered URL this response actually
-    // came from — `{{vars}}` substituted, params merged, secrets masked —
-    // so the send's real target is visible without decoding the address
-    // bar's tokens by hand. Each is muted like the other row-0 facts,
-    // truncated to what's left of the row, and dropped entirely on a row
-    // too tight to say anything useful.
-    for fact in [data.content_type.as_deref(), Some(data.url.as_str())] {
-        let Some(fact) = fact.filter(|f| !f.is_empty()) else { continue };
-        if right <= x + 2 {
-            break;
+        let mut x = area.x + chip.paint(buf, area.x, area.y, t.panel, t) + 1;
+        // One combined timing figure — ttfb → total — rather than two chips.
+        let timing = format!("{} → {}", human_elapsed(data.ttfb), human_elapsed(data.elapsed));
+        for label in [timing, human_size(data.size)] {
+            let s = format!(" {label} ");
+            if x as usize + crate::ui::cells(&s) > right as usize {
+                break 'row;
+            }
+            x = crate::paint::text(buf, x, area.y, &s, t.text_muted, t.panel, false) + 1;
         }
-        let s = crate::ui::ellipsize(fact, (right - x - 1) as usize);
-        x = crate::paint::text(buf, x + 1, area.y, &s, t.text_muted, t.panel, false) + 1;
+
+        // Then the content type and the rendered URL this response
+        // actually came from — `{{vars}}` substituted, params merged,
+        // secrets masked — so the send's real target is visible without
+        // decoding the address bar's tokens by hand. Each is muted like
+        // the other row-0 facts, truncated to what's left of the row, and
+        // dropped entirely on a row too tight to say anything useful.
+        for fact in [data.content_type.as_deref(), Some(data.url.as_str())] {
+            let Some(fact) = fact.filter(|f| !f.is_empty()) else { continue };
+            if right <= x + 2 {
+                break 'row;
+            }
+            let s = crate::ui::ellipsize(fact, (right - x - 1) as usize);
+            x = crate::paint::text(buf, x + 1, area.y, &s, t.text_muted, t.panel, false) + 1;
+        }
     }
 
     // Hidden (or mid-slide with only the one row left): row 0 is the whole
@@ -6046,37 +6051,8 @@ mod tests {
     fn a_wide_url_is_cut_short_of_the_step_pill() {
         let mut d = data(r#"{"a": 1}"#);
         d.url = format!("https://例え.jp/{}", "本番環境".repeat(20));
-        let mut r = Response::default();
-        r.set_state(ResponseState::Ready(Box::new(d)), 0);
-        let theme = Theme::dark();
-        let ctx = DrawCtx {
-            theme: &theme,
-            focused: true,
-            hovered: None,
-            pointer: None,
-            dragging: false,
-            anims: test_anims(),
-            now: std::time::Instant::now(),
-        };
-        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
-        let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
-        let buf = terminal.backend().buffer();
-        let pill = [-1, 1]
-            .into_iter()
-            .filter_map(|d| hits.rect_of(&crate::hit::Hit::SplitStep(d)))
-            .min_by_key(|r| r.x)
-            .expect("the step pill is drawn");
-        let row: String = (0..80).map(|x| buf[(x, pill.y)].symbol()).collect();
+        let row = row0_beside_an_intact_pill(d, 80);
         assert!(row.contains('\u{2026}'), "the URL is ellipsized: {row}");
-        // Every 2-cell glyph ends a cell short of the pill.
-        let edge = pill.x.saturating_sub(1);
-        for x in 0..80 {
-            let s = buf[(x, pill.y)].symbol();
-            if !s.is_empty() && "例え本番環境".contains(s) {
-                assert!(x + 2 <= edge, "{s} at column {x} runs past {edge}: {row}");
-            }
-        }
     }
 
     /// Draws a ready response for `d`, `w` columns wide, and returns row
@@ -6103,6 +6079,10 @@ mod tests {
         let row: String = (0..w).map(|x| buf[(x, pill.y)].symbol()).collect();
         let cap = pill.x - 1;
         assert_eq!(buf[(cap - 1, pill.y)].symbol(), " ", "a blank cell before the pill: {row}");
+        // A 2-cell glyph's second cell also reads " ", so the blank is
+        // only the row's own if the glyph before it is one cell wide.
+        let before = buf[(cap - 2, pill.y)].symbol();
+        assert!(crate::ui::cells(before) <= 1, "{before} runs into the blank cell: {row}");
         assert_eq!(buf[(cap, pill.y)].bg, theme.control, "the pill's cap: {row}");
         assert_eq!(buf[(pill.x + 1, pill.y)].symbol(), "\u{25B2}", "{row}");
         assert_eq!(buf[(pill.x + 4, pill.y)].symbol(), "\u{25BC}", "{row}");
@@ -6138,6 +6118,10 @@ mod tests {
         let row = row0_beside_an_intact_pill(data(r#"{"a": 1}"#), 22);
         assert!(!row.contains("ms"), "no timing: {row}");
         assert!(!row.contains(" B "), "no size: {row}");
+        // 14 columns: not even the status chip fits beside the pill, so
+        // the pill wins, as on the not-yet-ready strip: it is the control.
+        let row = row0_beside_an_intact_pill(data(r#"{"a": 1}"#), 14);
+        assert!(!row.contains("200"), "no status chip: {row}");
     }
 
     #[test]
