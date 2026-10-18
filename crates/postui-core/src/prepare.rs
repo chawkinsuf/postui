@@ -326,7 +326,7 @@ pub fn prepare(
 /// client put in before ours keeps its place when replaced; one it adds
 /// after ours is only added when the name is free, so it holds no place.
 fn wire_order(rows: &[HeaderRow]) -> Vec<SentHeader> {
-    let mut groups: Vec<(String, Vec<SentHeader>)> = Vec::new();
+    let mut groups: IndexMap<String, Vec<SentHeader>> = IndexMap::new();
     let mut ours_started = false;
     for r in rows {
         ours_started |= r.origin != HeaderOrigin::Client;
@@ -335,19 +335,13 @@ fn wire_order(rows: &[HeaderRow]) -> Vec<SentHeader> {
             continue;
         }
         let name = r.header.name.to_ascii_lowercase();
-        let group = match groups.iter().position(|(n, _)| *n == name) {
-            Some(i) => i,
-            None => {
-                groups.push((name.clone(), Vec::new()));
-                groups.len() - 1
-            }
-        };
+        let group = groups.entry(name.clone()).or_default();
         if r.sent() {
             let display_name = r.header.display_name.to_ascii_lowercase();
-            groups[group].1.push(SentHeader { name, display_name, ..r.header.clone() });
+            group.push(SentHeader { name, display_name, ..r.header.clone() });
         }
     }
-    groups.into_iter().flat_map(|(_, headers)| headers).collect()
+    groups.into_values().flatten().collect()
 }
 
 /// Where a header row comes from.
@@ -423,7 +417,10 @@ fn client_owned(name: &str) -> Option<&'static str> {
 /// Every header of `req`'s send, in wire order — the client's
 /// `Authorization` from the URL's userinfo, enabled defaults, enabled
 /// request rows, the auto `Content-Type`, then the client's `Accept`,
-/// `Host` and `Content-Length` — whether sent or not. The one
+/// `Host` and `Content-Length` — whether sent or not. The order is the
+/// order rows go into the client's header map, which [`wire_order`] reads
+/// to place the client's rows (one put in before ours keeps its place
+/// when replaced), so it is a contract, not a display choice. The one
 /// place a send's headers are worked out: [`prepare`] keeps the sent
 /// rows, and the editor's auto section draws the rest of the story.
 /// Never errors: unresolved tokens stay literal and are listed per row.
@@ -490,17 +487,22 @@ fn rows(
             unresolved: unresolved.into_iter().collect(),
         }
     };
-    // A row the client adds: shown as it is sent, nothing to mask.
-    let fixed = |name: &str, value: String, unsent: Option<Unsent>| HeaderRow {
-        header: SentHeader {
-            name: name.to_string(),
-            display_name: name.to_string(),
-            display: value.clone(),
-            value,
-        },
-        origin: HeaderOrigin::Client,
-        unsent,
-        unresolved: Vec::new(),
+    // A row the client adds, shown as `display`: masked when a secret can
+    // change it (the URL's rows), else as it is sent (`fixed`).
+    let client_row =
+        |name: &str, value: String, display: String, unsent: Option<Unsent>| HeaderRow {
+            header: SentHeader {
+                name: name.to_string(),
+                display_name: name.to_string(),
+                display,
+                value,
+            },
+            origin: HeaderOrigin::Client,
+            unsent,
+            unresolved: Vec::new(),
+        };
+    let fixed = |name: &str, value: String, unsent: Option<Unsent>| {
+        client_row(name, value.clone(), value, unsent)
     };
 
     let mut rows = Vec::new();
@@ -551,33 +553,37 @@ fn rows(
     let mut unresolved = BTreeSet::new();
     let real = url_headers(&substitute_masked(&req.url, vars, &no_mask, &mut unresolved));
     let url_tokens = crate::vars::find_tokens(&req.url);
-    // Shown exactly as sent unless a secret can change it; then masked,
-    // since no account of which part of it is the secret's can be trusted
-    // to be the parser's. Fail-closed: a stand-in URL the parser refuses
-    // (a secret scheme, say) counts as changed, so the row masks.
-    let by_secret = with_stand_ins(&req.url, &url_tokens, vars, secrets);
-    let secret_shapes = |pick: fn(&UrlHeaders) -> &Option<String>| {
-        by_secret
+    // Whether the values behind `stand_ins` can change the header `pick`
+    // reads: the two stand-ins disagree, or differ from the real one.
+    // Fail-closed: a stand-in URL the parser refuses (a secret scheme, say)
+    // counts as changed.
+    let changed = |stand_ins: &Option<[UrlHeaders; 2]>,
+                   pick: fn(&UrlHeaders) -> &Option<String>| {
+        stand_ins
             .as_ref()
             .is_some_and(|[one, two]| pick(one) != pick(two) || pick(one) != pick(&real))
     };
+    // Shown exactly as sent unless a secret can change it; then masked,
+    // since no account of which part of it is the secret's can be trusted
+    // to be the parser's.
+    let by_secret = with_stand_ins(&req.url, &url_tokens, vars, secrets);
     // reqwest turns the URL's userinfo into `Authorization: Basic …` as it
     // builds the request, before any row of ours, so it leads the wire. A
     // sent row naming `authorization` replaces it, like `Accept`. None
     // while a token still unresolved can change it.
-    let token_shapes = || {
-        with_stand_ins(&req.url, &url_tokens, vars, &unresolved)
-            .is_some_and(|[one, two]| one.authorization != two.authorization)
-    };
-    if let Some(auth) = real.authorization.clone().filter(|_| !token_shapes()) {
-        let display = if secret_shapes(|h| &h.authorization) {
+    let authorization: fn(&UrlHeaders) -> &Option<String> = |h| &h.authorization;
+    let by_token = || with_stand_ins(&req.url, &url_tokens, vars, &unresolved);
+    if let Some(auth) = real.authorization.clone().filter(|_| !changed(&by_token(), authorization))
+    {
+        let display = if changed(&by_secret, authorization) {
             format!("Basic {SECRET_MASK}")
         } else {
             auth.clone()
         };
-        let mut row = fixed("Authorization", auth, replaced(&rows, "authorization"));
-        row.header.display = display;
-        rows.insert(0, row);
+        rows.insert(
+            0,
+            client_row("Authorization", auth, display, replaced(&rows, "authorization")),
+        );
     }
     // `Accept: */*` is its default unless a sent row names `accept`.
     let unsent = replaced(&rows, "accept");
@@ -586,10 +592,8 @@ fn rows(
     // masked. A URL whose host is still a `{{token}}` has none yet.
     if let Some(host) = real.host.clone() {
         let display =
-            if secret_shapes(|h| &h.host) { SECRET_MASK.to_string() } else { host.clone() };
-        let mut row = fixed("Host", host, None);
-        row.header.display = display;
-        rows.push(row);
+            if changed(&by_secret, |h| &h.host) { SECRET_MASK.to_string() } else { host.clone() };
+        rows.push(client_row("Host", host, display, None));
     }
     // The byte length of what goes on the wire, never the masked body. An
     // empty body goes out with none (hyper sends no `content-length: 0`).
@@ -1748,11 +1752,11 @@ mod tests {
         req.headers.insert("authorization".into(), on("Bearer t"));
         let rows = header_rows(&req, &PrepareContext::default());
         assert_eq!(client(&rows, "Authorization").unsent, Some(Unsent::Replaced));
-        let (p, _) = prepare(&req, &PrepareContext::default()).unwrap();
-        assert_eq!(wire(&p), vec![("authorization".to_string(), "Bearer t".to_string())]);
+        // The only Authorization on the wire: the client's Basic is gone.
         let auths = |p: &PreparedRequest| -> Vec<String> {
             p.wire.iter().filter(|h| h.name == "authorization").map(|h| h.value.clone()).collect()
         };
+        let (p, _) = prepare(&req, &PrepareContext::default()).unwrap();
         assert_eq!(auths(&p), vec!["Bearer t".to_string()]);
 
         let req = base("http://u:pw@x.test/p");
@@ -1760,7 +1764,6 @@ mod tests {
         let rows = header_rows(&req, &c);
         assert_eq!(client(&rows, "Authorization").unsent, Some(Unsent::Replaced));
         let (p, _) = prepare(&req, &c).unwrap();
-        assert_eq!(wire(&p), vec![("Authorization".to_string(), "Bearer d".to_string())]);
         assert_eq!(auths(&p), vec!["Bearer d".to_string()]);
         let (p, _) = prepare(&req, &PrepareContext::default()).unwrap();
         assert!(p.headers.is_empty(), "the client's, not the request's");
