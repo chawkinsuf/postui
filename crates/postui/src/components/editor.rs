@@ -3259,7 +3259,13 @@ impl Editor {
                         continue;
                     }
                     crate::components::var_tokens::paint_var_tokens(
-                        buf, row, &text, area.x, &self.vars, theme, hits,
+                        buf,
+                        row,
+                        &text,
+                        area.x.into(),
+                        &self.vars,
+                        theme,
+                        hits,
                     );
                 }
                 // The engine's search prompt on the pane's bottom row (spec
@@ -3366,7 +3372,7 @@ impl Editor {
                 buf,
                 Rect::new(cols.name_x, y, name_w, 1),
                 &token_piece,
-                cols.name_x,
+                cols.name_x.into(),
                 &self.vars,
                 theme,
                 hits,
@@ -3448,6 +3454,9 @@ impl Editor {
             y += 1;
         }
 
+        // Columns stay usize until they are known to be inside the pane: a
+        // long name or value would wrap a bare `as u16` back over the text.
+        let right = usize::from(area.right());
         let auto = self.computed.rows.iter().filter(|r| r.origin != HeaderOrigin::Request);
         for (i, row) in auto.enumerate() {
             if y >= max_y {
@@ -3468,10 +3477,6 @@ impl Editor {
             // One plain cell between the value and the pill, so the pill's
             // hover fill never touches the text.
             let value_piece = format!("{} ", row.value);
-            // Columns stay usize until they are known to be inside the
-            // pane: a long name or value would wrap a bare `as u16` back
-            // over the text.
-            let right = usize::from(area.right());
             let value_col = usize::from(area.x) + crate::ui::cells(&name_piece);
             let pill_col = value_col + crate::ui::cells(&value_piece);
             let glyph_hovered = ctx.hovered == Some(&crate::hit::Hit::AutoHeaderCopy(i));
@@ -3485,20 +3490,19 @@ impl Editor {
                 Span::styled(value_piece, value_style),
                 Span::styled(crate::glyph::COPY_PILL, glyph_style),
             ]);
-            frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
-            if value_col < right {
-                // Fits in u16: left of `area.right()`.
-                let value_x = value_col as u16;
-                crate::components::var_tokens::paint_var_tokens(
-                    frame.buffer_mut(),
-                    Rect::new(value_x, y, area.right() - value_x, 1),
-                    &row.value,
-                    value_x,
-                    &self.vars,
-                    theme,
-                    hits,
-                );
-            }
+            let row_rect = Rect::new(area.x, y, area.width, 1);
+            frame.render_widget(Paragraph::new(line), row_rect);
+            // The tokens all lie in the value, so clipping them to the
+            // whole row keeps them off the name.
+            crate::components::var_tokens::paint_var_tokens(
+                frame.buffer_mut(),
+                row_rect,
+                &row.value,
+                value_col,
+                &self.vars,
+                theme,
+                hits,
+            );
             // The pill's cells inside the pane; cut off at the right edge,
             // it keeps what shows.
             let pill_end = (pill_col + crate::ui::cells(crate::glyph::COPY_PILL)).min(right);
@@ -6316,8 +6320,25 @@ url = "https://api.example.com/users""#,
         // `  ` + name + `: ` puts the value at column 65540, which a bare
         // `as u16` wraps to 4.
         e.computed.rows = vec![auto_header(&"n".repeat(65_536), "{{tok}}")];
-        let (hits, _) = draw_auto_headers(&e);
+        let (hits, buf) = draw_auto_headers(&e);
         assert_eq!(hits.rect_of(&Hit::VarToken("tok".into())), None);
+        let muted = Theme::dark().text_muted;
+        assert!((4..11).all(|x| buf[(x, 1)].fg == muted), "the name keeps its dim colour");
+
+        // On screen, the token is found where the value painted it.
+        e.computed.rows = vec![auto_header("A", "x {{tok}}")];
+        let (hits, _) = draw_auto_headers(&e);
+        assert_eq!(hits.rect_of(&Hit::VarToken("tok".into())), Some(Rect::new(7, 1, 7, 1)));
+    }
+
+    /// A pill cut by the pane's right edge registers the cells that show.
+    #[test]
+    fn an_auto_header_pill_cut_by_the_edge_keeps_what_shows() {
+        let mut e = Editor::default();
+        // `  A: ` + 52 cells + the spacer puts the pill at column 58 of 60.
+        e.computed.rows = vec![auto_header("A", &"v".repeat(52))];
+        let (hits, _) = draw_auto_headers(&e);
+        assert_eq!(hits.rect_of(&Hit::AutoHeaderCopy(0)), Some(Rect::new(58, 1, 2, 1)));
     }
 }
 

@@ -272,19 +272,21 @@ pub fn token_color(theme: &Theme, info: &TokenInfo) -> Color {
 ///
 /// `text` must be exactly the string drawn on `row.y` starting at
 /// `text_origin_col` — the painter walks it by display width to find each
-/// span's columns, and clips anything outside `row`. Only the foreground is
+/// span's columns, and clips anything outside `row`. The origin is a usize
+/// so text that starts past the screen (after a long prefix) clips away
+/// rather than wrapping a u16 back over it. Only the foreground is
 /// touched: the control keeps its own fill, caret and modifiers.
 pub fn paint_var_tokens(
     buf: &mut Buffer,
     row: Rect,
     text: &str,
-    text_origin_col: u16,
+    text_origin_col: usize,
     vars: &VarView,
     theme: &Theme,
     hits: &mut HitMap,
 ) {
     let columns = |bytes: Range<usize>| {
-        let start = text_origin_col as usize + crate::ui::cells(&text[..bytes.start]);
+        let start = text_origin_col + crate::ui::cells(&text[..bytes.start]);
         Some(start..start + crate::ui::cells(&text[bytes]))
     };
     paint_tokens(buf, row, text, columns, vars, theme, hits);
