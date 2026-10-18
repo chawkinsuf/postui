@@ -237,11 +237,10 @@ impl<'a> TreeLine<'a> {
     /// Display width of what [`TreeLine::plain_text`] would draw, without
     /// building it — what the widest-line measure over a whole tree runs.
     pub fn render_width(&self) -> usize {
-        use unicode_width::UnicodeWidthStr;
         if self.collapsed && self.container.is_some() {
-            return self.plain_text().width();
+            return crate::ui::cells(&self.plain_text());
         }
-        self.indent + self.text.width()
+        self.indent + crate::ui::cells(self.text)
     }
 }
 

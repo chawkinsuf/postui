@@ -709,8 +709,8 @@ pub(crate) fn clip(s: &str, width: u16) -> &str {
 /// what follows it: the crate's width measure, by grapheme as ratatui
 /// paints. Only code that must count per char like another program
 /// measures for itself — the body editor as edtui lays text out, the vim
-/// engine as Vim counts columns — plus the response view, which task #45
-/// decides; `lib.rs`'s `width_measure_test` holds the rest to this.
+/// engine and the response view's Vim cursor as Vim counts columns;
+/// `lib.rs`'s `width_measure_test` holds the rest to this.
 pub(crate) fn cells(s: &str) -> usize {
     // ASCII graphemes are one byte each (`\r\n` aside, two controls): a
     // cell apiece, none for a control.
@@ -723,13 +723,116 @@ pub(crate) fn cells(s: &str) -> usize {
 /// `s`'s graphemes, each with its byte offset and the cells it takes —
 /// the unit ratatui paints in: its own width for the grapheme, and none
 /// for one holding a control char, which it skips.
-pub(crate) fn graphemes(s: &str) -> impl DoubleEndedIterator<Item = (usize, &str, usize)> {
-    use ratatui::buffer::CellWidth;
-    use unicode_segmentation::UnicodeSegmentation;
-    s.grapheme_indices(true).map(|(i, g)| {
-        let w = if g.contains(char::is_control) { 0 } else { g.cell_width() as usize };
-        (i, g, w)
+pub(crate) fn graphemes(s: &str) -> Graphemes<'_> {
+    use unicode_segmentation::GraphemeCursor;
+    let n = s.len();
+    Graphemes {
+        s,
+        front: 0,
+        back: n,
+        fwd: GraphemeCursor::new(0, n, true),
+        bwd: GraphemeCursor::new(n, n, true),
+    }
+}
+
+/// One grapheme of [`char_graphemes`].
+pub(crate) struct CharGrapheme<'a> {
+    /// The char offset it starts at, and how many chars it holds.
+    pub char: usize,
+    pub chars: usize,
+    pub byte: usize,
+    pub text: &'a str,
+    /// The cells it paints, as [`graphemes`] gives them.
+    pub width: usize,
+}
+
+/// [`graphemes`] for text indexed by char — a cursor, a selection, a
+/// search hit — with each grapheme's char offset and char count beside
+/// its byte offset.
+pub(crate) fn char_graphemes(s: &str) -> impl Iterator<Item = CharGrapheme<'_>> {
+    let mut char = 0;
+    graphemes(s).map(move |(byte, text, width)| {
+        let chars = if text.len() == 1 { 1 } else { text.chars().count() };
+        char += chars;
+        CharGrapheme { char: char - chars, chars, byte, text, width }
     })
+}
+
+/// [`graphemes`]' iterator. It hands the segmenter only what can need it:
+/// two ASCII chars always have a grapheme boundary between them but for
+/// `\r\n` (every UAX #29 rule that joins two chars needs a non-ASCII one),
+/// so an ASCII char with ASCII beside it is a grapheme alone. That keeps
+/// a megabyte line with a little non-ASCII in it near the cost of a char
+/// walk (task #45). The rest goes to one segmenter cursor per end, kept
+/// across steps, so a run of non-ASCII costs what `grapheme_indices` does.
+pub(crate) struct Graphemes<'a> {
+    s: &'a str,
+    /// The unvisited bytes, both ends on grapheme boundaries.
+    front: usize,
+    back: usize,
+    fwd: unicode_segmentation::GraphemeCursor,
+    bwd: unicode_segmentation::GraphemeCursor,
+}
+
+impl<'a> Graphemes<'a> {
+    fn item(&self, at: usize, len: usize) -> (usize, &'a str, usize) {
+        use ratatui::buffer::CellWidth;
+        let g = &self.s[at..at + len];
+        let w = match g.as_bytes() {
+            [b] if b.is_ascii() => usize::from(!b.is_ascii_control()),
+            _ if g.contains(char::is_control) => 0,
+            _ => g.cell_width() as usize,
+        };
+        (at, g, w)
+    }
+}
+
+/// Whether ASCII `a` then ASCII `b` have a grapheme boundary between them.
+fn ascii_break(a: u8, b: u8) -> bool {
+    a.is_ascii() && b.is_ascii() && !(a == b'\r' && b == b'\n')
+}
+
+impl<'a> Iterator for Graphemes<'a> {
+    type Item = (usize, &'a str, usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let rest = &self.s[self.front..self.back];
+        let len = match rest.as_bytes() {
+            [] => return None,
+            [a] if a.is_ascii() => 1,
+            [a, b, ..] if ascii_break(*a, *b) => 1,
+            _ => {
+                if self.fwd.cur_cursor() != self.front {
+                    self.fwd.set_cursor(self.front);
+                }
+                let next = self.fwd.next_boundary(self.s, 0);
+                next.expect("the whole string is the chunk")? - self.front
+            }
+        };
+        let at = self.front;
+        self.front += len;
+        Some(self.item(at, len))
+    }
+}
+
+impl DoubleEndedIterator for Graphemes<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let rest = &self.s[self.front..self.back];
+        let len = match rest.as_bytes() {
+            [] => return None,
+            [b] if b.is_ascii() => 1,
+            [.., a, b] if ascii_break(*a, *b) => 1,
+            _ => {
+                if self.bwd.cur_cursor() != self.back {
+                    self.bwd.set_cursor(self.back);
+                }
+                let prev = self.bwd.prev_boundary(self.s, 0);
+                self.back - prev.expect("the whole string is the chunk")?
+            }
+        };
+        self.back -= len;
+        Some(self.item(self.back, len))
+    }
 }
 
 /// Marks the focused pane with a half-block accent bar down its left
@@ -974,6 +1077,47 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
     use unicode_width::UnicodeWidthStr;
+
+    /// Task #45: the ASCII shortcut in `graphemes` cuts exactly where the
+    /// segmenter does, from either end — around `\r\n`, a base char with a
+    /// combining mark or a keycap after it, a prepended mark before ASCII,
+    /// flags, ZWJ families and skin tones.
+    #[test]
+    fn graphemes_cut_where_the_segmenter_does() {
+        use unicode_segmentation::UnicodeSegmentation;
+        let samples = [
+            "",
+            "a",
+            "ab\r\ncd\r",
+            "\r\n",
+            "cafe\u{301}x",
+            "1\u{FE0F}\u{20E3}#",
+            "x\u{600}1y",
+            "\u{1F1FA}\u{1F1F8}\u{1F1EC}\u{1F1E7}a",
+            "a\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}b",
+            "\u{1F44B}\u{1F3FD}y\u{2764}\u{FE0F}",
+            "日本語 tab\there",
+        ];
+        for s in samples {
+            let want: Vec<(usize, &str)> = s.grapheme_indices(true).collect();
+            let got: Vec<(usize, &str)> = graphemes(s).map(|(i, g, _)| (i, g)).collect();
+            assert_eq!(got, want, "forward {s:?}");
+            let mut back: Vec<(usize, &str)> = graphemes(s).rev().map(|(i, g, _)| (i, g)).collect();
+            back.reverse();
+            assert_eq!(back, want, "backward {s:?}");
+            // Both ends at once meet in the middle without a gap.
+            let mut it = graphemes(s);
+            let mut ends = Vec::new();
+            while let Some((i, g, _)) = it.next() {
+                ends.push((i, g));
+                if let Some((i, g, _)) = it.next_back() {
+                    ends.push((i, g));
+                }
+            }
+            ends.sort();
+            assert_eq!(ends, want, "both ends {s:?}");
+        }
+    }
 
     fn render(app: &mut App) -> String {
         let backend = TestBackend::new(120, 40);

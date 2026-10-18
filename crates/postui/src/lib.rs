@@ -97,10 +97,10 @@ mod width_measure_test {
 
     /// Files that may measure text themselves: `ui.rs` is the measure;
     /// the body editor maps clicks the way edtui lays text out; the vim
-    /// engine counts columns as Vim does; the response view and its JSON
-    /// tree still count per char (task #45 decides which of theirs move).
-    const MEASURERS: [&str; 4] =
-        ["ui.rs", "components/editor.rs", "components/response.rs", "components/json_tree.rs"];
+    /// engine counts columns as Vim does, and so does the response view's
+    /// Vim cursor (`vim_cells`; everything it paints walks `ui::graphemes`,
+    /// task #45).
+    const MEASURERS: [&str; 3] = ["ui.rs", "components/editor.rs", "components/response.rs"];
 
     const MEASURES: [&str; 3] = ["unicode_width", "unicode_segmentation", "CellWidth"];
 
