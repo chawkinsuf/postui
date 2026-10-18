@@ -1748,6 +1748,14 @@ impl App {
         let mut app = Self::with_root(tx, dir.path().to_path_buf());
         app._test_rx = Some(rx);
         app._test_dir = Some(dir);
+        // Integration tests have no `cfg(test)`, so `Clipboard::new` gave
+        // this App the real host (see there); this keeps theirs off it too.
+        // Safe on the feature: `main` never builds an App through here.
+        #[cfg(feature = "test-util")]
+        {
+            app.clipboard =
+                crate::clipboard::Clipboard::new_for_test(None, app.ui_settings.osc52_limit);
+        }
         app
     }
 
