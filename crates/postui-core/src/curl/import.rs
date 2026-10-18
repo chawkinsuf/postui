@@ -1231,7 +1231,7 @@ mod tests {
             assert_eq!(back.request.method, p.method, "{toml}");
             assert_eq!(back.request.url, p.url, "{toml}");
             let mut sent: Vec<(String, String)> =
-                p.own_headers().map(|h| (h.name.clone(), h.value.clone())).collect();
+                p.headers.iter().map(|h| (h.name.clone(), h.value.clone())).collect();
             sent.sort();
             let mut got: Vec<(String, String)> =
                 back.request.headers.iter().map(|(k, e)| (k.clone(), e.value.clone())).collect();

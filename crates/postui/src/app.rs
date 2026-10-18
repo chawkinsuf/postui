@@ -9515,7 +9515,7 @@ impl App {
                 .computed
                 .rows
                 .get(*i)
-                .map(|r| (r.value.clone(), format!("Copied {}", r.name))),
+                .map(|r| (r.value.clone(), format!("Copied {}", r.display_name))),
         }
     }
 

@@ -36,6 +36,8 @@ pub struct ResponseData {
 /// screen shows — never the real value).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SentHeader {
+    /// The name as screens show it: secret values masked (a name is only
+    /// ever shown, never copied).
     pub name: String,
     pub value: String,
     pub display: String,
@@ -43,7 +45,7 @@ pub struct SentHeader {
 
 impl SentHeader {
     /// Every header `req` puts on the wire, in wire order and wire case
-    /// (lowercase): the prepared rows, the client's own included —
+    /// (lowercase): the request's own rows, then the client's —
     /// reqwest's `accept: */*`, hyper's `host` and, for a body,
     /// `content-length` (core's `header_rows` lists them). `Host` and
     /// `Content-Length` are what an HTTP/1.1 send carries; an h2
@@ -52,8 +54,9 @@ impl SentHeader {
     pub fn wire(req: &PreparedRequest) -> Vec<Self> {
         req.headers
             .iter()
+            .chain(&req.client_headers)
             .map(|h| SentHeader {
-                name: h.name.to_ascii_lowercase(),
+                name: h.display_name.to_ascii_lowercase(),
                 value: h.value.clone(),
                 display: h.display.clone(),
             })
@@ -126,7 +129,7 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
         .map_err(|e| format!("invalid method: {e}"))?;
     let mut builder = client.request(method, &req.url);
     builder = builder
-        .headers(header_map(req.own_headers().map(|h| (h.name.as_str(), h.value.as_str())))?);
+        .headers(header_map(req.headers.iter().map(|h| (h.name.as_str(), h.value.as_str())))?);
     if let Some(body) = &req.body {
         builder = builder.body(body.clone());
     }
@@ -285,6 +288,7 @@ mod tests {
             url: "https://x.test".into(),
             display_url: "https://x.test".into(),
             headers: vec![],
+            client_headers: vec![],
             body: None,
             insecure: false,
         };
@@ -319,6 +323,7 @@ mod tests {
             url: "http://127.0.0.1:1/v1/items?key=sk-live-REAL".into(),
             display_url: "http://127.0.0.1:1/v1/items?key=•••••".into(),
             headers: vec![],
+            client_headers: vec![],
             body: None,
             insecure: false,
         };
@@ -349,6 +354,7 @@ mod tests {
             url: format!("http://{addr}/"),
             display_url: format!("http://{addr}/"),
             headers: vec![],
+            client_headers: vec![],
             body: None,
             insecure: false,
         };
@@ -451,6 +457,7 @@ mod tests {
             url: url.clone(),
             display_url: url,
             headers: vec![],
+            client_headers: vec![],
             body: None,
             insecure: false,
         };

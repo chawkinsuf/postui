@@ -103,7 +103,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             // live across an env switch or an in-progress edit without
             // having to track exactly which action invalidates it. Gated on
             // the active tab -- there's nothing on screen to read it on any
-            // other tab, so skip the two prepare_context-driven passes.
+            // other tab, so skip building the context and its one pass.
             if app.editor.active_tab == crate::components::editor::EditorTab::Headers {
                 let prepare_ctx = app.prepare_context();
                 app.editor.recompute_computed_headers(&prepare_ctx);

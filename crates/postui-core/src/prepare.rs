@@ -12,25 +12,19 @@ pub struct PreparedRequest {
     /// version screens show for the sent request; never what goes on the
     /// wire.
     pub display_url: String,
-    /// Every header the send carries, in wire order: the [`header_rows`]
-    /// that are sent, the client's own included. Each row has its masked
-    /// twin in `display`, the version screens show (the response pane's
-    /// `sent` section). The client adds its `Client` rows itself, so the
-    /// request is built from [`Self::own_headers`] alone.
+    /// The headers the request itself sets, in wire order: the sent
+    /// [`header_rows`] other than the client's. What the request is built
+    /// from (and what curl export writes). Each row has its masked twin in
+    /// `display_name`/`display`, the version screens show.
     pub headers: Vec<HeaderRow>,
+    /// What the HTTP client adds on its own after `headers` (`Accept`,
+    /// `Host`, `Content-Length`), for the screens that show the whole send
+    /// (the response pane's `sent` section) — never put on the request.
+    pub client_headers: Vec<HeaderRow>,
     pub body: Option<String>,
     /// Skip TLS certificate verification for this send (the request's
     /// `insecure` flag, carried through so the transport can pick a client).
     pub insecure: bool,
-}
-
-impl PreparedRequest {
-    /// The headers the request sets itself: every sent row but the
-    /// client's own, which the HTTP client adds on its own (and curl
-    /// export leaves to curl).
-    pub fn own_headers(&self) -> impl Iterator<Item = &HeaderRow> {
-        self.headers.iter().filter(|h| h.origin != HeaderOrigin::Client)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -251,9 +245,15 @@ pub fn prepare(
 
     // Only what goes on the wire has to resolve: a row that isn't sent
     // (an overridden default, a row naming a client-owned header) never
-    // blocks the send, whatever its tokens.
-    let headers: Vec<HeaderRow> =
-        rows(req, ctx, &mut warnings).into_iter().filter(|r| r.sent).collect();
+    // blocks the send, whatever its tokens. A row the client-owned rule
+    // drops is left without a warning on purpose: the Headers tab marks it
+    // as an error where it is written, and the send goes as the user asked
+    // it not to fail (spec 2026-10-18 R3a/R3b; a send-time notice was
+    // weighed in review and declined).
+    let (client_headers, headers): (Vec<HeaderRow>, Vec<HeaderRow>) = rows(req, ctx, &mut warnings)
+        .into_iter()
+        .filter(|r| r.sent)
+        .partition(|r| r.origin == HeaderOrigin::Client);
     missing.extend(headers.iter().flat_map(|r| r.unresolved.iter().cloned()));
 
     if !missing.is_empty() {
@@ -277,6 +277,7 @@ pub fn prepare(
             url,
             display_url,
             headers,
+            client_headers,
             body,
             insecure: match ctx.tls_override {
                 Some(crate::project::TlsPolicy::Verify) => false,
@@ -307,11 +308,14 @@ pub enum HeaderOrigin {
 /// One header of a send, as [`header_rows`] lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeaderRow {
+    /// The real name; an unresolved `{{token}}` keeps its braces.
     pub name: String,
+    /// `name` with secret values rendered as [`SECRET_MASK`].
+    pub display_name: String,
     /// The real value; an unresolved `{{token}}` keeps its braces.
     pub value: String,
-    /// `value` with secret values rendered as [`SECRET_MASK`]: what
-    /// screens show while secrets are hidden.
+    /// `value` with secret values rendered as [`SECRET_MASK`]: with
+    /// `display_name`, what screens show while secrets are hidden.
     pub display: String,
     pub origin: HeaderOrigin,
     /// Whether it goes on the wire. A row that doesn't is still listed:
@@ -353,23 +357,34 @@ fn rows(
     let secrets = secret_names(ctx);
     let no_mask = BTreeSet::new();
     let quiet = |s: &str| substitute_masked(s, &vars, &no_mask, &mut BTreeSet::new());
+    // The screens' version of `text`: the real one when no secret is in
+    // play, which is most projects, on every frame the Headers tab shows.
+    let masked = |text: &str, real: &String| {
+        if secrets.is_empty() {
+            real.clone()
+        } else {
+            substitute_masked(text, &vars, &secrets, &mut BTreeSet::new())
+        }
+    };
     // Substitutes name and value together, so a row reports the
-    // unresolved tokens of both halves. Names are never masked.
+    // unresolved tokens of both halves.
     let row = |name: &str, value: &str, origin: HeaderOrigin| {
         let mut unresolved = BTreeSet::new();
-        let name = substitute_masked(name, &vars, &no_mask, &mut unresolved);
+        let real_name = substitute_masked(name, &vars, &no_mask, &mut unresolved);
         let real = substitute_masked(value, &vars, &no_mask, &mut unresolved);
         HeaderRow {
-            sent: client_owned(&name).is_none(),
-            name,
+            sent: client_owned(&real_name).is_none(),
+            display_name: masked(name, &real_name),
+            name: real_name,
+            display: masked(value, &real),
             value: real,
-            display: substitute_masked(value, &vars, &secrets, &mut BTreeSet::new()),
             origin,
             unresolved: unresolved.into_iter().collect(),
         }
     };
     let fixed = |name: &str, value: String, display: String, sent: bool| HeaderRow {
         name: name.to_string(),
+        display_name: name.to_string(),
         value,
         display,
         origin: HeaderOrigin::Client,
@@ -424,8 +439,12 @@ fn rows(
     // masked. A URL whose host is still a `{{token}}` has none yet.
     let url = quiet(&req.url);
     if let Some(host) = authority(&url) {
-        let masked = substitute_masked(&req.url, &vars, &secrets, &mut BTreeSet::new());
-        let display = authority(&masked).unwrap_or_else(|| host.clone());
+        let display = if secrets.is_empty() {
+            host.clone()
+        } else {
+            let masked = substitute_masked(&req.url, &vars, &secrets, &mut BTreeSet::new());
+            authority(&masked).unwrap_or_else(|| host.clone())
+        };
         rows.push(fixed("Host", host, display, true));
     }
     if let Some(body) = body {
@@ -470,11 +489,18 @@ fn authority(url: &str) -> Option<String> {
     if host_port.is_empty() || host_port.contains("{{") {
         return None;
     }
-    let parsed = url::Url::parse(&url.replace(SECRET_MASK, MASK_STAND_IN)).ok();
+    // Only a masked URL makes the round trip, so a real host that happens
+    // to hold the stand-in is left as it is.
+    let masked = url.contains(SECRET_MASK);
+    let parsed = if masked {
+        url::Url::parse(&url.replace(SECRET_MASK, MASK_STAND_IN)).ok()
+    } else {
+        url::Url::parse(url).ok()
+    };
     let Some(host) = parsed.as_ref().and_then(|u| u.host_str()) else {
         return Some(host_port.to_string());
     };
-    let host = host.replace(MASK_STAND_IN, SECRET_MASK);
+    let host = if masked { host.replace(MASK_STAND_IN, SECRET_MASK) } else { host.to_string() };
     Some(match parsed.and_then(|u| u.port()) {
         Some(port) => format!("{host}:{port}"),
         None => host,
@@ -489,7 +515,7 @@ mod tests {
 
     /// The `(name, value)` pairs the request itself puts on the wire.
     fn wire(p: &PreparedRequest) -> Vec<(String, String)> {
-        p.own_headers().map(|h| (h.name.clone(), h.value.clone())).collect()
+        p.headers.iter().map(|h| (h.name.clone(), h.value.clone())).collect()
     }
 
     fn ctx(vars: &[(&str, &str)], defaults: &[(&str, &str, bool)]) -> PrepareContext {
@@ -912,7 +938,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            p.own_headers().map(|h| (h.name.clone(), h.display.clone())).collect::<Vec<_>>(),
+            p.headers.iter().map(|h| (h.name.clone(), h.display.clone())).collect::<Vec<_>>(),
             vec![
                 ("X-Trace".to_string(), SECRET_MASK.to_string()),
                 ("Authorization".to_string(), format!("Bearer {SECRET_MASK}")),
@@ -1236,23 +1262,40 @@ mod tests {
         );
     }
 
-    /// A prepared request carries every sent row, the client's included,
-    /// in wire order; `own_headers` leaves the client's out.
+    /// A prepared request splits the sent rows into the ones it sets and
+    /// the ones the client adds after them, each in wire order.
     #[test]
-    fn prepared_headers_are_the_sent_rows_and_own_headers_skip_the_clients() {
+    fn prepared_headers_split_the_sent_rows_from_the_clients() {
         let mut req = base("https://x.test");
         req.method = Method::Post;
         req.body = Some(Body::Json { text: "{}".into() });
         req.headers.insert("Accept".into(), on("text/plain"));
         let (p, _) = prepare(&req, &PrepareContext::default()).unwrap();
-        assert_eq!(
-            p.headers.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(),
-            ["Accept", "Content-Type", "Host", "Content-Length"]
-        );
-        assert!(p.headers.iter().all(|h| h.sent));
-        assert_eq!(
-            p.own_headers().map(|h| h.name.as_str()).collect::<Vec<_>>(),
-            ["Accept", "Content-Type"]
-        );
+        let names = |rows: &[HeaderRow]| rows.iter().map(|h| h.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&p.headers), ["Accept", "Content-Type"]);
+        assert_eq!(names(&p.client_headers), ["Host", "Content-Length"]);
+        assert!(p.headers.iter().chain(&p.client_headers).all(|h| h.sent));
+    }
+
+    /// A secret in a header's name is masked on screen like one in its
+    /// value, and the real name is what goes on the wire.
+    #[test]
+    fn a_secret_in_a_header_name_is_masked_in_display_name() {
+        let mut c = ctx(&[("key", "s3cret")], &[("X-{{key}}", "1", true)]);
+        c.meta.insert("key".into(), varmodel::VarMeta::Secret);
+        let rows = header_rows(&base("https://x.test"), &c);
+        let r = row(&rows, "X-s3cret");
+        assert_eq!(r.display_name, format!("X-{SECRET_MASK}"));
+        let (p, _) = prepare(&base("https://x.test"), &c).unwrap();
+        assert_eq!(wire(&p), vec![("X-s3cret".to_string(), "1".to_string())]);
+    }
+
+    /// The stand-in for the mask only stands in for it: a real host that
+    /// holds the same label is sent and shown as it is.
+    #[test]
+    fn a_real_host_holding_the_mask_stand_in_is_left_alone() {
+        let rows =
+            header_rows(&base("https://postui-secret-mask.internal/x"), &PrepareContext::default());
+        assert_eq!(client(&rows, "Host").value, "postui-secret-mask.internal");
     }
 }

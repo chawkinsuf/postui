@@ -315,7 +315,7 @@ impl ComputedHeadersView {
     /// Whether any row has a secret to reveal — independent of
     /// `revealed`, so the toggle that hides it again stays on screen.
     pub fn has_secret(&self) -> bool {
-        self.rows.iter().any(|r| r.value != r.display)
+        self.rows.iter().any(|r| r.value != r.display || r.name != r.display_name)
     }
 }
 
@@ -3435,7 +3435,11 @@ impl Editor {
                 break;
             }
             let suppressed = !row.sent;
-            let value = if self.computed.revealed { &row.value } else { &row.display };
+            let (name, value) = if self.computed.revealed {
+                (&row.name, &row.value)
+            } else {
+                (&row.display_name, &row.display)
+            };
             // A default the client-owned rule drops reads as an error and
             // says why, as a typed row naming the same header does (spec
             // 2026-10-18 R3b): struck alone, it would look overridden by a
@@ -3457,7 +3461,7 @@ impl Editor {
                 name_style = name_style.add_modifier(Modifier::CROSSED_OUT);
                 value_style = value_style.add_modifier(Modifier::CROSSED_OUT);
             }
-            let name_piece = format!("  {}: ", row.name);
+            let name_piece = format!("  {name}: ");
             // One plain cell between the value and the pill, so the pill's
             // hover fill never touches the text.
             let value_piece = format!("{value} ");
@@ -6355,6 +6359,7 @@ url = "https://api.example.com/users""#,
     fn auto_header(name: &str, value: &str) -> postui_core::prepare::HeaderRow {
         postui_core::prepare::HeaderRow {
             name: name.into(),
+            display_name: name.into(),
             value: value.into(),
             display: value.into(),
             origin: postui_core::prepare::HeaderOrigin::Client,

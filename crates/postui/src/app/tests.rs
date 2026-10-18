@@ -14351,7 +14351,7 @@ fn computed_headers_mask_a_secret_by_default_and_the_reveal_toggle_unmasks() {
         value: "sk-live-abc123".into(),
     }));
     // A project default header, not a request-table row: the computed
-    // section only shows non-`Request`-origin rows, so this is what
+    // section never shows the request's own rows, so this is what
     // exercises it (see `computed_headers_recompute_reflects_an_env_switch`
     // for the same reasoning).
     set_default_header(&mut app, "Authorization", "Bearer {{api_key}}");
@@ -14420,8 +14420,8 @@ fn computed_header_copy_takes_the_real_value_of_a_masked_row() {
 
 #[test]
 fn computed_headers_reveal_toggle_hides_when_only_the_request_table_uses_a_secret() {
-    // The auto section draws only non-`Request` rows, and the request's
-    // own header is the editable table above (tokens, not values). With no
+    // The auto section never draws the request's own rows: those are the
+    // editable table above (tokens, not values). With no
     // masked value in the section, a reveal toggle would toggle nothing.
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
@@ -14461,7 +14461,7 @@ fn computed_headers_recompute_reflects_an_env_switch() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     // A project default header, not a request-table row: the computed
-    // section only shows non-`Request`-origin rows (the editable table
+    // section never shows the request's own rows (the editable table
     // above already shows the request's own rows, literal text and all),
     // so this is what actually exercises the env-driven recompute.
     set_default_header(&mut app, "X-Base", "{{base_url}}");

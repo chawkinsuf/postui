@@ -95,6 +95,23 @@ pub fn header_rows(req: &HttpRequest, ctx: &PrepareContext) -> Vec<HeaderRow>
   on the `url` crate. It is already in the lock file (2.5.8) as
   reqwest's.
 
+*Amended 2026-10-18 after review round 2 (`mine`):*
+- `PreparedRequest` splits its rows into `headers` (what the request
+  sets) and `client_headers` (what the client adds after them). The
+  obvious field is then the safe one: nothing has to remember to filter
+  out the client's rows before building a request or a curl command.
+- `HeaderRow` gains `display_name`. On main, the auto section masked a
+  secret in a header's name, and the first cut of `header_rows` lost
+  that. The sent section now shows names masked too.
+- A masked `Host` goes through the same parse as the real one. During
+  the parse, a plain stand-in label replaces the mask, which is put back
+  afterwards. The swap only happens when the URL holds the mask.
+- With no secrets in play, `display` is the real text and isn't worked
+  out a second time.
+- A dropped typed `Host` gets no send-time warning. The reviewer raised
+  it, and the user kept the Headers tab as the only signal
+  (`mine (approved)`).
+
 **Binary**
 - `http::send` puts only the non-`Client` rows on the request.
   `SentHeader::wire` becomes a map over `PreparedRequest.headers`,

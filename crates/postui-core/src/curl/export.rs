@@ -30,9 +30,9 @@ pub fn to_curl(req: &PreparedRequest) -> String {
         head.push_str(" -k");
     }
     let mut lines = vec![head];
-    // The rows the client adds itself (`Host`, `Accept`, …) are curl's to
-    // add too.
-    for h in req.own_headers() {
+    // Only the rows the request sets: the ones the client adds itself
+    // (`client_headers`: `Host`, `Accept`, …) are curl's to add too.
+    for h in &req.headers {
         let (name, value) = (&h.name, &h.value);
         // `Name:` with only blanks after it tells curl to drop the header;
         // `Name;` is curl's spelling of an empty value, and HTTP trims a
@@ -63,7 +63,8 @@ pub fn includes_secrets(
     ctx: &PrepareContext,
     prepared: &PreparedRequest,
 ) -> bool {
-    if prepared.url != prepared.display_url || prepared.own_headers().any(|h| h.value != h.display)
+    if prepared.url != prepared.display_url
+        || prepared.headers.iter().any(|h| h.value != h.display || h.name != h.display_name)
     {
         return true;
     }
@@ -95,6 +96,7 @@ mod tests {
             .enumerate()
             .map(|(row, (k, v))| HeaderRow {
                 name: k.to_string(),
+                display_name: k.to_string(),
                 value: v.to_string(),
                 display: v.to_string(),
                 origin: HeaderOrigin::Request { row },
@@ -107,6 +109,7 @@ mod tests {
             url: url.into(),
             display_url: url.into(),
             headers,
+            client_headers: Vec::new(),
             body: body.map(str::to_string),
             insecure: false,
         }
