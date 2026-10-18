@@ -277,11 +277,12 @@ pub struct Editor {
     pub split: crate::split::SplitState,
     /// The Headers tab's read-only computed-headers section (spec §6):
     /// everything that will actually be sent beyond the editable request
-    /// rows above — default headers (struck through when overridden), the
-    /// auto Content-Type, and the client-generated Host/Content-Length
-    /// rows. Recomputed every draw by `recompute_computed_headers` (cheap,
-    /// small N) so an env switch or a body edit shows up live; never
-    /// itself edited here.
+    /// rows above — default headers, the auto Content-Type, and the
+    /// client-generated rows (the URL's Authorization, Accept, Host,
+    /// Content-Length). A row something overrides is struck through;
+    /// Host and Content-Length never are (spec R3a). Recomputed
+    /// every draw by `recompute_computed_headers` (cheap, small N) so an
+    /// env switch or a body edit shows up live; never itself edited here.
     pub computed: ComputedHeadersView,
     /// The variable snapshot inline `{{token}}` highlighting and the hover
     /// tooltip resolve against (spec §7), synced by `App::update` on every
@@ -296,11 +297,10 @@ pub struct Editor {
 /// [`Editor::recompute_computed_headers`].
 #[derive(Debug, Default)]
 pub struct ComputedHeadersView {
-    /// The auto section's rows, in wire order: every row that is sent
-    /// other than the request's own (the editable table shows those),
-    /// and every default that isn't, struck through. An auto or client
-    /// row a sent row replaces is left out. `Hit::AutoHeaderCopy(i)` is
-    /// `rows[i]`.
+    /// The auto section's rows, in `header_rows` order: every row other
+    /// than the request's own (the editable table shows those), sent or
+    /// not; one that isn't sent sits where it would have gone and draws
+    /// struck through (task #57). `Hit::AutoHeaderCopy(i)` is `rows[i]`.
     pub rows: Vec<postui_core::prepare::HeaderRow>,
     /// The request table's notes, one per row (the Headers table's
     /// `notes`): a row kept off the wire (spec 2026-10-18 R3a) carries the
@@ -629,12 +629,16 @@ impl Editor {
                         *note = Some(RowNote::error(text));
                     }
                 }
-                // An unsent default is struck through: a request row
-                // replaced it, or the client owns its name. An unsent
-                // auto or client row just isn't part of the send.
-                HeaderOrigin::Default => auto.push(r),
-                _ if r.sent() => auto.push(r),
-                _ => {}
+                // Every other row is drawn, an unsent one struck through,
+                // so the user sees what is overridden (task #57): a
+                // default, the auto `Content-Type`, the client's `Accept`
+                // or the URL's `Authorization`, whether a typed row or a
+                // default replaced it. A struck `Authorization` shows its
+                // credential no more than the URL bar shows the userinfo,
+                // and masks the same way when a secret is in it.
+                HeaderOrigin::Default | HeaderOrigin::ContentType | HeaderOrigin::Client => {
+                    auto.push(r)
+                }
             }
         }
         self.computed.rows = auto;
@@ -3376,11 +3380,14 @@ impl Editor {
     /// Paints the Headers tab's computed-headers section (spec §6, the
     /// user's #4 complaint: see everything that will actually be sent): a
     /// dim divider, then one dim row per `self.computed.rows` entry. A row
-    /// that isn't sent (an overridden or duplicate default) renders struck
-    /// through; an unresolved `{{token}}` is tinted span-level. Each row
-    /// gets a trailing `󰆏` copy icon (`Hit::AutoHeaderCopy`, indexed into
-    /// `rows`); the divider carries a `👁 reveal`/`hide` toggle
-    /// (`Hit::AutoHeaderReveal`) whenever a row has a secret to reveal.
+    /// that isn't sent (a default, auto or client row something overrides,
+    /// a duplicate default, or a default naming a client-owned header,
+    /// which also reads as an error with its note) renders struck through;
+    /// an unresolved
+    /// `{{token}}` is tinted span-level. Each row gets a trailing `󰆏` copy
+    /// icon (`Hit::AutoHeaderCopy`, indexed into `rows`); the divider
+    /// carries a `👁 reveal`/`hide` toggle (`Hit::AutoHeaderReveal`)
+    /// whenever a row has a secret to reveal.
     fn draw_computed_headers(
         &self,
         frame: &mut Frame,
@@ -3458,14 +3465,18 @@ impl Editor {
                 name_style = name_style.add_modifier(Modifier::CROSSED_OUT);
                 value_style = value_style.add_modifier(Modifier::CROSSED_OUT);
             }
-            let name_piece = format!("  {name}: ");
+            // The indent is its own span, so a strike starts on the name's
+            // first char, not on the blanks in front of it.
+            let indent = "  ";
+            let name_piece = format!("{name}: ");
             // One plain cell between the value and the pill, so the pill's
             // hover fill never touches the text.
             let value_piece = format!("{value} ");
             // Columns stay usize (the token painter and `register_cols`
             // clip them to the row): a long name or value would wrap a bare
             // `as u16` back over the text.
-            let value_col = usize::from(area.x) + crate::ui::cells(&name_piece);
+            let value_col =
+                usize::from(area.x) + crate::ui::cells(indent) + crate::ui::cells(&name_piece);
             let pill_col = value_col + crate::ui::cells(&value_piece);
             let glyph_hovered = ctx.hovered == Some(&crate::hit::Hit::AutoHeaderCopy(i));
             let glyph_style = if glyph_hovered {
@@ -3474,6 +3485,7 @@ impl Editor {
                 Style::default().fg(theme.accent)
             };
             let mut spans = vec![
+                Span::styled(indent, base),
                 Span::styled(name_piece, name_style),
                 Span::styled(value_piece, value_style),
                 Span::styled(crate::glyph::COPY_PILL, glyph_style),
@@ -6309,6 +6321,103 @@ url = "https://api.example.com/users""#,
             buffer_has_crossed_out(terminal.backend().buffer(), "application/json"),
             "the suppressed default's own value renders struck through"
         );
+    }
+
+    /// A row that overrides an auto or client row leaves that row in the
+    /// auto section, struck through, so the user sees what is overridden
+    /// (task #57): the client's `Accept`, the auto `Content-Type`, the
+    /// URL's `Authorization` — by a typed row, or by a project default.
+    #[test]
+    fn headers_tab_strikes_the_auto_rows_something_overrides() {
+        let mut app = App::new_for_test();
+        app.update(Action::SetMethod(postui_core::model::Method::Post));
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.url = LineInput::new("https://u:pw@example.com/p");
+        app.editor.set_body_text(r#"{"a":1}"#);
+        for (name, value) in
+            [("Accept", "text/plain"), ("Content-Type", "text/csv"), ("Authorization", "Bearer t")]
+        {
+            app.editor.headers.insert(name.into(), Entry { value: value.into(), enabled: true });
+        }
+        app.update(Action::Render);
+
+        let mut terminal = Terminal::new(TestBackend::new(140, 70)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_has_crossed_out(buf, "*/*"), "the client's Accept");
+        assert!(buffer_has_crossed_out(buf, "application/json"), "the auto Content-Type");
+        assert!(buffer_has_crossed_out(buf, "Basic dTpwdw=="), "the URL's Authorization");
+        let content = format!("{buf:?}");
+        assert!(content.contains("Host: example.com"), "the client's Host is drawn");
+        assert!(!buffer_has_crossed_out(buf, "example.com"), "and sent, so not struck");
+        for typed in ["text/plain", "text/csv", "Bearer t"] {
+            assert!(content.contains(typed), "{typed} is drawn in the table");
+            assert!(!buffer_has_crossed_out(buf, typed), "{typed} is sent");
+        }
+
+        // A project default replaces the client's Accept just the same.
+        let root = app.proj().root().to_path_buf();
+        std::fs::write(root.join("project.toml"), "[default_headers]\nAccept = \"text/html\"\n")
+            .unwrap();
+        app.resync_project();
+        app.editor.headers.clear();
+        app.update(Action::Render);
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(format!("{buf:?}").contains("Accept: text/html"), "the default is drawn");
+        assert!(!buffer_has_crossed_out(buf, "text/html"), "and sent");
+        assert!(buffer_has_crossed_out(buf, "*/*"), "the client's Accept it replaces");
+    }
+
+    /// A struck auto row's strike starts on the name's first char: the
+    /// indent in front of it is not struck.
+    #[test]
+    fn a_struck_auto_row_strikes_from_the_names_first_char() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.url = LineInput::new("https://example.com/p");
+        app.editor
+            .headers
+            .insert("Accept".into(), Entry { value: "text/plain".into(), enabled: true });
+        app.update(Action::Render);
+
+        let mut terminal = Terminal::new(TestBackend::new(140, 70)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let struck =
+            |x: u16, y: u16| buf.cell((x, y)).unwrap().modifier.contains(Modifier::CROSSED_OUT);
+        let width = buf.area.width;
+        let (x, y) = (0..buf.area.height)
+            .find_map(|y| {
+                let line: String = (0..width).map(|x| buf.cell((x, y)).unwrap().symbol()).collect();
+                line.find("Accept: */*").map(|i| (line[..i].chars().count() as u16, y))
+            })
+            .expect("the client's Accept row is drawn");
+        assert!(struck(x, y), "the name's first char is struck");
+        assert!(!struck(x - 1, y) && !struck(x - 2, y), "the indent is not");
+    }
+
+    /// A struck URL `Authorization` masks a secret in the userinfo like a
+    /// sent one does: never sent, still never shown in the clear.
+    #[test]
+    fn a_struck_url_authorization_keeps_its_secret_masked() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.url = LineInput::new("https://u:{{pw}}@example.com/p");
+        app.editor
+            .headers
+            .insert("Authorization".into(), Entry { value: "Bearer t".into(), enabled: true });
+        let mut ctx = postui_core::prepare::PrepareContext::default();
+        ctx.vars.insert("pw".into(), "hunter2".into());
+        ctx.meta.insert("pw".into(), postui_core::varmodel::VarMeta::Secret);
+        app.editor.recompute_computed_headers(&ctx);
+
+        let auth = app.editor.computed.rows.iter().find(|r| r.header.name == "Authorization");
+        let auth = auth.expect("the URL's Authorization is listed");
+        assert!(!auth.sent());
+        let mask = postui_core::prepare::SECRET_MASK;
+        assert_eq!(auth.header.display, format!("Basic {mask}"));
+        assert!(app.editor.computed.has_secret(), "so the reveal toggle shows");
     }
 
     #[test]
