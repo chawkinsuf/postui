@@ -3259,7 +3259,13 @@ impl Editor {
                         continue;
                     }
                     crate::components::var_tokens::paint_var_tokens(
-                        buf, row, &text, area.x, &self.vars, theme, hits,
+                        buf,
+                        row,
+                        &text,
+                        area.x.into(),
+                        &self.vars,
+                        theme,
+                        hits,
                     );
                 }
                 // The engine's search prompt on the pane's bottom row (spec
@@ -3366,7 +3372,7 @@ impl Editor {
                 buf,
                 Rect::new(cols.name_x, y, name_w, 1),
                 &token_piece,
-                cols.name_x,
+                cols.name_x.into(),
                 &self.vars,
                 theme,
                 hits,
@@ -3465,11 +3471,14 @@ impl Editor {
                 value_style = value_style.add_modifier(Modifier::CROSSED_OUT);
             }
             let name_piece = format!("  {}: ", row.name);
-            let value_x = area.x.saturating_add(crate::ui::cells(&name_piece) as u16);
             // One plain cell between the value and the pill, so the pill's
             // hover fill never touches the text.
             let value_piece = format!("{} ", row.value);
-            let text_len = crate::ui::cells(&name_piece) + crate::ui::cells(&value_piece);
+            // Columns stay usize (the token painter and `register_cols`
+            // clip them to the row): a long name or value would wrap a bare
+            // `as u16` back over the text.
+            let value_col = usize::from(area.x) + crate::ui::cells(&name_piece);
+            let pill_col = value_col + crate::ui::cells(&value_piece);
             let glyph_hovered = ctx.hovered == Some(&crate::hit::Hit::AutoHeaderCopy(i));
             let glyph_style = if glyph_hovered {
                 Style::default().bg(theme.accent).fg(theme.on_accent)
@@ -3481,24 +3490,28 @@ impl Editor {
                 Span::styled(value_piece, value_style),
                 Span::styled(crate::glyph::COPY_PILL, glyph_style),
             ]);
-            frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
+            let row_rect = Rect::new(area.x, y, area.width, 1);
+            frame.render_widget(Paragraph::new(line), row_rect);
+            // The tokens all lie in the value, so clipping them to the
+            // whole row keeps them off the name.
             crate::components::var_tokens::paint_var_tokens(
                 frame.buffer_mut(),
-                Rect::new(value_x, y, area.right().saturating_sub(value_x), 1),
+                row_rect,
                 &row.value,
-                value_x,
+                value_col,
                 &self.vars,
                 theme,
                 hits,
             );
-            let glyph_x = area.x.saturating_add(text_len as u16);
-            let glyph_w = area.width.saturating_sub(text_len as u16).min(3);
-            if glyph_w > 0 {
-                hits.register(
-                    Rect::new(glyph_x, y, glyph_w, 1),
-                    crate::hit::Hit::AutoHeaderCopy(i),
-                );
-            }
+            // Cut off at the right edge, the pill keeps what shows. Its
+            // spacer cells are part of the button (the hover fill covers
+            // them), so even a one-cell sliver is a live edge of it, as on
+            // the response Headers tab (#50).
+            hits.register_cols(
+                pill_col..pill_col + crate::ui::cells(crate::glyph::COPY_PILL),
+                row_rect,
+                crate::hit::Hit::AutoHeaderCopy(i),
+            );
             y += 1;
         }
     }
@@ -6253,6 +6266,78 @@ url = "https://api.example.com/users""#,
         );
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("Host"), "{content}");
+    }
+
+    /// Draws `e`'s auto-header section alone, 60 cells wide, at column 0.
+    fn draw_auto_headers(e: &Editor) -> (crate::hit::HitMap, ratatui::buffer::Buffer) {
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            pointer: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 5)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| e.draw_computed_headers(f, f.area(), &ctx, &mut hits)).unwrap();
+        (hits, terminal.backend().buffer().clone())
+    }
+
+    fn auto_header(name: &str, value: &str) -> postui_core::prepare::ComputedHeader {
+        postui_core::prepare::ComputedHeader {
+            name: name.into(),
+            value: value.into(),
+            origin: postui_core::prepare::HeaderOrigin::Client,
+            unresolved: Vec::new(),
+        }
+    }
+
+    /// A pill past column 65535 is far off the pane's right edge; its
+    /// column must not wrap into the pane as a rect over the value text.
+    #[test]
+    fn an_auto_header_pill_past_u16_columns_registers_no_rect() {
+        let mut e = Editor::default();
+        // `  Host: ` + value + the spacer puts the pill at column 65546,
+        // which a bare `as u16` wraps to 10.
+        e.computed.rows = vec![auto_header("Host", &"v".repeat(65_537)), auto_header("A", "b")];
+        let (hits, buf) = draw_auto_headers(&e);
+        assert_eq!(hits.rect_of(&Hit::AutoHeaderCopy(0)), None);
+        // A row that fits still gets its pill, on the painted glyph.
+        let rect = hits.rect_of(&Hit::AutoHeaderCopy(1)).expect("the short row's pill");
+        assert_eq!(rect.width, 3, "{rect:?}");
+        assert_eq!(buf[(rect.x + 1, rect.y)].symbol(), crate::glyph::COPY_PILL.trim());
+    }
+
+    /// A value that starts past column 65535 shows nothing, so its tokens
+    /// are not tinted or registered where the wrapped column would land.
+    #[test]
+    fn an_auto_header_value_past_u16_columns_paints_no_token() {
+        let mut e = Editor::default();
+        // `  ` + name + `: ` puts the value at column 65540, which a bare
+        // `as u16` wraps to 4.
+        e.computed.rows = vec![auto_header(&"n".repeat(65_536), "{{tok}}")];
+        let (hits, buf) = draw_auto_headers(&e);
+        assert_eq!(hits.rect_of(&Hit::VarToken("tok".into())), None);
+        let muted = Theme::dark().text_muted;
+        assert!((4..11).all(|x| buf[(x, 1)].fg == muted), "the name keeps its dim colour");
+
+        // On screen, the token is found where the value painted it.
+        e.computed.rows = vec![auto_header("A", "x {{tok}}")];
+        let (hits, _) = draw_auto_headers(&e);
+        assert_eq!(hits.rect_of(&Hit::VarToken("tok".into())), Some(Rect::new(7, 1, 7, 1)));
+    }
+
+    /// A pill cut by the pane's right edge registers the cells that show.
+    #[test]
+    fn an_auto_header_pill_cut_by_the_edge_keeps_what_shows() {
+        let mut e = Editor::default();
+        // `  A: ` + 52 cells + the spacer puts the pill at column 58 of 60.
+        e.computed.rows = vec![auto_header("A", &"v".repeat(52))];
+        let (hits, _) = draw_auto_headers(&e);
+        assert_eq!(hits.rect_of(&Hit::AutoHeaderCopy(0)), Some(Rect::new(58, 1, 2, 1)));
     }
 }
 
