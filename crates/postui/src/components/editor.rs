@@ -314,7 +314,7 @@ impl ComputedHeadersView {
     /// Whether any row has a secret to reveal — independent of
     /// `revealed`, so the toggle that hides it again stays on screen.
     pub fn has_secret(&self) -> bool {
-        self.rows.iter().any(postui_core::prepare::HeaderRow::is_masked)
+        self.rows.iter().any(|r| r.is_masked())
     }
 }
 
@@ -6388,10 +6388,12 @@ url = "https://api.example.com/users""#,
 
     fn auto_header(name: &str, value: &str) -> postui_core::prepare::HeaderRow {
         postui_core::prepare::HeaderRow {
-            name: name.into(),
-            display_name: name.into(),
-            value: value.into(),
-            display: value.into(),
+            header: postui_core::prepare::SentHeader {
+                name: name.into(),
+                display_name: name.into(),
+                value: value.into(),
+                display: value.into(),
+            },
             origin: postui_core::prepare::HeaderOrigin::Client,
             unsent: None,
             unresolved: Vec::new(),

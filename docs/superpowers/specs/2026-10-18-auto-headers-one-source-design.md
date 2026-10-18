@@ -149,6 +149,21 @@ pub fn header_rows(req: &HttpRequest, ctx: &PrepareContext) -> Vec<HeaderRow>
   pane. The user ruled no change here (`you`, "No change. The issue is
   it can't scroll."). Scrolling the tab is task #56.
 
+*Amended 2026-10-18 after review round 6:*
+- Whether the masked `Host` may show the real one is now decided from
+  the URL as written. If a secret's `{{token}}` sits in the scheme,
+  userinfo, host or port, the real `Host` is never shown, and the
+  display follows the string rules on the masked URL. Before, the
+  decision came from comparing masked and real strings after
+  substitution, and a secret whose value holds `/`, `?` or `#` could
+  move the client's split, so part of it showed as the `Host`. This
+  closes that class by construction (`mine`).
+- `HeaderRow` holds its `SentHeader` and reads its fields through it,
+  so the four fields and `is_masked` are written once.
+- Verified but predating this branch, so recorded on #22: a typed
+  `Transfer-Encoding` makes the client drop `Content-Length`, which the
+  list still shows as sent.
+
 **Binary**
 - `http::send` puts only the non-`Client` rows on the request.
   `SentHeader::wire` becomes a map over `PreparedRequest.headers`,

@@ -293,9 +293,8 @@ pub fn prepare(
     let (client_headers, headers): (Vec<HeaderRow>, Vec<HeaderRow>) =
         rows.into_iter().filter(HeaderRow::sent).partition(|r| r.origin == HeaderOrigin::Client);
     missing.extend(headers.iter().flat_map(|r| r.unresolved.iter().cloned()));
-    let headers: Vec<SentHeader> = headers.into_iter().map(HeaderRow::into_sent).collect();
-    let client_headers: Vec<SentHeader> =
-        client_headers.into_iter().map(HeaderRow::into_sent).collect();
+    let headers: Vec<SentHeader> = headers.into_iter().map(|r| r.header).collect();
+    let client_headers: Vec<SentHeader> = client_headers.into_iter().map(|r| r.header).collect();
 
     if !missing.is_empty() {
         let causes = missing
@@ -349,15 +348,10 @@ pub enum HeaderOrigin {
 /// One header of a send, as [`header_rows`] lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeaderRow {
-    /// The real name; an unresolved `{{token}}` keeps its braces.
-    pub name: String,
-    /// `name` with secret values rendered as [`SECRET_MASK`].
-    pub display_name: String,
-    /// The real value; an unresolved `{{token}}` keeps its braces.
-    pub value: String,
-    /// `value` with secret values rendered as [`SECRET_MASK`]: with
-    /// `display_name`, what screens show while secrets are hidden.
-    pub display: String,
+    /// The header itself: its real name and value (an unresolved
+    /// `{{token}}` keeps its braces) and their masked twins. A row reads
+    /// its fields straight through (`row.name`, `row.is_masked()`).
+    pub header: SentHeader,
     pub origin: HeaderOrigin,
     /// Why the row doesn't go on the wire, or `None` when it does. A row
     /// that isn't sent is still listed, so screens can say why.
@@ -366,22 +360,18 @@ pub struct HeaderRow {
     pub unresolved: Vec<String>,
 }
 
+impl std::ops::Deref for HeaderRow {
+    type Target = SentHeader;
+
+    fn deref(&self) -> &SentHeader {
+        &self.header
+    }
+}
+
 impl HeaderRow {
     /// Whether the row goes on the wire.
     pub fn sent(&self) -> bool {
         self.unsent.is_none()
-    }
-
-    /// Whether a secret's value is in the name or the value, as
-    /// [`SentHeader::is_masked`] asks of a sent one.
-    pub fn is_masked(&self) -> bool {
-        self.value != self.display || self.name != self.display_name
-    }
-
-    /// The row as it goes on the wire, once [`prepare`] has kept it.
-    fn into_sent(self) -> SentHeader {
-        let HeaderRow { name, display_name, value, display, .. } = self;
-        SentHeader { name, display_name, value, display }
     }
 }
 
@@ -470,20 +460,24 @@ fn rows(
         HeaderRow {
             unsent: client_owned(&real_name)
                 .map(|header| Unsent::ClientOwned { header, client_sends: false }),
-            display_name: masked(name, &real_name),
-            name: real_name,
-            display: masked(value, &real),
-            value: real,
+            header: SentHeader {
+                display_name: masked(name, &real_name),
+                name: real_name,
+                display: masked(value, &real),
+                value: real,
+            },
             origin,
             unresolved: unresolved.into_iter().collect(),
         }
     };
     // A row the client adds: shown as it is sent, nothing to mask.
     let fixed = |name: &str, value: String, unsent: Option<Unsent>| HeaderRow {
-        name: name.to_string(),
-        display_name: name.to_string(),
-        display: value.clone(),
-        value,
+        header: SentHeader {
+            name: name.to_string(),
+            display_name: name.to_string(),
+            display: value.clone(),
+            value,
+        },
         origin: HeaderOrigin::Client,
         unsent,
         unresolved: Vec::new(),
@@ -537,21 +531,22 @@ fn rows(
     // `Host` is the URL's authority as the client derives it, real and
     // masked. A URL whose host is still a `{{token}}` has none yet.
     if let Some(host) = authority(&quiet(&req.url)) {
-        let display = if secrets.is_empty() {
-            host.clone()
-        } else {
+        // Decided from the URL as written, never by comparing the real Host
+        // with a masked one after the fact: a secret's value can move where
+        // the client splits the URL (a `/` in a password), so once a secret
+        // is written where it could reach the Host, the real one is never
+        // shown. Its display follows string rules on the masked URL — if
+        // that has no host (it always has one where the real URL does), the
+        // bare mask.
+        let display = if secret_before_path(&req.url, secrets) {
             let masked = substitute_masked(&req.url, vars, secrets, &mut BTreeSet::new());
-            match host_port(&masked) {
-                // No secret in the host itself: it shows as it is sent.
-                Some((_, written)) if !written.contains(SECRET_MASK) => host.clone(),
-                // Never the real host, which holds the secret. A masked URL
-                // always has a host where the real one does, so the bare
-                // mask is only the safe answer for a case that doesn't
-                // arise.
-                _ => masked_authority(&masked).unwrap_or_else(|| SECRET_MASK.to_string()),
-            }
+            masked_authority(&masked).unwrap_or_else(|| SECRET_MASK.to_string())
+        } else {
+            host.clone()
         };
-        rows.push(HeaderRow { display, ..fixed("Host", host, None) });
+        let mut row = fixed("Host", host, None);
+        row.header.display = display;
+        rows.push(row);
     }
     // The byte length of what goes on the wire, never the masked body.
     if let Some(len) = body_len {
@@ -586,6 +581,19 @@ fn secret_names(ctx: &PrepareContext) -> BTreeSet<String> {
         .filter(|(_, m)| **m == varmodel::VarMeta::Secret)
         .map(|(name, _)| name.clone())
         .collect()
+}
+
+/// Whether a secret's `{{token}}` is written in `template` before its path
+/// — in the scheme, userinfo, host or port, anywhere its value could reach
+/// the Host the client derives. A token's own text holds none of the
+/// delimiters, so the template splits the same with or without values.
+fn secret_before_path(template: &str, secrets: &BTreeSet<String>) -> bool {
+    if secrets.is_empty() {
+        return false;
+    }
+    let path_from = template.find("://").map_or(0, |i| i + 3);
+    let end = template[path_from..].find(['/', '?', '#']).map_or(template.len(), |i| path_from + i);
+    crate::vars::find_tokens(&template[..end]).iter().any(|t| secrets.contains(&t.name))
 }
 
 /// `url`'s scheme and its host and port as written (no userinfo), or
@@ -1352,6 +1360,25 @@ mod tests {
         assert_eq!(plain.display, plain.value, "no secret in the host: shown as sent");
     }
 
+    /// A secret written anywhere a value can reach the Host — scheme,
+    /// userinfo, host, port — keeps the real Host off the screen, even
+    /// when its value moves the split (a `/` in a password makes the
+    /// client take `user:123` for the host and port).
+    #[test]
+    fn a_secret_that_moves_the_hosts_split_never_shows_through_it() {
+        for pw in ["123/x", "a#b", "q?r"] {
+            let mut c = ctx(&[("pw", pw)], &[]);
+            c.meta.insert("pw".into(), varmodel::VarMeta::Secret);
+            let rows = header_rows(&base("https://user:{{pw}}@example.com/p"), &c);
+            let host = client(&rows, "Host");
+            assert_ne!(host.value, "example.com", "{pw}: the split really did move");
+            assert_eq!(
+                host.display, "example.com",
+                "{pw}: the masked URL's host, not the real one"
+            );
+        }
+    }
+
     #[test]
     fn header_rows_content_length_ignores_masking_and_follows_the_substitution_flag() {
         let mut req = base("https://x.test");
@@ -1488,10 +1515,10 @@ mod tests {
         assert_eq!(wire(&p), vec![("X-s3cret".to_string(), "1".to_string())]);
     }
 
-    /// The stand-in for the mask only stands in for it: a real host that
-    /// holds the same label is sent and shown as it is.
+    /// A host with no secret written in it is sent and shown as it is,
+    /// whatever its labels look like and wherever else a secret sits.
     #[test]
-    fn a_real_host_holding_the_mask_stand_in_is_left_alone() {
+    fn a_host_without_a_secret_written_in_it_shows_as_sent() {
         let rows =
             header_rows(&base("https://postui-secret-mask.internal/x"), &PrepareContext::default());
         assert_eq!(client(&rows, "Host").value, "postui-secret-mask.internal");
