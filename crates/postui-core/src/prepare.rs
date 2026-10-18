@@ -349,8 +349,8 @@ pub enum HeaderOrigin {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeaderRow {
     /// The header itself: its real name and value (an unresolved
-    /// `{{token}}` keeps its braces) and their masked twins. A row reads
-    /// its fields straight through (`row.name`, `row.is_masked()`).
+    /// `{{token}}` keeps its braces) and their masked twins — what
+    /// [`prepare`] keeps of a row that is sent.
     pub header: SentHeader,
     pub origin: HeaderOrigin,
     /// Why the row doesn't go on the wire, or `None` when it does. A row
@@ -358,14 +358,6 @@ pub struct HeaderRow {
     pub unsent: Option<Unsent>,
     /// Names of `{{tokens}}` in the name or value that didn't resolve.
     pub unresolved: Vec<String>,
-}
-
-impl std::ops::Deref for HeaderRow {
-    type Target = SentHeader;
-
-    fn deref(&self) -> &SentHeader {
-        &self.header
-    }
 }
 
 impl HeaderRow {
@@ -394,10 +386,12 @@ pub enum Unsent {
 /// nothing may override (spec 2026-10-18 R3a): a request or default row
 /// with one of these names is listed but never sent, and the client's own
 /// row always is.
-pub const CLIENT_OWNED: [&str; 2] = ["Host", "Content-Length"];
+const CLIENT_OWNED: [&str; 2] = ["Host", "Content-Length"];
 
-/// The [`CLIENT_OWNED`] header `name` names, in its usual spelling.
-pub fn client_owned(name: &str) -> Option<&'static str> {
+/// The [`CLIENT_OWNED`] header `name` names, in its usual spelling. Kept
+/// private: callers read the verdict off [`Unsent::ClientOwned`] instead of
+/// asking about names again.
+fn client_owned(name: &str) -> Option<&'static str> {
     CLIENT_OWNED.into_iter().find(|owned| name.eq_ignore_ascii_case(owned))
 }
 
@@ -496,9 +490,9 @@ fn rows(
     let mut claimed: BTreeSet<String> = BTreeSet::new();
     for (k, e) in ctx.default_headers.iter().filter(|(_, e)| e.enabled) {
         let mut r = row(k, &e.value, HeaderOrigin::Default);
-        let lower = r.name.to_ascii_lowercase();
+        let lower = r.header.name.to_ascii_lowercase();
         // A client-owned default is already unsent, whatever else names it.
-        if r.sent() && request_names.iter().any(|n| n.eq_ignore_ascii_case(&r.name)) {
+        if r.sent() && request_names.iter().any(|n| n.eq_ignore_ascii_case(&r.header.name)) {
             r.unsent = Some(Unsent::Replaced);
         } else if r.sent() && !claimed.insert(lower.clone()) {
             warnings.push(PrepareWarning::DuplicateDefaultHeader { name: lower });
@@ -513,7 +507,7 @@ fn rows(
     // An auto or client row stands aside for a sent row naming it.
     let replaced = |rows: &[HeaderRow], name: &str| {
         rows.iter()
-            .any(|r| r.sent() && r.name.eq_ignore_ascii_case(name))
+            .any(|r| r.sent() && r.header.name.eq_ignore_ascii_case(name))
             .then_some(Unsent::Replaced)
     };
     if body_len.is_some() {
@@ -529,16 +523,19 @@ fn rows(
     let unsent = replaced(&rows, "accept");
     rows.push(fixed("Accept", "*/*".into(), unsent));
     // `Host` is the URL's authority as the client derives it, real and
-    // masked. A URL whose host is still a `{{token}}` has none yet.
+    // masked. A URL whose host is still a `{{token}}` has none yet. It is
+    // read off the substituted template rather than `prepare`'s assembled
+    // URL so `header_rows` needs no assembly: the two share an authority,
+    // since merging `[params]` only rewrites what follows `?` and `#`.
     if let Some(host) = authority(&quiet(&req.url)) {
         // Decided from the URL as written, never by comparing the real Host
         // with a masked one after the fact: a secret's value can move where
         // the client splits the URL (a `/` in a password), so once a secret
-        // is written where it could reach the Host, the real one is never
-        // shown. Its display follows string rules on the masked URL — if
-        // that has no host (it always has one where the real URL does), the
-        // bare mask.
-        let display = if secret_before_path(&req.url, secrets) {
+        // is written anywhere in it, the real Host is never shown. Its
+        // display follows string rules on the masked URL — and with no host
+        // there, the bare mask. The price is cosmetic: with a secret only in
+        // the path, an IDN host shows unpunycoded rather than as sent.
+        let display = if secret_in(&req.url, secrets) {
             let masked = substitute_masked(&req.url, vars, secrets, &mut BTreeSet::new());
             masked_authority(&masked).unwrap_or_else(|| SECRET_MASK.to_string())
         } else {
@@ -558,7 +555,7 @@ fn rows(
     let client: Vec<String> = rows
         .iter()
         .filter(|r| r.origin == HeaderOrigin::Client && r.sent())
-        .map(|r| r.name.clone())
+        .map(|r| r.header.name.clone())
         .collect();
     for r in &mut rows {
         if let Some(Unsent::ClientOwned { header, client_sends }) = &mut r.unsent {
@@ -583,17 +580,15 @@ fn secret_names(ctx: &PrepareContext) -> BTreeSet<String> {
         .collect()
 }
 
-/// Whether a secret's `{{token}}` is written in `template` before its path
-/// — in the scheme, userinfo, host or port, anywhere its value could reach
-/// the Host the client derives. A token's own text holds none of the
-/// delimiters, so the template splits the same with or without values.
-fn secret_before_path(template: &str, secrets: &BTreeSet<String>) -> bool {
-    if secrets.is_empty() {
-        return false;
-    }
-    let path_from = template.find("://").map_or(0, |i| i + 3);
-    let end = template[path_from..].find(['/', '?', '#']).map_or(template.len(), |i| path_from + i);
-    crate::vars::find_tokens(&template[..end]).iter().any(|t| secrets.contains(&t.name))
+/// Whether a secret's `{{token}}` is written anywhere in `template`. The
+/// whole URL, not just the part before its path: where the client splits a
+/// URL into host and path is the parser's call (it takes `https:/host`,
+/// and a `/` inside a secret's value moves the split), and every attempt to
+/// find the host part by string rules has missed a case. Asking about the
+/// whole URL can't.
+fn secret_in(template: &str, secrets: &BTreeSet<String>) -> bool {
+    !secrets.is_empty()
+        && crate::vars::find_tokens(template).iter().any(|t| secrets.contains(&t.name))
 }
 
 /// `url`'s scheme and its host and port as written (no userinfo), or
@@ -702,7 +697,9 @@ mod tests {
             );
             let rows = header_rows(&r, &c);
             assert!(
-                !rows.iter().any(|r| r.name == "Content-Type" || r.name == "Content-Length"),
+                !rows
+                    .iter()
+                    .any(|r| r.header.name == "Content-Type" || r.header.name == "Content-Length"),
                 "{m:?} computed headers carry no body rows"
             );
         }
@@ -1098,14 +1095,14 @@ mod tests {
 
     fn row<'a>(rows: &'a [HeaderRow], name: &str) -> &'a HeaderRow {
         rows.iter()
-            .find(|r| r.name.eq_ignore_ascii_case(name))
+            .find(|r| r.header.name.eq_ignore_ascii_case(name))
             .unwrap_or_else(|| panic!("no {name} row in {rows:#?}"))
     }
 
     /// The client's own row named `name`.
     fn client<'a>(rows: &'a [HeaderRow], name: &str) -> &'a HeaderRow {
         rows.iter()
-            .find(|r| r.origin == HeaderOrigin::Client && r.name.eq_ignore_ascii_case(name))
+            .find(|r| r.origin == HeaderOrigin::Client && r.header.name.eq_ignore_ascii_case(name))
             .unwrap_or_else(|| panic!("no client {name} row in {rows:#?}"))
     }
 
@@ -1118,13 +1115,14 @@ mod tests {
         ctx.meta.insert("api_key".into(), varmodel::VarMeta::Secret);
         ctx.default_headers.insert("X-Auth".into(), on("default"));
         let rows = header_rows(&req, &ctx);
-        let auth: Vec<_> = rows.iter().filter(|r| r.name.eq_ignore_ascii_case("x-auth")).collect();
+        let auth: Vec<_> =
+            rows.iter().filter(|r| r.header.name.eq_ignore_ascii_case("x-auth")).collect();
         assert!(auth.iter().any(|r| r.origin == HeaderOrigin::Request { row: 0 }
             && r.sent()
-            && r.value == "s3cret"
-            && r.display == SECRET_MASK));
+            && r.header.value == "s3cret"
+            && r.header.display == SECRET_MASK));
         assert!(auth.iter().any(|r| r.origin == HeaderOrigin::Default && !r.sent()));
-        assert_eq!(client(&rows, "Host").value, "api.example.com");
+        assert_eq!(client(&rows, "Host").header.value, "api.example.com");
     }
 
     #[test]
@@ -1137,7 +1135,7 @@ mod tests {
         assert_eq!(row(&rows, "X-Trace").origin, HeaderOrigin::Default);
         assert!(row(&rows, "X-Trace").sent());
         assert!(
-            !rows.iter().any(|r| r.name == "X-Off"),
+            !rows.iter().any(|r| r.header.name == "X-Off"),
             "a disabled default is not part of the send at all"
         );
     }
@@ -1157,7 +1155,7 @@ mod tests {
         let rows = header_rows(&req, &PrepareContext::default());
         let auto = row(&rows, "content-type");
         assert_eq!(auto.origin, HeaderOrigin::ContentType);
-        assert_eq!(auto.value, "application/json");
+        assert_eq!(auto.header.value, "application/json");
         assert!(auto.sent());
 
         req.headers.insert("content-TYPE".into(), on("application/vnd.x+json"));
@@ -1172,8 +1170,8 @@ mod tests {
         req.headers.insert("X-Ghost".into(), on("a{{ghost}}b"));
         let rows = header_rows(&req, &PrepareContext::default());
         let ghost = row(&rows, "X-Ghost");
-        assert_eq!(ghost.value, "a{{ghost}}b");
-        assert_eq!(ghost.display, "a{{ghost}}b");
+        assert_eq!(ghost.header.value, "a{{ghost}}b");
+        assert_eq!(ghost.header.display, "a{{ghost}}b");
         assert_eq!(ghost.unresolved, ["ghost".to_string()]);
     }
 
@@ -1187,8 +1185,8 @@ mod tests {
         ctx.vars.insert("host".into(), "api.example.com".into());
         ctx.vars.insert("tok".into(), "xyz".into());
         let rows = header_rows(&req, &ctx);
-        assert_eq!(client(&rows, "Host").value, "api.example.com:8443");
-        assert_eq!(client(&rows, "Content-Length").value, "12", "{{\"a\": \"xyz\"}}");
+        assert_eq!(client(&rows, "Host").header.value, "api.example.com:8443");
+        assert_eq!(client(&rows, "Content-Length").header.value, "12", "{{\"a\": \"xyz\"}}");
     }
 
     /// `Host` is what the client sends: lowercased, the scheme's default
@@ -1202,8 +1200,8 @@ mod tests {
             ("https://u:pw@example.com/p", "example.com"),
         ] {
             let rows = header_rows(&base(url), &PrepareContext::default());
-            assert_eq!(client(&rows, "Host").value, host, "{url}");
-            assert_eq!(client(&rows, "Host").display, host, "{url}");
+            assert_eq!(client(&rows, "Host").header.value, host, "{url}");
+            assert_eq!(client(&rows, "Host").header.display, host, "{url}");
         }
     }
 
@@ -1221,16 +1219,16 @@ mod tests {
         c.default_headers.insert("Content-Length".into(), on("7"));
         let rows = header_rows(&req, &c);
         for r in rows.iter().filter(|r| r.origin != HeaderOrigin::Client) {
-            if client_owned(&r.name).is_some() {
+            if client_owned(&r.header.name).is_some() {
                 assert!(!r.sent(), "{r:?}");
             }
         }
         assert!(rows.iter().any(|r| r.origin == HeaderOrigin::Request { row: 0 } && !r.sent()));
         assert!(rows.iter().any(|r| r.origin == HeaderOrigin::Request { row: 1 } && !r.sent()));
         assert!(client(&rows, "Host").sent());
-        assert_eq!(client(&rows, "Host").value, "example.com");
+        assert_eq!(client(&rows, "Host").header.value, "example.com");
         assert!(client(&rows, "Content-Length").sent());
-        assert_eq!(client(&rows, "Content-Length").value, "2");
+        assert_eq!(client(&rows, "Content-Length").header.value, "2");
 
         let (p, _) = prepare(&req, &c).unwrap();
         assert_eq!(wire(&p), vec![("Content-Type".into(), "application/json".into())]);
@@ -1301,9 +1299,9 @@ mod tests {
         let req = base("https://api.example.com/v1");
         let rows = header_rows(&req, &PrepareContext::default());
         let accept = client(&rows, "Accept");
-        assert_eq!(accept.value, "*/*");
+        assert_eq!(accept.header.value, "*/*");
         assert!(accept.sent());
-        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        let names: Vec<&str> = rows.iter().map(|r| r.header.name.as_str()).collect();
         assert_eq!(names, ["Accept", "Host"], "wire order");
 
         let mut req = base("https://api.example.com/v1");
@@ -1340,8 +1338,7 @@ mod tests {
     }
 
     /// A masked host follows plain string rules, never the real value: an
-    /// IDN host stays readable, a secret port stays masked, and a secret
-    /// elsewhere in the URL leaves the host as it is sent.
+    /// IDN host stays readable and a secret port stays masked.
     #[test]
     fn masked_host_string_rules() {
         let mut c = ctx(&[("t", "acme"), ("port", "8443"), ("k", "s3cret")], &[]);
@@ -1350,14 +1347,38 @@ mod tests {
         }
         let host = |url: &str| client(&header_rows(&base(url), &c), "Host").clone();
         let idn = host("https://{{t}}café.com/p");
-        assert_eq!(idn.display, format!("{SECRET_MASK}café.com"));
-        assert!(!idn.display.contains("acme"));
+        assert_eq!(idn.header.display, format!("{SECRET_MASK}café.com"));
+        assert!(!idn.header.display.contains("acme"));
         assert_eq!(
-            host("https://Api.example.com:{{port}}/p").display,
+            host("https://Api.example.com:{{port}}/p").header.display,
             format!("api.example.com:{SECRET_MASK}")
         );
-        let plain = host("https://Bücher.example/p?key={{k}}");
-        assert_eq!(plain.display, plain.value, "no secret in the host: shown as sent");
+        // A secret anywhere in the URL takes the string rules (the real
+        // Host is never shown then): the same host, written unpunycoded.
+        let elsewhere = host("https://Bücher.example/p?key={{k}}");
+        assert_eq!(elsewhere.header.value, "xn--bcher-kva.example");
+        assert_eq!(elsewhere.header.display, "bücher.example");
+    }
+
+    /// The parser takes `https:/host` and `https:///host` for `https://host`
+    /// too: a secret written in such a host never shows through the Host.
+    #[test]
+    fn a_secret_in_an_odd_slash_url_never_shows_through_the_host() {
+        let mut c = ctx(&[("tenant", "s3cret")], &[]);
+        c.meta.insert("tenant".into(), varmodel::VarMeta::Secret);
+        for url in ["https:///{{tenant}}.api.example.com/p", "https:/{{tenant}}.api.example.com/p"]
+        {
+            let rows = header_rows(&base(url), &c);
+            for host in rows.iter().filter(|r| r.header.name == "Host") {
+                assert!(!host.header.display.contains("s3cret"), "{url}: {host:?}");
+            }
+        }
+        let rows = header_rows(&base("https:/{{tenant}}.api.example.com/p"), &c);
+        assert_eq!(
+            client(&rows, "Host").header.value,
+            "s3cret.api.example.com",
+            "the parser's host"
+        );
     }
 
     /// A secret written anywhere a value can reach the Host — scheme,
@@ -1371,9 +1392,9 @@ mod tests {
             c.meta.insert("pw".into(), varmodel::VarMeta::Secret);
             let rows = header_rows(&base("https://user:{{pw}}@example.com/p"), &c);
             let host = client(&rows, "Host");
-            assert_ne!(host.value, "example.com", "{pw}: the split really did move");
+            assert_ne!(host.header.value, "example.com", "{pw}: the split really did move");
             assert_eq!(
-                host.display, "example.com",
+                host.header.display, "example.com",
                 "{pw}: the masked URL's host, not the real one"
             );
         }
@@ -1390,7 +1411,7 @@ mod tests {
 
         let rows = header_rows(&req, &ctx);
         assert_eq!(
-            client(&rows, "Content-Length").value,
+            client(&rows, "Content-Length").header.value,
             "11",
             "flag off: the raw `{{{{api_key}}}}` text is what gets sent"
         );
@@ -1398,8 +1419,11 @@ mod tests {
         req.substitute_body = true;
         let rows = header_rows(&req, &ctx);
         let length = client(&rows, "Content-Length");
-        assert_eq!(length.value, "6", "the real body's length");
-        assert_eq!(length.display, "6", "the mask must not change the length the client sends");
+        assert_eq!(length.header.value, "6", "the real body's length");
+        assert_eq!(
+            length.header.display, "6",
+            "the mask must not change the length the client sends"
+        );
     }
 
     #[test]
@@ -1411,8 +1435,8 @@ mod tests {
 
         let rows = header_rows(&req, &ctx);
         let host = client(&rows, "Host");
-        assert_eq!(host.display, "●●●●●●.api.example.com");
-        assert_eq!(host.value, "s3cret.api.example.com");
+        assert_eq!(host.header.display, "●●●●●●.api.example.com");
+        assert_eq!(host.header.value, "s3cret.api.example.com");
     }
 
     /// A masked host goes through the same derivation as the real one: no
@@ -1425,12 +1449,15 @@ mod tests {
 
         let rows = header_rows(&base("https://user:{{pw}}@Example.com:443/p"), &c);
         let host = client(&rows, "Host");
-        assert_eq!((host.value.as_str(), host.display.as_str()), ("example.com", "example.com"));
+        assert_eq!(
+            (host.header.value.as_str(), host.header.display.as_str()),
+            ("example.com", "example.com")
+        );
 
         let rows = header_rows(&base("https://{{tenant}}.Example.com:443/v1"), &c);
         let host = client(&rows, "Host");
-        assert_eq!(host.value, "acme.example.com");
-        assert_eq!(host.display, format!("{SECRET_MASK}.example.com"));
+        assert_eq!(host.header.value, "acme.example.com");
+        assert_eq!(host.header.display, format!("{SECRET_MASK}.example.com"));
     }
 
     /// A token left in the userinfo doesn't hide a host that is known.
@@ -1438,7 +1465,7 @@ mod tests {
     fn header_rows_keep_host_when_only_the_userinfo_is_unresolved() {
         let rows =
             header_rows(&base("https://{{user}}@api.example.com/p"), &PrepareContext::default());
-        assert_eq!(client(&rows, "Host").value, "api.example.com");
+        assert_eq!(client(&rows, "Host").header.value, "api.example.com");
     }
 
     /// Two defaults naming a client-owned header are both dropped by R3a;
@@ -1457,8 +1484,8 @@ mod tests {
     fn header_rows_omit_host_when_the_url_is_unresolved() {
         let req = base("https://{{host}}/v1");
         let rows = header_rows(&req, &PrepareContext::default());
-        assert!(!rows.iter().any(|r| r.name == "Host"));
-        assert!(!rows.iter().any(|r| r.name == "Content-Length"));
+        assert!(!rows.iter().any(|r| r.header.name == "Host"));
+        assert!(!rows.iter().any(|r| r.header.name == "Content-Length"));
     }
 
     #[test]
@@ -1472,7 +1499,7 @@ mod tests {
         ctx.default_headers.insert("X-D".into(), on("d"));
         let rows = header_rows(&req, &ctx);
         assert_eq!(
-            rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            rows.iter().map(|r| r.header.name.as_str()).collect::<Vec<_>>(),
             ["X-D", "X-A", "Content-Type", "Accept", "Host", "Content-Length"]
         );
         assert_eq!(
@@ -1510,7 +1537,7 @@ mod tests {
         c.meta.insert("key".into(), varmodel::VarMeta::Secret);
         let rows = header_rows(&base("https://x.test"), &c);
         let r = row(&rows, "X-s3cret");
-        assert_eq!(r.display_name, format!("X-{SECRET_MASK}"));
+        assert_eq!(r.header.display_name, format!("X-{SECRET_MASK}"));
         let (p, _) = prepare(&base("https://x.test"), &c).unwrap();
         assert_eq!(wire(&p), vec![("X-s3cret".to_string(), "1".to_string())]);
     }
@@ -1521,11 +1548,11 @@ mod tests {
     fn a_host_without_a_secret_written_in_it_shows_as_sent() {
         let rows =
             header_rows(&base("https://postui-secret-mask.internal/x"), &PrepareContext::default());
-        assert_eq!(client(&rows, "Host").value, "postui-secret-mask.internal");
+        assert_eq!(client(&rows, "Host").header.value, "postui-secret-mask.internal");
         // Nor does a secret elsewhere in the URL mask it on screen.
         let mut c = ctx(&[("k", "s3cret")], &[]);
         c.meta.insert("k".into(), varmodel::VarMeta::Secret);
         let rows = header_rows(&base("https://postui-secret-mask.internal/x?key={{k}}"), &c);
-        assert_eq!(client(&rows, "Host").display, "postui-secret-mask.internal");
+        assert_eq!(client(&rows, "Host").header.display, "postui-secret-mask.internal");
     }
 }

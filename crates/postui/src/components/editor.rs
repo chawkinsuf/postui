@@ -302,9 +302,10 @@ pub struct ComputedHeadersView {
     /// row a sent row replaces is left out. `Hit::AutoHeaderCopy(i)` is
     /// `rows[i]`.
     pub rows: Vec<postui_core::prepare::HeaderRow>,
-    /// Request-table rows kept off the wire (spec 2026-10-18 R3a), each
-    /// with the note saying why: the table draws them as errors.
-    pub dropped: Vec<(usize, String)>,
+    /// The request table's notes, one per row (the Headers table's
+    /// `notes`): a row kept off the wire (spec 2026-10-18 R3a) carries the
+    /// error note saying why, and the table draws it as an error.
+    pub notes: Vec<Option<RowNote>>,
     /// Whether secrets show in the clear (each row's `value`) rather than
     /// masked (its `display`).
     pub revealed: bool,
@@ -314,7 +315,7 @@ impl ComputedHeadersView {
     /// Whether any row has a secret to reveal — independent of
     /// `revealed`, so the toggle that hides it again stays on screen.
     pub fn has_secret(&self) -> bool {
-        self.rows.iter().any(|r| r.is_masked())
+        self.rows.iter().any(|r| r.header.is_masked())
     }
 }
 
@@ -615,13 +616,17 @@ impl Editor {
     pub fn recompute_computed_headers(&mut self, ctx: &postui_core::prepare::PrepareContext) {
         use postui_core::prepare::HeaderOrigin;
         let rows = postui_core::prepare::header_rows(&self.current_request(), ctx);
-        let mut dropped = Vec::new();
+        let mut notes = vec![None; self.headers.len()];
         let mut auto = Vec::new();
         for r in rows {
             match r.origin {
+                // Like the auto section, the verdict follows the committed
+                // key: a name still being typed is judged once it lands.
                 HeaderOrigin::Request { row } => {
-                    if let Some(note) = r.unsent.and_then(unsent_note) {
-                        dropped.push((row, note));
+                    if let (Some(note), Some(text)) =
+                        (notes.get_mut(row), r.unsent.and_then(unsent_note))
+                    {
+                        *note = Some(RowNote::error(text));
                     }
                 }
                 // An unsent default is struck through: a request row
@@ -633,7 +638,7 @@ impl Editor {
             }
         }
         self.computed.rows = auto;
-        self.computed.dropped = dropped;
+        self.computed.notes = notes;
     }
 
     /// A never-loaded (fresh scratch) editor is not dirty even though it has
@@ -3096,14 +3101,6 @@ impl Editor {
                 };
                 // A row naming a header the client sets itself is kept but
                 // never sent (spec 2026-10-18 R3a), so it reads as an error.
-                // Like the auto section, the verdict follows the committed
-                // key: a name still being typed is judged once it lands.
-                let mut notes: Vec<Option<RowNote>> = vec![None; self.headers.len()];
-                for (row, text) in &self.computed.dropped {
-                    if let Some(note) = notes.get_mut(*row) {
-                        *note = Some(RowNote::error(text.clone()));
-                    }
-                }
                 self.table.draw(
                     frame,
                     table_area,
@@ -3111,7 +3108,7 @@ impl Editor {
                     &table_ctx,
                     "+ Add header",
                     hits,
-                    &notes,
+                    &self.computed.notes,
                     &self.vars,
                 );
                 if let Some(computed_area) = computed_area {
@@ -3441,9 +3438,9 @@ impl Editor {
             }
             let suppressed = !row.sent();
             let (name, value) = if self.computed.revealed {
-                (&row.name, &row.value)
+                (&row.header.name, &row.header.value)
             } else {
-                (&row.display_name, &row.display)
+                (&row.header.display_name, &row.header.display)
             };
             // A default the client-owned rule drops reads as an error and
             // says why, as a typed row naming the same header does (spec

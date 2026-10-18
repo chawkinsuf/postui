@@ -164,6 +164,23 @@ pub fn header_rows(req: &HttpRequest, ctx: &PrepareContext) -> Vec<HeaderRow>
   `Transfer-Encoding` makes the client drop `Content-Length`, which the
   list still shows as sent.
 
+*Amended 2026-10-18 after review round 7:*
+- The round-6 rule looked for a secret only in the part of the URL
+  before its path. The parser also accepts `https:/host`, which that
+  split missed, so the secret showed. The rule now asks whether a
+  secret's `{{token}}` is written **anywhere** in the URL; if so, the
+  real `Host` is never shown. This is fail-closed, because every way of
+  finding the host part by string rules has missed one of the parser's
+  cases. The price is cosmetic: with a secret only in the path or
+  query, an IDN host shows unpunycoded (`mine`).
+- `HeaderRow` reads its `SentHeader` explicitly (`row.header.name`), not
+  through `Deref`. `CLIENT_OWNED`/`client_owned` are private to core.
+  The editor keeps the request table's notes ready-made, instead of
+  rebuilding them each frame.
+- Also verified but predating this branch, recorded on #22: a body that
+  is empty on the wire sends no `content-length`, though the list shows
+  `content-length: 0`.
+
 **Binary**
 - `http::send` puts only the non-`Client` rows on the request.
   `SentHeader::wire` becomes a map over `PreparedRequest.headers`,

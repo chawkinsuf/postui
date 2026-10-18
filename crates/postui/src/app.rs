@@ -9514,8 +9514,9 @@ impl App {
             CopyTarget::ComputedHeader(i) => {
                 let computed = &self.editor.computed;
                 computed.rows.get(*i).map(|r| {
-                    let name = if computed.revealed { &r.name } else { &r.display_name };
-                    (r.value.clone(), format!("Copied {name}"))
+                    let h = &r.header;
+                    let name = if computed.revealed { &h.name } else { &h.display_name };
+                    (h.value.clone(), format!("Copied {name}"))
                 })
             }
         }
