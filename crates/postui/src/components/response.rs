@@ -1934,7 +1934,20 @@ impl ReadyView {
         let line = (self.scroll + usize::from(yy - area.y)).min(self.visible_len() - 1);
         let disp_col = self.h_scroll + usize::from(xx - area.x);
         let text = self.display_line_text(line).unwrap_or_default();
-        Some((line, char_cell_at_display_col(&text, disp_col)))
+        // Past the row's end, its last grapheme.
+        let col = self.grapheme_at(line, &text, disp_col).unwrap_or_else(|| last_grapheme(&text));
+        Some((line, col))
+    }
+
+    /// [`grapheme_at_col`] on visible line `line` (`text` is its display
+    /// text), resumed from the row's column index when it has one: a long
+    /// raw line, indexed on its first sideways-scrolled frame.
+    fn grapheme_at(&self, line: usize, text: &str, col: usize) -> Option<usize> {
+        let from = match self.mode {
+            ViewMode::Raw => mark_for(self.raw_marks.get(&line).map(Vec::as_slice), col),
+            _ => (0, 0, 0),
+        };
+        grapheme_at_col(text, col, from)
     }
 
     /// The selection's char range on visible line `i`, as half-open
@@ -1980,7 +1993,15 @@ impl ReadyView {
                 out.push('\n');
             }
             let text = self.display_line_text(line).unwrap_or_default();
-            if let Some((from, to)) = self.sel_span(line, grapheme_edges(&text).as_deref(), 0) {
+            // Edges only as far as the range's last finite end: a long
+            // line's copy needs no index of the whole line.
+            let reach = match self.sel_range_on_line(line) {
+                Some((from, usize::MAX)) => from,
+                Some((_, to)) => to,
+                None => 0,
+            };
+            let edges = grapheme_edges(&text, reach);
+            if let Some((from, to)) = self.sel_span(line, edges.as_deref(), 0) {
                 out.extend(text.chars().skip(from).take(to - from));
             }
         }
@@ -2257,20 +2278,27 @@ fn first_non_blank(text: &str) -> usize {
     len.saturating_sub(1)
 }
 
-/// The char index of the grapheme painted at display column `col` of
-/// `text` (its first char; wide graphemes span several columns), clamped
-/// onto the line's last grapheme (0 when empty).
-fn char_cell_at_display_col(text: &str, col: usize) -> usize {
-    let mut w = 0usize;
-    let mut last = 0usize;
-    for g in crate::ui::char_graphemes(text) {
+/// The first char of the grapheme painted at display column `col` of
+/// `text` (wide graphemes span several columns), or `None` when `col` is
+/// past the text. The walk resumes from `from`, a `col_marks` entry at or
+/// before `col` (or the line start), as `viewport_window`'s does, so on
+/// an indexed raw line a click or a drag event costs `O(COL_MARK_STEP)`
+/// chars however far the row is scrolled.
+fn grapheme_at_col(text: &str, col: usize, from: ColMark) -> Option<usize> {
+    let (from_byte, from_char, mut w) = from;
+    for g in crate::ui::char_graphemes(&text[from_byte..]) {
         w += g.width;
         if w > col {
-            return g.char;
+            return Some(from_char + g.char);
         }
-        last = g.char;
     }
-    last
+    None
+}
+
+/// The first char of `text`'s last grapheme (0 when empty), found from
+/// the end rather than by walking the line.
+fn last_grapheme(text: &str) -> usize {
+    crate::ui::graphemes(text).next_back().map_or(0, |(byte, _, _)| text[..byte].chars().count())
 }
 
 /// The search hits that fall on one rendered line, as char ranges.
@@ -3531,7 +3559,7 @@ impl Response {
         // A row scrolled right past all its text shows none of it, so there
         // is no last word on screen to take.
         let text = view.display_line_text(line).unwrap_or_default();
-        if crate::ui::cells(&text) <= view.h_scroll {
+        if view.grapheme_at(line, &text, view.h_scroll).is_none() {
             return false;
         }
         let chars: Vec<char> = text.chars().collect();
@@ -3585,22 +3613,21 @@ impl Response {
         if head.1 == 0 && head.0 > anchor.0 {
             let row = head.0 - 1;
             // The row's last grapheme, as `cell_at` clamps a click past it.
-            let last =
-                view.display_line_text(row).map_or(0, |t| char_cell_at_display_col(&t, usize::MAX));
+            let last = view.display_line_text(row).map_or(0, |t| last_grapheme(&t));
             view.sel = Some((anchor, (row, last)));
             return true;
         }
         if head.0 < anchor.0 {
             // `cell_at` clamped a pointer past the row's end onto its
             // last grapheme; re-check the pointed display column against the
-            // row's width to tell the two apart (an empty row has no
+            // row to tell the two apart (a row that paints no cells has no
             // last char to spuriously grab — it stays in the sweep).
             let area = view.last_area.expect("cell_at resolved through last_area");
             let xx = x.clamp(area.x, area.x + area.width.max(1) - 1);
             let disp_col = view.h_scroll + usize::from(xx - area.x);
             let text = view.display_line_text(head.0).unwrap_or_default();
-            let width = crate::ui::cells(&text);
-            if width > 0 && disp_col >= width {
+            let paints = grapheme_at_col(&text, 0, (0, 0, 0)).is_some();
+            if paints && view.grapheme_at(head.0, &text, disp_col).is_none() {
                 view.sel = Some((anchor, (head.0 + 1, 0)));
                 return true;
             }
@@ -4553,7 +4580,8 @@ fn body_lines(
             let edges = if pieces.iter().all(|(s, _)| s.is_ascii()) {
                 None
             } else {
-                grapheme_edges(&pieces.iter().map(|(s, _)| s.as_str()).collect::<String>())
+                let row: String = pieces.iter().map(|(s, _)| s.as_str()).collect();
+                grapheme_edges(&row, usize::MAX)
             };
             // Search hits widen here rather than where they are found: the
             // matcher's char ranges also place the cursor on a match, by
@@ -4787,15 +4815,17 @@ fn apply_col_bg(line: Line<'static>, from: usize, to: usize, bg: Color) -> Line<
 /// its whole prefix.
 const COL_MARK_STEP: usize = 1024;
 
-/// A resume point for `viewport_window` — a char's byte offset, char index
-/// and the display column it starts at. `(0, 0, 0)` is the line start.
+/// A resume point for a column walk (`viewport_window`, `grapheme_at_col`)
+/// — a grapheme's byte offset, char index and the display column it
+/// starts at. `(0, 0, 0)` is the line start.
 type ColMark = (usize, usize, usize);
 
 /// The char offsets `text`'s graphemes start at, then its char count: the
-/// edges a highlight or a copy may end on. `None` for ASCII text, where
-/// every char is a grapheme. One walk per row, however many ranges it
-/// widens.
-fn grapheme_edges(text: &str) -> Option<Vec<usize>> {
+/// edges a highlight or a copy may end on, walked only until the first
+/// one past char `reach` — all that widening ranges whose finite ends lie
+/// by `reach` needs. `None` for ASCII text, where every char is a
+/// grapheme. One walk per row, however many ranges it widens.
+fn grapheme_edges(text: &str, reach: usize) -> Option<Vec<usize>> {
     if text.is_ascii() {
         return None;
     }
@@ -4803,6 +4833,9 @@ fn grapheme_edges(text: &str) -> Option<Vec<usize>> {
     let mut end = 0;
     for g in crate::ui::char_graphemes(text) {
         edges.push(g.char);
+        if g.char > reach {
+            return Some(edges);
+        }
         end = g.char + g.chars;
     }
     edges.push(end);
@@ -10313,15 +10346,48 @@ mod tests {
     /// grapheme; an end on an edge, or past the text, stays put.
     #[test]
     fn whole_graphemes_widens_only_a_cut_grapheme() {
-        let edges = grapheme_edges(&format!("ab{HEART}cd"));
+        let text = format!("ab{HEART}cd");
+        let edges = grapheme_edges(&text, usize::MAX);
         assert_eq!(edges.as_deref(), Some(&[0, 1, 2, 4, 5, 6][..]));
+        // Walked only to the first edge past the reach, which widens the
+        // same ranges.
+        let near = grapheme_edges(&text, 3);
+        assert_eq!(near.as_deref(), Some(&[0, 1, 2, 4][..]));
+        assert_eq!(whole_graphemes(near.as_deref(), (0, 3)), (0, 4));
+        assert_eq!(whole_graphemes(near.as_deref(), (3, usize::MAX)), (2, usize::MAX));
         let whole = |r| whole_graphemes(edges.as_deref(), r);
         assert_eq!(whole((0, 3)), (0, 4), "the end inside the heart");
         assert_eq!(whole((3, 5)), (2, 5), "the start inside the heart");
         assert_eq!(whole((2, 4)), (2, 4), "already whole");
         assert_eq!(whole((4, usize::MAX)), (4, usize::MAX));
         assert_eq!(whole((9, 10)), (9, 10), "past the text");
-        assert_eq!(grapheme_edges("abc"), None, "ASCII has nothing to widen");
+        assert_eq!(grapheme_edges("abc", usize::MAX), None, "ASCII has nothing to widen");
+    }
+
+    /// Task #45: a column lookup resumed from the column index lands where
+    /// the walk from the line start does, and says when a column is past
+    /// the row — so a click far along a long line need not walk it.
+    #[test]
+    fn a_column_lookup_resumed_from_a_mark_matches_the_walk_from_the_start() {
+        let text = format!("ab{HEART}{FAMILY}c\u{301}").repeat(COL_MARK_STEP);
+        let marks = col_marks(&text);
+        let width = crate::ui::cells(&text);
+        for col in [0, 1, 2, 3, COL_MARK_STEP, COL_MARK_STEP + 1, 3 * COL_MARK_STEP + 7, width - 1]
+        {
+            let from = mark_for(Some(&marks), col);
+            assert_eq!(
+                grapheme_at_col(&text, col, from),
+                grapheme_at_col(&text, col, (0, 0, 0)),
+                "col {col}"
+            );
+            assert!(grapheme_at_col(&text, col, from).is_some(), "col {col} is on the row");
+        }
+        let from = mark_for(Some(&marks), width);
+        assert_eq!(grapheme_at_col(&text, width, from), None, "past the row");
+        assert_eq!(grapheme_at_col("", 0, (0, 0, 0)), None);
+        // The last grapheme, found from the end: the decomposed `c` + accent.
+        assert_eq!(last_grapheme(&text), text.chars().count() - 2);
+        assert_eq!(last_grapheme(""), 0);
     }
 
     /// Task #45 review: a raw row's text is its window, so a hit past the
