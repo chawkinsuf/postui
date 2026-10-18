@@ -629,12 +629,11 @@ impl Editor {
                         *note = Some(RowNote::error(text));
                     }
                 }
-                // An unsent default is struck through: a request row
-                // replaced it, or the client owns its name. An unsent
-                // auto or client row just isn't part of the send.
-                HeaderOrigin::Default => auto.push(r),
-                _ if r.sent() => auto.push(r),
-                _ => {}
+                // Every other row is drawn, an unsent one struck through,
+                // so the user sees what their rows override (task #57,
+                // the user's rule): a default, the auto `Content-Type`,
+                // the client's `Accept` or the URL's `Authorization`.
+                _ => auto.push(r),
             }
         }
         self.computed.rows = auto;
@@ -6309,6 +6308,33 @@ url = "https://api.example.com/users""#,
             buffer_has_crossed_out(terminal.backend().buffer(), "application/json"),
             "the suppressed default's own value renders struck through"
         );
+    }
+
+    /// A typed row that overrides an auto or client row leaves that row in
+    /// the auto section, struck through, so the user sees what it
+    /// overrides (task #57): the client's `Accept`, the auto
+    /// `Content-Type`, the URL's `Authorization`.
+    #[test]
+    fn headers_tab_strikes_the_auto_rows_a_typed_row_overrides() {
+        let mut app = App::new_for_test();
+        app.update(Action::SetMethod(postui_core::model::Method::Post));
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.url = LineInput::new("https://u:pw@example.com/p");
+        app.editor.set_body_text(r#"{"a":1}"#);
+        for (name, value) in
+            [("Accept", "text/plain"), ("Content-Type", "text/csv"), ("Authorization", "Bearer t")]
+        {
+            app.editor.headers.insert(name.into(), Entry { value: value.into(), enabled: true });
+        }
+        app.update(Action::Render);
+
+        let mut terminal = Terminal::new(TestBackend::new(140, 70)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_has_crossed_out(buf, "*/*"), "the client's Accept");
+        assert!(buffer_has_crossed_out(buf, "application/json"), "the auto Content-Type");
+        assert!(buffer_has_crossed_out(buf, "Basic dTpwdw=="), "the URL's Authorization");
+        assert!(!buffer_has_crossed_out(buf, "example.com"), "the client's Host is sent");
     }
 
     #[test]
