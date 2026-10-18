@@ -4224,11 +4224,17 @@ fn draw_step_pill(
 /// clickable, so no control fill; chip fill means clickability), then
 /// the content type's media type and the rendered URL.
 ///
-/// What doesn't fit gives way, by design: with no room for the chip the
-/// row stays empty (the pill wins, as on the pending strip); a figure is
-/// shown whole or skipped, and the next is still tried; the media type
-/// and URL are ellipsized to the room left and dropped when that is
-/// under 2 cells.
+/// What doesn't fit gives way, so the ▲/▼ pill, the row's one control,
+/// is never painted over:
+/// - with no room for the chip the row stays empty, as on the pending
+///   strip, since the figures mean nothing without the status they
+///   describe;
+/// - a figure is shown whole or skipped, and the next is still tried: a
+///   cut number reads as a different number, and the room a long timing
+///   leaves is still worth a short size;
+/// - the media type and URL are ellipsized to the room left, since a
+///   cut one still says which type or host, and dropped under 2 cells,
+///   where all that would show is the `…`.
 fn draw_status_row(
     buf: &mut ratatui::buffer::Buffer,
     area: Rect,
