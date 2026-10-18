@@ -47,7 +47,7 @@ Two more findings:
 | R3a | `Host` and `Content-Length` belong to the client and can't be overridden. A request or default row with either name (matched after substitution, ignoring case) is allowed but never sent, and the send doesn't fail over it. The client's row is always sent and never struck through. This holds with no body too: a typed `Content-Length` on a GET is dropped. | `you` (the rule); "always, even with no body" is `mine (approved)` |
 | R3b | An enabled request row R3a drops is drawn in the error colour, with a trailing note in the table's note slot (where the Vars tab writes "overrides …"): `not sent · the client sets Host`. A project default the rule drops is struck through in the auto section, like any other unsent default (R5). *Amended 2026-10-18 after review round 1:* the struck default also reads as an error and carries the same note, so it can't be taken for one a request row overrides (`you`, "add a note"; the reviewer raised it). | `you` ("highlight the row as an error"); the note and its wording are `mine (approved)`, landing in #21 rather than #20 |
 | R4 | `Host` is the URL's authority the way the client sends it: host lowercased, default port dropped, no userinfo. On screen it shows exactly as sent unless a secret can change it, and then as the bare mask (amended after review round 8; see the §3 amendments). | stage7 §6; the derivation moves from `http.rs` |
-| R5 | ~~The auto section draws every non-request row that is sent, plus every unsent **default** row (struck through). Unsent auto and client rows stay hidden.~~ *Amended 2026-10-18, task #57:* the auto section draws every non-request row, an unsent one struck through: a replaced default, auto `Content-Type`, client `Accept` or the URL's `Authorization` alike. The hide rule was mine ("today's rule kept") and wasn't what the user meant. #20 keeps only the promote button. | `you`: "i want the user to be able to see what defauts are being overridden" |
+| R5 | ~~The auto section draws every non-request row that is sent, plus every unsent **default** row (struck through). Unsent auto and client rows stay hidden.~~ *Amended 2026-10-18, task #57:* the auto section draws every non-request row, an unsent one struck through: a replaced default, auto `Content-Type`, client `Accept` or the URL's `Authorization` alike. The hide rule was mine ("today's rule kept") and wasn't what the user meant. #20 keeps only the promote button. | `you` for the rule and for `Accept`: "i set the accept header it disappeared from the auto list instead of getting a cross out", "i want the user to be able to see what defauts are being overridden". `mine`: the same strike for `Content-Type` and `Authorization`, and for a client row a project default replaces |
 | R6 | The muted `✓ name value (status)` lines above the Headers table are removed. The auto section's strike-through is the one indicator. | `mine (approved)` |
 | R7 | The auto section's copy pill copies the real value, masked or not, like the sent section's pill and the variable tooltip. | `mine (approved)` |
 | R8 | A send fails on unresolved tokens only in rows that are sent (plus the URL, params and opted-in body). An overridden default's name no longer blocks it. | `mine` |
@@ -246,8 +246,9 @@ first, so `https:///host` has a `Host` row like the wire does.
   `PreparedRequest`. A prepared request's rows always have
   `sent: true` and no unresolved tokens, so two fields are redundant
   there. A second type for so little seemed worse.
-- Unsent auto and client rows are in the list but hidden by the editor
-  (R5), so #20's change only touches the draw.
+- ~~Unsent auto and client rows are in the list but hidden by the editor
+  (R5), so #20's change only touches the draw.~~ Withdrawn by task #57:
+  the editor draws them struck through (R5 as amended).
 - `HeaderOrigin::Request { row }` carries the table index for R3b,
   rather than the editor matching rows by name or by order.
 - R3b's note wording: `not sent · the client sets Host`.

@@ -277,9 +277,9 @@ pub struct Editor {
     pub split: crate::split::SplitState,
     /// The Headers tab's read-only computed-headers section (spec §6):
     /// everything that will actually be sent beyond the editable request
-    /// rows above — default headers (struck through when overridden), the
-    /// auto Content-Type, and the client-generated Host/Content-Length
-    /// rows. Recomputed every draw by `recompute_computed_headers` (cheap,
+    /// rows above — default headers, the auto Content-Type, and the
+    /// client-generated rows (the URL's Authorization, Accept, Host,
+    /// Content-Length), each struck through when not sent. Recomputed every draw by `recompute_computed_headers` (cheap,
     /// small N) so an env switch or a body edit shows up live; never
     /// itself edited here.
     pub computed: ComputedHeadersView,
@@ -296,11 +296,10 @@ pub struct Editor {
 /// [`Editor::recompute_computed_headers`].
 #[derive(Debug, Default)]
 pub struct ComputedHeadersView {
-    /// The auto section's rows, in wire order: every row that is sent
-    /// other than the request's own (the editable table shows those),
-    /// and every default that isn't, struck through. An auto or client
-    /// row a sent row replaces is left out. `Hit::AutoHeaderCopy(i)` is
-    /// `rows[i]`.
+    /// The auto section's rows, in `header_rows` order: every row other
+    /// than the request's own (the editable table shows those), sent or
+    /// not; one that isn't sent draws struck through (task #57).
+    /// `Hit::AutoHeaderCopy(i)` is `rows[i]`.
     pub rows: Vec<postui_core::prepare::HeaderRow>,
     /// The request table's notes, one per row (the Headers table's
     /// `notes`): a row kept off the wire (spec 2026-10-18 R3a) carries the
@@ -630,10 +629,13 @@ impl Editor {
                     }
                 }
                 // Every other row is drawn, an unsent one struck through,
-                // so the user sees what their rows override (task #57,
-                // the user's rule): a default, the auto `Content-Type`,
-                // the client's `Accept` or the URL's `Authorization`.
-                _ => auto.push(r),
+                // so the user sees what is overridden (task #57): a
+                // default, the auto `Content-Type`, the client's `Accept`
+                // or the URL's `Authorization`, whether a typed row or a
+                // default replaced it.
+                HeaderOrigin::Default | HeaderOrigin::ContentType | HeaderOrigin::Client => {
+                    auto.push(r)
+                }
             }
         }
         self.computed.rows = auto;
@@ -3375,8 +3377,8 @@ impl Editor {
     /// Paints the Headers tab's computed-headers section (spec §6, the
     /// user's #4 complaint: see everything that will actually be sent): a
     /// dim divider, then one dim row per `self.computed.rows` entry. A row
-    /// that isn't sent (an overridden or duplicate default) renders struck
-    /// through; an unresolved `{{token}}` is tinted span-level. Each row
+    /// that isn't sent (a default, auto or client row something overrides,
+    /// or a duplicate default) renders struck through; an unresolved `{{token}}` is tinted span-level. Each row
     /// gets a trailing `󰆏` copy icon (`Hit::AutoHeaderCopy`, indexed into
     /// `rows`); the divider carries a `👁 reveal`/`hide` toggle
     /// (`Hit::AutoHeaderReveal`) whenever a row has a secret to reveal.
@@ -6310,12 +6312,12 @@ url = "https://api.example.com/users""#,
         );
     }
 
-    /// A typed row that overrides an auto or client row leaves that row in
-    /// the auto section, struck through, so the user sees what it
-    /// overrides (task #57): the client's `Accept`, the auto
-    /// `Content-Type`, the URL's `Authorization`.
+    /// A row that overrides an auto or client row leaves that row in the
+    /// auto section, struck through, so the user sees what is overridden
+    /// (task #57): the client's `Accept`, the auto `Content-Type`, the
+    /// URL's `Authorization` — by a typed row, or by a project default.
     #[test]
-    fn headers_tab_strikes_the_auto_rows_a_typed_row_overrides() {
+    fn headers_tab_strikes_the_auto_rows_something_overrides() {
         let mut app = App::new_for_test();
         app.update(Action::SetMethod(postui_core::model::Method::Post));
         app.editor.active_tab = EditorTab::Headers;
@@ -6334,7 +6336,20 @@ url = "https://api.example.com/users""#,
         assert!(buffer_has_crossed_out(buf, "*/*"), "the client's Accept");
         assert!(buffer_has_crossed_out(buf, "application/json"), "the auto Content-Type");
         assert!(buffer_has_crossed_out(buf, "Basic dTpwdw=="), "the URL's Authorization");
-        assert!(!buffer_has_crossed_out(buf, "example.com"), "the client's Host is sent");
+        assert!(format!("{buf:?}").contains("Host: example.com"), "the client's Host is drawn");
+        assert!(!buffer_has_crossed_out(buf, "example.com"), "and sent, so not struck");
+
+        // A project default replaces the client's Accept just the same.
+        let root = app.proj().root().to_path_buf();
+        std::fs::write(root.join("project.toml"), "[default_headers]\nAccept = \"text/html\"\n")
+            .unwrap();
+        app.resync_project();
+        app.editor.headers.clear();
+        app.update(Action::Render);
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(!buffer_has_crossed_out(buf, "text/html"), "the default is sent");
+        assert!(buffer_has_crossed_out(buf, "*/*"), "the client's Accept it replaces");
     }
 
     #[test]
