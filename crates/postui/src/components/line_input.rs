@@ -1045,14 +1045,11 @@ impl Layout {
 
 /// `text`'s graphemes, in order.
 fn glyphs(text: &str) -> Vec<Glyph> {
-    let mut char = 0;
-    crate::ui::graphemes(text)
-        .map(|(byte, g, width)| {
-            let chars = g.chars().count();
-            char += chars;
-            let code = code_of(g, width);
-            let width = code.as_ref().map_or(width, String::len);
-            Glyph { char: char - chars, chars, byte, len: g.len(), code, width }
+    crate::ui::char_graphemes(text)
+        .map(|g| {
+            let code = code_of(g.text, g.width);
+            let width = code.as_ref().map_or(g.width, String::len);
+            Glyph { char: g.char, chars: g.chars, byte: g.byte, len: g.text.len(), code, width }
         })
         .collect()
 }

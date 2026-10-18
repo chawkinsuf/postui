@@ -785,8 +785,6 @@ const HEADER_PILL_GAP: &str = " ";
 
 /// The columns a header row's ` 󰆏 ` copy pill paints on, in cells as
 /// ratatui paints them: past the row's text and [`HEADER_PILL_GAP`].
-/// (`crop_cols` still counts per char, so scrolled past an emoji sequence
-/// the two part: #45.)
 fn header_pill_cols(line: &str) -> std::ops::Range<usize> {
     let start = crate::ui::cells(line) + crate::ui::cells(HEADER_PILL_GAP);
     start..start + crate::ui::cells(crate::glyph::COPY_PILL)
@@ -794,8 +792,8 @@ fn header_pill_cols(line: &str) -> std::ops::Range<usize> {
 
 /// `name: value` rows with the values aligned past the widest name.
 fn aligned_header_lines<'a>(rows: impl Iterator<Item = (&'a str, &'a str)> + Clone) -> Vec<String> {
-    let width = rows.clone().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
-    rows.map(|(k, v)| format!("{:<width$} {v}", format!("{k}:"), width = width + 1)).collect()
+    let width = rows.clone().map(|(k, _)| crate::ui::cells(k)).max().unwrap_or(0);
+    rows.map(|(k, v)| format!("{k}:{} {v}", " ".repeat(width - crate::ui::cells(k)))).collect()
 }
 
 /// The visible lines as painted, for the shared mouse words.
@@ -1954,8 +1952,20 @@ impl ReadyView {
         Some((from, to))
     }
 
-    /// The selected text, lines joined with `\n`, each line's part widened
-    /// to whole graphemes as it paints. `None` without a selection.
+    /// The selection on visible line `i` as the paint and the copy take it:
+    /// [`Self::sel_range_on_line`] in the coordinates of `text`, which
+    /// shows the line from char `char_start` on, and widened to whole
+    /// graphemes. The selection itself stays in chars, its end inclusive
+    /// and either end the anchor, so a grapheme is whole only once it is
+    /// read here; `None` when nothing of it is on `text`.
+    fn sel_span(&self, i: usize, text: &str, char_start: usize) -> Option<(usize, usize)> {
+        let (from, to) = self.sel_range_on_line(i)?;
+        let range = (from.saturating_sub(char_start), to.saturating_sub(char_start));
+        (range.1 > range.0).then(|| whole_graphemes(text, range))
+    }
+
+    /// The selected text, lines joined with `\n`, each line's part as it
+    /// paints. `None` without a selection.
     fn selected_text(&self) -> Option<String> {
         let (a, b) = self.sel?;
         let (s, e) = (a.0.min(b.0), a.0.max(b.0));
@@ -1965,9 +1975,9 @@ impl ReadyView {
                 out.push('\n');
             }
             let text = self.display_line_text(line).unwrap_or_default();
-            let range = self.sel_range_on_line(line).expect("the line is in the selection");
-            let (from, to) = whole_graphemes(&text, range);
-            out.extend(text.chars().skip(from).take(to.saturating_sub(from)));
+            if let Some((from, to)) = self.sel_span(line, &text, 0) {
+                out.extend(text.chars().skip(from).take(to - from));
+            }
         }
         Some(out)
     }
@@ -2240,12 +2250,12 @@ fn first_non_blank(text: &str) -> usize {
 fn char_cell_at_display_col(text: &str, col: usize) -> usize {
     let mut w = 0usize;
     let mut last = 0usize;
-    for (_, i, gw) in glyphs(text) {
-        w += gw;
+    for g in crate::ui::char_graphemes(text) {
+        w += g.width;
         if w > col {
-            return i;
+            return g.char;
         }
-        last = i;
+        last = g.char;
     }
     last
 }
@@ -4521,20 +4531,23 @@ fn body_lines(
         } else {
             LineMatches { ranges: Vec::new(), current: None }
         };
-        // Selection char columns are pre-crop coordinates, shifted into
-        // the window.
-        let mut sel = view
-            .sel_range_on_line(i)
-            .map(|(from, to)| (from.saturating_sub(char_start), to.saturating_sub(char_start)))
-            .filter(|(from, to)| to > from);
-        // Highlights cover whole graphemes: the window starts on one, so
-        // the row's own text is enough to widen them.
-        if !hits.ranges.is_empty() || sel.is_some() {
-            let row: String = pieces.iter().map(|(s, _)| s.as_str()).collect();
+        // Highlights cover whole graphemes, read off the row's own text:
+        // the window starts on a grapheme, and an all-ASCII row has none
+        // to widen, so it skips building the text.
+        let mut sel = None;
+        if !hits.ranges.is_empty() || view.sel.is_some() {
+            let row: String = if pieces.iter().all(|(s, _)| s.is_ascii()) {
+                String::new()
+            } else {
+                pieces.iter().map(|(s, _)| s.as_str()).collect()
+            };
+            // Search hits widen here rather than where they are found: the
+            // matcher's char ranges also place the cursor on a match, and
+            // the paint is the one place a hit becomes cells.
             let whole = |r| whole_graphemes(&row, r);
             hits.ranges = hits.ranges.into_iter().map(whole).collect();
             hits.current = hits.current.map(whole);
-            sel = sel.map(whole);
+            sel = view.sel_span(i, &row, char_start);
         }
         let mut line = highlighted(pieces, &hits);
         // Selection bg on top of search styling, before the h-crop.
@@ -4763,55 +4776,46 @@ const COL_MARK_STEP: usize = 1024;
 /// and the display column it starts at. `(0, 0, 0)` is the line start.
 type ColMark = (usize, usize, usize);
 
-/// `text`'s graphemes as ratatui paints them (`ui::graphemes`), each as
-/// its byte offset, its char offset — the unit selections, search hits
-/// and the Vim cursor count in — and the cells it takes. Every column
-/// walk in the view goes through this, so a heart and its selector, or a
-/// ZWJ family, is one glyph of the width it paints at, never split.
-fn glyphs(text: &str) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
-    let mut chars = 0;
-    crate::ui::graphemes(text).map(move |(byte, g, w)| {
-        let at = chars;
-        chars += if g.len() == 1 { 1 } else { g.chars().count() };
-        (byte, at, w)
-    })
-}
-
 /// The char range `[from, to)` of `text` widened out to whole graphemes,
 /// for a highlight or a copy: a span cut inside a grapheme makes ratatui
 /// paint each part alone, dropping a zero-width tail (a heart's selector,
-/// an accent) and shifting the row. A `to` past the end stays as it is.
+/// an accent) and shifting the row. An end already on a grapheme's edge,
+/// or past the text, stays as it is.
 fn whole_graphemes(text: &str, (from, to): (usize, usize)) -> (usize, usize) {
     if text.is_ascii() {
         return (from, to);
     }
-    let mut start = 0;
-    let mut end = None;
-    for (_, at, _) in glyphs(text) {
-        if at <= from {
-            start = at;
+    let (mut start, mut end) = (from, to);
+    for g in crate::ui::char_graphemes(text) {
+        let next = g.char + g.chars;
+        if g.char < from && from < next {
+            start = g.char;
         }
-        if at >= to {
-            end = Some(at);
+        if g.char < to && to < next {
+            end = next;
+        }
+        if next >= to {
             break;
         }
     }
-    // No grapheme starts at or past `to`: the range runs to the line end.
-    (start, end.unwrap_or_else(|| to.max(text.chars().count())))
+    (start, end)
 }
 
 /// The column index of `text`: entry `k` is the grapheme covering display
 /// column `k * COL_MARK_STEP` (a wide one covering two marks appears
-/// twice). Built once per long raw line, on the first frame that scrolls
-/// it sideways; `O(chars)` then, `O(1)` to look up after.
+/// twice). Every column walk in the view goes by grapheme, as ratatui
+/// paints, so a heart and its selector, or a ZWJ family, is one glyph of
+/// the width it paints at, never split. Built once per long raw line, on
+/// the first frame that scrolls it sideways; `O(chars)` then, `O(1)` to
+/// look up after.
 fn col_marks(text: &str) -> Vec<ColMark> {
     let mut marks = Vec::new();
     let mut cols = 0usize;
-    for (byte, idx, w) in glyphs(text) {
-        while marks.len() * COL_MARK_STEP < cols + w {
-            marks.push((byte, idx, cols));
+    for g in crate::ui::char_graphemes(text) {
+        while marks.len() * COL_MARK_STEP < cols + g.width {
+            marks.push((g.byte, g.char, cols));
         }
-        cols += w;
+        cols += g.width;
     }
     marks
 }
@@ -4837,29 +4841,30 @@ fn mark_for(marks: Option<&[ColMark]>, skip: usize) -> ColMark {
 fn viewport_window(text: &str, skip: usize, width: usize, from: ColMark) -> (usize, usize, &str) {
     let (from_byte, from_char, from_col) = from;
     debug_assert!(from_col <= skip, "a resume mark must not lie past the crop");
-    let rest = &text[from_byte..];
-    let mut glyphs = glyphs(rest).map(|(b, i, w)| (b + from_byte, i + from_char, w));
+    let mut glyphs = crate::ui::char_graphemes(&text[from_byte..]);
     let mut cols = from_col;
+    let mut end_char = from_char;
     let mut start = None;
-    for (byte, idx, w) in glyphs.by_ref() {
-        if cols + w > skip {
-            start = Some((idx, byte, skip - cols, w));
+    for g in glyphs.by_ref() {
+        end_char = from_char + g.char + g.chars;
+        if cols + g.width > skip {
+            start = Some((from_char + g.char, from_byte + g.byte, skip - cols, g.width));
             break;
         }
-        cols += w;
+        cols += g.width;
     }
     let Some((char_start, byte_start, residual, first_w)) = start else {
-        return (from_char + rest.chars().count(), 0, "");
+        return (end_char, 0, "");
     };
     let need = residual + width;
     let mut taken = first_w;
     let mut byte_end = text.len();
-    for (byte, _, w) in glyphs {
+    for g in glyphs {
         if taken >= need {
-            byte_end = byte;
+            byte_end = from_byte + g.byte;
             break;
         }
-        taken += w;
+        taken += g.width;
     }
     (char_start, residual, &text[byte_start..byte_end])
 }
@@ -10279,6 +10284,36 @@ mod tests {
         let (area, buf) = render_buf(&mut r);
         assert_eq!(row_cells(&buf, area, area.y, 5), ["c", "a", "f", "e\u{301}", "x"]);
         assert!(buf[(area.x + 3, area.y)].modifier.contains(Modifier::REVERSED));
+    }
+
+    /// Task #45: a range widens only where an end falls inside a
+    /// grapheme; an end on an edge, or past the text, stays put.
+    #[test]
+    fn whole_graphemes_widens_only_a_cut_grapheme() {
+        let text = format!("ab{HEART}cd");
+        assert_eq!(whole_graphemes(&text, (0, 3)), (0, 4), "the end inside the heart");
+        assert_eq!(whole_graphemes(&text, (3, 5)), (2, 5), "the start inside the heart");
+        assert_eq!(whole_graphemes(&text, (2, 4)), (2, 4), "already whole");
+        assert_eq!(whole_graphemes(&text, (4, usize::MAX)), (4, usize::MAX));
+        assert_eq!(whole_graphemes(&text, (9, 10)), (9, 10), "past the text");
+    }
+
+    /// Task #45 review: a raw row's text is its window, so a hit past the
+    /// window's right edge paints nothing on it — not the last grapheme
+    /// the window shows.
+    #[test]
+    fn a_hit_past_the_window_paints_nothing() {
+        let mut r = ready(&format!("{}x", "\u{e9}".repeat(100)));
+        r.open_search(SearchSyntax::Literal, false);
+        r.handle_key(ch('x'));
+        r.handle_key(key(KeyCode::Enter));
+        render_buf(&mut r);
+        r.view.as_mut().unwrap().h_scroll = 0;
+        let (area, buf) = render_buf(&mut r);
+        let lit: Vec<u16> = (area.x..area.x + area.width)
+            .filter(|&x| buf[(x, area.y)].modifier.contains(Modifier::REVERSED))
+            .collect();
+        assert_eq!(lit, Vec::<u16>::new());
     }
 
     /// Task #45: a row is "scrolled past its text" by its painted width —

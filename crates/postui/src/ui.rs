@@ -727,6 +727,29 @@ pub(crate) fn graphemes(s: &str) -> Graphemes<'_> {
     Graphemes { s, front: 0, back: s.len() }
 }
 
+/// One grapheme of [`char_graphemes`].
+pub(crate) struct CharGrapheme<'a> {
+    /// The char offset it starts at, and how many chars it holds.
+    pub char: usize,
+    pub chars: usize,
+    pub byte: usize,
+    pub text: &'a str,
+    /// The cells it paints, as [`graphemes`] gives them.
+    pub width: usize,
+}
+
+/// [`graphemes`] for text indexed by char — a cursor, a selection, a
+/// search hit — with each grapheme's char offset and char count beside
+/// its byte offset.
+pub(crate) fn char_graphemes(s: &str) -> impl Iterator<Item = CharGrapheme<'_>> {
+    let mut char = 0;
+    graphemes(s).map(move |(byte, text, width)| {
+        let chars = if text.len() == 1 { 1 } else { text.chars().count() };
+        char += chars;
+        CharGrapheme { char: char - chars, chars, byte, text, width }
+    })
+}
+
 /// [`graphemes`]' iterator. It hands the segmenter only what can need it:
 /// two ASCII chars always have a grapheme boundary between them but for
 /// `\r\n` (every UAX #29 rule that joins two chars needs a non-ASCII one),
