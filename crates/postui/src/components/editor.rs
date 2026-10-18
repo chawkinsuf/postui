@@ -3096,7 +3096,7 @@ impl Editor {
                 let mut notes: Vec<Option<RowNote>> = vec![None; self.headers.len()];
                 for &(row, name) in &self.computed.dropped {
                     if let Some(note) = notes.get_mut(row) {
-                        *note = Some(RowNote::error(format!("not sent · the client sets {name}")));
+                        *note = Some(RowNote::error(client_owned_note(name)));
                     }
                 }
                 self.table.draw(
@@ -3436,12 +3436,23 @@ impl Editor {
             }
             let suppressed = !row.sent;
             let value = if self.computed.revealed { &row.value } else { &row.display };
-            let mut name_style = dim;
+            // A default the client-owned rule drops reads as an error and
+            // says why, as a typed row naming the same header does (spec
+            // 2026-10-18 R3b): struck alone, it would look overridden by a
+            // request row that isn't there.
+            let owner = match row.origin {
+                postui_core::prepare::HeaderOrigin::Default if suppressed => {
+                    postui_core::prepare::client_owned(&row.name)
+                }
+                _ => None,
+            };
+            let base = if owner.is_some() { Style::default().fg(theme.error) } else { dim };
+            let mut name_style = base;
             // The value draws dim throughout; an unresolved `{{token}}` in
             // it is tinted span-level by `paint_var_tokens` below (Task 12
             // replaces Task 10's whole-value error tint, which coloured the
             // resolved parts of the value red too).
-            let mut value_style = dim;
+            let mut value_style = base;
             if suppressed {
                 name_style = name_style.add_modifier(Modifier::CROSSED_OUT);
                 value_style = value_style.add_modifier(Modifier::CROSSED_OUT);
@@ -3461,11 +3472,16 @@ impl Editor {
             } else {
                 Style::default().fg(theme.accent)
             };
-            let line = Line::from(vec![
+            let mut spans = vec![
                 Span::styled(name_piece, name_style),
                 Span::styled(value_piece, value_style),
                 Span::styled(crate::glyph::COPY_PILL, glyph_style),
-            ]);
+            ];
+            if let Some(owner) = owner {
+                let note = format!("  {}", client_owned_note(owner));
+                spans.push(Span::styled(note, Style::default().fg(theme.error)));
+            }
+            let line = Line::from(spans);
             let row_rect = Rect::new(area.x, y, area.width, 1);
             frame.render_widget(Paragraph::new(line), row_rect);
             // The tokens all lie in the value, so clipping them to the
@@ -3494,6 +3510,13 @@ impl Editor {
             y += 1;
         }
     }
+}
+
+/// Why a row naming a client-owned header (`Host`, `Content-Length`) is
+/// kept off the wire (spec 2026-10-18 R3a): the note a typed row and a
+/// project default both carry.
+fn client_owned_note(header: &str) -> String {
+    format!("not sent · the client sets {header}")
 }
 
 /// Context-aware JSON token highlights for the body buffer, matching the
@@ -5768,6 +5791,31 @@ url = "https://api.example.com/users""#,
         assert!(buffer_has_crossed_out(buf, "dflt-b"), "replaced by a disabled row");
     }
 
+    /// A project default naming `Host` is dropped by the same rule as a
+    /// typed row, so its struck auto row says why with the same note
+    /// (spec 2026-10-18 R3b).
+    #[test]
+    fn a_default_host_is_struck_with_the_client_owned_note() {
+        let mut app = App::new_for_test();
+        let root = app.proj().root().to_path_buf();
+        std::fs::write(root.join("project.toml"), "[default_headers]\nHost = \"internal.test\"\n")
+            .unwrap();
+        app.resync_project();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.url = LineInput::new("https://example.com/foo");
+        app.update(Action::Render);
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 70)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        assert!(buffer_has_crossed_out(buf, "internal.test"), "the default is not sent");
+        let (x, y) = find_text(buf, "not sent · the client sets Host").expect("the note");
+        assert_eq!(buf[(x, y)].fg, app.theme.error, "the note reads as an error");
+        let (vx, vy) = find_text(buf, "internal.test").unwrap();
+        assert_eq!(vy, y, "the note trails the default's own row");
+        assert_eq!(buf[(vx, vy)].fg, app.theme.error, "and the row reads as an error");
+    }
+
     /// A request row naming `Host` is kept but never sent (spec 2026-10-18
     /// R3a/R3b): it draws error-red with a note saying why, and the
     /// client's own `Host` row in the auto section stays, not struck.
@@ -6160,6 +6208,20 @@ url = "https://api.example.com/users""#,
     }
 
     // --- computed request-headers section (Task 10, spec §6) ---------
+
+    /// The cell where `needle` starts, counted in cells (a row's earlier
+    /// glyphs may be wider than a byte).
+    fn find_text(buf: &ratatui::buffer::Buffer, needle: &str) -> Option<(u16, u16)> {
+        for y in 0..buf.area.height {
+            let cells: Vec<&str> = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            for x in 0..cells.len() {
+                if cells[x..].concat().starts_with(needle) {
+                    return Some((x as u16, y));
+                }
+            }
+        }
+        None
+    }
 
     fn buffer_has_crossed_out(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
         for y in 0..buf.area.height {
