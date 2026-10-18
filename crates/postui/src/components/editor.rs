@@ -3513,11 +3513,14 @@ impl Editor {
 }
 
 /// The error note for a row kept off the wire for a reason the user has to
-/// act on — one naming a client-owned header (`Host`, `Content-Length`;
-/// spec 2026-10-18 R3a/R3b), carried by a typed row and a project default
-/// alike. It names the client's own row only when the client sends one (a
-/// GET has no `Content-Length`). A replaced or duplicate row needs none:
-/// its strike is the whole story.
+/// act on — one naming a client-owned header (`Host`, `Content-Length`,
+/// `Transfer-Encoding`; spec 2026-10-18 R3a/R3b/R3d), carried by a typed
+/// row and a project default alike. It names the client's own row only
+/// when the client sends one. When it doesn't (a GET or an empty body has
+/// no `Content-Length`; no send has a `Transfer-Encoding`), "set by the
+/// client only" says who owns the header, not that one goes out: the row
+/// is refused either way, and naming a row the wire lacks would be wrong.
+/// A replaced or duplicate row needs none: its strike is the whole story.
 fn unsent_note(unsent: postui_core::prepare::Unsent) -> Option<String> {
     use postui_core::prepare::Unsent;
     match unsent {

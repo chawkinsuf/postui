@@ -270,19 +270,28 @@ Rules added:
 
 | # | Behaviour | Who decided |
 |---|---|---|
-| R1a | The URL's userinfo gives a client `Authorization: Basic base64(user:password)` row, percent-decoded, listed first, as the wire has it. It follows reqwest's `extract_authority`: none when the username isn't UTF-8 once decoded, and a password that isn't is left off. None while the userinfo is still a `{{token}}`. A sent request or default row naming `authorization` replaces it, as with `Accept` (R3). | task (`you`); the decoding is reqwest's, pinned by `sent_headers_match_the_wire` |
+| R1a | The URL's userinfo gives a client `Authorization: Basic base64(user:password)` row, percent-decoded, listed first, as the wire has it. It follows reqwest's `extract_authority`: none when the username isn't UTF-8 once decoded, and a password that isn't is left off. None while a token still unresolved can change it (R4's parser test, asked of the unresolved names); a resolved value with braces in it is a credential like any other (review round 1). A sent request or default row naming `authorization` replaces it, as with `Accept` (R3). | task (`you`); the decoding is reqwest's, pinned by `sent_headers_match_the_wire` |
 | R1b | A typed `Authorization` that replaces the URL's goes out where reqwest put the URL's, first, but is listed where it is typed. Order only. | `mine (approved)` |
 | R1c | When a secret can change it (the parser test of R4), the row shows as `Basic ●●●●●●`; otherwise as sent, since the URL bar already shows the userinfo. | `mine (approved)` |
 | R3c | The client's `Content-Length` is listed only for a body with bytes in it. | follows the wire |
 | R3d | `Transfer-Encoding` joins R3a's client-owned names. A typed one is listed but never sent, with `not sent · set by the client only`, since the client never sends one for a body of known length. A chunked body can no longer be sent on purpose. | `mine (approved)` |
 | R10 | `Proxy-Authorization` is left out: it goes to the proxy, not the server, and listing it means copying reqwest's proxy env matching into core. Nothing filed. | `mine (approved)` |
 
-Design: `rows()` adds the `Authorization` row from `userinfo_auth`, a
-copy of reqwest's decode. The R4 parser test becomes `secret_shapes`,
-which takes the derivation (`authority` or `userinfo_auth`).
-`PreparedRequest::wire_headers` puts a client `Authorization` before
-`headers`. Core gains the `percent-encoding` crate, already in the lock
-file as `url`'s.
+Design: `url_headers` reads the `Host` and the userinfo's
+`Authorization` (`userinfo_auth`, a copy of reqwest's decode) from one
+parse. The R4 parser test becomes `with_stand_ins`, which gives both
+headers with the named values as `1` and as `2`; `rows()` asks it once
+for the secrets (mask) and once for the unresolved names (no
+`Authorization` yet). `PreparedRequest::wire_headers` puts the client's
+`Authorization` before `headers`. The `Basic` encoding is one helper,
+shared with curl import's `-u`. Core gains the `percent-encoding` crate,
+already in the lock file as `url`'s.
+
+*Review round 1:* the note `not sent · set by the client only` also
+covers rows where the client sends no such header at all (a typed
+`Transfer-Encoding`; `Content-Length` on an empty body, as on a GET
+since #21). It reads as who owns the header, not as a header that goes
+out; the reasoning sits at `unsent_note`. Kept by choice.
 
 ## 6. A note for #20
 

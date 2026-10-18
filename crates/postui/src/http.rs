@@ -357,21 +357,26 @@ mod tests {
         let auth: &[(&str, &str)] = &[("Authorization", "Bearer typed")];
         let json = Some("{\"a\":1}");
         let empty = Some("");
-        for (userinfo, body, extra) in [
-            ("", None, plain),
-            ("", json, plain),
-            ("", None, typed),
-            ("", json, typed),
-            ("", empty, plain),
-            ("", empty, typed),
-            ("u:pw@", None, plain),
-            ("u@", json, plain),
-            (":pw@", None, plain),
-            ("u%40x:p%20w@", None, plain),
-            ("%C3%BC:%C3%A9@", None, plain),
-            ("u:p%FF@", None, plain),
-            ("u%FF:p@", None, plain),
-            ("u:pw@", None, auth),
+        let (get, post) = (Method::Get, Method::Post);
+        for (userinfo, method, body, extra) in [
+            ("", get, None, plain),
+            ("", post, json, plain),
+            ("", get, None, typed),
+            ("", post, json, typed),
+            ("", post, empty, plain),
+            ("", Method::Put, empty, plain),
+            ("", Method::Patch, empty, plain),
+            ("", Method::Delete, empty, plain),
+            ("", Method::Options, empty, plain),
+            ("", post, empty, typed),
+            ("u:pw@", get, None, plain),
+            ("u@", post, json, plain),
+            (":pw@", get, None, plain),
+            ("u%40x:p%20w@", get, None, plain),
+            ("%C3%BC:%C3%A9@", get, None, plain),
+            ("u:p%FF@", get, None, plain),
+            ("u%FF:p@", get, None, plain),
+            ("u:pw@", get, None, auth),
         ] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -391,10 +396,8 @@ mod tests {
             for (name, value) in extra {
                 req.headers.insert(name.to_string(), on(value));
             }
-            if let Some(text) = body {
-                req.method = Method::Post;
-                req.body = Some(Body::Json { text: text.into() });
-            }
+            req.method = method;
+            req.body = body.map(|text| Body::Json { text: text.into() });
             let (prepared, _) = prepare(&req, &PrepareContext::default()).unwrap();
             let data = send(&client(), &prepared).await.unwrap();
             let raw = server.await.unwrap();
@@ -410,14 +413,16 @@ mod tests {
             assert!(wire.len() >= 3, "the probe saw the client's own rows: {raw}");
             let mut sent: Vec<(String, String)> =
                 data.sent_headers.iter().map(|h| (h.name.clone(), h.value.clone())).collect();
-            let mut in_order = wire.clone();
             if extra == auth {
-                // A typed Authorization takes the URL's place, first on the
-                // wire, but is listed where it is typed: order only.
-                sent.sort();
-                in_order.sort();
+                // The one accepted gap (spec 2026-10-18 R1b): a typed
+                // Authorization takes the URL's place, first on the wire,
+                // but is listed where it is typed.
+                assert_ne!(sent[0].0, "authorization", "listed where typed");
+                let at = sent.iter().position(|(k, _)| k == "authorization").unwrap();
+                let typed_row = sent.remove(at);
+                sent.insert(0, typed_row);
             }
-            assert_eq!(sent, in_order, "the snapshot is what went on the wire:\n{raw}");
+            assert_eq!(sent, wire, "the snapshot is what went on the wire:\n{raw}");
             assert!(
                 wire.iter().any(|(k, v)| k == "host" && v == &format!("127.0.0.1:{port}")),
                 "the client's own host went out:\n{raw}"

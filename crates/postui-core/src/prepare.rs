@@ -27,20 +27,24 @@ pub struct PreparedRequest {
 }
 
 impl PreparedRequest {
-    /// Every header the send puts on the wire, in wire order and wire case
-    /// (lowercase): reqwest's `authorization` from the URL's userinfo,
-    /// which it sets as it builds the request; `headers`; then reqwest's
+    /// Every header the send puts on the wire, in wire case (lowercase) and
+    /// wire order: reqwest's `authorization` from the URL's userinfo, which
+    /// it sets as it builds the request; `headers`; then reqwest's
     /// `accept: */*`, hyper's `host` and, for a non-empty body,
-    /// `content-length`.
+    /// `content-length`. One gap, accepted (spec 2026-10-18 R1b): a typed
+    /// `Authorization` that replaces the URL's takes its place, first on
+    /// the wire, but is listed where it is typed. The wire keeps a name's
+    /// values together the same way, so order is only exact for distinct
+    /// names.
     /// `Host` and `Content-Length` are what an HTTP/1.1 send carries; an h2
     /// negotiation spells the first as `:authority`, same value. The
     /// snapshot the response pane's `sent` section shows; verified against
     /// a raw server by the binary's `sent_headers_match_the_wire`.
     pub fn wire_headers(&self) -> Vec<SentHeader> {
-        // A client row named `Authorization` can only be the URL's: the
-        // client adds no other, and a typed one is in `headers`.
+        // A client row with this name can only be the URL's: the client
+        // adds no other, and a typed one is in `headers`.
         let (lead, rest): (Vec<_>, Vec<_>) =
-            self.client_headers.iter().partition(|h| h.name == "Authorization");
+            self.client_headers.iter().partition(|h| h.name == URL_AUTHORIZATION);
         lead.into_iter()
             .chain(&self.headers)
             .chain(rest)
@@ -533,16 +537,30 @@ fn rows(
     // off the substituted template rather than `prepare`'s assembled URL so
     // `header_rows` needs no assembly: the two share an authority, since
     // merging `[params]` only rewrites what follows `?` and `#`.
-    let url = quiet(&req.url);
+    let mut unresolved = BTreeSet::new();
+    let real = url_headers(&substitute_masked(&req.url, vars, &no_mask, &mut unresolved));
+    // Shown exactly as sent unless a secret can change it; then masked,
+    // since no account of which part of it is the secret's can be trusted
+    // to be the parser's.
+    let by_secret = with_stand_ins(&req.url, vars, secrets);
+    let secret_shapes = |pick: fn(&UrlHeaders) -> &Option<String>| {
+        by_secret
+            .as_ref()
+            .is_some_and(|[one, two]| pick(one) != pick(two) || pick(one) != pick(&real))
+    };
     // reqwest turns the URL's userinfo into `Authorization: Basic …` as it
     // builds the request, before any row of ours, so it leads the wire. A
-    // sent row naming `authorization` replaces it, like `Accept`.
-    if let Some(auth) = userinfo_auth(&url) {
-        let display = match secret_shapes(&req.url, vars, secrets, &auth, userinfo_auth) {
-            true => format!("Basic {SECRET_MASK}"),
-            false => auth.clone(),
+    // sent row naming `authorization` replaces it, like `Accept`. None
+    // while a token still unresolved can change it.
+    let token_shapes = with_stand_ins(&req.url, vars, &unresolved)
+        .is_some_and(|[one, two]| one.authorization != two.authorization);
+    if let Some(auth) = real.authorization.clone().filter(|_| !token_shapes) {
+        let display = if secret_shapes(|h| &h.authorization) {
+            format!("Basic {SECRET_MASK}")
+        } else {
+            auth.clone()
         };
-        let mut row = fixed("Authorization", auth, replaced(&rows, "authorization"));
+        let mut row = fixed(URL_AUTHORIZATION, auth, replaced(&rows, URL_AUTHORIZATION));
         row.header.display = display;
         rows.insert(0, row);
     }
@@ -551,14 +569,9 @@ fn rows(
     rows.push(fixed("Accept", "*/*".into(), unsent));
     // `Host` is the URL's authority as the client derives it, real and
     // masked. A URL whose host is still a `{{token}}` has none yet.
-    if let Some(host) = authority(&url) {
-        // Shown exactly as sent unless a secret can change it; then the
-        // bare mask, since no account of which part of it is the secret's
-        // can be trusted to be the parser's.
-        let display = match secret_shapes(&req.url, vars, secrets, &host, authority) {
-            true => SECRET_MASK.to_string(),
-            false => host.clone(),
-        };
+    if let Some(host) = real.host.clone() {
+        let display =
+            if secret_shapes(|h| &h.host) { SECRET_MASK.to_string() } else { host.clone() };
         let mut row = fixed("Host", host, None);
         row.header.display = display;
         rows.push(row);
@@ -603,49 +616,76 @@ fn secret_names(ctx: &PrepareContext) -> BTreeSet<String> {
         .collect()
 }
 
-/// Whether a secret's value can change the header `derive` reads off the
-/// URL `template` (its `Host`, or its userinfo's `Authorization`), whose
-/// real value is `real`. Asked of the parser, never answered by string
-/// rules about where a URL's parts sit (every such rule missed one of the
-/// parser's cases: `https:/host`, `127.1`, a `/` inside a password moving
-/// the split): the URL is parsed with every secret's value as `1`, then as
-/// `2`. If those two give one header and it is the real one, nothing of
-/// any secret is in it, so it can be shown as sent. `1` and `2` fit
-/// wherever a value can sit — host label, port, userinfo, path — so a
-/// secret that reaches the header gives two different ones.
-fn secret_shapes(
-    template: &str,
-    vars: &IndexMap<String, String>,
-    secrets: &BTreeSet<String>,
-    real: &str,
-    derive: fn(&str) -> Option<String>,
-) -> bool {
-    let tokens = crate::vars::find_tokens(template);
-    if !tokens.iter().any(|t| secrets.contains(&t.name)) {
-        return false;
-    }
-    let with = |stand_in: &str| {
-        let mut vars = vars.clone();
-        for name in secrets {
-            if let Some(value) = vars.get_mut(name) {
-                *value = stand_in.to_string();
-            }
-        }
-        derive(&crate::vars::substitute(template, &vars, &mut BTreeSet::new()))
-    };
-    let one = with("1");
-    one != with("2") || one.as_deref() != Some(real)
+/// The name of the client's row from the URL's userinfo. The one client
+/// row that leads the wire, so [`PreparedRequest::wire_headers`] finds it
+/// by this name.
+const URL_AUTHORIZATION: &str = "Authorization";
+
+/// The headers the client derives from a URL on its own, read with one
+/// parse.
+#[derive(Debug, PartialEq, Eq)]
+struct UrlHeaders {
+    host: Option<String>,
+    authorization: Option<String>,
 }
 
-/// The `Authorization` reqwest derives from `url`'s userinfo: `Basic` and
-/// the base64 of `user:password`, each percent-decoded. A copy of reqwest's
-/// `extract_authority`, so the binary's `sent_headers_match_the_wire` pins
-/// it against the wire: none without userinfo or when the username isn't
-/// UTF-8 once decoded, and a password that isn't is left off. None too
-/// while the userinfo is still a `{{token}}`, like `authority`'s host.
-fn userinfo_auth(url: &str) -> Option<String> {
+fn url_headers(url: &str) -> UrlHeaders {
+    let parsed = url::Url::parse(url).ok();
+    UrlHeaders {
+        authorization: parsed.as_ref().and_then(userinfo_auth),
+        host: authority(url, parsed.as_ref()),
+    }
+}
+
+/// [`url_headers`] of `template` with every name in `names` given the value
+/// `1`, then `2`; `None` when none of them is written in it. Two different
+/// answers for a header mean those names' values can change it. Asked of
+/// the parser, never answered by string rules about where a URL's parts sit
+/// (every such rule missed one of the parser's cases: `https:/host`,
+/// `127.1`, a `/` inside a password moving the split). `1` and `2` fit
+/// wherever a value can sit — host label, port, userinfo, path — so a value
+/// that reaches a header gives two different ones.
+fn with_stand_ins(
+    template: &str,
+    vars: &IndexMap<String, String>,
+    names: &BTreeSet<String>,
+) -> Option<[UrlHeaders; 2]> {
+    let tokens = crate::vars::find_tokens(template);
+    if !tokens.iter().any(|t| names.contains(&t.name)) {
+        return None;
+    }
+    // Only the template's own tokens, not the whole of `vars`: the editor
+    // asks on every frame.
+    let derive = |stand_in: &str| {
+        let values: IndexMap<String, String> = tokens
+            .iter()
+            .filter_map(|t| {
+                let value = if names.contains(&t.name) {
+                    Some(stand_in.to_string())
+                } else {
+                    vars.get(&t.name).cloned()
+                };
+                value.map(|v| (t.name.clone(), v))
+            })
+            .collect();
+        url_headers(&crate::vars::substitute(template, &values, &mut BTreeSet::new()))
+    };
+    Some([derive("1"), derive("2")])
+}
+
+/// The `Basic` credentials value for `user:password`: what reqwest sends
+/// for a URL's userinfo and curl for `-u`.
+pub(crate) fn basic_auth(credentials: &str) -> String {
     use base64::Engine as _;
-    let u = url::Url::parse(url).ok()?;
+    format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(credentials))
+}
+
+/// The `Authorization` reqwest derives from a URL's userinfo, each part
+/// percent-decoded. A copy of reqwest's `extract_authority`, so the
+/// binary's `sent_headers_match_the_wire` pins it against the wire: none
+/// without userinfo or when the username isn't UTF-8 once decoded, and a
+/// password that isn't is left off.
+fn userinfo_auth(u: &url::Url) -> Option<String> {
     let decode = |part: &str| {
         percent_encoding::percent_decode_str(part).decode_utf8().ok().map(String::from)
     };
@@ -654,20 +694,16 @@ fn userinfo_auth(url: &str) -> Option<String> {
     if user.is_empty() && password.is_none() {
         return None;
     }
-    let credentials = format!("{user}:{}", password.unwrap_or_default());
-    if credentials.contains("{{") {
-        return None;
-    }
-    Some(format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(credentials)))
+    Some(basic_auth(&format!("{user}:{}", password.unwrap_or_default())))
 }
 
-/// The `Host` value the client derives from `url`: the host, lowercased
-/// (and punycoded), plus the port when it isn't the scheme's default — no
-/// userinfo. `None` while the host is empty or still a `{{token}}`. A URL
-/// the parser refuses keeps its host and port as written (the send itself
-/// will report that URL).
-fn authority(url: &str) -> Option<String> {
-    if let Ok(u) = url::Url::parse(url)
+/// The `Host` value the client derives from `url` (`parsed`, if the parser
+/// takes it): the host, lowercased (and punycoded), plus the port when it
+/// isn't the scheme's default — no userinfo. `None` while the host is empty
+/// or still a `{{token}}`. A URL the parser refuses keeps its host and port
+/// as written (the send itself will report that URL).
+fn authority(url: &str, parsed: Option<&url::Url>) -> Option<String> {
+    if let Some(u) = parsed
         && let Some(host) = u.host_str()
     {
         // The parser takes braces in a host as they are (or escaped), so
@@ -1646,6 +1682,20 @@ mod tests {
             assert_eq!(auth(url), None, "{url}");
         }
         assert_eq!(auth("http://{{user}}:pw@x.test/p"), None, "not while it is a token");
+        assert_eq!(
+            auth("http://u:%7B%7Bx@x.test/p{{gone}}").as_deref(),
+            Some("Basic dTp7e3g="),
+            "braces written in the userinfo are its text; a token elsewhere doesn't matter"
+        );
+    }
+
+    /// A resolved value is the credential, braces and all: only a token
+    /// still unresolved keeps the row back.
+    #[test]
+    fn a_resolved_credential_with_braces_is_still_listed() {
+        let c = ctx(&[("pw", "ab{{cd")], &[]);
+        let rows = header_rows(&base("http://u:{{pw}}@x.test/p"), &c);
+        assert_eq!(client(&rows, "Authorization").header.value, basic_auth("u:ab{{cd"));
     }
 
     /// Like `Accept`, the URL's `Authorization` stands aside for a sent row
@@ -1660,10 +1710,14 @@ mod tests {
         assert_eq!(wire(&p), vec![("authorization".to_string(), "Bearer t".to_string())]);
         assert!(!p.client_headers.iter().any(|h| h.name == "Authorization"));
 
+        let req = base("http://u:pw@x.test/p");
         let c = ctx(&[], &[("Authorization", "Bearer d", true)]);
-        let rows = header_rows(&base("http://u:pw@x.test/p"), &c);
+        let rows = header_rows(&req, &c);
         assert_eq!(client(&rows, "Authorization").unsent, Some(Unsent::Replaced));
-        let (p, _) = prepare(&base("http://u:pw@x.test/p"), &PrepareContext::default()).unwrap();
+        let (p, _) = prepare(&req, &c).unwrap();
+        assert_eq!(wire(&p), vec![("Authorization".to_string(), "Bearer d".to_string())]);
+        assert!(!p.client_headers.iter().any(|h| h.name == "Authorization"));
+        let (p, _) = prepare(&req, &PrepareContext::default()).unwrap();
         assert_eq!(p.client_headers[0].name, "Authorization", "sent by the client otherwise");
     }
 
