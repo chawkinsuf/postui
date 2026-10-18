@@ -2030,7 +2030,6 @@ impl App {
         self.sidebar.open_dirty = self.editor.is_dirty();
         self.sidebar.in_flight =
             self.session.in_flight.iter().filter_map(|f| f.slug.clone()).collect();
-        self.editor.inherited_headers = self.meta().default_headers.clone();
         // The token-highlighting/tooltip snapshot, kept in lockstep with the
         // project's resolved values and the open request's own `[variables]`;
         // `shadowed` is read from it.
@@ -9509,13 +9508,13 @@ impl App {
                 .editor
                 .table_row_at(*i)
                 .map(|(key, value)| (value.to_string(), format!("Copied {key}"))),
+            // The real value even while the row shows masked, as the sent
+            // section's pill and the tooltip's copy do (spec 2026-10-18 R7).
             CopyTarget::ComputedHeader(i) => self
                 .editor
                 .computed
                 .rows
-                .iter()
-                .filter(|r| r.origin != postui_core::prepare::HeaderOrigin::Request)
-                .nth(*i)
+                .get(*i)
                 .map(|r| (r.value.clone(), format!("Copied {}", r.name))),
         }
     }

@@ -214,6 +214,14 @@ Replaces the stage-2 single-level grouping with a real tree derived from slugs:
   sees the effective set. Editing an inherited row is not possible in-place this
   stage (project.toml is hand-edited); a request row with the same name is the
   override mechanism.
+  *Amended 2026-10-18 (task #21):* the annotated rows above the table are
+  gone. The Headers tab's auto section (stage7 §6) shows each enabled default
+  once, struck through when a request row replaces it. A replacement by a
+  disabled row now looks the same as one by an enabled row. Removing them
+  was the implementer's proposal, approved by the user (`mine (approved)`);
+  see `2026-10-18-auto-headers-one-source-design.md` R6. The same task made
+  `Host` and `Content-Length` the client's: a default or request row naming
+  either is never sent (the user's rule, R3a there).
 
 ## 7. On-demand reload
 

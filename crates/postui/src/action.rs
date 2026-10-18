@@ -58,7 +58,8 @@ pub enum CopyTarget {
     ResponseHeader(usize),
     Url,
     /// One row of the request Headers tab's computed-headers section, by
-    /// index into its own display order (see `Hit::AutoHeaderCopy`).
+    /// index into `ComputedHeadersView::rows` (see `Hit::AutoHeaderCopy`).
+    /// Copies the real value, masked on screen or not.
     ComputedHeader(usize),
     /// One row of the active editor tab's key/value table (Params,
     /// Headers or Vars), by index — the row's own copy button. Copies the

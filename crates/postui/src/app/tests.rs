@@ -14386,6 +14386,38 @@ fn computed_headers_mask_a_secret_by_default_and_the_reveal_toggle_unmasks() {
     assert!(app.hits.rect_of(&Hit::AutoHeaderReveal).is_some());
 }
 
+/// The auto section's copy pill copies the real value even while the row
+/// shows masked, as the sent section's pill and the tooltip do (spec
+/// 2026-10-18 R7).
+#[test]
+fn computed_header_copy_takes_the_real_value_of_a_masked_row() {
+    use base64::Engine as _;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536));
+    app.update(Action::VarEdit(VarEditOp::SetSecretValue {
+        env: "qa".into(),
+        name: "api_key".into(),
+        value: "sk-live-abc123".into(),
+    }));
+    set_default_header(&mut app, "Authorization", "Bearer {{api_key}}");
+    app.editor.active_tab = EditorTab::Headers;
+    app.update(Action::Render);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    assert!(!app.editor.computed.revealed, "the row shows masked");
+
+    let rect = app.hits.rect_of(&Hit::AutoHeaderCopy(0)).expect("the Authorization row's pill");
+    app.handle_mouse(left_down(rect.x, rect.y));
+
+    let sent = String::from_utf8(app.clipboard.osc52_sent().to_vec()).unwrap();
+    let b64 = sent.trim_start_matches("\x1b]52;c;").trim_end_matches('\x07');
+    let copied = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+    assert_eq!(String::from_utf8(copied).unwrap(), "Bearer sk-live-abc123");
+}
+
 #[test]
 fn computed_headers_reveal_toggle_hides_when_only_the_request_table_uses_a_secret() {
     // The auto section draws only non-`Request` rows, and the request's
