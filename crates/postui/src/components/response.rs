@@ -4132,7 +4132,7 @@ pub const HEADER_STRIP_HEIGHT: u16 = 3;
 
 /// The hidden Response pane's total height — what `layout::compute_layout`
 /// shrinks the pane to while it's collapsed: just the strip's first row
-/// (status chip + `› show`), the tabs and icon actions having slid away
+/// (status facts + the ▲/▼ step pill), the tabs and icon actions having slid away
 /// with the body.
 pub const COLLAPSED_HEIGHT: u16 = 1;
 
@@ -4153,7 +4153,7 @@ fn draw_pending_strip(
 ) {
     let t = ctx.theme;
     crate::paint::fill(buf, area, t.panel);
-    let pill_x = draw_step_pill(buf, hits, area, split, ctx);
+    let right = draw_step_pill(buf, hits, area, split, ctx);
     let (label, color) = match state {
         ResponseState::Empty => ("\u{2014}".to_string(), t.text_muted),
         ResponseState::InFlight { started } => {
@@ -4167,17 +4167,19 @@ fn draw_pending_strip(
     };
     let chip = crate::paint::Chip { label: &label, color };
     // On a strip too tight for both, the pill wins: it is the control.
-    if area.x + chip.width() < pill_x {
+    if area.x + chip.width() <= right {
         chip.paint(buf, area.x, area.y, t.panel, t);
     }
 }
 
 /// Paints the header's ▲/▼ step pill right-aligned on `area`'s first
 /// row (one cell in from the right edge, like the tab strip below it)
-/// and registers its two `Hit::SplitStep` chips. Returns the x of the
-/// pill's leading cap — the column the row's text must stop short of.
+/// and registers its two `Hit::SplitStep` chips. Returns the column the
+/// row's text must end before: a cell short of the pill's leading cap,
+/// or the strip's right edge on a strip too narrow for the pill.
 /// Shared by the ready header strip and the not-yet-ready pane so the
-/// arrows sit in the same place in every state.
+/// arrows sit in the same place, and the text stops in the same place,
+/// in every state.
 fn draw_step_pill(
     buf: &mut ratatui::buffer::Buffer,
     hits: &mut crate::hit::HitMap,
@@ -4198,13 +4200,63 @@ fn draw_step_pill(
     for (rect, delta) in rects {
         hits.register(rect, crate::hit::Hit::SplitStep(delta));
     }
-    x
+    x - 1
 }
 
-/// Paints the 3-row header strip on `theme.panel`: the status chip plus
-/// the timing + size chips (plain muted text — they are not clickable) and
-/// content type, all on row 0, with the ▲/▼ step pill at its right end;
-/// the response tabs right-aligned on row 1;
+/// Paints the ready header's row 0 facts on `area`'s first row, ending
+/// before `right` (from [`draw_step_pill`]): the status chip, e.g.
+/// ` 200 `, then the timing and size figures (plain muted text — not
+/// clickable, so no control fill; chip fill means clickability), then
+/// the content type's media type and the rendered URL.
+///
+/// What doesn't fit gives way, by design: with no room for the chip the
+/// row stays empty (the pill wins, as on the pending strip); a figure is
+/// shown whole or skipped, and the next is still tried; the media type
+/// and URL are ellipsized to the room left and dropped when that is
+/// under 2 cells.
+fn draw_status_row(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    right: u16,
+    data: &crate::http::ResponseData,
+    t: &crate::theme::Theme,
+) {
+    let chip =
+        crate::paint::Chip { label: &data.status.to_string(), color: t.status_color(data.status) };
+    if area.x + chip.width() > right {
+        return;
+    }
+    let mut x = area.x + chip.paint(buf, area.x, area.y, t.panel, t) + 1;
+    // One combined timing figure — ttfb → total — rather than two chips.
+    let timing = format!("{} → {}", human_elapsed(data.ttfb), human_elapsed(data.elapsed));
+    for label in [timing, human_size(data.size)] {
+        let s = format!(" {label} ");
+        if x as usize + crate::ui::cells(&s) <= right as usize {
+            x = crate::paint::text(buf, x, area.y, &s, t.text_muted, t.panel, false) + 1;
+        }
+    }
+
+    // The media type alone (`multipart/form-data`, not its boundary):
+    // parameters would crowd the URL off the row, and the Headers tab has
+    // the whole value. Then the rendered URL this response actually came
+    // from — `{{vars}}` substituted, params merged, secrets masked — so
+    // the send's real target is visible without decoding the address
+    // bar's tokens by hand.
+    let media_type =
+        data.content_type.as_deref().map(|ct| ct.split(';').next().unwrap_or(ct).trim());
+    for fact in [media_type, Some(data.url.as_str())] {
+        let Some(fact) = fact.filter(|f| !f.is_empty()) else { continue };
+        if right <= x + 2 {
+            return;
+        }
+        let s = crate::ui::ellipsize(fact, (right - x - 1) as usize);
+        x = crate::paint::text(buf, x + 1, area.y, &s, t.text_muted, t.panel, false) + 1;
+    }
+}
+
+/// Paints the 3-row header strip on `theme.panel`: row 0 holds the
+/// status facts ([`draw_status_row`]) with the ▲/▼ step pill at its
+/// right end; the response tabs sit right-aligned on row 1;
 /// row 2 holds the tabs' accent underline on the right and the icon
 /// actions (search / edit / save / copy) on the left, directly above the body they act on.
 #[allow(clippy::too_many_arguments)] // one display-state flag per row feature, all from `Response`
@@ -4224,55 +4276,14 @@ fn draw_header_strip(
     let buf = frame.buffer_mut();
     crate::paint::fill(buf, area, t.panel);
 
-    // Row 0 (right): the ▲/▼ step pill. Painted first so every fact on
-    // the row knows where to stop: a cell short of it.
-    let pill_x = draw_step_pill(buf, hits, area, split, ctx);
-    let right = pill_x.saturating_sub(1);
-
-    // Row 0 (left): the status chip, e.g. " 200 ", then timing + size,
-    // plain muted text (not clickable, so no control fill — chip fill
-    // means clickability), then content type and URL. The chip and the
-    // figures are shown whole or the row ends there (by design: on a
-    // strip too tight for both, the pill wins, as on the pending strip);
-    // the content type and URL are truncated to the room left.
-    'row: {
-        let chip = crate::paint::Chip {
-            label: &data.status.to_string(),
-            color: t.status_color(data.status),
-        };
-        if area.x + chip.width() > right {
-            break 'row;
-        }
-        let mut x = area.x + chip.paint(buf, area.x, area.y, t.panel, t) + 1;
-        // One combined timing figure — ttfb → total — rather than two chips.
-        let timing = format!("{} → {}", human_elapsed(data.ttfb), human_elapsed(data.elapsed));
-        for label in [timing, human_size(data.size)] {
-            let s = format!(" {label} ");
-            if x as usize + crate::ui::cells(&s) > right as usize {
-                break 'row;
-            }
-            x = crate::paint::text(buf, x, area.y, &s, t.text_muted, t.panel, false) + 1;
-        }
-
-        // Then the content type and the rendered URL this response
-        // actually came from — `{{vars}}` substituted, params merged,
-        // secrets masked — so the send's real target is visible without
-        // decoding the address bar's tokens by hand. Each is muted like
-        // the other row-0 facts, truncated to what's left of the row, and
-        // dropped entirely on a row too tight to say anything useful.
-        for fact in [data.content_type.as_deref(), Some(data.url.as_str())] {
-            let Some(fact) = fact.filter(|f| !f.is_empty()) else { continue };
-            if right <= x + 2 {
-                break 'row;
-            }
-            let s = crate::ui::ellipsize(fact, (right - x - 1) as usize);
-            x = crate::paint::text(buf, x + 1, area.y, &s, t.text_muted, t.panel, false) + 1;
-        }
-    }
+    // Row 0: the ▲/▼ step pill at the right, painted first so the facts
+    // know where to stop.
+    let right = draw_step_pill(buf, hits, area, split, ctx);
+    draw_status_row(buf, area, right, data, t);
 
     // Hidden (or mid-slide with only the one row left): row 0 is the whole
     // strip — the tabs and icon actions slid away with the body, leaving
-    // the status chip and the `› show` toggle.
+    // the status facts and the step pill.
     if collapsed || area.height < HEADER_STRIP_HEIGHT {
         return;
     }
@@ -6075,36 +6086,45 @@ mod tests {
         let mut hits = crate::hit::HitMap::default();
         terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let buf = terminal.backend().buffer();
-        let pill = hits.rect_of(&crate::hit::Hit::SplitStep(1)).expect("the step pill is drawn");
-        let row: String = (0..w).map(|x| buf[(x, pill.y)].symbol()).collect();
-        let cap = pill.x - 1;
-        assert_eq!(buf[(cap - 1, pill.y)].symbol(), " ", "a blank cell before the pill: {row}");
+        let chips: Vec<Rect> =
+            [1, -1].iter().filter_map(|d| hits.rect_of(&crate::hit::Hit::SplitStep(*d))).collect();
+        assert_eq!(chips.len(), 2, "the step pill is drawn");
+        let y = chips[0].y;
+        let row: String = (0..w).map(|x| buf[(x, y)].symbol()).collect();
+        for (chip, arrow) in chips.iter().zip(["\u{25B2}", "\u{25BC}"]) {
+            assert_eq!(buf[(chip.x + 1, y)].symbol(), arrow, "{row}");
+        }
+        let cap = chips.iter().map(|c| c.x).min().unwrap() - 1;
+        assert_eq!(buf[(cap, y)].bg, theme.control, "the pill's cap: {row}");
+        let blank = cap.checked_sub(1).expect("the pill leaves room on its left");
+        assert_eq!(buf[(blank, y)].symbol(), " ", "a blank cell before the pill: {row}");
         // A 2-cell glyph's second cell also reads " ", so the blank is
         // only the row's own if the glyph before it is one cell wide.
-        let before = buf[(cap - 2, pill.y)].symbol();
-        assert!(crate::ui::cells(before) <= 1, "{before} runs into the blank cell: {row}");
-        assert_eq!(buf[(cap, pill.y)].bg, theme.control, "the pill's cap: {row}");
-        assert_eq!(buf[(pill.x + 1, pill.y)].symbol(), "\u{25B2}", "{row}");
-        assert_eq!(buf[(pill.x + 4, pill.y)].symbol(), "\u{25BC}", "{row}");
+        if let Some(before) = blank.checked_sub(1) {
+            let s = buf[(before, y)].symbol();
+            assert!(crate::ui::cells(s) <= 1, "{s} runs into the blank cell: {row}");
+        }
         row
     }
 
-    /// A content type longer than the row's room is ellipsized a cell
-    /// short of the step pill, like the URL, instead of painting over it.
+    /// The row shows the content type's media type alone: its parameters
+    /// would crowd the URL off the row, and the Headers tab has them.
     #[test]
-    fn a_long_content_type_is_cut_short_of_the_step_pill() {
+    fn a_long_content_type_shows_its_media_type_and_leaves_room_for_the_url() {
         let mut d = data(r#"{"a": 1}"#);
         d.content_type =
             Some("multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW".into());
         let row = row0_beside_an_intact_pill(d, 80);
-        assert!(row.contains(" multipart/form-data; bound"), "{row}");
-        assert!(row.contains('\u{2026}'), "the content type is ellipsized: {row}");
+        assert!(row.contains(" multipart/form-data "), "{row}");
+        assert!(!row.contains("boundary"), "{row}");
+        assert!(row.contains(" https://api.exam"), "the URL keeps the rest of the row: {row}");
     }
 
     /// On a strip too narrow for the timing and size figures, each is
-    /// shown whole or not at all, and the pill keeps its cells.
+    /// shown whole or skipped, the next still tried, and the pill keeps
+    /// its cells.
     #[test]
-    fn a_narrow_strip_drops_the_figures_that_would_reach_the_step_pill() {
+    fn a_narrow_strip_skips_the_figures_that_would_reach_the_step_pill() {
         // 36 columns: the pane's inset takes one each side, the pill and
         // its blank cell the right 9 of the 34 left, and the status chip
         // and its gap the left 6, so ` 38 ms → 342 ms ` (16) fits in the
@@ -6113,11 +6133,12 @@ mod tests {
         assert!(row.contains(" 38 ms → 342 ms "), "{row}");
         assert!(!row.contains(" B "), "no size: {row}");
         assert!(!row.contains("appl"), "no content type: {row}");
-        // 22 columns: the timing no longer fits whole, so it goes, and the
-        // figures after it with it.
-        let row = row0_beside_an_intact_pill(data(r#"{"a": 1}"#), 22);
+        // 28 columns: 11 cells between the chip's gap and the pill's
+        // blank. The timing no longer fits whole, so it is skipped, and
+        // ` 8 B ` (5) still takes its place.
+        let row = row0_beside_an_intact_pill(data(r#"{"a": 1}"#), 28);
         assert!(!row.contains("ms"), "no timing: {row}");
-        assert!(!row.contains(" B "), "no size: {row}");
+        assert!(row.contains(" 8 B "), "the size still fits: {row}");
         // 14 columns: not even the status chip fits beside the pill, so
         // the pill wins, as on the not-yet-ready strip: it is the control.
         let row = row0_beside_an_intact_pill(data(r#"{"a": 1}"#), 14);
@@ -8354,8 +8375,8 @@ mod tests {
     }
 
     /// Hiding hides the controls too: collapsed, the header strip drops its
-    /// tab strip and icon actions — only row 0 (status chip + `› show`)
-    /// survives.
+    /// tab strip and icon actions — only row 0 (status facts + the ▲/▼
+    /// step pill) survives.
     #[test]
     fn collapsed_ready_header_drops_tabs_and_icon_actions() {
         let mut r = ready(r#"{"a": 1}"#);
