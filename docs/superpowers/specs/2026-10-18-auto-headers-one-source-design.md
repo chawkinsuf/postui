@@ -128,6 +128,27 @@ pub fn header_rows(req: &HttpRequest, ctx: &PrepareContext) -> Vec<HeaderRow>
   characters, shows the authority as written, still masked. That
   cosmetic gap is accepted rather than chased further.
 
+*Amended 2026-10-18 after review round 5:*
+- `PreparedRequest` holds a slim `SentHeader { name, display_name,
+  value, display }`. It drops the `origin`, `unsent` and `unresolved`
+  fields, which meant nothing there. The response's sent section uses
+  the same type (`PreparedRequest::wire_headers`), so the binary's own
+  `SentHeader` goes. Proposed in response to the reviewer and approved
+  by the user (`mine (approved)`).
+- The masked `Host` no longer goes through the parser with a stand-in
+  label. That trick drew an edge case in four rounds (round 5: an IDN
+  host showed the stand-in's punycode). It now follows plain string
+  rules: as written, ASCII-lowercased, default port dropped, no
+  userinfo. These rules only apply when the host itself holds a secret;
+  otherwise the display is the real `Host`. A non-ASCII host shows
+  unpunycoded (`mine`).
+- A body's substituted length is counted without building the string,
+  since the Headers tab asks for it on every frame.
+- The copy toast names the row as the screen shows it.
+- When rows don't fit, the auto section still gives way on a short
+  pane. The user ruled no change here (`you`, "No change. The issue is
+  it can't scroll."). Scrolling the tab is task #56.
+
 **Binary**
 - `http::send` puts only the non-`Client` rows on the request.
   `SentHeader::wire` becomes a map over `PreparedRequest.headers`,

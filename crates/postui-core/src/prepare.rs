@@ -14,17 +14,55 @@ pub struct PreparedRequest {
     pub display_url: String,
     /// The headers the request itself sets, in wire order: the sent
     /// [`header_rows`] other than the client's. What the request is built
-    /// from (and what curl export writes). Each row has its masked twin in
-    /// `display_name`/`display`, the version screens show.
-    pub headers: Vec<HeaderRow>,
+    /// from (and what curl export writes).
+    pub headers: Vec<SentHeader>,
     /// What the HTTP client adds on its own after `headers` (`Accept`,
     /// `Host`, `Content-Length`), for the screens that show the whole send
     /// (the response pane's `sent` section) — never put on the request.
-    pub client_headers: Vec<HeaderRow>,
+    pub client_headers: Vec<SentHeader>,
     pub body: Option<String>,
     /// Skip TLS certificate verification for this send (the request's
     /// `insecure` flag, carried through so the transport can pick a client).
     pub insecure: bool,
+}
+
+impl PreparedRequest {
+    /// Every header the send puts on the wire, in wire order and wire case
+    /// (lowercase): `headers`, then the client's — reqwest's
+    /// `accept: */*`, hyper's `host` and, for a body, `content-length`.
+    /// `Host` and `Content-Length` are what an HTTP/1.1 send carries; an h2
+    /// negotiation spells the first as `:authority`, same value. The
+    /// snapshot the response pane's `sent` section shows; verified against
+    /// a raw server by the binary's `sent_headers_match_the_wire`.
+    pub fn wire_headers(&self) -> Vec<SentHeader> {
+        self.headers
+            .iter()
+            .chain(&self.client_headers)
+            .map(|h| SentHeader {
+                name: h.name.to_ascii_lowercase(),
+                display_name: h.display_name.to_ascii_lowercase(),
+                ..h.clone()
+            })
+            .collect()
+    }
+}
+
+/// One header that goes on the wire: its real name and value (what the
+/// request carries and a copy pill yields) and their masked twins (what
+/// screens show while secrets are hidden).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentHeader {
+    pub name: String,
+    pub display_name: String,
+    pub value: String,
+    pub display: String,
+}
+
+impl SentHeader {
+    /// Whether a secret's value is in the name or the value.
+    pub fn is_masked(&self) -> bool {
+        self.value != self.display || self.name != self.display_name
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -255,6 +293,9 @@ pub fn prepare(
     let (client_headers, headers): (Vec<HeaderRow>, Vec<HeaderRow>) =
         rows.into_iter().filter(HeaderRow::sent).partition(|r| r.origin == HeaderOrigin::Client);
     missing.extend(headers.iter().flat_map(|r| r.unresolved.iter().cloned()));
+    let headers: Vec<SentHeader> = headers.into_iter().map(HeaderRow::into_sent).collect();
+    let client_headers: Vec<SentHeader> =
+        client_headers.into_iter().map(HeaderRow::into_sent).collect();
 
     if !missing.is_empty() {
         let causes = missing
@@ -330,6 +371,18 @@ impl HeaderRow {
     pub fn sent(&self) -> bool {
         self.unsent.is_none()
     }
+
+    /// Whether a secret's value is in the name or the value, as
+    /// [`SentHeader::is_masked`] asks of a sent one.
+    pub fn is_masked(&self) -> bool {
+        self.value != self.display || self.name != self.display_name
+    }
+
+    /// The row as it goes on the wire, once [`prepare`] has kept it.
+    fn into_sent(self) -> SentHeader {
+        let HeaderRow { name, display_name, value, display, .. } = self;
+        SentHeader { name, display_name, value, display }
+    }
 }
 
 /// Why a listed [`HeaderRow`] isn't sent: recorded where the rule is
@@ -367,10 +420,20 @@ pub fn client_owned(name: &str) -> Option<&'static str> {
 pub fn header_rows(req: &HttpRequest, ctx: &PrepareContext) -> Vec<HeaderRow> {
     let vars = overlaid_vars(req, ctx);
     let body_len = sent_body(req).map(|body| match req.substitute_body {
-        true => substitute_masked(body, &vars, &BTreeSet::new(), &mut BTreeSet::new()).len(),
+        true => substituted_len(body, &vars),
         false => body.len(),
     });
     rows(req, ctx, &vars, &secret_names(ctx), body_len, &mut Vec::new())
+}
+
+/// The byte length `text` has once [`crate::vars::substitute`] has run on
+/// it (an unresolved token stays as written), counted without building the
+/// string: the Headers tab asks for a body's on every frame.
+fn substituted_len(text: &str, vars: &IndexMap<String, String>) -> usize {
+    crate::vars::find_tokens(text).iter().fold(text.len(), |len, t| match vars.get(&t.name) {
+        Some(value) => len - (t.end - t.start) + value.len(),
+        None => len,
+    })
 }
 
 /// The rows of [`header_rows`], from what the caller already worked out:
@@ -478,10 +541,15 @@ fn rows(
             host.clone()
         } else {
             let masked = substitute_masked(&req.url, vars, secrets, &mut BTreeSet::new());
-            // Never the real host: it may hold the secret. A masked URL
-            // always has a host where the real one does, so this is only
-            // the safe answer for a case that doesn't arise.
-            authority(&masked).unwrap_or_else(|| SECRET_MASK.to_string())
+            match host_port(&masked) {
+                // No secret in the host itself: it shows as it is sent.
+                Some((_, written)) if !written.contains(SECRET_MASK) => host.clone(),
+                // Never the real host, which holds the secret. A masked URL
+                // always has a host where the real one does, so the bare
+                // mask is only the safe answer for a case that doesn't
+                // arise.
+                _ => masked_authority(&masked).unwrap_or_else(|| SECRET_MASK.to_string()),
+            }
         };
         rows.push(HeaderRow { display, ..fixed("Host", host, None) });
     }
@@ -520,43 +588,49 @@ fn secret_names(ctx: &PrepareContext) -> BTreeSet<String> {
         .collect()
 }
 
-/// What [`authority`] parses in place of the secret mask: the parser
-/// would punycode the mask's glyphs into `xn--…`, but leaves a plain
-/// lowercase label as it is, so the mask can be put back afterwards.
-const MASK_STAND_IN: &str = "postui-secret-mask";
+/// `url`'s scheme and its host and port as written (no userinfo), or
+/// `None` while that is empty or still holds a `{{token}}`.
+fn host_port(url: &str) -> Option<(&str, &str)> {
+    let (scheme, after_scheme) = url.split_once("://").unwrap_or(("", url));
+    let segment = after_scheme.split(['/', '?', '#']).next().unwrap_or_default();
+    let host_port = segment.rsplit_once('@').map_or(segment, |(_, host_port)| host_port);
+    (!host_port.is_empty() && !host_port.contains("{{")).then_some((scheme, host_port))
+}
 
 /// The `Host` value the client derives from `url`: the host, lowercased
 /// (and punycoded), plus the port when it isn't the scheme's default — no
-/// userinfo. A masked URL goes through the same rule, its mask kept.
-/// `None` while the host is empty or still holds a `{{token}}`. A URL the
-/// parser refuses keeps its host and port as written (the send itself
-/// will report that URL); so does a masked one whose mask the parser
-/// can't take in place of the secret (a secret port, a label pushed past
-/// 63 characters) — still masked, just not in the client's exact form.
-/// That cosmetic gap is accepted rather than chased further.
+/// userinfo. A URL the parser refuses keeps its host and port as written
+/// (the send itself will report that URL).
 fn authority(url: &str) -> Option<String> {
-    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
-    let segment = after_scheme.split(['/', '?', '#']).next().unwrap_or_default();
-    let host_port = segment.rsplit_once('@').map_or(segment, |(_, host_port)| host_port);
-    if host_port.is_empty() || host_port.contains("{{") {
-        return None;
-    }
-    // Only a masked host makes the round trip (a mask elsewhere in the URL
-    // doesn't), so a real host that happens to hold the stand-in is left
-    // as it is.
-    let masked = host_port.contains(SECRET_MASK);
-    let parsed = if masked {
-        url::Url::parse(&url.replace(SECRET_MASK, MASK_STAND_IN)).ok()
-    } else {
-        url::Url::parse(url).ok()
-    };
+    let (_, written) = host_port(url)?;
+    let parsed = url::Url::parse(url).ok();
     let Some(host) = parsed.as_ref().and_then(|u| u.host_str()) else {
-        return Some(host_port.to_string());
+        return Some(written.to_string());
     };
-    let host = if masked { host.replace(MASK_STAND_IN, SECRET_MASK) } else { host.to_string() };
-    Some(match parsed.and_then(|u| u.port()) {
+    Some(match parsed.as_ref().and_then(|u| u.port()) {
         Some(port) => format!("{host}:{port}"),
-        None => host,
+        None => host.to_string(),
+    })
+}
+
+/// [`authority`] for a masked URL, by plain string rules rather than the
+/// parser, which can't take the mask's glyphs (it would punycode them
+/// into `xn--…`): the host and port as written, ASCII-lowercased, the
+/// scheme's default port dropped, no userinfo. It matches the real one
+/// for an ASCII host; a non-ASCII host shows unpunycoded, which reads
+/// better on screen anyway. The real value is never consulted, so the
+/// secret can't leak through it.
+fn masked_authority(url: &str) -> Option<String> {
+    let (scheme, written) = host_port(url)?;
+    let default_port = match scheme.to_ascii_lowercase().as_str() {
+        "https" => ":443",
+        "http" => ":80",
+        _ => "",
+    };
+    let host = written.to_ascii_lowercase();
+    Some(match host.strip_suffix(default_port) {
+        Some(bare) if !default_port.is_empty() => bare.to_string(),
+        _ => host,
     })
 }
 
@@ -1245,6 +1319,39 @@ mod tests {
         );
     }
 
+    /// The length is counted without building the string, and agrees with
+    /// what the substitution builds — unresolved and multibyte tokens too.
+    #[test]
+    fn substituted_len_matches_the_substituted_text() {
+        let vars: IndexMap<String, String> =
+            [("a", "ünïcode"), ("b", ""), ("c", "x")].map(|(k, v)| (k.into(), v.into())).into();
+        for text in ["", "plain", "{{a}}", "x{{a}}y{{b}}z{{gone}}", "{{c}}{{c}}{{ a }}", "{{"] {
+            let built = crate::vars::substitute(text, &vars, &mut BTreeSet::new());
+            assert_eq!(substituted_len(text, &vars), built.len(), "{text:?}");
+        }
+    }
+
+    /// A masked host follows plain string rules, never the real value: an
+    /// IDN host stays readable, a secret port stays masked, and a secret
+    /// elsewhere in the URL leaves the host as it is sent.
+    #[test]
+    fn masked_host_string_rules() {
+        let mut c = ctx(&[("t", "acme"), ("port", "8443"), ("k", "s3cret")], &[]);
+        for name in ["t", "port", "k"] {
+            c.meta.insert(name.into(), varmodel::VarMeta::Secret);
+        }
+        let host = |url: &str| client(&header_rows(&base(url), &c), "Host").clone();
+        let idn = host("https://{{t}}café.com/p");
+        assert_eq!(idn.display, format!("{SECRET_MASK}café.com"));
+        assert!(!idn.display.contains("acme"));
+        assert_eq!(
+            host("https://Api.example.com:{{port}}/p").display,
+            format!("api.example.com:{SECRET_MASK}")
+        );
+        let plain = host("https://Bücher.example/p?key={{k}}");
+        assert_eq!(plain.display, plain.value, "no secret in the host: shown as sent");
+    }
+
     #[test]
     fn header_rows_content_length_ignores_masking_and_follows_the_substitution_flag() {
         let mut req = base("https://x.test");
@@ -1357,10 +1464,15 @@ mod tests {
         req.body = Some(Body::Json { text: "{}".into() });
         req.headers.insert("Accept".into(), on("text/plain"));
         let (p, _) = prepare(&req, &PrepareContext::default()).unwrap();
-        let names = |rows: &[HeaderRow]| rows.iter().map(|h| h.name.clone()).collect::<Vec<_>>();
+        let names = |rows: &[SentHeader]| rows.iter().map(|h| h.name.clone()).collect::<Vec<_>>();
         assert_eq!(names(&p.headers), ["Accept", "Content-Type"]);
         assert_eq!(names(&p.client_headers), ["Host", "Content-Length"]);
-        assert!(p.headers.iter().chain(&p.client_headers).all(|h| h.sent()));
+        let wire: Vec<String> = p.wire_headers().into_iter().map(|h| h.name).collect();
+        assert_eq!(
+            wire,
+            ["accept", "content-type", "host", "content-length"],
+            "wire order, wire case"
+        );
     }
 
     /// A secret in a header's name is masked on screen like one in its

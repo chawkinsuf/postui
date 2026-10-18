@@ -9499,7 +9499,7 @@ impl App {
                     HeaderRow::Sent(j) => d
                         .sent_headers
                         .get(j)
-                        .map(|h| (h.value.clone(), format!("Copied {}", h.name))),
+                        .map(|h| (h.value.clone(), format!("Copied {}", h.display_name))),
                     HeaderRow::Divider | HeaderRow::Note => None,
                 }
             }
@@ -9509,13 +9509,15 @@ impl App {
                 .table_row_at(*i)
                 .map(|(key, value)| (value.to_string(), format!("Copied {key}"))),
             // The real value even while the row shows masked, as the sent
-            // section's pill and the tooltip's copy do (spec 2026-10-18 R7).
-            CopyTarget::ComputedHeader(i) => self
-                .editor
-                .computed
-                .rows
-                .get(*i)
-                .map(|r| (r.value.clone(), format!("Copied {}", r.display_name))),
+            // section's pill and the tooltip's copy do (spec 2026-10-18 R7);
+            // the toast names the row as the screen shows it.
+            CopyTarget::ComputedHeader(i) => {
+                let computed = &self.editor.computed;
+                computed.rows.get(*i).map(|r| {
+                    let name = if computed.revealed { &r.name } else { &r.display_name };
+                    (r.value.clone(), format!("Copied {name}"))
+                })
+            }
         }
     }
 

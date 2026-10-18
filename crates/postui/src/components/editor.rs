@@ -314,7 +314,7 @@ impl ComputedHeadersView {
     /// Whether any row has a secret to reveal — independent of
     /// `revealed`, so the toggle that hides it again stays on screen.
     pub fn has_secret(&self) -> bool {
-        self.rows.iter().any(|r| r.value != r.display || r.name != r.display_name)
+        self.rows.iter().any(postui_core::prepare::HeaderRow::is_masked)
     }
 }
 
@@ -3069,7 +3069,8 @@ impl Editor {
                 // (or disappears) rather than eating into the table. Since
                 // the status lines above the table went (spec 2026-10-18
                 // R6), the project defaults live only in that section, so
-                // they give way too; the pane split brings them back.
+                // they give way too; the pane split brings them back, and
+                // #56 is the task that makes the tab scroll to them.
                 let auto_rows = self.computed_row_count();
                 let rows = self.table_len();
                 let table_h = table_height(rows).min(area.height);

@@ -8400,8 +8400,9 @@ fn ready_response(app: &mut App, body: &str) {
             status: 200,
             url: "https://x.test/a".into(),
             headers: vec![("content-type".into(), "application/json".into())],
-            sent_headers: vec![crate::http::SentHeader {
+            sent_headers: vec![postui_core::prepare::SentHeader {
                 name: "authorization".into(),
+                display_name: "authorization".into(),
                 value: "Bearer s3cret".into(),
                 display: format!("Bearer {}", postui_core::prepare::SECRET_MASK),
             }],
@@ -14416,6 +14417,40 @@ fn computed_header_copy_takes_the_real_value_of_a_masked_row() {
     let b64 = sent.trim_start_matches("\x1b]52;c;").trim_end_matches('\x07');
     let copied = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
     assert_eq!(String::from_utf8(copied).unwrap(), "Bearer sk-live-abc123");
+}
+
+/// The copy toast names the row as the screen shows it: masked until the
+/// reveal toggle, the real name after.
+#[test]
+fn computed_header_copy_toast_names_the_row_as_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536));
+    app.update(Action::VarEdit(VarEditOp::SetSecretValue {
+        env: "qa".into(),
+        name: "api_key".into(),
+        value: "sk-live-abc123".into(),
+    }));
+    // Quoted: a bare TOML key can't hold the braces.
+    set_default_header(&mut app, "\"X-{{api_key}}\"", "1");
+    app.editor.active_tab = EditorTab::Headers;
+    app.update(Action::Render);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let copy = app.hits.rect_of(&Hit::AutoHeaderCopy(0)).expect("the default row's pill");
+    app.handle_mouse(left_down(copy.x, copy.y));
+    let masked = rendered_text(&mut app);
+    assert!(masked.contains("Copied X-\u{25cf}"), "masked: {masked}");
+    assert!(!masked.contains("sk-live-abc123"), "{masked}");
+
+    // Revealed, the longer real name moves the pill: find it again.
+    app.editor.computed.revealed = true;
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let copy = app.hits.rect_of(&Hit::AutoHeaderCopy(0)).expect("the default row's pill");
+    app.handle_mouse(left_down(copy.x, copy.y));
+    assert!(rendered_text(&mut app).contains("Copied X-sk-live-abc123"));
 }
 
 #[test]

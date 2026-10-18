@@ -1,7 +1,7 @@
 //! The reqwest-backed send path: building a client, issuing a prepared
 //! request, and shaping the result into something the UI can render without
 //! knowing anything about reqwest itself.
-use postui_core::prepare::PreparedRequest;
+use postui_core::prepare::{PreparedRequest, SentHeader};
 use std::error::Error as _;
 use std::time::{Duration, Instant};
 
@@ -19,8 +19,8 @@ pub struct ResponseData {
     pub headers: Vec<(String, String)>,
     /// The headers this request went out with, in send order — a snapshot
     /// taken at send time, so it still says what was sent after the
-    /// request has been edited. Shown under the response headers as the
-    /// Headers tab's `sent` section.
+    /// request has been edited (`PreparedRequest::wire_headers`). Shown
+    /// under the response headers as the Headers tab's `sent` section.
     pub sent_headers: Vec<SentHeader>,
     pub body: String,
     /// Time to first byte: send → response headers received.
@@ -29,39 +29,6 @@ pub struct ResponseData {
     pub elapsed: Duration,
     pub size: usize,
     pub content_type: Option<String>,
-}
-
-/// One header as it was sent: the real `value` (what the copy pill
-/// yields) and its `display` form with secret values masked (what the
-/// screen shows — never the real value).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SentHeader {
-    /// The name as screens show it: secret values masked (a name is only
-    /// ever shown, never copied).
-    pub name: String,
-    pub value: String,
-    pub display: String,
-}
-
-impl SentHeader {
-    /// Every header `req` puts on the wire, in wire order and wire case
-    /// (lowercase): the request's own rows, then the client's —
-    /// reqwest's `accept: */*`, hyper's `host` and, for a body,
-    /// `content-length` (core's `header_rows` lists them). `Host` and
-    /// `Content-Length` are what an HTTP/1.1 send carries; an h2
-    /// negotiation spells the first as `:authority`, same value. Verified
-    /// against a raw server by `sent_headers_match_the_wire`.
-    pub fn wire(req: &PreparedRequest) -> Vec<Self> {
-        req.headers
-            .iter()
-            .chain(&req.client_headers)
-            .map(|h| SentHeader {
-                name: h.display_name.to_ascii_lowercase(),
-                value: h.value.clone(),
-                display: h.display.clone(),
-            })
-            .collect()
-    }
 }
 
 /// Builds the client used for all requests. Deliberately no timeout of any
@@ -158,7 +125,7 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
         status,
         url: req.display_url.clone(),
         headers,
-        sent_headers: SentHeader::wire(req),
+        sent_headers: req.wire_headers(),
         body,
         ttfb,
         elapsed,
@@ -490,7 +457,7 @@ mod tests {
         ctx.vars.insert("key".into(), "s3cret".into());
         ctx.meta.insert("key".into(), VarMeta::Secret);
         let (req, _) = prepare(&req, &ctx).unwrap();
-        let rows = SentHeader::wire(&req);
+        let rows = req.wire_headers();
         let auth = rows.iter().find(|r| r.name == "authorization").unwrap();
         assert_eq!(auth.value, "Bearer s3cret");
         assert_eq!(auth.display, format!("Bearer {mask}"));
@@ -500,7 +467,7 @@ mod tests {
     }
 
     /// The rows the editor lists as sent (`header_rows`) and the
-    /// response's sent section (`SentHeader::wire`) describe the same
+    /// response's sent section (`PreparedRequest::wire_headers`) describe the same
     /// send: same names, same values, same order — including the four
     /// shapes where they once disagreed (spec 2026-10-18 §1): a default
     /// port, userinfo, and a typed `Host` or `Content-Length`.
@@ -542,7 +509,7 @@ mod tests {
                 .collect();
             let (prepared, _) = prepare(&req, &ctx).unwrap();
             let sent: Vec<(String, String)> =
-                SentHeader::wire(&prepared).into_iter().map(|h| (h.name, h.value)).collect();
+                prepared.wire_headers().into_iter().map(|h| (h.name, h.value)).collect();
             assert_eq!(auto, sent, "{}", req.url);
         }
     }

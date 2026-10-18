@@ -2,7 +2,7 @@
 //! command carries a secret (§5.4).
 
 use crate::model::{Body, HttpRequest, Method};
-use crate::prepare::{PrepareContext, PreparedRequest};
+use crate::prepare::{PrepareContext, PreparedRequest, SentHeader};
 use crate::varmodel::VarMeta;
 
 /// `req` as a bash/zsh command line: one flag per line joined with ` \`
@@ -63,9 +63,7 @@ pub fn includes_secrets(
     ctx: &PrepareContext,
     prepared: &PreparedRequest,
 ) -> bool {
-    if prepared.url != prepared.display_url
-        || prepared.headers.iter().any(|h| h.value != h.display || h.name != h.display_name)
-    {
+    if prepared.url != prepared.display_url || prepared.headers.iter().any(SentHeader::is_masked) {
         return true;
     }
     let Some(Body::Json { text }) = &req.body else {
@@ -82,7 +80,7 @@ pub fn includes_secrets(
 mod tests {
     use super::*;
     use crate::model::{HttpRequest, Method};
-    use crate::prepare::{HeaderOrigin, HeaderRow, PrepareContext, PreparedRequest, prepare};
+    use crate::prepare::{PrepareContext, PreparedRequest, SentHeader, prepare};
     use crate::varmodel::VarMeta;
 
     fn prepared(
@@ -93,15 +91,11 @@ mod tests {
     ) -> PreparedRequest {
         let headers = headers
             .iter()
-            .enumerate()
-            .map(|(row, (k, v))| HeaderRow {
+            .map(|(k, v)| SentHeader {
                 name: k.to_string(),
                 display_name: k.to_string(),
                 value: v.to_string(),
                 display: v.to_string(),
-                origin: HeaderOrigin::Request { row },
-                unsent: None,
-                unresolved: Vec::new(),
             })
             .collect();
         PreparedRequest {
