@@ -20,6 +20,9 @@ form_urlencoded = "1"
 # The URL parser reqwest itself uses (already in the lock file as its
 # dependency): core derives the `Host` the client will send with it.
 url = "2"
+# The decoder reqwest uses on a URL's userinfo (already in the lock file as
+# url's dependency): core derives the client's `Authorization` with it.
+percent-encoding = "2"
 jaq-core = "3"
 jaq-std = "3"
 jaq-json = { version = "2", features = ["sync"] }

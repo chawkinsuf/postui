@@ -252,6 +252,38 @@ first, so `https:///host` has a `Host` row like the wire does.
   rather than the editor matching rows by name or by order.
 - R3b's note wording: `not sent · the client sets Host`.
 
+## 5a. Task #22: every header the client adds (amended 2026-10-18)
+
+#22 asked for the client's `Authorization` from URL userinfo, and any
+other header the client adds or drops on its own. A raw-server probe of
+every method and body shape found:
+
+| Request | Listed before | Wire |
+|---|---|---|
+| `http://u:pw@host/` | nothing | `authorization: Basic dTpwdw==`, first |
+| an empty body, any method that sends one | `content-length: 0` | no `content-length` |
+| a typed `Transfer-Encoding`, with a body | `content-length: N` | no `content-length`; `gzip` becomes `gzip, chunked` |
+| a typed `Transfer-Encoding`, no or empty body | the row, sent | dropped, and hyper reorders the rest |
+| an env proxy with credentials, `http://` target | nothing | `proxy-authorization` (reqwest's source) |
+
+Rules added:
+
+| # | Behaviour | Who decided |
+|---|---|---|
+| R1a | The URL's userinfo gives a client `Authorization: Basic base64(user:password)` row, percent-decoded, listed first, as the wire has it. It follows reqwest's `extract_authority`: none when the username isn't UTF-8 once decoded, and a password that isn't is left off. None while the userinfo is still a `{{token}}`. A sent request or default row naming `authorization` replaces it, as with `Accept` (R3). | task (`you`); the decoding is reqwest's, pinned by `sent_headers_match_the_wire` |
+| R1b | A typed `Authorization` that replaces the URL's goes out where reqwest put the URL's, first, but is listed where it is typed. Order only. | `mine (approved)` |
+| R1c | When a secret can change it (the parser test of R4), the row shows as `Basic ●●●●●●`; otherwise as sent, since the URL bar already shows the userinfo. | `mine (approved)` |
+| R3c | The client's `Content-Length` is listed only for a body with bytes in it. | follows the wire |
+| R3d | `Transfer-Encoding` joins R3a's client-owned names. A typed one is listed but never sent, with `not sent · set by the client only`, since the client never sends one for a body of known length. A chunked body can no longer be sent on purpose. | `mine (approved)` |
+| R10 | `Proxy-Authorization` is left out: it goes to the proxy, not the server, and listing it means copying reqwest's proxy env matching into core. Nothing filed. | `mine (approved)` |
+
+Design: `rows()` adds the `Authorization` row from `userinfo_auth`, a
+copy of reqwest's decode. The R4 parser test becomes `secret_shapes`,
+which takes the derivation (`authority` or `userinfo_auth`).
+`PreparedRequest::wire_headers` puts a client `Authorization` before
+`headers`. Core gains the `percent-encoding` crate, already in the lock
+file as `url`'s.
+
 ## 6. A note for #20
 
 #20 says `Host` and `Content-Length` "cannot be overridden". Until now

@@ -340,19 +340,39 @@ mod tests {
     /// `sent_headers` is the wire truth, not the configured rows: what a
     /// raw server actually receives from a prepared send, name for name,
     /// value for value, in order — including what reqwest and hyper add on
-    /// their own (`accept`, `host`, `content-length`, which core's
-    /// `header_rows` predicts), with names in their wire case. A typed
-    /// `Host` or `Content-Length` is never sent (spec 2026-10-18 R3a): the
-    /// client's own row goes out instead.
+    /// their own (`authorization` from the URL's userinfo, `accept`, `host`,
+    /// `content-length`, which core's `header_rows` predicts), with names
+    /// in their wire case. A typed `Host`, `Content-Length` or
+    /// `Transfer-Encoding` is never sent (spec 2026-10-18 R3a): the
+    /// client's own row goes out instead, if it sends one. The userinfo
+    /// cases pin core's copy of reqwest's decoding.
     #[tokio::test]
     async fn sent_headers_match_the_wire() {
         use postui_core::model::{Body, Entry, HttpRequest, Method};
         use postui_core::prepare::{PrepareContext, prepare};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let plain: &[(&str, &str)] = &[];
-        let typed: &[(&str, &str)] = &[("Host", "other.test"), ("content-LENGTH", "99")];
+        let typed: &[(&str, &str)] =
+            &[("Host", "other.test"), ("content-LENGTH", "99"), ("Transfer-Encoding", "chunked")];
+        let auth: &[(&str, &str)] = &[("Authorization", "Bearer typed")];
         let json = Some("{\"a\":1}");
-        for (body, extra) in [(None, plain), (json, plain), (None, typed), (json, typed)] {
+        let empty = Some("");
+        for (userinfo, body, extra) in [
+            ("", None, plain),
+            ("", json, plain),
+            ("", None, typed),
+            ("", json, typed),
+            ("", empty, plain),
+            ("", empty, typed),
+            ("u:pw@", None, plain),
+            ("u@", json, plain),
+            (":pw@", None, plain),
+            ("u%40x:p%20w@", None, plain),
+            ("%C3%BC:%C3%A9@", None, plain),
+            ("u:p%FF@", None, plain),
+            ("u%FF:p@", None, plain),
+            ("u:pw@", None, auth),
+        ] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let port = listener.local_addr().unwrap().port();
             let server = tokio::spawn(async move {
@@ -363,8 +383,10 @@ mod tests {
                 String::from_utf8_lossy(&buf[..n]).to_string()
             });
             let on = |v: &str| Entry { value: v.into(), enabled: true };
-            let mut req =
-                HttpRequest { url: format!("http://127.0.0.1:{port}/p?q=1"), ..Default::default() };
+            let mut req = HttpRequest {
+                url: format!("http://{userinfo}127.0.0.1:{port}/p?q=1"),
+                ..Default::default()
+            };
             req.headers.insert("X-One".into(), on("1"));
             for (name, value) in extra {
                 req.headers.insert(name.to_string(), on(value));
@@ -386,14 +408,25 @@ mod tests {
                 })
                 .collect();
             assert!(wire.len() >= 3, "the probe saw the client's own rows: {raw}");
-            let sent: Vec<(String, String)> =
+            let mut sent: Vec<(String, String)> =
                 data.sent_headers.iter().map(|h| (h.name.clone(), h.value.clone())).collect();
-            assert_eq!(sent, wire, "the snapshot is what went on the wire:\n{raw}");
+            let mut in_order = wire.clone();
+            if extra == auth {
+                // A typed Authorization takes the URL's place, first on the
+                // wire, but is listed where it is typed: order only.
+                sent.sort();
+                in_order.sort();
+            }
+            assert_eq!(sent, in_order, "the snapshot is what went on the wire:\n{raw}");
             assert!(
                 wire.iter().any(|(k, v)| k == "host" && v == &format!("127.0.0.1:{port}")),
                 "the client's own host went out:\n{raw}"
             );
             assert!(!raw.contains("other.test") && !raw.contains(": 99"), "{raw}");
+            assert!(!raw.to_ascii_lowercase().contains("transfer-encoding"), "{raw}");
+            if !userinfo.is_empty() && userinfo != "u%FF:p@" {
+                assert!(wire.iter().any(|(k, _)| k == "authorization"), "{userinfo}: {raw}");
+            }
             for h in &data.sent_headers {
                 assert_eq!(h.display, h.value, "no secrets here, so display = value");
             }
@@ -468,9 +501,10 @@ mod tests {
 
     /// The rows the editor lists as sent (`header_rows`) and the
     /// response's sent section (`PreparedRequest::wire_headers`) describe the same
-    /// send: same names, same values, same order — including the four
-    /// shapes where they once disagreed (spec 2026-10-18 §1): a default
-    /// port, userinfo, and a typed `Host` or `Content-Length`.
+    /// send: same names, same values, same order — including the shapes
+    /// where they once disagreed (spec 2026-10-18 §1 and task #22): a
+    /// default port, userinfo, a typed `Host`, `Content-Length` or
+    /// `Transfer-Encoding`, and an empty body.
     #[test]
     fn the_auto_section_and_the_sent_section_agree() {
         use postui_core::model::{Body, Entry, HttpRequest, Method};
@@ -494,6 +528,11 @@ mod tests {
         typed_length.method = Method::Post;
         typed_length.body = Some(Body::Json { text: "{}".into() });
         typed_length.headers.insert("Content-Length".into(), on("2"));
+        let mut typed_encoding = typed_length.clone();
+        typed_encoding.headers.insert("Transfer-Encoding".into(), on("chunked"));
+        let mut empty = at("http://example.com/p");
+        empty.method = Method::Put;
+        empty.body = Some(Body::Json { text: String::new() });
 
         for req in [
             full,
@@ -501,6 +540,8 @@ mod tests {
             at("https://u:pw@example.com/p"),
             typed_host,
             typed_length,
+            typed_encoding,
+            empty,
         ] {
             let auto: Vec<(String, String)> = header_rows(&req, &ctx)
                 .into_iter()

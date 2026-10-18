@@ -16,8 +16,8 @@ pub struct PreparedRequest {
     /// [`header_rows`] other than the client's. What the request is built
     /// from (and what curl export writes).
     pub headers: Vec<SentHeader>,
-    /// What the HTTP client adds on its own after `headers` (`Accept`,
-    /// `Host`, `Content-Length`), for the screens that show the whole send
+    /// What the HTTP client adds on its own (the URL's `Authorization`,
+    /// `Accept`, `Host`, `Content-Length`), for the screens that show the whole send
     /// (the response pane's `sent` section) — never put on the request.
     pub client_headers: Vec<SentHeader>,
     pub body: Option<String>,
@@ -28,16 +28,22 @@ pub struct PreparedRequest {
 
 impl PreparedRequest {
     /// Every header the send puts on the wire, in wire order and wire case
-    /// (lowercase): `headers`, then the client's — reqwest's
-    /// `accept: */*`, hyper's `host` and, for a body, `content-length`.
+    /// (lowercase): reqwest's `authorization` from the URL's userinfo,
+    /// which it sets as it builds the request; `headers`; then reqwest's
+    /// `accept: */*`, hyper's `host` and, for a non-empty body,
+    /// `content-length`.
     /// `Host` and `Content-Length` are what an HTTP/1.1 send carries; an h2
     /// negotiation spells the first as `:authority`, same value. The
     /// snapshot the response pane's `sent` section shows; verified against
     /// a raw server by the binary's `sent_headers_match_the_wire`.
     pub fn wire_headers(&self) -> Vec<SentHeader> {
-        self.headers
-            .iter()
-            .chain(&self.client_headers)
+        // A client row named `Authorization` can only be the URL's: the
+        // client adds no other, and a typed one is in `headers`.
+        let (lead, rest): (Vec<_>, Vec<_>) =
+            self.client_headers.iter().partition(|h| h.name == "Authorization");
+        lead.into_iter()
+            .chain(&self.headers)
+            .chain(rest)
             .map(|h| SentHeader {
                 name: h.name.to_ascii_lowercase(),
                 display_name: h.display_name.to_ascii_lowercase(),
@@ -339,8 +345,8 @@ pub enum HeaderOrigin {
     Default,
     /// The `Content-Type: application/json` added for a body.
     ContentType,
-    /// Added by the HTTP client itself (`Accept`, `Host`,
-    /// `Content-Length`): listed so the screens show the whole send, but
+    /// Added by the HTTP client itself (the URL's `Authorization`,
+    /// `Accept`, `Host`, `Content-Length`): listed so the screens show the whole send, but
     /// never put on the request by us.
     Client,
 }
@@ -378,15 +384,19 @@ pub enum Unsent {
     Duplicate,
     /// It names a [`CLIENT_OWNED`] header (R3a). `client_sends`: whether
     /// the client sends its own row for it in this send — not without a
-    /// body for `Content-Length`, nor while the host is a `{{token}}`.
+    /// non-empty body for `Content-Length`, nor while the host is a
+    /// `{{token}}`, and never for `Transfer-Encoding`.
     ClientOwned { header: &'static str, client_sends: bool },
 }
 
 /// Headers the HTTP client sets from the URL and the body, and which
 /// nothing may override (spec 2026-10-18 R3a): a request or default row
 /// with one of these names is listed but never sent, and the client's own
-/// row always is.
-const CLIENT_OWNED: [&str; 2] = ["Host", "Content-Length"];
+/// row always is. `Transfer-Encoding` frames the body: the client never
+/// sends one for a body of known length, and hyper rewrites a typed one
+/// (adds `chunked`, drops it with no body) and drops `Content-Length` for
+/// it — so a typed one is the client's to refuse too (task #22).
+const CLIENT_OWNED: [&str; 3] = ["Host", "Content-Length", "Transfer-Encoding"];
 
 /// The [`CLIENT_OWNED`] header `name` names, in its usual spelling. Kept
 /// private: callers read the verdict off [`Unsent::ClientOwned`] instead of
@@ -395,9 +405,10 @@ fn client_owned(name: &str) -> Option<&'static str> {
     CLIENT_OWNED.into_iter().find(|owned| name.eq_ignore_ascii_case(owned))
 }
 
-/// Every header of `req`'s send, in wire order — enabled defaults,
-/// enabled request rows, the auto `Content-Type`, then the client's
-/// `Accept`, `Host` and `Content-Length` — whether sent or not. The one
+/// Every header of `req`'s send, in wire order — the client's
+/// `Authorization` from the URL's userinfo, enabled defaults, enabled
+/// request rows, the auto `Content-Type`, then the client's `Accept`,
+/// `Host` and `Content-Length` — whether sent or not. The one
 /// place a send's headers are worked out: [`prepare`] keeps the sent
 /// rows, and the editor's auto section draws the rest of the story.
 /// Never errors: unresolved tokens stay literal and are listed per row.
@@ -518,30 +529,43 @@ fn rows(
         });
     }
 
-    // The client's own rows, in the order it sends them. `Accept: */*` is
-    // its default unless a sent row names `accept`.
+    // The client's own rows. `Host` and the URL's `Authorization` are read
+    // off the substituted template rather than `prepare`'s assembled URL so
+    // `header_rows` needs no assembly: the two share an authority, since
+    // merging `[params]` only rewrites what follows `?` and `#`.
+    let url = quiet(&req.url);
+    // reqwest turns the URL's userinfo into `Authorization: Basic …` as it
+    // builds the request, before any row of ours, so it leads the wire. A
+    // sent row naming `authorization` replaces it, like `Accept`.
+    if let Some(auth) = userinfo_auth(&url) {
+        let display = match secret_shapes(&req.url, vars, secrets, &auth, userinfo_auth) {
+            true => format!("Basic {SECRET_MASK}"),
+            false => auth.clone(),
+        };
+        let mut row = fixed("Authorization", auth, replaced(&rows, "authorization"));
+        row.header.display = display;
+        rows.insert(0, row);
+    }
+    // `Accept: */*` is its default unless a sent row names `accept`.
     let unsent = replaced(&rows, "accept");
     rows.push(fixed("Accept", "*/*".into(), unsent));
     // `Host` is the URL's authority as the client derives it, real and
-    // masked. A URL whose host is still a `{{token}}` has none yet. It is
-    // read off the substituted template rather than `prepare`'s assembled
-    // URL so `header_rows` needs no assembly: the two share an authority,
-    // since merging `[params]` only rewrites what follows `?` and `#`.
-    if let Some(host) = authority(&quiet(&req.url)) {
+    // masked. A URL whose host is still a `{{token}}` has none yet.
+    if let Some(host) = authority(&url) {
         // Shown exactly as sent unless a secret can change it; then the
         // bare mask, since no account of which part of it is the secret's
         // can be trusted to be the parser's.
-        let display = if secret_shapes_host(&req.url, vars, secrets, &host) {
-            SECRET_MASK.to_string()
-        } else {
-            host.clone()
+        let display = match secret_shapes(&req.url, vars, secrets, &host, authority) {
+            true => SECRET_MASK.to_string(),
+            false => host.clone(),
         };
         let mut row = fixed("Host", host, None);
         row.header.display = display;
         rows.push(row);
     }
-    // The byte length of what goes on the wire, never the masked body.
-    if let Some(len) = body_len {
+    // The byte length of what goes on the wire, never the masked body. An
+    // empty body goes out with none (hyper sends no `content-length: 0`).
+    if let Some(len) = body_len.filter(|&len| len > 0) {
         rows.push(fixed("Content-Length", len.to_string(), None));
     }
 
@@ -579,20 +603,22 @@ fn secret_names(ctx: &PrepareContext) -> BTreeSet<String> {
         .collect()
 }
 
-/// Whether a secret's value can change the Host the client derives from
-/// `template`, whose real Host is `real`. Asked of the parser, never
-/// answered by string rules about where a URL's host sits (every such rule
-/// missed one of the parser's cases: `https:/host`, `127.1`, a `/` inside a
-/// password moving the split): the URL is parsed with every secret's value
-/// as `1`, then as `2`. If those two give one Host and it is the real one,
-/// nothing of any secret is in the real Host, so it can be shown as sent.
-/// `1` and `2` fit wherever a value can sit — host label, port, userinfo,
-/// path — so a secret that reaches the Host gives two different ones.
-fn secret_shapes_host(
+/// Whether a secret's value can change the header `derive` reads off the
+/// URL `template` (its `Host`, or its userinfo's `Authorization`), whose
+/// real value is `real`. Asked of the parser, never answered by string
+/// rules about where a URL's parts sit (every such rule missed one of the
+/// parser's cases: `https:/host`, `127.1`, a `/` inside a password moving
+/// the split): the URL is parsed with every secret's value as `1`, then as
+/// `2`. If those two give one header and it is the real one, nothing of
+/// any secret is in it, so it can be shown as sent. `1` and `2` fit
+/// wherever a value can sit — host label, port, userinfo, path — so a
+/// secret that reaches the header gives two different ones.
+fn secret_shapes(
     template: &str,
     vars: &IndexMap<String, String>,
     secrets: &BTreeSet<String>,
     real: &str,
+    derive: fn(&str) -> Option<String>,
 ) -> bool {
     let tokens = crate::vars::find_tokens(template);
     if !tokens.iter().any(|t| secrets.contains(&t.name)) {
@@ -605,10 +631,34 @@ fn secret_shapes_host(
                 *value = stand_in.to_string();
             }
         }
-        authority(&crate::vars::substitute(template, &vars, &mut BTreeSet::new()))
+        derive(&crate::vars::substitute(template, &vars, &mut BTreeSet::new()))
     };
     let one = with("1");
     one != with("2") || one.as_deref() != Some(real)
+}
+
+/// The `Authorization` reqwest derives from `url`'s userinfo: `Basic` and
+/// the base64 of `user:password`, each percent-decoded. A copy of reqwest's
+/// `extract_authority`, so the binary's `sent_headers_match_the_wire` pins
+/// it against the wire: none without userinfo or when the username isn't
+/// UTF-8 once decoded, and a password that isn't is left off. None too
+/// while the userinfo is still a `{{token}}`, like `authority`'s host.
+fn userinfo_auth(url: &str) -> Option<String> {
+    use base64::Engine as _;
+    let u = url::Url::parse(url).ok()?;
+    let decode = |part: &str| {
+        percent_encoding::percent_decode_str(part).decode_utf8().ok().map(String::from)
+    };
+    let user = decode(u.username())?;
+    let password = u.password().and_then(decode);
+    if user.is_empty() && password.is_none() {
+        return None;
+    }
+    let credentials = format!("{user}:{}", password.unwrap_or_default());
+    if credentials.contains("{{") {
+        return None;
+    }
+    Some(format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(credentials)))
 }
 
 /// The `Host` value the client derives from `url`: the host, lowercased
@@ -1562,5 +1612,127 @@ mod tests {
         c.meta.insert("k".into(), varmodel::VarMeta::Secret);
         let rows = header_rows(&base("https://postui-secret-mask.internal/x?key={{k}}"), &c);
         assert_eq!(client(&rows, "Host").header.display, "postui-secret-mask.internal");
+    }
+
+    /// The client turns the URL's userinfo into `Authorization: Basic …`,
+    /// percent-decoded, before any row of ours — so it leads the list. A
+    /// username that isn't UTF-8 gives none; a password that isn't is left
+    /// off (reqwest's `extract_authority`).
+    #[test]
+    fn the_urls_userinfo_is_the_clients_authorization() {
+        let auth = |url: &str| {
+            let rows = header_rows(&base(url), &PrepareContext::default());
+            let found = rows.iter().find(|r| r.header.name == "Authorization").cloned();
+            if let Some(r) = &found {
+                assert_eq!(r.origin, HeaderOrigin::Client, "{url}");
+                assert!(r.sent(), "{url}");
+                assert_eq!(rows[0], *r, "{url}: first on the wire");
+                assert_eq!(r.header.display, r.header.value, "{url}: no secret to mask");
+            }
+            found.map(|r| r.header.value)
+        };
+        for (url, value) in [
+            ("http://u:pw@x.test/p", "Basic dTpwdw=="),
+            ("http://u@x.test/p", "Basic dTo="),
+            ("http://u:@x.test/p", "Basic dTo="),
+            ("http://:pw@x.test/p", "Basic OnB3"),
+            ("http://u%40x:p%20w@x.test/p", "Basic dUB4OnAgdw=="),
+            ("http://ü:é@x.test/p", "Basic w7w6w6k="),
+            ("http://u:p%FF@x.test/p", "Basic dTo="),
+        ] {
+            assert_eq!(auth(url).as_deref(), Some(value), "{url}");
+        }
+        for url in ["http://x.test/p", "http://@x.test/p", "http://u%FF:p@x.test/p"] {
+            assert_eq!(auth(url), None, "{url}");
+        }
+        assert_eq!(auth("http://{{user}}:pw@x.test/p"), None, "not while it is a token");
+    }
+
+    /// Like `Accept`, the URL's `Authorization` stands aside for a sent row
+    /// naming it, from the request or the defaults.
+    #[test]
+    fn a_sent_authorization_row_replaces_the_urls() {
+        let mut req = base("http://u:pw@x.test/p");
+        req.headers.insert("authorization".into(), on("Bearer t"));
+        let rows = header_rows(&req, &PrepareContext::default());
+        assert_eq!(client(&rows, "Authorization").unsent, Some(Unsent::Replaced));
+        let (p, _) = prepare(&req, &PrepareContext::default()).unwrap();
+        assert_eq!(wire(&p), vec![("authorization".to_string(), "Bearer t".to_string())]);
+        assert!(!p.client_headers.iter().any(|h| h.name == "Authorization"));
+
+        let c = ctx(&[], &[("Authorization", "Bearer d", true)]);
+        let rows = header_rows(&base("http://u:pw@x.test/p"), &c);
+        assert_eq!(client(&rows, "Authorization").unsent, Some(Unsent::Replaced));
+        let (p, _) = prepare(&base("http://u:pw@x.test/p"), &PrepareContext::default()).unwrap();
+        assert_eq!(p.client_headers[0].name, "Authorization", "sent by the client otherwise");
+    }
+
+    /// A secret that can change the URL's `Authorization` masks its
+    /// credentials; one elsewhere in the URL leaves it as sent.
+    #[test]
+    fn a_secret_in_the_userinfo_masks_the_authorization() {
+        let mut c = ctx(&[("pw", "hunter2"), ("k", "s3cret")], &[]);
+        c.meta.insert("pw".into(), varmodel::VarMeta::Secret);
+        c.meta.insert("k".into(), varmodel::VarMeta::Secret);
+        let auth = |url: &str| client(&header_rows(&base(url), &c), "Authorization").header.clone();
+
+        let h = auth("https://user:{{pw}}@x.test/p");
+        assert_eq!(h.value, "Basic dXNlcjpodW50ZXIy");
+        assert_eq!(h.display, format!("Basic {SECRET_MASK}"));
+        let h = auth("https://user:pw@x.test/p?key={{k}}");
+        assert_eq!(h.display, h.value, "the secret is not in the userinfo");
+    }
+
+    /// An empty body goes out with no `Content-Length`: the client sends
+    /// one only for a body with bytes in it.
+    #[test]
+    fn an_empty_body_has_no_content_length() {
+        for method in [Method::Post, Method::Put, Method::Patch, Method::Delete, Method::Options] {
+            let mut req = base("http://x.test/p");
+            req.method = method;
+            req.body = Some(Body::Json { text: "".into() });
+            req.headers.insert("Content-Length".into(), on("0"));
+            let rows = header_rows(&req, &PrepareContext::default());
+            assert!(
+                !rows
+                    .iter()
+                    .any(|r| r.origin == HeaderOrigin::Client && r.header.name == "Content-Length")
+            );
+            assert_eq!(
+                row(&rows, "Content-Length").unsent,
+                Some(Unsent::ClientOwned { header: "Content-Length", client_sends: false }),
+                "{method:?}"
+            );
+        }
+        // Empty once substituted counts too.
+        let mut req = base("http://x.test/p");
+        req.method = Method::Post;
+        req.substitute_body = true;
+        req.body = Some(Body::Json { text: "{{payload}}".into() });
+        let c = ctx(&[("payload", "")], &[]);
+        let rows = header_rows(&req, &c);
+        assert!(!rows.iter().any(|r| r.header.name == "Content-Length"));
+        let (p, _) = prepare(&req, &c).unwrap();
+        assert!(p.client_headers.iter().all(|h| h.name != "Content-Length"));
+    }
+
+    /// `Transfer-Encoding` is the client's too: it frames the body itself,
+    /// and a typed one would be rewritten or dropped and take
+    /// `Content-Length` with it. Listed, never sent; the client sends none.
+    #[test]
+    fn a_typed_transfer_encoding_is_never_sent() {
+        let mut req = base("http://x.test/p");
+        req.method = Method::Post;
+        req.body = Some(Body::Json { text: "{}".into() });
+        req.headers.insert("transfer-ENCODING".into(), on("chunked"));
+        let c = ctx(&[], &[("Transfer-Encoding", "gzip", true)]);
+        let rows = header_rows(&req, &c);
+        let owned = Some(Unsent::ClientOwned { header: "Transfer-Encoding", client_sends: false });
+        let from = |origin| rows.iter().find(|r| r.origin == origin).unwrap().unsent;
+        assert_eq!(from(HeaderOrigin::Default), owned);
+        assert_eq!(from(HeaderOrigin::Request { row: 0 }), owned);
+        assert!(client(&rows, "Content-Length").sent());
+        let (p, _) = prepare(&req, &c).unwrap();
+        assert!(!p.wire_headers().iter().any(|h| h.name == "transfer-encoding"));
     }
 }
