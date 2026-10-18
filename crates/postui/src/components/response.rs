@@ -4165,18 +4165,30 @@ fn draw_pending_strip(
         ResponseState::Cancelled => ("cancelled".to_string(), t.text_muted),
         ResponseState::Ready(_) => unreachable!("the ready pane paints its own header"),
     };
-    let chip = crate::paint::Chip { label: &label, color };
-    // On a strip too tight for both, the pill wins: it is the control.
-    if area.x + chip.width() <= right {
-        chip.paint(buf, area.x, area.y, t.panel, t);
-    }
+    lead_chip(buf, area, right, crate::paint::Chip { label: &label, color }, t);
+}
+
+/// Paints `chip` at the left of `area`'s first row if it fits whole
+/// before `right`, and answers its width; on a strip too tight for both
+/// it and the step pill, the pill wins (it is the control) and this
+/// answers `None`. The one rule for both strips' status chip, so the
+/// header drops it at the same width in every state.
+fn lead_chip(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    right: u16,
+    chip: crate::paint::Chip,
+    t: &crate::theme::Theme,
+) -> Option<u16> {
+    (area.x + chip.width() <= right).then(|| chip.paint(buf, area.x, area.y, t.panel, t))
 }
 
 /// Paints the header's ▲/▼ step pill right-aligned on `area`'s first
 /// row (one cell in from the right edge, like the tab strip below it)
 /// and registers its two `Hit::SplitStep` chips. Returns the column the
 /// row's text must end before: a cell short of the pill's leading cap,
-/// or the strip's right edge on a strip too narrow for the pill.
+/// the strip's right edge on a strip too narrow for the pill, or its
+/// left edge on a strip with no row at all (no room for text either).
 /// Shared by the ready header strip and the not-yet-ready pane so the
 /// arrows sit in the same place, and the text stops in the same place,
 /// in every state.
@@ -4188,7 +4200,10 @@ fn draw_step_pill(
     ctx: &DrawCtx,
 ) -> u16 {
     let x = area.right().saturating_sub(crate::paint::STEP_CONTROL_WIDTH + 1);
-    if x <= area.x || area.height == 0 {
+    if area.height == 0 {
+        return area.x;
+    }
+    if x <= area.x {
         return area.right();
     }
     let hovered = match ctx.hovered {
@@ -4223,10 +4238,8 @@ fn draw_status_row(
 ) {
     let chip =
         crate::paint::Chip { label: &data.status.to_string(), color: t.status_color(data.status) };
-    if area.x + chip.width() > right {
-        return;
-    }
-    let mut x = area.x + chip.paint(buf, area.x, area.y, t.panel, t) + 1;
+    let Some(chip_w) = lead_chip(buf, area, right, chip, t) else { return };
+    let mut x = area.x + chip_w + 1;
     // One combined timing figure — ttfb → total — rather than two chips.
     let timing = format!("{} → {}", human_elapsed(data.ttfb), human_elapsed(data.elapsed));
     for label in [timing, human_size(data.size)] {
@@ -4243,7 +4256,7 @@ fn draw_status_row(
     // the send's real target is visible without decoding the address
     // bar's tokens by hand.
     let media_type =
-        data.content_type.as_deref().map(|ct| ct.split(';').next().unwrap_or(ct).trim());
+        data.content_type.as_deref().map(|ct| ct.split_once(';').map_or(ct, |(m, _)| m).trim());
     for fact in [media_type, Some(data.url.as_str())] {
         let Some(fact) = fact.filter(|f| !f.is_empty()) else { continue };
         if right <= x + 2 {
@@ -6105,6 +6118,30 @@ mod tests {
             assert!(crate::ui::cells(s) <= 1, "{s} runs into the blank cell: {row}");
         }
         row
+    }
+
+    /// A pane with no rows paints no row 0: neither strip's facts land on
+    /// the row below, which belongs to whatever is drawn there.
+    #[test]
+    fn a_zero_height_pane_paints_no_status_row() {
+        for mut r in [ready(r#"{"a": 1}"#), Pane::default()] {
+            let theme = Theme::dark();
+            let ctx = DrawCtx {
+                theme: &theme,
+                focused: true,
+                hovered: None,
+                pointer: None,
+                dragging: false,
+                anims: test_anims(),
+                now: std::time::Instant::now(),
+            };
+            let mut terminal = Terminal::new(TestBackend::new(60, 5)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal.draw(|f| r.draw(f, Rect::new(0, 2, 60, 0), &ctx, &mut hits)).unwrap();
+            let buf = terminal.backend().buffer();
+            let row: String = (0..60).map(|x| buf[(x, 2)].symbol()).collect();
+            assert_eq!(row.trim(), "", "the row below the pane is untouched: {row}");
+        }
     }
 
     /// The row shows the content type's media type alone: its parameters
