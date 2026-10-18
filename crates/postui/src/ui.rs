@@ -805,7 +805,8 @@ impl<'a> Iterator for Graphemes<'a> {
                 if self.fwd.cur_cursor() != self.front {
                     self.fwd.set_cursor(self.front);
                 }
-                self.fwd.next_boundary(self.s, 0).ok().flatten()? - self.front
+                let next = self.fwd.next_boundary(self.s, 0);
+                next.expect("the whole string is the chunk")? - self.front
             }
         };
         let at = self.front;
@@ -825,7 +826,8 @@ impl DoubleEndedIterator for Graphemes<'_> {
                 if self.bwd.cur_cursor() != self.back {
                     self.bwd.set_cursor(self.back);
                 }
-                self.back - self.bwd.prev_boundary(self.s, 0).ok().flatten()?
+                let prev = self.bwd.prev_boundary(self.s, 0);
+                self.back - prev.expect("the whole string is the chunk")?
             }
         };
         self.back -= len;

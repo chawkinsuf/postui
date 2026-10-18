@@ -2273,8 +2273,8 @@ fn first_non_blank(text: &str) -> usize {
 /// `text` (wide graphemes span several columns), or `None` when `col` is
 /// past the text. The walk resumes from `from`, a `col_marks` entry at or
 /// before `col` (or the line start), as `viewport_window`'s does, so on
-/// an indexed raw line a click or a drag event costs `O(COL_MARK_STEP)`
-/// chars however far the row is scrolled.
+/// an indexed raw line it segments `O(COL_MARK_STEP)` chars however far
+/// the row is scrolled (its caller still copies the line's text).
 fn grapheme_at_col(text: &str, col: usize, from: ColMark) -> Option<usize> {
     let (from_byte, from_char, mut w) = from;
     for g in crate::ui::char_graphemes(&text[from_byte..]) {
@@ -3607,10 +3607,14 @@ impl Response {
         let xx = x.clamp(area.x, area.x + area.width.max(1) - 1);
         let disp_col = view.h_scroll + usize::from(xx - area.x);
         if head.1 == 0 && head.0 > anchor.0 {
-            // The first *cell*, not the first grapheme: on the right half
-            // of a wide first glyph (`❤️`, `日`) the pointer is on that
-            // glyph, so the sweep takes it. Past a row's end (an empty row,
-            // or one glyph short of the pointer) is still the boundary.
+            // The head is the row's first grapheme; the boundary is the
+            // pointer on that grapheme's first cell (line column 0), not
+            // on any of its cells: on the right half of a wide first glyph
+            // (`❤️`, `日`) the pointer is on that glyph, so the sweep takes
+            // it. Past a row's end (an empty row, or one glyph short of
+            // the pointer) is still the boundary. Scrolled sideways, the
+            // left edge is mid-line for every row and the sweep takes the
+            // cell under the pointer, a cut wide first glyph included.
             let text = view.display_line_text(head.0).unwrap_or_default();
             if disp_col == 0 || view.grapheme_at(head.0, &text, disp_col).is_none() {
                 let row = head.0 - 1;
