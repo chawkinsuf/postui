@@ -58,15 +58,16 @@ impl Clipboard {
         Self {
             cmd: settings.clipboard_cmd.clone(),
             osc52_limit: settings.osc52_limit,
-            // Every test App is built through here (`App::bare`), so a unit
-            // test can't reach the host whichever path built its App. Keyed
-            // on `cfg(test)`, not the `test-util` feature: `cargo test`
-            // builds the real binary with `test-util` on too, and that
-            // binary must keep its clipboard. What that gives up:
-            // integration tests (no `cfg(test)`) get the real host here, and
-            // no test constructor can fix that for them, because most build
-            // their App through `App::with_root`, the production path. One
-            // that copies installs `Self::new_for_test` first.
+            // Every App is built through here (`App::bare`), so a unit test
+            // can't reach the host whichever path built its App; most call
+            // `App::with_root`, the production path, directly. Keyed on
+            // `cfg(test)`, not the `test-util` feature: `cargo test` builds
+            // the real binary with `test-util` on too, and that binary must
+            // keep its clipboard. Integration tests have no `cfg(test)`, so
+            // they get the real host here: `App::new_for_test` swaps in
+            // `Self::new_for_test` for them, and one that builds its App
+            // through `App::with_root` and copies or pastes installs it
+            // itself.
             #[cfg(test)]
             host: Host::Offline(Vec::new()),
             #[cfg(not(test))]
@@ -94,8 +95,7 @@ impl Clipboard {
     /// Gated on the `test-util` feature (rather than plain `#[cfg(test)]`)
     /// because integration tests under `tests/` link against the crate as
     /// an ordinary dependency — `cfg(test)` never applies there, so
-    /// [`Self::new`] reaches the real host in them, and an integration test
-    /// that copies must install this first. The crate's own
+    /// [`Self::new`] reaches the real host in them (see there). The crate's own
     /// `[dev-dependencies]` pulls itself back in with `test-util` enabled so
     /// `cargo test` gets this for free; a plain `cargo build`/`cargo build
     /// --release` does not enable the feature, so this stays unreachable
@@ -248,6 +248,9 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "hello");
     }
 
+    /// A test's clipboard has no native tier, so a fall-through past the
+    /// cmd can't be seen there; it is seen at OSC 52, where the chain past
+    /// the native tier always ends.
     #[test]
     fn failing_cmd_fails_without_falling_through() {
         let mut clipboard = Clipboard::new_for_test(Some("false".to_string()), 65536);

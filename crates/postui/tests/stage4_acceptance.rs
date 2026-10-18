@@ -14,6 +14,25 @@ use ratatui::crossterm::event::{
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// Integration tests have no `cfg(test)`, so `Clipboard::new` gives the
+/// real host here; the test App must still never reach it, for a copy or a
+/// paste. `osc52_sent` goes first: it panics on a real clipboard, before
+/// any copy could reach the developer's.
+#[test]
+fn the_test_apps_clipboard_stays_off_the_host() {
+    let mut app = App::new_for_test();
+    assert!(app.clipboard.osc52_sent().is_empty());
+
+    let result = app.clipboard.copy("x");
+
+    assert!(
+        matches!(result, postui::clipboard::CopyResult::Copied { via: "terminal (OSC 52)" }),
+        "skips the OS clipboard: {result:?}"
+    );
+    assert_eq!(app.clipboard.osc52_sent(), b"\x1b]52;c;eA==\x07", "and the terminal");
+    assert!(app.clipboard.read().is_err(), "and never reads it");
+}
+
 fn render(app: &mut App) -> String {
     app.anims.finish_all();
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
