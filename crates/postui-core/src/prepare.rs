@@ -114,7 +114,8 @@ impl fmt::Display for PrepareError {
 
 impl std::error::Error for PrepareError {}
 
-/// What a secret's value renders as when `computed_headers` is masking.
+/// What a secret's value renders as on screen (a header row's `display`,
+/// `PreparedRequest::display_url`).
 pub const SECRET_MASK: &str = "●●●●●●";
 
 /// Request `[variables]` overlaid on the context's resolved vars at highest
@@ -129,7 +130,7 @@ fn overlaid_vars(req: &HttpRequest, ctx: &PrepareContext) -> IndexMap<String, St
     vars
 }
 
-/// The one substitution both `prepare` and `computed_headers` go through:
+/// The one substitution both `prepare` and `header_rows` go through:
 /// replaces every resolvable `{{name}}`, leaves the rest verbatim while
 /// collecting their names into `unresolved`, and renders the value of any
 /// name in `masked` as [`SECRET_MASK`] instead.
@@ -246,10 +247,7 @@ pub fn prepare(
         masked.replace(&encoded_mask, SECRET_MASK)
     };
 
-    let mut body = sent_body(req);
-    if req.substitute_body {
-        body = body.map(|b| sub(&b));
-    }
+    let body = sent_body(req).map(|b| if req.substitute_body { sub(b) } else { b.to_string() });
 
     // Only what goes on the wire has to resolve: a row that isn't sent
     // (an overridden default, a row naming a client-owned header) never
@@ -385,7 +383,9 @@ fn rows(
     // the request has any row, enabled or disabled, whose name matches
     // case-insensitively after substitution (`{{h}}` with h = Accept is an
     // Accept row). Of two defaults resolving to the same lowercase name,
-    // the first is sent and the rest are reported.
+    // the first is sent and the rest are reported — unless the name is
+    // client-owned, when none of them is sent and there is no choice to
+    // report.
     let request_names: Vec<String> = req.headers.keys().map(|k| quiet(k)).collect();
     let mut claimed: BTreeSet<String> = BTreeSet::new();
     for (k, e) in ctx.default_headers.iter().filter(|(_, e)| e.enabled) {
@@ -393,7 +393,7 @@ fn rows(
         let lower = r.name.to_ascii_lowercase();
         if request_names.iter().any(|n| n.eq_ignore_ascii_case(&r.name)) {
             r.sent = false;
-        } else if !claimed.insert(lower.clone()) {
+        } else if r.sent && !claimed.insert(lower.clone()) {
             warnings.push(PrepareWarning::DuplicateDefaultHeader { name: lower });
             r.sent = false;
         }
@@ -431,7 +431,7 @@ fn rows(
     if let Some(body) = body {
         // The byte length of what goes on the wire: the substituted body
         // when the request opts in, never the masked one.
-        let len = if req.substitute_body { quiet(&body).len() } else { body.len() };
+        let len = if req.substitute_body { quiet(body).len() } else { body.len() };
         rows.push(fixed("Content-Length", len.to_string(), len.to_string(), true));
     }
     rows
@@ -439,8 +439,8 @@ fn rows(
 
 /// The body a send carries: none for a method that sends none, even when
 /// the request keeps body text for when the method switches back.
-fn sent_body(req: &HttpRequest) -> Option<String> {
-    req.method.sends_body().then(|| req.body.as_ref().map(|Body::Json { text }| text.clone()))?
+fn sent_body(req: &HttpRequest) -> Option<&str> {
+    req.method.sends_body().then(|| req.body.as_ref().map(|Body::Json { text }| text.as_str()))?
 }
 
 /// The names of the secret variables, whose values screens mask.
@@ -452,28 +452,32 @@ fn secret_names(ctx: &PrepareContext) -> BTreeSet<String> {
         .collect()
 }
 
+/// What [`authority`] parses in place of the secret mask: the parser
+/// would punycode the mask's glyphs into `xn--…`, but leaves a plain
+/// lowercase label as it is, so the mask can be put back afterwards.
+const MASK_STAND_IN: &str = "postui-secret-mask";
+
 /// The `Host` value the client derives from `url`: the host, lowercased
 /// (and punycoded), plus the port when it isn't the scheme's default — no
-/// userinfo. `None` while the host is empty or still holds a `{{token}}`.
-/// A host holding the secret mask is not parsed, since the parser would
-/// punycode the mask into `xn--…`, so that segment is taken verbatim; so
-/// is one the parser refuses (the send itself will report that URL).
+/// userinfo. A masked URL goes through the same rule, its mask kept.
+/// `None` while the host is empty or still holds a `{{token}}`. A URL the
+/// parser refuses keeps its host and port as written (the send itself
+/// will report that URL).
 fn authority(url: &str) -> Option<String> {
     let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
     let segment = after_scheme.split(['/', '?', '#']).next().unwrap_or_default();
-    if segment.is_empty() || segment.contains("{{") {
+    let host_port = segment.rsplit_once('@').map_or(segment, |(_, host_port)| host_port);
+    if host_port.is_empty() || host_port.contains("{{") {
         return None;
     }
-    if segment.contains(SECRET_MASK) {
-        return Some(segment.to_string());
-    }
-    let Ok(u) = url::Url::parse(url) else {
-        return Some(segment.to_string());
+    let parsed = url::Url::parse(&url.replace(SECRET_MASK, MASK_STAND_IN)).ok();
+    let Some(host) = parsed.as_ref().and_then(|u| u.host_str()) else {
+        return Some(host_port.to_string());
     };
-    Some(match (u.host_str(), u.port()) {
-        (Some(host), Some(p)) => format!("{host}:{p}"),
-        (Some(host), None) => host.to_string(),
-        (None, _) => segment.to_string(),
+    let host = host.replace(MASK_STAND_IN, SECRET_MASK);
+    Some(match parsed.and_then(|u| u.port()) {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
     })
 }
 
@@ -1163,6 +1167,44 @@ mod tests {
         let host = client(&rows, "Host");
         assert_eq!(host.display, "●●●●●●.api.example.com");
         assert_eq!(host.value, "s3cret.api.example.com");
+    }
+
+    /// A masked host goes through the same derivation as the real one: no
+    /// userinfo, no default port, lowercased — only the secret is masked.
+    #[test]
+    fn header_rows_masked_host_follows_the_same_rule_as_the_real_one() {
+        let mut c = ctx(&[("pw", "hunter2"), ("tenant", "Acme")], &[]);
+        c.meta.insert("pw".into(), varmodel::VarMeta::Secret);
+        c.meta.insert("tenant".into(), varmodel::VarMeta::Secret);
+
+        let rows = header_rows(&base("https://user:{{pw}}@Example.com:443/p"), &c);
+        let host = client(&rows, "Host");
+        assert_eq!((host.value.as_str(), host.display.as_str()), ("example.com", "example.com"));
+
+        let rows = header_rows(&base("https://{{tenant}}.Example.com:443/v1"), &c);
+        let host = client(&rows, "Host");
+        assert_eq!(host.value, "acme.example.com");
+        assert_eq!(host.display, format!("{SECRET_MASK}.example.com"));
+    }
+
+    /// A token left in the userinfo doesn't hide a host that is known.
+    #[test]
+    fn header_rows_keep_host_when_only_the_userinfo_is_unresolved() {
+        let rows =
+            header_rows(&base("https://{{user}}@api.example.com/p"), &PrepareContext::default());
+        assert_eq!(client(&rows, "Host").value, "api.example.com");
+    }
+
+    /// Two defaults naming a client-owned header are both dropped by R3a;
+    /// neither is chosen over the other, so neither is a duplicate.
+    #[test]
+    fn two_client_owned_defaults_are_not_reported_as_duplicates() {
+        let mut defaults = IndexMap::new();
+        defaults.insert("Host".to_string(), on("a.test"));
+        defaults.insert("host".to_string(), on("b.test"));
+        let c = PrepareContext { default_headers: defaults, ..PrepareContext::default() };
+        let (_, warns) = prepare(&base("http://x.test"), &c).unwrap();
+        assert!(warns.is_empty(), "{warns:?}");
     }
 
     #[test]

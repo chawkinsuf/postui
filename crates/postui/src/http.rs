@@ -125,7 +125,8 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
     let method = reqwest::Method::from_bytes(req.method.as_str().as_bytes())
         .map_err(|e| format!("invalid method: {e}"))?;
     let mut builder = client.request(method, &req.url);
-    builder = builder.headers(header_map(req.own_headers().map(|h| (&h.name, &h.value)))?);
+    builder = builder
+        .headers(header_map(req.own_headers().map(|h| (h.name.as_str(), h.value.as_str())))?);
     if let Some(body) = &req.body {
         builder = builder.body(body.clone());
     }
@@ -168,7 +169,7 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
 /// that resolve to the same name, are both what the user wrote, so both
 /// go on the wire rather than the later one silently replacing the first.
 fn header_map<'a>(
-    headers: impl IntoIterator<Item = (&'a String, &'a String)>,
+    headers: impl IntoIterator<Item = (&'a str, &'a str)>,
 ) -> Result<reqwest::header::HeaderMap, String> {
     let mut map = reqwest::header::HeaderMap::new();
     for (k, v) in headers {
@@ -303,17 +304,12 @@ mod tests {
     /// `elapsed` keeps counting until the body completes.
     #[test]
     fn same_named_headers_are_all_sent() {
-        let pairs = |rows: &[(&str, &str)]| -> Vec<(String, String)> {
-            rows.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
-        };
-        let rows = pairs(&[("Accept", "a"), ("accept", "b"), ("X-One", "1")]);
-        let map = header_map(rows.iter().map(|(k, v)| (k, v))).unwrap();
+        let map = header_map([("Accept", "a"), ("accept", "b"), ("X-One", "1")]).unwrap();
         let accepts: Vec<&str> =
             map.get_all("accept").iter().map(|v| v.to_str().unwrap()).collect();
         assert_eq!(accepts, ["a", "b"], "neither case-variant is dropped");
         assert_eq!(map.len(), 3);
-        let bad = pairs(&[("bad name", "x")]);
-        assert!(header_map(bad.iter().map(|(k, v)| (k, v))).is_err());
+        assert!(header_map([("bad name", "x")]).is_err());
     }
 
     #[tokio::test]

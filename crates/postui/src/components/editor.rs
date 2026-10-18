@@ -3469,7 +3469,10 @@ impl Editor {
             let row_rect = Rect::new(area.x, y, area.width, 1);
             frame.render_widget(Paragraph::new(line), row_rect);
             // The tokens all lie in the value, so clipping them to the
-            // whole row keeps them off the name.
+            // whole row keeps them off the name. A struck (unsent) row's
+            // tokens are tinted too, as a disabled table row's are: the
+            // tint says whether the token resolves, while the strike is
+            // what says the row won't block or reach the send.
             crate::components::var_tokens::paint_var_tokens(
                 frame.buffer_mut(),
                 row_rect,
