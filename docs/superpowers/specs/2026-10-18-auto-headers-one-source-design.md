@@ -252,6 +252,48 @@ first, so `https:///host` has a `Host` row like the wire does.
   rather than the editor matching rows by name or by order.
 - R3b's note wording: `not sent · the client sets Host`.
 
+## 5a. Task #22: every header the client adds (amended 2026-10-18)
+
+#22 asked for the client's `Authorization` from URL userinfo, and any
+other header the client adds or drops on its own. A raw-server probe of
+every method and body shape found:
+
+| Request | Listed before | Wire |
+|---|---|---|
+| `http://u:pw@host/` | nothing | `authorization: Basic dTpwdw==`, first |
+| an empty body, any method that sends one | `content-length: 0` | no `content-length` |
+| a typed `Transfer-Encoding`, with a body | `content-length: N` | no `content-length`; `gzip` becomes `gzip, chunked` |
+| a typed `Transfer-Encoding`, no or empty body | the row, sent | dropped, and hyper reorders the rest |
+| an env proxy with credentials, `http://` target | nothing | `proxy-authorization` (reqwest's source) |
+
+Rules added:
+
+| # | Behaviour | Who decided |
+|---|---|---|
+| R1a | The URL's userinfo gives a client `Authorization: Basic base64(user:password)` row, percent-decoded, listed first, as the wire has it. It follows reqwest's `extract_authority`: none when the username isn't UTF-8 once decoded, and a password that isn't is left off. None while a token still unresolved can change it (R4's parser test, asked of the unresolved names); a resolved value with braces in it is a credential like any other (review round 1). A sent request or default row naming `authorization` replaces it, as with `Accept` (R3). | task (`you`); the decoding is reqwest's, pinned by `sent_headers_match_the_wire` |
+| R1b | ~~A typed `Authorization` that replaces the URL's is listed where it is typed.~~ *Replaced after review round 2:* the sent section follows the wire's own order rule, probed on a raw server: reqwest's map holds all of a name's values together, at the place the name first went in, and the URL's `Authorization` goes in first. So a row that replaces it goes out, and is listed, first; and `X-A`, `X-B`, `x-a` go out as `x-a, x-a, x-b` (this was already misordered on main). `PreparedRequest.wire` holds that list, built once by `prepare` (`wire_order`); it replaces `client_headers`. The editor keeps table order. | `mine (approved)` |
+| R1c | When a secret can change it (the parser test of R4), the row shows as `Basic ●●●●●●`; otherwise as sent, since the URL bar already shows the userinfo. | `mine (approved)` |
+| R3c | The client's `Content-Length` is listed only for a body with bytes in it. | follows the wire |
+| R3d | `Transfer-Encoding` joins R3a's client-owned names. A typed one is listed but never sent, with `not sent · only the client may set Transfer-Encoding`, since the client never sends one for a body of known length. A chunked body can no longer be sent on purpose, and curl export leaves it out, as R9 does for `Host`/`Content-Length`. | `mine (approved)` |
+| R10 | `Proxy-Authorization` is left out: it goes to the proxy, not the server, and listing it means copying reqwest's proxy env matching into core. Nothing filed. | `mine (approved)` |
+
+Design: `url_headers` reads the `Host` and the userinfo's
+`Authorization` (`userinfo_auth`, a copy of reqwest's decode) from one
+parse. The R4 parser test becomes `with_stand_ins`, which gives both
+headers with the named values as `1` and as `2`; `rows()` asks it once
+for the secrets (mask) and once for the unresolved names (no
+`Authorization` yet). `prepare` builds `PreparedRequest.wire` by R1b's
+rule. The `Basic` encoding is one helper,
+shared with curl import's `-u`. Core gains the `percent-encoding` crate,
+already in the lock file as `url`'s.
+
+*Review rounds 1–2:* the note `not sent · set by the client only` (R3b,
+since #21) also covered rows where the client sends no such header at
+all (a typed `Transfer-Encoding`; `Content-Length` on a GET or an empty
+body), and read as if it did. It becomes `not sent · only the client may
+set X`, which says who may set it and nothing about what goes out
+(`mine (approved)`). `the client sets X` stays for when it does.
+
 ## 6. A note for #20
 
 #20 says `Host` and `Content-Length` "cannot be overridden". Until now

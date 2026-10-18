@@ -2129,6 +2129,7 @@ dependencies = [
  "jaq-core",
  "jaq-json",
  "jaq-std",
+ "percent-encoding",
  "serde",
  "serde_json",
  "tempfile",

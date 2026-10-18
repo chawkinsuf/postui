@@ -31,7 +31,8 @@ pub fn to_curl(req: &PreparedRequest) -> String {
     }
     let mut lines = vec![head];
     // Only the rows the request sets: the ones the client adds itself
-    // (`client_headers`: `Host`, `Accept`, …) are curl's to add too.
+    // (in `wire` only: `Host`, `Accept`, the userinfo's `Authorization`, …)
+    // are curl's to add too.
     for h in &req.headers {
         let (name, value) = (&h.name, &h.value);
         // `Name:` with only blanks after it tells curl to drop the header;
@@ -103,7 +104,7 @@ mod tests {
             url: url.into(),
             display_url: url.into(),
             headers,
-            client_headers: Vec::new(),
+            wire: Vec::new(),
             body: body.map(str::to_string),
             insecure: false,
         }

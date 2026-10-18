@@ -2,7 +2,6 @@
 
 use super::shell::{self, ShellCommand, ShellError};
 use crate::model::{Body, Entry, HttpRequest, Method};
-use base64::Engine as _;
 use indexmap::IndexMap;
 use std::fmt;
 
@@ -567,10 +566,7 @@ fn build(
     }
     if let Some(u) = user {
         let creds = if u.contains(':') { u } else { format!("{u}:") };
-        derived.push((
-            "Authorization",
-            format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(creds)),
-        ));
+        derived.push(("Authorization", crate::prepare::basic_auth(&creds)));
     }
     if json {
         derived.push(("Content-Type", "application/json".into()));
