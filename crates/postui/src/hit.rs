@@ -480,6 +480,19 @@ impl HitMap {
         self.regions.push((rect, hit));
     }
 
+    /// Registers `hit` over the buffer columns `cols` on `row.y`, cut to
+    /// `row`'s columns: a control the edge cuts keeps what shows, and one
+    /// wholly outside registers nothing. The columns are usize so a caller
+    /// measuring long text never wraps a bare `as u16` back over it.
+    pub fn register_cols(&mut self, cols: std::ops::Range<usize>, row: Rect, hit: Hit) {
+        let start = cols.start.max(row.x.into());
+        let end = cols.end.min(row.right().into());
+        if start < end {
+            // Both fit in u16: they lie within `row`.
+            self.register(Rect::new(start as u16, row.y, (end - start) as u16, 1), hit);
+        }
+    }
+
     /// Topmost (= last registered) hit containing the point.
     pub fn hit_at(&self, x: u16, y: u16) -> Option<&Hit> {
         self.hit_at_where(x, y, |_| false)
@@ -706,6 +719,23 @@ mod tests {
         assert_eq!(m.hit_at(50, 50), None);
         assert_eq!(m.pane_at(3, 2), Some(PaneId::Sidebar), "pane_at sees through overlays");
         assert_eq!(m.rect_of(&Hit::SidebarRow(0)), Some(Rect::new(2, 2, 3, 1)));
+    }
+
+    /// Columns cut to the row keep what shows; none inside, no rect.
+    #[test]
+    fn register_cols_keeps_the_cells_inside_the_row() {
+        let row = Rect::new(10, 4, 20, 1);
+        let mut m = HitMap::default();
+        m.register_cols(8..12, row, Hit::SidebarRow(0));
+        m.register_cols(28..31, row, Hit::SidebarRow(1));
+        m.register_cols(15..18, row, Hit::SidebarRow(2));
+        m.register_cols(65_546..65_549, row, Hit::SidebarRow(3));
+        m.register_cols(2..10, row, Hit::SidebarRow(4));
+        assert_eq!(m.rect_of(&Hit::SidebarRow(0)), Some(Rect::new(10, 4, 2, 1)));
+        assert_eq!(m.rect_of(&Hit::SidebarRow(1)), Some(Rect::new(28, 4, 2, 1)));
+        assert_eq!(m.rect_of(&Hit::SidebarRow(2)), Some(Rect::new(15, 4, 3, 1)));
+        assert_eq!(m.rect_of(&Hit::SidebarRow(3)), None, "past u16 columns: no wrap");
+        assert_eq!(m.rect_of(&Hit::SidebarRow(4)), None, "ends at the row's start");
     }
 
     #[test]

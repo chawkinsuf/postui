@@ -4644,16 +4644,16 @@ fn body_lines(
                 push(i, i, pieces, true, (0, view.h_scroll));
 
                 let y = area.y.saturating_add((i - start) as u16);
-                // Only the pill's cells inside the scrolled viewport are
-                // clickable; cut off at either edge, it keeps what shows.
-                let pill = header_pill_cols(line);
-                let shown = pill.start.max(view.h_scroll)
-                    ..pill.end.min(view.h_scroll + area.width as usize);
-                if y < area.y.saturating_add(area.height) && !shown.is_empty() {
-                    // Both fit in u16: `shown` lies within the viewport.
-                    let x = area.x + (shown.start - view.h_scroll) as u16;
-                    hits.register(
-                        Rect::new(x, y, shown.len() as u16, 1),
+                if y < area.y.saturating_add(area.height) {
+                    // Only the pill's cells inside the scrolled viewport are
+                    // clickable; cut off at either edge, it keeps what
+                    // shows. A column scrolled off the left saturates at or
+                    // left of `area.x`, which the clip treats alike.
+                    let pill = header_pill_cols(line);
+                    let to_buf = |c: usize| (usize::from(area.x) + c).saturating_sub(view.h_scroll);
+                    hits.register_cols(
+                        to_buf(pill.start)..to_buf(pill.end),
+                        Rect::new(area.x, y, area.width, 1),
                         crate::hit::Hit::HeaderCopy(i),
                     );
                 }

@@ -3454,9 +3454,6 @@ impl Editor {
             y += 1;
         }
 
-        // Columns stay usize until they are known to be inside the pane: a
-        // long name or value would wrap a bare `as u16` back over the text.
-        let right = usize::from(area.right());
         let auto = self.computed.rows.iter().filter(|r| r.origin != HeaderOrigin::Request);
         for (i, row) in auto.enumerate() {
             if y >= max_y {
@@ -3477,6 +3474,9 @@ impl Editor {
             // One plain cell between the value and the pill, so the pill's
             // hover fill never touches the text.
             let value_piece = format!("{} ", row.value);
+            // Columns stay usize (the token painter and `register_cols`
+            // clip them to the row): a long name or value would wrap a bare
+            // `as u16` back over the text.
             let value_col = usize::from(area.x) + crate::ui::cells(&name_piece);
             let pill_col = value_col + crate::ui::cells(&value_piece);
             let glyph_hovered = ctx.hovered == Some(&crate::hit::Hit::AutoHeaderCopy(i));
@@ -3503,18 +3503,15 @@ impl Editor {
                 theme,
                 hits,
             );
-            // The pill's cells inside the pane; cut off at the right edge,
-            // it keeps what shows. Its spacer cells are part of the button
-            // (the hover fill covers them), so even a one-cell sliver is a
-            // live edge of it, as on the response Headers tab (#50).
-            let pill_end = (pill_col + crate::ui::cells(crate::glyph::COPY_PILL)).min(right);
-            if pill_col < pill_end {
-                // Both fit in u16: they lie within the pane.
-                hits.register(
-                    Rect::new(pill_col as u16, y, (pill_end - pill_col) as u16, 1),
-                    crate::hit::Hit::AutoHeaderCopy(i),
-                );
-            }
+            // Cut off at the right edge, the pill keeps what shows. Its
+            // spacer cells are part of the button (the hover fill covers
+            // them), so even a one-cell sliver is a live edge of it, as on
+            // the response Headers tab (#50).
+            hits.register_cols(
+                pill_col..pill_col + crate::ui::cells(crate::glyph::COPY_PILL),
+                row_rect,
+                crate::hit::Hit::AutoHeaderCopy(i),
+            );
             y += 1;
         }
     }
