@@ -4230,36 +4230,39 @@ fn draw_header_strip(
 
     // Row 0 (left): the status chip, e.g. " 200 ", then timing + size,
     // plain muted text (not clickable, so no control fill — chip fill
-    // means clickability), then content type.
+    // means clickability), then content type. Every fact stops a cell
+    // short of the pill: the figures are shown whole or not at all (and
+    // the row ends there), the content type is truncated like the URL.
     let chip_w =
         crate::paint::Chip { label: &data.status.to_string(), color: t.status_color(data.status) }
             .paint(buf, area.x, area.y, t.panel, t);
 
+    let right = pill_x.saturating_sub(1);
     let mut x = area.x + chip_w + 1;
     // One combined timing figure — ttfb → total — rather than two chips.
     let timing = format!("{} → {}", human_elapsed(data.ttfb), human_elapsed(data.elapsed));
     for label in [timing, human_size(data.size)] {
         let s = format!(" {label} ");
-        x = crate::paint::text(buf, x, area.y, &s, t.text_muted, t.panel, false) + 1;
-    }
-    if let Some(ct) = &data.content_type {
-        let s = format!(" {ct}");
+        if x as usize + crate::ui::cells(&s) > right as usize {
+            x = right;
+            break;
+        }
         x = crate::paint::text(buf, x, area.y, &s, t.text_muted, t.panel, false) + 1;
     }
 
-    // The rendered URL this response actually came from — `{{vars}}`
-    // substituted, params merged, secrets masked — so the send's real
-    // target is visible without decoding the address bar's tokens by
-    // hand. Muted like the other row-0 facts, truncated to what's left
-    // of the row, and dropped entirely on a row too tight to say
-    // anything useful.
-    if !data.url.is_empty() {
-        let right = pill_x.saturating_sub(1);
-        if right > x + 2 {
-            let avail = (right - x - 1) as usize;
-            let s = crate::ui::ellipsize(&data.url, avail);
-            crate::paint::text(buf, x + 1, area.y, &s, t.text_muted, t.panel, false);
+    // Then the content type and the rendered URL this response actually
+    // came from — `{{vars}}` substituted, params merged, secrets masked —
+    // so the send's real target is visible without decoding the address
+    // bar's tokens by hand. Each is muted like the other row-0 facts,
+    // truncated to what's left of the row, and dropped entirely on a row
+    // too tight to say anything useful.
+    for fact in [data.content_type.as_deref(), Some(data.url.as_str())] {
+        let Some(fact) = fact.filter(|f| !f.is_empty()) else { continue };
+        if right <= x + 2 {
+            break;
         }
+        let s = crate::ui::ellipsize(fact, (right - x - 1) as usize);
+        x = crate::paint::text(buf, x + 1, area.y, &s, t.text_muted, t.panel, false) + 1;
     }
 
     // Hidden (or mid-slide with only the one row left): row 0 is the whole
@@ -6074,6 +6077,67 @@ mod tests {
                 assert!(x + 2 <= edge, "{s} at column {x} runs past {edge}: {row}");
             }
         }
+    }
+
+    /// Draws a ready response for `d`, `w` columns wide, and returns row
+    /// 0 as text after checking that the ▲/▼ pill and the blank cell
+    /// before it came through whatever the row's facts painted.
+    fn row0_beside_an_intact_pill(d: crate::http::ResponseData, w: u16) -> String {
+        let mut r = Response::default();
+        r.set_state(ResponseState::Ready(Box::new(d)), 0);
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            pointer: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(w, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+        let buf = terminal.backend().buffer();
+        let pill = hits.rect_of(&crate::hit::Hit::SplitStep(1)).expect("the step pill is drawn");
+        let row: String = (0..w).map(|x| buf[(x, pill.y)].symbol()).collect();
+        let cap = pill.x - 1;
+        assert_eq!(buf[(cap - 1, pill.y)].symbol(), " ", "a blank cell before the pill: {row}");
+        assert_eq!(buf[(cap, pill.y)].bg, theme.control, "the pill's cap: {row}");
+        assert_eq!(buf[(pill.x + 1, pill.y)].symbol(), "\u{25B2}", "{row}");
+        assert_eq!(buf[(pill.x + 4, pill.y)].symbol(), "\u{25BC}", "{row}");
+        row
+    }
+
+    /// A content type longer than the row's room is ellipsized a cell
+    /// short of the step pill, like the URL, instead of painting over it.
+    #[test]
+    fn a_long_content_type_is_cut_short_of_the_step_pill() {
+        let mut d = data(r#"{"a": 1}"#);
+        d.content_type =
+            Some("multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW".into());
+        let row = row0_beside_an_intact_pill(d, 80);
+        assert!(row.contains(" multipart/form-data; bound"), "{row}");
+        assert!(row.contains('\u{2026}'), "the content type is ellipsized: {row}");
+    }
+
+    /// On a strip too narrow for the timing and size figures, each is
+    /// shown whole or not at all, and the pill keeps its cells.
+    #[test]
+    fn a_narrow_strip_drops_the_figures_that_would_reach_the_step_pill() {
+        // 36 columns: the pane's inset takes one each side, the pill and
+        // its blank cell the right 9 of the 34 left, and the status chip
+        // and its gap the left 6, so ` 38 ms → 342 ms ` (16) fits in the
+        // 19 between; ` 8 B ` and the content type do not.
+        let row = row0_beside_an_intact_pill(data(r#"{"a": 1}"#), 36);
+        assert!(row.contains(" 38 ms → 342 ms "), "{row}");
+        assert!(!row.contains(" B "), "no size: {row}");
+        assert!(!row.contains("appl"), "no content type: {row}");
+        // 22 columns: the timing no longer fits whole, so it goes, and the
+        // figures after it with it.
+        let row = row0_beside_an_intact_pill(data(r#"{"a": 1}"#), 22);
+        assert!(!row.contains("ms"), "no timing: {row}");
+        assert!(!row.contains(" B "), "no size: {row}");
     }
 
     #[test]
