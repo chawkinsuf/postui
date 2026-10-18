@@ -1953,15 +1953,20 @@ impl ReadyView {
     }
 
     /// The selection on visible line `i` as the paint and the copy take it:
-    /// [`Self::sel_range_on_line`] in the coordinates of `text`, which
-    /// shows the line from char `char_start` on, and widened to whole
-    /// graphemes. The selection itself stays in chars, its end inclusive
-    /// and either end the anchor, so a grapheme is whole only once it is
-    /// read here; `None` when nothing of it is on `text`.
-    fn sel_span(&self, i: usize, text: &str, char_start: usize) -> Option<(usize, usize)> {
+    /// [`Self::sel_range_on_line`] in the coordinates of a text that shows
+    /// the line from char `char_start` on, widened to whole graphemes by
+    /// that text's `edges`. The selection itself stays in chars, its end
+    /// inclusive and either end the anchor, so a grapheme is whole only
+    /// once it is read here; `None` when nothing of it is on the text.
+    fn sel_span(
+        &self,
+        i: usize,
+        edges: Option<&[usize]>,
+        char_start: usize,
+    ) -> Option<(usize, usize)> {
         let (from, to) = self.sel_range_on_line(i)?;
         let range = (from.saturating_sub(char_start), to.saturating_sub(char_start));
-        (range.1 > range.0).then(|| whole_graphemes(text, range))
+        (range.1 > range.0).then(|| whole_graphemes(edges, range))
     }
 
     /// The selected text, lines joined with `\n`, each line's part as it
@@ -1975,7 +1980,7 @@ impl ReadyView {
                 out.push('\n');
             }
             let text = self.display_line_text(line).unwrap_or_default();
-            if let Some((from, to)) = self.sel_span(line, &text, 0) {
+            if let Some((from, to)) = self.sel_span(line, grapheme_edges(&text).as_deref(), 0) {
                 out.extend(text.chars().skip(from).take(to - from));
             }
         }
@@ -2193,6 +2198,14 @@ impl crate::vim::engine::Rows for ReadyView {
 
 /// The cells `c` takes at display column `at`, as Vim counts them: a tab
 /// runs to the next multiple of the pinned `'tabstop'` (2).
+///
+/// Per char on purpose, unlike everything the view paints or hit-tests
+/// (by grapheme, task #45): this column is only the Vim cursor's wanted
+/// column for `j`/`k`, and Vim 9.1 itself counts `❤️` as one column
+/// (`strdisplaywidth`, probed in #44), so following the paint would move
+/// the cursor where Vim does not; the 680-case Vim oracle pins Vim's.
+/// What Vim does with composing chars (skipping them, taking them with
+/// their base) is #44's.
 fn vim_cells(c: char, at: usize) -> usize {
     use unicode_width::UnicodeWidthChar;
     if c == '\t' { 2 - at % 2 } else { c.width().unwrap_or(0) }
@@ -3509,7 +3522,7 @@ impl Response {
             return false;
         };
         view.clear_sel();
-        // `cell_at` clamps a click past the line end onto its last char, so
+        // `cell_at` clamps a click past the line end onto its last grapheme, so
         // a double click there takes the last word, as in a field (spec
         // 2026-10-14, align the text mouse, A3).
         let Some((line, col)) = view.cell_at(x, y, false) else {
@@ -3571,14 +3584,15 @@ impl Response {
         // landing on a row start take its first char.
         if head.1 == 0 && head.0 > anchor.0 {
             let row = head.0 - 1;
+            // The row's last grapheme, as `cell_at` clamps a click past it.
             let last =
-                view.display_line_text(row).map_or(0, |t| t.chars().count().saturating_sub(1));
+                view.display_line_text(row).map_or(0, |t| char_cell_at_display_col(&t, usize::MAX));
             view.sel = Some((anchor, (row, last)));
             return true;
         }
         if head.0 < anchor.0 {
             // `cell_at` clamped a pointer past the row's end onto its
-            // last char; re-check the pointed display column against the
+            // last grapheme; re-check the pointed display column against the
             // row's width to tell the two apart (an empty row has no
             // last char to spuriously grab — it stays in the sweep).
             let area = view.last_area.expect("cell_at resolved through last_area");
@@ -4535,19 +4549,20 @@ fn body_lines(
         // the window starts on a grapheme, and an all-ASCII row has none
         // to widen, so it skips building the text.
         let mut sel = None;
-        if !hits.ranges.is_empty() || view.sel.is_some() {
-            let row: String = if pieces.iter().all(|(s, _)| s.is_ascii()) {
-                String::new()
+        if !hits.ranges.is_empty() || view.sel_range_on_line(i).is_some() {
+            let edges = if pieces.iter().all(|(s, _)| s.is_ascii()) {
+                None
             } else {
-                pieces.iter().map(|(s, _)| s.as_str()).collect()
+                grapheme_edges(&pieces.iter().map(|(s, _)| s.as_str()).collect::<String>())
             };
             // Search hits widen here rather than where they are found: the
-            // matcher's char ranges also place the cursor on a match, and
-            // the paint is the one place a hit becomes cells.
-            let whole = |r| whole_graphemes(&row, r);
+            // matcher's char ranges also place the cursor on a match, by
+            // Vim's per-char model in the vim profile (#44), and the paint
+            // is the one place a hit becomes cells.
+            let whole = |r| whole_graphemes(edges.as_deref(), r);
             hits.ranges = hits.ranges.into_iter().map(whole).collect();
             hits.current = hits.current.map(whole);
-            sel = view.sel_span(i, &row, char_start);
+            sel = view.sel_span(i, edges.as_deref(), char_start);
         }
         let mut line = highlighted(pieces, &hits);
         // Selection bg on top of search styling, before the h-crop.
@@ -4776,28 +4791,36 @@ const COL_MARK_STEP: usize = 1024;
 /// and the display column it starts at. `(0, 0, 0)` is the line start.
 type ColMark = (usize, usize, usize);
 
-/// The char range `[from, to)` of `text` widened out to whole graphemes,
-/// for a highlight or a copy: a span cut inside a grapheme makes ratatui
-/// paint each part alone, dropping a zero-width tail (a heart's selector,
-/// an accent) and shifting the row. An end already on a grapheme's edge,
-/// or past the text, stays as it is.
-fn whole_graphemes(text: &str, (from, to): (usize, usize)) -> (usize, usize) {
+/// The char offsets `text`'s graphemes start at, then its char count: the
+/// edges a highlight or a copy may end on. `None` for ASCII text, where
+/// every char is a grapheme. One walk per row, however many ranges it
+/// widens.
+fn grapheme_edges(text: &str) -> Option<Vec<usize>> {
     if text.is_ascii() {
-        return (from, to);
+        return None;
     }
-    let (mut start, mut end) = (from, to);
+    let mut edges = Vec::new();
+    let mut end = 0;
     for g in crate::ui::char_graphemes(text) {
-        let next = g.char + g.chars;
-        if g.char < from && from < next {
-            start = g.char;
-        }
-        if g.char < to && to < next {
-            end = next;
-        }
-        if next >= to {
-            break;
-        }
+        edges.push(g.char);
+        end = g.char + g.chars;
     }
+    edges.push(end);
+    Some(edges)
+}
+
+/// The char range `[from, to)` widened out to whole graphemes (`edges`,
+/// from [`grapheme_edges`]), for a highlight or a copy: a span cut inside
+/// a grapheme makes ratatui paint each part alone, dropping a zero-width
+/// tail (a heart's selector, an accent) and shifting the row. An end
+/// already on an edge, or past the text, stays as it is.
+fn whole_graphemes(edges: Option<&[usize]>, (from, to): (usize, usize)) -> (usize, usize) {
+    let Some(edges) = edges else {
+        return (from, to);
+    };
+    let last = edges[edges.len() - 1];
+    let start = if from < last { edges[edges.partition_point(|&e| e <= from) - 1] } else { from };
+    let end = if to < last { edges[edges.partition_point(|&e| e < to)] } else { to };
     (start, end)
 }
 
@@ -10290,12 +10313,15 @@ mod tests {
     /// grapheme; an end on an edge, or past the text, stays put.
     #[test]
     fn whole_graphemes_widens_only_a_cut_grapheme() {
-        let text = format!("ab{HEART}cd");
-        assert_eq!(whole_graphemes(&text, (0, 3)), (0, 4), "the end inside the heart");
-        assert_eq!(whole_graphemes(&text, (3, 5)), (2, 5), "the start inside the heart");
-        assert_eq!(whole_graphemes(&text, (2, 4)), (2, 4), "already whole");
-        assert_eq!(whole_graphemes(&text, (4, usize::MAX)), (4, usize::MAX));
-        assert_eq!(whole_graphemes(&text, (9, 10)), (9, 10), "past the text");
+        let edges = grapheme_edges(&format!("ab{HEART}cd"));
+        assert_eq!(edges.as_deref(), Some(&[0, 1, 2, 4, 5, 6][..]));
+        let whole = |r| whole_graphemes(edges.as_deref(), r);
+        assert_eq!(whole((0, 3)), (0, 4), "the end inside the heart");
+        assert_eq!(whole((3, 5)), (2, 5), "the start inside the heart");
+        assert_eq!(whole((2, 4)), (2, 4), "already whole");
+        assert_eq!(whole((4, usize::MAX)), (4, usize::MAX));
+        assert_eq!(whole((9, 10)), (9, 10), "past the text");
+        assert_eq!(grapheme_edges("abc"), None, "ASCII has nothing to widen");
     }
 
     /// Task #45 review: a raw row's text is its window, so a hit past the
