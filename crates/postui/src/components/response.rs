@@ -1950,58 +1950,48 @@ impl ReadyView {
         grapheme_at_col(text, col, from)
     }
 
-    /// The selection's char range on visible line `i`, as half-open
-    /// `[from, to)` over that line's display text (`to` may exceed the
-    /// line's length — callers clamp). `None` when `i` is outside the
-    /// selection.
-    fn sel_range_on_line(&self, i: usize) -> Option<(usize, usize)> {
+    /// The visible lines the selection covers.
+    fn sel_rows(&self) -> Option<std::ops::RangeInclusive<usize>> {
+        let (a, b) = self.sel?;
+        Some(a.0.min(b.0)..=a.0.max(b.0))
+    }
+
+    /// The selection on visible line `i`, the one way its columns are read
+    /// (the paint and the copy): half-open `[from, to)` in the coordinates
+    /// of `text`, which shows the line from char `char_start` on (`to` is
+    /// `usize::MAX` when it runs to the line's end), widened to whole
+    /// graphemes. The selection is stored in chars, its end inclusive and
+    /// either end the anchor, so a grapheme is made whole here, where the
+    /// text is at hand. `None` when nothing of it is on `text`.
+    fn sel_span(&self, i: usize, text: &str, char_start: usize) -> Option<(usize, usize)> {
         let (a, b) = self.sel?;
         let (s, e) = if a <= b { (a, b) } else { (b, a) };
         if i < s.0 || i > e.0 {
             return None;
         }
-        let from = if i == s.0 { s.1 } else { 0 };
-        let to = if i == e.0 { e.1 + 1 } else { usize::MAX };
-        Some((from, to))
-    }
-
-    /// The selection on visible line `i` as the paint and the copy take it:
-    /// [`Self::sel_range_on_line`] in the coordinates of a text that shows
-    /// the line from char `char_start` on, widened to whole graphemes by
-    /// that text's `edges`. The selection itself stays in chars, its end
-    /// inclusive and either end the anchor, so a grapheme is whole only
-    /// once it is read here; `None` when nothing of it is on the text.
-    fn sel_span(
-        &self,
-        i: usize,
-        edges: Option<&[usize]>,
-        char_start: usize,
-    ) -> Option<(usize, usize)> {
-        let (from, to) = self.sel_range_on_line(i)?;
-        let range = (from.saturating_sub(char_start), to.saturating_sub(char_start));
-        (range.1 > range.0).then(|| whole_graphemes(edges, range))
+        let from = if i == s.0 { s.1 } else { 0 }.saturating_sub(char_start);
+        let to = if i == e.0 { (e.1 + 1).saturating_sub(char_start) } else { usize::MAX };
+        if to <= from {
+            return None;
+        }
+        // Edges only as far as the last finite end: a long line needs no
+        // index of its whole length.
+        let reach = if to == usize::MAX { from } else { to };
+        Some(whole_graphemes(grapheme_edges(text, reach).as_deref(), (from, to)))
     }
 
     /// The selected text, lines joined with `\n`, each line's part as it
     /// paints. `None` without a selection.
     fn selected_text(&self) -> Option<String> {
-        let (a, b) = self.sel?;
-        let (s, e) = (a.0.min(b.0), a.0.max(b.0));
+        let rows = self.sel_rows()?;
+        let first = *rows.start();
         let mut out = String::new();
-        for line in s..=e {
-            if line > s {
+        for line in rows {
+            if line > first {
                 out.push('\n');
             }
             let text = self.display_line_text(line).unwrap_or_default();
-            // Edges only as far as the range's last finite end: a long
-            // line's copy needs no index of the whole line.
-            let reach = match self.sel_range_on_line(line) {
-                Some((from, usize::MAX)) => from,
-                Some((_, to)) => to,
-                None => 0,
-            };
-            let edges = grapheme_edges(&text, reach);
-            if let Some((from, to)) = self.sel_span(line, edges.as_deref(), 0) {
+            if let Some((from, to)) = self.sel_span(line, &text, 0) {
                 out.extend(text.chars().skip(from).take(to - from));
             }
         }
@@ -2225,8 +2215,9 @@ impl crate::vim::engine::Rows for ReadyView {
 /// column for `j`/`k`, and Vim 9.1 itself counts `❤️` as one column
 /// (`strdisplaywidth`, probed in #44), so following the paint would move
 /// the cursor where Vim does not; the 680-case Vim oracle pins Vim's.
-/// What Vim does with composing chars (skipping them, taking them with
-/// their base) is #44's.
+/// Not yet Vim's for composing chars (Mn/Mc/Me and VS16 U+FE0F): Vim
+/// never rests the cursor on one, while `col_of_vcol` can put it on the
+/// selector inside `❤️`. That gap, here and in the engine, is #44's.
 fn vim_cells(c: char, at: usize) -> usize {
     use unicode_width::UnicodeWidthChar;
     if c == '\t' { 2 - at % 2 } else { c.width().unwrap_or(0) }
@@ -2295,8 +2286,10 @@ fn grapheme_at_col(text: &str, col: usize, from: ColMark) -> Option<usize> {
     None
 }
 
-/// The first char of `text`'s last grapheme (0 when empty), found from
-/// the end rather than by walking the line.
+/// The first char of `text`'s last grapheme (0 when empty). The grapheme
+/// is segmented from the end; only its char offset needs the line, as a
+/// plain char count (no segmenting, as cheap as the char count it took
+/// before #45).
 fn last_grapheme(text: &str) -> usize {
     crate::ui::graphemes(text).next_back().map_or(0, |(byte, _, _)| text[..byte].chars().count())
 }
@@ -4574,23 +4567,26 @@ fn body_lines(
         };
         // Highlights cover whole graphemes, read off the row's own text:
         // the window starts on a grapheme, and an all-ASCII row has none
-        // to widen, so it skips building the text.
+        // to widen (empty text stands for it), so it skips building it.
         let mut sel = None;
-        if !hits.ranges.is_empty() || view.sel_range_on_line(i).is_some() {
-            let edges = if pieces.iter().all(|(s, _)| s.is_ascii()) {
-                None
+        let in_sel = view.sel_rows().is_some_and(|rows| rows.contains(&i));
+        if !hits.ranges.is_empty() || in_sel {
+            let row: String = if pieces.iter().all(|(s, _)| s.is_ascii()) {
+                String::new()
             } else {
-                let row: String = pieces.iter().map(|(s, _)| s.as_str()).collect();
-                grapheme_edges(&row, usize::MAX)
+                pieces.iter().map(|(s, _)| s.as_str()).collect()
             };
             // Search hits widen here rather than where they are found: the
             // matcher's char ranges also place the cursor on a match, by
             // Vim's per-char model in the vim profile (#44), and the paint
-            // is the one place a hit becomes cells.
+            // is the one place a hit becomes cells. Edges only as far as
+            // the last hit ends.
+            let reach = hits.ranges.iter().chain(&hits.current).map(|r| r.1).max().unwrap_or(0);
+            let edges = grapheme_edges(&row, reach);
             let whole = |r| whole_graphemes(edges.as_deref(), r);
             hits.ranges = hits.ranges.into_iter().map(whole).collect();
             hits.current = hits.current.map(whole);
-            sel = view.sel_span(i, edges.as_deref(), char_start);
+            sel = view.sel_span(i, &row, char_start);
         }
         let mut line = highlighted(pieces, &hits);
         // Selection bg on top of search styling, before the h-crop.

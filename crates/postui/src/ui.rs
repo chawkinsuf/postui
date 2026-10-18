@@ -724,7 +724,15 @@ pub(crate) fn cells(s: &str) -> usize {
 /// the unit ratatui paints in: its own width for the grapheme, and none
 /// for one holding a control char, which it skips.
 pub(crate) fn graphemes(s: &str) -> Graphemes<'_> {
-    Graphemes { s, front: 0, back: s.len() }
+    use unicode_segmentation::GraphemeCursor;
+    let n = s.len();
+    Graphemes {
+        s,
+        front: 0,
+        back: n,
+        fwd: GraphemeCursor::new(0, n, true),
+        bwd: GraphemeCursor::new(n, n, true),
+    }
 }
 
 /// One grapheme of [`char_graphemes`].
@@ -755,12 +763,15 @@ pub(crate) fn char_graphemes(s: &str) -> impl Iterator<Item = CharGrapheme<'_>> 
 /// `\r\n` (every UAX #29 rule that joins two chars needs a non-ASCII one),
 /// so an ASCII char with ASCII beside it is a grapheme alone. That keeps
 /// a megabyte line with a little non-ASCII in it near the cost of a char
-/// walk (task #45).
+/// walk (task #45). The rest goes to one segmenter cursor per end, kept
+/// across steps, so a run of non-ASCII costs what `grapheme_indices` does.
 pub(crate) struct Graphemes<'a> {
     s: &'a str,
     /// The unvisited bytes, both ends on grapheme boundaries.
     front: usize,
     back: usize,
+    fwd: unicode_segmentation::GraphemeCursor,
+    bwd: unicode_segmentation::GraphemeCursor,
 }
 
 impl<'a> Graphemes<'a> {
@@ -785,13 +796,17 @@ impl<'a> Iterator for Graphemes<'a> {
     type Item = (usize, &'a str, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
-        use unicode_segmentation::UnicodeSegmentation;
         let rest = &self.s[self.front..self.back];
         let len = match rest.as_bytes() {
             [] => return None,
             [a] if a.is_ascii() => 1,
             [a, b, ..] if ascii_break(*a, *b) => 1,
-            _ => rest.graphemes(true).next()?.len(),
+            _ => {
+                if self.fwd.cur_cursor() != self.front {
+                    self.fwd.set_cursor(self.front);
+                }
+                self.fwd.next_boundary(self.s, 0).ok().flatten()? - self.front
+            }
         };
         let at = self.front;
         self.front += len;
@@ -801,13 +816,17 @@ impl<'a> Iterator for Graphemes<'a> {
 
 impl DoubleEndedIterator for Graphemes<'_> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        use unicode_segmentation::UnicodeSegmentation;
         let rest = &self.s[self.front..self.back];
         let len = match rest.as_bytes() {
             [] => return None,
             [b] if b.is_ascii() => 1,
             [.., a, b] if ascii_break(*a, *b) => 1,
-            _ => rest.graphemes(true).next_back()?.len(),
+            _ => {
+                if self.bwd.cur_cursor() != self.back {
+                    self.bwd.set_cursor(self.back);
+                }
+                self.back - self.bwd.prev_boundary(self.s, 0).ok().flatten()?
+            }
         };
         self.back -= len;
         Some(self.item(self.back, len))
