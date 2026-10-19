@@ -1194,6 +1194,9 @@ impl App {
                 | Hit::TableCopy(_)
                 | Hit::TableDelete(_)
                 | Hit::TableCell { .. }
+                // The auto row's pencil commits an open cell itself, as
+                // its own undo step, before it adds its row.
+                | Hit::AutoHeaderOverride(_)
                 | Hit::SplitStop(_)
                 | Hit::SplitStep(_)
                 | Hit::ModalCancel

@@ -3550,7 +3550,11 @@ impl Editor {
             };
             // The pencil, on a row a request row may take over (task #20),
             // goes after the copy pill: it comes and goes, so the copy
-            // pill keeps its place on every row.
+            // pill keeps its place on every row. The pills trail the value
+            // rather than sit at the pane's edge, so a value too long for
+            // the pane pushes both off it (the clip rule of #51); the
+            // section is a read-out, and giving its pills a reserved edge
+            // would mean cutting values short.
             let pencil_col = pill_col + crate::ui::cells(crate::glyph::COPY_PILL);
             let overridable = row.overriding_row().is_some();
             let mut spans = vec![
@@ -6723,7 +6727,7 @@ url = "https://api.example.com/users""#,
             origin: postui_core::prepare::HeaderOrigin::Client,
             unsent: None,
             unresolved: Vec::new(),
-            written: None,
+            override_as: None,
         }
     }
 
@@ -6734,7 +6738,7 @@ url = "https://api.example.com/users""#,
     fn an_overridable_auto_row_has_a_pencil_pill_after_its_copy_pill() {
         let mut e = Editor::default();
         let overridable = |name: &str, value: &str| postui_core::prepare::HeaderRow {
-            written: Some((name.into(), value.into())),
+            override_as: Some((name.into(), value.into())),
             ..auto_header(name, value)
         };
         e.computed.rows = vec![

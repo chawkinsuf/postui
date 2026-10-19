@@ -353,9 +353,11 @@ opposite direction, from the request up into the project.
 | Undo takes the value edit back first, then the row, as with any row added and then edited. | `mine (approved)` |
 | Mouse only, like the copy pill: the auto section has no cursor. | `mine (approved)` |
 
-Design: `HeaderRow` gains `written`, the row's name and value as written
-where it comes from (`None` for the request's own rows, the URL's rows,
-and an auto or client row the request names), and
-`HeaderRow::overriding_row`, which is `written` for a row that is sent
-and not client-owned. `Action::OverrideAutoHeader(i)` commits an open
-cell, re-reads the section, inserts the row and opens its value.
+Design: `HeaderRow` gains `override_as`, how a request row taking it
+over is written (`None` for a row the request may never take over: its
+own rows, a client-owned header, the URL's rows, and an auto or client
+row the request names), and `HeaderRow::overriding_row`, which is
+`override_as` while the row is sent. `Action::OverrideAutoHeader(i)`
+commits an open cell as its own undo step, re-reads the section, inserts
+the row and opens its value, in Insert in the vim profile, as an add
+verb's row opens (vim spec §5.6; review round 1).

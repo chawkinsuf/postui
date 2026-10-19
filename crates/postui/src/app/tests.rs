@@ -14227,6 +14227,57 @@ fn undo_takes_the_auto_header_pencils_row_back_out() {
     assert!(app.editor.table.editing.is_none());
 }
 
+/// In the vim profile the pencil's value opens in Insert, as an add verb's
+/// row does (vim spec §5.6), so what is typed goes after the value.
+#[test]
+fn the_auto_header_pencil_opens_the_value_in_insert_in_vim() {
+    let mut app = App::new_for_test();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.url = LineInput::new("https://example.com/foo");
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let pencil = app.hits.rect_of(&Hit::AutoHeaderOverride(0)).expect("Accept's pencil");
+    app.handle_mouse(left_down(pencil.x, pencil.y));
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+    type_chars(&mut app, ", x");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.editor.headers["Accept"].value, "*/*, x");
+}
+
+/// A cell still open when the pencil is clicked commits as its own undo
+/// step: undo takes the pencil's row out and leaves the commit in place.
+#[test]
+fn the_auto_header_pencil_keeps_an_open_cells_commit_its_own_undo_step() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.url = LineInput::new("https://example.com/foo");
+    app.editor
+        .headers
+        .insert("X-Foo".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    app.focus = PaneId::Editor;
+    app.capture_undo(); // seed the shadow before the edit
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "2");
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let accept = app.editor.computed.rows.iter().position(|r| r.header.name == "Accept").unwrap();
+    let pencil = app.hits.rect_of(&Hit::AutoHeaderOverride(accept)).expect("Accept's pencil");
+    app.handle_mouse(left_down(pencil.x, pencil.y));
+    app.capture_undo();
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    assert_eq!(app.editor.headers["X-Foo"].value, "12");
+    assert!(app.editor.headers.contains_key("Accept"));
+
+    app.update(Action::Undo);
+    assert!(!app.editor.headers.contains_key("Accept"), "the pencil's row goes first");
+    assert_eq!(app.editor.headers["X-Foo"].value, "12", "the commit stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.headers["X-Foo"].value, "1", "then the commit goes");
+}
+
 /// The row's copy button puts that row's value — as typed, tokens and all
 /// — on the clipboard, and says which row it took it from.
 #[test]

@@ -373,15 +373,17 @@ pub struct HeaderRow {
     pub unsent: Option<Unsent>,
     /// Names of `{{tokens}}` in the name or value that didn't resolve.
     pub unresolved: Vec<String>,
-    /// The row's name and value as written where it comes from: a
-    /// default's with their `{{tokens}}`, an auto or client row's fixed
-    /// text. `None` for the request's own rows, which the table already
-    /// holds; for an auto or client row the request has a (disabled) row
-    /// naming, which is the one to edit; and for the rows the client reads
-    /// off the URL (`Host`, the userinfo's `Authorization`): copied into
-    /// the request, that `Authorization` would write the URL's credentials
-    /// into the request file in the clear.
-    pub written: Option<(String, String)>,
+    /// How a request row taking this row over is written (task #20): a
+    /// default's name and value with their `{{tokens}}`, an auto or client
+    /// row's fixed text. `None` for a row the request may never take over:
+    /// its own rows, which the table already holds; a header the client
+    /// owns (R3a); the rows the client reads off the URL (`Host`, the
+    /// userinfo's `Authorization`, which copied into the request would
+    /// write the URL's credentials into the request file in the clear);
+    /// and an auto or client row the request has a (disabled) row naming,
+    /// which is the one to edit. Whether the row is still sent is
+    /// [`HeaderRow::overriding_row`]'s to add.
+    pub override_as: Option<(String, String)>,
 }
 
 impl HeaderRow {
@@ -392,14 +394,11 @@ impl HeaderRow {
 
     /// The name and value of a request row that would take this row over,
     /// so the user can give it a value of their own (task #20): its
-    /// [`HeaderRow::written`] text, for a row that is sent and that a
-    /// request row may override. A row something already overrides has
-    /// none, nor has a header the client owns (R3a).
+    /// [`HeaderRow::override_as`], while the row is sent. A row something
+    /// already overrides has none.
     pub fn overriding_row(&self) -> Option<(&str, &str)> {
-        if !self.sent() || client_owned(&self.header.name).is_some() {
-            return None;
-        }
-        self.written.as_ref().map(|(name, value)| (name.as_str(), value.as_str()))
+        let (name, value) = self.override_as.as_ref().filter(|_| self.sent())?;
+        Some((name, value))
     }
 }
 
@@ -490,15 +489,17 @@ fn rows(
         let mut unresolved = BTreeSet::new();
         let real_name = substitute_masked(name, vars, &no_mask, &mut unresolved);
         let real = substitute_masked(value, vars, &no_mask, &mut unresolved);
+        let owned = client_owned(&real_name);
         HeaderRow {
-            unsent: client_owned(&real_name).map(|header| Unsent::ClientOwned { header }),
+            unsent: owned.map(|header| Unsent::ClientOwned { header }),
             header: SentHeader {
                 display_name: masked(name, &real_name),
                 name: real_name,
                 display: masked(value, &real),
                 value: real,
             },
-            written: (origin == HeaderOrigin::Default).then(|| (name.into(), value.into())),
+            override_as: (origin == HeaderOrigin::Default && owned.is_none())
+                .then(|| (name.into(), value.into())),
             origin,
             unresolved: unresolved.into_iter().collect(),
         }
@@ -516,15 +517,17 @@ fn rows(
             origin: HeaderOrigin::Client,
             unsent,
             unresolved: Vec::new(),
-            written: None,
+            override_as: None,
         };
     let request_names: Vec<String> = req.headers.keys().map(|k| quiet(k)).collect();
     let named_by_request = |name: &str| request_names.iter().any(|n| n.eq_ignore_ascii_case(name));
-    // An auto or client row of fixed text, shown as it is sent. One the
-    // request already has a row naming (a disabled one, which leaves it
-    // sent) has no overriding row to offer: that row is the one to edit.
+    // An auto or client row of fixed text, shown as it is sent. The
+    // request may take it over unless the client owns it, or the request
+    // already has a row naming it (a disabled one, which leaves it sent):
+    // that row is the one to edit.
     let fixed = |name: &str, value: String, unsent: Option<Unsent>| HeaderRow {
-        written: (!named_by_request(name)).then(|| (name.to_string(), value.clone())),
+        override_as: (client_owned(name).is_none() && !named_by_request(name))
+            .then(|| (name.to_string(), value.clone())),
         ..client_row(name, value.clone(), value, unsent)
     };
 
@@ -1884,6 +1887,11 @@ mod tests {
         for name in ["Authorization", "Host", "Content-Length"] {
             assert_eq!(overriding(HeaderOrigin::Client, name), None, "{name}");
         }
+        // The field itself says so, sent or not, for a reader that
+        // doesn't go through `overriding_row`.
+        let never = |r: &&HeaderRow| r.override_as.is_none();
+        assert!(rows.iter().filter(|r| r.header.name == "Content-Length").all(|r| never(&r)));
+        assert!(rows.iter().filter(|r| r.header.name == "Host").all(|r| never(&r)));
 
         // A disabled request row leaves the client's row sent, but it is
         // the row to edit: the client's row offers none.
