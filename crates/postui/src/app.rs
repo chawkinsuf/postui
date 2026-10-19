@@ -3751,23 +3751,29 @@ impl App {
                 if self.editor.active_tab != EditorTab::Headers {
                     return false;
                 }
+                // The row clicked, as the frame drew it: found again below
+                // by where it comes from and its name, not by `i`.
+                let Some(clicked) =
+                    self.editor.computed.rows.get(i).map(|r| (r.origin, r.header.name.clone()))
+                else {
+                    return false;
+                };
                 // A cell still open commits first, as an undo step of its
                 // own, so an undo of the new row leaves what was typed
                 // there. The section is read again after it: the commit can
-                // name this row's header and so override it. The section's
-                // rows stay where they were (a commit only changes the
-                // request's rows), so `i` still names the row clicked.
+                // name this row's header and so override it.
                 if self.editor.table.editing.is_some() {
                     self.commit_table_edit();
                     self.capture_undo();
+                    let ctx = self.prepare_context();
+                    self.editor.recompute_computed_headers(&ctx);
                 }
-                let ctx = self.prepare_context();
-                self.editor.recompute_computed_headers(&ctx);
                 let Some((name, value)) = self
                     .editor
                     .computed
                     .rows
-                    .get(i)
+                    .iter()
+                    .find(|r| (r.origin, &r.header.name) == (clicked.0, &clicked.1))
                     .and_then(|r| r.overriding_row())
                     .map(|(name, value)| (name.to_string(), value.to_string()))
                 else {

@@ -14269,6 +14269,32 @@ fn the_auto_header_pencil_from_an_open_ghost_cell_opens_in_insert_in_vim() {
     assert_eq!(app.editor.headers["Accept"].value, "*/*, x");
 }
 
+/// The pencil takes over the row it was drawn on, found by where the row
+/// comes from and its name, even when the section's rows have moved since
+/// that frame (here the URL gains userinfo, so the client's Authorization
+/// row now leads).
+#[test]
+fn the_auto_header_pencil_takes_the_row_it_was_drawn_on_after_rows_move() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.url = LineInput::new("https://example.com/foo");
+    app.editor
+        .headers
+        .insert("X-Foo".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    app.focus = PaneId::Editor;
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    assert_eq!(app.editor.computed.rows[0].header.name, "Accept");
+    let pencil = app.hits.rect_of(&Hit::AutoHeaderOverride(0)).expect("Accept's pencil");
+
+    app.editor.url = LineInput::new("https://user:pw@example.com/foo");
+    app.handle_mouse(left_down(pencil.x, pencil.y));
+
+    assert!(app.editor.headers.contains_key("Accept"), "{:?}", app.editor.headers);
+    assert!(!app.editor.headers.contains_key("Authorization"));
+}
+
 /// A cell still open when the pencil is clicked commits as its own undo
 /// step: undo takes the pencil's row out and leaves the commit in place.
 #[test]

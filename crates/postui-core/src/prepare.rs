@@ -386,8 +386,10 @@ pub struct HeaderRow {
     ///
     /// It carries the text, not a flag, so the click reads it off the one
     /// list rather than finding the row's default again by name. The cost
-    /// is a copy of each default's name and value per call (a few short
-    /// strings per frame of the Headers tab).
+    /// is a copy of each default's name and value, and of `Accept`'s and
+    /// `Content-Type`'s, per call: a few short strings per frame of the
+    /// Headers tab and per send, beside the substitution and masking that
+    /// already allocate for every row.
     pub override_as: Option<(String, String)>,
 }
 
