@@ -14158,6 +14158,175 @@ fn auto_header_copy_icon_puts_the_resolved_value_on_the_clipboard() {
     assert!(rendered_text(&mut app).contains("Copied Host"), "toast confirms the copy");
 }
 
+/// The pencil on an auto row adds the header to the request as written
+/// (a default's token stays a token), last, and opens its value with the
+/// caret at the end: a header is taken over to give it a value of one's
+/// own (task #20). The auto row is then struck, overridden, and loses its
+/// pencil.
+#[test]
+fn the_auto_header_pencil_adds_it_to_the_request_with_its_value_open() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    set_default_header(&mut app, "X-Key", "Bearer {{api_key}}");
+    app.editor
+        .headers
+        .insert("X-Mine".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    app.editor.active_tab = EditorTab::Headers;
+    app.focus = PaneId::Sidebar;
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let i = app.editor.computed.rows.iter().position(|r| r.header.name == "X-Key").unwrap();
+    let pencil = app.hits.rect_of(&Hit::AutoHeaderOverride(i)).expect("the default's pencil");
+
+    app.handle_mouse(left_down(pencil.x + 1, pencil.y));
+
+    let row = |app: &App, i: usize| {
+        app.editor.headers.get_index(i).map(|(k, e)| (k.clone(), e.value.clone(), e.enabled))
+    };
+    assert_eq!(row(&app, 1), Some(("X-Key".into(), "Bearer {{api_key}}".into(), true)));
+    assert_eq!(app.focus, PaneId::Editor);
+    assert_eq!(app.editor.sub_focus, SubFocus::Content);
+    let edit = app.editor.table.editing.as_ref().expect("the value is open for editing");
+    assert_eq!((edit.row, edit.col), (1, crate::components::table_editor::Col::Value));
+    assert_eq!(edit.input.cursor(), "Bearer {{api_key}}".chars().count(), "caret at the end");
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    assert!(!app.editor.computed.rows[i].sent(), "the default is overridden now");
+    assert_eq!(app.hits.rect_of(&Hit::AutoHeaderOverride(i)), None, "so it has no pencil");
+}
+
+/// The URL's own rows have no pencil (its `Authorization` would write the
+/// URL's credentials into the request file; `Host` is the client's), and
+/// undo takes the pencil's row back out: its value edit first, then the
+/// row, as with any row added and then edited.
+#[test]
+fn undo_takes_the_auto_header_pencils_row_back_out() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.url = LineInput::new("https://user:pw@example.com/foo");
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let names: Vec<_> = app.editor.computed.rows.iter().map(|r| r.header.name.as_str()).collect();
+    assert_eq!(names, ["Authorization", "Accept", "Host"]);
+    assert_eq!(app.hits.rect_of(&Hit::AutoHeaderOverride(0)), None, "no pencil on Authorization");
+    assert_eq!(app.hits.rect_of(&Hit::AutoHeaderOverride(2)), None, "no pencil on Host");
+    let pencil = app.hits.rect_of(&Hit::AutoHeaderOverride(1)).expect("Accept's pencil");
+
+    app.capture_undo(); // seed the shadow before the click
+    app.handle_mouse(left_down(pencil.x, pencil.y));
+    app.capture_undo();
+    type_chars(&mut app, ", text/plain");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.editor.headers["Accept"].value, "*/*, text/plain");
+    app.capture_undo();
+    app.update(Action::Undo);
+    assert_eq!(app.editor.headers["Accept"].value, "*/*", "the value edit goes first");
+    app.update(Action::Undo);
+    assert!(app.editor.headers.is_empty(), "then the row: {:?}", app.editor.headers);
+    assert!(app.editor.table.editing.is_none());
+}
+
+/// In the vim profile the pencil's value opens in Insert, as an add verb's
+/// row does (vim spec §5.6), so what is typed goes after the value.
+#[test]
+fn the_auto_header_pencil_opens_the_value_in_insert_in_vim() {
+    let mut app = App::new_for_test();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.url = LineInput::new("https://example.com/foo");
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let pencil = app.hits.rect_of(&Hit::AutoHeaderOverride(0)).expect("Accept's pencil");
+    app.handle_mouse(left_down(pencil.x, pencil.y));
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+    type_chars(&mut app, ", x");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.editor.headers["Accept"].value, "*/*, x");
+}
+
+/// The pencil's row lands on the ghost row's index, so from an open ghost
+/// value cell it opens the very cell id that was open; it still opens in
+/// Insert, a fresh session, as an add verb's row does.
+#[test]
+fn the_auto_header_pencil_from_an_open_ghost_cell_opens_in_insert_in_vim() {
+    let mut app = App::new_for_test();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.url = LineInput::new("https://example.com/foo");
+    app.focus = PaneId::Editor;
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    assert_eq!(app.mode_indicator(), Some("NORMAL"), "a click opens a cell in Normal");
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let pencil = app.hits.rect_of(&Hit::AutoHeaderOverride(0)).expect("Accept's pencil");
+    app.handle_mouse(left_down(pencil.x, pencil.y));
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+    type_chars(&mut app, ", x");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.editor.headers["Accept"].value, "*/*, x");
+}
+
+/// The pencil takes over the row it was drawn on, found by where the row
+/// comes from and its name, even when the section's rows have moved since
+/// that frame (here the URL gains userinfo, so the client's Authorization
+/// row now leads).
+#[test]
+fn the_auto_header_pencil_takes_the_row_it_was_drawn_on_after_rows_move() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.url = LineInput::new("https://example.com/foo");
+    app.editor
+        .headers
+        .insert("X-Foo".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    app.focus = PaneId::Editor;
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    assert_eq!(app.editor.computed.rows[0].header.name, "Accept");
+    let pencil = app.hits.rect_of(&Hit::AutoHeaderOverride(0)).expect("Accept's pencil");
+
+    app.editor.url = LineInput::new("https://user:pw@example.com/foo");
+    app.handle_mouse(left_down(pencil.x, pencil.y));
+
+    assert!(app.editor.headers.contains_key("Accept"), "{:?}", app.editor.headers);
+    assert!(!app.editor.headers.contains_key("Authorization"));
+}
+
+/// A cell still open when the pencil is clicked commits as its own undo
+/// step: undo takes the pencil's row out and leaves the commit in place.
+#[test]
+fn the_auto_header_pencil_keeps_an_open_cells_commit_its_own_undo_step() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.url = LineInput::new("https://example.com/foo");
+    app.editor
+        .headers
+        .insert("X-Foo".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    app.focus = PaneId::Editor;
+    app.capture_undo(); // seed the shadow before the edit
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "2");
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let accept = app.editor.computed.rows.iter().position(|r| r.header.name == "Accept").unwrap();
+    let pencil = app.hits.rect_of(&Hit::AutoHeaderOverride(accept)).expect("Accept's pencil");
+    app.handle_mouse(left_down(pencil.x, pencil.y));
+    app.capture_undo();
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    assert_eq!(app.editor.headers["X-Foo"].value, "12");
+    assert!(app.editor.headers.contains_key("Accept"));
+
+    app.update(Action::Undo);
+    assert!(!app.editor.headers.contains_key("Accept"), "the pencil's row goes first");
+    assert_eq!(app.editor.headers["X-Foo"].value, "12", "the commit stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.headers["X-Foo"].value, "1", "then the commit goes");
+}
+
 /// The row's copy button puts that row's value — as typed, tokens and all
 /// — on the clipboard, and says which row it took it from.
 #[test]

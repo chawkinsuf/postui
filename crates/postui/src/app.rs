@@ -3745,6 +3745,56 @@ impl App {
                 }
                 true
             }
+            Action::OverrideAutoHeader(i) => {
+                // The pencil is drawn on the Headers tab only, and the
+                // table state below is that tab's.
+                if self.editor.active_tab != EditorTab::Headers {
+                    return false;
+                }
+                // The row clicked, as the frame drew it: found again below
+                // by where it comes from and its name, not by `i`.
+                let Some(clicked) =
+                    self.editor.computed.rows.get(i).map(|r| (r.origin, r.header.name.clone()))
+                else {
+                    return false;
+                };
+                // A cell still open commits first, as an undo step of its
+                // own, so an undo of the new row leaves what was typed
+                // there. The section is read again after it: the commit can
+                // name this row's header and so override it.
+                if self.editor.table.editing.is_some() {
+                    self.commit_table_edit();
+                    self.capture_undo();
+                    let ctx = self.prepare_context();
+                    self.editor.recompute_computed_headers(&ctx);
+                }
+                let Some((name, value)) = self
+                    .editor
+                    .computed
+                    .rows
+                    .iter()
+                    .find(|r| (r.origin, &r.header.name) == (clicked.0, &clicked.1))
+                    .and_then(|r| r.overriding_row())
+                    .map(|(name, value)| (name.to_string(), value.to_string()))
+                else {
+                    // The commit took the row over: the redraw drops the
+                    // pencil and the closed cell.
+                    return true;
+                };
+                let entry = postui_core::model::Entry { value, enabled: true };
+                let at = self.editor.headers.len();
+                self.insert_row_copy(EditorTab::Headers, &name, entry, at);
+                // You take a header over to give it a value of your own
+                // (task #20), so its value opens, caret at the end: in
+                // Insert in the vim profile, as an add verb's row opens
+                // (vim spec §5.6).
+                self.vim_open_next_in_insert();
+                self.focus = PaneId::Editor;
+                self.editor.sub_focus = SubFocus::Content;
+                self.editor.table.col = crate::components::table_editor::Col::Value;
+                self.editor.table.begin_edit_selected(&self.editor.headers);
+                true
+            }
             Action::YankRequest(slug) => {
                 // Invisible until a put spends it (spec §5.1).
                 self.yank = crate::yank::Register::Request(slug);

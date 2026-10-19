@@ -373,12 +373,38 @@ pub struct HeaderRow {
     pub unsent: Option<Unsent>,
     /// Names of `{{tokens}}` in the name or value that didn't resolve.
     pub unresolved: Vec<String>,
+    /// How a request row taking this row over is written (task #20): a
+    /// default's name and value with their `{{tokens}}`, an auto or client
+    /// row's fixed text. `None` for a row the request may never take over:
+    /// its own rows, which the table already holds; a header the client
+    /// owns (R3a); the rows the client reads off the URL (`Host`, the
+    /// userinfo's `Authorization`, which copied into the request would
+    /// write the URL's credentials into the request file in the clear);
+    /// and any row the request has a row naming, enabled or disabled,
+    /// which is the one to edit. Whether the row is still sent is
+    /// [`HeaderRow::overriding_row`]'s to add.
+    ///
+    /// It carries the text, not a flag, so the click reads it off the one
+    /// list rather than finding the row's default again by name. The cost
+    /// is a copy of each default's name and value, and of `Accept`'s and
+    /// `Content-Type`'s, per call: a few short strings per frame of the
+    /// Headers tab and per send, beside the substitution and masking that
+    /// already allocate for every row.
+    pub override_as: Option<(String, String)>,
 }
 
 impl HeaderRow {
     /// Whether the row goes on the wire.
     pub fn sent(&self) -> bool {
         self.unsent.is_none()
+    }
+
+    /// The name and value of a request row that would take this row over,
+    /// so the user can give it a value of their own (task #20): its
+    /// [`HeaderRow::override_as`], while the row is sent. A row something
+    /// already overrides has none.
+    pub fn overriding_row(&self) -> Option<(&str, &str)> {
+        self.override_as.as_ref().filter(|_| self.sent()).map(|(n, v)| (n.as_str(), v.as_str()))
     }
 }
 
@@ -463,26 +489,37 @@ fn rows(
             substitute_masked(text, vars, secrets, &mut BTreeSet::new())
         }
     };
+    // Whether the request has a row, enabled or disabled, naming `name`
+    // (case-insensitively, after substitution: `{{h}}` with h = Accept is
+    // an Accept row). Such a row is the one to edit, so no other row of
+    // that name may be taken over (`override_as`).
+    let request_names: Vec<String> = req.headers.keys().map(|k| quiet(k)).collect();
+    let named_by_request = |name: &str| request_names.iter().any(|n| n.eq_ignore_ascii_case(name));
     // Substitutes name and value together, so a row reports the
     // unresolved tokens of both halves.
     let row = |name: &str, value: &str, origin: HeaderOrigin| {
         let mut unresolved = BTreeSet::new();
         let real_name = substitute_masked(name, vars, &no_mask, &mut unresolved);
         let real = substitute_masked(value, vars, &no_mask, &mut unresolved);
+        let owned = client_owned(&real_name);
+        let may_override =
+            origin == HeaderOrigin::Default && owned.is_none() && !named_by_request(&real_name);
         HeaderRow {
-            unsent: client_owned(&real_name).map(|header| Unsent::ClientOwned { header }),
+            unsent: owned.map(|header| Unsent::ClientOwned { header }),
             header: SentHeader {
                 display_name: masked(name, &real_name),
                 name: real_name,
                 display: masked(value, &real),
                 value: real,
             },
+            override_as: may_override.then(|| (name.into(), value.into())),
             origin,
             unresolved: unresolved.into_iter().collect(),
         }
     };
     // A row the client adds, shown as `display`: masked when a secret can
-    // change it (the URL's rows), else as it is sent (`fixed`).
+    // change it (the URL's rows), else as it is sent. The request may not
+    // take it over unless `fixed` says so.
     let client_row =
         |name: &str, value: String, display: String, unsent: Option<Unsent>| HeaderRow {
             header: SentHeader {
@@ -494,9 +531,13 @@ fn rows(
             origin: HeaderOrigin::Client,
             unsent,
             unresolved: Vec::new(),
+            override_as: None,
         };
-    let fixed = |name: &str, value: String, unsent: Option<Unsent>| {
-        client_row(name, value.clone(), value, unsent)
+    // An auto or client row of fixed text, shown as it is sent, that the
+    // request may take over unless it has a row naming it already.
+    let fixed = |name: &str, value: String, unsent: Option<Unsent>| HeaderRow {
+        override_as: (!named_by_request(name)).then(|| (name.to_string(), value.clone())),
+        ..client_row(name, value.clone(), value, unsent)
     };
 
     let mut rows = Vec::new();
@@ -508,13 +549,12 @@ fn rows(
     // the first is sent and the rest are reported — unless the name is
     // client-owned, when none of them is sent and there is no choice to
     // report.
-    let request_names: Vec<String> = req.headers.keys().map(|k| quiet(k)).collect();
     let mut claimed: BTreeSet<String> = BTreeSet::new();
     for (k, e) in ctx.default_headers.iter().filter(|(_, e)| e.enabled) {
         let mut r = row(k, &e.value, HeaderOrigin::Default);
         let lower = r.header.name.to_ascii_lowercase();
         // A client-owned default is already unsent, whatever else names it.
-        if r.sent() && request_names.iter().any(|n| n.eq_ignore_ascii_case(&r.header.name)) {
+        if r.sent() && named_by_request(&r.header.name) {
             r.unsent = Some(Unsent::Replaced);
         } else if r.sent() && !claimed.insert(lower.clone()) {
             warnings.push(PrepareWarning::DuplicateDefaultHeader { name: lower });
@@ -592,7 +632,8 @@ fn rows(
     // The byte length of what goes on the wire, never the masked body. An
     // empty body goes out with none (hyper sends no `content-length: 0`).
     if let Some(len) = body_len.filter(|&len| len > 0) {
-        rows.push(fixed("Content-Length", len.to_string(), None));
+        // The client's, like `Host`: never taken over (R3a).
+        rows.push(client_row("Content-Length", len.to_string(), len.to_string(), None));
     }
     rows
 }
@@ -1815,5 +1856,59 @@ mod tests {
         assert!(client(&rows, "Content-Length").sent());
         let (p, _) = prepare(&req, &c).unwrap();
         assert!(!p.wire.iter().any(|h| h.name == "transfer-encoding"));
+    }
+
+    /// A row the request may take over says how the request row that does
+    /// so is written (task #20): a default with its `{{tokens}}` as
+    /// written, the auto `Content-Type` and the client's `Accept` as sent.
+    /// The request's own rows, a row that isn't sent, the client-owned
+    /// rows and the URL's `Authorization` have none.
+    #[test]
+    fn header_rows_say_how_an_overriding_row_is_written() {
+        let mut req = base("https://user:pw@x.test/p");
+        req.method = Method::Post;
+        req.body = Some(Body::Json { text: "{}".into() });
+        req.headers.insert("X-Mine".into(), on("1"));
+        let c = ctx(
+            &[("api_key", "s3cret")],
+            &[("X-Key", "Bearer {{api_key}}", true), ("X-Mine", "0", true), ("Host", "h", true)],
+        );
+        let rows = header_rows(&req, &c);
+        let overriding = |origin: HeaderOrigin, name: &str| {
+            rows.iter()
+                .find(|r| r.origin == origin && r.header.name.eq_ignore_ascii_case(name))
+                .unwrap_or_else(|| panic!("no {origin:?} {name} row in {rows:#?}"))
+                .overriding_row()
+        };
+        assert_eq!(
+            overriding(HeaderOrigin::Default, "X-Key"),
+            Some(("X-Key", "Bearer {{api_key}}")),
+            "a default as written, its token unresolved"
+        );
+        assert_eq!(
+            overriding(HeaderOrigin::ContentType, "Content-Type"),
+            Some(("Content-Type", "application/json"))
+        );
+        assert_eq!(overriding(HeaderOrigin::Client, "Accept"), Some(("Accept", "*/*")));
+        let mine = HeaderOrigin::Request { row: 0 };
+        assert_eq!(overriding(mine, "X-Mine"), None, "already the request's");
+        assert_eq!(overriding(HeaderOrigin::Default, "X-Mine"), None, "replaced, so not sent");
+        assert_eq!(overriding(HeaderOrigin::Default, "Host"), None, "client-owned");
+        for name in ["Authorization", "Host", "Content-Length"] {
+            assert_eq!(overriding(HeaderOrigin::Client, name), None, "{name}");
+        }
+        // The field itself says so, sent or not, for a reader that
+        // doesn't go through `overriding_row`.
+        let never = |r: &&HeaderRow| r.override_as.is_none();
+        for name in ["Content-Length", "Host", "X-Mine"] {
+            assert!(rows.iter().filter(|r| r.header.name == name).all(|r| never(&r)), "{name}");
+        }
+
+        // A disabled request row leaves the client's row sent, but it is
+        // the row to edit: the client's row offers none.
+        req.headers.insert("accept".into(), off("text/plain"));
+        let rows = header_rows(&req, &c);
+        assert!(client(&rows, "Accept").sent());
+        assert_eq!(client(&rows, "Accept").overriding_row(), None);
     }
 }

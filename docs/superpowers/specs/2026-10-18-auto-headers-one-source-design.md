@@ -304,7 +304,7 @@ Replaced by #59 (§7): one wording, `X cannot be set manually`.
 #20 says `Host` and `Content-Length` "cannot be overridden". Until now
 the wire let a request row override them. R3a makes #20's premise true:
 those two get no promote button and no strike-through, and #20 needs
-nothing more for them.
+nothing more for them. *Done 2026-10-19 by #20: see §8.*
 
 ## 7. Task #59: struck in red, the reason in the footer (amended 2026-10-18)
 
@@ -333,3 +333,33 @@ hint table does, and `App::footer_hint` gives the footer a
 `CentreLine { hint, error }` (the error's forms, longest first), and the
 footer paints the hint where it fits, else the longest error form that
 does.
+
+## 8. Task #20: the pencil on an auto row (amended 2026-10-19)
+
+Striking overridden rows came with #57 (R5), and client-owned rows never
+strike as overridden (R3a, §7), so #20 adds the button that takes a row
+over. The user: "you would only promote if you wanted to customize the
+value" (`you`). In code it is "override" (`Hit::AutoHeaderOverride`,
+`HeaderRow::overriding_row`): the Vars tab's "promote" already names the
+opposite direction, from the request up into the project.
+
+| Rule | Who decided |
+|---|---|
+| An auto row the request may take over carries a `󰏫` pill right after its copy pill; the copy pill keeps its place on every row. Footer hint: `Edit this header in the request`. | `mine (approved)` |
+| A click adds the header to the request's Headers table, last, focuses the editor and opens the new row's value with the caret at the end. The auto row then strikes, overridden (R5). | `mine (approved)`, from the user's reason above |
+| A default's row is written as the project writes it, `{{tokens}}` and all; the auto `Content-Type` and the client's `Accept` as sent. | `mine (approved)` |
+| No pencil on a row that isn't sent (it is already overridden), on `Host`, `Content-Length` and `Transfer-Encoding` (R3a), or on the URL's `Authorization`, which would write the URL's credentials into the request file in the clear. | `you` for the client-owned rows (task text); `mine (approved)` for the rest |
+| No pencil on an auto or client row the request has a disabled row naming (a disabled row leaves `Accept` and `Content-Type` sent): that row is the one to edit. | `mine` |
+| Undo takes the value edit back first, then the row, as with any row added and then edited. | `mine (approved)` |
+| Mouse only, like the copy pill: the auto section has no cursor. | `mine (approved)` |
+
+Design: `HeaderRow` gains `override_as`, how a request row taking it
+over is written (`None` for a row the request may never take over: its
+own rows, a client-owned header, the URL's rows, and any row the request
+has a row naming), and `HeaderRow::overriding_row`, which is
+`override_as` while the row is sent. `Action::OverrideAutoHeader(i)`
+commits an open cell as its own undo step, re-reads the section, inserts
+the row and opens its value, in Insert in the vim profile, as an add
+verb's row opens (vim spec §5.6; review round 1). The vim seam opens an
+add verb's row fresh even when it lands on the cell id that was open (an
+open ghost cell; review round 2).

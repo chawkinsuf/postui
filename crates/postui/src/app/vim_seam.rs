@@ -266,6 +266,18 @@ impl App {
                 self.open_session(to, open_as, !mouse, Start::Normal);
             }
             Edge::Carry(from, to) => self.carry_session(from, to),
+            // An add verb's row can land on the id that was open: #20's
+            // pencil puts its row at the ghost row's index, and the table's
+            // add row reopens an emptied ghost key cell, so from an open
+            // ghost cell each opens the same cell id. What sets `add` makes
+            // a new field every time (a table's add resolves to the ghost
+            // row, or to nothing on the Body tab, which sets no flag), so
+            // the id is a new row's and it opens fresh, in Insert, as it
+            // would from any other cell (`:new` from an open cell, M5b).
+            Edge::Same(id) if add => {
+                self.close_session(id);
+                self.open_session(id, open_as, !mouse, Start::Normal);
+            }
             // Spec §3.3: the close edge also drops the router's pending
             // keys (amendment A4-1), but not the recording flag (the final
             // review's ruling I-4).
