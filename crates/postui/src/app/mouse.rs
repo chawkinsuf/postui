@@ -1075,11 +1075,20 @@ impl App {
     /// the main loop captures once per event, so without it whatever the
     /// same event does next (a click on another row's toggle, a click away
     /// whose action edits) would join the commit, and one undo would take
-    /// the typing back with it.
+    /// the typing back with it. It lives here rather than in the click
+    /// dispatch because keyboard paths commit through here too (a method
+    /// change that brings the Body tab back). A caller that edits the
+    /// request must commit *before* its own change, or the capture takes
+    /// both. What was already pending lands first, as a step of its own:
+    /// a jq filter typed while the cell stayed open behind the bar, whether
+    /// its session is still open (closed here, or the gate would hold the
+    /// commit's capture back) or the click already blurred it.
     pub(crate) fn commit_table_edit(&mut self) {
         if self.editor.table.editing.is_none() {
             return;
         }
+        self.flush_field_session();
+        self.capture_undo();
         if let Some(w) = self.editor.commit_table().warning {
             self.toasts.push(w, ToastKind::Warning);
         }

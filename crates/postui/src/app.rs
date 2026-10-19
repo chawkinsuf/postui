@@ -3321,6 +3321,10 @@ impl App {
                 None => false,
             },
             Action::CycleMethod => {
+                // An open cell commits before the method changes, as a step
+                // of its own (the tab sync below would commit it too late,
+                // in the same step as the method).
+                self.commit_table_edit();
                 self.no_coalesce = true;
                 self.editor.method = self.editor.method.cycle();
                 self.sync_active_tab();
@@ -3347,6 +3351,7 @@ impl App {
                 true
             }
             Action::SetMethod(m) => {
+                self.commit_table_edit(); // as `CycleMethod` does
                 self.no_coalesce = true;
                 self.editor.method = m;
                 self.sync_active_tab();

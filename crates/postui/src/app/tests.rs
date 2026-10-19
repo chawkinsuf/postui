@@ -2198,6 +2198,60 @@ fn a_click_away_that_edits_keeps_the_cells_commit_its_own_undo_step() {
     assert_eq!(app.editor.params["a"].value, "1", "then the commit goes");
 }
 
+/// A method change that brings the Body tab back commits the open cell on
+/// its way, and the commit is still a step of its own: undo takes the
+/// method back and leaves what was typed.
+#[test]
+fn a_method_change_keeps_the_cells_commit_its_own_undo_step() {
+    use postui_core::model::Method;
+    for action in [Action::CycleMethod, Action::SetMethod(Method::Post)] {
+        let mut app = app_with_a_typed_cell();
+        app.editor.preferred_tab = EditorTab::Body;
+        assert_eq!(app.editor.method, Method::Get);
+        app.update(action.clone());
+        app.capture_undo();
+        assert_eq!(app.editor.active_tab, EditorTab::Body, "{action:?}: the Body tab is back");
+        assert_eq!(app.editor.params["a"].value, "19", "{action:?}");
+
+        app.update(Action::Undo);
+        assert_eq!(app.editor.method, Method::Get, "{action:?}: the method goes first");
+        assert_eq!(app.editor.params["a"].value, "19", "{action:?}: the commit stays");
+        app.update(Action::Undo);
+        assert_eq!(app.editor.params["a"].value, "1", "{action:?}: then the commit goes");
+    }
+}
+
+/// A filter typed into the jq bar while a cell stays open behind it holds
+/// the app history's gate; a click away that edits still lands as three
+/// steps: the filter, the commit, the click's own action.
+#[test]
+fn a_click_away_past_an_edited_jq_bar_keeps_the_cells_commit_its_own_undo_step() {
+    let mut app = app_with_a_typed_cell();
+    app.editor.url = LineInput::new("https://example.com");
+    ready_response(&mut app, JQ_BODY);
+    app.capture_undo(); // the URL is the starting state, not an edit
+    app.update(Action::OpenJqBar);
+    type_str(&mut app, ".data");
+    app.sync_jq();
+    app.capture_undo();
+    assert!(app.editor.table.editing.is_some(), "the cell is still open behind the bar");
+    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    app.capture_undo();
+    app.sync_jq();
+    assert_eq!(app.editor.params["a"].value, "19");
+    assert!(app.editor.current_request().insecure);
+    assert_eq!(app.editor.jq, ".data");
+
+    app.update(Action::Undo);
+    assert!(!app.editor.current_request().insecure, "the toggle goes first");
+    assert_eq!(app.editor.params["a"].value, "19", "the commit stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["a"].value, "1", "then the commit goes");
+    assert_eq!(app.editor.jq, ".data", "the filter stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.jq, "", "then the filter goes");
+}
+
 /// Params `a=1, b=2, c=3`, editor focused.
 fn app_with_three_params() -> App {
     let mut app = App::new_for_test();

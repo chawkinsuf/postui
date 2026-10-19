@@ -124,8 +124,13 @@ cell outside the table's own keys) is captured right there, as a step of
 its own, before the rest of the event runs. A click on another row's
 toggle or trash, or a click away whose action edits (the TLS lock), would
 otherwise land in the same step as the commit, and one undo would take
-the typing back with it. A commit before a request switch or Save as is
-recorded under the request it was typed into.
+the typing back with it. Whatever was pending before the commit (a jq
+filter typed while the cell stayed open behind the bar) is captured
+first, its field session closed if it is still open. A caller that edits
+the request commits before its own change (a method change, which can
+bring the Body tab back and so commit the cell). A commit before a
+request switch or Save as is recorded under the request it was typed
+into.
 
 ### Coalescing
 
