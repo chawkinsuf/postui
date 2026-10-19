@@ -253,7 +253,8 @@ first, so `https:///host` has a `Host` row like the wire does.
   the editor draws them struck through (R5 as amended).
 - `HeaderOrigin::Request { row }` carries the table index for R3b,
   rather than the editor matching rows by name or by order.
-- R3b's note wording: `not sent · the client sets Host`.
+- ~~R3b's note wording: `not sent · the client sets Host`.~~ Replaced
+  by #59 (§7).
 
 ## 5a. Task #22: every header the client adds (amended 2026-10-18)
 
@@ -290,12 +291,13 @@ rule. The `Basic` encoding is one helper,
 shared with curl import's `-u`. Core gains the `percent-encoding` crate,
 already in the lock file as `url`'s.
 
-*Review rounds 1–2:* the note `not sent · set by the client only` (R3b,
+~~*Review rounds 1–2:* the note `not sent · set by the client only` (R3b,
 since #21) also covered rows where the client sends no such header at
 all (a typed `Transfer-Encoding`; `Content-Length` on a GET or an empty
 body), and read as if it did. It becomes `not sent · only the client may
 set X`, which says who may set it and nothing about what goes out
-(`mine (approved)`). `the client sets X` stays for when it does.
+(`mine (approved)`). `the client sets X` stays for when it does.~~
+Replaced by #59 (§7): one wording, `X cannot be set manually`.
 
 ## 6. A note for #20
 
@@ -318,7 +320,8 @@ R3b's note, and R3d's and §5a's wordings with it.
 | The footer's centre line shows it while the row is hovered, like any hover hint: a table row's surface or cell, or an auto row's (`Hit::AutoHeaderRow`, a surface whose click is the bare pane's). Whatever sits on top of the row (a token, a button) is its own hover. When the hover gives no message, it shows for the focused table's cursor row. A hovered button's own hint comes first. Struck defaults explain themselves on hover only: the auto section has no cursor. | `mine (approved)`; kept the ordinary hover rule after review round 2 (`you`: "we have messages in the footer on hover all the time") |
 | It is an error message: drawn in the error colour, and the per-pane chips stop short to make room for it, rightmost first, so a narrow footer still says it. A hover hint still takes only the room the chips leave. | room: `mine (approved)` (review round 1: below ~140 columns there was none); error colour `you` ("error message beats chips") |
 | It shows with `hover_hints = false`, since it replaces a note that always showed; it is silent under a dialog, off the request screen, and over a hovered footer chip (which its room would push aside). | `mine` |
-| Like the row's red strike, it follows the committed key: renaming a `Host` row keeps saying so until the new name commits. | `mine` (review round 1 raised it) |
+| Like the row's red strike, it follows the committed key, so while a cell is open no row says anything: the edit's commit and cancel chips keep the footer. | `mine` (review rounds 1 and 3 raised it) |
+| When the hover has nothing to say, the cursor row speaks even with the pointer on another, ordinary row: the footer is the keyboard's context, as its chips are. A footer too narrow for even a shortened error keeps its chips. | `mine` (review rounds 1–3 flipped on the first point; kept) |
 
 Design: `Unsent::ClientOwned` loses `client_sends`, which only chose
 between the two old wordings, and `rows()` its pass that filled it.

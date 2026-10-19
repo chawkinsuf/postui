@@ -489,13 +489,17 @@ pub fn draw_footer(
     // of vim's status beside it, rather than leave it out. Past the text
     // it needs the chip row's trailing gap and its own leading column (3)
     // and the column kept clear of the commands chip's pad (1), plus 1
-    // to breathe.
+    // to breathe. A footer too narrow for even a shortened error keeps
+    // its chips: cutting them would show neither.
     let chip_limit = match centre {
         Some(CentreLine::Error(error)) => {
-            let status_w = vim_status.map_or(0, |s| crate::ui::cells(s) as u16 + 1);
+            let pad = 5 + vim_status.map_or(0, |s| crate::ui::cells(s) as u16 + 1);
             let text_w = (crate::ui::cells(error) as u16).max(HINT_MIN_SHOWN);
-            let wanted = text_w + 5 + status_w;
-            right_limit.saturating_sub(wanted).max(start_x)
+            if right_limit.saturating_sub(start_x) >= HINT_MIN_SHOWN + pad {
+                right_limit.saturating_sub(text_w + pad).max(start_x)
+            } else {
+                right_limit
+            }
         }
         _ => right_limit,
     };
@@ -517,10 +521,10 @@ pub fn draw_footer(
         }
     }
     // The hint sits in the gap between the chips and the status (or the
-    // commands/quit pair), and the chips never yield it more room: a
-    // hovered chip must stay under the pointer, since hover is re-resolved
-    // against every frame's hit map, so a gap too small for a useful line
-    // leaves the hint out.
+    // commands/quit pair), and the chips never yield a hint more room
+    // (an error took its own above): a hovered chip must stay under the
+    // pointer, since hover is re-resolved against every frame's hit map,
+    // so a gap too small for a useful line leaves the hint out.
     if let Some(centre) = centre {
         let (line, color) = match centre {
             CentreLine::Hint(hint) => (hint, theme.text_muted),

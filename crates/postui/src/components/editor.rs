@@ -650,18 +650,26 @@ impl Editor {
     /// explains any hovered control: for the row `hovered` (a table row's
     /// surface or cell, or an auto row), else, for the keyboard, the table
     /// row under the cursor while the table holds it (`focused`: the
-    /// editor pane has it).
+    /// editor pane has it). The fallback holds even with the pointer on
+    /// another, ordinary row: the footer is the keyboard's context — its
+    /// chips name the cursor row's keys wherever the pointer is — and a
+    /// hover that has nothing to say leaves it so.
     ///
     /// Like the row's own red strike, the verdict follows the committed
-    /// key: a name being typed is judged once it lands, so renaming a
-    /// `Host` row keeps saying so until the new name commits.
+    /// key, so while a cell is open no row says anything: the name being
+    /// typed is judged once it lands, and the footer's room goes to the
+    /// edit's own commit and cancel chips (the click that opened the cell
+    /// usually leaves the pointer on its row).
     pub fn client_owned_message(
         &self,
         hovered: Option<&crate::hit::Hit>,
         focused: bool,
     ) -> Option<String> {
         use crate::hit::Hit;
-        if self.active_tab != EditorTab::Headers || self.table_collapsed {
+        if self.active_tab != EditorTab::Headers
+            || self.table_collapsed
+            || self.table.editing.is_some()
+        {
             return None;
         }
         let table_row = |i: usize| match self.computed.notes.get(i)? {
@@ -5919,6 +5927,14 @@ url = "https://api.example.com/users""#,
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("Content-Length cannot be set manually"), "{content}");
         assert!(content.contains("commands"), "the right-hand chips stay: {content}");
+
+        // Too narrow for even a shortened error: the chips stay rather than
+        // the footer showing neither.
+        let mut terminal = Terminal::new(TestBackend::new(50, 40)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(!content.contains("cannot be set"), "{content}");
+        assert!(content.contains(" send "), "the editor's first chip stays: {content}");
     }
 
     /// The footer message follows the keyboard cursor too: on a typed
@@ -5948,9 +5964,19 @@ url = "https://api.example.com/users""#,
         let (_, content) = draw_wide(&mut app);
         assert!(!content.contains("cannot be set manually"), "{content}");
 
+        // While a cell is open the edit's chips have the footer, hovered
+        // or not: the name being typed is judged once it lands.
+        app.editor.table.selected = Some(0);
+        app.editor.table.begin_edit_selected(&app.editor.headers);
+        assert!(app.editor.table.editing.is_some());
+        app.hovered = Some(Hit::TableCell { row: 0, col: 0 });
+        let (_, content) = draw_wide(&mut app);
+        assert!(!content.contains("cannot be set manually"), "{content}");
+        app.editor.table.editing = None;
+        app.hovered = None;
+
         // Under a dialog the keyboard is the dialog's, so the cursor row
         // says nothing.
-        app.editor.table.selected = Some(0);
         app.modals
             .push(crate::components::modal::Modal::Message { title: "t".into(), body: "b".into() });
         let (_, content) = draw_wide(&mut app);
