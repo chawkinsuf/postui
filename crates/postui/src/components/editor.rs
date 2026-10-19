@@ -481,11 +481,13 @@ impl Editor {
         self.set_saved(Some(req));
         self.computed.revealed = false;
         // A cell still open belongs to the request being replaced: drop
-        // it, never let it commit into this one (task #63). A click that
+        // it, never let it commit into this one (task #66). A click that
         // opens another request commits it first, so the dirty gate sees
-        // it; nothing else carries it over.
+        // it; nothing else carries it over. A landing that reloads the same
+        // request (a move-all following it) drops it too, until the dirty
+        // gate sees an open cell (#63). The row selection stays, as it
+        // always has: Save As lands on the content it was made in.
         self.table.editing = None;
-        self.table.selected = None;
     }
 
     /// Swaps in `req`'s fields the way `load` does, for undo/redo stepping

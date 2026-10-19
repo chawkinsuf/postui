@@ -141,7 +141,12 @@ it and its step is recorded under the request it was typed into; any
 other open (the keyboard, a palette row, which keeps the cell open)
 drops the cell in `Editor::load`, so it never commits into the request
 that opens. Such a drop loses the cell's typing; the dirty gate does not
-see an open cell yet.
+see an open cell yet. A landing that reloads the same request (a move-all
+that the open request follows) drops it too, where it used to survive
+the reload; keeping the drop until #63 fixes both is `mine (approved)`.
+The load drops only the cell: the row selection stays, so Save As keeps
+it. A change a tooltip pill makes to the open tab's map while the gate
+holds, without committing the cell, joins the commit's step beneath.
 
 ### Coalescing
 

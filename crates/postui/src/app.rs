@@ -2468,33 +2468,33 @@ impl App {
     /// anything else changed while the gate holds (a method change, a
     /// format) stays pending and joins the field's close, the gate's rule.
     ///
-    /// Copying the whole map is exact because nothing else can be pending
-    /// in it: a row toggle, delete or duplicate comes from the table's own
-    /// keys (the caret is in the table, so no field holds the gate) or from
-    /// a table hit, footer chip or row menu, which commits the cell first,
-    /// so no open cell is left to commit over the change. The shadow is always
-    /// for this request here too: a cell opens in an event the gate does
-    /// not hold, whose capture seeds it, and opening another request drops
-    /// the cell (`Editor::load`).
+    /// The step copies the whole map, so a change to that same map made
+    /// under the gate without committing the cell first rides in it: a
+    /// tooltip pill's remove-variable (a float overlay, which keeps the
+    /// cell open) followed by a Send. That merges two changes into one
+    /// step; letting the commit wait instead, as before #66, merges all
+    /// three into the field's close. Row toggles, deletes and duplicates
+    /// can't: they come from the table's own keys (the caret is in the
+    /// table, so no field holds the gate) or from a table hit, footer chip
+    /// or row menu, which commits the cell first.
     fn capture_table_commit(&mut self) {
         if !self.field_gate() {
             self.capture_undo();
             return;
         }
-        // The request changed under the commit (no shadow yet, or another
-        // request open): the next capture re-seeds.
-        let Some((slug, prev)) = self.shadow.take_if(|(slug, _)| *slug == self.editor.slug) else {
+        let tab = self.editor.active_tab;
+        let Some(map) = self.editor.table_map(tab) else { return };
+        // No shadow for the open request (none yet, or another request's):
+        // the next capture re-seeds.
+        let Some((slug, prev)) = self.shadow.take_if(|(s, _)| *s == self.editor.slug) else {
             return;
         };
         let mut after = prev.clone();
-        let (field, map) = match self.editor.active_tab {
-            EditorTab::Params => (&mut after.params, &self.editor.params),
-            EditorTab::Headers => (&mut after.headers, &self.editor.headers),
-            EditorTab::Vars => (&mut after.variables, &self.editor.variables),
-            EditorTab::Body => {
-                self.shadow = Some((slug, prev));
-                return;
-            }
+        let field = match tab {
+            EditorTab::Params => &mut after.params,
+            EditorTab::Headers => &mut after.headers,
+            EditorTab::Vars => &mut after.variables,
+            EditorTab::Body => unreachable!("Body has no table map"),
         };
         if field == map {
             self.shadow = Some((slug, prev));
@@ -8293,11 +8293,13 @@ impl App {
     /// replacement shares, in one place: a cell still under the caret is
     /// part of what is being thrown away, so it is dropped WITHOUT being
     /// committed, the selection into it goes with it (no stale row index
-    /// survives; `Editor::load` drops both), and the tab bar re-syncs to
-    /// the request that just landed. Shared by `Action::DiscardChanges`
-    /// and `Action::ReloadOpenRequest`; the caller owns the undo
-    /// bookkeeping (`no_coalesce`) and the toast.
+    /// survives), and the tab bar re-syncs to the request that just
+    /// landed. Shared by `Action::DiscardChanges` and
+    /// `Action::ReloadOpenRequest`; the caller owns the undo bookkeeping
+    /// (`no_coalesce`) and the toast.
     fn reseed_editor(&mut self, slug: Option<String>, req: postui_core::model::HttpRequest) {
+        // `Editor::load` drops the cell; the selection is ours to drop.
+        self.editor.table.selected = None;
         self.editor.load(slug, req);
         self.sync_active_tab();
     }

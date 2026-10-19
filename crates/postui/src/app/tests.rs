@@ -22671,6 +22671,23 @@ fn opening_another_request_drops_a_cell_left_open() {
     assert_eq!(app.history.undo_len(), steps, "and gains no undo step");
 }
 
+/// A load drops only the open cell: Save As lands on the content it was
+/// made in, so the row the user had selected stays selected (task #66).
+#[test]
+fn save_as_keeps_the_row_selection() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.editor.active_tab = EditorTab::Params;
+    app.editor.preferred_tab = EditorTab::Params;
+    app.editor
+        .params
+        .insert("a".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    app.editor.table.selected = Some(0);
+    app.update(Action::SaveRequestAs("copy".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/copy"));
+    assert_eq!(app.editor.table.selected, Some(0));
+}
+
 #[test]
 fn a_live_drag_paints_exactly_one_selection_band() {
     use ratatui::Terminal;
