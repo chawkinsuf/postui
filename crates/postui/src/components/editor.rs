@@ -234,6 +234,14 @@ pub struct Editor {
     /// (including the very first frame before anything has drawn). Mouse
     /// events are hit-tested against this before being forwarded to edtui.
     pub last_body_area: Option<Rect>,
+    /// Every Headers-tab row on the last frame (the request table's rows,
+    /// its add row, and the auto section's rows), each with the
+    /// client-owned header it names, if any. Recorded by
+    /// `draw_tab_content`'s Headers arm, empty on any other tab. The
+    /// footer looks the pointer up here (`client_owned_message`), so
+    /// whatever lies on top of a row — a token, a button — still counts
+    /// as the row, and the click hit map needs no entry of its own.
+    last_header_rows: Vec<(Rect, Option<&'static str>)>,
     /// Mirrors whether the open request has a send in flight, synced by `App::update` on every
     /// action alongside `open_slug`. Draw-only: swaps the address bar's Send
     /// cap to its spinner + "Sending" face (or "Cancel" on hover); its
@@ -357,6 +365,7 @@ impl Default for Editor {
             url_open: false,
             table: TableEditorState::default(),
             last_body_area: None,
+            last_header_rows: Vec::new(),
             sending: false,
             last_method_area: None,
             last_url_text_area: None,
@@ -646,29 +655,37 @@ impl Editor {
 
     /// What the footer says about a header row the client owns (spec
     /// 2026-10-18 R3b, task #59). Such a row draws struck in red and says
-    /// nothing on its own line, so the footer explains it: for the row
-    /// under the pointer first, else for the table row under the keyboard
-    /// cursor while the table holds the keyboard (`focused`: the editor
+    /// nothing on its own line, so the footer explains it. The row under
+    /// the `pointer` decides whenever the pointer is on a row of the tab,
+    /// so an ordinary row under it says nothing rather than naming another
+    /// row's header. Off the rows, the table row under the keyboard cursor
+    /// decides while the table holds the keyboard (`focused`: the editor
     /// pane has it).
+    ///
+    /// Like the row's own red strike, the verdict follows the committed
+    /// key: a name being typed is judged once it lands, so renaming a
+    /// `Host` row keeps saying so until the new name commits.
     pub fn client_owned_message(
         &self,
-        hovered: Option<&crate::hit::Hit>,
+        pointer: Option<(u16, u16)>,
         focused: bool,
     ) -> Option<String> {
-        use crate::hit::Hit;
         if self.active_tab != EditorTab::Headers || self.table_collapsed {
             return None;
         }
-        let table_row = |i: usize| *self.computed.client_owned.get(i)?;
-        let hovered = match hovered {
-            Some(Hit::TableRow(i) | Hit::TableCell { row: i, .. }) => table_row(*i),
-            Some(Hit::AutoHeaderRow(i)) => client_owned_header(self.computed.rows.get(*i)?.unsent),
-            _ => None,
-        };
-        let cursor = (focused && self.sub_focus == SubFocus::Content)
-            .then_some(self.table.selected)
-            .flatten();
-        let header = hovered.or_else(|| table_row(cursor?))?;
+        let under_pointer = pointer.and_then(|(x, y)| {
+            let at = ratatui::layout::Position { x, y };
+            self.last_header_rows.iter().find(|(rect, _)| rect.contains(at))
+        });
+        let header = match under_pointer {
+            Some((_, header)) => *header,
+            None => {
+                let cursor = (focused && self.sub_focus == SubFocus::Content)
+                    .then_some(self.table.selected)
+                    .flatten();
+                *self.computed.client_owned.get(cursor?)?
+            }
+        }?;
         Some(format!("{header} cannot be set manually"))
     }
 
@@ -3022,6 +3039,7 @@ impl Editor {
         let theme = ctx.theme;
         let focused = ctx.focused && self.sub_focus == SubFocus::Content;
         self.last_body_area = None;
+        self.last_header_rows.clear();
         match self.active_tab {
             EditorTab::Params => {
                 if self.table_collapsed {
@@ -3148,8 +3166,17 @@ impl Editor {
                     &notes,
                     &self.vars,
                 );
+                // Each drawn table row (the add row past the last) as the
+                // table registered it, for the footer's pointer lookup.
+                for i in 0..=self.headers.len() {
+                    if let Some(rect) = hits.rect_of(&crate::hit::Hit::TableRow(i)) {
+                        let header = self.computed.client_owned.get(i).copied().flatten();
+                        self.last_header_rows.push((rect, header));
+                    }
+                }
                 if let Some(computed_area) = computed_area {
-                    self.draw_computed_headers(frame, computed_area, ctx, hits);
+                    let rows = self.draw_computed_headers(frame, computed_area, ctx, hits);
+                    self.last_header_rows.extend(rows);
                 }
             }
             EditorTab::Body => {
@@ -3416,21 +3443,22 @@ impl Editor {
     /// that isn't sent (a default, auto or client row something overrides,
     /// a duplicate default, or a default naming a client-owned header,
     /// which also reads as an error) renders struck through; an unresolved
-    /// `{{token}}` is tinted span-level. Each row is a hover target
-    /// (`Hit::AutoHeaderRow`, for the footer's client-owned message) with
-    /// a trailing `󰆏` copy icon (`Hit::AutoHeaderCopy`), both indexed
-    /// into `rows`; the divider
+    /// `{{token}}` is tinted span-level. Each row gets a trailing `󰆏` copy
+    /// icon (`Hit::AutoHeaderCopy`, indexed into `rows`); the divider
     /// carries a `👁 reveal`/`hide` toggle (`Hit::AutoHeaderReveal`)
-    /// whenever a row has a secret to reveal.
+    /// whenever a row has a secret to reveal. Returns each drawn row's
+    /// rect with the client-owned header it names, for
+    /// `last_header_rows`.
     fn draw_computed_headers(
         &self,
         frame: &mut Frame,
         area: Rect,
         ctx: &DrawCtx,
         hits: &mut crate::hit::HitMap,
-    ) {
+    ) -> Vec<(Rect, Option<&'static str>)> {
+        let mut drawn = Vec::new();
         if area.height == 0 || area.width == 0 {
-            return;
+            return drawn;
         }
         let theme = ctx.theme;
         let dim = Style::default().fg(theme.text_muted);
@@ -3488,8 +3516,8 @@ impl Editor {
             // the reason in the footer (spec 2026-10-18 R3b, task #59):
             // struck and dim alone, it would look overridden by a request
             // row that isn't there.
-            let client_owned = client_owned_header(row.unsent).is_some();
-            let base = if client_owned { Style::default().fg(theme.error) } else { dim };
+            let client_owned = client_owned_header(row.unsent);
+            let base = if client_owned.is_some() { Style::default().fg(theme.error) } else { dim };
             let mut name_style = base;
             // The value draws dim throughout; an unresolved `{{token}}` in
             // it is tinted span-level by `paint_var_tokens` below (Task 12
@@ -3528,9 +3556,7 @@ impl Editor {
             let line = Line::from(spans);
             let row_rect = Rect::new(area.x, y, area.width, 1);
             frame.render_widget(Paragraph::new(line), row_rect);
-            // The whole row is a hover target, under its tokens and pill,
-            // so the footer can say why a struck row isn't sent.
-            hits.register(row_rect, crate::hit::Hit::AutoHeaderRow(i));
+            drawn.push((row_rect, client_owned));
             // The tokens all lie in the value, so clipping them to the
             // whole row keeps them off the name. A struck (unsent) row's
             // tokens are tinted too, as a disabled table row's are: the
@@ -3556,6 +3582,7 @@ impl Editor {
             );
             y += 1;
         }
+        drawn
     }
 }
 
@@ -5876,24 +5903,66 @@ url = "https://api.example.com/users""#,
         assert_eq!(buf[(vx, vy)].fg, app.theme.error, "the row reads as an error");
         assert!(!content.contains("cannot be set manually"), "no inline note: {content}");
 
-        let i = app.editor.computed.rows.iter().position(|r| r.header.value == "internal.test");
-        let hit = Hit::AutoHeaderRow(i.expect("the default's auto row"));
-        let row = app.hits.rect_of(&hit).expect("the auto row is a hover target");
-        assert_eq!(row.y, vy, "on the default's own row");
-        app.hovered = Some(hit);
+        // Anywhere on the row counts, the indent before the name included
+        // (`  Host: ` puts the row's first cell 8 left of the value).
+        app.pointer = Some((vx - 8, vy));
+        let (terminal, content) = draw_wide(&mut app);
+        let (mx, my) = find_text(terminal.backend().buffer(), "Host cannot be set manually")
+            .unwrap_or_else(|| panic!("the footer says why: {content}"));
+        let buf = terminal.backend().buffer();
+        assert_eq!(buf[(mx, my)].fg, app.theme.error, "an error message");
+    }
+
+    /// On a narrow footer the chips stop short to make room for the error,
+    /// rather than leave it out (task #59): at 110 columns the editor's
+    /// chips alone leave less than a hint's minimum.
+    #[test]
+    fn a_narrow_footer_makes_room_for_the_client_owned_error() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.url = LineInput::new("https://example.com/foo");
+        app.editor
+            .headers
+            .insert("Content-Length".into(), Entry { value: "5".into(), enabled: true });
+        app.focus = crate::layout::PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Content;
+        app.editor.table.selected = Some(0);
+        app.update(Action::Render);
+        let mut terminal = Terminal::new(TestBackend::new(110, 40)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("Content-Length cannot be set manually"), "{content}");
+        assert!(content.contains("commands"), "the right-hand chips stay: {content}");
+    }
+
+    /// The row under the pointer decides wherever the pointer is on a row:
+    /// on a token in a client-owned row it still speaks, and on an
+    /// ordinary row it says nothing, rather than name the cursor's row.
+    #[test]
+    fn the_pointer_row_decides_over_the_cursor_row() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.url = LineInput::new("https://example.com/foo");
+        app.editor.headers.insert("host".into(), Entry { value: "{{h}}".into(), enabled: true });
+        app.editor.headers.insert("X-A".into(), Entry { value: "1".into(), enabled: true });
+        app.focus = crate::layout::PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Content;
+        app.editor.table.selected = Some(0);
+        app.update(Action::Render);
+        draw_wide(&mut app);
+
+        let plain = app.hits.rect_of(&Hit::TableCell { row: 1, col: 1 }).unwrap();
+        app.pointer = Some((plain.x, plain.y));
+        app.hovered = Some(Hit::TableCell { row: 1, col: 1 });
+        let (_, content) = draw_wide(&mut app);
+        assert!(!content.contains("cannot be set manually"), "{content}");
+
+        let token = app.hits.rect_of(&Hit::VarToken("h".into())).expect("the token");
+        app.pointer = Some((token.x, token.y));
+        app.hovered = Some(Hit::VarToken("h".into()));
+        app.editor.table.selected = Some(1);
         let (_, content) = draw_wide(&mut app);
         assert!(content.contains("Host cannot be set manually"), "{content}");
-
-        // A click on the row does what one on the bare pane under it did.
-        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-        app.focus = crate::layout::PaneId::Sidebar;
-        app.handle_mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: row.x,
-            row: row.y,
-            modifiers: KeyModifiers::NONE,
-        });
-        assert_eq!(app.focus, crate::layout::PaneId::Editor);
     }
 
     /// The footer message follows the keyboard cursor too: on a typed
@@ -5958,6 +6027,8 @@ url = "https://api.example.com/users""#,
         assert!(!buffer_has_crossed_out(buf, "example.com"), "and it is not struck");
 
         app.ui_settings.hover_hints = false;
+        let value = app.hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
+        app.pointer = Some((value.x, value.y));
         app.hovered = Some(Hit::TableCell { row: 0, col: 1 });
         let (_, content) = draw_wide(&mut app);
         assert!(content.contains("Host cannot be set manually"), "{content}");
@@ -6574,7 +6645,11 @@ url = "https://api.example.com/users""#,
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 5)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| e.draw_computed_headers(f, f.area(), &ctx, &mut hits)).unwrap();
+        terminal
+            .draw(|f| {
+                e.draw_computed_headers(f, f.area(), &ctx, &mut hits);
+            })
+            .unwrap();
         (hits, terminal.backend().buffer().clone())
     }
 

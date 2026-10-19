@@ -1177,12 +1177,14 @@ impl App {
     }
 
     /// The footer's centre line: the hovered button's hint (unless
-    /// `hover_hints` is off), else why the header row under the pointer
-    /// or the keyboard cursor isn't sent (task #59). That message stands
-    /// in for a note that used to sit on the row itself, so the hints
-    /// switch leaves it on. It speaks only on the request screen with no
-    /// dialog up: otherwise the keyboard is elsewhere.
-    pub fn footer_hint(&self) -> Option<String> {
+    /// `hover_hints` is off), else the error for the header row under the
+    /// pointer or the keyboard cursor that isn't sent (task #59). The
+    /// error stands in for a note that used to sit on the row itself, so
+    /// the hints switch leaves it on. It speaks only on the request screen
+    /// with no dialog up, since the keyboard is elsewhere otherwise, and
+    /// never over a hovered footer chip, which its room would push aside.
+    pub fn footer_hint(&self) -> Option<crate::components::footer::CentreLine> {
+        use crate::components::footer::CentreLine;
         let hovered = self.hovered.as_ref();
         let hint = self
             .ui_settings
@@ -1190,11 +1192,18 @@ impl App {
             .then_some(hovered)
             .flatten()
             .and_then(|h| crate::hint::hint_for(h, &self.keymap, &self.hint_ctx(h)));
-        hint.or_else(|| {
-            (self.screen == Screen::Main && self.modals.top().is_none())
-                .then(|| self.editor.client_owned_message(hovered, self.focus == PaneId::Editor))
-                .flatten()
-        })
+        if let Some(hint) = hint {
+            return Some(CentreLine::Hint(hint));
+        }
+        let quiet = self.screen != Screen::Main
+            || self.modals.top().is_some()
+            || matches!(hovered, Some(Hit::FooterChip(_)));
+        if quiet {
+            return None;
+        }
+        self.editor
+            .client_owned_message(self.pointer, self.focus == PaneId::Editor)
+            .map(CentreLine::Error)
     }
 
     /// The state the hovered control's hint needs (see [`crate::hint::HintCtx`]).

@@ -115,14 +115,16 @@ pub fn header_rows(req: &HttpRequest, ctx: &PrepareContext) -> Vec<HeaderRow>
 *Amended 2026-10-18 after review round 3:*
 - `HeaderRow.sent: bool` becomes `unsent: Option<Unsent>`, which says
   why a row isn't sent: `Replaced`, `Duplicate`, or
-  `ClientOwned { header, client_sends }`. The editor reads the reason
+  `ClientOwned { header, client_sends }` (`client_sends` removed by
+  #59, §7). The editor reads the reason
   instead of calling `client_owned` on the name again (`mine`). It is
   the reason #57 strikes overridden rows by.
-- R3b's note names the client's row only when the client sends one:
+- ~~R3b's note names the client's row only when the client sends one:
   `not sent · the client sets Host`, else
   `not sent · set by the client only`. A GET has no `Content-Length`,
   and a `{{token}}` host has no `Host` yet. The user picked this from
-  the options (`mine (approved)`).
+  the options (`mine (approved)`).~~ Replaced by #59's footer message
+  (§7).
 - If the masked URL has no host, the masked `Host` falls back to the
   mask, never to the real host. A secret port, or a label pushed past 63
   characters, shows the authority as written, still masked. That
@@ -275,7 +277,7 @@ Rules added:
 | R1b | ~~A typed `Authorization` that replaces the URL's is listed where it is typed.~~ *Replaced after review round 2:* the sent section follows the wire's own order rule, probed on a raw server: reqwest's map holds all of a name's values together, at the place the name first went in, and the URL's `Authorization` goes in first. So a row that replaces it goes out, and is listed, first; and `X-A`, `X-B`, `x-a` go out as `x-a, x-a, x-b` (this was already misordered on main). `PreparedRequest.wire` holds that list, built once by `prepare` (`wire_order`); it replaces `client_headers`. The editor keeps table order. | `mine (approved)` |
 | R1c | When a secret can change it (the parser test of R4), the row shows as `Basic ●●●●●●`; otherwise as sent, since the URL bar already shows the userinfo. | `mine (approved)` |
 | R3c | The client's `Content-Length` is listed only for a body with bytes in it. | follows the wire |
-| R3d | `Transfer-Encoding` joins R3a's client-owned names. A typed one is listed but never sent, with `not sent · only the client may set Transfer-Encoding`, since the client never sends one for a body of known length. A chunked body can no longer be sent on purpose, and curl export leaves it out, as R9 does for `Host`/`Content-Length`. | `mine (approved)` |
+| R3d | `Transfer-Encoding` joins R3a's client-owned names. A typed one is listed but never sent, with ~~`not sent · only the client may set Transfer-Encoding`~~ (since #59, §7: struck in red, the footer says `Transfer-Encoding cannot be set manually`), since the client never sends one for a body of known length. A chunked body can no longer be sent on purpose, and curl export leaves it out, as R9 does for `Host`/`Content-Length`. | `mine (approved)` |
 | R10 | `Proxy-Authorization` is left out: it goes to the proxy, not the server, and listing it means copying reqwest's proxy env matching into core. Nothing filed. | `mine (approved)` |
 
 Design: `url_headers` reads the `Host` and the userinfo's
@@ -313,12 +315,16 @@ R3b's note, and R3d's and §5a's wordings with it.
 | A typed client-owned row (enabled) draws struck through in the error colour, over exactly its text, with nothing after the value. A disabled one draws as any disabled row. | `you` (strike, red); disabled unchanged `mine` |
 | A default the rule drops keeps its struck, red auto row, with no inline note. | `mine (approved)` |
 | The message is `<header> cannot be set manually`, e.g. `Content-Length cannot be set manually`, whether or not the client sends its own row. | `you` |
-| The footer's centre line shows it while the pointer is over the row (a table row, or an auto row via `Hit::AutoHeaderRow`), else while the focused table's cursor is on one. A hovered button's own hint comes first. | `mine (approved)` |
-| It shows with `hover_hints = false`, since it replaces a note that always showed; it is silent under a dialog and off the request screen. | `mine` |
+| The footer's centre line shows it while the pointer is anywhere on the row (a table row or an auto row, a token or button on it included). When the pointer is on any other row of the tab, the footer says nothing rather than name the cursor's row. Off the rows, it shows while the focused table's cursor is on one. A hovered button's own hint comes first. | `mine (approved)`; pointer row beats cursor row `mine` (review round 1) |
+| It is an error message: drawn in the error colour, and the per-pane chips stop short to make room for it, rightmost first, so a narrow footer still says it. A hover hint still takes only the room the chips leave. | room: `mine (approved)` (review round 1: below ~140 columns there was none); error colour `you` ("error message beats chips") |
+| It shows with `hover_hints = false`, since it replaces a note that always showed; it is silent under a dialog, off the request screen, and over a hovered footer chip (which its room would push aside). | `mine` |
+| Like the row's red strike, it follows the committed key: renaming a `Host` row keeps saying so until the new name commits. | `mine` (review round 1 raised it) |
 
 Design: `Unsent::ClientOwned` loses `client_sends`, which only chose
 between the two old wordings, and `rows()` its pass that filled it.
 `RowNote` becomes `Dim(String) | Unsent`. `ComputedHeadersView` keeps
-`client_owned: Vec<Option<&'static str>>` per request row;
-`Editor::client_owned_message` and `App::footer_hint` feed the footer.
-A click on an auto row does what a click on the bare pane did.
+`client_owned: Vec<Option<&'static str>>` per request row. The editor
+records each drawn Headers-tab row's rect with its verdict
+(`last_header_rows`), and `Editor::client_owned_message` looks the
+pointer up there, so the click hit map is unchanged. `App::footer_hint`
+gives the footer a `CentreLine::Hint` or `CentreLine::Error`.

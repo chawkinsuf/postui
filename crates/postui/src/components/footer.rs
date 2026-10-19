@@ -317,6 +317,21 @@ pub(crate) fn tabs_key() -> Key {
 /// lists. `draw_footer` spells the keycap (piece 4 spec §4.6).
 pub type FooterChip = (Key, String, Option<Action>);
 
+/// What the footer's centre line says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CentreLine {
+    /// The hovered button's hint (`hint::hint_for`), muted. It takes only
+    /// the room the chips leave: a hovered chip must stay under the
+    /// pointer, and hover is re-resolved against every frame's hit map.
+    Hint(String),
+    /// What is wrong with the row under the pointer or the keyboard
+    /// cursor (task #59: a header the client owns), in the error colour.
+    /// The chips stop short to leave it room, as a narrow footer would
+    /// otherwise never say it; nothing is hovered on the chip row then, so
+    /// no chip moves out from under the pointer.
+    Error(String),
+}
+
 /// A `paint_chip_row` entry's total footprint: ` key ` pill + ` label `
 /// (see its own layout comment — 4 columns beyond key+label either way).
 fn chip_width((key, label, _): &(&str, &str, Option<Action>)) -> u16 {
@@ -367,11 +382,10 @@ pub fn draw_footer(
     // spelled from them (piece 4 spec §4.6).
     spell: crate::keyroute::SpellCtx,
     keymap: &crate::keys::Keymap,
-    // The hovered button's one-line hint (`hint::hint_for`) — the footer
-    // is the tooltip. Centred in the gap between the per-pane chips and
-    // the commands/quit pair while enough of it fits there (ellipsized);
-    // on a narrow footer it stands in for the per-pane chips instead.
-    hint: Option<&str>,
+    // The centre line (see `CentreLine`), centred in the gap between the
+    // per-pane chips and the commands/quit pair while enough of it fits
+    // there (ellipsized).
+    centre: Option<&CentreLine>,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
     // The shared hover fade's 0->1 progress, so a hovered chip's keycap
@@ -471,8 +485,22 @@ pub fn draw_footer(
     let chips: Vec<(&str, &str, Option<Action>)> =
         owned.iter().map(|(k, l, a)| (k.as_str(), l.as_str(), a.clone())).collect();
     let start_x = area.x + 1;
-    paint_chip_row(buf, area, mid_y, start_x, right_limit, &chips, theme, hits, hovered, hover_t);
-    let chips_end = chip_row_end(start_x, right_limit, &chips);
+    // An error takes its room from the chips: they stop short of it, and
+    // of vim's status beside it, rather than leave it out. Past the text
+    // it needs the chip row's trailing gap and its own leading column (3)
+    // and the column kept clear of the commands chip's pad (1), plus 1
+    // to breathe.
+    let chip_limit = match centre {
+        Some(CentreLine::Error(error)) => {
+            let status_w = vim_status.map_or(0, |s| crate::ui::cells(s) as u16 + 1);
+            let text_w = (crate::ui::cells(error) as u16).max(HINT_MIN_SHOWN);
+            let wanted = text_w + 5 + status_w;
+            right_limit.saturating_sub(wanted).max(start_x)
+        }
+        _ => right_limit,
+    };
+    paint_chip_row(buf, area, mid_y, start_x, chip_limit, &chips, theme, hits, hovered, hover_t);
+    let chips_end = chip_row_end(start_x, chip_limit, &chips);
     // One column shy of `right_limit`: the commands chip's leading pad is
     // painted in the pill's own fill, so anything ending right against it
     // would read as part of the chip.
@@ -493,10 +521,14 @@ pub fn draw_footer(
     // hovered chip must stay under the pointer, since hover is re-resolved
     // against every frame's hit map, so a gap too small for a useful line
     // leaves the hint out.
-    if let Some(hint) = hint {
+    if let Some(centre) = centre {
+        let (line, color) = match centre {
+            CentreLine::Hint(hint) => (hint, theme.text_muted),
+            CentreLine::Error(error) => (error, theme.error),
+        };
         let hint_start = chips_end + 1;
         if hint_end.saturating_sub(hint_start) >= HINT_MIN_SHOWN {
-            paint_hint(buf, mid_y, hint_start, hint_end, hint, theme);
+            paint_hint(buf, mid_y, hint_start, hint_end, line, color, theme);
         }
     }
 }
@@ -522,9 +554,17 @@ fn chip_row_end(start_x: u16, right_limit: u16, chips: &[(&str, &str, Option<Act
     x
 }
 
-/// Paints `hint` centred in the free span `[start_x, end_x)`, muted on
-/// the panel, ellipsized to fit.
-fn paint_hint(buf: &mut Buffer, y: u16, start_x: u16, end_x: u16, hint: &str, theme: &Theme) {
+/// Paints `hint` centred in the free span `[start_x, end_x)`, in `color`
+/// on the panel, ellipsized to fit.
+fn paint_hint(
+    buf: &mut Buffer,
+    y: u16,
+    start_x: u16,
+    end_x: u16,
+    hint: &str,
+    color: ratatui::style::Color,
+    theme: &Theme,
+) {
     let free = end_x.saturating_sub(start_x);
     if free == 0 {
         return;
@@ -532,7 +572,7 @@ fn paint_hint(buf: &mut Buffer, y: u16, start_x: u16, end_x: u16, hint: &str, th
     let shown = crate::ui::ellipsize(hint, free as usize);
     let w = crate::ui::cells(&shown) as u16;
     let x = start_x + (free - w) / 2;
-    text(buf, x, y, &shown, theme.text_muted, theme.panel, false);
+    text(buf, x, y, &shown, color, theme.panel, false);
 }
 
 /// Paints a left-to-right row of `(key, label, action)` chips starting at
