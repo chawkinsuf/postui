@@ -5997,6 +5997,16 @@ url = "https://api.example.com/users""#,
         let (_, content) = draw_wide(&mut app);
         assert!(!content.contains("cannot be set manually"), "{content}");
 
+        // With hover hints off, a pointer resting on a footer chip has
+        // nothing to say, so the cursor row's error still shows.
+        app.editor.table.selected = Some(0);
+        app.ui_settings.hover_hints = false;
+        app.hovered = Some(Hit::FooterChip(Action::OpenPalette));
+        let (_, content) = draw_wide(&mut app);
+        assert!(content.contains("Content-Length cannot be set manually"), "{content}");
+        app.ui_settings.hover_hints = true;
+        app.hovered = None;
+
         // While a cell is open the edit's chips have the footer, hovered
         // or not: the name being typed is judged once it lands.
         app.editor.table.selected = Some(0);

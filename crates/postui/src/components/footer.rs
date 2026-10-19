@@ -461,6 +461,7 @@ pub fn draw_footer(
         && focus == PaneId::Response
         && field_open
         && matches!(jq_bar, JqBarState::Closed | JqBarState::Open);
+    let overridden = chips_override.is_some();
     let raw: Vec<FooterChip> = match chips_override {
         Some(c) => c,
         None => footer_chips(
@@ -490,9 +491,11 @@ pub fn draw_footer(
     // it needs the chip row's trailing gap and its own leading column (3)
     // and the column kept clear of the commands chip's pad (1), plus 1
     // to breathe. A footer too narrow for even a shortened error keeps
-    // its chips: cutting them would show neither.
+    // its chips: cutting them would show neither. Only the pane's own
+    // chips give way: an override set (a drag's cancel, a screen's own)
+    // is the way out of where the keyboard is, and keeps all of its room.
     let chip_limit = match centre {
-        Some(CentreLine::Error(error)) => {
+        Some(CentreLine::Error(error)) if !overridden => {
             let pad = 5 + vim_status.map_or(0, |s| crate::ui::cells(s) as u16 + 1);
             let text_w = (crate::ui::cells(error) as u16).max(HINT_MIN_SHOWN);
             if right_limit.saturating_sub(start_x) >= HINT_MIN_SHOWN + pad {
@@ -761,6 +764,56 @@ mod tests {
             lifted,
             "the word's ground lifts with the keycap, halfway at t=0.5"
         );
+    }
+
+    /// An error takes room from the pane's own chips only: an override
+    /// set (here a drag's cancel) keeps all of its chips, and the error
+    /// shows only in what room they leave (task #59).
+    #[test]
+    fn an_error_never_cuts_an_override_chip_set() {
+        let theme = Theme::for_terminal();
+        let keymap = crate::keys::Keymap::default_bindings();
+        let draw = |width: u16, centre: Option<&CentreLine>| {
+            let mut terminal = Terminal::new(TestBackend::new(width, FOOTER_HEIGHT)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            let chips: Vec<FooterChip> = vec![
+                (Key::Named("esc"), "cancel drag".into(), None),
+                (Key::Named("enter"), "drop here".into(), None),
+            ];
+            terminal
+                .draw(|f| {
+                    draw_footer(
+                        f,
+                        f.area(),
+                        &theme,
+                        PaneId::Sidebar,
+                        false,
+                        false,
+                        None,
+                        false,
+                        false,
+                        None,
+                        JqBarState::Closed,
+                        false,
+                        Some(chips),
+                        true,
+                        true,
+                        None,
+                        sidebar_spell(),
+                        &keymap,
+                        centre,
+                        &mut hits,
+                        None,
+                        1.0,
+                    )
+                })
+                .unwrap();
+            format!("{:?}", terminal.backend().buffer())
+        };
+        let error = CentreLine::Error("Content-Length cannot be set manually".into());
+        let content = draw(80, Some(&error));
+        assert!(content.contains("cancel drag"), "{content}");
+        assert!(content.contains("drop here"), "{content}");
     }
 
     /// The footer's chips are the same controls as the app bar's, so they

@@ -1183,13 +1183,6 @@ impl App {
         clicks: Clicks,
         m: ratatui::crossterm::event::MouseEvent,
     ) -> bool {
-        // An auto header row is a surface only its hover reads (the footer
-        // says why a client-owned row isn't sent, task #59): its click is
-        // the bare pane's under it, whole.
-        let hit = match hit {
-            Hit::AutoHeaderRow(_) => Hit::Pane(PaneId::Editor),
-            hit => hit,
-        };
         // A click anywhere that isn't the params/headers table itself (and
         // isn't inside a modal) is a
         // click away: it commits whatever cell was being edited (typing is
@@ -2065,8 +2058,10 @@ impl App {
             // A drawn `{{token}}` is never a click target (`Down(Left)`
             // resolves past it); the arm keeps the match exhaustive.
             Hit::VarToken(_) => false,
-            // Never reached: turned into the bare pane's click on the way in.
-            Hit::AutoHeaderRow(_) => false,
+            // A surface of its own, as a table row is (its hover is what
+            // the footer reads, task #59). Its click focuses the editor,
+            // as a click anywhere in the auto section always has.
+            Hit::AutoHeaderRow(_) => self.update(Action::FocusPane(PaneId::Editor)),
             // The tooltip's controls. Its edit pill is the path from "what
             // is this?" to the variable itself (spec §7): the popup action
             // picks the editor the token calls for, and the modal it

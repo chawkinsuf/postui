@@ -141,7 +141,7 @@ pub enum Hit {
     /// Row `i` of that section as a whole, under its tokens and copy icon,
     /// registered only for a client-owned row: a surface, like a table
     /// row, whose hover lets the footer say why it isn't sent (task #59).
-    /// A click on it does what one on the bare pane does.
+    /// A click on it focuses the editor.
     AutoHeaderRow(usize),
     /// The single "reveal"/"hide" toggle shown above the computed-headers
     /// section when at least one row would otherwise show a masked secret.

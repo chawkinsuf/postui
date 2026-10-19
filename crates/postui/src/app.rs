@@ -1181,8 +1181,7 @@ impl App {
     /// or the one under the keyboard cursor, that isn't sent (task #59). The
     /// error stands in for a note that used to sit on the row itself, so
     /// the hints switch leaves it on. It speaks only on the request screen
-    /// with no dialog up, since the keyboard is elsewhere otherwise, and
-    /// never over a hovered footer chip, which its room would push aside.
+    /// with no dialog up, since the keyboard is elsewhere otherwise.
     pub fn footer_hint(&self) -> Option<crate::components::footer::CentreLine> {
         use crate::components::footer::CentreLine;
         let hovered = self.hovered.as_ref();
@@ -1195,10 +1194,7 @@ impl App {
         if let Some(hint) = hint {
             return Some(CentreLine::Hint(hint));
         }
-        let quiet = self.screen != Screen::Main
-            || self.modals.top().is_some()
-            || matches!(hovered, Some(Hit::FooterChip(_)));
-        if quiet {
+        if self.screen != Screen::Main || self.modals.top().is_some() {
             return None;
         }
         self.editor

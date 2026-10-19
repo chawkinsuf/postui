@@ -585,9 +585,10 @@ impl TableEditorState {
     /// ghost row (an empty row labelled by `add_label` until it is typed
     /// into), and a closing `▔` edge. Every cell registers a
     /// `Hit::TableCell`, so a click lands straight in that cell's editor.
-    /// `notes[i]` trails row `i`'s value on the same line (rows past the
-    /// end have none): the Vars tab's dim `overrides …`, or the Headers
-    /// tab's error note on a row that is never sent.
+    /// `notes[i]` is row `i`'s [`RowNote`] (rows past the end have none):
+    /// the Vars tab's dim `overrides …` trailing the value, or the Headers
+    /// tab's mark on a row that is never sent, struck in red with nothing
+    /// trailing it.
     /// `vars` is the variable snapshot every drawn cell's `{{tokens}}` are
     /// tinted and registered against (spec §7).
     #[allow(clippy::too_many_arguments)] // signature is the produced interface, verbatim
