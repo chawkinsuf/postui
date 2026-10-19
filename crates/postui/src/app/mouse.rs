@@ -1094,11 +1094,16 @@ impl App {
         if self.editor.table.editing.is_none() {
             return;
         }
+        // The captures here spend `no_coalesce`; a caller that set it for
+        // a wholesale change still to come keeps it (keeping it longer
+        // than needed only starts a fresh step).
+        let no_coalesce = self.no_coalesce;
         self.capture_undo();
         if let Some(w) = self.editor.commit_table().warning {
             self.toasts.push(w, ToastKind::Warning);
         }
         self.capture_table_commit();
+        self.no_coalesce |= no_coalesce;
     }
 
     /// Commits the in-progress edit and re-resolves row `i` — an index from

@@ -2466,18 +2466,16 @@ impl App {
     /// (spec 2026-09-15, amended for #62). Only the commit goes beneath:
     /// anything else changed while the gate holds (a method change, a
     /// format) stays pending and joins the field's close, the gate's rule.
-    pub(crate) fn capture_table_commit(&mut self) {
+    fn capture_table_commit(&mut self) {
         if !self.field_gate() {
             self.capture_undo();
             return;
         }
-        let Some((slug, prev)) = &self.shadow else {
+        // The request changed under the commit (no shadow yet, or another
+        // request open): the next capture re-seeds.
+        let Some((slug, prev)) = self.shadow.take_if(|(slug, _)| *slug == self.editor.slug) else {
             return;
         };
-        // The request changed under the commit: the next capture re-seeds.
-        if *slug != self.editor.slug {
-            return;
-        }
         let current = self.editor.current_request();
         let after = postui_core::model::HttpRequest {
             params: current.params,
@@ -2485,10 +2483,10 @@ impl App {
             variables: current.variables,
             ..prev.clone()
         };
-        if after == *prev {
+        if after == prev {
+            self.shadow = Some((slug, prev));
             return;
         }
-        let (slug, prev) = (slug.clone(), prev.clone());
         self.record_editor_delta(slug, prev, after, false);
     }
 
@@ -2667,13 +2665,15 @@ impl App {
             self.commit_table_edit();
             // A pending uncaptured edit means the user changed something
             // after the last undo; capturing it clears the redo stack,
-            // which is exactly the linear-history contract.
+            // which is exactly the linear-history contract. (A committed
+            // cell captured itself; this is for everything else.)
             self.capture_undo();
         } else {
-            // A live cell edit is part of what's being undone: commit it
-            // so it becomes a step, then capture any pending delta. A live
-            // Settings field edit closes the same way (spec 2026-09-16):
-            // the close becomes the step the undo pops.
+            // A live cell edit is part of what's being undone: committing
+            // it makes it a step (it captures itself), then any other
+            // pending delta is captured. A live Settings field edit closes
+            // the same way (spec 2026-09-16): the close becomes the step
+            // the undo pops.
             self.commit_settings_edit();
             self.commit_table_edit();
             self.capture_undo();
@@ -10873,10 +10873,12 @@ impl App {
         };
         if target != self.editor.active_tab {
             // A cell still open commits as an undo step of its own (#62),
-            // after the change that moved the tab (a method change). The
-            // undo replay and the buffer swaps that call this have dropped
-            // the edit already (`apply_snapshot`, `reseed_editor`), so no
-            // step is ever recorded mid-replay.
+            // after the change that moved the tab (a method change). Undo
+            // replay and discard/reload drop the edit before they get here
+            // (`apply_snapshot`, `reseed_editor`), so no step is recorded
+            // mid-replay. Opening another request does not drop it yet:
+            // a cell left open from the old request commits into the new
+            // one (#63).
             self.commit_table_edit();
             let prev = self.editor.active_tab;
             self.editor.active_tab = target;
