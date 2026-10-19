@@ -3429,9 +3429,9 @@ impl Editor {
     /// `{{token}}` is tinted span-level. Each row gets a trailing `󰆏` copy
     /// icon (`Hit::AutoHeaderCopy`, indexed into `rows`); the divider
     /// carries a `👁 reveal`/`hide` toggle (`Hit::AutoHeaderReveal`)
-    /// whenever a row has a secret to reveal. Under them, each row is a
-    /// surface (`Hit::AutoHeaderRow`) whose hover lets the footer say why
-    /// a client-owned row isn't sent.
+    /// whenever a row has a secret to reveal. Under them, a client-owned
+    /// row is a surface (`Hit::AutoHeaderRow`) whose hover lets the footer
+    /// say why it isn't sent.
     fn draw_computed_headers(
         &self,
         frame: &mut Frame,
@@ -3538,7 +3538,11 @@ impl Editor {
             let line = Line::from(spans);
             let row_rect = Rect::new(area.x, y, area.width, 1);
             frame.render_widget(Paragraph::new(line), row_rect);
-            hits.register(row_rect, crate::hit::Hit::AutoHeaderRow(i));
+            // Only a client-owned row has something for the footer to say;
+            // every other row stays the bare pane, hover and all.
+            if client_owned {
+                hits.register(row_rect, crate::hit::Hit::AutoHeaderRow(i));
+            }
             // The tokens all lie in the value, so clipping them to the
             // whole row keeps them off the name. A struck (unsent) row's
             // tokens are tinted too, as a disabled table row's are: the
@@ -5888,6 +5892,9 @@ url = "https://api.example.com/users""#,
         let hit = Hit::AutoHeaderRow(i.expect("the default's auto row"));
         let row = app.hits.rect_of(&hit).expect("the auto row is a hover surface");
         assert_eq!(row.y, vy, "on the default's own row");
+        let accept = app.editor.computed.rows.iter().position(|r| r.header.name == "Accept");
+        let accept = Hit::AutoHeaderRow(accept.expect("the client's Accept row"));
+        assert_eq!(app.hits.rect_of(&accept), None, "an ordinary row stays the bare pane");
         app.hovered = Some(hit);
         let (terminal, content) = draw_wide(&mut app);
         let (mx, my) = find_text(terminal.backend().buffer(), "Host cannot be set manually")
@@ -5905,6 +5912,32 @@ url = "https://api.example.com/users""#,
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(app.focus, crate::layout::PaneId::Editor);
+    }
+
+    /// Every client-owned name gets the message (`Transfer-Encoding` too),
+    /// and a disabled row naming one is just off: it says nothing.
+    #[test]
+    fn transfer_encoding_speaks_and_a_disabled_host_row_stays_silent() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.url = LineInput::new("https://example.com/foo");
+        app.editor
+            .headers
+            .insert("transfer-encoding".into(), Entry { value: "chunked".into(), enabled: true });
+        app.editor.headers.insert("Host".into(), Entry { value: "x.test".into(), enabled: false });
+        app.update(Action::Render);
+        draw_wide(&mut app);
+
+        app.hovered = Some(Hit::TableCell { row: 0, col: 1 });
+        let (_, content) = draw_wide(&mut app);
+        assert!(content.contains("Transfer-Encoding cannot be set manually"), "{content}");
+
+        app.hovered = Some(Hit::TableCell { row: 1, col: 1 });
+        let (terminal, content) = draw_wide(&mut app);
+        assert!(!content.contains("cannot be set manually"), "{content}");
+        let key = app.hits.rect_of(&Hit::TableCell { row: 1, col: 0 }).unwrap();
+        let buf = terminal.backend().buffer();
+        assert_eq!(buf[(key.x, key.y)].fg, app.theme.text_muted, "drawn as any disabled row");
     }
 
     /// On a narrow footer the chips stop short to make room for the error,

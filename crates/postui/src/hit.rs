@@ -138,10 +138,10 @@ pub enum Hit {
     /// `ComputedHeadersView::rows[i]`, used as is (the view already holds
     /// only the rows the section draws).
     AutoHeaderCopy(usize),
-    /// Row `i` of that section as a whole, under its tokens and copy icon:
-    /// a surface, like a table row, whose hover lets the footer say why a
-    /// client-owned row isn't sent (task #59). A click on it does what one
-    /// on the bare pane does.
+    /// Row `i` of that section as a whole, under its tokens and copy icon,
+    /// registered only for a client-owned row: a surface, like a table
+    /// row, whose hover lets the footer say why it isn't sent (task #59).
+    /// A click on it does what one on the bare pane does.
     AutoHeaderRow(usize),
     /// The single "reveal"/"hide" toggle shown above the computed-headers
     /// section when at least one row would otherwise show a masked secret.
