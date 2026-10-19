@@ -355,9 +355,11 @@ opposite direction, from the request up into the project.
 
 Design: `HeaderRow` gains `override_as`, how a request row taking it
 over is written (`None` for a row the request may never take over: its
-own rows, a client-owned header, the URL's rows, and an auto or client
-row the request names), and `HeaderRow::overriding_row`, which is
+own rows, a client-owned header, the URL's rows, and any row the request
+has a row naming), and `HeaderRow::overriding_row`, which is
 `override_as` while the row is sent. `Action::OverrideAutoHeader(i)`
 commits an open cell as its own undo step, re-reads the section, inserts
 the row and opens its value, in Insert in the vim profile, as an add
-verb's row opens (vim spec §5.6; review round 1).
+verb's row opens (vim spec §5.6; review round 1). The vim seam opens an
+add verb's row fresh even when it lands on the cell id that was open (an
+open ghost cell; review round 2).

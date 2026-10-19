@@ -14246,6 +14246,29 @@ fn the_auto_header_pencil_opens_the_value_in_insert_in_vim() {
     assert_eq!(app.editor.headers["Accept"].value, "*/*, x");
 }
 
+/// The pencil's row lands on the ghost row's index, so from an open ghost
+/// value cell it opens the very cell id that was open; it still opens in
+/// Insert, a fresh session, as an add verb's row does.
+#[test]
+fn the_auto_header_pencil_from_an_open_ghost_cell_opens_in_insert_in_vim() {
+    let mut app = App::new_for_test();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.url = LineInput::new("https://example.com/foo");
+    app.focus = PaneId::Editor;
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    assert_eq!(app.mode_indicator(), Some("NORMAL"), "a click opens a cell in Normal");
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let pencil = app.hits.rect_of(&Hit::AutoHeaderOverride(0)).expect("Accept's pencil");
+    app.handle_mouse(left_down(pencil.x, pencil.y));
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+    type_chars(&mut app, ", x");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.editor.headers["Accept"].value, "*/*, x");
+}
+
 /// A cell still open when the pencil is clicked commits as its own undo
 /// step: undo takes the pencil's row out and leaves the commit in place.
 #[test]

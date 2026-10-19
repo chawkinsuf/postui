@@ -3746,6 +3746,11 @@ impl App {
                 true
             }
             Action::OverrideAutoHeader(i) => {
+                // The pencil is drawn on the Headers tab only, and the
+                // table state below is that tab's.
+                if self.editor.active_tab != EditorTab::Headers {
+                    return false;
+                }
                 // A cell still open commits first, as an undo step of its
                 // own, so an undo of the new row leaves what was typed
                 // there. The section is read again after it: the commit can
