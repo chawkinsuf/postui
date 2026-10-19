@@ -20833,12 +20833,12 @@ fn ping_with_a_typed_header_cell() -> (App, tempfile::TempDir) {
     (app, dir)
 }
 
-/// Extract from an open cell to a variables file: the typing commits as
-/// its own step before the op, the variable is the op's step, and the
-/// token lands in the same cell as a third (spec 2026-10-19 R6), as
-/// extracting from the URL line already does.
+/// Extract from an open cell to a variables file is the one op that keeps
+/// the cell open (spec 2026-10-19 R6, amended after review round 1): the
+/// variable is the op's step, and the typing commits with the token as
+/// one step on top of it.
 #[test]
-fn extracting_an_open_cell_to_the_project_is_three_undo_steps() {
+fn extracting_an_open_cell_to_the_project_commits_the_typing_with_the_token() {
     let (mut app, dir) = ping_with_a_typed_header_cell();
     app.update(Action::ConfirmExtractVariable {
         name: "token".into(),
@@ -20851,17 +20851,32 @@ fn extracting_an_open_cell_to_the_project_is_three_undo_steps() {
     assert!(vars().contains("default = \"Bearer abcx\""), "{}", vars());
 
     app.update(Action::Undo);
-    assert_eq!(app.editor.headers["authorization"].value, "Bearer abcx", "the token goes first");
+    assert_eq!(app.editor.headers["authorization"].value, "Bearer abc", "token and typing go");
     assert!(vars().contains("token"), "the variable stays");
     app.update(Action::Undo);
     assert!(!vars().contains("token"), "then the variable goes: {}", vars());
-    assert_eq!(app.editor.headers["authorization"].value, "Bearer abcx", "the typing stays");
-    app.update(Action::Undo);
-    assert_eq!(app.editor.headers["authorization"].value, "Bearer abc", "then the typing goes");
 }
 
-/// A selection in the open cell keeps the text around it through the
-/// commit the op makes first.
+/// The typed text never commits on its own, so a key typed on the
+/// "+ Add" row that names an existing row does not land on that row: the
+/// token makes a row of its own, and the existing one is untouched.
+#[test]
+fn extracting_an_add_row_key_that_names_an_existing_row_leaves_that_row_alone() {
+    let (mut app, _dir) = ping_with_a_typed_header_cell();
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    click_hit(&mut app, Hit::TableCell { row: 1, col: 0 });
+    type_chars(&mut app, "authorization");
+    app.update(Action::ConfirmExtractVariable {
+        name: "auth".into(),
+        destination: crate::action::ExtractDestination::ProjectDefault,
+    });
+    app.capture_undo();
+    assert_eq!(app.editor.headers["authorization"].value, "Bearer abcx", "untouched");
+    assert!(app.editor.headers.contains_key("{{auth}}"), "{:?}", app.editor.headers);
+}
+
+/// A selection in the open cell keeps the text around it.
 #[test]
 fn extracting_a_cell_selection_to_the_project_keeps_the_text_around_it() {
     use crate::action::TextSurface;

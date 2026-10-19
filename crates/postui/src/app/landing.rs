@@ -45,13 +45,30 @@ pub(crate) struct OpToken {
 }
 
 impl App {
-    /// Opens a journaled op: flushes the open field session (its keys
-    /// become their own step *before* the op, so nothing lands between
-    /// the journal entry and its marker), then captures the before-view.
+    /// Opens a journaled op: flushes the open field session and commits
+    /// an open table cell (their keys become their own step *before* the
+    /// op, so nothing lands between the journal entry and its marker),
+    /// then captures the before-view.
     /// The dirty gate's Discard reaches here with the edit still in the
     /// editor, so `before` carries it (OQ1).
     pub(super) fn begin_op(&mut self) -> OpToken {
         self.begin_op_on(None)
+    }
+
+    /// [`Self::begin_op`] that leaves an open table cell open, for Extract
+    /// alone: the one op that acts on the cell, writing `{{name}}` into it
+    /// after the variable is written. Every other op commits the cell first
+    /// (spec 2026-10-19 R5). Committing here would commit the typed text as
+    /// if Enter were pressed, so a key cell or the "+ Add" row could merge
+    /// into another row before the token arrived (review round 1, R6
+    /// amended): instead the typing and the token commit together, as one
+    /// step, as before. The before-view misses the typing, which costs
+    /// nothing: undoing an extract only removes the variable and never
+    /// reloads the editor from that view.
+    pub(super) fn begin_op_keeping_cell(&mut self) -> OpToken {
+        self.flush_text_session();
+        self.op_in_flight = true;
+        OpToken { before: self.view_on(None), list: None }
     }
 
     /// [`Self::begin_op`] for an op that moves `tab`'s own list cursor

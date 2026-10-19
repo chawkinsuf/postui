@@ -2517,6 +2517,13 @@ impl App {
     /// ended, the cell closes: a commit is its close.
     fn flush_field_session(&mut self) {
         self.commit_table_edit();
+        self.flush_text_session();
+    }
+
+    /// [`Self::flush_field_session`] without the cell: only the URL line's,
+    /// the jq bar's and the engine's sessions. For Extract alone, which
+    /// writes into the open cell after its op (`begin_op_keeping_cell`).
+    fn flush_text_session(&mut self) {
         if !self.field_gate() {
             return;
         }
@@ -7184,8 +7191,7 @@ impl App {
             description: None,
             values,
         };
-        let cell = self.extracted_cell_text(source, &name);
-        let t = self.begin_op();
+        let t = self.begin_op_keeping_cell();
         let result = match self.project_mut() {
             None => Err(NO_PROJECT.to_string()),
             Some(p) => p
@@ -7209,7 +7215,12 @@ impl App {
                     t,
                     self.open_request_label(crate::undo::StepLabel::variable(&name)),
                 );
-                self.replace_extracted(source, &name, cell);
+                match source {
+                    ExtractSource::FocusedField => self.replace_focused_field_with_token(&name),
+                    ExtractSource::Selection(surface) => {
+                        self.replace_selection_with_token(surface, &name);
+                    }
+                }
                 self.toasts.push(format!("extracted to {{{{{name}}}}}"), ToastKind::Success);
             }
             Err(msg) => {
@@ -7260,12 +7271,10 @@ impl App {
         use crate::action::ExtractDestination;
         // A `Request` destination journals nothing (its save below is not
         // an undo step), so it begins no op either: `begin_op` would
-        // close the open field session, or commit an open cell, as its
-        // own step, and the typing plus the token replacement are meant
-        // to peel off as one.
+        // close the open field session as its own step, and the typing
+        // plus the token replacement are meant to peel off as one.
         let wrote_to_request = matches!(destination, ExtractDestination::Request);
-        let cell = self.extracted_cell_text(source, &name);
-        let t = (!wrote_to_request).then(|| self.begin_op());
+        let t = (!wrote_to_request).then(|| self.begin_op_keeping_cell());
         let write_result: Result<(), String> = match destination {
             ExtractDestination::ProjectDefault => {
                 if self.variables().vars.contains_key(&name)
@@ -7385,12 +7394,17 @@ impl App {
                         self.open_request_label(crate::undo::StepLabel::variable(&name)),
                     );
                 }
-                self.replace_extracted(source, &name, cell);
+                match source {
+                    ExtractSource::FocusedField => self.replace_focused_field_with_token(&name),
+                    ExtractSource::Selection(surface) => {
+                        self.replace_selection_with_token(surface, &name);
+                    }
+                }
                 // Finding 2, same ruling as promote: the
                 // `Request` destination's write only exists so far
                 // in the dirty editor buffer (both the new
                 // `[variables]` option above and the field text
-                // `replace_extracted` just
+                // `replace_focused_field_with_token` just
                 // committed) — save it synchronously rather than
                 // leaving it save-on-demand, so "extract to
                 // request, then quit" can't lose it.
@@ -7431,83 +7445,76 @@ impl App {
         true
     }
 
-    /// The text the open table cell takes once `{{name}}` replaces what an
-    /// extract from `source` took: the whole cell, or its selection with
-    /// the rest kept. Read before the extract's op, which commits the cell
-    /// first as a step of its own like every op (spec 2026-10-19 R6), so
-    /// the selection is still there to read. `None` when the source is not
-    /// a table cell (the URL line, the body, the response).
-    fn extracted_cell_text(&self, source: ExtractSource, name: &str) -> Option<String> {
-        use crate::action::TextSurface;
-        let edit = self.editor.table.editing.as_ref()?;
+    /// `Action::ConfirmExtractVariable`'s tail: replaces whichever field
+    /// `focused_field_text` found (unchanged since the extract flow opened
+    /// — modals capture all input) with `{{name}}`. For the URL, that's a
+    /// direct field replacement (already "dirty" the instant it differs
+    /// from the saved snapshot); for a table cell under edit, the new text
+    /// is committed through the table's own `Enter` path so it lands in the
+    /// map (not left as a pending, uncommitted edit) and rides the same
+    /// dirty/save path as any other row commit. The cell is still open
+    /// here because the extract's op keeps it ([`Self::begin_op_keeping_cell`]).
+    fn replace_focused_field_with_token(&mut self, name: &str) {
         let token = format!("{{{{{name}}}}}");
-        match source {
-            // `focused_field_text`'s order: the URL line before a cell.
-            ExtractSource::FocusedField if !self.editor.url_open() => Some(token),
-            ExtractSource::Selection(TextSurface::TableCell) => {
-                let mut input = edit.input.clone();
-                input.paste(&token);
-                Some(input.text().to_string())
-            }
-            _ => None,
-        }
-    }
-
-    /// Puts `{{name}}` back where an extract from `source` took its value
-    /// (unchanged since the extract flow opened: modals capture all
-    /// input): `cell`, worked out by [`Self::extracted_cell_text`] before
-    /// the op, when that was a table cell; else the whole URL line, or the
-    /// URL's or the body's selection through their paste path. The
-    /// response is read-only: nothing to replace.
-    fn replace_extracted(&mut self, source: ExtractSource, name: &str, cell: Option<String>) {
-        use crate::action::TextSurface;
-        if let Some(text) = cell {
-            self.put_extracted_cell(&text);
+        if self.editor.url_open() {
+            self.editor.url = LineInput::new(&token);
             return;
         }
+        if let Some(edit) = self.editor.table.editing.as_mut() {
+            edit.input = LineInput::new(&token);
+        } else {
+            return;
+        }
+        self.commit_table_edit_with_enter();
+    }
+
+    /// Replaces `surface`'s live selection with `{{name}}`, keeping the
+    /// rest of the text: the line inputs and the body all take it through
+    /// their paste path (which replaces a selection); a table cell is then
+    /// committed through the table's own `Enter` path, exactly like
+    /// [`Self::replace_focused_field_with_token`]. The response is
+    /// read-only — nothing to replace.
+    fn replace_selection_with_token(&mut self, surface: crate::action::TextSurface, name: &str) {
+        use crate::action::TextSurface;
         let token = format!("{{{{{name}}}}}");
-        match source {
-            ExtractSource::FocusedField => {
-                if self.editor.url_open() {
-                    self.editor.url = LineInput::new(&token);
-                }
-            }
-            ExtractSource::Selection(TextSurface::Url) => self.editor.url.paste(&token),
-            ExtractSource::Selection(TextSurface::Body) => {
+        match surface {
+            TextSurface::Url => self.editor.url.paste(&token),
+            TextSurface::Body => {
                 self.editor.paste_body(&token);
             }
-            // A table cell's text came in `cell`. The response is
-            // read-only, and the Variable Manager's surfaces, the jq bar
-            // and the Settings tab are never offered.
-            ExtractSource::Selection(_) => {}
+            TextSurface::TableCell => {
+                if let Some(edit) = self.editor.table.editing.as_mut() {
+                    edit.input.paste(&token);
+                    self.commit_table_edit_with_enter();
+                }
+            }
+            TextSurface::Response => {}
+            // Never offered on the Variable Manager's own surfaces, the jq
+            // bar, or the Settings tab.
+            TextSurface::VmField
+            | TextSurface::VmCell
+            | TextSurface::Jq
+            | TextSurface::Settings => {}
         }
     }
 
-    /// Sets the table cell an extract took its value from to `text` and
-    /// commits it through the table's own `Enter` path, so it lands in the
-    /// map and rides the same dirty/save path as any row commit. The cell
-    /// is still open when the extract ran no op (a "This request"
-    /// destination): the typing and the token are then one step, as on
-    /// the URL line. An op committed it first (spec 2026-10-19 R6): it
-    /// reopens on the row that commit resolved to and the column it was
-    /// in, and the token is a step of its own.
-    fn put_extracted_cell(&mut self, text: &str) {
-        let editor = &mut self.editor;
-        let (table, map) = match editor.active_tab {
-            EditorTab::Params => (&mut editor.table, &mut editor.params),
-            EditorTab::Headers => (&mut editor.table, &mut editor.headers),
-            EditorTab::Vars => (&mut editor.table, &mut editor.variables),
-            EditorTab::Body => return,
-        };
-        if table.editing.is_none() {
-            let Some(row) = table.selected else { return };
-            let col = table.col;
-            table.click_cell(row, col, map);
+    /// Commits the table cell under edit through the active tab's own
+    /// `Enter` handling, so the new text lands in the map (not left as a
+    /// pending edit) and rides the same dirty/save path as any row commit.
+    fn commit_table_edit_with_enter(&mut self) {
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        match self.editor.active_tab {
+            EditorTab::Params => {
+                self.editor.table.handle_key(enter, &mut self.editor.params);
+            }
+            EditorTab::Headers => {
+                self.editor.table.handle_key(enter, &mut self.editor.headers);
+            }
+            EditorTab::Vars => {
+                self.editor.table.handle_key(enter, &mut self.editor.variables);
+            }
+            EditorTab::Body => {}
         }
-        if let Some(edit) = table.editing.as_mut() {
-            edit.input = LineInput::new(text);
-        }
-        table.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), map);
     }
 
     /// The value popup's remove — shared by the clicked "✕ remove"

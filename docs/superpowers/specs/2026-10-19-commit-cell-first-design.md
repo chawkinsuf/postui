@@ -48,7 +48,7 @@ about drafts. It accepts the Cancel behaviour that round objected to
 | R3 | Every dirty gate commits an open cell first, as its own step, then asks. Typing in a cell therefore counts as unsaved at quit, open, new request, duplicate/put of a request, move of the open request, space or project switch, curl import and replace, and vim `:q`/`:wq`. | mine (approved) |
 | R4 | Cancel on that prompt leaves the cell closed, with its typing committed and undoable (one ctrl+z takes it back). This is what a click on another request's sidebar row already does today. | mine (approved); replaces #62's "prompt sees the cell" |
 | R5 | Every path that replaces the editor wholesale or records an op's before-view commits an open cell first, as its own step: a journaled op (`begin_op`), opening another request, Discard, Reload, curl import's scratch discard, curl replace. Undoing the op or the discard therefore brings the typing back. | mine (approved); fixes #65 |
-| R6 | Extract (to variable or selector, whole cell or a selection in it) with a cell open: the typing commits as its own step, the variable or selector is written (a project step), then the token goes into the same cell as a third step. This matches extracting from the URL line to a project or env destination, which is already three steps. Extract to "This request" journals nothing and keeps today's single step (typing and token together), as the URL line does. Extract itself does not need the commit (undoing an extract never reloads the editor); it gets it because every op does, so `begin_op` has no exception. | mine (approved): "go with three steps" |
+| R6 | Extract (to variable or selector, whole cell or a selection in it) with a cell open keeps the cell open through its op, as before: the variable or selector is the op's step, and the typing commits with the token as one step on top. `begin_op_keeping_cell` is the one exception to R5. *Amended after review round 1:* the first version committed the typed text before the op ("three steps"), which commits it as if Enter were pressed, so a key typed on the "+ Add" row that names an existing row, or a key renamed onto another, merged rows before the token arrived. | mine (approved), replacing "go with three steps" |
 | R7 | A cell commit is its own undo step, bracketed by a capture before and after (#66, unchanged). A method change that moves the tab is two steps: the method, then the cell. | you (#66: "id rather have the logic in one place"), mine (approved) |
 | R8 | `Editor::load` still drops a cell left open, as a backstop, and now drops the add-row stash with it (a value typed on the "+ Add" row with no key). The row selection stays. | mine (approved) |
 
@@ -93,12 +93,9 @@ the cell can still be open when it runs:
   stays read-only for `view_on` and the undo jump guard. Quit checks
   `modals.is_empty()` first, so `ctrl+c` over a modal still exits at once.
 - **Extract** (R6): `confirm_extract` and `confirm_extract_to_selector`
-  work out the cell's replacement text before the op, while the cell is
-  still open (the whole text, or the selection pasted over). After the
-  op, they reopen the cell `begin_op` committed (`table.selected`,
-  `table.col`, which the commit resolved), set the text and commit it.
-  A "This request" destination runs no op, so the cell is still open and
-  gets the text directly.
+  begin their op with `begin_op_keeping_cell`, which flushes the URL/jq
+  session (`flush_text_session`) but leaves the cell open, so the token
+  replacement works on it as before.
 - **`Editor::load`** also clears the add-row stash (R8).
 
 ### Contract before → after
@@ -125,9 +122,10 @@ the cell can still be open when it runs:
 - R5: palette delete of the open request over a typed cell, then undo:
   the request is back with the typing (#65's repro). Discard over a typed
   cell, then undo: the typing is back.
-- R6: extract from an open cell to an env: three undo steps in order
-  (token, variable, typing); a selection in the cell keeps the text
-  around it; "This request" stays one editor step.
+- R6: extract from an open cell to the project: two undo steps (token
+  with typing, then the variable); a key typed on the "+ Add" row that
+  names an existing row leaves that row alone; a selection in the cell
+  keeps the text around it; "This request" stays one editor step.
 - R8: a stashed add-row value doesn't follow to another request.
 - Tests that pin the removed record-beneath step get the new rule (the
   cell commits when `alt+u` leaves it), not deletion.
@@ -137,7 +135,9 @@ the cell can still be open when it runs:
 All four were proposed by me. 1, 3 and 4 were approved by picking the
 recommended option; 2 was approved in chat ("go with three steps") after
 the user asked why Extract commits the cell first. So all are
-`mine (approved)`.
+`mine (approved)`. Review round 1 then showed the three-step shape
+merging rows from a key cell; the user picked E1 instead (`mine
+(approved)`), and R6 reads so.
 
 1. **R4, Cancel closes the cell.** The alternative, commit and reopen the
    same cell, keeps the caret in it. It costs a reopen that has to
