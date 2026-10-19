@@ -118,6 +118,15 @@ changes to input code. Opening or creating a request resets the shadow
 `pending_terminal_action`; the hook runs after completion, so an external
 edit is one step.
 
+*Amended 2026-10-19 (task #62, mine):* a table cell committed on the way
+to something else (`App::commit_table_edit`, the one path that commits a
+cell outside the table's own keys) is captured right there, as a step of
+its own, before the rest of the event runs. A click on another row's
+toggle or trash, or a click away whose action edits (the TLS lock), would
+otherwise land in the same step as the commit, and one undo would take
+the typing back with it. A commit before a request switch or Save as is
+recorded under the request it was typed into.
+
 ### Coalescing
 
 A new delta merges into the top step (keeping the top's `before`, taking

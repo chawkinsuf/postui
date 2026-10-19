@@ -2129,6 +2129,75 @@ fn checkbox_and_delete_clicks_during_an_edit_commit_it_first() {
     assert!(app.editor.params.get_index(1).is_none(), "the clicked row is gone");
 }
 
+/// Params `a=1, b=2`, editor focused, row 0's value open with `9` typed
+/// into it, and the shadow seeded before the typing.
+fn app_with_a_typed_cell() -> App {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Params;
+    for (k, v) in [("a", "1"), ("b", "2")] {
+        app.editor
+            .params
+            .insert(k.into(), postui_core::model::Entry { value: v.into(), enabled: true });
+    }
+    app.focus = PaneId::Editor;
+    app.capture_undo(); // seed the shadow before the edit
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "9");
+    app
+}
+
+/// A click that commits the open cell and then acts on another row makes
+/// two undo steps, not one: undo takes the action back and leaves what
+/// was typed (task #62).
+#[test]
+fn a_row_toggle_click_keeps_the_cells_commit_its_own_undo_step() {
+    let mut app = app_with_a_typed_cell();
+    hover_row_then_click(&mut app, Hit::TableRow(1), Hit::TableCheckbox(1));
+    app.capture_undo();
+    assert_eq!(app.editor.params["a"].value, "19");
+    assert!(!app.editor.params["b"].enabled);
+
+    app.update(Action::Undo);
+    assert!(app.editor.params["b"].enabled, "the toggle goes first");
+    assert_eq!(app.editor.params["a"].value, "19", "the commit stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["a"].value, "1", "then the commit goes");
+}
+
+#[test]
+fn a_row_delete_click_keeps_the_cells_commit_its_own_undo_step() {
+    let mut app = app_with_a_typed_cell();
+    hover_row_then_click(&mut app, Hit::TableRow(1), Hit::TableDelete(1));
+    app.capture_undo();
+    assert_eq!(app.editor.params["a"].value, "19");
+    assert!(!app.editor.params.contains_key("b"));
+
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["b"].value, "2", "the delete goes first");
+    assert_eq!(app.editor.params["a"].value, "19", "the commit stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["a"].value, "1", "then the commit goes");
+}
+
+/// The same for a click away from the table whose own action edits the
+/// request: the address bar's TLS lock.
+#[test]
+fn a_click_away_that_edits_keeps_the_cells_commit_its_own_undo_step() {
+    let mut app = app_with_a_typed_cell();
+    app.editor.url = LineInput::new("https://example.com");
+    app.capture_undo(); // the URL is the starting state, not an edit
+    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    app.capture_undo();
+    assert_eq!(app.editor.params["a"].value, "19");
+    assert!(app.editor.current_request().insecure);
+
+    app.update(Action::Undo);
+    assert!(!app.editor.current_request().insecure, "the toggle goes first");
+    assert_eq!(app.editor.params["a"].value, "19", "the commit stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["a"].value, "1", "then the commit goes");
+}
+
 /// Params `a=1, b=2, c=3`, editor focused.
 fn app_with_three_params() -> App {
     let mut app = App::new_for_test();

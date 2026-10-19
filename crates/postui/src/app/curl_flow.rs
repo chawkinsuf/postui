@@ -274,7 +274,6 @@ impl App {
         // The editor as it stands, as Copy as curl reads it: an open cell's
         // text and an open field's keys land first, as their own step.
         self.commit_table_edit();
-        self.capture_undo();
         self.flush_field_session();
         // The variables are sorted against the files as they are now, as
         // Send and Copy as curl read them (plan P6).

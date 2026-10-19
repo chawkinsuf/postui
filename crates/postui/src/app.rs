@@ -3764,7 +3764,6 @@ impl App {
                 // name this row's header and so override it.
                 if self.editor.table.editing.is_some() {
                     self.commit_table_edit();
-                    self.capture_undo();
                     let ctx = self.prepare_context();
                     self.editor.recompute_computed_headers(&ctx);
                 }

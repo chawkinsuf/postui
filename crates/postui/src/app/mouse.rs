@@ -1070,6 +1070,12 @@ impl App {
     /// toast. The one place typing is turned into map data outside the
     /// table's own key handling — click-away, focus loss, tab switch, save
     /// and send all go through here so a typed cell is never dropped.
+    ///
+    /// The commit is captured here as an undo step of its own (task #62):
+    /// the main loop captures once per event, so without it whatever the
+    /// same event does next (a click on another row's toggle, a click away
+    /// whose action edits) would join the commit, and one undo would take
+    /// the typing back with it.
     pub(crate) fn commit_table_edit(&mut self) {
         if self.editor.table.editing.is_none() {
             return;
@@ -1077,6 +1083,7 @@ impl App {
         if let Some(w) = self.editor.commit_table().warning {
             self.toasts.push(w, ToastKind::Warning);
         }
+        self.capture_undo();
     }
 
     /// Commits the in-progress edit and re-resolves row `i` — an index from
