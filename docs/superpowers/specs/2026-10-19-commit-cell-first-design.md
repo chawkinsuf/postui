@@ -45,7 +45,7 @@ about drafts. It accepts the Cancel behaviour that round objected to
 |---|---|---|
 | R1 | When the caret leaves an open cell, the cell commits and its undo step is recorded at once: a click away (already), `alt+u`, a pane jump, the jq bar, the search box, the Manage screen. | you (#62): "when the cursor leaves the cell, the input should close and the undo immediately recorded" |
 | R2 | A modal over the cell is not leaving it (palette, var picker, extract, paste, theme picker). A shortcut that keeps the caret in the cell (`alt+i`, the TLS lock) leaves it open. | mine (approved) (#62 rework) |
-| R3 | Every dirty gate commits an open cell first, as its own step, then asks. Typing in a cell therefore counts as unsaved at quit, open, new request, duplicate/put of a request, move of the open request, space or project switch, curl import and replace, and vim `:q`/`:wq`. | mine (approved) |
+| R3 | Every dirty gate commits an open cell first, as its own step, then asks. Typing in a cell therefore counts as unsaved at quit, open, new request, duplicate/put of a request, move of the open request, space or project switch, curl import and replace, and vim `:q`/`:wq`. Not a value typed on the "+ Add" row with no key: its commit only stashes it until a key arrives, and a save could not keep it, so it is lost as on main (task #68, found in review round 2). | mine (approved) |
 | R4 | Cancel on that prompt leaves the cell closed, with its typing committed and undoable (one ctrl+z takes it back). This is what a click on another request's sidebar row already does today. | mine (approved); replaces #62's "prompt sees the cell" |
 | R5 | Every path that replaces the editor wholesale or records an op's before-view commits an open cell first, as its own step: a journaled op (`begin_op`), opening another request, Discard, Reload, curl import's scratch discard, curl replace. Undoing the op or the discard therefore brings the typing back. | mine (approved); fixes #65 |
 | R6 | Extract (to variable or selector, whole cell or a selection in it) with a cell open keeps the cell open through its op, as before: the variable or selector is the op's step, and the typing commits with the token as one step on top. `begin_op_keeping_cell` is the one exception to R5. *Amended after review round 1:* the first version committed the typed text before the op ("three steps"), which commits it as if Enter were pressed, so a key typed on the "+ Add" row that names an existing row, or a key renamed onto another, merged rows before the token arrived. | mine (approved), replacing "go with three steps" |
@@ -78,7 +78,11 @@ the cell can still be open when it runs:
   today's gate check and shadow diff. `capture_undo` first closes the
   fields the caret has left: the URL line, as today, and now an open cell
   when the caret is not in the editor's content on the main screen
-  (`commit_table_edit`). Then it calls `capture_step`.
+  (`commit_table_edit`). Then it calls `capture_step`. A pane jump
+  (`Action::FocusPane` away from the editor) commits at the jump itself
+  (review round 2): the jq tree's tee-up jumps to the bar and fills it in
+  one event, and a commit left for the event's end would wait behind the
+  bar's session and join its step.
 - **`commit_table_edit`** brackets the commit with `capture_step`
   (before and after), not `capture_undo`, so the two can't recurse.
 - **`capture_table_commit` is removed**, along with the 2026-09-15 and

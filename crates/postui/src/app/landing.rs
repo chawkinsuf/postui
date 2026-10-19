@@ -67,8 +67,7 @@ impl App {
     /// reloads the editor from that view.
     pub(super) fn begin_op_keeping_cell(&mut self) -> OpToken {
         self.flush_text_session();
-        self.op_in_flight = true;
-        OpToken { before: self.view_on(None), list: None }
+        self.open_op(None)
     }
 
     /// [`Self::begin_op`] for an op that moves `tab`'s own list cursor
@@ -81,6 +80,12 @@ impl App {
 
     fn begin_op_on(&mut self, list: Option<ManageTab>) -> OpToken {
         self.flush_field_session();
+        self.open_op(list)
+    }
+
+    /// What every way of beginning an op shares once its fields are
+    /// flushed: the op is in flight, and its before-view is captured.
+    fn open_op(&mut self, list: Option<ManageTab>) -> OpToken {
         self.op_in_flight = true;
         OpToken { before: self.view_on(list), list }
     }

@@ -1314,28 +1314,24 @@ fn ctrl_z_in_an_open_cell_undoes_in_the_cell_not_the_history() {
     assert_eq!(app.history.undo_len(), steps, "the app history was not touched");
 }
 
-/// The caret decides which field the undo keys belong to. A cell edit
-/// that survived a jump to the response pane is live but caretless: with
-/// the jq bar focused, ctrl+z steps the bar and leaves the cell alone.
+/// The caret decides which field the undo keys belong to. A jump to the
+/// jq bar commits the cell it leaves (spec 2026-10-19 R1), so with the
+/// bar focused, ctrl+z steps the bar and the cell's typing stays put.
 #[test]
-fn ctrl_z_with_the_caret_in_the_jq_bar_steps_the_bar_not_a_live_cell_behind_it() {
+fn ctrl_z_with_the_caret_in_the_jq_bar_steps_the_bar_not_the_cell_it_left() {
     let mut app = app_with_one_param();
     click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     type_chars(&mut app, "abc");
-    let cell_text = app.editor.table.editing.as_ref().unwrap().input.text().to_string();
     ready_response(&mut app, JQ_BODY);
     app.update(Action::OpenJqBar);
     assert_eq!(app.focus, PaneId::Response);
     assert!(app.session.response.jq_focused());
-    assert!(app.editor.table.editing.is_some(), "the cell edit survives the jump");
+    assert!(app.editor.table.editing.is_none(), "the jump committed the cell");
     type_chars(&mut app, ".foo");
     app.handle_key(ctrl('z'));
     assert_ne!(app.session.response.jq_text(), ".foo", "the bar stepped");
-    assert_eq!(
-        app.editor.table.editing.as_ref().unwrap().input.text(),
-        cell_text,
-        "the caretless cell is untouched"
-    );
+    assert_eq!(app.editor.params["page"].value, "1abc", "the cell's typing is untouched");
 }
 
 /// …and a modal over a live Settings edit owns the caret: ctrl+z steps
@@ -2308,6 +2304,31 @@ fn opening_the_jq_bar_commits_the_cell_beneath_the_filter() {
     type_str(&mut app, ".data");
     app.sync_jq();
     app.capture_undo();
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.sync_jq();
+    app.capture_undo();
+    assert_eq!(app.editor.jq, ".data");
+
+    app.update(Action::Undo);
+    app.sync_jq();
+    assert_eq!(app.editor.jq, "", "the filter goes first");
+    assert_eq!(app.editor.params["a"].value, "19", "the cell stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["a"].value, "1", "then the cell goes");
+}
+
+/// A jump that fills the field it lands in, in the same event (the jq
+/// tree's "Where field…" row tees a filter up in the bar), still records
+/// the cell as its own step beneath the bar's: the jump commits the cell
+/// before the bar takes any text.
+#[test]
+fn a_tee_up_into_the_jq_bar_keeps_the_cells_commit_its_own_step() {
+    let mut app = app_with_a_typed_cell();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::JqTeeUp { text: ".data".into(), cursor: 5 });
+    app.sync_jq();
+    app.capture_undo();
+    assert!(app.editor.table.editing.is_none(), "the cell closed as the caret left");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.sync_jq();
     app.capture_undo();
@@ -7532,8 +7553,9 @@ fn stale_table_edit_does_not_capture_insert_var_text_after_focus_moves() {
     app.editor.sub_focus = SubFocus::Content;
     app.editor.table.selected = Some(0);
     app.editor.table.begin_edit_selected(&app.editor.params.clone());
-    let pending_before = app.editor.table.editing.as_ref().unwrap().input.text().to_string();
 
+    // The jump commits the cell it leaves (spec 2026-10-19 R1), so there
+    // is no stale edit left for the insert to land in.
     app.update(Action::FocusPane(PaneId::Response));
     app.update(Action::InsertVarText("x".into()));
 
@@ -7542,11 +7564,8 @@ fn stale_table_edit_does_not_capture_insert_var_text_after_focus_moves() {
         text.contains("nowhere to insert"),
         "toast shown when focus has moved off the table: {text}"
     );
-    assert_eq!(
-        app.editor.table.editing.as_ref().unwrap().input.text(),
-        pending_before,
-        "stale pending edit input must be unchanged"
-    );
+    assert!(app.editor.table.editing.is_none());
+    assert_eq!(app.editor.params["page"].value, "2", "nothing was inserted");
 }
 
 fn app_with_envs() -> (App, tempfile::TempDir) {
@@ -22834,6 +22853,18 @@ fn a_dirty_gate_commits_an_open_cell_and_asks() {
         assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "{how}");
         assert_eq!(app.editor.params["a"].value, "19", "{how}: the cell committed");
     }
+}
+
+/// Quit picked from the palette, a modal over the typed cell, meets the
+/// same gate: the palette is gone by the time the quit runs.
+#[test]
+fn quit_from_the_palette_over_a_typed_cell_asks() {
+    let (mut app, _dir) = alpha_with_a_typed_cell();
+    app.update(Action::OpenPalette);
+    type_chars(&mut app, "quit");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(!app.should_quit, "the typing is asked about");
+    assert!(unsaved_prompt_up(&app));
 }
 
 #[test]

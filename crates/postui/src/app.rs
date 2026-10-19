@@ -3076,6 +3076,16 @@ impl App {
                 true
             }
             Action::FocusPane(pane) => {
+                // A jump out of the editor leaves an open cell, which
+                // commits as the jump happens (spec 2026-10-19 R1) rather
+                // than at the end of the event, as `capture_undo` would:
+                // a jump that also fills the field it lands in (the jq
+                // tree's tee-up) would otherwise open that field's session
+                // first, and the cell's step would wait behind it and join
+                // the field's close.
+                if pane != PaneId::Editor {
+                    self.commit_table_edit();
+                }
                 self.focus = pane;
                 true
             }
@@ -8282,15 +8292,17 @@ impl App {
     /// as failed so a queued follow-on stops: the choice, not the queue,
     /// decides what happens next. `then` rides the Overwrite choice.
     /// Replaces the editor's buffer wholesale — the one rule every such
-    /// replacement shares, in one place: a cell still under the caret is
-    /// part of what is being thrown away, so it is dropped WITHOUT being
-    /// committed, the selection into it goes with it (no stale row index
-    /// survives), and the tab bar re-syncs to the request that just
-    /// landed. Shared by `Action::DiscardChanges` and
-    /// `Action::ReloadOpenRequest`; the caller owns the undo bookkeeping
-    /// (`no_coalesce`) and the toast.
+    /// replacement shares, in one place: the row selection goes (no stale
+    /// row index survives), and the tab bar re-syncs to the request that
+    /// just landed. Every caller (`Action::DiscardChanges`,
+    /// `Action::ReloadOpenRequest`, curl import's scratch discard) runs
+    /// `flush_field_session` first, so an open cell has already committed
+    /// as its own step and undoing the replacement brings its typing back
+    /// (spec 2026-10-19 R5); `Editor::load` dropping a cell is only the
+    /// backstop. The caller owns the undo bookkeeping (`no_coalesce`) and
+    /// the toast.
     fn reseed_editor(&mut self, slug: Option<String>, req: postui_core::model::HttpRequest) {
-        // `Editor::load` drops the cell; the selection is ours to drop.
+        // `Editor::load` keeps the selection; here it is ours to drop.
         self.editor.table.selected = None;
         self.editor.load(slug, req);
         self.sync_active_tab();
@@ -9207,6 +9219,11 @@ impl App {
     /// every reader of "unsaved" had to learn on #62. So Cancel finds the
     /// cell closed with its typing committed and undoable (R4), as a click
     /// on another request's row already leaves it.
+    ///
+    /// A value typed on the "+ Add" row with no key is not asked about:
+    /// its commit only stashes it in the table until a key arrives, and a
+    /// save could not keep it (a row needs a name), so it stays outside
+    /// the request and goes with the request, as on main (task #68).
     fn leaving_unsaved(&mut self) -> bool {
         self.commit_table_edit();
         self.editor_holds_unsaved()
