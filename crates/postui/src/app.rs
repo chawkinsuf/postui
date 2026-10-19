@@ -1193,7 +1193,6 @@ impl App {
             .and_then(|h| crate::hint::hint_for(h, &self.keymap, &self.hint_ctx(h)));
         let error = (self.screen == Screen::Main && self.modals.top().is_none())
             .then(|| self.editor.client_owned_message(hovered, self.focus == PaneId::Editor))
-            .flatten()
             .unwrap_or_default();
         crate::components::footer::CentreLine { hint, error }
     }

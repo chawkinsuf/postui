@@ -659,14 +659,32 @@ impl Editor {
     /// key: a name being typed is judged once it lands.
     ///
     /// The message comes longest form first, for the footer to show the
-    /// longest that fits (`CentreLine::Error`): it never takes room from
+    /// longest that fits (`CentreLine::error`): it never takes room from
     /// the chips (the user: "just make it shorter when there is less
-    /// space so we dont have to hide the chips").
+    /// space so we dont have to hide the chips"). Empty: nothing to say.
     pub fn client_owned_message(
         &self,
         hovered: Option<&crate::hit::Hit>,
         focused: bool,
-    ) -> Option<Vec<String>> {
+    ) -> Vec<String> {
+        self.client_owned_row(hovered, focused)
+            .map(|header| {
+                vec![
+                    format!("{header} cannot be set manually"),
+                    format!("{header} can't be set"),
+                    "can't be set".to_string(),
+                ]
+            })
+            .unwrap_or_default()
+    }
+
+    /// The client-owned header [`Editor::client_owned_message`] speaks
+    /// for, by its rules.
+    fn client_owned_row(
+        &self,
+        hovered: Option<&crate::hit::Hit>,
+        focused: bool,
+    ) -> Option<&'static str> {
         use crate::hit::Hit;
         if self.active_tab != EditorTab::Headers || self.table_collapsed {
             return None;
@@ -683,12 +701,7 @@ impl Editor {
         let cursor = (focused && self.sub_focus == SubFocus::Content)
             .then_some(self.table.selected)
             .flatten();
-        let header = hovered.or_else(|| table_row(cursor?))?;
-        Some(vec![
-            format!("{header} cannot be set manually"),
-            format!("{header} can't be set"),
-            "can't be set".to_string(),
-        ])
+        hovered.or_else(|| table_row(cursor?))
     }
 
     /// A never-loaded (fresh scratch) editor is not dirty even though it has

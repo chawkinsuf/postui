@@ -330,4 +330,6 @@ between the two old wordings, and `rows()` its pass that filled it.
 `ComputedHeadersView.notes` holds the table's notes, built once per
 recompute. `Editor::client_owned_message` reads the hovered hit as the
 hint table does, and `App::footer_hint` gives the footer a
-`CentreLine::Hint` or `CentreLine::Error`.
+`CentreLine { hint, error }` (the error's forms, longest first), and the
+footer paints the hint where it fits, else the longest error form that
+does.

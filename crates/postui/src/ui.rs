@@ -304,7 +304,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         &app.keymap,
         // The hovered button's hint — the footer stands in for a tooltip —
         // or what is wrong with a client-owned header row.
-        Some(&app.footer_hint()),
+        &app.footer_hint(),
         &mut hits,
         app.hovered.as_ref(),
         hover_t,

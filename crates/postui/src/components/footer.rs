@@ -386,7 +386,7 @@ pub fn draw_footer(
     // The centre line (see `CentreLine`), centred in the gap between the
     // per-pane chips and the commands/quit pair while enough of it fits
     // there (ellipsized).
-    centre: Option<&CentreLine>,
+    centre: &CentreLine,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
     // The shared hover fade's 0->1 progress, so a hovered chip's keycap
@@ -509,7 +509,6 @@ pub fn draw_footer(
     // the error, which shows its longest form that fits.
     let hint_start = chips_end + 1;
     let free = hint_end.saturating_sub(hint_start);
-    let Some(centre) = centre else { return };
     match &centre.hint {
         Some(hint) if free >= HINT_MIN_SHOWN => {
             paint_hint(buf, mid_y, hint_start, hint_end, hint, theme.text_muted, theme);
@@ -757,7 +756,7 @@ mod tests {
     fn an_error_shortens_to_fit_and_never_cuts_a_chip() {
         let theme = Theme::for_terminal();
         let keymap = crate::keys::Keymap::default_bindings();
-        let draw = |width: u16, centre: Option<&CentreLine>| {
+        let draw = |width: u16, centre: &CentreLine| {
             let mut terminal = Terminal::new(TestBackend::new(width, FOOTER_HEIGHT)).unwrap();
             let mut hits = crate::hit::HitMap::default();
             let chips: Vec<FooterChip> = vec![
@@ -808,7 +807,7 @@ mod tests {
         for (width, shown) in
             [(130, Some(forms[0])), (100, Some(forms[1])), (86, Some("can't be set")), (70, None)]
         {
-            let content = draw(width, Some(&error));
+            let content = draw(width, &error);
             assert!(content.contains("cancel drag"), "{width}: {content}");
             assert!(content.contains("drop here"), "{width}: {content}");
             match shown {
@@ -819,14 +818,14 @@ mod tests {
                 None => assert!(!content.contains("be set"), "{width}: {content}"),
             }
         }
-        assert!(!draw(100, Some(&error)).contains(forms[0]), "the longer form gave way");
+        assert!(!draw(100, &error).contains(forms[0]), "the longer form gave way");
 
         // A hint has the line where it fits; where it doesn't (a gap under
         // its minimum), the error still shows rather than nothing.
         let both = CentreLine { hint: Some("Delete this row".into()), ..error.clone() };
-        let wide = draw(130, Some(&both));
+        let wide = draw(130, &both);
         assert!(wide.contains("Delete this row") && !wide.contains("be set"), "{wide}");
-        let narrow = draw(86, Some(&both));
+        let narrow = draw(86, &both);
         assert!(narrow.contains("can't be set") && !narrow.contains("Delete"), "{narrow}");
     }
 
@@ -865,7 +864,7 @@ mod tests {
                     None,
                     sidebar_spell(),
                     &crate::keys::Keymap::default_bindings(),
-                    None,
+                    &CentreLine::default(),
                     &mut hits,
                     None,
                     1.0,
@@ -1072,7 +1071,7 @@ mod tests {
                     None,
                     spell,
                     &crate::keys::Keymap::default_bindings(),
-                    None,
+                    &CentreLine::default(),
                     &mut hits,
                     None,
                     1.0,
@@ -1491,7 +1490,7 @@ mod tests {
                     None,
                     response_spell(),
                     &crate::keys::Keymap::default_bindings(),
-                    None,
+                    &CentreLine::default(),
                     &mut hits,
                     None,
                     1.0,
@@ -1532,7 +1531,7 @@ mod tests {
                     None,
                     sidebar_spell(),
                     &crate::keys::Keymap::default_bindings(),
-                    None,
+                    &CentreLine::default(),
                     &mut hits,
                     None,
                     1.0,
@@ -1580,7 +1579,7 @@ mod tests {
                     None,
                     crate::keyroute::SpellCtx::default(),
                     &crate::keys::Keymap::default_bindings(),
-                    None,
+                    &CentreLine::default(),
                     &mut hits,
                     None,
                     1.0,
@@ -1623,7 +1622,7 @@ mod tests {
                     None,
                     sidebar_spell(),
                     &crate::keys::Keymap::default_bindings(),
-                    None,
+                    &CentreLine::default(),
                     &mut hits,
                     None,
                     1.0,
@@ -1700,7 +1699,7 @@ mod tests {
                     None,
                     sidebar_spell(),
                     &crate::keys::Keymap::default_bindings(),
-                    None,
+                    &CentreLine::default(),
                     &mut hits,
                     None,
                     1.0,
@@ -1760,7 +1759,7 @@ mod tests {
                     None,
                     crate::keyroute::SpellCtx::default(),
                     &crate::keys::Keymap::default_bindings(),
-                    None,
+                    &CentreLine::default(),
                     &mut hits,
                     None,
                     1.0,
@@ -1860,7 +1859,7 @@ mod tests {
                     None,
                     crate::keyroute::SpellCtx::default(),
                     &crate::keys::Keymap::default_bindings(),
-                    None,
+                    &CentreLine::default(),
                     &mut hits,
                     None,
                     1.0,
@@ -1916,7 +1915,7 @@ mod tests {
                         status,
                         crate::keyroute::SpellCtx::default(),
                         &crate::keys::Keymap::default_bindings(),
-                        None,
+                        &CentreLine::default(),
                         &mut hits,
                         None,
                         1.0,
