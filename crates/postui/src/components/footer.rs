@@ -317,20 +317,20 @@ pub(crate) fn tabs_key() -> Key {
 /// lists. `draw_footer` spells the keycap (piece 4 spec §4.6).
 pub type FooterChip = (Key, String, Option<Action>);
 
-/// What the footer's centre line says.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CentreLine {
-    /// The hovered button's hint (`hint::hint_for`), muted. It takes only
-    /// the room the chips leave: a hovered chip must stay under the
-    /// pointer, and hover is re-resolved against every frame's hit map.
-    Hint(String),
+/// What the footer's centre line may say. Both lines take only the room
+/// the chips leave: a hovered chip must stay under the pointer, and hover
+/// is re-resolved against every frame's hit map. The hint comes first;
+/// where there is none, or it doesn't fit, the error does.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CentreLine {
+    /// The hovered button's hint (`hint::hint_for`), muted, left out
+    /// below [`HINT_MIN_SHOWN`] cells rather than cut to a stub.
+    pub hint: Option<String>,
     /// What is wrong with the row under the pointer or the keyboard
     /// cursor (task #59: a header the client owns), in the error colour:
-    /// the same message from its longest form to its shortest. Like a
-    /// hint it takes only the room the chips leave, so nothing moves
-    /// under the pointer; where the full form doesn't fit, the longest
-    /// one that does shows whole, and below its shortest none does.
-    Error(Vec<String>),
+    /// the same message from its longest form to its shortest. The
+    /// longest form that fits shows whole; below the shortest, none does.
+    pub error: Vec<String>,
 }
 
 /// A `paint_chip_row` entry's total footprint: ` key ` pill + ` label `
@@ -504,23 +504,22 @@ pub fn draw_footer(
         }
     }
     // The centre line sits in the gap between the chips and the status
-    // (or the commands/quit pair), and the chips never yield it more
-    // room: a hovered chip must stay under the pointer, since hover is
-    // re-resolved against every frame's hit map. A hint too cut down to
-    // be useful is left out; an error picks its longest form that fits.
+    // (or the commands/quit pair), and the chips never yield it more room
+    // (see `CentreLine`). A hint too cut down to be useful gives way to
+    // the error, which shows its longest form that fits.
     let hint_start = chips_end + 1;
     let free = hint_end.saturating_sub(hint_start);
-    match centre {
-        Some(CentreLine::Hint(hint)) if free >= HINT_MIN_SHOWN => {
+    let Some(centre) = centre else { return };
+    match &centre.hint {
+        Some(hint) if free >= HINT_MIN_SHOWN => {
             paint_hint(buf, mid_y, hint_start, hint_end, hint, theme.text_muted, theme);
         }
-        Some(CentreLine::Error(forms)) => {
-            let fits = forms.iter().find(|form| crate::ui::cells(form) <= usize::from(free));
+        _ => {
+            let fits = centre.error.iter().find(|form| crate::ui::cells(form) <= usize::from(free));
             if let Some(form) = fits {
                 paint_hint(buf, mid_y, hint_start, hint_end, form, theme.error, theme);
             }
         }
-        _ => {}
     }
 }
 
@@ -796,9 +795,14 @@ mod tests {
             format!("{:?}", terminal.backend().buffer())
         };
         let forms = ["Content-Length cannot be set manually", "Content-Length can't be set"];
-        let error = CentreLine::Error(
-            forms.iter().map(|f| f.to_string()).chain(["can't be set".to_string()]).collect(),
-        );
+        let error = CentreLine {
+            hint: None,
+            error: forms
+                .iter()
+                .map(|f| f.to_string())
+                .chain(["can't be set".to_string()])
+                .collect(),
+        };
         // The chips end near column 42 and the commands/quit pair takes
         // the last ~28, so the gap is about `width - 70` cells.
         for (width, shown) in
@@ -816,6 +820,14 @@ mod tests {
             }
         }
         assert!(!draw(100, Some(&error)).contains(forms[0]), "the longer form gave way");
+
+        // A hint has the line where it fits; where it doesn't (a gap under
+        // its minimum), the error still shows rather than nothing.
+        let both = CentreLine { hint: Some("Delete this row".into()), ..error.clone() };
+        let wide = draw(130, Some(&both));
+        assert!(wide.contains("Delete this row") && !wide.contains("be set"), "{wide}");
+        let narrow = draw(86, Some(&both));
+        assert!(narrow.contains("can't be set") && !narrow.contains("Delete"), "{narrow}");
     }
 
     /// The footer's chips are the same controls as the app bar's, so they
