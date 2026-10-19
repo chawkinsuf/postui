@@ -272,7 +272,9 @@ impl App {
             return true;
         }
         // The editor as it stands, as Copy as curl reads it: an open cell's
-        // text and an open field's keys land first, as their own step.
+        // text and an open field's keys land first, as their own step (the
+        // commit captures itself; the capture takes whatever else is
+        // pending).
         self.commit_table_edit();
         self.capture_undo();
         self.flush_field_session();

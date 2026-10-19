@@ -2444,17 +2444,9 @@ impl App {
             Some((_, prev)) => {
                 let current = self.editor.current_request();
                 if *prev != current {
-                    let step = crate::undo::Step {
-                        kind: crate::undo::StepKind::EditorDelta {
-                            slug: current_slug.clone(),
-                            before: Box::new(prev.clone()),
-                            after: Box::new(current.clone()),
-                        },
-                        context: crate::undo::Context { slug: current_slug.clone() },
-                    };
+                    let prev = prev.clone();
                     let coalesce = !std::mem::take(&mut self.no_coalesce) && !closing;
-                    self.history.record_maybe_coalesce(step, coalesce);
-                    self.shadow = Some((current_slug, current));
+                    self.record_editor_delta(current_slug, prev, current, coalesce);
                     return true;
                 }
             }
@@ -2463,6 +2455,73 @@ impl App {
         self.no_coalesce = false;
         self.shadow = Some((current_slug, self.editor.current_request()));
         dropped
+    }
+
+    /// Captures a table cell's commit as a step of its own (task #66). With
+    /// no field session open this is [`Self::capture_undo`]. While one
+    /// holds the gate (the cell stayed open behind the URL line or the jq
+    /// bar), the field's live text must stay pending for its own close, so
+    /// the step moves only the committed tab's map (`Editor::commit_table`
+    /// commits the active tab's) from the shadow, and the shadow moves
+    /// with it: the field's close then lands on top, still one step (spec
+    /// 2026-09-15, amended for #66). Only the commit goes beneath:
+    /// anything else changed while the gate holds (a method change, a
+    /// format) stays pending and joins the field's close, the gate's rule.
+    /// Beneath is the order the user worked in, though the commit runs
+    /// last: the cell was typed before the caret left it for the field, so
+    /// undo takes back the field's session (and what joined it) first,
+    /// then the cell.
+    ///
+    /// The step copies the whole map, so a change to that same map made
+    /// under the gate without committing the cell first rides in it: a
+    /// tooltip pill's remove-variable (a float overlay, which keeps the
+    /// cell open) followed by a Send. That merges two changes into one
+    /// step; letting the commit wait instead, as before #66, merges all
+    /// three into the field's close. Row toggles, deletes and duplicates
+    /// can't: they come from the table's own keys (the caret is in the
+    /// table, so no field holds the gate) or from a table hit, footer chip
+    /// or row menu, which commits the cell first.
+    fn capture_table_commit(&mut self) {
+        if !self.field_gate() {
+            self.capture_undo();
+            return;
+        }
+        let tab = self.editor.active_tab;
+        let Some(map) = self.editor.table_map(tab) else { return };
+        // No shadow for the open request (none yet, or another request's):
+        // the next capture re-seeds.
+        let Some((slug, prev)) = self.shadow.take_if(|(s, _)| *s == self.editor.slug) else {
+            return;
+        };
+        let mut after = prev.clone();
+        match crate::components::editor::Editor::request_table_mut(&mut after, tab) {
+            Some(field) if field != map => {
+                field.clone_from(map);
+                self.record_editor_delta(slug, prev, after, false);
+            }
+            _ => self.shadow = Some((slug, prev)),
+        }
+    }
+
+    /// Records one `EditorDelta` step on the open request and moves the
+    /// shadow to its `after`: the one place a capture becomes a step.
+    fn record_editor_delta(
+        &mut self,
+        slug: Option<String>,
+        before: postui_core::model::HttpRequest,
+        after: postui_core::model::HttpRequest,
+        coalesce: bool,
+    ) {
+        let step = crate::undo::Step {
+            kind: crate::undo::StepKind::EditorDelta {
+                slug: slug.clone(),
+                before: Box::new(before),
+                after: Box::new(after.clone()),
+            },
+            context: crate::undo::Context { slug: slug.clone() },
+        };
+        self.history.record_maybe_coalesce(step, coalesce);
+        self.shadow = Some((slug, after));
     }
 
     /// Closes the open field's edit session (URL line, jq bar) in place
@@ -2619,13 +2678,15 @@ impl App {
             self.commit_table_edit();
             // A pending uncaptured edit means the user changed something
             // after the last undo; capturing it clears the redo stack,
-            // which is exactly the linear-history contract.
+            // which is exactly the linear-history contract. (A committed
+            // cell captured itself; this is for everything else.)
             self.capture_undo();
         } else {
-            // A live cell edit is part of what's being undone: commit it
-            // so it becomes a step, then capture any pending delta. A live
-            // Settings field edit closes the same way (spec 2026-09-16):
-            // the close becomes the step the undo pops.
+            // A live cell edit is part of what's being undone: committing
+            // it makes it a step (it captures itself), then any other
+            // pending delta is captured. A live Settings field edit closes
+            // the same way (spec 2026-09-16): the close becomes the step
+            // the undo pops.
             self.commit_settings_edit();
             self.commit_table_edit();
             self.capture_undo();
@@ -3764,7 +3825,6 @@ impl App {
                 // name this row's header and so override it.
                 if self.editor.table.editing.is_some() {
                     self.commit_table_edit();
-                    self.capture_undo();
                     let ctx = self.prepare_context();
                     self.editor.recompute_computed_headers(&ctx);
                 }
@@ -8237,7 +8297,7 @@ impl App {
     /// `Action::ReloadOpenRequest`; the caller owns the undo bookkeeping
     /// (`no_coalesce`) and the toast.
     fn reseed_editor(&mut self, slug: Option<String>, req: postui_core::model::HttpRequest) {
-        self.editor.table.editing = None;
+        // `Editor::load` drops the cell; the selection is ours to drop.
         self.editor.table.selected = None;
         self.editor.load(slug, req);
         self.sync_active_tab();
@@ -10825,6 +10885,12 @@ impl App {
             preferred
         };
         if target != self.editor.active_tab {
+            // A cell still open commits as an undo step of its own (#66),
+            // after the change that moved the tab (a method change). Undo
+            // replay, discard/reload and opening another request drop the
+            // edit before they get here (`apply_snapshot`, `Editor::load`),
+            // so no step is recorded mid-replay and no cell commits into a
+            // request it was not typed into.
             self.commit_table_edit();
             let prev = self.editor.active_tab;
             self.editor.active_tab = target;

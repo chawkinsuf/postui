@@ -1070,13 +1070,41 @@ impl App {
     /// toast. The one place typing is turned into map data outside the
     /// table's own key handling — click-away, focus loss, tab switch, save
     /// and send all go through here so a typed cell is never dropped.
+    ///
+    /// The commit is captured here as an undo step of its own (task #66):
+    /// the main loop captures once per event, so without it whatever the
+    /// same event does next (a click on another row's toggle, a click away
+    /// whose action edits) would join the commit, and one undo would take
+    /// the typing back with it. What was already pending is captured
+    /// first, so the commit is bracketed on both sides: a change its caller
+    /// made before committing (a method change whose tab sync commits the
+    /// cell) is its own step before it, and so is a jq filter the click
+    /// just blurred, typed while the cell stayed open behind the bar. It
+    /// lives here rather than in the click dispatch because keyboard paths
+    /// commit through here too.
+    ///
+    /// A field session still open (the cell stayed open behind the URL
+    /// line, or the jq bar keeps the caret through a Send) holds the app
+    /// history's gate, so the capture before the commit waits on it, and
+    /// the commit's own capture goes beneath the field's step instead
+    /// ([`Self::capture_table_commit`]). The session is never closed here:
+    /// that would wipe the field's own keystroke undo while the caret is
+    /// still in it.
+    ///
+    /// `no_coalesce` belongs to a change already made: the capture before
+    /// the commit records that change and spends the flag with it. A caller
+    /// that commits and then makes a wholesale change sets the flag after
+    /// committing, as every caller does (a method change sets it, changes
+    /// the method, then its tab sync commits).
     pub(crate) fn commit_table_edit(&mut self) {
         if self.editor.table.editing.is_none() {
             return;
         }
+        self.capture_undo();
         if let Some(w) = self.editor.commit_table().warning {
             self.toasts.push(w, ToastKind::Warning);
         }
+        self.capture_table_commit();
     }
 
     /// Commits the in-progress edit and re-resolves row `i` — an index from

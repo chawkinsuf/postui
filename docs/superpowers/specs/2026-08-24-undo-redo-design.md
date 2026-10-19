@@ -118,6 +118,36 @@ changes to input code. Opening or creating a request resets the shadow
 `pending_terminal_action`; the hook runs after completion, so an external
 edit is one step.
 
+*Amended 2026-10-19 (task #66, split from #62; the commit as its own step is mine, the
+gated case and the open rule below are `mine (approved)`):* a table cell
+committed on the way
+to something else (`App::commit_table_edit`, the one path that commits a
+cell outside the table's own keys) is captured right there, as a step of
+its own, before the rest of the event runs. A click on another row's
+toggle or trash, or a click away whose action edits (the TLS lock), would
+otherwise land in the same step as the commit, and one undo would take
+the typing back with it. Whatever was pending before the commit is
+captured first, so the commit is bracketed on both sides: a method change
+whose tab sync commits the cell is its own step before the commit, and so
+is a jq filter a click just blurred. A field session still open (the cell
+left behind the URL line by alt+u, or the jq bar keeping the caret
+through a Send) holds the gate as before; the commit then records a step
+that moves only the committed tab's map, beneath the field's, which still
+lands as one step on its close (spec 2026-09-15, amended the same day).
+The session is never closed early, which would wipe the field's own
+keystroke undo. Opening another request (task #63): a sidebar click
+commits the cell first, as any click away does, so the dirty gate sees
+it and its step is recorded under the request it was typed into; any
+other open (the keyboard, a palette row, which keeps the cell open)
+drops the cell in `Editor::load`, so it never commits into the request
+that opens. Such a drop loses the cell's typing; the dirty gate does not
+see an open cell yet. A landing that reloads the same request (a move-all
+that the open request follows) drops it too, where it used to survive
+the reload; keeping the drop until #63 fixes both is `mine (approved)`.
+The load drops only the cell: the row selection stays, so Save As keeps
+it. A change a tooltip pill makes to the open tab's map while the gate
+holds, without committing the cell, joins the commit's step beneath.
+
 ### Coalescing
 
 A new delta merges into the top step (keeping the top's `before`, taking

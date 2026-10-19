@@ -380,6 +380,20 @@ impl Editor {
         }
     }
 
+    /// `table_map`'s map in a request rather than the editor (an undo
+    /// snapshot); `None` for Body.
+    pub fn request_table_mut(
+        req: &mut HttpRequest,
+        tab: EditorTab,
+    ) -> Option<&mut IndexMap<String, Entry>> {
+        match tab {
+            EditorTab::Params => Some(&mut req.params),
+            EditorTab::Headers => Some(&mut req.headers),
+            EditorTab::Vars => Some(&mut req.variables),
+            EditorTab::Body => None,
+        }
+    }
+
     /// `table_map`, mutably. It borrows the whole editor, so a caller that
     /// also needs `self.table` at once keeps its own field-wise match.
     pub fn table_map_mut(&mut self, tab: EditorTab) -> Option<&mut IndexMap<String, Entry>> {
@@ -480,6 +494,14 @@ impl Editor {
         });
         self.set_saved(Some(req));
         self.computed.revealed = false;
+        // A cell still open belongs to the request being replaced: drop
+        // it, never let it commit into this one (task #66). A click that
+        // opens another request commits it first, so the dirty gate sees
+        // it; nothing else carries it over. A landing that reloads the same
+        // request (a move-all following it) drops it too, until the dirty
+        // gate sees an open cell (#63). The row selection stays, as it
+        // always has: Save As lands on the content it was made in.
+        self.table.editing = None;
     }
 
     /// Swaps in `req`'s fields the way `load` does, for undo/redo stepping

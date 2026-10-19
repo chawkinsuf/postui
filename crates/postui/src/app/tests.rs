@@ -2129,6 +2129,198 @@ fn checkbox_and_delete_clicks_during_an_edit_commit_it_first() {
     assert!(app.editor.params.get_index(1).is_none(), "the clicked row is gone");
 }
 
+/// Params `a=1, b=2`, editor focused, row 0's value open with `9` typed
+/// into it, and the shadow seeded before the typing.
+fn app_with_a_typed_cell() -> App {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Params;
+    for (k, v) in [("a", "1"), ("b", "2")] {
+        app.editor
+            .params
+            .insert(k.into(), postui_core::model::Entry { value: v.into(), enabled: true });
+    }
+    app.focus = PaneId::Editor;
+    app.capture_undo(); // seed the shadow before the edit
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "9");
+    app
+}
+
+/// A click that commits the open cell and then acts on another row makes
+/// two undo steps, not one: undo takes the action back and leaves what
+/// was typed (task #66).
+#[test]
+fn a_row_toggle_click_keeps_the_cells_commit_its_own_undo_step() {
+    let mut app = app_with_a_typed_cell();
+    hover_row_then_click(&mut app, Hit::TableRow(1), Hit::TableCheckbox(1));
+    app.capture_undo();
+    assert_eq!(app.editor.params["a"].value, "19");
+    assert!(!app.editor.params["b"].enabled);
+
+    app.update(Action::Undo);
+    assert!(app.editor.params["b"].enabled, "the toggle goes first");
+    assert_eq!(app.editor.params["a"].value, "19", "the commit stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["a"].value, "1", "then the commit goes");
+}
+
+#[test]
+fn a_row_delete_click_keeps_the_cells_commit_its_own_undo_step() {
+    let mut app = app_with_a_typed_cell();
+    hover_row_then_click(&mut app, Hit::TableRow(1), Hit::TableDelete(1));
+    app.capture_undo();
+    assert_eq!(app.editor.params["a"].value, "19");
+    assert!(!app.editor.params.contains_key("b"));
+
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["b"].value, "2", "the delete goes first");
+    assert_eq!(app.editor.params["a"].value, "19", "the commit stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["a"].value, "1", "then the commit goes");
+}
+
+/// The same for a click away from the table whose own action edits the
+/// request: the address bar's TLS lock.
+#[test]
+fn a_click_away_that_edits_keeps_the_cells_commit_its_own_undo_step() {
+    let mut app = app_with_a_typed_cell();
+    app.editor.url = LineInput::new("https://example.com");
+    app.capture_undo(); // the URL is the starting state, not an edit
+    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    app.capture_undo();
+    assert_eq!(app.editor.params["a"].value, "19");
+    assert!(app.editor.current_request().insecure);
+
+    app.update(Action::Undo);
+    assert!(!app.editor.current_request().insecure, "the toggle goes first");
+    assert_eq!(app.editor.params["a"].value, "19", "the commit stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["a"].value, "1", "then the commit goes");
+}
+
+/// A method change that brings the Body tab back commits the open cell
+/// on its way (the tab sync), after the method changed: two steps, in
+/// that order, never one.
+#[test]
+fn a_method_change_that_moves_the_tab_keeps_the_cells_commit_its_own_undo_step() {
+    use postui_core::model::Method;
+    for action in [Action::CycleMethod, Action::SetMethod(Method::Post)] {
+        let mut app = app_with_a_typed_cell();
+        app.editor.preferred_tab = EditorTab::Body;
+        assert_eq!(app.editor.method, Method::Get);
+        app.update(action.clone());
+        app.capture_undo();
+        assert_eq!(app.editor.active_tab, EditorTab::Body, "{action:?}: the Body tab is back");
+        assert_eq!(app.editor.params["a"].value, "19", "{action:?}");
+
+        app.update(Action::Undo);
+        assert_eq!(app.editor.params["a"].value, "1", "{action:?}: the commit goes first");
+        assert_ne!(app.editor.method, Method::Get, "{action:?}: the method stays");
+        app.update(Action::Undo);
+        assert_eq!(app.editor.method, Method::Get, "{action:?}: then the method goes");
+    }
+}
+
+/// A method change that leaves the tab where it is commits nothing: the
+/// cell stays open under the caret.
+#[test]
+fn a_method_change_that_keeps_the_tab_leaves_the_cell_open() {
+    let mut app = app_with_a_typed_cell();
+    app.editor.preferred_tab = EditorTab::Params;
+    app.update(Action::CycleMethod);
+    assert_eq!(app.editor.active_tab, EditorTab::Params);
+    assert!(app.editor.table.editing.is_some(), "the cell is still being typed in");
+}
+
+/// A commit while the jq bar keeps the caret (a tab switch from the bar)
+/// leaves the bar's own session alone: its keystrokes stay the field's to
+/// undo.
+#[test]
+fn a_commit_behind_a_focused_jq_bar_keeps_the_bars_session() {
+    let mut app = app_with_a_typed_cell();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::OpenJqBar);
+    type_str(&mut app, ".data");
+    app.sync_jq();
+    assert!(app.session.response.jq_field_edited());
+    app.update(Action::EditorTabSelect(EditorTab::Headers.index()));
+    assert!(app.editor.table.editing.is_none(), "the tab switch committed the cell");
+    assert!(app.session.response.jq_focused());
+    assert!(app.session.response.jq_field_edited(), "the bar's session is still open");
+
+    // The commit is a step of its own beneath the bar's: closing the bar
+    // puts the filter's step on top of it.
+    app.capture_undo();
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.sync_jq();
+    app.capture_undo();
+    assert!(!app.session.response.jq_focused());
+    assert_eq!(app.editor.jq, ".data");
+    app.update(Action::Undo);
+    app.sync_jq();
+    assert_eq!(app.editor.jq, "", "the filter goes first");
+    assert_eq!(app.editor.params["a"].value, "19", "the commit stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["a"].value, "1", "then the commit goes");
+}
+
+/// The same beneath the URL line: alt+u leaves the cell open behind it,
+/// and a click away that edits (the TLS lock) commits the cell while the
+/// URL's session still holds the gate. The commit is its own step, under
+/// the URL's.
+#[test]
+fn a_commit_behind_an_open_url_line_is_its_own_undo_step() {
+    let mut app = app_with_a_typed_cell();
+    app.editor.url = LineInput::new("https://e.com");
+    app.capture_undo(); // the URL is the starting state, not an edit
+    app.handle_key(alt('u'));
+    assert!(app.editor.url_open());
+    assert!(app.editor.table.editing.is_some(), "the cell stays open behind the URL");
+    type_chars(&mut app, "x");
+    app.capture_undo();
+    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    app.capture_undo();
+    assert_eq!(app.editor.params["a"].value, "19");
+    assert!(app.editor.insecure);
+
+    app.update(Action::Undo);
+    assert!(!app.editor.insecure, "the toggle goes first");
+    assert_eq!(app.editor.params["a"].value, "19", "the commit stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["a"].value, "1", "then the commit goes");
+}
+
+/// A filter typed into the jq bar while a cell stays open behind it holds
+/// the app history's gate; a click away that edits still lands as three
+/// steps: the filter, the commit, the click's own action.
+#[test]
+fn a_click_away_past_an_edited_jq_bar_keeps_the_cells_commit_its_own_undo_step() {
+    let mut app = app_with_a_typed_cell();
+    app.editor.url = LineInput::new("https://example.com");
+    ready_response(&mut app, JQ_BODY);
+    app.capture_undo(); // the URL is the starting state, not an edit
+    app.update(Action::OpenJqBar);
+    type_str(&mut app, ".data");
+    app.sync_jq();
+    app.capture_undo();
+    assert!(app.editor.table.editing.is_some(), "the cell is still open behind the bar");
+    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    app.capture_undo();
+    app.sync_jq();
+    assert_eq!(app.editor.params["a"].value, "19");
+    assert!(app.editor.current_request().insecure);
+    assert_eq!(app.editor.jq, ".data");
+
+    app.update(Action::Undo);
+    assert!(!app.editor.current_request().insecure, "the toggle goes first");
+    assert_eq!(app.editor.params["a"].value, "19", "the commit stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["a"].value, "1", "then the commit goes");
+    assert_eq!(app.editor.jq, ".data", "the filter stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.jq, "", "then the filter goes");
+}
+
 /// Params `a=1, b=2, c=3`, editor focused.
 fn app_with_three_params() -> App {
     let mut app = App::new_for_test();
@@ -22447,6 +22639,53 @@ fn three_row_app() -> (App, tempfile::TempDir) {
     render_once(&mut app);
     assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
     (app, dir)
+}
+
+/// A cell left open when another request opens without a click (the
+/// keyboard, a palette row) is dropped, never committed into the request
+/// that opens: that request keeps its own rows and gains no undo step
+/// (task #63).
+#[test]
+fn opening_another_request_drops_a_cell_left_open() {
+    let (mut app, dir) = three_row_app();
+    let mut beta = req("https://x/2");
+    beta.params.insert("b".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
+    postui_core::fixtures::save_request(dir.path(), "main/beta", &beta).unwrap();
+    let mut alpha = req("https://x/1");
+    alpha.params.insert("a".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    postui_core::fixtures::save_request(dir.path(), "main/alpha", &alpha).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.editor.active_tab = EditorTab::Params;
+    app.focus = PaneId::Editor;
+    app.capture_undo();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "9");
+    app.update(Action::FocusPane(PaneId::Sidebar));
+    let steps = app.history.undo_len();
+    app.update(Action::OpenRequest("main/beta".into()));
+    app.capture_undo();
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+    assert!(app.editor.table.editing.is_none(), "the old request's cell is gone");
+    assert_eq!(app.editor.params["b"].value, "2", "beta keeps its own row");
+    assert_eq!(app.history.undo_len(), steps, "and gains no undo step");
+}
+
+/// A load drops only the open cell: Save As lands on the content it was
+/// made in, so the row the user had selected stays selected (task #66).
+#[test]
+fn save_as_keeps_the_row_selection() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.editor.active_tab = EditorTab::Params;
+    app.editor.preferred_tab = EditorTab::Params;
+    app.editor
+        .params
+        .insert("a".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    app.editor.table.selected = Some(0);
+    app.update(Action::SaveRequestAs("copy".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/copy"));
+    assert_eq!(app.editor.table.selected, Some(0));
 }
 
 #[test]
