@@ -1071,7 +1071,7 @@ impl App {
     /// table's own key handling — click-away, focus loss, tab switch, save
     /// and send all go through here so a typed cell is never dropped.
     ///
-    /// The commit is captured here as an undo step of its own (task #62):
+    /// The commit is captured here as an undo step of its own (task #66):
     /// the main loop captures once per event, so without it whatever the
     /// same event does next (a click on another row's toggle, a click away
     /// whose action edits) would join the commit, and one undo would take

@@ -118,7 +118,7 @@ changes to input code. Opening or creating a request resets the shadow
 `pending_terminal_action`; the hook runs after completion, so an external
 edit is one step.
 
-*Amended 2026-10-19 (task #62; the commit as its own step is mine, the
+*Amended 2026-10-19 (task #66, split from #62; the commit as its own step is mine, the
 gated case and the open rule below are `mine (approved)`):* a table cell
 committed on the way
 to something else (`App::commit_table_edit`, the one path that commits a

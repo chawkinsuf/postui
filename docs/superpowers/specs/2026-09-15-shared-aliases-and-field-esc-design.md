@@ -206,7 +206,7 @@ updating; only the recording waits. Consequences:
 - A send fired while the URL line is open (ctrl+enter) uses the live
   text as today; the undo step still lands on close.
 
-*Amended 2026-10-19 (task #62, mine (approved)):* a table cell committed
+*Amended 2026-10-19 (task #66, split from #62, mine (approved)):* a table cell committed
 while the gate holds (the cell stays open behind the URL line after
 alt+u, or behind the jq bar after a jump to the response pane) records
 its own step at once, beneath the field's. The step moves only the

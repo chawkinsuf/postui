@@ -2457,14 +2457,14 @@ impl App {
         dropped
     }
 
-    /// Captures a table cell's commit as a step of its own (task #62). With
+    /// Captures a table cell's commit as a step of its own (task #66). With
     /// no field session open this is [`Self::capture_undo`]. While one
     /// holds the gate (the cell stayed open behind the URL line or the jq
     /// bar), the field's live text must stay pending for its own close, so
     /// the step moves only the committed tab's map (`Editor::commit_table`
     /// commits the active tab's) from the shadow, and the shadow moves
     /// with it: the field's close then lands on top, still one step (spec
-    /// 2026-09-15, amended for #62). Only the commit goes beneath:
+    /// 2026-09-15, amended for #66). Only the commit goes beneath:
     /// anything else changed while the gate holds (a method change, a
     /// format) stays pending and joins the field's close, the gate's rule.
     fn capture_table_commit(&mut self) {
@@ -10875,7 +10875,7 @@ impl App {
             preferred
         };
         if target != self.editor.active_tab {
-            // A cell still open commits as an undo step of its own (#62),
+            // A cell still open commits as an undo step of its own (#66),
             // after the change that moved the tab (a method change). Undo
             // replay, discard/reload and opening another request drop the
             // edit before they get here (`apply_snapshot`, `Editor::load`),

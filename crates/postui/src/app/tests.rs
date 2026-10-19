@@ -2148,7 +2148,7 @@ fn app_with_a_typed_cell() -> App {
 
 /// A click that commits the open cell and then acts on another row makes
 /// two undo steps, not one: undo takes the action back and leaves what
-/// was typed (task #62).
+/// was typed (task #66).
 #[test]
 fn a_row_toggle_click_keeps_the_cells_commit_its_own_undo_step() {
     let mut app = app_with_a_typed_cell();
