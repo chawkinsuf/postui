@@ -325,11 +325,12 @@ pub enum CentreLine {
     /// pointer, and hover is re-resolved against every frame's hit map.
     Hint(String),
     /// What is wrong with the row under the pointer or the keyboard
-    /// cursor (task #59: a header the client owns), in the error colour.
-    /// The chips stop short to leave it room, as a narrow footer would
-    /// otherwise never say it; nothing is hovered on the chip row then, so
-    /// no chip moves out from under the pointer.
-    Error(String),
+    /// cursor (task #59: a header the client owns), in the error colour:
+    /// the same message from its longest form to its shortest. Like a
+    /// hint it takes only the room the chips leave, so nothing moves
+    /// under the pointer; where the full form doesn't fit, the longest
+    /// one that does shows whole, and below its shortest none does.
+    Error(Vec<String>),
 }
 
 /// A `paint_chip_row` entry's total footprint: ` key ` pill + ` label `
@@ -461,7 +462,6 @@ pub fn draw_footer(
         && focus == PaneId::Response
         && field_open
         && matches!(jq_bar, JqBarState::Closed | JqBarState::Open);
-    let overridden = chips_override.is_some();
     let raw: Vec<FooterChip> = match chips_override {
         Some(c) => c,
         None => footer_chips(
@@ -486,28 +486,8 @@ pub fn draw_footer(
     let chips: Vec<(&str, &str, Option<Action>)> =
         owned.iter().map(|(k, l, a)| (k.as_str(), l.as_str(), a.clone())).collect();
     let start_x = area.x + 1;
-    // An error takes its room from the chips: they stop short of it, and
-    // of vim's status beside it, rather than leave it out. Past the text
-    // it needs the chip row's trailing gap and its own leading column (3)
-    // and the column kept clear of the commands chip's pad (1), plus 1
-    // to breathe. A footer too narrow for even a shortened error keeps
-    // its chips: cutting them would show neither. Only the pane's own
-    // chips give way: an override set (a drag's cancel, a screen's own)
-    // is the way out of where the keyboard is, and keeps all of its room.
-    let chip_limit = match centre {
-        Some(CentreLine::Error(error)) if !overridden => {
-            let pad = 5 + vim_status.map_or(0, |s| crate::ui::cells(s) as u16 + 1);
-            let text_w = (crate::ui::cells(error) as u16).max(HINT_MIN_SHOWN);
-            if right_limit.saturating_sub(start_x) >= HINT_MIN_SHOWN + pad {
-                right_limit.saturating_sub(text_w + pad).max(start_x)
-            } else {
-                right_limit
-            }
-        }
-        _ => right_limit,
-    };
-    paint_chip_row(buf, area, mid_y, start_x, chip_limit, &chips, theme, hits, hovered, hover_t);
-    let chips_end = chip_row_end(start_x, chip_limit, &chips);
+    paint_chip_row(buf, area, mid_y, start_x, right_limit, &chips, theme, hits, hovered, hover_t);
+    let chips_end = chip_row_end(start_x, right_limit, &chips);
     // One column shy of `right_limit`: the commands chip's leading pad is
     // painted in the pill's own fill, so anything ending right against it
     // would read as part of the chip.
@@ -523,20 +503,24 @@ pub fn draw_footer(
             hint_end = x.saturating_sub(1);
         }
     }
-    // The hint sits in the gap between the chips and the status (or the
-    // commands/quit pair), and the chips never yield a hint more room
-    // (an error took its own above): a hovered chip must stay under the
-    // pointer, since hover is re-resolved against every frame's hit map,
-    // so a gap too small for a useful line leaves the hint out.
-    if let Some(centre) = centre {
-        let (line, color) = match centre {
-            CentreLine::Hint(hint) => (hint, theme.text_muted),
-            CentreLine::Error(error) => (error, theme.error),
-        };
-        let hint_start = chips_end + 1;
-        if hint_end.saturating_sub(hint_start) >= HINT_MIN_SHOWN {
-            paint_hint(buf, mid_y, hint_start, hint_end, line, color, theme);
+    // The centre line sits in the gap between the chips and the status
+    // (or the commands/quit pair), and the chips never yield it more
+    // room: a hovered chip must stay under the pointer, since hover is
+    // re-resolved against every frame's hit map. A hint too cut down to
+    // be useful is left out; an error picks its longest form that fits.
+    let hint_start = chips_end + 1;
+    let free = hint_end.saturating_sub(hint_start);
+    match centre {
+        Some(CentreLine::Hint(hint)) if free >= HINT_MIN_SHOWN => {
+            paint_hint(buf, mid_y, hint_start, hint_end, hint, theme.text_muted, theme);
         }
+        Some(CentreLine::Error(forms)) => {
+            let fits = forms.iter().find(|form| crate::ui::cells(form) <= usize::from(free));
+            if let Some(form) = fits {
+                paint_hint(buf, mid_y, hint_start, hint_end, form, theme.error, theme);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -766,11 +750,12 @@ mod tests {
         );
     }
 
-    /// An error takes room from the pane's own chips only: an override
-    /// set (here a drag's cancel) keeps all of its chips, and the error
-    /// shows only in what room they leave (task #59).
+    /// An error never takes room from the chips (task #59, the user: "just
+    /// make it shorter when there is less space so we dont have to hide
+    /// the chips"): in a narrower gap it shows its longest form that fits
+    /// whole, in the error colour, and below its shortest, nothing.
     #[test]
-    fn an_error_never_cuts_an_override_chip_set() {
+    fn an_error_shortens_to_fit_and_never_cuts_a_chip() {
         let theme = Theme::for_terminal();
         let keymap = crate::keys::Keymap::default_bindings();
         let draw = |width: u16, centre: Option<&CentreLine>| {
@@ -810,10 +795,27 @@ mod tests {
                 .unwrap();
             format!("{:?}", terminal.backend().buffer())
         };
-        let error = CentreLine::Error("Content-Length cannot be set manually".into());
-        let content = draw(80, Some(&error));
-        assert!(content.contains("cancel drag"), "{content}");
-        assert!(content.contains("drop here"), "{content}");
+        let forms = ["Content-Length cannot be set manually", "Content-Length can't be set"];
+        let error = CentreLine::Error(
+            forms.iter().map(|f| f.to_string()).chain(["can't be set".to_string()]).collect(),
+        );
+        // The chips end near column 42 and the commands/quit pair takes
+        // the last ~28, so the gap is about `width - 70` cells.
+        for (width, shown) in
+            [(130, Some(forms[0])), (100, Some(forms[1])), (86, Some("can't be set")), (70, None)]
+        {
+            let content = draw(width, Some(&error));
+            assert!(content.contains("cancel drag"), "{width}: {content}");
+            assert!(content.contains("drop here"), "{width}: {content}");
+            match shown {
+                Some(form) => {
+                    assert!(content.contains(form), "{width}: {content}");
+                    assert!(!content.contains('…'), "shown whole, {width}: {content}");
+                }
+                None => assert!(!content.contains("be set"), "{width}: {content}"),
+            }
+        }
+        assert!(!draw(100, Some(&error)).contains(forms[0]), "the longer form gave way");
     }
 
     /// The footer's chips are the same controls as the app bar's, so they

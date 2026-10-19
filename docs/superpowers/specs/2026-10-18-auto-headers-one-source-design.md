@@ -318,10 +318,11 @@ R3b's note, and R3d's and §5a's wordings with it.
 | A default the rule drops keeps its struck, red auto row, with no inline note. | `mine (approved)` |
 | The message is `<header> cannot be set manually`, e.g. `Content-Length cannot be set manually`, whether or not the client sends its own row. | `you` |
 | The footer's centre line shows it while the row is hovered, like any hover hint: a table row's surface or cell, or an auto row's (`Hit::AutoHeaderRow`, a surface whose click is the bare pane's). Whatever sits on top of the row (a token, a button) is its own hover. When the hover gives no message, it shows for the focused table's cursor row. A hovered button's own hint comes first. Struck defaults explain themselves on hover only: the auto section has no cursor. | `mine (approved)`; kept the ordinary hover rule after review round 2 (`you`: "we have messages in the footer on hover all the time") |
-| It is an error message: drawn in the error colour, and the per-pane chips stop short to make room for it, rightmost first, so a narrow footer still says it. A hover hint still takes only the room the chips leave. | room: `mine (approved)` (review round 1: below ~140 columns there was none); error colour `you` ("error message beats chips") |
-| It shows with `hover_hints = false`, since it replaces a note that always showed; it is silent under a dialog, off the request screen, and over a hovered footer chip (which its room would push aside). | `mine` |
-| Like the row's red strike, it follows the committed key, so while a cell is open no row says anything: the edit's commit and cancel chips keep the footer. | `mine` (review rounds 1 and 3 raised it) |
-| When the hover has nothing to say, the cursor row speaks even with the pointer on another, ordinary row: the footer is the keyboard's context, as its chips are. A footer too narrow for even a shortened error keeps its chips. | `mine` (review rounds 1–3 flipped on the first point; kept) |
+| It is an error message, drawn in the error colour. | `you` ("error message beats chips") |
+| It never takes room from the chips. In the gap they leave it shows its longest form that fits whole: `Host cannot be set manually`, `Host can't be set`, `can't be set`; below that, nothing. (Rounds 1–5 had the chips give way instead; round 6 found them flickering under the pointer as the hover moved between a hint and the error.) | `you` ("just make it shorter when there is less space so we dont have to hide the chips"; "set a more reasonable min"); the two short forms `mine` |
+| It shows with `hover_hints = false`, since it replaces a note that always showed; it is silent under a dialog and off the request screen. | `mine` |
+| Like the row's red strike, it follows the committed key: a name being typed is judged once it lands. | `mine` |
+| When the hover has nothing to say, the cursor row speaks even with the pointer on another, ordinary row: the footer is the keyboard's context, as its chips are. | `mine` (review rounds 1–6 flipped on it; kept) |
 
 Design: `Unsent::ClientOwned` loses `client_sends`, which only chose
 between the two old wordings, and `rows()` its pass that filled it.

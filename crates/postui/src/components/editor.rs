@@ -656,20 +656,19 @@ impl Editor {
     /// hover that has nothing to say leaves it so.
     ///
     /// Like the row's own red strike, the verdict follows the committed
-    /// key, so while a cell is open no row says anything: the name being
-    /// typed is judged once it lands, and the footer's room goes to the
-    /// edit's own commit and cancel chips (the click that opened the cell
-    /// usually leaves the pointer on its row).
+    /// key: a name being typed is judged once it lands.
+    ///
+    /// The message comes longest form first, for the footer to show the
+    /// longest that fits (`CentreLine::Error`): it never takes room from
+    /// the chips (the user: "just make it shorter when there is less
+    /// space so we dont have to hide the chips").
     pub fn client_owned_message(
         &self,
         hovered: Option<&crate::hit::Hit>,
         focused: bool,
-    ) -> Option<String> {
+    ) -> Option<Vec<String>> {
         use crate::hit::Hit;
-        if self.active_tab != EditorTab::Headers
-            || self.table_collapsed
-            || self.table.editing.is_some()
-        {
+        if self.active_tab != EditorTab::Headers || self.table_collapsed {
             return None;
         }
         let table_row = |i: usize| match self.computed.notes.get(i)? {
@@ -685,7 +684,11 @@ impl Editor {
             .then_some(self.table.selected)
             .flatten();
         let header = hovered.or_else(|| table_row(cursor?))?;
-        Some(format!("{header} cannot be set manually"))
+        Some(vec![
+            format!("{header} cannot be set manually"),
+            format!("{header} can't be set"),
+            "can't be set".to_string(),
+        ])
     }
 
     /// A never-loaded (fresh scratch) editor is not dirty even though it has
@@ -5940,34 +5943,49 @@ url = "https://api.example.com/users""#,
         assert_eq!(buf[(key.x, key.y)].fg, app.theme.text_muted, "drawn as any disabled row");
     }
 
-    /// On a narrow footer the chips stop short to make room for the error,
-    /// rather than leave it out (task #59): at 110 columns the editor's
-    /// chips alone leave less than a hint's minimum.
+    /// The error never hides a chip (task #59, the user: "just make it
+    /// shorter when there is less space so we dont have to hide the
+    /// chips"): at every width the footer's chips are the same with the
+    /// cursor on a client-owned row as on an ordinary one, and where the
+    /// full message doesn't fit a shorter form shows.
     #[test]
-    fn a_narrow_footer_makes_room_for_the_client_owned_error() {
+    fn the_client_owned_error_shortens_and_never_hides_a_chip() {
         let mut app = App::new_for_test();
         app.editor.active_tab = EditorTab::Headers;
         app.editor.url = LineInput::new("https://example.com/foo");
         app.editor
             .headers
             .insert("Content-Length".into(), Entry { value: "5".into(), enabled: true });
+        app.editor.headers.insert("X-A".into(), Entry { value: "1".into(), enabled: true });
         app.focus = crate::layout::PaneId::Editor;
         app.editor.sub_focus = SubFocus::Content;
-        app.editor.table.selected = Some(0);
         app.update(Action::Render);
-        let mut terminal = Terminal::new(TestBackend::new(110, 40)).unwrap();
-        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
-        let content = format!("{:?}", terminal.backend().buffer());
-        assert!(content.contains("Content-Length cannot be set manually"), "{content}");
-        assert!(content.contains("commands"), "the right-hand chips stay: {content}");
-
-        // Too narrow for even a shortened error: the chips stay rather than
-        // the footer showing neither.
-        let mut terminal = Terminal::new(TestBackend::new(50, 40)).unwrap();
-        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
-        let content = format!("{:?}", terminal.backend().buffer());
-        assert!(!content.contains("cannot be set"), "{content}");
-        assert!(content.contains(" send "), "the editor's first chip stays: {content}");
+        let chips = ["send", "add header", "disable", "delete", "vars", "tabs", "commands"];
+        for width in [90, 110, 140, 180] {
+            let mut footer = |row: usize| {
+                app.editor.table.selected = Some(row);
+                let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
+                terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+                let buf = terminal.backend().buffer();
+                let y = buf.area.height - 2;
+                (0..width).map(|x| buf[(x, y)].symbol()).collect::<String>()
+            };
+            let (owned, plain) = (footer(0), footer(1));
+            for chip in chips {
+                assert_eq!(
+                    owned.contains(chip),
+                    plain.contains(chip),
+                    "{width}: {chip}\n{owned}\n{plain}"
+                );
+            }
+            assert!(!owned.contains('…'), "a form shows whole: {owned}");
+            if width >= 140 {
+                assert!(owned.contains(" be set"), "some form shows, {width}: {owned}");
+            }
+            if width >= 180 {
+                assert!(owned.contains("Content-Length cannot be set manually"), "{owned}");
+            }
+        }
     }
 
     /// The footer message follows the keyboard cursor too: on a typed
@@ -6005,17 +6023,6 @@ url = "https://api.example.com/users""#,
         let (_, content) = draw_wide(&mut app);
         assert!(content.contains("Content-Length cannot be set manually"), "{content}");
         app.ui_settings.hover_hints = true;
-        app.hovered = None;
-
-        // While a cell is open the edit's chips have the footer, hovered
-        // or not: the name being typed is judged once it lands.
-        app.editor.table.selected = Some(0);
-        app.editor.table.begin_edit_selected(&app.editor.headers);
-        assert!(app.editor.table.editing.is_some());
-        app.hovered = Some(Hit::TableCell { row: 0, col: 0 });
-        let (_, content) = draw_wide(&mut app);
-        assert!(!content.contains("cannot be set manually"), "{content}");
-        app.editor.table.editing = None;
         app.hovered = None;
 
         // Under a dialog the keyboard is the dialog's, so the cursor row
