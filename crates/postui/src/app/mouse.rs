@@ -2021,6 +2021,7 @@ impl App {
             Hit::AutoHeaderCopy(i) => {
                 self.update(Action::CopyToClipboard(CopyTarget::ComputedHeader(i)))
             }
+            Hit::AutoHeaderOverride(i) => self.update(Action::OverrideAutoHeader(i)),
             Hit::AutoHeaderReveal => self.update(Action::ToggleHeaderReveal),
             Hit::ScrollbarThumb(pane) => {
                 let Some(thumb) = self.hits.rect_of(&Hit::ScrollbarThumb(pane)) else {

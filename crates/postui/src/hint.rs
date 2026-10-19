@@ -436,6 +436,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             text(if *d > 0 { "Give the response more room" } else { "Give the editor more room" })
         }
         Hit::AutoHeaderCopy(_) => text("Copy this header's value"),
+        Hit::AutoHeaderOverride(_) => text("Edit this header in the request"),
         Hit::AutoHeaderReveal => {
             text(if ctx.on { "Hide the computed secrets" } else { "Show the computed secrets" })
         }

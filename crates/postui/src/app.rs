@@ -3745,6 +3745,36 @@ impl App {
                 }
                 true
             }
+            Action::OverrideAutoHeader(i) => {
+                // A cell still open commits first, and the section is read
+                // again after it: the commit can name this row's header
+                // and so override it. The section's rows stay where they
+                // were (a commit only changes the request's rows), so `i`
+                // still names the row clicked.
+                self.commit_table_edit();
+                let ctx = self.prepare_context();
+                self.editor.recompute_computed_headers(&ctx);
+                let Some((name, value)) = self
+                    .editor
+                    .computed
+                    .rows
+                    .get(i)
+                    .and_then(|r| r.overriding_row())
+                    .map(|(name, value)| (name.to_string(), value.to_string()))
+                else {
+                    return false;
+                };
+                let entry = postui_core::model::Entry { value, enabled: true };
+                let at = self.editor.headers.len();
+                self.insert_row_copy(EditorTab::Headers, &name, entry, at);
+                // You take a header over to give it a value of your own
+                // (task #20), so its value opens, caret at the end.
+                self.focus = PaneId::Editor;
+                self.editor.sub_focus = SubFocus::Content;
+                self.editor.table.col = crate::components::table_editor::Col::Value;
+                self.editor.table.begin_edit_selected(&self.editor.headers);
+                true
+            }
             Action::YankRequest(slug) => {
                 // Invisible until a put spends it (spec §5.1).
                 self.yank = crate::yank::Register::Request(slug);

@@ -3443,7 +3443,9 @@ impl Editor {
     /// a duplicate default, or a default naming a client-owned header,
     /// which also reads as an error) renders struck through; an unresolved
     /// `{{token}}` is tinted span-level. Each row gets a trailing `󰆏` copy
-    /// icon (`Hit::AutoHeaderCopy`, indexed into `rows`); the divider
+    /// icon (`Hit::AutoHeaderCopy`, indexed into `rows`), and a row a
+    /// request row may take over a `󰏫` after it (`Hit::AutoHeaderOverride`,
+    /// task #20); the divider
     /// carries a `👁 reveal`/`hide` toggle (`Hit::AutoHeaderReveal`)
     /// whenever a row has a secret to reveal. Under them, a client-owned
     /// row is a surface (`Hit::AutoHeaderRow`) whose hover lets the footer
@@ -3539,18 +3541,33 @@ impl Editor {
             let value_col =
                 usize::from(area.x) + crate::ui::cells(indent) + crate::ui::cells(&name_piece);
             let pill_col = value_col + crate::ui::cells(&value_piece);
-            let glyph_hovered = ctx.hovered == Some(&crate::hit::Hit::AutoHeaderCopy(i));
-            let glyph_style = if glyph_hovered {
-                Style::default().bg(theme.accent).fg(theme.on_accent)
-            } else {
-                Style::default().fg(theme.accent)
+            let pill_style = |hit: crate::hit::Hit| {
+                if ctx.hovered == Some(&hit) {
+                    Style::default().bg(theme.accent).fg(theme.on_accent)
+                } else {
+                    Style::default().fg(theme.accent)
+                }
             };
-            let spans = vec![
+            // The pencil, on a row a request row may take over (task #20),
+            // goes after the copy pill: it comes and goes, so the copy
+            // pill keeps its place on every row.
+            let pencil_col = pill_col + crate::ui::cells(crate::glyph::COPY_PILL);
+            let overridable = row.overriding_row().is_some();
+            let mut spans = vec![
                 Span::styled(indent, base),
                 Span::styled(name_piece, name_style),
                 Span::styled(value_piece, value_style),
-                Span::styled(crate::glyph::COPY_PILL, glyph_style),
+                Span::styled(
+                    crate::glyph::COPY_PILL,
+                    pill_style(crate::hit::Hit::AutoHeaderCopy(i)),
+                ),
             ];
+            if overridable {
+                spans.push(Span::styled(
+                    crate::glyph::PENCIL_PILL,
+                    pill_style(crate::hit::Hit::AutoHeaderOverride(i)),
+                ));
+            }
             let line = Line::from(spans);
             let row_rect = Rect::new(area.x, y, area.width, 1);
             frame.render_widget(Paragraph::new(line), row_rect);
@@ -3577,11 +3594,14 @@ impl Editor {
             // spacer cells are part of the button (the hover fill covers
             // them), so even a one-cell sliver is a live edge of it, as on
             // the response Headers tab (#50).
-            hits.register_cols(
-                pill_col..pill_col + crate::ui::cells(crate::glyph::COPY_PILL),
-                row_rect,
-                crate::hit::Hit::AutoHeaderCopy(i),
-            );
+            hits.register_cols(pill_col..pencil_col, row_rect, crate::hit::Hit::AutoHeaderCopy(i));
+            if overridable {
+                hits.register_cols(
+                    pencil_col..pencil_col + crate::ui::cells(crate::glyph::PENCIL_PILL),
+                    row_rect,
+                    crate::hit::Hit::AutoHeaderOverride(i),
+                );
+            }
             y += 1;
         }
     }
@@ -6703,7 +6723,36 @@ url = "https://api.example.com/users""#,
             origin: postui_core::prepare::HeaderOrigin::Client,
             unsent: None,
             unresolved: Vec::new(),
+            written: None,
         }
+    }
+
+    /// A row a request row may take over carries a pencil pill right after
+    /// its copy pill (task #20); a row with no overriding row, or one
+    /// already struck, carries the copy pill alone.
+    #[test]
+    fn an_overridable_auto_row_has_a_pencil_pill_after_its_copy_pill() {
+        let mut e = Editor::default();
+        let overridable = |name: &str, value: &str| postui_core::prepare::HeaderRow {
+            written: Some((name.into(), value.into())),
+            ..auto_header(name, value)
+        };
+        e.computed.rows = vec![
+            overridable("Accept", "*/*"),
+            auto_header("Host", "x.test"),
+            postui_core::prepare::HeaderRow {
+                unsent: Some(postui_core::prepare::Unsent::Replaced),
+                ..overridable("X-Old", "1")
+            },
+        ];
+        let (hits, buf) = draw_auto_headers(&e);
+        let copy = hits.rect_of(&Hit::AutoHeaderCopy(0)).expect("the Accept row's copy pill");
+        let pencil = hits.rect_of(&Hit::AutoHeaderOverride(0)).expect("the Accept row's pencil");
+        assert_eq!(pencil, Rect { x: copy.x + copy.width, ..copy }, "right after the copy pill");
+        assert_eq!(buf[(pencil.x + 1, pencil.y)].symbol(), crate::glyph::PENCIL);
+        assert_eq!(hits.rect_of(&Hit::AutoHeaderOverride(1)), None, "nothing to write");
+        assert_eq!(hits.rect_of(&Hit::AutoHeaderOverride(2)), None, "already overridden");
+        assert!(hits.rect_of(&Hit::AutoHeaderCopy(2)).is_some(), "a struck row still copies");
     }
 
     /// A pill past column 65535 is far off the pane's right edge; its

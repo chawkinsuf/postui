@@ -138,6 +138,10 @@ pub enum Hit {
     /// `ComputedHeadersView::rows[i]`, used as is (the view already holds
     /// only the rows the section draws).
     AutoHeaderCopy(usize),
+    /// The pencil after that copy icon, on a row a request row may take
+    /// over (`HeaderRow::overriding_row`): adds the header to the request
+    /// with its value open for editing (task #20).
+    AutoHeaderOverride(usize),
     /// Row `i` of that section as a whole, under its tokens and copy icon,
     /// registered only for a client-owned row: a surface, like a table
     /// row, whose hover lets the footer say why it isn't sent (task #59).

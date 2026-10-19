@@ -282,6 +282,12 @@ pub enum Action {
     /// `-copy-2`, …, same collision rule as `DuplicateRequest`/`DuplicateVar`)
     /// directly below it, with the same value and enabled flag.
     DuplicateTableRow(usize),
+    /// The pencil on row `i` of the Headers tab's auto section (index into
+    /// `ComputedHeadersView::rows`, see `Hit::AutoHeaderOverride`): adds
+    /// `HeaderRow::overriding_row` to the request's Headers table, last,
+    /// and opens its value for editing (task #20). Inert on a row that has
+    /// none.
+    OverrideAutoHeader(usize),
     /// `yy` / `y` on the sidebar: remember this request in `App::yank`.
     /// Invisible: no file, no undo step, no toast (piece 4 spec §5.1).
     YankRequest(String),
