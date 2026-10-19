@@ -2198,11 +2198,11 @@ fn a_click_away_that_edits_keeps_the_cells_commit_its_own_undo_step() {
     assert_eq!(app.editor.params["a"].value, "1", "then the commit goes");
 }
 
-/// A method change that brings the Body tab back commits the open cell on
-/// its way, and the commit is still a step of its own: undo takes the
-/// method back and leaves what was typed.
+/// A method change that brings the Body tab back commits the open cell
+/// on its way (the tab sync), after the method changed: two steps, in
+/// that order, never one.
 #[test]
-fn a_method_change_keeps_the_cells_commit_its_own_undo_step() {
+fn a_method_change_that_moves_the_tab_keeps_the_cells_commit_its_own_undo_step() {
     use postui_core::model::Method;
     for action in [Action::CycleMethod, Action::SetMethod(Method::Post)] {
         let mut app = app_with_a_typed_cell();
@@ -2214,11 +2214,39 @@ fn a_method_change_keeps_the_cells_commit_its_own_undo_step() {
         assert_eq!(app.editor.params["a"].value, "19", "{action:?}");
 
         app.update(Action::Undo);
-        assert_eq!(app.editor.method, Method::Get, "{action:?}: the method goes first");
-        assert_eq!(app.editor.params["a"].value, "19", "{action:?}: the commit stays");
+        assert_eq!(app.editor.params["a"].value, "1", "{action:?}: the commit goes first");
+        assert_ne!(app.editor.method, Method::Get, "{action:?}: the method stays");
         app.update(Action::Undo);
-        assert_eq!(app.editor.params["a"].value, "1", "{action:?}: then the commit goes");
+        assert_eq!(app.editor.method, Method::Get, "{action:?}: then the method goes");
     }
+}
+
+/// A method change that leaves the tab where it is commits nothing: the
+/// cell stays open under the caret.
+#[test]
+fn a_method_change_that_keeps_the_tab_leaves_the_cell_open() {
+    let mut app = app_with_a_typed_cell();
+    app.editor.preferred_tab = EditorTab::Params;
+    app.update(Action::CycleMethod);
+    assert_eq!(app.editor.active_tab, EditorTab::Params);
+    assert!(app.editor.table.editing.is_some(), "the cell is still being typed in");
+}
+
+/// A commit while the jq bar keeps the caret (a tab switch from the bar)
+/// leaves the bar's own session alone: its keystrokes stay the field's to
+/// undo.
+#[test]
+fn a_commit_behind_a_focused_jq_bar_keeps_the_bars_session() {
+    let mut app = app_with_a_typed_cell();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::OpenJqBar);
+    type_str(&mut app, ".data");
+    app.sync_jq();
+    assert!(app.session.response.jq_field_edited());
+    app.update(Action::EditorTabSelect(EditorTab::Headers.index()));
+    assert!(app.editor.table.editing.is_none(), "the tab switch committed the cell");
+    assert!(app.session.response.jq_focused());
+    assert!(app.session.response.jq_field_edited(), "the bar's session is still open");
 }
 
 /// A filter typed into the jq bar while a cell stays open behind it holds

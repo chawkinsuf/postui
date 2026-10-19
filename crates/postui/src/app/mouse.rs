@@ -1075,19 +1075,24 @@ impl App {
     /// the main loop captures once per event, so without it whatever the
     /// same event does next (a click on another row's toggle, a click away
     /// whose action edits) would join the commit, and one undo would take
-    /// the typing back with it. It lives here rather than in the click
-    /// dispatch because keyboard paths commit through here too (a method
-    /// change that brings the Body tab back). A caller that edits the
-    /// request must commit *before* its own change, or the capture takes
-    /// both. What was already pending lands first, as a step of its own:
-    /// a jq filter typed while the cell stayed open behind the bar, whether
-    /// its session is still open (closed here, or the gate would hold the
-    /// commit's capture back) or the click already blurred it.
+    /// the typing back with it. What was already pending is captured
+    /// first, so the commit is bracketed on both sides: a change its caller
+    /// made before committing (a method change whose tab sync commits the
+    /// cell) is its own step before it, and so is a jq filter the click
+    /// just blurred, typed while the cell stayed open behind the bar. It
+    /// lives here rather than in the click dispatch because keyboard paths
+    /// commit through here too.
+    ///
+    /// A field session still open (the jq bar keeps the caret through a
+    /// Send) holds the app history's gate, and both captures wait on it:
+    /// the commit then lands with that field's step when it closes, the
+    /// gate's one-step-per-session rule. Closing the session here would
+    /// separate them, but it would also wipe the field's own keystroke
+    /// undo while the caret is still in it.
     pub(crate) fn commit_table_edit(&mut self) {
         if self.editor.table.editing.is_none() {
             return;
         }
-        self.flush_field_session();
         self.capture_undo();
         if let Some(w) = self.editor.commit_table().warning {
             self.toasts.push(w, ToastKind::Warning);

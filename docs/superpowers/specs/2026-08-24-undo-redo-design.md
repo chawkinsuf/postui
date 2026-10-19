@@ -124,13 +124,15 @@ cell outside the table's own keys) is captured right there, as a step of
 its own, before the rest of the event runs. A click on another row's
 toggle or trash, or a click away whose action edits (the TLS lock), would
 otherwise land in the same step as the commit, and one undo would take
-the typing back with it. Whatever was pending before the commit (a jq
-filter typed while the cell stayed open behind the bar) is captured
-first, its field session closed if it is still open. A caller that edits
-the request commits before its own change (a method change, which can
-bring the Body tab back and so commit the cell). A commit before a
-request switch or Save as is recorded under the request it was typed
-into.
+the typing back with it. Whatever was pending before the commit is
+captured first, so the commit is bracketed on both sides: a method change
+whose tab sync commits the cell is its own step before the commit, and so
+is a jq filter a click just blurred. A field session still open (the jq
+bar keeping the caret through a Send) holds the gate as before, and the
+commit lands with that field's step when it closes; closing the session
+early would wipe the field's own keystroke undo. A click that opens
+another request commits first, so its commit is recorded under the
+request it was typed into.
 
 ### Coalescing
 
