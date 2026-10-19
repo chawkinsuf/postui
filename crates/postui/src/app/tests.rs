@@ -2232,93 +2232,114 @@ fn a_method_change_that_keeps_the_tab_leaves_the_cell_open() {
     assert!(app.editor.table.editing.is_some(), "the cell is still being typed in");
 }
 
-/// A commit while the jq bar keeps the caret (a tab switch from the bar)
-/// leaves the bar's own session alone: its keystrokes stay the field's to
-/// undo.
+/// Every way the caret leaves an open cell by keyboard closes it, and its
+/// commit is recorded at once as a step of its own (spec 2026-10-19 R1,
+/// the user's rule: "when the cursor leaves the cell, the input should
+/// close and the undo immediately recorded"). The main loop's capture
+/// after the leaving event is where it happens.
 #[test]
-fn a_commit_behind_a_focused_jq_bar_keeps_the_bars_session() {
-    let mut app = app_with_a_typed_cell();
-    ready_response(&mut app, JQ_BODY);
-    app.update(Action::OpenJqBar);
-    type_str(&mut app, ".data");
-    app.sync_jq();
-    assert!(app.session.response.jq_field_edited());
-    app.update(Action::EditorTabSelect(EditorTab::Headers.index()));
-    assert!(app.editor.table.editing.is_none(), "the tab switch committed the cell");
-    assert!(app.session.response.jq_focused());
-    assert!(app.session.response.jq_field_edited(), "the bar's session is still open");
-
-    // The commit is a step of its own beneath the bar's: closing the bar
-    // puts the filter's step on top of it.
-    app.capture_undo();
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    app.sync_jq();
-    app.capture_undo();
-    assert!(!app.session.response.jq_focused());
-    assert_eq!(app.editor.jq, ".data");
-    app.update(Action::Undo);
-    app.sync_jq();
-    assert_eq!(app.editor.jq, "", "the filter goes first");
-    assert_eq!(app.editor.params["a"].value, "19", "the commit stays");
-    app.update(Action::Undo);
-    assert_eq!(app.editor.params["a"].value, "1", "then the commit goes");
+fn leaving_a_cell_by_keyboard_commits_it_as_its_own_undo_step() {
+    type Leave = fn(&mut App);
+    let leaves: [(&str, Leave); 6] = [
+        ("alt+u", |app| {
+            app.handle_key(alt('u'));
+        }),
+        ("pane jump to the sidebar", |app| {
+            app.update(Action::FocusPane(PaneId::Sidebar));
+        }),
+        ("pane jump to the response", |app| {
+            app.update(Action::FocusPane(PaneId::Response));
+        }),
+        ("the jq bar", |app| {
+            app.update(Action::OpenJqBar);
+        }),
+        ("the search box", |app| {
+            app.update(Action::OpenResponseSearch { backward: false });
+        }),
+        ("the Manage screen", |app| {
+            app.update(Action::OpenManage { tab: None });
+        }),
+    ];
+    for (how, leave) in leaves {
+        let mut app = app_with_a_typed_cell();
+        ready_response(&mut app, JQ_BODY);
+        leave(&mut app);
+        app.capture_undo();
+        assert!(app.editor.table.editing.is_none(), "{how}: the cell closed");
+        assert_eq!(app.editor.params["a"].value, "19", "{how}: the typing committed");
+        app.update(Action::Undo);
+        assert_eq!(app.editor.params["a"].value, "1", "{how}: one undo takes it back");
+    }
 }
 
-/// The same beneath the URL line: alt+u leaves the cell open behind it,
-/// and a click away that edits (the TLS lock) commits the cell while the
-/// URL's session still holds the gate. The commit is its own step, under
-/// the URL's.
+/// alt+u closes the cell before the URL line takes keys, so the URL's
+/// typing is a step on top of the cell's: undo takes the URL back first.
 #[test]
-fn a_commit_behind_an_open_url_line_is_its_own_undo_step() {
+fn alt_u_then_url_typing_undoes_the_url_then_the_cell() {
     let mut app = app_with_a_typed_cell();
     app.editor.url = LineInput::new("https://e.com");
     app.capture_undo(); // the URL is the starting state, not an edit
     app.handle_key(alt('u'));
+    app.capture_undo();
     assert!(app.editor.url_open());
-    assert!(app.editor.table.editing.is_some(), "the cell stays open behind the URL");
+    assert!(app.editor.table.editing.is_none(), "the cell closed as the caret left");
     type_chars(&mut app, "x");
     app.capture_undo();
-    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.capture_undo();
-    assert_eq!(app.editor.params["a"].value, "19");
-    assert!(app.editor.insecure);
+    assert_eq!(app.editor.url.text(), "https://e.comx");
 
     app.update(Action::Undo);
-    assert!(!app.editor.insecure, "the toggle goes first");
-    assert_eq!(app.editor.params["a"].value, "19", "the commit stays");
+    assert_eq!(app.editor.url.text(), "https://e.com", "the URL goes first");
+    assert_eq!(app.editor.params["a"].value, "19", "the cell stays");
     app.update(Action::Undo);
-    assert_eq!(app.editor.params["a"].value, "1", "then the commit goes");
+    assert_eq!(app.editor.params["a"].value, "1", "then the cell goes");
 }
 
-/// A filter typed into the jq bar while a cell stays open behind it holds
-/// the app history's gate; a click away that edits still lands as three
-/// steps: the filter, the commit, the click's own action.
+/// The same for the jq bar: the cell closes as the caret moves to the
+/// bar, and the filter typed there is its own step on top.
 #[test]
-fn a_click_away_past_an_edited_jq_bar_keeps_the_cells_commit_its_own_undo_step() {
+fn opening_the_jq_bar_commits_the_cell_beneath_the_filter() {
     let mut app = app_with_a_typed_cell();
-    app.editor.url = LineInput::new("https://example.com");
     ready_response(&mut app, JQ_BODY);
-    app.capture_undo(); // the URL is the starting state, not an edit
     app.update(Action::OpenJqBar);
+    app.capture_undo();
+    assert!(app.editor.table.editing.is_none(), "the cell closed as the caret left");
     type_str(&mut app, ".data");
     app.sync_jq();
     app.capture_undo();
-    assert!(app.editor.table.editing.is_some(), "the cell is still open behind the bar");
-    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
-    app.capture_undo();
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.sync_jq();
-    assert_eq!(app.editor.params["a"].value, "19");
-    assert!(app.editor.current_request().insecure);
+    app.capture_undo();
     assert_eq!(app.editor.jq, ".data");
 
     app.update(Action::Undo);
-    assert!(!app.editor.current_request().insecure, "the toggle goes first");
-    assert_eq!(app.editor.params["a"].value, "19", "the commit stays");
+    app.sync_jq();
+    assert_eq!(app.editor.jq, "", "the filter goes first");
+    assert_eq!(app.editor.params["a"].value, "19", "the cell stays");
     app.update(Action::Undo);
-    assert_eq!(app.editor.params["a"].value, "1", "then the commit goes");
-    assert_eq!(app.editor.jq, ".data", "the filter stays");
-    app.update(Action::Undo);
-    assert_eq!(app.editor.jq, "", "then the filter goes");
+    assert_eq!(app.editor.params["a"].value, "1", "then the cell goes");
+}
+
+/// A shortcut that keeps the caret in the cell (alt+i, the TLS lock) and
+/// a modal over it (the palette) are not leaving it (spec 2026-10-19 R2).
+#[test]
+fn a_shortcut_or_a_modal_that_keeps_the_caret_leaves_the_cell_open() {
+    let mut app = app_with_a_typed_cell();
+    app.handle_key(alt('i'));
+    app.capture_undo();
+    assert!(app.editor.insecure, "alt+i toggled the lock");
+    let edit = app.editor.table.editing.as_ref().expect("alt+i leaves the cell open");
+    assert_eq!(edit.input.text(), "19");
+
+    app.update(Action::OpenPalette);
+    app.capture_undo();
+    assert!(app.editor.table.editing.is_some(), "the palette is over the cell");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    assert!(app.modals.is_empty());
+    let edit = app.editor.table.editing.as_ref().expect("closing the palette leaves it open");
+    assert_eq!(edit.input.text(), "19");
 }
 
 /// Params `a=1, b=2, c=3`, editor focused.
@@ -20787,6 +20808,98 @@ fn extracting_a_table_cell_selection_replaces_the_part_and_commits_the_cell() {
     assert_eq!(app.editor.variables["token"].value, "abc");
 }
 
+/// `main/ping` open on Headers with `authorization: Bearer abc` as the
+/// starting state, and `x` typed into its value cell.
+fn ping_with_a_typed_header_cell() -> (App, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let mut ping = req("https://x/ping");
+    ping.headers.insert(
+        "authorization".into(),
+        postui_core::model::Entry { value: "Bearer abc".into(), enabled: true },
+    );
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &ping).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("main/ping".into()));
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.preferred_tab = EditorTab::Headers;
+    app.focus = PaneId::Editor;
+    app.capture_undo();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    type_chars(&mut app, "x");
+    app.capture_undo();
+    (app, dir)
+}
+
+/// Extract from an open cell to a variables file: the typing commits as
+/// its own step before the op, the variable is the op's step, and the
+/// token lands in the same cell as a third (spec 2026-10-19 R6), as
+/// extracting from the URL line already does.
+#[test]
+fn extracting_an_open_cell_to_the_project_is_three_undo_steps() {
+    let (mut app, dir) = ping_with_a_typed_header_cell();
+    app.update(Action::ConfirmExtractVariable {
+        name: "token".into(),
+        destination: crate::action::ExtractDestination::ProjectDefault,
+    });
+    app.capture_undo();
+    assert!(app.editor.table.editing.is_none(), "the cell commits");
+    assert_eq!(app.editor.headers["authorization"].value, "{{token}}");
+    let vars = || std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(vars().contains("default = \"Bearer abcx\""), "{}", vars());
+
+    app.update(Action::Undo);
+    assert_eq!(app.editor.headers["authorization"].value, "Bearer abcx", "the token goes first");
+    assert!(vars().contains("token"), "the variable stays");
+    app.update(Action::Undo);
+    assert!(!vars().contains("token"), "then the variable goes: {}", vars());
+    assert_eq!(app.editor.headers["authorization"].value, "Bearer abcx", "the typing stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.headers["authorization"].value, "Bearer abc", "then the typing goes");
+}
+
+/// A selection in the open cell keeps the text around it through the
+/// commit the op makes first.
+#[test]
+fn extracting_a_cell_selection_to_the_project_keeps_the_text_around_it() {
+    use crate::action::TextSurface;
+    let (mut app, dir) = ping_with_a_typed_header_cell();
+    let edit = app.editor.table.editing.as_mut().unwrap();
+    edit.input.set_cursor(7);
+    edit.input.begin_mouse_selection();
+    edit.input.extend_mouse_selection_to(11);
+    assert_eq!(edit.input.selected_text().as_deref(), Some("abcx"));
+    app.update(Action::ConfirmExtractSelection {
+        name: "token".into(),
+        destination: crate::action::ExtractDestination::ProjectDefault,
+        surface: TextSurface::TableCell,
+    });
+    app.capture_undo();
+    assert!(app.editor.table.editing.is_none(), "the cell commits");
+    assert_eq!(app.editor.headers["authorization"].value, "Bearer {{token}}");
+    let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(vars.contains("default = \"abcx\""), "{vars}");
+}
+
+/// Extract to "This request" runs no op: the typing and the token are
+/// still one step, as on the URL line.
+#[test]
+fn extracting_an_open_cell_to_the_request_is_one_editor_step() {
+    let (mut app, _dir) = ping_with_a_typed_header_cell();
+    app.update(Action::ConfirmExtractVariable {
+        name: "token".into(),
+        destination: crate::action::ExtractDestination::Request,
+    });
+    app.capture_undo();
+    assert_eq!(app.editor.headers["authorization"].value, "{{token}}");
+    assert_eq!(app.editor.variables["token"].value, "Bearer abcx");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.headers["authorization"].value, "Bearer abc");
+    assert!(!app.editor.variables.contains_key("token"));
+}
+
 #[test]
 fn extracting_a_body_selection_replaces_it_with_the_token() {
     use crate::action::TextSurface;
@@ -22641,12 +22754,10 @@ fn three_row_app() -> (App, tempfile::TempDir) {
     (app, dir)
 }
 
-/// A cell left open when another request opens without a click (the
-/// keyboard, a palette row) is dropped, never committed into the request
-/// that opens: that request keeps its own rows and gains no undo step
-/// (task #63).
-#[test]
-fn opening_another_request_drops_a_cell_left_open() {
+/// `three_row_app` with `main/alpha` saved as param `a=1` and `main/beta`
+/// as `b=2`; alpha open on Params with `9` typed into `a`'s value cell,
+/// the shadow seeded before the typing.
+fn alpha_with_a_typed_cell() -> (App, tempfile::TempDir) {
     let (mut app, dir) = three_row_app();
     let mut beta = req("https://x/2");
     beta.params.insert("b".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
@@ -22657,18 +22768,142 @@ fn opening_another_request_drops_a_cell_left_open() {
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     app.editor.active_tab = EditorTab::Params;
+    app.editor.preferred_tab = EditorTab::Params;
     app.focus = PaneId::Editor;
     app.capture_undo();
     click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
     type_chars(&mut app, "9");
+    app.capture_undo();
+    assert!(app.editor.table.editing.is_some());
+    (app, dir)
+}
+
+fn unsaved_prompt_up(app: &App) -> bool {
+    matches!(app.modals.top(), Some(Modal::Confirm { title, .. }) if title == "Unsaved changes")
+}
+
+/// A cell left open by a keyboard pane jump commits into the request it
+/// was typed in, as its own step, before another request opens: the
+/// dirty gate then asks about it, and the request that opens keeps its
+/// own rows (tasks #63, #67).
+#[test]
+fn a_cell_left_by_a_pane_jump_commits_before_another_request_opens() {
+    let (mut app, _dir) = alpha_with_a_typed_cell();
     app.update(Action::FocusPane(PaneId::Sidebar));
-    let steps = app.history.undo_len();
+    app.capture_undo();
+    assert!(app.editor.table.editing.is_none());
+    assert_eq!(app.editor.params["a"].value, "19", "alpha holds its typing");
     app.update(Action::OpenRequest("main/beta".into()));
+    assert!(unsaved_prompt_up(&app), "the gate sees the committed typing");
+    app.handle_key(plain('d'));
     app.capture_undo();
     assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
-    assert!(app.editor.table.editing.is_none(), "the old request's cell is gone");
     assert_eq!(app.editor.params["b"].value, "2", "beta keeps its own row");
-    assert_eq!(app.history.undo_len(), steps, "and gains no undo step");
+}
+
+/// A dirty gate reached with the caret still in the cell commits it first
+/// and asks (spec 2026-10-19 R3): quit, vim's `:q`, and an open from the
+/// palette, which is a modal over the cell.
+#[test]
+fn a_dirty_gate_commits_an_open_cell_and_asks() {
+    let gates: [(&str, Action); 3] = [
+        ("quit", Action::Quit),
+        (":q", Action::GatedQuit),
+        ("open", Action::OpenRequest("main/beta".into())),
+    ];
+    for (how, action) in gates {
+        let (mut app, _dir) = alpha_with_a_typed_cell();
+        app.update(action);
+        assert!(unsaved_prompt_up(&app), "{how}: asks instead of losing the typing");
+        assert!(!app.should_quit, "{how}");
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "{how}");
+        assert_eq!(app.editor.params["a"].value, "19", "{how}: the cell committed");
+    }
+}
+
+#[test]
+fn save_and_quit_over_an_open_cell_writes_it() {
+    let (mut app, dir) = alpha_with_a_typed_cell();
+    app.update(Action::Quit);
+    app.handle_key(plain('s'));
+    assert!(app.should_quit);
+    let on_disk = postui_core::fixtures::load_request(dir.path(), "main/alpha").unwrap();
+    assert_eq!(on_disk.params["a"].value, "19");
+}
+
+/// An open cell with nothing typed holds nothing unsaved: quit goes.
+#[test]
+fn quit_over_an_untouched_cell_does_not_ask() {
+    let (mut app, _dir) = alpha_with_a_typed_cell();
+    app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    app.capture_undo();
+    app.update(Action::Quit);
+    assert!(app.modals.is_empty());
+    assert!(app.should_quit);
+}
+
+/// Cancel on the prompt leaves the cell closed with its typing committed,
+/// one undo step that takes it back (spec 2026-10-19 R4), as a click on
+/// another request's row already left it.
+#[test]
+fn cancel_on_the_gate_leaves_the_cell_committed_and_undoable() {
+    let (mut app, _dir) = alpha_with_a_typed_cell();
+    app.update(Action::Quit);
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    assert!(app.modals.is_empty());
+    assert!(!app.should_quit);
+    assert!(app.editor.table.editing.is_none(), "the cell closed");
+    assert_eq!(app.editor.params["a"].value, "19");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["a"].value, "1", "one undo takes the typing back");
+}
+
+/// An op on the open request run over an open cell (the palette's Delete)
+/// commits the cell first, so undoing the op brings the typing back with
+/// the request (spec 2026-10-19 R5, task #65).
+#[test]
+fn undoing_an_op_run_over_an_open_cell_brings_its_typing_back() {
+    let (mut app, _dir) = alpha_with_a_typed_cell();
+    app.update(Action::DeleteRequest("main/alpha".into()));
+    app.capture_undo();
+    assert_ne!(app.editor.slug.as_deref(), Some("main/alpha"));
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+    assert_eq!(app.editor.params["a"].value, "19", "the typing came back with the request");
+}
+
+/// Discard over an open cell commits it first, so the toast's undo brings
+/// the typing back too (spec 2026-10-19 R5).
+#[test]
+fn undoing_a_discard_over_an_open_cell_brings_its_typing_back() {
+    let (mut app, _dir) = alpha_with_a_typed_cell();
+    app.update(Action::DiscardChanges);
+    app.capture_undo();
+    assert!(app.editor.table.editing.is_none());
+    assert_eq!(app.editor.params["a"].value, "1", "discarded");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["a"].value, "19", "the typing is back");
+}
+
+/// A value typed on the "+ Add" row with no key belongs to the request it
+/// was typed in: another request's add row starts empty (spec 2026-10-19
+/// R8).
+#[test]
+fn a_stashed_add_row_value_does_not_follow_to_another_request() {
+    let (mut app, _dir) = alpha_with_a_typed_cell();
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.update(Action::SaveRequest);
+    click_hit(&mut app, Hit::TableCell { row: 1, col: 1 });
+    type_chars(&mut app, "v");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    assert!(!app.editor.is_dirty(), "a stash is not part of the request");
+    app.update(Action::OpenRequest("main/beta".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+    click_hit(&mut app, Hit::TableCell { row: 1, col: 1 });
+    let edit = app.editor.table.editing.as_ref().expect("the add row's value cell is open");
+    assert_eq!(edit.input.text(), "", "alpha's stash stayed behind");
 }
 
 /// A load drops only the open cell: Save As lands on the content it was

@@ -128,25 +128,25 @@ toggle or trash, or a click away whose action edits (the TLS lock), would
 otherwise land in the same step as the commit, and one undo would take
 the typing back with it. Whatever was pending before the commit is
 captured first, so the commit is bracketed on both sides: a method change
-whose tab sync commits the cell is its own step before the commit, and so
-is a jq filter a click just blurred. A field session still open (the cell
-left behind the URL line by alt+u, or the jq bar keeping the caret
-through a Send) holds the gate as before; the commit then records a step
-that moves only the committed tab's map, beneath the field's, which still
-lands as one step on its close (spec 2026-09-15, amended the same day).
-The session is never closed early, which would wipe the field's own
-keystroke undo. Opening another request (task #63): a sidebar click
-commits the cell first, as any click away does, so the dirty gate sees
-it and its step is recorded under the request it was typed into; any
-other open (the keyboard, a palette row, which keeps the cell open)
-drops the cell in `Editor::load`, so it never commits into the request
-that opens. Such a drop loses the cell's typing; the dirty gate does not
-see an open cell yet. A landing that reloads the same request (a move-all
-that the open request follows) drops it too, where it used to survive
-the reload; keeping the drop until #63 fixes both is `mine (approved)`.
-The load drops only the cell: the row selection stays, so Save As keeps
-it. A change a tooltip pill makes to the open tab's map while the gate
-holds, without committing the cell, joins the commit's step beneath.
+whose tab sync commits the cell is its own step before the commit.
+
+*Amended 2026-10-19 (tasks #63, #67, #65; spec
+2026-10-19-commit-cell-first, which replaces the rest of the #66
+amendment above, its record-beneath step and its load drop):* a cell
+is open only while the caret is in it. `capture_undo` commits a cell the
+caret has left (alt+u, a pane jump, the jq bar, search, Manage) as its
+own step, as the user ruled: "when the cursor leaves the cell, the input
+should close and the undo immediately recorded". A modal over the cell
+is not leaving it (`mine (approved)`). Every dirty gate commits an open
+cell before it asks (`App::leaving_unsaved`), and every path that
+replaces the editor or records an op's before-view commits it first
+(`App::flush_field_session`), so the cell's typing is asked about,
+saved, and brought back by undo like any other edit (`mine
+(approved)`). Cancel on the prompt therefore finds the cell closed with
+its typing committed (`mine (approved)`). Nothing outside the table
+reads an uncommitted draft. `Editor::load` still drops a stray cell and
+the "+ Add" row's stash as a backstop; the row selection stays, so Save
+As keeps it.
 
 ### Coalescing
 

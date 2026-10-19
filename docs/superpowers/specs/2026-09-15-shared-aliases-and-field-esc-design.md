@@ -206,15 +206,13 @@ updating; only the recording waits. Consequences:
 - A send fired while the URL line is open (ctrl+enter) uses the live
   text as today; the undo step still lands on close.
 
-*Amended 2026-10-19 (task #66, split from #62, mine (approved)):* a table cell committed
-while the gate holds (the cell stays open behind the URL line after
-alt+u, or behind the jq bar after a jump to the response pane) records
-its own step at once, beneath the field's. The step moves only the
-table maps from the shadow, and the shadow moves with it, so the field's
-close still yields one step, on top. Before, the commit waited for the
-close and joined it, along with anything else the commit's event did.
-Only the commit goes beneath: any other change made while the gate holds
-(a method change, a format) still joins the field's close.
+*Amended 2026-10-19 (tasks #63, #67; replaces #66's amendment of the
+same day):* a table cell never stays open behind another field. When
+the caret leaves it (alt+u to the URL line, a jump to the jq bar), it
+commits as its own step before the field takes keys (the user: "when the
+cursor leaves the cell, the input should close and the undo immediately
+recorded"), so the field's close is a step on top of it and no cell
+commit ever waits on the gate. See spec 2026-10-19-commit-cell-first.
 
 **Exception: the body editor.** It is a document, not a field, and has
 no close. It keeps its current burst coalescing in the app history; one

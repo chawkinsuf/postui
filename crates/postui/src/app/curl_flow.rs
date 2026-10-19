@@ -96,7 +96,7 @@ impl App {
         // Each create opens its request, replacing the editor: ask once,
         // up front. Discard discards there and then, so skipping every
         // prompt afterwards still leaves what the answer said.
-        if self.editor_holds_unsaved() {
+        if self.leaving_unsaved() {
             self.dirty_gate_split(
                 "import",
                 Action::BeginCurlImport { run: run.clone(), discard: false },
@@ -272,12 +272,11 @@ impl App {
             return true;
         }
         // The editor as it stands, as Copy as curl reads it: an open cell's
-        // text and an open field's keys land first, as their own step (the
-        // commit captures itself; the capture takes whatever else is
-        // pending).
-        self.commit_table_edit();
-        self.capture_undo();
+        // text and an open field's keys land first, as their own steps (the
+        // flush commits the cell and closes the field's session; the
+        // capture takes whatever else is pending).
         self.flush_field_session();
+        self.capture_undo();
         // The variables are sorted against the files as they are now, as
         // Send and Copy as curl read them (plan P6).
         self.apply(Action::ReloadProjectFiles);
@@ -307,7 +306,7 @@ impl App {
         let import = commands.into_iter().next().expect("checked: one command");
         let replace = CurlReplace { import, notes, vars };
         match other {
-            Some(slug) if self.editor_holds_unsaved() => {
+            Some(slug) if self.leaving_unsaved() => {
                 let replace = Box::new(replace);
                 self.dirty_gate("open", Action::ForceReplaceWithCurl { slug, replace });
             }

@@ -178,6 +178,14 @@ impl TableEditorState {
         self.pending_ghost_value = None;
     }
 
+    /// Drops what is being typed, the open cell and a value stashed on the
+    /// ghost row, but keeps the cursor: for a load, whose new content the
+    /// typing never belonged to.
+    pub fn drop_typing(&mut self) {
+        self.editing = None;
+        self.pending_ghost_value = None;
+    }
+
     /// The text `row`/`col` currently shows. Empty for the ghost row.
     fn cell_text(map: &IndexMap<String, Entry>, row: usize, col: Col) -> String {
         match map.get_index(row) {

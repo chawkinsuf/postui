@@ -2405,7 +2405,6 @@ impl App {
     }
 
     pub fn capture_undo(&mut self) -> bool {
-        let current_slug = self.editor.slug.clone();
         // A caret that has left the URL line closes its session here too,
         // so a mouse blur, alt+u or a Tab out of the pane is as good as Esc
         // — focus counts, since a pane switch moves it without touching
@@ -2413,6 +2412,20 @@ impl App {
         let off_screen = self.screen != Screen::Main;
         if off_screen || self.focus != PaneId::Editor || !self.editor.url_open() {
             self.editor.url.end_edit();
+        }
+        // A table cell the caret has left (alt+u, a pane jump, the jq bar,
+        // search, Manage) commits the same way, recording its own step at
+        // once (spec 2026-10-19 R1, the user's rule: "when the cursor
+        // leaves the cell, the input should close and the undo immediately
+        // recorded"). A modal over the cell is not leaving it (R2): the
+        // var picker, extract and paste act on the open cell. The close
+        // changes what the table draws, so it asks for the repaint.
+        let in_cell = !off_screen
+            && self.focus == PaneId::Editor
+            && self.editor.sub_focus == crate::components::editor::SubFocus::Content;
+        let closed = !in_cell && self.editor.table.editing.is_some();
+        if closed {
+            self.commit_table_edit();
         }
         // The same for an untouched auto-indent (spec 2026-10-16 R3): the
         // screen drops it once the caret is off its line or out of the
@@ -2429,11 +2442,22 @@ impl App {
         if off_screen {
             self.session.response.end_jq_edit_session();
         }
+        self.capture_step() || closed || dropped
+    }
+
+    /// [`Self::capture_undo`]'s recording half, without closing what the
+    /// caret has left: diffs the open request against the shadow and
+    /// records any change as a step, unless a field session holds the
+    /// gate. `true` when a step was recorded. A cell's commit brackets
+    /// itself with this ([`Self::commit_table_edit`]), so the close in
+    /// `capture_undo` can commit through it without the two recursing.
+    fn capture_step(&mut self) -> bool {
+        let current_slug = self.editor.slug.clone();
         if self.field_gate() {
             // A wholesale change taken mid-field (`no_coalesce`, e.g. alt+j
             // format) is still pending here: it joins the close as one step.
             self.field_gate_was_on = true;
-            return dropped;
+            return false;
         }
         let closing = std::mem::take(&mut self.field_gate_was_on);
         match &self.shadow {
@@ -2454,53 +2478,7 @@ impl App {
         }
         self.no_coalesce = false;
         self.shadow = Some((current_slug, self.editor.current_request()));
-        dropped
-    }
-
-    /// Captures a table cell's commit as a step of its own (task #66). With
-    /// no field session open this is [`Self::capture_undo`]. While one
-    /// holds the gate (the cell stayed open behind the URL line or the jq
-    /// bar), the field's live text must stay pending for its own close, so
-    /// the step moves only the committed tab's map (`Editor::commit_table`
-    /// commits the active tab's) from the shadow, and the shadow moves
-    /// with it: the field's close then lands on top, still one step (spec
-    /// 2026-09-15, amended for #66). Only the commit goes beneath:
-    /// anything else changed while the gate holds (a method change, a
-    /// format) stays pending and joins the field's close, the gate's rule.
-    /// Beneath is the order the user worked in, though the commit runs
-    /// last: the cell was typed before the caret left it for the field, so
-    /// undo takes back the field's session (and what joined it) first,
-    /// then the cell.
-    ///
-    /// The step copies the whole map, so a change to that same map made
-    /// under the gate without committing the cell first rides in it: a
-    /// tooltip pill's remove-variable (a float overlay, which keeps the
-    /// cell open) followed by a Send. That merges two changes into one
-    /// step; letting the commit wait instead, as before #66, merges all
-    /// three into the field's close. Row toggles, deletes and duplicates
-    /// can't: they come from the table's own keys (the caret is in the
-    /// table, so no field holds the gate) or from a table hit, footer chip
-    /// or row menu, which commits the cell first.
-    fn capture_table_commit(&mut self) {
-        if !self.field_gate() {
-            self.capture_undo();
-            return;
-        }
-        let tab = self.editor.active_tab;
-        let Some(map) = self.editor.table_map(tab) else { return };
-        // No shadow for the open request (none yet, or another request's):
-        // the next capture re-seeds.
-        let Some((slug, prev)) = self.shadow.take_if(|(s, _)| *s == self.editor.slug) else {
-            return;
-        };
-        let mut after = prev.clone();
-        match crate::components::editor::Editor::request_table_mut(&mut after, tab) {
-            Some(field) if field != map => {
-                field.clone_from(map);
-                self.record_editor_delta(slug, prev, after, false);
-            }
-            _ => self.shadow = Some((slug, prev)),
-        }
+        false
     }
 
     /// Records one `EditorDelta` step on the open request and moves the
@@ -2531,7 +2509,14 @@ impl App {
     /// request — which would otherwise lose that step: the gate only ever
     /// hands over on a close, and `Editor::load` swaps the field out from
     /// under it with the diff unrecorded.
+    ///
+    /// An open table cell commits first, as its own step (spec 2026-10-19
+    /// R5): the cell's typing lives outside the request until it commits,
+    /// so without this a discard's or an op's undo could not bring it
+    /// back. Unlike the URL line, which stays open with only its session
+    /// ended, the cell closes: a commit is its close.
     fn flush_field_session(&mut self) {
+        self.commit_table_edit();
         if !self.field_gate() {
             return;
         }
@@ -2719,13 +2704,13 @@ impl App {
             // screen: with any modal already up (this gate included),
             // ctrl+c stays a reliable, immediate exit, so pressing it
             // twice always leaves without saving.
-            Action::Quit if self.editor_holds_unsaved() && self.modals.is_empty() => {
+            Action::Quit if self.modals.is_empty() && self.leaving_unsaved() => {
                 self.dirty_gate("quit", Action::ForceQuit);
                 true
             }
             // `:q` has no such exemption: typed over a dialog it still meets
             // the gate, whose cancel goes back to that dialog.
-            Action::GatedQuit if self.editor_holds_unsaved() => {
+            Action::GatedQuit if self.leaving_unsaved() => {
                 self.dirty_gate("quit", Action::ForceQuit);
                 true
             }
@@ -3530,7 +3515,7 @@ impl App {
                 true
             }
             Action::OpenRequest(slug) => {
-                if self.editor_holds_unsaved() {
+                if self.leaving_unsaved() {
                     self.dirty_gate("open", Action::ForceOpenRequest(slug));
                     true
                 } else {
@@ -3648,7 +3633,7 @@ impl App {
                 // anything is written (spec §4.3: the gate runs before the op).
                 let force =
                     Action::ForceDuplicateRequest { slug, anchor: None, above: false, count: 1 };
-                if self.editor_holds_unsaved() {
+                if self.leaving_unsaved() {
                     self.dirty_gate("duplicate", force);
                     true
                 } else {
@@ -3922,7 +3907,7 @@ impl App {
                 // The copy opens, so unsaved edits are gated first, as
                 // Duplicate's are: once, the count riding with the
                 // deferred put.
-                if self.editor_holds_unsaved() {
+                if self.leaving_unsaved() {
                     self.dirty_gate("duplicate", force);
                     true
                 } else {
@@ -3993,7 +3978,7 @@ impl App {
                     return true;
                 }
                 let moving_open = self.editor.slug.as_deref() == Some(slug.as_str());
-                if moving_open && self.editor_holds_unsaved() {
+                if moving_open && self.leaving_unsaved() {
                     self.dirty_gate("move", Action::ForceMoveRequestToSpace { slug, space });
                 } else {
                     self.apply(Action::ForceMoveRequestToSpace { slug, space });
@@ -4044,7 +4029,7 @@ impl App {
                 if self.refuse_without_project() {
                     return true;
                 }
-                if self.editor_holds_unsaved() {
+                if self.leaving_unsaved() {
                     self.dirty_gate("create", Action::ForceCreateRequest(name));
                     true
                 } else {
@@ -4652,7 +4637,7 @@ impl App {
                 if target == self.root() {
                     return false;
                 }
-                if self.editor_holds_unsaved() {
+                if self.leaving_unsaved() {
                     self.dirty_gate("switch", Action::ForceSwitchProject(target));
                 } else {
                     self.apply(Action::ForceSwitchProject(target));
@@ -4834,7 +4819,7 @@ impl App {
                 }
                 self.registry.add_known(path.clone());
                 self.save_registry();
-                if self.editor_holds_unsaved() {
+                if self.leaving_unsaved() {
                     self.dirty_gate("create", Action::ForceSwitchProject(path));
                 } else {
                     self.apply(Action::ForceSwitchProject(path));
@@ -6437,7 +6422,7 @@ impl App {
                 if name == self.active_space() {
                     return true;
                 }
-                if self.editor_holds_unsaved() {
+                if self.leaving_unsaved() {
                     self.dirty_gate("switch", Action::ForceSwitchSpace(name));
                     true
                 } else {
@@ -6967,7 +6952,7 @@ impl App {
                 let open_here =
                     self.editor.slug.as_deref().and_then(postui_core::storage::space_of)
                         == Some(from.as_str());
-                if open_here && self.editor_holds_unsaved() {
+                if open_here && self.leaving_unsaved() {
                     self.dirty_gate("move", Action::ForceMoveAllRequests { from, to });
                 } else {
                     self.apply(Action::ForceMoveAllRequests { from, to });
@@ -7199,6 +7184,7 @@ impl App {
             description: None,
             values,
         };
+        let cell = self.extracted_cell_text(source, &name);
         let t = self.begin_op();
         let result = match self.project_mut() {
             None => Err(NO_PROJECT.to_string()),
@@ -7223,12 +7209,7 @@ impl App {
                     t,
                     self.open_request_label(crate::undo::StepLabel::variable(&name)),
                 );
-                match source {
-                    ExtractSource::FocusedField => self.replace_focused_field_with_token(&name),
-                    ExtractSource::Selection(surface) => {
-                        self.replace_selection_with_token(surface, &name);
-                    }
-                }
+                self.replace_extracted(source, &name, cell);
                 self.toasts.push(format!("extracted to {{{{{name}}}}}"), ToastKind::Success);
             }
             Err(msg) => {
@@ -7279,9 +7260,11 @@ impl App {
         use crate::action::ExtractDestination;
         // A `Request` destination journals nothing (its save below is not
         // an undo step), so it begins no op either: `begin_op` would
-        // close the open field session as its own step, and the typing
-        // plus the token replacement are meant to peel off as one.
+        // close the open field session, or commit an open cell, as its
+        // own step, and the typing plus the token replacement are meant
+        // to peel off as one.
         let wrote_to_request = matches!(destination, ExtractDestination::Request);
+        let cell = self.extracted_cell_text(source, &name);
         let t = (!wrote_to_request).then(|| self.begin_op());
         let write_result: Result<(), String> = match destination {
             ExtractDestination::ProjectDefault => {
@@ -7402,17 +7385,12 @@ impl App {
                         self.open_request_label(crate::undo::StepLabel::variable(&name)),
                     );
                 }
-                match source {
-                    ExtractSource::FocusedField => self.replace_focused_field_with_token(&name),
-                    ExtractSource::Selection(surface) => {
-                        self.replace_selection_with_token(surface, &name);
-                    }
-                }
+                self.replace_extracted(source, &name, cell);
                 // Finding 2, same ruling as promote: the
                 // `Request` destination's write only exists so far
                 // in the dirty editor buffer (both the new
                 // `[variables]` option above and the field text
-                // `replace_focused_field_with_token` just
+                // `replace_extracted` just
                 // committed) — save it synchronously rather than
                 // leaving it save-on-demand, so "extract to
                 // request, then quit" can't lose it.
@@ -7453,75 +7431,83 @@ impl App {
         true
     }
 
-    /// `Action::ConfirmExtractVariable`'s tail: replaces whichever field
-    /// `focused_field_text` found (unchanged since the extract flow opened
-    /// — modals capture all input) with `{{name}}`. For the URL, that's a
-    /// direct field replacement (already "dirty" the instant it differs
-    /// from the saved snapshot); for a table cell under edit, the new text
-    /// is committed through the table's own `Enter` path so it lands in the
-    /// map (not left as a pending, uncommitted edit) and rides the same
-    /// dirty/save path as any other row commit.
-    fn replace_focused_field_with_token(&mut self, name: &str) {
+    /// The text the open table cell takes once `{{name}}` replaces what an
+    /// extract from `source` took: the whole cell, or its selection with
+    /// the rest kept. Read before the extract's op, which commits the cell
+    /// first as a step of its own like every op (spec 2026-10-19 R6), so
+    /// the selection is still there to read. `None` when the source is not
+    /// a table cell (the URL line, the body, the response).
+    fn extracted_cell_text(&self, source: ExtractSource, name: &str) -> Option<String> {
+        use crate::action::TextSurface;
+        let edit = self.editor.table.editing.as_ref()?;
         let token = format!("{{{{{name}}}}}");
-        if self.editor.url_open() {
-            self.editor.url = LineInput::new(&token);
-            return;
+        match source {
+            // `focused_field_text`'s order: the URL line before a cell.
+            ExtractSource::FocusedField if !self.editor.url_open() => Some(token),
+            ExtractSource::Selection(TextSurface::TableCell) => {
+                let mut input = edit.input.clone();
+                input.paste(&token);
+                Some(input.text().to_string())
+            }
+            _ => None,
         }
-        if let Some(edit) = self.editor.table.editing.as_mut() {
-            edit.input = LineInput::new(&token);
-        } else {
-            return;
-        }
-        self.commit_table_edit_with_enter();
     }
 
-    /// Replaces `surface`'s live selection with `{{name}}`, keeping the
-    /// rest of the text: the line inputs and the body all take it through
-    /// their paste path (which replaces a selection); a table cell is then
-    /// committed through the table's own `Enter` path, exactly like
-    /// [`Self::replace_focused_field_with_token`]. The response is
-    /// read-only — nothing to replace.
-    fn replace_selection_with_token(&mut self, surface: crate::action::TextSurface, name: &str) {
+    /// Puts `{{name}}` back where an extract from `source` took its value
+    /// (unchanged since the extract flow opened: modals capture all
+    /// input): `cell`, worked out by [`Self::extracted_cell_text`] before
+    /// the op, when that was a table cell; else the whole URL line, or the
+    /// URL's or the body's selection through their paste path. The
+    /// response is read-only: nothing to replace.
+    fn replace_extracted(&mut self, source: ExtractSource, name: &str, cell: Option<String>) {
         use crate::action::TextSurface;
+        if let Some(text) = cell {
+            self.put_extracted_cell(&text);
+            return;
+        }
         let token = format!("{{{{{name}}}}}");
-        match surface {
-            TextSurface::Url => self.editor.url.paste(&token),
-            TextSurface::Body => {
-                self.editor.paste_body(&token);
-            }
-            TextSurface::TableCell => {
-                if let Some(edit) = self.editor.table.editing.as_mut() {
-                    edit.input.paste(&token);
-                    self.commit_table_edit_with_enter();
+        match source {
+            ExtractSource::FocusedField => {
+                if self.editor.url_open() {
+                    self.editor.url = LineInput::new(&token);
                 }
             }
-            TextSurface::Response => {}
-            // Never offered on the Variable Manager's own surfaces, the jq
-            // bar, or the Settings tab.
-            TextSurface::VmField
-            | TextSurface::VmCell
-            | TextSurface::Jq
-            | TextSurface::Settings => {}
+            ExtractSource::Selection(TextSurface::Url) => self.editor.url.paste(&token),
+            ExtractSource::Selection(TextSurface::Body) => {
+                self.editor.paste_body(&token);
+            }
+            // A table cell's text came in `cell`. The response is
+            // read-only, and the Variable Manager's surfaces, the jq bar
+            // and the Settings tab are never offered.
+            ExtractSource::Selection(_) => {}
         }
     }
 
-    /// Commits the table cell under edit through the active tab's own
-    /// `Enter` handling, so the new text lands in the map (not left as a
-    /// pending edit) and rides the same dirty/save path as any row commit.
-    fn commit_table_edit_with_enter(&mut self) {
-        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        match self.editor.active_tab {
-            EditorTab::Params => {
-                self.editor.table.handle_key(enter, &mut self.editor.params);
-            }
-            EditorTab::Headers => {
-                self.editor.table.handle_key(enter, &mut self.editor.headers);
-            }
-            EditorTab::Vars => {
-                self.editor.table.handle_key(enter, &mut self.editor.variables);
-            }
-            EditorTab::Body => {}
+    /// Sets the table cell an extract took its value from to `text` and
+    /// commits it through the table's own `Enter` path, so it lands in the
+    /// map and rides the same dirty/save path as any row commit. The cell
+    /// is still open when the extract ran no op (a "This request"
+    /// destination): the typing and the token are then one step, as on
+    /// the URL line. An op committed it first (spec 2026-10-19 R6): it
+    /// reopens on the row that commit resolved to and the column it was
+    /// in, and the token is a step of its own.
+    fn put_extracted_cell(&mut self, text: &str) {
+        let editor = &mut self.editor;
+        let (table, map) = match editor.active_tab {
+            EditorTab::Params => (&mut editor.table, &mut editor.params),
+            EditorTab::Headers => (&mut editor.table, &mut editor.headers),
+            EditorTab::Vars => (&mut editor.table, &mut editor.variables),
+            EditorTab::Body => return,
+        };
+        if table.editing.is_none() {
+            let Some(row) = table.selected else { return };
+            let col = table.col;
+            table.click_cell(row, col, map);
         }
+        if let Some(edit) = table.editing.as_mut() {
+            edit.input = LineInput::new(text);
+        }
+        table.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), map);
     }
 
     /// The value popup's remove — shared by the clicked "✕ remove"
@@ -9206,6 +9192,19 @@ impl App {
         self.editor.is_dirty() || self.editor.is_scratch_dirty()
     }
 
+    /// [`Self::editor_holds_unsaved`] for a dirty gate, which is about to
+    /// leave the open request (open another, quit, switch space…). An open
+    /// table cell commits first, as its own undo step, so the gate sees
+    /// what was typed there and asks (spec 2026-10-19 R3). The gate never
+    /// counts an uncommitted draft instead: that third state was what
+    /// every reader of "unsaved" had to learn on #62. So Cancel finds the
+    /// cell closed with its typing committed and undoable (R4), as a click
+    /// on another request's row already leaves it.
+    fn leaving_unsaved(&mut self) -> bool {
+        self.commit_table_edit();
+        self.editor_holds_unsaved()
+    }
+
     /// Push the standard unsaved-changes confirm. A slugged request's
     /// "save" path completes synchronously unless the file changed outside
     /// the app, in which case `SaveRequestThen` carries `then` into the
@@ -10887,10 +10886,11 @@ impl App {
         if target != self.editor.active_tab {
             // A cell still open commits as an undo step of its own (#66),
             // after the change that moved the tab (a method change). Undo
-            // replay, discard/reload and opening another request drop the
-            // edit before they get here (`apply_snapshot`, `Editor::load`),
-            // so no step is recorded mid-replay and no cell commits into a
-            // request it was not typed into.
+            // replay drops the edit before it gets here (`apply_snapshot`),
+            // and discard, reload and opening another request commit it
+            // first (`flush_field_session`), so no step is recorded
+            // mid-replay and no cell commits into a request it was not
+            // typed into.
             self.commit_table_edit();
             let prev = self.editor.active_tab;
             self.editor.active_tab = target;
