@@ -131,26 +131,18 @@ fn hovered_row(ctx: &DrawCtx) -> Option<usize> {
     }
 }
 
-/// A note trailing one row's value on its line, given to
-/// [`TableEditorState::draw`] per row.
+/// What one row says about itself, given to [`TableEditorState::draw`] per
+/// row.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RowNote {
-    pub text: String,
-    /// The row is wrong as written: the note and the row's text draw in
-    /// the error colour (a header row that is never sent).
-    pub error: bool,
-}
-
-impl RowNote {
-    /// A dim note about the value, such as the Vars tab's `overrides …`.
-    pub fn dim(text: String) -> Self {
-        Self { text, error: false }
-    }
-
-    /// A note saying the row is wrong as written.
-    pub fn error(text: String) -> Self {
-        Self { text, error: true }
-    }
+pub enum RowNote {
+    /// A dim note trailing the value on its line, such as the Vars tab's
+    /// `overrides …`.
+    Dim(String),
+    /// The row is kept but never used (a header row the client owns): an
+    /// enabled row's text draws struck through in the error colour. It
+    /// carries no text, as the row's line has no room to say why next to
+    /// its actions; the footer says it instead (task #59).
+    Unsent,
 }
 
 /// Shared cursor/edit state for a key/value table (Params, Headers or Vars).
@@ -780,9 +772,8 @@ impl TableEditorState {
     /// One painter, one row height. A row being edited draws its
     /// `LineInput` in place, right where the text was, the way the
     /// Variable Manager's grid edits its own cells: nothing opens up, and
-    /// no row below the cursor moves. `note` trails the value (see
-    /// [`RowNote`]); an error note turns an enabled row's text error-red
-    /// too.
+    /// no row below the cursor moves. `note` trails the value, or marks
+    /// an enabled row unsent: struck and error-red (see [`RowNote`]).
     #[allow(clippy::too_many_arguments)]
     fn draw_row(
         &self,
@@ -819,11 +810,11 @@ impl TableEditorState {
             if show_actions { area.right().saturating_sub(ACTIONS_W) } else { area.right() };
         let value_w = value_right.saturating_sub(cols.value_x);
         let name_w = cols.divider_x.saturating_sub(cols.name_x);
-        let error = note.is_some_and(|n| n.error);
+        let unsent = note == Some(&RowNote::Unsent);
         let fg = match (real, entry.enabled, lit) {
             (false, _, true) => theme.text,
             (false, _, false) => theme.text_muted,
-            (true, true, _) if error => theme.error,
+            (true, true, _) if unsent => theme.error,
             (true, true, _) => theme.text,
             (true, false, _) => theme.text_muted,
         };
@@ -870,17 +861,16 @@ impl TableEditorState {
             // The note trails the value on the same line: it is about
             // that value, so it reads where the value ends rather than on
             // a row of its own.
-            if let Some(note) = note {
+            if let Some(RowNote::Dim(note)) = note {
                 let note_x = cols.value_x + value_drew + 3;
                 let room = value_right.saturating_sub(note_x);
-                let color = if note.error { theme.error } else { theme.text_muted };
                 if room > 0 {
-                    text(buf, note_x, y, clip(&note.text, room), color, value_bg, false);
+                    text(buf, note_x, y, clip(note, room), theme.text_muted, value_bg, false);
                 }
             }
         }
 
-        if real && !entry.enabled {
+        if real && (!entry.enabled || unsent) {
             // The strike marks the text that is actually there: a value
             // too long for its cell was clipped, and the line has to stop
             // where the clip did rather than run on across empty cells
@@ -2107,7 +2097,7 @@ mod tests {
     #[test]
     fn the_shadow_hint_trails_a_wide_value_s_cells() {
         let map = map_of(&[("a", "本番")]);
-        let notes = [Some(RowNote::dim("overrides qa: 1".into()))];
+        let notes = [Some(RowNote::Dim("overrides qa: 1".into()))];
         let mut hits = HitMap::default();
         let terminal = draw_narrow(&map, 40, &notes, &mut hits);
         let buf = terminal.backend().buffer();
@@ -2117,25 +2107,31 @@ mod tests {
         assert_eq!(buf[(v.x + 7, v.y)].fg, Theme::dark().text_muted, "a dim note");
     }
 
-    /// An error note (a header row that is never sent) turns the enabled
-    /// row's name and value error-red and trails the value in red too; a
-    /// row without a note keeps the plain text colour.
+    /// An unsent row (a header row that is never sent) draws its name and
+    /// value error-red and struck through, exactly over their text, with
+    /// nothing trailing the value: the footer says why (task #59). A row
+    /// without a note keeps the plain text colour.
     #[test]
-    fn an_error_note_draws_its_row_and_itself_in_the_error_colour() {
+    fn an_unsent_row_is_struck_in_the_error_colour_with_no_trailing_text() {
         let theme = Theme::dark();
         let map = map_of(&[("Host", "other.test"), ("X-A", "1")]);
-        let notes = [Some(RowNote::error("not sent".into()))];
+        let notes = [Some(RowNote::Unsent)];
         let mut hits = HitMap::default();
         let terminal = draw_narrow(&map, 40, &notes, &mut hits);
         let buf = terminal.backend().buffer();
         let cell = |row, col| hits.rect_of(&Hit::TableCell { row, col }).unwrap();
         let (k, v) = (cell(0, 0), cell(0, 1));
+        let struck = |x, y| buf[(x, y)].modifier.contains(Modifier::CROSSED_OUT);
         assert_eq!(buf[(k.x, k.y)].fg, theme.error, "the name");
         assert_eq!(buf[(v.x, v.y)].fg, theme.error, "the value");
-        assert_eq!(buf[(v.x + 13, v.y)].symbol(), "n", "the note, 3 cells past the value");
-        assert_eq!(buf[(v.x + 13, v.y)].fg, theme.error);
+        assert!(struck(k.x, k.y) && struck(k.x + 3, k.y), "the name is struck");
+        assert!(struck(v.x, v.y) && struck(v.x + 9, v.y), "the value is struck");
+        assert!(!struck(v.x + 10, v.y), "the strike stops where the value does");
+        let rest: String = (v.x + 10..v.right()).map(|x| buf[(x, v.y)].symbol()).collect();
+        assert_eq!(rest.trim(), "", "no note trails the value");
         let plain = cell(1, 0);
         assert_eq!(buf[(plain.x, plain.y)].fg, theme.text, "a row with no note is plain");
+        assert!(!struck(plain.x, plain.y), "and it is not struck");
     }
 
     /// A disabled wide value is struck across exactly the cells it fills.

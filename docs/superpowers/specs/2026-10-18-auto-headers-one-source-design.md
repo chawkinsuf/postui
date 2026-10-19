@@ -45,7 +45,7 @@ Two more findings:
 | R2 | A default row is not sent when any request row (enabled or disabled) has the same substituted name, or when an earlier default already has it. Unchanged. | stage3 §6 |
 | R3 | The auto `Content-Type` and the client's `Accept` are not sent when a sent request or default row has their name. Unchanged. | stage7 §6 |
 | R3a | `Host` and `Content-Length` belong to the client and can't be overridden. A request or default row with either name (matched after substitution, ignoring case) is allowed but never sent, and the send doesn't fail over it. The client's row is always sent and never struck through. This holds with no body too: a typed `Content-Length` on a GET is dropped. | `you` (the rule); "always, even with no body" is `mine (approved)` |
-| R3b | An enabled request row R3a drops is drawn in the error colour, with a trailing note in the table's note slot (where the Vars tab writes "overrides …"): `not sent · the client sets Host`. A project default the rule drops is struck through in the auto section, like any other unsent default (R5). *Amended 2026-10-18 after review round 1:* the struck default also reads as an error and carries the same note, so it can't be taken for one a request row overrides (`you`, "add a note"; the reviewer raised it). | `you` ("highlight the row as an error"); the note and its wording are `mine (approved)`, landing in #21 rather than #20 |
+| R3b | An enabled request row R3a drops is drawn in the error colour, with a trailing note in the table's note slot (where the Vars tab writes "overrides …"): `not sent · the client sets Host`. A project default the rule drops is struck through in the auto section, like any other unsent default (R5). *Amended 2026-10-18 after review round 1:* the struck default also reads as an error and carries the same note, so it can't be taken for one a request row overrides (`you`, "add a note"; the reviewer raised it). *Amended 2026-10-18 by task #59 (§7):* no inline note. The row is struck through in the error colour, and the footer says `Host cannot be set manually` while the row is hovered or under the table's cursor. | `you` ("highlight the row as an error"); the note and its wording are `mine (approved)`, landing in #21 rather than #20; #59's strike + footer message is `you`, its wording `you` |
 | R4 | `Host` is the URL's authority the way the client sends it: host lowercased, default port dropped, no userinfo. On screen it shows exactly as sent unless a secret can change it, and then as the bare mask (amended after review round 8; see the §3 amendments). | stage7 §6; the derivation moves from `http.rs` |
 | R5 | ~~The auto section draws every non-request row that is sent, plus every unsent **default** row (struck through). Unsent auto and client rows stay hidden.~~ *Amended 2026-10-18, task #57:* the auto section draws every non-request row, an unsent one struck through: a replaced default, auto `Content-Type`, client `Accept` or the URL's `Authorization` alike. The hide rule was mine ("today's rule kept") and wasn't what the user meant. #20 keeps only the promote button. | `you` for the rule and for `Accept`: "i set the accept header it disappeared from the auto list instead of getting a cross out", "i want the user to be able to see what defauts are being overridden". `mine`: the same strike for `Content-Type` and `Authorization`, and for a client row a project default replaces |
 | R6 | The muted `✓ name value (status)` lines above the Headers table are removed. The auto section's strike-through is the one indicator. | `mine (approved)` |
@@ -301,3 +301,24 @@ set X`, which says who may set it and nothing about what goes out
 the wire let a request row override them. R3a makes #20's premise true:
 those two get no promote button and no strike-through, and #20 needs
 nothing more for them.
+
+## 7. Task #59: struck in red, the reason in the footer (amended 2026-10-18)
+
+The user asked for client-owned rows to be struck through in red, with
+a short footer message instead of the inline note (`you`). This replaces
+R3b's note, and R3d's and §5a's wordings with it.
+
+| Rule | Who decided |
+|---|---|
+| A typed client-owned row (enabled) draws struck through in the error colour, over exactly its text, with nothing after the value. A disabled one draws as any disabled row. | `you` (strike, red); disabled unchanged `mine` |
+| A default the rule drops keeps its struck, red auto row, with no inline note. | `mine (approved)` |
+| The message is `<header> cannot be set manually`, e.g. `Content-Length cannot be set manually`, whether or not the client sends its own row. | `you` |
+| The footer's centre line shows it while the pointer is over the row (a table row, or an auto row via `Hit::AutoHeaderRow`), else while the focused table's cursor is on one. A hovered button's own hint comes first. | `mine (approved)` |
+| It shows with `hover_hints = false`, since it replaces a note that always showed; it is silent under a dialog and off the request screen. | `mine` |
+
+Design: `Unsent::ClientOwned` loses `client_sends`, which only chose
+between the two old wordings, and `rows()` its pass that filled it.
+`RowNote` becomes `Dim(String) | Unsent`. `ComputedHeadersView` keeps
+`client_owned: Vec<Option<&'static str>>` per request row;
+`Editor::client_owned_message` and `App::footer_hint` feed the footer.
+A click on an auto row does what a click on the bare pane did.

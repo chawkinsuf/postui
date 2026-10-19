@@ -302,10 +302,11 @@ pub struct ComputedHeadersView {
     /// not; one that isn't sent sits where it would have gone and draws
     /// struck through (task #57). `Hit::AutoHeaderCopy(i)` is `rows[i]`.
     pub rows: Vec<postui_core::prepare::HeaderRow>,
-    /// The request table's notes, one per row (the Headers table's
-    /// `notes`): a row kept off the wire (spec 2026-10-18 R3a) carries the
-    /// error note saying why, and the table draws it as an error.
-    pub notes: Vec<Option<RowNote>>,
+    /// One per request table row: the header a row names when it is kept
+    /// off the wire because the client owns it (spec 2026-10-18 R3a). The
+    /// table draws that row struck in red ([`RowNote::Unsent`]) and the
+    /// footer says why ([`Editor::client_owned_message`]).
+    pub client_owned: Vec<Option<&'static str>>,
     /// Whether secrets show in the clear (each row's `value`) rather than
     /// masked (its `display`).
     pub revealed: bool,
@@ -616,17 +617,15 @@ impl Editor {
     pub fn recompute_computed_headers(&mut self, ctx: &postui_core::prepare::PrepareContext) {
         use postui_core::prepare::HeaderOrigin;
         let rows = postui_core::prepare::header_rows(&self.current_request(), ctx);
-        let mut notes = vec![None; self.headers.len()];
+        let mut client_owned = vec![None; self.headers.len()];
         let mut auto = Vec::new();
         for r in rows {
             match r.origin {
                 // Like the auto section, the verdict follows the committed
                 // key: a name still being typed is judged once it lands.
                 HeaderOrigin::Request { row } => {
-                    if let (Some(note), Some(text)) =
-                        (notes.get_mut(row), r.unsent.and_then(unsent_note))
-                    {
-                        *note = Some(RowNote::error(text));
+                    if let Some(slot) = client_owned.get_mut(row) {
+                        *slot = client_owned_header(r.unsent);
                     }
                 }
                 // Every other row is drawn, an unsent one struck through,
@@ -642,7 +641,35 @@ impl Editor {
             }
         }
         self.computed.rows = auto;
-        self.computed.notes = notes;
+        self.computed.client_owned = client_owned;
+    }
+
+    /// What the footer says about a header row the client owns (spec
+    /// 2026-10-18 R3b, task #59). Such a row draws struck in red and says
+    /// nothing on its own line, so the footer explains it: for the row
+    /// under the pointer first, else for the table row under the keyboard
+    /// cursor while the table holds the keyboard (`focused`: the editor
+    /// pane has it).
+    pub fn client_owned_message(
+        &self,
+        hovered: Option<&crate::hit::Hit>,
+        focused: bool,
+    ) -> Option<String> {
+        use crate::hit::Hit;
+        if self.active_tab != EditorTab::Headers || self.table_collapsed {
+            return None;
+        }
+        let table_row = |i: usize| *self.computed.client_owned.get(i)?;
+        let hovered = match hovered {
+            Some(Hit::TableRow(i) | Hit::TableCell { row: i, .. }) => table_row(*i),
+            Some(Hit::AutoHeaderRow(i)) => client_owned_header(self.computed.rows.get(*i)?.unsent),
+            _ => None,
+        };
+        let cursor = (focused && self.sub_focus == SubFocus::Content)
+            .then_some(self.table.selected)
+            .flatten();
+        let header = hovered.or_else(|| table_row(cursor?))?;
+        Some(format!("{header} cannot be set manually"))
     }
 
     /// A never-loaded (fresh scratch) editor is not dirty even though it has
@@ -3051,7 +3078,7 @@ impl Editor {
                 let notes: Vec<Option<RowNote>> = self
                     .variables
                     .keys()
-                    .map(|k| self.shadowed.get(k).map(|s| RowNote::dim(format!("overrides {s}"))))
+                    .map(|k| self.shadowed.get(k).map(|s| RowNote::Dim(format!("overrides {s}"))))
                     .collect();
                 self.table.draw(
                     frame,
@@ -3104,7 +3131,13 @@ impl Editor {
                     now: ctx.now,
                 };
                 // A row naming a header the client sets itself is kept but
-                // never sent (spec 2026-10-18 R3a), so it reads as an error.
+                // never sent (spec 2026-10-18 R3a), so it is struck in red.
+                let notes: Vec<Option<RowNote>> = self
+                    .computed
+                    .client_owned
+                    .iter()
+                    .map(|header| header.map(|_| RowNote::Unsent))
+                    .collect();
                 self.table.draw(
                     frame,
                     table_area,
@@ -3112,7 +3145,7 @@ impl Editor {
                     &table_ctx,
                     "+ Add header",
                     hits,
-                    &self.computed.notes,
+                    &notes,
                     &self.vars,
                 );
                 if let Some(computed_area) = computed_area {
@@ -3382,10 +3415,11 @@ impl Editor {
     /// dim divider, then one dim row per `self.computed.rows` entry. A row
     /// that isn't sent (a default, auto or client row something overrides,
     /// a duplicate default, or a default naming a client-owned header,
-    /// which also reads as an error with its note) renders struck through;
-    /// an unresolved
-    /// `{{token}}` is tinted span-level. Each row gets a trailing `󰆏` copy
-    /// icon (`Hit::AutoHeaderCopy`, indexed into `rows`); the divider
+    /// which also reads as an error) renders struck through; an unresolved
+    /// `{{token}}` is tinted span-level. Each row is a hover target
+    /// (`Hit::AutoHeaderRow`, for the footer's client-owned message) with
+    /// a trailing `󰆏` copy icon (`Hit::AutoHeaderCopy`), both indexed
+    /// into `rows`; the divider
     /// carries a `👁 reveal`/`hide` toggle (`Hit::AutoHeaderReveal`)
     /// whenever a row has a secret to reveal.
     fn draw_computed_headers(
@@ -3449,12 +3483,13 @@ impl Editor {
             } else {
                 (&row.header.display_name, &row.header.display)
             };
-            // A default the client-owned rule drops reads as an error and
-            // says why, as a typed row naming the same header does (spec
-            // 2026-10-18 R3b): struck alone, it would look overridden by a
-            // request row that isn't there.
-            let note = row.unsent.and_then(unsent_note);
-            let base = if note.is_some() { Style::default().fg(theme.error) } else { dim };
+            // A default the client-owned rule drops reads as an error, as a
+            // typed row naming the same header does, and hovering it puts
+            // the reason in the footer (spec 2026-10-18 R3b, task #59):
+            // struck and dim alone, it would look overridden by a request
+            // row that isn't there.
+            let client_owned = client_owned_header(row.unsent).is_some();
+            let base = if client_owned { Style::default().fg(theme.error) } else { dim };
             let mut name_style = base;
             // The value draws dim throughout; an unresolved `{{token}}` in
             // it is tinted span-level by `paint_var_tokens` below (Task 12
@@ -3484,18 +3519,18 @@ impl Editor {
             } else {
                 Style::default().fg(theme.accent)
             };
-            let mut spans = vec![
+            let spans = vec![
                 Span::styled(indent, base),
                 Span::styled(name_piece, name_style),
                 Span::styled(value_piece, value_style),
                 Span::styled(crate::glyph::COPY_PILL, glyph_style),
             ];
-            if let Some(note) = note {
-                spans.push(Span::styled(format!("  {note}"), Style::default().fg(theme.error)));
-            }
             let line = Line::from(spans);
             let row_rect = Rect::new(area.x, y, area.width, 1);
             frame.render_widget(Paragraph::new(line), row_rect);
+            // The whole row is a hover target, under its tokens and pill,
+            // so the footer can say why a struck row isn't sent.
+            hits.register(row_rect, crate::hit::Hit::AutoHeaderRow(i));
             // The tokens all lie in the value, so clipping them to the
             // whole row keeps them off the name. A struck (unsent) row's
             // tokens are tinted too, as a disabled table row's are: the
@@ -3524,24 +3559,16 @@ impl Editor {
     }
 }
 
-/// The error note for a row kept off the wire for a reason the user has to
-/// act on — one naming a client-owned header (`Host`, `Content-Length`,
-/// `Transfer-Encoding`; spec 2026-10-18 R3a/R3b/R3d), carried by a typed
-/// row and a project default alike. It names the client's own row only
-/// when the client sends one. When it doesn't (a GET or an empty body has
-/// no `Content-Length`; no send has a `Transfer-Encoding`), the note says
-/// who may set the header and nothing about what goes out, since nothing
-/// does (task #22, `mine (approved)`). A replaced or duplicate row needs
-/// none: its strike is the whole story.
-fn unsent_note(unsent: postui_core::prepare::Unsent) -> Option<String> {
+/// The header a row names when it is kept off the wire because the client
+/// owns it (`Host`, `Content-Length`, `Transfer-Encoding`; spec 2026-10-18
+/// R3a/R3d), for a typed row and a project default alike: the reason the
+/// user has to act on, so the row reads as an error and the footer
+/// explains it. A replaced or duplicate row gets none: its strike is the
+/// whole story.
+fn client_owned_header(unsent: Option<postui_core::prepare::Unsent>) -> Option<&'static str> {
     use postui_core::prepare::Unsent;
-    match unsent {
-        Unsent::ClientOwned { header, client_sends: true } => {
-            Some(format!("not sent · the client sets {header}"))
-        }
-        Unsent::ClientOwned { header, client_sends: false } => {
-            Some(format!("not sent · only the client may set {header}"))
-        }
+    match unsent? {
+        Unsent::ClientOwned { header } => Some(header),
         Unsent::Replaced | Unsent::Duplicate => None,
     }
 }
@@ -5818,11 +5845,21 @@ url = "https://api.example.com/users""#,
         assert!(buffer_has_crossed_out(buf, "dflt-b"), "replaced by a disabled row");
     }
 
+    /// Draws the whole app into a terminal wide enough for the footer's
+    /// centre line, and returns the buffer's text.
+    fn draw_wide(app: &mut App) -> (Terminal<TestBackend>, String) {
+        let mut terminal = Terminal::new(TestBackend::new(180, 70)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        (terminal, content)
+    }
+
     /// A project default naming `Host` is dropped by the same rule as a
-    /// typed row, so its struck auto row says why with the same note
-    /// (spec 2026-10-18 R3b).
+    /// typed row, so its auto row reads as an error, struck, and says
+    /// nothing inline: hovering the row puts the reason in the footer
+    /// (spec 2026-10-18 R3b, amended by task #59).
     #[test]
-    fn a_default_host_is_struck_with_the_client_owned_note() {
+    fn a_default_host_is_struck_in_red_and_its_hover_says_why() {
         let mut app = App::new_for_test();
         let root = app.proj().root().to_path_buf();
         std::fs::write(root.join("project.toml"), "[default_headers]\nHost = \"internal.test\"\n")
@@ -5832,41 +5869,77 @@ url = "https://api.example.com/users""#,
         app.editor.url = LineInput::new("https://example.com/foo");
         app.update(Action::Render);
 
-        let mut terminal = Terminal::new(TestBackend::new(100, 70)).unwrap();
-        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let (terminal, content) = draw_wide(&mut app);
         let buf = terminal.backend().buffer();
         assert!(buffer_has_crossed_out(buf, "internal.test"), "the default is not sent");
-        let (x, y) = find_text(buf, "not sent · the client sets Host").expect("the note");
-        assert_eq!(buf[(x, y)].fg, app.theme.error, "the note reads as an error");
         let (vx, vy) = find_text(buf, "internal.test").unwrap();
-        assert_eq!(vy, y, "the note trails the default's own row");
-        assert_eq!(buf[(vx, vy)].fg, app.theme.error, "and the row reads as an error");
+        assert_eq!(buf[(vx, vy)].fg, app.theme.error, "the row reads as an error");
+        assert!(!content.contains("cannot be set manually"), "no inline note: {content}");
+
+        let i = app.editor.computed.rows.iter().position(|r| r.header.value == "internal.test");
+        let hit = Hit::AutoHeaderRow(i.expect("the default's auto row"));
+        let row = app.hits.rect_of(&hit).expect("the auto row is a hover target");
+        assert_eq!(row.y, vy, "on the default's own row");
+        app.hovered = Some(hit);
+        let (_, content) = draw_wide(&mut app);
+        assert!(content.contains("Host cannot be set manually"), "{content}");
+
+        // A click on the row does what one on the bare pane under it did.
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        app.focus = crate::layout::PaneId::Sidebar;
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: row.x,
+            row: row.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.focus, crate::layout::PaneId::Editor);
     }
 
-    /// On a GET the client sends no `Content-Length`, so a typed one's note
-    /// doesn't point at a client row that isn't there.
+    /// The footer message follows the keyboard cursor too: on a typed
+    /// `Content-Length` row of the focused table it shows, with nothing
+    /// hovered, and it goes when the cursor leaves the row.
     #[test]
-    fn a_typed_content_length_on_a_get_says_only_the_client_may_set_it() {
+    fn the_cursor_on_a_client_owned_row_puts_the_reason_in_the_footer() {
         let mut app = App::new_for_test();
         app.editor.active_tab = EditorTab::Headers;
         app.editor.url = LineInput::new("https://example.com/foo");
         app.editor
             .headers
             .insert("Content-Length".into(), Entry { value: "5".into(), enabled: true });
+        app.editor.headers.insert("X-A".into(), Entry { value: "1".into(), enabled: true });
+        app.focus = crate::layout::PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Content;
+        app.editor.table.selected = Some(0);
         app.update(Action::Render);
 
-        let mut terminal = Terminal::new(TestBackend::new(140, 70)).unwrap();
-        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
-        let content = format!("{:?}", terminal.backend().buffer());
-        assert!(content.contains("not sent · only the client may set Content-Length"), "{content}");
-        assert!(!content.contains("the client sets"), "{content}");
+        let (terminal, content) = draw_wide(&mut app);
+        assert!(content.contains("Content-Length cannot be set manually"), "{content}");
+        let buf = terminal.backend().buffer();
+        let key = app.hits.rect_of(&Hit::TableCell { row: 0, col: 0 }).unwrap();
+        assert!(buf[(key.x, key.y)].modifier.contains(Modifier::CROSSED_OUT), "struck");
+
+        app.editor.table.selected = Some(1);
+        let (_, content) = draw_wide(&mut app);
+        assert!(!content.contains("cannot be set manually"), "{content}");
+
+        // Under a dialog the keyboard is the dialog's, so the cursor row
+        // says nothing.
+        app.editor.table.selected = Some(0);
+        app.modals
+            .push(crate::components::modal::Modal::Message { title: "t".into(), body: "b".into() });
+        let (_, content) = draw_wide(&mut app);
+        assert!(!content.contains("cannot be set manually"), "{content}");
     }
 
     /// A request row naming `Host` is kept but never sent (spec 2026-10-18
-    /// R3a/R3b): it draws error-red with a note saying why, and the
-    /// client's own `Host` row in the auto section stays, not struck.
+    /// R3a/R3b): it draws error-red and struck, with no inline note, and
+    /// hovering it puts the reason in the footer, even with hover hints
+    /// off, since it stands in for a note that always showed (task #59).
+    /// A button on the row keeps its own hint. The client's own `Host`
+    /// row in the auto section stays, not struck.
     #[test]
-    fn a_typed_host_row_reads_as_an_error_and_the_clients_host_stays() {
+    fn a_typed_host_row_is_struck_in_red_and_the_clients_host_stays() {
         let mut app = App::new_for_test();
         app.editor.active_tab = EditorTab::Headers;
         app.editor.url = LineInput::new("https://example.com/foo");
@@ -5875,15 +5948,25 @@ url = "https://api.example.com/users""#,
             .insert("host".into(), Entry { value: "other.test".into(), enabled: true });
         app.update(Action::Render);
 
-        let mut terminal = Terminal::new(TestBackend::new(100, 70)).unwrap();
-        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let (terminal, content) = draw_wide(&mut app);
         let buf = terminal.backend().buffer();
-        let content = format!("{buf:?}");
-        assert!(content.contains("not sent · the client sets Host"), "{content}");
+        assert!(!content.contains("cannot be set manually"), "no inline note: {content}");
         let key = app.hits.rect_of(&Hit::TableCell { row: 0, col: 0 }).unwrap();
         assert_eq!(buf[(key.x, key.y)].fg, app.theme.error, "the row reads as an error");
+        assert!(buffer_has_crossed_out(buf, "other.test"), "and it is struck");
         assert!(content.contains("Host: example.com"), "the client's Host row: {content}");
         assert!(!buffer_has_crossed_out(buf, "example.com"), "and it is not struck");
+
+        app.ui_settings.hover_hints = false;
+        app.hovered = Some(Hit::TableCell { row: 0, col: 1 });
+        let (_, content) = draw_wide(&mut app);
+        assert!(content.contains("Host cannot be set manually"), "{content}");
+
+        app.ui_settings.hover_hints = true;
+        app.hovered = Some(Hit::TableDelete(0));
+        let (_, content) = draw_wide(&mut app);
+        assert!(content.contains("Delete this row"), "{content}");
+        assert!(!content.contains("cannot be set manually"), "{content}");
     }
 
     /// Regression test for a bug where the synthesized scroll events landed
