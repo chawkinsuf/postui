@@ -380,6 +380,20 @@ impl Editor {
         }
     }
 
+    /// `table_map`'s map in a request rather than the editor (an undo
+    /// snapshot); `None` for Body.
+    pub fn request_table_mut(
+        req: &mut HttpRequest,
+        tab: EditorTab,
+    ) -> Option<&mut IndexMap<String, Entry>> {
+        match tab {
+            EditorTab::Params => Some(&mut req.params),
+            EditorTab::Headers => Some(&mut req.headers),
+            EditorTab::Vars => Some(&mut req.variables),
+            EditorTab::Body => None,
+        }
+    }
+
     /// `table_map`, mutably. It borrows the whole editor, so a caller that
     /// also needs `self.table` at once keeps its own field-wise match.
     pub fn table_map_mut(&mut self, tab: EditorTab) -> Option<&mut IndexMap<String, Entry>> {

@@ -2467,6 +2467,10 @@ impl App {
     /// 2026-09-15, amended for #66). Only the commit goes beneath:
     /// anything else changed while the gate holds (a method change, a
     /// format) stays pending and joins the field's close, the gate's rule.
+    /// Beneath is the order the user worked in, though the commit runs
+    /// last: the cell was typed before the caret left it for the field, so
+    /// undo takes back the field's session (and what joined it) first,
+    /// then the cell.
     ///
     /// The step copies the whole map, so a change to that same map made
     /// under the gate without committing the cell first rides in it: a
@@ -2490,18 +2494,13 @@ impl App {
             return;
         };
         let mut after = prev.clone();
-        let field = match tab {
-            EditorTab::Params => &mut after.params,
-            EditorTab::Headers => &mut after.headers,
-            EditorTab::Vars => &mut after.variables,
-            EditorTab::Body => unreachable!("Body has no table map"),
-        };
-        if field == map {
-            self.shadow = Some((slug, prev));
-            return;
+        match crate::components::editor::Editor::request_table_mut(&mut after, tab) {
+            Some(field) if field != map => {
+                field.clone_from(map);
+                self.record_editor_delta(slug, prev, after, false);
+            }
+            _ => self.shadow = Some((slug, prev)),
         }
-        field.clone_from(map);
-        self.record_editor_delta(slug, prev, after, false);
     }
 
     /// Records one `EditorDelta` step on the open request and moves the
