@@ -1191,9 +1191,11 @@ impl App {
             .then_some(hovered)
             .flatten()
             .and_then(|h| crate::hint::hint_for(h, &self.keymap, &self.hint_ctx(h)));
-        let error = (self.screen == Screen::Main && self.modals.top().is_none())
-            .then(|| self.editor.client_owned_message(hovered, self.focus == PaneId::Editor))
-            .unwrap_or_default();
+        let error = if self.screen == Screen::Main && self.modals.top().is_none() {
+            self.editor.client_owned_message(hovered, self.focus == PaneId::Editor)
+        } else {
+            Vec::new()
+        };
         crate::components::footer::CentreLine { hint, error }
     }
 
