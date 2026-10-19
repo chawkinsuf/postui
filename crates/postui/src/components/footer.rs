@@ -317,6 +317,22 @@ pub(crate) fn tabs_key() -> Key {
 /// lists. `draw_footer` spells the keycap (piece 4 spec §4.6).
 pub type FooterChip = (Key, String, Option<Action>);
 
+/// What the footer's centre line may say. Both lines take only the room
+/// the chips leave: a hovered chip must stay under the pointer, and hover
+/// is re-resolved against every frame's hit map. The hint comes first;
+/// where there is none, or it doesn't fit, the error does.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CentreLine {
+    /// The hovered button's hint (`hint::hint_for`), muted, left out
+    /// below [`HINT_MIN_SHOWN`] cells rather than cut to a stub.
+    pub hint: Option<String>,
+    /// What is wrong with the row under the pointer or the keyboard
+    /// cursor (task #59: a header the client owns), in the error colour:
+    /// the same message from its longest form to its shortest. The
+    /// longest form that fits shows whole; below the shortest, none does.
+    pub error: Vec<String>,
+}
+
 /// A `paint_chip_row` entry's total footprint: ` key ` pill + ` label `
 /// (see its own layout comment — 4 columns beyond key+label either way).
 fn chip_width((key, label, _): &(&str, &str, Option<Action>)) -> u16 {
@@ -367,11 +383,10 @@ pub fn draw_footer(
     // spelled from them (piece 4 spec §4.6).
     spell: crate::keyroute::SpellCtx,
     keymap: &crate::keys::Keymap,
-    // The hovered button's one-line hint (`hint::hint_for`) — the footer
-    // is the tooltip. Centred in the gap between the per-pane chips and
-    // the commands/quit pair while enough of it fits there (ellipsized);
-    // on a narrow footer it stands in for the per-pane chips instead.
-    hint: Option<&str>,
+    // The centre line (see `CentreLine`), centred in the gap between the
+    // per-pane chips and the commands/quit pair while enough of it fits
+    // there (ellipsized).
+    centre: &CentreLine,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
     // The shared hover fade's 0->1 progress, so a hovered chip's keycap
@@ -488,15 +503,21 @@ pub fn draw_footer(
             hint_end = x.saturating_sub(1);
         }
     }
-    // The hint sits in the gap between the chips and the status (or the
-    // commands/quit pair), and the chips never yield it more room: a
-    // hovered chip must stay under the pointer, since hover is re-resolved
-    // against every frame's hit map, so a gap too small for a useful line
-    // leaves the hint out.
-    if let Some(hint) = hint {
-        let hint_start = chips_end + 1;
-        if hint_end.saturating_sub(hint_start) >= HINT_MIN_SHOWN {
-            paint_hint(buf, mid_y, hint_start, hint_end, hint, theme);
+    // The centre line sits in the gap between the chips and the status
+    // (or the commands/quit pair), and the chips never yield it more room
+    // (see `CentreLine`). A hint too cut down to be useful gives way to
+    // the error, which shows its longest form that fits.
+    let hint_start = chips_end + 1;
+    let free = hint_end.saturating_sub(hint_start);
+    match &centre.hint {
+        Some(hint) if free >= HINT_MIN_SHOWN => {
+            paint_hint(buf, mid_y, hint_start, hint_end, hint, theme.text_muted, theme);
+        }
+        _ => {
+            let fits = centre.error.iter().find(|form| crate::ui::cells(form) <= usize::from(free));
+            if let Some(form) = fits {
+                paint_hint(buf, mid_y, hint_start, hint_end, form, theme.error, theme);
+            }
         }
     }
 }
@@ -522,9 +543,17 @@ fn chip_row_end(start_x: u16, right_limit: u16, chips: &[(&str, &str, Option<Act
     x
 }
 
-/// Paints `hint` centred in the free span `[start_x, end_x)`, muted on
-/// the panel, ellipsized to fit.
-fn paint_hint(buf: &mut Buffer, y: u16, start_x: u16, end_x: u16, hint: &str, theme: &Theme) {
+/// Paints `hint` centred in the free span `[start_x, end_x)`, in `color`
+/// on the panel, ellipsized to fit.
+fn paint_hint(
+    buf: &mut Buffer,
+    y: u16,
+    start_x: u16,
+    end_x: u16,
+    hint: &str,
+    color: ratatui::style::Color,
+    theme: &Theme,
+) {
     let free = end_x.saturating_sub(start_x);
     if free == 0 {
         return;
@@ -532,7 +561,7 @@ fn paint_hint(buf: &mut Buffer, y: u16, start_x: u16, end_x: u16, hint: &str, th
     let shown = crate::ui::ellipsize(hint, free as usize);
     let w = crate::ui::cells(&shown) as u16;
     let x = start_x + (free - w) / 2;
-    text(buf, x, y, &shown, theme.text_muted, theme.panel, false);
+    text(buf, x, y, &shown, color, theme.panel, false);
 }
 
 /// Paints a left-to-right row of `(key, label, action)` chips starting at
@@ -719,6 +748,87 @@ mod tests {
         );
     }
 
+    /// An error never takes room from the chips (task #59, the user: "just
+    /// make it shorter when there is less space so we dont have to hide
+    /// the chips"): in a narrower gap it shows its longest form that fits
+    /// whole, in the error colour, and below its shortest, nothing.
+    #[test]
+    fn an_error_shortens_to_fit_and_never_cuts_a_chip() {
+        let theme = Theme::for_terminal();
+        let keymap = crate::keys::Keymap::default_bindings();
+        let draw = |width: u16, centre: &CentreLine| {
+            let mut terminal = Terminal::new(TestBackend::new(width, FOOTER_HEIGHT)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            let chips: Vec<FooterChip> = vec![
+                (Key::Named("esc"), "cancel drag".into(), None),
+                (Key::Named("enter"), "drop here".into(), None),
+            ];
+            terminal
+                .draw(|f| {
+                    draw_footer(
+                        f,
+                        f.area(),
+                        &theme,
+                        PaneId::Sidebar,
+                        false,
+                        false,
+                        None,
+                        false,
+                        false,
+                        None,
+                        JqBarState::Closed,
+                        false,
+                        Some(chips),
+                        true,
+                        true,
+                        None,
+                        sidebar_spell(),
+                        &keymap,
+                        centre,
+                        &mut hits,
+                        None,
+                        1.0,
+                    )
+                })
+                .unwrap();
+            format!("{:?}", terminal.backend().buffer())
+        };
+        let forms = ["Content-Length cannot be set manually", "Content-Length can't be set"];
+        let error = CentreLine {
+            hint: None,
+            error: forms
+                .iter()
+                .map(|f| f.to_string())
+                .chain(["can't be set".to_string()])
+                .collect(),
+        };
+        // The chips end near column 42 and the commands/quit pair takes
+        // the last ~28, so the gap is about `width - 70` cells.
+        for (width, shown) in
+            [(130, Some(forms[0])), (100, Some(forms[1])), (86, Some("can't be set")), (70, None)]
+        {
+            let content = draw(width, &error);
+            assert!(content.contains("cancel drag"), "{width}: {content}");
+            assert!(content.contains("drop here"), "{width}: {content}");
+            match shown {
+                Some(form) => {
+                    assert!(content.contains(form), "{width}: {content}");
+                    assert!(!content.contains('…'), "shown whole, {width}: {content}");
+                }
+                None => assert!(!content.contains("be set"), "{width}: {content}"),
+            }
+        }
+        assert!(!draw(100, &error).contains(forms[0]), "the longer form gave way");
+
+        // A hint has the line where it fits; where it doesn't (a gap under
+        // its minimum), the error still shows rather than nothing.
+        let both = CentreLine { hint: Some("Delete this row".into()), ..error.clone() };
+        let wide = draw(130, &both);
+        assert!(wide.contains("Delete this row") && !wide.contains("be set"), "{wide}");
+        let narrow = draw(86, &both);
+        assert!(narrow.contains("can't be set") && !narrow.contains("Delete"), "{narrow}");
+    }
+
     /// The footer's chips are the same controls as the app bar's, so they
     /// carry the same caps and register the same block — otherwise the bar
     /// stands 1.25 rows and the footer reads as a thinner, lesser row of
@@ -754,7 +864,7 @@ mod tests {
                     None,
                     sidebar_spell(),
                     &crate::keys::Keymap::default_bindings(),
-                    None,
+                    &CentreLine::default(),
                     &mut hits,
                     None,
                     1.0,
@@ -961,7 +1071,7 @@ mod tests {
                     None,
                     spell,
                     &crate::keys::Keymap::default_bindings(),
-                    None,
+                    &CentreLine::default(),
                     &mut hits,
                     None,
                     1.0,
@@ -1380,7 +1490,7 @@ mod tests {
                     None,
                     response_spell(),
                     &crate::keys::Keymap::default_bindings(),
-                    None,
+                    &CentreLine::default(),
                     &mut hits,
                     None,
                     1.0,
@@ -1421,7 +1531,7 @@ mod tests {
                     None,
                     sidebar_spell(),
                     &crate::keys::Keymap::default_bindings(),
-                    None,
+                    &CentreLine::default(),
                     &mut hits,
                     None,
                     1.0,
@@ -1469,7 +1579,7 @@ mod tests {
                     None,
                     crate::keyroute::SpellCtx::default(),
                     &crate::keys::Keymap::default_bindings(),
-                    None,
+                    &CentreLine::default(),
                     &mut hits,
                     None,
                     1.0,
@@ -1512,7 +1622,7 @@ mod tests {
                     None,
                     sidebar_spell(),
                     &crate::keys::Keymap::default_bindings(),
-                    None,
+                    &CentreLine::default(),
                     &mut hits,
                     None,
                     1.0,
@@ -1589,7 +1699,7 @@ mod tests {
                     None,
                     sidebar_spell(),
                     &crate::keys::Keymap::default_bindings(),
-                    None,
+                    &CentreLine::default(),
                     &mut hits,
                     None,
                     1.0,
@@ -1649,7 +1759,7 @@ mod tests {
                     None,
                     crate::keyroute::SpellCtx::default(),
                     &crate::keys::Keymap::default_bindings(),
-                    None,
+                    &CentreLine::default(),
                     &mut hits,
                     None,
                     1.0,
@@ -1749,7 +1859,7 @@ mod tests {
                     None,
                     crate::keyroute::SpellCtx::default(),
                     &crate::keys::Keymap::default_bindings(),
-                    None,
+                    &CentreLine::default(),
                     &mut hits,
                     None,
                     1.0,
@@ -1805,7 +1915,7 @@ mod tests {
                         status,
                         crate::keyroute::SpellCtx::default(),
                         &crate::keys::Keymap::default_bindings(),
-                        None,
+                        &CentreLine::default(),
                         &mut hits,
                         None,
                         1.0,

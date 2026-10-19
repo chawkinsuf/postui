@@ -250,6 +250,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         | Hit::UrlBar
         | Hit::TableRow(_)
         | Hit::TableCell { .. }
+        | Hit::AutoHeaderRow(_)
         | Hit::BodyEditor
         | Hit::JsonRow(_)
         | Hit::JsonArrow(_)

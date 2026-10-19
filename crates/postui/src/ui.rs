@@ -302,15 +302,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         vim_status.as_deref(),
         app.spell_ctx(),
         &app.keymap,
-        // The hovered button's hint — the footer stands in for a tooltip.
-        // Switched off wholesale by `hover_hints = false` in config.toml,
-        // which leaves the chip row untouched under the pointer.
-        app.ui_settings
-            .hover_hints
-            .then_some(app.hovered.as_ref())
-            .flatten()
-            .and_then(|h| crate::hint::hint_for(h, &app.keymap, &app.hint_ctx(h)))
-            .as_deref(),
+        // The hovered button's hint — the footer stands in for a tooltip —
+        // or what is wrong with a client-owned header row.
+        &app.footer_hint(),
         &mut hits,
         app.hovered.as_ref(),
         hover_t,

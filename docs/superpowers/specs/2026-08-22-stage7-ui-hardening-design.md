@@ -127,6 +127,8 @@ The editor's Headers tab gains a read-only **auto section** below the editable r
 
 *Amended 2026-10-18 (task #22):* the client-generated rows now also include the `Authorization: Basic …` reqwest derives from the URL's userinfo, and `Content-Length` shows only for a non-empty body (an empty one goes out with none). `Transfer-Encoding` joins `Host` and `Content-Length` as the client's: a typed one is never sent (`mine (approved)`). Details in the auto-headers spec's task #22 section.
 
+*Amended 2026-10-18 (task #59):* a client-owned row no longer carries an inline note. It is struck through in the error colour, and the footer says `Host cannot be set manually` while the row is hovered or under the table's cursor (`you`; details in the auto-headers spec's §7).
+
 ## 7. Inline variable value preview
 
 - Every `{{token}}` in the URL bar, table cells, and body editor is highlighted: tinted when it resolves, red when unresolved/needs-selection/missing-secret.

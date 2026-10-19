@@ -391,11 +391,8 @@ pub enum Unsent {
     Replaced,
     /// A default whose name an earlier default already sends.
     Duplicate,
-    /// It names a [`CLIENT_OWNED`] header (R3a). `client_sends`: whether
-    /// the client sends its own row for it in this send — not without a
-    /// non-empty body for `Content-Length`, nor while the host is a
-    /// `{{token}}`, and never for `Transfer-Encoding`.
-    ClientOwned { header: &'static str, client_sends: bool },
+    /// It names a [`CLIENT_OWNED`] header (R3a), in its usual spelling.
+    ClientOwned { header: &'static str },
 }
 
 /// Headers the HTTP client sets from the URL and the body, and which
@@ -467,16 +464,13 @@ fn rows(
         }
     };
     // Substitutes name and value together, so a row reports the
-    // unresolved tokens of both halves. Whether the client sends its own
-    // row for a client-owned name is filled in at the end, from the
-    // client's rows themselves.
+    // unresolved tokens of both halves.
     let row = |name: &str, value: &str, origin: HeaderOrigin| {
         let mut unresolved = BTreeSet::new();
         let real_name = substitute_masked(name, vars, &no_mask, &mut unresolved);
         let real = substitute_masked(value, vars, &no_mask, &mut unresolved);
         HeaderRow {
-            unsent: client_owned(&real_name)
-                .map(|header| Unsent::ClientOwned { header, client_sends: false }),
+            unsent: client_owned(&real_name).map(|header| Unsent::ClientOwned { header }),
             header: SentHeader {
                 display_name: masked(name, &real_name),
                 name: real_name,
@@ -599,23 +593,6 @@ fn rows(
     // empty body goes out with none (hyper sends no `content-length: 0`).
     if let Some(len) = body_len.filter(|&len| len > 0) {
         rows.push(fixed("Content-Length", len.to_string(), None));
-    }
-
-    // Now the client's rows are known, a row naming a client-owned header
-    // says whether the client sends its own. Read off the rows just built
-    // on purpose, not predicted up front by name (`Host` when there's a
-    // host, `Content-Length` when there's a body): a prediction is a
-    // second statement of when the client sends each row, free to drift
-    // from the code above that builds them.
-    let client: Vec<String> = rows
-        .iter()
-        .filter(|r| r.origin == HeaderOrigin::Client && r.sent())
-        .map(|r| r.header.name.clone())
-        .collect();
-    for r in &mut rows {
-        if let Some(Unsent::ClientOwned { header, client_sends }) = &mut r.unsent {
-            *client_sends = client.iter().any(|name| name.eq_ignore_ascii_case(header));
-        }
     }
     rows
 }
@@ -1347,9 +1324,10 @@ mod tests {
         assert!(!p.headers.iter().any(|h| h.name.eq_ignore_ascii_case("content-length")));
     }
 
-    /// Each unsent row records why, so screens never work it out again —
-    /// including whether the client sends its own row for a client-owned
-    /// name (not without a body, nor while the host is a `{{token}}`).
+    /// Each unsent row records why, so screens never work it out again. A
+    /// client-owned name is the client's whether or not the client sends
+    /// its own row (not without a body, nor while the host is a
+    /// `{{token}}`).
     #[test]
     fn unsent_rows_record_why() {
         let mut req = base("http://example.com/p");
@@ -1361,9 +1339,9 @@ mod tests {
             rows.iter().find(|r| r.origin == origin).unwrap().unsent
         };
         let rows = header_rows(&req, &c);
-        let owned = |header, client_sends| Some(Unsent::ClientOwned { header, client_sends });
-        assert_eq!(why(&rows, HeaderOrigin::Request { row: 0 }), owned("Content-Length", false));
-        assert_eq!(why(&rows, HeaderOrigin::Request { row: 1 }), owned("Host", true));
+        let owned = |header| Some(Unsent::ClientOwned { header });
+        assert_eq!(why(&rows, HeaderOrigin::Request { row: 0 }), owned("Content-Length"));
+        assert_eq!(why(&rows, HeaderOrigin::Request { row: 1 }), owned("Host"));
         assert_eq!(rows[0].unsent, Some(Unsent::Replaced), "X-A default, replaced");
         assert_eq!(rows[1].unsent, None, "the first X-B goes out");
         assert_eq!(rows[2].unsent, Some(Unsent::Duplicate), "the second doesn't");
@@ -1373,8 +1351,8 @@ mod tests {
         req.url = "http://{{host}}/p".into();
         c.default_headers.clear();
         let rows = header_rows(&req, &c);
-        assert_eq!(why(&rows, HeaderOrigin::Request { row: 0 }), owned("Content-Length", true));
-        assert_eq!(why(&rows, HeaderOrigin::Request { row: 1 }), owned("Host", false));
+        assert_eq!(why(&rows, HeaderOrigin::Request { row: 0 }), owned("Content-Length"));
+        assert_eq!(why(&rows, HeaderOrigin::Request { row: 1 }), owned("Host"));
     }
 
     /// Only what is sent has to resolve (R8): a row that is listed but not
@@ -1803,7 +1781,7 @@ mod tests {
             );
             assert_eq!(
                 row(&rows, "Content-Length").unsent,
-                Some(Unsent::ClientOwned { header: "Content-Length", client_sends: false }),
+                Some(Unsent::ClientOwned { header: "Content-Length" }),
                 "{method:?}"
             );
         }
@@ -1830,7 +1808,7 @@ mod tests {
         req.headers.insert("transfer-ENCODING".into(), on("chunked"));
         let c = ctx(&[], &[("Transfer-Encoding", "gzip", true)]);
         let rows = header_rows(&req, &c);
-        let owned = Some(Unsent::ClientOwned { header: "Transfer-Encoding", client_sends: false });
+        let owned = Some(Unsent::ClientOwned { header: "Transfer-Encoding" });
         let from = |origin| rows.iter().find(|r| r.origin == origin).unwrap().unsent;
         assert_eq!(from(HeaderOrigin::Default), owned);
         assert_eq!(from(HeaderOrigin::Request { row: 0 }), owned);

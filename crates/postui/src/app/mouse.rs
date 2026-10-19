@@ -2058,6 +2058,10 @@ impl App {
             // A drawn `{{token}}` is never a click target (`Down(Left)`
             // resolves past it); the arm keeps the match exhaustive.
             Hit::VarToken(_) => false,
+            // A surface of its own, as a table row is (its hover is what
+            // the footer reads, task #59). Its click focuses the editor,
+            // as a click anywhere in the auto section always has.
+            Hit::AutoHeaderRow(_) => self.update(Action::FocusPane(PaneId::Editor)),
             // The tooltip's controls. Its edit pill is the path from "what
             // is this?" to the variable itself (spec §7): the popup action
             // picks the editor the token calls for, and the modal it

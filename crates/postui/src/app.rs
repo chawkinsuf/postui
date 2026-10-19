@@ -1176,6 +1176,29 @@ impl App {
         }
     }
 
+    /// The footer's centre line: the hovered button's hint (unless
+    /// `hover_hints` is off), and the error for the hovered header row,
+    /// or the one under the keyboard cursor, that isn't sent (task #59),
+    /// which shows where the hint is missing or doesn't fit. The
+    /// error stands in for a note that used to sit on the row itself, so
+    /// the hints switch leaves it on. It speaks only on the request screen
+    /// with no dialog up, since the keyboard is elsewhere otherwise.
+    pub fn footer_hint(&self) -> crate::components::footer::CentreLine {
+        let hovered = self.hovered.as_ref();
+        let hint = self
+            .ui_settings
+            .hover_hints
+            .then_some(hovered)
+            .flatten()
+            .and_then(|h| crate::hint::hint_for(h, &self.keymap, &self.hint_ctx(h)));
+        let error = if self.screen == Screen::Main && self.modals.top().is_none() {
+            self.editor.client_owned_message(hovered, self.focus == PaneId::Editor)
+        } else {
+            Vec::new()
+        };
+        crate::components::footer::CentreLine { hint, error }
+    }
+
     /// The state the hovered control's hint needs (see [`crate::hint::HintCtx`]).
     /// Reading the app happens here, once, for the hovered hit alone, so
     /// `hint::hint_for` stays a table of wording. A control listed here and
