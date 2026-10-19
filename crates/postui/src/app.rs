@@ -1177,8 +1177,8 @@ impl App {
     }
 
     /// The footer's centre line: the hovered button's hint (unless
-    /// `hover_hints` is off), else the error for the header row under the
-    /// pointer or the keyboard cursor that isn't sent (task #59). The
+    /// `hover_hints` is off), else the error for the hovered header row,
+    /// or the one under the keyboard cursor, that isn't sent (task #59). The
     /// error stands in for a note that used to sit on the row itself, so
     /// the hints switch leaves it on. It speaks only on the request screen
     /// with no dialog up, since the keyboard is elsewhere otherwise, and
@@ -1202,7 +1202,7 @@ impl App {
             return None;
         }
         self.editor
-            .client_owned_message(self.pointer, self.focus == PaneId::Editor)
+            .client_owned_message(hovered, self.focus == PaneId::Editor)
             .map(CentreLine::Error)
     }
 

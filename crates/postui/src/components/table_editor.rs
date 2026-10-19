@@ -138,11 +138,11 @@ pub enum RowNote {
     /// A dim note trailing the value on its line, such as the Vars tab's
     /// `overrides …`.
     Dim(String),
-    /// The row is kept but never used (a header row the client owns): an
-    /// enabled row's text draws struck through in the error colour. It
-    /// carries no text, as the row's line has no room to say why next to
-    /// its actions; the footer says it instead (task #59).
-    Unsent,
+    /// The row is kept but never used (a header row the client owns,
+    /// named here in its usual spelling): an enabled row's text draws
+    /// struck through in the error colour, and nothing trails it. The
+    /// footer says why instead (task #59), from the name carried here.
+    Unsent(&'static str),
 }
 
 /// Shared cursor/edit state for a key/value table (Params, Headers or Vars).
@@ -810,7 +810,7 @@ impl TableEditorState {
             if show_actions { area.right().saturating_sub(ACTIONS_W) } else { area.right() };
         let value_w = value_right.saturating_sub(cols.value_x);
         let name_w = cols.divider_x.saturating_sub(cols.name_x);
-        let unsent = note == Some(&RowNote::Unsent);
+        let unsent = matches!(note, Some(RowNote::Unsent(_)));
         let fg = match (real, entry.enabled, lit) {
             (false, _, true) => theme.text,
             (false, _, false) => theme.text_muted,
@@ -2115,7 +2115,7 @@ mod tests {
     fn an_unsent_row_is_struck_in_the_error_colour_with_no_trailing_text() {
         let theme = Theme::dark();
         let map = map_of(&[("Host", "other.test"), ("X-A", "1")]);
-        let notes = [Some(RowNote::Unsent)];
+        let notes = [Some(RowNote::Unsent("Host"))];
         let mut hits = HitMap::default();
         let terminal = draw_narrow(&map, 40, &notes, &mut hits);
         let buf = terminal.backend().buffer();

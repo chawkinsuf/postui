@@ -138,6 +138,11 @@ pub enum Hit {
     /// `ComputedHeadersView::rows[i]`, used as is (the view already holds
     /// only the rows the section draws).
     AutoHeaderCopy(usize),
+    /// Row `i` of that section as a whole, under its tokens and copy icon:
+    /// a surface, like a table row, whose hover lets the footer say why a
+    /// client-owned row isn't sent (task #59). A click on it does what one
+    /// on the bare pane does.
+    AutoHeaderRow(usize),
     /// The single "reveal"/"hide" toggle shown above the computed-headers
     /// section when at least one row would otherwise show a masked secret.
     AutoHeaderReveal,
@@ -401,9 +406,14 @@ impl PointerShape {
             Some(Hit::Pane(PaneId::Response)) => PointerShape::Text,
             // The variable tooltip's panel between its pills: a click there
             // is only swallowed, so it is chrome, not a button.
-            Some(Hit::Pane(_) | Hit::ModalOutside | Hit::ModalBody | Hit::TipPanel(_)) => {
-                PointerShape::Default
-            }
+            // An auto header row is a surface, hovered only for the footer.
+            Some(
+                Hit::Pane(_)
+                | Hit::ModalOutside
+                | Hit::ModalBody
+                | Hit::TipPanel(_)
+                | Hit::AutoHeaderRow(_),
+            ) => PointerShape::Default,
             Some(_) => PointerShape::Pointer,
         }
     }
@@ -818,6 +828,8 @@ mod tests {
         assert_eq!(PointerShape::for_hit(Some(&Hit::Pane(PaneId::Sidebar))), PointerShape::Default);
         assert_eq!(PointerShape::for_hit(Some(&Hit::ModalOutside)), PointerShape::Default);
         assert_eq!(PointerShape::for_hit(Some(&Hit::ModalBody)), PointerShape::Default);
+        // Task #59: an auto header row is a surface.
+        assert_eq!(PointerShape::for_hit(Some(&Hit::AutoHeaderRow(0))), PointerShape::Default);
         // Task #33: the variable tooltip's panel is an arrow; its pills
         // (the tip's buttons) keep the hand.
         assert_eq!(PointerShape::for_hit(Some(&Hit::TipPanel("x".into()))), PointerShape::Default);

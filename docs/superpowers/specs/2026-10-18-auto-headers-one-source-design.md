@@ -315,16 +315,15 @@ R3b's note, and R3d's and §5a's wordings with it.
 | A typed client-owned row (enabled) draws struck through in the error colour, over exactly its text, with nothing after the value. A disabled one draws as any disabled row. | `you` (strike, red); disabled unchanged `mine` |
 | A default the rule drops keeps its struck, red auto row, with no inline note. | `mine (approved)` |
 | The message is `<header> cannot be set manually`, e.g. `Content-Length cannot be set manually`, whether or not the client sends its own row. | `you` |
-| The footer's centre line shows it while the pointer is anywhere on the row (a table row or an auto row, a token or button on it included). When the pointer is on any other row of the tab, the footer says nothing rather than name the cursor's row. Off the rows, it shows while the focused table's cursor is on one. A hovered button's own hint comes first. | `mine (approved)`; pointer row beats cursor row `mine` (review round 1) |
+| The footer's centre line shows it while the row is hovered, like any hover hint: a table row's surface or cell, or an auto row's (`Hit::AutoHeaderRow`, a surface whose click is the bare pane's). Whatever sits on top of the row (a token, a button) is its own hover. When the hover gives no message, it shows for the focused table's cursor row. A hovered button's own hint comes first. Struck defaults explain themselves on hover only: the auto section has no cursor. | `mine (approved)`; kept the ordinary hover rule after review round 2 (`you`: "we have messages in the footer on hover all the time") |
 | It is an error message: drawn in the error colour, and the per-pane chips stop short to make room for it, rightmost first, so a narrow footer still says it. A hover hint still takes only the room the chips leave. | room: `mine (approved)` (review round 1: below ~140 columns there was none); error colour `you` ("error message beats chips") |
 | It shows with `hover_hints = false`, since it replaces a note that always showed; it is silent under a dialog, off the request screen, and over a hovered footer chip (which its room would push aside). | `mine` |
 | Like the row's red strike, it follows the committed key: renaming a `Host` row keeps saying so until the new name commits. | `mine` (review round 1 raised it) |
 
 Design: `Unsent::ClientOwned` loses `client_sends`, which only chose
 between the two old wordings, and `rows()` its pass that filled it.
-`RowNote` becomes `Dim(String) | Unsent`. `ComputedHeadersView` keeps
-`client_owned: Vec<Option<&'static str>>` per request row. The editor
-records each drawn Headers-tab row's rect with its verdict
-(`last_header_rows`), and `Editor::client_owned_message` looks the
-pointer up there, so the click hit map is unchanged. `App::footer_hint`
-gives the footer a `CentreLine::Hint` or `CentreLine::Error`.
+`RowNote` becomes `Dim(String) | Unsent(&'static str)`, and
+`ComputedHeadersView.notes` holds the table's notes, built once per
+recompute. `Editor::client_owned_message` reads the hovered hit as the
+hint table does, and `App::footer_hint` gives the footer a
+`CentreLine::Hint` or `CentreLine::Error`.

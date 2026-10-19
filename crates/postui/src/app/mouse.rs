@@ -2022,6 +2022,9 @@ impl App {
                 self.update(Action::CopyToClipboard(CopyTarget::ComputedHeader(i)))
             }
             Hit::AutoHeaderReveal => self.update(Action::ToggleHeaderReveal),
+            // A surface hovered only for the footer: the click is the bare
+            // pane's under it.
+            Hit::AutoHeaderRow(_) => self.update(Action::FocusPane(PaneId::Editor)),
             Hit::ScrollbarThumb(pane) => {
                 let Some(thumb) = self.hits.rect_of(&Hit::ScrollbarThumb(pane)) else {
                     return false;
