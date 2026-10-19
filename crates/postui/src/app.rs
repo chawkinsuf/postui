@@ -2444,17 +2444,9 @@ impl App {
             Some((_, prev)) => {
                 let current = self.editor.current_request();
                 if *prev != current {
-                    let step = crate::undo::Step {
-                        kind: crate::undo::StepKind::EditorDelta {
-                            slug: current_slug.clone(),
-                            before: Box::new(prev.clone()),
-                            after: Box::new(current.clone()),
-                        },
-                        context: crate::undo::Context { slug: current_slug.clone() },
-                    };
+                    let prev = prev.clone();
                     let coalesce = !std::mem::take(&mut self.no_coalesce) && !closing;
-                    self.history.record_maybe_coalesce(step, coalesce);
-                    self.shadow = Some((current_slug, current));
+                    self.record_editor_delta(current_slug, prev, current, coalesce);
                     return true;
                 }
             }
@@ -2471,7 +2463,9 @@ impl App {
     /// bar), the field's live text must stay pending for its own close, so
     /// the step moves only the table maps from the shadow, and the shadow
     /// moves with it: the field's close then lands on top, still one step
-    /// (spec 2026-09-15, amended for #62).
+    /// (spec 2026-09-15, amended for #62). Only the commit goes beneath:
+    /// anything else changed while the gate holds (a method change, a
+    /// format) stays pending and joins the field's close, the gate's rule.
     pub(crate) fn capture_table_commit(&mut self) {
         if !self.field_gate() {
             self.capture_undo();
@@ -2494,16 +2488,28 @@ impl App {
         if after == *prev {
             return;
         }
-        let slug = slug.clone();
+        let (slug, prev) = (slug.clone(), prev.clone());
+        self.record_editor_delta(slug, prev, after, false);
+    }
+
+    /// Records one `EditorDelta` step on the open request and moves the
+    /// shadow to its `after`: the one place a capture becomes a step.
+    fn record_editor_delta(
+        &mut self,
+        slug: Option<String>,
+        before: postui_core::model::HttpRequest,
+        after: postui_core::model::HttpRequest,
+        coalesce: bool,
+    ) {
         let step = crate::undo::Step {
             kind: crate::undo::StepKind::EditorDelta {
                 slug: slug.clone(),
-                before: Box::new(prev.clone()),
+                before: Box::new(before),
                 after: Box::new(after.clone()),
             },
             context: crate::undo::Context { slug: slug.clone() },
         };
-        self.history.record_no_coalesce(step);
+        self.history.record_maybe_coalesce(step, coalesce);
         self.shadow = Some((slug, after));
     }
 
@@ -10866,6 +10872,11 @@ impl App {
             preferred
         };
         if target != self.editor.active_tab {
+            // A cell still open commits as an undo step of its own (#62),
+            // after the change that moved the tab (a method change). The
+            // undo replay and the buffer swaps that call this have dropped
+            // the edit already (`apply_snapshot`, `reseed_editor`), so no
+            // step is ever recorded mid-replay.
             self.commit_table_edit();
             let prev = self.editor.active_tab;
             self.editor.active_tab = target;

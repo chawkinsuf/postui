@@ -213,6 +213,8 @@ its own step at once, beneath the field's. The step moves only the
 table maps from the shadow, and the shadow moves with it, so the field's
 close still yields one step, on top. Before, the commit waited for the
 close and joined it, along with anything else the commit's event did.
+Only the commit goes beneath: any other change made while the gate holds
+(a method change, a format) still joins the field's close.
 
 **Exception: the body editor.** It is a document, not a field, and has
 no close. It keeps its current burst coalescing in the app history; one
