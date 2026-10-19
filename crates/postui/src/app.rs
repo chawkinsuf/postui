@@ -2467,6 +2467,15 @@ impl App {
     /// 2026-09-15, amended for #66). Only the commit goes beneath:
     /// anything else changed while the gate holds (a method change, a
     /// format) stays pending and joins the field's close, the gate's rule.
+    ///
+    /// Copying the whole map is exact because nothing else can be pending
+    /// in it: a row toggle, delete or duplicate comes from the table's own
+    /// keys (the caret is in the table, so no field holds the gate) or from
+    /// a table hit, footer chip or row menu, which commits the cell first,
+    /// so no open cell is left to commit over the change. The shadow is always
+    /// for this request here too: a cell opens in an event the gate does
+    /// not hold, whose capture seeds it, and opening another request drops
+    /// the cell (`Editor::load`).
     fn capture_table_commit(&mut self) {
         if !self.field_gate() {
             self.capture_undo();

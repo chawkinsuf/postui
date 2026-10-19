@@ -1090,23 +1090,21 @@ impl App {
     /// ([`Self::capture_table_commit`]). The session is never closed here:
     /// that would wipe the field's own keystroke undo while the caret is
     /// still in it.
+    ///
+    /// `no_coalesce` belongs to a change already made: the capture before
+    /// the commit records that change and spends the flag with it. A caller
+    /// that commits and then makes a wholesale change sets the flag after
+    /// committing, as every caller does (a method change sets it, changes
+    /// the method, then its tab sync commits).
     pub(crate) fn commit_table_edit(&mut self) {
         if self.editor.table.editing.is_none() {
             return;
         }
-        // `no_coalesce` belongs to the change it was set for. When that
-        // change was what was pending here, the capture below records it
-        // and spends the flag; when nothing was pending, the change is
-        // still to come, so the flag outlives the commit's own capture.
-        let no_coalesce = self.no_coalesce;
-        let changes = self.history.changes();
         self.capture_undo();
-        let pending_recorded = self.history.changes() != changes;
         if let Some(w) = self.editor.commit_table().warning {
             self.toasts.push(w, ToastKind::Warning);
         }
         self.capture_table_commit();
-        self.no_coalesce |= no_coalesce && !pending_recorded;
     }
 
     /// Commits the in-progress edit and re-resolves row `i` — an index from
