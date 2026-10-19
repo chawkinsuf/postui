@@ -480,6 +480,12 @@ impl Editor {
         });
         self.set_saved(Some(req));
         self.computed.revealed = false;
+        // A cell still open belongs to the request being replaced: drop
+        // it, never let it commit into this one (task #63). A click that
+        // opens another request commits it first, so the dirty gate sees
+        // it; nothing else carries it over.
+        self.table.editing = None;
+        self.table.selected = None;
     }
 
     /// Swaps in `req`'s fields the way `load` does, for undo/redo stepping

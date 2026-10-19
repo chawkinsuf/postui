@@ -1094,16 +1094,19 @@ impl App {
         if self.editor.table.editing.is_none() {
             return;
         }
-        // The captures here spend `no_coalesce`; a caller that set it for
-        // a wholesale change still to come keeps it (keeping it longer
-        // than needed only starts a fresh step).
+        // `no_coalesce` belongs to the change it was set for. When that
+        // change was what was pending here, the capture below records it
+        // and spends the flag; when nothing was pending, the change is
+        // still to come, so the flag outlives the commit's own capture.
         let no_coalesce = self.no_coalesce;
+        let changes = self.history.changes();
         self.capture_undo();
+        let pending_recorded = self.history.changes() != changes;
         if let Some(w) = self.editor.commit_table().warning {
             self.toasts.push(w, ToastKind::Warning);
         }
         self.capture_table_commit();
-        self.no_coalesce |= no_coalesce;
+        self.no_coalesce |= no_coalesce && !pending_recorded;
     }
 
     /// Commits the in-progress edit and re-resolves row `i` — an index from

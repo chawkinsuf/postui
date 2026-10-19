@@ -2461,9 +2461,10 @@ impl App {
     /// no field session open this is [`Self::capture_undo`]. While one
     /// holds the gate (the cell stayed open behind the URL line or the jq
     /// bar), the field's live text must stay pending for its own close, so
-    /// the step moves only the table maps from the shadow, and the shadow
-    /// moves with it: the field's close then lands on top, still one step
-    /// (spec 2026-09-15, amended for #62). Only the commit goes beneath:
+    /// the step moves only the committed tab's map (`Editor::commit_table`
+    /// commits the active tab's) from the shadow, and the shadow moves
+    /// with it: the field's close then lands on top, still one step (spec
+    /// 2026-09-15, amended for #62). Only the commit goes beneath:
     /// anything else changed while the gate holds (a method change, a
     /// format) stays pending and joins the field's close, the gate's rule.
     fn capture_table_commit(&mut self) {
@@ -2476,17 +2477,21 @@ impl App {
         let Some((slug, prev)) = self.shadow.take_if(|(slug, _)| *slug == self.editor.slug) else {
             return;
         };
-        let current = self.editor.current_request();
-        let after = postui_core::model::HttpRequest {
-            params: current.params,
-            headers: current.headers,
-            variables: current.variables,
-            ..prev.clone()
+        let mut after = prev.clone();
+        let (field, map) = match self.editor.active_tab {
+            EditorTab::Params => (&mut after.params, &self.editor.params),
+            EditorTab::Headers => (&mut after.headers, &self.editor.headers),
+            EditorTab::Vars => (&mut after.variables, &self.editor.variables),
+            EditorTab::Body => {
+                self.shadow = Some((slug, prev));
+                return;
+            }
         };
-        if after == prev {
+        if field == map {
             self.shadow = Some((slug, prev));
             return;
         }
+        field.clone_from(map);
         self.record_editor_delta(slug, prev, after, false);
     }
 
@@ -8279,13 +8284,11 @@ impl App {
     /// replacement shares, in one place: a cell still under the caret is
     /// part of what is being thrown away, so it is dropped WITHOUT being
     /// committed, the selection into it goes with it (no stale row index
-    /// survives), and the tab bar re-syncs to the request that just
-    /// landed. Shared by `Action::DiscardChanges` and
-    /// `Action::ReloadOpenRequest`; the caller owns the undo bookkeeping
-    /// (`no_coalesce`) and the toast.
+    /// survives; `Editor::load` drops both), and the tab bar re-syncs to
+    /// the request that just landed. Shared by `Action::DiscardChanges`
+    /// and `Action::ReloadOpenRequest`; the caller owns the undo
+    /// bookkeeping (`no_coalesce`) and the toast.
     fn reseed_editor(&mut self, slug: Option<String>, req: postui_core::model::HttpRequest) {
-        self.editor.table.editing = None;
-        self.editor.table.selected = None;
         self.editor.load(slug, req);
         self.sync_active_tab();
     }
@@ -10874,11 +10877,10 @@ impl App {
         if target != self.editor.active_tab {
             // A cell still open commits as an undo step of its own (#62),
             // after the change that moved the tab (a method change). Undo
-            // replay and discard/reload drop the edit before they get here
-            // (`apply_snapshot`, `reseed_editor`), so no step is recorded
-            // mid-replay. Opening another request does not drop it yet:
-            // a cell left open from the old request commits into the new
-            // one (#63).
+            // replay, discard/reload and opening another request drop the
+            // edit before they get here (`apply_snapshot`, `Editor::load`),
+            // so no step is recorded mid-replay and no cell commits into a
+            // request it was not typed into.
             self.commit_table_edit();
             let prev = self.editor.active_tab;
             self.editor.active_tab = target;

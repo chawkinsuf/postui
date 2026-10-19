@@ -22641,6 +22641,36 @@ fn three_row_app() -> (App, tempfile::TempDir) {
     (app, dir)
 }
 
+/// A cell left open when another request opens without a click (the
+/// keyboard, a palette row) is dropped, never committed into the request
+/// that opens: that request keeps its own rows and gains no undo step
+/// (task #63).
+#[test]
+fn opening_another_request_drops_a_cell_left_open() {
+    let (mut app, dir) = three_row_app();
+    let mut beta = req("https://x/2");
+    beta.params.insert("b".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
+    postui_core::fixtures::save_request(dir.path(), "main/beta", &beta).unwrap();
+    let mut alpha = req("https://x/1");
+    alpha.params.insert("a".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    postui_core::fixtures::save_request(dir.path(), "main/alpha", &alpha).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.editor.active_tab = EditorTab::Params;
+    app.focus = PaneId::Editor;
+    app.capture_undo();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "9");
+    app.update(Action::FocusPane(PaneId::Sidebar));
+    let steps = app.history.undo_len();
+    app.update(Action::OpenRequest("main/beta".into()));
+    app.capture_undo();
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+    assert!(app.editor.table.editing.is_none(), "the old request's cell is gone");
+    assert_eq!(app.editor.params["b"].value, "2", "beta keeps its own row");
+    assert_eq!(app.history.undo_len(), steps, "and gains no undo step");
+}
+
 #[test]
 fn a_live_drag_paints_exactly_one_selection_band() {
     use ratatui::Terminal;

@@ -118,7 +118,9 @@ changes to input code. Opening or creating a request resets the shadow
 `pending_terminal_action`; the hook runs after completion, so an external
 edit is one step.
 
-*Amended 2026-10-19 (task #62, mine):* a table cell committed on the way
+*Amended 2026-10-19 (task #62; the commit as its own step is mine, the
+gated case and the open rule below are `mine (approved)`):* a table cell
+committed on the way
 to something else (`App::commit_table_edit`, the one path that commits a
 cell outside the table's own keys) is captured right there, as a step of
 its own, before the rest of the event runs. A click on another row's
@@ -130,12 +132,16 @@ whose tab sync commits the cell is its own step before the commit, and so
 is a jq filter a click just blurred. A field session still open (the cell
 left behind the URL line by alt+u, or the jq bar keeping the caret
 through a Send) holds the gate as before; the commit then records a step
-that moves only the table maps, beneath the field's, which still lands
-as one step on its close (spec 2026-09-15, amended the same day). The
-session is never closed early, which would wipe the field's own
-keystroke undo. Recorded as `mine (approved)`. A click that opens
-another request commits first, so its commit is recorded under the
-request it was typed into.
+that moves only the committed tab's map, beneath the field's, which still
+lands as one step on its close (spec 2026-09-15, amended the same day).
+The session is never closed early, which would wipe the field's own
+keystroke undo. Opening another request (task #63): a sidebar click
+commits the cell first, as any click away does, so the dirty gate sees
+it and its step is recorded under the request it was typed into; any
+other open (the keyboard, a palette row, which keeps the cell open)
+drops the cell in `Editor::load`, so it never commits into the request
+that opens. Such a drop loses the cell's typing; the dirty gate does not
+see an open cell yet.
 
 ### Coalescing
 
