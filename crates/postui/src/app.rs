@@ -2465,6 +2465,48 @@ impl App {
         dropped
     }
 
+    /// Captures a table cell's commit as a step of its own (task #62). With
+    /// no field session open this is [`Self::capture_undo`]. While one
+    /// holds the gate (the cell stayed open behind the URL line or the jq
+    /// bar), the field's live text must stay pending for its own close, so
+    /// the step moves only the table maps from the shadow, and the shadow
+    /// moves with it: the field's close then lands on top, still one step
+    /// (spec 2026-09-15, amended for #62).
+    pub(crate) fn capture_table_commit(&mut self) {
+        if !self.field_gate() {
+            self.capture_undo();
+            return;
+        }
+        let Some((slug, prev)) = &self.shadow else {
+            return;
+        };
+        // The request changed under the commit: the next capture re-seeds.
+        if *slug != self.editor.slug {
+            return;
+        }
+        let current = self.editor.current_request();
+        let after = postui_core::model::HttpRequest {
+            params: current.params,
+            headers: current.headers,
+            variables: current.variables,
+            ..prev.clone()
+        };
+        if after == *prev {
+            return;
+        }
+        let slug = slug.clone();
+        let step = crate::undo::Step {
+            kind: crate::undo::StepKind::EditorDelta {
+                slug: slug.clone(),
+                before: Box::new(prev.clone()),
+                after: Box::new(after.clone()),
+            },
+            context: crate::undo::Context { slug: slug.clone() },
+        };
+        self.history.record_no_coalesce(step);
+        self.shadow = Some((slug, after));
+    }
+
     /// Closes the open field's edit session (URL line, jq bar) in place
     /// and records the keystrokes it was holding as the one app-history
     /// step they were waiting to become. For the paths that replace the

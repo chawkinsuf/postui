@@ -206,6 +206,14 @@ updating; only the recording waits. Consequences:
 - A send fired while the URL line is open (ctrl+enter) uses the live
   text as today; the undo step still lands on close.
 
+*Amended 2026-10-19 (task #62, mine (approved)):* a table cell committed
+while the gate holds (the cell stays open behind the URL line after
+alt+u, or behind the jq bar after a jump to the response pane) records
+its own step at once, beneath the field's. The step moves only the
+table maps from the shadow, and the shadow moves with it, so the field's
+close still yields one step, on top. Before, the commit waited for the
+close and joined it, along with anything else the commit's event did.
+
 **Exception: the body editor.** It is a document, not a field, and has
 no close. It keeps its current burst coalescing in the app history; one
 step per blur would make a long editing session a single undo. When the

@@ -1083,12 +1083,13 @@ impl App {
     /// lives here rather than in the click dispatch because keyboard paths
     /// commit through here too.
     ///
-    /// A field session still open (the jq bar keeps the caret through a
-    /// Send) holds the app history's gate, and both captures wait on it:
-    /// the commit then lands with that field's step when it closes, the
-    /// gate's one-step-per-session rule. Closing the session here would
-    /// separate them, but it would also wipe the field's own keystroke
-    /// undo while the caret is still in it.
+    /// A field session still open (the cell stayed open behind the URL
+    /// line, or the jq bar keeps the caret through a Send) holds the app
+    /// history's gate, so the capture before the commit waits on it, and
+    /// the commit's own capture goes beneath the field's step instead
+    /// ([`Self::capture_table_commit`]). The session is never closed here:
+    /// that would wipe the field's own keystroke undo while the caret is
+    /// still in it.
     pub(crate) fn commit_table_edit(&mut self) {
         if self.editor.table.editing.is_none() {
             return;
@@ -1097,7 +1098,7 @@ impl App {
         if let Some(w) = self.editor.commit_table().warning {
             self.toasts.push(w, ToastKind::Warning);
         }
-        self.capture_undo();
+        self.capture_table_commit();
     }
 
     /// Commits the in-progress edit and re-resolves row `i` — an index from

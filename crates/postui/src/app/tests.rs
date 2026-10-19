@@ -2247,6 +2247,47 @@ fn a_commit_behind_a_focused_jq_bar_keeps_the_bars_session() {
     assert!(app.editor.table.editing.is_none(), "the tab switch committed the cell");
     assert!(app.session.response.jq_focused());
     assert!(app.session.response.jq_field_edited(), "the bar's session is still open");
+
+    // The commit is a step of its own beneath the bar's: closing the bar
+    // puts the filter's step on top of it.
+    app.capture_undo();
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.sync_jq();
+    app.capture_undo();
+    assert!(!app.session.response.jq_focused());
+    assert_eq!(app.editor.jq, ".data");
+    app.update(Action::Undo);
+    app.sync_jq();
+    assert_eq!(app.editor.jq, "", "the filter goes first");
+    assert_eq!(app.editor.params["a"].value, "19", "the commit stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["a"].value, "1", "then the commit goes");
+}
+
+/// The same beneath the URL line: alt+u leaves the cell open behind it,
+/// and a click away that edits (the TLS lock) commits the cell while the
+/// URL's session still holds the gate. The commit is its own step, under
+/// the URL's.
+#[test]
+fn a_commit_behind_an_open_url_line_is_its_own_undo_step() {
+    let mut app = app_with_a_typed_cell();
+    app.editor.url = LineInput::new("https://e.com");
+    app.capture_undo(); // the URL is the starting state, not an edit
+    app.handle_key(alt('u'));
+    assert!(app.editor.url_open());
+    assert!(app.editor.table.editing.is_some(), "the cell stays open behind the URL");
+    type_chars(&mut app, "x");
+    app.capture_undo();
+    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    app.capture_undo();
+    assert_eq!(app.editor.params["a"].value, "19");
+    assert!(app.editor.insecure);
+
+    app.update(Action::Undo);
+    assert!(!app.editor.insecure, "the toggle goes first");
+    assert_eq!(app.editor.params["a"].value, "19", "the commit stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params["a"].value, "1", "then the commit goes");
 }
 
 /// A filter typed into the jq bar while a cell stays open behind it holds

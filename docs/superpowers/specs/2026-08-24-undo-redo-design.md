@@ -127,10 +127,13 @@ otherwise land in the same step as the commit, and one undo would take
 the typing back with it. Whatever was pending before the commit is
 captured first, so the commit is bracketed on both sides: a method change
 whose tab sync commits the cell is its own step before the commit, and so
-is a jq filter a click just blurred. A field session still open (the jq
-bar keeping the caret through a Send) holds the gate as before, and the
-commit lands with that field's step when it closes; closing the session
-early would wipe the field's own keystroke undo. A click that opens
+is a jq filter a click just blurred. A field session still open (the cell
+left behind the URL line by alt+u, or the jq bar keeping the caret
+through a Send) holds the gate as before; the commit then records a step
+that moves only the table maps, beneath the field's, which still lands
+as one step on its close (spec 2026-09-15, amended the same day). The
+session is never closed early, which would wipe the field's own
+keystroke undo. Recorded as `mine (approved)`. A click that opens
 another request commits first, so its commit is recorded under the
 request it was typed into.
 
