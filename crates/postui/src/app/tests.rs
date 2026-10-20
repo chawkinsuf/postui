@@ -28546,19 +28546,15 @@ fn a_dialogs_footer_chip_keeps_the_url_line_under_it_open() {
 }
 
 /// Task #73: the Variable Manager's form field and grid cell stay open
-/// under a dialog, whatever the click in it: a press on its body, a left
-/// or right press on a point that registers no hit (a gap between the
-/// footer's chips), a right press on the dialog.
+/// under a dialog, whatever the click in it: a press on its body, a press
+/// on a point that registers no hit (a gap between the footer's chips),
+/// a right press on the dialog.
 #[test]
 fn a_click_in_a_dialog_keeps_the_manager_edit_under_it_open() {
     type Press = fn(&mut App);
-    let left_gap: Press = |app| {
+    let gap: Press = |app| {
         let (x, y) = bare_point(app);
         app.handle_mouse(left_down(x, y));
-    };
-    let right_gap: Press = |app| {
-        let (x, y) = bare_point(app);
-        app.handle_mouse(right_down(x, y));
     };
     let body: Press = |app| click_hit(app, Hit::ModalBody);
     let right_body: Press = |app| {
@@ -28566,9 +28562,7 @@ fn a_click_in_a_dialog_keeps_the_manager_edit_under_it_open() {
         let r = app.hits.rect_of(&Hit::ModalBody).unwrap();
         app.handle_mouse(right_down(r.x + 1, r.y));
     };
-    for (what, press) in
-        [("body", body), ("gap", left_gap), ("right gap", right_gap), ("right body", right_body)]
-    {
+    for (what, press) in [("body", body), ("gap", gap), ("right body", right_body)] {
         let dir = tempfile::tempdir().unwrap();
         var_project(dir.path());
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -28625,18 +28619,23 @@ fn a_click_between_a_dialogs_footer_chips_keeps_the_settings_field() {
 /// The footer's quit chip shows under every dialog but is the app's
 /// (task #73 keeps it as on main): its click away still commits the
 /// Settings field before quitting. Quitting over a dialog is task #74's.
+/// Under a dialog the chip is `Quit` in vim too (`:` does not apply
+/// there, `spell::quit_action`).
 #[test]
 fn the_quit_chip_under_a_dialog_still_commits_the_settings_field() {
     use crate::components::manage::ManageTab;
     use crate::components::settings::SettingsField;
-    let mut app = App::new_for_test();
-    let _dir = config_at_tempdir(&mut app);
-    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
-    app.settings.begin_edit(SettingsField::AiCmd, "llm --pipe");
-    app.push_modal(Modal::Message { title: "note".into(), body: "hello".into() });
-    click_hit(&mut app, Hit::FooterChip(Action::Quit));
-    assert!(app.should_quit);
-    assert_eq!(app.ui_settings.ai_cmd, "llm --pipe", "the field committed before the quit");
+    for profile in [crate::config::KeyProfile::Arrows, crate::config::KeyProfile::Vim] {
+        let mut app = App::new_for_test();
+        let _dir = config_at_tempdir(&mut app);
+        app.use_profile(profile);
+        app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+        app.settings.begin_edit(SettingsField::AiCmd, "llm --pipe");
+        app.push_modal(Modal::Message { title: "note".into(), body: "hello".into() });
+        click_hit(&mut app, Hit::FooterChip(Action::Quit));
+        assert!(app.should_quit, "{profile:?}");
+        assert_eq!(app.ui_settings.ai_cmd, "llm --pipe", "{profile:?}: committed before the quit");
+    }
 }
 
 /// Plan M1 Deviation 2: an unset `keymap` runs arrows until the

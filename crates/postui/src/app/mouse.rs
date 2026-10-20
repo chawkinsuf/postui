@@ -342,8 +342,8 @@ impl App {
                     //
                     // With a dialog open the point is the dialog's (a gap
                     // between its footer chips, say), and nothing under it
-                    // closes (`on_hit`'s dialog rule, task #73).
-                    let live = self.modals.is_empty()
+                    // closes (`click_is_dialogs`).
+                    let live = !self.click_is_dialogs(None)
                         && (self.varmanager.form.editing.is_some()
                             || self.varmanager.grid.editing.is_some()
                             || self.settings.editing.is_some()
@@ -478,10 +478,10 @@ impl App {
                 // whose row index would then address a different record —
                 // and the next click-away would write the typed text into
                 // that wrong option. A right press in a dialog is the
-                // dialog's (`on_hit`'s dialog rule, task #73): asked after
-                // a re-targeting click has closed its dropdown, so a press
-                // that lands on the screen under it still commits.
-                if self.modals.is_empty() {
+                // dialog's (`click_is_dialogs`): asked after a re-targeting
+                // click has closed its dropdown, so a press that lands on
+                // the screen under it still commits.
+                if !self.click_is_dialogs(Some(&hit)) {
                     self.commit_var_form();
                     self.commit_grid_edit();
                 }
@@ -1231,6 +1231,24 @@ impl App {
         ]
     }
 
+    /// Whether a click on `hit` (`None`: a point with no hit) is a
+    /// dialog's, so that no click-away rule runs for it. A click in a
+    /// dialog is the dialog's, as its keys are (task #73): while one is
+    /// open, whatever is open under it stays open — whether the click
+    /// lands on its buttons, its text box, its footer chips or a gap
+    /// between them. Asking whether a dialog is open, as the jq bar's
+    /// rule does, rather than listing the dialogs' hits, leaves no dialog
+    /// hit to miss.
+    ///
+    /// The footer's quit chip is the one exception: it shows under every
+    /// dialog but is the app's, and its click away commits a live Settings
+    /// field or Manager edit before quitting, as on main. Under a dialog
+    /// that chip is always `Quit`, in vim too: `:` does not apply there
+    /// (`spell::quit_action`). Quitting over a dialog is task #74's.
+    fn click_is_dialogs(&self, hit: Option<&Hit>) -> bool {
+        !self.modals.is_empty() && !matches!(hit, Some(Hit::FooterChip(Action::Quit)))
+    }
+
     /// The central click dispatch: maps a resolved `Hit` (plus click count
     /// and the raw event, for hits that need to forward it) to app state
     /// changes. Only `Pane` and `BodyEditor` are wired up so far; later
@@ -1241,19 +1259,7 @@ impl App {
         clicks: Clicks,
         m: ratatui::crossterm::event::MouseEvent,
     ) -> bool {
-        // A click in a dialog is the dialog's, as its keys are (task #73):
-        // while one is open no click-away rule below runs, so whatever is
-        // open under it stays open — its buttons, its text box, its footer
-        // chips, a gap between them. Asking whether a dialog is open, as
-        // the jq bar's rule does, rather than listing the dialogs' hits,
-        // leaves no dialog hit to miss.
-        //
-        // The footer's quit chip is the one exception: it shows under every
-        // dialog but is the app's, and its click away commits a live
-        // Settings field or Manager edit before quitting, as on main.
-        // Quitting over a dialog is task #74's.
-        let in_dialog = !self.modals.is_empty()
-            && !matches!(hit, Hit::FooterChip(Action::Quit | Action::GatedQuit));
+        let in_dialog = self.click_is_dialogs(Some(&hit));
         // A click anywhere that isn't the params/headers table itself (and
         // isn't in a dialog) is a click away: it commits whatever cell was
         // being edited (typing is never silently thrown away) and clears
