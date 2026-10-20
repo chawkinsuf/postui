@@ -62,7 +62,7 @@ the cell can still be open when it runs:
 | Reader | Can a cell be open? | Covered by |
 |---|---|---|
 | 14 dirty gates (`editor_holds_unsaved`): Quit, GatedQuit, OpenRequest, Duplicate, put request, MoveRequestToSpace, CreateRequest, SwitchProject, create project, SwitchSpace, MoveAllRequests, curl import, curl replace into another row, vim WriteQuit | yes, through a key or a palette row from the cell | R3: `leaving_unsaved` |
-| `view_on` (op before/after views) | yes, a palette op | R5: delete request(s) and delete space call `commit_before_removal` first; other ops never replace the editor (`land` asserts it) |
+| `view_on` (op before/after views) | yes, a palette op | R5: a delete that replaces the editor commits first; other ops never replace the editor (`land` asserts it) |
 | `land` → `open_in_editor` / scratch, `Editor::load` | only if no gate or op ran first | R5: `flush_field_session` (already called there); R8 backstop |
 | DiscardChanges, ReloadOpenRequest, curl import's scratch discard | yes | R5: `flush_field_session` (already called there) |
 | curl replace (in place) | yes | already commits; collapses into `flush_field_session` |
@@ -98,11 +98,12 @@ the cell can still be open when it runs:
   asks `editor_holds_unsaved`, which stays read-only for `view_on` and
   the undo jump guard. Quit checks `modals.is_empty()` first, so
   `ctrl+c` over a modal still exits at once.
-- **`App::commit_before_removal`**: delete request(s) and delete space
-  always commit an open cell before their op (round 5: a guard on "does
-  this delete take the open request" missed a scratch in a deleted active
-  space). `land` debug-asserts that no op replaces the editor over an
-  open cell.
+- **Deletes** commit an open cell before their op when they replace what
+  the editor holds: delete request(s) taking the open request; delete
+  space of the active space (whatever is open, a scratch too) or of the
+  open request's space (rounds 5 and 6: a slug-only guard missed the
+  scratch; committing always closed the cell on an unrelated delete).
+  `land` debug-asserts that no op replaces the editor over an open cell.
 - **Extract** (R6) is unchanged from main.
 - **`commit_table_edit`** asserts (debug builds) that no field session
   holds the gate when a cell commits: the invariant R1 rests on. Added

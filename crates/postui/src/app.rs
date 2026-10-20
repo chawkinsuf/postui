@@ -2413,6 +2413,12 @@ impl App {
         if off_screen || self.focus != PaneId::Editor || !self.editor.url_open() {
             self.editor.url.end_edit();
         }
+        // The jq bar keeps its caret across a screen change (the pane is
+        // still the focused one underneath), so only its session closes.
+        // Both text sessions close before a cell commits below.
+        if off_screen {
+            self.session.response.end_jq_edit_session();
+        }
         // A table cell the caret has left (alt+u, a pane jump, the jq bar,
         // search, Manage) commits the same way, recording its own step at
         // once (spec 2026-10-19 R1, the user's rule: "when the cursor
@@ -2436,11 +2442,6 @@ impl App {
             && matches!(self.editor.caret(), crate::components::editor::Caret::Body { .. })
             && !self.vim_owns_body();
         let dropped = self.editor.settle_auto_indent(in_body);
-        // The jq bar keeps its caret across a screen change (the pane is
-        // still the focused one underneath), so only its session closes.
-        if off_screen {
-            self.session.response.end_jq_edit_session();
-        }
         // A close has already captured around its commit.
         let recorded = closed || self.capture_step();
         recorded || dropped
@@ -4147,7 +4148,12 @@ impl App {
                 let from_row = self.sidebar.row_of(&slug);
                 let cursor_on = self.sidebar.selected_slug().as_deref() == Some(slug.as_str());
                 let was_open = self.editor.slug.as_deref() == Some(slug.as_str());
-                self.commit_before_removal();
+                if was_open {
+                    // The delete replaces the editor: an open cell commits
+                    // first, so undo brings its typing back (spec
+                    // 2026-10-19 R5).
+                    self.commit_table_edit();
+                }
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
                     self.op_in_flight = false;
@@ -4174,7 +4180,10 @@ impl App {
                 let noun = if n == 1 { "request" } else { "requests" };
                 let from_row = slugs.first().and_then(|s| self.sidebar.row_of(s));
                 let was_open = self.editor.slug.as_ref().is_some_and(|open| slugs.contains(open));
-                self.commit_before_removal();
+                if was_open {
+                    // As a single delete (spec 2026-10-19 R5).
+                    self.commit_table_edit();
+                }
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
                     self.op_in_flight = false;
@@ -6818,7 +6827,16 @@ impl App {
                 // rows to count. The count the dialog used to warn about
                 // lives in the toast now, next to the undo hint.
                 let count = self.sidebar.space_counts().get(&name).copied().unwrap_or(0);
-                self.commit_before_removal();
+                // Deleting the active space lands on another space's request
+                // (whatever was open, a scratch too), and deleting the open
+                // request's space takes it: either replaces the editor, so
+                // an open cell commits first (spec 2026-10-19 R5).
+                if was_active
+                    || self.editor.slug.as_deref().and_then(postui_core::storage::space_of)
+                        == Some(name.as_str())
+                {
+                    self.commit_table_edit();
+                }
                 let t = self.begin_list_op(crate::components::manage::ManageTab::Spaces);
                 let Some(p) = self.project.as_mut() else {
                     return true;
@@ -9245,21 +9263,6 @@ impl App {
         self.commit_table_edit();
         self.editor_holds_unsaved()
     }
-
-    /// For the ops that delete without asking (a delete never confirms; a
-    /// space delete has no gate, OQ4) and may replace what the editor
-    /// holds: an open table cell commits first, as its own step, so the
-    /// op's before-view holds the typing and undoing the delete brings it
-    /// back (spec 2026-10-19 R5, task #65). Always, not only when the
-    /// delete takes the open request: whether it does (a scratch in a
-    /// deleted active space, a request another space's landing replaces)
-    /// is the op's to work out, and a cell left open across an unrelated
-    /// delete loses nothing by committing. `land` asserts no op replaces
-    /// the editor over an open cell.
-    fn commit_before_removal(&mut self) {
-        self.commit_table_edit();
-    }
-
     /// Push the standard unsaved-changes confirm. A slugged request's
     /// "save" path completes synchronously unless the file changed outside
     /// the app, in which case `SaveRequestThen` carries `then` into the

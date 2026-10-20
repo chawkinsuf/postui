@@ -22946,6 +22946,17 @@ fn undoing_an_op_run_over_an_open_cell_brings_its_typing_back() {
     assert_eq!(app.editor.params["a"].value, "19", "the typing came back with the request");
 }
 
+/// A delete that leaves the open request alone (another row, from the
+/// palette over the cell) leaves the cell open too.
+#[test]
+fn deleting_another_request_leaves_an_open_cell_open() {
+    let (mut app, _dir) = alpha_with_a_typed_cell();
+    app.update(Action::DeleteRequest("main/gamma".into()));
+    app.capture_undo();
+    let edit = app.editor.table.editing.as_ref().expect("the cell is still open");
+    assert_eq!(edit.input.text(), "19");
+}
+
 /// The same for a space delete that takes an unsaved scratch with it: the
 /// cell commits before the op, so undoing the delete brings the typing
 /// back with the scratch.

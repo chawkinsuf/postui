@@ -52,9 +52,9 @@ impl App {
     /// editor, so `before` carries it (OQ1).
     ///
     /// An open table cell stays open: the ops run over one (the var
-    /// picker's new variable, a selector pick, extract) act on it. An op
-    /// that deletes without asking commits it first, through
-    /// [`Self::commit_before_removal`] (spec 2026-10-19 R5).
+    /// picker's new variable, a selector pick, extract) act on it. A
+    /// delete that replaces what the editor holds commits it first (spec
+    /// 2026-10-19 R5); `land` asserts no op replaces the editor over one.
     pub(super) fn begin_op(&mut self) -> OpToken {
         self.begin_op_on(None)
     }
@@ -349,8 +349,8 @@ impl App {
             !(self.op_in_flight
                 && (l.open.is_some() || l.open_cursor)
                 && self.editor.table.editing.is_some()),
-            "a journaled op that replaces the editor must commit an open cell first \
-             (commit_before_removal), or its undo loses the typing"
+            "a journaled op that replaces the editor must commit an open cell before \
+             begin_op, or its undo loses the typing"
         );
         // 1. A live drag's working order names rows this may rewrite. Only
         //    a drag in progress is cancelled: an armed press stays armed,
