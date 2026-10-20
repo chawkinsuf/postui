@@ -4680,11 +4680,7 @@ impl App {
                 if target == self.root() {
                     return false;
                 }
-                if self.leaving_unsaved() {
-                    self.dirty_gate("switch", Action::ForceSwitchProject(target));
-                } else {
-                    self.apply(Action::ForceSwitchProject(target));
-                }
+                self.switch_project_gated("switch", target);
                 true
             }
             Action::ForceSwitchProject(target) => {
@@ -4810,24 +4806,7 @@ impl App {
                 true
             }
             Action::CreateProjectAt(path) => {
-                // The handle is only the writer: the switch below opens
-                // the project this just wrote, so drop it rather than
-                // installing it as `self.project`.
-                match Project::init(&path, None) {
-                    Ok((_written, warnings)) => {
-                        for w in warnings {
-                            self.toasts.push(w, ToastKind::Warning);
-                        }
-                    }
-                    Err(e) => {
-                        self.toasts.push(
-                            format!("could not create project at {}: {e}", path.display()),
-                            ToastKind::Error,
-                        );
-                        return true;
-                    }
-                }
-                self.switch_to_created(path);
+                self.create_project(path, None);
                 true
             }
             Action::PromptNewProject => {
@@ -4845,23 +4824,7 @@ impl App {
                     self.toasts.push("project path is empty — enter a path", ToastKind::Error);
                     return true;
                 }
-                let path = crate::config::expand_tilde(&path);
-                // As in `CreateProjectAt`: the switch below re-opens it.
-                match Project::init(&path, Some(&name)) {
-                    Ok((_written, warnings)) => {
-                        for w in warnings {
-                            self.toasts.push(w, ToastKind::Warning);
-                        }
-                    }
-                    Err(e) => {
-                        self.toasts.push(
-                            format!("could not create project at {}: {e}", path.display()),
-                            ToastKind::Error,
-                        );
-                        return true;
-                    }
-                }
-                self.switch_to_created(path);
+                self.create_project(crate::config::expand_tilde(&path), Some(&name));
                 true
             }
             Action::OpenEnvChooser => {
@@ -9257,20 +9220,44 @@ impl App {
         self.editor_holds_unsaved()
     }
 
-    /// The tail both create paths share (the New project dialog and the
-    /// open-by-path "Create"), once `Project::init` has written the
-    /// project: list it as known, then switch to it through the dirty
-    /// gate. `last` moves only when the switch runs, so a Cancel leaves the
-    /// new project on disk and known but not current (task #69).
-    fn switch_to_created(&mut self, path: PathBuf) {
+    /// Both create paths, the New project dialog and the open-by-path
+    /// "Create" (task #69): write the project, list it as known, then
+    /// switch to it through the dirty gate. `last` moves only when the
+    /// switch runs, so a Cancel leaves the new project on disk and known
+    /// but not current.
+    fn create_project(&mut self, path: PathBuf, name: Option<&str>) {
+        // The handle is only the writer: the switch opens the project
+        // this just wrote, so drop it rather than installing it as
+        // `self.project`.
+        match Project::init(&path, name) {
+            Ok((_written, warnings)) => {
+                for w in warnings {
+                    self.toasts.push(w, ToastKind::Warning);
+                }
+            }
+            Err(e) => {
+                self.toasts.push(
+                    format!("could not create project at {}: {e}", path.display()),
+                    ToastKind::Error,
+                );
+                return;
+            }
+        }
         self.registry.add_known(path.clone());
         self.save_registry();
+        self.switch_project_gated("create", path);
+    }
+
+    /// Switch to `target`, through the unsaved-changes confirm (its
+    /// buttons say `verb`) when the editor holds unsaved edits.
+    fn switch_project_gated(&mut self, verb: &str, target: PathBuf) {
         if self.leaving_unsaved() {
-            self.dirty_gate("create", Action::ForceSwitchProject(path));
+            self.dirty_gate(verb, Action::ForceSwitchProject(target));
         } else {
-            self.apply(Action::ForceSwitchProject(path));
+            self.apply(Action::ForceSwitchProject(target));
         }
     }
+
     /// Push the standard unsaved-changes confirm. A slugged request's
     /// "save" path completes synchronously unless the file changed outside
     /// the app, in which case `SaveRequestThen` carries `then` into the

@@ -7467,7 +7467,8 @@ fn create_project_with_dirty_editor_defers_last_until_dirty_gate_resolves() {
 }
 
 /// Task #69: "Create" in the open-by-path prompt's "Not a postui project"
-/// confirm asks about unsaved edits like the New project dialog does.
+/// confirm asks about unsaved edits like the New project dialog does, and
+/// Cancel keeps them: the project is written and known, but not current.
 #[test]
 fn create_project_at_path_with_dirty_editor_goes_through_the_dirty_gate() {
     let (mut app, dir, _b) = two_projects();
@@ -7488,14 +7489,15 @@ fn create_project_at_path_with_dirty_editor_goes_through_the_dirty_gate() {
         panic!("a dirty editor asks before the switch");
     };
     assert_eq!(title, "Unsaved changes");
-    assert_eq!(app.proj().root(), dir.path(), "not switched yet");
-    assert_eq!(app.registry.last, old_last, "last must not change before the dirty gate resolves");
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.modals.is_empty(), "Esc cancels the gate");
+    assert_eq!(app.proj().root(), dir.path(), "not switched");
+    assert_eq!(app.registry.last, old_last, "last stays on the current project");
+    assert!(postui_core::project::Project::is_project(&new_path), "the project was written");
     assert!(app.registry.known.contains(&new_path), "the created project is known");
     assert_eq!(app.editor.url.text(), "https://x/r/", "the edit is still there");
-
-    app.handle_key(plain('d'));
-    assert_eq!(app.proj().root(), new_path);
-    assert_eq!(app.registry.last, Some(new_path));
+    assert!(app.editor.is_dirty());
 }
 
 #[test]
