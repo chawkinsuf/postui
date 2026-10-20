@@ -214,24 +214,24 @@ cursor leaves the cell, the input should close and the undo immediately
 recorded"), so the field's close is a step on top of it and no cell
 commit ever waits on the gate. See spec 2026-10-19-commit-cell-first.
 
-*Amended 2026-10-20 (task #64; mine (approved)):* a mouse click records
-what an open field holds back as its own step before the click acts, so
-a click whose action edits (the TLS lock, a row's checkbox, the jq
-switch) is a step of its own on top, and one undo takes back only it.
-Every click does it, wherever it lands. A click that leaves the field
-open (in its own text, on a copy pill, on a scrollbar) therefore splits
-the typing into two steps there; each undo still lands on a state the
-request was in. In vim this is Vim's rule too: <LeftMouse> in Insert
-lets the changes before and after it undo separately
-(`:help ins-special-special`). Only a click with a dialog or menu open
-does not: it acts in the dialog as its keys do, and what it changes, like
-what a shortcut taken in the field (alt+i) changes, happens with the
-field still open and joins its close, as above. (Review round 2 dropped
-an exception for a click on the field's own text: mine (approved).) The
+*Amended 2026-10-20 (task #64; mine (approved)):* a field's close is
+recorded where the caret leaves it, before what the same event goes on
+to do: a click away, a pane move, a click that puts the caret in the
+table. So a click that closes the field and edits (the TLS lock, a row's
+checkbox, the jq switch from the URL line) is a step of its own on top
+of the typing, and one undo takes back only it. A click that leaves the
+field open (in its own text, on a copy pill, on a scrollbar, with a
+dialog or menu over it) closes nothing and records nothing: the field
+keeps its session and its own undo history, and what such a click
+changes, like what a shortcut taken in the field (alt+i) changes,
+happens with the field still open and joins its close, as above. The
 vim body is left out: it is the document of the exception below, whose
-engine history outlives its closes (amendment C3), and a flush would
-wipe that history at every click; a click away from it that edits still
-joins its close, as before (task #72).
+engine history outlives its closes (amendment C3), and the flush would
+end it; a click away from it that edits still joins its close, as
+before (task #72). (Review rounds 1–3 tried recording at the press, with
+and without an exception for the field's own text; at the press the
+close is not known yet, and a flush there wiped the session history of
+clicks that keep the field open.)
 
 **Exception: the body editor.** It is a document, not a field, and has
 no close. It keeps its current burst coalescing in the app history; one

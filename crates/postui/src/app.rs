@@ -2459,7 +2459,28 @@ impl App {
         if pane != PaneId::Editor {
             self.commit_table_edit();
         }
+        if pane != self.focus {
+            self.leave_text_field();
+        }
         self.focus = pane;
+    }
+
+    /// The caret is leaving the text field that holds its typing back (a
+    /// click away, a pane move, a click that puts the caret in the table):
+    /// the typing is recorded as its own step now, at the field's close,
+    /// before what the same event goes on to do (task #64; spec 2026-09-15,
+    /// amended). Left to the end of the event, the close would take in a
+    /// click's edit (the TLS lock, a row's checkbox), and one undo would
+    /// take back both. Only a real close comes here, so a click that leaves
+    /// the field open keeps its session and its undo history.
+    ///
+    /// The vim body is left out: a document, not a field (the spec's
+    /// exception), whose engine history outlives its closes (amendment C3),
+    /// and the flush would end it (task #72).
+    fn leave_text_field(&mut self) {
+        if !self.vim_owns_body() {
+            self.flush_text_session();
+        }
     }
 
     /// [`Self::capture_undo`]'s recording half, without closing what the

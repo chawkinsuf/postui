@@ -2333,11 +2333,10 @@ fn a_click_that_edits_leaves_the_vim_url_typing_its_own_undo_step() {
     assert_eq!(app.editor.url.text(), "https://e.com", "then the typing goes");
 }
 
-/// A click in the field's own text records the typing before it too (task
-/// #64, review round 2; mine, approved): the typing on either side of it is
-/// two steps, as Vim splits an Insert at <LeftMouse>.
+/// A click in the field's own text closes nothing, so it records nothing:
+/// the typing on both sides of it is still the one step.
 #[test]
-fn a_click_in_the_url_line_splits_its_typing_at_the_click() {
+fn a_click_in_the_url_line_keeps_its_typing_one_undo_step() {
     let mut app = app_with_typed_url();
     click_hit(&mut app, Hit::UrlBar);
     app.capture_undo();
@@ -2348,9 +2347,43 @@ fn a_click_in_the_url_line_splits_its_typing_at_the_click() {
     assert_eq!(app.editor.url.text(), "https://e.comxy");
 
     app.update(Action::Undo);
-    assert_eq!(app.editor.url.text(), "https://e.comx", "the typing after the click");
+    assert_eq!(app.editor.url.text(), "https://e.com", "one step takes both");
+}
+
+/// Nor does it touch the field's own history: what ctrl+z took back in the
+/// line, ctrl+shift+z still brings back after a click in it.
+#[test]
+fn a_click_in_the_url_line_keeps_its_redo() {
+    let mut app = app_with_typed_url();
     app.update(Action::Undo);
-    assert_eq!(app.editor.url.text(), "https://e.com", "then the typing before it");
+    assert_eq!(app.editor.url.text(), "https://e.com", "the line's own undo");
+    click_hit(&mut app, Hit::UrlBar);
+    app.capture_undo();
+    app.update(Action::Redo);
+    assert_eq!(app.editor.url.text(), "https://e.comx", "the line's redo survived");
+}
+
+/// In vim, the same for the engine's history: after a click in the line's
+/// text, `u` still steps back one change at a time (Vim's), not the whole
+/// typing at once as an app step would.
+#[test]
+fn a_click_in_the_vim_url_line_keeps_its_u_history() {
+    let mut app = App::new_for_test();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.editor.url = LineInput::new("https://e.com");
+    app.capture_undo();
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    for ev in crate::keyroute::notation::events("Ax<Esc>Ay<Esc>") {
+        app.handle_key(ev);
+        app.capture_undo();
+    }
+    click_hit(&mut app, Hit::UrlBar);
+    app.capture_undo();
+    assert!(app.editor.url_open());
+    app.handle_key(plain('u'));
+    app.capture_undo();
+    assert_eq!(app.editor.url.text(), "https://e.comx", "u undid only the last change");
 }
 
 /// A click while the vim URL line is still in Insert hands the typing so
@@ -2392,12 +2425,10 @@ fn a_click_mid_insert_in_the_vim_url_line_undoes_in_order() {
     assert_eq!(app.editor.url.text(), "https://e.com", "then the earlier typing");
 }
 
-/// Task #64 (mine, approved): any other click records the typing so far,
-/// even one that leaves the field open (a row's copy pill), so the typing
-/// on either side of it is two steps. Each undo still lands on a state the
-/// request was in.
+/// Nor a click elsewhere that leaves the URL line open (a row's copy
+/// pill): the typing on both sides of it is still the one step.
 #[test]
-fn a_click_that_keeps_the_url_open_splits_its_typing_at_the_click() {
+fn a_click_that_keeps_the_url_open_keeps_its_typing_one_undo_step() {
     let mut app = app_with_one_param();
     app.editor.url = LineInput::new("https://e.com");
     app.capture_undo();
@@ -2413,9 +2444,7 @@ fn a_click_that_keeps_the_url_open_splits_its_typing_at_the_click() {
     app.capture_undo();
 
     app.update(Action::Undo);
-    assert_eq!(app.editor.url.text(), "https://e.comx", "the typing after the click");
-    app.update(Action::Undo);
-    assert_eq!(app.editor.url.text(), "https://e.com", "then the typing before it");
+    assert_eq!(app.editor.url.text(), "https://e.com", "one step takes both");
 }
 
 /// A method change that brings the Body tab back commits the open cell
