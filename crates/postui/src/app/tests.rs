@@ -28481,19 +28481,38 @@ fn a_clicked_extract_from_a_field_mid_edit_records_what_its_keys_do() {
     assert_eq!(run(true), keys);
 }
 
-/// Task #71: a blocking dialog's button (here the keyboard question's) is
-/// a dialog hit too, so a click on it leaves the URL line under it open.
+/// Task #71: a blocking dialog's buttons are dialog hits too, so a click
+/// on one leaves the URL line under it open.
 #[test]
 fn a_click_on_a_blocking_dialogs_button_keeps_the_url_line_open() {
-    let mut app = App::new_for_test();
-    let _dir = config_at_tempdir(&mut app);
-    app.anims.enabled = false;
-    app.focus = crate::layout::PaneId::Editor;
-    app.editor.open_url_from_app();
-    app.push_modal(Modal::KeymapChoice { aimed: None });
-    click_hit(&mut app, Hit::KeymapChoice(crate::config::KeyProfile::Arrows));
-    assert!(app.modals.is_empty(), "the answer closes the question");
-    assert!(app.editor.url_open(), "the URL line under it is still open");
+    use crate::action::{ConfigFile, ConfigStartupChoice};
+    let scratch = tempfile::tempdir().unwrap();
+    let edit_path = scratch.path().join("config-edit.toml");
+    let invalid = || Modal::ConfigEditInvalid {
+        file: ConfigFile::Config,
+        path: edit_path.clone(),
+        error: "bad".into(),
+    };
+    let cases = [
+        (Modal::KeymapChoice { aimed: None }, Hit::KeymapChoice(crate::config::KeyProfile::Arrows)),
+        (
+            Modal::ConfigStartup { error: "bad".into() },
+            Hit::ConfigStartupChoice(ConfigStartupChoice::ContinueUnsaved),
+        ),
+        (invalid(), Hit::ConfigEditKeepEditing),
+        (invalid(), Hit::ConfigEditDiscard),
+    ];
+    for (modal, hit) in cases {
+        std::fs::write(&edit_path, "x").unwrap();
+        let mut app = App::new_for_test();
+        let _dir = config_at_tempdir(&mut app);
+        app.anims.enabled = false;
+        app.focus = crate::layout::PaneId::Editor;
+        app.editor.open_url_from_app();
+        app.push_modal(modal);
+        click_hit(&mut app, hit.clone());
+        assert!(app.editor.url_open(), "{hit:?}: the URL line under the dialog is still open");
+    }
 }
 
 /// Plan M1 Deviation 2: an unset `keymap` runs arrows until the
