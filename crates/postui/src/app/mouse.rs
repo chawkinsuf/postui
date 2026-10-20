@@ -299,22 +299,23 @@ impl App {
                 // the end of the event, the field's close would take in
                 // whatever the click then changes (the TLS lock, a row's
                 // checkbox), and one undo would take back both. It goes
-                // first, before the click can blur the field. A click on a
-                // field's text only places the caret and edits nothing, so
-                // a close it causes still lands alone. One with a dialog or
-                // menu open acts in it, as its keys do: like a shortcut
+                // first, before the click can blur the field. Every click
+                // does it, whatever it lands on, so no list of hits has to
+                // guess which ones leave the field: one that leaves it open
+                // (a click in its own text, a copy pill, a scrollbar)
+                // splits the typing into two steps there, and each undo
+                // still lands on a state the request was in. In vim that is
+                // Vim's own rule: <LeftMouse> in Insert lets the changes
+                // before and after it undo separately
+                // (`:help ins-special-special`). Only a click with a dialog
+                // or menu open acts in it, as its keys do: like a shortcut
                 // taken in the field (alt+i), whose change joins the close
                 // (spec 2026-09-15), what it does happens with the field
-                // still open. Any other click records the typing even when
-                // the field stays open (a copy pill, a scrollbar): the
-                // typing on either side is then two steps, each undo still
-                // lands on a state the request was in, and in vim that is
-                // Vim's own rule, where <LeftMouse> in Insert lets the
-                // changes before and after it undo separately
-                // (`:help ins-special-special`).
-                let on_field_text =
-                    matches!(hit, Some(Hit::UrlBar | Hit::ResponseJqBar | Hit::BodyEditor));
-                if self.modals.is_empty() && !on_field_text {
+                // still open. Nor the vim body: a document, not a field
+                // (spec 2026-09-15's exception), whose engine history
+                // outlives its closes (amendment C3), where a flush would
+                // wipe it on every click.
+                if self.modals.is_empty() && !self.vim_owns_body() {
                     self.flush_text_session();
                 }
                 // A click anywhere but the jq bar itself is Enter for a

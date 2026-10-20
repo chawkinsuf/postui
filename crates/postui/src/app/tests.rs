@@ -2333,34 +2333,11 @@ fn a_click_that_edits_leaves_the_vim_url_typing_its_own_undo_step() {
     assert_eq!(app.editor.url.text(), "https://e.com", "then the typing goes");
 }
 
-/// The vim body's engine session the same way.
+/// A click in the field's own text records the typing before it too (task
+/// #64, review round 2; mine, approved): the typing on either side of it is
+/// two steps, as Vim splits an Insert at <LeftMouse>.
 #[test]
-fn a_click_that_edits_leaves_the_vim_body_typing_its_own_undo_step() {
-    use super::key_matrix_tests::{Fixture, build, draw, feed, use_persisted_profile};
-    let mut app = build(Fixture::Body);
-    use_persisted_profile(&mut app, crate::config::KeyProfile::Vim);
-    draw(&mut app);
-    app.capture_undo();
-    let before = app.editor.body_text();
-    feed(&mut app, "ix<Esc>");
-    app.capture_undo();
-    let typed = app.editor.body_text();
-    assert_ne!(typed, before);
-    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
-    app.capture_undo();
-    assert!(app.editor.current_request().insecure);
-
-    app.update(Action::Undo);
-    assert!(!app.editor.current_request().insecure, "the toggle goes first");
-    assert_eq!(app.editor.body_text(), typed, "the typing stays");
-    app.update(Action::Undo);
-    assert_eq!(app.editor.body_text(), before, "then the typing goes");
-}
-
-/// A click on the field's own text places the caret and keeps the typing
-/// one step.
-#[test]
-fn a_click_in_the_url_line_keeps_its_typing_one_undo_step() {
+fn a_click_in_the_url_line_splits_its_typing_at_the_click() {
     let mut app = app_with_typed_url();
     click_hit(&mut app, Hit::UrlBar);
     app.capture_undo();
@@ -2371,7 +2348,48 @@ fn a_click_in_the_url_line_keeps_its_typing_one_undo_step() {
     assert_eq!(app.editor.url.text(), "https://e.comxy");
 
     app.update(Action::Undo);
-    assert_eq!(app.editor.url.text(), "https://e.com", "one step takes both");
+    assert_eq!(app.editor.url.text(), "https://e.comx", "the typing after the click");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://e.com", "then the typing before it");
+}
+
+/// A click while the vim URL line is still in Insert hands the typing so
+/// far over as its own step: once the line is closed again, undo takes the
+/// later typing, then the click's toggle, then the earlier typing.
+#[test]
+fn a_click_mid_insert_in_the_vim_url_line_undoes_in_order() {
+    let mut app = App::new_for_test();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.editor.url = LineInput::new("https://e.com");
+    app.capture_undo();
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    for ev in crate::keyroute::notation::events("Ax") {
+        app.handle_key(ev);
+    }
+    app.capture_undo();
+    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    app.capture_undo();
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    for ev in crate::keyroute::notation::events("Ay<Esc><Esc>") {
+        app.handle_key(ev);
+    }
+    app.capture_undo();
+    assert_eq!(app.editor.url.text(), "https://e.comxy");
+    assert!(!app.editor.url_open(), "the second Esc closed the line");
+
+    app.update(Action::Undo);
+    app.capture_undo();
+    assert_eq!(app.editor.url.text(), "https://e.comx", "the later typing goes first");
+    assert!(app.editor.current_request().insecure, "the toggle stays");
+    app.update(Action::Undo);
+    app.capture_undo();
+    assert!(!app.editor.current_request().insecure, "then the toggle");
+    assert_eq!(app.editor.url.text(), "https://e.comx");
+    app.update(Action::Undo);
+    app.capture_undo();
+    assert_eq!(app.editor.url.text(), "https://e.com", "then the earlier typing");
 }
 
 /// Task #64 (mine, approved): any other click records the typing so far,

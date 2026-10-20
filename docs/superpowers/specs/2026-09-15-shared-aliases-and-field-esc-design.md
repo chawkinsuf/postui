@@ -218,15 +218,20 @@ commit ever waits on the gate. See spec 2026-10-19-commit-cell-first.
 what an open field holds back as its own step before the click acts, so
 a click whose action edits (the TLS lock, a row's checkbox, the jq
 switch) is a step of its own on top, and one undo takes back only it.
-Not a click on a field's text, which places the caret, nor one with a
-dialog or menu open, which acts in it as its keys do: what such a click
-or a shortcut taken in the field (alt+i) changes happens with the field
-still open and joins its close, as above. Any other click records the
-typing even when the field stays open (a copy pill, a scrollbar), so the
-typing on either side of it is two steps; each undo still lands on a
-state the request was in. In vim this is Vim's rule too: <LeftMouse> in
-Insert lets the changes before and after it undo separately
-(`:help ins-special-special`).
+Every click does it, wherever it lands. A click that leaves the field
+open (in its own text, on a copy pill, on a scrollbar) therefore splits
+the typing into two steps there; each undo still lands on a state the
+request was in. In vim this is Vim's rule too: <LeftMouse> in Insert
+lets the changes before and after it undo separately
+(`:help ins-special-special`). Only a click with a dialog or menu open
+does not: it acts in the dialog as its keys do, and what it changes, like
+what a shortcut taken in the field (alt+i) changes, happens with the
+field still open and joins its close, as above. (Review round 2 dropped
+an exception for a click on the field's own text: mine (approved).) The
+vim body is left out: it is the document of the exception below, whose
+engine history outlives its closes (amendment C3), and a flush would
+wipe that history at every click; a click away from it that edits still
+joins its close, as before (task #72).
 
 **Exception: the body editor.** It is a document, not a field, and has
 no close. It keeps its current burst coalescing in the app history; one
