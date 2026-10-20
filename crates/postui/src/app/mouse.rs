@@ -299,13 +299,19 @@ impl App {
                 // the end of the event, the field's close would take in
                 // whatever the click then changes (the TLS lock, a row's
                 // checkbox), and one undo would take back both. It goes
-                // first, before the click can blur the field. A click on
-                // the field's own text only places the caret, and one with
-                // a dialog open acts in the dialog, as its keys do. Any
-                // other click records the typing even when the field stays
-                // open (a copy pill, a scroll): the typing on either side
-                // is then two steps, and each undo still lands on a state
-                // the request was in.
+                // first, before the click can blur the field. A click on a
+                // field's text only places the caret and edits nothing, so
+                // a close it causes still lands alone. One with a dialog or
+                // menu open acts in it, as its keys do: like a shortcut
+                // taken in the field (alt+i), whose change joins the close
+                // (spec 2026-09-15), what it does happens with the field
+                // still open. Any other click records the typing even when
+                // the field stays open (a copy pill, a scrollbar): the
+                // typing on either side is then two steps, each undo still
+                // lands on a state the request was in, and in vim that is
+                // Vim's own rule, where <LeftMouse> in Insert lets the
+                // changes before and after it undo separately
+                // (`:help ins-special-special`).
                 let on_field_text =
                     matches!(hit, Some(Hit::UrlBar | Hit::ResponseJqBar | Hit::BodyEditor));
                 if self.modals.is_empty() && !on_field_text {

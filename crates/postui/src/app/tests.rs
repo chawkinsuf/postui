@@ -28369,7 +28369,9 @@ fn a_clicked_extract_from_a_field_mid_edit_records_what_its_keys_do() {
         app.update(Action::Undo);
         (steps, app.editor.url.text().to_string())
     };
-    assert_eq!(run(true), run(false));
+    let keys = run(false);
+    assert_eq!(keys.1, "https://x/ping/abc-123", "one undo takes the typing and the extract");
+    assert_eq!(run(true), keys);
 }
 
 /// Plan M1 Deviation 2: an unset `keymap` runs arrows until the
