@@ -1252,6 +1252,10 @@ impl App {
                 | Hit::ConfirmChoice(_)
                 | Hit::ModalBody
                 | Hit::ModalField(_)
+                // A dialog's text box sits over its field (task #71): a
+                // click in it, say naming an extract, must not blur the
+                // URL line the extract replaces.
+                | Hit::ModalInput(_)
                 | Hit::ModalChoiceArrow { .. }
                 | Hit::ModalRowToggle(_)
                 | Hit::ModalAddRow
@@ -1259,6 +1263,12 @@ impl App {
                 | Hit::ModalRevealToggle
                 | Hit::ModalRemove
                 | Hit::ModalOutside
+                // The blocking dialogs' buttons are dialog hits like any
+                // other (task #71).
+                | Hit::ConfigStartupChoice(_)
+                | Hit::KeymapChoice(_)
+                | Hit::ConfigEditKeepEditing
+                | Hit::ConfigEditDiscard
                 | Hit::DropdownRow(_)
                 | Hit::ChooserRow(_)
                 | Hit::ChooserToggle

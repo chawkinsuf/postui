@@ -28428,7 +28428,9 @@ fn extract_to_request_from_a_field_mid_edit_is_one_undo_step() {
 
 /// The extract dialog over the URL line confirms by click as by its keys
 /// (task #64): a click with a dialog open acts in the dialog, so it does
-/// not record the typing under it as a step of its own.
+/// not record the typing under it as a step of its own. The click route
+/// also clicks the name box before typing the name (task #71): that click
+/// must not blur the URL line, or the extract has no field to replace.
 #[test]
 fn a_clicked_extract_from_a_field_mid_edit_records_what_its_keys_do() {
     let run = |click: bool| {
@@ -28450,6 +28452,9 @@ fn a_clicked_extract_from_a_field_mid_edit_records_what_its_keys_do() {
         app.handle_key(plain('9'));
         app.capture_undo();
         app.update(Action::ExtractToVariable);
+        if click {
+            click_hit(&mut app, Hit::ModalInput(0));
+        }
         type_into_field(&mut app, "trace_id");
         // "This request": the destination whose extract joins the typing.
         let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top_mut() else {
@@ -28474,6 +28479,21 @@ fn a_clicked_extract_from_a_field_mid_edit_records_what_its_keys_do() {
     let keys = run(false);
     assert_eq!(keys.1, "https://x/ping/abc-123", "one undo takes the typing and the extract");
     assert_eq!(run(true), keys);
+}
+
+/// Task #71: a blocking dialog's button (here the keyboard question's) is
+/// a dialog hit too, so a click on it leaves the URL line under it open.
+#[test]
+fn a_click_on_a_blocking_dialogs_button_keeps_the_url_line_open() {
+    let mut app = App::new_for_test();
+    let _dir = config_at_tempdir(&mut app);
+    app.anims.enabled = false;
+    app.focus = crate::layout::PaneId::Editor;
+    app.editor.open_url_from_app();
+    app.push_modal(Modal::KeymapChoice { aimed: None });
+    click_hit(&mut app, Hit::KeymapChoice(crate::config::KeyProfile::Arrows));
+    assert!(app.modals.is_empty(), "the answer closes the question");
+    assert!(app.editor.url_open(), "the URL line under it is still open");
 }
 
 /// Plan M1 Deviation 2: an unset `keymap` runs arrows until the
