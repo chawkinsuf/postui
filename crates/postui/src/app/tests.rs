@@ -2279,6 +2279,30 @@ fn a_click_that_edits_leaves_the_jq_typing_its_own_undo_step() {
     assert_eq!(app.editor.jq, "", "then the filter goes");
 }
 
+/// A pane move that also fills the field it lands in (the jq tree's
+/// tee-up) records the URL's typing at the move (`set_focus`), beneath the
+/// filter's.
+#[test]
+fn a_tee_up_from_the_url_line_leaves_its_typing_its_own_undo_step() {
+    let mut app = app_with_typed_url();
+    ready_response(&mut app, JQ_BODY);
+    app.capture_undo();
+    app.update(Action::JqTeeUp { text: ".data".into(), cursor: 5 });
+    app.sync_jq();
+    app.capture_undo();
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.sync_jq();
+    app.capture_undo();
+    assert_eq!(app.editor.jq, ".data");
+
+    app.update(Action::Undo);
+    app.sync_jq();
+    assert_eq!(app.editor.jq, "", "the filter goes first");
+    assert_eq!(app.editor.url.text(), "https://e.comx", "the typing stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://e.com", "then the typing goes");
+}
+
 /// The jq switch clicked while the URL line holds the typing.
 #[test]
 fn the_jq_switch_leaves_the_url_typing_its_own_undo_step() {

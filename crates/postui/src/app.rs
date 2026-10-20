@@ -2474,6 +2474,12 @@ impl App {
     /// take back both. Only a real close comes here, so a click that leaves
     /// the field open keeps its session and its undo history.
     ///
+    /// It is called where the caret leaves (`set_focus`, the editor's
+    /// `move_editor_caret`, the jq bar's blur), and by an action that edits
+    /// before it moves the caret (the auto-header pencil adds its row
+    /// first). That second kind is why the call is not only in a setter for
+    /// `focus` and `sub_focus`: a setter runs at the move, after the edit.
+    ///
     /// The vim body is left out: a document, not a field (the spec's
     /// exception), whose engine history outlives its closes (amendment C3),
     /// and the flush would end it (task #72).
@@ -3858,11 +3864,6 @@ impl App {
                 else {
                     return false;
                 };
-                // The pencil takes the caret into the table after it adds
-                // its row, so a text field it leaves closes first, as its
-                // own step (task #64): the row's step must not take in the
-                // field's typing.
-                self.leave_text_field();
                 // A cell still open commits first, as an undo step of its
                 // own, so an undo of the new row leaves what was typed
                 // there. The section is read again after it: the commit can
@@ -3887,6 +3888,11 @@ impl App {
                 };
                 let entry = postui_core::model::Entry { value, enabled: true };
                 let at = self.editor.headers.len();
+                // The pencil takes the caret into the table after it adds
+                // its row, so a text field it leaves closes first, as its
+                // own step (task #64): the row's step must not take in the
+                // field's typing.
+                self.leave_text_field();
                 self.insert_row_copy(EditorTab::Headers, &name, entry, at);
                 // You take a header over to give it a value of your own
                 // (task #20), so its value opens, caret at the end: in
