@@ -28611,6 +28611,26 @@ fn a_click_between_a_dialogs_footer_chips_keeps_the_settings_field() {
     assert!(app.settings.focused, "and keeps the cursor");
 }
 
+/// The Variable Manager is outside #73's dialog rule until #75: a click
+/// between a dialog's footer chips still saves its live edit, as on main.
+#[test]
+fn a_click_between_a_dialogs_footer_chips_still_saves_the_manager_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
+    let r = field_rect(&mut app, VmField::EnvValue);
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y));
+    app.handle_key(plain('9'));
+    app.push_modal(chipped_dialog());
+    let (x, y) = bare_point(&mut app);
+    app.handle_mouse(left_down(x, y));
+    assert!(app.varmanager.form.editing.is_none(), "the edit closed");
+    let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(qa.contains("https://qa.example.com9"), "and saved: {qa}");
+}
+
 /// The footer's quit chip shows under every dialog but is the app's
 /// (task #73 keeps it as on main): its click away still commits the
 /// Settings field before quitting. Quitting over a dialog is task #74's.

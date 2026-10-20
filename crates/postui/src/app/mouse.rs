@@ -62,6 +62,14 @@ pub(super) fn count_clicks(
     LastClick { hit: hit.clone(), cell, at, clicks: Clicks { list, text } }
 }
 
+/// The footer's quit chip, whichever quit the profile and surface spell it
+/// as (`spell::quit_action`). It is the app's on every screen and under
+/// every dialog: the testbed lets only it through, and the dialog rule
+/// lets its click away commit before the quit.
+fn is_quit_chip(hit: &Hit) -> bool {
+    matches!(hit, Hit::FooterChip(Action::Quit | Action::GatedQuit | Action::CloseWindow { .. }))
+}
+
 /// The hit a text field is drawn under: the one map between the two.
 fn field_hit(field: FieldId) -> Option<Hit> {
     Some(match field {
@@ -370,14 +378,7 @@ impl App {
                 // a click open the palette, a project/env chooser, or the
                 // Variable Manager from underneath the showcase, with no way
                 // back short of quitting.
-                if self.screen == Screen::Testbed
-                    && !matches!(
-                        hit,
-                        Hit::FooterChip(
-                            Action::Quit | Action::GatedQuit | Action::CloseWindow { .. }
-                        )
-                    )
-                {
+                if self.screen == Screen::Testbed && !is_quit_chip(&hit) {
                     return false;
                 }
                 // Both counts at once (`count_clicks`): rows and buttons read
@@ -1240,24 +1241,24 @@ impl App {
         clicks: Clicks,
         m: ratatui::crossterm::event::MouseEvent,
     ) -> bool {
-        // A click in a dialog is the dialog's, as its keys are (task #73):
-        // while one is open, the request editor's and the Settings tab's
-        // click-away rules don't run, so the URL line, a table cell or a
-        // Settings field under it stays open, whether the click lands on
-        // its buttons, its text box, its footer chips or a gap between
+        // A click in a dialog is the dialog's, as its keys are, for the
+        // request editor and the Settings tab (task #73): while one is open
+        // their click-away rules don't run, so the URL line, a table cell
+        // or a Settings field under it stays open, whether the click lands
+        // on its buttons, its text box, its footer chips or a gap between
         // them. The rule asks whether a dialog is open, as the jq bar's
         // rule and the no-hit point do, rather than listing the dialogs'
-        // hits, so there is no dialog hit left to miss. The Variable
-        // Manager's commits below are not under it (see there).
+        // hits, so there is no dialog hit left to miss. It reads the stack
+        // while the hit comes from the last frame, which is what every
+        // click path relies on: the loop redraws after any event that
+        // reports a change. The Variable Manager's commits below are not
+        // under the rule yet (see there).
         //
         // The footer's quit chip is the one exception: it shows under every
         // dialog but is the app's, and its click away commits a live
-        // Settings field before quitting, as on main. The chip is matched
-        // by the action the footer gave it. Quitting over a dialog is task
-        // #74's.
-        let in_dialog = !self.modals.is_empty()
-            && !matches!(&hit, Hit::FooterChip(a)
-                if *a == crate::keyroute::spell::quit_action(self.spell_ctx()));
+        // Settings field before quitting, as on main. Quitting over a
+        // dialog is task #74's.
+        let in_dialog = !self.modals.is_empty() && !is_quit_chip(&hit);
         // A click anywhere that isn't the params/headers table itself (and
         // isn't in a dialog) is a click away: it commits whatever cell was
         // being edited (typing is never silently thrown away) and clears
