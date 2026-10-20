@@ -28570,10 +28570,10 @@ fn bare_point(app: &mut App) -> (u16, u16) {
 }
 
 /// A palette row clicked over a live Manager edit saves the edit before
-/// its command runs, as on main: the command can switch what the edit
-/// belongs to, here the environment, and the typing must land in the one
-/// it was typed against. Task #73 leaves the Manager's commits out of the
-/// dialog rule for this, until #75 moves the save into the switch.
+/// its command runs: the command can switch what the edit belongs to,
+/// here the environment, and the typing must land in the one it was typed
+/// against. Task #73 leaves the Manager's commits out of the dialog rule
+/// for this, until #75 moves the save into the switch.
 #[test]
 fn a_palette_row_clicked_over_a_manager_edit_saves_it_first() {
     let dir = tempfile::tempdir().unwrap();
@@ -28612,7 +28612,7 @@ fn a_click_between_a_dialogs_footer_chips_keeps_the_settings_field() {
 }
 
 /// The Variable Manager is outside #73's dialog rule until #75: a click
-/// between a dialog's footer chips still saves its live edit, as on main.
+/// between a dialog's footer chips still saves its live edit.
 #[test]
 fn a_click_between_a_dialogs_footer_chips_still_saves_the_manager_edit() {
     let dir = tempfile::tempdir().unwrap();
@@ -28632,8 +28632,8 @@ fn a_click_between_a_dialogs_footer_chips_still_saves_the_manager_edit() {
 }
 
 /// The footer's quit chip shows under every dialog but is the app's
-/// (task #73 keeps it as on main): its click away still commits the
-/// Settings field before quitting. Quitting over a dialog is task #74's.
+/// (task #73's one exception to the dialog rule): its click away commits
+/// the Settings field before quitting. Quitting over a dialog is #74's.
 /// Under a dialog the chip is `Quit` in vim too (`:` does not apply
 /// there, `spell::quit_action`).
 #[test]

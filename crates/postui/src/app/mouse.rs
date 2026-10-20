@@ -67,7 +67,12 @@ pub(super) fn count_clicks(
 /// every dialog: the testbed lets only it through, and the dialog rule
 /// lets its click away commit before the quit.
 fn is_quit_chip(hit: &Hit) -> bool {
-    matches!(hit, Hit::FooterChip(Action::Quit | Action::GatedQuit | Action::CloseWindow { .. }))
+    matches!(
+        hit,
+        Hit::FooterChip(
+            Action::Quit | Action::GatedQuit | Action::CloseWindow { write: false, force: false }
+        )
+    )
 }
 
 /// The hit a text field is drawn under: the one map between the two.
@@ -1255,9 +1260,9 @@ impl App {
         // under the rule yet (see there).
         //
         // The footer's quit chip is the one exception: it shows under every
-        // dialog but is the app's, and its click away commits a live
-        // Settings field before quitting, as on main. Quitting over a
-        // dialog is task #74's.
+        // dialog but is the app's, so its click away runs and commits a
+        // live Settings field before the quit. (Under a dialog that chip is
+        // `Quit`, which quits at once with no gate; task #74.)
         let in_dialog = !self.modals.is_empty() && !is_quit_chip(&hit);
         // A click anywhere that isn't the params/headers table itself (and
         // isn't in a dialog) is a click away: it commits whatever cell was
