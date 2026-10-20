@@ -3433,6 +3433,10 @@ impl App {
                 // well the caret is in) would snap the fill to its
                 // unfocused color for a frame — a visible blink.
                 let already = self.focus == PaneId::Editor && self.editor.url_open();
+                // The caret leaves an open cell for the URL line: it
+                // commits as it leaves, before the URL can take keys, as a
+                // pane move does (`set_focus`, spec 2026-10-19 R1).
+                self.commit_table_edit();
                 self.focus = PaneId::Editor;
                 self.editor.open_url_from_app();
                 if !already {
@@ -6831,10 +6835,7 @@ impl App {
                 // (whatever was open, a scratch too), and deleting the open
                 // request's space takes it: either replaces the editor, so
                 // an open cell commits first (spec 2026-10-19 R5).
-                if was_active
-                    || self.editor.slug.as_deref().and_then(postui_core::storage::space_of)
-                        == Some(name.as_str())
-                {
+                if was_active || self.open_in_space(&name) {
                     self.commit_table_edit();
                 }
                 let t = self.begin_list_op(crate::components::manage::ManageTab::Spaces);
@@ -6998,10 +6999,7 @@ impl App {
                 // reloads the editor from disk — so unsaved edits to a
                 // request living in `from` are gated exactly like a space
                 // switch.
-                let open_here =
-                    self.editor.slug.as_deref().and_then(postui_core::storage::space_of)
-                        == Some(from.as_str());
-                if open_here && self.leaving_unsaved() {
+                if self.open_in_space(&from) && self.leaving_unsaved() {
                     self.dirty_gate("move", Action::ForceMoveAllRequests { from, to });
                 } else {
                     self.apply(Action::ForceMoveAllRequests { from, to });

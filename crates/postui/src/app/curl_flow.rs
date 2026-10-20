@@ -306,10 +306,9 @@ impl App {
         let import = commands.into_iter().next().expect("checked: one command");
         let replace = CurlReplace { import, notes, vars };
         match other {
-            // The flush above already committed an open cell, so the gate
-            // asks the plain question (`leaving_unsaved` would commit
-            // nothing more).
-            Some(slug) if self.editor_holds_unsaved() => {
+            // Every gate asks through `leaving_unsaved`, so none can forget
+            // the cell; here the flush above has already committed it.
+            Some(slug) if self.leaving_unsaved() => {
                 let replace = Box::new(replace);
                 self.dirty_gate("open", Action::ForceReplaceWithCurl { slug, replace });
             }

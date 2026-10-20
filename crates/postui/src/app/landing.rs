@@ -560,6 +560,12 @@ impl App {
             .is_none_or(|s| postui_core::storage::space_of(s) == Some(self.active_space().as_str()))
     }
 
+    /// Whether the editor holds a request of `space` (a scratch belongs to
+    /// none).
+    pub(super) fn open_in_space(&self, space: &str) -> bool {
+        self.editor.slug.as_deref().and_then(postui_core::storage::space_of) == Some(space)
+    }
+
     /// The cursor on the open request's row, else the first request row,
     /// else the first row.
     fn cursor_on_open(&mut self) {
