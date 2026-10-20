@@ -2420,9 +2420,9 @@ impl App {
         // recorded"). A modal over the cell is not leaving it (R2): the
         // var picker, extract and paste act on the open cell. The close
         // changes what the table draws, so it asks for the repaint.
-        let in_cell = !off_screen
-            && self.focus == PaneId::Editor
-            && self.editor.sub_focus == crate::components::editor::SubFocus::Content;
+        let in_editor = !off_screen && self.focus == PaneId::Editor;
+        let in_cell =
+            in_editor && self.editor.sub_focus == crate::components::editor::SubFocus::Content;
         let closed = !in_cell && self.editor.table.editing.is_some();
         if closed {
             self.commit_table_edit();
@@ -2432,8 +2432,7 @@ impl App {
         // arrows body. A modal over the body is not leaving (R5).
         // The drop changes only the screen, so it asks for the repaint
         // itself.
-        let in_body = !off_screen
-            && self.focus == PaneId::Editor
+        let in_body = in_editor
             && matches!(self.editor.caret(), crate::components::editor::Caret::Body { .. })
             && !self.vim_owns_body();
         let dropped = self.editor.settle_auto_indent(in_body);
@@ -2527,17 +2526,17 @@ impl App {
     ///
     /// An open table cell commits first, as its own step (spec 2026-10-19
     /// R5): the cell's typing lives outside the request until it commits,
-    /// so without this a discard's or an op's undo could not bring it
-    /// back. Unlike the URL line, which stays open with only its session
-    /// ended, the cell closes: a commit is its close.
+    /// so without this a discard's undo could not bring it back. Unlike
+    /// the URL line, which stays open with only its session ended, the
+    /// cell closes: a commit is its close.
     fn flush_field_session(&mut self) {
         self.commit_table_edit();
         self.flush_text_session();
     }
 
     /// [`Self::flush_field_session`] without the cell: only the URL line's,
-    /// the jq bar's and the engine's sessions. For Extract alone, which
-    /// writes into the open cell after its op (`begin_op_keeping_cell`).
+    /// the jq bar's and the engine's sessions. What a journaled op flushes
+    /// (`begin_op`), since the ops run over an open cell act on it.
     fn flush_text_session(&mut self) {
         if !self.field_gate() {
             return;
@@ -4146,6 +4145,9 @@ impl App {
                 let from_row = self.sidebar.row_of(&slug);
                 let cursor_on = self.sidebar.selected_slug().as_deref() == Some(slug.as_str());
                 let was_open = self.editor.slug.as_deref() == Some(slug.as_str());
+                if was_open {
+                    self.leave_open_request();
+                }
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
                     self.op_in_flight = false;
@@ -4172,6 +4174,9 @@ impl App {
                 let noun = if n == 1 { "request" } else { "requests" };
                 let from_row = slugs.first().and_then(|s| self.sidebar.row_of(s));
                 let was_open = self.editor.slug.as_ref().is_some_and(|open| slugs.contains(open));
+                if was_open {
+                    self.leave_open_request();
+                }
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
                     self.op_in_flight = false;
@@ -6815,6 +6820,11 @@ impl App {
                 // rows to count. The count the dialog used to warn about
                 // lives in the toast now, next to the undo hint.
                 let count = self.sidebar.space_counts().get(&name).copied().unwrap_or(0);
+                if self.editor.slug.as_deref().and_then(postui_core::storage::space_of)
+                    == Some(name.as_str())
+                {
+                    self.leave_open_request();
+                }
                 let t = self.begin_list_op(crate::components::manage::ManageTab::Spaces);
                 let Some(p) = self.project.as_mut() else {
                     return true;
@@ -7211,7 +7221,7 @@ impl App {
             description: None,
             values,
         };
-        let t = self.begin_op_keeping_cell();
+        let t = self.begin_op();
         let result = match self.project_mut() {
             None => Err(NO_PROJECT.to_string()),
             Some(p) => p
@@ -7294,7 +7304,7 @@ impl App {
         // close the open field session as its own step, and the typing
         // plus the token replacement are meant to peel off as one.
         let wrote_to_request = matches!(destination, ExtractDestination::Request);
-        let t = (!wrote_to_request).then(|| self.begin_op_keeping_cell());
+        let t = (!wrote_to_request).then(|| self.begin_op());
         let write_result: Result<(), String> = match destination {
             ExtractDestination::ProjectDefault => {
                 if self.variables().vars.contains_key(&name)
@@ -7472,8 +7482,7 @@ impl App {
     /// from the saved snapshot); for a table cell under edit, the new text
     /// is committed through the table's own `Enter` path so it lands in the
     /// map (not left as a pending, uncommitted edit) and rides the same
-    /// dirty/save path as any other row commit. The cell is still open
-    /// here because the extract's op keeps it ([`Self::begin_op_keeping_cell`]).
+    /// dirty/save path as any other row commit.
     fn replace_focused_field_with_token(&mut self, name: &str) {
         let token = format!("{{{{{name}}}}}");
         if self.editor.url_open() {
@@ -9239,8 +9248,18 @@ impl App {
     /// leaving_unsaved()` commits only when the gate applies, and a move
     /// that does not touch the open request leaves its cell alone.
     fn leaving_unsaved(&mut self) -> bool {
-        self.commit_table_edit();
+        self.leave_open_request();
         self.editor_holds_unsaved()
+    }
+
+    /// Commits an open table cell, as its own step, before the open
+    /// request is left: what every dirty gate does (`leaving_unsaved`),
+    /// and what an op that removes the open request without asking does
+    /// first (a delete never confirms; a space delete has no gate, OQ4),
+    /// so its before-view holds the typing and undoing it brings the
+    /// typing back (spec 2026-10-19 R5, task #65).
+    fn leave_open_request(&mut self) {
+        self.commit_table_edit();
     }
 
     /// Push the standard unsaved-changes confirm. A slugged request's

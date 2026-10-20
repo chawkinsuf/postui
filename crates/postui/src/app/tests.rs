@@ -8233,6 +8233,30 @@ fn insert_picker_new_variable_confirm_creates_the_var_and_inserts_at_the_origina
     assert!(saved.vars.contains_key("token"), "written to disk too");
 }
 
+/// The same from an open table cell: the new variable's op leaves the
+/// cell open, so the token lands in it (spec 2026-10-19 R5: only an op
+/// that removes the open request commits the cell first).
+#[test]
+fn insert_picker_new_variable_from_an_open_cell_inserts_into_the_cell() {
+    let mut app = app_with_vars();
+    app.editor.active_tab = EditorTab::Params;
+    app.editor
+        .params
+        .insert("a".into(), postui_core::model::Entry { value: "x".into(), enabled: true });
+    app.focus = PaneId::Editor;
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    app.update(Action::OpenVarPicker { completing: false });
+    for c in "token".chars() {
+        app.handle_key(plain(c));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    submit_prompt(&mut app);
+    assert!(app.proj().variables().vars.contains_key("token"));
+    let edit = app.editor.table.editing.as_ref().expect("the cell is still open");
+    assert_eq!(edit.input.text(), "x{{token}}");
+}
+
 #[test]
 fn insert_picker_new_variable_confirm_with_a_reserved_name_toasts_and_inserts_nothing() {
     // Review finding: apply_modal_result used to dispatch every action in a

@@ -177,6 +177,7 @@ impl TableEditorState {
         self.editing = None;
         self.pending_ghost_value = None;
     }
+
     /// The text `row`/`col` currently shows. Empty for the ghost row.
     fn cell_text(map: &IndexMap<String, Entry>, row: usize, col: Col) -> String {
         match map.get_index(row) {

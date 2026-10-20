@@ -47,8 +47,8 @@ about drafts. It accepts the Cancel behaviour that round objected to
 | R2 | A modal over the cell is not leaving it (palette, var picker, extract, paste, theme picker). A shortcut that keeps the caret in the cell (`alt+i`, the TLS lock) leaves it open. | mine (approved) (#62 rework) |
 | R3 | Every dirty gate commits an open cell first, as its own step, then asks. Typing in a cell therefore counts as unsaved at quit, open, new request, duplicate/put of a request, move of the open request, space or project switch, curl import and replace, and vim `:q`/`:wq`. Not a value typed on the "+ Add" row with no key: its commit only stashes it until a key arrives, and a save could not keep it, so it is lost as on main (task #68, found in review round 2). | mine (approved) |
 | R4 | Cancel on that prompt leaves the cell closed, with its typing committed and undoable (one ctrl+z takes it back). This is what a click on another request's sidebar row already does today. | mine (approved); replaces #62's "prompt sees the cell" |
-| R5 | Every path that replaces the editor wholesale or records an op's before-view commits an open cell first, as its own step: a journaled op (`begin_op`), opening another request, Discard, Reload, curl import's scratch discard, curl replace. Undoing the op or the discard therefore brings the typing back. | mine (approved); fixes #65 |
-| R6 | Extract (to variable or selector, whole cell or a selection in it) with a cell open keeps the cell open through its op, as before: the variable or selector is the op's step, and the typing commits with the token as one step on top. `begin_op_keeping_cell` is the one exception to R5. *Amended after review round 1:* the first version committed the typed text before the op ("three steps"), which commits it as if Enter were pressed, so a key typed on the "+ Add" row that names an existing row, or a key renamed onto another, merged rows before the token arrived. | mine (approved), replacing "go with three steps" |
+| R5 | Every path that leaves or replaces the open request commits an open cell first, as its own step: opening another request (the landing), Discard, Reload, curl import's scratch discard, curl replace, and an op that removes the open request without asking (delete request, delete space). Undoing the delete or the discard therefore brings the typing back. Other journaled ops leave the cell open, as on main: the ones run over a cell act on it (the var picker's new variable, a selector pick, extract). *Amended after review round 4:* the first R5 committed in every op (`begin_op`), which closed the cell under those dialogs. | mine (approved, narrowed after round 4 on the user's "just fix it"); fixes #65 |
+| R6 | Extract (to variable or selector, whole cell or a selection in it) with a cell open keeps the cell open through its op, as on main: the variable or selector is the op's step, and the typing commits with the token as one step on top. *Amended after review round 1:* the first version committed the typed text before the op ("three steps"), which commits it as if Enter were pressed, so a key typed on the "+ Add" row that names an existing row, or a key renamed onto another, merged rows before the token arrived. | mine (approved), replacing "go with three steps" |
 | R7 | A cell commit is its own undo step, bracketed by a capture before and after (#66, unchanged). A method change that moves the tab is two steps: the method, then the cell. | you (#66: "id rather have the logic in one place"), mine (approved) |
 | R8 | `Editor::load` still drops a cell left open, as a backstop. The row selection stays, and so does the add-row stash (a value typed on the "+ Add" row with no key), as on main. *Amended after review round 3:* clearing the stash on load (the first R8) also lost it on Save As, rename and move-all, which load the same content; the stash's leak into another request moved to task #68 with its other problems. | mine (the user had approved clearing it; this reversal is proposed, not yet confirmed) |
 
@@ -62,7 +62,7 @@ the cell can still be open when it runs:
 | Reader | Can a cell be open? | Covered by |
 |---|---|---|
 | 14 dirty gates (`editor_holds_unsaved`): Quit, GatedQuit, OpenRequest, Duplicate, put request, MoveRequestToSpace, CreateRequest, SwitchProject, create project, SwitchSpace, MoveAllRequests, curl import, curl replace into another row, vim WriteQuit | yes, through a key or a palette row from the cell | R3: `leaving_unsaved` |
-| `view_on` (op before/after views) | yes, a palette op | R5: `begin_op_on` → `flush_field_session` |
+| `view_on` (op before/after views) | yes, a palette op | R5: a delete of the open request or its space calls `leave_open_request` first; other ops never reload the open request |
 | `land` → `open_in_editor` / scratch, `Editor::load` | only if no gate or op ran first | R5: `flush_field_session` (already called there); R8 backstop |
 | DiscardChanges, ReloadOpenRequest, curl import's scratch discard | yes | R5: `flush_field_session` (already called there) |
 | curl replace (in place) | yes | already commits; collapses into `flush_field_session` |
@@ -89,17 +89,18 @@ the cell can still be open when it runs:
   2026-08-24 amendments that describe it. Under R1 a cell is never open
   beside a field session, so its gated path is unreachable.
 - **`flush_field_session`** commits an open cell first, then flushes the
-  URL/jq/vim session as today. It already runs on every path in R5, so
-  those paths need no change of their own. Curl replace's three lines
-  (commit, capture, flush) become one.
-- **`App::leaving_unsaved(&mut self)`**: `commit_table_edit` followed by
-  `editor_holds_unsaved`. The 14 gates call it. `editor_holds_unsaved`
-  stays read-only for `view_on` and the undo jump guard. Quit checks
+  URL/jq/vim session (`flush_text_session`, the old body). Landings,
+  Discard, Reload and curl already call it. Curl replace's three lines
+  (commit, capture, flush) become one. `begin_op` flushes only the text
+  session, as on main, so ops run over a cell (the var picker, a
+  selector pick, extract) still act on it.
+- **`App::leave_open_request`** commits an open cell before the open
+  request is left. `leaving_unsaved` (the 14 gates) calls it and then
+  `editor_holds_unsaved`, which stays read-only for `view_on` and the
+  undo jump guard; delete request(s) and delete space call it before
+  their op when they remove the open request. Quit checks
   `modals.is_empty()` first, so `ctrl+c` over a modal still exits at once.
-- **Extract** (R6): `confirm_extract` and `confirm_extract_to_selector`
-  begin their op with `begin_op_keeping_cell`, which flushes the URL/jq
-  session (`flush_text_session`) but leaves the cell open, so the token
-  replacement works on it as before.
+- **Extract** (R6) is unchanged from main.
 - **`commit_table_edit`** asserts (debug builds) that no field session
   holds the gate when a cell commits: the invariant R1 rests on. Added
   after review round 3 (every round raised it); `mine`, reversing the
