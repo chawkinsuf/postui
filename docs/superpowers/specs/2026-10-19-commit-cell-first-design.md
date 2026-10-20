@@ -62,7 +62,7 @@ the cell can still be open when it runs:
 | Reader | Can a cell be open? | Covered by |
 |---|---|---|
 | 14 dirty gates (`editor_holds_unsaved`): Quit, GatedQuit, OpenRequest, Duplicate, put request, MoveRequestToSpace, CreateRequest, SwitchProject, create project, SwitchSpace, MoveAllRequests, curl import, curl replace into another row, vim WriteQuit | yes, through a key or a palette row from the cell | R3: `leaving_unsaved` |
-| `view_on` (op before/after views) | yes, a palette op | R5: a delete of the open request or its space calls `leave_open_request` first; other ops never reload the open request |
+| `view_on` (op before/after views) | yes, a palette op | R5: delete request(s) and delete space call `commit_before_removal` first; other ops never replace the editor (`land` asserts it) |
 | `land` → `open_in_editor` / scratch, `Editor::load` | only if no gate or op ran first | R5: `flush_field_session` (already called there); R8 backstop |
 | DiscardChanges, ReloadOpenRequest, curl import's scratch discard | yes | R5: `flush_field_session` (already called there) |
 | curl replace (in place) | yes | already commits; collapses into `flush_field_session` |
@@ -94,12 +94,15 @@ the cell can still be open when it runs:
   (commit, capture, flush) become one. `begin_op` flushes only the text
   session, as on main, so ops run over a cell (the var picker, a
   selector pick, extract) still act on it.
-- **`App::leave_open_request`** commits an open cell before the open
-  request is left. `leaving_unsaved` (the 14 gates) calls it and then
-  `editor_holds_unsaved`, which stays read-only for `view_on` and the
-  undo jump guard; delete request(s) and delete space call it before
-  their op when they remove the open request. Quit checks
-  `modals.is_empty()` first, so `ctrl+c` over a modal still exits at once.
+- **`App::leaving_unsaved`** (the 14 gates) commits an open cell, then
+  asks `editor_holds_unsaved`, which stays read-only for `view_on` and
+  the undo jump guard. Quit checks `modals.is_empty()` first, so
+  `ctrl+c` over a modal still exits at once.
+- **`App::commit_before_removal`**: delete request(s) and delete space
+  always commit an open cell before their op (round 5: a guard on "does
+  this delete take the open request" missed a scratch in a deleted active
+  space). `land` debug-asserts that no op replaces the editor over an
+  open cell.
 - **Extract** (R6) is unchanged from main.
 - **`commit_table_edit`** asserts (debug builds) that no field session
   holds the gate when a cell commits: the invariant R1 rests on. Added
@@ -148,23 +151,18 @@ the user asked why Extract commits the cell first. So all are
 merging rows from a key cell; the user picked E1 instead (`mine
 (approved)`), and R6 reads so.
 
-1. **R4, Cancel closes the cell.** The alternative, commit and reopen the
-   same cell, keeps the caret in it. It costs a reopen that has to
-   re-resolve the row after the commit (a key rename can collapse rows,
-   and the add row may have become a real one), and the cell's keystroke
-   undo is gone either way. Recommended: close.
-2. **R6, Extract.** The alternative, E1, lets Extract keep the cell open
-   through its op, as today. That is one named exception in `begin_op`,
-   and it keeps the typing and token as one step. Its before-view
-   misses the typing, which is harmless because undoing an extract never
-   reloads the editor. Recommended: R6 as written (no exception, and it
-   matches the URL line).
-3. **Scope:** fold #65 into this branch. It's the same rule (R5), and
-   `flush_field_session` fixes it at no extra cost. #64 (a click closing
-   the URL line merges its typing) stays separate: it is about the URL
-   line, not a cell.
-4. **R8:** clearing the add-row stash on load is a pre-existing leak of
-   the same kind. One line.
-5. Unchanged on purpose: the sidebar dirty dot doesn't show an open
-   cell's typing until it commits (as on main), and there are no new
-   debug assertions.
+Where each choice stands now (the history is in the §2 amendments):
+
+1. **R4, Cancel closes the cell.** Approved; unchanged.
+2. **R6, Extract** keeps the cell open through its op, as on main (E1),
+   after review round 1. Since round 4 no op commits the cell except a
+   delete, so Extract needs no exception of its own.
+3. **Scope:** #65 folded in (R5: deletes commit first). #64 (a click
+   closing the URL line merges its typing) stays separate.
+4. **R8:** reversed after review round 3 (load keeps the stash, as on
+   main; #68). `mine`, made after the user said "continue", not yet
+   confirmed by them.
+5. **Debug assertions:** two were added after review rounds 3 and 5
+   (no field gate when a cell commits; no op landing over an open cell),
+   reversing the approved "none". `mine`, not yet confirmed. The sidebar
+   dirty dot is unchanged (as on main).

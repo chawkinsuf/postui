@@ -2441,7 +2441,9 @@ impl App {
         if off_screen {
             self.session.response.end_jq_edit_session();
         }
-        self.capture_step() || closed || dropped
+        // A close has already captured around its commit.
+        let recorded = closed || self.capture_step();
+        recorded || dropped
     }
 
     /// Moves the pane focus: the one way the focus actions leave a pane.
@@ -4145,9 +4147,7 @@ impl App {
                 let from_row = self.sidebar.row_of(&slug);
                 let cursor_on = self.sidebar.selected_slug().as_deref() == Some(slug.as_str());
                 let was_open = self.editor.slug.as_deref() == Some(slug.as_str());
-                if was_open {
-                    self.leave_open_request();
-                }
+                self.commit_before_removal();
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
                     self.op_in_flight = false;
@@ -4174,9 +4174,7 @@ impl App {
                 let noun = if n == 1 { "request" } else { "requests" };
                 let from_row = slugs.first().and_then(|s| self.sidebar.row_of(s));
                 let was_open = self.editor.slug.as_ref().is_some_and(|open| slugs.contains(open));
-                if was_open {
-                    self.leave_open_request();
-                }
+                self.commit_before_removal();
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
                     self.op_in_flight = false;
@@ -6820,11 +6818,7 @@ impl App {
                 // rows to count. The count the dialog used to warn about
                 // lives in the toast now, next to the undo hint.
                 let count = self.sidebar.space_counts().get(&name).copied().unwrap_or(0);
-                if self.editor.slug.as_deref().and_then(postui_core::storage::space_of)
-                    == Some(name.as_str())
-                {
-                    self.leave_open_request();
-                }
+                self.commit_before_removal();
                 let t = self.begin_list_op(crate::components::manage::ManageTab::Spaces);
                 let Some(p) = self.project.as_mut() else {
                     return true;
@@ -9248,17 +9242,21 @@ impl App {
     /// leaving_unsaved()` commits only when the gate applies, and a move
     /// that does not touch the open request leaves its cell alone.
     fn leaving_unsaved(&mut self) -> bool {
-        self.leave_open_request();
+        self.commit_table_edit();
         self.editor_holds_unsaved()
     }
 
-    /// Commits an open table cell, as its own step, before the open
-    /// request is left: what every dirty gate does (`leaving_unsaved`),
-    /// and what an op that removes the open request without asking does
-    /// first (a delete never confirms; a space delete has no gate, OQ4),
-    /// so its before-view holds the typing and undoing it brings the
-    /// typing back (spec 2026-10-19 R5, task #65).
-    fn leave_open_request(&mut self) {
+    /// For the ops that delete without asking (a delete never confirms; a
+    /// space delete has no gate, OQ4) and may replace what the editor
+    /// holds: an open table cell commits first, as its own step, so the
+    /// op's before-view holds the typing and undoing the delete brings it
+    /// back (spec 2026-10-19 R5, task #65). Always, not only when the
+    /// delete takes the open request: whether it does (a scratch in a
+    /// deleted active space, a request another space's landing replaces)
+    /// is the op's to work out, and a cell left open across an unrelated
+    /// delete loses nothing by committing. `land` asserts no op replaces
+    /// the editor over an open cell.
+    fn commit_before_removal(&mut self) {
         self.commit_table_edit();
     }
 

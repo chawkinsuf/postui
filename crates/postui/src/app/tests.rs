@@ -22946,6 +22946,31 @@ fn undoing_an_op_run_over_an_open_cell_brings_its_typing_back() {
     assert_eq!(app.editor.params["a"].value, "19", "the typing came back with the request");
 }
 
+/// The same for a space delete that takes an unsaved scratch with it: the
+/// cell commits before the op, so undoing the delete brings the typing
+/// back with the scratch.
+#[test]
+fn undoing_a_space_delete_over_a_scratch_cell_brings_its_typing_back() {
+    let (mut app, _dir) = spaced_app();
+    app.editor.active_tab = EditorTab::Params;
+    app.editor.preferred_tab = EditorTab::Params;
+    app.editor
+        .params
+        .insert("a".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    app.focus = PaneId::Editor;
+    app.capture_undo();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    type_chars(&mut app, "9");
+    assert_eq!(app.editor.slug, None, "a scratch");
+    app.update(Action::DeleteSpace("main".into()));
+    app.capture_undo();
+    assert_ne!(app.active_space(), "main");
+    app.update(Action::Undo);
+    assert_eq!(app.active_space(), "main");
+    assert_eq!(app.editor.params["a"].value, "19", "the typing came back with the scratch");
+}
+
 /// Discard over an open cell commits it first, so the toast's undo brings
 /// the typing back too (spec 2026-10-19 R5).
 #[test]
