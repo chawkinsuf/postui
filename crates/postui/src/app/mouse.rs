@@ -1068,8 +1068,12 @@ impl App {
 
     /// Commits any in-progress table cell edit, surfacing its warning as a
     /// toast. The one place typing is turned into map data outside the
-    /// table's own key handling — click-away, focus loss, tab switch, save
-    /// and send all go through here so a typed cell is never dropped.
+    /// table's own key handling: the caret leaving the cell
+    /// (`capture_undo`), click-away, tab switch, save, send, every dirty
+    /// gate (`leaving_unsaved`) and every path that replaces the editor
+    /// (`flush_field_session`) go through here, so a typed cell is never
+    /// dropped and nothing outside the table ever reads an uncommitted
+    /// draft (spec 2026-10-19).
     ///
     /// The commit is captured here as an undo step of its own (task #66):
     /// the main loop captures once per event, so without it whatever the
@@ -1078,18 +1082,14 @@ impl App {
     /// the typing back with it. What was already pending is captured
     /// first, so the commit is bracketed on both sides: a change its caller
     /// made before committing (a method change whose tab sync commits the
-    /// cell) is its own step before it, and so is a jq filter the click
-    /// just blurred, typed while the cell stayed open behind the bar. It
-    /// lives here rather than in the click dispatch because keyboard paths
-    /// commit through here too.
+    /// cell) is its own step before it. It lives here rather than in the
+    /// click dispatch because keyboard paths commit through here too.
     ///
-    /// A field session still open (the cell stayed open behind the URL
-    /// line, or the jq bar keeps the caret through a Send) holds the app
-    /// history's gate, so the capture before the commit waits on it, and
-    /// the commit's own capture goes beneath the field's step instead
-    /// ([`Self::capture_table_commit`]). The session is never closed here:
-    /// that would wipe the field's own keystroke undo while the caret is
-    /// still in it.
+    /// No field session holds these captures back: a cell is open only
+    /// while the caret is in it, so the URL line and the jq bar never hold
+    /// keystrokes beside an open cell. The assertion holds the suite to
+    /// that; were it broken, the commit would join the field's close step
+    /// (the merge before #66), never lose the typing.
     ///
     /// `no_coalesce` belongs to a change already made: the capture before
     /// the commit records that change and spends the flag with it. A caller
@@ -1100,11 +1100,12 @@ impl App {
         if self.editor.table.editing.is_none() {
             return;
         }
-        self.capture_undo();
+        debug_assert!(!self.field_gate(), "a table cell open beside a field session");
+        self.capture_step();
         if let Some(w) = self.editor.commit_table().warning {
             self.toasts.push(w, ToastKind::Warning);
         }
-        self.capture_table_commit();
+        self.capture_step();
     }
 
     /// Commits the in-progress edit and re-resolves row `i` — an index from

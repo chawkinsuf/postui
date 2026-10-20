@@ -1293,7 +1293,7 @@ impl App {
     pub(super) fn apply_vim(&mut self, action: Action) -> bool {
         match action {
             Action::WriteQuit | Action::ForceWrite { quit: true } => {
-                if !self.editor_holds_unsaved() {
+                if !self.leaving_unsaved() {
                     return self.apply(Action::ForceQuit);
                 }
                 if self.editor.slug.is_none() {

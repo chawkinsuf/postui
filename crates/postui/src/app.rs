@@ -2405,7 +2405,6 @@ impl App {
     }
 
     pub fn capture_undo(&mut self) -> bool {
-        let current_slug = self.editor.slug.clone();
         // A caret that has left the URL line closes its session here too,
         // so a mouse blur, alt+u or a Tab out of the pane is as good as Esc
         // — focus counts, since a pane switch moves it without touching
@@ -2414,26 +2413,68 @@ impl App {
         if off_screen || self.focus != PaneId::Editor || !self.editor.url_open() {
             self.editor.url.end_edit();
         }
+        // The jq bar keeps its caret across a screen change (the pane is
+        // still the focused one underneath), so only its session closes.
+        // Both text sessions close before a cell commits below.
+        if off_screen {
+            self.session.response.end_jq_edit_session();
+        }
+        // A table cell the caret has left (alt+u, a pane jump, the jq bar,
+        // search, Manage) commits the same way, recording its own step at
+        // once (spec 2026-10-19 R1, the user's rule: "when the cursor
+        // leaves the cell, the input should close and the undo immediately
+        // recorded"). A modal over the cell is not leaving it (R2): the
+        // var picker, extract and paste act on the open cell. The close
+        // changes what the table draws, so it asks for the repaint.
+        let in_editor = !off_screen && self.focus == PaneId::Editor;
+        let in_cell =
+            in_editor && self.editor.sub_focus == crate::components::editor::SubFocus::Content;
+        let closed = !in_cell && self.editor.table.editing.is_some();
+        if closed {
+            self.commit_table_edit();
+        }
         // The same for an untouched auto-indent (spec 2026-10-16 R3): the
         // screen drops it once the caret is off its line or out of the
         // arrows body. A modal over the body is not leaving (R5).
         // The drop changes only the screen, so it asks for the repaint
         // itself.
-        let in_body = !off_screen
-            && self.focus == PaneId::Editor
+        let in_body = in_editor
             && matches!(self.editor.caret(), crate::components::editor::Caret::Body { .. })
             && !self.vim_owns_body();
         let dropped = self.editor.settle_auto_indent(in_body);
-        // The jq bar keeps its caret across a screen change (the pane is
-        // still the focused one underneath), so only its session closes.
-        if off_screen {
-            self.session.response.end_jq_edit_session();
+        // A close has already captured around its commit.
+        let recorded = closed || self.capture_step();
+        recorded || dropped
+    }
+
+    /// Moves the pane focus: the one way the focus actions leave a pane.
+    /// A move out of the editor leaves an open cell, which commits as the
+    /// move happens (spec 2026-10-19 R1) rather than at the end of the
+    /// event, as `capture_undo` would: a move that also fills the field it
+    /// lands in (the jq tree's tee-up) would otherwise open that field's
+    /// session first, and the cell's step would wait behind it and join
+    /// the field's close. `capture_undo` stays the net for the screen
+    /// changes and sub-focus moves that end an event outside the cell.
+    fn set_focus(&mut self, pane: PaneId) {
+        if pane != PaneId::Editor {
+            self.commit_table_edit();
         }
+        self.focus = pane;
+    }
+
+    /// [`Self::capture_undo`]'s recording half, without closing what the
+    /// caret has left: diffs the open request against the shadow and
+    /// records any change as a step, unless a field session holds the
+    /// gate. `true` when a step was recorded. A cell's commit brackets
+    /// itself with this ([`Self::commit_table_edit`]), so the close in
+    /// `capture_undo` can commit through it without the two recursing.
+    fn capture_step(&mut self) -> bool {
+        let current_slug = self.editor.slug.clone();
         if self.field_gate() {
             // A wholesale change taken mid-field (`no_coalesce`, e.g. alt+j
             // format) is still pending here: it joins the close as one step.
             self.field_gate_was_on = true;
-            return dropped;
+            return false;
         }
         let closing = std::mem::take(&mut self.field_gate_was_on);
         match &self.shadow {
@@ -2454,53 +2495,7 @@ impl App {
         }
         self.no_coalesce = false;
         self.shadow = Some((current_slug, self.editor.current_request()));
-        dropped
-    }
-
-    /// Captures a table cell's commit as a step of its own (task #66). With
-    /// no field session open this is [`Self::capture_undo`]. While one
-    /// holds the gate (the cell stayed open behind the URL line or the jq
-    /// bar), the field's live text must stay pending for its own close, so
-    /// the step moves only the committed tab's map (`Editor::commit_table`
-    /// commits the active tab's) from the shadow, and the shadow moves
-    /// with it: the field's close then lands on top, still one step (spec
-    /// 2026-09-15, amended for #66). Only the commit goes beneath:
-    /// anything else changed while the gate holds (a method change, a
-    /// format) stays pending and joins the field's close, the gate's rule.
-    /// Beneath is the order the user worked in, though the commit runs
-    /// last: the cell was typed before the caret left it for the field, so
-    /// undo takes back the field's session (and what joined it) first,
-    /// then the cell.
-    ///
-    /// The step copies the whole map, so a change to that same map made
-    /// under the gate without committing the cell first rides in it: a
-    /// tooltip pill's remove-variable (a float overlay, which keeps the
-    /// cell open) followed by a Send. That merges two changes into one
-    /// step; letting the commit wait instead, as before #66, merges all
-    /// three into the field's close. Row toggles, deletes and duplicates
-    /// can't: they come from the table's own keys (the caret is in the
-    /// table, so no field holds the gate) or from a table hit, footer chip
-    /// or row menu, which commits the cell first.
-    fn capture_table_commit(&mut self) {
-        if !self.field_gate() {
-            self.capture_undo();
-            return;
-        }
-        let tab = self.editor.active_tab;
-        let Some(map) = self.editor.table_map(tab) else { return };
-        // No shadow for the open request (none yet, or another request's):
-        // the next capture re-seeds.
-        let Some((slug, prev)) = self.shadow.take_if(|(s, _)| *s == self.editor.slug) else {
-            return;
-        };
-        let mut after = prev.clone();
-        match crate::components::editor::Editor::request_table_mut(&mut after, tab) {
-            Some(field) if field != map => {
-                field.clone_from(map);
-                self.record_editor_delta(slug, prev, after, false);
-            }
-            _ => self.shadow = Some((slug, prev)),
-        }
+        false
     }
 
     /// Records one `EditorDelta` step on the open request and moves the
@@ -2531,7 +2526,21 @@ impl App {
     /// request — which would otherwise lose that step: the gate only ever
     /// hands over on a close, and `Editor::load` swaps the field out from
     /// under it with the diff unrecorded.
+    ///
+    /// An open table cell commits first, as its own step (spec 2026-10-19
+    /// R5): the cell's typing lives outside the request until it commits,
+    /// so without this a discard's undo could not bring it back. Unlike
+    /// the URL line, which stays open with only its session ended, the
+    /// cell closes: a commit is its close.
     fn flush_field_session(&mut self) {
+        self.commit_table_edit();
+        self.flush_text_session();
+    }
+
+    /// [`Self::flush_field_session`] without the cell: only the URL line's,
+    /// the jq bar's and the engine's sessions. What a journaled op flushes
+    /// (`begin_op`), since the ops run over an open cell act on it.
+    fn flush_text_session(&mut self) {
         if !self.field_gate() {
             return;
         }
@@ -2719,13 +2728,18 @@ impl App {
             // screen: with any modal already up (this gate included),
             // ctrl+c stays a reliable, immediate exit, so pressing it
             // twice always leaves without saving.
-            Action::Quit if self.editor_holds_unsaved() && self.modals.is_empty() => {
+            Action::Quit if self.modals.is_empty() && self.leaving_unsaved() => {
                 self.dirty_gate("quit", Action::ForceQuit);
                 true
             }
             // `:q` has no such exemption: typed over a dialog it still meets
-            // the gate, whose cancel goes back to that dialog.
-            Action::GatedQuit if self.editor_holds_unsaved() => {
+            // the gate, whose cancel goes back to that dialog. Quitting
+            // leaves the request, so an open cell commits first even under
+            // a dialog that acts on it (extract, the var picker): after a
+            // Cancel that dialog finds no open field and says so, but the
+            // typing is kept and undoable. Counting the uncommitted cell
+            // instead is the draft state spec 2026-10-19 rules out.
+            Action::GatedQuit if self.leaving_unsaved() => {
                 self.dirty_gate("quit", Action::ForceQuit);
                 true
             }
@@ -3076,15 +3090,15 @@ impl App {
             // (rather than through an `Action`) and just need a repaint.
             Action::Render => true,
             Action::FocusNext => {
-                self.focus = self.focus.next();
+                self.set_focus(self.focus.next());
                 true
             }
             Action::FocusPrev => {
-                self.focus = self.focus.prev();
+                self.set_focus(self.focus.prev());
                 true
             }
             Action::FocusPane(pane) => {
-                self.focus = pane;
+                self.set_focus(pane);
                 true
             }
             Action::PaneMove(dir) => self.pane_move(dir),
@@ -3419,6 +3433,10 @@ impl App {
                 // well the caret is in) would snap the fill to its
                 // unfocused color for a frame — a visible blink.
                 let already = self.focus == PaneId::Editor && self.editor.url_open();
+                // The caret leaves an open cell for the URL line: it
+                // commits as it leaves, before the URL can take keys, as a
+                // pane move does (`set_focus`, spec 2026-10-19 R1).
+                self.commit_table_edit();
                 self.focus = PaneId::Editor;
                 self.editor.open_url_from_app();
                 if !already {
@@ -3530,7 +3548,7 @@ impl App {
                 true
             }
             Action::OpenRequest(slug) => {
-                if self.editor_holds_unsaved() {
+                if self.leaving_unsaved() {
                     self.dirty_gate("open", Action::ForceOpenRequest(slug));
                     true
                 } else {
@@ -3648,7 +3666,7 @@ impl App {
                 // anything is written (spec §4.3: the gate runs before the op).
                 let force =
                     Action::ForceDuplicateRequest { slug, anchor: None, above: false, count: 1 };
-                if self.editor_holds_unsaved() {
+                if self.leaving_unsaved() {
                     self.dirty_gate("duplicate", force);
                     true
                 } else {
@@ -3922,7 +3940,7 @@ impl App {
                 // The copy opens, so unsaved edits are gated first, as
                 // Duplicate's are: once, the count riding with the
                 // deferred put.
-                if self.editor_holds_unsaved() {
+                if self.leaving_unsaved() {
                     self.dirty_gate("duplicate", force);
                     true
                 } else {
@@ -3993,7 +4011,7 @@ impl App {
                     return true;
                 }
                 let moving_open = self.editor.slug.as_deref() == Some(slug.as_str());
-                if moving_open && self.editor_holds_unsaved() {
+                if moving_open && self.leaving_unsaved() {
                     self.dirty_gate("move", Action::ForceMoveRequestToSpace { slug, space });
                 } else {
                     self.apply(Action::ForceMoveRequestToSpace { slug, space });
@@ -4044,7 +4062,7 @@ impl App {
                 if self.refuse_without_project() {
                     return true;
                 }
-                if self.editor_holds_unsaved() {
+                if self.leaving_unsaved() {
                     self.dirty_gate("create", Action::ForceCreateRequest(name));
                     true
                 } else {
@@ -4134,6 +4152,12 @@ impl App {
                 let from_row = self.sidebar.row_of(&slug);
                 let cursor_on = self.sidebar.selected_slug().as_deref() == Some(slug.as_str());
                 let was_open = self.editor.slug.as_deref() == Some(slug.as_str());
+                if was_open {
+                    // The delete replaces the editor: an open cell commits
+                    // first, so undo brings its typing back (spec
+                    // 2026-10-19 R5).
+                    self.commit_table_edit();
+                }
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
                     self.op_in_flight = false;
@@ -4160,6 +4184,10 @@ impl App {
                 let noun = if n == 1 { "request" } else { "requests" };
                 let from_row = slugs.first().and_then(|s| self.sidebar.row_of(s));
                 let was_open = self.editor.slug.as_ref().is_some_and(|open| slugs.contains(open));
+                if was_open {
+                    // As a single delete (spec 2026-10-19 R5).
+                    self.commit_table_edit();
+                }
                 let t = self.begin_op();
                 let Some(p) = self.project.as_mut() else {
                     self.op_in_flight = false;
@@ -4652,7 +4680,7 @@ impl App {
                 if target == self.root() {
                     return false;
                 }
-                if self.editor_holds_unsaved() {
+                if self.leaving_unsaved() {
                     self.dirty_gate("switch", Action::ForceSwitchProject(target));
                 } else {
                     self.apply(Action::ForceSwitchProject(target));
@@ -4834,7 +4862,7 @@ impl App {
                 }
                 self.registry.add_known(path.clone());
                 self.save_registry();
-                if self.editor_holds_unsaved() {
+                if self.leaving_unsaved() {
                     self.dirty_gate("create", Action::ForceSwitchProject(path));
                 } else {
                     self.apply(Action::ForceSwitchProject(path));
@@ -6437,7 +6465,7 @@ impl App {
                 if name == self.active_space() {
                     return true;
                 }
-                if self.editor_holds_unsaved() {
+                if self.leaving_unsaved() {
                     self.dirty_gate("switch", Action::ForceSwitchSpace(name));
                     true
                 } else {
@@ -6803,6 +6831,13 @@ impl App {
                 // rows to count. The count the dialog used to warn about
                 // lives in the toast now, next to the undo hint.
                 let count = self.sidebar.space_counts().get(&name).copied().unwrap_or(0);
+                // Deleting the active space lands on another space's request
+                // (whatever was open, a scratch too), and deleting the open
+                // request's space takes it: either replaces the editor, so
+                // an open cell commits first (spec 2026-10-19 R5).
+                if was_active || self.open_in_space(&name) {
+                    self.commit_table_edit();
+                }
                 let t = self.begin_list_op(crate::components::manage::ManageTab::Spaces);
                 let Some(p) = self.project.as_mut() else {
                     return true;
@@ -6964,10 +6999,7 @@ impl App {
                 // reloads the editor from disk — so unsaved edits to a
                 // request living in `from` are gated exactly like a space
                 // switch.
-                let open_here =
-                    self.editor.slug.as_deref().and_then(postui_core::storage::space_of)
-                        == Some(from.as_str());
-                if open_here && self.editor_holds_unsaved() {
+                if self.open_in_space(&from) && self.leaving_unsaved() {
                     self.dirty_gate("move", Action::ForceMoveAllRequests { from, to });
                 } else {
                     self.apply(Action::ForceMoveAllRequests { from, to });
@@ -8289,15 +8321,17 @@ impl App {
     /// as failed so a queued follow-on stops: the choice, not the queue,
     /// decides what happens next. `then` rides the Overwrite choice.
     /// Replaces the editor's buffer wholesale — the one rule every such
-    /// replacement shares, in one place: a cell still under the caret is
-    /// part of what is being thrown away, so it is dropped WITHOUT being
-    /// committed, the selection into it goes with it (no stale row index
-    /// survives), and the tab bar re-syncs to the request that just
-    /// landed. Shared by `Action::DiscardChanges` and
-    /// `Action::ReloadOpenRequest`; the caller owns the undo bookkeeping
-    /// (`no_coalesce`) and the toast.
+    /// replacement shares, in one place: the row selection goes (no stale
+    /// row index survives), and the tab bar re-syncs to the request that
+    /// just landed. Every caller (`Action::DiscardChanges`,
+    /// `Action::ReloadOpenRequest`, curl import's scratch discard) runs
+    /// `flush_field_session` first, so an open cell has already committed
+    /// as its own step and undoing the replacement brings its typing back
+    /// (spec 2026-10-19 R5); `Editor::load` dropping a cell is only the
+    /// backstop. The caller owns the undo bookkeeping (`no_coalesce`) and
+    /// the toast.
     fn reseed_editor(&mut self, slug: Option<String>, req: postui_core::model::HttpRequest) {
-        // `Editor::load` drops the cell; the selection is ours to drop.
+        // `Editor::load` keeps the selection; here it is ours to drop.
         self.editor.table.selected = None;
         self.editor.load(slug, req);
         self.sync_active_tab();
@@ -9206,6 +9240,27 @@ impl App {
         self.editor.is_dirty() || self.editor.is_scratch_dirty()
     }
 
+    /// [`Self::editor_holds_unsaved`] for a dirty gate, which is about to
+    /// leave the open request (open another, quit, switch space…). An open
+    /// table cell commits first, as its own undo step, so the gate sees
+    /// what was typed there and asks (spec 2026-10-19 R3). The gate never
+    /// counts an uncommitted draft instead: that third state was what
+    /// every reader of "unsaved" had to learn on #62. So Cancel finds the
+    /// cell closed with its typing committed and undoable (R4), as a click
+    /// on another request's row already leaves it.
+    ///
+    /// A value typed on the "+ Add" row with no key is not asked about:
+    /// its commit only stashes it in the table until a key arrives, and a
+    /// save could not keep it (a row needs a name), so it stays outside
+    /// the request and goes with the request, as on main (task #68).
+    ///
+    /// It commits, so a guard puts it last: `moving_open &&
+    /// leaving_unsaved()` commits only when the gate applies, and a move
+    /// that does not touch the open request leaves its cell alone.
+    fn leaving_unsaved(&mut self) -> bool {
+        self.commit_table_edit();
+        self.editor_holds_unsaved()
+    }
     /// Push the standard unsaved-changes confirm. A slugged request's
     /// "save" path completes synchronously unless the file changed outside
     /// the app, in which case `SaveRequestThen` carries `then` into the
@@ -10887,10 +10942,11 @@ impl App {
         if target != self.editor.active_tab {
             // A cell still open commits as an undo step of its own (#66),
             // after the change that moved the tab (a method change). Undo
-            // replay, discard/reload and opening another request drop the
-            // edit before they get here (`apply_snapshot`, `Editor::load`),
-            // so no step is recorded mid-replay and no cell commits into a
-            // request it was not typed into.
+            // replay drops the edit before it gets here (`apply_snapshot`),
+            // and discard, reload and opening another request commit it
+            // first (`flush_field_session`), so no step is recorded
+            // mid-replay and no cell commits into a request it was not
+            // typed into.
             self.commit_table_edit();
             let prev = self.editor.active_tab;
             self.editor.active_tab = target;

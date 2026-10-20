@@ -50,6 +50,11 @@ impl App {
     /// the journal entry and its marker), then captures the before-view.
     /// The dirty gate's Discard reaches here with the edit still in the
     /// editor, so `before` carries it (OQ1).
+    ///
+    /// An open table cell stays open: the ops run over one (the var
+    /// picker's new variable, a selector pick, extract) act on it. A
+    /// delete that replaces what the editor holds commits it first (spec
+    /// 2026-10-19 R5); `land` asserts no op replaces the editor over one.
     pub(super) fn begin_op(&mut self) -> OpToken {
         self.begin_op_on(None)
     }
@@ -63,7 +68,7 @@ impl App {
     }
 
     fn begin_op_on(&mut self, list: Option<ManageTab>) -> OpToken {
-        self.flush_field_session();
+        self.flush_text_session();
         self.op_in_flight = true;
         OpToken { before: self.view_on(list), list }
     }
@@ -340,6 +345,13 @@ impl App {
             !(self.op_in_flight && self.field_gate()),
             "a journaled op must flush the field session before landing (begin_op does)"
         );
+        debug_assert!(
+            !(self.op_in_flight
+                && (l.open.is_some() || l.open_cursor)
+                && self.editor.table.editing.is_some()),
+            "a journaled op that replaces the editor must commit an open cell before \
+             begin_op, or its undo loses the typing"
+        );
         // 1. A live drag's working order names rows this may rewrite. Only
         //    a drag in progress is cancelled: an armed press stays armed,
         //    since a row press dispatches its own open through here.
@@ -546,6 +558,12 @@ impl App {
             .slug
             .as_deref()
             .is_none_or(|s| postui_core::storage::space_of(s) == Some(self.active_space().as_str()))
+    }
+
+    /// Whether the editor holds a request of `space` (a scratch belongs to
+    /// none).
+    pub(super) fn open_in_space(&self, space: &str) -> bool {
+        self.editor.slug.as_deref().and_then(postui_core::storage::space_of) == Some(space)
     }
 
     /// The cursor on the open request's row, else the first request row,
