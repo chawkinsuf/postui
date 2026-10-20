@@ -293,6 +293,24 @@ impl App {
                 // route to the variable itself.
                 let hit = self.hits.hit_at_ignoring_var_tokens(m.column, m.row).cloned();
                 let hit = self.cancel_stale_drags(hit);
+                // A click records the typing a text field holds back (the
+                // URL line, the jq bar, a vim session) as its own step
+                // before it acts (task #64), as a discard does: left to
+                // the end of the event, the field's close would take in
+                // whatever the click then changes (the TLS lock, a row's
+                // checkbox), and one undo would take back both. It goes
+                // first, before the click can blur the field. A click on
+                // the field's own text only places the caret, and one with
+                // a dialog open acts in the dialog, as its keys do. Any
+                // other click records the typing even when the field stays
+                // open (a copy pill, a scroll): the typing on either side
+                // is then two steps, and each undo still lands on a state
+                // the request was in.
+                let on_field_text =
+                    matches!(hit, Some(Hit::UrlBar | Hit::ResponseJqBar | Hit::BodyEditor));
+                if self.modals.is_empty() && !on_field_text {
+                    self.flush_text_session();
+                }
                 // A click anywhere but the jq bar itself is Enter for a
                 // focused bar: the filter is already applied (every edit
                 // re-ran it), so all that is left to do is leave the bar.

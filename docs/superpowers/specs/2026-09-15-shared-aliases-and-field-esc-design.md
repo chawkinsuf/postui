@@ -214,6 +214,16 @@ cursor leaves the cell, the input should close and the undo immediately
 recorded"), so the field's close is a step on top of it and no cell
 commit ever waits on the gate. See spec 2026-10-19-commit-cell-first.
 
+*Amended 2026-10-20 (task #64; mine (approved)):* a mouse click records
+what an open field holds back as its own step before the click acts, so
+a click whose action edits (the TLS lock, a row's checkbox, the jq
+switch) is a step of its own on top, and one undo takes back only it.
+Not a click on the field's own text, which places the caret, nor one
+with a dialog open, which acts in the dialog as its keys do. Any other
+click records the typing even when the field stays open (a copy pill, a
+scroll), so the typing on either side of it is two steps; each undo
+still lands on a state the request was in.
+
 **Exception: the body editor.** It is a document, not a field, and has
 no close. It keeps its current burst coalescing in the app history; one
 step per blur would make a long editing session a single undo. When the
