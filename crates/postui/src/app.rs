@@ -4810,9 +4810,17 @@ impl App {
                 true
             }
             Action::ForceCreateProject { path, name } => {
+                // This runs after the dirty gate was answered, so a Cancel
+                // writes nothing (task #69). The cost: an init that fails
+                // fails after the gate, so a Save stays saved and a
+                // Discard keeps the edits, with the toast below and no
+                // switch. Nothing is lost either way.
+                //
                 // The handle is only the writer: the switch below opens
-                // the project this just wrote, and registers it, so drop
-                // it rather than installing it as `self.project`.
+                // the project this just wrote, so drop it rather than
+                // installing it as `self.project`. The switch registers
+                // it only once it opens, so a folder that fails to open
+                // never joins the known projects.
                 match Project::init(&path, name.as_deref()) {
                     Ok((_written, warnings)) => {
                         for w in warnings {
@@ -4824,6 +4832,7 @@ impl App {
                             format!("could not create project at {}: {e}", path.display()),
                             ToastKind::Error,
                         );
+                        self.last_action_failed = true;
                         return true;
                     }
                 }

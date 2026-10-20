@@ -7500,6 +7500,36 @@ fn create_project_at_path_with_dirty_editor_goes_through_the_dirty_gate() {
     assert!(app.editor.is_dirty());
 }
 
+/// Task #69: the create runs after the gate, so an init that fails fails
+/// after Discard: the edits stay, nothing switches, and the error shows.
+#[test]
+fn create_project_failing_after_discard_keeps_the_edits() {
+    let (mut app, dir, _b) = two_projects();
+    postui_core::fixtures::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/r".into()));
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    app.handle_key(plain('/'));
+
+    // A regular file where the project's parent folder would be: init
+    // cannot make the folder.
+    let fresh = tempfile::tempdir().unwrap();
+    std::fs::write(fresh.path().join("file"), "").unwrap();
+    let new_path = fresh.path().join("file").join("newproj");
+    app.update(Action::OpenProjectByPath(new_path.to_string_lossy().into_owned()));
+    app.handle_key(plain('y'));
+    app.handle_key(plain('d'));
+
+    assert!(app.last_action_failed, "the failed create reports it");
+    let text = rendered_text(&mut app);
+    assert!(text.contains("could not create project"), "error toast shown: {text}");
+    assert_eq!(app.proj().root(), dir.path(), "not switched");
+    assert!(!app.registry.known.contains(&new_path));
+    assert_eq!(app.editor.url.text(), "https://x/r/", "the edit is still there");
+    assert!(app.editor.is_dirty());
+}
+
 #[test]
 fn cycle_env_reloads_project_files_before_switching() {
     let (mut app, dir) = app_with_envs();
