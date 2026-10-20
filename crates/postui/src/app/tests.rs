@@ -28571,7 +28571,7 @@ fn a_click_in_a_dialog_keeps_the_manager_edit_under_it_open() {
         let r = field_rect(&mut app, VmField::EnvValue);
         app.handle_mouse(left_down(r.x + r.width - 2, r.y));
         app.handle_key(plain('9'));
-        app.push_modal(Modal::Message { title: "note".into(), body: "hello".into() });
+        app.push_modal(chipped_dialog());
         press(&mut app);
         assert!(app.varmanager.form.editing.is_some(), "{what}: the form field is still open");
 
@@ -28583,22 +28583,59 @@ fn a_click_in_a_dialog_keeps_the_manager_edit_under_it_open() {
         let r = cell_rect(&mut app, 1, 1);
         app.handle_mouse(left_down(r.x + 10, r.y));
         app.handle_key(plain('9'));
-        app.push_modal(Modal::Message { title: "note".into(), body: "hello".into() });
+        app.push_modal(chipped_dialog());
         press(&mut app);
         assert!(app.varmanager.grid.editing.is_some(), "{what}: the grid cell is still open");
     }
 }
 
+/// A dialog whose footer chips are clickable (`enter confirm`, `esc
+/// cancel`), so the footer row has gaps between chips.
+fn chipped_dialog() -> Modal {
+    Modal::Prompt {
+        title: "Rename".into(),
+        input: crate::components::line_input::LineInput::new("old"),
+        kind: crate::components::modal::PromptKind::RenameRequest { from: "old".into() },
+        revealed: false,
+    }
+}
+
 /// A gap between the footer's chips, with a dialog open: a point on the
-/// quit chip's row that registers no hit.
+/// quit chip's row that registers no hit, past the first chip.
 fn bare_point(app: &mut App) -> (u16, u16) {
     render_once(app);
     let quit = app.hits.rect_of(&Hit::FooterChip(Action::Quit)).expect("the quit chip");
     let y = quit.y + quit.height / 2;
-    let x = (0..quit.x)
+    let first_chip = (0..quit.x).find(|x| app.hits.hit_at(*x, y).is_some()).expect("a chip");
+    let x = (first_chip..quit.x)
         .find(|x| app.hits.hit_at(*x, y).is_none())
         .expect("a gap between the footer's chips");
     (x, y)
+}
+
+/// A palette row clicked over a live Manager edit saves the edit before
+/// its command runs, as on main (task #73 keeps it): the command can
+/// switch what the edit belongs to, here the environment, and the typing
+/// must land in the one it was typed against.
+#[test]
+fn a_palette_row_clicked_over_a_manager_edit_saves_it_first() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.anims.enabled = false;
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
+    let r = field_rect(&mut app, VmField::EnvValue);
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y));
+    app.handle_key(plain('9'));
+    app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+    assert!(matches!(app.modals.top(), Some(Modal::Palette(_))), "the palette opened");
+    type_chars(&mut app, "next");
+    let i = palette_row_of(&app, "env-next");
+    click_hit(&mut app, Hit::PaletteRow(i));
+    assert_ne!(app.active_env(), Some("qa"), "the row switched the environment");
+    let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(qa.contains("https://qa.example.com9"), "saved to qa first: {qa}");
 }
 
 /// The quit chip's exception is its quit's: a right press on it quits
@@ -28630,7 +28667,7 @@ fn a_click_between_a_dialogs_footer_chips_keeps_the_settings_field() {
     let mut app = App::new_for_test();
     app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
     app.settings.begin_edit(SettingsField::AiCmd, "llm --pipe");
-    app.push_modal(Modal::Message { title: "note".into(), body: "hello".into() });
+    app.push_modal(chipped_dialog());
     let (x, y) = bare_point(&mut app);
     app.handle_mouse(left_down(x, y));
     assert_eq!(app.settings.editing, Some(SettingsField::AiCmd), "the field is still open");

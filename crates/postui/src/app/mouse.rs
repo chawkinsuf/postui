@@ -1256,9 +1256,9 @@ impl App {
         // Settings field or Manager edit before quitting, as on main. The
         // chip is matched by the action the footer gave it. Quitting over a
         // dialog is task #74's.
-        let quit_chip = matches!(&hit, Hit::FooterChip(a)
-            if *a == crate::keyroute::spell::quit_action(self.spell_ctx()));
-        let in_dialog = !self.modals.is_empty() && !quit_chip;
+        let in_dialog = !self.modals.is_empty()
+            && !matches!(&hit, Hit::FooterChip(a)
+                if *a == crate::keyroute::spell::quit_action(self.spell_ctx()));
         // A click anywhere that isn't the params/headers table itself (and
         // isn't in a dialog) is a click away: it commits whatever cell was
         // being edited (typing is never silently thrown away) and clears
@@ -1301,7 +1301,18 @@ impl App {
         // `form.editing` out from under the field that was live.
         let editing_this_field = matches!(hit, Hit::VmFormField(field)
             if self.varmanager.form.editing.as_ref().is_some_and(|e| e.field == field));
-        if !in_dialog && !editing_this_field && !matches!(hit, Hit::VmRevealToggle) {
+        //
+        // A row that runs a command (the palette's, a chooser's, a menu's)
+        // saves the Manager's edits first even in a dialog, as on main:
+        // the Manage screen lets ctrl+p and the env and space switchers
+        // over a live edit, and a command that switches the environment
+        // would otherwise leave the edit open to land in the new one. That
+        // keyboard route itself is task #75's; this keeps the click route
+        // as safe as main had it.
+        let runs_command =
+            matches!(hit, Hit::PaletteRow(_) | Hit::ChooserRow(_) | Hit::DropdownRow(_));
+        let saves_manager_edits = !in_dialog || runs_command;
+        if saves_manager_edits && !editing_this_field && !matches!(hit, Hit::VmRevealToggle) {
             self.commit_var_form();
         }
         // …and the selector grid's cell, likewise: any click that isn't on the
@@ -1310,7 +1321,7 @@ impl App {
         // first (Task 8's commit-first rule).
         let editing_this_cell = matches!(hit, Hit::VmEntryCell { row, col }
             if self.varmanager.grid.editing.as_ref().is_some_and(|e| e.row == row && e.col == col));
-        if !in_dialog && !editing_this_cell {
+        if saves_manager_edits && !editing_this_cell {
             self.commit_grid_edit();
         }
         // …and the Settings tab's field and cursor, likewise. Any click
