@@ -1235,6 +1235,12 @@ impl App {
         // isn't inside a modal) is a
         // click away: it commits whatever cell was being edited (typing is
         // never silently thrown away) and clears the table selection.
+        //
+        // The modal part is a list of the modals' hits, not "any click while
+        // a modal is open": the footer's quit chip shows under every dialog
+        // and is the app's, and its click away commits a live Settings field
+        // before quitting. The dialogs' own footer chips are still missing
+        // from it (task #73, which also weighs the open-modal rule).
         let keeps_table_selection = matches!(
             hit,
             Hit::TableRow(_)
@@ -1252,6 +1258,10 @@ impl App {
                 | Hit::ConfirmChoice(_)
                 | Hit::ModalBody
                 | Hit::ModalField(_)
+                // A dialog's text box sits over its field (task #71): a
+                // click in it, say naming an extract, must not blur the
+                // URL line the extract replaces.
+                | Hit::ModalInput(_)
                 | Hit::ModalChoiceArrow { .. }
                 | Hit::ModalRowToggle(_)
                 | Hit::ModalAddRow
@@ -1259,6 +1269,12 @@ impl App {
                 | Hit::ModalRevealToggle
                 | Hit::ModalRemove
                 | Hit::ModalOutside
+                // The blocking dialogs' buttons are dialog hits like any
+                // other (task #71).
+                | Hit::ConfigStartupChoice(_)
+                | Hit::KeymapChoice(_)
+                | Hit::ConfigEditKeepEditing
+                | Hit::ConfigEditDiscard
                 | Hit::DropdownRow(_)
                 | Hit::ChooserRow(_)
                 | Hit::ChooserToggle
