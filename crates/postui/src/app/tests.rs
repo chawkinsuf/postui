@@ -28545,50 +28545,6 @@ fn a_dialogs_footer_chip_keeps_the_url_line_under_it_open() {
     assert_eq!(app.editor.url.text(), "{{trace_id}}");
 }
 
-/// Task #73: the Variable Manager's form field and grid cell stay open
-/// under a dialog, whatever the click in it: a press on its body, a press
-/// on a point that registers no hit (a gap between the footer's chips),
-/// a right press on the dialog.
-#[test]
-fn a_click_in_a_dialog_keeps_the_manager_edit_under_it_open() {
-    type Press = fn(&mut App);
-    let gap: Press = |app| {
-        let (x, y) = bare_point(app);
-        app.handle_mouse(left_down(x, y));
-    };
-    let body: Press = |app| click_hit(app, Hit::ModalBody);
-    let right_body: Press = |app| {
-        render_once(app);
-        let r = app.hits.rect_of(&Hit::ModalBody).unwrap();
-        app.handle_mouse(right_down(r.x + 1, r.y));
-    };
-    for (what, press) in [("body", body), ("gap", gap), ("right body", right_body)] {
-        let dir = tempfile::tempdir().unwrap();
-        var_project(dir.path());
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::with_root(tx, dir.path().to_path_buf());
-        goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
-        let r = field_rect(&mut app, VmField::EnvValue);
-        app.handle_mouse(left_down(r.x + r.width - 2, r.y));
-        app.handle_key(plain('9'));
-        app.push_modal(chipped_dialog());
-        press(&mut app);
-        assert!(app.varmanager.form.editing.is_some(), "{what}: the form field is still open");
-
-        let dir = tempfile::tempdir().unwrap();
-        var_project(dir.path());
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::with_root(tx, dir.path().to_path_buf());
-        goto_group(&mut app, "user");
-        let r = cell_rect(&mut app, 1, 1);
-        app.handle_mouse(left_down(r.x + 10, r.y));
-        app.handle_key(plain('9'));
-        app.push_modal(chipped_dialog());
-        press(&mut app);
-        assert!(app.varmanager.grid.editing.is_some(), "{what}: the grid cell is still open");
-    }
-}
-
 /// A dialog whose footer chips are clickable (`enter confirm`, `esc
 /// cancel`), so the footer row has gaps between chips.
 fn chipped_dialog() -> Modal {
@@ -28614,9 +28570,10 @@ fn bare_point(app: &mut App) -> (u16, u16) {
 }
 
 /// A palette row clicked over a live Manager edit saves the edit before
-/// its command runs, as on main (task #73 keeps it): the command can
-/// switch what the edit belongs to, here the environment, and the typing
-/// must land in the one it was typed against.
+/// its command runs, as on main: the command can switch what the edit
+/// belongs to, here the environment, and the typing must land in the one
+/// it was typed against. Task #73 leaves the Manager's commits out of the
+/// dialog rule for this, until #75 moves the save into the switch.
 #[test]
 fn a_palette_row_clicked_over_a_manager_edit_saves_it_first() {
     let dir = tempfile::tempdir().unwrap();
@@ -28636,26 +28593,6 @@ fn a_palette_row_clicked_over_a_manager_edit_saves_it_first() {
     assert_ne!(app.active_env(), Some("qa"), "the row switched the environment");
     let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(qa.contains("https://qa.example.com9"), "saved to qa first: {qa}");
-}
-
-/// The quit chip's exception is its quit's: a right press on it quits
-/// nothing, so the Manager edit under the dialog stays open (task #73).
-#[test]
-fn a_right_press_on_the_quit_chip_under_a_dialog_keeps_the_manager_edit() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_group(&mut app, "user");
-    let r = cell_rect(&mut app, 1, 1);
-    app.handle_mouse(left_down(r.x + 10, r.y));
-    app.handle_key(plain('9'));
-    app.push_modal(Modal::Message { title: "note".into(), body: "hello".into() });
-    render_once(&mut app);
-    let quit = app.hits.rect_of(&Hit::FooterChip(Action::Quit)).unwrap();
-    app.handle_mouse(right_down(quit.x + 1, quit.y + 1));
-    assert!(!app.should_quit);
-    assert!(app.varmanager.grid.editing.is_some(), "the grid cell is still open");
 }
 
 /// Task #73: a click between a dialog's footer chips keeps the Settings

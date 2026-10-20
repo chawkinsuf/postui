@@ -341,19 +341,23 @@ impl App {
                     // left lifted on a tab the pointer has walked off.
                     //
                     // With a dialog open the point is the dialog's (a gap
-                    // between its footer chips, say), and nothing under it
-                    // closes (`on_hit`'s dialog rule, task #73).
-                    let live = self.modals.is_empty()
-                        && (self.varmanager.form.editing.is_some()
-                            || self.varmanager.grid.editing.is_some()
-                            || self.settings.editing.is_some()
-                            || self.settings.focused);
-                    if !live {
+                    // between its footer chips, say), and the Settings
+                    // field under it stays open (`on_hit`'s dialog rule,
+                    // task #73). The Manager's edits save in a dialog too,
+                    // for `on_hit`'s reason.
+                    let manager_live = self.varmanager.form.editing.is_some()
+                        || self.varmanager.grid.editing.is_some();
+                    let settings_live = self.modals.is_empty()
+                        && (self.settings.editing.is_some() || self.settings.focused);
+                    if !manager_live && !settings_live {
                         return jq_blurred;
                     }
                     self.commit_var_form();
                     self.commit_grid_edit();
-                    if self.settings.editing.is_none() || self.commit_settings_edit_for_click() {
+                    if settings_live
+                        && (self.settings.editing.is_none()
+                            || self.commit_settings_edit_for_click())
+                    {
                         self.settings.focused = false;
                     }
                     return self.update(Action::Render);
@@ -477,15 +481,9 @@ impl App {
                 // the option rows out from under a still-live `GridEdit`,
                 // whose row index would then address a different record —
                 // and the next click-away would write the typed text into
-                // that wrong option. A right press in a dialog is the
-                // dialog's (`on_hit`'s dialog rule, task #73), the quit chip
-                // included, since a right press on it quits nothing. It is
-                // asked after a re-targeting press has closed a dropdown,
-                // so one that was all that was open still commits.
-                if self.modals.is_empty() {
-                    self.commit_var_form();
-                    self.commit_grid_edit();
-                }
+                // that wrong option.
+                self.commit_var_form();
+                self.commit_grid_edit();
                 // A commit that *failed* keeps its edit (spec §5: the typed
                 // text survives), so the row indices it holds must stay
                 // meaningful: offer no menu that could renumber them until
@@ -1243,19 +1241,20 @@ impl App {
         m: ratatui::crossterm::event::MouseEvent,
     ) -> bool {
         // A click in a dialog is the dialog's, as its keys are (task #73):
-        // while one is open no click-away rule runs, so whatever is open
-        // under it stays open, whether the click lands on its buttons, its
-        // text box, its footer chips or a gap between them. The rule asks
-        // whether a dialog is open, as the jq bar's rule, the no-hit point
-        // and the right press do, rather than listing the dialogs' hits,
-        // so there is no dialog hit left to miss.
+        // while one is open, the request editor's and the Settings tab's
+        // click-away rules don't run, so the URL line, a table cell or a
+        // Settings field under it stays open, whether the click lands on
+        // its buttons, its text box, its footer chips or a gap between
+        // them. The rule asks whether a dialog is open, as the jq bar's
+        // rule and the no-hit point do, rather than listing the dialogs'
+        // hits, so there is no dialog hit left to miss. The Variable
+        // Manager's commits below are not under it (see there).
         //
-        // The footer's quit chip is the one exception, and it is this
-        // click's alone (a right press on it quits nothing): it shows under
-        // every dialog but is the app's, and its click away commits a live
-        // Settings field or Manager edit before quitting, as on main. The
-        // chip is matched by the action the footer gave it. Quitting over a
-        // dialog is task #74's.
+        // The footer's quit chip is the one exception: it shows under every
+        // dialog but is the app's, and its click away commits a live
+        // Settings field before quitting, as on main. The chip is matched
+        // by the action the footer gave it. Quitting over a dialog is task
+        // #74's.
         let in_dialog = !self.modals.is_empty()
             && !matches!(&hit, Hit::FooterChip(a)
                 if *a == crate::keyroute::spell::quit_action(self.spell_ctx()));
@@ -1299,20 +1298,19 @@ impl App {
         // whatever is being typed there first — including a click on a
         // *different* form field, which must never silently overwrite
         // `form.editing` out from under the field that was live.
+        //
+        // These two commits run in a dialog too, so the dialog rule
+        // above does not cover the Manager. The Manage screen lets ctrl+p
+        // and the env and space switchers open over a live edit, and a
+        // command the dialog then runs (a palette row, a picker's Open, a
+        // Confirm) can switch the environment or project the edit belongs
+        // to. Saving first keeps the typing where it was typed. The cost
+        // is coarser, not wrong: a click in a dialog over the Manager
+        // closes its edit, saved. Task #75 moves that save into the
+        // switches themselves; the Manager can then join the dialog rule.
         let editing_this_field = matches!(hit, Hit::VmFormField(field)
             if self.varmanager.form.editing.as_ref().is_some_and(|e| e.field == field));
-        //
-        // A row that runs a command (the palette's, a chooser's, a menu's)
-        // saves the Manager's edits first even in a dialog, as on main:
-        // the Manage screen lets ctrl+p and the env and space switchers
-        // over a live edit, and a command that switches the environment
-        // would otherwise leave the edit open to land in the new one. That
-        // keyboard route itself is task #75's; this keeps the click route
-        // as safe as main had it.
-        let runs_command =
-            matches!(hit, Hit::PaletteRow(_) | Hit::ChooserRow(_) | Hit::DropdownRow(_));
-        let saves_manager_edits = !in_dialog || runs_command;
-        if saves_manager_edits && !editing_this_field && !matches!(hit, Hit::VmRevealToggle) {
+        if !editing_this_field && !matches!(hit, Hit::VmRevealToggle) {
             self.commit_var_form();
         }
         // …and the selector grid's cell, likewise: any click that isn't on the
@@ -1321,7 +1319,7 @@ impl App {
         // first (Task 8's commit-first rule).
         let editing_this_cell = matches!(hit, Hit::VmEntryCell { row, col }
             if self.varmanager.grid.editing.as_ref().is_some_and(|e| e.row == row && e.col == col));
-        if saves_manager_edits && !editing_this_cell {
+        if !editing_this_cell {
             self.commit_grid_edit();
         }
         // …and the Settings tab's field and cursor, likewise. Any click
