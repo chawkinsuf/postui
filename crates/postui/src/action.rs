@@ -592,7 +592,8 @@ pub enum Action {
     /// switches to it directly; anything else asks to create one there.
     OpenProjectByPath(String),
     /// Initialize a new project at `path` (from the open-by-path
-    /// create-confirm), then switch to it.
+    /// create-confirm), register it, and switch to it (through the dirty
+    /// gate when the editor is dirty), as `CreateProject` does.
     CreateProjectAt(std::path::PathBuf),
     /// Open the "new project" modal (name + prefilled path).
     PromptNewProject,

@@ -7466,6 +7466,38 @@ fn create_project_with_dirty_editor_defers_last_until_dirty_gate_resolves() {
     assert_eq!(app.registry.last, Some(new_path));
 }
 
+/// Task #69: "Create" in the open-by-path prompt's "Not a postui project"
+/// confirm asks about unsaved edits like the New project dialog does.
+#[test]
+fn create_project_at_path_with_dirty_editor_goes_through_the_dirty_gate() {
+    let (mut app, dir, _b) = two_projects();
+    postui_core::fixtures::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/r".into()));
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    app.handle_key(plain('/'));
+    assert!(app.editor.is_dirty());
+
+    let old_last = app.registry.last.clone();
+    let fresh = tempfile::tempdir().unwrap();
+    let new_path = fresh.path().join("newproj");
+    app.update(Action::OpenProjectByPath(new_path.to_string_lossy().into_owned()));
+    app.handle_key(plain('y'));
+    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
+        panic!("a dirty editor asks before the switch");
+    };
+    assert_eq!(title, "Unsaved changes");
+    assert_eq!(app.proj().root(), dir.path(), "not switched yet");
+    assert_eq!(app.registry.last, old_last, "last must not change before the dirty gate resolves");
+    assert!(app.registry.known.contains(&new_path), "the created project is known");
+    assert_eq!(app.editor.url.text(), "https://x/r/", "the edit is still there");
+
+    app.handle_key(plain('d'));
+    assert_eq!(app.proj().root(), new_path);
+    assert_eq!(app.registry.last, Some(new_path));
+}
+
 #[test]
 fn cycle_env_reloads_project_files_before_switching() {
     let (mut app, dir) = app_with_envs();

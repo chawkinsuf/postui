@@ -4810,9 +4810,9 @@ impl App {
                 true
             }
             Action::CreateProjectAt(path) => {
-                // The handle is only the writer: `ForceSwitchProject`
-                // below opens the project this just wrote, so drop it
-                // rather than installing it as `self.project`.
+                // The handle is only the writer: the switch below opens
+                // the project this just wrote, so drop it rather than
+                // installing it as `self.project`.
                 match Project::init(&path, None) {
                     Ok((_written, warnings)) => {
                         for w in warnings {
@@ -4827,7 +4827,8 @@ impl App {
                         return true;
                     }
                 }
-                self.apply(Action::ForceSwitchProject(path))
+                self.switch_to_created(path);
+                true
             }
             Action::PromptNewProject => {
                 let prefill = format!("{}/", self.registry.default_root().display());
@@ -4860,13 +4861,7 @@ impl App {
                         return true;
                     }
                 }
-                self.registry.add_known(path.clone());
-                self.save_registry();
-                if self.leaving_unsaved() {
-                    self.dirty_gate("create", Action::ForceSwitchProject(path));
-                } else {
-                    self.apply(Action::ForceSwitchProject(path));
-                }
+                self.switch_to_created(path);
                 true
             }
             Action::OpenEnvChooser => {
@@ -9260,6 +9255,21 @@ impl App {
     fn leaving_unsaved(&mut self) -> bool {
         self.commit_table_edit();
         self.editor_holds_unsaved()
+    }
+
+    /// The tail both create paths share (the New project dialog and the
+    /// open-by-path "Create"), once `Project::init` has written the
+    /// project: list it as known, then switch to it through the dirty
+    /// gate. `last` moves only when the switch runs, so a Cancel leaves the
+    /// new project on disk and known but not current (task #69).
+    fn switch_to_created(&mut self, path: PathBuf) {
+        self.registry.add_known(path.clone());
+        self.save_registry();
+        if self.leaving_unsaved() {
+            self.dirty_gate("create", Action::ForceSwitchProject(path));
+        } else {
+            self.apply(Action::ForceSwitchProject(path));
+        }
     }
     /// Push the standard unsaved-changes confirm. A slugged request's
     /// "save" path completes synchronously unless the file changed outside
