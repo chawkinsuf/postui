@@ -302,7 +302,11 @@ impl App {
                 // Nor is the bar's own switch (the header 󰈲, the footer's
                 // `unfilter`) a click away: an empty bar hides once it
                 // blurs, and the toggle would then read it as closed and
-                // open it again. `ToggleJqBar` blurs as it closes.
+                // open it again. `ToggleJqBar` blurs as it closes. Its
+                // switch-off is the bar's own state, part of the bar's close
+                // as Esc's is, so the filter typed and the switch are one
+                // step, by click as by key (task #64 records only a close
+                // that comes with an edit elsewhere).
                 let jq_blurred = self.session.response.jq_focused()
                     && self.modals.is_empty()
                     && !matches!(
@@ -1109,12 +1113,12 @@ impl App {
         self.capture_step();
     }
 
-    /// Moves the editor's caret for a click: the one way a click changes
-    /// `sub_focus`. A URL line it leaves closes here, so its typing is
-    /// recorded as its own step before the click acts (see
+    /// Moves the editor's caret for a click, left or right: the one way a
+    /// click changes `sub_focus`. A URL line it leaves closes here, so its
+    /// typing is recorded as its own step before the click acts (see
     /// [`App::leave_text_field`]); a click that keeps it open never comes
     /// here, and its typing stays one step with its own history intact.
-    fn move_editor_caret(&mut self, to: SubFocus) {
+    pub(super) fn move_editor_caret(&mut self, to: SubFocus) {
         if self.focus == PaneId::Editor && self.editor.sub_focus != to {
             self.leave_text_field();
         }

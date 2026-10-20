@@ -3458,7 +3458,7 @@ impl App {
                 // commits as it leaves, before the URL can take keys, as a
                 // pane move does (`set_focus`, spec 2026-10-19 R1).
                 self.commit_table_edit();
-                self.focus = PaneId::Editor;
+                self.set_focus(PaneId::Editor);
                 self.editor.open_url_from_app();
                 if !already {
                     self.begin_focus_fade();
@@ -3776,7 +3776,7 @@ impl App {
                     return false;
                 }
                 self.commit_table_edit();
-                self.focus = PaneId::Editor;
+                self.set_focus(PaneId::Editor);
                 self.editor.begin_add_row();
                 true
             }
@@ -3858,6 +3858,11 @@ impl App {
                 else {
                     return false;
                 };
+                // The pencil takes the caret into the table after it adds
+                // its row, so a text field it leaves closes first, as its
+                // own step (task #64): the row's step must not take in the
+                // field's typing.
+                self.leave_text_field();
                 // A cell still open commits first, as an undo step of its
                 // own, so an undo of the new row leaves what was typed
                 // there. The section is read again after it: the commit can
@@ -3888,7 +3893,7 @@ impl App {
                 // Insert in the vim profile, as an add verb's row opens
                 // (vim spec §5.6).
                 self.vim_open_next_in_insert();
-                self.focus = PaneId::Editor;
+                self.set_focus(PaneId::Editor);
                 self.editor.sub_focus = SubFocus::Content;
                 self.editor.table.col = crate::components::table_editor::Col::Value;
                 self.editor.table.begin_edit_selected(&self.editor.headers);
@@ -8891,7 +8896,7 @@ impl App {
             }
             Hit::BodyEditor => {
                 self.update(Action::FocusPane(PaneId::Editor));
-                self.editor.sub_focus = SubFocus::Content;
+                self.move_editor_caret(SubFocus::Content);
                 (TextSurface::Body, true)
             }
             // Only once there is response text to select: an empty pane
@@ -8922,7 +8927,7 @@ impl App {
                     return None;
                 }
                 self.update(Action::FocusPane(PaneId::Editor));
-                self.editor.sub_focus = SubFocus::Content;
+                self.move_editor_caret(SubFocus::Content);
                 (TextSurface::TableCell, true)
             }
             Hit::VmFormField(field) => {

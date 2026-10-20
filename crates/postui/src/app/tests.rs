@@ -14903,6 +14903,37 @@ fn the_auto_header_pencil_keeps_an_open_cells_commit_its_own_undo_step() {
     assert_eq!(app.editor.headers["X-Foo"].value, "1", "then the commit goes");
 }
 
+/// The same for the URL line's typing (task #64): the pencil adds its row
+/// before it takes the caret, so the line's close is recorded first, as
+/// the cell's commit is.
+#[test]
+fn the_auto_header_pencil_keeps_the_urls_typing_its_own_undo_step() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.url = LineInput::new("https://e.com");
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.capture_undo();
+    app.handle_key(alt('u'));
+    type_chars(&mut app, "x");
+    app.capture_undo();
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let accept = app.editor.computed.rows.iter().position(|r| r.header.name == "Accept").unwrap();
+    let pencil = app.hits.rect_of(&Hit::AutoHeaderOverride(accept)).expect("Accept's pencil");
+    app.handle_mouse(left_down(pencil.x, pencil.y));
+    app.capture_undo();
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    assert!(app.editor.headers.contains_key("Accept"));
+
+    app.update(Action::Undo);
+    assert!(!app.editor.headers.contains_key("Accept"), "the pencil's row goes first");
+    assert_eq!(app.editor.url.text(), "https://e.comx", "the typing stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://e.com", "then the typing goes");
+}
+
 /// The row's copy button puts that row's value — as typed, tokens and all
 /// — on the clipboard, and says which row it took it from.
 #[test]
