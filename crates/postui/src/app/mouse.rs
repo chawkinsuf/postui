@@ -342,8 +342,8 @@ impl App {
                     //
                     // With a dialog open the point is the dialog's (a gap
                     // between its footer chips, say), and nothing under it
-                    // closes (`click_is_dialogs`).
-                    let live = !self.click_is_dialogs(None)
+                    // closes (`on_hit`'s dialog rule, task #73).
+                    let live = self.modals.is_empty()
                         && (self.varmanager.form.editing.is_some()
                             || self.varmanager.grid.editing.is_some()
                             || self.settings.editing.is_some()
@@ -478,10 +478,11 @@ impl App {
                 // whose row index would then address a different record —
                 // and the next click-away would write the typed text into
                 // that wrong option. A right press in a dialog is the
-                // dialog's (`click_is_dialogs`): asked after a re-targeting
-                // click has closed its dropdown, so a press that lands on
-                // the screen under it still commits.
-                if !self.click_is_dialogs(Some(&hit)) {
+                // dialog's (`on_hit`'s dialog rule, task #73), the quit chip
+                // included, since a right press on it quits nothing. It is
+                // asked after a re-targeting press has closed a dropdown,
+                // so one that was all that was open still commits.
+                if self.modals.is_empty() {
                     self.commit_var_form();
                     self.commit_grid_edit();
                 }
@@ -1231,24 +1232,6 @@ impl App {
         ]
     }
 
-    /// Whether a click on `hit` (`None`: a point with no hit) is a
-    /// dialog's, so that no click-away rule runs for it. A click in a
-    /// dialog is the dialog's, as its keys are (task #73): while one is
-    /// open, whatever is open under it stays open — whether the click
-    /// lands on its buttons, its text box, its footer chips or a gap
-    /// between them. Asking whether a dialog is open, as the jq bar's
-    /// rule does, rather than listing the dialogs' hits, leaves no dialog
-    /// hit to miss.
-    ///
-    /// The footer's quit chip is the one exception: it shows under every
-    /// dialog but is the app's, and its click away commits a live Settings
-    /// field or Manager edit before quitting, as on main. Under a dialog
-    /// that chip is always `Quit`, in vim too: `:` does not apply there
-    /// (`spell::quit_action`). Quitting over a dialog is task #74's.
-    fn click_is_dialogs(&self, hit: Option<&Hit>) -> bool {
-        !self.modals.is_empty() && !matches!(hit, Some(Hit::FooterChip(Action::Quit)))
-    }
-
     /// The central click dispatch: maps a resolved `Hit` (plus click count
     /// and the raw event, for hits that need to forward it) to app state
     /// changes. Only `Pane` and `BodyEditor` are wired up so far; later
@@ -1259,37 +1242,53 @@ impl App {
         clicks: Clicks,
         m: ratatui::crossterm::event::MouseEvent,
     ) -> bool {
-        let in_dialog = self.click_is_dialogs(Some(&hit));
+        // A click in a dialog is the dialog's, as its keys are (task #73):
+        // while one is open no click-away rule runs, so whatever is open
+        // under it stays open, whether the click lands on its buttons, its
+        // text box, its footer chips or a gap between them. The rule asks
+        // whether a dialog is open, as the jq bar's rule, the no-hit point
+        // and the right press do, rather than listing the dialogs' hits,
+        // so there is no dialog hit left to miss.
+        //
+        // The footer's quit chip is the one exception, and it is this
+        // click's alone (a right press on it quits nothing): it shows under
+        // every dialog but is the app's, and its click away commits a live
+        // Settings field or Manager edit before quitting, as on main. The
+        // chip is matched by the action the footer gave it. Quitting over a
+        // dialog is task #74's.
+        let quit_chip = matches!(&hit, Hit::FooterChip(a)
+            if *a == crate::keyroute::spell::quit_action(self.spell_ctx()));
+        let in_dialog = !self.modals.is_empty() && !quit_chip;
         // A click anywhere that isn't the params/headers table itself (and
         // isn't in a dialog) is a click away: it commits whatever cell was
         // being edited (typing is never silently thrown away) and clears
         // the table selection.
         let keeps_table_selection = in_dialog
             || matches!(
-            hit,
-            Hit::TableRow(_)
-                | Hit::TableCheckbox(_)
-                | Hit::TableCopy(_)
-                | Hit::TableDelete(_)
-                | Hit::TableCell { .. }
-                // The auto row's pencil commits an open cell itself, as
-                // its own undo step, before it adds its row.
-                | Hit::AutoHeaderOverride(_)
-                | Hit::SplitStop(_)
-                | Hit::SplitStep(_)
-                | Hit::ScrollbarThumb(_)
-                | Hit::ScrollbarTrack(..)
-                | Hit::HScrollThumb(_)
-                | Hit::HScrollTrack(..)
-                // The `{{ }} vars` chip inserts into whatever text field is
-                // live, so it must not be treated as a click away: blurring
-                // the URL line (or committing the cell) first would leave
-                // the picker it opens with nowhere to insert.
-                | Hit::FooterChip(Action::OpenVarPicker { .. })
-        )
-        // The tooltip floats over the rows: clicking one of its pills
-        // must neither commit the cell under edit nor drop the selection.
-        || hit.is_float_overlay();
+                hit,
+                Hit::TableRow(_)
+                    | Hit::TableCheckbox(_)
+                    | Hit::TableCopy(_)
+                    | Hit::TableDelete(_)
+                    | Hit::TableCell { .. }
+                    // The auto row's pencil commits an open cell itself, as
+                    // its own undo step, before it adds its row.
+                    | Hit::AutoHeaderOverride(_)
+                    | Hit::SplitStop(_)
+                    | Hit::SplitStep(_)
+                    | Hit::ScrollbarThumb(_)
+                    | Hit::ScrollbarTrack(..)
+                    | Hit::HScrollThumb(_)
+                    | Hit::HScrollTrack(..)
+                    // The `{{ }} vars` chip inserts into whatever text field
+                    // is live, so it must not be treated as a click away:
+                    // blurring the URL line (or committing the cell) first
+                    // would leave the picker it opens with nowhere to insert.
+                    | Hit::FooterChip(Action::OpenVarPicker { .. })
+            )
+            // The tooltip floats over the rows: clicking one of its pills
+            // must neither commit the cell under edit nor drop the selection.
+            || hit.is_float_overlay();
         if !keeps_table_selection {
             self.commit_table_edit();
             self.editor.table.selected = None;

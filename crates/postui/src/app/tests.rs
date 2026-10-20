@@ -28589,15 +28589,36 @@ fn a_click_in_a_dialog_keeps_the_manager_edit_under_it_open() {
     }
 }
 
-/// A point that registers no hit, with a dialog open: the footer row has
-/// gaps between its chips.
+/// A gap between the footer's chips, with a dialog open: a point on the
+/// quit chip's row that registers no hit.
 fn bare_point(app: &mut App) -> (u16, u16) {
     render_once(app);
-    (0..40u16)
-        .rev()
-        .flat_map(|y| (0..120u16).map(move |x| (x, y)))
-        .find(|(x, y)| app.hits.hit_at(*x, *y).is_none())
-        .expect("some point with no hit")
+    let quit = app.hits.rect_of(&Hit::FooterChip(Action::Quit)).expect("the quit chip");
+    let y = quit.y + quit.height / 2;
+    let x = (0..quit.x)
+        .find(|x| app.hits.hit_at(*x, y).is_none())
+        .expect("a gap between the footer's chips");
+    (x, y)
+}
+
+/// The quit chip's exception is its quit's: a right press on it quits
+/// nothing, so the Manager edit under the dialog stays open (task #73).
+#[test]
+fn a_right_press_on_the_quit_chip_under_a_dialog_keeps_the_manager_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let r = cell_rect(&mut app, 1, 1);
+    app.handle_mouse(left_down(r.x + 10, r.y));
+    app.handle_key(plain('9'));
+    app.push_modal(Modal::Message { title: "note".into(), body: "hello".into() });
+    render_once(&mut app);
+    let quit = app.hits.rect_of(&Hit::FooterChip(Action::Quit)).unwrap();
+    app.handle_mouse(right_down(quit.x + 1, quit.y + 1));
+    assert!(!app.should_quit);
+    assert!(app.varmanager.grid.editing.is_some(), "the grid cell is still open");
 }
 
 /// Task #73: a click between a dialog's footer chips keeps the Settings
