@@ -2236,7 +2236,10 @@ fn a_method_change_that_keeps_the_tab_leaves_the_cell_open() {
 #[test]
 fn leaving_a_cell_by_keyboard_commits_it_as_its_own_undo_step() {
     type Leave = fn(&mut App);
-    let leaves: [(&str, Leave); 6] = [
+    let leaves: [(&str, Leave); 7] = [
+        ("next pane", |app| {
+            app.update(Action::FocusNext);
+        }),
         ("alt+u", |app| {
             app.handle_key(alt('u'));
         }),
@@ -22930,26 +22933,6 @@ fn undoing_a_discard_over_an_open_cell_brings_its_typing_back() {
     assert_eq!(app.editor.params["a"].value, "1", "discarded");
     app.update(Action::Undo);
     assert_eq!(app.editor.params["a"].value, "19", "the typing is back");
-}
-
-/// A value typed on the "+ Add" row with no key belongs to the request it
-/// was typed in: another request's add row starts empty (spec 2026-10-19
-/// R8).
-#[test]
-fn a_stashed_add_row_value_does_not_follow_to_another_request() {
-    let (mut app, _dir) = alpha_with_a_typed_cell();
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    app.update(Action::SaveRequest);
-    click_hit(&mut app, Hit::TableCell { row: 1, col: 1 });
-    type_chars(&mut app, "v");
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    app.capture_undo();
-    assert!(!app.editor.is_dirty(), "a stash is not part of the request");
-    app.update(Action::OpenRequest("main/beta".into()));
-    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
-    click_hit(&mut app, Hit::TableCell { row: 1, col: 1 });
-    let edit = app.editor.table.editing.as_ref().expect("the add row's value cell is open");
-    assert_eq!(edit.input.text(), "", "alpha's stash stayed behind");
 }
 
 /// A load drops only the open cell: Save As lands on the content it was

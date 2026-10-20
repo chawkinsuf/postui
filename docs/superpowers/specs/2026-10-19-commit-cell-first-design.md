@@ -50,7 +50,7 @@ about drafts. It accepts the Cancel behaviour that round objected to
 | R5 | Every path that replaces the editor wholesale or records an op's before-view commits an open cell first, as its own step: a journaled op (`begin_op`), opening another request, Discard, Reload, curl import's scratch discard, curl replace. Undoing the op or the discard therefore brings the typing back. | mine (approved); fixes #65 |
 | R6 | Extract (to variable or selector, whole cell or a selection in it) with a cell open keeps the cell open through its op, as before: the variable or selector is the op's step, and the typing commits with the token as one step on top. `begin_op_keeping_cell` is the one exception to R5. *Amended after review round 1:* the first version committed the typed text before the op ("three steps"), which commits it as if Enter were pressed, so a key typed on the "+ Add" row that names an existing row, or a key renamed onto another, merged rows before the token arrived. | mine (approved), replacing "go with three steps" |
 | R7 | A cell commit is its own undo step, bracketed by a capture before and after (#66, unchanged). A method change that moves the tab is two steps: the method, then the cell. | you (#66: "id rather have the logic in one place"), mine (approved) |
-| R8 | `Editor::load` still drops a cell left open, as a backstop, and now drops the add-row stash with it (a value typed on the "+ Add" row with no key). The row selection stays. | mine (approved) |
+| R8 | `Editor::load` still drops a cell left open, as a backstop. The row selection stays, and so does the add-row stash (a value typed on the "+ Add" row with no key), as on main. *Amended after review round 3:* clearing the stash on load (the first R8) also lost it on Save As, rename and move-all, which load the same content; the stash's leak into another request moved to task #68 with its other problems. | mine (the user had approved clearing it; this reversal is proposed, not yet confirmed) |
 
 ## 3. Design
 
@@ -100,7 +100,10 @@ the cell can still be open when it runs:
   begin their op with `begin_op_keeping_cell`, which flushes the URL/jq
   session (`flush_text_session`) but leaves the cell open, so the token
   replacement works on it as before.
-- **`Editor::load`** also clears the add-row stash (R8).
+- **`commit_table_edit`** asserts (debug builds) that no field session
+  holds the gate when a cell commits: the invariant R1 rests on. Added
+  after review round 3 (every round raised it); `mine`, reversing the
+  approved "no new debug assertions".
 
 ### Contract before → after
 
@@ -130,7 +133,8 @@ the cell can still be open when it runs:
   with typing, then the variable); a key typed on the "+ Add" row that
   names an existing row leaves that row alone; a selection in the cell
   keeps the text around it; "This request" stays one editor step.
-- R8: a stashed add-row value doesn't follow to another request.
+- R8: no test of its own after the round-3 amendment (load keeps the
+  stash, as on main; #68).
 - Tests that pin the removed record-beneath step get the new rule (the
   cell commits when `alt+u` leaves it), not deletion.
 

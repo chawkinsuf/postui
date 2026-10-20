@@ -1087,7 +1087,9 @@ impl App {
     ///
     /// No field session holds these captures back: a cell is open only
     /// while the caret is in it, so the URL line and the jq bar never hold
-    /// keystrokes beside an open cell.
+    /// keystrokes beside an open cell. The assertion holds the suite to
+    /// that; were it broken, the commit would join the field's close step
+    /// (the merge before #66), never lose the typing.
     ///
     /// `no_coalesce` belongs to a change already made: the capture before
     /// the commit records that change and spends the flag with it. A caller
@@ -1098,6 +1100,7 @@ impl App {
         if self.editor.table.editing.is_none() {
             return;
         }
+        debug_assert!(!self.field_gate(), "a table cell open beside a field session");
         self.capture_step();
         if let Some(w) = self.editor.commit_table().warning {
             self.toasts.push(w, ToastKind::Warning);

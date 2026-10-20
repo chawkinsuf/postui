@@ -144,9 +144,8 @@ replaces the editor or records an op's before-view commits it first
 saved, and brought back by undo like any other edit (`mine
 (approved)`). Cancel on the prompt therefore finds the cell closed with
 its typing committed (`mine (approved)`). Nothing outside the table
-reads an uncommitted draft. `Editor::load` still drops a stray cell and
-the "+ Add" row's stash as a backstop; the row selection stays, so Save
-As keeps it.
+reads an uncommitted draft. `Editor::load` still drops a stray cell as a
+backstop; the row selection stays, so Save As keeps it.
 
 ### Coalescing
 

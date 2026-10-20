@@ -2445,6 +2445,21 @@ impl App {
         self.capture_step() || closed || dropped
     }
 
+    /// Moves the pane focus: the one way the focus actions leave a pane.
+    /// A move out of the editor leaves an open cell, which commits as the
+    /// move happens (spec 2026-10-19 R1) rather than at the end of the
+    /// event, as `capture_undo` would: a move that also fills the field it
+    /// lands in (the jq tree's tee-up) would otherwise open that field's
+    /// session first, and the cell's step would wait behind it and join
+    /// the field's close. `capture_undo` stays the net for the screen
+    /// changes and sub-focus moves that end an event outside the cell.
+    fn set_focus(&mut self, pane: PaneId) {
+        if pane != PaneId::Editor {
+            self.commit_table_edit();
+        }
+        self.focus = pane;
+    }
+
     /// [`Self::capture_undo`]'s recording half, without closing what the
     /// caret has left: diffs the open request against the shadow and
     /// records any change as a step, unless a field session holds the
@@ -2716,7 +2731,12 @@ impl App {
                 true
             }
             // `:q` has no such exemption: typed over a dialog it still meets
-            // the gate, whose cancel goes back to that dialog.
+            // the gate, whose cancel goes back to that dialog. Quitting
+            // leaves the request, so an open cell commits first even under
+            // a dialog that acts on it (extract, the var picker): after a
+            // Cancel that dialog finds no open field and says so, but the
+            // typing is kept and undoable. Counting the uncommitted cell
+            // instead is the draft state spec 2026-10-19 rules out.
             Action::GatedQuit if self.leaving_unsaved() => {
                 self.dirty_gate("quit", Action::ForceQuit);
                 true
@@ -3068,25 +3088,15 @@ impl App {
             // (rather than through an `Action`) and just need a repaint.
             Action::Render => true,
             Action::FocusNext => {
-                self.focus = self.focus.next();
+                self.set_focus(self.focus.next());
                 true
             }
             Action::FocusPrev => {
-                self.focus = self.focus.prev();
+                self.set_focus(self.focus.prev());
                 true
             }
             Action::FocusPane(pane) => {
-                // A jump out of the editor leaves an open cell, which
-                // commits as the jump happens (spec 2026-10-19 R1) rather
-                // than at the end of the event, as `capture_undo` would:
-                // a jump that also fills the field it lands in (the jq
-                // tree's tee-up) would otherwise open that field's session
-                // first, and the cell's step would wait behind it and join
-                // the field's close.
-                if pane != PaneId::Editor {
-                    self.commit_table_edit();
-                }
-                self.focus = pane;
+                self.set_focus(pane);
                 true
             }
             Action::PaneMove(dir) => self.pane_move(dir),
@@ -9224,6 +9234,10 @@ impl App {
     /// its commit only stashes it in the table until a key arrives, and a
     /// save could not keep it (a row needs a name), so it stays outside
     /// the request and goes with the request, as on main (task #68).
+    ///
+    /// It commits, so a guard puts it last: `moving_open &&
+    /// leaving_unsaved()` commits only when the gate applies, and a move
+    /// that does not touch the open request leaves its cell alone.
     fn leaving_unsaved(&mut self) -> bool {
         self.commit_table_edit();
         self.editor_holds_unsaved()

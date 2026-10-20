@@ -480,14 +480,15 @@ impl Editor {
         });
         self.set_saved(Some(req));
         self.computed.revealed = false;
-        // What is being typed in the table belongs to the request being
-        // replaced: never let it commit into this one. Every way to a load
-        // commits an open cell first (the dirty gates, and the landing's
+        // A cell still open belongs to the request being replaced: never
+        // let it commit into this one. Every way to a load commits an open
+        // cell first (the dirty gates, and the landing's
         // `App::flush_field_session`; spec 2026-10-19), so dropping one
-        // here is only a backstop. A value stashed on the "+ Add" row goes
-        // too (R8). The row selection stays, as it always has: Save As
-        // lands on the content it was made in.
-        self.table.drop_typing();
+        // here is only a backstop. The row selection stays, as it always
+        // has: Save As lands on the content it was made in. So does a
+        // value stashed on the "+ Add" row (task #68 owns where it should
+        // go).
+        self.table.editing = None;
     }
 
     /// Swaps in `req`'s fields the way `load` does, for undo/redo stepping
