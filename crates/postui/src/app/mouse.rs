@@ -339,10 +339,15 @@ impl App {
                     // and the same rule: the edit commits, and the
                     // keyboard cursor goes with it, so no control is
                     // left lifted on a tab the pointer has walked off.
-                    let live = self.varmanager.form.editing.is_some()
-                        || self.varmanager.grid.editing.is_some()
-                        || self.settings.editing.is_some()
-                        || self.settings.focused;
+                    //
+                    // With a dialog open the point is the dialog's (a gap
+                    // between its footer chips, say), and nothing under it
+                    // closes (`on_hit`'s dialog rule, task #73).
+                    let live = self.modals.is_empty()
+                        && (self.varmanager.form.editing.is_some()
+                            || self.varmanager.grid.editing.is_some()
+                            || self.settings.editing.is_some()
+                            || self.settings.focused);
                     if !live {
                         return jq_blurred;
                     }
@@ -472,9 +477,14 @@ impl App {
                 // the option rows out from under a still-live `GridEdit`,
                 // whose row index would then address a different record —
                 // and the next click-away would write the typed text into
-                // that wrong option.
-                self.commit_var_form();
-                self.commit_grid_edit();
+                // that wrong option. A right press in a dialog is the
+                // dialog's (`on_hit`'s dialog rule, task #73): asked after
+                // a re-targeting click has closed its dropdown, so a press
+                // that lands on the screen under it still commits.
+                if self.modals.is_empty() {
+                    self.commit_var_form();
+                    self.commit_grid_edit();
+                }
                 // A commit that *failed* keeps its edit (spec §5: the typed
                 // text survives), so the row indices it holds must stay
                 // meaningful: offer no menu that could renumber them until
@@ -1231,17 +1241,25 @@ impl App {
         clicks: Clicks,
         m: ratatui::crossterm::event::MouseEvent,
     ) -> bool {
-        // A click anywhere that isn't the params/headers table itself (and
-        // isn't inside a modal) is a
-        // click away: it commits whatever cell was being edited (typing is
-        // never silently thrown away) and clears the table selection.
+        // A click in a dialog is the dialog's, as its keys are (task #73):
+        // while one is open no click-away rule below runs, so whatever is
+        // open under it stays open — its buttons, its text box, its footer
+        // chips, a gap between them. Asking whether a dialog is open, as
+        // the jq bar's rule does, rather than listing the dialogs' hits,
+        // leaves no dialog hit to miss.
         //
-        // The modal part is a list of the modals' hits, not "any click while
-        // a modal is open": the footer's quit chip shows under every dialog
-        // and is the app's, and its click away commits a live Settings field
-        // before quitting. The dialogs' own footer chips are still missing
-        // from it (task #73, which also weighs the open-modal rule).
-        let keeps_table_selection = matches!(
+        // The footer's quit chip is the one exception: it shows under every
+        // dialog but is the app's, and its click away commits a live
+        // Settings field or Manager edit before quitting, as on main.
+        // Quitting over a dialog is task #74's.
+        let in_dialog = !self.modals.is_empty()
+            && !matches!(hit, Hit::FooterChip(Action::Quit | Action::GatedQuit));
+        // A click anywhere that isn't the params/headers table itself (and
+        // isn't in a dialog) is a click away: it commits whatever cell was
+        // being edited (typing is never silently thrown away) and clears
+        // the table selection.
+        let keeps_table_selection = in_dialog
+            || matches!(
             hit,
             Hit::TableRow(_)
                 | Hit::TableCheckbox(_)
@@ -1253,39 +1271,6 @@ impl App {
                 | Hit::AutoHeaderOverride(_)
                 | Hit::SplitStop(_)
                 | Hit::SplitStep(_)
-                | Hit::ModalCancel
-                | Hit::ModalConfirm
-                | Hit::ConfirmChoice(_)
-                | Hit::ModalBody
-                | Hit::ModalField(_)
-                // A dialog's text box sits over its field (task #71): a
-                // click in it, say naming an extract, must not blur the
-                // URL line the extract replaces.
-                | Hit::ModalInput(_)
-                | Hit::ModalChoiceArrow { .. }
-                | Hit::ModalRowToggle(_)
-                | Hit::ModalAddRow
-                | Hit::ModalSharedToggle
-                | Hit::ModalRevealToggle
-                | Hit::ModalRemove
-                | Hit::ModalOutside
-                // The blocking dialogs' buttons are dialog hits like any
-                // other (task #71).
-                | Hit::ConfigStartupChoice(_)
-                | Hit::KeymapChoice(_)
-                | Hit::ConfigEditKeepEditing
-                | Hit::ConfigEditDiscard
-                | Hit::DropdownRow(_)
-                | Hit::ChooserRow(_)
-                | Hit::ChooserToggle
-                | Hit::ChooserStepDown
-                | Hit::ChooserStepUp
-                | Hit::PickerRow(_)
-                | Hit::PickerPrimary
-                | Hit::PickerHidden
-                | Hit::NewProjectBrowse
-                | Hit::PaletteRow(_)
-                | Hit::VarPickerRow(_)
                 | Hit::ScrollbarThumb(_)
                 | Hit::ScrollbarTrack(..)
                 | Hit::HScrollThumb(_)
@@ -1311,7 +1296,7 @@ impl App {
         // `form.editing` out from under the field that was live.
         let editing_this_field = matches!(hit, Hit::VmFormField(field)
             if self.varmanager.form.editing.as_ref().is_some_and(|e| e.field == field));
-        if !editing_this_field && !matches!(hit, Hit::VmRevealToggle) {
+        if !in_dialog && !editing_this_field && !matches!(hit, Hit::VmRevealToggle) {
             self.commit_var_form();
         }
         // …and the selector grid's cell, likewise: any click that isn't on the
@@ -1320,7 +1305,7 @@ impl App {
         // first (Task 8's commit-first rule).
         let editing_this_cell = matches!(hit, Hit::VmEntryCell { row, col }
             if self.varmanager.grid.editing.as_ref().is_some_and(|e| e.row == row && e.col == col));
-        if !editing_this_cell {
+        if !in_dialog && !editing_this_cell {
             self.commit_grid_edit();
         }
         // …and the Settings tab's field and cursor, likewise. Any click
@@ -1333,9 +1318,9 @@ impl App {
         // as it does on the tab's own hits.
         //
         // Overlays are exempt, like every other click-away rule here: a
-        // modal, a dropdown or a scrollbar drawn over the tab must not
+        // dialog, a dropdown or a scrollbar drawn over the tab must not
         // pull the caret out from under what is being typed.
-        // `keeps_table_selection` is already that exemption set.
+        // `keeps_table_selection` already holds those exemptions.
         let keeps_settings_focus = keeps_table_selection
             || matches!(
                 hit,
@@ -1355,7 +1340,7 @@ impl App {
         // Likewise, clicking away blurs whichever editor input is active
         // (URL line / table / body). Hits that themselves place the
         // sub-focus (UrlBar, BodyEditor, the table hits) re-set it right
-        // after; modal and scrollbar hits are excluded above so an open
+        // after; dialog and scrollbar clicks are excluded above so an open
         // popup or a scroll never blurs the input under it.
         let keeps_editor_input =
             keeps_table_selection || matches!(hit, Hit::UrlBar | Hit::BodyEditor | Hit::CopyUrl);

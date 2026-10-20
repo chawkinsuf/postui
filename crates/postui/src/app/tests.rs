@@ -28515,6 +28515,130 @@ fn a_click_on_a_blocking_dialogs_button_keeps_the_url_line_open() {
     }
 }
 
+/// Task #73: a click in a dialog is the dialog's, as its keys are. Its
+/// footer chips are no exception: `esc done` closes the dialog's name
+/// box, not the URL line the extract replaces.
+#[test]
+fn a_dialogs_footer_chip_keeps_the_url_line_under_it_open() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping/abc-123"))
+        .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.anims.enabled = false;
+    app.update(Action::ForceOpenRequest("main/ping".into()));
+    app.focus = crate::layout::PaneId::Editor;
+    app.editor.open_url_from_app();
+    app.handle_key(plain('9'));
+    app.update(Action::ExtractToVariable);
+    type_into_field(&mut app, "trace_id");
+    click_hit(&mut app, Hit::FooterChip(Action::CloseField));
+    assert!(app.editor.url_open(), "the chip closed the dialog's field, not the URL line");
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top_mut() else {
+        panic!("the extract dialog");
+    };
+    let destination = fields.iter_mut().find(|f| f.key == "destination").unwrap();
+    destination.input.set_text("This request");
+    click_modal_confirm(&mut app);
+    assert!(app.modals.is_empty(), "the dialog confirmed");
+    assert_eq!(app.editor.url.text(), "{{trace_id}}");
+}
+
+/// Task #73: the Variable Manager's form field and grid cell stay open
+/// under a dialog, whatever the click in it: a press on its body, a left
+/// or right press on a point that registers no hit (a gap between the
+/// footer's chips), a right press on the dialog.
+#[test]
+fn a_click_in_a_dialog_keeps_the_manager_edit_under_it_open() {
+    type Press = fn(&mut App);
+    let left_gap: Press = |app| {
+        let (x, y) = bare_point(app);
+        app.handle_mouse(left_down(x, y));
+    };
+    let right_gap: Press = |app| {
+        let (x, y) = bare_point(app);
+        app.handle_mouse(right_down(x, y));
+    };
+    let body: Press = |app| click_hit(app, Hit::ModalBody);
+    let right_body: Press = |app| {
+        render_once(app);
+        let r = app.hits.rect_of(&Hit::ModalBody).unwrap();
+        app.handle_mouse(right_down(r.x + 1, r.y));
+    };
+    for (what, press) in
+        [("body", body), ("gap", left_gap), ("right gap", right_gap), ("right body", right_body)]
+    {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
+        let r = field_rect(&mut app, VmField::EnvValue);
+        app.handle_mouse(left_down(r.x + r.width - 2, r.y));
+        app.handle_key(plain('9'));
+        app.push_modal(Modal::Message { title: "note".into(), body: "hello".into() });
+        press(&mut app);
+        assert!(app.varmanager.form.editing.is_some(), "{what}: the form field is still open");
+
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        goto_group(&mut app, "user");
+        let r = cell_rect(&mut app, 1, 1);
+        app.handle_mouse(left_down(r.x + 10, r.y));
+        app.handle_key(plain('9'));
+        app.push_modal(Modal::Message { title: "note".into(), body: "hello".into() });
+        press(&mut app);
+        assert!(app.varmanager.grid.editing.is_some(), "{what}: the grid cell is still open");
+    }
+}
+
+/// A point that registers no hit, with a dialog open: the footer row has
+/// gaps between its chips.
+fn bare_point(app: &mut App) -> (u16, u16) {
+    render_once(app);
+    (0..40u16)
+        .rev()
+        .flat_map(|y| (0..120u16).map(move |x| (x, y)))
+        .find(|(x, y)| app.hits.hit_at(*x, *y).is_none())
+        .expect("some point with no hit")
+}
+
+/// Task #73: a click between a dialog's footer chips keeps the Settings
+/// field under the dialog, and its cursor.
+#[test]
+fn a_click_between_a_dialogs_footer_chips_keeps_the_settings_field() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    app.settings.begin_edit(SettingsField::AiCmd, "llm --pipe");
+    app.push_modal(Modal::Message { title: "note".into(), body: "hello".into() });
+    let (x, y) = bare_point(&mut app);
+    app.handle_mouse(left_down(x, y));
+    assert_eq!(app.settings.editing, Some(SettingsField::AiCmd), "the field is still open");
+    assert!(app.settings.focused, "and keeps the cursor");
+}
+
+/// The footer's quit chip shows under every dialog but is the app's
+/// (task #73 keeps it as on main): its click away still commits the
+/// Settings field before quitting. Quitting over a dialog is task #74's.
+#[test]
+fn the_quit_chip_under_a_dialog_still_commits_the_settings_field() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    let _dir = config_at_tempdir(&mut app);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    app.settings.begin_edit(SettingsField::AiCmd, "llm --pipe");
+    app.push_modal(Modal::Message { title: "note".into(), body: "hello".into() });
+    click_hit(&mut app, Hit::FooterChip(Action::Quit));
+    assert!(app.should_quit);
+    assert_eq!(app.ui_settings.ai_cmd, "llm --pipe", "the field committed before the quit");
+}
+
 /// Plan M1 Deviation 2: an unset `keymap` runs arrows until the
 /// first-launch question is answered (the question blocks at the next
 /// event boundary, spec §4.2; this pins what runs underneath it).
