@@ -1235,6 +1235,12 @@ impl App {
         // isn't inside a modal) is a
         // click away: it commits whatever cell was being edited (typing is
         // never silently thrown away) and clears the table selection.
+        //
+        // The modal part is a list of the modals' hits, not "any click while
+        // a modal is open": the footer's quit chip shows under every dialog
+        // and is the app's, and its click away commits a live Settings field
+        // before quitting. The dialogs' own footer chips are still missing
+        // from it (task #73, which also weighs the open-modal rule).
         let keeps_table_selection = matches!(
             hit,
             Hit::TableRow(_)
