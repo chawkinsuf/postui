@@ -302,7 +302,11 @@ impl App {
                 // Nor is the bar's own switch (the header 󰈲, the footer's
                 // `unfilter`) a click away: an empty bar hides once it
                 // blurs, and the toggle would then read it as closed and
-                // open it again. `ToggleJqBar` blurs as it closes.
+                // open it again. `ToggleJqBar` blurs as it closes. Its
+                // switch-off is the bar's own state, part of the bar's close
+                // as Esc's is, so the filter typed and the switch are one
+                // step, by click as by key (task #64 records only a close
+                // that comes with an edit elsewhere).
                 let jq_blurred = self.session.response.jq_focused()
                     && self.modals.is_empty()
                     && !matches!(
@@ -318,6 +322,7 @@ impl App {
                         )
                     );
                 if jq_blurred {
+                    self.leave_text_field();
                     self.session.response.set_jq_focus(false);
                 }
                 let Some(hit) = hit else {
@@ -536,7 +541,7 @@ impl App {
                     | Hit::TableCell { row: i, .. } => {
                         let i = *i;
                         changed |= self.update(Action::FocusPane(PaneId::Editor));
-                        self.editor.sub_focus = SubFocus::Content;
+                        self.move_editor_caret(SubFocus::Content);
                         match self.resolve_table_row_across_commit(i) {
                             Some(resolved) => {
                                 changed |= self.editor.table.selected != Some(resolved);
@@ -1021,7 +1026,7 @@ impl App {
         // A press on the body's text gives it the caret, as its own mouse
         // code does: vim takes the press only on the field with the caret.
         if field == FieldId::Body && at.is_some() {
-            self.editor.sub_focus = SubFocus::Content;
+            self.move_editor_caret(SubFocus::Content);
         }
         if let Some(at) = at
             && self.vim_text_press(field, at, clicks.text)
@@ -1106,6 +1111,20 @@ impl App {
             self.toasts.push(w, ToastKind::Warning);
         }
         self.capture_step();
+    }
+
+    /// Moves the editor's caret for a click's dispatch, left or right. A URL
+    /// line it leaves closes here, so its typing is recorded as its own step
+    /// before the click acts (see [`App::leave_text_field`]); a click that
+    /// keeps it open never comes here, and its typing stays one step with
+    /// its own history intact. The editor's own body mouse code also places
+    /// the caret, but a body press edits nothing, so a close it makes lands
+    /// alone at the end of the event.
+    pub(super) fn move_editor_caret(&mut self, to: SubFocus) {
+        if self.focus == PaneId::Editor && self.editor.sub_focus != to {
+            self.leave_text_field();
+        }
+        self.editor.sub_focus = to;
     }
 
     /// Commits the in-progress edit and re-resolves row `i` — an index from
@@ -1325,7 +1344,7 @@ impl App {
         let keeps_editor_input =
             keeps_table_selection || matches!(hit, Hit::UrlBar | Hit::BodyEditor | Hit::CopyUrl);
         if !keeps_editor_input {
-            self.editor.sub_focus = SubFocus::None;
+            self.move_editor_caret(SubFocus::None);
         }
         match hit {
             Hit::Pane(p) => {
@@ -1561,7 +1580,7 @@ impl App {
             }
             Hit::TableCheckbox(i) => {
                 self.update(Action::FocusPane(PaneId::Editor));
-                self.editor.sub_focus = SubFocus::Content;
+                self.move_editor_caret(SubFocus::Content);
                 // A checkbox click during another row's edit commits that
                 // edit first — and that commit can collapse rows, so `i`
                 // (baked into the last frame's hit map) is re-resolved by
@@ -1589,7 +1608,7 @@ impl App {
             // it selects the row, nothing more — editing is the cells' job.
             Hit::TableRow(i) => {
                 self.update(Action::FocusPane(PaneId::Editor));
-                self.editor.sub_focus = SubFocus::Content;
+                self.move_editor_caret(SubFocus::Content);
                 // The background of the row being edited is that row's own
                 // chrome (the pad lines its expansion added): clicking it
                 // is inert, so the second click of a double click can't
@@ -1607,7 +1626,7 @@ impl App {
             // was being edited before it.
             Hit::TableCell { row, col } => {
                 self.update(Action::FocusPane(PaneId::Editor));
-                self.editor.sub_focus = SubFocus::Content;
+                self.move_editor_caret(SubFocus::Content);
                 let cell_col = crate::components::table_editor::Col::from_index(col);
                 let already_editing = self
                     .editor
@@ -1647,7 +1666,7 @@ impl App {
             }
             Hit::TableDelete(i) => {
                 self.update(Action::FocusPane(PaneId::Editor));
-                self.editor.sub_focus = SubFocus::Content;
+                self.move_editor_caret(SubFocus::Content);
                 // Same as the checkbox: commit first, then re-resolve the
                 // row so the confirm never names the wrong one.
                 let Some(i) = self.resolve_table_row_across_commit(i) else {

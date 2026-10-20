@@ -2194,6 +2194,283 @@ fn a_click_away_that_edits_keeps_the_cells_commit_its_own_undo_step() {
     assert_eq!(app.editor.params["a"].value, "1", "then the commit goes");
 }
 
+/// A fresh app with the URL line open and `x` typed onto `https://e.com`,
+/// its session holding the typing back.
+fn app_with_typed_url() -> App {
+    let mut app = App::new_for_test();
+    app.editor.url = LineInput::new("https://e.com");
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.capture_undo();
+    app.handle_key(alt('u'));
+    type_chars(&mut app, "x");
+    app.capture_undo();
+    app
+}
+
+/// Task #64: a click records the open field's typing as its own step
+/// before it acts, so a click whose action edits (the TLS lock) is a step
+/// of its own on top: one undo takes back the toggle, not the typing.
+#[test]
+fn a_click_that_edits_leaves_the_url_typing_its_own_undo_step() {
+    let mut app = app_with_typed_url();
+    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    app.capture_undo();
+    assert!(app.editor.current_request().insecure);
+
+    app.update(Action::Undo);
+    assert!(!app.editor.current_request().insecure, "the toggle goes first");
+    assert_eq!(app.editor.url.text(), "https://e.comx", "the typing stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://e.com", "then the typing goes");
+    app.update(Action::Redo);
+    assert_eq!(app.editor.url.text(), "https://e.comx", "redo: the typing first");
+    assert!(!app.editor.current_request().insecure);
+    app.update(Action::Redo);
+    assert!(app.editor.current_request().insecure, "then the toggle");
+}
+
+/// The same for a click that puts the caret in the table and acts there
+/// (a row's checkbox).
+#[test]
+fn a_checkbox_click_leaves_the_url_typing_its_own_undo_step() {
+    let mut app = app_with_one_param();
+    app.editor.url = LineInput::new("https://e.com");
+    app.capture_undo();
+    app.handle_key(alt('u'));
+    type_chars(&mut app, "x");
+    app.capture_undo();
+    hover_row_then_click(&mut app, Hit::TableRow(0), Hit::TableCheckbox(0));
+    app.capture_undo();
+    let enabled = |app: &App| app.editor.params.values().next().unwrap().enabled;
+    assert!(!enabled(&app), "the click toggled the row");
+
+    app.update(Action::Undo);
+    assert!(enabled(&app), "the toggle goes first");
+    assert_eq!(app.editor.url.text(), "https://e.comx", "the typing stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://e.com", "then the typing goes");
+}
+
+/// The jq bar's typing too, whose click-away blur comes before the click
+/// acts.
+#[test]
+fn a_click_that_edits_leaves_the_jq_typing_its_own_undo_step() {
+    let mut app = App::new_for_test();
+    app.editor.url = LineInput::new("https://e.com");
+    ready_response(&mut app, JQ_BODY);
+    app.capture_undo();
+    app.update(Action::OpenJqBar);
+    type_str(&mut app, ".data");
+    app.sync_jq();
+    app.capture_undo();
+    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    app.sync_jq();
+    app.capture_undo();
+    assert_eq!(app.editor.jq, ".data");
+    assert!(app.editor.current_request().insecure);
+
+    app.update(Action::Undo);
+    app.sync_jq();
+    assert!(!app.editor.current_request().insecure, "the toggle goes first");
+    assert_eq!(app.editor.jq, ".data", "the filter stays");
+    app.update(Action::Undo);
+    app.sync_jq();
+    assert_eq!(app.editor.jq, "", "then the filter goes");
+}
+
+/// A pane move that also fills the field it lands in (the jq tree's
+/// tee-up) records the URL's typing at the move (`set_focus`), beneath the
+/// filter's.
+#[test]
+fn a_tee_up_from_the_url_line_leaves_its_typing_its_own_undo_step() {
+    let mut app = app_with_typed_url();
+    ready_response(&mut app, JQ_BODY);
+    app.capture_undo();
+    app.update(Action::JqTeeUp { text: ".data".into(), cursor: 5 });
+    app.sync_jq();
+    app.capture_undo();
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.sync_jq();
+    app.capture_undo();
+    assert_eq!(app.editor.jq, ".data");
+
+    app.update(Action::Undo);
+    app.sync_jq();
+    assert_eq!(app.editor.jq, "", "the filter goes first");
+    assert_eq!(app.editor.url.text(), "https://e.comx", "the typing stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://e.com", "then the typing goes");
+}
+
+/// The jq switch clicked while the URL line holds the typing.
+#[test]
+fn the_jq_switch_leaves_the_url_typing_its_own_undo_step() {
+    let mut app = App::new_for_test();
+    app.editor.url = LineInput::new("https://e.com");
+    app.editor.jq = ".data".into();
+    app.editor.jq_enabled = false;
+    ready_response(&mut app, JQ_BODY);
+    app.sync_jq();
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.capture_undo();
+    app.handle_key(alt('u'));
+    type_chars(&mut app, "x");
+    app.capture_undo();
+    click_hit(&mut app, Hit::ResponseJqButton);
+    app.sync_jq();
+    app.capture_undo();
+    assert!(app.editor.jq_enabled, "the switch turned the filter on");
+
+    app.update(Action::Undo);
+    app.sync_jq();
+    assert!(!app.editor.jq_enabled, "the switch goes first");
+    assert_eq!(app.editor.url.text(), "https://e.comx", "the typing stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://e.com", "then the typing goes");
+}
+
+/// In vim the engine holds the URL's typing (here in Normal, the line
+/// still open): the click hands it over as its own step all the same.
+#[test]
+fn a_click_that_edits_leaves_the_vim_url_typing_its_own_undo_step() {
+    let mut app = App::new_for_test();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.editor.url = LineInput::new("https://e.com");
+    app.capture_undo();
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    for ev in crate::keyroute::notation::events("Ax<Esc>") {
+        app.handle_key(ev);
+    }
+    app.capture_undo();
+    assert!(app.editor.url_open());
+    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    app.capture_undo();
+    assert!(app.editor.current_request().insecure);
+
+    app.update(Action::Undo);
+    assert!(!app.editor.current_request().insecure, "the toggle goes first");
+    assert_eq!(app.editor.url.text(), "https://e.comx", "the typing stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://e.com", "then the typing goes");
+}
+
+/// A click in the field's own text closes nothing, so it records nothing:
+/// the typing on both sides of it is still the one step.
+#[test]
+fn a_click_in_the_url_line_keeps_its_typing_one_undo_step() {
+    let mut app = app_with_typed_url();
+    click_hit(&mut app, Hit::UrlBar);
+    app.capture_undo();
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    type_chars(&mut app, "y");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    assert_eq!(app.editor.url.text(), "https://e.comxy");
+
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://e.com", "one step takes both");
+}
+
+/// Nor does it touch the field's own history: what ctrl+z took back in the
+/// line, ctrl+shift+z still brings back after a click in it.
+#[test]
+fn a_click_in_the_url_line_keeps_its_redo() {
+    let mut app = app_with_typed_url();
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://e.com", "the line's own undo");
+    click_hit(&mut app, Hit::UrlBar);
+    app.capture_undo();
+    app.update(Action::Redo);
+    assert_eq!(app.editor.url.text(), "https://e.comx", "the line's redo survived");
+}
+
+/// In vim, the same for the engine's history: after a click in the line's
+/// text, `u` still steps back one change at a time (Vim's), not the whole
+/// typing at once as an app step would.
+#[test]
+fn a_click_in_the_vim_url_line_keeps_its_u_history() {
+    let mut app = App::new_for_test();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.editor.url = LineInput::new("https://e.com");
+    app.capture_undo();
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    for ev in crate::keyroute::notation::events("Ax<Esc>Ay<Esc>") {
+        app.handle_key(ev);
+        app.capture_undo();
+    }
+    click_hit(&mut app, Hit::UrlBar);
+    app.capture_undo();
+    assert!(app.editor.url_open());
+    app.handle_key(plain('u'));
+    app.capture_undo();
+    assert_eq!(app.editor.url.text(), "https://e.comx", "u undid only the last change");
+}
+
+/// A click while the vim URL line is still in Insert hands the typing so
+/// far over as its own step: once the line is closed again, undo takes the
+/// later typing, then the click's toggle, then the earlier typing.
+#[test]
+fn a_click_mid_insert_in_the_vim_url_line_undoes_in_order() {
+    let mut app = App::new_for_test();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.editor.url = LineInput::new("https://e.com");
+    app.capture_undo();
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    for ev in crate::keyroute::notation::events("Ax") {
+        app.handle_key(ev);
+    }
+    app.capture_undo();
+    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    app.capture_undo();
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    for ev in crate::keyroute::notation::events("Ay<Esc><Esc>") {
+        app.handle_key(ev);
+    }
+    app.capture_undo();
+    assert_eq!(app.editor.url.text(), "https://e.comxy");
+    assert!(!app.editor.url_open(), "the second Esc closed the line");
+
+    app.update(Action::Undo);
+    app.capture_undo();
+    assert_eq!(app.editor.url.text(), "https://e.comx", "the later typing goes first");
+    assert!(app.editor.current_request().insecure, "the toggle stays");
+    app.update(Action::Undo);
+    app.capture_undo();
+    assert!(!app.editor.current_request().insecure, "then the toggle");
+    assert_eq!(app.editor.url.text(), "https://e.comx");
+    app.update(Action::Undo);
+    app.capture_undo();
+    assert_eq!(app.editor.url.text(), "https://e.com", "then the earlier typing");
+}
+
+/// Nor a click elsewhere that leaves the URL line open (a row's copy
+/// pill): the typing on both sides of it is still the one step.
+#[test]
+fn a_click_that_keeps_the_url_open_keeps_its_typing_one_undo_step() {
+    let mut app = app_with_one_param();
+    app.editor.url = LineInput::new("https://e.com");
+    app.capture_undo();
+    app.handle_key(alt('u'));
+    type_chars(&mut app, "x");
+    app.capture_undo();
+    hover_row_then_click(&mut app, Hit::TableRow(0), Hit::TableCopy(0));
+    app.capture_undo();
+    assert!(app.editor.url_open(), "a copy leaves the URL line open");
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    type_chars(&mut app, "y");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://e.com", "one step takes both");
+}
+
 /// A method change that brings the Body tab back commits the open cell
 /// on its way (the tab sync), after the method changed: two steps, in
 /// that order, never one.
@@ -14648,6 +14925,37 @@ fn the_auto_header_pencil_keeps_an_open_cells_commit_its_own_undo_step() {
     assert_eq!(app.editor.headers["X-Foo"].value, "12", "the commit stays");
     app.update(Action::Undo);
     assert_eq!(app.editor.headers["X-Foo"].value, "1", "then the commit goes");
+}
+
+/// The same for the URL line's typing (task #64): the pencil adds its row
+/// before it takes the caret, so the line's close is recorded first, as
+/// the cell's commit is.
+#[test]
+fn the_auto_header_pencil_keeps_the_urls_typing_its_own_undo_step() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.url = LineInput::new("https://e.com");
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.capture_undo();
+    app.handle_key(alt('u'));
+    type_chars(&mut app, "x");
+    app.capture_undo();
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let accept = app.editor.computed.rows.iter().position(|r| r.header.name == "Accept").unwrap();
+    let pencil = app.hits.rect_of(&Hit::AutoHeaderOverride(accept)).expect("Accept's pencil");
+    app.handle_mouse(left_down(pencil.x, pencil.y));
+    app.capture_undo();
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    assert!(app.editor.headers.contains_key("Accept"));
+
+    app.update(Action::Undo);
+    assert!(!app.editor.headers.contains_key("Accept"), "the pencil's row goes first");
+    assert_eq!(app.editor.url.text(), "https://e.comx", "the typing stays");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://e.com", "then the typing goes");
 }
 
 /// The row's copy button puts that row's value — as typed, tokens and all
@@ -28116,6 +28424,56 @@ fn extract_to_request_from_a_field_mid_edit_is_one_undo_step() {
         "https://x/ping/abc-123",
         "one undo peels the typing and the replacement together"
     );
+}
+
+/// The extract dialog over the URL line confirms by click as by its keys
+/// (task #64): a click with a dialog open acts in the dialog, so it does
+/// not record the typing under it as a step of its own.
+#[test]
+fn a_clicked_extract_from_a_field_mid_edit_records_what_its_keys_do() {
+    let run = |click: bool| {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        postui_core::fixtures::save_request(
+            dir.path(),
+            "main/ping",
+            &req("https://x/ping/abc-123"),
+        )
+        .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        app.anims.enabled = false;
+        app.update(Action::ForceOpenRequest("main/ping".into()));
+        app.capture_undo();
+        app.focus = crate::layout::PaneId::Editor;
+        app.editor.open_url_from_app();
+        app.handle_key(plain('9'));
+        app.capture_undo();
+        app.update(Action::ExtractToVariable);
+        type_into_field(&mut app, "trace_id");
+        // "This request": the destination whose extract joins the typing.
+        let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top_mut() else {
+            panic!("the extract dialog");
+        };
+        let destination = fields.iter_mut().find(|f| f.key == "destination").unwrap();
+        destination.input.set_text("This request");
+        if click {
+            click_modal_confirm(&mut app);
+        } else {
+            for code in [KeyCode::Esc, KeyCode::Esc, KeyCode::Enter] {
+                app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+            }
+        }
+        app.capture_undo();
+        assert!(app.modals.is_empty(), "click {click}: the dialog confirmed");
+        assert_eq!(app.editor.url.text(), "{{trace_id}}", "click {click}");
+        let steps = app.history.undo_len();
+        app.update(Action::Undo);
+        (steps, app.editor.url.text().to_string())
+    };
+    let keys = run(false);
+    assert_eq!(keys.1, "https://x/ping/abc-123", "one undo takes the typing and the extract");
+    assert_eq!(run(true), keys);
 }
 
 /// Plan M1 Deviation 2: an unset `keymap` runs arrows until the
