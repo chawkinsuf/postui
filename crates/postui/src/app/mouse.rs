@@ -1113,11 +1113,13 @@ impl App {
         self.capture_step();
     }
 
-    /// Moves the editor's caret for a click, left or right: the one way a
-    /// click changes `sub_focus`. A URL line it leaves closes here, so its
-    /// typing is recorded as its own step before the click acts (see
-    /// [`App::leave_text_field`]); a click that keeps it open never comes
-    /// here, and its typing stays one step with its own history intact.
+    /// Moves the editor's caret for a click's dispatch, left or right. A URL
+    /// line it leaves closes here, so its typing is recorded as its own step
+    /// before the click acts (see [`App::leave_text_field`]); a click that
+    /// keeps it open never comes here, and its typing stays one step with
+    /// its own history intact. The editor's own body mouse code also places
+    /// the caret, but a body press edits nothing, so a close it makes lands
+    /// alone at the end of the event.
     pub(super) fn move_editor_caret(&mut self, to: SubFocus) {
         if self.focus == PaneId::Editor && self.editor.sub_focus != to {
             self.leave_text_field();

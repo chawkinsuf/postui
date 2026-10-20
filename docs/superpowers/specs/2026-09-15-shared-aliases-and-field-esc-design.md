@@ -223,8 +223,11 @@ of the typing, and one undo takes back only it. A click that leaves the
 field open (in its own text, on a copy pill, on a scrollbar, with a
 dialog or menu over it) closes nothing and records nothing: the field
 keeps its session and its own undo history, and what such a click
-changes, like what a shortcut taken in the field (alt+i) changes,
-happens with the field still open and joins its close, as above. The
+changes, like what a shortcut that keeps the caret in the field (alt+i)
+changes, happens with the field still open and joins its close, as
+above. A shortcut that takes the caret elsewhere (alt+q to the jq bar)
+is a close like a click away: the typing is its own step beneath what
+the shortcut does. The
 vim body is left out: it is the document of the exception below, whose
 engine history outlives its closes (amendment C3), and the flush would
 end it; a click away from it that edits still joins its close, as
