@@ -7455,15 +7455,79 @@ fn create_project_with_dirty_editor_defers_last_until_dirty_gate_resolves() {
     });
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
     assert_eq!(app.registry.last, old_last, "last must not change before the dirty gate resolves");
-    assert!(
-        app.registry.known.contains(&new_path),
-        "new path is known even though not yet current"
-    );
+    // Task #69: the gate asks before anything is written.
+    assert!(!postui_core::project::Project::is_project(&new_path), "nothing created yet");
+    assert!(!app.registry.known.contains(&new_path), "not known before the gate resolves");
     assert_eq!(app.proj().root(), dir.path(), "not switched yet");
 
     app.handle_key(plain('d'));
     assert_eq!(app.proj().root(), new_path);
-    assert_eq!(app.registry.last, Some(new_path));
+    assert_eq!(app.registry.last, Some(new_path.clone()));
+    assert!(app.registry.known.contains(&new_path));
+}
+
+/// Task #69: "Create" in the open-by-path prompt's "Not a postui project"
+/// confirm asks about unsaved edits like the New project dialog does, and
+/// asks first: Cancel keeps the edits and creates nothing.
+#[test]
+fn create_project_at_path_with_dirty_editor_goes_through_the_dirty_gate() {
+    let (mut app, dir, _b) = two_projects();
+    postui_core::fixtures::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/r".into()));
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    app.handle_key(plain('/'));
+    assert!(app.editor.is_dirty());
+
+    let old_last = app.registry.last.clone();
+    let fresh = tempfile::tempdir().unwrap();
+    let new_path = fresh.path().join("newproj");
+    app.update(Action::OpenProjectByPath(new_path.to_string_lossy().into_owned()));
+    app.handle_key(plain('y'));
+    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
+        panic!("a dirty editor asks before the switch");
+    };
+    assert_eq!(title, "Unsaved changes");
+
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.modals.is_empty(), "Esc cancels the gate");
+    assert_eq!(app.proj().root(), dir.path(), "not switched");
+    assert_eq!(app.registry.last, old_last, "last stays on the current project");
+    assert!(!postui_core::project::Project::is_project(&new_path), "nothing was created");
+    assert!(!app.registry.known.contains(&new_path), "nothing was added to the known projects");
+    assert_eq!(app.editor.url.text(), "https://x/r/", "the edit is still there");
+    assert!(app.editor.is_dirty());
+}
+
+/// Task #69: the create runs after the gate, so an init that fails fails
+/// after Discard: the edits stay, nothing switches, and the error shows.
+#[test]
+fn create_project_failing_after_discard_keeps_the_edits() {
+    let (mut app, dir, _b) = two_projects();
+    postui_core::fixtures::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/r".into()));
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    app.handle_key(plain('/'));
+
+    // A regular file where the project's parent folder would be: init
+    // cannot make the folder.
+    let fresh = tempfile::tempdir().unwrap();
+    std::fs::write(fresh.path().join("file"), "").unwrap();
+    let new_path = fresh.path().join("file").join("newproj");
+    app.update(Action::OpenProjectByPath(new_path.to_string_lossy().into_owned()));
+    app.handle_key(plain('y'));
+    app.handle_key(plain('d'));
+
+    assert!(app.last_action_failed, "the failed create reports it");
+    let text = rendered_text(&mut app);
+    assert!(text.contains("could not create project"), "error toast shown: {text}");
+    assert_eq!(app.proj().root(), dir.path(), "not switched");
+    assert!(!app.registry.known.contains(&new_path));
+    assert_eq!(app.editor.url.text(), "https://x/r/", "the edit is still there");
+    assert!(app.editor.is_dirty());
 }
 
 #[test]

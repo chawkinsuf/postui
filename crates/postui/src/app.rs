@@ -4680,11 +4680,7 @@ impl App {
                 if target == self.root() {
                     return false;
                 }
-                if self.leaving_unsaved() {
-                    self.dirty_gate("switch", Action::ForceSwitchProject(target));
-                } else {
-                    self.apply(Action::ForceSwitchProject(target));
-                }
+                self.apply_gated("switch", Action::ForceSwitchProject(target));
                 true
             }
             Action::ForceSwitchProject(target) => {
@@ -4810,10 +4806,22 @@ impl App {
                 true
             }
             Action::CreateProjectAt(path) => {
-                // The handle is only the writer: `ForceSwitchProject`
-                // below opens the project this just wrote, so drop it
-                // rather than installing it as `self.project`.
-                match Project::init(&path, None) {
+                self.apply_gated("create", Action::ForceCreateProject { path, name: None });
+                true
+            }
+            Action::ForceCreateProject { path, name } => {
+                // This runs after the dirty gate was answered, so a Cancel
+                // writes nothing (task #69). The cost: an init that fails
+                // fails after the gate, so a Save stays saved and a
+                // Discard keeps the edits, with the toast below and no
+                // switch. Nothing is lost either way.
+                //
+                // The handle is only the writer: the switch below opens
+                // the project this just wrote, so drop it rather than
+                // installing it as `self.project`. The switch registers
+                // it only once it opens, so a folder that fails to open
+                // never joins the known projects.
+                match Project::init(&path, name.as_deref()) {
                     Ok((_written, warnings)) => {
                         for w in warnings {
                             self.toasts.push(w, ToastKind::Warning);
@@ -4824,6 +4832,7 @@ impl App {
                             format!("could not create project at {}: {e}", path.display()),
                             ToastKind::Error,
                         );
+                        self.last_action_failed = true;
                         return true;
                     }
                 }
@@ -4845,28 +4854,7 @@ impl App {
                     return true;
                 }
                 let path = crate::config::expand_tilde(&path);
-                // As in `CreateProjectAt`: the switch below re-opens it.
-                match Project::init(&path, Some(&name)) {
-                    Ok((_written, warnings)) => {
-                        for w in warnings {
-                            self.toasts.push(w, ToastKind::Warning);
-                        }
-                    }
-                    Err(e) => {
-                        self.toasts.push(
-                            format!("could not create project at {}: {e}", path.display()),
-                            ToastKind::Error,
-                        );
-                        return true;
-                    }
-                }
-                self.registry.add_known(path.clone());
-                self.save_registry();
-                if self.leaving_unsaved() {
-                    self.dirty_gate("create", Action::ForceSwitchProject(path));
-                } else {
-                    self.apply(Action::ForceSwitchProject(path));
-                }
+                self.apply_gated("create", Action::ForceCreateProject { path, name: Some(name) });
                 true
             }
             Action::OpenEnvChooser => {
@@ -9261,6 +9249,20 @@ impl App {
         self.commit_table_edit();
         self.editor_holds_unsaved()
     }
+
+    /// Run `then`, which replaces the editor, through the unsaved-changes
+    /// confirm (its buttons say `verb`) when the editor holds unsaved
+    /// edits. The gate asks before `then` does anything, so a Cancel
+    /// leaves no trace of it: creating a project writes nothing until
+    /// Save or Discard (task #69).
+    fn apply_gated(&mut self, verb: &str, then: Action) {
+        if self.leaving_unsaved() {
+            self.dirty_gate(verb, then);
+        } else {
+            self.apply(then);
+        }
+    }
+
     /// Push the standard unsaved-changes confirm. A slugged request's
     /// "save" path completes synchronously unless the file changed outside
     /// the app, in which case `SaveRequestThen` carries `then` into the
