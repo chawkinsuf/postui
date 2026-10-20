@@ -222,6 +222,13 @@ From the parked stage-3 final-review minors:
    longer move off-screen past 16 items.
 2. `CreateProject` no longer registers + sets `last` before the dirty gate resolves;
    `last` is left to `ForceSwitchProject`.
+
+   *Amended 2026-10-19 (task #69, `mine (approved)`):* the gate now runs before
+   anything is written, for both create paths (the New project dialog and
+   open-by-path's "Create"). `ForceCreateProject` writes the project on Save or
+   Discard and switches to it, and the switch registers it. A Cancel leaves no
+   project on disk and nothing in the known list (before this, the project was
+   written and added to the known list before the gate asked).
 3. `slugify` empty-result guards (non-ASCII names): non-empty checks + toast on the
    New Project prefill path; empty path no longer inits cwd.
 4. `CycleEnv` performs the spec-§7 reload (symmetry with `OpenEnvChooser`).

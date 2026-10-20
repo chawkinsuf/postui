@@ -4680,7 +4680,7 @@ impl App {
                 if target == self.root() {
                     return false;
                 }
-                self.switch_project_gated("switch", target);
+                self.apply_gated("switch", Action::ForceSwitchProject(target));
                 true
             }
             Action::ForceSwitchProject(target) => {
@@ -4806,8 +4806,28 @@ impl App {
                 true
             }
             Action::CreateProjectAt(path) => {
-                self.create_project(path, None);
+                self.apply_gated("create", Action::ForceCreateProject { path, name: None });
                 true
+            }
+            Action::ForceCreateProject { path, name } => {
+                // The handle is only the writer: the switch below opens
+                // the project this just wrote, and registers it, so drop
+                // it rather than installing it as `self.project`.
+                match Project::init(&path, name.as_deref()) {
+                    Ok((_written, warnings)) => {
+                        for w in warnings {
+                            self.toasts.push(w, ToastKind::Warning);
+                        }
+                    }
+                    Err(e) => {
+                        self.toasts.push(
+                            format!("could not create project at {}: {e}", path.display()),
+                            ToastKind::Error,
+                        );
+                        return true;
+                    }
+                }
+                self.apply(Action::ForceSwitchProject(path))
             }
             Action::PromptNewProject => {
                 let prefill = format!("{}/", self.registry.default_root().display());
@@ -4824,7 +4844,8 @@ impl App {
                     self.toasts.push("project path is empty — enter a path", ToastKind::Error);
                     return true;
                 }
-                self.create_project(crate::config::expand_tilde(&path), Some(&name));
+                let path = crate::config::expand_tilde(&path);
+                self.apply_gated("create", Action::ForceCreateProject { path, name: Some(name) });
                 true
             }
             Action::OpenEnvChooser => {
@@ -9220,41 +9241,16 @@ impl App {
         self.editor_holds_unsaved()
     }
 
-    /// Both create paths, the New project dialog and the open-by-path
-    /// "Create" (task #69): write the project, list it as known, then
-    /// switch to it through the dirty gate. `last` moves only when the
-    /// switch runs, so a Cancel leaves the new project on disk and known
-    /// but not current.
-    fn create_project(&mut self, path: PathBuf, name: Option<&str>) {
-        // The handle is only the writer: the switch opens the project
-        // this just wrote, so drop it rather than installing it as
-        // `self.project`.
-        match Project::init(&path, name) {
-            Ok((_written, warnings)) => {
-                for w in warnings {
-                    self.toasts.push(w, ToastKind::Warning);
-                }
-            }
-            Err(e) => {
-                self.toasts.push(
-                    format!("could not create project at {}: {e}", path.display()),
-                    ToastKind::Error,
-                );
-                return;
-            }
-        }
-        self.registry.add_known(path.clone());
-        self.save_registry();
-        self.switch_project_gated("create", path);
-    }
-
-    /// Switch to `target`, through the unsaved-changes confirm (its
-    /// buttons say `verb`) when the editor holds unsaved edits.
-    fn switch_project_gated(&mut self, verb: &str, target: PathBuf) {
+    /// Run `then`, which replaces the editor, through the unsaved-changes
+    /// confirm (its buttons say `verb`) when the editor holds unsaved
+    /// edits. The gate asks before `then` does anything, so a Cancel
+    /// leaves no trace of it: creating a project writes nothing until
+    /// Save or Discard (task #69).
+    fn apply_gated(&mut self, verb: &str, then: Action) {
         if self.leaving_unsaved() {
-            self.dirty_gate(verb, Action::ForceSwitchProject(target));
+            self.dirty_gate(verb, then);
         } else {
-            self.apply(Action::ForceSwitchProject(target));
+            self.apply(then);
         }
     }
 

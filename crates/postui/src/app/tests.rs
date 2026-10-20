@@ -7455,20 +7455,20 @@ fn create_project_with_dirty_editor_defers_last_until_dirty_gate_resolves() {
     });
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
     assert_eq!(app.registry.last, old_last, "last must not change before the dirty gate resolves");
-    assert!(
-        app.registry.known.contains(&new_path),
-        "new path is known even though not yet current"
-    );
+    // Task #69: the gate asks before anything is written.
+    assert!(!postui_core::project::Project::is_project(&new_path), "nothing created yet");
+    assert!(!app.registry.known.contains(&new_path), "not known before the gate resolves");
     assert_eq!(app.proj().root(), dir.path(), "not switched yet");
 
     app.handle_key(plain('d'));
     assert_eq!(app.proj().root(), new_path);
-    assert_eq!(app.registry.last, Some(new_path));
+    assert_eq!(app.registry.last, Some(new_path.clone()));
+    assert!(app.registry.known.contains(&new_path));
 }
 
 /// Task #69: "Create" in the open-by-path prompt's "Not a postui project"
 /// confirm asks about unsaved edits like the New project dialog does, and
-/// Cancel keeps them: the project is written and known, but not current.
+/// asks first: Cancel keeps the edits and creates nothing.
 #[test]
 fn create_project_at_path_with_dirty_editor_goes_through_the_dirty_gate() {
     let (mut app, dir, _b) = two_projects();
@@ -7494,8 +7494,8 @@ fn create_project_at_path_with_dirty_editor_goes_through_the_dirty_gate() {
     assert!(app.modals.is_empty(), "Esc cancels the gate");
     assert_eq!(app.proj().root(), dir.path(), "not switched");
     assert_eq!(app.registry.last, old_last, "last stays on the current project");
-    assert!(postui_core::project::Project::is_project(&new_path), "the project was written");
-    assert!(app.registry.known.contains(&new_path), "the created project is known");
+    assert!(!postui_core::project::Project::is_project(&new_path), "nothing was created");
+    assert!(!app.registry.known.contains(&new_path), "nothing was added to the known projects");
     assert_eq!(app.editor.url.text(), "https://x/r/", "the edit is still there");
     assert!(app.editor.is_dirty());
 }

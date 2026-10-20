@@ -592,15 +592,21 @@ pub enum Action {
     /// switches to it directly; anything else asks to create one there.
     OpenProjectByPath(String),
     /// Initialize a new project at `path` (from the open-by-path
-    /// create-confirm), add it to the known projects, and switch to it
-    /// (through the dirty gate when the editor is dirty), as
-    /// `CreateProject` does.
+    /// create-confirm) and switch to it, through the dirty gate when the
+    /// editor is dirty, as `CreateProject` does.
     CreateProjectAt(std::path::PathBuf),
+    /// Actually create the project at `path` (`name` goes to `Project::init`)
+    /// and switch to it, bypassing the dirty check (used directly, or as the
+    /// tail action of a dirty-prompt choice).
+    ForceCreateProject {
+        path: std::path::PathBuf,
+        name: Option<String>,
+    },
     /// Open the "new project" modal (name + prefilled path).
     PromptNewProject,
     /// User confirmed the new-project modal: create a project named `name`
-    /// at `path`, add it to the known projects, and switch to it (through
-    /// the dirty gate when the editor is dirty).
+    /// at `path` and switch to it, through the dirty gate when the editor
+    /// is dirty. The gate asks before anything is written (task #69).
     CreateProject {
         name: String,
         path: String,
