@@ -1557,15 +1557,19 @@ impl App {
     /// spellings of a tab switch (`OpenManage` with a tab, and the strip's
     /// `SelectManageTab`). Each list tab keeps its own cursor; a parked
     /// cursor past the end of a list that shrank while away clamps here.
-    /// Any in-progress Settings field edit ends: it points at something
-    /// the new tab does not show.
-    fn switch_manage_tab_state(&mut self, tab: crate::components::manage::ManageTab) {
+    /// The open inputs close first, saved (`close_open_inputs`): a Settings
+    /// field or a Variables input points at something the new tab does not
+    /// show. `false`, with no switch, when one refuses to.
+    fn switch_manage_tab_state(&mut self, tab: crate::components::manage::ManageTab) -> bool {
         use crate::components::manage::ManageTab;
+        if !self.close_open_inputs(true) {
+            return false;
+        }
         self.manage.switch_list(tab);
         if matches!(tab, ManageTab::Environments | ManageTab::Spaces) {
             self.clamp_list(tab);
         }
-        self.settings.end_edit();
+        true
     }
 
     /// Moves the Manage screen's list cursor onto `name` in the open tab.
@@ -2710,23 +2714,15 @@ impl App {
         if !self.modals.is_empty() {
             return false;
         }
-        if redo {
-            self.commit_table_edit();
-            // A pending uncaptured edit means the user changed something
-            // after the last undo; capturing it clears the redo stack,
-            // which is exactly the linear-history contract. (A committed
-            // cell captured itself; this is for everything else.)
-            self.capture_undo();
-        } else {
-            // A live cell edit is part of what's being undone: committing
-            // it makes it a step (it captures itself), then any other
-            // pending delta is captured. A live Settings field edit closes
-            // the same way (spec 2026-09-16): the close becomes the step
-            // the undo pops.
-            self.commit_settings_edit();
-            self.commit_table_edit();
-            self.capture_undo();
+        // Every open input closes first (task #75): a live cell or field
+        // edit is part of what's being undone, so its close becomes the
+        // step the undo pops (spec 2026-09-16). Then any other pending
+        // delta is captured; before a redo, capturing it clears the redo
+        // stack, which is exactly the linear-history contract.
+        if !self.close_open_inputs(true) {
+            return false;
         }
+        self.capture_undo();
         loop {
             let popped = if redo { self.history.pop_redo() } else { self.history.pop_undo() };
             let Some(step) = popped else {
@@ -3040,6 +3036,8 @@ impl App {
                 redraw
             }
             Action::Quit | Action::ForceQuit | Action::GatedQuit => {
+                // A refused close still quits: ctrl+c must always work.
+                self.close_open_inputs(true);
                 let slug = self.editor.slug.clone();
                 if let Some(p) = self.project_mut() {
                     p.set_open_request(slug.as_deref());
@@ -4716,6 +4714,9 @@ impl App {
                 true
             }
             Action::ForceSwitchProject(target) => {
+                if !self.close_open_inputs(true) {
+                    return true;
+                }
                 // Open the incoming project before touching the current
                 // one: a project that refuses to open (a broken file it
                 // would write back) leaves the current project exactly as
@@ -4853,6 +4854,12 @@ impl App {
                 // installing it as `self.project`. The switch registers
                 // it only once it opens, so a folder that fails to open
                 // never joins the known projects.
+                //
+                // The inputs close before the init writes anything, so a
+                // refused close leaves no project behind that nothing opens.
+                if !self.close_open_inputs(true) {
+                    return true;
+                }
                 match Project::init(&path, name.as_deref()) {
                     Ok((_written, warnings)) => {
                         for w in warnings {
@@ -4987,6 +4994,10 @@ impl App {
                 true
             }
             Action::CycleEnv(delta) => {
+                // Before the reload too, which can move what an input shows.
+                if !self.close_open_inputs(true) {
+                    return true;
+                }
                 self.resync_project();
                 let envs = self.environments().to_vec();
                 if envs.is_empty() {
@@ -5010,6 +5021,9 @@ impl App {
                 self.apply(Action::SwitchEnv(Some(next)))
             }
             Action::SwitchEnv(env) => {
+                if !self.close_open_inputs(true) {
+                    return true;
+                }
                 let warnings = self.set_active_env(env);
                 if !warnings.is_empty() {
                     for w in warnings {
@@ -5417,7 +5431,9 @@ impl App {
                 // front of it, as it does for every other switch.
                 //
                 // The editor's buffer is not part of any of this: unsaved
-                // edits are the user's, and a reload is not a discard.
+                // edits are the user's, and a reload is not a discard. A
+                // live input is kept open across it too (Settings spec,
+                // "Reload while the Settings tab is open").
                 let retried = match (self.project.is_none(), self.open_error.as_ref()) {
                     (true, Some(e)) => {
                         let root = e.root.clone();
@@ -5807,8 +5823,8 @@ impl App {
                 if self.screen == Screen::Manage && (tab.is_none() || self.manage.tab == target) {
                     return self.update(Action::CloseScreen);
                 }
-                if self.manage.tab != target {
-                    self.switch_manage_tab_state(target);
+                if self.manage.tab != target && !self.switch_manage_tab_state(target) {
+                    return true;
                 }
                 let prev = self.manage.tab;
                 self.manage.tab = target;
@@ -5843,7 +5859,9 @@ impl App {
                 // still ends: it points at something this tab does not
                 // show.
                 if self.manage.tab != tab {
-                    self.switch_manage_tab_state(tab);
+                    if !self.switch_manage_tab_state(tab) {
+                        return true;
+                    }
                     let prev = self.manage.tab;
                     self.manage.tab = tab;
                     self.settings.clamp_to_live(self.ui_settings_are_editable());
@@ -5855,13 +5873,15 @@ impl App {
                 true
             }
             Action::CloseScreen => {
+                // The open inputs close first, saved: one left live
+                // off-screen would go on owning ctrl+v and ctrl+c, and its
+                // Enter would write whenever the tab came back.
+                if !self.close_open_inputs(true) {
+                    return true;
+                }
                 // Leaving the screen mid-drag cancels it — there is no
                 // list left to drop onto.
                 self.finish_manage_drag(false);
-                // A field edit left live off-screen would go on owning
-                // ctrl+v and ctrl+c, and its Enter would write config
-                // whenever the tab came back.
-                self.settings.end_edit();
                 self.screen = Screen::Main;
                 self.focus = self.prior_focus;
                 true
@@ -7736,43 +7756,51 @@ impl App {
         }
     }
 
+    /// Closes every open input, saved, before the app state changes under
+    /// it (task #75, the user's rule: "when something changes in the app
+    /// state like this, just close the input before the change in state").
+    /// The functions that change it call this first: the env switch, the
+    /// project switch and create, undo/redo, a Manage tab switch, closing
+    /// the screen, quitting, and every journaled op (`begin_op`). Reload
+    /// from disk is the exception: it keeps a live input open (Settings
+    /// spec, "Reload while the Settings tab is open"). Whatever key, click, palette row, dialog or vim
+    /// command reached them, the input is closed before the change, so its
+    /// commit never reads the state that came after (the Variable
+    /// Manager's reads the environment and option row as they are when it
+    /// runs). An input's cursor stays where it was: still selected, closed.
+    ///
+    /// `editor`: whether the request editor's inputs close too (the table
+    /// cell commits; the URL line's and jq bar's typing becomes its own
+    /// step, `flush_field_session`). A journaled op passes `false`, since
+    /// some act on them: the var picker's insert, a selector pick, extract.
+    ///
+    /// `false` when an input refused to close (a bad value or a failed
+    /// write: it toasted and keeps the typing); the caller then leaves its
+    /// change undone, and a sequence of actions stops there
+    /// (`last_action_failed`). Quitting and a journaled op go on regardless:
+    /// ctrl+c must always quit, and `begin_op` has no way to refuse.
+    fn close_open_inputs(&mut self, editor: bool) -> bool {
+        let closed = self.close_manager_input()
+            && (self.settings.editing.is_none() || self.commit_settings_edit_for_click());
+        if !closed {
+            self.last_action_failed = true;
+            return false;
+        }
+        if editor {
+            self.flush_field_session();
+        }
+        true
+    }
+
     /// Closes the Variable Manager's live input, the form field or the
-    /// grid cell, saved, as the user leaves it: a click away, a key the
-    /// screen lets past the input (alt+x, ctrl+p, alt+r, …), or ctrl+c
-    /// (step 1 of the router, ahead of the others). Its commit
-    /// reads the environment and the option row as they are when it runs,
-    /// so a switch run with the input still open would write the typing
-    /// somewhere else. Closing where the user leaves means nothing runs
-    /// over a live input but the input's own keys, its Copy/Paste menu
-    /// and vim's `:` line (whose `:q!` abandons it, as Vim's does), so no
-    /// action has to close it itself (task #75,
-    /// the user's rule: "when something changes in the app state like
-    /// this, just close the input before the change in state"). The
-    /// field's cursor stays where it was: the input is still selected,
-    /// closed.
-    ///
-    /// Why here and not inside each switch: the actions that change what
-    /// the input was typed against are many (env and project switches, a
-    /// new env or variable, a tab, a reload, undo) and run from keys,
-    /// palette rows and dialogs alike. A per-action close keeps missing
-    /// one. The routes that reach the app over a live input without
-    /// passing here are the two this rule leaves open: vim's `:` line
-    /// (task #77) and a reload of files changed outside the app on focus
-    /// (task #78). Async results (a response, an AI reply) touch no
-    /// Manager state.
-    ///
-    /// The ghost row's name commit walks on into the new option's first
-    /// cell; that input closes too, with nothing typed in it yet.
-    ///
-    /// `false` when the input refused to close (a bad value or a failed
-    /// write: it toasted and keeps the typing). The caller then drops the
-    /// click or key, so the typing never moves under another environment:
-    /// the footer's quit chip included, as a refused Settings field
-    /// swallows it. Only ctrl+c quits past a refusal, since it must
-    /// always work.
+    /// grid cell, saved: for [`Self::close_open_inputs`] and for a click
+    /// away from it. The ghost row's name commit walks on into the new
+    /// option's first cell; that input closes too, with nothing typed in
+    /// it yet. `false` when the input refused to close (it toasted and
+    /// keeps the typing): a click then stops there, as a refused Settings
+    /// field swallows its click.
     fn close_manager_input(&mut self) -> bool {
         if !self.commit_var_form() || !self.commit_grid_edit() {
-            self.last_action_failed = true;
             return false;
         }
         self.varmanager.grid.editing = None;
@@ -10290,11 +10318,6 @@ impl App {
                 self.copy_text_with_toast(&text, "Copied selection".to_string());
                 return router::Ran::routed(true);
             }
-            // The key leaves the Variable Manager's input, as step 3's do,
-            // so it closes it first (`close_manager_input`), before the
-            // unsaved-changes gate can open over it. A close the input
-            // refuses still quits: ctrl+c must always work.
-            self.close_manager_input();
             return router::Ran::routed(self.update(Action::Quit));
         }
 
@@ -10462,17 +10485,12 @@ impl App {
 
         // 3. A non-Main screen captures all remaining input, like a modal —
         // except the small whitelist of global actions that legitimately
-        // work "on top of" any screen still gets first refusal. Such a key
-        // leaves the Variable Manager's input, so it closes the input
-        // first, as a click away does (`close_manager_input`).
+        // work "on top of" any screen still gets first refusal.
         if self.screen != Screen::Main {
             if modified
                 && let Some(a) = global.clone()
                 && screen_escape_whitelist(&a)
             {
-                if !self.close_manager_input() {
-                    return true;
-                }
                 return self.update(a);
             }
             // The testbed is a dead end, not a screen with content of its

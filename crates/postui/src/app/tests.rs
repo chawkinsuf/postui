@@ -28569,11 +28569,11 @@ fn bare_point(app: &mut App) -> (u16, u16) {
     (x, y)
 }
 
-/// The palette never runs over a live Manager edit: ctrl+p leaves the
-/// edit, so it closes, saved, before the palette opens (task #75), and the
-/// env switch a palette row then runs leaves the typing where it was typed.
+/// A palette row clicked over a live Manager edit: the click is the
+/// palette's, and the env switch the row runs closes the edit, saved,
+/// before it switches (task #75).
 #[test]
-fn a_palette_row_switching_env_finds_the_manager_edit_saved() {
+fn a_palette_row_clicked_over_a_manager_edit_saves_it_first() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -28664,19 +28664,22 @@ fn a_palette_env_switch_run_with_enter_closes_the_manager_input_first() {
     assert_closed_into_qa(&app, dir.path());
 }
 
-/// Every key the screen lets past the input leaves it, so each closes it
-/// first: the tab chord, alt+r closing the screen, and ctrl+p opening a
-/// palette whose commands (a project switch, a new environment, a new
-/// variable) would otherwise run over the typing.
+/// The tab chord and alt+r (closing the screen) change what the screen
+/// shows, so each closes the input first. Opening the palette changes
+/// nothing yet, so the input stays open under it.
 #[test]
-fn a_key_that_leaves_the_manager_input_closes_it_first() {
+fn a_tab_switch_and_a_screen_close_close_the_manager_input_first() {
     let alt = |c: KeyCode| KeyEvent::new(c, KeyModifiers::ALT);
-    for key in [alt(KeyCode::Right), alt(KeyCode::Char('r')), ctrl('p')] {
+    for key in [alt(KeyCode::Right), alt(KeyCode::Char('r'))] {
         let dir = tempfile::tempdir().unwrap();
         let mut app = manager_form_edit(dir.path());
         app.handle_key(key);
         assert_closed_into_qa(&app, dir.path());
     }
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = manager_form_edit(dir.path());
+    app.handle_key(ctrl('p'));
+    assert!(app.varmanager.form.editing.is_some(), "the palette opens over the open input");
     // An undo with nothing typed in the field steps the app's history, so
     // the untouched input closes first. (With typing, ctrl+z undoes it.)
     let dir = tempfile::tempdir().unwrap();
@@ -28690,16 +28693,32 @@ fn a_key_that_leaves_the_manager_input_closes_it_first() {
     assert!(app.varmanager.form.editing.is_none(), "the untouched input closed");
 }
 
-/// ctrl+c leaves the input too: it closes, saved, before the quit's
-/// unsaved-changes gate opens over it, so neither answer loses it.
+/// A journaled op closes the input first (`begin_op`): creating an
+/// environment activates it, and the typing must stay in qa.
 #[test]
-fn ctrl_c_closes_the_manager_input_before_the_quit_gate() {
+fn a_journaled_op_closes_the_manager_input_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = manager_form_edit(dir.path());
+    app.update(Action::CreateEnv("staging".into()));
+    assert_eq!(app.active_env(), Some("staging"), "the new env is active");
+    assert_closed_into_qa(&app, dir.path());
+    let staging =
+        std::fs::read_to_string(dir.path().join("environments/staging.toml")).unwrap_or_default();
+    assert!(!staging.contains("qa.example.com9"), "nothing in staging: {staging}");
+}
+
+/// Quitting closes the input, saved, whichever answer the unsaved-changes
+/// gate gets: the gate opens over the open input, and its Discard quits.
+#[test]
+fn quitting_closes_the_manager_input_first() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = manager_form_edit(dir.path());
     app.editor.url.set_text("https://dirty.example");
     assert!(app.editor_holds_unsaved(), "the request is unsaved");
     app.handle_key(ctrl('c'));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the gate asks");
+    app.handle_key(plain('d'));
+    assert!(app.should_quit, "Discard quit");
     assert_closed_into_qa(&app, dir.path());
 }
 

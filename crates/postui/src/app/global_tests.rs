@@ -18,6 +18,39 @@ fn toasts(app: &App) -> Vec<String> {
     app.toasts.messages().into_iter().map(str::to_string).collect()
 }
 
+/// Task #75 in vim: a Variable Manager field open in idle Normal hands
+/// `u` and `gt` to the app, and the undo and the tab switch close the
+/// field first. A palette command run from the `:` line (#77) closes it
+/// too: the env switch it runs closes it before switching, so the typing
+/// stays in qa.
+#[test]
+fn vim_keys_that_change_state_close_a_manager_field_first() {
+    use crate::components::varmanager::{FormStop, VmField};
+    for keys in ["u", "gt"] {
+        let mut app = vim(Fixture::VarForm);
+        feed(&mut app, "i<Esc>");
+        assert!(app.varmanager.form.editing.is_some(), "{keys}: the field is open");
+        feed(&mut app, keys);
+        assert!(app.varmanager.form.editing.is_none(), "{keys}: the field closed");
+    }
+    let mut app = vim(Fixture::VarForm);
+    app.varmanager.form_cursor = FormStop::Field(VmField::EnvValue);
+    feed(&mut app, "ixyz<Esc>:next");
+    let Some(crate::components::modal::Modal::Palette(p)) = app.modals.top_mut() else {
+        panic!("the : line is open");
+    };
+    let i = p.filtered().iter().position(|c| c.id == "env-next").expect("env-next is offered");
+    p.select(i);
+    feed(&mut app, "<CR>");
+    assert_ne!(app.active_env(), Some("qa"), "the env switched");
+    assert!(app.varmanager.form.editing.is_none(), "the field closed");
+    let root = app.root().to_path_buf();
+    let qa = std::fs::read_to_string(root.join("environments/qa.toml")).unwrap();
+    assert!(qa.contains("alpha = \"xyz\""), "saved to qa: {qa}");
+    let default = std::fs::read_to_string(root.join("environments/default.toml")).unwrap();
+    assert!(!default.contains("xyz"), "nothing in default: {default}");
+}
+
 #[test]
 fn zz_saves_a_dirty_request_and_quits() {
     let mut app = vim(Fixture::TableThreeHeaders);
