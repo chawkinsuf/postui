@@ -1294,10 +1294,11 @@ impl App {
         // the click, as the Settings field's does, so nothing the click
         // would do runs over the typing.
         //
-        // Under a dialog the input stays open, as the table's does: the
-        // only dialog that can be over it is its own Copy/Paste menu
-        // (task #76), since every way off the input closes it first
-        // (`close_manager_input`).
+        // Under a dialog the input stays open, as the table's does: a
+        // click in the dialog is the dialog's (its Copy/Paste menu acts on
+        // the input, task #76), and a command the dialog runs that changes
+        // the state the input was typed against closes it first itself
+        // (`close_open_inputs`, task #75).
         let on_the_input = matches!(hit, Hit::VmRevealToggle)
             || matches!(hit, Hit::VmFormField(field)
                 if self.varmanager.form.editing.as_ref().is_some_and(|e| e.field == field))

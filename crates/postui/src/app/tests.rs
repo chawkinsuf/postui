@@ -28680,8 +28680,12 @@ fn a_tab_switch_and_a_screen_close_close_the_manager_input_first() {
     let mut app = manager_form_edit(dir.path());
     app.handle_key(ctrl('p'));
     assert!(app.varmanager.form.editing.is_some(), "the palette opens over the open input");
-    // An undo with nothing typed in the field steps the app's history, so
-    // the untouched input closes first. (With typing, ctrl+z undoes it.)
+}
+
+/// An undo with nothing typed in the field steps the app's history, so
+/// the untouched input closes first. (With typing, ctrl+z undoes it.)
+#[test]
+fn an_undo_closes_an_untouched_manager_input_first() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();

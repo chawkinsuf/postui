@@ -1557,12 +1557,13 @@ impl App {
     /// spellings of a tab switch (`OpenManage` with a tab, and the strip's
     /// `SelectManageTab`). Each list tab keeps its own cursor; a parked
     /// cursor past the end of a list that shrank while away clamps here.
-    /// The open inputs close first, saved (`close_open_inputs`): a Settings
-    /// field or a Variables input points at something the new tab does not
-    /// show. `false`, with no switch, when one refuses to.
+    /// The screen's open inputs close first, saved (`close_open_inputs`): a
+    /// Settings field or a Variables input points at something the new tab
+    /// does not show. The request editor's are not the screen's and stay
+    /// as they are. `false`, with no switch, when one refuses to.
     fn switch_manage_tab_state(&mut self, tab: crate::components::manage::ManageTab) -> bool {
         use crate::components::manage::ManageTab;
-        if !self.close_open_inputs(true) {
+        if !self.close_open_inputs(false) {
             return false;
         }
         self.manage.switch_list(tab);
@@ -5864,9 +5865,9 @@ impl App {
                 // drop the drag on the floor anyway).
                 self.finish_manage_drag(false);
                 // Each list tab keeps its own cursor, so switching tabs
-                // does not reset it, but the Settings tab's field edit
-                // still ends: it points at something this tab does not
-                // show.
+                // does not reset it, but the screen's open inputs close,
+                // saved (`switch_manage_tab_state`): they point at
+                // something this tab does not show.
                 if self.manage.tab != tab {
                     if !self.switch_manage_tab_state(tab) {
                         return true;
@@ -5882,10 +5883,11 @@ impl App {
                 true
             }
             Action::CloseScreen => {
-                // The open inputs close first, saved: one left live
-                // off-screen would go on owning ctrl+v and ctrl+c, and its
-                // Enter would write whenever the tab came back.
-                if !self.close_open_inputs(true) {
+                // The screen's open inputs close first, saved: one left
+                // live off-screen would go on owning ctrl+v and ctrl+c, and
+                // its Enter would write whenever the tab came back. The
+                // request editor's are not the screen's.
+                if !self.close_open_inputs(false) {
                     return true;
                 }
                 // Leaving the screen mid-drag cancels it — there is no
@@ -7782,6 +7784,8 @@ impl App {
     /// cell commits; the URL line's and jq bar's typing becomes its own
     /// step, `flush_field_session`). A journaled op passes `false`, since
     /// some act on them: the var picker's insert, a selector pick, extract.
+    /// So do the Manage screen's own changes (a tab switch, closing it),
+    /// which leave the request editor as it is.
     ///
     /// `false` when an input refused to close (a bad value or a failed
     /// write: it toasted and keeps the typing); the caller then leaves its
