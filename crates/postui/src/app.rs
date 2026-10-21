@@ -1615,6 +1615,11 @@ impl App {
     /// the environment selectors reload the project before listing, so a
     /// file another process just created shows up in the list.
     pub fn resync_project(&mut self) {
+        // The re-read can renumber the option rows a Variable Manager grid
+        // cell finds its option by, so the Manager's input closes first
+        // (task #75). A close it refuses leaves it open; the callers that
+        // must stop on that (Reload from disk, an env cycle) checked first.
+        self.close_manager_input();
         if let Some(p) = self.project.as_mut() {
             p.invalidate_stamps();
         }
@@ -9419,6 +9424,13 @@ impl App {
     /// leaves no trace of it: creating a project writes nothing until
     /// Save or Discard (task #69).
     fn apply_gated(&mut self, verb: &str, then: Action) {
+        // `then` (a project switch or create) stops on an input that
+        // refuses to close; stopping here instead keeps the gate from
+        // asking first, so a Discard never throws the request's edits away
+        // for a switch that then does not happen.
+        if !self.close_inputs_or_stop(true) {
+            return;
+        }
         if self.leaving_unsaved() {
             self.dirty_gate(verb, then);
         } else {
@@ -10826,6 +10838,14 @@ impl App {
             return false;
         };
         let text = self.settings.field_text().to_string();
+        // Nothing was typed: the close writes nothing, as the Variable
+        // Manager's does. A write would pin the default the field showed
+        // into config.toml, and every state change now closes the field
+        // (task #75).
+        if field.text_value(&self.ui_settings).as_deref() == Some(text.as_str()) {
+            self.settings.end_edit();
+            return true;
+        }
         let int = match field {
             SettingsField::Osc52Limit => Some(parse_osc52_limit(&text)),
             SettingsField::IndentWidth => Some(parse_indent_width(&text)),

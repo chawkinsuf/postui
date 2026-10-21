@@ -28769,6 +28769,48 @@ fn a_refused_close_in_the_dirty_gate_check_fails_no_action() {
     assert!(!app.last_action_failed, "and the open did not read as failed");
 }
 
+/// Closing a Settings field nobody typed in writes nothing: leaving
+/// Manage with the AI command field open must not pin its default into
+/// config.toml.
+#[test]
+fn closing_an_untouched_settings_field_writes_nothing() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"arrows\"\n").unwrap();
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    let seed = SettingsField::AiCmd.text_value(&app.ui_settings).unwrap();
+    app.settings.begin_edit(SettingsField::AiCmd, &seed);
+    app.update(Action::CloseScreen);
+    assert_eq!(app.settings.editing, None, "the field closed");
+    let config = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(!config.contains("ai_cmd"), "nothing pinned: {config}");
+}
+
+/// A project switch whose open input refuses to close stops before the
+/// unsaved-changes gate asks, so no Discard throws the request's edits
+/// away for a switch that then does not happen.
+#[test]
+fn a_refused_input_stops_a_project_switch_before_its_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(other.path(), Some("other")).unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let r = cell_rect(&mut app, 2, 0);
+    app.handle_mouse(left_down(r.x, r.y));
+    type_chars(&mut app, "description");
+    app.editor.url.set_text("https://dirty.example");
+    assert!(app.editor_holds_unsaved(), "the request is unsaved");
+    app.update(Action::SwitchProject(other.path().to_path_buf()));
+    assert!(app.modals.is_empty(), "no gate asks");
+    assert_eq!(app.root(), dir.path(), "no switch");
+    assert!(app.varmanager.grid.editing.is_some(), "the typing is kept");
+}
+
 /// A delete of an option whose name cell is live closes the cell first:
 /// the rename lands, and the delete of the old name reads as already gone,
 /// with no "Deleted" toast for an option that survives.
