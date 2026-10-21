@@ -7821,13 +7821,15 @@ impl App {
     /// they fix it or undo the typing with ctrl+z, which is how a Manager
     /// field is discarded anyway. ctrl+c still quits.
     fn close_open_inputs(&mut self, editor: bool) -> bool {
-        if !self.close_manager_input() || !self.commit_settings_edit_for_click() {
-            return false;
-        }
+        // Each input closes whether or not another refused: a caller that
+        // goes on past a refusal (the dirty gate's check, the quit) must
+        // not leave a closable input open, a table cell least of all.
+        let manager = self.close_manager_input();
+        let settings = self.commit_settings_edit_for_click();
         if editor {
             self.flush_field_session();
         }
-        true
+        manager && settings
     }
 
     /// Closes the Variable Manager's live input, the form field or the

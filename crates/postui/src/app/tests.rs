@@ -28769,6 +28769,32 @@ fn a_refused_close_in_the_dirty_gate_check_fails_no_action() {
     assert!(!app.last_action_failed, "and the open did not read as failed");
 }
 
+/// One input refusing to close does not keep the others open: with a
+/// Manager cell refused, the quit still commits a request-table cell left
+/// open on the main screen.
+#[test]
+fn a_refused_manager_close_still_closes_the_other_inputs() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let r = cell_rect(&mut app, 2, 0);
+    app.handle_mouse(left_down(r.x, r.y));
+    type_chars(&mut app, "description");
+    // A params cell left open on the main screen, under the Manager.
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    app.editor.active_tab = EditorTab::Params;
+    app.editor.table.selected = Some(0);
+    let params = app.editor.params.clone();
+    app.editor.table.begin_edit_selected(&params);
+    assert!(app.editor.table.editing.is_some(), "the cell is open");
+    assert!(!app.close_open_inputs(true), "the Manager cell refuses");
+    assert!(app.editor.table.editing.is_none(), "the table cell closed anyway");
+}
+
 /// A click away whose close the input refuses swallows the click, so the
 /// header's env chip opens no chooser over the kept typing.
 #[test]
