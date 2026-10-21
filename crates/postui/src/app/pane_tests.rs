@@ -163,7 +163,8 @@ fn a_tab_key_whose_field_close_is_refused_moves_nothing() {
 
 /// A Settings field that does close lets the tab key go, even with a
 /// Variables edit left live behind another tab (a failed click-away
-/// commit leaves one, `screen_field` says): that edit is not this tab's.
+/// commit leaves one, `screen_field` says): that edit is not this tab's,
+/// and the tab switch closes it as it closes every open input (task #75).
 #[test]
 fn a_tab_key_leaves_a_settings_field_past_a_variables_edit_behind_it() {
     use crate::components::manage::ManageTab;
@@ -182,7 +183,7 @@ fn a_tab_key_leaves_a_settings_field_past_a_variables_edit_behind_it() {
     feed(&mut app, "gT");
     assert_eq!(app.settings.editing, None, "the Settings field closed");
     assert_ne!(app.manage.tab, ManageTab::Settings, "and the tab moved");
-    assert!(app.varmanager.form.editing.is_some(), "the Variables edit is untouched");
+    assert!(app.varmanager.form.editing.is_none(), "the tab switch closed the Variables edit");
 }
 
 /// A pending key the footer echoes is dropped by a key that then does

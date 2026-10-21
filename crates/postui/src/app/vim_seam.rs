@@ -1319,9 +1319,10 @@ impl App {
                 if force {
                     // `ZQ` and `:q!` abandon a field open on the screen, as
                     // Vim's `!` abandons changes, so a field whose close
-                    // would refuse cannot keep the screen. `CloseScreen`
-                    // drops a Settings edit.
+                    // would refuse cannot keep the screen. Dropped here,
+                    // since `CloseScreen` would save them.
                     self.varmanager.end_edits();
+                    self.settings.end_edit();
                 } else {
                     // A field open on the screen closes first, as the line's
                     // `:q` and `ZZ` close it; one that refuses keeps the

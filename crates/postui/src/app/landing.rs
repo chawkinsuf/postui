@@ -51,10 +51,15 @@ impl App {
     /// The dirty gate's Discard reaches here with the edit still in the
     /// editor, so `before` carries it (OQ1).
     ///
-    /// An open table cell stays open: the ops run over one (the var
-    /// picker's new variable, a selector pick, extract) act on it. A
-    /// delete that replaces what the editor holds commits it first (spec
-    /// 2026-10-19 R5); `land` asserts no op replaces the editor over one.
+    /// The Variable Manager's open input closes first, saved, since the op
+    /// changes the project it was typed against (task #75,
+    /// `close_open_inputs`); a close it refuses leaves it open and the op
+    /// still runs. A Settings field holds config, not project state, and
+    /// stays as it is. An open table cell stays open: the ops run over one
+    /// (the var picker's new variable, a selector pick, extract) act on
+    /// it. A delete that replaces what the editor holds commits it first
+    /// (spec 2026-10-19 R5); `land` asserts no op replaces the editor over
+    /// one.
     pub(super) fn begin_op(&mut self) -> OpToken {
         self.begin_op_on(None)
     }
@@ -68,6 +73,9 @@ impl App {
     }
 
     fn begin_op_on(&mut self, list: Option<ManageTab>) -> OpToken {
+        // A close the input refuses is not the op's failure: the op still
+        // runs, and a sequence it is part of goes on.
+        self.close_manager_input();
         self.flush_text_session();
         self.op_in_flight = true;
         OpToken { before: self.view_on(list), list }

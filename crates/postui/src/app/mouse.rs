@@ -355,18 +355,19 @@ impl App {
                     //
                     // With a dialog open the point is the dialog's (a gap
                     // between its footer chips, say), and the Settings
-                    // field under it stays open (`on_hit`'s dialog rule,
-                    // task #73). The Manager's edits save in a dialog too,
-                    // for `on_hit`'s reason.
-                    let manager_live = self.varmanager.form.editing.is_some()
-                        || self.varmanager.grid.editing.is_some();
+                    // field or Manager input under it stays open
+                    // (`on_hit`'s dialog rule, tasks #73 and #75).
+                    let manager_live = self.modals.is_empty()
+                        && (self.varmanager.form.editing.is_some()
+                            || self.varmanager.grid.editing.is_some());
                     let settings_live = self.modals.is_empty()
                         && (self.settings.editing.is_some() || self.settings.focused);
                     if !manager_live && !settings_live {
                         return jq_blurred;
                     }
-                    self.commit_var_form();
-                    self.commit_grid_edit();
+                    if manager_live && !self.close_manager_input() {
+                        return self.update(Action::Render);
+                    }
                     if settings_live
                         && (self.settings.editing.is_none()
                             || self.commit_settings_edit_for_click())
@@ -487,25 +488,11 @@ impl App {
                 // the option rows out from under a still-live `GridEdit`,
                 // whose row index would then address a different record —
                 // and the next click-away would write the typed text into
-                // that wrong option.
-                self.commit_var_form();
-                self.commit_grid_edit();
-                // A commit that *failed* keeps its edit (spec §5: the typed
-                // text survives), so the row indices it holds must stay
-                // meaningful: offer no menu that could renumber them until
-                // the user has dealt with it. The failure already toasted.
-                if self.varmanager.grid.editing.is_some()
-                    && matches!(hit, Hit::VmEntryCell { .. } | Hit::VmEntryRadio(_))
-                {
-                    return self.update(Action::Render);
-                }
-                // Same rule for the left list: selecting a different row
-                // after a failed form/grid commit would reset `form`/`grid`
-                // and discard the typed text the failure left live.
-                if (self.varmanager.form.editing.is_some()
-                    || self.varmanager.grid.editing.is_some())
-                    && matches!(hit, Hit::VmLeftRow(_))
-                {
+                // that wrong option. A close the input refuses (spec §5: the
+                // typed text survives) swallows the press: no menu is
+                // offered over the typing. A right press in a dialog is the
+                // dialog's, as a left one is (`on_hit`'s dialog rule).
+                if self.modals.is_empty() && !self.close_manager_input() {
                     return self.update(Action::Render);
                 }
                 // A table hit is normalized to `TableRow(resolved)` for the
@@ -1247,17 +1234,17 @@ impl App {
         m: ratatui::crossterm::event::MouseEvent,
     ) -> bool {
         // A click in a dialog is the dialog's, as its keys are, for the
-        // request editor and the Settings tab (task #73): while one is open
-        // their click-away rules don't run, so the URL line, a table cell
-        // or a Settings field under it stays open, whether the click lands
+        // request editor, the Settings tab (task #73) and the Variable
+        // Manager (task #75): while one is open their click-away rules
+        // don't run, so the URL line, a table cell, a Settings field or a
+        // Manager input under it stays open, whether the click lands
         // on its buttons, its text box, its footer chips or a gap between
         // them. The rule asks whether a dialog is open, as the jq bar's
         // rule and the no-hit point do, rather than listing the dialogs'
         // hits, so there is no dialog hit left to miss. It reads the stack
         // while the hit comes from the last frame, which is what every
         // click path relies on: the loop redraws after any event that
-        // reports a change. The Variable Manager's commits below are not
-        // under the rule yet (see there).
+        // reports a change.
         //
         // The footer's quit chip is the one exception: it shows under every
         // dialog but is the app's, so its click away runs and commits a
@@ -1298,35 +1285,28 @@ impl App {
             self.commit_table_edit();
             self.editor.table.selected = None;
         }
-        // Same rule for the variable form's own in-place field: any click
-        // that isn't on the field already under edit (or the reveal
-        // toggle, which must not disturb an edit in progress) commits
-        // whatever is being typed there first — including a click on a
-        // *different* form field, which must never silently overwrite
-        // `form.editing` out from under the field that was live.
+        // Same rule for the Variable Manager's input, the form field or the
+        // grid cell: any click that isn't on the input itself (or the
+        // reveal toggle, which must not disturb an edit in progress) closes
+        // it first, saved — including a click on a *different* field or
+        // cell, which must never silently overwrite the edit that was live
+        // (Task 8's commit-first rule). A close the input refuses swallows
+        // the click, as the Settings field's does, so nothing the click
+        // would do runs over the typing.
         //
-        // These two commits run in a dialog too, so the dialog rule
-        // above does not cover the Manager. The Manage screen lets ctrl+p
-        // and the env and space switchers open over a live edit, and a
-        // command the dialog then runs (a palette row, a picker's Open, a
-        // Confirm) can switch the environment or project the edit belongs
-        // to. Saving first keeps the typing where it was typed. The cost
-        // is coarser, not wrong: a click in a dialog over the Manager
-        // closes its edit, saved. Task #75 moves that save into the
-        // switches themselves; the Manager can then join the dialog rule.
-        let editing_this_field = matches!(hit, Hit::VmFormField(field)
-            if self.varmanager.form.editing.as_ref().is_some_and(|e| e.field == field));
-        if !editing_this_field && !matches!(hit, Hit::VmRevealToggle) {
-            self.commit_var_form();
-        }
-        // …and the selector grid's cell, likewise: any click that isn't on the
-        // cell already under edit commits it first, so clicking straight
-        // from one cell to another never drops what was typed into the
-        // first (Task 8's commit-first rule).
-        let editing_this_cell = matches!(hit, Hit::VmEntryCell { row, col }
-            if self.varmanager.grid.editing.as_ref().is_some_and(|e| e.row == row && e.col == col));
-        if !editing_this_cell {
-            self.commit_grid_edit();
+        // Under a dialog the input stays open, as the table's does: a
+        // click in the dialog is the dialog's (its Copy/Paste menu acts on
+        // the input, task #76), and a command the dialog runs that changes
+        // the state the input was typed against closes it first itself
+        // (`close_open_inputs`, task #75).
+        let on_the_input = matches!(hit, Hit::VmRevealToggle)
+            && self.varmanager.form.editing.is_some()
+            || matches!(hit, Hit::VmFormField(field)
+                if self.varmanager.form.editing.as_ref().is_some_and(|e| e.field == field))
+            || matches!(hit, Hit::VmEntryCell { row, col }
+                if self.varmanager.grid.editing.as_ref().is_some_and(|e| e.row == row && e.col == col));
+        if !in_dialog && !on_the_input && !self.close_manager_input() {
+            return self.update(Action::Render);
         }
         // …and the Settings tab's field and cursor, likewise. Any click
         // that isn't on one of the tab's own controls commits whatever
@@ -2161,17 +2141,10 @@ impl App {
             // A click on the panel between its controls: consumed, so it
             // never reaches whatever the tip floats over.
             Hit::TipPanel(_) => true,
-            // Like `VmFormField`/`VmEntryCell` above: the commit attempts at
-            // the top of this function just ran, and a write failure
-            // restores the original edit (still live) with its typed text.
-            // Selecting a different row would reset `form`/`grid` and throw
-            // that text away, so the click is absorbed instead — render
-            // only, edit and detail stay put.
+            // The input closed at the top of this function (a close it
+            // refused swallowed the click there), so selecting a row never
+            // resets `form`/`grid` over live typing.
             Hit::VmLeftRow(i) => {
-                if self.varmanager.form.editing.is_some() || self.varmanager.grid.editing.is_some()
-                {
-                    return self.update(Action::Render);
-                }
                 self.varmanager.select_row(i);
                 self.update(Action::Render)
             }
@@ -2180,22 +2153,15 @@ impl App {
             Hit::VmNewVar => self.update(Action::PromptNewVar),
             Hit::VmNewSelector => self.update(Action::PromptNewSelector),
             // A second click on the field already under edit is inert (the
-            // top-of-`on_hit` guard above left it alone precisely so this
-            // check still sees the live edit). A click on any other field
-            // lands here only after that same guard already tried to
-            // commit whatever was being edited: on success `form.editing`
-            // is now `None` and this starts a fresh edit on the clicked
-            // field; on a write failure it restores the *original* field's
-            // edit (spec's write-failure rule: the typed text stays put),
-            // and this must not clobber that with the newly clicked field
-            // — the click is absorbed and the original edit stays live.
+            // top-of-`on_hit` close left it alone precisely so this check
+            // still sees the live edit). A click on any other field lands
+            // here only once that close saved whatever was being edited (a
+            // close it refused swallowed the click there), so this starts
+            // a fresh edit on the clicked field.
             Hit::VmFormField(field) => {
                 let already_editing =
                     self.varmanager.form.editing.as_ref().is_some_and(|e| e.field == field);
                 if !already_editing {
-                    if self.varmanager.form.editing.is_some() {
-                        return self.update(Action::Render);
-                    }
                     let Self { project, varmanager, .. } = self;
                     if let Some(p) = project {
                         varmanager.start_field_edit(p, field);
@@ -2208,9 +2174,7 @@ impl App {
             }
             // The grid's cells follow `VmFormField`'s rules exactly: a
             // second click on the live cell is inert, and a click on
-            // another cell after a *failed* commit is absorbed so the
-            // original edit (holding the text that couldn't be written)
-            // stays live.
+            // another cell lands only once the close saved the first.
             Hit::VmEntryCell { row, col } => {
                 let already_editing = self
                     .varmanager
@@ -2219,9 +2183,6 @@ impl App {
                     .as_ref()
                     .is_some_and(|e| e.row == row && e.col == col);
                 if !already_editing {
-                    if self.varmanager.grid.editing.is_some() {
-                        return self.update(Action::Render);
-                    }
                     self.varmanager.grid.cursor = (row, col);
                     self.vm_start_cell_edit(row, col);
                 }
