@@ -28569,11 +28569,11 @@ fn bare_point(app: &mut App) -> (u16, u16) {
     (x, y)
 }
 
-/// A palette row clicked over a live Manager edit closes the edit, saved,
-/// before its command switches what the edit belongs to (here the
-/// environment): the switch closes it (task #75), not the click.
+/// The palette never runs over a live Manager edit: ctrl+p leaves the
+/// edit, so it closes, saved, before the palette opens (task #75), and the
+/// env switch a palette row then runs leaves the typing where it was typed.
 #[test]
-fn a_palette_row_clicked_over_a_manager_edit_saves_it_first() {
+fn a_palette_row_switching_env_finds_the_manager_edit_saved() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -28607,25 +28607,6 @@ fn a_click_between_a_dialogs_footer_chips_keeps_the_settings_field() {
     app.handle_mouse(left_down(x, y));
     assert_eq!(app.settings.editing, Some(SettingsField::AiCmd), "the field is still open");
     assert!(app.settings.focused, "and keeps the cursor");
-}
-
-/// Task #75: the Variable Manager is under #73's dialog rule too. A click
-/// between a dialog's footer chips leaves its live edit open.
-#[test]
-fn a_click_between_a_dialogs_footer_chips_keeps_the_manager_edit() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
-    let r = field_rect(&mut app, VmField::EnvValue);
-    app.handle_mouse(left_down(r.x + r.width - 2, r.y));
-    app.handle_key(plain('9'));
-    app.push_modal(chipped_dialog());
-    let (x, y) = bare_point(&mut app);
-    app.handle_mouse(left_down(x, y));
-    let edit = app.varmanager.form.editing.as_ref().expect("the edit is still open");
-    assert_eq!(edit.input.text(), "https://qa.example.com9");
 }
 
 /// A live `base_url` env-value edit in `var_project` (env qa), `9` typed.
@@ -28707,6 +28688,19 @@ fn a_key_that_leaves_the_manager_input_closes_it_first() {
     app.handle_mouse(left_down(r.x + r.width - 2, r.y));
     app.handle_key(ctrl('z'));
     assert!(app.varmanager.form.editing.is_none(), "the untouched input closed");
+}
+
+/// ctrl+c leaves the input too: it closes, saved, before the quit's
+/// unsaved-changes gate opens over it, so neither answer loses it.
+#[test]
+fn ctrl_c_closes_the_manager_input_before_the_quit_gate() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = manager_form_edit(dir.path());
+    app.editor.url.set_text("https://dirty.example");
+    assert!(app.editor_holds_unsaved(), "the request is unsaved");
+    app.handle_key(ctrl('c'));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the gate asks");
+    assert_closed_into_qa(&app, dir.path());
 }
 
 /// A click away whose close the input refuses swallows the click, so the

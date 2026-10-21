@@ -365,8 +365,8 @@ impl App {
                     if !manager_live && !settings_live {
                         return jq_blurred;
                     }
-                    if manager_live {
-                        self.close_manager_input();
+                    if manager_live && !self.close_manager_input() {
+                        return self.update(Action::Render);
                     }
                     if settings_live
                         && (self.settings.editing.is_none()

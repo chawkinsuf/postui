@@ -7737,8 +7737,9 @@ impl App {
     }
 
     /// Closes the Variable Manager's live input, the form field or the
-    /// grid cell, saved, as the user leaves it: a click away, or a key the
-    /// screen lets past the input (alt+x, ctrl+p, alt+r, …). Its commit
+    /// grid cell, saved, as the user leaves it: a click away, a key the
+    /// screen lets past the input (alt+x, ctrl+p, alt+r, …), or ctrl+c
+    /// (step 1 of the router, ahead of the others). Its commit
     /// reads the environment and the option row as they are when it runs,
     /// so a switch run with the input still open would write the typing
     /// somewhere else. Closing where the user leaves means nothing runs
@@ -10276,6 +10277,11 @@ impl App {
                 self.copy_text_with_toast(&text, "Copied selection".to_string());
                 return router::Ran::routed(true);
             }
+            // The key leaves the Variable Manager's input, as step 3's do,
+            // so it closes it first (`close_manager_input`), before the
+            // unsaved-changes gate can open over it. A close the input
+            // refuses still quits: ctrl+c must always work.
+            self.close_manager_input();
             return router::Ran::routed(self.update(Action::Quit));
         }
 
