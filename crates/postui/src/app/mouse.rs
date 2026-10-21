@@ -1300,6 +1300,7 @@ impl App {
         // the state the input was typed against closes it first itself
         // (`close_open_inputs`, task #75).
         let on_the_input = matches!(hit, Hit::VmRevealToggle)
+            && self.varmanager.form.editing.is_some()
             || matches!(hit, Hit::VmFormField(field)
                 if self.varmanager.form.editing.as_ref().is_some_and(|e| e.field == field))
             || matches!(hit, Hit::VmEntryCell { row, col }
@@ -2140,17 +2141,10 @@ impl App {
             // A click on the panel between its controls: consumed, so it
             // never reaches whatever the tip floats over.
             Hit::TipPanel(_) => true,
-            // Like `VmFormField`/`VmEntryCell` above: the commit attempts at
-            // the top of this function just ran, and a write failure
-            // restores the original edit (still live) with its typed text.
-            // Selecting a different row would reset `form`/`grid` and throw
-            // that text away, so the click is absorbed instead — render
-            // only, edit and detail stay put.
+            // The input closed at the top of this function (a close it
+            // refused swallowed the click there), so selecting a row never
+            // resets `form`/`grid` over live typing.
             Hit::VmLeftRow(i) => {
-                if self.varmanager.form.editing.is_some() || self.varmanager.grid.editing.is_some()
-                {
-                    return self.update(Action::Render);
-                }
                 self.varmanager.select_row(i);
                 self.update(Action::Render)
             }
@@ -2159,22 +2153,15 @@ impl App {
             Hit::VmNewVar => self.update(Action::PromptNewVar),
             Hit::VmNewSelector => self.update(Action::PromptNewSelector),
             // A second click on the field already under edit is inert (the
-            // top-of-`on_hit` guard above left it alone precisely so this
-            // check still sees the live edit). A click on any other field
-            // lands here only after that same guard already tried to
-            // commit whatever was being edited: on success `form.editing`
-            // is now `None` and this starts a fresh edit on the clicked
-            // field; on a write failure it restores the *original* field's
-            // edit (spec's write-failure rule: the typed text stays put),
-            // and this must not clobber that with the newly clicked field
-            // — the click is absorbed and the original edit stays live.
+            // top-of-`on_hit` close left it alone precisely so this check
+            // still sees the live edit). A click on any other field lands
+            // here only once that close saved whatever was being edited (a
+            // close it refused swallowed the click there), so this starts
+            // a fresh edit on the clicked field.
             Hit::VmFormField(field) => {
                 let already_editing =
                     self.varmanager.form.editing.as_ref().is_some_and(|e| e.field == field);
                 if !already_editing {
-                    if self.varmanager.form.editing.is_some() {
-                        return self.update(Action::Render);
-                    }
                     let Self { project, varmanager, .. } = self;
                     if let Some(p) = project {
                         varmanager.start_field_edit(p, field);
@@ -2187,9 +2174,7 @@ impl App {
             }
             // The grid's cells follow `VmFormField`'s rules exactly: a
             // second click on the live cell is inert, and a click on
-            // another cell after a *failed* commit is absorbed so the
-            // original edit (holding the text that couldn't be written)
-            // stays live.
+            // another cell lands only once the close saved the first.
             Hit::VmEntryCell { row, col } => {
                 let already_editing = self
                     .varmanager
@@ -2198,9 +2183,6 @@ impl App {
                     .as_ref()
                     .is_some_and(|e| e.row == row && e.col == col);
                 if !already_editing {
-                    if self.varmanager.grid.editing.is_some() {
-                        return self.update(Action::Render);
-                    }
                     self.varmanager.grid.cursor = (row, col);
                     self.vm_start_cell_edit(row, col);
                 }
