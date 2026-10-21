@@ -28749,6 +28749,26 @@ fn quitting_closes_the_manager_input_first() {
     assert_closed_into_qa(&app, dir.path());
 }
 
+/// The dirty gate's check closes the open inputs but cannot stop the
+/// action, so a close the input refuses does not mark an action that ran
+/// as failed (which would stop the rest of a dialog's sequence).
+#[test]
+fn a_refused_close_in_the_dirty_gate_check_fails_no_action() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let r = cell_rect(&mut app, 2, 0);
+    app.handle_mouse(left_down(r.x, r.y));
+    type_chars(&mut app, "description");
+    app.last_action_failed = false;
+    app.update(Action::OpenRequest("main/ping".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/ping"), "the request opened");
+    assert!(!app.last_action_failed, "and the open did not read as failed");
+}
+
 /// A click away whose close the input refuses swallows the click, so the
 /// header's env chip opens no chooser over the kept typing.
 #[test]

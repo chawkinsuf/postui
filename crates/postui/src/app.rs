@@ -1564,6 +1564,7 @@ impl App {
     fn switch_manage_tab_state(&mut self, tab: crate::components::manage::ManageTab) -> bool {
         use crate::components::manage::ManageTab;
         if !self.close_open_inputs(false) {
+            self.last_action_failed = true;
             return false;
         }
         self.manage.switch_list(tab);
@@ -2721,6 +2722,7 @@ impl App {
         // delta is captured; before a redo, capturing it clears the redo
         // stack, which is exactly the linear-history contract.
         if !self.close_open_inputs(true) {
+            self.last_action_failed = true;
             return false;
         }
         self.capture_undo();
@@ -2751,7 +2753,8 @@ impl App {
             // opening/switching away from it — but only from the plain
             // screen: with any modal already up (this gate included),
             // ctrl+c stays a reliable, immediate exit, so pressing it
-            // twice always leaves without saving.
+            // twice always leaves without saving the request. (An open
+            // input still closes, saved, on the way out: task #75.)
             Action::Quit if self.modals.is_empty() && self.leaving_unsaved() => {
                 self.dirty_gate("quit", Action::ForceQuit);
                 true
@@ -4506,6 +4509,7 @@ impl App {
             Action::RequestFailed { generation, error } => self.session.failed(generation, error),
             Action::InitProjectHere => {
                 if !self.close_open_inputs(true) {
+                    self.last_action_failed = true;
                     return true;
                 }
                 match Project::init(self.root(), None) {
@@ -4725,6 +4729,7 @@ impl App {
             }
             Action::ForceSwitchProject(target) => {
                 if !self.close_open_inputs(true) {
+                    self.last_action_failed = true;
                     return true;
                 }
                 // Open the incoming project before touching the current
@@ -4868,6 +4873,7 @@ impl App {
                 // The inputs close before the init writes anything, so a
                 // refused close leaves no project behind that nothing opens.
                 if !self.close_open_inputs(true) {
+                    self.last_action_failed = true;
                     return true;
                 }
                 match Project::init(&path, name.as_deref()) {
@@ -5006,6 +5012,7 @@ impl App {
             Action::CycleEnv(delta) => {
                 // Before the reload too, which can move what an input shows.
                 if !self.close_open_inputs(true) {
+                    self.last_action_failed = true;
                     return true;
                 }
                 self.resync_project();
@@ -5032,6 +5039,7 @@ impl App {
             }
             Action::SwitchEnv(env) => {
                 if !self.close_open_inputs(true) {
+                    self.last_action_failed = true;
                     return true;
                 }
                 let warnings = self.set_active_env(env);
@@ -5895,6 +5903,7 @@ impl App {
                 // its Enter would write whenever the tab came back. The
                 // request editor's are not the screen's.
                 if !self.close_open_inputs(false) {
+                    self.last_action_failed = true;
                     return true;
                 }
                 // Leaving the screen mid-drag cancels it — there is no
@@ -7779,8 +7788,10 @@ impl App {
     /// state like this, just close the input before the change in state").
     /// The functions that change it call this first: the env switch, the
     /// project switch and create, undo/redo, a Manage tab switch, closing
-    /// the screen, quitting, and every journaled op (`begin_op`). Reload
-    /// from disk closes only the Variable Manager's: it keeps a live
+    /// the screen, quitting, and the dirty gate's check (`leaving_unsaved`).
+    /// Two close only the Variable Manager's input (`close_manager_input`):
+    /// a journaled op (`begin_op`), which writes the project and nothing a
+    /// Settings field holds, and Reload from disk, which keeps a live
     /// Settings field open (Settings spec, "Reload while the Settings tab
     /// is open"). Whatever key, click, palette row, dialog or vim
     /// command reached them, the input is closed before the change, so its
@@ -7790,16 +7801,16 @@ impl App {
     ///
     /// `editor`: whether the request editor's inputs close too (the table
     /// cell commits; the URL line's and jq bar's typing becomes its own
-    /// step, `flush_field_session`). A journaled op passes `false`, since
-    /// some act on them: the var picker's insert, a selector pick, extract.
-    /// So do the Manage screen's own changes (a tab switch, closing it),
-    /// which leave the request editor as it is.
+    /// step, `flush_field_session`). The Manage screen's own changes (a tab
+    /// switch, closing it) pass `false`: they leave the request editor as
+    /// it is.
     ///
     /// `false` when an input refused to close (a bad value or a failed
-    /// write: it toasted and keeps the typing); the caller then leaves its
-    /// change undone, and a sequence of actions stops there
-    /// (`last_action_failed`). Quitting and a journaled op go on regardless:
-    /// ctrl+c must always quit, and `begin_op` has no way to refuse.
+    /// write: it toasted and keeps the typing); a caller that stops then
+    /// leaves its change undone and sets `last_action_failed`, so a
+    /// sequence of actions stops there too. Quitting, the dirty gate's
+    /// check and a journaled op go on regardless: ctrl+c must always quit,
+    /// and the other two have no way to refuse.
     ///
     /// Why stop rather than carry on (task #75, mine (approved)): carrying
     /// on leaves the typing open across the change, so a later save can
@@ -7810,10 +7821,7 @@ impl App {
     /// they fix it or undo the typing with ctrl+z, which is how a Manager
     /// field is discarded anyway. ctrl+c still quits.
     fn close_open_inputs(&mut self, editor: bool) -> bool {
-        let closed = self.close_manager_input()
-            && (self.settings.editing.is_none() || self.commit_settings_edit_for_click());
-        if !closed {
-            self.last_action_failed = true;
+        if !self.close_manager_input() || !self.commit_settings_edit_for_click() {
             return false;
         }
         if editor {
