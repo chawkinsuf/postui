@@ -7751,12 +7751,25 @@ impl App {
     /// field's cursor stays where it was: the input is still selected,
     /// closed.
     ///
+    /// Why here and not inside each switch: the actions that change what
+    /// the input was typed against are many (env and project switches, a
+    /// new env or variable, a tab, a reload, undo) and run from keys,
+    /// palette rows and dialogs alike. A per-action close keeps missing
+    /// one. The routes that reach the app over a live input without
+    /// passing here are the two this rule leaves open: vim's `:` line
+    /// (task #77) and a reload of files changed outside the app on focus
+    /// (task #78). Async results (a response, an AI reply) touch no
+    /// Manager state.
+    ///
     /// The ghost row's name commit walks on into the new option's first
     /// cell; that input closes too, with nothing typed in it yet.
     ///
     /// `false` when the input refused to close (a bad value or a failed
     /// write: it toasted and keeps the typing). The caller then drops the
-    /// click or key, so the typing never moves under another environment.
+    /// click or key, so the typing never moves under another environment:
+    /// the footer's quit chip included, as a refused Settings field
+    /// swallows it. Only ctrl+c quits past a refusal, since it must
+    /// always work.
     fn close_manager_input(&mut self) -> bool {
         if !self.commit_var_form() || !self.commit_grid_edit() {
             self.last_action_failed = true;
