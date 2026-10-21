@@ -1558,14 +1558,19 @@ impl App {
     /// `SelectManageTab`). Each list tab keeps its own cursor; a parked
     /// cursor past the end of a list that shrank while away clamps here.
     /// Any in-progress Settings field edit ends: it points at something
-    /// the new tab does not show.
-    fn switch_manage_tab_state(&mut self, tab: crate::components::manage::ManageTab) {
+    /// the new tab does not show. The Variable Manager's input closes
+    /// first, saved; `false` (and no switch) when it refuses to.
+    fn switch_manage_tab_state(&mut self, tab: crate::components::manage::ManageTab) -> bool {
         use crate::components::manage::ManageTab;
+        if !self.close_manager_input() {
+            return false;
+        }
         self.manage.switch_list(tab);
         if matches!(tab, ManageTab::Environments | ManageTab::Spaces) {
             self.clamp_list(tab);
         }
         self.settings.end_edit();
+        true
     }
 
     /// Moves the Manage screen's list cursor onto `name` in the open tab.
@@ -2708,6 +2713,11 @@ impl App {
             return false;
         }
         if !self.modals.is_empty() {
+            return false;
+        }
+        // The Variable Manager's input closes before the step changes what
+        // it was typed against (task #75); nothing was typed in it here.
+        if !self.close_manager_input() {
             return false;
         }
         if redo {
@@ -4716,6 +4726,9 @@ impl App {
                 true
             }
             Action::ForceSwitchProject(target) => {
+                if !self.close_manager_input() {
+                    return true;
+                }
                 // Open the incoming project before touching the current
                 // one: a project that refuses to open (a broken file it
                 // would write back) leaves the current project exactly as
@@ -4987,6 +5000,10 @@ impl App {
                 true
             }
             Action::CycleEnv(delta) => {
+                // Before the reload, which can move the rows under the input.
+                if !self.close_manager_input() {
+                    return true;
+                }
                 self.resync_project();
                 let envs = self.environments().to_vec();
                 if envs.is_empty() {
@@ -5010,6 +5027,9 @@ impl App {
                 self.apply(Action::SwitchEnv(Some(next)))
             }
             Action::SwitchEnv(env) => {
+                if !self.close_manager_input() {
+                    return true;
+                }
                 let warnings = self.set_active_env(env);
                 if !warnings.is_empty() {
                     for w in warnings {
@@ -5417,7 +5437,11 @@ impl App {
                 // front of it, as it does for every other switch.
                 //
                 // The editor's buffer is not part of any of this: unsaved
-                // edits are the user's, and a reload is not a discard.
+                // edits are the user's, and a reload is not a discard. The
+                // Variable Manager's input closes first, saved (task #75).
+                if !self.close_manager_input() {
+                    return true;
+                }
                 let retried = match (self.project.is_none(), self.open_error.as_ref()) {
                     (true, Some(e)) => {
                         let root = e.root.clone();
@@ -5807,8 +5831,8 @@ impl App {
                 if self.screen == Screen::Manage && (tab.is_none() || self.manage.tab == target) {
                     return self.update(Action::CloseScreen);
                 }
-                if self.manage.tab != target {
-                    self.switch_manage_tab_state(target);
+                if self.manage.tab != target && !self.switch_manage_tab_state(target) {
+                    return true;
                 }
                 let prev = self.manage.tab;
                 self.manage.tab = target;
@@ -5843,7 +5867,9 @@ impl App {
                 // still ends: it points at something this tab does not
                 // show.
                 if self.manage.tab != tab {
-                    self.switch_manage_tab_state(tab);
+                    if !self.switch_manage_tab_state(tab) {
+                        return true;
+                    }
                     let prev = self.manage.tab;
                     self.manage.tab = tab;
                     self.settings.clamp_to_live(self.ui_settings_are_editable());
@@ -5855,6 +5881,9 @@ impl App {
                 true
             }
             Action::CloseScreen => {
+                if !self.close_manager_input() {
+                    return true;
+                }
                 // Leaving the screen mid-drag cancels it — there is no
                 // list left to drop onto.
                 self.finish_manage_drag(false);
@@ -7697,25 +7726,25 @@ impl App {
     /// nothing being edited. A write failure toasts and puts the edit back
     /// exactly as it was — the typed text is never lost to a failed write
     /// (spec §5's general write-failure rule), and a secret's value never
-    /// appears in the toast.
-    pub(crate) fn commit_var_form(&mut self) {
+    /// appears in the toast. `false` only for that refusal.
+    pub(crate) fn commit_var_form(&mut self) -> bool {
         let Some(crate::components::varmanager::FormEdit { field, input, original }) =
             self.varmanager.form.editing.take()
         else {
-            return;
+            return true;
         };
         let VmDetail::Var(name) = self.varmanager.detail.clone() else {
-            return;
+            return true;
         };
         let value = input.text().to_string();
         // Nothing was typed: clicking from field to field must not write
         // (and so must not journal an entry that lands on the undo stack).
         // The grid's `GridEdit::original` keeps the same rule.
         if value == original {
-            return;
+            return true;
         }
         let Some(op) = self.project().map(|p| var_edit_op_for(p, &name, field, value)) else {
-            return;
+            return true;
         };
         // This commit never routes through `self.apply` — it's called
         // directly from `handle_key` (click-away/Enter), so it records its
@@ -7723,13 +7752,42 @@ impl App {
         let t = self.begin_op();
         let label = crate::undo::StepLabel::variable(op.subject());
         match self.apply_var_edit(&op) {
-            Ok(()) => self.record_project_step(t, label),
+            Ok(()) => {
+                self.record_project_step(t, label);
+                true
+            }
             Err(msg) => {
                 self.varmanager.form.editing =
                     Some(crate::components::varmanager::FormEdit { field, input, original });
                 self.toasts.push(msg, ToastKind::Error);
+                false
             }
         }
+    }
+
+    /// Closes the Variable Manager's live input, the form field or the
+    /// grid cell, saved, before something changes what it was typed
+    /// against: the environment, the project, the tab or screen showing it,
+    /// or the history (task #75, the user's rule: "when something changes
+    /// in the app state like this, just close the input before the change
+    /// in state"). Its commit reads the environment and the option row as
+    /// they are when it runs, so after the change it would write the
+    /// typing somewhere else. The field's cursor stays where it was, so the
+    /// input is still selected, closed.
+    ///
+    /// The ghost row's name commit walks on into the new option's first
+    /// cell; that input closes too, with nothing typed in it yet.
+    ///
+    /// `false` when the input refused to close (a bad value or a failed
+    /// write: it toasted and keeps the typing). The caller then leaves its
+    /// change undone, so the typing never moves under another environment.
+    fn close_manager_input(&mut self) -> bool {
+        if !self.commit_var_form() || !self.commit_grid_edit() {
+            self.last_action_failed = true;
+            return false;
+        }
+        self.varmanager.grid.editing = None;
+        true
     }
 
     /// Maps one [`VarEditOp`] onto core's [`postui_core::project::VarEdit`]
@@ -8141,24 +8199,25 @@ impl App {
     ///
     /// A write failure toasts and puts the edit back exactly as it was, so
     /// the typed text survives a retry (spec §5) — including the reserved
-    /// option name `description`, which core refuses.
-    pub(crate) fn commit_grid_edit(&mut self) {
+    /// option name `description`, which core refuses. `false` only for
+    /// that refusal.
+    pub(crate) fn commit_grid_edit(&mut self) -> bool {
         let Some(edit) = self.varmanager.grid.editing.take() else {
-            return;
+            return true;
         };
         let VmDetail::Group(selector) = self.varmanager.detail.clone() else {
-            return;
+            return true;
         };
         // A shared selector's grid works without an environment (its ops
         // ignore the env they carry); everyone else's needs one.
         let env = match self.active_env().map(str::to_string) {
             Some(env) => env,
             None if self.selector_is_shared(&selector) => String::new(),
-            None => return,
+            None => return true,
         };
         let value = edit.input.text().to_string();
         if value == edit.original {
-            return;
+            return true;
         }
         let options: Vec<String> =
             postui_core::varmodel::options_of(self.variables(), self.env_data(), &selector)
@@ -8179,7 +8238,7 @@ impl App {
             // creates nothing (and neither does a value typed into a row
             // that doesn't exist yet — the caller never starts one).
             if edit.col != 0 || value.is_empty() {
-                return;
+                return true;
             }
             let values = fields
                 .iter()
@@ -8196,7 +8255,7 @@ impl App {
         } else if edit.col == 0 {
             // Clearing a name is not a delete: leave the option as it was.
             if value.is_empty() {
-                return;
+                return true;
             }
             t = self.begin_op();
             self.apply_var_struct(&VarStructOp::RenameOption {
@@ -8217,7 +8276,7 @@ impl App {
             })
         } else {
             let Some(field) = fields.get(edit.col - 1).cloned() else {
-                return;
+                return true;
             };
             t = self.begin_op();
             self.apply_var_edit(&VarEditOp::SetOptionValue {
@@ -8238,10 +8297,12 @@ impl App {
                     self.vm_start_cell_edit(edit.row, 1);
                 }
                 self.record_project_step(t, label);
+                true
             }
             Err(msg) => {
                 self.varmanager.grid.editing = Some(edit);
                 self.toasts.push(msg, ToastKind::Error);
+                false
             }
         }
     }
@@ -10823,7 +10884,9 @@ impl App {
     /// capturing every key while it's open.
     fn handle_var_form_key(&mut self, ev: KeyEvent) -> bool {
         match ev.code {
-            KeyCode::Esc | KeyCode::Enter => self.commit_var_form(),
+            KeyCode::Esc | KeyCode::Enter => {
+                self.commit_var_form();
+            }
             _ => {
                 if let Some(edit) = self.varmanager.form.editing.as_mut() {
                     edit.input.handle_key(ev);
@@ -10841,7 +10904,9 @@ impl App {
     /// mouse; a commit that failed keeps its edit and stays put.
     fn handle_grid_key(&mut self, ev: KeyEvent) -> bool {
         match ev.code {
-            KeyCode::Esc | KeyCode::Enter => self.commit_grid_edit(),
+            KeyCode::Esc | KeyCode::Enter => {
+                self.commit_grid_edit();
+            }
             KeyCode::Tab => self.step_grid_edit(1),
             KeyCode::BackTab => self.step_grid_edit(-1),
             _ => {

@@ -28569,11 +28569,9 @@ fn bare_point(app: &mut App) -> (u16, u16) {
     (x, y)
 }
 
-/// A palette row clicked over a live Manager edit saves the edit before
-/// its command runs: the command can switch what the edit belongs to,
-/// here the environment, and the typing must land in the one it was typed
-/// against. Task #73 leaves the Manager's commits out of the dialog rule
-/// for this, until #75 moves the save into the switch.
+/// A palette row clicked over a live Manager edit closes the edit, saved,
+/// before its command switches what the edit belongs to (here the
+/// environment): the switch closes it (task #75), not the click.
 #[test]
 fn a_palette_row_clicked_over_a_manager_edit_saves_it_first() {
     let dir = tempfile::tempdir().unwrap();
@@ -28611,10 +28609,10 @@ fn a_click_between_a_dialogs_footer_chips_keeps_the_settings_field() {
     assert!(app.settings.focused, "and keeps the cursor");
 }
 
-/// The Variable Manager is outside #73's dialog rule until #75: a click
-/// between a dialog's footer chips still saves its live edit.
+/// Task #75: the Variable Manager is under #73's dialog rule too. A click
+/// between a dialog's footer chips leaves its live edit open.
 #[test]
-fn a_click_between_a_dialogs_footer_chips_still_saves_the_manager_edit() {
+fn a_click_between_a_dialogs_footer_chips_keeps_the_manager_edit() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -28626,9 +28624,164 @@ fn a_click_between_a_dialogs_footer_chips_still_saves_the_manager_edit() {
     app.push_modal(chipped_dialog());
     let (x, y) = bare_point(&mut app);
     app.handle_mouse(left_down(x, y));
-    assert!(app.varmanager.form.editing.is_none(), "the edit closed");
+    let edit = app.varmanager.form.editing.as_ref().expect("the edit is still open");
+    assert_eq!(edit.input.text(), "https://qa.example.com9");
+}
+
+/// A live `base_url` env-value edit in `var_project` (env qa), `9` typed.
+fn manager_form_edit(dir: &std::path::Path) -> App {
+    var_project(dir);
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.to_path_buf());
+    app.anims.enabled = false;
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
+    let r = field_rect(&mut app, VmField::EnvValue);
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y));
+    app.handle_key(plain('9'));
+    assert!(app.varmanager.form.editing.is_some(), "the field is open");
+    app
+}
+
+/// Asserts `manager_form_edit`'s typing closed into qa, with the field
+/// still selected.
+fn assert_closed_into_qa(app: &App, dir: &std::path::Path) {
+    use crate::components::varmanager::{FormStop, VmFocus};
+    assert!(app.varmanager.form.editing.is_none(), "the input closed");
+    assert_eq!(app.varmanager.form_cursor, FormStop::Field(VmField::EnvValue), "still selected");
+    assert_eq!(app.varmanager.focus, VmFocus::Form);
+    let qa = std::fs::read_to_string(dir.join("environments/qa.toml")).unwrap();
+    assert!(qa.contains("https://qa.example.com9"), "saved to qa: {qa}");
+    for env in ["default", "dev"] {
+        let other = std::fs::read_to_string(dir.join(format!("environments/{env}.toml")))
+            .unwrap_or_default();
+        assert!(!other.contains("qa.example.com9"), "nothing in {env}: {other}");
+    }
+}
+
+/// Task #75 (the user's rule): changing the environment closes the input
+/// on the env it was typed against, before the switch. The field stays
+/// selected, closed, in the new env.
+#[test]
+fn an_env_switch_closes_the_manager_input_on_the_env_it_was_typed_against() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = manager_form_edit(dir.path());
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT));
+    assert_ne!(app.active_env(), Some("qa"), "alt+x switched the environment");
+    assert_closed_into_qa(&app, dir.path());
+}
+
+/// The same switch run with Enter from the palette.
+#[test]
+fn a_palette_env_switch_run_with_enter_closes_the_manager_input_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = manager_form_edit(dir.path());
+    app.handle_key(ctrl('p'));
+    type_chars(&mut app, "next");
+    select_palette_command(&mut app, "env-next");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_ne!(app.active_env(), Some("qa"), "the row switched the environment");
+    assert_closed_into_qa(&app, dir.path());
+}
+
+/// Leaving the Variables tab, closing the screen and an undo change what
+/// the screen shows, so each closes the input first.
+#[test]
+fn a_tab_switch_a_screen_close_and_an_undo_close_the_manager_input_first() {
+    for action in [Action::CycleTabs(1), Action::CloseScreen] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = manager_form_edit(dir.path());
+        app.update(action);
+        assert_closed_into_qa(&app, dir.path());
+    }
+    // An undo with nothing typed in the field steps the app's history, so
+    // the untouched input closes first.
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
+    let r = field_rect(&mut app, VmField::EnvValue);
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y));
+    app.update(Action::Undo);
+    assert!(app.varmanager.form.editing.is_none(), "the untouched input closed");
+}
+
+/// A project switch closes the input in the project it was typed in.
+#[test]
+fn a_project_switch_closes_the_manager_input_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(other.path(), Some("other")).unwrap();
+    let mut app = manager_form_edit(dir.path());
+    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+    assert_eq!(app.root(), other.path(), "switched");
+    assert!(app.varmanager.form.editing.is_none(), "the input closed");
     let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(qa.contains("https://qa.example.com9"), "and saved: {qa}");
+    assert!(qa.contains("https://qa.example.com9"), "saved in the first project: {qa}");
+}
+
+/// The grid's ghost row walks on into the new option's first cell when its
+/// name commits; closing for a switch ends that cell too, so no input is
+/// left open across the switch.
+#[test]
+fn an_env_switch_over_the_ghost_row_closes_the_input_it_walks_into() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let r = cell_rect(&mut app, 2, 0);
+    app.handle_mouse(left_down(r.x, r.y));
+    type_chars(&mut app, "carol");
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT));
+    assert_ne!(app.active_env(), Some("qa"), "switched");
+    assert!(app.varmanager.grid.editing.is_none(), "no input open across the switch");
+    let qa = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
+    assert!(qa.options["user"].contains_key("carol"), "created in qa");
+}
+
+/// A close the cell refuses (core refuses `description` as an option
+/// name; the commit toasts and keeps the typing) stops the switch, so the
+/// typing never moves into another environment.
+#[test]
+fn a_refused_manager_close_stops_the_env_switch() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let r = cell_rect(&mut app, 2, 0);
+    app.handle_mouse(left_down(r.x, r.y));
+    type_chars(&mut app, "description");
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT));
+    assert_eq!(app.active_env(), Some("qa"), "the switch did not run");
+    let edit = app.varmanager.grid.editing.as_ref().expect("the typing is kept");
+    assert_eq!(edit.input.text(), "description");
+}
+
+/// Task #76: Copy clicked in a live grid cell's own menu copies the cell's
+/// selection. The menu is a dialog, so the click no longer closes the cell
+/// under it.
+#[test]
+fn copy_clicked_in_a_live_manager_cells_menu_copies_its_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let out = dir.path().join("out.txt");
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.anims.enabled = false;
+    app.set_clipboard_for_test(file_clipboard(&out, ""));
+    goto_group(&mut app, "user");
+    app.vm_start_cell_edit(0, 1);
+    app.varmanager.grid.editing.as_mut().unwrap().input.select_all();
+    let expected = app.varmanager.grid.editing.as_ref().unwrap().input.text().to_string();
+    render_once(&mut app);
+    let cell = app.hits.rect_of(&Hit::VmEntryCell { row: 0, col: 1 }).expect("the edited cell");
+    app.handle_mouse(right_down(cell.x, cell.y));
+    assert_eq!(menu_labels(&app), vec!["Copy", "Paste"]);
+    click_hit(&mut app, Hit::DropdownRow(0));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), expected, "copied");
+    assert!(app.varmanager.grid.editing.is_some(), "the cell is still open");
 }
 
 /// The footer's quit chip shows under every dialog but is the app's
