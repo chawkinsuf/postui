@@ -28683,18 +28683,21 @@ fn a_palette_env_switch_run_with_enter_closes_the_manager_input_first() {
     assert_closed_into_qa(&app, dir.path());
 }
 
-/// Leaving the Variables tab, closing the screen and an undo change what
-/// the screen shows, so each closes the input first.
+/// Every key the screen lets past the input leaves it, so each closes it
+/// first: the tab chord, alt+r closing the screen, and ctrl+p opening a
+/// palette whose commands (a project switch, a new environment, a new
+/// variable) would otherwise run over the typing.
 #[test]
-fn a_tab_switch_a_screen_close_and_an_undo_close_the_manager_input_first() {
-    for action in [Action::CycleTabs(1), Action::CloseScreen] {
+fn a_key_that_leaves_the_manager_input_closes_it_first() {
+    let alt = |c: KeyCode| KeyEvent::new(c, KeyModifiers::ALT);
+    for key in [alt(KeyCode::Right), alt(KeyCode::Char('r')), ctrl('p')] {
         let dir = tempfile::tempdir().unwrap();
         let mut app = manager_form_edit(dir.path());
-        app.update(action);
+        app.handle_key(key);
         assert_closed_into_qa(&app, dir.path());
     }
     // An undo with nothing typed in the field steps the app's history, so
-    // the untouched input closes first.
+    // the untouched input closes first. (With typing, ctrl+z undoes it.)
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -28702,22 +28705,26 @@ fn a_tab_switch_a_screen_close_and_an_undo_close_the_manager_input_first() {
     goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("base_url".into()));
     let r = field_rect(&mut app, VmField::EnvValue);
     app.handle_mouse(left_down(r.x + r.width - 2, r.y));
-    app.update(Action::Undo);
+    app.handle_key(ctrl('z'));
     assert!(app.varmanager.form.editing.is_none(), "the untouched input closed");
 }
 
-/// A project switch closes the input in the project it was typed in.
+/// A click away whose close the input refuses swallows the click, so the
+/// header's env chip opens no chooser over the kept typing.
 #[test]
-fn a_project_switch_closes_the_manager_input_first() {
+fn a_refused_manager_close_swallows_the_click_away() {
     let dir = tempfile::tempdir().unwrap();
-    let other = tempfile::tempdir().unwrap();
-    postui_core::fixtures::init_project(other.path(), Some("other")).unwrap();
-    let mut app = manager_form_edit(dir.path());
-    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
-    assert_eq!(app.root(), other.path(), "switched");
-    assert!(app.varmanager.form.editing.is_none(), "the input closed");
-    let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(qa.contains("https://qa.example.com9"), "saved in the first project: {qa}");
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let r = cell_rect(&mut app, 2, 0);
+    app.handle_mouse(left_down(r.x, r.y));
+    type_chars(&mut app, "description");
+    click_hit(&mut app, Hit::HeaderEnv);
+    assert!(app.modals.is_empty(), "the click opened nothing");
+    let edit = app.varmanager.grid.editing.as_ref().expect("the typing is kept");
+    assert_eq!(edit.input.text(), "description");
 }
 
 /// The grid's ghost row walks on into the new option's first cell when its

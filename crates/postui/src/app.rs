@@ -1558,19 +1558,14 @@ impl App {
     /// `SelectManageTab`). Each list tab keeps its own cursor; a parked
     /// cursor past the end of a list that shrank while away clamps here.
     /// Any in-progress Settings field edit ends: it points at something
-    /// the new tab does not show. The Variable Manager's input closes
-    /// first, saved; `false` (and no switch) when it refuses to.
-    fn switch_manage_tab_state(&mut self, tab: crate::components::manage::ManageTab) -> bool {
+    /// the new tab does not show.
+    fn switch_manage_tab_state(&mut self, tab: crate::components::manage::ManageTab) {
         use crate::components::manage::ManageTab;
-        if !self.close_manager_input() {
-            return false;
-        }
         self.manage.switch_list(tab);
         if matches!(tab, ManageTab::Environments | ManageTab::Spaces) {
             self.clamp_list(tab);
         }
         self.settings.end_edit();
-        true
     }
 
     /// Moves the Manage screen's list cursor onto `name` in the open tab.
@@ -2713,11 +2708,6 @@ impl App {
             return false;
         }
         if !self.modals.is_empty() {
-            return false;
-        }
-        // The Variable Manager's input closes before the step changes what
-        // it was typed against (task #75); nothing was typed in it here.
-        if !self.close_manager_input() {
             return false;
         }
         if redo {
@@ -4726,9 +4716,6 @@ impl App {
                 true
             }
             Action::ForceSwitchProject(target) => {
-                if !self.close_manager_input() {
-                    return true;
-                }
                 // Open the incoming project before touching the current
                 // one: a project that refuses to open (a broken file it
                 // would write back) leaves the current project exactly as
@@ -5000,10 +4987,6 @@ impl App {
                 true
             }
             Action::CycleEnv(delta) => {
-                // Before the reload, which can move the rows under the input.
-                if !self.close_manager_input() {
-                    return true;
-                }
                 self.resync_project();
                 let envs = self.environments().to_vec();
                 if envs.is_empty() {
@@ -5027,9 +5010,6 @@ impl App {
                 self.apply(Action::SwitchEnv(Some(next)))
             }
             Action::SwitchEnv(env) => {
-                if !self.close_manager_input() {
-                    return true;
-                }
                 let warnings = self.set_active_env(env);
                 if !warnings.is_empty() {
                     for w in warnings {
@@ -5437,11 +5417,7 @@ impl App {
                 // front of it, as it does for every other switch.
                 //
                 // The editor's buffer is not part of any of this: unsaved
-                // edits are the user's, and a reload is not a discard. The
-                // Variable Manager's input closes first, saved (task #75).
-                if !self.close_manager_input() {
-                    return true;
-                }
+                // edits are the user's, and a reload is not a discard.
                 let retried = match (self.project.is_none(), self.open_error.as_ref()) {
                     (true, Some(e)) => {
                         let root = e.root.clone();
@@ -5831,8 +5807,8 @@ impl App {
                 if self.screen == Screen::Manage && (tab.is_none() || self.manage.tab == target) {
                     return self.update(Action::CloseScreen);
                 }
-                if self.manage.tab != target && !self.switch_manage_tab_state(target) {
-                    return true;
+                if self.manage.tab != target {
+                    self.switch_manage_tab_state(target);
                 }
                 let prev = self.manage.tab;
                 self.manage.tab = target;
@@ -5867,9 +5843,7 @@ impl App {
                 // still ends: it points at something this tab does not
                 // show.
                 if self.manage.tab != tab {
-                    if !self.switch_manage_tab_state(tab) {
-                        return true;
-                    }
+                    self.switch_manage_tab_state(tab);
                     let prev = self.manage.tab;
                     self.manage.tab = tab;
                     self.settings.clamp_to_live(self.ui_settings_are_editable());
@@ -5881,9 +5855,6 @@ impl App {
                 true
             }
             Action::CloseScreen => {
-                if !self.close_manager_input() {
-                    return true;
-                }
                 // Leaving the screen mid-drag cancels it — there is no
                 // list left to drop onto.
                 self.finish_manage_drag(false);
@@ -7766,21 +7737,25 @@ impl App {
     }
 
     /// Closes the Variable Manager's live input, the form field or the
-    /// grid cell, saved, before something changes what it was typed
-    /// against: the environment, the project, the tab or screen showing it,
-    /// or the history (task #75, the user's rule: "when something changes
-    /// in the app state like this, just close the input before the change
-    /// in state"). Its commit reads the environment and the option row as
-    /// they are when it runs, so after the change it would write the
-    /// typing somewhere else. The field's cursor stays where it was, so the
-    /// input is still selected, closed.
+    /// grid cell, saved, as the user leaves it: a click away, or a key the
+    /// screen lets past the input (alt+x, ctrl+p, alt+r, …). Its commit
+    /// reads the environment and the option row as they are when it runs,
+    /// so a switch run with the input still open would write the typing
+    /// somewhere else. Closing where the user leaves means nothing runs
+    /// over a live input but the input's own keys, its Copy/Paste menu
+    /// and vim's `:` line (whose `:q!` abandons it, as Vim's does), so no
+    /// action has to close it itself (task #75,
+    /// the user's rule: "when something changes in the app state like
+    /// this, just close the input before the change in state"). The
+    /// field's cursor stays where it was: the input is still selected,
+    /// closed.
     ///
     /// The ghost row's name commit walks on into the new option's first
     /// cell; that input closes too, with nothing typed in it yet.
     ///
     /// `false` when the input refused to close (a bad value or a failed
-    /// write: it toasted and keeps the typing). The caller then leaves its
-    /// change undone, so the typing never moves under another environment.
+    /// write: it toasted and keeps the typing). The caller then drops the
+    /// click or key, so the typing never moves under another environment.
     fn close_manager_input(&mut self) -> bool {
         if !self.commit_var_form() || !self.commit_grid_edit() {
             self.last_action_failed = true;
@@ -10468,12 +10443,17 @@ impl App {
 
         // 3. A non-Main screen captures all remaining input, like a modal —
         // except the small whitelist of global actions that legitimately
-        // work "on top of" any screen still gets first refusal.
+        // work "on top of" any screen still gets first refusal. Such a key
+        // leaves the Variable Manager's input, so it closes the input
+        // first, as a click away does (`close_manager_input`).
         if self.screen != Screen::Main {
             if modified
                 && let Some(a) = global.clone()
                 && screen_escape_whitelist(&a)
             {
+                if !self.close_manager_input() {
+                    return true;
+                }
                 return self.update(a);
             }
             // The testbed is a dead end, not a screen with content of its
