@@ -72,7 +72,11 @@ impl App {
     }
 
     fn begin_op_on(&mut self, list: Option<ManageTab>) -> OpToken {
+        // A close an input refuses is not the op's failure: the op still
+        // runs, and a sequence it is part of goes on.
+        let failed = self.last_action_failed;
         self.close_open_inputs(false);
+        self.last_action_failed = failed;
         self.flush_text_session();
         self.op_in_flight = true;
         OpToken { before: self.view_on(list), list }

@@ -51,6 +51,21 @@ fn vim_keys_that_change_state_close_a_manager_field_first() {
     assert!(!default.contains("xyz"), "nothing in default: {default}");
 }
 
+/// `:qa!` abandons a Variables field as `:q!` does: the quit writes none
+/// of the typing (only the local state every quit saves), though a plain
+/// quit closes the field saved (task #75).
+#[test]
+fn qa_bang_abandons_a_manager_field() {
+    let mut app = vim(Fixture::VarForm);
+    let before = snapshot(&app);
+    feed(&mut app, "ixyz<Esc>:qa!<CR>");
+    assert!(app.should_quit);
+    let diff = super::key_matrix_tests::snapshot_diff(&before, &snapshot(&app));
+    assert!(!diff.contains("xyz"), "the typing is not written: {diff}");
+    assert!(!diff.contains("file variables.toml"), "{diff}");
+    assert!(!diff.contains("file environments/"), "{diff}");
+}
+
 #[test]
 fn zz_saves_a_dirty_request_and_quits() {
     let mut app = vim(Fixture::TableThreeHeaders);

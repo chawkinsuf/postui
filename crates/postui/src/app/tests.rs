@@ -11454,7 +11454,7 @@ fn shared_selector_grid_edit_and_ghost_row_work_without_an_env() {
     let edit = app.varmanager.grid.editing.as_mut().expect("ghost edit started without an env");
     assert_eq!((edit.row, edit.col), (2, 0));
     edit.input.insert_str("de");
-    app.commit_grid_edit();
+    app.commit_grid_edit(true);
     assert!(
         app.proj().variables().options["locale"].contains_key("de"),
         "{:?}",
@@ -11466,7 +11466,7 @@ fn shared_selector_grid_edit_and_ghost_row_work_without_an_env() {
     let edit = app.varmanager.grid.editing.as_mut().unwrap();
     edit.input.select_all();
     edit.input.paste("en-GB");
-    app.commit_grid_edit();
+    app.commit_grid_edit(true);
     assert_eq!(app.proj().variables().options["locale"]["en"].values["lang"], "en-GB");
 }
 
@@ -14376,14 +14376,14 @@ fn committing_the_description_cell_writes_through_and_an_emptied_one_removes() {
     let edit = app.varmanager.grid.editing.as_mut().unwrap();
     assert_eq!(edit.input.text(), "admin", "seeded from the stored text");
     edit.input = crate::components::line_input::LineInput::new("head admin");
-    app.commit_grid_edit();
+    app.commit_grid_edit(true);
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(env_doc.contains("head admin"), "{env_doc}");
 
     app.vm_start_cell_edit(0, 3);
     let edit = app.varmanager.grid.editing.as_mut().unwrap();
     edit.input = crate::components::line_input::LineInput::new("");
-    app.commit_grid_edit();
+    app.commit_grid_edit(true);
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!env_doc.contains("head admin"), "an emptied description leaves the file: {env_doc}");
     assert!(env_doc.contains("1001"), "values untouched: {env_doc}");

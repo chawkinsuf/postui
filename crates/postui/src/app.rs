@@ -3035,9 +3035,15 @@ impl App {
                 }
                 redraw
             }
-            Action::Quit | Action::ForceQuit | Action::GatedQuit => {
-                // A refused close still quits: ctrl+c must always work.
+            // A quit closes the open inputs first, saved (`leaving_unsaved`
+            // did when the gate above ran); a refused close still quits,
+            // since ctrl+c must always work. `ForceQuit` abandons them:
+            // vim's `:qa!`, and a gate's answer, which finds them closed.
+            Action::Quit | Action::GatedQuit => {
                 self.close_open_inputs(true);
+                self.apply(Action::ForceQuit)
+            }
+            Action::ForceQuit => {
                 let slug = self.editor.slug.clone();
                 if let Some(p) = self.project_mut() {
                     p.set_open_request(slug.as_deref());
@@ -4498,6 +4504,9 @@ impl App {
             }
             Action::RequestFailed { generation, error } => self.session.failed(generation, error),
             Action::InitProjectHere => {
+                if !self.close_open_inputs(true) {
+                    return true;
+                }
                 match Project::init(self.root(), None) {
                     Ok((project, warnings)) => {
                         let root = project.root().to_path_buf();
@@ -7794,17 +7803,12 @@ impl App {
 
     /// Closes the Variable Manager's live input, the form field or the
     /// grid cell, saved: for [`Self::close_open_inputs`] and for a click
-    /// away from it. The ghost row's name commit walks on into the new
-    /// option's first cell; that input closes too, with nothing typed in
-    /// it yet. `false` when the input refused to close (it toasted and
-    /// keeps the typing): a click then stops there, as a refused Settings
-    /// field swallows its click.
+    /// away from it. A ghost row's name commit does not walk on into the
+    /// new option's first cell here: the input closes. `false` when the
+    /// input refused to close (it toasted and keeps the typing): a click
+    /// then stops there, as a refused Settings field swallows its click.
     fn close_manager_input(&mut self) -> bool {
-        if !self.commit_var_form() || !self.commit_grid_edit() {
-            return false;
-        }
-        self.varmanager.grid.editing = None;
-        true
+        self.commit_var_form() && self.commit_grid_edit(false)
     }
 
     /// Maps one [`VarEditOp`] onto core's [`postui_core::project::VarEdit`]
@@ -8210,15 +8214,17 @@ impl App {
     /// holds (click-away, click-another-cell, or `Enter`) — Task 8's rules,
     /// on the three kinds of cell the grid has: the ghost row's name cell
     /// creates an option (with an empty value for every field, so the new
-    /// record validates) and continues into its first field cell, a real
-    /// option's name cell renames it, and a field cell writes that one
-    /// value. Text that didn't change writes nothing.
+    /// record validates) and, with `walk_on`, continues into its first
+    /// field cell (the keyboard's Enter, Esc and Tab; a close for a click
+    /// away or a state change does not), a real option's name cell renames
+    /// it, and a field cell writes that one value. Text that didn't change
+    /// writes nothing.
     ///
     /// A write failure toasts and puts the edit back exactly as it was, so
     /// the typed text survives a retry (spec §5) — including the reserved
     /// option name `description`, which core refuses. `false` only for
     /// that refusal.
-    pub(crate) fn commit_grid_edit(&mut self) -> bool {
+    pub(crate) fn commit_grid_edit(&mut self, walk_on: bool) -> bool {
         let Some(edit) = self.varmanager.grid.editing.take() else {
             return true;
         };
@@ -8310,7 +8316,7 @@ impl App {
                 // The ghost flow keeps going left-to-right: the row that
                 // was the ghost is now a real option (appended, so it keeps
                 // its index) with its first field cell live.
-                if ghost && !fields.is_empty() {
+                if walk_on && ghost && !fields.is_empty() {
                     self.vm_start_cell_edit(edit.row, 1);
                 }
                 self.record_project_step(t, label);
@@ -9355,8 +9361,13 @@ impl App {
     /// It commits, so a guard puts it last: `moving_open &&
     /// leaving_unsaved()` commits only when the gate applies, and a move
     /// that does not touch the open request leaves its cell alone.
+    ///
+    /// The other open inputs close with the cell (`close_open_inputs`,
+    /// task #75): what follows the gate changes the app state, and the
+    /// gate's own dialog must not open over a live input whose answer
+    /// (`ForceQuit`, a switch) would then run past it.
     fn leaving_unsaved(&mut self) -> bool {
-        self.commit_table_edit();
+        self.close_open_inputs(true);
         self.editor_holds_unsaved()
     }
 
@@ -10922,7 +10933,7 @@ impl App {
     fn handle_grid_key(&mut self, ev: KeyEvent) -> bool {
         match ev.code {
             KeyCode::Esc | KeyCode::Enter => {
-                self.commit_grid_edit();
+                self.commit_grid_edit(true);
             }
             KeyCode::Tab => self.step_grid_edit(1),
             KeyCode::BackTab => self.step_grid_edit(-1),
@@ -10948,7 +10959,7 @@ impl App {
     /// on into the new option's first field is likewise left alone.
     fn step_grid_edit(&mut self, dir: i32) {
         let at = self.varmanager.grid.editing.as_ref().map(|e| (e.row, e.col));
-        self.commit_grid_edit();
+        self.commit_grid_edit(true);
         let Some((row, col)) = at else { return };
         if self.varmanager.grid.editing.is_some() {
             return;
