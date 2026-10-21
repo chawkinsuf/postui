@@ -28769,6 +28769,34 @@ fn a_refused_close_in_the_dirty_gate_check_fails_no_action() {
     assert!(!app.last_action_failed, "and the open did not read as failed");
 }
 
+/// A delete of an option whose name cell is live closes the cell first:
+/// the rename lands, and the delete of the old name reads as already gone,
+/// with no "Deleted" toast for an option that survives.
+#[test]
+fn deleting_an_option_under_its_live_rename_closes_the_rename_first() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    app.vm_start_cell_edit(0, 0); // alice's name
+    let edit = app.varmanager.grid.editing.as_mut().unwrap();
+    edit.input = crate::components::line_input::LineInput::new("ann");
+    app.toasts = Default::default();
+    app.update(Action::VarStruct(VarStructOp::DeleteOption {
+        env: "qa".into(),
+        selector: "user".into(),
+        name: "alice".into(),
+    }));
+    let qa = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
+    assert!(qa.options["user"].contains_key("ann"), "the rename landed");
+    assert!(
+        !app.toasts.messages().iter().any(|m| m.contains("Deleted")),
+        "no delete toast for a survivor: {:?}",
+        app.toasts.messages()
+    );
+}
+
 /// One input refusing to close does not keep the others open: with a
 /// Manager cell refused, the quit still commits a request-table cell left
 /// open on the main screen.

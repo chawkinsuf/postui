@@ -1563,8 +1563,7 @@ impl App {
     /// as they are. `false`, with no switch, when one refuses to.
     fn switch_manage_tab_state(&mut self, tab: crate::components::manage::ManageTab) -> bool {
         use crate::components::manage::ManageTab;
-        if !self.close_open_inputs(false) {
-            self.last_action_failed = true;
+        if !self.close_inputs_or_stop(false) {
             return false;
         }
         self.manage.switch_list(tab);
@@ -2721,8 +2720,7 @@ impl App {
         // step the undo pops (spec 2026-09-16). Then any other pending
         // delta is captured; before a redo, capturing it clears the redo
         // stack, which is exactly the linear-history contract.
-        if !self.close_open_inputs(true) {
-            self.last_action_failed = true;
+        if !self.close_inputs_or_stop(true) {
             return false;
         }
         self.capture_undo();
@@ -4508,8 +4506,7 @@ impl App {
             }
             Action::RequestFailed { generation, error } => self.session.failed(generation, error),
             Action::InitProjectHere => {
-                if !self.close_open_inputs(true) {
-                    self.last_action_failed = true;
+                if !self.close_inputs_or_stop(true) {
                     return true;
                 }
                 match Project::init(self.root(), None) {
@@ -4728,14 +4725,10 @@ impl App {
                 true
             }
             Action::ForceSwitchProject(target) => {
-                if !self.close_open_inputs(true) {
-                    self.last_action_failed = true;
-                    return true;
-                }
                 // Open the incoming project before touching the current
                 // one: a project that refuses to open (a broken file it
                 // would write back) leaves the current project exactly as
-                // it was.
+                // it was, its open inputs included.
                 let (project, warnings) = match Project::open(target.clone()) {
                     Ok(opened) => opened,
                     Err(e) => {
@@ -4747,6 +4740,11 @@ impl App {
                         return true;
                     }
                 };
+                // Then the open inputs close, saved, into the project they
+                // were typed against.
+                if !self.close_inputs_or_stop(true) {
+                    return true;
+                }
                 // A switch can land with the mouse button still held (alt+z
                 // cycles projects): every drag and armed press belongs to
                 // the project being left — a press left armed would promote
@@ -4872,8 +4870,7 @@ impl App {
                 //
                 // The inputs close before the init writes anything, so a
                 // refused close leaves no project behind that nothing opens.
-                if !self.close_open_inputs(true) {
-                    self.last_action_failed = true;
+                if !self.close_inputs_or_stop(true) {
                     return true;
                 }
                 match Project::init(&path, name.as_deref()) {
@@ -5011,8 +5008,7 @@ impl App {
             }
             Action::CycleEnv(delta) => {
                 // Before the reload too, which can move what an input shows.
-                if !self.close_open_inputs(true) {
-                    self.last_action_failed = true;
+                if !self.close_inputs_or_stop(true) {
                     return true;
                 }
                 self.resync_project();
@@ -5038,8 +5034,7 @@ impl App {
                 self.apply(Action::SwitchEnv(Some(next)))
             }
             Action::SwitchEnv(env) => {
-                if !self.close_open_inputs(true) {
-                    self.last_action_failed = true;
+                if !self.close_inputs_or_stop(true) {
                     return true;
                 }
                 let warnings = self.set_active_env(env);
@@ -5902,8 +5897,7 @@ impl App {
                 // live off-screen would go on owning ctrl+v and ctrl+c, and
                 // its Enter would write whenever the tab came back. The
                 // request editor's are not the screen's.
-                if !self.close_open_inputs(false) {
-                    self.last_action_failed = true;
+                if !self.close_inputs_or_stop(false) {
                     return true;
                 }
                 // Leaving the screen mid-drag cancels it — there is no
@@ -6150,6 +6144,11 @@ impl App {
                 true
             }
             Action::VarStruct(op) => {
+                // The Manager's input closes before anything below reads
+                // the declarations (`begin_op` would close it only after):
+                // closing a renamed option's cell renames it, and a delete
+                // of the old name must then read as already gone.
+                self.close_manager_input();
                 // Sampled before the mutation so the delete toasts below
                 // stay quiet when the target was already gone (deleting a
                 // missing entry is a no-op, not news).
@@ -7807,8 +7806,7 @@ impl App {
     ///
     /// `false` when an input refused to close (a bad value or a failed
     /// write: it toasted and keeps the typing); a caller that stops then
-    /// leaves its change undone and sets `last_action_failed`, so a
-    /// sequence of actions stops there too. Quitting, the dirty gate's
+    /// leaves its change undone (`close_inputs_or_stop`). Quitting, the dirty gate's
     /// check and a journaled op go on regardless: ctrl+c must always quit,
     /// and the other two have no way to refuse.
     ///
@@ -7832,6 +7830,17 @@ impl App {
         manager && settings
     }
 
+    /// [`Self::close_open_inputs`] for a change that stops when an input
+    /// refuses to close: `false` then, with `last_action_failed` set so a
+    /// sequence of actions stops there too. The caller returns at once.
+    fn close_inputs_or_stop(&mut self, editor: bool) -> bool {
+        let closed = self.close_open_inputs(editor);
+        if !closed {
+            self.last_action_failed = true;
+        }
+        closed
+    }
+
     /// Closes the Variable Manager's live input, the form field or the
     /// grid cell, saved: for [`Self::close_open_inputs`] and for a click
     /// away from it. A ghost row's name commit does not walk on into the
@@ -7839,7 +7848,9 @@ impl App {
     /// input refused to close (it toasted and keeps the typing): a click
     /// then stops there, as a refused Settings field swallows its click.
     fn close_manager_input(&mut self) -> bool {
-        self.commit_var_form() && self.commit_grid_edit(false)
+        let form = self.commit_var_form();
+        let grid = self.commit_grid_edit(false);
+        form && grid
     }
 
     /// Maps one [`VarEditOp`] onto core's [`postui_core::project::VarEdit`]
