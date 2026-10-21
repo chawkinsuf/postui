@@ -7800,6 +7800,15 @@ impl App {
     /// change undone, and a sequence of actions stops there
     /// (`last_action_failed`). Quitting and a journaled op go on regardless:
     /// ctrl+c must always quit, and `begin_op` has no way to refuse.
+    ///
+    /// Why stop rather than carry on (task #75, mine (approved)): carrying
+    /// on leaves the typing open across the change, so a later save can
+    /// land it under the env or option the change moved to, the bug this
+    /// fixes. The cost, taken knowingly: a value that can never be saved
+    /// holds the user on the input (no tab switch, screen close, env
+    /// switch or undo, and the footer's quit chip swallows its click) until
+    /// they fix it or undo the typing with ctrl+z, which is how a Manager
+    /// field is discarded anyway. ctrl+c still quits.
     fn close_open_inputs(&mut self, editor: bool) -> bool {
         let closed = self.close_manager_input()
             && (self.settings.editing.is_none() || self.commit_settings_edit_for_click());
