@@ -5442,8 +5442,15 @@ impl App {
                 //
                 // The editor's buffer is not part of any of this: unsaved
                 // edits are the user's, and a reload is not a discard. A
-                // live input is kept open across it too (Settings spec,
-                // "Reload while the Settings tab is open").
+                // live Settings field is kept open across it too (Settings
+                // spec, "Reload while the Settings tab is open"). The
+                // Variable Manager's input closes first (task #75): its
+                // commit finds its option by row, and the reload can
+                // renumber the rows.
+                if !self.close_manager_input() {
+                    self.last_action_failed = true;
+                    return true;
+                }
                 let retried = match (self.project.is_none(), self.open_error.as_ref()) {
                     (true, Some(e)) => {
                         let root = e.root.clone();
@@ -7773,8 +7780,9 @@ impl App {
     /// The functions that change it call this first: the env switch, the
     /// project switch and create, undo/redo, a Manage tab switch, closing
     /// the screen, quitting, and every journaled op (`begin_op`). Reload
-    /// from disk is the exception: it keeps a live input open (Settings
-    /// spec, "Reload while the Settings tab is open"). Whatever key, click, palette row, dialog or vim
+    /// from disk closes only the Variable Manager's: it keeps a live
+    /// Settings field open (Settings spec, "Reload while the Settings tab
+    /// is open"). Whatever key, click, palette row, dialog or vim
     /// command reached them, the input is closed before the change, so its
     /// commit never reads the state that came after (the Variable
     /// Manager's reads the environment and option row as they are when it

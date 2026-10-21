@@ -28697,6 +28697,29 @@ fn an_undo_closes_an_untouched_manager_input_first() {
     assert!(app.varmanager.form.editing.is_none(), "the untouched input closed");
 }
 
+/// Reload from disk closes a live grid cell first: the reload can
+/// renumber the options, and the cell finds its option by row. Here the
+/// file loses alice under bob's cell, and the typing stays bob's.
+#[test]
+fn reload_from_disk_closes_a_manager_grid_cell_first() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    app.vm_start_cell_edit(1, 1); // bob's user
+    type_chars(&mut app, "7");
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "base_url = \"https://qa.example.com\"\n\n[options.user.bob]\nuser = \"2002\"\n\n[options.user.carol]\nuser = \"3003\"\n",
+    )
+    .unwrap();
+    app.update(Action::ReloadFromDisk);
+    assert!(app.varmanager.grid.editing.is_none(), "the cell closed");
+    let qa = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
+    assert_eq!(qa.options["user"]["carol"].values["user"], "3003", "carol untouched");
+}
+
 /// A journaled op closes the input first (`begin_op`): creating an
 /// environment activates it, and the typing must stay in qa.
 #[test]
