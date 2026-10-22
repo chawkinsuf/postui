@@ -5410,24 +5410,33 @@ impl App {
                 true
             }
             Action::ReloadProjectFiles => {
-                // The re-read can renumber the option rows a Variable
-                // Manager grid cell finds its option by, so the Manager's
-                // input closes first (task #78, the rule `close_open_inputs`
-                // states) — only when there is something to re-read, so
-                // focus coming back to an unchanged project closes nothing.
                 // Every reload passes here: focus-gained, Send, the
-                // choosers, `resync_project`. A close the input refuses
-                // holds the re-read back, so the rows stay as the kept
-                // typing saw them.
+                // choosers, `resync_project`. Focus coming back to an
+                // unchanged project changes nothing, and closes nothing.
                 let stale = self.project().is_some_and(|p| p.changed_on_disk());
-                if stale && !self.close_manager_input() {
-                    return true;
-                }
-                let (changed, warnings) = match self.project_mut() {
-                    Some(p) => p.poll(),
-                    None => (false, Vec::new()),
-                };
-                if changed {
+                if stale {
+                    // The re-read can renumber the option rows a Variable
+                    // Manager grid cell finds its option by, so the
+                    // Manager's input closes first (task #78, the rule
+                    // `close_open_inputs` states). One that refuses to
+                    // close is cancelled, its typing dropped (the user's
+                    // ruling): left open across the re-read it would save
+                    // into whichever option took its row, and holding the
+                    // re-read back would leave Send and the pickers on
+                    // stale files.
+                    if !self.close_manager_input() {
+                        self.varmanager.end_edits();
+                    }
+                    // Forced: the close's write, or the read of one that was
+                    // refused, can take a changed file's new stamp with it
+                    // (#81), and the re-read is due all the same.
+                    let warnings = self
+                        .project_mut()
+                        .map(|p| {
+                            p.invalidate_stamps();
+                            p.poll().1
+                        })
+                        .unwrap_or_default();
                     // The rows a live drag is rearranging are about to be
                     // rebuilt from a tree that changed on disk under it:
                     // its working order names siblings that may be gone,
@@ -5435,14 +5444,11 @@ impl App {
                     self.finish_sidebar_drag(false);
                     self.finish_manage_drag(false);
                     self.refresh_sidebar();
-                }
-                for w in warnings {
-                    self.toasts.push(w, ToastKind::Warning);
+                    for w in warnings {
+                        self.toasts.push(w, ToastKind::Warning);
+                    }
                 }
                 self.prompt_migration_if_pending();
-                // `stale`, not `changed`: the close's own write can take
-                // the file's new stamp with it, leaving `poll` nothing to
-                // re-read, and the screen changed all the same.
                 stale
             }
             Action::ReloadFromDisk => {
@@ -7811,7 +7817,8 @@ impl App {
     /// Settings field holds; Reload from disk, which keeps a live Settings
     /// field open (Settings spec, "Reload while the Settings tab is open");
     /// and a reload of project files changed on disk (`ReloadProjectFiles`,
-    /// task #78), which reads nothing a Settings field holds either.
+    /// task #78), which reads nothing a Settings field holds either, and
+    /// cancels an input that refuses rather than stop.
     /// Whatever key, click, palette row, dialog or vim
     /// command reached them, the input is closed before the change, so its
     /// commit never reads the state that came after (the Variable

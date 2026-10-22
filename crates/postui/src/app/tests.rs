@@ -28773,12 +28773,11 @@ fn a_focus_gained_with_no_file_changed_keeps_the_manager_cell_open() {
     assert_eq!(edit.input.text(), "20027");
 }
 
-/// A close the cell refuses holds the reload back, as a refused close stops
-/// any change (task #75): the rows stay as the typing saw them. Once the
-/// typing is fixed its commit writes the file as it is on disk, carol and
-/// all.
+/// A close the cell refuses cancels the edit, and the reload goes on: the
+/// user's ruling (task #78), since an input left open across the reload,
+/// or a reload held back for it, each cause other issues.
 #[test]
-fn a_refused_manager_close_holds_the_reload_back() {
+fn a_reload_cancels_a_manager_edit_that_refuses_to_close() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -28795,13 +28794,10 @@ fn a_refused_manager_close_holds_the_reload_back() {
     };
 
     app.on_focus_gained();
-    let edit = app.varmanager.grid.editing.as_ref().expect("the typing is kept");
-    assert_eq!(edit.input.text(), "description");
-    assert_eq!(options(&app), ["alice", "bob"], "no reload under the kept typing");
-
-    type_chars(&mut app, "x");
-    assert!(app.close_manager_input(), "the fixed name commits");
-    assert_eq!(options(&app), ["bob", "carol", "descriptionx"]);
+    assert!(app.varmanager.grid.editing.is_none(), "the edit is cancelled");
+    assert_eq!(options(&app), ["bob", "carol"], "the reload landed");
+    let qa = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
+    assert!(!qa.options["user"].contains_key("description"), "nothing written");
 }
 
 /// A journaled op closes the input first (`begin_op`): creating an
