@@ -617,19 +617,19 @@ impl JsonTree {
     /// such as a bracket inside a string, and on a scalar or an empty
     /// container's line.
     pub fn bracket_partner(&self, full: usize, col: usize) -> Option<(usize, usize)> {
-        let open_col = |line: usize| {
-            let line = self.line(line);
-            line.indent + line.text.chars().count() - 1
-        };
+        // A container's two lines share its indent: the closing bracket
+        // sits there, the opening one ends its line.
         let rec = self.lines.get(full)?;
+        let indent = usize::from(rec.indent);
+        let open_col = |open: usize| indent + self.line(open).text.chars().count() - 1;
         let (here, partner, partner_col) = match rec.kind {
             Kind::Open => {
                 let close = self.containers[rec.container as usize].end_line as usize;
-                (open_col(full), close, self.line(close).indent)
+                (open_col(full), close, indent)
             }
             Kind::Close => {
                 let open = self.containers[rec.parent as usize].open_line as usize;
-                (self.line(full).indent, open, open_col(open))
+                (indent, open, open_col(open))
             }
             Kind::Scalar | Kind::Empty => return None,
         };
@@ -1190,6 +1190,11 @@ mod tests {
         assert_eq!(t.bracket_partner(1, 2), None, "the key's quote");
         assert_eq!(t.bracket_partner(4, 3), None, "the comma");
         assert_eq!(t.bracket_partner(2, 4), None, "a scalar line");
+        // A jq stream: each document's brackets pair within it.
+        // 0 `{`, 1 `  "a": 1`, 2 `}`, 3 `[`, 4 `  2`, 5 `]`.
+        let t = JsonTree::parse_many(&[r#"{"a": 1}"#.into(), "[2]".into()]).unwrap();
+        assert_eq!(t.bracket_partner(3, 0), Some((5, 0)));
+        assert_eq!(t.bracket_partner(2, 0), Some((0, 0)));
     }
 
     #[test]

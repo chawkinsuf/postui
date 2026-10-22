@@ -10562,6 +10562,34 @@ mod tests {
         assert!(bracket_lit_at(&mut r, true, 0, 0), "its `)` is on the same row");
     }
 
+    /// R19 across a closed fold: the tree's full line maps to the visible
+    /// row that shows it.
+    #[test]
+    fn a_tree_partner_past_a_closed_fold_lights_on_its_visible_row() {
+        // Full lines 0 `{`, 1 `"a": [`, 2–3, 4 `],`, 5 `"b": [`, 6–7, 8 `]`,
+        // 9 `}`; closing `a` leaves 0 `{`, 1 `"a": […]`, 2 `"b": [`, 3–4,
+        // 5 `]`, 6 `}`.
+        let mut r = ready(r#"{"a": [1, 2], "b": [3, 4]}"#);
+        r.view.as_mut().unwrap().active_tree_mut().unwrap().toggle(1);
+        click_cell(&mut r, 0, 0);
+        assert!(bracket_lit_at(&mut r, true, 6, 0), "the root `}}` on visible row 6");
+    }
+
+    /// R20 is arrows': Vim's cursor on the `,` of `},` lights nothing, as
+    /// Vim's matchparen looks only under its cursor.
+    #[test]
+    fn vims_cursor_on_a_trailing_comma_lights_nothing() {
+        // 0 `{`, 1 `"a": {`, 2 `"b": 1`, 3 `  },`, 4 `"c": 2`, 5 `}`.
+        let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
+        r.vim_cursor = true;
+        r.motion(ResponseMotion::Lines(3));
+        r.motion(ResponseMotion::Col(crate::action::ColMove::Right(3)));
+        assert_eq!(col_of(&r, 3, ','), 3);
+        assert!(!bracket_lit_at(&mut r, true, 3, 2));
+        r.motion(ResponseMotion::Col(crate::action::ColMove::Left(1)));
+        assert!(bracket_lit_at(&mut r, true, 3, 2), "on the `}}` it lights");
+    }
+
     /// R19 on the tree view: the tree names the partner's line, however
     /// far below.
     #[test]
