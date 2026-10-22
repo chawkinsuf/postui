@@ -1206,8 +1206,10 @@ impl ReadyView {
             want: self.want,
             visual: self.line_anchor.is_some(),
             clicked: self.clicked,
-            scroll: self.scroll,
-            height: self.height,
+            // Only vim's walk stops at the rows in view (R19): in arrows a
+            // scroll changes nothing, so it never walks again.
+            scroll: if vim { self.scroll } else { 0 },
+            height: if vim { self.height } else { 0 },
         };
         if let Some((seen, pair)) = self.bracket_memo
             && seen == inputs
@@ -1220,10 +1222,12 @@ impl ReadyView {
     }
 
     /// The bracket at the cursor's column and its partner, as visible
-    /// (line, char) cells of the lines as painted, while both rows show
-    /// (spec 2026-10-22, matching brackets, R9–R13): Vim's cursor column
-    /// with `vim`, else the char a click put the cursor on. `None` on a
-    /// closed fold's line, whose summary is not its text.
+    /// (line, char) cells of the lines as painted (spec 2026-10-22,
+    /// matching brackets, R9–R13, R19, R20). With `vim`, it's Vim's cursor
+    /// column, and only while both rows show. Otherwise it's the char a
+    /// click put the cursor on, or the bracket before a clicked `,`, with
+    /// the partner anywhere. `None` on a closed fold's line, whose summary
+    /// is not its text.
     fn bracket_pair(&self, vim: bool) -> Option<(crate::text::Pos, crate::text::Pos)> {
         let line = self.real_line()?;
         if self.in_closed_fold(line) {
@@ -1232,18 +1236,32 @@ impl ReadyView {
         let col = if vim { self.cur_col() } else { self.clicked.filter(|(l, _)| *l == line)?.1 };
         // A peek before the matcher copies the line: a raw line can be
         // megabytes long.
-        let c = match self.mode {
+        let char_at = |col: usize| match self.mode {
             ViewMode::Raw => self.raw_lines.get(self.cursor)?.chars().nth(col),
             _ => self.display_line_text(self.cursor)?.chars().nth(col),
-        }?;
-        if !crate::text::brackets::is_bracket(c) {
-            return None;
-        }
-        // Rows only (R5, Vim's matchparen): a bracket scrolled out sideways
-        // still counts, as Vim's `nowrap` window counts it.
-        let last = (self.scroll + self.height.max(1) - 1).min(self.visible_len().checked_sub(1)?);
+        };
+        let bracket = |col| char_at(col).is_some_and(crate::text::brackets::is_bracket);
+        // Arrows: a click on the `,` right after a bracket (a click past
+        // the end of a `},` line lands there) takes that bracket (R20).
+        // Vim looks only under its cursor.
+        let col = match col.checked_sub(1) {
+            Some(prev) if !vim && char_at(col) == Some(',') && bracket(prev) => prev,
+            _ if bracket(col) => col,
+            _ => return None,
+        };
+        // Vim's matchparen (R5) walks only the rows in view, and lights
+        // nothing past them. Arrows walks every line, so a partner below
+        // the view is lit when scrolled to (R19). Rows only either way: a
+        // bracket scrolled out sideways still counts, as in Vim's `nowrap`
+        // window.
+        let last = self.visible_len().checked_sub(1)?;
+        let rows = if vim {
+            self.scroll..=(self.scroll + self.height.max(1) - 1).min(last)
+        } else {
+            0..=last
+        };
         let at = crate::text::Pos::new(self.cursor, col);
-        crate::text::brackets::matching_pair(self, at, false, self.scroll..=last)
+        crate::text::brackets::matching_pair(self, at, false, rows)
     }
 
     /// Puts Vim's cursor on column `col` of its line, wanted there after.
@@ -10525,20 +10543,47 @@ mod tests {
         assert!(!bracket_lit_at(&mut r, true, 5, 0));
     }
 
-    /// R5 and scrolling: the pair stays lit while both show, and goes dark
-    /// once the clicked one scrolls out.
+    /// R19 (#89): in arrows a clicked bracket lights at once, its partner
+    /// below the view too, so scrolling down shows it lit.
     #[test]
-    fn the_pair_lights_only_while_both_rows_show() {
+    fn an_arrows_click_lights_a_partner_out_of_view() {
         let mut lines = vec!["x"; 40];
         lines[5] = "(";
-        lines[8] = ")";
+        lines[35] = ")";
         let mut r = ready(&lines.join("\n"));
         click_cell(&mut r, 5, 0);
-        assert!(bracket_lit_at(&mut r, true, 8, 0));
-        r.view.as_mut().unwrap().scroll = 2;
-        assert!(bracket_lit_at(&mut r, true, 8, 0), "scrolling keeps it");
-        r.view.as_mut().unwrap().scroll = 6;
-        assert!(!bracket_lit_at(&mut r, true, 8, 0), "the `(` scrolled out");
+        assert!(bracket_lit_at(&mut r, true, 5, 0), "the `(` with its `)` out of view");
+        r.view.as_mut().unwrap().scroll = 25;
+        assert!(bracket_lit_at(&mut r, true, 35, 0), "scrolled to, the `)` is lit");
+    }
+
+    /// R5 still holds in vim: Vim's matchparen lights nothing while the
+    /// partner is out of view.
+    #[test]
+    fn a_vim_partner_out_of_view_lights_nothing() {
+        let mut lines = vec!["x"; 40];
+        lines[0] = "(";
+        lines[35] = ")";
+        let mut r = ready(&lines.join("\n"));
+        r.vim_cursor = true;
+        assert!(!bracket_lit_at(&mut r, true, 0, 0));
+    }
+
+    /// R20 (#89): in arrows a click past the end of a `},` line lands on
+    /// the `,`, and lights the `}` before it with its `{`. A `,` after
+    /// anything else lights nothing.
+    #[test]
+    fn a_click_on_a_trailing_comma_lights_its_bracket() {
+        // 0 `{`, 1 `"a": {`, 2 `"b": 1`, 3 `},`, 4 `"c": 2`, 5 `}`.
+        let mut r = ready(r#"{"a": {"b": 1}, "c": 2}"#);
+        let close = col_of(&r, 3, '}');
+        let open = col_of(&r, 1, '{');
+        click_cell(&mut r, 3, close + 5);
+        assert!(bracket_lit_at(&mut r, true, 3, close));
+        assert!(bracket_lit_at(&mut r, true, 1, open));
+        let mut r = ready("(1, 2)");
+        click_cell(&mut r, 0, 2);
+        assert!(!bracket_lit_at(&mut r, true, 0, 0), "a `,` after `1`");
     }
 
     /// A press on the pane off the text (above the body rect: a click
