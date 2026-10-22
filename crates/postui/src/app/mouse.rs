@@ -1350,9 +1350,20 @@ impl App {
             Hit::Pane(p) => {
                 // A click on the response pane's bare content (Raw and
                 // Headers register no per-row hits) anchors a selection
-                // sweep, exactly like a JsonRow click does in Pretty.
+                // sweep and puts the cursor on the clicked char, exactly
+                // like a JsonRow click does in Pretty (spec 2026-10-22,
+                // matching brackets, R18). A double click too, as Pretty's
+                // does: the cursor takes the word's start, where the
+                // anchor is. R18 asks for one path for all three views,
+                // so this matches Pretty rather than a view of its own. A
+                // click below the text anchors on the last line's end
+                // (`cell_at`'s clamp, as the selection's anchor always
+                // has), so the cursor goes there, as an editor's caret does.
                 if p == PaneId::Response && self.response_click_selection(clicks.text, m) {
                     self.text_drag = Some(TextDrag::Response);
+                    if let Some(row) = self.session.response.anchor_line() {
+                        self.update(Action::JsonRowClicked { row, toggle: false });
+                    }
                 }
                 self.update(Action::FocusPane(p))
             }

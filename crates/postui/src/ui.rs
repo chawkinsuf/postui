@@ -109,6 +109,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 app.editor.recompute_computed_headers(&prepare_ctx);
             }
             app.editor.env_tls = app.env_tls();
+            app.session.response.vim_cursor = app.profile() == crate::config::KeyProfile::Vim;
             app.vim_mirror_body_search();
             let hovered = app.hovered.as_ref();
             let pointer = app.pointer;
