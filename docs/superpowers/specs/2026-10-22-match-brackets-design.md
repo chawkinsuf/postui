@@ -151,13 +151,22 @@ and `%` don't change.
   or the selection keeps that paint instead.
 - R18: `Hit::Pane(Response)`'s single click calls `click_row` on the
   clicked line after anchoring, as `Hit::JsonRow` does.
-- The pair is computed in the draw, not cached. Frames are drawn on events
-  and animation ticks, not continuously. A cache keyed on the column, line,
-  tree and scroll would go stale on a fold toggle that leaves those
-  unchanged, and would light the wrong cells. Before any line is copied,
-  the draw checks that the char at the column is a bracket. The cost lands
-  only while a bracket is lit: a lit bracket on a megabyte-long minified
-  Raw line walks that line each frame.
+- The pair is worked out in the draw, but only when something it reads has
+  changed since the last frame (`BracketInputs`, review round 1). Before
+  this, a lit bracket on a 3 MB minified Raw line cost about 10 ms per
+  frame, measured in release. In the vim profile that's the default state:
+  the cursor starts on the first line's `{`. The memo's key is everything
+  the matcher reads:
+  - the profile and the mode;
+  - the cursor, its fold line and its column's inputs (`at_col`, `want`,
+    V, the clicked char);
+  - the scroll and the height;
+  - the tree: `tree_epoch` for a swap, and `tree_edits` for a fold.
+    `tree_edits` counts `active_tree_mut`, the only mutable way to the tree
+    on screen.
+
+  Raw's and Headers' lines never change for a view's life. A repeat frame
+  costs about 0.4 µs.
 
 **Removed:** nothing.
 

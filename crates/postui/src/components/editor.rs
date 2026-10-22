@@ -933,6 +933,14 @@ impl Editor {
     /// has scrolled the caret into view (`update_viewport_vertical_wrap` in
     /// edtui 0.11.6), from its offset now. A line cut off at the bottom
     /// counts.
+    ///
+    /// The overlays go in before edtui renders, so this predicts its scroll
+    /// rather than reading it. One known gap: edtui decides whether to
+    /// scroll down from `num_rows`, the line count of its previous frame
+    /// (private), where this measures the wrap now. They differ only when
+    /// a line above the caret rewraps in the same frame the caret leaves
+    /// the view. Then a pair at the view's edge stays dark, or lights with
+    /// one end hidden, until the next frame (spec §3: cosmetic, accepted).
     fn body_rows_in_view(&self, width: usize, height: usize) -> Option<RangeInclusive<usize>> {
         let lines = &self.body.lines;
         let gutter = usize::from(line_number_gutter_width(lines.len()));

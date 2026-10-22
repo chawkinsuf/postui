@@ -1352,7 +1352,10 @@ impl App {
                 // Headers register no per-row hits) anchors a selection
                 // sweep and puts the cursor on the clicked char, exactly
                 // like a JsonRow click does in Pretty (spec 2026-10-22,
-                // matching brackets, R18).
+                // matching brackets, R18). A double click too, as Pretty's
+                // does: the cursor takes the word's start, where the
+                // anchor is. R18 asks for one path for all three views,
+                // so this matches Pretty rather than a view of its own.
                 if p == PaneId::Response && self.response_click_selection(clicks.text, m) {
                     self.text_drag = Some(TextDrag::Response);
                     if let Some(row) = self.session.response.anchor_line() {

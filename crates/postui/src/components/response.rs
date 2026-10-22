@@ -762,6 +762,12 @@ pub struct ReadyView {
     /// content-width cache is keyed on, so a run that leaves the same tree
     /// up (a null result, a superseded run) keeps the measure.
     tree_epoch: u64,
+    /// Counts the tree on screen's mutable borrows (`active_tree_mut`):
+    /// with `tree_epoch`, what tells the bracket memo its folds moved.
+    tree_edits: u64,
+    /// The last [`ReadyView::bracket_pair`] answer and what it read (see
+    /// [`BracketInputs`]).
+    bracket_memo: Option<(BracketInputs, Option<(crate::text::Pos, crate::text::Pos)>)>,
     /// Column indexes (`col_marks`) of the raw lines that have been
     /// scrolled sideways, by line — built lazily by `index_raw_rows`, never
     /// invalidated (the raw lines are immutable for the view's life).
@@ -888,6 +894,8 @@ impl ReadyView {
             jq_outputs: 1,
             jq_runs: 0,
             tree_epoch: 0,
+            tree_edits: 0,
+            bracket_memo: None,
             raw_marks: HashMap::new(),
         };
         view.reset_want();
@@ -932,7 +940,10 @@ impl ReadyView {
         self.jq_tree = tree;
     }
 
+    /// The one mutable way to the tree on screen, so every fold it makes
+    /// counts in `tree_edits`.
     fn active_tree_mut(&mut self) -> Option<&mut JsonTree> {
+        self.tree_edits += 1;
         if self.jq_tree.is_some() { self.jq_tree.as_mut() } else { self.tree.as_mut() }
     }
 
@@ -1172,6 +1183,33 @@ impl ReadyView {
         }
     }
 
+    /// [`ReadyView::bracket_pair`], worked out again only when what it reads
+    /// changed since the last frame.
+    fn lit_pair(&mut self, vim: bool) -> Option<(crate::text::Pos, crate::text::Pos)> {
+        let inputs = BracketInputs {
+            vim,
+            mode: self.mode,
+            tree_epoch: self.tree_epoch,
+            tree_edits: self.tree_edits,
+            cursor: self.cursor,
+            fold_line: self.fold_line,
+            at_col: self.at_col,
+            want: self.want,
+            visual: self.line_anchor.is_some(),
+            clicked: self.clicked,
+            scroll: self.scroll,
+            height: self.height,
+        };
+        if let Some((seen, pair)) = self.bracket_memo
+            && seen == inputs
+        {
+            return pair;
+        }
+        let pair = self.bracket_pair(vim);
+        self.bracket_memo = Some((inputs, pair));
+        pair
+    }
+
     /// The bracket at the cursor's column and its partner, as visible
     /// (line, char) cells of the lines as painted, while both rows show
     /// (spec 2026-10-22, matching brackets, R9–R13): Vim's cursor column
@@ -1184,12 +1222,12 @@ impl ReadyView {
         }
         let col = if vim { self.cur_col() } else { self.clicked.filter(|(l, _)| *l == line)?.1 };
         // A peek before the matcher copies the line: a raw line can be
-        // megabytes long, and this runs every frame.
+        // megabytes long.
         let c = match self.mode {
             ViewMode::Raw => self.raw_lines.get(self.cursor)?.chars().nth(col),
             _ => self.display_line_text(self.cursor)?.chars().nth(col),
         }?;
-        if !"()[]{}".contains(c) {
+        if !crate::text::brackets::is_bracket(c) {
             return None;
         }
         let last = (self.scroll + self.height.max(1) - 1).min(self.visible_len().checked_sub(1)?);
@@ -2331,6 +2369,28 @@ fn last_grapheme(text: &str) -> usize {
 struct LineMatches {
     ranges: Vec<(usize, usize)>,
     current: Option<(usize, usize)>,
+}
+
+/// Everything [`ReadyView::bracket_pair`] reads, so a frame that changes
+/// none of it reuses the last answer: the walk to a partner can cross a
+/// megabyte-long minified Raw line (about 10 ms a frame, measured), and
+/// the draw runs on every event. The lines walked are the mode's: Raw's
+/// and Headers' never change for the view's life, and the tree's change
+/// only by a swap (`tree_epoch`) or a fold (`tree_edits`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BracketInputs {
+    vim: bool,
+    mode: ViewMode,
+    tree_epoch: u64,
+    tree_edits: u64,
+    cursor: usize,
+    fold_line: Option<usize>,
+    at_col: Option<(usize, usize)>,
+    want: usize,
+    visual: bool,
+    clicked: Option<(usize, usize)>,
+    scroll: usize,
+    height: usize,
 }
 
 impl LineMatches {
@@ -3569,6 +3629,9 @@ impl Response {
             return false;
         };
         view.clear_sel();
+        // A press anywhere forgets the last click's char; `click_row` sets
+        // the new one when it lands on text (R10).
+        view.clicked = None;
         let Some(cell) = view.cell_at(x, y, false) else {
             return false;
         };
@@ -3587,6 +3650,7 @@ impl Response {
             return false;
         };
         view.clear_sel();
+        view.clicked = None;
         // `cell_at` clamps a click past the line end onto its last grapheme, so
         // a double click there takes the last word, as in a field (spec
         // 2026-10-14, align the text mouse, A3).
@@ -4208,7 +4272,7 @@ impl Component for Response {
         if view.mode == ViewMode::Raw && view.h_scroll > 0 {
             view.index_raw_rows(view.scroll..view.scroll + view.height);
         }
-        let pair = ctx.focused.then(|| view.bracket_pair(self.vim_cursor)).flatten();
+        let pair = if ctx.focused { view.lit_pair(self.vim_cursor) } else { None };
         let body = body_lines(view, t, ctx.focused, ctx.hovered, hits, body_area, pair);
         frame.render_widget(Paragraph::new(body), body_area);
 
@@ -10463,6 +10527,31 @@ mod tests {
         assert!(bracket_lit_at(&mut r, true, 8, 0), "scrolling keeps it");
         r.view.as_mut().unwrap().scroll = 6;
         assert!(!bracket_lit_at(&mut r, true, 8, 0), "the `(` scrolled out");
+    }
+
+    /// A press on the pane off the text (above the body rect: a click
+    /// below the text lands on the last line's end) clears the pair too
+    /// (R10).
+    #[test]
+    fn a_click_off_the_text_clears_the_pair() {
+        let mut r = ready("(a)");
+        click_cell(&mut r, 0, 0);
+        assert!(bracket_lit_at(&mut r, true, 0, 2));
+        let (area, _) = render_buf(&mut r);
+        assert!(!r.begin_selection_at(area.x, area.y - 1), "above the body");
+        assert!(!bracket_lit_at(&mut r, true, 0, 2));
+    }
+
+    /// A fold that leaves the cursor and the scroll alone still moves the
+    /// lit partner: the pair is worked out again, not reused.
+    #[test]
+    fn a_fold_moves_the_lit_partner() {
+        let mut r = ready(r#"{"a": [1, 2]}"#);
+        r.vim_cursor = true;
+        assert!(bracket_lit_at(&mut r, true, 5, 0), "the root `}}` on line 5");
+        let view = r.view.as_mut().unwrap();
+        view.active_tree_mut().unwrap().toggle(1);
+        assert!(bracket_lit_at(&mut r, true, 2, 0), "now on line 2");
     }
 
     /// R13: a closed fold's line shows a summary, so it never lights.

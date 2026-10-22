@@ -27,6 +27,11 @@ fn pair(c: char) -> Option<(char, char)> {
     }
 }
 
+/// Whether `c` is one of the brackets this module matches.
+pub(crate) fn is_bracket(c: char) -> bool {
+    pair(c).is_some()
+}
+
 /// The bracket at `at` and its partner, both on rows `rows`, for the
 /// highlight that lights them: Vim's matchparen with JSON syntax (spec
 /// 2026-10-22, matching brackets, R2–R6). With `before` (a caret between
