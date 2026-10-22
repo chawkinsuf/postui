@@ -1506,6 +1506,12 @@ impl App {
                 Some(from) => self.update(Action::PromptMoveAllRequests(from)),
                 None => false,
             },
+            // The quit chip is a quit request: it hides under a dialog, and
+            // a click resolved against an older frame is refused there as
+            // the other requests are (task #85, `quit_refused`).
+            Hit::FooterChip(action) if action.quits_under_a_dialog() && self.quit_refused() => {
+                self.refuse_quit()
+            }
             Hit::FooterChip(action) => {
                 // Chips that live inside the request panel (the Body
                 // toolbar row, the address bar's TLS lock, the split

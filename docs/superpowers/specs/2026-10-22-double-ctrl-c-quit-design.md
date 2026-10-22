@@ -78,9 +78,10 @@ Spec rows this replaces (each gets a dated amendment pointing here):
     is refused (`refuse_quit`, which toasts with `Toasts::push_once`);
   - `apply_modal_result`: a command run from the palette or the `:` line
     while another dialog is still open, one whose actions quit
-    (`Action::quits`), is refused whole, so its leading `CloseField`
+    (`Action::quits_under_a_dialog`), is refused whole, so its leading `CloseField`
     never closes the dialog's field;
-  - the footer hides the quit chip.
+  - the footer hides the quit chip, and a click on it resolved against
+    an older frame is refused too.
   Arrows' plain `q` never reaches `Quit` under a dialog (dialogs take
   every key), and `ZZ`/`ZQ` bind only on the navigation surfaces.
 - **`App::apply`**: the gate arm (`Quit | GatedQuit if leaving_unsaved`)
@@ -106,7 +107,8 @@ Spec rows this replaces (each gets a dated amendment pointing here):
 
 Contract change: a quit request is refused with any dialog open; `Quit`
 no longer means "skip the gate under a dialog", and `GatedQuit` no longer
-"meets the gate over a dialog". `Action::quits` names the quit actions.
+"meets the gate over a dialog". `Action::quits_under_a_dialog` names the
+quit actions.
 
 ## 4. Tests
 

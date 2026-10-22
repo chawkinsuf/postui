@@ -11495,7 +11495,7 @@ impl App {
         // dialog keeps its field (task #85, `quit_refused`).
         if matches!(popped, Some(Modal::Palette(_)))
             && self.quit_refused()
-            && res.actions.iter().any(Action::quits)
+            && res.actions.iter().any(Action::quits_under_a_dialog)
         {
             return self.refuse_quit() || changed;
         }

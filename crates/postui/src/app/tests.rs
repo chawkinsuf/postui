@@ -29292,6 +29292,15 @@ fn the_quit_chip_commits_the_settings_field() {
     app.push_modal(Modal::Message { title: "note".into(), body: "hello".into() });
     render_once(&mut app);
     assert!(app.hits.rect_of(&Hit::FooterChip(Action::Quit)).is_none(), "no chip under a dialog");
+    // A click resolved against a frame drawn before the dialog opened is
+    // refused too (rework review round 3).
+    let mut app = App::new_for_test();
+    render_once(&mut app);
+    let chip = app.hits.rect_of(&Hit::FooterChip(Action::Quit)).expect("the quit chip");
+    app.push_modal(Modal::Message { title: "note".into(), body: "hello".into() });
+    app.handle_mouse(left_down(chip.x + 1, chip.y));
+    assert!(!app.should_quit, "refused under the dialog");
+    assert!(app.toasts.messages().contains(&"Close the dialog first"));
 }
 
 /// Plan M1 Deviation 2: an unset `keymap` runs arrows until the

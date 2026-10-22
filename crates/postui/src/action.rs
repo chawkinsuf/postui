@@ -1207,11 +1207,11 @@ pub enum Action {
 }
 
 impl Action {
-    /// Whether the action quits the app, a window verb included (over a
-    /// dialog it quits rather than closing Manage): what a command from
-    /// the palette or the `:` line over another dialog is refused for
-    /// (task #85, `App::quit_refused`).
-    pub fn quits(&self) -> bool {
+    /// Whether the action would quit the app if run with a dialog open, a
+    /// window verb included (off a dialog on Manage it closes the screen
+    /// instead): what a quit request is refused for there (task #85,
+    /// `App::quit_refused`).
+    pub fn quits_under_a_dialog(&self) -> bool {
         matches!(
             self,
             Action::Quit
