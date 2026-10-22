@@ -102,6 +102,14 @@ pub enum ConfigStartupChoice {
     Quit,
 }
 
+/// An answer to the first-launch keyboard question (`Modal::KeymapChoice`):
+/// a profile, or Quit, which leaves without choosing one (task #86).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeymapAnswer {
+    Profile(crate::config::KeyProfile),
+    Quit,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Quit,
@@ -214,6 +222,9 @@ pub enum Action {
     /// to `config.toml`, swaps the live keymap, and is one config undo
     /// step. A write that fails still applies for this session.
     SetKeyProfile(crate::config::KeyProfile),
+    /// Answers the first-launch keyboard question, from a key or a click:
+    /// closes it, then sets the profile or quits (task #86).
+    KeymapAnswer(KeymapAnswer),
     EditorTabSelect(usize),
     EditorTabCycle(i8),
     /// The one tab chord every pane shares (alt+←/→ by default): steps

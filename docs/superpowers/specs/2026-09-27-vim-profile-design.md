@@ -487,6 +487,14 @@ changes (`mine` unless marked):
   to fall back to (`you`: no default). ctrl+c still quits (amended
   2026-10-22 by task #85: no quit runs while a dialog is open, this one
   included, `you`: "no ^c ^c in dialogs"; an answer is the way out).
+  Amended 2026-10-22 by task #86: a third answer, `q` "Quit", last in the
+  row, leaves without choosing, so nothing is written and the question
+  comes back next launch (`you`: "yes add a quit button"). It is the
+  ordinary quit once the question has closed, so unsaved edits meet the
+  unsaved-changes question first, and staying brings the keyboard question
+  back. ←/→ step one answer and stop at the ends; with nothing aimed, ←
+  aims Arrows and → aims Vim, so a second → aims Quit (`mine (approved)`:
+  the order, the stepping and the ordinary quit).
 - **Stacking.** It stacks under the startup config gate and is re-raised
   at every event boundary (`earlier`, a21a167).
 - **When the write fails.** This happens if `config.toml` is unwritable,

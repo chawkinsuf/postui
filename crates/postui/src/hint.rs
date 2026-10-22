@@ -12,7 +12,7 @@
 //! `Hit` variant is a compile error until it has decided whether it is a
 //! button with a hint or a surface without one.
 
-use crate::action::{Action, CopyTarget, ExtractDestination};
+use crate::action::{Action, CopyTarget, ExtractDestination, KeymapAnswer};
 use crate::components::palette::all_commands;
 use crate::hit::Hit;
 use crate::keys::Keymap;
@@ -488,8 +488,15 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         }
         Hit::NewProjectBrowse => text("Browse for the project folder"),
         Hit::ConfirmChoice(_) => text("Answer with this choice"),
-        Hit::KeymapChoice(crate::config::KeyProfile::Arrows) => text("Use arrows and Enter"),
-        Hit::KeymapChoice(crate::config::KeyProfile::Vim) => text("Use vim keys"),
+        Hit::KeymapChoice(KeymapAnswer::Profile(crate::config::KeyProfile::Arrows)) => {
+            text("Use arrows and Enter")
+        }
+        Hit::KeymapChoice(KeymapAnswer::Profile(crate::config::KeyProfile::Vim)) => {
+            text("Use vim keys")
+        }
+        // About the choice, not files: this is the ordinary quit, which
+        // may ask about unsaved edits first; only the keymap is left unset.
+        Hit::KeymapChoice(KeymapAnswer::Quit) => text("Quit and ask again next launch"),
         Hit::ConfigStartupChoice(choice) => {
             use crate::action::ConfigStartupChoice as C;
             text(match choice {
@@ -979,8 +986,9 @@ mod tests {
             Hit::SettingsIndent(crate::config::IndentKind::Spaces),
             Hit::SettingsIndent(crate::config::IndentKind::Tabs),
             Hit::SettingsControl(crate::components::settings::SettingsField::IndentWidth),
-            Hit::KeymapChoice(crate::config::KeyProfile::Arrows),
-            Hit::KeymapChoice(crate::config::KeyProfile::Vim),
+            Hit::KeymapChoice(KeymapAnswer::Profile(crate::config::KeyProfile::Arrows)),
+            Hit::KeymapChoice(KeymapAnswer::Profile(crate::config::KeyProfile::Vim)),
+            Hit::KeymapChoice(KeymapAnswer::Quit),
             Hit::SettingsFile { file: crate::action::ConfigFile::Config, reset: false },
             Hit::SettingsFile { file: crate::action::ConfigFile::Keys, reset: true },
         ] {

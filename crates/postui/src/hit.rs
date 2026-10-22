@@ -286,8 +286,8 @@ pub enum Hit {
     /// One of `Modal::ConfigStartup`'s four buttons
     /// (Edit…/Reset/Ignore/Quit).
     ConfigStartupChoice(crate::action::ConfigStartupChoice),
-    /// One of `Modal::KeymapChoice`'s two answers.
-    KeymapChoice(crate::config::KeyProfile),
+    /// One of `Modal::KeymapChoice`'s answers.
+    KeymapChoice(crate::action::KeymapAnswer),
     /// `Modal::ConfigEditInvalid`'s "Keep editing" button: resumes the
     /// editor on the same temp file, with the user's work intact.
     ConfigEditKeepEditing,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::action::KeymapAnswer;
 use ratatui::crossterm::event::KeyCode;
 
 /// Writes a project default header into `project.toml` and re-reads the
@@ -28683,7 +28684,12 @@ fn a_click_on_a_blocking_dialogs_button_keeps_the_url_line_open() {
         error: "bad".into(),
     };
     let cases = [
-        (Modal::KeymapChoice { aimed: None }, Hit::KeymapChoice(crate::config::KeyProfile::Arrows)),
+        (
+            Modal::KeymapChoice { aimed: None },
+            Hit::KeymapChoice(crate::action::KeymapAnswer::Profile(
+                crate::config::KeyProfile::Arrows,
+            )),
+        ),
         (
             Modal::ConfigStartup { error: "bad".into() },
             Hit::ConfigStartupChoice(ConfigStartupChoice::ContinueUnsaved),
@@ -29476,10 +29482,10 @@ fn app_with_unset_keymap() -> App {
     app
 }
 
-/// Spec §4.2: two equal answers, neither aimed; Esc and Enter do nothing
-/// until one is chosen, and the question is asked once.
+/// Spec §4.2: two equal profiles and Quit, none aimed; Esc and Enter do
+/// nothing until one is chosen, and the question is asked once.
 #[test]
-fn the_keyboard_question_offers_two_equal_answers_and_no_way_out() {
+fn the_keyboard_question_has_no_default_and_no_dismissal() {
     use crate::config::KeyProfile;
     let mut app = app_with_unset_keymap();
     for ev in [
@@ -29513,9 +29519,107 @@ fn arrows_aim_and_enter_confirms_the_keyboard_question() {
 fn clicking_a_keyboard_answer_chooses_it() {
     let mut app = app_with_unset_keymap();
     app.anims.finish_all();
-    click_hit(&mut app, Hit::KeymapChoice(crate::config::KeyProfile::Vim));
+    click_hit(&mut app, Hit::KeymapChoice(KeymapAnswer::Profile(crate::config::KeyProfile::Vim)));
     assert_eq!(app.profile(), crate::config::KeyProfile::Vim);
     assert!(app.modals.is_empty());
+}
+
+/// Task #86: Quit leaves without choosing, so `config.toml` is not
+/// written and the question comes back next launch.
+#[test]
+fn quit_on_the_keyboard_question_leaves_without_writing() {
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    app.ui_settings.keymap = None;
+    assert!(app.raise_keymap_choice());
+    app.handle_key(plain('q'));
+    assert!(app.should_quit);
+    assert!(app.modals.is_empty(), "not asked again on the way out");
+    assert_eq!(app.ui_settings.keymap, None, "no profile chosen");
+    assert!(!dir.path().join("config.toml").exists(), "nothing written");
+}
+
+/// Task #86: an answer only ever answers the question on top. One that
+/// arrives with another dialog over it (a click resolved against an older
+/// frame) neither quits nor writes, and closes nothing.
+#[test]
+fn a_keyboard_answer_under_another_dialog_does_nothing() {
+    use crate::config::KeyProfile;
+    for answer in [KeymapAnswer::Quit, KeymapAnswer::Profile(KeyProfile::Vim)] {
+        let mut app = App::new_for_test();
+        let dir = config_at_tempdir(&mut app);
+        app.ui_settings.keymap = None;
+        assert!(app.raise_keymap_choice());
+        app.push_modal(Modal::Message { title: "t".into(), body: "b".into() });
+        app.update(Action::KeymapAnswer(answer));
+        assert!(!app.should_quit, "{answer:?}");
+        assert_eq!(app.ui_settings.keymap, None, "{answer:?}");
+        assert_eq!(app.modals.iter().count(), 2, "{answer:?}: both dialogs stay");
+        assert!(!dir.path().join("config.toml").exists(), "{answer:?}: nothing written");
+    }
+}
+
+#[test]
+fn clicking_the_keyboard_questions_quit_quits() {
+    let mut app = app_with_unset_keymap();
+    app.anims.finish_all();
+    click_hit(&mut app, Hit::KeymapChoice(KeymapAnswer::Quit));
+    assert!(app.should_quit);
+    assert_eq!(app.ui_settings.keymap, None);
+}
+
+/// Task #86: ←/→ step one answer and stop at the ends. With nothing aimed
+/// ← aims Arrows and → aims Vim, so a second → reaches Quit.
+#[test]
+fn arrows_step_the_keyboard_aim_through_all_three_answers() {
+    use crate::config::KeyProfile;
+    let aim = |app: &App| match app.modals.top() {
+        Some(Modal::KeymapChoice { aimed }) => *aimed,
+        other => panic!("question gone: {:?}", other.is_some()),
+    };
+    let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
+    let right = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+
+    let mut app = app_with_unset_keymap();
+    app.handle_key(left);
+    assert_eq!(aim(&app), Some(KeymapAnswer::Profile(KeyProfile::Arrows)));
+    app.handle_key(left);
+    assert_eq!(aim(&app), Some(KeymapAnswer::Profile(KeyProfile::Arrows)), "stops at the end");
+
+    let mut app = app_with_unset_keymap();
+    app.handle_key(right);
+    assert_eq!(aim(&app), Some(KeymapAnswer::Profile(KeyProfile::Vim)));
+    app.handle_key(right);
+    assert_eq!(aim(&app), Some(KeymapAnswer::Quit));
+    app.handle_key(right);
+    assert_eq!(aim(&app), Some(KeymapAnswer::Quit), "stops at the end");
+    app.handle_key(left);
+    assert_eq!(aim(&app), Some(KeymapAnswer::Profile(KeyProfile::Vim)));
+    app.handle_key(right);
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.should_quit, "Enter on an aimed Quit quits");
+    assert_eq!(app.ui_settings.keymap, None);
+}
+
+/// Task #86: Quit is the ordinary quit once the question has closed, so
+/// unsaved edits meet the unsaved-changes question; staying brings the
+/// keyboard question back.
+#[test]
+fn quit_on_the_keyboard_question_meets_the_unsaved_changes_question() {
+    let mut app = dirty_app();
+    app.ui_settings.keymap = None;
+    assert!(app.raise_keymap_choice());
+    app.handle_key(plain('q'));
+    assert!(!app.should_quit, "the edits are asked about");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    assert_eq!(app.modals.iter().count(), 1, "the keyboard question closed");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!app.should_quit);
+    assert!(
+        matches!(app.modals.top(), Some(Modal::KeymapChoice { .. })),
+        "still no profile: the question is back"
+    );
+    assert!(app.editor.is_dirty(), "the edits stay");
 }
 
 /// It stacks under the startup gate: with any modal up it waits.
@@ -29613,7 +29717,9 @@ fn every_surface_is_named_from_app_state() {
     app.push_modal(Modal::Message { title: "t".into(), body: "b".into() });
     assert_eq!(app.surface(), Surface::Dialog);
     app.modals.pop();
-    app.push_modal(Modal::KeymapChoice { aimed: Some(crate::config::KeyProfile::Arrows) });
+    app.push_modal(Modal::KeymapChoice {
+        aimed: Some(KeymapAnswer::Profile(crate::config::KeyProfile::Arrows)),
+    });
     assert_eq!(app.surface(), Surface::Dialog, "the keyboard question is a dialog");
     app.modals.pop();
     app.update(Action::OpenPalette);
