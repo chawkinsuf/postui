@@ -28744,8 +28744,6 @@ fn a_focus_gained_reload_closes_a_manager_grid_cell_first() {
     app.vm_start_cell_edit(1, 1); // bob's user
     type_chars(&mut app, "7");
     rewrite_qa_without_alice(dir.path());
-    // The close's own write reads qa.toml as it is now, so the poll after
-    // it has nothing left to re-read; the screen still changed.
     assert!(app.on_focus_gained(), "repaints");
     assert!(app.varmanager.grid.editing.is_none(), "the cell closed");
     let qa = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
@@ -28758,7 +28756,8 @@ fn a_focus_gained_reload_closes_a_manager_grid_cell_first() {
 }
 
 /// Focus coming back with nothing changed on disk is no change in state:
-/// the cell stays open with its typing.
+/// the cell stays open with its typing. The app's own save just before
+/// (alice's cell) is not an outside change either.
 #[test]
 fn a_focus_gained_with_no_file_changed_keeps_the_manager_cell_open() {
     let dir = tempfile::tempdir().unwrap();
@@ -28766,6 +28765,9 @@ fn a_focus_gained_with_no_file_changed_keeps_the_manager_cell_open() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_group(&mut app, "user");
+    app.vm_start_cell_edit(0, 1); // alice's user
+    type_chars(&mut app, "1");
+    assert!(app.close_manager_input(), "alice's cell saved");
     app.vm_start_cell_edit(1, 1); // bob's user
     type_chars(&mut app, "7");
     app.on_focus_gained();

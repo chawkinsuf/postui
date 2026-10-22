@@ -1616,7 +1616,11 @@ impl App {
     /// file another process just created shows up in the list.
     pub fn resync_project(&mut self) {
         // The forced re-read closes the Variable Manager's input first in
-        // `ReloadProjectFiles` (task #78).
+        // `ReloadProjectFiles` (task #78), and cancels one that refuses,
+        // even when no file did change: forced means the stamps can't say
+        // (a file written in the same mtime tick), and an input left open
+        // across a re-read that did renumber its rows would save into the
+        // wrong option. The cost is typing that could not be saved anyway.
         if let Some(p) = self.project.as_mut() {
             p.invalidate_stamps();
         }
