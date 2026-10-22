@@ -93,7 +93,7 @@ Cost, named when asked: the cursor row now follows a click in Raw and
 Headers. In the vim profile, searches, `V` and yanks then start from the
 clicked line, as in Pretty and in Vim.
 
-Found in review round 2 (mine, to be confirmed with the user): a click on
+Found in review round 2 (mine (approved), kept by the user at handoff): a click on
 the pane's empty space below the text gets the same treatment. The
 selection anchor already clamped such a click onto the last line's last
 char (`cell_at`), so the cursor now goes there too, as an editor's caret
