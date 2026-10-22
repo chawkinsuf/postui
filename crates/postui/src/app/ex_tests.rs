@@ -160,21 +160,22 @@ fn bang_on_a_clean_or_never_saved_request() {
     }
 }
 
-/// Task #85 R1: no quit while a dialog is open, so `:q` over one is
-/// refused (it met the dirty gate over the dialog before, the final
-/// review's I-1); `:q!` is still the line's way out. ctrl+c twice is
-/// refused the same way.
+/// Task #85 R1: no quit while a dialog is open, so every quit verb on the
+/// line over one is refused (`:q` met the dirty gate over the dialog
+/// before, the final review's I-1, and `:q!` was the way out); Esc closes
+/// the dialog first. ctrl+c twice is refused the same way.
 #[test]
 fn colon_q_over_a_dialog_is_refused() {
     let mut app = vim(Fixture::DirtyScratch);
     feed(&mut app, ":w<CR>");
     assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "Save as");
-    feed(&mut app, "<Esc>:q<CR>");
-    assert!(!app.should_quit, "refused");
-    assert_eq!(app.modals.iter().count(), 1, "no gate over the dialog");
-    assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "Save as stays");
-    feed(&mut app, ":q!<CR>");
-    assert!(app.should_quit, ":q! still leaves at once");
+    for q in [":q<CR>", ":q!<CR>", ":wq<CR>", ":x<CR>", ":qa!<CR>"] {
+        feed(&mut app, "<Esc>");
+        feed(&mut app, q);
+        assert!(!app.should_quit, "{q}: refused");
+        assert_eq!(app.modals.iter().count(), 1, "{q}: nothing over the dialog");
+        assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "{q}: Save as stays");
+    }
     let mut app = vim(Fixture::DirtyScratch);
     feed(&mut app, ":w<CR><C-c><C-c>");
     assert!(!app.should_quit, "ctrl+c over a dialog is refused");

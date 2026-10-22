@@ -254,7 +254,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let drag_live = drag_live(app);
     let globals_live = app.modals.footer_chips().is_none() && !drag_live;
     // No quit while a dialog is open (task #85), so no quit chip either.
-    let quit_live = app.modals.is_empty();
+    let quit_live = !app.quit_refused();
     // A plain `q` reaches the quit binding only in the arrows profile (vim
     // gave `q` up, plan M1 Deviation 4) and only where nothing consumes it
     // first: no modal (they capture all input), the Main screen (other

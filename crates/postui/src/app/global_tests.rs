@@ -197,11 +197,11 @@ fn zq_on_manage_abandons_a_field_that_refuses_its_close() {
 
 /// The code review of sweep backlog item 4: a dialog over Manage takes the
 /// window verbs as a dialog over the main screen does; Manage is never
-/// closed under it. Since task #85 that means `:q` is refused there (no
-/// quit while a dialog is open) and `:q!` quits.
+/// closed under it. Since task #85 that means they are refused there (no
+/// quit while a dialog is open).
 #[test]
 fn a_window_verb_in_a_dialog_over_manage_acts_as_over_the_main_screen() {
-    for (q, quits) in [(":q<CR>", false), (":q!<CR>", true)] {
+    for q in [":q<CR>", ":q!<CR>"] {
         let mut app = vim(Fixture::VarList);
         feed(&mut app, "a");
         assert!(
@@ -211,7 +211,8 @@ fn a_window_verb_in_a_dialog_over_manage_acts_as_over_the_main_screen() {
         assert_eq!(app.surface(), crate::keyroute::Surface::Prompt);
         feed(&mut app, "<Esc>");
         feed(&mut app, q);
-        assert_eq!(app.should_quit, quits, "{q}: as over the main screen");
+        assert!(!app.should_quit, "{q}: refused, as over the main screen");
+        assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "{q}: the prompt stays");
         assert_eq!(app.screen, Screen::Manage, "{q}: Manage not closed under the dialog");
     }
 }

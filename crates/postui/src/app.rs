@@ -38,7 +38,7 @@ const NO_PROJECT: &str = "no project is open";
 const EDIT_DISCARDED: &str = "Edit discarded — the project was re-read from disk";
 
 /// What a quit refused under a dialog toasts (task #85).
-const CLOSE_THE_DIALOG_FIRST: &str = "Close the dialog first (esc)";
+const CLOSE_THE_DIALOG_FIRST: &str = "Close the dialog first";
 
 /// Wall-clock dwell the caret must rest inside a `{{token}}` before its
 /// tooltip appears -- matching the original 2 ticks @ the tick's nominal
@@ -2763,17 +2763,26 @@ impl App {
 
     fn apply(&mut self, action: Action) -> bool {
         match action {
-            // No quit while a dialog is open (task #85: "The dialog must be
-            // resolved and then the application can be quit"): ctrl+c, the
-            // quit chip, `:q` and the palette's Quit row are all refused,
-            // so the dialog keeps its typing and its question. The
-            // unsaved-changes question is a dialog too, so a held or
-            // mashed ctrl+c stops on it; `d` is the way out without saving
-            // ("lets not let ^C again discard changes"). The toast shows
-            // once however often the key repeats. The forcing quits
-            // (`ForceQuit`: `:q!`, `ZQ`) and the saving ones (`WriteQuit`)
-            // are not these actions.
-            Action::Quit | Action::GatedQuit if !self.modals.is_empty() => {
+            // No quit of any kind while a dialog is open (task #85: "The
+            // dialog must be resolved and then the application can be
+            // quit"): ctrl+c, the quit chip, the palette's Quit row and
+            // every vim quit verb (`:q`, `:q!`, `:wq`, `:x`, `:qa`) are
+            // refused, before any of them saves, so the dialog keeps its
+            // typing and its question. The unsaved-changes question is a
+            // dialog too, so a held or mashed ctrl+c stops on it; `d` is
+            // the way out without saving ("lets not let ^C again discard
+            // changes"). A dialog's own answer that quits (the question's
+            // Discard, the startup dialog's Quit) runs after the dialog
+            // closed, so it is not refused. The toast shows once however
+            // often the key repeats.
+            Action::Quit
+            | Action::GatedQuit
+            | Action::ForceQuit
+            | Action::WriteQuit
+            | Action::ForceWrite { quit: true }
+            | Action::CloseWindow { .. }
+                if self.quit_refused() =>
+            {
                 self.toasts.push_once(CLOSE_THE_DIALOG_FIRST, ToastKind::Info);
                 true
             }
@@ -10420,6 +10429,13 @@ impl App {
         changed || ended || noted || regated || asked
     }
 
+    /// Whether a quit is refused right now: while any dialog is open (task
+    /// #85). `apply` refuses every quit verb on it, and the footer hides
+    /// its quit chip on it, so the two cannot disagree.
+    pub(crate) fn quit_refused(&self) -> bool {
+        !self.modals.is_empty()
+    }
+
     /// Takes down an armed quit (task #85): drops its toast and answers the
     /// combo that armed it, if the toast was still showing. Every key and
     /// every mouse press calls it first, so a quit's two presses are back
@@ -10482,7 +10498,7 @@ impl App {
             // A half-typed key goes, as Vim's ctrl+c cancels it: `d`
             // ctrl+c `d` is not `dd`.
             self.vim_drop_pending();
-            if !self.modals.is_empty() {
+            if self.quit_refused() {
                 return router::Ran::routed(self.update(Action::Quit));
             }
             let key = crate::keys::format_combo(&combo);

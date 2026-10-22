@@ -37,14 +37,14 @@ their own way out, so nobody gets stuck:
 
 | # | Rule | Source |
 |---|---|---|
-| R1 | With any dialog open, a quit is refused: `^C`, the quit chip, `:q`/`:qa` and the palette's Quit row do not quit and do not open the unsaved-changes question. A `^C` there toasts "Close the dialog first (esc)", once however often it is pressed, and does not arm. The three dialogs Esc cannot close are no exception: they are left by their own answers. | refusal: `you` (task text: "The dialog must be resolved and then the application can be quit"); no exception for the three: `you` ("no ^c ^c in dialogs"); the rework: `mine (approved)` ("lets go with your plan"); the toast wording: `mine` |
+| R1 | With any dialog open, every quit is refused: `^C`, the quit chip, the palette's Quit row and every vim quit verb (`:q`, `:qa`, `:q!`, `:qa!`, `:wq`, `:x`, `:wq!`), before any of them saves; none opens the unsaved-changes question. A refusal toasts "Close the dialog first", once however often it repeats, and a `^C` does not arm. The three dialogs Esc cannot close are no exception: they are left by their own answers. A dialog's own answer that quits (the question's Discard, the startup dialog's Quit) runs after its dialog closed, so it is not refused. | refusal: `you` (task text: "The dialog must be resolved and then the application can be quit"); no exception for the three: `you` ("no ^c ^c in dialogs"); the rework: `mine (approved)` ("lets go with your plan"); the forcing and saving vim verbs too: `mine (approved)` (rework review round 1); the toast wording: `mine` (no "(esc)": three dialogs refuse Esc) |
 | R2 | With no dialog open, `^C` quits only on a second press. The first press changes nothing (no input closes, a live drag stays live) and toasts "Press ^C again to quit". | double press: `you` (task text); "the first press changes nothing": `mine (approved)` |
-| R3 | The second press is the same combo, pressed next, while that toast is showing (a short toast lives 3 s). Any other key or mouse press between the two (a copy, a `q`, a click, another quit combo) takes the arm and its toast down, so the next press is a first press again. The toast is the arm: it never shows when a press would not quit. Input that is not a key or a mouse press (a paste, the wheel, focus, an async result) leaves the arm; if it opened a dialog, the second press meets R1. | `mine (approved)` (review rounds 1–3) |
+| R3 | The second press is the same combo, pressed next, while that toast is showing (a short toast lives 3 s). Any other key or mouse press between the two (a copy, a `q`, a click, another quit combo) takes the arm and its toast down, so the next press is a first press again. The toast is the arm: it never shows when a press would not quit. Input that is not a key or a mouse press (a paste, the wheel, focus, an async result) leaves the arm; if it opened a dialog, the arm toast stays up until the second press, which is refused with R1's toast. | `mine (approved)` (review rounds 1–3) |
 | R4 | The quit the second press runs meets the unsaved-changes question when the request holds edits. The question is a dialog, so a quit on it is refused (R1): a held or mashed `^C` stops there, and leaving without saving takes `d`. | `you` ("lets not let ^C again discard changes") |
 | R5 | Every `^C` that does not quit drops a half-typed vim key (`d`, `g`, a count, the body's `/` prompt; the response's search box is an open input and stays), as Vim's `^C` cancels it, so `d` `^C` `d` is not `dd`. | `Vim` (review round 3) |
 | R6 | With a live text selection `^C` copies, as now, and neither arms nor is refused. | `you` (vim profile spec, 2026-10-03) |
 | R7 | The arm toast spells the combo pressed (`^C`, `^Q`, …). | `mine` |
-| R8 | One-step quits stay one step with no dialog open: arrows' `q`, `:q`/`:qa`, the palette's Quit row, the footer quit chip. `:q!`, `:qa!`, `ZQ`, `ZZ`, `:wq` and `:x` are unchanged (they force or save first). | `mine (approved)` |
+| R8 | One-step quits stay one step with no dialog open: arrows' `q`, `:q`/`:qa`, the palette's Quit row, the footer quit chip; `:q!`, `:qa!`, `ZQ`, `ZZ`, `:wq` and `:x` are unchanged there (they force or save first). | `mine (approved)` |
 | R9 | The footer hides the quit chip while any dialog is open, as it hides a key that won't work. | `mine (approved)` |
 | R10 | A quit cancels a live row drag before it opens the unsaved-changes question, or the drag would swallow the question's keys and land on release under it. | `mine` (review round 8) |
 | R11 | Esc: unchanged. | verified, no change |
@@ -69,8 +69,12 @@ Spec rows this replaces (each gets a dated amendment pointing here):
 
 ## 3. Design
 
-- **`App::apply`**: a new first arm, `Quit` or `GatedQuit` with any dialog
-  open, toasts the refusal (`Toasts::push_once`) and does nothing else.
+- **`App::quit_refused`** (any dialog open) is the one rule: `apply` and
+  the footer both read it.
+- **`App::apply`**: a new first arm, any quit action (`Quit`, `GatedQuit`,
+  `ForceQuit`, `WriteQuit`, `ForceWrite { quit: true }`, `CloseWindow`)
+  while `quit_refused`, toasts the refusal (`Toasts::push_once`) and does
+  nothing else.
   The gate arm (`Quit | GatedQuit if leaving_unsaved`) then only runs
   with no dialog open; it cancels a live row drag, then opens the
   question (`dirty_gate`).
@@ -101,8 +105,10 @@ or "meet the gate over a dialog" (GatedQuit).
 - R1: `^C ^C` over a dialog (the palette, a prompt with typing) neither
   quits nor opens the question; the dialog and its typing stay; the
   refusal toast shows once for ten presses; Esc, then `^C ^C`, quits. The
-  three Esc-proof dialogs refuse it too. `:q` and the palette's Quit row
-  over a dialog are refused; `:q!` still quits.
+  three Esc-proof dialogs refuse it too. Every quit action, and every vim
+  quit verb on the line over a dialog (`:q`, `:q!`, `:wq`, `:x`, `:qa!`),
+  is refused with nothing written; the palette's Quit row too. The
+  startup dialog's own Quit answer still quits.
 - R2: one `^C` on the plain screen does not quit and toasts; a second
   quits.
 - R3: a second press after the toast expired only re-arms; a key, a click

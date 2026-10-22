@@ -315,7 +315,7 @@ fn ctrl_c_over_a_dialog_is_refused() {
     }
     assert!(!app.should_quit);
     assert!(matches!(app.modals.top(), Some(Modal::Palette(_))), "the palette stays open");
-    assert_eq!(app.toasts.messages(), vec!["Close the dialog first (esc)"], "said once, no arm");
+    assert_eq!(app.toasts.messages(), vec!["Close the dialog first"], "said once, no arm");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(ctrl('c'));
     app.handle_key(ctrl('c'));
@@ -351,21 +351,39 @@ fn ctrl_c_twice_over_a_dialog_with_unsaved_edits_is_refused() {
     );
 }
 
-/// Task #85 R1: the quit chip, `Quit` and `GatedQuit` are refused under a
-/// dialog as ctrl+c is.
+/// Task #85 R1 (review round 1 of the rework): every quit is refused under
+/// a dialog, the forcing and saving ones included, before anything is
+/// written.
 #[test]
-fn every_gated_quit_is_refused_under_a_dialog() {
-    for quit in [Action::Quit, Action::GatedQuit] {
+fn every_quit_is_refused_under_a_dialog() {
+    for quit in [
+        Action::Quit,
+        Action::GatedQuit,
+        Action::ForceQuit,
+        Action::WriteQuit,
+        Action::ForceWrite { quit: true },
+        Action::CloseWindow { write: true, force: false },
+    ] {
         let mut app = dirty_app();
+        let file = app.proj().root().join("requests/main/r.toml");
+        let saved = std::fs::read_to_string(&file).unwrap();
         app.modals.push(Modal::Message { title: "About".into(), body: "hello".into() });
         app.update(quit.clone());
         assert!(!app.should_quit, "{quit:?}");
-        assert_eq!(app.modals.iter().count(), 1, "{quit:?}: no question over the dialog");
+        assert_eq!(app.modals.iter().count(), 1, "{quit:?}: nothing over the dialog");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), saved, "{quit:?}: nothing written");
+        assert_eq!(app.toasts.messages(), vec!["Close the dialog first"], "{quit:?}");
     }
-    let mut app = dirty_app();
-    app.modals.push(Modal::Message { title: "About".into(), body: "hello".into() });
-    app.update(Action::ForceQuit);
-    assert!(app.should_quit, "a forcing quit is not one of them");
+}
+
+/// Task #85: a dialog's own answer that quits runs after the dialog
+/// closed, so it is not refused: the startup dialog's Quit quits.
+#[test]
+fn the_startup_dialogs_quit_answer_quits() {
+    let mut app = App::new_for_test();
+    app.modals.push(Modal::ConfigStartup { error: "bad".into() });
+    app.handle_key(plain('q'));
+    assert!(app.should_quit);
 }
 
 /// Task #85 R3: a second press once the toast is gone only arms again.
@@ -420,7 +438,7 @@ fn ctrl_c_on_the_quit_question_never_discards() {
     assert!(!app.should_quit, "a held ctrl+c stops at the question");
     assert_eq!(app.modals.iter().count(), 1, "one question, not a stack of them");
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
-    assert_eq!(app.toasts.messages(), vec!["Close the dialog first (esc)"], "said once");
+    assert_eq!(app.toasts.messages(), vec!["Close the dialog first"], "said once");
     app.handle_key(plain('d'));
     assert!(app.should_quit, "Discard leaves");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), saved, "nothing written");

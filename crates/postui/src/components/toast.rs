@@ -91,7 +91,12 @@ impl Toasts {
     /// held key would otherwise repeat (task #85's "close the dialog
     /// first").
     pub fn push_once(&mut self, message: &str, kind: ToastKind) {
-        if !self.entries.iter().any(|t| t.message == message) {
+        let now = Instant::now();
+        if !self
+            .entries
+            .iter()
+            .any(|t| t.message == message && t.expires_at.is_none_or(|at| now < at))
+        {
             self.push(message, kind);
         }
     }
