@@ -32,6 +32,11 @@ const MIGRATION_TITLE: &str = "Migrate variables";
 /// braces — it exists so no write can be attempted against an empty root.
 const NO_PROJECT: &str = "no project is open";
 
+/// What a reload toasts after it cancels a Variable Manager input that
+/// refused to close (task #78): the refusal's own error reads as if the
+/// typing were still there to fix.
+const EDIT_DISCARDED: &str = "Edit discarded — the project was re-read from disk";
+
 /// Wall-clock dwell the caret must rest inside a `{{token}}` before its
 /// tooltip appears -- matching the original 2 ticks @ the tick's nominal
 /// 100ms period. Wall-clock rather than tick-counted because the tick
@@ -1615,11 +1620,9 @@ impl App {
     /// the environment selectors reload the project before listing, so a
     /// file another process just created shows up in the list.
     pub fn resync_project(&mut self) {
-        // The re-read can renumber the option rows a Variable Manager grid
-        // cell finds its option by, so the Manager's input closes first
-        // (task #75). A close it refuses leaves it open; the callers that
-        // must stop on that (Reload from disk, an env cycle) checked first.
-        self.close_manager_input();
+        // Forced, so `ReloadProjectFiles` always treats it as stale and
+        // closes the Variable Manager's input first (task #78; the rule is
+        // spelled out there).
         if let Some(p) = self.project.as_mut() {
             p.invalidate_stamps();
         }
@@ -5413,11 +5416,47 @@ impl App {
                 true
             }
             Action::ReloadProjectFiles => {
-                let (changed, warnings) = match self.project_mut() {
-                    Some(p) => p.poll(),
-                    None => (false, Vec::new()),
-                };
-                if changed {
+                // Every reload passes here: focus-gained, Send, the
+                // choosers, `resync_project`. Focus coming back to an
+                // unchanged project changes nothing, and closes nothing.
+                let stale = self.project().is_some_and(|p| p.changed_on_disk());
+                if stale {
+                    // The re-read can renumber the option rows a Variable
+                    // Manager grid cell finds its option by, so the
+                    // Manager's input closes first (task #78, the rule
+                    // `close_open_inputs` states). One that refuses to
+                    // close is cancelled, its typing dropped (the user's
+                    // ruling), and a toast says so, since the refusal's own
+                    // error reads as if the typing were still there (mine
+                    // (approved)): left open across the re-read it would
+                    // save into whichever option took its row, and holding
+                    // the re-read back would leave Send and the pickers on
+                    // stale files. Every reload does this, the choosers
+                    // included (mine (approved)); a command that changes
+                    // state stops on the refusal before it reloads.
+                    //
+                    // The close saves into the file as it is on disk now,
+                    // outside edit and all, so the typing wins where both
+                    // touched the same value, and an option deleted outside
+                    // comes back holding what was typed into it. That is
+                    // the #75 rule's cost, taken knowingly: the other two
+                    // outcomes are typing saved into whichever option took
+                    // its row (this task's bug) or typing dropped that
+                    // could have been saved.
+                    if !self.close_manager_input() {
+                        self.varmanager.end_edits();
+                        self.toasts.push(EDIT_DISCARDED, ToastKind::Warning);
+                    }
+                    // Forced: the close's write, or the read of one that was
+                    // refused, can take a changed file's new stamp with it
+                    // (#81), and the re-read is due all the same.
+                    let warnings = self
+                        .project_mut()
+                        .map(|p| {
+                            p.invalidate_stamps();
+                            p.poll().1
+                        })
+                        .unwrap_or_default();
                     // The rows a live drag is rearranging are about to be
                     // rebuilt from a tree that changed on disk under it:
                     // its working order names siblings that may be gone,
@@ -5425,12 +5464,17 @@ impl App {
                     self.finish_sidebar_drag(false);
                     self.finish_manage_drag(false);
                     self.refresh_sidebar();
-                }
-                for w in warnings {
-                    self.toasts.push(w, ToastKind::Warning);
+                    // The Variable Manager caches the declarations it
+                    // shows; the re-read hands it the new ones (task #82).
+                    if self.screen == Screen::Manage {
+                        self.sync_varmanager();
+                    }
+                    for w in warnings {
+                        self.toasts.push(w, ToastKind::Warning);
+                    }
                 }
                 self.prompt_migration_if_pending();
-                changed
+                stale
             }
             Action::ReloadFromDisk => {
                 // The project half. With a project open it is a forced
@@ -5454,7 +5498,10 @@ impl App {
                 // spec, "Reload while the Settings tab is open"). The
                 // Variable Manager's input closes first (task #75): its
                 // commit finds its option by row, and the reload can
-                // renumber the rows.
+                // renumber the rows. Closed here, before the reload's own
+                // close, because this command changes state: a refusal
+                // stops it with the typing kept, where a reload alone
+                // cancels it (task #78, `ReloadProjectFiles`).
                 if !self.close_manager_input() {
                     self.last_action_failed = true;
                     return true;
@@ -7793,11 +7840,14 @@ impl App {
     /// The functions that change it call this first: the env switch, the
     /// project switch and create, undo/redo, a Manage tab switch, closing
     /// the screen, quitting, and the dirty gate's check (`leaving_unsaved`).
-    /// Two close only the Variable Manager's input (`close_manager_input`):
+    /// Three close only the Variable Manager's input (`close_manager_input`):
     /// a journaled op (`begin_op`), which writes the project and nothing a
-    /// Settings field holds, and Reload from disk, which keeps a live
-    /// Settings field open (Settings spec, "Reload while the Settings tab
-    /// is open"). Whatever key, click, palette row, dialog or vim
+    /// Settings field holds; Reload from disk, which keeps a live Settings
+    /// field open (Settings spec, "Reload while the Settings tab is open");
+    /// and a reload of project files changed on disk (`ReloadProjectFiles`,
+    /// task #78), which reads nothing a Settings field holds either, and
+    /// cancels an input that refuses rather than stop.
+    /// Whatever key, click, palette row, dialog or vim
     /// command reached them, the input is closed before the change, so its
     /// commit never reads the state that came after (the Variable
     /// Manager's reads the environment and option row as they are when it

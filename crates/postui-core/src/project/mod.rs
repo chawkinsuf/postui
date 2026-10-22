@@ -687,11 +687,16 @@ impl Project {
         self.force_reload = true;
     }
 
+    /// Whether the next `poll` will re-read: a watched file changed on
+    /// disk since it was last read, or `invalidate_stamps` forced it.
+    pub fn changed_on_disk(&self) -> bool {
+        self.force_reload || self.watched().iter().any(|p| self.disk.changed(p))
+    }
+
     /// Today's timer reload: silent, mtime-gated, keeps what fails to
     /// parse. Returns whether anything was re-read.
     pub fn poll(&mut self) -> (bool, Vec<Warning>) {
-        let changed = self.force_reload || self.watched().iter().any(|p| self.disk.changed(p));
-        if !changed {
+        if !self.changed_on_disk() {
             return (false, Vec::new());
         }
         self.force_reload = false;
