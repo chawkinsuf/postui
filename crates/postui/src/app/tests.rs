@@ -329,6 +329,30 @@ fn a_late_second_ctrl_c_only_arms_again() {
     assert!(app.should_quit);
 }
 
+/// Task #85 R2 (review round 2): the two presses are back to back. A key
+/// or a click between them, or a different quit combo, takes the arm and
+/// its toast down, so the next press is a first one again.
+#[test]
+fn anything_between_the_two_ctrl_c_presses_disarms() {
+    let quit_toast = |app: &App| app.toasts.messages().iter().any(|m| m.starts_with("Press "));
+    let mut app = App::new_for_test();
+    app.handle_key(ctrl('c'));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(!quit_toast(&app), "a key between takes the toast down");
+    app.handle_key(ctrl('c'));
+    assert!(!app.should_quit, "a first press again");
+    app.handle_mouse(left_down(0, 0));
+    assert!(!quit_toast(&app), "a click between takes the toast down");
+    app.handle_key(ctrl('c'));
+    assert!(!app.should_quit, "a first press again");
+    app.keymap.bind(crate::keys::KeyCombo::parse("ctrl+q").unwrap(), Action::Quit);
+    app.handle_key(ctrl('q'));
+    assert!(!app.should_quit, "another quit combo arms its own");
+    assert!(app.toasts.messages().contains(&"Press ^Q again to quit"));
+    app.handle_key(ctrl('q'));
+    assert!(app.should_quit, "the same combo again quits");
+}
+
 /// Task #85 R3/R4: ctrl+c twice over a dialog meets the unsaved-changes
 /// check, which opens over the dialog; cancelling it gives the dialog back
 /// with its typing.

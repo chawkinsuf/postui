@@ -37,9 +37,9 @@ their own way out, so nobody gets stuck today:
 | # | Rule | Source |
 |---|---|---|
 | R1 | `^C` quits only on a second press. The first press changes nothing (no dialog closes, no input closes, a live drag stays live) and toasts "Press ^C again to quit". | double press: `you` (task text); "the first press never changes anything": `mine (approved)` |
-| R2 | The second press counts while that toast is showing (a short toast lives 3 s). Once it is gone, a press is a first press again. The quit the second press runs takes the toast down, so the toast never shows when a press would not quit. Nothing else disarms it. | `mine` (review round 1: the toast is the arm, so the two can't disagree) |
+| R2 | The second press is the same combo, pressed next, while that toast is showing (a short toast lives 3 s). Any other key or mouse press between the two (a copy, a `q`, a click, another quit combo) takes the arm and its toast down, so the next press is a first press again. The toast is the arm: it never shows when a press would not quit. | `mine (approved)` (review round 1: the toast is the arm; round 2: back to back, replacing "nothing but time disarms it", after three paths let an input between the presses count as the second, one of them a single ^C quitting past the check) |
 | R3 | The second press runs `Quit`, and `Quit` meets the unsaved-changes check whether or not a dialog is open. The modal exemption goes. | `you` (the task's ask) |
-| R4 | The check opens over whatever dialog is open, as `:q`'s does today; its Cancel returns to that dialog with its typing intact. | `mine` (in chat I said the quit would cancel open dialogs first; this keeps them instead, see §5) |
+| R4 | The check opens over whatever dialog is open, as `:q`'s does today; its Cancel returns to that dialog with its typing intact. Cost (kept, as `:q` has always had it): the quit closes open inputs first (task #75's rule), so a table cell under the extract or var-picker dialog is committed on the way to the check, and after a Cancel that dialog finds no open field; the cell's typing is kept and undoable. | `mine (approved)` (in chat I said the quit would cancel open dialogs first; this keeps them instead, see §5) |
 | R5 | `Quit` while the quit's own check is the top dialog leaves without saving: `^C ^C` on the check is "quit anyway". | `mine (approved)` |
 | R6 | With a live text selection `^C` copies, as now, and does not arm. | `you` (vim profile spec, 2026-10-03) |
 | R7 | The toast spells the combo pressed (`^C`, `^Q`, …). | `mine` |
@@ -61,12 +61,16 @@ Spec rows this replaces (each gets a dated amendment pointing here):
 
 ## 3. Design
 
+- **`App::disarm_quit`**, called first by every key (`handle_key`) and
+  every mouse press (`handle_mouse`): takes `App::quit_armed` (the toast's
+  id and the combo that armed it), dismisses the toast, and answers the
+  combo if the toast was still live.
 - **`App::route_key` step 1** (the modified quit combo): after the
-  selection copy, if the toast the last first press showed is still live,
-  dismiss it and `update(Action::Quit)`; otherwise push the toast and keep
-  its id (`App::quit_armed`). `Toasts` gains `push_id`, `is_live` and
-  `dismiss`. (Review round 1 replaced a stored timestamp and a copy of
-  the toast lifetime, which could disagree with the toast on screen.)
+  selection copy, if this key is the combo `disarm_quit` answered,
+  `update(Action::Quit)`; otherwise push the toast and arm with its id and
+  this combo. `Toasts` gains `push_id`, `is_live` and `dismiss`. (Review
+  round 1 replaced a stored timestamp and a copy of the toast lifetime;
+  round 2 made the presses back to back.)
 - **`App::apply`**: the `Quit` gate arm loses `self.modals.is_empty()`.
   A new arm before it: `Action::Quit` when the top dialog is the quit's
   check → `ForceQuit`. "Is the quit's check" reads the dialog itself: a
@@ -88,7 +92,10 @@ dialog's Quit) all want the gated meaning.
   quits. Under a dialog, one `^C` leaves the dialog open and does not
   quit.
 - R2: a second press after the toast expired only re-arms; the quit takes
-  the toast down.
+  the toast down; a key, a click or another quit combo between the presses
+  disarms.
+- R5 in vim: the `:` line does not open on the gate, and the chip there
+  is `Quit`, so a click quits rather than stacking a second gate.
 - R3/R4: `^C ^C` over a dialog with unsaved edits opens the check over
   it; Esc on the check returns to the dialog, typing intact; nothing quit.
 - R5: `^C ^C` on the check quits without writing the request.
@@ -103,7 +110,8 @@ dialog's Quit) all want the gated meaning.
 Approved with the spec on 2026-10-22 (picked from my options, so
 `mine (approved)`):
 
-1. R2's 3 s window, and nothing but time disarms it.
+1. R2's 3 s window, and nothing but time disarms it (superseded in review
+   round 2: back to back, also `mine (approved)`).
 2. R4: the check stacks over open dialogs instead of cancelling them, so
    cancelling the quit gives the dialog back with its typing.
 3. R5: on the check, `^C ^C` (and one click of the arrows quit chip)

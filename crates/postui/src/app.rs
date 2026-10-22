@@ -119,8 +119,9 @@ pub enum Screen {
 pub struct App {
     pub should_quit: bool,
     /// The "press ^C again to quit" toast the modified quit combo's first
-    /// press showed (task #85): a press while it is live quits.
-    quit_armed: Option<u64>,
+    /// press showed, and that combo (task #85): pressed again next, while
+    /// the toast is live, it quits. See `disarm_quit`.
+    quit_armed: Option<(u64, KeyCombo)>,
     pub focus: PaneId,
     /// Which full-frame screen is showing (spec §5). `Screen::Main` is the
     /// normal three-pane layout.
@@ -7884,7 +7885,7 @@ impl App {
     /// holds the user on the input (no tab switch, screen close, env
     /// switch or undo, and the footer's quit chip swallows its click) until
     /// they fix it or undo the typing with ctrl+z, which is how a Manager
-    /// field is discarded anyway. ctrl+c still quits.
+    /// field is discarded anyway. ctrl+c twice still quits.
     fn close_open_inputs(&mut self, editor: bool) -> bool {
         // Each input closes whether or not another refused: a caller that
         // goes on past a refusal (the dirty gate's check, the quit) must
@@ -10395,11 +10396,14 @@ impl App {
         // this key did (spec §3.1).
         self.vim_catch_up();
         let echo = self.key_echo();
-        let ran = self.route_key(ev);
+        // Every key ends an armed quit; step 1 asks whether this one is
+        // its second press (task #85).
+        let armed = self.disarm_quit();
+        let ran = self.route_key(ev, armed.as_ref());
         self.vim_after_key(ran);
         // A key that does nothing may still drop the pending keys the
         // footer echoes (a refused `<C-w>h`, `5gt` past the strip).
-        let changed = ran.changed || self.key_echo() != echo;
+        let changed = ran.changed || self.key_echo() != echo || armed.is_some();
         // The op safety net at the event boundary, as `dispatch` has one
         // per action: a key handled without an action (a var-form or
         // grid commit) can bail between `begin_op` and its record.
@@ -10414,7 +10418,19 @@ impl App {
         changed || ended || noted || regated || asked
     }
 
-    fn route_key(&mut self, ev: KeyEvent) -> router::Ran {
+    /// Takes down an armed quit (task #85): drops its toast and answers the
+    /// combo that armed it, if the toast was still showing. Every key and
+    /// every mouse press calls it first, so a quit's two presses are back
+    /// to back: anything between them, a copy or a click included, makes
+    /// the next press a first one again.
+    pub(crate) fn disarm_quit(&mut self) -> Option<KeyCombo> {
+        let (id, combo) = self.quit_armed.take()?;
+        let live = self.toasts.is_live(id);
+        self.toasts.dismiss(id, &mut self.anims);
+        live.then_some(combo)
+    }
+
+    fn route_key(&mut self, ev: KeyEvent, armed: Option<&KeyCombo>) -> router::Ran {
         let ev = crate::keys::normalize_super_keys(ev);
         // cmd+c — SUPER+c, from terminals that report it — is copy-only:
         // copy the live selection, otherwise nothing. It is deliberately
@@ -10440,25 +10456,22 @@ impl App {
         // 1. A modified quit combo pre-empts everything — except that when
         // a text selection is live anywhere, ctrl+c means "copy" (the GUI
         // meaning) and quit keeps working the moment nothing is selected.
-        // It quits on a second press while the first one's toast shows
-        // (task #85): the first changes nothing, so a stray ctrl+c costs
-        // no dialog, field or drag. The toast is the arm, so what it says
-        // is always true: a quit takes it down, and once it is gone the
-        // next press is a first one again. The quit itself meets the
-        // unsaved-changes check like any other.
+        // It quits on a second press of the same combo, right after the
+        // first and while its toast shows (task #85): the first changes
+        // nothing, so a stray ctrl+c costs no dialog, field or drag. The
+        // toast is the arm (`disarm_quit`), so it never outlives it. The
+        // quit itself meets the unsaved-changes check like any other.
         if modified && global == Some(Action::Quit) {
             if let Some(text) = self.active_selection_text() {
                 self.copy_text_with_toast(&text, "Copied selection".to_string());
                 return router::Ran::routed(true);
             }
-            if let Some(id) = self.quit_armed.take().filter(|id| self.toasts.is_live(*id)) {
-                self.toasts.dismiss(id, &mut self.anims);
-                self.update(Action::Quit);
-                return router::Ran::routed(true);
+            if armed == Some(&combo) {
+                return router::Ran::routed(self.update(Action::Quit));
             }
             let key = crate::keys::format_combo(&combo);
-            self.quit_armed =
-                Some(self.toasts.push_id(format!("Press {key} again to quit"), ToastKind::Info));
+            let id = self.toasts.push_id(format!("Press {key} again to quit"), ToastKind::Info);
+            self.quit_armed = Some((id, combo));
             return router::Ran::routed(true);
         }
 

@@ -167,7 +167,7 @@ impl Router {
         }
         // An alt chord or a modified named key: no row names it, so what
         // was pending is dropped and the key goes on (`g` then ctrl+c
-        // still quits).
+        // still reaches the quit).
         let Some(tok) = Tok::of(&ev) else {
             self.pending.clear();
             return Resolved::Declined;
@@ -311,7 +311,8 @@ impl Router {
             return if first { self.step(ev, tok, ctx, false) } else { Resolved::Declined };
         }
         // A prefix and a key that does not extend it: vim's beep. A ctrl
-        // chord is the exception: it goes on (`g` then ctrl+c quits).
+        // chord is the exception: it goes on (`g` then ctrl+c reaches the
+        // quit).
         self.pending.clear();
         if matches!(tok, Tok::Ctrl(_)) { Resolved::Declined } else { Resolved::Consumed }
     }

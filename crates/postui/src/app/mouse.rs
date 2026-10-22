@@ -112,10 +112,12 @@ impl App {
         // Deviation 6).
         self.note_pane();
         // A press drops a half-typed key (plan M1 Deviation 15): a `g`
-        // never survives a click.
-        if matches!(m.kind, MouseEventKind::Down(_)) {
+        // never survives a click. It drops an armed quit too, so the two
+        // ctrl+c presses are back to back (task #85).
+        let disarmed = matches!(m.kind, MouseEventKind::Down(_)) && {
             self.router.clear();
-        }
+            self.disarm_quit().is_some()
+        };
         let edge = self.vim_mouse_start(&m);
         let changed = self.handle_mouse_inner(m);
         self.vim_mouse_end(edge);
@@ -131,7 +133,7 @@ impl App {
         // not be left down.
         let regated = self.reraise_startup_config_gate();
         let asked = self.raise_keymap_choice();
-        changed || ended || noted || regated || asked
+        changed || ended || noted || regated || asked || disarmed
     }
 
     fn handle_mouse_inner(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
