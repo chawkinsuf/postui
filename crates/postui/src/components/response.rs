@@ -1228,36 +1228,31 @@ impl ReadyView {
     /// put the cursor on, or the bracket right before a clicked `,`.
     fn bracket_pair(&self, vim: bool) -> Option<(crate::text::Pos, crate::text::Pos)> {
         use crate::text::Pos;
-        use crate::text::brackets::{is_bracket, matching_pair};
+        use crate::text::brackets::{bracket_at, partner_of};
         let line = self.real_line()?;
         if self.in_closed_fold(line) {
             return None;
         }
-        // A peek before the matcher copies the line: a raw line can be
-        // megabytes long.
-        let char_at = |col: usize| match self.mode {
-            ViewMode::Raw => self.raw_lines.get(self.cursor)?.chars().nth(col),
-            _ => self.display_line_text(self.cursor)?.chars().nth(col),
+        let col = if vim { self.cur_col() } else { self.clicked.filter(|(l, _)| *l == line)?.1 };
+        // The chars at `col - 1` and `col`, in one pass, before the matcher
+        // copies the line: a raw line can be megabytes long.
+        let from = col.saturating_sub(1);
+        let near: Vec<char> = match self.mode {
+            ViewMode::Raw => self.raw_lines.get(self.cursor)?.chars().skip(from).take(2).collect(),
+            _ => self.display_line_text(self.cursor)?.chars().skip(from).take(2).collect(),
         };
-        let bracket = |col| char_at(col).is_some_and(is_bracket);
-        let col = if vim {
-            // Vim's matchparen looks only under its cursor.
-            Some(self.cur_col()).filter(|&col| bracket(col))?
-        } else {
-            // A click past the end of a `},` line lands on the `,`: a `,`
-            // right after a bracket takes that bracket (R20).
-            let col = self.clicked.filter(|(l, _)| *l == line)?.1;
-            match col.checked_sub(1) {
-                Some(prev) if char_at(col) == Some(',') && bracket(prev) => prev,
-                _ if bracket(col) => col,
-                _ => return None,
-            }
-        };
+        // Vim's matchparen looks only under its cursor. In arrows a click
+        // past the end of a `},` line lands on the `,`, so a clicked `,`
+        // takes the bracket right before it (R20).
+        let before = !vim && near.get(col - from) == Some(&',');
+        let col = from + bracket_at(&near, col - from, before)?;
         let at = Pos::new(self.cursor, col);
         // Arrows on the tree view: a container's own bracket gets its
         // partner from the tree, on screen or not, so scrolling shows it
-        // lit (R19). Any other bracket (Raw, Headers, one inside a string)
-        // would need a walk with no bound, so it keeps R5.
+        // lit (R19). That holds after the clicked end scrolls out too: click
+        // a `]`, scroll up, and its `[` is lit. Any other bracket (Raw,
+        // Headers, one inside a string) would need a walk with no bound, so
+        // it keeps R5.
         if !vim && self.mode == ViewMode::Pretty {
             let tree = self.active_tree()?;
             if let Some((full, col)) = tree.bracket_partner(line, col) {
@@ -1269,7 +1264,7 @@ impl ReadyView {
         // in Vim's `nowrap` window.
         let last = self.visible_len().checked_sub(1)?;
         let rows = self.scroll..=(self.scroll + self.height.max(1) - 1).min(last);
-        matching_pair(self, at, false, rows)
+        Some((at, partner_of(self, at, rows)?))
     }
 
     /// Puts Vim's cursor on column `col` of its line, wanted there after.
@@ -5614,10 +5609,15 @@ mod tests {
     /// Renders and returns the (body-area rect, buffer) so selection tests
     /// can map screen cells.
     fn render_buf(resp: &mut Response) -> (Rect, ratatui::buffer::Buffer) {
+        render_buf_focused(resp, true)
+    }
+
+    /// [`render_buf`] with the pane focused or not.
+    fn render_buf_focused(resp: &mut Response, focused: bool) -> (Rect, ratatui::buffer::Buffer) {
         let theme = Theme::dark();
         let ctx = DrawCtx {
             theme: &theme,
-            focused: true,
+            focused,
             hovered: None,
             pointer: None,
             dragging: false,
@@ -10465,27 +10465,13 @@ mod tests {
     /// brackets, R8).
     fn bracket_lit_at(r: &mut Response, focused: bool, line: usize, col: usize) -> bool {
         let theme = Theme::dark();
-        let ctx = DrawCtx {
-            theme: &theme,
-            focused,
-            hovered: None,
-            pointer: None,
-            dragging: false,
-            anims: test_anims(),
-            now: std::time::Instant::now(),
-        };
-        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
-        let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
-        let view = r.view().unwrap();
-        let area = view.last_area.unwrap();
-        let Some(row) = line.checked_sub(view.scroll) else {
+        let (area, buf) = render_buf_focused(r, focused);
+        let Some(row) = line.checked_sub(r.view().unwrap().scroll) else {
             return false; // scrolled out above
         };
         let x = area.x + u16::try_from(col).unwrap();
         let y = area.y + u16::try_from(row).unwrap();
-        let cell = &terminal.backend().buffer()[(x, y)];
-        (cell.fg, cell.bg) == (theme.on_accent, theme.accent)
+        (buf[(x, y)].fg, buf[(x, y)].bg) == (theme.on_accent, theme.accent)
     }
 
     /// Where `c` first shows on visible line `line`.
@@ -10551,14 +10537,23 @@ mod tests {
         assert!(!bracket_lit_at(&mut r, true, 5, 0));
     }
 
-    /// R19 is the tree view's (#89 round 2): Raw keeps R5, so a partner
-    /// below the view lights nothing. A one-line body's partner shares the
-    /// clicked row, however far right it is.
+    /// R19 is the tree view's: Raw keeps R5, so a partner below the view
+    /// lights nothing, and a lit pair goes dark once the clicked end
+    /// scrolls out. A one-line body's partner shares the clicked row,
+    /// however far right it is.
     #[test]
     fn an_arrows_raw_click_keeps_r5() {
         let mut lines = vec!["x"; 40];
         lines[5] = "(";
+        lines[8] = ")";
         lines[35] = ")";
+        let mut r = ready(&lines.join("\n"));
+        click_cell(&mut r, 8, 0);
+        r.view.as_mut().unwrap().scroll = 2;
+        assert!(bracket_lit_at(&mut r, true, 8, 0), "both show");
+        r.view.as_mut().unwrap().scroll = 6;
+        assert!(!bracket_lit_at(&mut r, true, 8, 0), "the `(` scrolled out");
+        lines[8] = "x";
         let mut r = ready(&lines.join("\n"));
         click_cell(&mut r, 5, 0);
         assert!(!bracket_lit_at(&mut r, true, 5, 0), "the `)` is out of view");

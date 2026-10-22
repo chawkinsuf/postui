@@ -105,13 +105,20 @@ root `}`.
 **`text/brackets.rs`** gains one entry point for both panels:
 
 ```rust
-/// The bracket at `at` (or, with `before`, the one just before it when
-/// `at` holds none) and its partner, both on rows `rows`: Vim's
-/// matchparen with JSON syntax (R2–R6).
-pub(crate) fn matching_pair<B: Lines + ?Sized>(
-    buf: &B, at: Pos, before: bool, rows: RangeInclusive<usize>,
-) -> Option<(Pos, Pos)>
+/// The bracket a caret at `col` stands by: the char at `col`, or with
+/// `before` the one before it (R2).
+pub(crate) fn bracket_at(line: &[char], col: usize, before: bool) -> Option<usize>
+/// The partner of the bracket at `at`, on rows `rows`: Vim's matchparen
+/// with JSON syntax (R3–R6).
+pub(crate) fn partner_of<B: Lines + ?Sized>(
+    buf: &B, at: Pos, rows: RangeInclusive<usize>,
+) -> Option<Pos>
 ```
+
+(The #89 cleanup split these apart; they began as one `matching_pair`
+with a `before` flag. The body, the response and R20's comma rule each
+pick their bracket with `bracket_at`; R20 is `before` switched on for a
+clicked `,`.)
 
 It is its own walk, not `find_match`. It counts the bracket and its partner
 forward or backward, and with R4 it skips positions inside a string, worked
@@ -184,7 +191,7 @@ and `%` don't change.
 
 ## 4. Tests
 
-- `brackets.rs`: `matching_pair` covers each row of the probe table (N1,
+- `brackets.rs`: `bracket_at` with `partner_of` covers each row of the probe table (N1,
   N2, N3, N3b, N4/N5 via `rows`, I1–I3). The row limit stops an unmatched
   walk. An escaped quote (`"a\"{"`) doesn't end a string. The existing `%`
   tests pass unchanged.

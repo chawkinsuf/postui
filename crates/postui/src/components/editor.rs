@@ -926,22 +926,20 @@ impl Editor {
         bottom: u16,
         theme: &Theme,
     ) {
-        use crate::text::brackets::is_bracket;
+        use crate::text::brackets::{bracket_at, partner_of};
         use crate::text::{Lines as _, Pos};
         let lines = &self.body.lines;
         let gutter = line_number_gutter_width(lines.len());
         let width = usize::from(area.width.saturating_sub(gutter));
-        let caret = Pos::new(self.body.cursor.row, self.body.cursor.col);
-        let before = self.body.mode == EditorMode::Insert;
         // Most frames have no bracket by the caret: look before measuring
         // the view.
-        let line = lines.line(caret.row);
-        let bracket_at = |col: usize| line.get(col).is_some_and(|&c| is_bracket(c));
-        if width == 0
-            || !(bracket_at(caret.col) || before && caret.col > 0 && bracket_at(caret.col - 1))
-        {
+        let caret = self.body.cursor;
+        let before = self.body.mode == EditorMode::Insert;
+        let Some(col) = bracket_at(&lines.line(caret.row), caret.col, before) else { return };
+        if width == 0 {
             return;
         }
+        let a = Pos::new(caret.row, col);
         // Each row in view: the screen row it starts on and its wrapped
         // segments.
         let top = self.body.viewport_offset().1;
@@ -957,10 +955,7 @@ impl Editor {
             y = y.saturating_add(tall);
         }
         let Some(last) = (top + rows.len()).checked_sub(1) else { return };
-        let Some((a, b)) = crate::text::brackets::matching_pair(lines, caret, before, top..=last)
-        else {
-            return;
-        };
+        let Some(b) = partner_of(lines, a, top..=last) else { return };
         let cell = |at: Pos| {
             let (y0, segments) = &rows[at.row - top];
             let (k, segment) = segments.iter().enumerate().find(|(_, s)| s.contains(&at.col))?;
@@ -4112,24 +4107,28 @@ mod tests {
         body_cell(e, needle).fg
     }
 
-    /// Draws `e` and returns the buffer cell holding the first occurrence
-    /// of `needle` inside the body area.
-    fn body_cell(e: &mut Editor, needle: char) -> ratatui::buffer::Cell {
+    /// Draws `e` at 120×24, the pane focused or not, and returns the frame.
+    fn draw_body(e: &mut Editor, focused: bool) -> ratatui::buffer::Buffer {
         let theme = Theme::dark();
         let ctx = DrawCtx {
             theme: &theme,
-            focused: true,
+            focused,
             hovered: None,
             pointer: None,
             dragging: false,
             anims: test_anims(),
             now: std::time::Instant::now(),
         };
-        let backend = TestBackend::new(120, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
-        let buf = terminal.backend().buffer().clone();
+        terminal.backend().buffer().clone()
+    }
+
+    /// Draws `e` and returns the buffer cell holding the first occurrence
+    /// of `needle` inside the body area.
+    fn body_cell(e: &mut Editor, needle: char) -> ratatui::buffer::Cell {
+        let buf = draw_body(e, true);
         let area = e.last_body_area.unwrap();
         for y in area.y..area.bottom() {
             for x in area.x..area.right() {
@@ -4149,25 +4148,13 @@ mod tests {
         row: usize,
         col: usize,
     ) -> ratatui::buffer::Cell {
-        let theme = Theme::dark();
-        let ctx = DrawCtx {
-            theme: &theme,
-            focused,
-            hovered: None,
-            pointer: None,
-            dragging: false,
-            anims: test_anims(),
-            now: std::time::Instant::now(),
-        };
-        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
-        let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+        let buf = draw_body(e, focused);
         let area = e.last_body_area.unwrap();
         let gutter = line_number_gutter_width(e.body.lines.len());
         let top = e.body.viewport_offset().1;
         let x = area.x + gutter + u16::try_from(col).unwrap();
         let y = area.y + u16::try_from(row - top).unwrap();
-        terminal.backend().buffer()[(x, y)].clone()
+        buf[(x, y)].clone()
     }
 
     fn bracket_lit(cell: &ratatui::buffer::Cell) -> bool {
@@ -4220,28 +4207,11 @@ mod tests {
 
     /// The lit cells of the body area after a focused draw.
     fn lit_body_cells(e: &mut Editor) -> usize {
-        let theme = Theme::dark();
-        let ctx = DrawCtx {
-            theme: &theme,
-            focused: true,
-            hovered: None,
-            pointer: None,
-            dragging: false,
-            anims: test_anims(),
-            now: std::time::Instant::now(),
-        };
-        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
-        let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+        let buf = draw_body(e, true);
         let area = e.last_body_area.unwrap();
-        let buf = terminal.backend().buffer();
-        let lit = |x, y| {
-            let cell: &ratatui::buffer::Cell = &buf[(x, y)];
-            (cell.fg, cell.bg) == (theme.on_accent, theme.accent)
-        };
         (area.y..area.bottom())
             .flat_map(|y| (area.x..area.right()).map(move |x| (x, y)))
-            .filter(|&(x, y)| lit(x, y))
+            .filter(|&(x, y)| bracket_lit(&buf[(x, y)]))
             .count()
     }
 

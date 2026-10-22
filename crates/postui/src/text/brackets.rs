@@ -32,44 +32,46 @@ pub(crate) fn is_bracket(c: char) -> bool {
     pair(c).is_some()
 }
 
-/// The bracket at `at` and its partner, both on rows `rows`, for the
-/// highlight that lights them: Vim's matchparen with JSON syntax (spec
-/// 2026-10-22, matching brackets, R2–R6). With `before` (a caret between
-/// chars: arrows, or Vim's Insert), the char before `at` stands in when the
-/// one at `at` is no bracket.
+/// The column of the bracket a caret at `col` of `line` stands by, for the
+/// highlight (spec 2026-10-22, matching brackets, R2): the char at `col`.
+/// With `before` (a caret between chars: arrows, or Vim's Insert), the char
+/// before it stands in when the one at `col` is no bracket.
+pub(crate) fn bracket_at(line: &[char], col: usize, before: bool) -> Option<usize> {
+    let is = |col: usize| line.get(col).is_some_and(|&c| is_bracket(c));
+    if is(col) {
+        return Some(col);
+    }
+    col.checked_sub(1).filter(|&prev| before && is(prev))
+}
+
+/// The partner of the bracket at `at`, on rows `rows`, for the highlight
+/// that lights the two: Vim's matchparen with JSON syntax (spec 2026-10-22,
+/// matching brackets, R3–R6). `None` when `at` holds no bracket, or the
+/// partner isn't on `rows`.
 ///
 /// Not [`find_match`]: that is `%`, whose quote parity reads a string's
 /// bracket differently from matchparen's syntax test (probe N3). A string
 /// here is a run between unescaped `"` on one line, which is exact for
 /// JSON. Outside a string, brackets inside strings are skipped; from inside
 /// one, nothing is.
-pub(crate) fn matching_pair<B: Lines + ?Sized>(
+pub(crate) fn partner_of<B: Lines + ?Sized>(
     buf: &B,
     at: Pos,
-    before: bool,
     rows: RangeInclusive<usize>,
-) -> Option<(Pos, Pos)> {
+) -> Option<Pos> {
     let first = *rows.start();
     let last = (*rows.end()).min(buf.line_count() - 1);
     if at.row < first || at.row > last {
         return None;
     }
     let mut line = buf.line(at.row);
-    let start = match line.get(at.col).copied().and_then(pair) {
-        Some(_) => at.col,
-        None if before && at.col > 0 => {
-            pair(*line.get(at.col - 1)?)?;
-            at.col - 1
-        }
-        None => return None,
-    };
-    let c = line[start];
+    let c = *line.get(at.col)?;
     let (open, close) = pair(c)?;
     let (find, forward) = if c == open { (close, true) } else { (open, false) };
     let mut strings = in_strings(&line);
-    let skip = !strings[start];
+    let skip = !strings[at.col];
     let mut depth = 0usize;
-    let (mut row, mut col) = (at.row, start);
+    let (mut row, mut col) = (at.row, at.col);
     loop {
         // One char on, crossing to the next row in view at a line's end.
         if forward {
@@ -102,7 +104,7 @@ pub(crate) fn matching_pair<B: Lines + ?Sized>(
             depth += 1;
         } else if line[col] == find {
             if depth == 0 {
-                return Some((Pos::new(at.row, start), Pos::new(row, col)));
+                return Some(Pos::new(row, col));
             }
             depth -= 1;
         }
@@ -316,12 +318,24 @@ mod tests {
         Pos::new(row, col)
     }
 
+    /// The pair a caret at (`row`, `col`) lights, as the highlight's
+    /// callers ask for it: the bracket, then its partner.
+    fn lit<B: Lines + ?Sized>(
+        buf: &B,
+        row: usize,
+        col: usize,
+        before: bool,
+        rows: RangeInclusive<usize>,
+    ) -> Option<(Pos, Pos)> {
+        let at = p(row, bracket_at(&buf.line(row), col, before)?);
+        Some((at, partner_of(buf, at, rows)?))
+    }
+
     /// Each row of the Vim 9.1 probe table, matchparen with `ft=json`.
     #[test]
     fn the_pair_is_vims_matchparen_with_json_syntax() {
         let buf = probe();
-        let all = 0..=61;
-        let at = |row, col, before| matching_pair(&buf, p(row, col), before, all.clone());
+        let at = |row, col, before| lit(&buf, row, col, before, 0..=61);
         assert_eq!(at(0, 0, false), Some((p(0, 0), p(0, 34))), "N1: the string's `{{` is skipped");
         assert_eq!(at(0, 12, false), None, "N2: Normal looks only under the caret");
         assert_eq!(
@@ -340,26 +354,23 @@ mod tests {
     #[test]
     fn a_partner_outside_the_rows_lights_nothing() {
         let buf = probe();
-        assert_eq!(matching_pair(&buf, p(2, 0), false, 0..=28), None, "N4: the `}}` is below");
-        assert_eq!(matching_pair(&buf, p(60, 0), false, 33..=61), None, "N5: the `{{` is above");
-        assert_eq!(matching_pair(&buf, p(2, 0), false, 0..=60), Some((p(2, 0), p(60, 0))));
+        assert_eq!(partner_of(&buf, p(2, 0), 0..=28), None, "N4: the `}}` is below");
+        assert_eq!(partner_of(&buf, p(60, 0), 33..=61), None, "N5: the `{{` is above");
+        assert_eq!(partner_of(&buf, p(2, 0), 0..=60), Some(p(60, 0)));
     }
 
     #[test]
     fn an_escaped_quote_does_not_end_a_string() {
         let line: Vec<char> = r#"{"a\"{": 1}"#.chars().collect();
-        assert_eq!(matching_pair(&line[..], p(0, 0), false, 0..=0), Some((p(0, 0), p(0, 10))));
+        assert_eq!(partner_of(&line[..], p(0, 0), 0..=0), Some(p(0, 10)));
     }
 
     #[test]
     fn a_char_that_is_no_bracket_lights_nothing() {
         let line: Vec<char> = "ab".chars().collect();
-        assert_eq!(matching_pair(&line[..], p(0, 1), true, 0..=0), None);
-        assert_eq!(
-            matching_pair(&line[..], p(0, 9), true, 0..=0),
-            None,
-            "past the end of a short line"
-        );
-        assert_eq!(matching_pair(&line[..], p(0, 0), true, 0..=0), None, "nothing before column 0");
+        assert_eq!(bracket_at(&line, 1, true), None);
+        assert_eq!(bracket_at(&line, 9, true), None, "past the end of a short line");
+        assert_eq!(bracket_at(&line, 0, true), None, "nothing before column 0");
+        assert_eq!(partner_of(&line[..], p(0, 0), 0..=0), None, "`a` has no partner");
     }
 }

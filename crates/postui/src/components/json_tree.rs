@@ -617,21 +617,23 @@ impl JsonTree {
     /// such as a bracket inside a string, and on a scalar or an empty
     /// container's line.
     pub fn bracket_partner(&self, full: usize, col: usize) -> Option<(usize, usize)> {
-        let rec = self.lines.get(full)?;
-        let (open, close) = match rec.kind {
-            Kind::Open => (full, self.containers[rec.container as usize].end_line as usize),
-            Kind::Close => (self.containers[rec.parent as usize].open_line as usize, full),
-            Kind::Scalar | Kind::Empty => return None,
-        };
-        let open_col = {
-            let line = self.line(open);
+        let open_col = |line: usize| {
+            let line = self.line(line);
             line.indent + line.text.chars().count() - 1
         };
-        let close_col = self.line(close).indent;
-        match rec.kind {
-            Kind::Open => (col == open_col).then_some((close, close_col)),
-            _ => (col == close_col).then_some((open, open_col)),
-        }
+        let rec = self.lines.get(full)?;
+        let (here, partner, partner_col) = match rec.kind {
+            Kind::Open => {
+                let close = self.containers[rec.container as usize].end_line as usize;
+                (open_col(full), close, self.line(close).indent)
+            }
+            Kind::Close => {
+                let open = self.containers[rec.parent as usize].open_line as usize;
+                (self.line(full).indent, open, open_col(open))
+            }
+            Kind::Scalar | Kind::Empty => return None,
+        };
+        (col == here).then_some((partner, partner_col))
     }
 
     /// The visible line that shows full line `full`: itself, or the
