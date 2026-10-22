@@ -380,7 +380,8 @@ fn ctrl_c_twice_over_a_dialog_meets_the_unsaved_check_over_it() {
 
 /// Task #85 R5 (review round 5): ctrl+c never discards. On the quit's own
 /// question a held or mashed ctrl+c neither quits nor stacks another
-/// question: it reminds, and `d` is the way out without saving.
+/// question nor piles up toasts: the question shows its answers, and `d`
+/// is the way out without saving.
 #[test]
 fn ctrl_c_on_the_quit_question_never_discards() {
     let mut app = dirty_app();
@@ -392,15 +393,7 @@ fn ctrl_c_on_the_quit_question_never_discards() {
     assert!(!app.should_quit, "a held ctrl+c stops at the question");
     assert_eq!(app.modals.iter().count(), 1, "one question, not a stack of them");
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { quit_gate: true, .. })));
-    assert!(
-        app.toasts.messages().contains(&"Unsaved changes: s saves, d discards, esc cancels"),
-        "{:?}",
-        app.toasts.messages()
-    );
-    assert!(
-        !app.toasts.messages().iter().any(|m| m.starts_with("Press ")),
-        "no arm where a second press cannot quit"
-    );
+    assert!(app.toasts.is_empty(), "no arm, no pile: {:?}", app.toasts.messages());
     app.handle_key(plain('d'));
     assert!(app.should_quit, "Discard leaves");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), saved, "nothing written");

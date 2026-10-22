@@ -88,7 +88,11 @@ impl Toasts {
     }
 
     /// Whether toast `id` is still showing at `now`: in the list and not
-    /// past its expiry, which the next tick would prune.
+    /// past its expiry, which the next tick would prune. A toast `draw`
+    /// leaves off a screen too short for the whole stack still counts:
+    /// the quit's arm (task #85) is pushed newest, and the presses are back
+    /// to back, so only a toast landing between them could hide it, and
+    /// the quit it allows still meets the unsaved-changes question.
     pub fn is_live(&self, id: u64, now: Instant) -> bool {
         self.entries.iter().any(|t| t.id == id && t.expires_at.is_none_or(|at| now < at))
     }

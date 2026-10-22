@@ -506,7 +506,7 @@ pub enum Modal {
         body: String,
         choices: Vec<(char, String, Vec<Action>)>,
         /// The quit's own unsaved-changes question (`App::quit_gate`): a
-        /// quit asked on it only reminds of its answers (task #85 R5),
+        /// quit asked on it waits for one of its answers (task #85 R5),
         /// rather than stacking a second question. False on every
         /// other confirm, which [`Modal::confirm`] builds. A flag on the
         /// question itself (the user's call for an explicit mark) rather

@@ -40,7 +40,7 @@ their own way out, so nobody gets stuck today:
 | R2 | The second press is the same combo, pressed next, while that toast is showing (a short toast lives 3 s). Any other key or mouse press between the two (a copy, a `q`, a click, another quit combo) takes the arm and its toast down, so the next press is a first press again. The toast is the arm: it never shows when a press would not quit. | `mine (approved)` (review round 1: the toast is the arm; round 2: back to back, replacing "nothing but time disarms it", after three paths let an input between the presses count as the second, one of them a single ^C quitting past the check). Input that is not a key or a mouse press (a paste, the wheel, focus, an async result) leaves the arm: none of it can open the unsaved-changes gate, so the second press still meets it (`mine`, review round 3) |
 | R3 | The second press runs `Quit`, and `Quit` meets the unsaved-changes check whether or not a dialog is open. The modal exemption goes. | `you` (the task's ask) |
 | R4 | The check opens over whatever dialog is open, as `:q`'s does today; its Cancel returns to that dialog with its typing intact. Cost (kept, as `:q` has always had it): the quit closes open inputs first (task #75's rule), so a table cell under the extract or var-picker dialog is committed on the way to the check, and after a Cancel that dialog finds no open field; the cell's typing is kept and undoable. | `mine (approved)` (in chat I said the quit would cancel open dialogs first; this keeps them instead, see §5) |
-| R5 | A quit never discards edits by itself. `Quit` or `GatedQuit` while the quit's own check is the top dialog does not quit and does not stack another check: it toasts "Unsaved changes: s saves, d discards, esc cancels". A `^C` there does not arm. Leaving without saving takes `d`. | `you` (review round 5, 2026-10-22: "lets not let ^C again discard changes"), replacing "`^C ^C` on the check is quit anyway" (`mine (approved)`), which let a held or mashed `^C` (terminal auto-repeat arrives as presses) run through the check unread. The toast wording is `mine`. |
+| R5 | A quit never discards edits by itself. `Quit` or `GatedQuit` while the quit's own check is the top dialog does nothing: it does not quit, does not stack another check, and toasts nothing; the check already shows its answers, in the dialog and the footer. A `^C` there does not arm. Leaving without saving takes `d`. | `you` (review round 5, 2026-10-22: "lets not let ^C again discard changes"), replacing "`^C ^C` on the check is quit anyway" (`mine (approved)`), which let a held or mashed `^C` (terminal auto-repeat arrives as presses) run through the check unread. No toast is `mine` (review round 6: a reminder toast piled up one per repeat of a held key). |
 | R6 | With a live text selection `^C` copies, as now, and does not arm. | `you` (vim profile spec, 2026-10-03) |
 | R7 | The toast spells the combo pressed (`^C`, `^Q`, …). | `mine` |
 | R8 | One-step quits stay one step: arrows' `q`, `:q`/`:qa`, the palette's Quit row, the footer quit chip. Under a dialog the chip's `Quit` now meets the check (R3). `:q!`, `:qa!` and `ZQ` still force. | follows R3; `mine` |
@@ -89,8 +89,9 @@ Spec rows this replaces (each gets a dated amendment pointing here):
   a bare `[ForceQuit]` answer, which a later dialog could match by
   accident; a test pins that such a dialog now gets the gate.
 - **Amended after review round 5 (`you`):** the R5 arm no longer
-  force-quits; it toasts the reminder and stays. Step 1 does not arm on
-  the quit's question, so the press goes straight to that reminder.
+  force-quits; it does nothing (round 6 dropped a reminder toast). Step 1
+  does not arm on the quit's question. `unsaved_question` builds both
+  forms of the question, with `quit_gate` passed in by its two callers.
 - **Removed:** the modal exemption, and the comments that explain it
   (`apply`, `Action::GatedQuit`'s doc, `spell::quit_action`, footer and
   `ui.rs` notes on `^C` pre-empting).
@@ -113,7 +114,7 @@ dialog's Quit) all want the gated meaning.
   quit chip there neither quits nor stacks a second gate.
 - R3/R4: `^C ^C` over a dialog with unsaved edits opens the check over
   it; Esc on the check returns to the dialog, typing intact; nothing quit.
-- R5: ten `^C` presses (a held key) stop at one check, toast the reminder,
+- R5: ten `^C` presses (a held key) stop at one check, leave no toast,
   never arm, and write nothing; `d` then quits. A quit during a live drag
   ends the drag, so the check gets its keys.
 - R6: `^C` with a selection copies; the next `^C` only arms.
