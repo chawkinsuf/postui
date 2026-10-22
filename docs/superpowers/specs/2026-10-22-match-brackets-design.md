@@ -76,6 +76,22 @@ Two consequences:
 | R15 | `{{var}}` braces match like any other brace. | mine (approved) |
 | R16 | No gutter line spanning the block this round. | mine (approved) |
 | R17 | The vim response has no Insert mode, so R2's char-before fallback never applies there. | Vim |
+| R18 | A click in Raw or Headers puts the response's cursor on the clicked char, as a click in Pretty already does: the cursor row moves there, and so does Vim's column. Before this, those clicks only anchored a selection. Amended 2026-10-22, see below. | mine (approved) |
+
+**Amendment, 2026-10-22 (during implementation).** §3 assumed every view's
+click goes through `click_row`. Only Pretty's does: Raw and Headers register
+no row hit, so their clicks reach `Hit::Pane(Response)`, which only anchors
+a selection (b6e07be, added for selection alone; no spec rules on the
+cursor there). The user picked routing those clicks through `click_row`
+like Pretty's (R18) over two alternatives:
+
+- lighting from the clicked cell without moving the cursor, which leaves the
+  vim profile unlit;
+- Pretty only.
+
+Cost, named when asked: the cursor row now follows a click in Raw and
+Headers. In the vim profile, searches, `V` and yanks then start from the
+clicked line, as in Pretty and in Vim.
 
 ## 3. Design
 
@@ -116,10 +132,12 @@ and `%` don't change.
 
 **Response (`components/response.rs`).**
 
-- `ReadyView` answers `bracket_pair() -> Option<(Pos, Pos)>` in buffer
-  (search-corpus) coordinates. The rows are the buffer lines the viewport
-  shows. It answers `None` on a closed fold's line. The column depends on
-  the profile:
+- `ReadyView` answers `bracket_pair() -> Option<(Pos, Pos)>` in visible
+  (line, char) cells, matched over the lines as painted (its `Lines`
+  impl). A closed fold's summary (`{…}`) is balanced, so walking past one
+  never miscounts. The rows are the visible lines the viewport shows. It
+  answers `None` on a closed fold's line. The column depends on the
+  profile:
   - vim: `cur_col()`;
   - arrows: a new `clicked: Option<(line, col)>`. `click_row` sets it
     beside `at_col`, and `cursor_moved` forgets it beside `at_col`.
@@ -127,15 +145,19 @@ and `%` don't change.
   `at_col` itself can't serve arrows: arrows' PageUp and PageDown set it
   (first non-blank), and arrows' search starts from it, so clearing it
   there would move searches.
-- The response learns the profile the same way `SearchSyntax::of` does: the
-  app hands it in.
-- The draw maps the two positions to display cells the way search hits are
-  mapped (`LineMatches`), and paints them with R8's style under the search
-  classes in `highlighted`.
-- The pair is computed when the column, the line, the tree or the scroll
-  changes, not every frame. A minified one-line Raw body is a single line,
-  so one walk per change may cover megabytes. That is a click's cost, not a
-  frame's.
+- The app hands the response the profile before each draw, as it hands
+  the editor `env_tls`.
+- The draw paints the two cells with R8's style. A cell under a search hit
+  or the selection keeps that paint instead.
+- R18: `Hit::Pane(Response)`'s single click calls `click_row` on the
+  clicked line after anchoring, as `Hit::JsonRow` does.
+- The pair is computed in the draw, not cached. Frames are drawn on events
+  and animation ticks, not continuously. A cache keyed on the column, line,
+  tree and scroll would go stale on a fold toggle that leaves those
+  unchanged, and would light the wrong cells. Before any line is copied,
+  the draw checks that the char at the column is a bracket. The cost lands
+  only while a bracket is lit: a lit bracket on a megabyte-long minified
+  Raw line walks that line each frame.
 
 **Removed:** nothing.
 
@@ -156,6 +178,7 @@ and `%` don't change.
   - ↓ in arrows clears, PageDown onto a `}` line lights nothing, and scrolling keeps them (R10);
   - in vim, `j` onto a bracket column lights the pair (R11);
   - Raw and Headers light, and a closed fold line doesn't (R12, R13);
+  - an app-level click in Raw moves the cursor row to the clicked line (R18);
   - an unfocused pane lights nothing (R14).
 - The real TUI in tmux: arrows body, vim body Normal and Insert, and a
   response click in both profiles.
