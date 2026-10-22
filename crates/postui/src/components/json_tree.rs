@@ -609,6 +609,18 @@ impl JsonTree {
         changed
     }
 
+    /// The full line holding the other bracket of the container that full
+    /// line `full` opens or closes: its closing line, or its opening one.
+    /// `None` for a scalar or an empty container's line.
+    pub fn bracket_partner(&self, full: usize) -> Option<usize> {
+        let rec = self.lines.get(full)?;
+        match rec.kind {
+            Kind::Open => Some(self.containers[rec.container as usize].end_line as usize),
+            Kind::Close => Some(self.containers[rec.parent as usize].open_line as usize),
+            Kind::Scalar | Kind::Empty => None,
+        }
+    }
+
     /// The visible line that shows full line `full`: itself, or the
     /// opening line of the outermost closed fold that hides it. `None` out
     /// of range.

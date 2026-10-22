@@ -244,17 +244,26 @@ when the partner is off screen, and looks only under the cursor.
 
 **Design.**
 
-- R19: `ReadyView::bracket_pair` walks every visible line in arrows (rows
-  `0..=last`), and only the rows in view in vim.
+- R19: in arrows, `ReadyView::bracket_pair` looks past the rows in view.
+  Vim's path is unchanged. Review round 1 found that an unbounded text
+  walk freezes on a big tree, and pairs a string's bracket with a stray one
+  far away, so arrows works in three steps:
+  - A bracket inside a string pairs only inside that string. JSON strings
+    never span lines, so the walk stays on its line. (mine, round 1)
+  - On the Tree view, a bracket outside strings is its container's own,
+    and `JsonTree::bracket_partner` names the partner's line, with no
+    walk.
+  - Raw and Headers walk every line.
 - R19: the memo (`BracketInputs`) leaves the scroll and the height out of
   its key in arrows. They no longer change the answer there, so scrolling
   never re-walks.
-- R20: in arrows, a clicked `,` with a bracket right before it starts from
-  that bracket instead.
+- R20: in arrows, a clicked `,` outside a string, with a bracket right
+  before it, starts from that bracket instead.
 
-**Cost.** One walk per click. That walk can cross the whole response: a
-click on the root `{` of a large tree reads every line to its end, once.
-Scrolling reuses the answer.
+**Cost.** None on the Tree view, where the tree answers. Raw and Headers
+walk once per click, and can cross the whole text: a click on the outer
+`{` of a big pretty-printed body in Raw reads every line once. Scrolling
+reuses the answer.
 
 **Tests.**
 
@@ -270,3 +279,7 @@ Scrolling reuses the answer.
 - Only `,` counts, and only directly after the bracket: not `;`, not
   whitespace, and not `} ,`.
 - In vim, the comma rule doesn't apply: Vim looks only under the cursor.
+- (Round 1) In arrows, a bracket inside a string pairs only within its
+  string, and a `,` inside a string never triggers R20. Vim's own R4, used
+  in vim and the body, skips nothing from inside a string, so it can pair
+  across lines.
