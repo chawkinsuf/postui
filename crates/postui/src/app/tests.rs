@@ -29004,6 +29004,25 @@ fn a_refused_manager_close_stops_the_env_switch() {
     assert_eq!(edit.input.text(), "description");
 }
 
+/// Opening the env chooser forces a re-read, which cancels an input that
+/// refuses to close (task #78); a close the cell refuses stops the chooser
+/// first instead, as it stops the switch, so the typing is kept.
+#[test]
+fn a_refused_manager_close_stops_the_env_chooser() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let r = cell_rect(&mut app, 2, 0);
+    app.handle_mouse(left_down(r.x, r.y));
+    type_chars(&mut app, "description");
+    app.update(Action::OpenEnvChooser);
+    assert!(app.modals.is_empty(), "no chooser opened");
+    let edit = app.varmanager.grid.editing.as_ref().expect("the typing is kept");
+    assert_eq!(edit.input.text(), "description");
+}
+
 /// Task #76: Copy clicked in a live grid cell's own menu copies the cell's
 /// selection. The menu is a dialog, so the click no longer closes the cell
 /// under it.

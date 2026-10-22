@@ -1617,10 +1617,10 @@ impl App {
     pub fn resync_project(&mut self) {
         // The forced re-read closes the Variable Manager's input first in
         // `ReloadProjectFiles` (task #78), and cancels one that refuses,
-        // even when no file did change: forced means the stamps can't say
-        // (a file written in the same mtime tick), and an input left open
-        // across a re-read that did renumber its rows would save into the
-        // wrong option. The cost is typing that could not be saved anyway.
+        // whether or not a file changed: forced means the stamps can't say.
+        // So every caller stops on a refused close before it gets here
+        // (Reload from disk, an env cycle, the env chooser), and the
+        // typing is kept for the user to fix.
         if let Some(p) = self.project.as_mut() {
             p.invalidate_stamps();
         }
@@ -4918,7 +4918,14 @@ impl App {
             Action::OpenEnvChooser => {
                 use crate::components::modal::{DropdownState, MenuItem};
                 // Forced (not mtime-gated): an environment file created
-                // in the same tick must show up in the list.
+                // in the same tick must show up in the list. The forced
+                // re-read would cancel a Manager input that refuses to
+                // close, so a refusal stops the chooser here first and the
+                // typing is kept (task #78), as for Reload from disk.
+                if !self.close_manager_input() {
+                    self.last_action_failed = true;
+                    return true;
+                }
                 self.resync_project();
                 let mut items: Vec<MenuItem> = self
                     .environments()
@@ -5477,7 +5484,9 @@ impl App {
                 // spec, "Reload while the Settings tab is open"). The
                 // Variable Manager's input closes first (task #75): its
                 // commit finds its option by row, and the reload can
-                // renumber the rows.
+                // renumber the rows. Closed here so a refusal stops the
+                // command with the typing kept; the forced re-read below
+                // would cancel it (task #78, `ReloadProjectFiles`).
                 if !self.close_manager_input() {
                     self.last_action_failed = true;
                     return true;
