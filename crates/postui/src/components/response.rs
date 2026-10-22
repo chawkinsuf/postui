@@ -1230,6 +1230,8 @@ impl ReadyView {
         if !crate::text::brackets::is_bracket(c) {
             return None;
         }
+        // Rows only (R5, Vim's matchparen): a bracket scrolled out sideways
+        // still counts, as Vim's `nowrap` window counts it.
         let last = (self.scroll + self.height.max(1) - 1).min(self.visible_len().checked_sub(1)?);
         let at = crate::text::Pos::new(self.cursor, col);
         crate::text::brackets::matching_pair(self, at, false, self.scroll..=last)
@@ -2784,6 +2786,8 @@ impl Response {
             return;
         };
         view.tree = None;
+        // The tree on screen is gone: a swap, like `attach_tree`'s.
+        view.tree_epoch += 1;
         view.set_jq_tree(None);
         view.jq_doc = None;
         view.jq_tree_code = None;

@@ -93,6 +93,13 @@ Cost, named when asked: the cursor row now follows a click in Raw and
 Headers. In the vim profile, searches, `V` and yanks then start from the
 clicked line, as in Pretty and in Vim.
 
+Found in review round 2 (mine, to be confirmed with the user): a click on
+the pane's empty space below the text gets the same treatment. The
+selection anchor already clamped such a click onto the last line's last
+char (`cell_at`), so the cursor now goes there too, as an editor's caret
+does. In all three views this lights the last line's bracket, often the
+root `}`.
+
 ## 3. Design
 
 **`text/brackets.rs`** gains one entry point for both panels:
@@ -114,21 +121,26 @@ and `%` don't change.
 
 **Body (`components/editor.rs`).**
 
-- `OverlayKind::Bracket` is added after `Match`, so it has the lowest
-  precedence.
-- `body_overlays` adds the two one-cell overlays from `matching_pair`, when
-  the body is focused. They use the caret, R2's `before` flag, and the rows
-  the draw will show.
+- `paint_bracket_pair` paints the two cells onto the frame after edtui
+  renders, while the body is focused, the way the `{{var}}` tokens are
+  repainted.
+  - Rows in view are edtui's own viewport after its scroll, walked in wrap
+    rows down to the bottom, or to the vim search prompt's row when it's
+    open.
+  - A cell the Visual span, a search hit or the selection already paints
+    keeps that paint.
+  - The caret's cell keeps its reverse, because only the colours are
+    patched.
 - R2's `before` is `self.body.mode == EditorMode::Insert`. The engine
   already paints Insert and Replace as edtui's `Insert`, and Normal and
   Visual as `Normal` and `Visual` (`BodyBuf::show`). The arrows body is
   always `Insert`. No seam change.
-- Rows in view: edtui moves its viewport during render to keep the caret
-  visible. The overlays are built before that, so the range is the caret's
-  row clamped into `[offset, offset + height)` the way edtui's render
-  clamps it. Wrapped lines take more than one screen row, so the range is
-  counted in buffer lines over the screen rows, as the click math already
-  does (`last_body_area`, the wrap walk).
+- Review round 2 replaced the first design. That design added
+  `OverlayKind::Bracket` to edtui's highlights before render, which meant
+  predicting edtui's scroll. Two rounds found frames where the prediction
+  and the real scroll differ: edtui's private `num_rows`, and a first
+  render that doesn't scroll. Painting after the render reads the real
+  viewport instead.
 
 **Response (`components/response.rs`).**
 
