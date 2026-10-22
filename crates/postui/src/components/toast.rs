@@ -13,9 +13,8 @@ pub enum ToastKind {
     Warning,
 }
 
-/// Total wall-clock lifetime of a toast, from `push` to removal. A short
-/// toast's whole life, so also how long "press ^C again" holds (task #85).
-pub(crate) const TOAST_LIFETIME: Duration = Duration::from_secs(3);
+/// Total wall-clock lifetime of a toast, from `push` to removal.
+const TOAST_LIFETIME: Duration = Duration::from_secs(3);
 
 /// Total on-screen height (in rows) of one painted toast: a filled `panel`
 /// rect with its message vertically centered on the middle row.
@@ -69,6 +68,13 @@ impl Default for Toasts {
 
 impl Toasts {
     pub fn push(&mut self, message: impl Into<String>, kind: ToastKind) {
+        self.push_id(message, kind);
+    }
+
+    /// [`Self::push`], answering the toast's id for [`Self::is_live`] and
+    /// [`Self::dismiss`]: for a toast whose showing is itself state, as
+    /// "press ^C again to quit" is (task #85).
+    pub fn push_id(&mut self, message: impl Into<String>, kind: ToastKind) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         self.entries.push(Toast {
@@ -78,6 +84,18 @@ impl Toasts {
             fade_started: false,
             id,
         });
+        id
+    }
+
+    /// Whether toast `id` is still showing.
+    pub fn is_live(&self, id: u64) -> bool {
+        self.entries.iter().any(|t| t.id == id)
+    }
+
+    /// Removes toast `id` at once, its animation with it.
+    pub fn dismiss(&mut self, id: u64, anims: &mut Anims) {
+        self.entries.retain(|t| t.id != id);
+        anims.clear(AnimKey::ToastFade(id));
     }
 
     /// Stamps `expires_at` on every toast that doesn't have one yet --

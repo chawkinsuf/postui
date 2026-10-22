@@ -37,7 +37,7 @@ their own way out, so nobody gets stuck today:
 | # | Rule | Source |
 |---|---|---|
 | R1 | `^C` quits only on a second press. The first press changes nothing (no dialog closes, no input closes, a live drag stays live) and toasts "Press ^C again to quit". | double press: `you` (task text); "the first press never changes anything": `mine (approved)` |
-| R2 | The second press counts while that toast is showing: within the toast's base lifetime (3 s) of the first. Later, it is a first press again. Nothing else disarms it. | `mine` |
+| R2 | The second press counts while that toast is showing (a short toast lives 3 s). Once it is gone, a press is a first press again. The quit the second press runs takes the toast down, so the toast never shows when a press would not quit. Nothing else disarms it. | `mine` (review round 1: the toast is the arm, so the two can't disagree) |
 | R3 | The second press runs `Quit`, and `Quit` meets the unsaved-changes check whether or not a dialog is open. The modal exemption goes. | `you` (the task's ask) |
 | R4 | The check opens over whatever dialog is open, as `:q`'s does today; its Cancel returns to that dialog with its typing intact. | `mine` (in chat I said the quit would cancel open dialogs first; this keeps them instead, see §5) |
 | R5 | `Quit` while the quit's own check is the top dialog leaves without saving: `^C ^C` on the check is "quit anyway". | `mine (approved)` |
@@ -62,10 +62,11 @@ Spec rows this replaces (each gets a dated amendment pointing here):
 ## 3. Design
 
 - **`App::route_key` step 1** (the modified quit combo): after the
-  selection copy, if `quit_armed_at` is within the window, clear it and
-  `update(Action::Quit)`; otherwise set it to now and push the toast. The
-  window is the toast's base lifetime, so "while the message shows" holds;
-  `toast::TOAST_LIFETIME` becomes `pub(crate)`.
+  selection copy, if the toast the last first press showed is still live,
+  dismiss it and `update(Action::Quit)`; otherwise push the toast and keep
+  its id (`App::quit_armed`). `Toasts` gains `push_id`, `is_live` and
+  `dismiss`. (Review round 1 replaced a stored timestamp and a copy of
+  the toast lifetime, which could disagree with the toast on screen.)
 - **`App::apply`**: the `Quit` gate arm loses `self.modals.is_empty()`.
   A new arm before it: `Action::Quit` when the top dialog is the quit's
   check → `ForceQuit`. "Is the quit's check" reads the dialog itself: a
@@ -86,7 +87,8 @@ dialog's Quit) all want the gated meaning.
 - R1: one `^C` on the plain screen does not quit and toasts; a second
   quits. Under a dialog, one `^C` leaves the dialog open and does not
   quit.
-- R2: a second press after the window (armed time set back) only re-arms.
+- R2: a second press after the toast expired only re-arms; the quit takes
+  the toast down.
 - R3/R4: `^C ^C` over a dialog with unsaved edits opens the check over
   it; Esc on the check returns to the dialog, typing intact; nothing quit.
 - R5: `^C ^C` on the check quits without writing the request.

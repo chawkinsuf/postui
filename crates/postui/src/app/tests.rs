@@ -315,13 +315,14 @@ fn the_first_ctrl_c_over_a_dialog_leaves_it_open() {
     assert!(app.should_quit, "nothing unsaved: the second press quits");
 }
 
-/// Task #85 R2: a second press after the toast's lifetime only arms again.
+/// Task #85 R2: a second press once the toast is gone only arms again.
 #[test]
 fn a_late_second_ctrl_c_only_arms_again() {
     let mut app = App::new_for_test();
     app.handle_key(ctrl('c'));
-    let late = crate::components::toast::TOAST_LIFETIME + std::time::Duration::from_millis(1);
-    app.quit_armed = app.quit_armed.map(|at| at - late);
+    let later = std::time::Instant::now() + std::time::Duration::from_secs(9);
+    app.toasts.on_tick(&mut app.anims, later);
+    assert!(app.toasts.is_empty(), "the toast is gone");
     app.handle_key(ctrl('c'));
     assert!(!app.should_quit, "too late: armed again, not quit");
     app.handle_key(ctrl('c'));
@@ -362,6 +363,7 @@ fn ctrl_c_twice_on_the_quit_check_leaves_without_saving() {
     app.handle_key(ctrl('c'));
     app.handle_key(ctrl('c'));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the unsaved-changes check");
+    assert!(app.toasts.is_empty(), "the used arm takes its toast down, so it never misleads");
     app.handle_key(ctrl('c'));
     assert!(!app.should_quit, "a first press again");
     app.handle_key(ctrl('c'));

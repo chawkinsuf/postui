@@ -118,9 +118,9 @@ pub enum Screen {
 
 pub struct App {
     pub should_quit: bool,
-    /// When the modified quit combo was last pressed, while its "press
-    /// again" toast still holds (task #85): the next press quits.
-    pub(crate) quit_armed: Option<Instant>,
+    /// The "press ^C again to quit" toast the modified quit combo's first
+    /// press showed (task #85): a press while it is live quits.
+    quit_armed: Option<u64>,
     pub focus: PaneId,
     /// Which full-frame screen is showing (spec §5). `Screen::Main` is the
     /// normal three-pane layout.
@@ -2759,11 +2759,15 @@ impl App {
 
     fn apply(&mut self, action: Action) -> bool {
         match action {
-            // A quit asked again while its own unsaved-changes confirm is
-            // up (ctrl+c twice more, arrows' quit chip) is "quit anyway":
-            // the confirm is the quit's question, and asking to quit is an
-            // answer to it (task #85 R5). Read from the confirm itself —
-            // only `dirty_gate("quit", ForceQuit)` offers a bare ForceQuit.
+            // A quit asked on a confirm that itself offers quitting without
+            // saving (a bare `ForceQuit` answer) picks that answer: asking
+            // to quit answers a question whose answers include "quit"
+            // (task #85 R5). Today that confirm is the quit's own unsaved-
+            // changes gate, so ctrl+c twice more (or arrows' quit chip) on
+            // it is "quit anyway". Any confirm with that answer gets the
+            // same rule, since it offers that exit already; one whose quit
+            // answer saves first (the drift confirm's) does not match, and
+            // a quit there meets the gate over it as over any dialog.
             Action::Quit
                 if matches!(self.modals.top(), Some(Modal::Confirm { choices, .. })
                     if choices.iter().any(|(_, _, a)| a[..] == [Action::ForceQuit])) =>
@@ -3055,7 +3059,7 @@ impl App {
             }
             // A quit closes the open inputs first, saved (`leaving_unsaved`
             // did when the gate above ran); a refused close still quits,
-            // since ctrl+c must always work. `ForceQuit` abandons them:
+            // since a quit must always work. `ForceQuit` abandons them:
             // vim's `:qa!`, and a gate's answer, which finds them closed.
             Action::Quit | Action::GatedQuit => {
                 self.close_open_inputs(true);
@@ -7870,7 +7874,7 @@ impl App {
     /// `false` when an input refused to close (a bad value or a failed
     /// write: it toasted and keeps the typing); a caller that stops then
     /// leaves its change undone (`close_inputs_or_stop`). Quitting, the dirty gate's
-    /// check and a journaled op go on regardless: ctrl+c must always quit,
+    /// check and a journaled op go on regardless: a quit must always quit,
     /// and the other two have no way to refuse.
     ///
     /// Why stop rather than carry on (task #75, mine (approved)): carrying
@@ -10436,23 +10440,25 @@ impl App {
         // 1. A modified quit combo pre-empts everything — except that when
         // a text selection is live anywhere, ctrl+c means "copy" (the GUI
         // meaning) and quit keeps working the moment nothing is selected.
-        // It quits on a second press while the first one's toast holds
+        // It quits on a second press while the first one's toast shows
         // (task #85): the first changes nothing, so a stray ctrl+c costs
-        // no dialog, field or drag. The quit itself meets the unsaved-
-        // changes check like any other.
+        // no dialog, field or drag. The toast is the arm, so what it says
+        // is always true: a quit takes it down, and once it is gone the
+        // next press is a first one again. The quit itself meets the
+        // unsaved-changes check like any other.
         if modified && global == Some(Action::Quit) {
             if let Some(text) = self.active_selection_text() {
                 self.copy_text_with_toast(&text, "Copied selection".to_string());
                 return router::Ran::routed(true);
             }
-            let now = Instant::now();
-            let window = crate::components::toast::TOAST_LIFETIME;
-            if self.quit_armed.take().is_some_and(|at| now.duration_since(at) < window) {
-                return router::Ran::routed(self.update(Action::Quit));
+            if let Some(id) = self.quit_armed.take().filter(|id| self.toasts.is_live(*id)) {
+                self.toasts.dismiss(id, &mut self.anims);
+                self.update(Action::Quit);
+                return router::Ran::routed(true);
             }
-            self.quit_armed = Some(now);
             let key = crate::keys::format_combo(&combo);
-            self.toasts.push(format!("Press {key} again to quit"), ToastKind::Info);
+            self.quit_armed =
+                Some(self.toasts.push_id(format!("Press {key} again to quit"), ToastKind::Info));
             return router::Ran::routed(true);
         }
 
