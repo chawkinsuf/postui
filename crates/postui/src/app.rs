@@ -1615,11 +1615,8 @@ impl App {
     /// the environment selectors reload the project before listing, so a
     /// file another process just created shows up in the list.
     pub fn resync_project(&mut self) {
-        // The re-read can renumber the option rows a Variable Manager grid
-        // cell finds its option by, so the Manager's input closes first
-        // (task #75). A close it refuses leaves it open; the callers that
-        // must stop on that (Reload from disk, an env cycle) checked first.
-        self.close_manager_input();
+        // The forced re-read closes the Variable Manager's input first in
+        // `ReloadProjectFiles` (task #78).
         if let Some(p) = self.project.as_mut() {
             p.invalidate_stamps();
         }
@@ -5413,6 +5410,19 @@ impl App {
                 true
             }
             Action::ReloadProjectFiles => {
+                // The re-read can renumber the option rows a Variable
+                // Manager grid cell finds its option by, so the Manager's
+                // input closes first (task #78, the rule `close_open_inputs`
+                // states) — only when there is something to re-read, so
+                // focus coming back to an unchanged project closes nothing.
+                // Every reload passes here: focus-gained, Send, the
+                // choosers, `resync_project`. A close the input refuses
+                // holds the re-read back, so the rows stay as the kept
+                // typing saw them.
+                let stale = self.project().is_some_and(|p| p.changed_on_disk());
+                if stale && !self.close_manager_input() {
+                    return true;
+                }
                 let (changed, warnings) = match self.project_mut() {
                     Some(p) => p.poll(),
                     None => (false, Vec::new()),
@@ -5430,7 +5440,10 @@ impl App {
                     self.toasts.push(w, ToastKind::Warning);
                 }
                 self.prompt_migration_if_pending();
-                changed
+                // `stale`, not `changed`: the close's own write can take
+                // the file's new stamp with it, leaving `poll` nothing to
+                // re-read, and the screen changed all the same.
+                stale
             }
             Action::ReloadFromDisk => {
                 // The project half. With a project open it is a forced
@@ -7793,11 +7806,13 @@ impl App {
     /// The functions that change it call this first: the env switch, the
     /// project switch and create, undo/redo, a Manage tab switch, closing
     /// the screen, quitting, and the dirty gate's check (`leaving_unsaved`).
-    /// Two close only the Variable Manager's input (`close_manager_input`):
+    /// Three close only the Variable Manager's input (`close_manager_input`):
     /// a journaled op (`begin_op`), which writes the project and nothing a
-    /// Settings field holds, and Reload from disk, which keeps a live
-    /// Settings field open (Settings spec, "Reload while the Settings tab
-    /// is open"). Whatever key, click, palette row, dialog or vim
+    /// Settings field holds; Reload from disk, which keeps a live Settings
+    /// field open (Settings spec, "Reload while the Settings tab is open");
+    /// and a reload of project files changed on disk (`ReloadProjectFiles`,
+    /// task #78), which reads nothing a Settings field holds either.
+    /// Whatever key, click, palette row, dialog or vim
     /// command reached them, the input is closed before the change, so its
     /// commit never reads the state that came after (the Variable
     /// Manager's reads the environment and option row as they are when it
