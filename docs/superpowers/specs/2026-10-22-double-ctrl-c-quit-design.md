@@ -71,11 +71,15 @@ Spec rows this replaces (each gets a dated amendment pointing here):
   this combo. `Toasts` gains `push_id`, `is_live` and `dismiss`. (Review
   round 1 replaced a stored timestamp and a copy of the toast lifetime;
   round 2 made the presses back to back.)
-- **`App::apply`**: the `Quit` gate arm loses `self.modals.is_empty()`.
-  A new arm before it: `Action::Quit` when the top dialog is the quit's
-  check → `ForceQuit`. "Is the quit's check" reads the dialog itself: a
-  `Confirm` with a `[ForceQuit]` choice, which only `dirty_gate("quit",
-  ForceQuit)` builds (both its named and never-saved forms).
+- **`App::apply`** (as built after the amendments below): the `Quit` gate
+  arm loses `self.modals.is_empty()`, and before opening the question it
+  cancels a live row drag, which would otherwise swallow the question's
+  keys and land on release (review round 8). A new arm before it: `Quit`
+  or `GatedQuit` while the quit's own question (`Confirm { quit_gate:
+  true, .. }`) is on top does nothing. *Superseded original:* that arm
+  went to `ForceQuit`, recognising the question by a bare `[ForceQuit]`
+  answer; block 1 replaced the recognition with the mark, and round 5
+  replaced the force quit with nothing.
 - **Amended after review block 1 (2026-10-22, `you`: "i do like having
   it more expicit"):** the quit's question is marked, not recognised by
   its answers. `Modal::Confirm` gains `quit_gate: bool`, true only on the

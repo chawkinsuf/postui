@@ -2782,6 +2782,12 @@ impl App {
             // typing is kept and undoable. Counting the uncommitted cell
             // instead is the draft state spec 2026-10-19 rules out.
             Action::Quit | Action::GatedQuit if self.leaving_unsaved() => {
+                // A live row drag owns the keyboard (Esc and the quit combo
+                // aside), so it would swallow the question's answers and
+                // land on release under it: the quit cancels it first, as
+                // a quit closes what is open before it asks (task #85).
+                self.finish_sidebar_drag(false);
+                self.finish_manage_drag(false);
                 self.quit_gate();
                 true
             }
@@ -10452,8 +10458,12 @@ impl App {
     /// open the unsaved-changes gate, so the second press still meets it.
     fn disarm_quit(&mut self) -> Option<KeyCombo> {
         let (id, combo) = self.quit_armed.take()?;
+        // An expired toast is left to the tick's prune, which redraws; a
+        // live one goes now, and the caller redraws for it.
         let live = self.toasts.is_live(id, Instant::now());
-        self.toasts.dismiss(id, &mut self.anims);
+        if live {
+            self.toasts.dismiss(id, &mut self.anims);
+        }
         live.then_some(combo)
     }
 

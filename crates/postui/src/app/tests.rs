@@ -24513,12 +24513,14 @@ fn the_modified_quit_combo_still_quits_during_a_drag() {
 #[test]
 fn a_quit_during_a_drag_ends_it_so_the_question_answers() {
     let (mut app, _dir) = three_row_app();
-    app.editor.url.set_text("https://dirty.example");
-    assert!(app.editor_holds_unsaved());
     let r0 = row_rect(&mut app, 0);
     let r2 = row_rect(&mut app, 2);
     app.handle_mouse(left_down(r0.x + 2, r0.y));
     app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_some(), "a live drag");
+    // Dirtied after the press: a dirty editor never starts a drag.
+    app.editor.url.set_text("https://dirty.example");
+    assert!(app.editor_holds_unsaved());
     app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     assert!(app.sidebar.drag.is_none(), "the drag ended, cancelled");
