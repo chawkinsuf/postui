@@ -693,11 +693,13 @@ pub struct ReadyView {
     /// Vim's `w_curswant`: the display column a move to another line lands
     /// on (the line's last char when shorter), `usize::MAX` after `$`.
     want: usize,
-    /// The char a click put the cursor on, as `at_col` holds it: what
+    /// The char a click put the cursor on, as (real line, char): what
     /// lights a bracket pair in the arrows profile (spec 2026-10-22,
     /// matching brackets, R10). Not `at_col`, which arrows' PageUp and
     /// PageDown also set (on the first non-blank, often a `}`), and which
-    /// arrows' search starts from. Forgotten with `at_col`.
+    /// arrows' search starts from. A key that moves the cursor keeps it,
+    /// so paging to a lit partner finds it lit (#89). The next press, a
+    /// tree swap and a view switch forget it.
     clicked: Option<(usize, usize)>,
     /// The V anchor's column, as Vim's Visual start has one (`o` goes there).
     anchor_col: usize,
@@ -936,6 +938,8 @@ impl ReadyView {
     fn set_body_tree(&mut self, tree: Option<JsonTree>) {
         self.tree = tree;
         self.tree_epoch += 1;
+        // The clicked line named a line of the old tree.
+        self.clicked = None;
     }
 
     /// Swaps the filtered tree in (or out), bumping the epoch only when
@@ -945,6 +949,7 @@ impl ReadyView {
         self.cursor_moved();
         if tree.is_some() || self.jq_tree.is_some() {
             self.tree_epoch += 1;
+            self.clicked = None;
         }
         self.jq_tree = tree;
     }
@@ -1176,7 +1181,6 @@ impl ReadyView {
     fn cursor_moved(&mut self) {
         self.fold_line = None;
         self.at_col = None;
-        self.clicked = None;
     }
 
     /// Vim's cursor column on the cursor's real line: the one set there, or
@@ -1229,24 +1233,37 @@ impl ReadyView {
     fn bracket_pair(&self, vim: bool) -> Option<(crate::text::Pos, crate::text::Pos)> {
         use crate::text::Pos;
         use crate::text::brackets::{bracket_at, partner_of};
-        let line = self.real_line()?;
+        // Vim's cursor, or the clicked char wherever the cursor has moved
+        // since (#89): its real line and the visible row showing it.
+        let (line, row, col) = if vim {
+            (self.real_line()?, self.cursor, self.cur_col())
+        } else {
+            let (line, col) = self.clicked?;
+            let row = match self.mode {
+                ViewMode::Pretty => self.active_tree()?.visible_index_of(line)?,
+                _ => line,
+            };
+            (line, row, col)
+        };
         if self.in_closed_fold(line) {
             return None;
         }
-        let col = if vim { self.cur_col() } else { self.clicked.filter(|(l, _)| *l == line)?.1 };
-        // The chars at `col - 1` and `col`, in one pass, before the matcher
-        // copies the line: a raw line can be megabytes long.
-        let from = col.saturating_sub(1);
-        let near: Vec<char> = match self.mode {
-            ViewMode::Raw => self.raw_lines.get(self.cursor)?.chars().skip(from).take(2).collect(),
-            _ => self.display_line_text(self.cursor)?.chars().skip(from).take(2).collect(),
+        // The line's chars from `col - 1` on, read lazily: a raw line can
+        // be megabytes long, and the matcher copies it only for a bracket.
+        let text = match self.mode {
+            ViewMode::Raw => std::borrow::Cow::Borrowed(self.raw_lines.get(row)?.as_str()),
+            _ => std::borrow::Cow::Owned(self.display_line_text(row)?),
         };
+        let from = col.saturating_sub(1);
+        let near: Vec<char> = text.chars().skip(from).take(2).collect();
         // Vim's matchparen looks only under its cursor. In arrows a click
-        // past the end of a `},` line lands on the `,`, so a clicked `,`
-        // takes the bracket right before it (R20).
-        let before = !vim && near.get(col - from) == Some(&',');
+        // past the end of a `},` line lands on the `,`, so a `,` that ends
+        // its line takes the bracket right before it (R20).
+        let before = !vim
+            && near.get(col - from) == Some(&',')
+            && text.chars().skip(col + 1).all(char::is_whitespace);
         let col = from + bracket_at(&near, col - from, before)?;
-        let at = Pos::new(self.cursor, col);
+        let at = Pos::new(row, col);
         // Arrows on the tree view: a container's own bracket gets its
         // partner from the tree, on screen or not, so scrolling shows it
         // lit (R19). That holds after the clicked end scrolls out too: click
@@ -1730,8 +1747,10 @@ impl ReadyView {
             return;
         }
         self.mode = mode;
-        // Selection coordinates live in the old mode's line space.
+        // Selection coordinates live in the old mode's line space, and so
+        // does the clicked char.
         self.clear_sel();
+        self.clicked = None;
         if mode != ViewMode::Headers {
             self.body_mode = mode;
         }
@@ -10509,20 +10528,28 @@ mod tests {
         assert!(!bracket_lit_at(&mut r, true, 4, close), "a click elsewhere clears it");
     }
 
-    /// R10: in arrows a key never lights a bracket. ↓ leaves the clicked
-    /// line, and PageDown landing on `}` (its first non-blank) lights
-    /// nothing.
+    /// R10 (#89): in arrows a key never lights a bracket of its own, and
+    /// keeps the clicked pair lit, so paging down reaches the partner lit.
+    /// PageDown landing on the root `}` (its first non-blank) lights it
+    /// not. A view switch forgets the click.
     #[test]
-    fn arrows_keys_never_light_a_bracket() {
+    fn arrows_keys_keep_the_clicked_pair_and_light_none() {
+        // 0 `{`, 1 `"a": [`, 2 `1,`, 3 `2`, 4 `]`, 5 `}`.
         let mut r = ready(r#"{"a": [1, 2]}"#);
         let open = col_of(&r, 1, '[');
         click_cell(&mut r, 1, open);
         r.handle_key(key(KeyCode::Down));
-        assert!(!bracket_lit_at(&mut r, true, 1, open), "↓ clears it");
+        assert!(bracket_lit_at(&mut r, true, 1, open), "↓ keeps it");
         r.handle_key(key(KeyCode::PageDown));
         assert_eq!(r.view().unwrap().cursor, 5, "on the `}}` line");
-        assert!(!bracket_lit_at(&mut r, true, 5, 0));
-        assert!(!bracket_lit_at(&mut r, true, 0, 0));
+        // PageDown scrolled (Vim's `onepage()`); look from the top.
+        r.view.as_mut().unwrap().scroll = 0;
+        assert!(bracket_lit_at(&mut r, true, 1, open), "the clicked `[`");
+        assert!(bracket_lit_at(&mut r, true, 4, 2), "its `]`");
+        assert!(!bracket_lit_at(&mut r, true, 5, 0), "the root `}}` the key landed on");
+        r.set_view_mode(ViewMode::Raw);
+        r.set_view_mode(ViewMode::Pretty);
+        assert!(!bracket_lit_at(&mut r, true, 1, open), "a view switch forgets it");
     }
 
     /// R11: in vim, Vim's cursor column drives it, so the first line's `{`
@@ -10606,15 +10633,18 @@ mod tests {
     }
 
     /// On the tree view a bracket inside a string is no container's: it
-    /// keeps R4 and R5, so `,` after it (R20) pairs it inside its string.
+    /// keeps R4 and R5, and pairs inside its string. A mid-line `,` after
+    /// it takes nothing (R20).
     #[test]
     fn a_tree_string_bracket_pairs_by_the_text_rules() {
         // Tree lines 0 `[`, 1 `  "[a],b"`, 2 `]`.
         let mut r = ready("[\"[a],b\"]");
-        click_cell(&mut r, 1, 6);
+        click_cell(&mut r, 1, 5);
         assert!(bracket_lit_at(&mut r, true, 1, 5));
         assert!(bracket_lit_at(&mut r, true, 1, 3));
         assert!(!bracket_lit_at(&mut r, true, 0, 0), "not the container's `[`");
+        click_cell(&mut r, 1, 6);
+        assert!(!bracket_lit_at(&mut r, true, 1, 5), "the `,` is mid-line");
     }
 
     /// R5 still holds in vim: Vim's matchparen lights nothing while the
@@ -10650,6 +10680,13 @@ mod tests {
         let mut r = ready("(1, 2)");
         click_cell(&mut r, 0, 2);
         assert!(!bracket_lit_at(&mut r, true, 0, 0), "a `,` after `1`");
+        // Only a `,` that ends its line: one mid-line takes nothing.
+        let mut r = ready("f(a),g(b)");
+        click_cell(&mut r, 0, 4);
+        assert!(!bracket_lit_at(&mut r, true, 0, 3), "a mid-line `,`");
+        let mut r = ready("f(a),  ");
+        click_cell(&mut r, 0, 4);
+        assert!(bracket_lit_at(&mut r, true, 0, 3), "blanks may follow it");
     }
 
     /// A press on the pane off the text (above the body rect: a click

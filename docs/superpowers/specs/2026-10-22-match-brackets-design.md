@@ -68,7 +68,7 @@ Two consequences:
 | R7 | The body lights only while it has focus. | mine (approved) |
 | R8 | Style: `on_accent` text on an `accent` background. Visual, the search landing and search matches paint over it. The cell under the body's caret keeps the caret's look (edtui reverses it), as Vim's cursor covers its own bracket, so only the partner shows the plain style there. | mine (approved) |
 | R9 | Response: a click on a bracket lights it and its partner. | you |
-| R10 | Response, arrows: the pair lights only from a click. The next click moves it or clears it. A move to another line, a new response, a new tree (jq) and a view switch clear it. Scrolling keeps it. A key never lights it: arrows' PageDown puts the column on the first non-blank, often a `}`, and that must not light. | mine (approved) |
+| R10 | Response, arrows: the pair lights only from a click. The next click moves it or clears it. A new response, a new tree (jq) and a view switch clear it. Scrolling keeps it, and since #89 so does a key that moves the cursor (amended 2026-10-22, §6). A key never lights a pair of its own: arrows' PageDown puts the column on the first non-blank, often a `}`, and that must not light. | mine (approved) |
 | R11 | Response, vim: Vim's cursor column (`cur_col`) drives it, so `%`, `l` or `j` onto a bracket lights the pair, as Vim does. | Vim |
 | R12 | Response: works in Pretty, Raw and Headers. | mine (approved) |
 | R13 | Response: a closed fold's line never lights (it shows a summary, not its text). | mine (approved) |
@@ -247,7 +247,7 @@ when the partner is off screen, and looks only under the cursor.
 | # | Rule | From |
 |---|---|---|
 | R19 | Arrows response, Tree view: a clicked container bracket lights with its partner wherever the partner is, on screen or not. Scrolling brings the lit partner into view. This replaces R5 there. Raw, Headers, a bracket inside a string, the vim response and the body keep R5 (a one-line Raw body's partner is on the clicked row, so it lights). | you (the ask); arrows-response-only is mine (approved); Tree-view-only is mine (approved, review round 2) |
-| R20 | Arrows response: a click on a `,` that directly follows a bracket (which includes a click past the end of a `},` or `],` line, since that lands on the `,`) lights that bracket's pair. Only a `,`, and only right after the bracket. | you (the ask); response-only is mine (approved); comma-only is mine (approved) |
+| R20 | Arrows response: a click on a `,` that directly follows a bracket and ends its line (blanks may follow it), which includes a click past the end of a `},` or `],` line since that lands on the `,`, lights that bracket's pair. A mid-line `,` takes nothing. | you (the ask); response-only, comma-only and line-end-only are mine (approved) |
 
 **Design.**
 
@@ -291,3 +291,19 @@ walks only the rows in view, as before #89.
 - Only `,` counts, and only directly after the bracket: not `;`, not
   whitespace, and not `} ,`.
 - In vim, the comma rule doesn't apply: Vim looks only under the cursor.
+
+**At handoff, 2026-10-22.** Two points came back across review rounds,
+and the user picked the recommended option for each (`mine (approved)`):
+
+- **Keys keep the clicked pair lit.** A key that moved the cursor cleared
+  the pair (R10), so only the wheel or the scrollbar scrolled to a lit
+  partner; ↓ or PageDown turned it off.
+  - Now `clicked` holds the real line it was made on, and the pair is
+    anchored there, not at the cursor.
+  - A press, a tree swap (`set_body_tree`, `set_jq_tree`) and a view switch
+    (`set_mode`) forget it; `cursor_moved` no longer does.
+  - A fold that hides the clicked line darkens the pair (R13).
+  - Cost: the highlight no longer follows the cursor row.
+- **R20 is a line-end comma.** Only a `,` that ends its line (blanks may
+  follow) takes the bracket before it. Before, any `,` right after a
+  bracket did, so a click on the comma in Raw's `f(a),g(b)` lit `(a)`.
