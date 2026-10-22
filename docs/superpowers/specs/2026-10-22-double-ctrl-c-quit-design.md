@@ -40,7 +40,7 @@ their own way out, so nobody gets stuck today:
 | R2 | The second press is the same combo, pressed next, while that toast is showing (a short toast lives 3 s). Any other key or mouse press between the two (a copy, a `q`, a click, another quit combo) takes the arm and its toast down, so the next press is a first press again. The toast is the arm: it never shows when a press would not quit. | `mine (approved)` (review round 1: the toast is the arm; round 2: back to back, replacing "nothing but time disarms it", after three paths let an input between the presses count as the second, one of them a single ^C quitting past the check). Input that is not a key or a mouse press (a paste, the wheel, focus, an async result) leaves the arm: none of it can open the unsaved-changes gate, so the second press still meets it (`mine`, review round 3) |
 | R3 | The second press runs `Quit`, and `Quit` meets the unsaved-changes check whether or not a dialog is open. The modal exemption goes. | `you` (the task's ask) |
 | R4 | The check opens over whatever dialog is open, as `:q`'s does today; its Cancel returns to that dialog with its typing intact. Cost (kept, as `:q` has always had it): the quit closes open inputs first (task #75's rule), so a table cell under the extract or var-picker dialog is committed on the way to the check, and after a Cancel that dialog finds no open field; the cell's typing is kept and undoable. | `mine (approved)` (in chat I said the quit would cancel open dialogs first; this keeps them instead, see §5) |
-| R5 | `Quit` while the quit's own check is the top dialog leaves without saving: `^C ^C` on the check is "quit anyway". `GatedQuit` (`:q`) gets the same, though the line cannot open on a confirm (review round 4). | `mine (approved)` |
+| R5 | A quit never discards edits by itself. `Quit` or `GatedQuit` while the quit's own check is the top dialog does not quit and does not stack another check: it toasts "Unsaved changes: s saves, d discards, esc cancels". A `^C` there does not arm. Leaving without saving takes `d`. | `you` (review round 5, 2026-10-22: "lets not let ^C again discard changes"), replacing "`^C ^C` on the check is quit anyway" (`mine (approved)`), which let a held or mashed `^C` (terminal auto-repeat arrives as presses) run through the check unread. The toast wording is `mine`. |
 | R6 | With a live text selection `^C` copies, as now, and does not arm. | `you` (vim profile spec, 2026-10-03) |
 | R7 | The toast spells the combo pressed (`^C`, `^Q`, …). | `mine` |
 | R8 | One-step quits stay one step: arrows' `q`, `:q`/`:qa`, the palette's Quit row, the footer quit chip. Under a dialog the chip's `Quit` now meets the check (R3). `:q!`, `:qa!` and `ZQ` still force. | follows R3; `mine` |
@@ -79,14 +79,18 @@ Spec rows this replaces (each gets a dated amendment pointing here):
 - **Amended after review block 1 (2026-10-22, `you`: "i do like having
   it more expicit"):** the quit's question is marked, not recognised by
   its answers. `Modal::Confirm` gains `quit_gate: bool`, true only on the
-  question `App::quit_gate` builds (through the same builder as every
-  dirty gate, `push_dirty_gate`). Every other confirm is built with
+  question `App::quit_gate` builds (it takes the shared, unmarked
+  `unsaved_question` and marks it; review round 5 dropped a `quit_gate`
+  parameter every gate caller had to pass). Every other confirm is built with
   `Modal::confirm(title, body, choices)`, which sets it false, so it
   defaults to false in all but name (Rust's default field values are
   still unstable; `you` asked "couldnt it just default to false?"). The
   R5 arm matches `Confirm { quit_gate: true, .. }`. This replaces reading
   a bare `[ForceQuit]` answer, which a later dialog could match by
   accident; a test pins that such a dialog now gets the gate.
+- **Amended after review round 5 (`you`):** the R5 arm no longer
+  force-quits; it toasts the reminder and stays. Step 1 does not arm on
+  the quit's question, so the press goes straight to that reminder.
 - **Removed:** the modal exemption, and the comments that explain it
   (`apply`, `Action::GatedQuit`'s doc, `spell::quit_action`, footer and
   `ui.rs` notes on `^C` pre-empting).
@@ -105,11 +109,13 @@ dialog's Quit) all want the gated meaning.
 - R2: a second press after the toast expired only re-arms; the quit takes
   the toast down; a key, a click or another quit combo between the presses
   disarms.
-- R5 in vim: the `:` line does not open on the gate, and the chip there
-  is `Quit`, so a click quits rather than stacking a second gate.
+- R5 in vim: the `:` line does not open on the gate, and a click on the
+  quit chip there neither quits nor stacks a second gate.
 - R3/R4: `^C ^C` over a dialog with unsaved edits opens the check over
   it; Esc on the check returns to the dialog, typing intact; nothing quit.
-- R5: `^C ^C` on the check quits without writing the request.
+- R5: ten `^C` presses (a held key) stop at one check, toast the reminder,
+  never arm, and write nothing; `d` then quits. A quit during a live drag
+  ends the drag, so the check gets its keys.
 - R6: `^C` with a selection copies; the next `^C` only arms.
 - R8: a quit-chip click under a dialog with unsaved edits opens the check.
 - R10: `^C ^C` over each of the three blocking dialogs quits.
@@ -126,6 +132,7 @@ Approved with the spec on 2026-10-22 (picked from my options, so
 2. R4: the check stacks over open dialogs instead of cancelling them, so
    cancelling the quit gives the dialog back with its typing.
 3. R5: on the check, `^C ^C` (and one click of the arrows quit chip)
-   means quit without saving.
+   means quit without saving (superseded in review round 5 by the user:
+   a quit never discards).
 4. R7's toast wording, and R9's unchanged chip keycap.
 5. R1 during a live row drag: the first `^C` doesn't cancel the drag.

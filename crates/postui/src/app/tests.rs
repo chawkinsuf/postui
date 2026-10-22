@@ -378,28 +378,39 @@ fn ctrl_c_twice_over_a_dialog_meets_the_unsaved_check_over_it() {
     assert!(!app.should_quit);
 }
 
-/// Task #85 R5: ctrl+c twice on the quit's own check leaves without saving.
+/// Task #85 R5 (review round 5): ctrl+c never discards. On the quit's own
+/// question a held or mashed ctrl+c neither quits nor stacks another
+/// question: it reminds, and `d` is the way out without saving.
 #[test]
-fn ctrl_c_twice_on_the_quit_check_leaves_without_saving() {
+fn ctrl_c_on_the_quit_question_never_discards() {
     let mut app = dirty_app();
     let file = app.proj().root().join("requests/main/r.toml");
     let saved = std::fs::read_to_string(&file).unwrap();
-    app.handle_key(ctrl('c'));
-    app.handle_key(ctrl('c'));
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the unsaved-changes check");
-    assert!(app.toasts.is_empty(), "the used arm takes its toast down, so it never misleads");
-    app.handle_key(ctrl('c'));
-    assert!(!app.should_quit, "a first press again");
-    app.handle_key(ctrl('c'));
-    assert!(app.should_quit, "quit anyway");
+    for _ in 0..10 {
+        app.handle_key(ctrl('c'));
+    }
+    assert!(!app.should_quit, "a held ctrl+c stops at the question");
+    assert_eq!(app.modals.iter().count(), 1, "one question, not a stack of them");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { quit_gate: true, .. })));
+    assert!(
+        app.toasts.messages().contains(&"Unsaved changes: s saves, d discards, esc cancels"),
+        "{:?}",
+        app.toasts.messages()
+    );
+    assert!(
+        !app.toasts.messages().iter().any(|m| m.starts_with("Press ")),
+        "no arm where a second press cannot quit"
+    );
+    app.handle_key(plain('d'));
+    assert!(app.should_quit, "Discard leaves");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), saved, "nothing written");
 }
 
-/// Task #85 R5: only the quit's own question is "quit anyway". It is
-/// marked where it is built, so another confirm that offers a quit answer
-/// gets the gate over it like any dialog.
+/// Task #85 R5: only the quit's own question takes a quit as "already
+/// asking". It is marked where it is built, so another confirm that offers
+/// a quit answer gets the question over it like any dialog.
 #[test]
-fn only_the_quit_gate_is_quit_anyway() {
+fn only_the_quit_question_is_already_asking() {
     let mut app = dirty_app();
     app.push_modal(Modal::confirm(
         "Other",
@@ -407,10 +418,11 @@ fn only_the_quit_gate_is_quit_anyway() {
         vec![('q', "Quit".into(), vec![Action::ForceQuit])],
     ));
     app.update(Action::Quit);
-    assert!(!app.should_quit, "not the quit's question: the gate opens over it");
+    assert!(!app.should_quit, "not the quit's question: the question opens over it");
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { quit_gate: true, .. })));
     app.update(Action::Quit);
-    assert!(app.should_quit, "on the quit's question, quit anyway");
+    assert!(!app.should_quit, "on the quit's question a quit only reminds");
+    assert_eq!(app.modals.iter().count(), 2, "no second question");
 }
 
 /// Task #85 R10: ctrl+c twice leaves each dialog that refuses Esc.
@@ -3872,10 +3884,11 @@ fn quitting_clean_needs_no_confirm() {
 }
 
 /// Task #85 R3/R5: a quit with a dialog open meets the unsaved-changes
-/// gate like any other, and a quit asked on the gate itself leaves without
-/// saving, so a dirty editor never traps the user.
+/// gate like any other, and a quit asked on the gate itself only reminds:
+/// the gate's own answers are the way out, so a dirty editor never traps
+/// the user and never loses its edits to a repeated quit.
 #[test]
-fn quit_with_a_modal_open_meets_the_gate_and_a_second_quit_leaves() {
+fn quit_with_a_modal_open_meets_the_gate_and_a_second_quit_waits_for_it() {
     let mut app = dirty_app();
     app.modals.push(crate::components::modal::Modal::Message {
         title: "About".into(),
@@ -3885,7 +3898,9 @@ fn quit_with_a_modal_open_meets_the_gate_and_a_second_quit_leaves() {
     assert!(!app.should_quit, "the gate, not a quit");
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the gate over the dialog");
     app.update(Action::Quit);
-    assert!(app.should_quit, "quit on the gate is quit anyway");
+    assert!(!app.should_quit, "a quit on the gate waits for its answer");
+    app.handle_key(plain('d'));
+    assert!(app.should_quit, "Discard leaves");
 }
 
 #[test]
@@ -24498,6 +24513,25 @@ fn the_modified_quit_combo_still_quits_during_a_drag() {
     assert!(app.sidebar.drag.is_some(), "the drag survives the first press");
     app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     assert!(app.should_quit, "ctrl+c twice is the escape hatch");
+}
+
+/// Task #85 (review round 5): the quit ends a live drag first, so the
+/// unsaved-changes question it opens gets its keys rather than the drag.
+#[test]
+fn a_quit_during_a_drag_ends_it_so_the_question_answers() {
+    let (mut app, _dir) = three_row_app();
+    app.editor.url.set_text("https://dirty.example");
+    assert!(app.editor_holds_unsaved());
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert!(app.sidebar.drag.is_none(), "the drag ended, cancelled");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { quit_gate: true, .. })));
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert!(app.should_quit, "the question takes its own keys");
 }
 
 #[test]

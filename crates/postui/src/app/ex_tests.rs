@@ -503,11 +503,11 @@ fn the_quit_chip_runs_what_it_spells() {
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the dirty gate's confirm");
 }
 
-/// Task #85 R5 in vim: the line does not open on the quit's own gate, so
-/// the chip there is `Quit` (`^C`), not `:q`; a click is "quit anyway"
-/// rather than a second gate stacked on the first.
+/// Task #85 R5 in vim: the line does not open on the quit's own gate, and
+/// a click on the quit chip there only reminds: no quit without an answer,
+/// and no second gate stacked on the first.
 #[test]
-fn the_vim_quit_chip_on_the_quit_gate_quits() {
+fn the_vim_quit_chip_on_the_quit_gate_waits_for_its_answer() {
     let mut app = vim(Fixture::DirtyScratch);
     feed(&mut app, ":q<CR>");
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the dirty gate's confirm");
@@ -515,7 +515,8 @@ fn the_vim_quit_chip_on_the_quit_gate_quits() {
     assert_eq!(app.modals.iter().count(), 1, "no `:` line on the gate, so no second gate");
     draw(&mut app);
     click_chip(&mut app, Action::Quit);
-    assert!(app.should_quit);
+    assert!(!app.should_quit);
+    assert_eq!(app.modals.iter().count(), 1, "still the one gate");
 }
 
 /// Sweep backlog item 4: on Manage, where `:q` closes the screen, the quit

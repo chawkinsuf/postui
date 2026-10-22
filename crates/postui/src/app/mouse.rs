@@ -114,10 +114,11 @@ impl App {
         // A press drops a half-typed key (plan M1 Deviation 15): a `g`
         // never survives a click. It drops an armed quit too, so the two
         // ctrl+c presses are back to back (task #85).
-        let disarmed = matches!(m.kind, MouseEventKind::Down(_)) && {
+        let mut disarmed = false;
+        if matches!(m.kind, MouseEventKind::Down(_)) {
             self.router.clear();
-            self.disarm_quit().is_some()
-        };
+            disarmed = self.disarm_quit().is_some();
+        }
         let edge = self.vim_mouse_start(&m);
         let changed = self.handle_mouse_inner(m);
         self.vim_mouse_end(edge);

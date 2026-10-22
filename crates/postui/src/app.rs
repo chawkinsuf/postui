@@ -37,6 +37,10 @@ const NO_PROJECT: &str = "no project is open";
 /// typing were still there to fix.
 const EDIT_DISCARDED: &str = "Edit discarded — the project was re-read from disk";
 
+/// What a quit asked on the quit's own unsaved-changes question toasts
+/// (task #85 R5): the question's answers, since a quit never discards.
+const QUIT_QUESTION_REMINDER: &str = "Unsaved changes: s saves, d discards, esc cancels";
+
 /// Wall-clock dwell the caret must rest inside a `{{token}}` before its
 /// tooltip appears -- matching the original 2 ticks @ the tick's nominal
 /// 100ms period. Wall-clock rather than tick-counted because the tick
@@ -2761,15 +2765,16 @@ impl App {
     fn apply(&mut self, action: Action) -> bool {
         match action {
             // A quit asked on the quit's own unsaved-changes question is
-            // "quit anyway" (task #85 R5): ctrl+c twice more, or the quit
-            // chip, leaves without saving, and so would `:q` if the line
-            // could open there. The question is marked where it is built
-            // (`quit_gate`), so no other confirm can match it by accident;
-            // over any other dialog a quit meets the gate, as below.
-            Action::Quit | Action::GatedQuit
-                if matches!(self.modals.top(), Some(Modal::Confirm { quit_gate: true, .. })) =>
-            {
-                self.apply(Action::ForceQuit)
+            // already being asked: it only reminds of the answers (task #85
+            // R5). A quit never discards edits by itself, so a held or
+            // mashed ctrl+c stops here until someone reads the question;
+            // `d` is the way out without saving (the user: "lets not let ^C
+            // again discard changes"). The question is marked where it is
+            // built (`quit_gate`); over any other dialog a quit meets the
+            // gate, as below.
+            Action::Quit | Action::GatedQuit if self.quit_question_up() => {
+                self.toasts.push(QUIT_QUESTION_REMINDER, ToastKind::Info);
+                true
             }
             // An unsaved request gates quitting behind the same confirm as
             // opening/switching away from it, with a dialog open or not
@@ -9504,31 +9509,39 @@ impl App {
     /// path goes through the Save-as prompt, with `then` deferred until
     /// that save succeeds.
     fn dirty_gate(&mut self, verb: &str, then: Action) {
-        self.dirty_gate_split(verb, then.clone(), then, false);
+        self.dirty_gate_split(verb, then.clone(), then);
     }
 
     /// The quit's own unsaved-changes question, marked (`quit_gate`) so a
-    /// quit asked on it is "quit anyway" (task #85 R5).
+    /// quit asked on it only reminds of its answers (task #85 R5).
     fn quit_gate(&mut self) {
-        self.dirty_gate_split("quit", Action::ForceQuit, Action::ForceQuit, true);
+        let mut question = self.unsaved_question("quit", Action::ForceQuit, Action::ForceQuit);
+        if let Modal::Confirm { quit_gate, .. } = &mut question {
+            *quit_gate = true;
+        }
+        self.push_modal(question);
+    }
+
+    /// Whether the quit's own unsaved-changes question is the top dialog.
+    fn quit_question_up(&self) -> bool {
+        matches!(self.modals.top(), Some(Modal::Confirm { quit_gate: true, .. }))
     }
 
     /// `dirty_gate` for a follow-on that does not replace the editor by
     /// itself: Discard runs `discard_then`, which has to throw the edits
-    /// away on its own. `quit_gate` marks the quit's own question.
-    fn dirty_gate_split(
-        &mut self,
-        verb: &str,
-        then: Action,
-        discard_then: Action,
-        quit_gate: bool,
-    ) {
+    /// away on its own.
+    fn dirty_gate_split(&mut self, verb: &str, then: Action, discard_then: Action) {
+        let question = self.unsaved_question(verb, then, discard_then);
+        self.push_modal(question);
+    }
+
+    /// The unsaved-changes confirm every gate shows, unmarked.
+    fn unsaved_question(&self, verb: &str, then: Action, discard_then: Action) -> Modal {
         if self.editor.slug.is_none() {
-            self.push_modal(Modal::Confirm {
-                quit_gate,
-                title: "Unsaved request".into(),
-                body: "This request has never been saved.".into(),
-                choices: vec![
+            return Modal::confirm(
+                "Unsaved request",
+                "This request has never been saved.",
+                vec![
                     (
                         's',
                         format!("Save as… & {verb}"),
@@ -9536,15 +9549,13 @@ impl App {
                     ),
                     ('d', "Discard request".into(), vec![discard_then]),
                 ],
-            });
-            return;
+            );
         }
         let current = self.editor.slug.clone().unwrap_or_default();
-        self.push_modal(Modal::Confirm {
-            quit_gate,
-            title: "Unsaved changes".into(),
-            body: format!("\"{current}\" has unsaved changes."),
-            choices: vec![
+        Modal::confirm(
+            "Unsaved changes",
+            format!("\"{current}\" has unsaved changes."),
+            vec![
                 (
                     's',
                     format!("Save & {verb}"),
@@ -9555,7 +9566,7 @@ impl App {
                 ),
                 ('d', "Discard changes".into(), vec![discard_then]),
             ],
-        });
+        )
     }
 
     /// Shared validate/exists-check/save/refresh/open path for `CreateRequest`
@@ -10435,7 +10446,7 @@ impl App {
     /// next press a first one again. Input that is neither (a paste, the
     /// wheel, focus, a response landing) leaves the arm: none of it can
     /// open the unsaved-changes gate, so the second press still meets it.
-    pub(crate) fn disarm_quit(&mut self) -> Option<KeyCombo> {
+    fn disarm_quit(&mut self) -> Option<KeyCombo> {
         let (id, combo) = self.quit_armed.take()?;
         let live = self.toasts.is_live(id, Instant::now());
         self.toasts.dismiss(id, &mut self.anims);
@@ -10478,7 +10489,10 @@ impl App {
                 self.copy_text_with_toast(&text, "Copied selection".to_string());
                 return router::Ran::routed(true);
             }
-            if armed == Some(&combo) {
+            // On the quit's own question a quit only reminds (R5), so a
+            // press there goes straight to it: arming would promise a quit
+            // the second press cannot make.
+            if armed == Some(&combo) || self.quit_question_up() {
                 return router::Ran::routed(self.update(Action::Quit));
             }
             // A half-typed key goes, as Vim's ctrl+c cancels it: `d`
