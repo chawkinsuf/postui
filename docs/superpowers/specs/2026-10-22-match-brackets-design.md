@@ -268,8 +268,9 @@ still freeze on an unmatched bracket in Raw. The user picked narrowing
 R19 to the Tree view (`mine (approved)`). That removes the unbounded walk
 and the string rule together. The review count restarts at round 1.
 
-**Cost.** None: the Tree view's lookup is constant-time, and everything
-else walks only the rows in view, as before #89.
+**Cost.** No walk: the Tree view's lookup reads the two container lines,
+counting the opening line's chars (its key's length), and everything else
+walks only the rows in view, as before #89.
 
 **Tests.**
 
