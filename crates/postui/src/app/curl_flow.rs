@@ -101,6 +101,7 @@ impl App {
                 "import",
                 Action::BeginCurlImport { run: run.clone(), discard: false },
                 Action::BeginCurlImport { run, discard: true },
+                false,
             );
         } else {
             self.push_curl_prompt(*run);

@@ -507,7 +507,11 @@ pub enum Modal {
         choices: Vec<(char, String, Vec<Action>)>,
         /// The quit's own unsaved-changes question (`App::quit_gate`): a
         /// quit asked on it is "quit anyway" (task #85 R5). False on every
-        /// other confirm, which [`Modal::confirm`] builds.
+        /// other confirm, which [`Modal::confirm`] builds. A flag on the
+        /// question itself (the user's call for an explicit mark) rather
+        /// than its own variant, which would repeat every Confirm arm for
+        /// keys, drawing and chips, or an id on `App`, which goes stale as
+        /// the stack changes.
         quit_gate: bool,
     },
     /// A single-line text prompt (new request name, rename, save-as).

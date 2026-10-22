@@ -87,9 +87,10 @@ impl Toasts {
         id
     }
 
-    /// Whether toast `id` is still showing.
-    pub fn is_live(&self, id: u64) -> bool {
-        self.entries.iter().any(|t| t.id == id)
+    /// Whether toast `id` is still showing at `now`: in the list and not
+    /// past its expiry, which the next tick would prune.
+    pub fn is_live(&self, id: u64, now: Instant) -> bool {
+        self.entries.iter().any(|t| t.id == id && t.expires_at.is_none_or(|at| now < at))
     }
 
     /// Removes toast `id` at once, its animation with it.

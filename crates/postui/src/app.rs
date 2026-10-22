@@ -2761,12 +2761,12 @@ impl App {
     fn apply(&mut self, action: Action) -> bool {
         match action {
             // A quit asked on the quit's own unsaved-changes question is
-            // "quit anyway" (task #85 R5): ctrl+c twice more, or arrows'
-            // quit chip, leaves without saving. The question is marked
-            // where it is built (`quit_gate`), so no other confirm can
-            // match it by accident; over any other dialog a quit meets
-            // the gate, as below.
-            Action::Quit
+            // "quit anyway" (task #85 R5): ctrl+c twice more, or the quit
+            // chip, leaves without saving, and so would `:q` if the line
+            // could open there. The question is marked where it is built
+            // (`quit_gate`), so no other confirm can match it by accident;
+            // over any other dialog a quit meets the gate, as below.
+            Action::Quit | Action::GatedQuit
                 if matches!(self.modals.top(), Some(Modal::Confirm { quit_gate: true, .. })) =>
             {
                 self.apply(Action::ForceQuit)
@@ -9504,23 +9504,25 @@ impl App {
     /// path goes through the Save-as prompt, with `then` deferred until
     /// that save succeeds.
     fn dirty_gate(&mut self, verb: &str, then: Action) {
-        self.dirty_gate_split(verb, then.clone(), then);
-    }
-
-    /// `dirty_gate` for a follow-on that does not replace the editor by
-    /// itself: Discard runs `discard_then`, which has to throw the edits
-    /// away on its own.
-    fn dirty_gate_split(&mut self, verb: &str, then: Action, discard_then: Action) {
-        self.push_dirty_gate(verb, then, discard_then, false);
+        self.dirty_gate_split(verb, then.clone(), then, false);
     }
 
     /// The quit's own unsaved-changes question, marked (`quit_gate`) so a
     /// quit asked on it is "quit anyway" (task #85 R5).
     fn quit_gate(&mut self) {
-        self.push_dirty_gate("quit", Action::ForceQuit, Action::ForceQuit, true);
+        self.dirty_gate_split("quit", Action::ForceQuit, Action::ForceQuit, true);
     }
 
-    fn push_dirty_gate(&mut self, verb: &str, then: Action, discard_then: Action, quit_gate: bool) {
+    /// `dirty_gate` for a follow-on that does not replace the editor by
+    /// itself: Discard runs `discard_then`, which has to throw the edits
+    /// away on its own. `quit_gate` marks the quit's own question.
+    fn dirty_gate_split(
+        &mut self,
+        verb: &str,
+        then: Action,
+        discard_then: Action,
+        quit_gate: bool,
+    ) {
         if self.editor.slug.is_none() {
             self.push_modal(Modal::Confirm {
                 quit_gate,
@@ -10435,7 +10437,7 @@ impl App {
     /// open the unsaved-changes gate, so the second press still meets it.
     pub(crate) fn disarm_quit(&mut self) -> Option<KeyCombo> {
         let (id, combo) = self.quit_armed.take()?;
-        let live = self.toasts.is_live(id);
+        let live = self.toasts.is_live(id, Instant::now());
         self.toasts.dismiss(id, &mut self.anims);
         live.then_some(combo)
     }
