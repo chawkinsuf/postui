@@ -534,6 +534,20 @@ impl App {
             .find(|&id| caret == FieldCaret::Live(id))
     }
 
+    /// Drops the half-typed keys, the router's and the live field's engine's,
+    /// as Vim's ctrl+c cancels a pending command: the app's ctrl+c is taken
+    /// before either sees it (task #85), so its first press, which only
+    /// arms the quit, says so here. The recording flag stays, as for a
+    /// field close.
+    pub(crate) fn vim_drop_pending(&mut self) {
+        self.router.clear_pending();
+        match self.live_engine_field() {
+            Some(id) if id.is_modal() => self.vim.modal_glue.clear_pending(),
+            Some(_) => self.vim.glue.clear_pending(),
+            None => {}
+        }
+    }
+
     /// The engine `id` runs on: the dialog engine for a dialog's field
     /// (plan M3b Deviation 1), else the screen's.
     pub(crate) fn glue_of(&self, id: FieldId) -> &Glue {

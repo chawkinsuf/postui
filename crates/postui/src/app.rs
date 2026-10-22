@@ -10421,8 +10421,10 @@ impl App {
     /// Takes down an armed quit (task #85): drops its toast and answers the
     /// combo that armed it, if the toast was still showing. Every key and
     /// every mouse press calls it first, so a quit's two presses are back
-    /// to back: anything between them, a copy or a click included, makes
-    /// the next press a first one again.
+    /// to back: a key or a click between them, a copy included, makes the
+    /// next press a first one again. Input that is neither (a paste, the
+    /// wheel, focus, a response landing) leaves the arm: none of it can
+    /// open the unsaved-changes gate, so the second press still meets it.
     pub(crate) fn disarm_quit(&mut self) -> Option<KeyCombo> {
         let (id, combo) = self.quit_armed.take()?;
         let live = self.toasts.is_live(id);
@@ -10469,6 +10471,9 @@ impl App {
             if armed == Some(&combo) {
                 return router::Ran::routed(self.update(Action::Quit));
             }
+            // A half-typed key goes, as Vim's ctrl+c cancels it: `d`
+            // ctrl+c `d` is not `dd`.
+            self.vim_drop_pending();
             let key = crate::keys::format_combo(&combo);
             let id = self.toasts.push_id(format!("Press {key} again to quit"), ToastKind::Info);
             self.quit_armed = Some((id, combo));

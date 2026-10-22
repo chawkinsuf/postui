@@ -66,6 +66,26 @@ fn qa_bang_abandons_a_manager_field() {
     assert!(!diff.contains("file environments/"), "{diff}");
 }
 
+/// Task #85: the first ctrl+c only arms the quit, but it drops a half-typed
+/// key, as Vim's ctrl+c cancels a pending command: `d` ctrl+c `d` deletes
+/// nothing, and `g` ctrl+c `g` moves nowhere.
+#[test]
+fn the_first_ctrl_c_drops_a_pending_key() {
+    let mut app = vim(Fixture::Body);
+    let body = app.editor.body_text();
+    feed(&mut app, "d<C-c>d");
+    assert!(!app.should_quit);
+    assert_eq!(app.editor.body_text(), body, "no `dd`");
+    let mut app = vim(Fixture::SidebarThree);
+    feed(&mut app, "j");
+    let row = app.sidebar.selected_slug();
+    feed(&mut app, "g<C-c>");
+    assert_eq!(app.key_echo(), "", "nothing pending");
+    feed(&mut app, "g");
+    assert!(!app.should_quit);
+    assert_eq!(app.sidebar.selected_slug(), row, "no `gg`");
+}
+
 #[test]
 fn zz_saves_a_dirty_request_and_quits() {
     let mut app = vim(Fixture::TableThreeHeaders);

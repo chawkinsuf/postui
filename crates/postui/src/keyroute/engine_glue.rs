@@ -386,6 +386,11 @@ impl Glue {
     /// Trades registers with `other` (plan M3b Deviation 1): the dialog
     /// engine takes the screen's when a dialog session opens and gives them
     /// back when it closes, so the unnamed register is shared (key list §5).
+    /// Drops the engine's half-typed command (`Engine::clear_pending`).
+    pub fn clear_pending(&mut self) {
+        self.engine.clear_pending();
+    }
+
     pub fn swap_registers(&mut self, other: &mut Glue) {
         std::mem::swap(self.engine.registers_mut(), other.engine.registers_mut());
     }

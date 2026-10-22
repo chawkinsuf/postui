@@ -456,8 +456,9 @@ impl Engine {
     }
 
     /// Drops a half-typed command: Normal's, an Insert `ctrl+r`, or the
-    /// search prompt.
-    fn clear_pending(&mut self) {
+    /// search prompt. Also the app's ctrl+c, which the engine never sees
+    /// (task #85), as Vim's ctrl+c cancels a pending command.
+    pub fn clear_pending(&mut self) {
         self.pending.clear();
         self.reg_pending = None;
         self.search = None;
