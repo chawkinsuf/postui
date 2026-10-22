@@ -79,9 +79,8 @@ Spec rows this replaces (each gets a dated amendment pointing here):
 - **Amended after review block 1 (2026-10-22, `you`: "i do like having
   it more expicit"):** the quit's question is marked, not recognised by
   its answers. `Modal::Confirm` gains `quit_gate: bool`, true only on the
-  question `App::quit_gate` builds (it takes the shared, unmarked
-  `unsaved_question` and marks it; review round 5 dropped a `quit_gate`
-  parameter every gate caller had to pass). Every other confirm is built with
+  question `App::quit_gate` builds (see the round 5 amendment below for
+  how the builder takes the mark). Every other confirm is built with
   `Modal::confirm(title, body, choices)`, which sets it false, so it
   defaults to false in all but name (Rust's default field values are
   still unstable; `you` asked "couldnt it just default to false?"). The
@@ -90,8 +89,12 @@ Spec rows this replaces (each gets a dated amendment pointing here):
   accident; a test pins that such a dialog now gets the gate.
 - **Amended after review round 5 (`you`):** the R5 arm no longer
   force-quits; it does nothing (round 6 dropped a reminder toast). Step 1
-  does not arm on the quit's question. `unsaved_question` builds both
-  forms of the question, with `quit_gate` passed in by its two callers.
+  does not arm on the quit's question. The private `unsaved_question`
+  builds both forms of the question with `quit_gate` passed in by its two
+  callers (`dirty_gate_split` false, `quit_gate` true); the gate callers
+  pass nothing (round 5 removed a flag they all carried), and the mark is
+  set as the question is built (round 6 replaced an after-the-fact
+  `if let` that could silently miss it).
 - **Removed:** the modal exemption, and the comments that explain it
   (`apply`, `Action::GatedQuit`'s doc, `spell::quit_action`, footer and
   `ui.rs` notes on `^C` pre-empting).

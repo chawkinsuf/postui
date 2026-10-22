@@ -3055,8 +3055,10 @@ impl App {
                 redraw
             }
             // A quit closes the open inputs first, saved (`leaving_unsaved`
-            // did when the gate above ran); a refused close still quits,
-            // since a quit must always work. `ForceQuit` abandons them:
+            // did when the gate above ran); a refused close never stops a
+            // quit, or a bad value could hold the app open. (A quit on the
+            // quit's own question does nothing, above: that is a question
+            // waiting for its answer, not a refusal.) `ForceQuit` abandons them:
             // vim's `:qa!`, and a gate's answer, which finds them closed.
             Action::Quit | Action::GatedQuit => {
                 self.close_open_inputs(true);
@@ -7871,8 +7873,8 @@ impl App {
     /// `false` when an input refused to close (a bad value or a failed
     /// write: it toasted and keeps the typing); a caller that stops then
     /// leaves its change undone (`close_inputs_or_stop`). Quitting, the dirty gate's
-    /// check and a journaled op go on regardless: a quit must always quit,
-    /// and the other two have no way to refuse.
+    /// check and a journaled op go on regardless: a refused close never
+    /// stops a quit, and the other two have no way to refuse.
     ///
     /// Why stop rather than carry on (task #75, mine (approved)): carrying
     /// on leaves the typing open across the change, so a later save can
