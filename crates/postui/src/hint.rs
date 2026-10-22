@@ -494,7 +494,9 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::KeymapChoice(KeymapAnswer::Profile(crate::config::KeyProfile::Vim)) => {
             text("Use vim keys")
         }
-        Hit::KeymapChoice(KeymapAnswer::Quit) => text("Quit without changing config.toml"),
+        // About the choice, not files: this is the ordinary quit, which
+        // may ask about unsaved edits first; only the keymap is left unset.
+        Hit::KeymapChoice(KeymapAnswer::Quit) => text("Quit and ask again next launch"),
         Hit::ConfigStartupChoice(choice) => {
             use crate::action::ConfigStartupChoice as C;
             text(match choice {

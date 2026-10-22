@@ -666,15 +666,18 @@ pub(crate) const CONFIG_EDIT_KEEP: char = 'k';
 pub(crate) const CONFIG_EDIT_DISCARD: char = 'd';
 
 /// `Modal::KeymapChoice`'s answers, in button order: the key, the painted
-/// label, the answer. All paint as Secondary: neither profile is the
-/// default. Quit is last, as on `ConfigStartup` (task #86).
-fn keymap_choices() -> [(char, &'static str, crate::action::KeymapAnswer); 3] {
+/// label, the footer chip's label, the answer. All paint as Secondary:
+/// neither profile is the default. The two profiles come first, Arrows
+/// then Vim, because ←/→ with nothing aimed start between them (the key
+/// arm's 0 and 1); Quit is last, as on `ConfigStartup` (task #86).
+#[rustfmt::skip]
+fn keymap_choices() -> [(char, &'static str, &'static str, crate::action::KeymapAnswer); 3] {
     use crate::action::KeymapAnswer;
     use crate::config::KeyProfile;
     [
-        ('a', "Arrows and Enter", KeymapAnswer::Profile(KeyProfile::Arrows)),
-        ('v', "Vim keys", KeymapAnswer::Profile(KeyProfile::Vim)),
-        ('q', "Quit", KeymapAnswer::Quit),
+        ('a', "Arrows and Enter", "arrows", KeymapAnswer::Profile(KeyProfile::Arrows)),
+        ('v', "Vim keys",         "vim",    KeymapAnswer::Profile(KeyProfile::Vim)),
+        ('q', "Quit",             "quit",   KeymapAnswer::Quit),
     ]
 }
 
@@ -1719,13 +1722,14 @@ impl ModalStack {
                     (Key::Answer(CONFIG_EDIT_DISCARD), "discard", None),
                 ]
             }
+            // The answer chips read the table the key arm and the buttons
+            // read, as `ConfigStartup`'s do.
             Modal::KeymapChoice { aimed } => {
-                let mut chips = vec![
-                    (Key::Answer('a'), "arrows", None),
-                    (Key::Answer('v'), "vim", None),
-                    (Key::Answer('q'), "quit", None),
-                    (Key::Named("\u{2190}\u{2192}"), "aim", None),
-                ];
+                let mut chips: Vec<_> = keymap_choices()
+                    .into_iter()
+                    .map(|(c, _, chip, _)| (Key::Answer(c), chip, None))
+                    .collect();
+                chips.push((Key::Named("\u{2190}\u{2192}"), "aim", None));
                 if aimed.is_some() {
                     chips.push((Key::Named("enter"), "choose", None));
                 }
@@ -1909,40 +1913,32 @@ impl ModalStack {
             // own arm (`App`'s `KeymapAnswer`) pops the modal, so the
             // results here never close it themselves.
             Modal::KeymapChoice { aimed } => {
-                use crate::action::KeymapAnswer;
-                use crate::config::KeyProfile;
                 let choose = |answer| ModalResult {
                     actions: vec![Action::KeymapAnswer(answer)],
                     close: false,
                     ..Default::default()
                 };
                 let choices = keymap_choices();
-                // Positions are looked up, not written as 0 and 1, so the
-                // first press keeps aiming the profiles if the row changes.
-                let at = |answer| {
-                    choices.iter().position(|(_, _, c)| *c == answer).expect("in the table")
-                };
                 // ←/→ step one answer and stop at the ends. Nothing aimed
-                // sits between the two profiles, so the first press aims
-                // Arrows or Vim as the arrow points (task #86).
-                let here = aimed.map(at);
+                // sits between the two profiles, which the table puts
+                // first, so the first press aims Arrows (0) or Vim (1) as
+                // the arrow points (task #86).
+                let here = choices.iter().position(|(.., c)| Some(*c) == *aimed);
+                let last = choices.len() - 1;
                 match key.code {
                     KeyCode::Left => {
-                        let arrows = at(KeymapAnswer::Profile(KeyProfile::Arrows));
-                        *aimed = Some(choices[here.map_or(arrows, |i| i.saturating_sub(1))].2);
+                        *aimed = Some(choices[here.map_or(0, |i| i.saturating_sub(1))].3);
                         None
                     }
                     KeyCode::Right => {
-                        let vim = at(KeymapAnswer::Profile(KeyProfile::Vim));
-                        let last = choices.len() - 1;
-                        *aimed = Some(choices[here.map_or(vim, |i| (i + 1).min(last))].2);
+                        *aimed = Some(choices[here.map_or(1, |i| (i + 1).min(last))].3);
                         None
                     }
                     KeyCode::Enter => aimed.map(choose),
                     KeyCode::Char(c) => choices
                         .into_iter()
-                        .find(|(k, _, _)| k.eq_ignore_ascii_case(&c))
-                        .map(|(_, _, answer)| choose(answer)),
+                        .find(|(k, ..)| k.eq_ignore_ascii_case(&c))
+                        .map(|(.., answer)| choose(answer)),
                     _ => None, // swallowed: modals capture all input
                 }
             }
@@ -2731,7 +2727,7 @@ impl ModalStack {
             Modal::KeymapChoice { aimed } => {
                 let buttons: Vec<(&str, crate::hit::Hit, bool)> = keymap_choices()
                     .iter()
-                    .map(|(_, label, answer)| {
+                    .map(|(_, label, _, answer)| {
                         (*label, crate::hit::Hit::KeymapChoice(*answer), *aimed == Some(*answer))
                     })
                     .collect();
