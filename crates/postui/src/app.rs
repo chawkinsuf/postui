@@ -5437,6 +5437,15 @@ impl App {
                     // stale files. Every reload does this, the choosers
                     // included (mine (approved)); a command that changes
                     // state stops on the refusal before it reloads.
+                    //
+                    // The close saves into the file as it is on disk now,
+                    // outside edit and all, so the typing wins where both
+                    // touched the same value, and an option deleted outside
+                    // comes back holding what was typed into it. That is
+                    // the #75 rule's cost, taken knowingly: the other two
+                    // outcomes are typing saved into whichever option took
+                    // its row (this task's bug) or typing dropped that
+                    // could have been saved.
                     if !self.close_manager_input() {
                         self.varmanager.end_edits();
                         self.toasts.push(EDIT_DISCARDED, ToastKind::Warning);
