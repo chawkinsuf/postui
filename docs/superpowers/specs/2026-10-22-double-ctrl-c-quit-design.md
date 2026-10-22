@@ -31,7 +31,7 @@ their own way out, so nobody gets stuck:
 |---|---|---|
 | Bad `config.toml` at startup (`ConfigStartup`) | refused | its Quit / Continue / Edit / Reset |
 | `$EDITOR` config edit didn't apply (`ConfigEditInvalid`) | refused (holds a temp file) | Keep editing / Discard |
-| First-launch keyboard question (`KeymapChoice`) | refused (no default) | pick a profile |
+| First-launch keyboard question (`KeymapChoice`) | refused (no default) | pick a profile, or its Quit (task #86, 2026-10-22) |
 
 ## 2. Rules
 

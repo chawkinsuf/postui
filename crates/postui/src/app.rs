@@ -2895,6 +2895,19 @@ impl App {
                 self.router.clear();
                 true
             }
+            Action::KeymapQuit => {
+                // Only ever answers the question on top: a click resolved
+                // against an older frame must not quit from under whatever
+                // dialog covers it now (task #85: no quit under a dialog).
+                let Some(Modal::KeymapChoice { .. }) = self.modals.top() else {
+                    return false;
+                };
+                self.modals.pop();
+                // The ordinary quit, so unsaved edits are asked about. No
+                // profile was chosen, so a question left standing comes
+                // back at the next event boundary.
+                self.update(Action::Quit)
+            }
             // Config changes are outside the undo system, so this confirm
             // is the only guard against a reset -- there is no undo path
             // to fall back on.
