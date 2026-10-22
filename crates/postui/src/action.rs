@@ -1206,6 +1206,24 @@ pub enum Action {
     JqCollect,
 }
 
+impl Action {
+    /// Whether the action quits the app, a window verb included (over a
+    /// dialog it quits rather than closing Manage): what a command from
+    /// the palette or the `:` line over another dialog is refused for
+    /// (task #85, `App::quit_refused`).
+    pub fn quits(&self) -> bool {
+        matches!(
+            self,
+            Action::Quit
+                | Action::GatedQuit
+                | Action::ForceQuit
+                | Action::WriteQuit
+                | Action::ForceWrite { quit: true }
+                | Action::CloseWindow { .. }
+        )
+    }
+}
+
 /// Where `zt` `zz` `zb` put the cursor's line (piece 4 spec §5.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Place {

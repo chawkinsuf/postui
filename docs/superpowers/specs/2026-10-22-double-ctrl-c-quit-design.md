@@ -65,18 +65,26 @@ Spec rows this replaces (each gets a dated amendment pointing here):
 - request reordering spec: "the modified quit combo … still quits" during
   a live drag (now: on its second press, cancelling the drag);
 - the vim profile spec's "a dialog over Manage quits, as one over the main
-  screen does" for `:q` (now refused; `:q!` still quits).
+  screen does" for `:q` (now refused, `:q!` too).
 
 ## 3. Design
 
-- **`App::quit_refused`** (any dialog open) is the one rule: `apply` and
-  the footer both read it.
-- **`App::apply`**: a new first arm, any quit action (`Quit`, `GatedQuit`,
-  `ForceQuit`, `WriteQuit`, `ForceWrite { quit: true }`, `CloseWindow`)
-  while `quit_refused`, toasts the refusal (`Toasts::push_once`) and does
-  nothing else.
-  The gate arm (`Quit | GatedQuit if leaving_unsaved`) then only runs
-  with no dialog open; it cancels a live row drag, then opens the
+- **`App::quit_refused`** (any dialog open) is the one rule, applied
+  where a quit request comes in, so a dialog's own answer that quits is
+  never refused (rework review round 2: refusing inside `apply` could not
+  tell the startup dialog's Quit, over the "not a project" question, from
+  a `^C`, and refused it):
+  - `route_key` step 1: a `^C` press with a dialog open, first or second,
+    is refused (`refuse_quit`, which toasts with `Toasts::push_once`);
+  - `apply_modal_result`: a command run from the palette or the `:` line
+    while another dialog is still open, one whose actions quit
+    (`Action::quits`), is refused whole, so its leading `CloseField`
+    never closes the dialog's field;
+  - the footer hides the quit chip.
+  Arrows' plain `q` never reaches `Quit` under a dialog (dialogs take
+  every key), and `ZZ`/`ZQ` bind only on the navigation surfaces.
+- **`App::apply`**: the gate arm (`Quit | GatedQuit if leaving_unsaved`)
+  loses `modals.is_empty()`; it cancels a live row drag, then opens the
   question (`dirty_gate`).
 - **`App::disarm_quit`**, called first by every key (`handle_key`) and
   every mouse press (`handle_mouse`): takes `App::quit_armed` (the arm
@@ -92,13 +100,13 @@ Spec rows this replaces (each gets a dated amendment pointing here):
 - **Removed**: the modal exemption in the gate arm. The footer quit
   chip's exception from the dialog click rule (`is_quit_chip` in
   `in_dialog`) goes too, since the chip is not drawn under a dialog.
-- **Unchanged**: `ForceQuit`, `WriteQuit`; the cmd+c rule; stdin EOF in
-  `main.rs` (still quits at once); the startup dialog's Quit answer (it
-  closes its dialog before it quits).
+- **Unchanged**: what `ForceQuit` and `WriteQuit` do once they run; the
+  cmd+c rule; stdin EOF in `main.rs` (still quits at once); the startup
+  dialog's Quit answer.
 
-Contract change: `Action::Quit` and `Action::GatedQuit` are refused with
-any dialog open; they no longer mean "skip the gate under a dialog" (Quit)
-or "meet the gate over a dialog" (GatedQuit).
+Contract change: a quit request is refused with any dialog open; `Quit`
+no longer means "skip the gate under a dialog", and `GatedQuit` no longer
+"meets the gate over a dialog". `Action::quits` names the quit actions.
 
 ## 4. Tests
 

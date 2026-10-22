@@ -175,6 +175,9 @@ fn colon_q_over_a_dialog_is_refused() {
         assert!(!app.should_quit, "{q}: refused");
         assert_eq!(app.modals.iter().count(), 1, "{q}: nothing over the dialog");
         assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "{q}: Save as stays");
+        // Refused whole: the verb's leading `CloseField` never ran
+        // (rework review round 2).
+        assert!(app.field_caret().is_live(), "{q}: its field still open");
     }
     let mut app = vim(Fixture::DirtyScratch);
     feed(&mut app, ":w<CR><C-c><C-c>");

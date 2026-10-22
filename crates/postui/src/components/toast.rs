@@ -55,6 +55,14 @@ struct Toast {
     id: u64,
 }
 
+impl Toast {
+    /// Whether it is still showing at `now`: not past its expiry, which
+    /// the next tick would prune (one not stamped yet was just pushed).
+    fn live(&self, now: Instant) -> bool {
+        self.expires_at.is_none_or(|at| now < at)
+    }
+}
+
 pub struct Toasts {
     entries: Vec<Toast>,
     next_id: u64,
@@ -92,11 +100,7 @@ impl Toasts {
     /// first").
     pub fn push_once(&mut self, message: &str, kind: ToastKind) {
         let now = Instant::now();
-        if !self
-            .entries
-            .iter()
-            .any(|t| t.message == message && t.expires_at.is_none_or(|at| now < at))
-        {
+        if !self.entries.iter().any(|t| t.message == message && t.live(now)) {
             self.push(message, kind);
         }
     }
@@ -108,7 +112,7 @@ impl Toasts {
     /// to back, so only a toast landing between them could hide it, and
     /// the quit it allows still meets the unsaved-changes question.
     pub fn is_live(&self, id: u64, now: Instant) -> bool {
-        self.entries.iter().any(|t| t.id == id && t.expires_at.is_none_or(|at| now < at))
+        self.entries.iter().any(|t| t.id == id && t.live(now))
     }
 
     /// Removes toast `id` at once, its animation with it.

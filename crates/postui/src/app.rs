@@ -2763,29 +2763,11 @@ impl App {
 
     fn apply(&mut self, action: Action) -> bool {
         match action {
-            // No quit of any kind while a dialog is open (task #85: "The
-            // dialog must be resolved and then the application can be
-            // quit"): ctrl+c, the quit chip, the palette's Quit row and
-            // every vim quit verb (`:q`, `:q!`, `:wq`, `:x`, `:qa`) are
-            // refused, before any of them saves, so the dialog keeps its
-            // typing and its question. The unsaved-changes question is a
-            // dialog too, so a held or mashed ctrl+c stops on it; `d` is
-            // the way out without saving ("lets not let ^C again discard
-            // changes"). A dialog's own answer that quits (the question's
-            // Discard, the startup dialog's Quit) runs after the dialog
-            // closed, so it is not refused. The toast shows once however
-            // often the key repeats.
-            Action::Quit
-            | Action::GatedQuit
-            | Action::ForceQuit
-            | Action::WriteQuit
-            | Action::ForceWrite { quit: true }
-            | Action::CloseWindow { .. }
-                if self.quit_refused() =>
-            {
-                self.toasts.push_once(CLOSE_THE_DIALOG_FIRST, ToastKind::Info);
-                true
-            }
+            // (No quit runs while a dialog is open, task #85: the requests
+            // are refused where they come in, `refuse_quit`'s callers, so a
+            // quit that gets here is either asked with no dialog open or a
+            // dialog's own answer, which may quit.)
+            //
             // An unsaved request gates quitting behind the same confirm as
             // opening/switching away from it. (An open input closes, saved,
             // on the way out: task #75.)
@@ -10429,11 +10411,26 @@ impl App {
         changed || ended || noted || regated || asked
     }
 
-    /// Whether a quit is refused right now: while any dialog is open (task
-    /// #85). `apply` refuses every quit verb on it, and the footer hides
-    /// its quit chip on it, so the two cannot disagree.
+    /// Whether a quit asked now is refused: while any dialog is open (task
+    /// #85: "The dialog must be resolved and then the application can be
+    /// quit"). The quit requests are refused where they come in, by this one
+    /// rule: ctrl+c (`route_key` step 1), a command run from the palette or
+    /// the `:` line over another dialog (`apply_modal_result`), and the
+    /// footer's quit chip, which hides. A dialog's own answer that quits
+    /// (the unsaved-changes question's Discard, the startup dialog's Quit)
+    /// is not a request from outside it, so it is never refused.
     pub(crate) fn quit_refused(&self) -> bool {
         !self.modals.is_empty()
+    }
+
+    /// Refuses a quit request (see [`Self::quit_refused`]): the dialog
+    /// keeps its typing and its question. The unsaved-changes question is
+    /// a dialog too, so a held or mashed ctrl+c stops on it; `d` is the way
+    /// out without saving ("lets not let ^C again discard changes"). The
+    /// toast shows once however often the request repeats.
+    fn refuse_quit(&mut self) -> bool {
+        self.toasts.push_once(CLOSE_THE_DIALOG_FIRST, ToastKind::Info);
+        true
     }
 
     /// Takes down an armed quit (task #85): drops its toast and answers the
@@ -10485,20 +10482,21 @@ impl App {
         // first and while its toast shows (task #85): the first changes
         // nothing, so a stray ctrl+c costs no field or drag. The toast is
         // the arm (`disarm_quit`), so it never outlives it. With a dialog
-        // open there is no quit to arm: the press goes to `Quit`, which
-        // refuses it. The quit itself meets the unsaved-changes check.
+        // open the press is refused, first or second (a dialog can open
+        // between them by itself). The quit itself meets the unsaved-
+        // changes check.
         if modified && global == Some(Action::Quit) {
             if let Some(text) = self.active_selection_text() {
                 self.copy_text_with_toast(&text, "Copied selection".to_string());
                 return router::Ran::routed(true);
             }
-            if armed == Some(&combo) {
-                return router::Ran::routed(self.update(Action::Quit));
-            }
             // A half-typed key goes, as Vim's ctrl+c cancels it: `d`
             // ctrl+c `d` is not `dd`.
             self.vim_drop_pending();
             if self.quit_refused() {
+                return router::Ran::routed(self.refuse_quit());
+            }
+            if armed == Some(&combo) {
                 return router::Ran::routed(self.update(Action::Quit));
             }
             let key = crate::keys::format_combo(&combo);
@@ -11490,6 +11488,16 @@ impl App {
             // skipped the engine, the gate recorded nothing, and an older app
             // step landed over the typed text.
             self.vim_catch_up();
+        }
+        // A command run from the palette or the `:` line over another
+        // dialog is a quit request from outside that dialog: one that quits
+        // is refused whole, its leading `CloseField` included, so the
+        // dialog keeps its field (task #85, `quit_refused`).
+        if matches!(popped, Some(Modal::Palette(_)))
+            && self.quit_refused()
+            && res.actions.iter().any(Action::quits)
+        {
+            return self.refuse_quit() || changed;
         }
         if let Some(id) = &res.usage {
             self.usage.record(id, crate::usage::now());

@@ -351,36 +351,18 @@ fn ctrl_c_twice_over_a_dialog_with_unsaved_edits_is_refused() {
     );
 }
 
-/// Task #85 R1 (review round 1 of the rework): every quit is refused under
-/// a dialog, the forcing and saving ones included, before anything is
-/// written.
+/// Task #85 (rework review round 2): a dialog's own answer that quits is
+/// not a request from outside it, so it is never refused, even with
+/// another dialog under it: the startup dialog's Quit over the "not a
+/// postui project" question quits.
 #[test]
-fn every_quit_is_refused_under_a_dialog() {
-    for quit in [
-        Action::Quit,
-        Action::GatedQuit,
-        Action::ForceQuit,
-        Action::WriteQuit,
-        Action::ForceWrite { quit: true },
-        Action::CloseWindow { write: true, force: false },
-    ] {
-        let mut app = dirty_app();
-        let file = app.proj().root().join("requests/main/r.toml");
-        let saved = std::fs::read_to_string(&file).unwrap();
-        app.modals.push(Modal::Message { title: "About".into(), body: "hello".into() });
-        app.update(quit.clone());
-        assert!(!app.should_quit, "{quit:?}");
-        assert_eq!(app.modals.iter().count(), 1, "{quit:?}: nothing over the dialog");
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), saved, "{quit:?}: nothing written");
-        assert_eq!(app.toasts.messages(), vec!["Close the dialog first"], "{quit:?}");
-    }
-}
-
-/// Task #85: a dialog's own answer that quits runs after the dialog
-/// closed, so it is not refused: the startup dialog's Quit quits.
-#[test]
-fn the_startup_dialogs_quit_answer_quits() {
+fn the_startup_dialogs_quit_answer_quits_over_another_dialog() {
     let mut app = App::new_for_test();
+    app.modals.push(Modal::Confirm {
+        title: "Not a postui project".into(),
+        body: "create one here?".into(),
+        choices: vec![('y', "Create project".into(), vec![Action::InitProjectHere])],
+    });
     app.modals.push(Modal::ConfigStartup { error: "bad".into() });
     app.handle_key(plain('q'));
     assert!(app.should_quit);
@@ -3912,7 +3894,8 @@ fn a_second_quit_on_the_gate_waits_for_its_answer() {
     app.update(Action::Quit);
     assert!(!app.should_quit, "the gate, not a quit");
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the gate");
-    app.update(Action::Quit);
+    app.handle_key(ctrl('c'));
+    app.handle_key(ctrl('c'));
     assert!(!app.should_quit, "a quit on the gate waits for its answer");
     assert_eq!(app.modals.iter().count(), 1, "no second gate");
     app.handle_key(plain('d'));
