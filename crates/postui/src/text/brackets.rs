@@ -1,6 +1,8 @@
 //! Vim's bracket matching (`%`, the block text objects, a double click on a
 //! bracket), moved here from the vim engine so both profiles share it.
 
+use std::ops::RangeInclusive;
+
 use super::{Lines, Pos};
 
 /// Where [`find_match`] starts from.
@@ -23,6 +25,102 @@ fn pair(c: char) -> Option<(char, char)> {
         '{' | '}' => Some(('{', '}')),
         _ => None,
     }
+}
+
+/// The bracket at `at` and its partner, both on rows `rows`, for the
+/// highlight that lights them: Vim's matchparen with JSON syntax (spec
+/// 2026-10-22, matching brackets, R2–R6). With `before` (a caret between
+/// chars: arrows, or Vim's Insert), the char before `at` stands in when the
+/// one at `at` is no bracket.
+///
+/// Not [`find_match`]: that is `%`, whose quote parity reads a string's
+/// bracket differently from matchparen's syntax test (probe N3). A string
+/// here is a run between unescaped `"` on one line, which is exact for
+/// JSON. Outside a string, brackets inside strings are skipped; from inside
+/// one, nothing is.
+pub(crate) fn matching_pair<B: Lines + ?Sized>(
+    buf: &B,
+    at: Pos,
+    before: bool,
+    rows: RangeInclusive<usize>,
+) -> Option<(Pos, Pos)> {
+    let first = *rows.start();
+    let last = (*rows.end()).min(buf.line_count() - 1);
+    if at.row < first || at.row > last {
+        return None;
+    }
+    let mut line = buf.line(at.row);
+    let start = match line.get(at.col).copied().and_then(pair) {
+        Some(_) => at.col,
+        None if before && at.col > 0 => {
+            pair(*line.get(at.col - 1)?)?;
+            at.col - 1
+        }
+        None => return None,
+    };
+    let c = line[start];
+    let (open, close) = pair(c)?;
+    let (find, forward) = if c == open { (close, true) } else { (open, false) };
+    let mut strings = in_strings(&line);
+    let skip = !strings[start];
+    let mut depth = 0usize;
+    let (mut row, mut col) = (at.row, start);
+    loop {
+        // One char on, crossing to the next row in view at a line's end.
+        if forward {
+            col += 1;
+            while col >= line.len() {
+                if row == last {
+                    return None;
+                }
+                row += 1;
+                line = buf.line(row);
+                strings = in_strings(&line);
+                col = 0;
+            }
+        } else {
+            while col == 0 {
+                if row == first {
+                    return None;
+                }
+                row -= 1;
+                line = buf.line(row);
+                strings = in_strings(&line);
+                col = line.len();
+            }
+            col -= 1;
+        }
+        if skip && strings[col] {
+            continue;
+        }
+        if line[col] == c {
+            depth += 1;
+        } else if line[col] == find {
+            if depth == 0 {
+                return Some((Pos::new(at.row, start), Pos::new(row, col)));
+            }
+            depth -= 1;
+        }
+    }
+}
+
+/// Which chars of `line` sit inside a JSON string, its quotes included.
+fn in_strings(line: &[char]) -> Vec<bool> {
+    let mut inside = false;
+    let mut escaped = false;
+    line.iter()
+        .map(|&c| {
+            let was = inside;
+            if inside && escaped {
+                escaped = false;
+            } else if inside && c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                inside = !inside;
+            }
+            was || inside
+        })
+        .collect()
 }
 
 fn backslashes_before(line: &[char], col: usize) -> usize {
@@ -190,5 +288,73 @@ pub(crate) fn find_match<B: Lines + ?Sized>(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The probe file (spec 2026-10-22, matching brackets, §1): line 0 has
+    /// brackets inside strings, line 2's `{` closes on line 60, line 61 is
+    /// `(x)(y)`.
+    fn probe() -> edtui::Lines {
+        let mut text = String::from("{\"a\": [1, 2], \"b\": \"x{y\", \"c\": \")\"}\n][\n{\n");
+        for _ in 0..57 {
+            text.push_str("  1,\n");
+        }
+        text.push_str("}\n(x)(y)");
+        edtui::Lines::from(text.as_str())
+    }
+
+    fn p(row: usize, col: usize) -> Pos {
+        Pos::new(row, col)
+    }
+
+    /// Each row of the Vim 9.1 probe table, matchparen with `ft=json`.
+    #[test]
+    fn the_pair_is_vims_matchparen_with_json_syntax() {
+        let buf = probe();
+        let all = 0..=61;
+        let at = |row, col, before| matching_pair(&buf, p(row, col), before, all.clone());
+        assert_eq!(at(0, 0, false), Some((p(0, 0), p(0, 34))), "N1: the string's `{{` is skipped");
+        assert_eq!(at(0, 12, false), None, "N2: Normal looks only under the caret");
+        assert_eq!(
+            at(0, 21, false),
+            Some((p(0, 21), p(0, 34))),
+            "N3: inside a string, nothing is skipped"
+        );
+        assert_eq!(at(0, 32, false), None, "N3b: no `(` before the string's `)`");
+        assert_eq!(at(61, 0, false), Some((p(61, 0), p(61, 2))), "N6");
+        assert_eq!(at(0, 6, false), Some((p(0, 6), p(0, 11))), "N7");
+        assert_eq!(at(0, 12, true), Some((p(0, 11), p(0, 6))), "I1: the char before the caret");
+        assert_eq!(at(61, 3, true), Some((p(61, 3), p(61, 5))), "I2: the char under it wins");
+        assert_eq!(at(61, 6, true), Some((p(61, 5), p(61, 3))), "I3: past the end, the one before");
+    }
+
+    #[test]
+    fn a_partner_outside_the_rows_lights_nothing() {
+        let buf = probe();
+        assert_eq!(matching_pair(&buf, p(2, 0), false, 0..=28), None, "N4: the `}}` is below");
+        assert_eq!(matching_pair(&buf, p(60, 0), false, 33..=61), None, "N5: the `{{` is above");
+        assert_eq!(matching_pair(&buf, p(2, 0), false, 0..=60), Some((p(2, 0), p(60, 0))));
+    }
+
+    #[test]
+    fn an_escaped_quote_does_not_end_a_string() {
+        let line: Vec<char> = r#"{"a\"{": 1}"#.chars().collect();
+        assert_eq!(matching_pair(&line[..], p(0, 0), false, 0..=0), Some((p(0, 0), p(0, 10))));
+    }
+
+    #[test]
+    fn a_char_that_is_no_bracket_lights_nothing() {
+        let line: Vec<char> = "ab".chars().collect();
+        assert_eq!(matching_pair(&line[..], p(0, 1), true, 0..=0), None);
+        assert_eq!(
+            matching_pair(&line[..], p(0, 9), true, 0..=0),
+            None,
+            "past the end of a short line"
+        );
+        assert_eq!(matching_pair(&line[..], p(0, 0), true, 0..=0), None, "nothing before column 0");
     }
 }

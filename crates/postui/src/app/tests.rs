@@ -4129,6 +4129,28 @@ fn double_click_in_response_selects_the_word_and_drag_extends_by_words() {
     assert_eq!(app.session.response.selected_text().as_deref(), Some("plain text"));
 }
 
+/// Spec 2026-10-22 (matching brackets) R18, R9: a click in Raw puts the
+/// response's cursor on the clicked line, as a Pretty row's does, and a
+/// click on a bracket lights it and its partner.
+#[test]
+fn a_raw_click_moves_the_cursor_and_lights_a_bracket() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let mut app = App::new_for_test();
+    ready_response(&mut app, "x\n(a\nb)"); // not JSON -> Raw view
+    render_once(&mut app);
+    let area = app.session.response.view().unwrap().last_area.expect("body area recorded");
+    app.handle_mouse(left_down(area.x, area.y + 1));
+    app.handle_mouse(left_up(area.x, area.y + 1));
+    assert_eq!(app.session.response.view().unwrap().cursor, 1, "the cursor follows the click");
+    // Same size as `render_once`, so the recorded area still matches.
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let cell = terminal.backend().buffer()[(area.x + 1, area.y + 2)].clone();
+    assert_eq!(cell.symbol(), ")");
+    assert_eq!((cell.fg, cell.bg), (app.theme.on_accent, app.theme.accent), "the partner lights");
+}
+
 #[test]
 fn body_selection_paints_with_the_selection_color() {
     use ratatui::Terminal;

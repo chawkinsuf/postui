@@ -19,6 +19,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use std::ops::RangeInclusive;
 use std::time::Instant;
 
 /// Which editor tab is active.
@@ -886,7 +887,7 @@ impl Editor {
     /// The overlays this draw wants, in precedence order (see `Overlay`).
     /// A search match is end-exclusive on one row; an empty one paints
     /// nothing.
-    fn body_overlays(&self) -> Vec<Overlay> {
+    fn body_overlays(&self, pair: Option<(crate::text::Pos, crate::text::Pos)>) -> Vec<Overlay> {
         use crate::keyroute::engine_glue::Pos;
         let span = |(s, e): (Pos, Pos)| {
             (e.col > s.col)
@@ -904,7 +905,71 @@ impl Editor {
                 out.push(Overlay { from, to, kind: OverlayKind::Match });
             }
         }
+        for at in pair.into_iter().flat_map(|(a, b)| [a, b]) {
+            let cell = edtui::Index2::new(at.row, at.col);
+            out.push(Overlay { from: cell, to: cell, kind: OverlayKind::Bracket });
+        }
         out
+    }
+
+    /// The bracket by the caret and its partner, lit while the body is
+    /// focused (spec 2026-10-22, matching brackets, R1–R7). A caret between
+    /// chars (edtui's `Insert`: arrows always, Vim's Insert and Replace)
+    /// also takes the bracket before it; Vim's Normal and Visual carets sit
+    /// on a char. `width` × `height` is the content area the draw gives
+    /// edtui, gutter included.
+    fn body_bracket_pair(
+        &self,
+        width: usize,
+        height: usize,
+    ) -> Option<(crate::text::Pos, crate::text::Pos)> {
+        let caret = crate::text::Pos::new(self.body.cursor.row, self.body.cursor.col);
+        let before = self.body.mode == EditorMode::Insert;
+        let rows = self.body_rows_in_view(width, height)?;
+        crate::text::brackets::matching_pair(&self.body.lines, caret, before, rows)
+    }
+
+    /// The buffer rows the next draw shows: edtui's viewport once its render
+    /// has scrolled the caret into view (`update_viewport_vertical_wrap` in
+    /// edtui 0.11.6), from its offset now. A line cut off at the bottom
+    /// counts.
+    fn body_rows_in_view(&self, width: usize, height: usize) -> Option<RangeInclusive<usize>> {
+        let lines = &self.body.lines;
+        let gutter = usize::from(line_number_gutter_width(lines.len()));
+        let width = width.checked_sub(gutter).filter(|&w| w > 0)?;
+        if height == 0 {
+            return None;
+        }
+        let tall = |row| wrap_segments(&crate::text::Lines::line(lines, row), width).len().max(1);
+        let caret = self.body.cursor.row;
+        let last_from = |top: usize| {
+            let mut screen = 0;
+            let mut last = top;
+            for row in top..lines.len() {
+                if screen >= height {
+                    break;
+                }
+                last = row;
+                screen += tall(row);
+            }
+            last
+        };
+        let mut top = self.body.viewport_offset().1.min(caret);
+        if last_from(top) < caret {
+            // edtui's `scroll_down`: the caret's line and as many whole
+            // lines above it as fit.
+            let mut left = height;
+            top = caret;
+            for row in (0..=caret).rev() {
+                let h = tall(row);
+                if left < h {
+                    break;
+                }
+                left -= h;
+                top = row;
+            }
+        }
+        Some(top..=last_from(top))
     }
 
     /// Replaces the whole body buffer. Only explicit user actions (loading a
@@ -1795,10 +1860,11 @@ fn column_in_wrapped_line(
     col
 }
 
-/// One highlight the body paints over its JSON colours in the vim profile
-/// (plan M3a Deviation 16): the Visual span, the search match Enter would
-/// land on, then the other matches. edtui styles a cell with the first
-/// highlight that contains it, so this order is the precedence.
+/// One highlight the body paints over its JSON colours (plan M3a Deviation
+/// 16): the Visual span, the search match Enter would land on, the other
+/// matches, then the lit bracket pair (spec 2026-10-22, matching brackets,
+/// R8). edtui styles a cell with the first highlight that contains it, so
+/// this order is the precedence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Overlay {
     from: edtui::Index2,
@@ -1811,6 +1877,7 @@ enum OverlayKind {
     Visual,
     Landing,
     Match,
+    Bracket,
 }
 
 impl OverlayKind {
@@ -1822,6 +1889,7 @@ impl OverlayKind {
             OverlayKind::Visual => Style::default().bg(theme.selection).fg(theme.text),
             OverlayKind::Landing => found.add_modifier(Modifier::BOLD),
             OverlayKind::Match => found,
+            OverlayKind::Bracket => Style::default().fg(theme.on_accent).bg(theme.accent),
         }
     }
 }
@@ -3250,7 +3318,12 @@ impl Editor {
                 }
                 // The vim overlays go first: edtui styles a cell with the
                 // first highlight that contains it.
-                let overlays = self.body_overlays();
+                let pair = focused
+                    .then(|| {
+                        self.body_bracket_pair(usize::from(area.width), usize::from(area.height))
+                    })
+                    .flatten();
+                let overlays = self.body_overlays(pair);
                 if self.body_hl_overlays != overlays {
                     // One splice: the JSON colours behind them move once.
                     let stale = self.body_hl_overlays.len().min(self.body.highlights.len());
@@ -4055,6 +4128,105 @@ mod tests {
             }
         }
         panic!("{needle:?} not found in the body area");
+    }
+
+    /// Draws `e`, the pane focused or not, and returns the cell showing
+    /// body position (`row`, `col`) of a line too short to wrap.
+    fn body_cell_at(
+        e: &mut Editor,
+        focused: bool,
+        row: usize,
+        col: usize,
+    ) -> ratatui::buffer::Cell {
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused,
+            hovered: None,
+            pointer: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+        let area = e.last_body_area.unwrap();
+        let gutter = line_number_gutter_width(e.body.lines.len());
+        let top = e.body.viewport_offset().1;
+        let x = area.x + gutter + u16::try_from(col).unwrap();
+        let y = area.y + u16::try_from(row - top).unwrap();
+        terminal.backend().buffer()[(x, y)].clone()
+    }
+
+    fn bracket_lit(cell: &ratatui::buffer::Cell) -> bool {
+        let theme = Theme::dark();
+        (cell.fg, cell.bg) == (theme.on_accent, theme.accent)
+    }
+
+    /// Spec 2026-10-22 (matching brackets) R1, R2: the caret on a bracket,
+    /// or just after one, lights it and its partner.
+    #[test]
+    fn the_caret_on_or_after_a_bracket_lights_the_pair() {
+        let mut e = body_editor("{\"a\": [1]}");
+        e.body.cursor = edtui::Index2::new(0, 0);
+        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 9)), "the partner `}}`");
+        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 0)), "the caret's `{{`");
+        assert!(!bracket_lit(&body_cell_at(&mut e, true, 0, 6)), "an unrelated `[`");
+        e.body.cursor = edtui::Index2::new(0, 10);
+        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 0)), "after `}}`, the `{{` lights");
+        e.body.cursor = edtui::Index2::new(0, 2);
+        assert!(!bracket_lit(&body_cell_at(&mut e, true, 0, 0)), "on `a` nothing lights");
+    }
+
+    /// R7: only the focused body lights.
+    #[test]
+    fn an_unfocused_body_lights_no_bracket() {
+        let mut e = body_editor("{\"a\": [1]}");
+        e.body.cursor = edtui::Index2::new(0, 0);
+        assert!(!bracket_lit(&body_cell_at(&mut e, false, 0, 9)));
+    }
+
+    /// R5: a partner below the view lights nothing, the caret's either.
+    #[test]
+    fn a_partner_out_of_view_lights_nothing() {
+        let mut text = String::from("{\n");
+        for _ in 0..40 {
+            text.push_str("  1,\n");
+        }
+        text.push('}');
+        let mut e = body_editor(&text);
+        e.body.cursor = edtui::Index2::new(0, 0);
+        assert!(!bracket_lit(&body_cell_at(&mut e, true, 0, 0)));
+        // From the `}`, edtui scrolls to it; the `{` is far above.
+        e.body.cursor = edtui::Index2::new(41, 0);
+        assert!(!bracket_lit(&body_cell_at(&mut e, true, 41, 0)));
+        // A short block lights across its rows.
+        let mut e = body_editor("{\n  1\n}");
+        e.body.cursor = edtui::Index2::new(2, 0);
+        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 0)));
+    }
+
+    /// R8: Visual paints over the pair.
+    #[test]
+    fn visual_paints_over_a_lit_bracket() {
+        let theme = Theme::dark();
+        let mut e = body_editor("{\"a\": [1]}");
+        e.body.cursor = edtui::Index2::new(0, 0);
+        e.body_visual = Some((edtui::Index2::new(0, 8), edtui::Index2::new(0, 9)));
+        assert_eq!(body_cell_at(&mut e, true, 0, 9).bg, theme.selection);
+    }
+
+    /// R2: a vim Normal caret looks only under itself; Insert (edtui's
+    /// `Insert`, which arrows always is) also looks before.
+    #[test]
+    fn a_normal_caret_after_a_bracket_lights_nothing() {
+        let mut e = body_editor("[1], 2");
+        e.body.mode = EditorMode::Normal;
+        e.body.cursor = edtui::Index2::new(0, 3);
+        assert!(!bracket_lit(&body_cell_at(&mut e, true, 0, 0)));
+        e.body.mode = EditorMode::Insert;
+        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 0)));
     }
 
     /// The engine's Visual span draws over the JSON colours, survives an
