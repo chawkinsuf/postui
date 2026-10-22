@@ -1917,24 +1917,25 @@ impl ModalStack {
                     ..Default::default()
                 };
                 let choices = keymap_choices();
-                let at = |answer| choices.iter().position(|(_, _, c)| *c == answer);
+                // Positions are looked up, not written as 0 and 1, so the
+                // first press keeps aiming the profiles if the row changes.
+                let at = |answer| {
+                    choices.iter().position(|(_, _, c)| *c == answer).expect("in the table")
+                };
                 // ←/→ step one answer and stop at the ends. Nothing aimed
                 // sits between the two profiles, so the first press aims
                 // Arrows or Vim as the arrow points (task #86).
-                let here = aimed.and_then(at);
+                let here = aimed.map(at);
                 match key.code {
                     KeyCode::Left => {
-                        let to = here.map_or(at(KeymapAnswer::Profile(KeyProfile::Arrows)), |i| {
-                            Some(i.saturating_sub(1))
-                        });
-                        *aimed = to.map(|i| choices[i].2);
+                        let arrows = at(KeymapAnswer::Profile(KeyProfile::Arrows));
+                        *aimed = Some(choices[here.map_or(arrows, |i| i.saturating_sub(1))].2);
                         None
                     }
                     KeyCode::Right => {
-                        let to = here.map_or(at(KeymapAnswer::Profile(KeyProfile::Vim)), |i| {
-                            Some((i + 1).min(choices.len() - 1))
-                        });
-                        *aimed = to.map(|i| choices[i].2);
+                        let vim = at(KeymapAnswer::Profile(KeyProfile::Vim));
+                        let last = choices.len() - 1;
+                        *aimed = Some(choices[here.map_or(vim, |i| (i + 1).min(last))].2);
                         None
                     }
                     KeyCode::Enter => aimed.map(choose),
