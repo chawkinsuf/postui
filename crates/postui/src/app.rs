@@ -1620,12 +1620,9 @@ impl App {
     /// the environment selectors reload the project before listing, so a
     /// file another process just created shows up in the list.
     pub fn resync_project(&mut self) {
-        // The forced re-read closes the Variable Manager's input first in
-        // `ReloadProjectFiles` (task #78), and cancels one that refuses,
-        // whether or not a file changed: forced means the stamps can't say.
-        // A caller that changes state (Reload from disk, an env cycle)
-        // stops on the refusal before it gets here, as `close_open_inputs`
-        // says; a reload alone (the env chooser) cancels.
+        // Forced, so `ReloadProjectFiles` always treats it as stale and
+        // closes the Variable Manager's input first (task #78; the rule is
+        // spelled out there).
         if let Some(p) = self.project.as_mut() {
             p.invalidate_stamps();
         }
