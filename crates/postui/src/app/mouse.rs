@@ -2002,7 +2002,7 @@ impl App {
                 }
             }
             Hit::ConfigStartupChoice(choice) => self.update(Action::ConfigStartupChoice(choice)),
-            Hit::KeymapChoice(answer) => self.update(answer.action()),
+            Hit::KeymapChoice(answer) => self.update(Action::KeymapAnswer(answer)),
             Hit::ConfigEditKeepEditing => {
                 let Some(Modal::ConfigEditInvalid { file, path, .. }) = self.modals.top() else {
                     return false;

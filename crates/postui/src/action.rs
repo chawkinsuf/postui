@@ -110,16 +110,6 @@ pub enum KeymapAnswer {
     Quit,
 }
 
-impl KeymapAnswer {
-    /// What answering runs, from a key or a click alike.
-    pub fn action(self) -> Action {
-        match self {
-            Self::Profile(profile) => Action::SetKeyProfile(profile),
-            Self::Quit => Action::KeymapQuit,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Quit,
@@ -232,9 +222,9 @@ pub enum Action {
     /// to `config.toml`, swaps the live keymap, and is one config undo
     /// step. A write that fails still applies for this session.
     SetKeyProfile(crate::config::KeyProfile),
-    /// The keyboard question's Quit (task #86): closes the question and
-    /// quits, choosing no profile, so nothing is written.
-    KeymapQuit,
+    /// Answers the first-launch keyboard question, from a key or a click:
+    /// closes it, then sets the profile or quits (task #86).
+    KeymapAnswer(KeymapAnswer),
     EditorTabSelect(usize),
     EditorTabCycle(i8),
     /// The one tab chord every pane shares (alt+←/→ by default): steps

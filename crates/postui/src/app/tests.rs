@@ -29534,8 +29534,29 @@ fn quit_on_the_keyboard_question_leaves_without_writing() {
     assert!(app.raise_keymap_choice());
     app.handle_key(plain('q'));
     assert!(app.should_quit);
+    assert!(app.modals.is_empty(), "not asked again on the way out");
     assert_eq!(app.ui_settings.keymap, None, "no profile chosen");
     assert!(!dir.path().join("config.toml").exists(), "nothing written");
+}
+
+/// Task #86: an answer only ever answers the question on top. One that
+/// arrives with another dialog over it (a click resolved against an older
+/// frame) neither quits nor writes, and closes nothing.
+#[test]
+fn a_keyboard_answer_under_another_dialog_does_nothing() {
+    use crate::config::KeyProfile;
+    for answer in [KeymapAnswer::Quit, KeymapAnswer::Profile(KeyProfile::Vim)] {
+        let mut app = App::new_for_test();
+        let dir = config_at_tempdir(&mut app);
+        app.ui_settings.keymap = None;
+        assert!(app.raise_keymap_choice());
+        app.push_modal(Modal::Message { title: "t".into(), body: "b".into() });
+        app.update(Action::KeymapAnswer(answer));
+        assert!(!app.should_quit, "{answer:?}");
+        assert_eq!(app.ui_settings.keymap, None, "{answer:?}");
+        assert_eq!(app.modals.iter().count(), 2, "{answer:?}: both dialogs stay");
+        assert!(!dir.path().join("config.toml").exists(), "{answer:?}: nothing written");
+    }
 }
 
 #[test]

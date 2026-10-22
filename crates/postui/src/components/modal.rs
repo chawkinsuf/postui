@@ -1906,29 +1906,37 @@ impl ModalStack {
                 _ => None, // swallowed: modals capture all input
             },
             // No `Esc` arm, as for `ConfigStartup`. The answering action's
-            // own arm (`App`'s `SetKeyProfile` or `KeymapQuit`) pops the
-            // modal, so the results here never close it themselves.
+            // own arm (`App`'s `KeymapAnswer`) pops the modal, so the
+            // results here never close it themselves.
             Modal::KeymapChoice { aimed } => {
-                let choose = |answer: crate::action::KeymapAnswer| ModalResult {
-                    actions: vec![answer.action()],
+                use crate::action::KeymapAnswer;
+                use crate::config::KeyProfile;
+                let choose = |answer| ModalResult {
+                    actions: vec![Action::KeymapAnswer(answer)],
                     close: false,
                     ..Default::default()
                 };
                 let choices = keymap_choices();
+                let at = |answer| choices.iter().position(|(_, _, c)| *c == answer);
                 // ←/→ step one answer and stop at the ends. Nothing aimed
                 // sits between the two profiles, so the first press aims
                 // Arrows or Vim as the arrow points (task #86).
-                let at = aimed.and_then(|a| choices.iter().position(|(_, _, c)| *c == a));
-                let to = match key.code {
-                    KeyCode::Left => Some(at.map_or(0, |i| i.saturating_sub(1))),
-                    KeyCode::Right => Some(at.map_or(1, |i| (i + 1).min(choices.len() - 1))),
-                    _ => None,
-                };
-                if let Some(to) = to {
-                    *aimed = Some(choices[to].2);
-                    return None;
-                }
+                let here = aimed.and_then(at);
                 match key.code {
+                    KeyCode::Left => {
+                        let to = here.map_or(at(KeymapAnswer::Profile(KeyProfile::Arrows)), |i| {
+                            Some(i.saturating_sub(1))
+                        });
+                        *aimed = to.map(|i| choices[i].2);
+                        None
+                    }
+                    KeyCode::Right => {
+                        let to = here.map_or(at(KeymapAnswer::Profile(KeyProfile::Vim)), |i| {
+                            Some((i + 1).min(choices.len() - 1))
+                        });
+                        *aimed = to.map(|i| choices[i].2);
+                        None
+                    }
                     KeyCode::Enter => aimed.map(choose),
                     KeyCode::Char(c) => choices
                         .into_iter()

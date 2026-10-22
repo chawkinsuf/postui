@@ -724,9 +724,11 @@ impl App {
     /// Raises the keyboard question when `config.toml` has never carried a
     /// `keymap` (piece 4 spec §4.2). It stacks under the startup config
     /// gate: with any modal up it waits for the next event boundary,
-    /// where the callers ask again.
+    /// where the callers ask again. Never while quitting: its own Quit
+    /// leaves the keymap unset (task #86).
     pub(crate) fn raise_keymap_choice(&mut self) -> bool {
         if self.ui_settings.keymap.is_some()
+            || self.should_quit
             || self.modals.top().is_some()
             || self.pending_terminal_action.is_some()
             || self.startup_config_gate
@@ -2895,18 +2897,27 @@ impl App {
                 self.router.clear();
                 true
             }
-            Action::KeymapQuit => {
+            Action::KeymapAnswer(answer) => {
+                use crate::action::KeymapAnswer;
                 // Only ever answers the question on top: a click resolved
-                // against an older frame must not quit from under whatever
-                // dialog covers it now (task #85: no quit under a dialog).
+                // against an older frame must not answer from under
+                // whatever dialog covers it now (task #85: no quit under a
+                // dialog).
                 let Some(Modal::KeymapChoice { .. }) = self.modals.top() else {
                     return false;
                 };
-                self.modals.pop();
-                // The ordinary quit, so unsaved edits are asked about. No
-                // profile was chosen, so a question left standing comes
-                // back at the next event boundary.
-                self.update(Action::Quit)
+                match answer {
+                    // Its arm closes the question: a profile set by any
+                    // route answers it.
+                    KeymapAnswer::Profile(profile) => self.update(Action::SetKeyProfile(profile)),
+                    // The ordinary quit, so unsaved edits are asked about.
+                    // No profile was chosen, so staying brings the question
+                    // back at the next event boundary.
+                    KeymapAnswer::Quit => {
+                        self.modals.pop();
+                        self.update(Action::Quit)
+                    }
+                }
             }
             // Config changes are outside the undo system, so this confirm
             // is the only guard against a reset -- there is no undo path
