@@ -28797,6 +28797,7 @@ fn a_reload_cancels_a_manager_edit_that_refuses_to_close() {
 
     app.on_focus_gained();
     assert!(app.varmanager.grid.editing.is_none(), "the edit is cancelled");
+    assert_eq!(app.toasts.last_message(), Some(EDIT_DISCARDED), "and says so");
     assert_eq!(options(&app), ["bob", "carol"], "the reload landed");
     let qa = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert!(!qa.options["user"].contains_key("description"), "nothing written");
@@ -29004,11 +29005,11 @@ fn a_refused_manager_close_stops_the_env_switch() {
     assert_eq!(edit.input.text(), "description");
 }
 
-/// Opening the env chooser forces a re-read, which cancels an input that
-/// refuses to close (task #78); a close the cell refuses stops the chooser
-/// first instead, as it stops the switch, so the typing is kept.
+/// Opening the env chooser is a reload, not a switch: its forced re-read
+/// cancels an input that refuses to close, as every reload does (task #78),
+/// even with no file changed, since forced means the stamps can't say.
 #[test]
-fn a_refused_manager_close_stops_the_env_chooser() {
+fn the_env_choosers_reload_cancels_a_refused_manager_edit() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -29018,9 +29019,35 @@ fn a_refused_manager_close_stops_the_env_chooser() {
     app.handle_mouse(left_down(r.x, r.y));
     type_chars(&mut app, "description");
     app.update(Action::OpenEnvChooser);
-    assert!(app.modals.is_empty(), "no chooser opened");
-    let edit = app.varmanager.grid.editing.as_ref().expect("the typing is kept");
-    assert_eq!(edit.input.text(), "description");
+    assert!(app.varmanager.grid.editing.is_none(), "the edit is cancelled");
+    assert!(app.toasts.messages().contains(&EDIT_DISCARDED), "{:?}", app.toasts.messages());
+    assert!(!app.modals.is_empty(), "the chooser opened");
+}
+
+/// Task #82: a reload of files changed on disk syncs the Variable Manager,
+/// as Reload from disk does, so a selector deleted outside leaves its list
+/// and the detail pane.
+#[test]
+fn a_focus_gained_reload_syncs_the_variable_manager() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    std::fs::write(
+        dir.path().join("variables.toml"),
+        "# edited elsewhere, selector gone\n[base_url]\ndefault = \"http://localhost:8080\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "base_url = \"https://qa.example.com\"\n",
+    )
+    .unwrap();
+    app.on_focus_gained();
+    use crate::components::varmanager::{VmDetail, VmRow};
+    assert!(!app.varmanager.left_rows.contains(&VmRow::Group("user".into())), "list synced");
+    assert!(!matches!(app.varmanager.detail, VmDetail::Group(_)), "detail moved off it");
 }
 
 /// Task #76: Copy clicked in a live grid cell's own menu copies the cell's

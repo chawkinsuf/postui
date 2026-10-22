@@ -32,6 +32,11 @@ const MIGRATION_TITLE: &str = "Migrate variables";
 /// braces — it exists so no write can be attempted against an empty root.
 const NO_PROJECT: &str = "no project is open";
 
+/// What a reload toasts after it cancels a Variable Manager input that
+/// refused to close (task #78): the refusal's own error reads as if the
+/// typing were still there to fix.
+const EDIT_DISCARDED: &str = "Edit discarded — the project was re-read from disk";
+
 /// Wall-clock dwell the caret must rest inside a `{{token}}` before its
 /// tooltip appears -- matching the original 2 ticks @ the tick's nominal
 /// 100ms period. Wall-clock rather than tick-counted because the tick
@@ -1618,9 +1623,9 @@ impl App {
         // The forced re-read closes the Variable Manager's input first in
         // `ReloadProjectFiles` (task #78), and cancels one that refuses,
         // whether or not a file changed: forced means the stamps can't say.
-        // So every caller stops on a refused close before it gets here
-        // (Reload from disk, an env cycle, the env chooser), and the
-        // typing is kept for the user to fix.
+        // A caller that changes state (Reload from disk, an env cycle)
+        // stops on the refusal before it gets here, as `close_open_inputs`
+        // says; a reload alone (the env chooser) cancels.
         if let Some(p) = self.project.as_mut() {
             p.invalidate_stamps();
         }
@@ -4918,14 +4923,7 @@ impl App {
             Action::OpenEnvChooser => {
                 use crate::components::modal::{DropdownState, MenuItem};
                 // Forced (not mtime-gated): an environment file created
-                // in the same tick must show up in the list. The forced
-                // re-read would cancel a Manager input that refuses to
-                // close, so a refusal stops the chooser here first and the
-                // typing is kept (task #78), as for Reload from disk.
-                if !self.close_manager_input() {
-                    self.last_action_failed = true;
-                    return true;
-                }
+                // in the same tick must show up in the list.
                 self.resync_project();
                 let mut items: Vec<MenuItem> = self
                     .environments()
@@ -5431,12 +5429,17 @@ impl App {
                     // Manager's input closes first (task #78, the rule
                     // `close_open_inputs` states). One that refuses to
                     // close is cancelled, its typing dropped (the user's
-                    // ruling): left open across the re-read it would save
-                    // into whichever option took its row, and holding the
-                    // re-read back would leave Send and the pickers on
-                    // stale files.
+                    // ruling), and a toast says so, since the refusal's own
+                    // error reads as if the typing were still there (mine
+                    // (approved)): left open across the re-read it would
+                    // save into whichever option took its row, and holding
+                    // the re-read back would leave Send and the pickers on
+                    // stale files. Every reload does this, the choosers
+                    // included (mine (approved)); a command that changes
+                    // state stops on the refusal before it reloads.
                     if !self.close_manager_input() {
                         self.varmanager.end_edits();
+                        self.toasts.push(EDIT_DISCARDED, ToastKind::Warning);
                     }
                     // Forced: the close's write, or the read of one that was
                     // refused, can take a changed file's new stamp with it
@@ -5455,6 +5458,11 @@ impl App {
                     self.finish_sidebar_drag(false);
                     self.finish_manage_drag(false);
                     self.refresh_sidebar();
+                    // The Variable Manager caches the declarations it
+                    // shows; the re-read hands it the new ones (task #82).
+                    if self.screen == Screen::Manage {
+                        self.sync_varmanager();
+                    }
                     for w in warnings {
                         self.toasts.push(w, ToastKind::Warning);
                     }
@@ -5484,9 +5492,10 @@ impl App {
                 // spec, "Reload while the Settings tab is open"). The
                 // Variable Manager's input closes first (task #75): its
                 // commit finds its option by row, and the reload can
-                // renumber the rows. Closed here so a refusal stops the
-                // command with the typing kept; the forced re-read below
-                // would cancel it (task #78, `ReloadProjectFiles`).
+                // renumber the rows. Closed here, before the reload's own
+                // close, because this command changes state: a refusal
+                // stops it with the typing kept, where a reload alone
+                // cancels it (task #78, `ReloadProjectFiles`).
                 if !self.close_manager_input() {
                     self.last_action_failed = true;
                     return true;
