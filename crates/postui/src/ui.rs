@@ -249,10 +249,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     // The palette chip hides under a modal with chips of its own and
     // during a live row drag, for the same reason: its key is dead. The
-    // quit chip then advertises the modified combo, the one key that
-    // still pre-empts both.
+    // quit chip stays through a drag, advertising the modified combo, the
+    // one key that still pre-empts it.
     let drag_live = drag_live(app);
     let globals_live = app.modals.footer_chips().is_none() && !drag_live;
+    // No quit while a dialog is open (task #85), so no quit chip either.
+    let quit_live = app.modals.is_empty();
     // A plain `q` reaches the quit binding only in the arrows profile (vim
     // gave `q` up, plan M1 Deviation 4) and only where nothing consumes it
     // first: no modal (they capture all input), the Main screen (other
@@ -298,6 +300,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         pane.field_open,
         vm_chips,
         globals_live,
+        quit_live,
         plain_q_quits,
         vim_status.as_deref(),
         app.spell_ctx(),
@@ -1473,7 +1476,7 @@ mod tests {
         app.update(Action::PromptNewRequest);
         assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })));
         assert_eq!(header_keys(&app), (":w".to_string(), alt_d.clone()), "under a prompt");
-        app.push_modal(Modal::confirm("t", "b", Vec::new()));
+        app.push_modal(Modal::Confirm { title: "t".into(), body: "b".into(), choices: Vec::new() });
         assert_eq!(app.surface(), crate::keyroute::Surface::Dialog);
         assert_eq!(header_keys(&app), (":w".to_string(), alt_d.clone()), "under a confirm");
         app.update(Action::OpenPalette);

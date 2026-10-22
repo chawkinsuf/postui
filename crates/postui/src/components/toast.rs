@@ -87,6 +87,15 @@ impl Toasts {
         id
     }
 
+    /// [`Self::push`], unless the same message is already up: for a toast a
+    /// held key would otherwise repeat (task #85's "close the dialog
+    /// first").
+    pub fn push_once(&mut self, message: &str, kind: ToastKind) {
+        if !self.entries.iter().any(|t| t.message == message) {
+            self.push(message, kind);
+        }
+    }
+
     /// Whether toast `id` is still showing at `now`: in the list and not
     /// past its expiry, which the next tick would prune. A toast `draw`
     /// leaves off a screen too short for the whole stack still counts:

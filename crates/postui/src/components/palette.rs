@@ -356,8 +356,8 @@ pub fn all_commands() -> Vec<Command> {
             description: "Redo the last undone change",
             action: Action::Redo,
         },
-        // It meets the dirty gate even when vim's `:` line opened over a
-        // dialog, and asks again on the gate itself (`GatedQuit`).
+        // It meets the dirty gate, and is refused when vim's `:` line
+        // opened over a dialog (`GatedQuit`, task #85).
         Command { id: "quit", name: "Quit", description: "Exit postui", action: Action::GatedQuit },
     ]
 }

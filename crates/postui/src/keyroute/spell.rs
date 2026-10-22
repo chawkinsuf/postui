@@ -86,10 +86,11 @@ pub fn spell(at: SpellCtx, action: &Action, keymap: &Keymap) -> Option<String> {
 }
 
 /// What the quit chip runs at `at`: in vim where the line opens, the verb
-/// its keycap reads, so a click over a dialog meets the dirty gate as the
-/// typed one does: `:q` on the main screen, and on Manage, where `:q`
-/// closes the screen (`Action::CloseWindow`), `:qa`. Else `Quit`, whose
-/// keys are arrows' `q` and `^C` pressed twice (task #85).
+/// its keycap reads, so a click meets the dirty gate as the typed one
+/// does: `:q` on the main screen, and on Manage, where `:q` closes the
+/// screen (`Action::CloseWindow`), `:qa`. Else `Quit`, whose keys are
+/// arrows' `q` and `^C` pressed twice (task #85). The chip shows only with
+/// no dialog open, where no quit runs.
 pub fn quit_action(at: SpellCtx) -> Action {
     if at.profile != KeyProfile::Vim || !colon_applies(at) {
         Action::Quit

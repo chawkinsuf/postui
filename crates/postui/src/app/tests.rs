@@ -286,7 +286,7 @@ fn alt_shift(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT | KeyModifiers::SHIFT)
 }
 
-/// Task #85 R1: the first ctrl+c changes nothing but a toast; the second
+/// Task #85 R2: the first ctrl+c changes nothing but a toast; the second
 /// quits.
 #[test]
 fn the_first_ctrl_c_only_arms_the_quit() {
@@ -303,19 +303,72 @@ fn the_first_ctrl_c_only_arms_the_quit() {
     assert!(app.should_quit, "the second press quits");
 }
 
-/// Task #85 R1: over a dialog the first press leaves the dialog as it is.
+/// Task #85 R1: no quit while a dialog is open. ctrl+c, however often,
+/// leaves the dialog as it is, arms nothing and says why, once; after Esc
+/// closes the dialog, ctrl+c twice quits.
 #[test]
-fn the_first_ctrl_c_over_a_dialog_leaves_it_open() {
+fn ctrl_c_over_a_dialog_is_refused() {
     let mut app = App::new_for_test();
     app.update(Action::OpenPalette);
-    app.handle_key(ctrl('c'));
+    for _ in 0..10 {
+        app.handle_key(ctrl('c'));
+    }
     assert!(!app.should_quit);
     assert!(matches!(app.modals.top(), Some(Modal::Palette(_))), "the palette stays open");
+    assert_eq!(app.toasts.messages(), vec!["Close the dialog first (esc)"], "said once, no arm");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(ctrl('c'));
-    assert!(app.should_quit, "nothing unsaved: the second press quits");
+    app.handle_key(ctrl('c'));
+    assert!(app.should_quit, "the dialog resolved, ctrl+c twice quits");
 }
 
-/// Task #85 R2: a second press once the toast is gone only arms again.
+/// Task #85 R1: a dialog keeps its typing, and the unsaved-changes question
+/// does not open over it; Esc, then ctrl+c twice, meets the question.
+#[test]
+fn ctrl_c_twice_over_a_dialog_with_unsaved_edits_is_refused() {
+    use crate::components::modal::PromptKind;
+    let mut app = dirty_app();
+    app.modals.push(Modal::Prompt {
+        title: "Name".into(),
+        input: crate::components::line_input::LineInput::new("half-typed"),
+        kind: PromptKind::NewRequest,
+        revealed: false,
+    });
+    app.handle_key(ctrl('c'));
+    app.handle_key(ctrl('c'));
+    assert!(!app.should_quit);
+    assert_eq!(app.modals.iter().count(), 1, "no question over the dialog");
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+        panic!("the dialog stays");
+    };
+    assert_eq!(input.text(), "half-typed", "its typing intact");
+    app.modals.pop();
+    app.handle_key(ctrl('c'));
+    app.handle_key(ctrl('c'));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "the unsaved-changes question"
+    );
+}
+
+/// Task #85 R1: the quit chip, `Quit` and `GatedQuit` are refused under a
+/// dialog as ctrl+c is.
+#[test]
+fn every_gated_quit_is_refused_under_a_dialog() {
+    for quit in [Action::Quit, Action::GatedQuit] {
+        let mut app = dirty_app();
+        app.modals.push(Modal::Message { title: "About".into(), body: "hello".into() });
+        app.update(quit.clone());
+        assert!(!app.should_quit, "{quit:?}");
+        assert_eq!(app.modals.iter().count(), 1, "{quit:?}: no question over the dialog");
+    }
+    let mut app = dirty_app();
+    app.modals.push(Modal::Message { title: "About".into(), body: "hello".into() });
+    app.update(Action::ForceQuit);
+    assert!(app.should_quit, "a forcing quit is not one of them");
+}
+
+/// Task #85 R3: a second press once the toast is gone only arms again.
 #[test]
 fn a_late_second_ctrl_c_only_arms_again() {
     let mut app = App::new_for_test();
@@ -329,7 +382,7 @@ fn a_late_second_ctrl_c_only_arms_again() {
     assert!(app.should_quit);
 }
 
-/// Task #85 R2 (review round 2): the two presses are back to back. A key
+/// Task #85 R3 (review round 2): the two presses are back to back. A key
 /// or a click between them, or a different quit combo, takes the arm and
 /// its toast down, so the next press is a first one again.
 #[test]
@@ -353,35 +406,9 @@ fn anything_between_the_two_ctrl_c_presses_disarms() {
     assert!(app.should_quit, "the same combo again quits");
 }
 
-/// Task #85 R3/R4: ctrl+c twice over a dialog meets the unsaved-changes
-/// check, which opens over the dialog; cancelling it gives the dialog back
-/// with its typing.
-#[test]
-fn ctrl_c_twice_over_a_dialog_meets_the_unsaved_check_over_it() {
-    use crate::components::modal::PromptKind;
-    let mut app = dirty_app();
-    app.modals.push(Modal::Prompt {
-        title: "Name".into(),
-        input: crate::components::line_input::LineInput::new("half-typed"),
-        kind: PromptKind::NewRequest,
-        revealed: false,
-    });
-    app.handle_key(ctrl('c'));
-    app.handle_key(ctrl('c'));
-    assert!(!app.should_quit, "the check, not a quit");
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the unsaved-changes check");
-    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
-        panic!("cancelling the check goes back to the dialog");
-    };
-    assert_eq!(input.text(), "half-typed", "its typing intact");
-    assert!(!app.should_quit);
-}
-
-/// Task #85 R5 (review round 5): ctrl+c never discards. On the quit's own
-/// question a held or mashed ctrl+c neither quits nor stacks another
-/// question nor piles up toasts: the question shows its answers, and `d`
-/// is the way out without saving.
+/// Task #85 R4: ctrl+c never discards. The unsaved-changes question is a
+/// dialog, so a held or mashed ctrl+c stops on it: one question, nothing
+/// written; `d` is the way out without saving.
 #[test]
 fn ctrl_c_on_the_quit_question_never_discards() {
     let mut app = dirty_app();
@@ -392,35 +419,17 @@ fn ctrl_c_on_the_quit_question_never_discards() {
     }
     assert!(!app.should_quit, "a held ctrl+c stops at the question");
     assert_eq!(app.modals.iter().count(), 1, "one question, not a stack of them");
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { quit_gate: true, .. })));
-    assert!(app.toasts.is_empty(), "no arm, no pile: {:?}", app.toasts.messages());
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    assert_eq!(app.toasts.messages(), vec!["Close the dialog first (esc)"], "said once");
     app.handle_key(plain('d'));
     assert!(app.should_quit, "Discard leaves");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), saved, "nothing written");
 }
 
-/// Task #85 R5: only the quit's own question takes a quit as "already
-/// asking". It is marked where it is built, so another confirm that offers
-/// a quit answer gets the question over it like any dialog.
+/// Task #85 R1 ("no ^c ^c in dialogs"): the dialogs Esc cannot close are
+/// no exception; their own answers are the way out.
 #[test]
-fn only_the_quit_question_is_already_asking() {
-    let mut app = dirty_app();
-    app.push_modal(Modal::confirm(
-        "Other",
-        "b",
-        vec![('q', "Quit".into(), vec![Action::ForceQuit])],
-    ));
-    app.update(Action::Quit);
-    assert!(!app.should_quit, "not the quit's question: the question opens over it");
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { quit_gate: true, .. })));
-    app.update(Action::Quit);
-    assert!(!app.should_quit, "on the quit's question a quit only reminds");
-    assert_eq!(app.modals.iter().count(), 2, "no second question");
-}
-
-/// Task #85 R10: ctrl+c twice leaves each dialog that refuses Esc.
-#[test]
-fn ctrl_c_twice_quits_from_the_dialogs_esc_cannot_close() {
+fn ctrl_c_twice_is_refused_by_the_dialogs_esc_cannot_close() {
     let dir = tempfile::tempdir().unwrap();
     for modal in [
         Modal::ConfigStartup { error: "bad".into() },
@@ -434,9 +443,9 @@ fn ctrl_c_twice_quits_from_the_dialogs_esc_cannot_close() {
         let mut app = App::new_for_test();
         app.modals.push(modal);
         app.handle_key(ctrl('c'));
-        assert!(!app.should_quit);
         app.handle_key(ctrl('c'));
-        assert!(app.should_quit);
+        assert!(!app.should_quit);
+        assert_eq!(app.modals.iter().count(), 1, "the dialog stays");
     }
 }
 
@@ -3876,22 +3885,18 @@ fn quitting_clean_needs_no_confirm() {
     assert!(app.modals.is_empty());
 }
 
-/// Task #85 R3/R5: a quit with a dialog open meets the unsaved-changes
-/// gate like any other, and a quit asked on the gate itself only reminds:
-/// the gate's own answers are the way out, so a dirty editor never traps
-/// the user and never loses its edits to a repeated quit.
+/// Task #85 R4: a quit asked on the unsaved-changes gate is refused like
+/// one over any dialog, so a dirty editor never loses its edits to a
+/// repeated quit; the gate's own answers are the way out.
 #[test]
-fn quit_with_a_modal_open_meets_the_gate_and_a_second_quit_waits_for_it() {
+fn a_second_quit_on_the_gate_waits_for_its_answer() {
     let mut app = dirty_app();
-    app.modals.push(crate::components::modal::Modal::Message {
-        title: "About".into(),
-        body: "hello".into(),
-    });
     app.update(Action::Quit);
     assert!(!app.should_quit, "the gate, not a quit");
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the gate over the dialog");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the gate");
     app.update(Action::Quit);
     assert!(!app.should_quit, "a quit on the gate waits for its answer");
+    assert_eq!(app.modals.iter().count(), 1, "no second gate");
     app.handle_key(plain('d'));
     assert!(app.should_quit, "Discard leaves");
 }
@@ -14613,7 +14618,7 @@ fn opening_a_legacy_project_offers_the_migration_and_lists_its_notes() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let app = App::with_root(tx, dir.path().to_path_buf());
 
-    let Some(Modal::Confirm { title, body, choices, .. }) = app.modals.top() else {
+    let Some(Modal::Confirm { title, body, choices }) = app.modals.top() else {
         panic!("a legacy project must offer the migration");
     };
     assert_eq!(title, "Migrate variables");
@@ -16193,11 +16198,11 @@ fn the_quit_chip_shows_ctrl_c_wherever_plain_q_would_type() {
     let content = rendered_text(&mut app);
     assert!(content.contains("^C  quit"), "{content}");
 
-    // A modal captures everything; only the modified combo quits.
+    // No quit runs under a dialog (task #85), so no quit chip either.
     app.focus = PaneId::Sidebar;
     app.update(Action::PromptNewRequest);
     let content = rendered_text(&mut app);
-    assert!(content.contains("^C  quit"), "{content}");
+    assert!(!content.contains(" quit"), "{content}");
     // A one-field prompt's Esc cancels it (spec §10 open question 2).
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
@@ -24524,7 +24529,10 @@ fn a_quit_during_a_drag_ends_it_so_the_question_answers() {
     app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     assert!(app.sidebar.drag.is_none(), "the drag ended, cancelled");
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { quit_gate: true, .. })));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "the unsaved-changes question"
+    );
     app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
     assert!(app.should_quit, "the question takes its own keys");
 }
@@ -28737,13 +28745,20 @@ fn chipped_dialog() -> Modal {
 }
 
 /// A gap between the footer's chips, with a dialog open: a point on the
-/// quit chip's row that registers no hit, past the first chip.
+/// chips' row that registers no hit, past the first chip. (No quit chip
+/// shows under a dialog, task #85, so the row is found by any chip on
+/// `render_once`'s 120×40 screen.)
 fn bare_point(app: &mut App) -> (u16, u16) {
     render_once(app);
-    let quit = app.hits.rect_of(&Hit::FooterChip(Action::Quit)).expect("the quit chip");
-    let y = quit.y + quit.height / 2;
-    let first_chip = (0..quit.x).find(|x| app.hits.hit_at(*x, y).is_some()).expect("a chip");
-    let x = (first_chip..quit.x)
+    let (first_chip, y) = (0..40u16)
+        .rev()
+        .find_map(|y| {
+            (0..120u16)
+                .find(|x| matches!(app.hits.hit_at(*x, y), Some(Hit::FooterChip(_))))
+                .map(|x| (x, y))
+        })
+        .expect("a footer chip");
+    let x = (first_chip..120)
         .find(|x| app.hits.hit_at(*x, y).is_none())
         .expect("a gap between the footer's chips");
     (x, y)
@@ -29257,26 +29272,25 @@ fn copy_clicked_in_a_live_manager_cells_menu_copies_its_selection() {
     assert!(app.varmanager.grid.editing.is_some(), "the cell is still open");
 }
 
-/// The footer's quit chip shows under every dialog but is the app's
-/// (task #73's one exception to the dialog rule): its click away commits
-/// the Settings field before quitting. Quitting over a dialog is #74's.
-/// Under a dialog the chip is `Quit` in vim too (`:` does not apply
-/// there, `spell::quit_action`).
+/// The footer's quit chip commits a live Settings field before quitting
+/// (task #73). It shows only with no dialog open (task #85: no quit runs
+/// under one), so a dialog never has it to click.
 #[test]
-fn the_quit_chip_under_a_dialog_still_commits_the_settings_field() {
+fn the_quit_chip_commits_the_settings_field() {
     use crate::components::manage::ManageTab;
     use crate::components::settings::SettingsField;
-    for profile in [crate::config::KeyProfile::Arrows, crate::config::KeyProfile::Vim] {
-        let mut app = App::new_for_test();
-        let _dir = config_at_tempdir(&mut app);
-        app.use_profile(profile);
-        app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
-        app.settings.begin_edit(SettingsField::AiCmd, "llm --pipe");
-        app.push_modal(Modal::Message { title: "note".into(), body: "hello".into() });
-        click_hit(&mut app, Hit::FooterChip(Action::Quit));
-        assert!(app.should_quit, "{profile:?}");
-        assert_eq!(app.ui_settings.ai_cmd, "llm --pipe", "{profile:?}: committed before the quit");
-    }
+    let mut app = App::new_for_test();
+    let _dir = config_at_tempdir(&mut app);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    app.settings.begin_edit(SettingsField::AiCmd, "llm --pipe");
+    click_hit(&mut app, Hit::FooterChip(Action::Quit));
+    assert!(app.should_quit);
+    assert_eq!(app.ui_settings.ai_cmd, "llm --pipe", "committed before the quit");
+    let mut app = App::new_for_test();
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    app.push_modal(Modal::Message { title: "note".into(), body: "hello".into() });
+    render_once(&mut app);
+    assert!(app.hits.rect_of(&Hit::FooterChip(Action::Quit)).is_none(), "no chip under a dialog");
 }
 
 /// Plan M1 Deviation 2: an unset `keymap` runs arrows until the

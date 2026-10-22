@@ -63,9 +63,8 @@ pub(super) fn count_clicks(
 }
 
 /// The footer's quit chip, whichever quit the profile and surface spell it
-/// as (`spell::quit_action`). It is the app's on every screen and under
-/// every dialog: the testbed lets only it through, and the dialog rule
-/// lets its click away commit before the quit.
+/// as (`spell::quit_action`). It is the app's on every screen, so the
+/// testbed lets only it through.
 fn is_quit_chip(hit: &Hit) -> bool {
     matches!(
         hit,
@@ -1248,12 +1247,9 @@ impl App {
         // while the hit comes from the last frame, which is what every
         // click path relies on: the loop redraws after any event that
         // reports a change.
-        //
-        // The footer's quit chip is the one exception: it shows under every
-        // dialog but is the app's, so its click away runs and commits a
-        // live Settings field before the quit. (Under a dialog that chip is
-        // `Quit`, which meets the dirty gate over the dialog; task #85.)
-        let in_dialog = !self.modals.is_empty() && !is_quit_chip(&hit);
+        // (The footer's quit chip, once its exception, is not drawn under a
+        // dialog since task #85: no quit runs under one.)
+        let in_dialog = !self.modals.is_empty();
         // A click anywhere that isn't the params/headers table itself (and
         // isn't in a dialog) is a click away: it commits whatever cell was
         // being edited (typing is never silently thrown away) and clears

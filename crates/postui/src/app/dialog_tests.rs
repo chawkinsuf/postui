@@ -92,14 +92,14 @@ fn close_field_closes_a_dialog_field_and_keeps_the_dialog() {
 fn a_confirm_answers_letters_and_ignores_moves() {
     for profile in [KeyProfile::Vim, KeyProfile::Arrows] {
         let mut app = app_in(Fixture::SidebarThree, profile);
-        app.push_modal(Modal::confirm(
-            "Sure?",
-            "b",
-            vec![
+        app.push_modal(Modal::Confirm {
+            title: "Sure?".into(),
+            body: "b".into(),
+            choices: vec![
                 ('y', "Yes".into(), vec![Action::ShowToast("yes".into(), ToastKind::Info)]),
                 ('n', "No".into(), vec![]),
             ],
-        ));
+        });
         feed(&mut app, "jx");
         assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "{profile:?}");
         feed(&mut app, "y");

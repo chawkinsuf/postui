@@ -641,14 +641,14 @@ pub(super) fn build(f: Fixture) -> App {
                 ));
             }
             if matches!(f, ConfirmYesNo) {
-                app.push_modal(Modal::confirm(
-                    "Sure?",
-                    "b",
-                    vec![
+                app.push_modal(Modal::Confirm {
+                    title: "Sure?".into(),
+                    body: "b".into(),
+                    choices: vec![
                         ('y', "Yes".into(), vec![Action::ShowToast("yes".into(), ToastKind::Info)]),
                         ('n', "No".into(), vec![]),
                     ],
-                ));
+                });
             }
         }
         TableThreeHeaders | TableAfterDelete | Method | UrlLine => {

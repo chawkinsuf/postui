@@ -505,15 +505,6 @@ pub enum Modal {
         title: String,
         body: String,
         choices: Vec<(char, String, Vec<Action>)>,
-        /// The quit's own unsaved-changes question (`App::quit_gate`): a
-        /// quit asked on it waits for one of its answers (task #85 R5),
-        /// rather than stacking a second question. False on every
-        /// other confirm, which [`Modal::confirm`] builds. A flag on the
-        /// question itself (the user's call for an explicit mark) rather
-        /// than its own variant, which would repeat every Confirm arm for
-        /// keys, drawing and chips, or an id on `App`, which goes stale as
-        /// the stack changes.
-        quit_gate: bool,
     },
     /// A single-line text prompt (new request name, rename, save-as).
     /// `Enter` on non-empty text closes and dispatches the action matching
@@ -700,16 +691,6 @@ impl FormButton {
 }
 
 impl Modal {
-    /// A plain confirm: every one but the quit's own question, the only
-    /// one built with `quit_gate: true` (`App::quit_gate`).
-    pub fn confirm(
-        title: impl Into<String>,
-        body: impl Into<String>,
-        choices: Vec<(char, String, Vec<Action>)>,
-    ) -> Self {
-        Modal::Confirm { title: title.into(), body: body.into(), choices, quit_gate: false }
-    }
-
     /// The modals with text fields and a Cancel/Confirm row: Esc in a
     /// field lands on that row rather than closing the modal.
     pub fn is_form(&self) -> bool {
@@ -2799,7 +2780,7 @@ impl ModalStack {
                 );
                 hits.register(btn_area, crate::hit::Hit::ModalConfirm);
             }
-            Modal::Confirm { title, body, choices, .. } => {
+            Modal::Confirm { title, body, choices } => {
                 let area = centered_rect(screen, 60.min(screen.width), 13.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
                 paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
@@ -4138,11 +4119,11 @@ mod tests {
         assert!(!content.contains("enter confirm"), "{content}");
 
         let mut m = ModalStack::default();
-        m.push(Modal::confirm(
-            "Unsaved changes",
-            "Save before closing?",
-            vec![('s', "Save".into(), vec![])],
-        ));
+        m.push(Modal::Confirm {
+            title: "Unsaved changes".into(),
+            body: "Save before closing?".into(),
+            choices: vec![('s', "Save".into(), vec![])],
+        });
         let content = draw_modal(&mut m);
         assert!(!content.contains("esc cancel"), "{content}");
 
@@ -4164,11 +4145,11 @@ mod tests {
     #[test]
     fn confirm_modal_footer_chips_advertise_each_choice_key() {
         let mut m = ModalStack::default();
-        m.push(Modal::confirm(
-            "Discard changes",
-            "Revert?",
-            vec![('d', "Discard changes".into(), vec![]), ('k', "Keep".into(), vec![])],
-        ));
+        m.push(Modal::Confirm {
+            title: "Discard changes".into(),
+            body: "Revert?".into(),
+            choices: vec![('d', "Discard changes".into(), vec![]), ('k', "Keep".into(), vec![])],
+        });
         let chips = spelled(m.footer_chips().expect("a confirm supplies chips"));
         assert!(chips.iter().any(|(k, l, a)| k == "d" && l == "discard changes" && a.is_none()));
         assert!(chips.iter().any(|(k, l, _)| k == "k" && l == "keep"));
@@ -4602,11 +4583,14 @@ mod tests {
     #[test]
     fn confirm_modal_paints_capped_buttons_on_the_panel_it_floats_in() {
         let mut m = ModalStack::default();
-        m.push(Modal::confirm(
-            "Delete request?",
-            "This cannot be undone.",
-            vec![('n', "Cancel".into(), vec![]), ('y', "Delete".into(), vec![Action::Quit])],
-        ));
+        m.push(Modal::Confirm {
+            title: "Delete request?".into(),
+            body: "This cannot be undone.".into(),
+            choices: vec![
+                ('n', "Cancel".into(), vec![]),
+                ('y', "Delete".into(), vec![Action::Quit]),
+            ],
+        });
         let theme = Theme::dark();
         let keymap = crate::keys::Keymap::default_bindings();
         let backend = TestBackend::new(80, 24);
@@ -5239,11 +5223,11 @@ mod tests {
     fn a_dialogs_answer_letters() {
         let mut m = ModalStack::default();
         assert!(m.answer_letters().is_empty());
-        m.push(Modal::confirm(
-            "t",
-            "b",
-            vec![('y', "Yes".into(), vec![]), ('n', "No".into(), vec![])],
-        ));
+        m.push(Modal::Confirm {
+            title: "t".into(),
+            body: "b".into(),
+            choices: vec![('y', "Yes".into(), vec![]), ('n', "No".into(), vec![])],
+        });
         assert_eq!(m.answer_letters(), vec!['y', 'n']);
         m.push(Modal::KeymapChoice { aimed: None });
         assert_eq!(m.answer_letters(), vec!['a', 'v']);
@@ -6071,7 +6055,7 @@ mod tests {
             spelled(m.footer_chips().unwrap()).iter().any(|(k, l, _)| k == "esc" && l == "close")
         );
         let mut m = ModalStack::default();
-        m.push(Modal::confirm("?", "", vec![]));
+        m.push(Modal::Confirm { title: "?".into(), body: String::new(), choices: vec![] });
         assert!(
             spelled(m.footer_chips().unwrap()).iter().any(|(k, l, _)| k == "esc" && l == "cancel")
         );
@@ -6133,7 +6117,7 @@ mod tests {
     #[test]
     fn pickers_and_confirms_still_close_on_one_esc() {
         let mut m = ModalStack::default();
-        m.push(Modal::confirm("?", "", vec![]));
+        m.push(Modal::Confirm { title: "?".into(), body: String::new(), choices: vec![] });
         assert!(m.handle_key(key(KeyCode::Esc)).unwrap().close);
         let mut m = ModalStack::default();
         m.push(Modal::Chooser(crate::components::chooser::ChooserState::new("Pick", vec![])));

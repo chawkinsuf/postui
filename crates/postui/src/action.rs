@@ -108,11 +108,10 @@ pub enum Action {
     /// Quit without the unsaved-changes gate — what the gate's own choices
     /// dispatch once the user has decided.
     ForceQuit,
-    /// `:q` (spec §5.9): `Quit` behind the unsaved-changes gate whatever
-    /// is open under the line, a dialog included; the line's way out is
-    /// `:q!` (the final review's I-1). Since task #85 `Quit` meets the gate
-    /// the same way, and on the quit's own gate both wait for its answer:
-    /// a quit never discards edits by itself.
+    /// `:q` (spec §5.9): `Quit` behind the unsaved-changes gate; the
+    /// line's way out is `:q!` (the final review's I-1). Since task #85
+    /// both are refused while a dialog is open, the gate included, so a
+    /// quit never discards edits by itself; the two now act alike.
     GatedQuit,
     /// `ZZ`, `:wq`, `:x` (spec §5.9, §5.11): quit, saving first when the
     /// request has unsaved edits. A never-saved request asks for a name;

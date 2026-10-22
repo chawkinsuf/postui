@@ -37,6 +37,9 @@ const NO_PROJECT: &str = "no project is open";
 /// typing were still there to fix.
 const EDIT_DISCARDED: &str = "Edit discarded — the project was re-read from disk";
 
+/// What a quit refused under a dialog toasts (task #85).
+const CLOSE_THE_DIALOG_FIRST: &str = "Close the dialog first (esc)";
+
 /// Wall-clock dwell the caret must rest inside a `{{token}}` before its
 /// tooltip appears -- matching the original 2 ticks @ the tick's nominal
 /// 100ms period. Wall-clock rather than tick-counted because the tick
@@ -670,14 +673,14 @@ impl App {
                     Some(fallback) => vec![Action::SwitchProject(fallback)],
                     None => vec![],
                 };
-                app.push_modal(Modal::confirm(
-                    "Not a postui project",
-                    format!("{path} has no project.toml — create one here?"),
-                    vec![
+                app.push_modal(Modal::Confirm {
+                    title: "Not a postui project".into(),
+                    body: format!("{path} has no project.toml — create one here?"),
+                    choices: vec![
                         ('y', "Create project".into(), vec![Action::InitProjectHere]),
                         ('n', "Open default project".into(), fallback_actions),
                     ],
-                ));
+                });
             }
             StartupDisposition::OpenAsIs { register } => {
                 if !Project::is_project(&root) {
@@ -1027,14 +1030,14 @@ impl App {
         if let Some(rest) = outcome.notes.len().checked_sub(SHOWN).filter(|n| *n > 0) {
             lines.push(format!("\u{2022} \u{2026} and {rest} more"));
         }
-        self.push_modal(Modal::confirm(
-            MIGRATION_TITLE,
-            lines.join("\n"),
-            vec![
+        self.push_modal(Modal::Confirm {
+            title: MIGRATION_TITLE.into(),
+            body: lines.join("\n"),
+            choices: vec![
                 ('n', "Not now".into(), vec![Action::DeclineMigration]),
                 ('y', "Migrate".into(), vec![Action::ApplyMigration]),
             ],
-        ));
+        });
     }
 
     /// Applies a freshly loaded `UiSettings` (and the `Theme` derived from
@@ -2760,27 +2763,23 @@ impl App {
 
     fn apply(&mut self, action: Action) -> bool {
         match action {
-            // A quit asked on the quit's own unsaved-changes question is
-            // already being asked, so it does nothing (task #85 R5): the
-            // question shows its answers, in the dialog and the footer. A
-            // quit never discards edits by itself, so a held or mashed
-            // ctrl+c stops here until someone reads the question; `d` is
-            // the way out without saving (the user: "lets not let ^C again
-            // discard changes"). Nothing is toasted either, which a held
-            // key would pile up. The question is marked where it is built
-            // (`quit_gate`); over any other dialog a quit meets the gate,
-            // as below.
-            Action::Quit | Action::GatedQuit if self.quit_question_up() => false,
+            // No quit while a dialog is open (task #85: "The dialog must be
+            // resolved and then the application can be quit"): ctrl+c, the
+            // quit chip, `:q` and the palette's Quit row are all refused,
+            // so the dialog keeps its typing and its question. The
+            // unsaved-changes question is a dialog too, so a held or
+            // mashed ctrl+c stops on it; `d` is the way out without saving
+            // ("lets not let ^C again discard changes"). The toast shows
+            // once however often the key repeats. The forcing quits
+            // (`ForceQuit`: `:q!`, `ZQ`) and the saving ones (`WriteQuit`)
+            // are not these actions.
+            Action::Quit | Action::GatedQuit if !self.modals.is_empty() => {
+                self.toasts.push_once(CLOSE_THE_DIALOG_FIRST, ToastKind::Info);
+                true
+            }
             // An unsaved request gates quitting behind the same confirm as
-            // opening/switching away from it, with a dialog open or not
-            // (task #85): the confirm opens over the dialog, whose typing a
-            // cancel gives back. (An open input closes, saved, on the way
-            // out: task #75.) `:q` meets it the same way. Quitting
-            // leaves the request, so an open cell commits first even under
-            // a dialog that acts on it (extract, the var picker): after a
-            // Cancel that dialog finds no open field and says so, but the
-            // typing is kept and undoable. Counting the uncommitted cell
-            // instead is the draft state spec 2026-10-19 rules out.
+            // opening/switching away from it. (An open input closes, saved,
+            // on the way out: task #75.)
             Action::Quit | Action::GatedQuit if self.leaving_unsaved() => {
                 // A live row drag owns the keyboard (Esc and the quit combo
                 // aside), so it would swallow the question's answers and
@@ -2788,7 +2787,7 @@ impl App {
                 // a quit closes what is open before it asks (task #85).
                 self.finish_sidebar_drag(false);
                 self.finish_manage_drag(false);
-                self.quit_gate();
+                self.dirty_gate("quit", Action::ForceQuit);
                 true
             }
             Action::DiscardChanges => {
@@ -2932,11 +2931,11 @@ impl App {
                         "Replaces keys.toml with the default, fully commented keymap.".to_string(),
                     ),
                 };
-                self.push_modal(Modal::confirm(
+                self.push_modal(Modal::Confirm {
                     title,
                     body,
-                    vec![('r', "Reset".into(), vec![Action::ForceResetConfigFile(file)])],
-                ));
+                    choices: vec![('r', "Reset".into(), vec![Action::ForceResetConfigFile(file)])],
+                });
                 true
             }
             Action::ForceResetConfigFile(file) => {
@@ -3062,9 +3061,7 @@ impl App {
             }
             // A quit closes the open inputs first, saved (`leaving_unsaved`
             // did when the gate above ran); a refused close never stops a
-            // quit, or a bad value could hold the app open. (A quit on the
-            // quit's own question does nothing, above: that is a question
-            // waiting for its answer, not a refusal.) `ForceQuit` abandons them:
+            // quit, or a bad value could hold the app open. `ForceQuit` abandons them:
             // vim's `:qa!`, and a gate's answer, which finds them closed.
             Action::Quit | Action::GatedQuit => {
                 self.close_open_inputs(true);
@@ -3331,14 +3328,14 @@ impl App {
                                 .unwrap_or_else(|| path.display().to_string());
                             let mut on_yes = close_picker();
                             on_yes.push(write);
-                            self.push_modal(Modal::confirm(
-                                "File exists",
-                                format!("overwrite {name}?"),
-                                vec![
+                            self.push_modal(Modal::Confirm {
+                                title: "File exists".into(),
+                                body: format!("overwrite {name}?"),
+                                choices: vec![
                                     ('y', "Overwrite".into(), on_yes),
                                     ('n', "Cancel".into(), vec![]),
                                 ],
-                            ));
+                            });
                             return true;
                         }
                         for a in close_picker() {
@@ -4335,14 +4332,14 @@ impl App {
                 }
                 let body = self.editor.body_text();
                 if !body.is_empty() && postui_core::json::validate(&body).is_err() {
-                    self.push_modal(Modal::confirm(
-                        "Invalid body",
-                        "Body is not valid JSON — send anyway?",
-                        vec![
+                    self.push_modal(Modal::Confirm {
+                        title: "Invalid body".into(),
+                        body: "Body is not valid JSON — send anyway?".into(),
+                        choices: vec![
                             ('y', "Send anyway".into(), vec![Action::ForceSend]),
                             ('n', "Cancel".into(), vec![]),
                         ],
-                    ));
+                    });
                     return true;
                 }
                 self.apply(Action::ForceSend)
@@ -4865,14 +4862,14 @@ impl App {
                     self.apply(Action::SwitchProject(path));
                 } else {
                     let display = path.display().to_string();
-                    self.push_modal(Modal::confirm(
-                        "Not a postui project",
-                        format!("create project at {display}?"),
-                        vec![
+                    self.push_modal(Modal::Confirm {
+                        title: "Not a postui project".into(),
+                        body: format!("create project at {display}?"),
+                        choices: vec![
                             ('y', "Create".into(), vec![Action::CreateProjectAt(path)]),
                             ('n', "Cancel".into(), vec![]),
                         ],
-                    ));
+                    });
                 }
                 true
             }
@@ -5218,12 +5215,12 @@ impl App {
                     return self.dispatch(Action::RunJqDescribe(sentence));
                 }
                 let program = crate::ai::program_name(&self.ui_settings.ai_cmd).to_string();
-                self.push_modal(Modal::confirm(
-                    "Send to AI?",
-                    format!(
+                self.push_modal(Modal::Confirm {
+                    title: "Send to AI?".into(),
+                    body: format!(
                         "The response's structure (key names and types, no values) will be sent to `{program}`."
                     ),
-                    vec![
+                    choices: vec![
                         ('s', "Send once".into(), vec![Action::RunJqDescribe(sentence.clone())]),
                         (
                             'a',
@@ -5232,7 +5229,7 @@ impl App {
                         ),
                         ('n', "Cancel".into(), vec![]),
                     ],
-                ));
+                });
                 true
             }
             Action::SetAiConfirmed => {
@@ -6205,11 +6202,11 @@ impl App {
                     ));
                 }
                 choices.push(('c', "Cancel".to_string(), vec![]));
-                self.push_modal(Modal::confirm(
-                    format!("Promote {name}"),
-                    "Where should the value land?",
+                self.push_modal(Modal::Confirm {
+                    title: format!("Promote {name}"),
+                    body: "Where should the value land?".into(),
                     choices,
-                ));
+                });
                 true
             }
             Action::VarStruct(op) => {
@@ -8022,10 +8019,10 @@ impl App {
                     lines.join("\n")
                 )
             };
-            self.push_modal(Modal::confirm(
-                format!("Un-mark {name} as secret"),
+            self.push_modal(Modal::Confirm {
+                title: format!("Un-mark {name} as secret"),
                 body,
-                vec![
+                choices: vec![
                     ('n', "Cancel".into(), vec![]),
                     (
                         'y',
@@ -8033,7 +8030,7 @@ impl App {
                         vec![Action::VarStruct(VarStructOp::ToggleSecret { name })],
                     ),
                 ],
-            ));
+            });
         } else {
             let mut envs_with_values: Vec<String> = Vec::new();
             for env in self.environments().to_vec() {
@@ -8050,10 +8047,10 @@ impl App {
                     envs_with_values.join(", ")
                 )
             };
-            self.push_modal(Modal::confirm(
-                format!("Mark {name} as secret"),
+            self.push_modal(Modal::Confirm {
+                title: format!("Mark {name} as secret"),
                 body,
-                vec![
+                choices: vec![
                     ('n', "Cancel".into(), vec![]),
                     (
                         'y',
@@ -8061,7 +8058,7 @@ impl App {
                         vec![Action::VarStruct(VarStructOp::ToggleSecret { name })],
                     ),
                 ],
-            ));
+            });
         }
     }
 
@@ -8639,7 +8636,7 @@ impl App {
             choices.push(('r', "Reload from disk".to_string(), vec![Action::ReloadOpenRequest]));
         }
         choices.push(('c', "Cancel".to_string(), vec![]));
-        self.push_modal(Modal::confirm(title, body, choices));
+        self.push_modal(Modal::Confirm { title, body, choices });
         self.last_action_failed = true;
         true
     }
@@ -9516,37 +9513,12 @@ impl App {
         self.dirty_gate_split(verb, then.clone(), then);
     }
 
-    /// The quit's own unsaved-changes question, marked (`quit_gate`) so a
-    /// quit asked on it waits for its answer (task #85 R5).
-    fn quit_gate(&mut self) {
-        let question = self.unsaved_question("quit", Action::ForceQuit, Action::ForceQuit, true);
-        self.push_modal(question);
-    }
-
-    /// Whether the quit's own unsaved-changes question is the top dialog.
-    fn quit_question_up(&self) -> bool {
-        matches!(self.modals.top(), Some(Modal::Confirm { quit_gate: true, .. }))
-    }
-
     /// `dirty_gate` for a follow-on that does not replace the editor by
     /// itself: Discard runs `discard_then`, which has to throw the edits
     /// away on its own.
     fn dirty_gate_split(&mut self, verb: &str, then: Action, discard_then: Action) {
-        let question = self.unsaved_question(verb, then, discard_then, false);
-        self.push_modal(question);
-    }
-
-    /// The unsaved-changes confirm every gate shows; `quit_gate` marks the
-    /// quit's own (only `quit_gate` passes true).
-    fn unsaved_question(
-        &self,
-        verb: &str,
-        then: Action,
-        discard_then: Action,
-        quit_gate: bool,
-    ) -> Modal {
         if self.editor.slug.is_none() {
-            return Modal::Confirm {
+            self.push_modal(Modal::Confirm {
                 title: "Unsaved request".into(),
                 body: "This request has never been saved.".into(),
                 choices: vec![
@@ -9557,11 +9529,11 @@ impl App {
                     ),
                     ('d', "Discard request".into(), vec![discard_then]),
                 ],
-                quit_gate,
-            };
+            });
+            return;
         }
         let current = self.editor.slug.clone().unwrap_or_default();
-        Modal::Confirm {
+        self.push_modal(Modal::Confirm {
             title: "Unsaved changes".into(),
             body: format!("\"{current}\" has unsaved changes."),
             choices: vec![
@@ -9575,8 +9547,7 @@ impl App {
                 ),
                 ('d', "Discard changes".into(), vec![discard_then]),
             ],
-            quit_gate,
-        }
+        });
     }
 
     /// Shared validate/exists-check/save/refresh/open path for `CreateRequest`
@@ -10454,8 +10425,9 @@ impl App {
     /// every mouse press calls it first, so a quit's two presses are back
     /// to back: a key or a click between them, a copy included, makes the
     /// next press a first one again. Input that is neither (a paste, the
-    /// wheel, focus, a response landing) leaves the arm: none of it can
-    /// open the unsaved-changes gate, so the second press still meets it.
+    /// wheel, focus, a response landing) leaves the arm: if it opened a
+    /// dialog, the second press is refused like any quit under one, and
+    /// otherwise the quit still meets the unsaved-changes gate.
     fn disarm_quit(&mut self) -> Option<KeyCombo> {
         let (id, combo) = self.quit_armed.take()?;
         // An expired toast is left to the tick's prune, which redraws; a
@@ -10495,23 +10467,24 @@ impl App {
         // meaning) and quit keeps working the moment nothing is selected.
         // It quits on a second press of the same combo, right after the
         // first and while its toast shows (task #85): the first changes
-        // nothing, so a stray ctrl+c costs no dialog, field or drag. The
-        // toast is the arm (`disarm_quit`), so it never outlives it. The
-        // quit itself meets the unsaved-changes check like any other.
+        // nothing, so a stray ctrl+c costs no field or drag. The toast is
+        // the arm (`disarm_quit`), so it never outlives it. With a dialog
+        // open there is no quit to arm: the press goes to `Quit`, which
+        // refuses it. The quit itself meets the unsaved-changes check.
         if modified && global == Some(Action::Quit) {
             if let Some(text) = self.active_selection_text() {
                 self.copy_text_with_toast(&text, "Copied selection".to_string());
                 return router::Ran::routed(true);
             }
-            // On the quit's own question a quit waits for its answer (R5),
-            // so a press there goes straight to it: arming would promise a
-            // quit the second press cannot make.
-            if armed == Some(&combo) || self.quit_question_up() {
+            if armed == Some(&combo) {
                 return router::Ran::routed(self.update(Action::Quit));
             }
             // A half-typed key goes, as Vim's ctrl+c cancels it: `d`
             // ctrl+c `d` is not `dd`.
             self.vim_drop_pending();
+            if !self.modals.is_empty() {
+                return router::Ran::routed(self.update(Action::Quit));
+            }
             let key = crate::keys::format_combo(&combo);
             let id = self.toasts.push_id(format!("Press {key} again to quit"), ToastKind::Info);
             self.quit_armed = Some((id, combo));
