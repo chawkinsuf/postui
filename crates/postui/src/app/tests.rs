@@ -395,6 +395,24 @@ fn ctrl_c_twice_on_the_quit_check_leaves_without_saving() {
     assert_eq!(std::fs::read_to_string(&file).unwrap(), saved, "nothing written");
 }
 
+/// Task #85 R5: only the quit's own question is "quit anyway". It is
+/// marked where it is built, so another confirm that offers a quit answer
+/// gets the gate over it like any dialog.
+#[test]
+fn only_the_quit_gate_is_quit_anyway() {
+    let mut app = dirty_app();
+    app.push_modal(Modal::confirm(
+        "Other",
+        "b",
+        vec![('q', "Quit".into(), vec![Action::ForceQuit])],
+    ));
+    app.update(Action::Quit);
+    assert!(!app.should_quit, "not the quit's question: the gate opens over it");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { quit_gate: true, .. })));
+    app.update(Action::Quit);
+    assert!(app.should_quit, "on the quit's question, quit anyway");
+}
+
 /// Task #85 R10: ctrl+c twice leaves each dialog that refuses Esc.
 #[test]
 fn ctrl_c_twice_quits_from_the_dialogs_esc_cannot_close() {
@@ -14587,7 +14605,7 @@ fn opening_a_legacy_project_offers_the_migration_and_lists_its_notes() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let app = App::with_root(tx, dir.path().to_path_buf());
 
-    let Some(Modal::Confirm { title, body, choices }) = app.modals.top() else {
+    let Some(Modal::Confirm { title, body, choices, .. }) = app.modals.top() else {
         panic!("a legacy project must offer the migration");
     };
     assert_eq!(title, "Migrate variables");

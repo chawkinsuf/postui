@@ -1473,7 +1473,7 @@ mod tests {
         app.update(Action::PromptNewRequest);
         assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })));
         assert_eq!(header_keys(&app), (":w".to_string(), alt_d.clone()), "under a prompt");
-        app.push_modal(Modal::Confirm { title: "t".into(), body: "b".into(), choices: Vec::new() });
+        app.push_modal(Modal::confirm("t", "b", Vec::new()));
         assert_eq!(app.surface(), crate::keyroute::Surface::Dialog);
         assert_eq!(header_keys(&app), (":w".to_string(), alt_d.clone()), "under a confirm");
         app.update(Action::OpenPalette);

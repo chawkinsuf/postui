@@ -76,6 +76,17 @@ Spec rows this replaces (each gets a dated amendment pointing here):
   check → `ForceQuit`. "Is the quit's check" reads the dialog itself: a
   `Confirm` with a `[ForceQuit]` choice, which only `dirty_gate("quit",
   ForceQuit)` builds (both its named and never-saved forms).
+- **Amended after review block 1 (2026-10-22, `you`: "i do like having
+  it more expicit"):** the quit's question is marked, not recognised by
+  its answers. `Modal::Confirm` gains `quit_gate: bool`, true only on the
+  question `App::quit_gate` builds (through the same builder as every
+  dirty gate, `push_dirty_gate`). Every other confirm is built with
+  `Modal::confirm(title, body, choices)`, which sets it false, so it
+  defaults to false in all but name (Rust's default field values are
+  still unstable; `you` asked "couldnt it just default to false?"). The
+  R5 arm matches `Confirm { quit_gate: true, .. }`. This replaces reading
+  a bare `[ForceQuit]` answer, which a later dialog could match by
+  accident; a test pins that such a dialog now gets the gate.
 - **Removed:** the modal exemption, and the comments that explain it
   (`apply`, `Action::GatedQuit`'s doc, `spell::quit_action`, footer and
   `ui.rs` notes on `^C` pre-empting).

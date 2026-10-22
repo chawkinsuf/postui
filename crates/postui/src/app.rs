@@ -670,14 +670,14 @@ impl App {
                     Some(fallback) => vec![Action::SwitchProject(fallback)],
                     None => vec![],
                 };
-                app.push_modal(Modal::Confirm {
-                    title: "Not a postui project".into(),
-                    body: format!("{path} has no project.toml — create one here?"),
-                    choices: vec![
+                app.push_modal(Modal::confirm(
+                    "Not a postui project",
+                    format!("{path} has no project.toml — create one here?"),
+                    vec![
                         ('y', "Create project".into(), vec![Action::InitProjectHere]),
                         ('n', "Open default project".into(), fallback_actions),
                     ],
-                });
+                ));
             }
             StartupDisposition::OpenAsIs { register } => {
                 if !Project::is_project(&root) {
@@ -1027,14 +1027,14 @@ impl App {
         if let Some(rest) = outcome.notes.len().checked_sub(SHOWN).filter(|n| *n > 0) {
             lines.push(format!("\u{2022} \u{2026} and {rest} more"));
         }
-        self.push_modal(Modal::Confirm {
-            title: MIGRATION_TITLE.into(),
-            body: lines.join("\n"),
-            choices: vec![
+        self.push_modal(Modal::confirm(
+            MIGRATION_TITLE,
+            lines.join("\n"),
+            vec![
                 ('n', "Not now".into(), vec![Action::DeclineMigration]),
                 ('y', "Migrate".into(), vec![Action::ApplyMigration]),
             ],
-        });
+        ));
     }
 
     /// Applies a freshly loaded `UiSettings` (and the `Theme` derived from
@@ -2760,18 +2760,14 @@ impl App {
 
     fn apply(&mut self, action: Action) -> bool {
         match action {
-            // A quit asked on a confirm that itself offers quitting without
-            // saving (a bare `ForceQuit` answer) picks that answer: asking
-            // to quit answers a question whose answers include "quit"
-            // (task #85 R5). Today that confirm is the quit's own unsaved-
-            // changes gate, so ctrl+c twice more (or arrows' quit chip) on
-            // it is "quit anyway". Any confirm with that answer gets the
-            // same rule, since it offers that exit already; one whose quit
-            // answer saves first (the drift confirm's) does not match, and
-            // a quit there meets the gate over it as over any dialog.
+            // A quit asked on the quit's own unsaved-changes question is
+            // "quit anyway" (task #85 R5): ctrl+c twice more, or arrows'
+            // quit chip, leaves without saving. The question is marked
+            // where it is built (`quit_gate`), so no other confirm can
+            // match it by accident; over any other dialog a quit meets
+            // the gate, as below.
             Action::Quit
-                if matches!(self.modals.top(), Some(Modal::Confirm { choices, .. })
-                    if choices.iter().any(|(_, _, a)| a[..] == [Action::ForceQuit])) =>
+                if matches!(self.modals.top(), Some(Modal::Confirm { quit_gate: true, .. })) =>
             {
                 self.apply(Action::ForceQuit)
             }
@@ -2786,7 +2782,7 @@ impl App {
             // typing is kept and undoable. Counting the uncommitted cell
             // instead is the draft state spec 2026-10-19 rules out.
             Action::Quit | Action::GatedQuit if self.leaving_unsaved() => {
-                self.dirty_gate("quit", Action::ForceQuit);
+                self.quit_gate();
                 true
             }
             Action::DiscardChanges => {
@@ -2930,11 +2926,11 @@ impl App {
                         "Replaces keys.toml with the default, fully commented keymap.".to_string(),
                     ),
                 };
-                self.push_modal(Modal::Confirm {
+                self.push_modal(Modal::confirm(
                     title,
                     body,
-                    choices: vec![('r', "Reset".into(), vec![Action::ForceResetConfigFile(file)])],
-                });
+                    vec![('r', "Reset".into(), vec![Action::ForceResetConfigFile(file)])],
+                ));
                 true
             }
             Action::ForceResetConfigFile(file) => {
@@ -3327,14 +3323,14 @@ impl App {
                                 .unwrap_or_else(|| path.display().to_string());
                             let mut on_yes = close_picker();
                             on_yes.push(write);
-                            self.push_modal(Modal::Confirm {
-                                title: "File exists".into(),
-                                body: format!("overwrite {name}?"),
-                                choices: vec![
+                            self.push_modal(Modal::confirm(
+                                "File exists",
+                                format!("overwrite {name}?"),
+                                vec![
                                     ('y', "Overwrite".into(), on_yes),
                                     ('n', "Cancel".into(), vec![]),
                                 ],
-                            });
+                            ));
                             return true;
                         }
                         for a in close_picker() {
@@ -4331,14 +4327,14 @@ impl App {
                 }
                 let body = self.editor.body_text();
                 if !body.is_empty() && postui_core::json::validate(&body).is_err() {
-                    self.push_modal(Modal::Confirm {
-                        title: "Invalid body".into(),
-                        body: "Body is not valid JSON — send anyway?".into(),
-                        choices: vec![
+                    self.push_modal(Modal::confirm(
+                        "Invalid body",
+                        "Body is not valid JSON — send anyway?",
+                        vec![
                             ('y', "Send anyway".into(), vec![Action::ForceSend]),
                             ('n', "Cancel".into(), vec![]),
                         ],
-                    });
+                    ));
                     return true;
                 }
                 self.apply(Action::ForceSend)
@@ -4861,14 +4857,14 @@ impl App {
                     self.apply(Action::SwitchProject(path));
                 } else {
                     let display = path.display().to_string();
-                    self.push_modal(Modal::Confirm {
-                        title: "Not a postui project".into(),
-                        body: format!("create project at {display}?"),
-                        choices: vec![
+                    self.push_modal(Modal::confirm(
+                        "Not a postui project",
+                        format!("create project at {display}?"),
+                        vec![
                             ('y', "Create".into(), vec![Action::CreateProjectAt(path)]),
                             ('n', "Cancel".into(), vec![]),
                         ],
-                    });
+                    ));
                 }
                 true
             }
@@ -5214,12 +5210,12 @@ impl App {
                     return self.dispatch(Action::RunJqDescribe(sentence));
                 }
                 let program = crate::ai::program_name(&self.ui_settings.ai_cmd).to_string();
-                self.push_modal(Modal::Confirm {
-                    title: "Send to AI?".into(),
-                    body: format!(
+                self.push_modal(Modal::confirm(
+                    "Send to AI?",
+                    format!(
                         "The response's structure (key names and types, no values) will be sent to `{program}`."
                     ),
-                    choices: vec![
+                    vec![
                         ('s', "Send once".into(), vec![Action::RunJqDescribe(sentence.clone())]),
                         (
                             'a',
@@ -5228,7 +5224,7 @@ impl App {
                         ),
                         ('n', "Cancel".into(), vec![]),
                     ],
-                });
+                ));
                 true
             }
             Action::SetAiConfirmed => {
@@ -6201,11 +6197,11 @@ impl App {
                     ));
                 }
                 choices.push(('c', "Cancel".to_string(), vec![]));
-                self.push_modal(Modal::Confirm {
-                    title: format!("Promote {name}"),
-                    body: "Where should the value land?".into(),
+                self.push_modal(Modal::confirm(
+                    format!("Promote {name}"),
+                    "Where should the value land?",
                     choices,
-                });
+                ));
                 true
             }
             Action::VarStruct(op) => {
@@ -8017,10 +8013,10 @@ impl App {
                     lines.join("\n")
                 )
             };
-            self.push_modal(Modal::Confirm {
-                title: format!("Un-mark {name} as secret"),
+            self.push_modal(Modal::confirm(
+                format!("Un-mark {name} as secret"),
                 body,
-                choices: vec![
+                vec![
                     ('n', "Cancel".into(), vec![]),
                     (
                         'y',
@@ -8028,7 +8024,7 @@ impl App {
                         vec![Action::VarStruct(VarStructOp::ToggleSecret { name })],
                     ),
                 ],
-            });
+            ));
         } else {
             let mut envs_with_values: Vec<String> = Vec::new();
             for env in self.environments().to_vec() {
@@ -8045,10 +8041,10 @@ impl App {
                     envs_with_values.join(", ")
                 )
             };
-            self.push_modal(Modal::Confirm {
-                title: format!("Mark {name} as secret"),
+            self.push_modal(Modal::confirm(
+                format!("Mark {name} as secret"),
                 body,
-                choices: vec![
+                vec![
                     ('n', "Cancel".into(), vec![]),
                     (
                         'y',
@@ -8056,7 +8052,7 @@ impl App {
                         vec![Action::VarStruct(VarStructOp::ToggleSecret { name })],
                     ),
                 ],
-            });
+            ));
         }
     }
 
@@ -8634,7 +8630,7 @@ impl App {
             choices.push(('r', "Reload from disk".to_string(), vec![Action::ReloadOpenRequest]));
         }
         choices.push(('c', "Cancel".to_string(), vec![]));
-        self.push_modal(Modal::Confirm { title, body, choices });
+        self.push_modal(Modal::confirm(title, body, choices));
         self.last_action_failed = true;
         true
     }
@@ -9515,8 +9511,19 @@ impl App {
     /// itself: Discard runs `discard_then`, which has to throw the edits
     /// away on its own.
     fn dirty_gate_split(&mut self, verb: &str, then: Action, discard_then: Action) {
+        self.push_dirty_gate(verb, then, discard_then, false);
+    }
+
+    /// The quit's own unsaved-changes question, marked (`quit_gate`) so a
+    /// quit asked on it is "quit anyway" (task #85 R5).
+    fn quit_gate(&mut self) {
+        self.push_dirty_gate("quit", Action::ForceQuit, Action::ForceQuit, true);
+    }
+
+    fn push_dirty_gate(&mut self, verb: &str, then: Action, discard_then: Action, quit_gate: bool) {
         if self.editor.slug.is_none() {
             self.push_modal(Modal::Confirm {
+                quit_gate,
                 title: "Unsaved request".into(),
                 body: "This request has never been saved.".into(),
                 choices: vec![
@@ -9532,6 +9539,7 @@ impl App {
         }
         let current = self.editor.slug.clone().unwrap_or_default();
         self.push_modal(Modal::Confirm {
+            quit_gate,
             title: "Unsaved changes".into(),
             body: format!("\"{current}\" has unsaved changes."),
             choices: vec![
