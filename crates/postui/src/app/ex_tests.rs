@@ -161,8 +161,9 @@ fn bang_on_a_clean_or_never_saved_request() {
 }
 
 /// The final review's I-1: `:q` meets the dirty gate from every state the
-/// line opens from, a dialog under it included; ctrl+c keeps its modal
-/// exemption, and `:q!` is the line's way out.
+/// line opens from, a dialog under it included, and `:q!` is the line's
+/// way out. Task #85 took ctrl+c's modal exemption away: twice, it meets
+/// the gate too.
 #[test]
 fn colon_q_over_a_dialog_meets_the_dirty_gate() {
     let mut app = vim(Fixture::DirtyScratch);
@@ -185,8 +186,9 @@ fn colon_q_over_a_dialog_meets_the_dirty_gate() {
     feed(&mut app, "<Esc>:q!<CR>");
     assert!(app.should_quit, ":q! still leaves at once");
     let mut app = vim(Fixture::DirtyScratch);
-    feed(&mut app, ":w<CR><C-c>");
-    assert!(app.should_quit, "ctrl+c over a dialog stays an immediate exit");
+    feed(&mut app, ":w<CR><C-c><C-c>");
+    assert!(!app.should_quit, "ctrl+c over a dialog meets the gate");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the dirty gate's confirm");
 }
 
 /// Review Focus 1.
@@ -486,7 +488,7 @@ fn the_quit_chip_runs_what_it_spells() {
     draw(&mut app);
     assert!(
         app.hits.rect_of(&crate::hit::Hit::FooterChip(Action::Quit)).is_some(),
-        "typing in the dialog: `^C`, the emergency exit"
+        "typing in the dialog: `^C`'s quit"
     );
     feed(&mut app, "<Esc>");
     click_chip(&mut app, Action::CloseWindow { write: false, force: false });
@@ -496,7 +498,9 @@ fn the_quit_chip_runs_what_it_spells() {
     draw(&mut app);
     feed(&mut app, "<C-p>");
     click_chip(&mut app, Action::Quit);
-    assert!(app.should_quit, "arrows' ^C chip stays the emergency exit over a dialog");
+    // Task #85 R8: arrows' chip over a dialog meets the gate too.
+    assert!(!app.should_quit, "the gate, not a quit");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the dirty gate's confirm");
 }
 
 /// Sweep backlog item 4: on Manage, where `:q` closes the screen, the quit

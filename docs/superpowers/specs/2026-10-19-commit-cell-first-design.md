@@ -97,7 +97,9 @@ the cell can still be open when it runs:
 - **`App::leaving_unsaved`** (the 14 gates) commits an open cell, then
   asks `editor_holds_unsaved`, which stays read-only for `view_on` and
   the undo jump guard. Quit checks `modals.is_empty()` first, so
-  `ctrl+c` over a modal still exits at once.
+  `ctrl+c` over a modal still exits at once. (Amended 2026-10-22, task
+  #85: the `modals.is_empty()` check is gone; a quit over a modal meets
+  the gate too.)
 - **Deletes** commit an open cell before their op when they replace what
   the editor holds: delete request(s) taking the open request; delete
   space of the active space (whatever is open, a scratch too) or of the

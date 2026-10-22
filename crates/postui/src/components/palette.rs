@@ -356,8 +356,8 @@ pub fn all_commands() -> Vec<Command> {
             description: "Redo the last undone change",
             action: Action::Redo,
         },
-        // A picked row, not the ctrl+c emergency exit: it meets the dirty
-        // gate even when vim's `:` line opened over a dialog.
+        // It meets the dirty gate even when vim's `:` line opened over a
+        // dialog, and asks again on the gate itself (`GatedQuit`).
         Command { id: "quit", name: "Quit", description: "Exit postui", action: Action::GatedQuit },
     ]
 }

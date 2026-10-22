@@ -118,6 +118,9 @@ pub enum Screen {
 
 pub struct App {
     pub should_quit: bool,
+    /// When the modified quit combo was last pressed, while its "press
+    /// again" toast still holds (task #85): the next press quits.
+    pub(crate) quit_armed: Option<Instant>,
     pub focus: PaneId,
     /// Which full-frame screen is showing (spec §5). `Screen::Main` is the
     /// normal three-pane layout.
@@ -1679,6 +1682,7 @@ impl App {
         };
         let mut app = Self {
             should_quit: false,
+            quit_armed: None,
             focus: PaneId::Sidebar,
             screen: Screen::default(),
             prior_focus: PaneId::Sidebar,
@@ -2755,24 +2759,28 @@ impl App {
 
     fn apply(&mut self, action: Action) -> bool {
         match action {
-            // An unsaved request gates quitting behind the same confirm as
-            // opening/switching away from it — but only from the plain
-            // screen: with any modal already up (this gate included),
-            // ctrl+c stays a reliable, immediate exit, so pressing it
-            // twice always leaves without saving the request. (An open
-            // input still closes, saved, on the way out: task #75.)
-            Action::Quit if self.modals.is_empty() && self.leaving_unsaved() => {
-                self.dirty_gate("quit", Action::ForceQuit);
-                true
+            // A quit asked again while its own unsaved-changes confirm is
+            // up (ctrl+c twice more, arrows' quit chip) is "quit anyway":
+            // the confirm is the quit's question, and asking to quit is an
+            // answer to it (task #85 R5). Read from the confirm itself —
+            // only `dirty_gate("quit", ForceQuit)` offers a bare ForceQuit.
+            Action::Quit
+                if matches!(self.modals.top(), Some(Modal::Confirm { choices, .. })
+                    if choices.iter().any(|(_, _, a)| a[..] == [Action::ForceQuit])) =>
+            {
+                self.apply(Action::ForceQuit)
             }
-            // `:q` has no such exemption: typed over a dialog it still meets
-            // the gate, whose cancel goes back to that dialog. Quitting
+            // An unsaved request gates quitting behind the same confirm as
+            // opening/switching away from it, with a dialog open or not
+            // (task #85): the confirm opens over the dialog, whose typing a
+            // cancel gives back. (An open input closes, saved, on the way
+            // out: task #75.) `:q` meets it the same way. Quitting
             // leaves the request, so an open cell commits first even under
             // a dialog that acts on it (extract, the var picker): after a
             // Cancel that dialog finds no open field and says so, but the
             // typing is kept and undoable. Counting the uncommitted cell
             // instead is the draft state spec 2026-10-19 rules out.
-            Action::GatedQuit if self.leaving_unsaved() => {
+            Action::Quit | Action::GatedQuit if self.leaving_unsaved() => {
                 self.dirty_gate("quit", Action::ForceQuit);
                 true
             }
@@ -10343,7 +10351,8 @@ impl App {
 
     /// Central key router. Order (each step tested):
     /// 1. A CTRL/ALT combo the keymap maps to Quit pre-empts everything,
-    ///    including open modals — ctrl+c must always quit.
+    ///    including open modals, so ctrl+c always reaches the quit: its
+    ///    first press arms it, the second quits (task #85).
     ///
     ///    1a. The key router (`crate::keyroute`): in the vim profile a
     ///    table row runs here (a motion replays its named key through
@@ -10424,16 +10433,27 @@ impl App {
         let global = self.keymap.lookup(&combo);
         let modified = ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
 
-        // 1. A modified quit combo is the escape hatch: it pre-empts
-        // everything — except that when a text selection is live anywhere,
-        // ctrl+c means "copy" (the GUI meaning) and quit keeps working the
-        // moment nothing is selected.
+        // 1. A modified quit combo pre-empts everything — except that when
+        // a text selection is live anywhere, ctrl+c means "copy" (the GUI
+        // meaning) and quit keeps working the moment nothing is selected.
+        // It quits on a second press while the first one's toast holds
+        // (task #85): the first changes nothing, so a stray ctrl+c costs
+        // no dialog, field or drag. The quit itself meets the unsaved-
+        // changes check like any other.
         if modified && global == Some(Action::Quit) {
             if let Some(text) = self.active_selection_text() {
                 self.copy_text_with_toast(&text, "Copied selection".to_string());
                 return router::Ran::routed(true);
             }
-            return router::Ran::routed(self.update(Action::Quit));
+            let now = Instant::now();
+            let window = crate::components::toast::TOAST_LIFETIME;
+            if self.quit_armed.take().is_some_and(|at| now.duration_since(at) < window) {
+                return router::Ran::routed(self.update(Action::Quit));
+            }
+            self.quit_armed = Some(now);
+            let key = crate::keys::format_combo(&combo);
+            self.toasts.push(format!("Press {key} again to quit"), ToastKind::Info);
+            return router::Ran::routed(true);
         }
 
         // A live row drag owns Escape: it cancels the drag, nothing else.

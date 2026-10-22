@@ -109,9 +109,10 @@ pub enum Action {
     /// dispatch once the user has decided.
     ForceQuit,
     /// `:q` (spec §5.9): `Quit` behind the unsaved-changes gate whatever
-    /// is open under the line, a dialog included. `Quit` skips the gate
-    /// with a modal up so ctrl+c stays an emergency exit; the line's is
-    /// `:q!` (the final review's I-1).
+    /// is open under the line, a dialog included; the line's way out is
+    /// `:q!` (the final review's I-1). `Quit` meets the gate the same way
+    /// since task #85, and differs only on the gate itself, where it is
+    /// "quit anyway" (`:q` there asks again).
     GatedQuit,
     /// `ZZ`, `:wq`, `:x` (spec §5.9, §5.11): quit, saving first when the
     /// request has unsaved edits. A never-saved request asks for a name;

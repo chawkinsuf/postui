@@ -13,8 +13,9 @@ pub enum ToastKind {
     Warning,
 }
 
-/// Total wall-clock lifetime of a toast, from `push` to removal.
-const TOAST_LIFETIME: Duration = Duration::from_secs(3);
+/// Total wall-clock lifetime of a toast, from `push` to removal. A short
+/// toast's whole life, so also how long "press ^C again" holds (task #85).
+pub(crate) const TOAST_LIFETIME: Duration = Duration::from_secs(3);
 
 /// Total on-screen height (in rows) of one painted toast: a filled `panel`
 /// rect with its message vertically centered on the middle row.

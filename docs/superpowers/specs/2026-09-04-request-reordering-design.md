@@ -208,7 +208,8 @@ sidebar_press: Option<(usize, String)>, // row index + slug of the armed press
   notes" below for why that alternative exists.
 - **A live drag owns the keyboard.** Escape cancels and the modified
   quit combo (ctrl+c, or whatever `Action::Quit` is bound to with a
-  modifier) still quits; *every other key is swallowed* — before
+  modifier) still quits (amended 2026-10-22, task #85: on its second
+  press; the first leaves the drag live); *every other key is swallowed* — before
   modals, before the per-screen routes — so nothing opens a dialog,
   moves the selection or reorders by keyboard under a row in flight.
   The footer says the same: while a drag is live its chips are exactly

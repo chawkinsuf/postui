@@ -1249,7 +1249,7 @@ impl App {
         // The footer's quit chip is the one exception: it shows under every
         // dialog but is the app's, so its click away runs and commits a
         // live Settings field before the quit. (Under a dialog that chip is
-        // `Quit`, which quits at once with no gate; task #74.)
+        // `Quit`, which meets the dirty gate over the dialog; task #85.)
         let in_dialog = !self.modals.is_empty() && !is_quit_chip(&hit);
         // A click anywhere that isn't the params/headers table itself (and
         // isn't in a dialog) is a click away: it commits whatever cell was

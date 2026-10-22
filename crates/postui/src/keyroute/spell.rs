@@ -89,7 +89,7 @@ pub fn spell(at: SpellCtx, action: &Action, keymap: &Keymap) -> Option<String> {
 /// its keycap reads, so a click over a dialog meets the dirty gate as the
 /// typed one does: `:q` on the main screen, and on Manage, where `:q`
 /// closes the screen (`Action::CloseWindow`), `:qa`. Else `Quit`, whose
-/// keys are arrows' `q` and the `^C` emergency exit.
+/// keys are arrows' `q` and `^C` pressed twice (task #85).
 pub fn quit_action(at: SpellCtx) -> Action {
     if at.profile != KeyProfile::Vim || !colon_applies(at) {
         Action::Quit

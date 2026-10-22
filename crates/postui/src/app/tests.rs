@@ -286,12 +286,109 @@ fn alt_shift(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT | KeyModifiers::SHIFT)
 }
 
+/// Task #85 R1: the first ctrl+c changes nothing but a toast; the second
+/// quits.
 #[test]
-fn ctrl_c_quits_even_with_modal_open() {
+fn the_first_ctrl_c_only_arms_the_quit() {
+    let mut app = App::new_for_test();
+    app.handle_key(ctrl('c'));
+    assert!(!app.should_quit, "one press never quits");
+    assert!(app.modals.is_empty());
+    assert!(
+        app.toasts.messages().contains(&"Press ^C again to quit"),
+        "{:?}",
+        app.toasts.messages()
+    );
+    app.handle_key(ctrl('c'));
+    assert!(app.should_quit, "the second press quits");
+}
+
+/// Task #85 R1: over a dialog the first press leaves the dialog as it is.
+#[test]
+fn the_first_ctrl_c_over_a_dialog_leaves_it_open() {
     let mut app = App::new_for_test();
     app.update(Action::OpenPalette);
     app.handle_key(ctrl('c'));
+    assert!(!app.should_quit);
+    assert!(matches!(app.modals.top(), Some(Modal::Palette(_))), "the palette stays open");
+    app.handle_key(ctrl('c'));
+    assert!(app.should_quit, "nothing unsaved: the second press quits");
+}
+
+/// Task #85 R2: a second press after the toast's lifetime only arms again.
+#[test]
+fn a_late_second_ctrl_c_only_arms_again() {
+    let mut app = App::new_for_test();
+    app.handle_key(ctrl('c'));
+    let late = crate::components::toast::TOAST_LIFETIME + std::time::Duration::from_millis(1);
+    app.quit_armed = app.quit_armed.map(|at| at - late);
+    app.handle_key(ctrl('c'));
+    assert!(!app.should_quit, "too late: armed again, not quit");
+    app.handle_key(ctrl('c'));
     assert!(app.should_quit);
+}
+
+/// Task #85 R3/R4: ctrl+c twice over a dialog meets the unsaved-changes
+/// check, which opens over the dialog; cancelling it gives the dialog back
+/// with its typing.
+#[test]
+fn ctrl_c_twice_over_a_dialog_meets_the_unsaved_check_over_it() {
+    use crate::components::modal::PromptKind;
+    let mut app = dirty_app();
+    app.modals.push(Modal::Prompt {
+        title: "Name".into(),
+        input: crate::components::line_input::LineInput::new("half-typed"),
+        kind: PromptKind::NewRequest,
+        revealed: false,
+    });
+    app.handle_key(ctrl('c'));
+    app.handle_key(ctrl('c'));
+    assert!(!app.should_quit, "the check, not a quit");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the unsaved-changes check");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+        panic!("cancelling the check goes back to the dialog");
+    };
+    assert_eq!(input.text(), "half-typed", "its typing intact");
+    assert!(!app.should_quit);
+}
+
+/// Task #85 R5: ctrl+c twice on the quit's own check leaves without saving.
+#[test]
+fn ctrl_c_twice_on_the_quit_check_leaves_without_saving() {
+    let mut app = dirty_app();
+    let file = app.proj().root().join("requests/main/r.toml");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    app.handle_key(ctrl('c'));
+    app.handle_key(ctrl('c'));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the unsaved-changes check");
+    app.handle_key(ctrl('c'));
+    assert!(!app.should_quit, "a first press again");
+    app.handle_key(ctrl('c'));
+    assert!(app.should_quit, "quit anyway");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), saved, "nothing written");
+}
+
+/// Task #85 R10: ctrl+c twice leaves each dialog that refuses Esc.
+#[test]
+fn ctrl_c_twice_quits_from_the_dialogs_esc_cannot_close() {
+    let dir = tempfile::tempdir().unwrap();
+    for modal in [
+        Modal::ConfigStartup { error: "bad".into() },
+        Modal::ConfigEditInvalid {
+            file: crate::action::ConfigFile::Config,
+            path: dir.path().join("edit.toml"),
+            error: "bad".into(),
+        },
+        Modal::KeymapChoice { aimed: None },
+    ] {
+        let mut app = App::new_for_test();
+        app.modals.push(modal);
+        app.handle_key(ctrl('c'));
+        assert!(!app.should_quit);
+        app.handle_key(ctrl('c'));
+        assert!(app.should_quit);
+    }
 }
 
 #[test]
@@ -310,13 +407,16 @@ fn ctrl_c_copies_the_url_selection_instead_of_quitting() {
     assert!(!app.should_quit, "copy pre-empts quit");
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://example.com");
     assert!(app.editor.url.selection().is_some(), "copy keeps the selection");
-    // With the selection gone, ctrl+c means quit again (here gated on the
-    // unsaved URL edit, so it surfaces as the confirm modal).
+    // The copy did not arm the quit (task #85 R6): with the selection gone
+    // the next ctrl+c is a first press, and only the one after it quits
+    // (here gated on the unsaved URL edit, so it surfaces as the confirm).
     app.editor.url.clear_selection();
+    app.handle_key(ctrl('c'));
+    assert!(!app.should_quit && app.modals.is_empty(), "a first press only arms");
     app.handle_key(ctrl('c'));
     assert!(
         app.should_quit || !app.modals.is_empty(),
-        "quit (or its unsaved-changes gate) fires once nothing is selected"
+        "quit (or its unsaved-changes gate) fires on the second press"
     );
 }
 
@@ -3727,18 +3827,21 @@ fn quitting_clean_needs_no_confirm() {
     assert!(app.modals.is_empty());
 }
 
+/// Task #85 R3/R5: a quit with a dialog open meets the unsaved-changes
+/// gate like any other, and a quit asked on the gate itself leaves without
+/// saving, so a dirty editor never traps the user.
 #[test]
-fn quit_with_a_modal_already_open_stays_immediate() {
-    // ctrl+c must stay a reliable exit from inside any modal — including
-    // the unsaved-changes gate itself (press it twice to leave without
-    // saving), so a dirty editor never traps the user.
+fn quit_with_a_modal_open_meets_the_gate_and_a_second_quit_leaves() {
     let mut app = dirty_app();
     app.modals.push(crate::components::modal::Modal::Message {
         title: "About".into(),
         body: "hello".into(),
     });
     app.update(Action::Quit);
-    assert!(app.should_quit);
+    assert!(!app.should_quit, "the gate, not a quit");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the gate over the dialog");
+    app.update(Action::Quit);
+    assert!(app.should_quit, "quit on the gate is quit anyway");
 }
 
 #[test]
@@ -24345,8 +24448,12 @@ fn the_modified_quit_combo_still_quits_during_a_drag() {
     let r2 = row_rect(&mut app, 2);
     app.handle_mouse(left_down(r0.x + 2, r0.y));
     app.handle_mouse(moved(r0.x + 2, r2.y));
+    // Task #85 R1: the first press changes nothing, the drag included.
     app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
-    assert!(app.should_quit, "ctrl+c is the escape hatch");
+    assert!(!app.should_quit);
+    assert!(app.sidebar.drag.is_some(), "the drag survives the first press");
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert!(app.should_quit, "ctrl+c twice is the escape hatch");
 }
 
 #[test]
@@ -28826,6 +28933,8 @@ fn quitting_closes_the_manager_input_first() {
     app.editor.url.set_text("https://dirty.example");
     assert!(app.editor_holds_unsaved(), "the request is unsaved");
     app.handle_key(ctrl('c'));
+    assert!(app.varmanager.form.editing.is_some(), "the first press changes nothing (#85)");
+    app.handle_key(ctrl('c'));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the gate asks");
     app.handle_key(plain('d'));
     assert!(app.should_quit, "Discard quit");
@@ -29778,12 +29887,15 @@ fn a_count_on_h_walks_out_of_nested_folders() {
     assert_eq!(app.sidebar.selected, twin.sidebar.selected);
 }
 
-/// Review Focus 5: ctrl+c is step 1, before the router sees anything.
+/// Review Focus 5: ctrl+c is step 1, before the router sees anything; it
+/// quits on its second press (task #85).
 #[test]
 fn ctrl_c_quits_with_a_prefix_pending() {
     let mut app = App::new_for_test();
     app.use_profile(crate::config::KeyProfile::Vim);
     app.handle_key(plain('g'));
+    app.handle_key(ctrl('c'));
+    assert!(!app.should_quit, "the first press only arms");
     app.handle_key(ctrl('c'));
     assert!(app.should_quit);
 }

@@ -112,7 +112,7 @@ Focus model unchanged from stage 1: Tab/Shift+Tab and mouse click move between s
 
 ## 7. Parked stage-1 fixes (in scope)
 
-1. **Global quit escape hatch:** quit bindings are checked before modal/palette delegation — Ctrl+C always quits, modal open or not. The palette's char handling becomes modifier-aware (Ctrl+letter no longer inserts a literal character).
+1. **Global quit escape hatch:** quit bindings are checked before modal/palette delegation — Ctrl+C always quits, modal open or not. The palette's char handling becomes modifier-aware (Ctrl+letter no longer inserts a literal character). *Amended 2026-10-22 (task #85, spec `2026-10-22-double-ctrl-c-quit-design.md`): Ctrl+C still comes first, but quits on a second press, and the quit meets the unsaved-changes check with a modal open too. The double press is `you`; the rest is `mine (approved)`.*
 2. **Multi-combo bindings:** `Keymap` maps action → list of combos. A TOML override sets the full list explicitly (`quit = ["ctrl+q", "ctrl+c"]`; a bare string still means a one-element list). Ctrl+C remains reserved for quit regardless of overrides.
 3. **Modal close policy:** modal updates return `ModalResult { action, close: bool }`; the event loop stops inferring closure from "any non-Close action." Stage 2's confirm/prompt modals are the first real consumers.
 4. **`Action::Render` / redraw policy:** the mpsc arm carries real traffic (responses, spinner ticks); rendering becomes event-driven — redraw on state change or spinner tick, not a constant 10 fps repaint.
