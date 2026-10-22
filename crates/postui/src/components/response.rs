@@ -929,6 +929,15 @@ impl ReadyView {
         self.jq_tree.as_ref().or(self.tree.as_ref())
     }
 
+    /// Swaps the body tree in (or out). With [`ReadyView::set_jq_tree`]
+    /// and [`ReadyView::active_tree_mut`], the only writers of the trees,
+    /// so `tree_epoch` and `tree_edits` see every change (what the bracket
+    /// memo, `BracketInputs`, relies on).
+    fn set_body_tree(&mut self, tree: Option<JsonTree>) {
+        self.tree = tree;
+        self.tree_epoch += 1;
+    }
+
     /// Swaps the filtered tree in (or out), bumping the epoch only when
     /// the tree on screen actually changes — clearing an already-absent
     /// filter tree leaves the body tree, and its width measure, as it was.
@@ -2378,7 +2387,9 @@ struct LineMatches {
 /// megabyte-long minified Raw line (about 10 ms a frame, measured), and
 /// the draw runs on every event. The lines walked are the mode's: Raw's
 /// and Headers' never change for the view's life, and the tree's change
-/// only by a swap (`tree_epoch`) or a fold (`tree_edits`).
+/// only through its writers: a swap (`set_body_tree`, `set_jq_tree`, which
+/// bump `tree_epoch`) or a fold (`active_tree_mut`, which bumps
+/// `tree_edits`). A new input to `bracket_pair` belongs here too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BracketInputs {
     vim: bool,
@@ -2488,9 +2499,8 @@ impl Response {
         view.clear_sel();
         match tree {
             Some(tree) => {
-                view.tree = Some(tree);
+                view.set_body_tree(Some(tree));
                 view.cursor_moved();
-                view.tree_epoch += 1;
                 // A switched-on filter is about to run against this tree
                 // (see the `jq_applied` reset below): keep the spinner up
                 // until its output lands rather than showing the full
@@ -2785,9 +2795,7 @@ impl Response {
         let Some(view) = self.view.as_mut() else {
             return;
         };
-        view.tree = None;
-        // The tree on screen is gone: a swap, like `attach_tree`'s.
-        view.tree_epoch += 1;
+        view.set_body_tree(None);
         view.set_jq_tree(None);
         view.jq_doc = None;
         view.jq_tree_code = None;

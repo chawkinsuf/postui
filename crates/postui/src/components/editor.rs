@@ -926,11 +926,20 @@ impl Editor {
         bottom: u16,
         theme: &Theme,
     ) {
+        use crate::text::brackets::is_bracket;
         use crate::text::{Lines as _, Pos};
         let lines = &self.body.lines;
         let gutter = line_number_gutter_width(lines.len());
         let width = usize::from(area.width.saturating_sub(gutter));
-        if width == 0 {
+        let caret = Pos::new(self.body.cursor.row, self.body.cursor.col);
+        let before = self.body.mode == EditorMode::Insert;
+        // Most frames have no bracket by the caret: look before measuring
+        // the view.
+        let line = lines.line(caret.row);
+        let bracket_at = |col: usize| line.get(col).is_some_and(|&c| is_bracket(c));
+        if width == 0
+            || !(bracket_at(caret.col) || before && caret.col > 0 && bracket_at(caret.col - 1))
+        {
             return;
         }
         // Each row in view: the screen row it starts on and its wrapped
@@ -948,8 +957,6 @@ impl Editor {
             y = y.saturating_add(tall);
         }
         let Some(last) = (top + rows.len()).checked_sub(1) else { return };
-        let caret = Pos::new(self.body.cursor.row, self.body.cursor.col);
-        let before = self.body.mode == EditorMode::Insert;
         let Some((a, b)) = crate::text::brackets::matching_pair(lines, caret, before, top..=last)
         else {
             return;
@@ -964,10 +971,12 @@ impl Editor {
             (y < bottom).then_some((x, y))
         };
         let (Some(cell_a), Some(cell_b)) = (cell(a), cell(b)) else { return };
+        // The overlays lead `body.highlights` (the draw splices them in
+        // first), so edtui's own test says what they cover.
+        let overlays = &self.body.highlights[..self.body_hl_overlays.len()];
         let covered = |at: Pos| {
             let at = edtui::Index2::new(at.row, at.col);
-            let key = |i: edtui::Index2| (i.row, i.col);
-            self.body_hl_overlays.iter().any(|o| key(o.from) <= key(at) && key(at) <= key(o.to))
+            overlays.iter().any(|h| h.contains(&at))
                 || self.body.selection.as_ref().is_some_and(|s| s.contains(&at))
         };
         let lit = Style::default().fg(theme.on_accent).bg(theme.accent);
@@ -4243,15 +4252,23 @@ mod tests {
         let mut text = String::new();
         for row in 0..42 {
             text.push_str(match row {
-                20 => "{\n",
+                36 => "{\n",
                 41 => "}\n",
                 _ => "1,\n",
             });
         }
         let mut e = body_editor(&text);
         e.body.cursor = edtui::Index2::new(41, 0);
-        assert!(matches!(lit_body_cells(&mut e), 0 | 2));
-        assert!(matches!(lit_body_cells(&mut e), 0 | 2), "and on the next");
+        let mut lit = 0;
+        for frame in 0..2 {
+            lit = lit_body_cells(&mut e);
+            let top = e.body.viewport_offset().1;
+            let height = usize::from(e.last_body_area.unwrap().height);
+            let shows = |row| (top..top + height).contains(&row);
+            let expected = if shows(36) && shows(41) { 2 } else { 0 };
+            assert_eq!(lit, expected, "frame {frame}: top {top}");
+        }
+        assert_eq!(lit, 2, "once edtui has scrolled to the caret, both ends light");
     }
 
     /// R5: the vim search prompt covers the body's bottom row, so a
