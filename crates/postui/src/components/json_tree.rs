@@ -609,15 +609,28 @@ impl JsonTree {
         changed
     }
 
-    /// The full line holding the other bracket of the container that full
-    /// line `full` opens or closes: its closing line, or its opening one.
-    /// `None` for a scalar or an empty container's line.
-    pub fn bracket_partner(&self, full: usize) -> Option<usize> {
+    /// When char `col` of full line `full`, as an expanded line draws it
+    /// (indent included), is the bracket of the container the line opens
+    /// or closes, its partner's (full line, char). An opening line ends
+    /// with its bracket (its comma is drawn by the closing line), and a
+    /// closing line starts with its bracket. `None` for any other char,
+    /// such as a bracket inside a string, and on a scalar or an empty
+    /// container's line.
+    pub fn bracket_partner(&self, full: usize, col: usize) -> Option<(usize, usize)> {
         let rec = self.lines.get(full)?;
+        let (open, close) = match rec.kind {
+            Kind::Open => (full, self.containers[rec.container as usize].end_line as usize),
+            Kind::Close => (self.containers[rec.parent as usize].open_line as usize, full),
+            Kind::Scalar | Kind::Empty => return None,
+        };
+        let open_col = {
+            let line = self.line(open);
+            line.indent + line.text.chars().count() - 1
+        };
+        let close_col = self.line(close).indent;
         match rec.kind {
-            Kind::Open => Some(self.containers[rec.container as usize].end_line as usize),
-            Kind::Close => Some(self.containers[rec.parent as usize].open_line as usize),
-            Kind::Scalar | Kind::Empty => None,
+            Kind::Open => (col == open_col).then_some((close, close_col)),
+            _ => (col == close_col).then_some((open, open_col)),
         }
     }
 
@@ -1160,6 +1173,21 @@ mod tests {
         assert_eq!(t.jq_path_of(4), ".[0]");
         assert!(JsonTree::parse_many(&["{".to_string()]).is_none());
         assert!(JsonTree::parse_many(&[]).is_some(), "no outputs is an empty tree, not a failure");
+    }
+
+    /// A container's own bracket names its partner's line and char, either
+    /// way; any other char names nothing.
+    #[test]
+    fn a_container_bracket_names_its_partner() {
+        // 0 `{`, 1 `  "a": [`, 2 `    1,`, 3 `    2`, 4 `  ],`, 5 `  "b": 3`, 6 `}`.
+        let t = JsonTree::parse(r#"{"a": [1, 2], "b": 3}"#).unwrap();
+        assert_eq!(t.bracket_partner(1, 7), Some((4, 2)));
+        assert_eq!(t.bracket_partner(4, 2), Some((1, 7)));
+        assert_eq!(t.bracket_partner(0, 0), Some((6, 0)));
+        assert_eq!(t.bracket_partner(6, 0), Some((0, 0)));
+        assert_eq!(t.bracket_partner(1, 2), None, "the key's quote");
+        assert_eq!(t.bracket_partner(4, 3), None, "the comma");
+        assert_eq!(t.bracket_partner(2, 4), None, "a scalar line");
     }
 
     #[test]

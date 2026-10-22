@@ -1206,10 +1206,8 @@ impl ReadyView {
             want: self.want,
             visual: self.line_anchor.is_some(),
             clicked: self.clicked,
-            // Only vim's walk stops at the rows in view (R19): in arrows a
-            // scroll changes nothing, so it never walks again.
-            scroll: if vim { self.scroll } else { 0 },
-            height: if vim { self.height } else { 0 },
+            scroll: self.scroll,
+            height: self.height,
         };
         if let Some((seen, pair)) = self.bracket_memo
             && seen == inputs
@@ -1223,76 +1221,55 @@ impl ReadyView {
 
     /// The bracket at the cursor's column and its partner, as visible
     /// (line, char) cells of the lines as painted (spec 2026-10-22,
-    /// matching brackets, R9–R13, R19, R20). With `vim`, it's Vim's cursor
-    /// column, and only while both rows show. Otherwise it's the char a
-    /// click put the cursor on, or the bracket before a clicked `,`, with
-    /// the partner anywhere. `None` on a closed fold's line, whose summary
-    /// is not its text.
+    /// matching brackets, R9–R13, R19, R20). `None` on a closed fold's
+    /// line, whose summary is not its text.
+    ///
+    /// With `vim`, the char under Vim's cursor. Otherwise, the char a click
+    /// put the cursor on, or the bracket right before a clicked `,`.
     fn bracket_pair(&self, vim: bool) -> Option<(crate::text::Pos, crate::text::Pos)> {
+        use crate::text::Pos;
+        use crate::text::brackets::{is_bracket, matching_pair};
         let line = self.real_line()?;
         if self.in_closed_fold(line) {
             return None;
         }
-        use crate::text::Pos;
-        use crate::text::brackets::{in_strings, is_bracket, matching_pair};
-        let last = self.visible_len().checked_sub(1)?;
-        if vim {
-            // Vim's matchparen: the char under the cursor, its partner in
-            // the rows in view or nothing (R5). Rows only: a bracket
-            // scrolled out sideways still counts, as in Vim's `nowrap`
-            // window.
-            let col = self.cur_col();
-            // A peek before the matcher copies the line: a raw line can be
-            // megabytes long.
-            let c = match self.mode {
-                ViewMode::Raw => self.raw_lines.get(self.cursor)?.chars().nth(col),
-                _ => self.display_line_text(self.cursor)?.chars().nth(col),
-            }?;
-            if !is_bracket(c) {
-                return None;
+        // A peek before the matcher copies the line: a raw line can be
+        // megabytes long.
+        let char_at = |col: usize| match self.mode {
+            ViewMode::Raw => self.raw_lines.get(self.cursor)?.chars().nth(col),
+            _ => self.display_line_text(self.cursor)?.chars().nth(col),
+        };
+        let bracket = |col| char_at(col).is_some_and(is_bracket);
+        let col = if vim {
+            // Vim's matchparen looks only under its cursor.
+            Some(self.cur_col()).filter(|&col| bracket(col))?
+        } else {
+            // A click past the end of a `},` line lands on the `,`: a `,`
+            // right after a bracket takes that bracket (R20).
+            let col = self.clicked.filter(|(l, _)| *l == line)?.1;
+            match col.checked_sub(1) {
+                Some(prev) if char_at(col) == Some(',') && bracket(prev) => prev,
+                _ if bracket(col) => col,
+                _ => return None,
             }
-            let rows = self.scroll..=(self.scroll + self.height.max(1) - 1).min(last);
-            return matching_pair(self, Pos::new(self.cursor, col), false, rows);
-        }
-        // Arrows: the clicked char, the partner anywhere in the view's
-        // lines, lit when scrolled to (R19).
-        let col = self.clicked.filter(|(l, _)| *l == line)?.1;
-        let text = crate::text::Lines::line(self, self.cursor);
-        let strings = in_strings(&text);
-        let bracket = |col: usize| text.get(col).is_some_and(|&c| is_bracket(c));
-        // A click on a `,` right after a bracket (a click past the end of a
-        // `},` line lands there) takes that bracket (R20). Not a `,` in a
-        // string.
-        let col = match col.checked_sub(1) {
-            Some(prev) if text.get(col) == Some(&',') && !strings[col] && bracket(prev) => prev,
-            _ if bracket(col) => col,
-            _ => return None,
         };
         let at = Pos::new(self.cursor, col);
-        // A bracket in a string pairs inside it only, and a string never
-        // spans lines: a stray bracket elsewhere is not its partner.
-        if strings[col] {
-            return matching_pair(self, at, false, self.cursor..=self.cursor);
-        }
-        // Outside strings, a tree line's bracket is its container's own:
-        // the tree knows the partner's line, with no walk.
-        if self.mode == ViewMode::Pretty {
+        // Arrows on the tree view: a container's own bracket gets its
+        // partner from the tree, on screen or not, so scrolling shows it
+        // lit (R19). Any other bracket (Raw, Headers, one inside a string)
+        // would need a walk with no bound, so it keeps R5.
+        if !vim && self.mode == ViewMode::Pretty {
             let tree = self.active_tree()?;
-            let Some(full) = tree.bracket_partner(line) else {
-                // An empty container's `[]` or `{}`, on one line.
-                return matching_pair(self, at, false, self.cursor..=self.cursor);
-            };
-            let row = tree.visible_index_of(full)?;
-            // A closing line starts with its bracket; an opening line ends
-            // with it (its comma is drawn by the closing line).
-            let partner = if full > line {
-                tree.line(full).indent
-            } else {
-                self.display_line_text(row)?.chars().count().checked_sub(1)?
-            };
-            return Some((at, Pos::new(row, partner)));
+            if let Some((full, col)) = tree.bracket_partner(line, col) {
+                return Some((at, Pos::new(tree.visible_index_of(full)?, col)));
+            }
         }
-        matching_pair(self, at, false, 0..=last)
+        // Vim's matchparen: the partner in the rows in view, or nothing
+        // (R5). Rows only: a bracket scrolled out sideways still counts, as
+        // in Vim's `nowrap` window.
+        let last = self.visible_len().checked_sub(1)?;
+        let rows = self.scroll..=(self.scroll + self.height.max(1) - 1).min(last);
+        matching_pair(self, at, false, rows)
     }
 
     /// Puts Vim's cursor on column `col` of its line, wanted there after.
@@ -10574,18 +10551,20 @@ mod tests {
         assert!(!bracket_lit_at(&mut r, true, 5, 0));
     }
 
-    /// R19 (#89): in arrows a clicked bracket lights at once, its partner
-    /// below the view too, so scrolling down shows it lit.
+    /// R19 is the tree view's (#89 round 2): Raw keeps R5, so a partner
+    /// below the view lights nothing. A one-line body's partner shares the
+    /// clicked row, however far right it is.
     #[test]
-    fn an_arrows_click_lights_a_partner_out_of_view() {
+    fn an_arrows_raw_click_keeps_r5() {
         let mut lines = vec!["x"; 40];
         lines[5] = "(";
         lines[35] = ")";
         let mut r = ready(&lines.join("\n"));
         click_cell(&mut r, 5, 0);
-        assert!(bracket_lit_at(&mut r, true, 5, 0), "the `(` with its `)` out of view");
-        r.view.as_mut().unwrap().scroll = 25;
-        assert!(bracket_lit_at(&mut r, true, 35, 0), "scrolled to, the `)` is lit");
+        assert!(!bracket_lit_at(&mut r, true, 5, 0), "the `)` is out of view");
+        let mut r = ready(&format!("({})", "x".repeat(200)));
+        click_cell(&mut r, 0, 0);
+        assert!(bracket_lit_at(&mut r, true, 0, 0), "its `)` is on the same row");
     }
 
     /// R19 on the tree view: the tree names the partner's line, however
@@ -10603,23 +10582,16 @@ mod tests {
         assert!(bracket_lit_at(&mut r, true, 0, 0), "and from the `]` back up");
     }
 
-    /// A bracket in a string pairs only inside its string: a stray bracket
-    /// in another line's string is not its partner. Nor does a `,` in a
-    /// string take the bracket before it (R20).
+    /// On the tree view a bracket inside a string is no container's: it
+    /// keeps R4 and R5, so `,` after it (R20) pairs it inside its string.
     #[test]
-    fn a_string_bracket_pairs_only_inside_its_string() {
-        let mut r = ready("\"(a\"\nx\n\"b)\"");
-        click_cell(&mut r, 0, 1);
-        assert!(!bracket_lit_at(&mut r, true, 0, 1));
-        assert!(!bracket_lit_at(&mut r, true, 2, 2));
-        let mut r = ready("\"(a)\"");
-        click_cell(&mut r, 0, 1);
-        assert!(bracket_lit_at(&mut r, true, 0, 3), "inside one string it pairs");
+    fn a_tree_string_bracket_pairs_by_the_text_rules() {
         // Tree lines 0 `[`, 1 `  "[a],b"`, 2 `]`.
         let mut r = ready("[\"[a],b\"]");
         click_cell(&mut r, 1, 6);
-        assert!(!bracket_lit_at(&mut r, true, 1, 5), "the `,` is in a string");
-        assert!(!bracket_lit_at(&mut r, true, 1, 3));
+        assert!(bracket_lit_at(&mut r, true, 1, 5));
+        assert!(bracket_lit_at(&mut r, true, 1, 3));
+        assert!(!bracket_lit_at(&mut r, true, 0, 0), "not the container's `[`");
     }
 
     /// R5 still holds in vim: Vim's matchparen lights nothing while the

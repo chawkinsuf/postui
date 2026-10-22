@@ -110,7 +110,7 @@ pub(crate) fn matching_pair<B: Lines + ?Sized>(
 }
 
 /// Which chars of `line` sit inside a JSON string, its quotes included.
-pub(crate) fn in_strings(line: &[char]) -> Vec<bool> {
+fn in_strings(line: &[char]) -> Vec<bool> {
     let mut inside = false;
     let mut escaped = false;
     line.iter()

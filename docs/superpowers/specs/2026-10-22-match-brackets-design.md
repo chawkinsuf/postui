@@ -239,38 +239,42 @@ when the partner is off screen, and looks only under the cursor.
 
 | # | Rule | From |
 |---|---|---|
-| R19 | Arrows response: a clicked bracket lights with its partner wherever the partner is in the view's lines, on screen or not. Scrolling brings the lit partner into view. This replaces R5 there; the vim response and the body keep R5. | you (the ask); arrows-response-only is mine (approved) |
+| R19 | Arrows response, Tree view: a clicked container bracket lights with its partner wherever the partner is, on screen or not. Scrolling brings the lit partner into view. This replaces R5 there. Raw, Headers, a bracket inside a string, the vim response and the body keep R5 (a one-line Raw body's partner is on the clicked row, so it lights). | you (the ask); arrows-response-only is mine (approved); Tree-view-only is mine (approved, review round 2) |
 | R20 | Arrows response: a click on a `,` that directly follows a bracket (which includes a click past the end of a `},` or `],` line, since that lands on the `,`) lights that bracket's pair. Only a `,`, and only right after the bracket. | you (the ask); response-only is mine (approved); comma-only is mine (approved) |
 
 **Design.**
 
-- R19: in arrows, `ReadyView::bracket_pair` looks past the rows in view.
-  Vim's path is unchanged. Review round 1 found that an unbounded text
-  walk freezes on a big tree, and pairs a string's bracket with a stray one
-  far away, so arrows works in three steps:
-  - A bracket inside a string pairs only inside that string. JSON strings
-    never span lines, so the walk stays on its line. (mine, round 1)
-  - On the Tree view, a bracket outside strings is its container's own,
-    and `JsonTree::bracket_partner` names the partner's line, with no
-    walk.
-  - Raw and Headers walk every line.
-- R19: the memo (`BracketInputs`) leaves the scroll and the height out of
-  its key in arrows. They no longer change the answer there, so scrolling
-  never re-walks.
-- R20: in arrows, a clicked `,` outside a string, with a bracket right
-  before it, starts from that bracket instead.
+- R19: in arrows on the Tree view, `JsonTree::bracket_partner(line,
+  col)` names the partner's (line, char) when the clicked char is the
+  container's own bracket. That's a lookup, not a walk. Everything else
+  goes through the same rows-in-view walk as Vim (R4, R5).
+- R20: in arrows, a clicked `,` with a bracket right before it starts
+  from that bracket instead.
 
-**Cost.** None on the Tree view, where the tree answers. Raw and Headers
-walk once per click, and can cross the whole text: a click on the outer
-`{` of a big pretty-printed body in Raw reads every line once. Scrolling
-reuses the answer.
+**Rework (review round 2).** The first design walked every line in arrows
+for every view. Review round 1 found two problems with that: it froze on
+a big tree, and it paired a string's bracket with a stray one far away.
+The round-1 fix added a "pairs only within its string" rule and a tree
+shortcut. Round 2 then found that the string rule misreads non-JSON Raw
+text, that it splits vim from arrows, and that the whole-body walk can
+still freeze on an unmatched bracket in Raw. The user picked narrowing
+R19 to the Tree view (`mine (approved)`). That removes the unbounded walk
+and the string rule together. The review count restarts at round 1.
+
+**Cost.** None: the Tree view's lookup is constant-time, and everything
+else walks only the rows in view, as before #89.
 
 **Tests.**
 
-- Arrows: a click on `{` with its `}` below the view lights the `{` now,
-  and the `}` once scrolled to. The #24 test that pinned R5 for an arrows
-  click gets the new rule.
-- Vim: a partner out of view still lights nothing.
+- Arrows, Tree view: a click on `[` with its `]` 41 lines down lights the
+  `[` now and the `]` once scrolled to, and back up from the `]`.
+- `JsonTree::bracket_partner`: both directions; a key's quote, a comma
+  and a scalar line name nothing.
+- Arrows, Raw: a partner below the view lights nothing; a one-line body
+  lights its far-right partner.
+- Arrows, Tree view: a bracket inside a string pairs by the text rules.
+- Vim: a partner out of view lights nothing, and a scroll that takes it
+  out goes dark.
 - Arrows: a click past the end of a `},` line lights the `}` and its `{`;
   a click on a `,` after a non-bracket lights nothing.
 
@@ -279,7 +283,3 @@ reuses the answer.
 - Only `,` counts, and only directly after the bracket: not `;`, not
   whitespace, and not `} ,`.
 - In vim, the comma rule doesn't apply: Vim looks only under the cursor.
-- (Round 1) In arrows, a bracket inside a string pairs only within its
-  string, and a `,` inside a string never triggers R20. Vim's own R4, used
-  in vim and the body, skips nothing from inside a string, so it can pair
-  across lines.
