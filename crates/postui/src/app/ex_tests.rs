@@ -160,33 +160,29 @@ fn bang_on_a_clean_or_never_saved_request() {
     }
 }
 
-/// The final review's I-1: `:q` meets the dirty gate from every state the
-/// line opens from, a dialog under it included; ctrl+c keeps its modal
-/// exemption, and `:q!` is the line's way out.
+/// Task #85 R1: no quit while a dialog is open, so every quit verb on the
+/// line over one is refused (`:q` met the dirty gate over the dialog
+/// before, the final review's I-1, and `:q!` was the way out); Esc closes
+/// the dialog first. ctrl+c twice is refused the same way.
 #[test]
-fn colon_q_over_a_dialog_meets_the_dirty_gate() {
+fn colon_q_over_a_dialog_is_refused() {
     let mut app = vim(Fixture::DirtyScratch);
     feed(&mut app, ":w<CR>");
     assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "Save as");
-    feed(&mut app, "<Esc>:q<CR>");
-    assert!(!app.should_quit, "the gate, not a quit");
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the dirty gate's confirm");
-    feed(&mut app, "<Esc>");
-    assert!(
-        matches!(app.modals.top(), Some(Modal::Prompt { .. })),
-        "cancelling the gate goes back to Save as"
-    );
-    assert!(!app.should_quit);
-    assert_eq!(
-        app.mode_indicator(),
-        Some("INSERT"),
-        "its field back in Insert, as under any dialog that closes"
-    );
-    feed(&mut app, "<Esc>:q!<CR>");
-    assert!(app.should_quit, ":q! still leaves at once");
+    for q in [":q<CR>", ":q!<CR>", ":wq<CR>", ":x<CR>", ":qa!<CR>"] {
+        feed(&mut app, "<Esc>");
+        feed(&mut app, q);
+        assert!(!app.should_quit, "{q}: refused");
+        assert_eq!(app.modals.iter().count(), 1, "{q}: nothing over the dialog");
+        assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "{q}: Save as stays");
+        // Refused whole: the verb's leading `CloseField` never ran
+        // (rework review round 2).
+        assert!(app.field_caret().is_live(), "{q}: its field still open");
+    }
     let mut app = vim(Fixture::DirtyScratch);
-    feed(&mut app, ":w<CR><C-c>");
-    assert!(app.should_quit, "ctrl+c over a dialog stays an immediate exit");
+    feed(&mut app, ":w<CR><C-c><C-c>");
+    assert!(!app.should_quit, "ctrl+c over a dialog is refused");
+    assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "Save as stays");
 }
 
 /// Review Focus 1.
@@ -433,10 +429,10 @@ fn click_chip(app: &mut App, action: Action) {
 }
 
 /// The second code review's first finding: the palette's own Quit row,
-/// picked on the line over a dialog, meets the dirty gate as `:q` does,
-/// rather than leaving at once with the edits lost.
+/// picked on the line over a dialog, never leaves at once with the edits
+/// lost. Since task #85 it is refused there, as `:q` is.
 #[test]
-fn the_palette_quit_row_meets_the_dirty_gate_over_a_dialog() {
+fn the_palette_quit_row_is_refused_over_a_dialog() {
     let mut app = vim(Fixture::DirtyScratch);
     feed(&mut app, ":w<CR>");
     assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "Save as");
@@ -444,8 +440,8 @@ fn the_palette_quit_row_meets_the_dirty_gate_over_a_dialog() {
     assert_eq!(palette(&app).selected(), 1);
     assert_eq!(palette(&app).filtered()[0].id, "quit", "the fuzzy Quit row, under the pinned verb");
     feed(&mut app, "<CR>");
-    assert!(!app.should_quit, "the gate, not a quit");
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the dirty gate's confirm");
+    assert!(!app.should_quit, "refused");
+    assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "Save as stays, no gate");
 }
 
 /// The second code review's fourth finding: a click on the pinned add
@@ -476,27 +472,44 @@ fn a_clicked_add_verb_opens_in_insert_as_enter_does() {
 }
 
 /// The code review's fifth finding: where the quit chip reads `:q`, a
-/// click runs `:q`'s gated quit, so over a dialog it meets the dirty
-/// gate rather than leaving at once with the edits lost.
+/// click runs `:q`'s gated quit, meeting the dirty gate. Task #85 R9: under
+/// a dialog no quit runs, so no quit chip is drawn there.
 #[test]
 fn the_quit_chip_runs_what_it_spells() {
     let mut app = vim(Fixture::DirtyScratch);
-    feed(&mut app, ":w<CR>");
-    assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "Save as");
     draw(&mut app);
-    assert!(
-        app.hits.rect_of(&crate::hit::Hit::FooterChip(Action::Quit)).is_some(),
-        "typing in the dialog: `^C`, the emergency exit"
-    );
-    feed(&mut app, "<Esc>");
     click_chip(&mut app, Action::CloseWindow { write: false, force: false });
     assert!(!app.should_quit, "the gate, not a quit");
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the dirty gate's confirm");
     let mut app = build(Fixture::DirtyScratch);
     draw(&mut app);
-    feed(&mut app, "<C-p>");
     click_chip(&mut app, Action::Quit);
-    assert!(app.should_quit, "arrows' ^C chip stays the emergency exit over a dialog");
+    assert!(!app.should_quit, "the gate, not a quit");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the dirty gate's confirm");
+}
+
+/// Task #85 R9: no quit chip under any dialog, the quit's own unsaved-
+/// changes question included, in either profile.
+#[test]
+fn no_quit_chip_under_a_dialog() {
+    let any_quit_chip = |app: &App| {
+        [Action::Quit, Action::GatedQuit, Action::CloseWindow { write: false, force: false }]
+            .into_iter()
+            .any(|a| app.hits.rect_of(&crate::hit::Hit::FooterChip(a)).is_some())
+    };
+    let mut app = vim(Fixture::DirtyScratch);
+    feed(&mut app, ":w<CR>");
+    draw(&mut app);
+    assert!(!any_quit_chip(&app), "under Save as");
+    let mut app = vim(Fixture::DirtyScratch);
+    feed(&mut app, ":q<CR>");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the dirty gate's confirm");
+    draw(&mut app);
+    assert!(!any_quit_chip(&app), "on the gate");
+    let mut app = build(Fixture::DirtyScratch);
+    feed(&mut app, "<C-p>");
+    draw(&mut app);
+    assert!(!any_quit_chip(&app), "under the palette");
 }
 
 /// Sweep backlog item 4: on Manage, where `:q` closes the screen, the quit

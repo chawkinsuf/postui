@@ -37,6 +37,9 @@ const NO_PROJECT: &str = "no project is open";
 /// typing were still there to fix.
 const EDIT_DISCARDED: &str = "Edit discarded — the project was re-read from disk";
 
+/// What a quit refused under a dialog toasts (task #85).
+const CLOSE_THE_DIALOG_FIRST: &str = "Close the dialog first";
+
 /// Wall-clock dwell the caret must rest inside a `{{token}}` before its
 /// tooltip appears -- matching the original 2 ticks @ the tick's nominal
 /// 100ms period. Wall-clock rather than tick-counted because the tick
@@ -118,6 +121,10 @@ pub enum Screen {
 
 pub struct App {
     pub should_quit: bool,
+    /// The "press ^C again to quit" toast the modified quit combo's first
+    /// press showed, and that combo (task #85): pressed again next, while
+    /// the toast is live, it quits. See `disarm_quit`.
+    quit_armed: Option<(u64, KeyCombo)>,
     pub focus: PaneId,
     /// Which full-frame screen is showing (spec §5). `Screen::Main` is the
     /// normal three-pane layout.
@@ -1679,6 +1686,7 @@ impl App {
         };
         let mut app = Self {
             should_quit: false,
+            quit_armed: None,
             focus: PaneId::Sidebar,
             screen: Screen::default(),
             prior_focus: PaneId::Sidebar,
@@ -2755,24 +2763,21 @@ impl App {
 
     fn apply(&mut self, action: Action) -> bool {
         match action {
+            // (No quit runs while a dialog is open, task #85: the requests
+            // are refused where they come in, `refuse_quit`'s callers, so a
+            // quit that gets here is either asked with no dialog open or a
+            // dialog's own answer, which may quit.)
+            //
             // An unsaved request gates quitting behind the same confirm as
-            // opening/switching away from it — but only from the plain
-            // screen: with any modal already up (this gate included),
-            // ctrl+c stays a reliable, immediate exit, so pressing it
-            // twice always leaves without saving the request. (An open
-            // input still closes, saved, on the way out: task #75.)
-            Action::Quit if self.modals.is_empty() && self.leaving_unsaved() => {
-                self.dirty_gate("quit", Action::ForceQuit);
-                true
-            }
-            // `:q` has no such exemption: typed over a dialog it still meets
-            // the gate, whose cancel goes back to that dialog. Quitting
-            // leaves the request, so an open cell commits first even under
-            // a dialog that acts on it (extract, the var picker): after a
-            // Cancel that dialog finds no open field and says so, but the
-            // typing is kept and undoable. Counting the uncommitted cell
-            // instead is the draft state spec 2026-10-19 rules out.
-            Action::GatedQuit if self.leaving_unsaved() => {
+            // opening/switching away from it. (An open input closes, saved,
+            // on the way out: task #75.)
+            Action::Quit | Action::GatedQuit if self.leaving_unsaved() => {
+                // A live row drag owns the keyboard (Esc and the quit combo
+                // aside), so it would swallow the question's answers and
+                // land on release under it: the quit cancels it first, as
+                // a quit closes what is open before it asks (task #85).
+                self.finish_sidebar_drag(false);
+                self.finish_manage_drag(false);
                 self.dirty_gate("quit", Action::ForceQuit);
                 true
             }
@@ -3046,8 +3051,8 @@ impl App {
                 redraw
             }
             // A quit closes the open inputs first, saved (`leaving_unsaved`
-            // did when the gate above ran); a refused close still quits,
-            // since ctrl+c must always work. `ForceQuit` abandons them:
+            // did when the gate above ran); a refused close never stops a
+            // quit, or a bad value could hold the app open. `ForceQuit` abandons them:
             // vim's `:qa!`, and a gate's answer, which finds them closed.
             Action::Quit | Action::GatedQuit => {
                 self.close_open_inputs(true);
@@ -7862,8 +7867,8 @@ impl App {
     /// `false` when an input refused to close (a bad value or a failed
     /// write: it toasted and keeps the typing); a caller that stops then
     /// leaves its change undone (`close_inputs_or_stop`). Quitting, the dirty gate's
-    /// check and a journaled op go on regardless: ctrl+c must always quit,
-    /// and the other two have no way to refuse.
+    /// check and a journaled op go on regardless: a refused close never
+    /// stops a quit, and the other two have no way to refuse.
     ///
     /// Why stop rather than carry on (task #75, mine (approved)): carrying
     /// on leaves the typing open across the change, so a later save can
@@ -7872,7 +7877,8 @@ impl App {
     /// holds the user on the input (no tab switch, screen close, env
     /// switch or undo, and the footer's quit chip swallows its click) until
     /// they fix it or undo the typing with ctrl+z, which is how a Manager
-    /// field is discarded anyway. ctrl+c still quits.
+    /// field is discarded anyway. ctrl+c twice still leaves, through the
+    /// unsaved-changes question when the request holds edits.
     fn close_open_inputs(&mut self, editor: bool) -> bool {
         // Each input closes whether or not another refused: a caller that
         // goes on past a refusal (the dirty gate's check, the quit) must
@@ -10343,7 +10349,8 @@ impl App {
 
     /// Central key router. Order (each step tested):
     /// 1. A CTRL/ALT combo the keymap maps to Quit pre-empts everything,
-    ///    including open modals — ctrl+c must always quit.
+    ///    including open modals, so ctrl+c always reaches the quit: its
+    ///    first press arms it, the second quits (task #85).
     ///
     ///    1a. The key router (`crate::keyroute`): in the vim profile a
     ///    table row runs here (a motion replays its named key through
@@ -10382,11 +10389,14 @@ impl App {
         // this key did (spec §3.1).
         self.vim_catch_up();
         let echo = self.key_echo();
-        let ran = self.route_key(ev);
+        // Every key ends an armed quit; step 1 asks whether this one is
+        // its second press (task #85).
+        let armed = self.disarm_quit();
+        let ran = self.route_key(ev, armed.as_ref());
         self.vim_after_key(ran);
         // A key that does nothing may still drop the pending keys the
         // footer echoes (a refused `<C-w>h`, `5gt` past the strip).
-        let changed = ran.changed || self.key_echo() != echo;
+        let changed = ran.changed || self.key_echo() != echo || armed.is_some();
         // The op safety net at the event boundary, as `dispatch` has one
         // per action: a key handled without an action (a var-form or
         // grid commit) can bail between `begin_op` and its record.
@@ -10401,7 +10411,48 @@ impl App {
         changed || ended || noted || regated || asked
     }
 
-    fn route_key(&mut self, ev: KeyEvent) -> router::Ran {
+    /// Whether a quit asked now is refused: while any dialog is open (task
+    /// #85: "The dialog must be resolved and then the application can be
+    /// quit"). The quit requests are refused where they come in, by this one
+    /// rule: ctrl+c (`route_key` step 1), a command run from the palette or
+    /// the `:` line over another dialog (`apply_modal_result`), and the
+    /// footer's quit chip, which hides. A dialog's own answer that quits
+    /// (the unsaved-changes question's Discard, the startup dialog's Quit)
+    /// is not a request from outside it, so it is never refused.
+    pub(crate) fn quit_refused(&self) -> bool {
+        !self.modals.is_empty()
+    }
+
+    /// Refuses a quit request (see [`Self::quit_refused`]): the dialog
+    /// keeps its typing and its question. The unsaved-changes question is
+    /// a dialog too, so a held or mashed ctrl+c stops on it; `d` is the way
+    /// out without saving ("lets not let ^C again discard changes"). The
+    /// toast shows once however often the request repeats.
+    fn refuse_quit(&mut self) -> bool {
+        self.toasts.push_once(CLOSE_THE_DIALOG_FIRST, ToastKind::Info);
+        true
+    }
+
+    /// Takes down an armed quit (task #85): drops its toast and answers the
+    /// combo that armed it, if the toast was still showing. Every key and
+    /// every mouse press calls it first, so a quit's two presses are back
+    /// to back: a key or a click between them, a copy included, makes the
+    /// next press a first one again. Input that is neither (a paste, the
+    /// wheel, focus, a response landing) leaves the arm: if it opened a
+    /// dialog, the second press is refused like any quit under one, and
+    /// otherwise the quit still meets the unsaved-changes gate.
+    fn disarm_quit(&mut self) -> Option<KeyCombo> {
+        let (id, combo) = self.quit_armed.take()?;
+        // An expired toast is left to the tick's prune, which redraws; a
+        // live one goes now, and the caller redraws for it.
+        let live = self.toasts.is_live(id, Instant::now());
+        if live {
+            self.toasts.dismiss(id, &mut self.anims);
+        }
+        live.then_some(combo)
+    }
+
+    fn route_key(&mut self, ev: KeyEvent, armed: Option<&KeyCombo>) -> router::Ran {
         let ev = crate::keys::normalize_super_keys(ev);
         // cmd+c — SUPER+c, from terminals that report it — is copy-only:
         // copy the live selection, otherwise nothing. It is deliberately
@@ -10424,16 +10475,34 @@ impl App {
         let global = self.keymap.lookup(&combo);
         let modified = ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
 
-        // 1. A modified quit combo is the escape hatch: it pre-empts
-        // everything — except that when a text selection is live anywhere,
-        // ctrl+c means "copy" (the GUI meaning) and quit keeps working the
-        // moment nothing is selected.
+        // 1. A modified quit combo pre-empts everything — except that when
+        // a text selection is live anywhere, ctrl+c means "copy" (the GUI
+        // meaning) and quit keeps working the moment nothing is selected.
+        // It quits on a second press of the same combo, right after the
+        // first and while its toast shows (task #85): the first changes
+        // nothing, so a stray ctrl+c costs no field or drag. The toast is
+        // the arm (`disarm_quit`), so it never outlives it. With a dialog
+        // open the press is refused, first or second (a dialog can open
+        // between them by itself). The quit itself meets the unsaved-
+        // changes check.
         if modified && global == Some(Action::Quit) {
             if let Some(text) = self.active_selection_text() {
                 self.copy_text_with_toast(&text, "Copied selection".to_string());
                 return router::Ran::routed(true);
             }
-            return router::Ran::routed(self.update(Action::Quit));
+            // A half-typed key goes, as Vim's ctrl+c cancels it: `d`
+            // ctrl+c `d` is not `dd`.
+            self.vim_drop_pending();
+            if self.quit_refused() {
+                return router::Ran::routed(self.refuse_quit());
+            }
+            if armed == Some(&combo) {
+                return router::Ran::routed(self.update(Action::Quit));
+            }
+            let key = crate::keys::format_combo(&combo);
+            let id = self.toasts.push_id(format!("Press {key} again to quit"), ToastKind::Info);
+            self.quit_armed = Some((id, combo));
+            return router::Ran::routed(true);
         }
 
         // A live row drag owns Escape: it cancels the drag, nothing else.
@@ -11419,6 +11488,16 @@ impl App {
             // skipped the engine, the gate recorded nothing, and an older app
             // step landed over the typed text.
             self.vim_catch_up();
+        }
+        // A command run from the palette or the `:` line over another
+        // dialog is a quit request from outside that dialog: one that quits
+        // is refused whole, its leading `CloseField` included, so the
+        // dialog keeps its field (task #85, `quit_refused`).
+        if matches!(popped, Some(Modal::Palette(_)))
+            && self.quit_refused()
+            && res.actions.iter().any(Action::quits_under_a_dialog)
+        {
+            return self.refuse_quit() || changed;
         }
         if let Some(id) = &res.usage {
             self.usage.record(id, crate::usage::now());

@@ -210,7 +210,8 @@ fn fallback_description(action: &Action) -> Option<String> {
     Some(match action {
         Action::Quit => "Quit postui".to_string(),
         // Vim's quit chip (`:q`, `:qa` on Manage): the dirty gate asks
-        // first, over a dialog too. The chip runs `:q` only off Manage.
+        // first. The chip runs `:q` only off Manage, and shows only with
+        // no dialog open (task #85).
         Action::GatedQuit | Action::CloseWindow { write: false, force: false } => {
             "Quit postui, asking first about unsaved changes".to_string()
         }

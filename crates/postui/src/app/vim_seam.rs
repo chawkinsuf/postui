@@ -534,6 +534,20 @@ impl App {
             .find(|&id| caret == FieldCaret::Live(id))
     }
 
+    /// Drops the half-typed keys, the router's and the live field's engine's,
+    /// as Vim's ctrl+c cancels a pending command: the app's ctrl+c is taken
+    /// before either sees it (task #85), so its first press, which only
+    /// arms the quit, says so here. The recording flag stays, as for a
+    /// field close.
+    pub(crate) fn vim_drop_pending(&mut self) {
+        self.router.clear_pending();
+        match self.live_engine_field() {
+            Some(id) if id.is_modal() => self.vim.modal_glue.clear_pending(),
+            Some(_) => self.vim.glue.clear_pending(),
+            None => {}
+        }
+    }
+
     /// The engine `id` runs on: the dialog engine for a dialog's field
     /// (plan M3b Deviation 1), else the screen's.
     pub(crate) fn glue_of(&self, id: FieldId) -> &Glue {
@@ -1306,8 +1320,9 @@ impl App {
             Action::ForceWrite { quit: false } => self.save_request_checked(None, true),
             Action::CloseWindow { write, force } => {
                 // Manage by the keyboard's surface, as the line's caption and
-                // the quit chip read it: a dialog over Manage quits, as one
-                // over the main screen does.
+                // the quit chip read it. (Over a dialog, Manage's or the main
+                // screen's, `apply` refuses every window verb first: no quit
+                // while a dialog is open, task #85.)
                 if !table::Surfaces::MANAGE.has(self.surface()) {
                     return self.apply(match (write, force) {
                         (false, false) => Action::GatedQuit,

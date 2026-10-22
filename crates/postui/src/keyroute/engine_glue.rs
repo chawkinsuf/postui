@@ -383,6 +383,11 @@ impl Glue {
         self.profile = Some(profile);
     }
 
+    /// Drops the engine's half-typed command (`Engine::clear_pending`).
+    pub fn clear_pending(&mut self) {
+        self.engine.clear_pending();
+    }
+
     /// Trades registers with `other` (plan M3b Deviation 1): the dialog
     /// engine takes the screen's when a dialog session opens and gives them
     /// back when it closes, so the unnamed register is shared (key list §5).

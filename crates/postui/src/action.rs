@@ -108,10 +108,10 @@ pub enum Action {
     /// Quit without the unsaved-changes gate — what the gate's own choices
     /// dispatch once the user has decided.
     ForceQuit,
-    /// `:q` (spec §5.9): `Quit` behind the unsaved-changes gate whatever
-    /// is open under the line, a dialog included. `Quit` skips the gate
-    /// with a modal up so ctrl+c stays an emergency exit; the line's is
-    /// `:q!` (the final review's I-1).
+    /// `:q` (spec §5.9): `Quit` behind the unsaved-changes gate; the
+    /// line's way out is `:q!` (the final review's I-1). Since task #85
+    /// both are refused while a dialog is open, the gate included, so a
+    /// quit never discards edits by itself; the two now act alike.
     GatedQuit,
     /// `ZZ`, `:wq`, `:x` (spec §5.9, §5.11): quit, saving first when the
     /// request has unsaved edits. A never-saved request asks for a name;
@@ -1204,6 +1204,24 @@ pub enum Action {
     },
     /// Structural menu's "Collect into array": wraps the bar text in `[ … ]`.
     JqCollect,
+}
+
+impl Action {
+    /// Whether the action would quit the app if run with a dialog open, a
+    /// window verb included (off a dialog on Manage it closes the screen
+    /// instead): what a quit request is refused for there (task #85,
+    /// `App::quit_refused`).
+    pub fn quits_under_a_dialog(&self) -> bool {
+        matches!(
+            self,
+            Action::Quit
+                | Action::GatedQuit
+                | Action::ForceQuit
+                | Action::WriteQuit
+                | Action::ForceWrite { quit: true }
+                | Action::CloseWindow { .. }
+        )
+    }
 }
 
 /// Where `zt` `zz` `zb` put the cursor's line (piece 4 spec §5.7).

@@ -63,9 +63,8 @@ pub(super) fn count_clicks(
 }
 
 /// The footer's quit chip, whichever quit the profile and surface spell it
-/// as (`spell::quit_action`). It is the app's on every screen and under
-/// every dialog: the testbed lets only it through, and the dialog rule
-/// lets its click away commit before the quit.
+/// as (`spell::quit_action`). It is the app's on every screen, so the
+/// testbed lets only it through.
 fn is_quit_chip(hit: &Hit) -> bool {
     matches!(
         hit,
@@ -112,9 +111,12 @@ impl App {
         // Deviation 6).
         self.note_pane();
         // A press drops a half-typed key (plan M1 Deviation 15): a `g`
-        // never survives a click.
+        // never survives a click. It drops an armed quit too, so the two
+        // ctrl+c presses are back to back (task #85).
+        let mut disarmed = false;
         if matches!(m.kind, MouseEventKind::Down(_)) {
             self.router.clear();
+            disarmed = self.disarm_quit().is_some();
         }
         let edge = self.vim_mouse_start(&m);
         let changed = self.handle_mouse_inner(m);
@@ -131,7 +133,7 @@ impl App {
         // not be left down.
         let regated = self.reraise_startup_config_gate();
         let asked = self.raise_keymap_choice();
-        changed || ended || noted || regated || asked
+        changed || ended || noted || regated || asked || disarmed
     }
 
     fn handle_mouse_inner(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
@@ -1245,12 +1247,9 @@ impl App {
         // while the hit comes from the last frame, which is what every
         // click path relies on: the loop redraws after any event that
         // reports a change.
-        //
-        // The footer's quit chip is the one exception: it shows under every
-        // dialog but is the app's, so its click away runs and commits a
-        // live Settings field before the quit. (Under a dialog that chip is
-        // `Quit`, which quits at once with no gate; task #74.)
-        let in_dialog = !self.modals.is_empty() && !is_quit_chip(&hit);
+        // (The footer's quit chip, once its exception, is not drawn under a
+        // dialog since task #85: no quit runs under one.)
+        let in_dialog = !self.modals.is_empty();
         // A click anywhere that isn't the params/headers table itself (and
         // isn't in a dialog) is a click away: it commits whatever cell was
         // being edited (typing is never silently thrown away) and clears
@@ -1507,6 +1506,12 @@ impl App {
                 Some(from) => self.update(Action::PromptMoveAllRequests(from)),
                 None => false,
             },
+            // The quit chip is a quit request: it hides under a dialog, and
+            // a click resolved against an older frame is refused there as
+            // the other requests are (task #85, `quit_refused`).
+            Hit::FooterChip(action) if action.quits_under_a_dialog() && self.quit_refused() => {
+                self.refuse_quit()
+            }
             Hit::FooterChip(action) => {
                 // Chips that live inside the request panel (the Body
                 // toolbar row, the address bar's TLS lock, the split

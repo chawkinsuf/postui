@@ -654,7 +654,7 @@ impl Keymap {
 /// (stored as its uppercase `char` with `SHIFT` already folded away)
 /// prints back out as `shift+<lowercase>`, and `BackTab` (parsed from
 /// `shift+tab`) prints as `shift+tab`.
-fn format_combo(combo: &KeyCombo) -> String {
+pub(crate) fn format_combo(combo: &KeyCombo) -> String {
     let mut parts = Vec::new();
     if combo.modifiers.contains(KeyModifiers::ALT) {
         parts.push(alt_label().to_string());

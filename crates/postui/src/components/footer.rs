@@ -367,13 +367,15 @@ pub fn draw_footer(
     chips_override: Option<Vec<FooterChip>>,
     // `false` while an open modal supplies the chips: it captures the
     // keyboard, so the palette chip — whose shortcut goes dead under it —
-    // hides rather than advertise a key that won't work. Quit stays (the
-    // modified quit combo pre-empts everything).
+    // hides rather than advertise a key that won't work.
     globals_live: bool,
+    // `false` while any dialog is open: no quit runs under one (task
+    // #85), so the quit chip hides too.
+    quit_live: bool,
     // Whether a plain `q` actually reaches `Action::Quit` right now. Where
-    // it doesn't — a modal open, a non-Main screen, the editor's text
-    // areas — the quit chip's keycap shows the pre-empting `^C` combo
-    // instead of advertising a key that would just type.
+    // it doesn't — a non-Main screen, the editor's text areas — the quit
+    // chip's keycap shows the pre-empting `^C` combo instead of
+    // advertising a key that would just type.
     plain_q_quits: bool,
     // Vim's mode and pending keys (`App::vim_status`): `None` in arrows.
     // Paints at the right end before the commands chip, whole or not at
@@ -407,20 +409,26 @@ pub fn draw_footer(
     let quit_key =
         keycap(&Key::Quit { plain_q: plain_q_quits }, spell, keymap).unwrap_or_else(|| "^C".into());
     let quit_chip = (quit_key.as_str(), "quit", Some(quit_action(spell)));
-    let quit_w = chip_width(&quit_chip);
-    let quit_x = (area.x + area.width).saturating_sub(quit_w + 1);
-    paint_chip_row(
-        buf,
-        area,
-        mid_y,
-        quit_x,
-        quit_x + quit_w,
-        &[quit_chip],
-        theme,
-        hits,
-        hovered,
-        hover_t,
-    );
+    // Where the quit chip starts: the row's right edge when it is hidden.
+    let quit_x = if quit_live {
+        let quit_w = chip_width(&quit_chip);
+        let quit_x = (area.x + area.width).saturating_sub(quit_w + 1);
+        paint_chip_row(
+            buf,
+            area,
+            mid_y,
+            quit_x,
+            quit_x + quit_w,
+            &[quit_chip],
+            theme,
+            hits,
+            hovered,
+            hover_t,
+        );
+        quit_x
+    } else {
+        area.x + area.width
+    };
 
     let right_limit = if globals_live {
         // The palette chip sits right-aligned, one gap column left of quit.
@@ -781,6 +789,7 @@ mod tests {
                         Some(chips),
                         true,
                         true,
+                        true,
                         None,
                         sidebar_spell(),
                         &keymap,
@@ -859,6 +868,7 @@ mod tests {
                     JqBarState::Closed,
                     false,
                     None,
+                    true,
                     true,
                     true,
                     None,
@@ -1066,6 +1076,7 @@ mod tests {
                     JqBarState::Closed,
                     false,
                     None,
+                    true,
                     true,
                     true,
                     None,
@@ -1487,6 +1498,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    true,
                     None,
                     response_spell(),
                     &crate::keys::Keymap::default_bindings(),
@@ -1526,6 +1538,7 @@ mod tests {
                     JqBarState::Closed,
                     false,
                     None,
+                    true,
                     true,
                     true,
                     None,
@@ -1576,6 +1589,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    true,
                     None,
                     crate::keyroute::SpellCtx::default(),
                     &crate::keys::Keymap::default_bindings(),
@@ -1617,6 +1631,7 @@ mod tests {
                     JqBarState::Closed,
                     false,
                     None,
+                    true,
                     true,
                     true,
                     None,
@@ -1696,6 +1711,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    true,
                     None,
                     sidebar_spell(),
                     &crate::keys::Keymap::default_bindings(),
@@ -1754,6 +1770,7 @@ mod tests {
                     JqBarState::Closed,
                     false,
                     None,
+                    true,
                     true,
                     true,
                     None,
@@ -1856,6 +1873,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    true,
                     None,
                     crate::keyroute::SpellCtx::default(),
                     &crate::keys::Keymap::default_bindings(),
@@ -1910,6 +1928,7 @@ mod tests {
                         JqBarState::Closed,
                         false,
                         None,
+                        true,
                         true,
                         true,
                         status,

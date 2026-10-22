@@ -55,6 +55,14 @@ struct Toast {
     id: u64,
 }
 
+impl Toast {
+    /// Whether it is still showing at `now`: not past its expiry, which
+    /// the next tick would prune (one not stamped yet was just pushed).
+    fn live(&self, now: Instant) -> bool {
+        self.expires_at.is_none_or(|at| now < at)
+    }
+}
+
 pub struct Toasts {
     entries: Vec<Toast>,
     next_id: u64,
@@ -68,6 +76,13 @@ impl Default for Toasts {
 
 impl Toasts {
     pub fn push(&mut self, message: impl Into<String>, kind: ToastKind) {
+        self.push_id(message, kind);
+    }
+
+    /// [`Self::push`], answering the toast's id for [`Self::is_live`] and
+    /// [`Self::dismiss`]: for a toast whose showing is itself state, as
+    /// "press ^C again to quit" is (task #85).
+    pub fn push_id(&mut self, message: impl Into<String>, kind: ToastKind) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         self.entries.push(Toast {
@@ -77,6 +92,33 @@ impl Toasts {
             fade_started: false,
             id,
         });
+        id
+    }
+
+    /// [`Self::push`], unless the same message is already up: for a toast a
+    /// held key would otherwise repeat (task #85's "close the dialog
+    /// first").
+    pub fn push_once(&mut self, message: &str, kind: ToastKind) {
+        let now = Instant::now();
+        if !self.entries.iter().any(|t| t.message == message && t.live(now)) {
+            self.push(message, kind);
+        }
+    }
+
+    /// Whether toast `id` is still showing at `now`: in the list and not
+    /// past its expiry, which the next tick would prune. A toast `draw`
+    /// leaves off a screen too short for the whole stack still counts:
+    /// the quit's arm (task #85) is pushed newest, and the presses are back
+    /// to back, so only a toast landing between them could hide it, and
+    /// the quit it allows still meets the unsaved-changes question.
+    pub fn is_live(&self, id: u64, now: Instant) -> bool {
+        self.entries.iter().any(|t| t.id == id && t.live(now))
+    }
+
+    /// Removes toast `id` at once, its animation with it.
+    pub fn dismiss(&mut self, id: u64, anims: &mut Anims) {
+        self.entries.retain(|t| t.id != id);
+        anims.clear(AnimKey::ToastFade(id));
     }
 
     /// Stamps `expires_at` on every toast that doesn't have one yet --

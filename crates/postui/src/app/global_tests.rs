@@ -66,6 +66,26 @@ fn qa_bang_abandons_a_manager_field() {
     assert!(!diff.contains("file environments/"), "{diff}");
 }
 
+/// Task #85: the first ctrl+c only arms the quit, but it drops a half-typed
+/// key, as Vim's ctrl+c cancels a pending command: `d` ctrl+c `d` deletes
+/// nothing, and `g` ctrl+c `g` moves nowhere.
+#[test]
+fn the_first_ctrl_c_drops_a_pending_key() {
+    let mut app = vim(Fixture::Body);
+    let body = app.editor.body_text();
+    feed(&mut app, "d<C-c>d");
+    assert!(!app.should_quit);
+    assert_eq!(app.editor.body_text(), body, "no `dd`");
+    let mut app = vim(Fixture::SidebarThree);
+    feed(&mut app, "j");
+    let row = app.sidebar.selected_slug();
+    feed(&mut app, "g<C-c>");
+    assert_eq!(app.key_echo(), "", "nothing pending");
+    feed(&mut app, "g");
+    assert!(!app.should_quit);
+    assert_eq!(app.sidebar.selected_slug(), row, "no `gg`");
+}
+
 #[test]
 fn zz_saves_a_dirty_request_and_quits() {
     let mut app = vim(Fixture::TableThreeHeaders);
@@ -176,10 +196,11 @@ fn zq_on_manage_abandons_a_field_that_refuses_its_close() {
 }
 
 /// The code review of sweep backlog item 4: a dialog over Manage takes the
-/// window verbs as a dialog over the main screen does (they quit), as the
-/// line's caption and the quit chip say; Manage is never closed under it.
+/// window verbs as a dialog over the main screen does; Manage is never
+/// closed under it. Since task #85 that means they are refused there (no
+/// quit while a dialog is open).
 #[test]
-fn a_window_verb_in_a_dialog_over_manage_quits() {
+fn a_window_verb_in_a_dialog_over_manage_acts_as_over_the_main_screen() {
     for q in [":q<CR>", ":q!<CR>"] {
         let mut app = vim(Fixture::VarList);
         feed(&mut app, "a");
@@ -190,7 +211,8 @@ fn a_window_verb_in_a_dialog_over_manage_quits() {
         assert_eq!(app.surface(), crate::keyroute::Surface::Prompt);
         feed(&mut app, "<Esc>");
         feed(&mut app, q);
-        assert!(app.should_quit, "{q}: quit, as over the main screen");
+        assert!(!app.should_quit, "{q}: refused, as over the main screen");
+        assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "{q}: the prompt stays");
         assert_eq!(app.screen, Screen::Manage, "{q}: Manage not closed under the dialog");
     }
 }
