@@ -221,3 +221,52 @@ All approved by the user on 2026-10-22 (an option they picked, so
 - R10: arrows' response lights only from a click, never from a key.
 - R13: no light on a closed fold's line.
 - R15: `{{var}}` braces are ordinary braces.
+
+## 6. Amendment, 2026-10-22: the response's reach and a trailing comma (#89)
+
+The user, after #24 merged:
+
+> does it not match in the response if the other one is not on the screen?
+> it would be nice to be able to scroll down to see it. also, something like
+> `{` i can click at the end of the line to highlight, but the end is `},`
+> so that doesnt work. it probably makes sense to trigger it when its just a
+> comma and then a brace/bracket
+
+Scope: the response in the arrows profile only. The user picked that for
+both changes, over also changing the arrows body (`mine (approved)`). The
+vim profile keeps Vim's rules (R5, R11): Vim's matchparen lights nothing
+when the partner is off screen, and looks only under the cursor.
+
+| # | Rule | From |
+|---|---|---|
+| R19 | Arrows response: a clicked bracket lights with its partner wherever the partner is in the view's lines, on screen or not. Scrolling brings the lit partner into view. This replaces R5 there; the vim response and the body keep R5. | you (the ask); arrows-response-only is mine (approved) |
+| R20 | Arrows response: a click on a `,` that directly follows a bracket (which includes a click past the end of a `},` or `],` line, since that lands on the `,`) lights that bracket's pair. Only a `,`, and only right after the bracket. | you (the ask); response-only is mine (approved); comma-only is mine (approved) |
+
+**Design.**
+
+- R19: `ReadyView::bracket_pair` walks every visible line in arrows (rows
+  `0..=last`), and only the rows in view in vim.
+- R19: the memo (`BracketInputs`) leaves the scroll and the height out of
+  its key in arrows. They no longer change the answer there, so scrolling
+  never re-walks.
+- R20: in arrows, a clicked `,` with a bracket right before it starts from
+  that bracket instead.
+
+**Cost.** One walk per click. That walk can cross the whole response: a
+click on the root `{` of a large tree reads every line to its end, once.
+Scrolling reuses the answer.
+
+**Tests.**
+
+- Arrows: a click on `{` with its `}` below the view lights the `{` now,
+  and the `}` once scrolled to. The #24 test that pinned R5 for an arrows
+  click gets the new rule.
+- Vim: a partner out of view still lights nothing.
+- Arrows: a click past the end of a `},` line lights the `}` and its `{`;
+  a click on a `,` after a non-bracket lights nothing.
+
+**`mine` choices to veto.**
+
+- Only `,` counts, and only directly after the bracket: not `;`, not
+  whitespace, and not `} ,`.
+- In vim, the comma rule doesn't apply: Vim looks only under the cursor.
