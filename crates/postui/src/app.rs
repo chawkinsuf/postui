@@ -2343,14 +2343,12 @@ impl App {
     /// into a fixed width. Either way nothing changes, the stored value
     /// included.
     fn set_sidebar_cols(&mut self, want: i32) -> bool {
-        let (Some(sidebar), Some(editor)) = (
-            self.hits.rect_of(&Hit::Pane(PaneId::Sidebar)),
-            self.hits.rect_of(&Hit::Pane(PaneId::Editor)),
-        ) else {
+        let (Some(sidebar), Some(body)) =
+            (self.hits.rect_of(&Hit::Pane(PaneId::Sidebar)), self.drawn_body_cols())
+        else {
             return false;
         };
         let drawn = i32::from(sidebar.width);
-        let body = sidebar.width + 1 + editor.width;
         let next = crate::layout::clamp_sidebar_cols(body, want);
         let step = i32::from(next) - drawn;
         if step == 0 || step.signum() != (want - drawn).signum() {
@@ -2358,6 +2356,14 @@ impl App {
         }
         self.sidebar_width = Some(next);
         true
+    }
+
+    /// The last frame's body width in columns: the sidebar, the gutter and
+    /// the main column. `None` before a frame is drawn.
+    fn drawn_body_cols(&self) -> Option<u16> {
+        let sidebar = self.hits.rect_of(&Hit::Pane(PaneId::Sidebar))?;
+        let editor = self.hits.rect_of(&Hit::Pane(PaneId::Editor))?;
+        Some(sidebar.width + 1 + editor.width)
     }
 
     /// Records the sidebar width as the project's persisted layout
@@ -2435,7 +2441,7 @@ impl App {
     /// at, un-eased, through the same clamp and snaps as a drag, and saves
     /// a change: the body of every `ctrl+w` height key.
     fn move_split_line(&mut self, to: impl FnOnce(u16, i32) -> i32) -> bool {
-        let Some((column, _)) = self.split_column() else {
+        let Some(column) = self.split_column() else {
             return false;
         };
         let now = self.split_state();
@@ -2459,14 +2465,14 @@ impl App {
         true
     }
 
-    /// The last frame's main column (editor over response) and the
-    /// editor's rect in it — what the row-counting ways of moving the
-    /// split line (the strip drag, the `ctrl+w` height keys) measure rows
-    /// against. `None` before a frame is drawn.
-    fn split_column(&self) -> Option<(ratatui::layout::Rect, ratatui::layout::Rect)> {
+    /// The last frame's main column (editor over response): what the
+    /// row-counting ways of moving the split line (the strip drag, the
+    /// `ctrl+w` height keys) measure rows against. `None` before a frame
+    /// is drawn.
+    fn split_column(&self) -> Option<ratatui::layout::Rect> {
         let editor = self.hits.rect_of(&Hit::Pane(PaneId::Editor))?;
         let response = self.hits.rect_of(&Hit::Pane(PaneId::Response))?;
-        Some((editor.union(response), editor))
+        Some(editor.union(response))
     }
 
     /// Vim's `{N}<C-w>>` `<` `+` `-` (spec S7, E13), as Vim 9.1 resizes
@@ -2477,7 +2483,8 @@ impl App {
     /// height, and Vim's `-` there gives rows to a command line postui
     /// does not have, so both do nothing there. `_` maximizes the focused
     /// one, or sets its content rows to the count; on the sidebar it does
-    /// nothing. `=` evens the split from any window (E13).
+    /// nothing. `=` evens the split and halves the body for the sidebar,
+    /// from any window (E13).
     fn pane_resize(&mut self, dir: crate::action::ResizeDir, count: u16) -> bool {
         use crate::action::ResizeDir;
         if self.screen != Screen::Main {
@@ -2503,8 +2510,19 @@ impl App {
             (PaneId::Response, ResizeDir::Height) => self.move_split_line(|column, _| {
                 i32::from(column) - i32::from(crate::components::response::HEADER_STRIP_HEIGHT) - n
             }),
-            // Eased, like the keyboard stop it is (E14).
-            (_, ResizeDir::Even) => self.apply_split_stop(crate::split::SplitStop::Even),
+            // The split eases, like the keyboard stop it is (E14), and the
+            // sidebar takes half the body, as Vim's CTRL-W = makes all
+            // windows equally wide too.
+            (_, ResizeDir::Even) => {
+                let split = self.apply_split_stop(crate::split::SplitStop::Even);
+                let sidebar = self
+                    .drawn_body_cols()
+                    .is_some_and(|body| self.set_sidebar_cols((i32::from(body) - 1) / 2));
+                if sidebar {
+                    self.persist_sidebar();
+                }
+                split || sidebar
+            }
         }
     }
 
@@ -2544,7 +2562,7 @@ impl App {
                 if !drag.moved && row == press {
                     return false;
                 }
-                let Some((main, _)) = self.split_column() else {
+                let Some(main) = self.split_column() else {
                     return false;
                 };
                 let editor_rows = i32::from(row) - i32::from(grab) - i32::from(main.y);
@@ -3423,6 +3441,9 @@ impl App {
                 self.apply(Action::ForceQuit)
             }
             Action::ForceQuit => {
+                // A resize the button still holds ends here, saved, as
+                // every end of one does (spec P2a).
+                self.finish_resize();
                 let slug = self.editor.slug.clone();
                 if let Some(p) = self.project_mut() {
                     p.set_open_request(slug.as_deref());
@@ -4909,6 +4930,10 @@ impl App {
                                 .push(format!("could not open project: {e}"), ToastKind::Error);
                         }
                         self.refresh_sidebar();
+                        // The sizes are the new project's local state, as
+                        // every other open seeds them.
+                        self.seed_split_from_project();
+                        self.seed_sidebar_from_project();
                         // The project was opened on a bare directory, before
                         // init wrote the stock `default` env: land in it now,
                         // as an open of the finished project would.

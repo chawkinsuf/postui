@@ -1231,22 +1231,25 @@ impl App {
     /// text (the strip) anchors nothing but still clears the selection and
     /// the lit bracket pair. `sweep` arms the selection sweep on an
     /// anchor; the strip passes `false`, as its motion is the resize's.
-    /// Either way the response takes the focus.
+    /// Either way the response takes the focus. Returns whether anything
+    /// changed.
     fn press_response_pane(
         &mut self,
         clicks: u8,
         m: ratatui::crossterm::event::MouseEvent,
         sweep: bool,
-    ) {
-        if self.response_click_selection(clicks, m) {
+    ) -> bool {
+        let anchored = self.response_click_selection(clicks, m);
+        let mut changed = anchored;
+        if anchored {
             if sweep {
                 self.text_drag = Some(TextDrag::Response);
             }
             if let Some(row) = self.session.response.anchor_line() {
-                self.update(Action::JsonRowClicked { row, toggle: false });
+                changed |= self.update(Action::JsonRowClicked { row, toggle: false });
             }
         }
-        self.update(Action::FocusPane(PaneId::Response));
+        self.update(Action::FocusPane(PaneId::Response)) || changed
     }
 
     /// The `▼`/`▲` search buttons: focus the response pane and step the
@@ -1416,10 +1419,7 @@ impl App {
             self.move_editor_caret(SubFocus::None);
         }
         match hit {
-            Hit::Pane(PaneId::Response) => {
-                self.press_response_pane(clicks.text, m, true);
-                true
-            }
+            Hit::Pane(PaneId::Response) => self.press_response_pane(clicks.text, m, true),
             Hit::Pane(p) => self.update(Action::FocusPane(p)),
             Hit::BodyEditor => {
                 self.update(Action::FocusPane(PaneId::Editor));
@@ -1748,15 +1748,18 @@ impl App {
                 self.update(Action::SplitStop(stop))
             }
             // A press on a resize handle arms the drag. The gutter's moves
-            // no focus: a click there never did anything. The strip is the
-            // response pane's header, so its press first clicks as the
-            // pane's does (spec E2a; the click-away above already ran for
-            // it), arming no text sweep: the motion is the resize's. The
-            // handle is the hovered hit for the length of the drag, so the
-            // strip stays lit wherever the pointer goes.
+            // no focus: a click there never did anything, and in vim it is
+            // a press on a window separator, no click either (spec S7). The
+            // strip is the response pane's header, so its press first
+            // clicks as the pane's does (spec E2a; the click-away above
+            // already ran for it), arming no text sweep: the motion is the
+            // resize's. The handle is the hovered hit for the length of the
+            // drag, so the strip stays lit wherever the pointer goes.
             Hit::SidebarGutter | Hit::SplitHandle => {
                 if hit == Hit::SplitHandle {
                     self.press_response_pane(clicks.text, m, false);
+                } else {
+                    self.vim_separator_press();
                 }
                 let kind = match hit {
                     Hit::SidebarGutter => ResizeHandle::Sidebar,

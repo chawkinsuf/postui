@@ -437,11 +437,13 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::TableDelete(_) => text("Delete this row"),
         // The two end chips are the hide/show toggles (spec E12a): a click
         // hides the other pane, and on the lit chip (`on`) shows it again
-        // at the share it had. Each carries its toggle's key.
+        // at the share it had. Each carries its toggle's key. The middle
+        // stops are no chip, so they have no hint.
         Hit::SplitStop(stop) => {
             let (pane, toggle) = match stop {
                 SplitStop::EditorFull => ("response", Action::ToggleResponseCollapse),
-                _ => ("editor", Action::ToggleTableCollapse),
+                SplitStop::ResponseFull => ("editor", Action::ToggleTableCollapse),
+                SplitStop::EditorBig | SplitStop::Even | SplitStop::ResponseBig => return None,
             };
             let verb = if ctx.on { "Show" } else { "Hide" };
             Some(Source::Keyed(format!("{verb} the {pane}"), toggle))

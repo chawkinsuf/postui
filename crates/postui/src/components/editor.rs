@@ -2992,8 +2992,9 @@ impl Editor {
         // The whole column's two-chip control: "editor only" and
         // "response only" (the lit one restores the split) — and it lives
         // on this fixed row, never repositioning itself mid-click the way
-        // buttons on the response header would. Its key (`alt+w`) is named
-        // by the chips' hover hint, not painted here.
+        // buttons on the response header would. No key is painted here:
+        // each chip's hover hint names its hide/show toggle's key (spec
+        // E12a), and `alt+w`, which steps the split, is in the palette.
         let buf = frame.buffer_mut();
         // `table_collapsed` stays the authority on this pane's own
         // minimized flag, so a standalone render still lights the right

@@ -909,6 +909,24 @@ fn shift_alt_p_toggles_the_response_and_the_chip_hint_names_it() {
     }
 }
 
+/// Review round 6 L8 (E12a): only the two end stops are chips, each with
+/// its toggle's hint. A middle stop has no chip and names no toggle.
+#[test]
+fn only_the_end_stops_have_a_chip_hint() {
+    use crate::split::SplitStop;
+    let app = App::new_for_test();
+    let hint = |stop| {
+        let chip = Hit::SplitStop(stop);
+        crate::hint::hint_for(&chip, &app.keymap, &app.hint_ctx(&chip))
+    };
+    for stop in [SplitStop::EditorFull, SplitStop::ResponseFull] {
+        assert!(hint(stop).is_some(), "{stop:?}");
+    }
+    for stop in [SplitStop::EditorBig, SplitStop::Even, SplitStop::ResponseBig] {
+        assert_eq!(hint(stop), None, "{stop:?}");
+    }
+}
+
 /// S6b: the palette's "Widen sidebar" / "Narrow sidebar" run from the
 /// editor move the sidebar's edge a step the way they say.
 #[test]
@@ -1098,6 +1116,112 @@ fn ctrl_w_plus_mid_ease_counts_from_the_target() {
     }
     render_at(&mut app, 120, TALL);
     assert_eq!(pane_rows(&app, PaneId::Editor), target_rows + 1);
+}
+
+/// Review round 6 L2 (E13): `<C-w>=` evens the split and also sets the
+/// sidebar to half the body, `(body − 1) / 2`, clamped (S5), as Vim's
+/// CTRL-W = makes all windows equally wide too. The width is saved.
+#[test]
+fn ctrl_w_equal_also_halves_the_sidebar() {
+    const WIDE: u16 = 160;
+    let mut app = App::new_for_test();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.sidebar_width = Some(30);
+    app.update(Action::FocusPane(PaneId::Editor));
+    app.update(Action::SplitStop(crate::split::SplitStop::EditorBig));
+    render_at(&mut app, WIDE, 40);
+    assert_eq!(sidebar_cols(&app), 30);
+    press(&mut app, "<C-w>=");
+    let half = crate::layout::clamp_sidebar_cols(WIDE, i32::from((WIDE - 1) / 2));
+    assert_eq!(app.split_state(), SplitState::default(), "50/50");
+    assert_eq!(app.sidebar_width, Some(half));
+    assert_eq!(saved_width(&app), Some(half), "saved");
+    render_at(&mut app, WIDE, 40);
+    assert_eq!(sidebar_cols(&app), half);
+}
+
+/// Review round 6 L1 (S7): in vim a press on the sidebar gutter is no
+/// click, as Vim's press on a window separator is not. The body keeps its
+/// Visual selection through the press, the drag and the release, and a
+/// pending operator through a press.
+#[test]
+fn a_vim_gutter_drag_keeps_the_bodys_visual_and_operator() {
+    use super::key_matrix_tests::{Fixture, build, draw, feed};
+    let mut app = build(Fixture::Body);
+    app.use_profile(crate::config::KeyProfile::Vim);
+    draw(&mut app);
+    feed(&mut app, "jwvll");
+    assert_eq!(app.mode_indicator(), Some("VISUAL"));
+    let selection = app.editor.body_visual;
+    assert!(selection.is_some());
+    let (x, y) = gutter_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_drag(x + 4, y));
+    app.handle_mouse(left_up(x + 4, y));
+    assert!(app.sidebar_width.is_some(), "the drag resized");
+    assert_eq!(app.mode_indicator(), Some("VISUAL"), "still Visual");
+    assert_eq!(app.editor.body_visual, selection, "the selection is unchanged");
+
+    feed(&mut app, "<Esc>d");
+    draw(&mut app);
+    let (x, y) = gutter_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_up(x, y));
+    feed(&mut app, "d");
+    assert_eq!(app.editor.body_text(), "{\n}", "the `d` before the press and the one after");
+}
+
+/// Review round 6 L3: creating the project in place seeds both sizes from
+/// its local state, as every other open does, so the screen draws what
+/// `.local/state.toml` holds. The drags alone save what they draw, so the
+/// file is also written from outside before the init (another postui on
+/// the same folder), which only a seed picks up.
+#[test]
+fn init_project_here_draws_the_sizes_its_state_holds() {
+    let mut app = App::new_for_test();
+    assert!(!postui_core::project::Project::is_project(app.proj().root()));
+    render(&mut app);
+    let (x, y) = gutter_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_drag(24, y));
+    app.handle_mouse(left_up(24, y));
+    render(&mut app);
+    let (x, y) = handle_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_drag(x, y + 3));
+    app.handle_mouse(left_up(x, y + 3));
+    let root = app.proj().root().to_path_buf();
+    let mut outside = postui_core::fixtures::load_local_state(&root).unwrap();
+    assert_eq!(outside.sidebar_width, Some(24), "the drag saved");
+    outside.sidebar_width = Some(30);
+    outside.main_split = Some(
+        SplitState { editor_minimized: false, response_minimized: true, ratio: 0.6 }.to_token(),
+    );
+    postui_core::fixtures::save_local_state(&root, &outside).unwrap();
+    app.update(Action::InitProjectHere);
+    assert!(postui_core::project::Project::is_project(app.proj().root()));
+    let state = postui_core::fixtures::load_local_state(app.proj().root()).unwrap();
+    assert_eq!(app.sidebar_width, state.sidebar_width, "the width the state holds");
+    let split = state.main_split.as_deref().and_then(SplitState::from_token);
+    assert_eq!(Some(app.split_state()), split, "the split the state holds");
+    render(&mut app);
+    let drawn = sidebar_cols(&app);
+    assert_eq!(Some(drawn), state.sidebar_width, "drawn");
+}
+
+/// Audit (spec P2a): a quit while a resize is live ends it where it got
+/// to, saved, as every other end of a resize does.
+#[test]
+fn a_quit_mid_resize_saves_the_size() {
+    let mut app = App::new_for_test();
+    render(&mut app);
+    let (x, y) = gutter_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_drag(24, y));
+    app.update(Action::ForceQuit);
+    assert!(app.should_quit);
+    assert!(app.resize.is_none(), "the quit ended the resize");
+    assert_eq!(saved_width(&app), Some(24), "and saved it");
 }
 
 /// E7: from "editor only", `<C-w>+` on the response's strip grows it by
