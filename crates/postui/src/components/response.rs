@@ -2549,14 +2549,9 @@ pub struct Response {
     /// Whether the pane is hidden — collapsed to just its header strip,
     /// with the editor taking the freed rows (`Action::ToggleResponseCollapse`).
     /// A sticky layout preference: `Session::sync_open` carries it across
-    /// request switches instead of swapping it with the response.
-    /// Session-only — never persisted.
+    /// request switches instead of swapping it with the response. Saved
+    /// with the split, as the project's pane sizes (`App::persist_sizes`).
     pub collapsed: bool,
-    /// Display copy of the column's split, refreshed by the app before
-    /// every draw: the header's ▲/▼ step pill greys the arrow that
-    /// points past an endpoint from it. The app state stays the
-    /// authority; `collapsed` above is still this pane's own flag.
-    pub split: crate::split::SplitState,
     /// Display copy of the profile, refreshed by the frame before every
     /// draw ([`Response::set_vim_cursor`]): whether Vim's cursor column,
     /// rather than a click, lights a bracket pair (spec 2026-10-22,
@@ -4272,12 +4267,12 @@ impl Component for Response {
             other => {
                 // No response yet: row 0 is the same panel-tone header
                 // strip the ready pane has — a status-shaped chip naming
-                // the state in the status chip's slot, the step pill at
+                // the state in the status chip's slot, the grip at
                 // the right — so the pane reads as a pane with a header
                 // before the first send too. Hidden, that strip is the
                 // whole pane.
                 let strip = Rect { height: inner.height.min(COLLAPSED_HEIGHT), ..inner };
-                draw_pending_strip(frame.buffer_mut(), hits, strip, other, self.split, ctx);
+                draw_pending_strip(frame.buffer_mut(), hits, strip, other, ctx);
                 if self.collapsed || inner.height <= COLLAPSED_HEIGHT {
                     return;
                 }
@@ -4358,18 +4353,7 @@ impl Component for Response {
             ])
             .split(inner);
 
-        draw_header_strip(
-            frame,
-            hits,
-            rows[0],
-            data,
-            view,
-            &self.jq,
-            jq_open,
-            self.collapsed,
-            self.split,
-            ctx,
-        );
+        draw_header_strip(frame, hits, rows[0], data, view, &self.jq, jq_open, self.collapsed, ctx);
         self.jq_caret = None;
         if jq_open {
             self.jq_caret = draw_jq_bar(frame, hits, rows[1], &self.jq, ctx);
@@ -4439,14 +4423,14 @@ pub const HEADER_STRIP_HEIGHT: u16 = 3;
 
 /// The hidden Response pane's total height — what `layout::compute_layout`
 /// shrinks the pane to while it's collapsed: just the strip's first row
-/// (status facts + the ▲/▼ step pill), the tabs and icon actions having slid away
+/// (status facts + the grip), the tabs and icon actions having slid away
 /// with the body.
 pub const COLLAPSED_HEIGHT: u16 = 1;
 
 /// The not-yet-ready pane's one-row header strip on `area`: panel fill,
 /// a status-shaped chip at the left naming the state — `—` while empty,
 /// the spinner and elapsed time in flight, `failed` in the error tone,
-/// `cancelled` — and the ▲/▼ step pill at the right. The same strip
+/// `cancelled` — and the grip at the right. The same strip
 /// serves the hidden pane (where it is the whole pane) and the expanded
 /// one (where the body message sits below it), so the header never
 /// changes shape when the pane opens.
@@ -4455,12 +4439,13 @@ fn draw_pending_strip(
     hits: &mut crate::hit::HitMap,
     area: Rect,
     state: &ResponseState,
-    split: crate::split::SplitState,
     ctx: &DrawCtx,
 ) {
     let t = ctx.theme;
-    crate::paint::fill(buf, area, t.panel);
-    let right = draw_step_pill(buf, hits, area, split, ctx);
+    let (hot, bg) = strip_face(ctx);
+    crate::paint::fill(buf, area, bg);
+    hits.register(area, crate::hit::Hit::SplitHandle);
+    let right = draw_grip(buf, area, hot, t);
     let (label, color) = match state {
         ResponseState::Empty => ("\u{2014}".to_string(), t.text_muted),
         ResponseState::InFlight { started } => {
@@ -4472,12 +4457,12 @@ fn draw_pending_strip(
         ResponseState::Cancelled => ("cancelled".to_string(), t.text_muted),
         ResponseState::Ready(_) => unreachable!("the ready pane paints its own header"),
     };
-    lead_chip(buf, area, right, crate::paint::Chip { label: &label, color }, t);
+    lead_chip(buf, area, right, crate::paint::Chip { label: &label, color }, bg, t);
 }
 
 /// Paints `chip` at the left of `area`'s first row if it fits whole
 /// before `right`, and answers its width; on a strip too tight for both
-/// it and the step pill, the pill wins (it is the control) and this
+/// it and the grip, the grip wins (it is the handle's hint) and this
 /// answers `None`. The one rule for both strips' status chip, so the
 /// header drops it at the same width in every state.
 fn lead_chip(
@@ -4485,54 +4470,65 @@ fn lead_chip(
     area: Rect,
     right: u16,
     chip: crate::paint::Chip,
+    bg: ratatui::style::Color,
     t: &crate::theme::Theme,
 ) -> Option<u16> {
-    (area.x + chip.width() <= right).then(|| chip.paint(buf, area.x, area.y, t.panel, t))
+    (area.x + chip.width() <= right).then(|| chip.paint(buf, area.x, area.y, bg, t))
 }
 
-/// Paints the header's ▲/▼ step pill right-aligned on `area`'s first
-/// row (one cell in from the right edge, like the tab strip below it)
-/// and registers its two `Hit::SplitStep` chips. Returns the column the
-/// row's text must end before: a cell short of the pill's leading cap,
-/// the strip's right edge on a strip too narrow for the pill, or its
-/// left edge on a strip with no row at all (no room for text either).
-/// Shared by the ready header strip and the not-yet-ready pane so the
-/// arrows sit in the same place, and the text stops in the same place,
-/// in every state.
-fn draw_step_pill(
-    buf: &mut ratatui::buffer::Buffer,
-    hits: &mut crate::hit::HitMap,
-    area: Rect,
-    split: crate::split::SplitState,
-    ctx: &DrawCtx,
-) -> u16 {
-    let x = area.right().saturating_sub(crate::paint::STEP_CONTROL_WIDTH + 1);
+/// The grip at the right end of the header's first row: a hint that the
+/// strip drags, with no hit of its own (the whole strip is the
+/// [`crate::hit::Hit::SplitHandle`]).
+const GRIP: &str = "\u{283F}\u{283F}";
+
+/// Whether the pointer is over the strip's draggable part, and the
+/// background every paint on the strip takes: `theme.panel`, warmed
+/// toward the control hover tone by the shared hover fade while hot.
+fn strip_face(ctx: &DrawCtx) -> (bool, ratatui::style::Color) {
+    let t = ctx.theme;
+    let hot = ctx.hovered == Some(&crate::hit::Hit::SplitHandle);
+    // Half way to the hover tone, not `paint::hover_surface`'s full lifted
+    // one: the whole three-row strip lights, so it warms only slightly
+    // (spec E4, as on the approved mockup); the grip carries the accent.
+    let bg = if hot {
+        crate::theme::mix(t.panel, t.control_hover, 0.5 * ctx.hover_t())
+    } else {
+        t.panel
+    };
+    (hot, bg)
+}
+
+/// Paints [`GRIP`] right-aligned on `area`'s first row (one cell in from
+/// the right edge, like the tab strip below it), over whatever
+/// background the strip already holds, lit in the accent while `hot`.
+/// Returns the column the row's text must end before: a cell short of
+/// the grip, the strip's right edge on a strip too narrow for it, or
+/// its left edge on a strip with no row at all (no room for text
+/// either). Shared by the ready header strip and the not-yet-ready pane
+/// so the grip sits in the same place, and the text stops in the same
+/// place, in every state.
+fn draw_grip(buf: &mut ratatui::buffer::Buffer, area: Rect, hot: bool, t: &Theme) -> u16 {
+    let width = crate::ui::cells(GRIP) as u16;
+    let x = area.right().saturating_sub(width + 1);
     if area.height == 0 {
         return area.x;
     }
     if x <= area.x {
         return area.right();
     }
-    let hovered = match ctx.hovered {
-        Some(crate::hit::Hit::SplitStep(d)) => Some(*d),
-        _ => None,
-    };
-    let rects =
-        crate::paint::StepControl { state: split, hovered }.paint(buf, x, area.y, ctx.theme);
-    for (rect, delta) in rects {
-        hits.register(rect, crate::hit::Hit::SplitStep(delta));
-    }
+    let fg = if hot { t.accent } else { t.text_disabled };
+    // A style patch: the strip's background stays.
+    buf.set_string(x, area.y, GRIP, Style::default().fg(fg));
     x - 1
 }
 
 /// Paints the ready header's row 0 facts on `area`'s first row, ending
-/// before `right` (from [`draw_step_pill`]): the status chip, e.g.
+/// before `right` (from [`draw_grip`]): the status chip, e.g.
 /// ` 200 `, then the timing and size figures (plain muted text — not
 /// clickable, so no control fill; chip fill means clickability), then
-/// the content type's media type and the rendered URL.
+/// the content type's media type and the rendered URL, all on `bg`.
 ///
-/// What doesn't fit gives way, so the ▲/▼ pill, the row's one control,
-/// is never painted over:
+/// What doesn't fit gives way, so the grip is never painted over:
 /// - with no room for the chip the row stays empty, as on the pending
 ///   strip, since the figures mean nothing without the status they
 ///   describe;
@@ -4547,18 +4543,19 @@ fn draw_status_row(
     area: Rect,
     right: u16,
     data: &crate::http::ResponseData,
+    bg: ratatui::style::Color,
     t: &crate::theme::Theme,
 ) {
     let chip =
         crate::paint::Chip { label: &data.status.to_string(), color: t.status_color(data.status) };
-    let Some(chip_w) = lead_chip(buf, area, right, chip, t) else { return };
+    let Some(chip_w) = lead_chip(buf, area, right, chip, bg, t) else { return };
     let mut x = area.x + chip_w + 1;
     // One combined timing figure — ttfb → total — rather than two chips.
     let timing = format!("{} → {}", human_elapsed(data.ttfb), human_elapsed(data.elapsed));
     for label in [timing, human_size(data.size)] {
         let s = format!(" {label} ");
         if x as usize + crate::ui::cells(&s) <= right as usize {
-            x = crate::paint::text(buf, x, area.y, &s, t.text_muted, t.panel, false) + 1;
+            x = crate::paint::text(buf, x, area.y, &s, t.text_muted, bg, false) + 1;
         }
     }
 
@@ -4576,15 +4573,18 @@ fn draw_status_row(
             return;
         }
         let s = crate::ui::ellipsize(fact, (right - x - 1) as usize);
-        x = crate::paint::text(buf, x + 1, area.y, &s, t.text_muted, t.panel, false) + 1;
+        x = crate::paint::text(buf, x + 1, area.y, &s, t.text_muted, bg, false) + 1;
     }
 }
 
-/// Paints the 3-row header strip on `theme.panel`: row 0 holds the
-/// status facts ([`draw_status_row`]) with the ▲/▼ step pill at its
-/// right end; the response tabs sit right-aligned on row 1;
-/// row 2 holds the tabs' accent underline on the right and the icon
-/// actions (search / edit / save / copy) on the left, directly above the body they act on.
+/// Paints the 3-row header strip on `theme.panel` (warmed while the
+/// pointer is over its draggable part): row 0 holds the status facts
+/// ([`draw_status_row`]) with the grip at its right end; the response
+/// tabs sit right-aligned on row 1; row 2 holds the tabs' accent
+/// underline on the right and the icon actions (search / edit / save /
+/// copy) on the left, directly above the body they act on. The whole
+/// strip is registered first as the [`crate::hit::Hit::SplitHandle`], so
+/// the tabs and icons registered after it sit on top.
 #[allow(clippy::too_many_arguments)] // one display-state flag per row feature, all from `Response`
 fn draw_header_strip(
     frame: &mut Frame,
@@ -4595,21 +4595,22 @@ fn draw_header_strip(
     bar: &JqBar,
     jq_open: bool,
     collapsed: bool,
-    split: crate::split::SplitState,
     ctx: &DrawCtx,
 ) {
     let t = ctx.theme;
     let buf = frame.buffer_mut();
-    crate::paint::fill(buf, area, t.panel);
+    let (hot, bg) = strip_face(ctx);
+    crate::paint::fill(buf, area, bg);
+    hits.register(area, crate::hit::Hit::SplitHandle);
 
-    // Row 0: the ▲/▼ step pill at the right, painted first so the facts
-    // know where to stop.
-    let right = draw_step_pill(buf, hits, area, split, ctx);
-    draw_status_row(buf, area, right, data, t);
+    // Row 0: the grip at the right, painted first so the facts know where
+    // to stop.
+    let right = draw_grip(buf, area, hot, t);
+    draw_status_row(buf, area, right, data, bg, t);
 
     // Hidden (or mid-slide with only the one row left): row 0 is the whole
     // strip — the tabs and icon actions slid away with the body, leaving
-    // the status facts and the step pill.
+    // the status facts and the grip.
     if collapsed || area.height < HEADER_STRIP_HEIGHT {
         return;
     }
@@ -4617,7 +4618,7 @@ fn draw_header_strip(
     // Row 2 (left): the icon actions, on the stretch of the underline row
     // the tabs' rule doesn't reach.
     let jq_available = view.has_tree_view() && view.mode == ViewMode::Pretty;
-    draw_header_actions(frame, hits, area, jq_available, jq_open, ctx);
+    draw_header_actions(frame, hits, area, jq_available, jq_open, bg, ctx);
 
     let buf = frame.buffer_mut();
     let row1_y = area.y + 1;
@@ -4661,7 +4662,7 @@ fn draw_header_strip(
         disabled: None,
         right_anchored: 0,
     }
-    .paint(buf, tabstrip_area, t.panel, t);
+    .paint(buf, tabstrip_area, bg, t);
     for (rect, mode) in rects.into_iter().zip(modes) {
         hits.register(rect, crate::hit::Hit::ResponseTab(mode));
     }
@@ -4743,6 +4744,7 @@ fn draw_header_actions(
     area: Rect,
     jq_available: bool,
     jq_open: bool,
+    bg: ratatui::style::Color,
     ctx: &DrawCtx,
 ) {
     let y = area.y + 2;
@@ -4763,7 +4765,7 @@ fn draw_header_actions(
             label,
             hit.clone(),
             if pressed { Some(&hit) } else { ctx.hovered },
-            ctx.theme.panel,
+            bg,
             ctx.theme,
         );
         rects.push((rect, hit));
@@ -6455,19 +6457,19 @@ mod tests {
     }
 
     /// A URL in 2-cell glyphs is ellipsized in cells: it stops a cell
-    /// short of the step pill instead of painting over it.
+    /// short of the grip instead of painting over it.
     #[test]
-    fn a_wide_url_is_cut_short_of_the_step_pill() {
+    fn a_wide_url_is_cut_short_of_the_grip() {
         let mut d = data(r#"{"a": 1}"#);
         d.url = format!("https://例え.jp/{}", "本番環境".repeat(20));
-        let row = row0_beside_an_intact_pill(d, 80);
+        let row = row0_beside_an_intact_grip(d, 80);
         assert!(row.contains('\u{2026}'), "the URL is ellipsized: {row}");
     }
 
     /// Draws a ready response for `d`, `w` columns wide, and returns row
-    /// 0 as text after checking that the ▲/▼ pill and the blank cell
-    /// before it came through whatever the row's facts painted.
-    fn row0_beside_an_intact_pill(d: crate::http::ResponseData, w: u16) -> String {
+    /// 0 as text after checking that the grip and the blank cell before
+    /// it came through whatever the row's facts painted.
+    fn row0_beside_an_intact_grip(d: crate::http::ResponseData, w: u16) -> String {
         let mut r = Response::default();
         r.set_state(ResponseState::Ready(Box::new(d)), 0);
         let theme = Theme::dark();
@@ -6484,18 +6486,15 @@ mod tests {
         let mut hits = crate::hit::HitMap::default();
         terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let buf = terminal.backend().buffer();
-        let chips: Vec<Rect> =
-            [1, -1].iter().filter_map(|d| hits.rect_of(&crate::hit::Hit::SplitStep(*d))).collect();
-        assert_eq!(chips.len(), 2, "the step pill is drawn");
-        let y = chips[0].y;
+        let strip = hits.rect_of(&crate::hit::Hit::SplitHandle).expect("the strip is the handle");
+        let y = strip.y;
         let row: String = (0..w).map(|x| buf[(x, y)].symbol()).collect();
-        for (chip, arrow) in chips.iter().zip(["\u{25B2}", "\u{25BC}"]) {
-            assert_eq!(buf[(chip.x + 1, y)].symbol(), arrow, "{row}");
+        let grip = strip.right() - 3;
+        for x in [grip, grip + 1] {
+            assert_eq!(buf[(x, y)].symbol(), "\u{283F}", "{row}");
         }
-        let cap = chips.iter().map(|c| c.x).min().unwrap() - 1;
-        assert_eq!(buf[(cap, y)].bg, theme.control, "the pill's cap: {row}");
-        let blank = cap.checked_sub(1).expect("the pill leaves room on its left");
-        assert_eq!(buf[(blank, y)].symbol(), " ", "a blank cell before the pill: {row}");
+        let blank = grip.checked_sub(1).expect("the grip leaves room on its left");
+        assert_eq!(buf[(blank, y)].symbol(), " ", "a blank cell before the grip: {row}");
         // A 2-cell glyph's second cell also reads " ", so the blank is
         // only the row's own if the glyph before it is one cell wide.
         if let Some(before) = blank.checked_sub(1) {
@@ -6536,34 +6535,34 @@ mod tests {
         let mut d = data(r#"{"a": 1}"#);
         d.content_type =
             Some("multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW".into());
-        let row = row0_beside_an_intact_pill(d, 80);
+        let row = row0_beside_an_intact_grip(d, 80);
         assert!(row.contains(" multipart/form-data "), "{row}");
         assert!(!row.contains("boundary"), "{row}");
         assert!(row.contains(" https://api.exam"), "the URL keeps the rest of the row: {row}");
     }
 
     /// On a strip too narrow for the timing and size figures, each is
-    /// shown whole or skipped, the next still tried, and the pill keeps
+    /// shown whole or skipped, the next still tried, and the grip keeps
     /// its cells.
     #[test]
-    fn a_narrow_strip_skips_the_figures_that_would_reach_the_step_pill() {
-        // 36 columns: the pane's inset takes one each side, the pill and
-        // its blank cell the right 9 of the 34 left, and the status chip
+    fn a_narrow_strip_skips_the_figures_that_would_reach_the_grip() {
+        // 32 columns: the pane's inset takes one each side, the grip and
+        // its blank cell the right 4 of the 30 left, and the status chip
         // and its gap the left 6, so ` 38 ms → 342 ms ` (16) fits in the
-        // 19 between; ` 8 B ` and the content type do not.
-        let row = row0_beside_an_intact_pill(data(r#"{"a": 1}"#), 36);
+        // 20 between; ` 8 B ` and the content type do not.
+        let row = row0_beside_an_intact_grip(data(r#"{"a": 1}"#), 32);
         assert!(row.contains(" 38 ms → 342 ms "), "{row}");
         assert!(!row.contains(" B "), "no size: {row}");
         assert!(!row.contains("appl"), "no content type: {row}");
-        // 28 columns: 11 cells between the chip's gap and the pill's
+        // 25 columns: 13 cells between the chip's gap and the grip's
         // blank. The timing no longer fits whole, so it is skipped, and
         // ` 8 B ` (5) still takes its place.
-        let row = row0_beside_an_intact_pill(data(r#"{"a": 1}"#), 28);
+        let row = row0_beside_an_intact_grip(data(r#"{"a": 1}"#), 25);
         assert!(!row.contains("ms"), "no timing: {row}");
         assert!(row.contains(" 8 B "), "the size still fits: {row}");
-        // 14 columns: not even the status chip fits beside the pill, so
-        // the pill wins, as on the not-yet-ready strip: it is the control.
-        let row = row0_beside_an_intact_pill(data(r#"{"a": 1}"#), 14);
+        // 10 columns: not even the status chip fits beside the grip, so
+        // the grip wins, as on the not-yet-ready strip.
+        let row = row0_beside_an_intact_grip(data(r#"{"a": 1}"#), 10);
         assert!(!row.contains("200"), "no status chip: {row}");
     }
 
@@ -8593,7 +8592,7 @@ mod tests {
     }
 
     /// The pane no longer paints split buttons of its own — the column's
-    /// five-stop control lives in the editor's fixed tab-bar row, so
+    /// two-chip control lives in the editor's fixed tab-bar row, so
     /// this header never registers a `SplitStop` hit that would move out
     /// from under a click.
     #[test]
@@ -8626,68 +8625,121 @@ mod tests {
         assert!(!out.contains("esc to cancel"), "{out}");
     }
 
-    /// The header's own split affordance is the one-step ▲/▼ pill,
-    /// right-aligned on row 0 — the row that survives every state, so the
-    /// arrows are reachable expanded, collapsed, and before the first
-    /// response has arrived.
+    /// The header's grip is right-aligned on row 0 — the row that
+    /// survives every state, so the strip reads as a handle expanded,
+    /// collapsed, and before the first response has arrived — and the
+    /// ▲/▼ step pill it replaced is gone.
     #[test]
-    fn header_row_0_carries_the_step_pill_in_every_state() {
+    fn grip_sits_at_the_right_end_of_row_0_in_every_state() {
         use crate::hit::Hit;
         let mut r = ready(r#"{"a": 1}"#);
         let mut empty = Response::default();
         for (name, resp) in [("ready", &mut *r), ("empty", &mut empty)] {
             for collapsed in [false, true] {
                 resp.collapsed = collapsed;
-                let hits = render_hits(resp);
-                let up = hits
-                    .rect_of(&Hit::SplitStep(1))
-                    .unwrap_or_else(|| panic!("{name} collapsed={collapsed}: ▲ hit"));
-                let down = hits
-                    .rect_of(&Hit::SplitStep(-1))
-                    .unwrap_or_else(|| panic!("{name} collapsed={collapsed}: ▼ hit"));
-                assert_eq!(up.y, 0, "{name} collapsed={collapsed}");
-                assert_eq!(down.y, 0, "{name} collapsed={collapsed}");
-                assert_eq!(up.x + up.width, down.x, "▲ then ▼, flush");
-                // Right-aligned: the trailing cap sits one cell in from the
-                // pane's inner right edge (the 60-wide pane insets one
-                // column each side).
-                assert_eq!(down.x + down.width + 1, 60 - 2, "{name} collapsed={collapsed}");
+                let (out, hits) = render_hovered(resp, None);
+                let strip = hits
+                    .rect_of(&Hit::SplitHandle)
+                    .unwrap_or_else(|| panic!("{name} collapsed={collapsed}: handle"));
+                assert_eq!(strip.y, 0, "{name} collapsed={collapsed}");
+                // Right-aligned: the grip ends one cell in from the pane's
+                // inner right edge (the 60-wide pane insets one column
+                // each side).
+                assert_eq!(strip.right(), 60 - 1, "{name} collapsed={collapsed}");
+                let theme = Theme::dark();
+                let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+                let ctx = DrawCtx {
+                    theme: &theme,
+                    focused: true,
+                    hovered: None,
+                    pointer: None,
+                    dragging: false,
+                    anims: test_anims(),
+                    now: std::time::Instant::now(),
+                };
+                let mut hits = crate::hit::HitMap::default();
+                terminal.draw(|f| resp.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+                let buf = terminal.backend().buffer();
+                let grip: String = (strip.right() - 3..strip.right() - 1)
+                    .map(|x| buf[(x, 0)].symbol().to_string())
+                    .collect();
+                assert_eq!(grip, "\u{283F}\u{283F}", "{name} collapsed={collapsed}");
+                assert_eq!(buf[(strip.right() - 3, 0)].fg, theme.text_disabled, "resting grip");
+                assert!(
+                    !out.contains('\u{25B2}') && !out.contains('\u{25BC}'),
+                    "no step pill left: {out}"
+                );
             }
         }
     }
 
-    /// The pill lights from the display copy of the split the app hands
-    /// the pane: with the response minimized, ▼ has nowhere to go.
+    /// The whole strip is the split handle, registered under its tabs and
+    /// icon buttons: blank cells and the status facts hit the handle, a
+    /// tab or an icon still hits itself (spec E1, E2).
     #[test]
-    fn step_pill_greys_from_the_panes_split_copy() {
-        let theme = Theme::dark();
+    fn strip_is_the_split_handle_under_its_buttons() {
+        use crate::hit::Hit;
         let mut r = ready(r#"{"a": 1}"#);
-        r.collapsed = true;
-        r.split = crate::split::SplitState { response_minimized: true, ..Default::default() };
-        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
-        let mut hits = crate::hit::HitMap::default();
-        let ctx = DrawCtx {
-            theme: &theme,
-            focused: true,
-            hovered: None,
-            pointer: None,
-            dragging: false,
-            anims: test_anims(),
-            now: std::time::Instant::now(),
-        };
-        terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
-        let down = hits.rect_of(&crate::hit::Hit::SplitStep(-1)).unwrap();
-        let buf = terminal.backend().buffer();
-        assert_eq!(buf[(down.x + 1, 0)].symbol(), "\u{25BC}");
-        assert_eq!(buf[(down.x + 1, 0)].fg, theme.text_disabled);
-        let up = hits.rect_of(&crate::hit::Hit::SplitStep(1)).unwrap();
-        assert_ne!(buf[(up.x + 1, 0)].fg, theme.text_disabled, "▲ still live");
+        let hits = render_hits(&mut r);
+        let strip = hits.rect_of(&Hit::SplitHandle).expect("handle registered");
+        assert_eq!((strip.y, strip.height), (0, HEADER_STRIP_HEIGHT), "the ready strip");
+        // A blank cell on the tabs row, left of the tabs.
+        assert_eq!(hits.hit_at(strip.x + 2, 1), Some(&Hit::SplitHandle));
+        // The status chip and the facts beside it, on row 0.
+        assert_eq!(hits.hit_at(strip.x + 2, 0), Some(&Hit::SplitHandle));
+        assert_eq!(hits.hit_at(strip.x + 12, 0), Some(&Hit::SplitHandle));
+        // A tab and an icon sit on top.
+        let tab = hits.rect_of(&Hit::ResponseTab(ViewMode::Raw)).expect("a tab");
+        assert_eq!(hits.hit_at(tab.x, tab.y), Some(&Hit::ResponseTab(ViewMode::Raw)));
+        let icon = hits.rect_of(&Hit::ResponseSearchButton).expect("an icon");
+        assert_eq!(hits.hit_at(icon.x, icon.y), Some(&Hit::ResponseSearchButton));
+
+        // The not-yet-ready strip is one row, and a blank cell is the handle.
+        let mut empty = Response::default();
+        let hits = render_hits(&mut empty);
+        let strip = hits.rect_of(&Hit::SplitHandle).expect("handle on the pending strip");
+        assert_eq!((strip.y, strip.height), (0, 1));
+        assert_eq!(hits.hit_at(30, 0), Some(&Hit::SplitHandle));
     }
 
-    /// A long sent URL truncates short of the pill instead of running
+    /// Over the strip's draggable part the strip warms toward the hover
+    /// tone and the grip lights accent; over a tab it does neither (the
+    /// tab is the hovered thing).
+    #[test]
+    fn the_hovered_strip_warms_and_lights_the_grip() {
+        let theme = Theme::dark();
+        let draw = |hovered: Option<&crate::hit::Hit>| {
+            let mut r = ready(r#"{"a": 1}"#);
+            let ctx = DrawCtx {
+                theme: &theme,
+                focused: true,
+                hovered,
+                pointer: None,
+                dragging: false,
+                anims: test_anims(),
+                now: std::time::Instant::now(),
+            };
+            let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+            let strip = hits.rect_of(&crate::hit::Hit::SplitHandle).unwrap();
+            let buf = terminal.backend().buffer().clone();
+            (buf, strip)
+        };
+        let (rest, strip) = draw(None);
+        assert_eq!(rest[(strip.x + 2, 1)].bg, theme.panel, "resting strip");
+        let (hot, _) = draw(Some(&crate::hit::Hit::SplitHandle));
+        assert_ne!(hot[(strip.x + 2, 1)].bg, theme.panel, "a blank cell warms");
+        assert_ne!(hot[(strip.x + 12, 0)].bg, theme.panel, "the status facts warm with it");
+        assert_eq!(hot[(strip.right() - 3, 0)].fg, theme.accent, "the grip lights");
+        let (tab, _) = draw(Some(&crate::hit::Hit::ResponseTab(ViewMode::Raw)));
+        assert_eq!(tab[(strip.x + 2, 1)].bg, theme.panel, "a hovered tab leaves the strip cool");
+    }
+
+    /// A long sent URL truncates short of the grip instead of running
     /// underneath it.
     #[test]
-    fn sent_url_stops_clear_of_the_step_pill() {
+    fn sent_url_stops_clear_of_the_grip() {
         let mut r = ready(r#"{"a": 1}"#);
         if let ResponseState::Ready(d) = &mut r.state {
             d.url = format!("https://example.com/{}", "x".repeat(200));
@@ -8707,21 +8759,21 @@ mod tests {
         };
         terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         let buf = terminal.backend().buffer();
-        let up = hits.rect_of(&crate::hit::Hit::SplitStep(1)).unwrap();
-        let cap_x = up.x - 1;
-        assert_eq!(buf[(cap_x, 0)].bg, theme.control, "leading cap");
-        // The cell before the cap is a gap, and the URL ends in an
-        // ellipsis just before it — it never runs under the pill.
-        assert_eq!(buf[(cap_x - 1, 0)].symbol(), " ", "gap before the pill");
-        assert_eq!(buf[(cap_x - 2, 0)].symbol(), "\u{2026}", "URL ends in an ellipsis");
-        assert_eq!(buf[(cap_x - 3, 0)].symbol(), "x", "URL text runs right up to it");
+        let strip = hits.rect_of(&crate::hit::Hit::SplitHandle).unwrap();
+        let grip_x = strip.right() - 3;
+        assert_eq!(buf[(grip_x, 0)].symbol(), "\u{283F}", "the grip");
+        // The cell before the grip is a gap, and the URL ends in an
+        // ellipsis just before it — it never runs under the grip.
+        assert_eq!(buf[(grip_x - 1, 0)].symbol(), " ", "gap before the grip");
+        assert_eq!(buf[(grip_x - 2, 0)].symbol(), "\u{2026}", "URL ends in an ellipsis");
+        assert_eq!(buf[(grip_x - 3, 0)].symbol(), "x", "URL text runs right up to it");
     }
 
     /// Before a response lands the pane still reads as a pane with a
     /// header: row 0 is the same panel-tone strip the ready header uses,
     /// with a status-shaped chip in the status chip's slot naming the
     /// state (`—` empty, spinner in flight, `failed`, `cancelled`) and the
-    /// step pill at the right — and the centred body message below it.
+    /// grip at the right — and the centred body message below it.
     #[test]
     fn pending_pane_row_0_is_a_panel_strip_with_a_state_chip() {
         let theme = Theme::dark();
@@ -8747,7 +8799,7 @@ mod tests {
             terminal.draw(|f| r.draw(f, f.area(), &ctx, &mut hits)).unwrap();
             let buf = terminal.backend().buffer();
             // The strip spans the inner width on the panel tone (a cell
-            // clear of both the chip and the pill).
+            // clear of both the chip and the grip).
             assert_eq!(buf[(30, 0)].bg, theme.panel, "{name}: row 0 is a panel strip");
             assert_eq!(buf[(30, 1)].bg, theme.page, "{name}: the body stays page-toned");
             // The chip sits where the ready header's status chip sits:
@@ -8761,8 +8813,8 @@ mod tests {
             // contrasting tone from that fill).
             assert_eq!(buf[(2, 0)].bg, theme.tint(color, theme.panel), "{name}: chip fill");
             assert!(
-                hits.rect_of(&crate::hit::Hit::SplitStep(1)).is_some(),
-                "{name}: pill still on row 0"
+                hits.rect_of(&crate::hit::Hit::SplitHandle).is_some(),
+                "{name}: handle still on row 0"
             );
         }
         // The body message survives, below the strip.
@@ -8797,8 +8849,8 @@ mod tests {
     }
 
     /// Hiding hides the controls too: collapsed, the header strip drops its
-    /// tab strip and icon actions — only row 0 (status facts + the ▲/▼
-    /// step pill) survives.
+    /// tab strip and icon actions — only row 0 (status facts + the grip)
+    /// survives.
     #[test]
     fn collapsed_ready_header_drops_tabs_and_icon_actions() {
         let mut r = ready(r#"{"a": 1}"#);

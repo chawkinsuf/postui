@@ -160,6 +160,21 @@ pub enum Action {
     /// field open (the user's decision, 2026-10-05). On a closed surface
     /// there is no field to close (plan M5a Deviation 16).
     PaneMove(PaneDir),
+    /// Vim's `{N}<C-w>>` `<` `+` `-` `_` `=` (spec S7, E13): resizes the
+    /// focused pane by (`_`: to) `count` columns or rows, as Vim 9.1 resizes the current
+    /// window in a `sidebar | editor/response` layout. Off the main screen
+    /// there is one window and nothing to resize.
+    PaneResize {
+        dir: ResizeDir,
+        count: u16,
+    },
+    /// Moves the sidebar's edge this many columns (narrower when
+    /// negative), whatever has focus (spec S6b): the palette's "Widen
+    /// sidebar" / "Narrow sidebar", and what `alt+w` / `shift+alt+w`
+    /// become while the sidebar has focus (`KeyContext::action`, S6a). Unlike
+    /// [`Self::PaneResize`], which follows Vim's current window, it always
+    /// means the sidebar.
+    StepSidebar(i16),
     ScrollPane(PaneId, i16),
     OpenPalette,
     /// Vim's `:` (spec §5.9): the palette in ex mode, its query read as a
@@ -248,29 +263,28 @@ pub enum Action {
     CycleMethod,
     FocusUrl,
     /// Toggles `App::table_collapsed` (params/headers table body vs. tab
-    /// strip only). Session-only — never persisted.
+    /// strip only). Saved with the split, as the project's pane sizes
+    /// (spec P3).
     ToggleTableCollapse,
     /// Toggles the Response pane between hidden (collapsed to its header
-    /// strip, editor taking the freed rows) and shown. Session-only —
-    /// never persisted.
+    /// strip, editor taking the freed rows) and shown. Saved with the
+    /// split, as the project's pane sizes (spec P3).
     ToggleResponseCollapse,
-    /// One of the split control's five chips was pressed: jumps the
-    /// column straight to that settled state
+    /// One of the split control's two end chips was pressed: jumps the
+    /// column straight to that settled state, or restores the split when
+    /// it is the lit one
     /// ([`crate::split::SplitState::apply`]) and persists the result as
     /// the project's layout preference.
     SplitStop(crate::split::SplitStop),
-    /// Steps the split to the next stop in on-screen order, wrapping —
-    /// the keyboard route to the split control: one key (see the footer's
-    /// `split` chip) walks the boundary down the column and back around.
+    /// Steps the split to the next stop in on-screen order, wrapping: one
+    /// key walks the boundary down the column and back around (spec E11).
+    /// Always the split, from any surface (`:split`, the palette). The
+    /// `alt+w` key bound to it is context-based instead: with the sidebar
+    /// focused it widens the sidebar (`KeyContext::action`, spec S6, S6a).
     CycleSplit,
-    /// Steps the split to the previous stop, wrapping — [`Self::CycleSplit`]
-    /// run the other way (shift+alt+w).
+    /// [`Self::CycleSplit`] run the other way (shift+alt+w, `:splitback`):
+    /// steps the split to the previous stop.
     CycleSplitBack,
-    /// Nudges the split one stop *without* wrapping — the response
-    /// header's ▲ (`+1`, the response grows) and ▼ (`-1`) buttons
-    /// ([`crate::split::SplitStop::step`]). A no-op at the endpoint the
-    /// arrow points past.
-    SplitStep(i8),
     /// Start a new row on the active table tab (Params/Headers/Vars):
     /// focuses the editor's table and begins editing the ghost row's key
     /// cell, exactly like clicking "+ Add …". Inert on the Body tab.
@@ -1370,6 +1384,21 @@ pub enum PaneDir {
     Next,
     Prev,
     Last,
+}
+
+/// How a `ctrl+w` sizing key resizes the current window (spec S7, E13):
+/// `>` `<` its width, `+` `-` its height, by the count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeDir {
+    Wider,
+    Narrower,
+    Taller,
+    Shorter,
+    /// `_`: the height set to the count, in the pane's content rows; with
+    /// no count, as tall as it goes (Vim's 9999).
+    Height,
+    /// `=`: the split evened to 50/50, from any window; no count.
+    Even,
 }
 
 /// Which tab a vim tab key goes to (piece 4 spec §5.8).

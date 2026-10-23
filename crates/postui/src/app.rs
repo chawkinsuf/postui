@@ -67,6 +67,38 @@ pub struct Drag {
     pub horizontal: bool,
 }
 
+/// A live pane resize (task #90): armed by a press on one of the two
+/// handles, driven by motion, and ended — kept and saved — by the release
+/// or by any lost-release cleanup (spec P2, P2a).
+///
+/// `moved` records whether any motion of this drag changed a size. It,
+/// not where the drag ends, decides whether the end saves: a drag that
+/// never moved anything was a click and has nothing to save, while one
+/// that moved saves even back where it began.
+///
+/// `tracked` records whether the drag has had `Drag(Left)` motion, which
+/// proves the terminal tracks the button: a bare `Moved` after it means
+/// the button is up and its release was lost.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResizeDrag {
+    pub kind: ResizeHandle,
+    pub moved: bool,
+    pub tracked: bool,
+}
+
+/// Which handle a [`ResizeDrag`] is moving.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ResizeHandle {
+    /// The sidebar gutter: the pointer's column is the new gutter column.
+    Sidebar,
+    /// The response header strip. `grab` is the pressed row minus the
+    /// strip's top row, so the strip keeps its place under the pointer;
+    /// `press` is the pressed row, where motion before the drag has moved
+    /// is a click's jitter; `start` is the split at the press, whose share
+    /// a drag into a minimized end keeps (E9a).
+    Split { grab: u16, press: u16, start: crate::split::SplitState },
+}
+
 /// Which text surface a left-button drag is sweeping a selection over,
 /// armed by the `Down(Left)` that started the sweep and cleared on
 /// `Up(Left)` — the text-selection sibling of the scrollbar [`Drag`].
@@ -350,6 +382,15 @@ pub struct App {
     pub drag: Option<Drag>,
     /// A live text-selection sweep (which surface it is over), or `None`.
     pub text_drag: Option<TextDrag>,
+    /// A live pane resize (the sidebar gutter or the response header
+    /// strip), or `None`.
+    pub resize: Option<ResizeDrag>,
+    /// The terminal's size, written by every frame of every screen: what
+    /// [`Self::settled_layout`] lays the panes out in (spec S8a). It
+    /// changes only with a resize event, and the event loop draws after
+    /// one before it reads the next event, so a key or click never sees a
+    /// stale size. `None` before the first frame.
+    pub(crate) term_area: Option<ratatui::layout::Rect>,
     /// A left press on a sidebar request row: `(row index, slug)`. Armed
     /// by `on_hit`, cleared on release; becomes a live row drag the moment
     /// the pointer moves onto another row (see `mouse.rs`).
@@ -362,7 +403,8 @@ pub struct App {
     pub manage_press: Option<(usize, String)>,
     /// Whether the active tab's params/headers table body is collapsed
     /// (tab strip + its count chip stay visible; only the table itself is
-    /// hidden). Session-only — never persisted.
+    /// hidden): the split's editor-minimized end, saved with the split
+    /// ([`Self::persist_sizes`]).
     pub table_collapsed: bool,
     /// The last `table_collapsed` value `AnimKey::PaneCollapse` was driven
     /// toward, tracked so `update` can tell when it flips
@@ -373,12 +415,15 @@ pub struct App {
     /// collapse anim — see [`Self::sync_response_collapse_anim`].
     response_collapsed_target: bool,
     /// The editor's share of the main column while both panes are shown —
-    /// the split's settled ratio stop (see [`crate::split`]). Sticky
+    /// the split's free share, 0 to 1 (see [`crate::split`]). Sticky
     /// through minimize/expand so re-opening lands where the user left it.
-    pub split_ratio: crate::split::SplitRatio,
+    pub split_ratio: f32,
+    /// The sidebar's saved width in columns; `None` is the default 28%.
+    /// Set by a drag or key, seeded from and saved to the project.
+    pub sidebar_width: Option<u16>,
     /// The last `split_ratio` value `AnimKey::SplitRatio` was driven
     /// toward — see [`Self::sync_split_ratio_anim`].
-    split_ratio_target: crate::split::SplitRatio,
+    split_ratio_target: f32,
     /// The most recent left press, for the click counts
     /// ([`mouse::count_clicks`]).
     last_click: Option<mouse::LastClick>,
@@ -978,12 +1023,13 @@ impl App {
             app.show_open_error();
             return app;
         }
+        // The project's saved pane sizes (P5), whether or not its spaces
+        // could be made below: its local state is loaded either way, and
+        // every later size save writes it back beside the one that moved.
+        app.seed_sizes_from_project();
         match app.project.as_mut().map(|p| p.ensure_spaces()) {
             Some(Ok(())) => {
                 app.refresh_sidebar();
-                // Restore this project's saved layout split alongside its
-                // open request.
-                app.seed_split_from_project();
                 // Restore the request that was open when this project was
                 // last used — the same restore a project *switch* already
                 // performs. Without it the sidebar draws a selection whose
@@ -1234,6 +1280,9 @@ impl App {
                 matches!(self.sidebar.rows.get(*i), Some(Row::Folder { expanded: true, .. }))
             }
             Hit::AutoHeaderReveal => self.editor.computed.revealed,
+            // The lit end chip restores the split rather than jumping to
+            // that end.
+            Hit::SplitStop(stop) => self.split_state().stop() == Some(*stop),
             // The response toolbar acts on the tab that is up: copy,
             // save, the external editor and search all run over
             // `search_corpus`, the open tab's text. Read from the same
@@ -1753,13 +1802,16 @@ impl App {
             tip_revealed: None,
             drag: None,
             text_drag: None,
+            resize: None,
+            term_area: None,
             sidebar_press: None,
             manage_press: None,
             table_collapsed: false,
             pane_collapsed_target: false,
             response_collapsed_target: false,
-            split_ratio: crate::split::SplitRatio::default(),
-            split_ratio_target: crate::split::SplitRatio::default(),
+            split_ratio: crate::split::SplitState::default().ratio,
+            sidebar_width: None,
+            split_ratio_target: crate::split::SplitState::default().ratio,
             last_click: None,
             last_action_failed: false,
             last_loose_warning: None,
@@ -2127,13 +2179,10 @@ impl App {
         // editor, so the default is mirrored in on every update (spec
         // 2026-10-15 R6).
         self.editor.indent_default = self.ui_settings.default_indent();
-        // Display copies for the panes' split clusters — the app state
-        // stays the authority, the components only light segments from it.
+        // Display copy for the split control — the app state stays the
+        // authority, the editor only lights a chip from it.
         self.editor.split = self.split_state();
-        self.session.response.split = self.editor.split;
-        self.sync_pane_collapse_anim();
-        self.sync_response_collapse_anim();
-        self.sync_split_ratio_anim();
+        self.sync_split_anims(false);
         self.sync_editor_tab_underline();
         // Any toast pushed by `apply(action)` above gets its slide-in
         // started here rather than inside `Toasts::push` itself — `push`
@@ -2149,15 +2198,20 @@ impl App {
     /// (`Action::ToggleTableCollapse`/the `⌄ hide` chip), retargets the
     /// anim from wherever it currently sits to the new pole over
     /// `ui_settings.anim_ms.pane_collapse` (120ms by default). Called on
-    /// every `update`, not just the toggle action.
-    fn sync_pane_collapse_anim(&mut self) {
+    /// every `update`, not just the toggle action. With `snap` it jumps
+    /// to the pole instead, eased or settled (see [`Self::sync_split_anims`]).
+    fn sync_pane_collapse_anim(&mut self, snap: bool) {
         let target = self.table_collapsed;
-        if target == self.pane_collapsed_target {
+        if target == self.pane_collapsed_target && !snap {
             return;
         }
         self.pane_collapsed_target = target;
         let now = Instant::now();
         let target_v = if target { 1.0 } else { 0.0 };
+        if snap {
+            self.anims.snap(AnimKey::PaneCollapse, target_v);
+            return;
+        }
         if self.anims.value(AnimKey::PaneCollapse, now).is_none() {
             self.anims.snap(AnimKey::PaneCollapse, 1.0 - target_v);
         }
@@ -2174,14 +2228,18 @@ impl App {
     /// chases `table_collapsed`. The flag lives on `session.response` but
     /// is a sticky layout preference (`session.sync_open` carries it
     /// across request switches).
-    fn sync_response_collapse_anim(&mut self) {
+    fn sync_response_collapse_anim(&mut self, snap: bool) {
         let target = self.session.response.collapsed;
-        if target == self.response_collapsed_target {
+        if target == self.response_collapsed_target && !snap {
             return;
         }
         self.response_collapsed_target = target;
         let now = Instant::now();
         let target_v = if target { 1.0 } else { 0.0 };
+        if snap {
+            self.anims.snap(AnimKey::ResponseCollapse, target_v);
+            return;
+        }
         if self.anims.value(AnimKey::ResponseCollapse, now).is_none() {
             self.anims.snap(AnimKey::ResponseCollapse, 1.0 - target_v);
         }
@@ -2193,34 +2251,39 @@ impl App {
         );
     }
 
-    /// Records the current split as the project's persisted layout
-    /// preference (`.local/state.toml`'s `main_split`). Best-effort, like
-    /// every local-state save.
-    fn persist_split(&mut self) {
-        let token = self.split_state().to_token().to_string();
+    /// Records both pane sizes the app holds, the split and the sidebar
+    /// width, as the project's (`.local/layout.toml`), in one write: the
+    /// one save behind every size change. Best-effort, like every
+    /// local-state save.
+    fn persist_sizes(&mut self) {
+        let layout = postui_core::project::LayoutState {
+            main_split: Some(self.split_state().to_token()),
+            sidebar_width: self.sidebar_width,
+        };
         if let Some(p) = self.project_mut() {
-            p.set_main_split(Some(token));
+            p.set_pane_sizes(layout);
         }
     }
 
-    /// Seeds the split from the project's saved layout preference — the
-    /// reopen half of [`Self::persist_split`]. An absent or unrecognized
-    /// token leaves the default split in place.
-    fn seed_split_from_project(&mut self) {
-        let Some(s) = self
-            .project()
-            .and_then(|p| p.local().main_split.as_deref())
+    /// Takes the pane sizes of a project opened or switched to — the
+    /// reopen half of [`Self::persist_sizes`]. Spec P5's one rule: the project's saved
+    /// sizes win, and a size it has not saved (or an unrecognized split
+    /// token) is the default, so a switch never carries the previous
+    /// project's sizes over. A project created in place takes the other
+    /// half of the rule: `InitProjectHere` saves the sizes on screen as its
+    /// own ([`Self::persist_sizes`]). Saves nothing.
+    fn seed_sizes_from_project(&mut self) {
+        let layout = self.project().map(|p| &p.local().layout);
+        let split = layout
+            .and_then(|l| l.main_split.as_deref())
             .and_then(crate::split::SplitState::from_token)
-        else {
-            return;
-        };
-        self.table_collapsed = s.editor_minimized;
-        self.session.response.collapsed = s.response_minimized;
-        self.split_ratio = s.ratio;
+            .unwrap_or_default();
+        self.sidebar_width = layout.and_then(|l| l.sidebar_width);
+        self.set_split_fields(split);
     }
 
     /// The whole split state the split control reads and drives — the
-    /// two endpoint flags plus the ratio stop, in one value.
+    /// two endpoint flags plus the free editor share, in one value.
     pub fn split_state(&self) -> crate::split::SplitState {
         crate::split::SplitState {
             editor_minimized: self.table_collapsed,
@@ -2229,42 +2292,333 @@ impl App {
         }
     }
 
-    /// Jumps the split to `stop` — the shared body of `Action::SplitStop`
-    /// (a control chip click) and `Action::CycleSplit` (the keyboard
-    /// cycle). Returns whether anything actually moved.
+    /// Jumps the split to `stop`, or restores the split when `stop` is the
+    /// lit end ([`crate::split::SplitState::apply`]) — the body of
+    /// `Action::SplitStop`, a click on one of the split control's two end
+    /// chips. Returns whether anything actually moved.
     fn apply_split_stop(&mut self, stop: crate::split::SplitStop) -> bool {
+        self.apply_split_state(self.split_state().apply(stop))
+    }
+
+    /// The split one `alt+w` / `shift+alt+w` press steps to: the next stop
+    /// that way that changes the screen at the terminal's current height
+    /// ([`crate::split::SplitState::cycled_moving`], spec E11). Before the
+    /// first frame there is no height, and it is the plain next stop.
+    fn cycled_split(&self, forward: bool) -> crate::split::SplitState {
+        let now = self.split_state();
+        if self.term_area.is_none() {
+            return now.cycled(forward);
+        }
+        now.cycled_moving(forward, |s| {
+            let rows = self.layout_at(s).map_or(0, |l| l.editor.height);
+            (rows, s.editor_minimized, s.response_minimized)
+        })
+    }
+
+    /// Sets the split to `next` — the shared body of every split change
+    /// (chips, steps, the keyboard cycle). Returns whether anything
+    /// actually moved.
+    fn apply_split_state(&mut self, next: crate::split::SplitState) -> bool {
         let prev = self.split_state();
-        let next = prev.apply(stop);
-        self.table_collapsed = next.editor_minimized;
-        self.session.response.collapsed = next.response_minimized;
-        self.split_ratio = next.ratio;
+        self.set_split_fields(next);
         // `sync_pane_collapse_anim` / `sync_response_collapse_anim` /
         // `sync_split_ratio_anim` (run on every `update`) ease whichever
         // of the three the jump actually moved.
         if next != prev {
-            self.persist_split();
+            self.persist_sizes();
         }
         next != prev
     }
 
+    /// Stores `s` in the three fields [`Self::split_state`] reads — the
+    /// one place they are written together. Callers add what their change
+    /// needs: the save, or the un-eased snap.
+    fn set_split_fields(&mut self, s: crate::split::SplitState) {
+        self.table_collapsed = s.editor_minimized;
+        self.session.response.collapsed = s.response_minimized;
+        self.split_ratio = s.ratio;
+    }
+
+    /// Sets the split to `s` with no easing: a live drag's line follows
+    /// the pointer row by row (spec E5, E14). The three anims snap to the
+    /// new values and their targets follow, so the `sync_*` passes
+    /// `update` runs find nothing to ease. Saves nothing; the drag saves
+    /// once at its end (P2).
+    fn set_split_now(&mut self, s: crate::split::SplitState) {
+        self.set_split_fields(s);
+        self.sync_split_anims(true);
+    }
+
+    /// Brings the split's three anims to the split fields — the one place
+    /// each anim's target is derived. `update` eases them (`snap` false);
+    /// a live drag snaps them, settled or mid-ease ([`Self::set_split_now`]).
+    fn sync_split_anims(&mut self, snap: bool) {
+        self.sync_pane_collapse_anim(snap);
+        self.sync_response_collapse_anim(snap);
+        self.sync_split_ratio_anim(snap);
+    }
+
+    /// The layout the sizes put on screen at the terminal's size, with
+    /// every ease settled: what each pane-sizing path (the drags, the
+    /// keyboard and palette steps) measures against (spec S8, S8a). A pure
+    /// function of the state and the terminal, so it is current on any
+    /// screen. `None` before the first frame.
+    fn settled_layout(&self) -> Option<crate::layout::AppLayout> {
+        self.layout_at(self.split_state())
+    }
+
+    /// [`Self::settled_layout`] for the split `s` instead of the current
+    /// one: where `s` would put the panes at the terminal's size.
+    fn layout_at(&self, s: crate::split::SplitState) -> Option<crate::layout::AppLayout> {
+        let flag = |on: bool| if on { 1.0 } else { 0.0 };
+        self.term_area.map(|area| {
+            crate::layout::compute_layout(
+                area,
+                flag(s.editor_minimized),
+                flag(s.response_minimized),
+                s.ratio,
+                self.sidebar_width,
+            )
+        })
+    }
+
+    /// Moves the sidebar's edge to the columns `to` wants, given the width
+    /// on screen and the body, clamped by S5. Stores the width only when
+    /// it differs from the one on screen, so a want the clamp can't reach
+    /// leaves the default unset and a squeezed saved width saved. Returns
+    /// whether the edge moved; before the first frame there is no body to
+    /// measure, and nothing changes.
+    ///
+    /// The width on screen is [`crate::layout::sidebar_cols`] of the saved
+    /// width, always within the clamp's limits, so the clamped want lies
+    /// the way the want points or on the edge itself: no step or drag
+    /// moves the edge against what was asked (spec S8).
+    ///
+    /// Measured from the screen, not the saved width, so a narrowing step
+    /// on a window that squeezes a wider saved width moves the edge at
+    /// once and saves what it shows. From the saved width the step would
+    /// land still past the limit, and the key would do nothing visible.
+    /// The wider width it replaces is the cost (S8).
+    fn move_sidebar_edge(&mut self, to: impl FnOnce(u16, ratatui::layout::Rect) -> i32) -> bool {
+        let Some(layout) = self.settled_layout() else {
+            return false;
+        };
+        let (now, body) = (layout.sidebar.width, layout.body);
+        let next = crate::layout::clamp_sidebar_cols(body.width, to(now, body));
+        if next == now {
+            return false;
+        }
+        self.sidebar_width = Some(next);
+        true
+    }
+
+    /// The action `combo`'s keymap binding gives the key where the keyboard
+    /// is: the one keymap read every key takes (`route_key`, its quit check
+    /// included, `handle_key_routed`, `App::user_bare`, and the vim seam's
+    /// forwarded keys), with [`Self::key_context`] applied.
+    pub(crate) fn lookup_key(&self, combo: &KeyCombo) -> Option<Action> {
+        self.keymap.lookup(combo).map(|a| self.key_context().action(a))
+    }
+
+    /// Where the keyboard is, for [`crate::keys::KeyContext::action`]: the
+    /// one input a key's action takes context from. Both palettes are
+    /// opened with it too, so their key column names a key only where it
+    /// runs the row.
+    pub(crate) fn key_context(&self) -> crate::keys::KeyContext {
+        crate::keys::KeyContext {
+            sidebar_on_main: self.focus == PaneId::Sidebar && self.screen == Screen::Main,
+        }
+    }
+
+    /// Moves the sidebar's edge `delta` columns from the width on screen,
+    /// so the first step from the unset 28% default starts there (spec S6).
+    /// It stops at the limits (S5) with no wrap, and saves on a change
+    /// (P2). A step the limits stop changes nothing
+    /// ([`Self::move_sidebar_edge`]), so a saved width the window squeezes
+    /// stays saved.
+    fn step_sidebar(&mut self, delta: i32) -> bool {
+        if !self.move_sidebar_edge(|now, _| i32::from(now) + delta) {
+            return false;
+        }
+        self.persist_sizes();
+        true
+    }
+
+    /// Moves the editor/response line `editor_delta` rows down (up when
+    /// negative) from where the split's state puts it, un-eased, and saves
+    /// a change (spec E13, P2). A minimized pane counts from its snap: the
+    /// editor from its chrome, the response from its full header strip, so
+    /// one row out of either end shows one row of content. Past either end
+    /// it snaps there, keeping the share (E6, E9a).
+    ///
+    /// The rows come from the state at the settled layout's column height,
+    /// not from a drawn editor rect: right after an eased change (`alt+w`,
+    /// a chip) that rect is partway through the ease, and counting from it
+    /// would land N rows from an in-between height (review round 2 G6).
+    fn resize_split_rows(&mut self, editor_delta: i32) -> bool {
+        self.move_split_line(|_, editor_rows| editor_rows + editor_delta)
+    }
+
+    /// Moves the editor/response line to the editor rows `to` gives for
+    /// the column's height and the editor rows the split's state puts it
+    /// at, un-eased, through the same clamp and snaps as a drag, and saves
+    /// a change: the body of every `ctrl+w` height key.
+    fn move_split_line(&mut self, to: impl FnOnce(u16, i32) -> i32) -> bool {
+        let Some(column) = self.settled_layout().map(|l| l.main) else {
+            return false;
+        };
+        let now = self.split_state();
+        let editor_rows = if now.editor_minimized {
+            crate::components::editor::CHROME_HEIGHT
+        } else if now.response_minimized {
+            column.height.saturating_sub(crate::components::response::HEADER_STRIP_HEIGHT)
+        } else {
+            crate::layout::editor_rows_for(column.height, now.ratio)
+        };
+        let next = crate::layout::split_for_editor_rows(
+            now,
+            column.height,
+            to(column.height, i32::from(editor_rows)),
+        );
+        if next == now {
+            return false;
+        }
+        self.set_split_now(next);
+        self.persist_sizes();
+        true
+    }
+
+    /// Vim's `{N}<C-w>>` `<` `+` `-` (spec S7, E13), as Vim 9.1 resizes
+    /// the current window in a `sidebar | editor/response` layout. `>` `<`
+    /// widen or narrow the focused pane, so from the editor or response
+    /// they move the sidebar's edge the other way. `+` `-` grow or shrink
+    /// the focused one of the editor and response; the sidebar is full
+    /// height, and Vim's `-` there gives rows to a command line postui
+    /// does not have, so both do nothing there. `_` maximizes the focused
+    /// one, or sets its content rows to the count; on the sidebar it does
+    /// nothing. `=` evens the split and halves the body for the sidebar,
+    /// from any window (E13).
+    fn pane_resize(&mut self, dir: crate::action::ResizeDir, count: u16) -> bool {
+        use crate::action::ResizeDir;
+        if self.screen != Screen::Main {
+            return false;
+        }
+        let n = i32::from(count);
+        match (self.focus, dir) {
+            (PaneId::Sidebar, ResizeDir::Wider) => self.step_sidebar(n),
+            (PaneId::Sidebar, ResizeDir::Narrower) => self.step_sidebar(-n),
+            (PaneId::Sidebar, ResizeDir::Taller | ResizeDir::Shorter) => false,
+            (PaneId::Editor | PaneId::Response, ResizeDir::Wider) => self.step_sidebar(-n),
+            (PaneId::Editor | PaneId::Response, ResizeDir::Narrower) => self.step_sidebar(n),
+            (PaneId::Editor, ResizeDir::Taller) => self.resize_split_rows(n),
+            (PaneId::Editor, ResizeDir::Shorter) => self.resize_split_rows(-n),
+            (PaneId::Response, ResizeDir::Taller) => self.resize_split_rows(-n),
+            (PaneId::Response, ResizeDir::Shorter) => self.resize_split_rows(n),
+            // `N_` counts the focused pane's content rows: the editor's
+            // below its chrome, the response's below its header strip.
+            (PaneId::Sidebar, ResizeDir::Height) => false,
+            (PaneId::Editor, ResizeDir::Height) => self.move_split_line(|_, _| {
+                i32::from(crate::components::editor::CHROME_HEIGHT).saturating_add(n)
+            }),
+            (PaneId::Response, ResizeDir::Height) => self.move_split_line(|column, _| {
+                i32::from(column) - i32::from(crate::components::response::HEADER_STRIP_HEIGHT) - n
+            }),
+            // The split eases, like the keyboard stop it is (E14), and the
+            // sidebar takes half the body, as Vim's CTRL-W = makes all
+            // windows equally wide too.
+            (_, ResizeDir::Even) => {
+                let prev = self.split_state();
+                self.set_split_fields(prev.apply(crate::split::SplitStop::Even));
+                let split = self.split_state() != prev;
+                let sidebar = self.move_sidebar_edge(|_, body| (i32::from(body.width) - 1) / 2);
+                if split || sidebar {
+                    self.persist_sizes();
+                }
+                split || sidebar
+            }
+        }
+    }
+
+    /// Moves the live resize's divider to the pointer at (`column`, `row`),
+    /// measured against [`Self::settled_layout`]. Returns whether a size changed,
+    /// and records a change in the drag's `moved`.
+    fn resize_to(&mut self, column: u16, row: u16) -> bool {
+        let Some(drag) = self.resize else {
+            return false;
+        };
+        let changed = match drag.kind {
+            ResizeHandle::Sidebar => {
+                self.move_sidebar_edge(|_, body| i32::from(column) - i32::from(body.x))
+            }
+            // Motion on the pressed row before the drag has moved anything
+            // is a click's jitter, and moves nothing: the share the split
+            // holds need not be the one the pressed row inverts to, and a
+            // frame drawn since the press (an ease going on) need not draw
+            // the line there. The pressed row is known at the press, so no
+            // frame is asked (review round 5 K2). Once the drag has moved,
+            // every motion follows the pointer, and one on the same row
+            // inverts to the share already set, so `next == now` holds.
+            ResizeHandle::Split { press, .. } if !drag.moved && row == press => false,
+            ResizeHandle::Split { grab, start, .. } => {
+                match self.settled_layout().map(|l| l.main) {
+                    Some(main) => {
+                        let editor_rows = i32::from(row) - i32::from(grab) - i32::from(main.y);
+                        let next =
+                            crate::layout::split_for_editor_rows(start, main.height, editor_rows);
+                        let moves = next != self.split_state();
+                        if moves {
+                            self.set_split_now(next);
+                        }
+                        moves
+                    }
+                    None => false,
+                }
+            }
+        };
+        if changed && let Some(drag) = &mut self.resize {
+            drag.moved = true;
+        }
+        changed
+    }
+
+    /// Ends the live resize, keeping the size it reached, and saves it
+    /// (spec P2, P2a). Every way a resize ends comes through here: the
+    /// release and each lost-release cleanup. A drag that never moved
+    /// anything (a click on a handle, the strip's being the usual way to
+    /// focus the response) has nothing new to save, so it writes no state
+    /// file. Returns whether one was live.
+    fn finish_resize(&mut self) -> bool {
+        let Some(drag) = self.resize.take() else {
+            return false;
+        };
+        if drag.moved {
+            self.persist_sizes();
+        }
+        true
+    }
+
     /// Keeps `AnimKey::SplitRatio` chasing `split_ratio`'s editor share
     /// the same way [`Self::sync_pane_collapse_anim`] chases
-    /// `table_collapsed`: whenever the stop changes, eases from wherever
-    /// the share currently sits to the new stop.
-    fn sync_split_ratio_anim(&mut self) {
+    /// `table_collapsed`: whenever the share changes, eases from wherever
+    /// it currently sits to the new share, or with `snap` jumps there.
+    fn sync_split_ratio_anim(&mut self, snap: bool) {
         let target = self.split_ratio;
-        if target == self.split_ratio_target {
+        if target == self.split_ratio_target && !snap {
             return;
         }
         let previous = self.split_ratio_target;
         self.split_ratio_target = target;
+        if snap {
+            self.anims.snap(AnimKey::SplitRatio, target);
+            return;
+        }
         let now = Instant::now();
         if self.anims.value(AnimKey::SplitRatio, now).is_none() {
-            self.anims.snap(AnimKey::SplitRatio, previous.editor_share());
+            self.anims.snap(AnimKey::SplitRatio, previous);
         }
         self.anims.retarget(
             AnimKey::SplitRatio,
-            target.editor_share(),
+            target,
             self.ui_settings.anim_ms.pane_collapse,
             now,
         );
@@ -3089,6 +3443,9 @@ impl App {
                 self.apply(Action::ForceQuit)
             }
             Action::ForceQuit => {
+                // A resize the button still holds ends here, saved, as
+                // every end of one does (spec P2a).
+                self.finish_resize();
                 let slug = self.editor.slug.clone();
                 if let Some(p) = self.project_mut() {
                     p.set_open_request(slug.as_deref());
@@ -3201,10 +3558,11 @@ impl App {
             Action::OpenPalette => {
                 use crate::components::modal::Modal;
                 use crate::components::palette::PaletteState;
-                self.push_modal(Modal::Palette(PaletteState::new(
-                    &self.usage,
-                    crate::usage::now(),
-                )));
+                // Where the keys mean what is known only here, where the
+                // palette is opened from a focus.
+                let palette = PaletteState::new(&self.usage, crate::usage::now())
+                    .with_key_context(self.key_context());
+                self.push_modal(Modal::Palette(palette));
                 true
             }
             Action::Close => {
@@ -3528,7 +3886,7 @@ impl App {
                 if self.table_collapsed && self.session.response.collapsed {
                     self.session.response.collapsed = false;
                 }
-                self.persist_split();
+                self.persist_sizes();
                 true
             }
             Action::ToggleResponseCollapse => {
@@ -3543,16 +3901,19 @@ impl App {
                 if self.session.response.collapsed && self.table_collapsed {
                     self.table_collapsed = false;
                 }
-                self.persist_split();
+                self.persist_sizes();
                 true
             }
             Action::SplitStop(stop) => self.apply_split_stop(stop),
-            Action::CycleSplit => self.apply_split_stop(self.split_state().stop().next()),
-            Action::CycleSplitBack => self.apply_split_stop(self.split_state().stop().prev()),
-            Action::SplitStep(delta) => match self.split_state().stop().step(delta) {
-                Some(stop) => self.apply_split_stop(stop),
-                None => false,
-            },
+            // Always the split (E11). The `alt+w` key's sidebar meaning is
+            // the key's, applied before it gets here (`KeyContext::action`,
+            // spec S6a).
+            Action::CycleSplit => self.apply_split_state(self.cycled_split(true)),
+            Action::CycleSplitBack => self.apply_split_state(self.cycled_split(false)),
+            Action::PaneResize { dir, count } => self.pane_resize(dir, count),
+            // Always the sidebar, wherever focus is and whichever screen
+            // shows (spec S6b, S8a).
+            Action::StepSidebar(delta) => self.step_sidebar(i32::from(delta)),
             Action::FormatBody => {
                 self.no_coalesce = true;
                 // The body's own indent (spec 2026-10-15 R10).
@@ -4572,6 +4933,10 @@ impl App {
                                 .push(format!("could not open project: {e}"), ToastKind::Error);
                         }
                         self.refresh_sidebar();
+                        // Created in place: the sizes on screen become the
+                        // new project's (spec P5), whatever its folder's
+                        // `.local/layout.toml` held.
+                        self.persist_sizes();
                         // The project was opened on a bare directory, before
                         // init wrote the stock `default` env: land in it now,
                         // as an open of the finished project would.
@@ -4791,7 +5156,9 @@ impl App {
                 // A switch can land with the mouse button still held (alt+z
                 // cycles projects): every drag and armed press belongs to
                 // the project being left — a press left armed would promote
-                // into a drag of a same-named row in the next project.
+                // into a drag of a same-named row in the next project, and a
+                // live resize ends here, saved into the project it sized
+                // (P2a), before the next one's sizes are seeded below.
                 self.cancel_stale_drags(None);
                 self.history.clear();
                 self.marked_entry = None;
@@ -4829,10 +5196,9 @@ impl App {
                     }
                     None => {}
                 }
-                // The layout split is per-project local state too: restore
-                // the incoming project's saved split alongside its open
-                // request.
-                self.seed_split_from_project();
+                // The pane sizes are per-project local state too: restore
+                // the incoming project's alongside its open request (P5).
+                self.seed_sizes_from_project();
                 let open = self
                     .project()
                     .and_then(|p| p.local().open_request.clone())
@@ -9123,8 +9489,13 @@ impl App {
                 (TextSurface::Body, true)
             }
             // Only once there is response text to select: an empty pane
-            // (nothing sent yet, in flight, an error) offers no menu.
-            Hit::Pane(PaneId::Response) if self.session.response.view().is_some() => {
+            // (nothing sent yet, in flight, an error) offers no menu. The
+            // header strip is still the pane to a right click: it registers
+            // as the split handle over the pane's hit, and its facts and
+            // blank cells opened this menu before it was a handle.
+            Hit::Pane(PaneId::Response) | Hit::SplitHandle
+                if self.session.response.view().is_some() =>
+            {
                 (TextSurface::Response, false)
             }
             Hit::JsonRow(row) | Hit::JsonArrow(row) if self.session.response.view().is_some() => {
@@ -10502,7 +10873,7 @@ impl App {
         // command) therefore cannot change the meaning of the key being
         // handled. That is the "never mid-key" guarantee — no copy, no
         // handshake, just ordering.
-        let global = self.keymap.lookup(&combo);
+        let global = self.lookup_key(&combo);
         let modified = ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
 
         // 1. A modified quit combo pre-empts everything — except that when
@@ -10590,8 +10961,9 @@ impl App {
         let combo = KeyCombo::from_event(&ev);
         // A replayed key reads the keymap again: the keymap is only ever
         // swapped by an action, never mid-lookup, so this is the same
-        // "one read per key" the first lookup is.
-        let global = self.keymap.lookup(&combo);
+        // "one read per key" the first lookup is. The binding takes the
+        // key's context (`App::lookup_key`, spec S6a).
+        let global = self.lookup_key(&combo);
         let modified = ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
 
         // 1b. A bound paste combo digs past the layers below: modals and
@@ -11930,6 +12302,8 @@ mod mouse;
 #[cfg(test)]
 mod pane_tests;
 mod panes;
+#[cfg(test)]
+mod resize_tests;
 #[cfg(test)]
 mod response_conformance_tests;
 mod router;

@@ -1,56 +1,43 @@
-//! The split control: one row of five 3-cell chips, right-aligned in the
-//! Editor pane's tab-bar row — fixed chrome at the top of the column, so
-//! the control never moves out from under the pointer the way the old
+//! The split control: two 2-cell chips, right-aligned in the Editor
+//! pane's tab-bar row — fixed chrome at the top of the column, so the
+//! control never moves out from under the pointer the way the old
 //! per-pane clusters on the (repositioning) response header did. Each
-//! chip jumps the column straight to one of its five settled states.
+//! chip jumps the column to one end: "editor only" (the response
+//! minimized) and "response only" (the editor minimized). The chip of
+//! the end the column sits at is lit, and clicking it again restores the
+//! split. Everything between the ends is the drag handle's and the
+//! keyboard cycle's.
 //!
 //! Each chip's glyph is a two-tone mini-picture of its state: the
 //! editor's share in one tone above the response's in another, drawn
 //! with a lower-block glyph whose bg paints the editor mass above a
-//! response-tone fg. The editor's share is the lit one — the control
-//! reads as "how much of the column the upper pane gets", shrinking
-//! left to right until the response-full chip carries no lit mass at
-//! all. The chips sit flush against each other — two glyph cells each,
-//! no padding — so the row fuses into one continuous staircase
-//! (`▁▁▂▂▄▄▆▆▇▇`) reading left to right as the boundary sliding down;
-//! the current state's picture lights up accent.
-//!
-//! [`StepControl`] is its one-step sibling on the response header: the
-//! same pill face holding ▲/▼ chips that nudge the split a stop at a time.
+//! response-tone fg. The chips sit flush against each other — two glyph
+//! cells each, no padding — so the pair fuses into one control face
+//! (`▁▁▇▇`) reading as the boundary at the top and at the bottom; the
+//! lit chip's picture goes accent.
 
 use crate::split::{SplitState, SplitStop};
 use crate::theme::Theme;
 use ratatui::{buffer::Buffer, layout::Rect};
 
 /// Each chip is 2 cells: its glyph doubled, no padding — the chips fuse
-/// into one continuous mini-picture of the boundary sliding down.
+/// into one continuous mini-picture of the boundary.
 pub const SPLIT_SEGMENT_WIDTH: u16 = 2;
-/// The whole control: five contiguous chips plus a one-cell control-fill
-/// cap at each end, so the staircase reads as one pill-shaped control
-/// face rather than a loose graphic.
-pub const SPLIT_CONTROL_WIDTH: u16 = SPLIT_SEGMENT_WIDTH * 5 + 2;
+/// The whole control: two contiguous chips plus a one-cell control-fill
+/// cap at each end, so the pair reads as one pill-shaped control face
+/// rather than a loose graphic.
+pub const SPLIT_CONTROL_WIDTH: u16 = SPLIT_SEGMENT_WIDTH * 2 + 2;
 
-/// `stop`'s mini-picture: the response mass painted bottom-up in fg under
-/// the editor-tone bg (the lit share). The lit editor mass runs
-/// `7/8 → 6/8 → 4/8 → 2/8 → 1/8` of the cell: both endpoints keep a
-/// one-eighth strip of the other tone (a `█` or bare cell there left the
-/// chip with a single tone, so it read as an empty slot rather than the
-/// last stop), and the strips match — a full-cell editor-full chip
-/// beside a response-full chip with a strip read as two different kinds
-/// of button. Block glyphs only come in eighths, so with the strips this
-/// thin the steps cannot all be equal: the three settled shares in the
-/// middle (75/25, 50/50, 25/75) step by 2/8, and the endpoints sit 1/8
-/// beyond them. The one fully even ladder, `▂▃▄▅▆`, needs quarter-cell
-/// strips at the ends, which read as too much of the other pane.
-pub fn split_glyph(stop: SplitStop) -> &'static str {
-    match stop {
-        SplitStop::EditorFull => "\u{2581}\u{2581}", // ▁▁ editor takes all
-        SplitStop::EditorBig => "\u{2582}\u{2582}",  // ▂▂ 75/25
-        SplitStop::Even => "\u{2584}\u{2584}",       // ▄▄ 50/50
-        SplitStop::ResponseBig => "\u{2586}\u{2586}", // ▆▆ 25/75
-        SplitStop::ResponseFull => "\u{2587}\u{2587}", // ▇▇ response takes all
-    }
-}
+/// The two chips, left to right, each with its mini-picture: the response
+/// mass painted bottom-up in fg under the editor-tone bg (the lit share).
+/// The lit editor mass is `7/8` of the cell at "editor only" and `1/8` at
+/// "response only": both keep a one-eighth strip of the other tone (a `█`
+/// or bare cell there left the chip with a single tone, so it read as an
+/// empty slot rather than the last stop), and the strips match.
+const CHIPS: [(SplitStop, &str); 2] = [
+    (SplitStop::EditorFull, "\u{2581}\u{2581}"), // ▁▁ editor takes all
+    (SplitStop::ResponseFull, "\u{2587}\u{2587}"), // ▇▇ response takes all
+];
 
 /// The split control, ready to paint: the current split (for the lit
 /// chip) and which chip the pointer is over, if any (resolved from the
@@ -63,10 +50,10 @@ pub struct SplitControl {
 impl SplitControl {
     /// Paints the control with its left edge at `(x, y)` and returns each
     /// chip's rect with the stop it jumps to, for hit registration.
-    pub fn paint(&self, buf: &mut Buffer, x: u16, y: u16, theme: &Theme) -> [(Rect, SplitStop); 5] {
+    pub fn paint(&self, buf: &mut Buffer, x: u16, y: u16, theme: &Theme) -> [(Rect, SplitStop); 2] {
         let active = self.state.stop();
-        // The end caps: control fill, so the staircase sits on a visible
-        // button face and the whole strip reads as one control.
+        // The end caps: control fill, so the pair sits on a visible
+        // button face and reads as one control.
         crate::paint::fill(buf, Rect::new(x, y, 1, 1), theme.control);
         crate::paint::fill(buf, Rect::new(x + SPLIT_CONTROL_WIDTH - 1, y, 1, 1), theme.control);
         // Half-cell eaves above and below: the pill face bleeds half a
@@ -87,17 +74,18 @@ impl SplitControl {
             }
         }
         let mut i = 0u16;
-        SplitStop::ALL.map(|stop| {
+        CHIPS.map(|(stop, glyph)| {
             let rect = Rect::new(x + 1 + i * SPLIT_SEGMENT_WIDTH, y, SPLIT_SEGMENT_WIDTH, 1);
             i += 1;
             let hovered = self.hovered == Some(stop);
+            let lit = active == Some(stop);
             // The mini-picture fully covers its own cells, so hover and
             // "lit" are the picture's own tones changing. The tones follow
             // the app's glyph-on-button idiom, with the editor's share as
             // the lit mass (the control sets the upper pane's size): the
             // response mass is the control fill itself (one dark pill
             // face with the caps), the editor mass a glyph-grey above it
-            // — hover lifts both a step like any button, and the active
+            // — hover lifts both a step like any button, and the lit
             // chip swaps into the accent pair (accent mass over the dim
             // selection tint) instead of a solid glowing block.
             // Resting editor mass: halfway between disabled and muted
@@ -105,64 +93,15 @@ impl SplitControl {
             // fill, full `text_muted` reads too hot as a solid 2-cell
             // block (it's a mass, not a glyph stroke).
             let resting_mass = crate::theme::mix(theme.text_disabled, theme.text_muted, 0.5);
-            let (editor_tone, response_tone) = if active == stop {
+            let (editor_tone, response_tone) = if lit {
                 (theme.accent, theme.selection)
             } else if hovered {
                 (theme.text_muted, theme.control_hover)
             } else {
                 (resting_mass, theme.control)
             };
-            let glyph = split_glyph(stop);
             crate::paint::text(buf, rect.x, y, glyph, response_tone, editor_tone, false);
             (rect, stop)
-        })
-    }
-}
-
-/// Each step chip is 3 cells: the arrow centred with one cell of face
-/// either side, so a hover lift reads as a button rather than a lone
-/// glyph changing colour.
-pub const STEP_SEGMENT_WIDTH: u16 = 3;
-/// The step control: two chips plus the same one-cell caps as the split
-/// control, so the two read as one family of pill.
-pub const STEP_CONTROL_WIDTH: u16 = STEP_SEGMENT_WIDTH * 2 + 2;
-
-/// The split control's one-step sibling on the response header: ▲ grows
-/// the response a stop, ▼ shrinks it (the arrows move the header they
-/// sit on). Same pill face, caps and tones as [`SplitControl`], minus
-/// the eaves: the header's row 0 is the pane's top edge (the row above
-/// is the editor's) and the response tabs sit right under it, so the
-/// pill stays flat. The arrow pointing past an endpoint greys out
-/// instead of wrapping.
-pub struct StepControl {
-    pub state: SplitState,
-    /// The delta (`+1` for ▲, `-1` for ▼) of the chip under the pointer.
-    pub hovered: Option<i8>,
-}
-
-impl StepControl {
-    /// Paints the control with its left edge at `(x, y)` and returns each
-    /// chip's rect with the delta it steps by, for hit registration.
-    pub fn paint(&self, buf: &mut Buffer, x: u16, y: u16, theme: &Theme) -> [(Rect, i8); 2] {
-        crate::paint::fill(buf, Rect::new(x, y, 1, 1), theme.control);
-        crate::paint::fill(buf, Rect::new(x + STEP_CONTROL_WIDTH - 1, y, 1, 1), theme.control);
-        let current = self.state.stop();
-        let resting_mass = crate::theme::mix(theme.text_disabled, theme.text_muted, 0.5);
-        let mut i = 0u16;
-        [(1i8, "\u{25B2}"), (-1i8, "\u{25BC}")].map(|(delta, arrow)| {
-            let rect = Rect::new(x + 1 + i * STEP_SEGMENT_WIDTH, y, STEP_SEGMENT_WIDTH, 1);
-            i += 1;
-            let live = current.step(delta).is_some();
-            let (fg, bg) = if !live {
-                (theme.text_disabled, theme.control)
-            } else if self.hovered == Some(delta) {
-                (theme.text_muted, theme.control_hover)
-            } else {
-                (resting_mass, theme.control)
-            };
-            crate::paint::fill(buf, rect, bg);
-            crate::paint::text(buf, rect.x + 1, y, arrow, fg, bg, false);
-            (rect, delta)
         })
     }
 }
@@ -176,7 +115,7 @@ mod tests {
         term.backend().buffer().cell((x, y)).unwrap()
     }
 
-    fn paint(control: SplitControl) -> (Terminal<TestBackend>, [(Rect, SplitStop); 5]) {
+    fn paint(control: SplitControl) -> (Terminal<TestBackend>, [(Rect, SplitStop); 2]) {
         let theme = Theme::dark();
         let mut term = Terminal::new(TestBackend::new(20, 1)).unwrap();
         let mut rects = None;
@@ -188,19 +127,21 @@ mod tests {
     }
 
     #[test]
-    fn chips_are_contiguous_two_cell_buttons_in_stop_order() {
-        let (_, rects) = paint(SplitControl { state: SplitState::default(), hovered: None });
-        assert_eq!(rects.map(|(_, s)| s), SplitStop::ALL);
+    fn control_paints_the_two_end_chips() {
+        let (term, rects) = paint(SplitControl { state: SplitState::default(), hovered: None });
+        assert_eq!(rects.map(|(_, s)| s), [SplitStop::EditorFull, SplitStop::ResponseFull]);
         for (i, (rect, _)) in rects.iter().enumerate() {
             assert_eq!(rect.width, SPLIT_SEGMENT_WIDTH);
             assert_eq!(rect.height, 1);
             // Chips start one cell in: the control-fill cap comes first.
             assert_eq!(rect.x, 3 + i as u16 * SPLIT_SEGMENT_WIDTH);
         }
-        // Both end caps carry the control fill, framing the staircase as
-        // one button face.
+        let row: String =
+            (2..2 + SPLIT_CONTROL_WIDTH).map(|x| cell(&term, x, 0).symbol()).collect();
+        assert_eq!(row, " \u{2581}\u{2581}\u{2587}\u{2587} ");
+        // Both end caps carry the control fill, framing the pair as one
+        // button face.
         let theme = Theme::dark();
-        let (term, _) = paint(SplitControl { state: SplitState::default(), hovered: None });
         assert_eq!(cell(&term, 2, 0).bg, theme.control);
         assert_eq!(cell(&term, 2 + SPLIT_CONTROL_WIDTH - 1, 0).bg, theme.control);
     }
@@ -209,58 +150,44 @@ mod tests {
     fn resting_chips_paint_muted_two_tone_pictures_across_both_cells() {
         let theme = Theme::dark();
         let (term, rects) = paint(SplitControl { state: SplitState::default(), hovered: None });
-        for (rect, stop) in rects {
-            if stop == SplitStop::Even {
-                continue; // the lit chip, checked separately below
-            }
-            let glyph = split_glyph(stop);
-            let mass = crate::theme::mix(theme.text_disabled, theme.text_muted, 0.5);
-            // The editor mass (the bg, above the glyph) is the lit grey;
-            // the response mass below is the control fill.
-            let (want_fg, want_bg) = (theme.control, mass);
-            // Both cells carry the doubled glyph — the chip is nothing
-            // but its picture, fusing flush with its neighbors.
-            let one_char = &glyph[..glyph.len() / 2];
+        let mass = crate::theme::mix(theme.text_disabled, theme.text_muted, 0.5);
+        for ((rect, stop), glyph) in rects.into_iter().zip(["\u{2581}", "\u{2587}"]) {
+            // The editor mass (the bg, above the glyph) is the resting
+            // grey; the response mass below is the control fill. Both
+            // cells carry the glyph: the chip is nothing but its picture.
             for dx in 0..SPLIT_SEGMENT_WIDTH {
                 let c = cell(&term, rect.x + dx, 0);
-                assert_eq!(c.symbol(), one_char, "{stop:?}");
-                assert_eq!(c.fg, want_fg, "{stop:?}");
-                assert_eq!(c.bg, want_bg, "{stop:?}");
+                assert_eq!(c.symbol(), glyph, "{stop:?}");
+                assert_eq!(c.fg, theme.control, "{stop:?}");
+                assert_eq!(c.bg, mass, "{stop:?}");
             }
         }
     }
 
     #[test]
-    fn the_current_stops_picture_glows_in_accent_tones() {
+    fn the_lit_chip_is_the_minimized_end() {
         let theme = Theme::dark();
+        // Response minimized: the EditorFull chip is lit, the other quiet.
         let (term, rects) = paint(SplitControl {
-            state: SplitState::default(), // 50/50: the Even chip is lit
+            state: SplitState { response_minimized: true, ..Default::default() },
             hovered: None,
         });
-        let even = rects[2].0;
-        // ▄ under an editor-tone bg: the editor's share in accent above
-        // the dim selection tint standing in for the response's.
-        assert_eq!(cell(&term, even.x + 1, 0).bg, theme.accent);
-        assert_eq!(cell(&term, even.x + 1, 0).fg, theme.selection);
-        assert_eq!(
-            cell(&term, rects[0].0.x + 1, 0).fg,
-            theme.control,
-            "the other chips' pictures stay quiet"
-        );
-    }
-
-    #[test]
-    fn the_minimized_endpoints_light_their_chip_too() {
-        let theme = Theme::dark();
+        assert_eq!(cell(&term, rects[0].0.x + 1, 0).bg, theme.accent);
+        assert_eq!(cell(&term, rects[0].0.x + 1, 0).fg, theme.selection);
+        assert_ne!(cell(&term, rects[1].0.x + 1, 0).bg, theme.accent);
+        // Editor minimized: the mirror.
         let (term, rects) = paint(SplitControl {
             state: SplitState { editor_minimized: true, ..Default::default() },
             hovered: None,
         });
-        // ResponseFull's ▇: the response's selection-tint mass under a
-        // one-eighth strip of accent editor mass.
-        let chip = rects[4].0;
-        assert_eq!(cell(&term, chip.x + 1, 0).fg, theme.selection);
-        assert_eq!(cell(&term, chip.x + 1, 0).bg, theme.accent);
+        assert_eq!(cell(&term, rects[1].0.x + 1, 0).bg, theme.accent);
+        assert_eq!(cell(&term, rects[1].0.x + 1, 0).fg, theme.selection);
+        assert_ne!(cell(&term, rects[0].0.x + 1, 0).bg, theme.accent);
+        // Both panes showing: neither chip is accent.
+        let (term, rects) = paint(SplitControl { state: SplitState::default(), hovered: None });
+        for (rect, _) in rects {
+            assert_ne!(cell(&term, rect.x + 1, 0).bg, theme.accent);
+        }
     }
 
     #[test]
@@ -268,7 +195,7 @@ mod tests {
         let theme = Theme::dark();
         let (term, rects) = paint(SplitControl {
             state: SplitState::default(),
-            hovered: Some(SplitStop::EditorBig),
+            hovered: Some(SplitStop::ResponseFull),
         });
         let chip = rects[1].0;
         assert_eq!(cell(&term, chip.x, 0).bg, theme.text_muted);
@@ -276,96 +203,12 @@ mod tests {
 
         // Hovering the lit chip changes nothing — its picture already
         // glows accent, and there is no face behind it to lift.
-        let (term, rects) =
-            paint(SplitControl { state: SplitState::default(), hovered: Some(SplitStop::Even) });
-        let chip = rects[2].0;
+        let (term, rects) = paint(SplitControl {
+            state: SplitState { response_minimized: true, ..Default::default() },
+            hovered: Some(SplitStop::EditorFull),
+        });
+        let chip = rects[0].0;
         assert_eq!(cell(&term, chip.x, 0).bg, theme.accent);
         assert_eq!(cell(&term, chip.x, 0).fg, theme.selection);
-    }
-
-    #[test]
-    fn the_boundary_slides_down_across_the_glyph_row() {
-        // The pictures' lit editor mass shrinks chip by chip, with the
-        // same one-eighth strip of the other tone at both ends — flush,
-        // the row fuses into one staircase.
-        let glyphs: Vec<_> = SplitStop::ALL.iter().map(|s| split_glyph(*s)).collect();
-        assert_eq!(glyphs, ["▁▁", "▂▂", "▄▄", "▆▆", "▇▇"]);
-    }
-
-    fn paint_step(control: StepControl) -> (Terminal<TestBackend>, [(Rect, i8); 2]) {
-        let theme = Theme::dark();
-        let mut term = Terminal::new(TestBackend::new(20, 3)).unwrap();
-        // Painted on the middle row: the pill must leave both neighbours
-        // alone (no eaves — see `StepControl`).
-        let mut rects = None;
-        term.draw(|f| {
-            rects = Some(control.paint(f.buffer_mut(), 2, 1, &theme));
-        })
-        .unwrap();
-        (term, rects.unwrap())
-    }
-
-    #[test]
-    fn step_control_is_two_arrow_chips_between_control_fill_caps() {
-        let theme = Theme::dark();
-        let (term, rects) = paint_step(StepControl { state: SplitState::default(), hovered: None });
-        assert_eq!(rects.map(|(_, d)| d), [1, -1], "▲ (response grows) then ▼");
-        for (i, (rect, _)) in rects.iter().enumerate() {
-            assert_eq!(rect.width, STEP_SEGMENT_WIDTH);
-            assert_eq!(rect.height, 1);
-            assert_eq!(rect.x, 3 + i as u16 * STEP_SEGMENT_WIDTH);
-        }
-        assert_eq!(cell(&term, 2, 1).bg, theme.control);
-        assert_eq!(cell(&term, 2 + STEP_CONTROL_WIDTH - 1, 1).bg, theme.control);
-        // The arrows sit centred in their chips, in the split control's
-        // resting-mass tone on the one shared control face.
-        let mass = crate::theme::mix(theme.text_disabled, theme.text_muted, 0.5);
-        let up = cell(&term, rects[0].0.x + 1, 1);
-        assert_eq!(up.symbol(), "\u{25B2}");
-        assert_eq!(up.fg, mass);
-        assert_eq!(up.bg, theme.control);
-        let down = cell(&term, rects[1].0.x + 1, 1);
-        assert_eq!(down.symbol(), "\u{25BC}");
-        assert_eq!(down.fg, mass);
-        assert_eq!(cell(&term, rects[0].0.x, 1).bg, theme.control, "chip padding is the face");
-        for dx in 0..STEP_CONTROL_WIDTH {
-            assert_eq!(cell(&term, 2 + dx, 0).symbol(), " ", "no upper eave");
-            assert_eq!(cell(&term, 2 + dx, 2).symbol(), " ", "no lower eave");
-        }
-    }
-
-    #[test]
-    fn step_control_hover_lifts_the_whole_chip() {
-        let theme = Theme::dark();
-        let (term, rects) =
-            paint_step(StepControl { state: SplitState::default(), hovered: Some(-1) });
-        let down = rects[1].0;
-        for dx in 0..STEP_SEGMENT_WIDTH {
-            assert_eq!(cell(&term, down.x + dx, 1).bg, theme.control_hover);
-        }
-        assert_eq!(cell(&term, down.x + 1, 1).fg, theme.text_muted);
-        assert_eq!(cell(&term, rects[0].0.x, 1).bg, theme.control, "the other chip rests");
-    }
-
-    #[test]
-    fn step_control_greys_the_arrow_pointing_past_an_endpoint() {
-        let theme = Theme::dark();
-        // Response-full: ▲ has nowhere to go, and hovering it lifts nothing.
-        let (term, rects) = paint_step(StepControl {
-            state: SplitState { editor_minimized: true, ..Default::default() },
-            hovered: Some(1),
-        });
-        let up = rects[0].0;
-        assert_eq!(cell(&term, up.x + 1, 1).fg, theme.text_disabled);
-        assert_eq!(cell(&term, up.x + 1, 1).bg, theme.control);
-        let mass = crate::theme::mix(theme.text_disabled, theme.text_muted, 0.5);
-        assert_eq!(cell(&term, rects[1].0.x + 1, 1).fg, mass, "▼ still live");
-        // Editor-full: the mirror.
-        let (term, rects) = paint_step(StepControl {
-            state: SplitState { response_minimized: true, ..Default::default() },
-            hovered: None,
-        });
-        assert_eq!(cell(&term, rects[1].0.x + 1, 1).fg, theme.text_disabled);
-        assert_eq!(cell(&term, rects[0].0.x + 1, 1).fg, mass);
     }
 }

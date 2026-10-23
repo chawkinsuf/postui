@@ -208,6 +208,38 @@ pub fn fold_text_nav_bytes(ev: KeyEvent, macos: bool) -> KeyEvent {
     }
 }
 
+/// Where the keyboard is, as far as a key's binding is concerned
+/// (`App::key_context`). [`Self::action`] is the one place a key's action
+/// takes context: every key press reads its binding through it
+/// (`App::lookup_key`), and the palettes' key column checks a row's key
+/// against it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyContext {
+    /// The sidebar has focus on the main screen.
+    pub sidebar_on_main: bool,
+}
+
+impl KeyContext {
+    /// What a key bound to `action` does here. With the sidebar focused on
+    /// the main screen, the split keys (`alt+w`, `shift+alt+w`, or whatever
+    /// keys.toml binds to `cycle_split` / `cycle_split_back`) step the
+    /// sidebar's width.
+    ///
+    /// The context belongs to the key, not to the split action (spec S6,
+    /// S6a): `:split` and the split chips dispatch their action directly,
+    /// never through here, so they always mean the split. The step is
+    /// `StepSidebar`, the palette's sidebar-only action (S6b), not vim's
+    /// `PaneResize`, which follows the current window.
+    pub fn action(self, action: Action) -> Action {
+        let step = crate::layout::SIDEBAR_STEP_COLS;
+        match action {
+            Action::CycleSplit if self.sidebar_on_main => Action::StepSidebar(step),
+            Action::CycleSplitBack if self.sidebar_on_main => Action::StepSidebar(-step),
+            _ => action,
+        }
+    }
+}
+
 /// `PartialEq` compares the bindings: a live reload uses it to tell a
 /// keys.toml that changed from one that was merely re-read, and only
 /// re-issues its advisories for the former.
@@ -410,6 +442,9 @@ impl Keymap {
             ("alt+v", Action::OpenVarPicker { completing: false }),
             ("alt+a", Action::TableAddRow),
             ("alt+p", Action::ToggleTableCollapse),
+            // Hiding the response pairs with hiding the editor the way
+            // shift+alt+w pairs with alt+w (spec E12b).
+            ("shift+alt+p", Action::ToggleResponseCollapse),
             ("alt+w", Action::CycleSplit),
             ("shift+alt+w", Action::CycleSplitBack),
             ("alt+r", Action::OpenManage { tab: None }),
@@ -434,15 +469,13 @@ impl Keymap {
         self.bindings.get(combo).cloned()
     }
 
-    /// What `combo` is bound to when a `keys.toml` override put it there,
+    /// Whether `combo`'s binding is one a `keys.toml` override put there,
     /// never a default binding (plan M2 Deviation 18: in arrows only the
     /// user's letters beat the router's verb rows).
-    pub(crate) fn lookup_override(&self, combo: &KeyCombo) -> Option<Action> {
-        let action = self.bindings.get(combo)?;
-        self.overrides
-            .iter()
-            .any(|(a, combos)| a == action && combos.contains(combo))
-            .then(|| action.clone())
+    pub(crate) fn is_override(&self, combo: &KeyCombo) -> bool {
+        self.bindings.get(combo).is_some_and(|action| {
+            self.overrides.iter().any(|(a, combos)| a == action && combos.contains(combo))
+        })
     }
 
     pub fn bind(&mut self, combo: KeyCombo, action: Action) {
@@ -941,6 +974,8 @@ mod tests {
         assert_eq!(get("alt+t"), Some(Action::OpenThemeChooser));
         assert_eq!(get("alt+w"), Some(Action::CycleSplit));
         assert_eq!(get("shift+alt+w"), Some(Action::CycleSplitBack));
+        assert_eq!(get("alt+p"), Some(Action::ToggleTableCollapse));
+        assert_eq!(get("shift+alt+p"), Some(Action::ToggleResponseCollapse));
         assert_eq!(get("alt+d"), Some(Action::DiscardChanges));
         assert_eq!(get("alt+b"), None, "alt+b is reserved for word-left (ESC b)");
         assert_eq!(get("alt+f"), None, "alt+f is reserved for word-right (ESC f)");
@@ -1334,7 +1369,17 @@ mod tests {
         assert_eq!(get(Vim, "alt+right"), None, "gt steps the tabs in vim (plan M4a)");
         assert_eq!(get(Vim, "alt+left"), None);
         assert_eq!(get(Arrows, "alt+right"), Some(Action::CycleTabs(1)));
-        for combo in ["ctrl+c", "ctrl+v", "ctrl+o", "ctrl+p", "ctrl+z", "alt+t", "ctrl+1"] {
+        for combo in [
+            "ctrl+c",
+            "ctrl+v",
+            "ctrl+o",
+            "ctrl+p",
+            "ctrl+z",
+            "alt+t",
+            "ctrl+1",
+            "alt+p",
+            "shift+alt+p",
+        ] {
             assert_eq!(
                 get(Vim, combo),
                 get(Arrows, combo),

@@ -108,14 +108,16 @@ pub enum Hit {
         row: usize,
         col: u8,
     },
-    /// One chip of the five-stop split control (see
+    /// One of the split control's two end chips (see
     /// [`crate::paint::SplitControl`]): click dispatches the matching
     /// `Action::SplitStop`.
     SplitStop(crate::split::SplitStop),
-    /// One of the response header's ▲/▼ nudge buttons (see
-    /// [`crate::paint::StepControl`]): click dispatches
-    /// `Action::SplitStep` with the same delta.
-    SplitStep(i8),
+    /// The response header strip as a whole, under its tabs and icon
+    /// buttons: the handle the editor/response line is dragged by.
+    SplitHandle,
+    /// The 1-column gutter between the sidebar and the main column: the
+    /// handle the sidebar's width is dragged by.
+    SidebarGutter,
     /// Raw mouse event forwarded to edtui (click-to-place, wheel).
     BodyEditor,
     ResponseTab(crate::components::response::ViewMode),
@@ -376,6 +378,12 @@ pub enum PointerShape {
     /// The closed-hand cursor while a sidebar row is being dragged (set by
     /// `App::pointer_shape_update`, not by a hit).
     Grabbing,
+    /// The left-right resize shape: over the sidebar gutter, and for the
+    /// whole of a gutter drag (spec S3).
+    ColResize,
+    /// The up-down resize shape: over the response header strip's handle,
+    /// and for the whole of a strip drag (spec E4).
+    RowResize,
 }
 
 impl PointerShape {
@@ -386,6 +394,8 @@ impl PointerShape {
             PointerShape::Pointer => "pointer",
             PointerShape::Text => "text",
             PointerShape::Grabbing => "grabbing",
+            PointerShape::ColResize => "ew-resize",
+            PointerShape::RowResize => "ns-resize",
         }
     }
 
@@ -408,6 +418,9 @@ impl PointerShape {
             // The response pane's bare content is selectable text (a click
             // anchors a selection sweep), so it I-beams like the editors.
             Some(Hit::Pane(PaneId::Response)) => PointerShape::Text,
+            // The two resize handles (spec S3, E4).
+            Some(Hit::SidebarGutter) => PointerShape::ColResize,
+            Some(Hit::SplitHandle) => PointerShape::RowResize,
             // The variable tooltip's panel between its pills: a click there
             // is only swallowed, so it is chrome, not a button.
             // An auto header row is a surface, hovered only for the footer.
@@ -589,7 +602,9 @@ impl HitMap {
         })
     }
 
-    /// Last-registered rect for `hit` — the test helper click tests use.
+    /// Last-registered rect for `hit`: where the last frame drew it. Click
+    /// tests use it, and so does the strip resize's grab (the strip as the
+    /// user saw it at the press).
     pub fn rect_of(&self, hit: &Hit) -> Option<Rect> {
         self.regions.iter().rev().find(|(_, h)| h == hit).map(|(rect, _)| *rect)
     }
@@ -879,6 +894,8 @@ mod tests {
         assert_eq!(PointerShape::Default.as_str(), "default");
         assert_eq!(PointerShape::Pointer.as_str(), "pointer");
         assert_eq!(PointerShape::Text.as_str(), "text");
+        assert_eq!(PointerShape::ColResize.as_str(), "ew-resize");
+        assert_eq!(PointerShape::RowResize.as_str(), "ns-resize");
     }
 
     #[test]

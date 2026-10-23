@@ -255,7 +255,7 @@ fn palette_row_of(app: &App, id: &str) -> usize {
 }
 
 /// Moves the open palette's cursor onto command `id`.
-fn select_palette_command(app: &mut App, id: &str) {
+pub(super) fn select_palette_command(app: &mut App, id: &str) {
     let i = palette_row_of(app, id);
     let Some(Modal::Palette(p)) = app.modals.top_mut() else { unreachable!() };
     p.select(i);
@@ -7490,7 +7490,7 @@ fn esc_on_idle_response_pane_does_nothing() {
     assert_eq!(action, None);
 }
 
-fn two_projects() -> (App, tempfile::TempDir, tempfile::TempDir) {
+pub(super) fn two_projects() -> (App, tempfile::TempDir, tempfile::TempDir) {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
@@ -9178,7 +9178,7 @@ fn an_arrows_keys_toml_letter_wins_over_a_response_line_selection() {
     assert!(!app.should_quit);
 }
 
-fn ready_response(app: &mut App, body: &str) {
+pub(super) fn ready_response(app: &mut App, body: &str) {
     app.session.response.set_state(
         ResponseState::Ready(Box::new(crate::http::ResponseData {
             status: 200,
@@ -17214,8 +17214,8 @@ fn the_new_entry_button_starts_the_ghost_row_and_edit_fields_opens_the_editor() 
 }
 
 /// Every button inside the request panel focuses it on click — send,
-/// copy-URL, the TLS lock, the split control and its alt+w pill, and the
-/// Body toolbar chips — not just its text surfaces (URL bar, tabs, tables).
+/// copy-URL, the TLS lock, the split control, and the Body toolbar chips
+/// — not just its text surfaces (URL bar, tabs, tables).
 #[tokio::test]
 async fn request_panel_buttons_focus_the_editor_pane() {
     let mut app = App::new_for_test();
@@ -17225,10 +17225,9 @@ async fn request_panel_buttons_focus_the_editor_pane() {
     let buttons = [
         Hit::SendButton,
         Hit::CopyUrl,
-        Hit::SplitStop(crate::split::SplitStop::Even),
+        Hit::SplitStop(crate::split::SplitStop::EditorFull),
         Hit::FooterChip(Action::ToggleInsecure),
         Hit::FooterChip(Action::FormatBody),
-        Hit::FooterChip(Action::CycleSplit),
     ];
     for hit in buttons {
         app.update(Action::FocusPane(PaneId::Response));
@@ -17274,9 +17273,11 @@ fn every_named_action_is_mouse_reachable() {
         // forward half is the `alt+←→ tabs` footer chip on every
         // strip, and each strip's tabs are clickable directly.
         Action::CycleTabs(-1),
-        // shift+alt+w walks the split stops backward; every stop is also a
-        // directly clickable chip on the split control (`Hit::SplitStop`),
-        // and the forward cycle's alt+w pill is the strip's mouse path.
+        // alt+w and shift+alt+w walk the split stops; the mouse's
+        // equivalents are the two end chips on the split control
+        // (`Hit::SplitStop`) and dragging the response header strip
+        // (`Hit::SplitHandle`), which reach every state the cycle does.
+        Action::CycleSplit,
         Action::CycleSplitBack,
     ];
 
@@ -17688,20 +17689,19 @@ fn toggle_response_collapse_flips_the_flag_and_eases_the_anim() {
     assert!(!app.session.response.collapsed, "toggles back open");
 }
 
-/// `Action::SplitStop` (the split control's five chips) drives the
-/// five-state split: a ratio chip moves the stop and eases
-/// `AnimKey::SplitRatio`; the endpoint chips set the same flags the old
-/// toggles did, keeping the ratio sticky underneath.
+/// `Action::SplitStop` drives the split: a ratio stop moves the share and
+/// eases `AnimKey::SplitRatio`; the two endpoint chips set the same flags
+/// the old toggles did, keeping the ratio sticky underneath.
 #[test]
 fn split_stops_update_the_split_and_ease_the_ratio_anim() {
-    use crate::split::{SplitRatio, SplitStop};
+    use crate::split::SplitStop;
     let mut app = App::new_for_test_with_anims(true);
-    assert_eq!(app.split_ratio, SplitRatio::Even);
+    assert_eq!(app.split_ratio, 0.5);
 
     // 75/25 from 50/50 shrinks the response to its quarter, easing the
     // ratio rather than snapping.
     app.update(Action::SplitStop(SplitStop::EditorBig));
-    assert_eq!(app.split_ratio, SplitRatio::EditorBig);
+    assert_eq!(app.split_ratio, 0.75);
     assert!(!app.session.response.collapsed);
     assert!(!app.table_collapsed);
     let now = std::time::Instant::now();
@@ -17714,7 +17714,7 @@ fn split_stops_update_the_split_and_ease_the_ratio_anim() {
     // toggle; the ratio stop survives underneath.
     app.update(Action::SplitStop(SplitStop::EditorFull));
     assert!(app.session.response.collapsed);
-    assert_eq!(app.split_ratio, SplitRatio::EditorBig, "ratio is sticky");
+    assert_eq!(app.split_ratio, 0.75, "ratio is sticky");
 
     // The response-full chip gives the response the whole column by
     // minimizing the editor — one click from the opposite endpoint.
@@ -17725,52 +17725,64 @@ fn split_stops_update_the_split_and_ease_the_ratio_anim() {
     // A ratio chip reopens both panes straight at its stop.
     app.update(Action::SplitStop(SplitStop::ResponseBig));
     assert!(!app.table_collapsed);
-    assert_eq!(app.split_ratio, SplitRatio::ResponseBig);
+    assert_eq!(app.split_ratio, 0.25);
 }
 
-/// `Action::CycleSplit` (the footer's `alt+s` context chip) steps the
+/// `Action::CycleSplit` (alt+w, outside the sidebar: spec E11) steps the
 /// split through the five stops in on-screen order and wraps — the
 /// one-key keyboard route to every state the control's chips reach.
 #[test]
 fn cycle_split_steps_through_every_stop_and_wraps() {
     use crate::split::SplitStop::*;
     let mut app = App::new_for_test();
-    assert_eq!(app.split_state().stop(), Even);
+    app.update(Action::FocusPane(PaneId::Editor));
+    assert_eq!(app.split_state().stop(), Some(Even));
     let mut seen = vec![];
     for _ in 0..5 {
         app.update(Action::CycleSplit);
         seen.push(app.split_state().stop());
     }
-    assert_eq!(seen, [ResponseBig, ResponseFull, EditorFull, EditorBig, Even]);
+    assert_eq!(
+        seen,
+        [Some(ResponseBig), Some(ResponseFull), Some(EditorFull), Some(EditorBig), Some(Even)]
+    );
 }
 
-/// `Action::SplitStep` (the response header's ▲/▼ buttons) nudges the
-/// split exactly one stop per press and stalls at the endpoints rather
-/// than wrapping — the button at the edge is a no-op, not a jump across
-/// the column.
+/// Clicking the lit end chip again restores the split to the share it
+/// had (spec E9), through the real chip in the editor's tab-bar row.
 #[test]
-fn split_step_moves_one_stop_and_stalls_at_the_ends() {
-    use crate::split::SplitStop::*;
+fn clicking_the_lit_chip_restores_the_split() {
+    use crate::split::SplitStop;
     let mut app = App::new_for_test();
-    assert_eq!(app.split_state().stop(), Even);
-    app.update(Action::SplitStep(1));
-    assert_eq!(app.split_state().stop(), ResponseBig, "▲ grows the response");
-    app.update(Action::SplitStep(1));
-    assert_eq!(app.split_state().stop(), ResponseFull);
-    assert!(app.table_collapsed);
-    app.update(Action::SplitStep(1));
-    assert_eq!(app.split_state().stop(), ResponseFull, "stalls at the bottom stop");
-    for _ in 0..4 {
-        app.update(Action::SplitStep(-1));
+    app.split_ratio = 0.6;
+    click_hit(&mut app, Hit::SplitStop(SplitStop::EditorFull));
+    assert!(app.session.response.collapsed, "the first click minimizes the response");
+    assert!(!app.table_collapsed);
+    click_hit(&mut app, Hit::SplitStop(SplitStop::EditorFull));
+    assert!(!app.session.response.collapsed, "the lit chip restores both panes");
+    assert!(!app.table_collapsed);
+    assert_eq!(app.split_ratio, 0.6);
+}
+
+/// A press on either drag handle (the response header strip, the sidebar
+/// gutter) changes no size. The gutter's moves no focus either; the
+/// strip's clicks as the response pane always did and focuses it (spec
+/// E2a; see `resize_tests`).
+#[test]
+fn a_press_on_a_drag_handle_moves_nothing() {
+    for (hit, focus) in [(Hit::SplitHandle, PaneId::Response), (Hit::SidebarGutter, PaneId::Editor)]
+    {
+        let mut app = App::new_for_test();
+        app.update(Action::FocusPane(PaneId::Editor));
+        let (split, width) = (app.split_state(), app.sidebar_width);
+        click_hit(&mut app, hit.clone());
+        assert_eq!(app.focus, focus, "{hit:?}");
+        assert_eq!((app.split_state(), app.sidebar_width), (split, width), "{hit:?}");
     }
-    assert_eq!(app.split_state().stop(), EditorFull, "▼ shrinks the response");
-    assert!(app.session.response.collapsed);
-    app.update(Action::SplitStep(-1));
-    assert_eq!(app.split_state().stop(), EditorFull, "stalls at the top stop");
 }
 
 /// The split is a persisted layout preference: chip presses and the
-/// keyboard toggles record it in the project's `.local/state.toml`, and
+/// keyboard toggles record it in the project's `.local/layout.toml`, and
 /// opening the project seeds the split back from it.
 #[test]
 fn split_persists_to_local_state_and_reseeds_on_open() {
@@ -17779,16 +17791,36 @@ fn split_persists_to_local_state_and_reseeds_on_open() {
     app.update(Action::SplitStop(SplitStop::EditorBig));
     let root = app.proj().root().to_path_buf();
     let saved =
-        |root: &std::path::Path| postui_core::fixtures::load_local_state(root).unwrap().main_split;
-    assert_eq!(saved(&root).as_deref(), Some("editor-big"));
+        |root: &std::path::Path| postui_core::fixtures::load_layout(root).unwrap().main_split;
+    assert_eq!(saved(&root).as_deref(), Some("0.7500"));
 
     app.update(Action::ToggleResponseCollapse);
-    assert_eq!(saved(&root).as_deref(), Some("editor-full"));
+    assert_eq!(saved(&root).as_deref(), Some("editor-full@0.7500"));
 
     // A fresh app on the same root wakes up with the saved split.
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let reopened = App::with_root(tx, root.clone());
     assert!(reopened.session.response.collapsed, "the minimized response comes back minimized");
+    drop(app); // keeps the temp project alive until the reopened app is done
+}
+
+/// The sidebar's saved width is a per-project layout preference: opening a
+/// project with `sidebar_width` in its `.local/layout.toml` draws the
+/// sidebar that many columns wide.
+#[test]
+fn a_saved_sidebar_width_draws_from_the_project() {
+    let app = App::new_for_test();
+    let root = app.proj().root().to_path_buf();
+    let mut layout = postui_core::fixtures::load_layout(&root).unwrap();
+    layout.sidebar_width = Some(30);
+    postui_core::fixtures::save_layout(&root, &layout).unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut reopened = App::with_root(tx, root.clone());
+    assert_eq!(reopened.sidebar_width, Some(30));
+    render_once(&mut reopened);
+    let sidebar = reopened.hits.rect_of(&Hit::Pane(PaneId::Sidebar)).unwrap();
+    assert_eq!(sidebar.width, 30);
     drop(app); // keeps the temp project alive until the reopened app is done
 }
 

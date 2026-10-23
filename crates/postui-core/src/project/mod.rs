@@ -91,8 +91,9 @@ impl std::fmt::Display for OpenError {
     }
 }
 
-/// The per-project, machine-owned state from `.local/state.toml`.
-/// Data only; `Project` persists it (Task 6).
+/// The per-project, machine-owned state from `.local/state.toml`, plus
+/// the pane sizes from `.local/layout.toml`. Data only; `Project`
+/// persists it (Task 6).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Local {
     pub active_space: String,
@@ -100,7 +101,9 @@ pub struct Local {
     pub expanded: BTreeSet<String>,
     pub selections: IndexMap<String, IndexMap<String, String>>,
     pub shared_selections: IndexMap<String, String>,
-    pub main_split: Option<String>,
+    /// The pane sizes, as `layout.toml` holds them. They live in that
+    /// unjournaled file, so undo never restores them (spec P3a, P3b).
+    pub layout: LayoutState,
     /// The request the editor has open, as last told to the project.
     pub open_request: Option<String>,
 }
@@ -187,6 +190,7 @@ pub(crate) const VARIABLES_TOML: &str = "variables.toml";
 pub(crate) const ENVIRONMENTS_DIR: &str = "environments";
 pub(crate) const REQUESTS_DIR: &str = "requests";
 pub(crate) const STATE_TOML: &str = ".local/state.toml";
+pub(crate) const LAYOUT_TOML: &str = ".local/layout.toml";
 pub(crate) const SECRETS_TOML: &str = ".local/secrets.toml";
 
 pub(crate) fn rel(s: &str) -> Result<RelPath, Error> {
@@ -795,7 +799,6 @@ impl Project {
             Ok(text) => match toml::from_str::<LocalState>(&text.unwrap_or_default()) {
                 Ok(state) => {
                     self.local.open_request = state.open_request;
-                    self.local.main_split = state.main_split;
                     self.local.expanded = state.expanded.into_iter().collect();
                     self.local.selections = state.selections;
                     self.local.shared_selections = state.shared_selections;
@@ -1021,6 +1024,9 @@ impl Project {
         let state: LocalState = Self::read_doc(&mut disk, STATE_TOML, |t| {
             toml::from_str(t).map_err(|e| e.to_string())
         })?;
+        let layout: LayoutState = Self::read_doc(&mut disk, LAYOUT_TOML, |t| {
+            toml::from_str(t).map_err(|e| e.to_string())
+        })?;
         let secrets: IndexMap<String, IndexMap<String, String>> =
             Self::read_doc(&mut disk, SECRETS_TOML, |t| {
                 toml::from_str(t).map_err(|e| e.to_string())
@@ -1097,7 +1103,7 @@ impl Project {
                 expanded: state.expanded.into_iter().collect(),
                 selections: state.selections,
                 shared_selections: state.shared_selections,
-                main_split: state.main_split,
+                layout,
                 open_request,
             },
             journal: Journal::new(),
@@ -1308,6 +1314,11 @@ mod tests {
         std::fs::read_to_string(dir.path().join(rel)).ok()
     }
 
+    /// Pane sizes with both set: the split token and the sidebar width.
+    pub(crate) fn sizes(split: &str, width: u16) -> LayoutState {
+        LayoutState { main_split: Some(split.into()), sidebar_width: Some(width) }
+    }
+
     #[test]
     fn open_loads_every_document_and_lands_in_the_first_environment() {
         let (_d, p) = fixture();
@@ -1339,6 +1350,33 @@ mod tests {
         std::fs::write(dir.path().join(".local/state.toml"), "space = 3\n").unwrap();
         let err = Project::open(dir.path().to_path_buf()).unwrap_err();
         assert_eq!(err.file, ".local/state.toml");
+    }
+
+    /// An unparseable `.local/layout.toml` refuses the open like
+    /// `state.toml` does (spec P4), so it is never defaulted and then
+    /// overwritten.
+    #[test]
+    fn an_unparseable_layout_toml_refuses_the_open_and_is_left_alone() {
+        let (dir, _p) = fixture();
+        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
+        std::fs::write(dir.path().join(".local/layout.toml"), "sidebar_width = \"wide\"\n")
+            .unwrap();
+        let err = Project::open(dir.path().to_path_buf()).unwrap_err();
+        assert_eq!(err.file, ".local/layout.toml");
+        assert_eq!(read(&dir, ".local/layout.toml").as_deref(), Some("sidebar_width = \"wide\"\n"));
+    }
+
+    /// The sizes come from `.local/layout.toml` alone (spec P3b; postui is
+    /// unreleased, so no project keeps them anywhere older): a `main_split`
+    /// in `state.toml` is an unknown key, and opening writes no layout file.
+    #[test]
+    fn the_sizes_come_from_layout_toml_only_and_open_writes_none() {
+        let (dir, _p) = fixture();
+        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
+        std::fs::write(dir.path().join(".local/state.toml"), "main_split = \"0.6000\"\n").unwrap();
+        let (p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        assert_eq!(p.local().layout.main_split, None);
+        assert!(read(&dir, ".local/layout.toml").is_none(), "the open wrote nothing");
     }
 
     #[test]

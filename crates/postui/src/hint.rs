@@ -109,6 +109,12 @@ fn manage_noun(tab: Option<crate::components::manage::ManageTab>) -> &'static st
 pub fn hint_for(hit: &Hit, keymap: &Keymap, ctx: &HintCtx) -> Option<String> {
     match hint_source(hit, ctx)? {
         Source::Text(s) => Some(s),
+        Source::Keyed(s, action) => {
+            Some(match crate::keyroute::spell::spell(ctx.spell, &action, keymap) {
+                Some(key) => format!("{s} \u{b7} {key}"),
+                None => s,
+            })
+        }
         Source::Of(action) => {
             Some(describe_action(&action, keymap, !shows_its_own_keycap(hit), ctx.spell))
         }
@@ -138,6 +144,9 @@ fn shows_its_own_keycap(hit: &Hit) -> bool {
 enum Source {
     /// A fixed line for a control with no single palette action.
     Text(String),
+    /// A fixed line, then the key of `action`, which does the same as
+    /// the control: for a control whose palette wording doesn't fit it.
+    Keyed(String, Action),
     /// A control that dispatches `action`: described like the palette does.
     Of(Action),
 }
@@ -220,8 +229,6 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::CancelSend => "Cancel the request in flight".to_string(),
         Action::CloseField => "Close the field, keeping what you typed".to_string(),
         Action::FocusUrl => "Edit the URL".to_string(),
-        Action::CycleSplit => "Step the editor/response split".to_string(),
-        Action::CycleSplitBack => "Step the split back".to_string(),
         Action::DeleteTableRow(_) => "Delete this row".to_string(),
         Action::ToggleVarReveal => "Reveal or hide the secret value".to_string(),
         // Closing switches the filter off — when there is one: an empty
@@ -253,6 +260,8 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         | Hit::TableCell { .. }
         | Hit::AutoHeaderRow(_)
         | Hit::BodyEditor
+        | Hit::SplitHandle
+        | Hit::SidebarGutter
         | Hit::JsonRow(_)
         | Hit::JsonArrow(_)
         | Hit::ScrollbarThumb(_)
@@ -426,15 +435,18 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::TableCheckbox(_) => text(if ctx.on { "Disable this row" } else { "Enable this row" }),
         Hit::TableCopy(_) => text("Copy this row's value"),
         Hit::TableDelete(_) => text("Delete this row"),
-        Hit::SplitStop(stop) => text(match stop {
-            SplitStop::EditorFull => "Editor full size",
-            SplitStop::EditorBig => "Split 75/25",
-            SplitStop::Even => "Split evenly",
-            SplitStop::ResponseBig => "Split 25/75",
-            SplitStop::ResponseFull => "Response full size",
-        }),
-        Hit::SplitStep(d) => {
-            text(if *d > 0 { "Give the response more room" } else { "Give the editor more room" })
+        // The two end chips are the hide/show toggles (spec E12a): a click
+        // hides the other pane, and on the lit chip (`on`) shows it again
+        // at the share it had. Each carries its toggle's key. The middle
+        // stops are no chip, so they have no hint.
+        Hit::SplitStop(stop) => {
+            let (pane, toggle) = match stop {
+                SplitStop::EditorFull => ("response", Action::ToggleResponseCollapse),
+                SplitStop::ResponseFull => ("editor", Action::ToggleTableCollapse),
+                SplitStop::EditorBig | SplitStop::Even | SplitStop::ResponseBig => return None,
+            };
+            let verb = if ctx.on { "Show" } else { "Hide" };
+            Some(Source::Keyed(format!("{verb} the {pane}"), toggle))
         }
         Hit::AutoHeaderCopy(_) => text("Copy this header's value"),
         Hit::AutoHeaderOverride(_) => text("Edit this header in the request"),
@@ -656,6 +668,53 @@ mod tests {
         }
     }
 
+    /// Spec E12a, E12b: the two split chips are the hide/show toggles, so
+    /// each hint says which pane a click hides (or, lit, shows again) and
+    /// carries that toggle's key as the profile spells it.
+    #[test]
+    fn split_chip_hints_are_the_hide_show_toggles() {
+        use crate::config::KeyProfile;
+        let alt = crate::keys::alt_label();
+        for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+            let keymap = Keymap::default_bindings_for(profile);
+            let spell = crate::keyroute::SpellCtx { profile, ..Default::default() };
+            let hint = |stop, on| {
+                hint_for(&Hit::SplitStop(stop), &keymap, &HintCtx { on, spell, ..ctx() }).unwrap()
+            };
+            assert_eq!(
+                hint(SplitStop::EditorFull, false),
+                format!("Hide the response \u{b7} {alt}+shift+p"),
+                "{profile:?}"
+            );
+            assert_eq!(
+                hint(SplitStop::EditorFull, true),
+                format!("Show the response \u{b7} {alt}+shift+p"),
+                "{profile:?}"
+            );
+            assert_eq!(
+                hint(SplitStop::ResponseFull, false),
+                format!("Hide the editor \u{b7} {alt}+p"),
+                "{profile:?}"
+            );
+            assert_eq!(
+                hint(SplitStop::ResponseFull, true),
+                format!("Show the editor \u{b7} {alt}+p"),
+                "{profile:?}"
+            );
+        }
+    }
+
+    /// A toggle with no key in the active keymap leaves the key off.
+    #[test]
+    fn a_split_chip_hint_leaves_off_an_unbound_toggle_key() {
+        let mut keymap = Keymap::default_bindings();
+        keymap.apply_overrides("toggle_response_collapse = []").unwrap();
+        assert_eq!(
+            hint_for(&Hit::SplitStop(SplitStop::EditorFull), &keymap, &ctx()).unwrap(),
+            "Hide the response"
+        );
+    }
+
     /// A control that paints the key on itself doesn't repeat it: the
     /// Theme chip's own `alt+t` pill sits a hand's width from the footer.
     #[test]
@@ -719,15 +778,10 @@ mod tests {
     }
 
     /// A chip action the palette doesn't list still gets real words, not
-    /// the `Debug` last resort — including the `alt+w` split pill, which
-    /// is a `FooterChip` hit painted on the editor's tab strip.
+    /// the `Debug` last resort.
     #[test]
     fn chip_actions_outside_the_palette_use_the_fallback_wording() {
         let keymap = Keymap::default_bindings();
-        assert_eq!(
-            hint_for(&Hit::FooterChip(Action::CycleSplit), &keymap, &ctx()).unwrap(),
-            "Step the editor/response split"
-        );
         assert_eq!(
             hint_for(&Hit::FooterChip(Action::DeleteTableRow(3)), &keymap, &ctx()).unwrap(),
             "Delete this row"
@@ -811,11 +865,9 @@ mod tests {
                 }
             }
         }
-        // The split pill and the always-present right-hand pair, which
-        // `footer_chips` doesn't list.
+        // The always-present right-hand pair, which `footer_chips` doesn't
+        // list.
         for action in [
-            Action::CycleSplit,
-            Action::CycleSplitBack,
             Action::OpenPalette,
             Action::OpenExPalette,
             Action::Quit,
@@ -944,7 +996,6 @@ mod tests {
             Hit::PickerPrimary,
             Hit::PickerHidden,
             Hit::VmSecretToggle,
-            Hit::FooterChip(Action::CycleSplit),
             Hit::ManageMoveAll,
             Hit::ManageEnvTls(Some(postui_core::project::TlsPolicy::Insecure)),
             Hit::AutoHeaderReveal,
@@ -957,7 +1008,7 @@ mod tests {
             Hit::ModalRemove,
             Hit::PickerPrimary,
             Hit::ResponseSearchNext,
-            Hit::SplitStep(1),
+            Hit::SplitStop(SplitStop::EditorFull),
             Hit::TipReveal("tok".into()),
             Hit::VmEntryRadio(0),
             Hit::VmPromoteBtn,

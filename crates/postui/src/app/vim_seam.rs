@@ -59,6 +59,10 @@ pub(crate) struct VimState {
     /// What the mouse did on a field's text during this event, which the
     /// engine settles at its end (`vim_mouse_end`).
     text_mouse: Option<(FieldId, Pos, Mouse)>,
+    /// This event's left press landed on a window separator (the sidebar
+    /// gutter, or the response's header strip), which `vim_mouse_end` does
+    /// not settle as a click.
+    separator_press: bool,
 }
 
 /// The change `.` repeats (spec §5.12) and the history's change count
@@ -908,7 +912,7 @@ impl App {
         }
         let indent =
             (ev.code == KeyCode::Tab && ev.modifiers.is_empty()) || ev.code == KeyCode::BackTab;
-        match self.keymap.lookup(&KeyCombo::from_event(&ev)) {
+        match self.lookup_key(&KeyCombo::from_event(&ev)) {
             Some(a) if !indent => Ran::routed(self.update(a)),
             _ => Ran::default(),
         }
@@ -929,7 +933,7 @@ impl App {
         if id.is_modal() || id.insert_only() {
             return true;
         }
-        if self.keymap.lookup(&KeyCombo::from_event(ev)).is_some() {
+        if self.lookup_key(&KeyCombo::from_event(ev)).is_some() {
             return true;
         }
         let plain = ev.modifiers.difference(KeyModifiers::SHIFT).is_empty();
@@ -998,6 +1002,7 @@ impl App {
         if button {
             self.sync_session(None, Cause::Before);
             self.vim.text_mouse = None;
+            self.vim.separator_press = false;
         }
         MouseEdge { button, left_press: m.kind == MouseEventKind::Down(MouseButton::Left) }
     }
@@ -1005,18 +1010,28 @@ impl App {
     /// After a mouse event: a button's settles the session. What the
     /// mouse did on the text of the field that has the caret now settles
     /// at its char (spec 2026-10-14); any other left press is a plain
-    /// click, and a release does nothing, as in Vim.
+    /// click, except one on a window separator, and a release does
+    /// nothing, as in Vim.
     pub(super) fn vim_mouse_end(&mut self, edge: MouseEdge) {
         if !edge.button {
             return;
         }
+        let separator = std::mem::take(&mut self.vim.separator_press);
         let how = match self.vim.text_mouse.take() {
             Some((field, at, mouse)) if self.field_caret() == FieldCaret::Live(field) => {
                 Some(Settled::Mouse(at, mouse))
             }
-            _ => edge.left_press.then_some(Settled::Click),
+            _ => (edge.left_press && !separator).then_some(Settled::Click),
         };
         self.sync_session(None, Cause::Mouse(how));
+    }
+
+    /// A left press on a window separator (`App::is_separator_press`, spec
+    /// S7): the sidebar gutter, or in vim the response's header strip.
+    /// Vim keeps Visual mode and a pending operator through a press there,
+    /// so the end of the event settles nothing.
+    pub(super) fn vim_separator_press(&mut self) {
+        self.vim.separator_press = true;
     }
 
     /// A left press on `field`'s text at char `(row, col)`, with Vim's click
@@ -1356,12 +1371,15 @@ impl App {
                 self.vim.ex_over_visual |= self.profile() == KeyProfile::Vim
                     && self.focus == PaneId::Response
                     && self.session.response.line_selection();
-                self.push_modal(Modal::Palette(PaletteState::new_ex(
-                    &self.usage,
-                    crate::usage::now(),
-                    scope,
-                    self.vim.cmdline_history.lines(),
-                )));
+                self.push_modal(Modal::Palette(
+                    PaletteState::new_ex(
+                        &self.usage,
+                        crate::usage::now(),
+                        scope,
+                        self.vim.cmdline_history.lines(),
+                    )
+                    .with_key_context(self.key_context()),
+                ));
                 true
             }
             Action::NoHlSearch => {

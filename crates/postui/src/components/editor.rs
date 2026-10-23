@@ -2952,10 +2952,6 @@ impl Editor {
                 if self.table_collapsed { 1.0 } else { 0.0 },
             )
             .clamp(0.0, 1.0);
-        // Where the strip row's left-side content (tabs + the "vars"
-        // badge) ends: the split control's keycap pill below must never
-        // paint over it on a narrow pane.
-        let mut strip_end = area.x;
         if fade_t < 1.0 {
             let rects = {
                 let buf = frame.buffer_mut();
@@ -2978,14 +2974,12 @@ impl Editor {
             // The "vars" indicator sits right after the tab blocks, on the
             // labels row.
             let last_rect = rects[tabs.len() - 1];
-            strip_end = last_rect.x + last_rect.width;
             if self.substitute_body {
                 let x = last_rect.x + last_rect.width + 2;
                 frame.render_widget(
                     Paragraph::new(Line::styled("vars ", Style::default().fg(theme.accent))),
                     Rect::new(x, area.y, 5, 1),
                 );
-                strip_end = x + 5;
             }
             if fade_t > 0.0 {
                 // Mid-slide: blend the whole strip toward the page it sits
@@ -2995,10 +2989,12 @@ impl Editor {
         }
 
         // --- split control (right-aligned) ---
-        // The whole column's five-stop control: one chip per settled
-        // state, so any layout is one click away — and it lives on this
-        // fixed row, never repositioning itself mid-click the way
-        // buttons on the response header would.
+        // The whole column's two-chip control: "editor only" and
+        // "response only" (the lit one restores the split) — and it lives
+        // on this fixed row, never repositioning itself mid-click the way
+        // buttons on the response header would. No key is painted here:
+        // each chip's hover hint names its hide/show toggle's key (spec
+        // E12a), and `alt+w`, which steps the split, is in the palette.
         let buf = frame.buffer_mut();
         // `table_collapsed` stays the authority on this pane's own
         // minimized flag, so a standalone render still lights the right
@@ -3017,24 +3013,6 @@ impl Editor {
             .paint(buf, control_x, area.y, theme);
         for (rect, stop) in rects {
             hits.register(rect, crate::hit::Hit::SplitStop(stop));
-        }
-        // The control advertises its own shortcut in place — an `alt+w`
-        // keycap pill one gap column to its left, itself a clickable
-        // cycle button (the footer no longer carries a "split" chip).
-        // Its own hit, so it warms on its own — the staircase chips beside
-        // it never light up with it.
-        let cycle_hit = crate::hit::Hit::FooterChip(Action::CycleSplit);
-        let (pill_color, pill_on) =
-            crate::paint::keycap_face(theme, ctx.hovered == Some(&cycle_hit), ctx.hover_t());
-        let pill_label = " alt+w ";
-        let pill_w = crate::ui::cells(pill_label) as u16;
-        let pill_x = control_x.saturating_sub(pill_w + 1);
-        // On a pane too narrow to fit it clear of the tab strip (and the
-        // "vars" badge), the pill drops — the control itself stays.
-        if pill_x > strip_end {
-            crate::paint::Chip { label: "alt+w", color: pill_color }
-                .paint(buf, pill_x, area.y, pill_on, theme);
-            hits.register(Rect { x: pill_x, y: area.y, width: pill_w, height: 1 }, cycle_hit);
         }
     }
 
@@ -4869,72 +4847,31 @@ mod tests {
         );
     }
 
-    /// Every chip rect of the five-stop split control, in on-screen
-    /// order, or a panic when any chip is missing.
-    fn control_rects(hits: &crate::hit::HitMap) -> [Rect; 5] {
-        crate::split::SplitStop::ALL.map(|s| {
+    /// Both chip rects of the split control, `[EditorFull, ResponseFull]`,
+    /// or a panic when either is missing.
+    fn control_rects(hits: &crate::hit::HitMap) -> [Rect; 2] {
+        [crate::split::SplitStop::EditorFull, crate::split::SplitStop::ResponseFull].map(|s| {
             hits.rect_of(&Hit::SplitStop(s)).unwrap_or_else(|| panic!("{s:?} chip registered"))
         })
     }
 
-    /// The `alt+w` keycap is its own button: hovering it warms that pill
-    /// alone and leaves the staircase chips beside it exactly as they were.
+    /// The control is two end chips and nothing else: no middle stop, and
+    /// no `alt+w` keycap pill (its key is named by the chips' hover hint).
     #[test]
-    fn the_split_keycap_warms_on_its_own_leaving_the_staircase_alone() {
-        let theme = Theme::dark();
-        let hit = Hit::FooterChip(Action::CycleSplit);
-        let draw = |hovered: Option<&Hit>| {
-            let ctx = DrawCtx {
-                theme: &theme,
-                focused: true,
-                hovered,
-                pointer: None,
-                dragging: false,
-                anims: test_anims(),
-                now: std::time::Instant::now(),
-            };
-            let mut e = Editor::default();
-            let mut terminal = Terminal::new(TestBackend::new(120, 14)).unwrap();
-            let mut hits = crate::hit::HitMap::default();
-            terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
-            let pill = hits.rect_of(&hit).expect("split keycap pill");
-            let [first, ..] = control_rects(&hits);
-            let buf = terminal.backend().buffer();
-            (buf.cell((pill.x + 1, pill.y)).unwrap().bg, buf.cell((first.x, first.y)).unwrap().bg)
-        };
-
-        let (rest_pill, rest_chip) = draw(None);
-        let (hot_pill, chip_while_pill_hot) = draw(Some(&hit));
-
-        assert_eq!(
-            rest_pill,
-            theme.tint(theme.text_muted, theme.control),
-            "at rest it is an ordinary muted keycap"
-        );
-        let (color, on) = crate::paint::keycap_face(&theme, true, 1.0);
-        assert_eq!(hot_pill, theme.tint(color, on), "hovered, it warms");
-        assert_eq!(chip_while_pill_hot, rest_chip, "the staircase chip beside it is untouched");
-    }
-
-    /// The split control advertises its own shortcut in place: an `alt+w`
-    /// keycap pill one gap column left of the control, clickable as a
-    /// cycle button (`Hit::FooterChip(Action::CycleSplit)`), replacing
-    /// the old footer "split" chip.
-    #[test]
-    fn split_control_advertises_its_keycap_beside_it() {
+    fn split_control_registers_two_chips_and_no_keycap_pill() {
         let mut e = Editor::default();
         let (content, hits) = draw_editor(&mut e);
-        let pill = hits
-            .rect_of(&Hit::FooterChip(Action::CycleSplit))
-            .expect("split keycap pill registered");
-        let [first, ..] = control_rects(&hits);
-        assert_eq!(
-            pill.x + pill.width + 2,
-            first.x,
-            "pill, one gap column, then the control's left end cap"
-        );
-        assert_eq!(pill.y, first.y, "same row as the control");
-        assert!(content.contains(&format!(" {}+w ", crate::keys::alt_label())), "{content}");
+        let [first, second] = control_rects(&hits);
+        assert_eq!(first.x + first.width, second.x, "the chips sit flush");
+        for stop in [
+            crate::split::SplitStop::EditorBig,
+            crate::split::SplitStop::Even,
+            crate::split::SplitStop::ResponseBig,
+        ] {
+            assert!(hits.rect_of(&Hit::SplitStop(stop)).is_none(), "{stop:?} has no chip");
+        }
+        assert!(hits.rect_of(&Hit::FooterChip(Action::CycleSplit)).is_none(), "no keycap pill");
+        assert!(!content.contains("+w"), "the tab-bar row names no alt+w: {content}");
     }
 
     /// Draws `e` at 120x14 (wide enough for every toolbar chip, Body tab
@@ -5020,7 +4957,7 @@ mod tests {
         assert!(!out.contains("Params"), "tab labels are invisible: {out}");
         assert!(hits.rect_of(&Hit::EditorTab(0)).is_none(), "hidden tabs take no clicks");
         control_rects(&hits); // the split control stays
-        assert!(out.contains('\u{2586}'), "the control's chips stay: {out}");
+        assert!(out.contains('\u{2587}'), "the control's chips stay: {out}");
     }
 
     /// Hiding puts away the tab content, not the request's controls: the
@@ -5110,8 +5047,38 @@ mod tests {
 
     /// The split control right-aligns 2 cols in from the pane edge (1
     /// for `pane_surface`, 1 for its own margin) — expanded and hidden
-    /// alike, so it never moves as the split changes. Its five chips run
-    /// in stop order, boundary sliding down left to right.
+    /// alike, so it never moves as the split changes. Its two chips run
+    /// in stop order, the boundary at the top then at the bottom.
+    #[test]
+    fn the_tab_row_fits_beside_the_split_control_at_the_main_minimum() {
+        // The widest everyday tab row: single-digit counts on the three
+        // counted tabs, the Body badge, and the "vars" indicator (S5's
+        // main-column minimum is sized for it).
+        let mut e = Editor { method: postui_core::model::Method::Post, ..Editor::default() };
+        for i in 0..9 {
+            let entry = || Entry { value: "1".into(), enabled: true };
+            e.params.insert(format!("p{i}"), entry());
+            e.headers.insert(format!("h{i}"), entry());
+            e.variables.insert(format!("v{i}"), entry());
+        }
+        e.set_body_text("{}");
+        e.substitute_body = true;
+        let hits = draw_editor_sized(&mut e, crate::layout::MAIN_MIN_COLS, 20);
+        let tabs_end = (0..DRAW_ORDER.len())
+            .filter_map(|i| hits.rect_of(&Hit::EditorTab(i)))
+            .map(|r| r.x + r.width)
+            .max()
+            .expect("tabs drawn");
+        // "vars " sits two cells after the last tab.
+        let vars_end = tabs_end + 2 + 5;
+        let [first, ..] = control_rects(&hits);
+        assert!(
+            vars_end < first.x,
+            "tabs and vars end at {vars_end}, the control starts at {}",
+            first.x
+        );
+    }
+
     #[test]
     fn split_control_keeps_its_right_inset_in_every_state() {
         let mut e = Editor::default();
@@ -5124,7 +5091,7 @@ mod tests {
         let mut e = Editor { table_collapsed: true, ..Editor::default() };
         let hits = draw_editor_sized(&mut e, 120, COLLAPSED_HEIGHT);
         let rects = control_rects(&hits);
-        assert_eq!(rects[4].x + rects[4].width, 120 - 3, "{:?}", rects[4]);
+        assert_eq!(rects[1].x + rects[1].width, 120 - 3, "{:?}", rects[1]);
         for pair in rects.windows(2) {
             assert!(pair[0].x < pair[1].x, "chips in on-screen order");
         }
@@ -6396,8 +6363,13 @@ url = "https://api.example.com/users""#,
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
 
-        let layout =
-            crate::layout::compute_layout(ratatui::layout::Rect::new(0, 0, 120, 40), 0.0, 0.0, 0.5);
+        let layout = crate::layout::compute_layout(
+            ratatui::layout::Rect::new(0, 0, 120, 40),
+            0.0,
+            0.0,
+            0.5,
+            None,
+        );
         let buf = terminal.backend().buffer();
         // Deep into the pane's lower region, well past the address bar, tab
         // bar, and the empty table's few header/ghost/edge rows.

@@ -258,7 +258,7 @@ impl Project {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{fixture, read};
+    use super::super::tests::{fixture, read, sizes};
     use super::*;
     use crate::varedit;
 
@@ -406,7 +406,7 @@ mod tests {
         p.set_active_space("auth");
         p.record_space_open(Some("auth/login"));
         p.set_open_request(Some("auth/login"));
-        p.set_main_split(Some("60".into()));
+        p.set_pane_sizes(sizes("60", 30));
         p.persist_local().unwrap();
         p.rename_space("auth", "Login").unwrap();
         p.undo().unwrap();
@@ -414,8 +414,85 @@ mod tests {
         assert_eq!(p.local().active_space, "auth");
         assert_eq!(p.local().space_open.get("auth").map(String::as_str), Some("auth/login"));
         assert_eq!(p.local().open_request.as_deref(), Some("auth/login"));
-        assert_eq!(p.local().main_split.as_deref(), Some("60"));
+        assert_eq!(p.local().layout, sizes("60", 30));
         assert_eq!(p.spaces(), ["main", "auth"]);
+    }
+
+    #[test]
+    fn undo_and_redo_keep_the_pane_sizes_set_after_the_op() {
+        let (dir, mut p) = fixture();
+        p.set_pane_sizes(sizes("60", 30));
+        p.persist_local().unwrap();
+        p.rename_space("auth", "Login").unwrap();
+        p.set_pane_sizes(sizes("70", 40));
+        p.undo().unwrap();
+        assert_eq!(p.local().layout, sizes("70", 40));
+        let text = read(&dir, ".local/layout.toml").unwrap();
+        assert!(
+            text.contains("main_split = \"70\"") && text.contains("sidebar_width = 40"),
+            "{text}"
+        );
+        p.redo().unwrap();
+        assert_eq!(p.local().layout, sizes("70", 40));
+        let (p2, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        assert_eq!(p2.local().layout, sizes("70", 40));
+    }
+
+    /// An entry's op count and how many of its ops write `state.toml`.
+    type Counts = (usize, usize);
+
+    /// `e`'s [`Counts`].
+    fn op_counts(e: &Entry) -> Counts {
+        let state = e
+            .ops
+            .iter()
+            .filter(|op| matches!(op, Op::Text { path, .. } if path.as_str() == STATE_TOML))
+            .count();
+        (e.ops.len(), state)
+    }
+
+    /// A space rename whose entry rewrites `state.toml` (the space is the
+    /// active one) and a resize, then five undo/redo pairs, with `resize`
+    /// run before each undo and each redo. Returns the rename's entry's
+    /// counts and, per cycle, the counts of the entry the undo pushed and
+    /// the one the redo pushed.
+    fn cycle_counts(resize: impl Fn(&mut Project, u16)) -> (Counts, Vec<(Counts, Counts)>) {
+        let (_dir, mut p) = fixture();
+        p.set_active_space("auth");
+        p.persist_local().unwrap();
+        p.rename_space("auth", "Login").unwrap();
+        let first = op_counts(p.journal.peek_undo().unwrap());
+        p.set_pane_sizes(sizes("70", 30));
+        let mut cycles = Vec::new();
+        for i in 0..5u16 {
+            resize(&mut p, 2 * i);
+            p.undo().unwrap().unwrap();
+            let undone = op_counts(p.journal.peek_redo().unwrap());
+            resize(&mut p, 2 * i + 1);
+            p.redo().unwrap().unwrap();
+            let redone = op_counts(p.journal.peek_undo().unwrap());
+            cycles.push((undone, redone));
+        }
+        (first, cycles)
+    }
+
+    /// Review round 7 M1: a resize after the op never reaches the journal
+    /// (the sizes live in `layout.toml`, spec P3b), so every replay's entry
+    /// is exactly the op's own.
+    #[test]
+    fn undo_redo_after_a_resize_keeps_entries_bounded() {
+        let (first, cycles) = cycle_counts(|_, _| {});
+        assert_eq!(cycles, vec![(first, first); 5], "the rename's entry: {first:?}");
+    }
+
+    /// Review round 7 M1: a resize before each undo and each redo used to
+    /// make `reload_all`'s write-back a new op every time, so each replay's
+    /// entry was one op longer than the last. The sizes now live in the
+    /// unjournaled `layout.toml` (spec P3b), so no replay ever records them.
+    #[test]
+    fn undo_redo_with_a_resize_between_keeps_entries_bounded() {
+        let (first, cycles) = cycle_counts(|p, n| p.set_pane_sizes(sizes("70", 31 + n)));
+        assert_eq!(cycles, vec![(first, first); 5], "the rename's entry: {first:?}");
     }
 
     /// `.local/state.toml` does not exist yet when this op runs.

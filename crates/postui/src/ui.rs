@@ -45,9 +45,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         now,
         if app.session.response.collapsed { 1.0 } else { 0.0 },
     );
-    let ratio_t =
-        app.anims.value_or(crate::anim::AnimKey::SplitRatio, now, app.split_ratio.editor_share());
-    let layout = compute_layout(frame.area(), collapse_t, response_t, ratio_t);
+    let ratio_t = app.anims.value_or(crate::anim::AnimKey::SplitRatio, now, app.split_ratio);
+    app.term_area = Some(frame.area());
+    let layout = compute_layout(frame.area(), collapse_t, response_t, ratio_t, app.sidebar_width);
     let focus = app.focus;
     let screen = app.screen;
     let mut hits = std::mem::take(&mut app.hits);
@@ -102,6 +102,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             // panes — the surviving separator now that panes no longer
             // draw a `│` border of their own.
             crate::paint::fill(frame.buffer_mut(), layout.gutter, app.theme.page);
+            // It is also the sidebar's drag handle. Its look stays as it
+            // is (spec S2): the hit has no hover paint.
+            hits.register(layout.gutter, Hit::SidebarGutter);
             // Recomputed every draw the Headers tab is showing (spec §6,
             // Task 10): cheap (small N), and keeps the computed section
             // live across an env switch or an in-progress edit without
@@ -1542,8 +1545,13 @@ mod tests {
         let mut app = App::new_for_test();
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
-        let layout =
-            crate::layout::compute_layout(ratatui::layout::Rect::new(0, 0, 120, 40), 0.0, 0.0, 0.5);
+        let layout = crate::layout::compute_layout(
+            ratatui::layout::Rect::new(0, 0, 120, 40),
+            0.0,
+            0.0,
+            0.5,
+            None,
+        );
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let buf = terminal.backend().buffer();
 

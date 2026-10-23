@@ -166,6 +166,32 @@ impl App {
                 if self.sidebar.drag.is_some() {
                     return self.sidebar_drag_to(m.column, m.row);
                 }
+                // So does a live pane resize: the divider follows the
+                // pointer wherever it goes, and hover stays frozen on the
+                // handle (it stays lit) until the release. It follows
+                // `Moved` too, for the reason this arm's header gives:
+                // terminals that don't track button state report a held
+                // drag as `Moved`. Once this drag has had a `Drag(Left)`,
+                // though, the terminal does track it, so a bare `Moved`
+                // means the button is up and the release was lost (review
+                // round 7 M5): the resize ends there, as a release would,
+                // and the `Moved` is a hover. Any other lost release is
+                // caught by the next press or a focus loss. Every end keeps
+                // the size where it got to and saves it (spec P2a).
+                // A key can also take the Main screen away mid-drag (`alt+r`
+                // to Manage, a dialog such as the palette): the resize ends
+                // at the next motion too, which then sizes nothing it can't
+                // show (review round 8 N4).
+                if let Some(drag) = &mut self.resize {
+                    let lost = m.kind == MouseEventKind::Moved && drag.tracked;
+                    drag.tracked |= m.kind != MouseEventKind::Moved;
+                    if lost || self.screen != Screen::Main || !self.modals.is_empty() {
+                        self.finish_resize();
+                        self.resync_hover();
+                        return true;
+                    }
+                    return self.resize_to(m.column, m.row) && self.update(Action::Render);
+                }
                 // A press armed on a row becomes a drag the moment the
                 // pointer reaches a *different* row. The `hit_at` check
                 // keeps a press-then-wander over the header (or any other
@@ -178,9 +204,9 @@ impl App {
                 // press whose request is gone promotes nothing. A modal
                 // opened by the press itself (a broken row's error) owns
                 // the pointer, so nothing promotes under one either.
-                // A live thumb drag or text sweep owns the button as well:
-                // a press left armed by a lost release never promotes over
-                // one of those.
+                // A live thumb drag or text sweep owns the button as well
+                // (a live pane resize returned above): a press left armed
+                // by a lost release never promotes over one of those.
                 let other_drag = self.drag.is_some() || self.text_drag.is_some();
                 if let Some((_, pressed)) = self.sidebar_press.clone()
                     && self.modals.is_empty()
@@ -322,8 +348,11 @@ impl App {
                 // as Esc's is, so the filter typed and the switch are one
                 // step, by click as by key (task #64 records only a close
                 // that comes with an edit elsewhere).
+                // A press on a window separator is exempt as a scrollbar is:
+                // it disturbs nothing ([`Self::is_separator_press`]).
                 let jq_blurred = self.session.response.jq_focused()
                     && self.modals.is_empty()
+                    && !hit.as_ref().is_some_and(|h| self.is_separator_press(h))
                     && !matches!(
                         hit,
                         Some(
@@ -429,7 +458,8 @@ impl App {
                 // The app cannot recover a key it never receives, so a
                 // right click is the in-band cancel.
                 // The same lost release then leaves every other drag kind
-                // live too (a thumb drag, a text sweep) and would leave an
+                // live too (a thumb drag, a text sweep, a pane resize, which
+                // keeps the size it reached and saves it) and would leave an
                 // armed press ready to promote into a drag out from under
                 // the menu this click is about to open: all of it ends
                 // here, exactly as a `Down(Left)` ends it.
@@ -581,6 +611,16 @@ impl App {
                 self.manage_press = None;
                 let had_text = self.text_drag.take().is_some();
                 let ended = self.drag.take().is_some() || had_text;
+                // A resize ends where it got to, saved if it moved. The
+                // strip's click already happened at the press (spec E2a),
+                // so the release adds nothing to it. Hover was frozen on
+                // the handle for the drag: it re-resolves under the
+                // pointer now.
+                if self.resize.is_some() {
+                    self.finish_resize();
+                    self.resync_hover();
+                    return true;
+                }
                 // A row drag writes its new order only when it is dropped
                 // on the sidebar; a release anywhere else cancels it.
                 if self.sidebar.drag.is_some() {
@@ -646,9 +686,10 @@ impl App {
     }
 
     /// Ends every drag a lost button release can leave live — the two row
-    /// drags, a scrollbar thumb drag, a text sweep — and disarms both row
-    /// presses, because a fresh button press (or a focus loss) proves the
-    /// button that started them is no longer held. Nothing is written.
+    /// drags, a scrollbar thumb drag, a text sweep, a pane resize — and
+    /// disarms both row presses, because a fresh button press (or a focus
+    /// loss) proves the button that started them is no longer held.
+    /// Nothing is written but a resize's size, which is kept and saved.
     ///
     /// `hit` is the click being handled, resolved against the last frame.
     /// A live row drag painted that frame in its *preview* order and the
@@ -688,6 +729,9 @@ impl App {
         self.manage_press = None;
         self.drag = None;
         self.text_drag = None;
+        // A resize is applied live, so it ends where it got to and is
+        // saved, like a thumb drag and unlike a row reorder (spec P2a).
+        self.finish_resize();
         hit
     }
 
@@ -742,7 +786,8 @@ impl App {
         let live = self.sidebar.drag.is_some()
             || self.manage.list.drag.is_some()
             || self.drag.is_some()
-            || self.text_drag.is_some();
+            || self.text_drag.is_some()
+            || self.resize.is_some();
         let lit = self.hovered.is_some() || self.hovered_token.is_some();
         self.cancel_stale_drags(None);
         self.hovered = None;
@@ -771,6 +816,7 @@ impl App {
     pub fn resync_hover(&mut self) -> bool {
         if self.drag.is_some()
             || self.text_drag.is_some()
+            || self.resize.is_some()
             || self.sidebar.drag.is_some()
             || self.manage.list.drag.is_some()
         {
@@ -800,12 +846,17 @@ impl App {
     /// frame. Pure aside from updating `last_pointer_shape`, so it's
     /// testable without a terminal. A live sidebar row drag overrides the
     /// hover shape with the closed hand, since hover is frozen for the
-    /// length of the drag.
+    /// length of the drag; a live pane resize keeps its handle's resize
+    /// shape wherever the pointer wanders (spec S3, E4).
     pub fn pointer_shape_update(&mut self) -> Option<PointerShape> {
         let shape = if self.sidebar.drag.is_some() || self.manage.list.drag.is_some() {
             PointerShape::Grabbing
         } else {
-            PointerShape::for_hit(self.hovered.as_ref())
+            match self.resize.map(|drag| drag.kind) {
+                Some(ResizeHandle::Sidebar) => PointerShape::ColResize,
+                Some(ResizeHandle::Split { .. }) => PointerShape::RowResize,
+                None => PointerShape::for_hit(self.hovered.as_ref()),
+            }
         };
         if shape == self.last_pointer_shape {
             return None;
@@ -1175,6 +1226,44 @@ impl App {
         }
     }
 
+    /// A left press on the response pane: its bare content, or its header
+    /// strip, which is the split handle and clicks first (spec E2a). The
+    /// one path for both, so the strip's click can't drift from the
+    /// pane's.
+    ///
+    /// A press on the bare content (Raw and Headers register no per-row
+    /// hits) anchors a selection and puts the cursor on the clicked char,
+    /// exactly like a JsonRow click does in Pretty (spec 2026-10-22,
+    /// matching brackets, R18). A double click too, as Pretty's does: the
+    /// cursor takes the word's start, where the anchor is. R18 asks for
+    /// one path for all three views, so this matches Pretty rather than a
+    /// view of its own. A click below the text anchors on the last line's
+    /// end (`cell_at`'s clamp, as the selection's anchor always has), so
+    /// the cursor goes there, as an editor's caret does. A press off the
+    /// text (the strip) anchors nothing but still clears the selection and
+    /// the lit bracket pair. `sweep` arms the selection sweep on an
+    /// anchor; the strip passes `false`, as its motion is the resize's.
+    /// Either way the response takes the focus. Returns whether anything
+    /// changed.
+    fn press_response_pane(
+        &mut self,
+        clicks: u8,
+        m: ratatui::crossterm::event::MouseEvent,
+        sweep: bool,
+    ) -> bool {
+        let anchored = self.response_click_selection(clicks, m);
+        let mut changed = anchored;
+        if anchored {
+            if sweep {
+                self.text_drag = Some(TextDrag::Response);
+            }
+            if let Some(row) = self.session.response.anchor_line() {
+                changed |= self.update(Action::JsonRowClicked { row, toggle: false });
+            }
+        }
+        self.update(Action::FocusPane(PaneId::Response)) || changed
+    }
+
     /// The `▼`/`▲` search buttons: focus the response pane and step the
     /// match cycle, exactly as `n`/`N` do.
     fn step_response_search(&mut self, delta: i32) -> bool {
@@ -1194,27 +1283,21 @@ impl App {
     #[cfg(test)]
     pub(crate) fn mouse_dispatch_mirror() -> Vec<Action> {
         vec![
-            Action::Close,              // Hit::ModalOutside
-            Action::OpenProjectChooser, // Hit::HeaderProject
-            Action::CycleProject(1),    // Hit::HeaderProjectCycle
-            Action::OpenSpaceChooser,   // Hit::HeaderSpace
-            Action::CycleSpace(1),      // Hit::HeaderSpaceCycle
-            Action::OpenEnvChooser,     // Hit::HeaderEnv
-            Action::CycleEnv(1),        // Hit::HeaderEnvCycle
-            // The split control's own keycap pill (editor tab-bar row)
-            // registers Hit::FooterChip(CycleSplit) outside `footer_chips`,
-            // so the parity sweep's Group A never sees it.
-            Action::CycleSplit,
-            Action::SplitStep(1),  // Hit::SplitStep (response header ▲)
-            Action::SplitStep(-1), // Hit::SplitStep (response header ▼)
+            Action::Close,                    // Hit::ModalOutside
+            Action::OpenProjectChooser,       // Hit::HeaderProject
+            Action::CycleProject(1),          // Hit::HeaderProjectCycle
+            Action::OpenSpaceChooser,         // Hit::HeaderSpace
+            Action::CycleSpace(1),            // Hit::HeaderSpaceCycle
+            Action::OpenEnvChooser,           // Hit::HeaderEnv
+            Action::CycleEnv(1),              // Hit::HeaderEnvCycle
             Action::OpenManage { tab: None }, // Hit::HeaderManage
-            Action::OpenThemeChooser, // Hit::HeaderTheme
-            Action::OpenMethodDropdown, // Hit::MethodSelector
-            Action::FocusUrl,      // Hit::UrlBar
-            Action::Send,          // Hit::SendButton (not in flight)
-            Action::EditorTabSelect(0), // Hit::EditorTab, any draw position
-            Action::EditorTabSelect(1), // (converted through
-            Action::EditorTabSelect(2), //  EditorTab::from_draw_position(..).index())
+            Action::OpenThemeChooser,         // Hit::HeaderTheme
+            Action::OpenMethodDropdown,       // Hit::MethodSelector
+            Action::FocusUrl,                 // Hit::UrlBar
+            Action::Send,                     // Hit::SendButton (not in flight)
+            Action::EditorTabSelect(0),       // Hit::EditorTab, any draw position
+            Action::EditorTabSelect(1),       // (converted through
+            Action::EditorTabSelect(2),       //  EditorTab::from_draw_position(..).index())
             Action::EditorTabSelect(3),
             // The Environments/Spaces tabs' `+ New` button (Hit::ManageNew);
             // the rest of that face's hits either dispatch per-item actions
@@ -1223,6 +1306,23 @@ impl App {
             Action::OpenNewEnvPrompt,
             Action::OpenNewSpacePrompt,
         ]
+    }
+
+    /// Whether a left press on `hit` lands on a window separator (spec S7):
+    /// it moves a divider and nothing else, so it clicks nothing away and
+    /// moves no focus. The sidebar gutter is one in both profiles, since a
+    /// click there never did anything. In vim the response's header strip
+    /// is one too: it is the editor window's status line, and Vim 9.1 keeps
+    /// the current window and Visual mode through a press on a status line
+    /// (probed with `test_setmouse`, both the current window's and the one
+    /// above it). Outside vim the strip is the response pane's header, and
+    /// a press there clicks first (E2a).
+    fn is_separator_press(&self, hit: &Hit) -> bool {
+        match hit {
+            Hit::SidebarGutter => true,
+            Hit::SplitHandle => self.profile() == crate::config::KeyProfile::Vim,
+            _ => false,
+        }
     }
 
     /// The central click dispatch: maps a resolved `Hit` (plus click count
@@ -1266,7 +1366,6 @@ impl App {
                     // its own undo step, before it adds its row.
                     | Hit::AutoHeaderOverride(_)
                     | Hit::SplitStop(_)
-                    | Hit::SplitStep(_)
                     | Hit::ScrollbarThumb(_)
                     | Hit::ScrollbarTrack(..)
                     | Hit::HScrollThumb(_)
@@ -1279,7 +1378,10 @@ impl App {
             )
             // The tooltip floats over the rows: clicking one of its pills
             // must neither commit the cell under edit nor drop the selection.
-            || hit.is_float_overlay();
+            || hit.is_float_overlay()
+            // A press on a window separator moves a divider and nothing
+            // else.
+            || self.is_separator_press(&hit);
         if !keeps_table_selection {
             self.commit_table_edit();
             self.editor.table.selected = None;
@@ -1347,26 +1449,8 @@ impl App {
             self.move_editor_caret(SubFocus::None);
         }
         match hit {
-            Hit::Pane(p) => {
-                // A click on the response pane's bare content (Raw and
-                // Headers register no per-row hits) anchors a selection
-                // sweep and puts the cursor on the clicked char, exactly
-                // like a JsonRow click does in Pretty (spec 2026-10-22,
-                // matching brackets, R18). A double click too, as Pretty's
-                // does: the cursor takes the word's start, where the
-                // anchor is. R18 asks for one path for all three views,
-                // so this matches Pretty rather than a view of its own. A
-                // click below the text anchors on the last line's end
-                // (`cell_at`'s clamp, as the selection's anchor always
-                // has), so the cursor goes there, as an editor's caret does.
-                if p == PaneId::Response && self.response_click_selection(clicks.text, m) {
-                    self.text_drag = Some(TextDrag::Response);
-                    if let Some(row) = self.session.response.anchor_line() {
-                        self.update(Action::JsonRowClicked { row, toggle: false });
-                    }
-                }
-                self.update(Action::FocusPane(p))
-            }
+            Hit::Pane(PaneId::Response) => self.press_response_pane(clicks.text, m, true),
+            Hit::Pane(p) => self.update(Action::FocusPane(p)),
             Hit::BodyEditor => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 // The caret, a double click's word, and a sweep armed:
@@ -1525,11 +1609,10 @@ impl App {
             }
             Hit::FooterChip(action) => {
                 // Chips that live inside the request panel (the Body
-                // toolbar row, the address bar's TLS lock, the split
-                // control's alt+w pill) focus the panel like any of its
-                // buttons. The footer's own chips are contextual — they
-                // describe the pane already focused — so they never move
-                // focus themselves.
+                // toolbar row, the address bar's TLS lock) focus the panel
+                // like any of its buttons. The footer's own chips are
+                // contextual — they describe the pane already focused — so
+                // they never move focus themselves.
                 if matches!(
                     action,
                     Action::FormatBody
@@ -1538,7 +1621,6 @@ impl App {
                         | Action::OpenBodyInEditor
                         | Action::BodyClear
                         | Action::ToggleInsecure
-                        | Action::CycleSplit
                 ) {
                     self.update(Action::FocusPane(PaneId::Editor));
                 }
@@ -1695,9 +1777,43 @@ impl App {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.update(Action::SplitStop(stop))
             }
-            Hit::SplitStep(delta) => {
-                self.update(Action::FocusPane(PaneId::Response));
-                self.update(Action::SplitStep(delta))
+            // A press on a resize handle arms the drag. A press on a window
+            // separator ([`Self::is_separator_press`]) moves no focus and
+            // clicks nothing. Otherwise (the strip, outside vim) it is the
+            // response pane's header, so its press first clicks as the
+            // pane's does (spec E2a; the click-away above already ran for
+            // it), arming no text sweep: the motion is the resize's. The
+            // handle is the hovered hit for the length of the drag, so it
+            // stays lit wherever the pointer goes.
+            Hit::SidebarGutter | Hit::SplitHandle => {
+                if self.is_separator_press(&hit) {
+                    self.vim_separator_press();
+                } else {
+                    self.press_response_pane(clicks.text, m, false);
+                }
+                let kind = if hit == Hit::SidebarGutter {
+                    ResizeHandle::Sidebar
+                } else {
+                    // Where this frame drew the strip, not where it will
+                    // settle: the user grabs what they see. The first motion
+                    // snaps the split (`set_split_now`), so from then on
+                    // drawn and settled agree, and measuring from the drawn
+                    // strip keeps it under the pointer (spec E5). Measuring
+                    // from the settled strip would put the line the ease's
+                    // remaining rows away.
+                    let top = self.hits.rect_of(&Hit::SplitHandle).map_or(m.row, |r| r.y);
+                    ResizeHandle::Split {
+                        grab: m.row.saturating_sub(top),
+                        press: m.row,
+                        start: self.split_state(),
+                    }
+                };
+                self.resize = Some(ResizeDrag { kind, moved: false, tracked: false });
+                if self.hovered.as_ref() != Some(&hit) {
+                    self.hovered = Some(hit);
+                    self.begin_hover_fade();
+                }
+                self.update(Action::Render)
             }
             Hit::UrlBar => {
                 let was_focused = self.editor.url_open();

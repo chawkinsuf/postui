@@ -139,8 +139,8 @@ pub(crate) fn footer_chips(
                     "vars",
                     Some(Action::OpenVarPicker { completing: false }),
                 ),
-                // The split cycle's alt+w is advertised beside the split
-                // control itself (the tab-bar row's keycap pill), not here.
+                // The split cycle's alt+w is found in the palette (spec
+                // E12a), not here.
                 // Arrows are the primary route (method ← URL ↓ content)
                 // and get no chip of their own (2026-09-18: the old
                 // `↑↓←→ navigate` chip made way for the tab chord — the
@@ -1351,14 +1351,32 @@ mod tests {
         );
     }
 
-    /// The split shortcut is advertised beside the split control itself
-    /// (the editor tab-bar row's keycap pill), not as a footer chip — no
-    /// pane's footer list carries it.
+    /// No footer carries a width chip, in either profile (spec S6, S7):
+    /// footers carry actions on the focused area's content, not window
+    /// keys. The sidebar's width keys and the split's `alt+w` are found in
+    /// the palette (S6b, E12a).
     #[test]
-    fn no_footer_list_carries_the_split_chip() {
-        for pane in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
+    fn no_footer_carries_a_width_chip() {
+        use crate::config::KeyProfile;
+        use crate::keyroute::Surface;
+        let sizes = |a: &Option<Action>| {
+            matches!(
+                a,
+                Some(
+                    Action::StepSidebar(_)
+                        | Action::PaneResize { .. }
+                        | Action::CycleSplit
+                        | Action::CycleSplitBack
+                )
+            )
+        };
+        for (pane, surface) in [
+            (PaneId::Sidebar, Surface::Sidebar),
+            (PaneId::Editor, Surface::UrlLine),
+            (PaneId::Response, Surface::Response(crate::components::response::ViewMode::Pretty)),
+        ] {
             for url_focused in [false, true] {
-                let chips = footer_chips(
+                let chips = super::footer_chips(
                     pane,
                     false,
                     false,
@@ -1369,10 +1387,32 @@ mod tests {
                     JqBarState::Closed,
                     false,
                 );
+                let at = format!("{pane:?} url_focused={url_focused}");
                 assert!(
-                    !chips.iter().any(|(_, _, a)| *a == Some(Action::CycleSplit)),
-                    "{pane:?} url_focused={url_focused} still advertises split"
+                    !chips.iter().any(|(k, l, a)| *l == "width"
+                        || sizes(a)
+                        || matches!(
+                            k,
+                            Key::Of(Action::CycleSplit | Action::PaneResize { .. })
+                                | Key::OneOf(_, Action::CycleSplit | Action::PaneResize { .. })
+                                | Key::OneOf(Action::CycleSplit | Action::PaneResize { .. }, _)
+                        )),
+                    "{at}: {chips:?}"
                 );
+                for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+                    let painted = crate::keyroute::spell::resolve(
+                        chips.clone(),
+                        crate::keyroute::SpellCtx { profile, surface, ..Default::default() },
+                        &crate::keys::Keymap::default_bindings_for(profile),
+                    );
+                    assert!(
+                        !painted.iter().any(|(k, l, _)| *l == "width"
+                            || k.ends_with("+w")
+                            || k.starts_with("^W")
+                            || k.starts_with(":split")),
+                        "{at} {profile:?}: {painted:?}"
+                    );
+                }
             }
         }
     }
