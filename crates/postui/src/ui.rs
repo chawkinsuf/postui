@@ -89,6 +89,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         hover_t,
     );
 
+    // Every frame, whichever screen shows: the profile is switched from
+    // Settings, and the response's clicked bracket follows it.
+    let vim = app.profile() == crate::config::KeyProfile::Vim;
+    app.session.response.set_vim_cursor(vim);
     match screen {
         Screen::Main => {
             hits.register(layout.sidebar, Hit::Pane(PaneId::Sidebar));
@@ -109,7 +113,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 app.editor.recompute_computed_headers(&prepare_ctx);
             }
             app.editor.env_tls = app.env_tls();
-            app.session.response.vim_cursor = app.profile() == crate::config::KeyProfile::Vim;
             app.vim_mirror_body_search();
             let hovered = app.hovered.as_ref();
             let pointer = app.pointer;

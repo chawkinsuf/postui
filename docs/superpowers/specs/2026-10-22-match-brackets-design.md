@@ -68,7 +68,7 @@ Two consequences:
 | R7 | The body lights only while it has focus. | mine (approved) |
 | R8 | Style: `on_accent` text on an `accent` background. Visual, the search landing and search matches paint over it. The cell under the body's caret keeps the caret's look (edtui reverses it), as Vim's cursor covers its own bracket, so only the partner shows the plain style there. | mine (approved) |
 | R9 | Response: a click on a bracket lights it and its partner. | you |
-| R10 | Response, arrows: the pair lights only from a click. The next click moves it or clears it. A move to another line, a new response, a new tree (jq) and a view switch clear it. Scrolling keeps it. A key never lights it: arrows' PageDown puts the column on the first non-blank, often a `}`, and that must not light. | mine (approved) |
+| R10 | Response, arrows: the pair lights only from a click. The next click moves it or clears it. A new response and a view switch clear it, and so does a new tree (jq, a parse landing) for a click made on the Tree view; a Raw or Headers click outlives a tree swap, since its text didn't change. Scrolling keeps it, and since #89 so does a key that moves the cursor (amended 2026-10-22, §6). A key never lights a pair of its own: arrows' PageDown puts the column on the first non-blank, often a `}`, and that must not light. | mine (approved) |
 | R11 | Response, vim: Vim's cursor column (`cur_col`) drives it, so `%`, `l` or `j` onto a bracket lights the pair, as Vim does. | Vim |
 | R12 | Response: works in Pretty, Raw and Headers. | mine (approved) |
 | R13 | Response: a closed fold's line never lights (it shows a summary, not its text). | mine (approved) |
@@ -105,13 +105,22 @@ root `}`.
 **`text/brackets.rs`** gains one entry point for both panels:
 
 ```rust
-/// The bracket at `at` (or, with `before`, the one just before it when
-/// `at` holds none) and its partner, both on rows `rows`: Vim's
-/// matchparen with JSON syntax (R2–R6).
-pub(crate) fn matching_pair<B: Lines + ?Sized>(
-    buf: &B, at: Pos, before: bool, rows: RangeInclusive<usize>,
-) -> Option<(Pos, Pos)>
+/// The bracket a caret at `col` stands by: the char at `col`, or with
+/// `before` the one before it (R2).
+pub(crate) fn bracket_at(line: &[char], col: usize, before: bool) -> Option<usize>
+/// The partner of the bracket at `at`, on rows `rows`: Vim's matchparen
+/// with JSON syntax (R3–R6).
+pub(crate) fn partner_of<B: Lines + ?Sized>(
+    buf: &B, at: Pos, rows: RangeInclusive<usize>,
+) -> Option<Pos>
 ```
+
+(The #89 cleanup split these apart; they began as one `matching_pair`
+with a `before` flag. The body picks its bracket with `bracket_at`. The
+response picks its own: Vim's cursor char, or the bracket an arrows click
+named, which `ReadyView::record_click` settles once, R20's line-end comma
+included. Both find the partner with `partner_of`, or the tree on the
+arrows tree view (R19).)
 
 It is its own walk, not `find_match`. It counts the bracket and its partner
 forward or backward, and with R4 it skips positions inside a string, worked
@@ -184,7 +193,7 @@ and `%` don't change.
 
 ## 4. Tests
 
-- `brackets.rs`: `matching_pair` covers each row of the probe table (N1,
+- `brackets.rs`: `bracket_at` with `partner_of` covers each row of the probe table (N1,
   N2, N3, N3b, N4/N5 via `rows`, I1–I3). The row limit stops an unmatched
   walk. An escaped quote (`"a\"{"`) doesn't end a string. The existing `%`
   tests pass unchanged.
@@ -221,3 +230,106 @@ All approved by the user on 2026-10-22 (an option they picked, so
 - R10: arrows' response lights only from a click, never from a key.
 - R13: no light on a closed fold's line.
 - R15: `{{var}}` braces are ordinary braces.
+
+## 6. Amendment, 2026-10-22: the response's reach and a trailing comma (#89)
+
+The user, after #24 merged:
+
+> does it not match in the response if the other one is not on the screen?
+> it would be nice to be able to scroll down to see it. also, something like
+> `{` i can click at the end of the line to highlight, but the end is `},`
+> so that doesnt work. it probably makes sense to trigger it when its just a
+> comma and then a brace/bracket
+
+Scope: the response in the arrows profile only. The user picked that for
+both changes, over also changing the arrows body (`mine (approved)`). The
+vim profile keeps Vim's rules (R5, R11): Vim's matchparen lights nothing
+when the partner is off screen, and looks only under the cursor.
+
+| # | Rule | From |
+|---|---|---|
+| R19 | Arrows response, Tree view: a clicked container bracket lights with its partner wherever the partner is, on screen or not. Scrolling brings the lit partner into view. This replaces R5 there. Raw, Headers, a bracket inside a string, the vim response and the body keep R5 (a one-line Raw body's partner is on the clicked row, so it lights). | you (the ask); arrows-response-only is mine (approved); Tree-view-only is mine (approved, review round 2) |
+| R20 | Arrows response: a click on a `,` that directly follows a bracket and ends its line lights that bracket's pair. Blanks and a CRLF's `\r` may follow the `,`, and a click on them, or past the end of the line, counts too. A mid-line `,` takes nothing. | you (the ask); response-only, comma-only and line-end-only are mine (approved) |
+
+**Design.**
+
+- R19: in arrows on the Tree view, `JsonTree::bracket_partner(line,
+  col)` names the partner's (line, char) when the clicked char is the
+  container's own bracket. That's a lookup, not a walk. Everything else
+  goes through the same rows-in-view walk as Vim (R4, R5).
+- R20: in arrows, a clicked `,` with a bracket right before it starts
+  from that bracket instead.
+
+**Rework (review round 2).** The first design walked every line in arrows
+for every view. Review round 1 found two problems with that: it froze on
+a big tree, and it paired a string's bracket with a stray one far away.
+The round-1 fix added a "pairs only within its string" rule and a tree
+shortcut. Round 2 then found that the string rule misreads non-JSON Raw
+text, that it splits vim from arrows, and that the whole-body walk can
+still freeze on an unmatched bracket in Raw. The user picked narrowing
+R19 to the Tree view (`mine (approved)`). That removes the unbounded walk
+and the string rule together. The review count restarts at round 1.
+
+**Cost.** No walk: the Tree view's lookup reads the two container lines,
+counting the opening line's chars (its key's length), and everything else
+walks only the rows in view, as before #89.
+
+**Tests.**
+
+- Arrows, Tree view: a click on `[` with its `]` 41 lines down lights the
+  `[` now and the `]` once scrolled to, and back up from the `]`.
+- `JsonTree::bracket_partner`: both directions; a key's quote, a comma
+  and a scalar line name nothing.
+- Arrows, Raw: a partner below the view lights nothing; a one-line body
+  lights its far-right partner.
+- Arrows, Tree view: a bracket inside a string pairs by the text rules.
+- Vim: a partner out of view lights nothing, and a scroll that takes it
+  out goes dark.
+- Arrows: a click past the end of a `},` line lights the `}` and its `{`;
+  a click on a `,` after a non-bracket lights nothing.
+
+**`mine` choices to veto.**
+
+- Only `,` counts, and only directly after the bracket: not `;`, not
+  whitespace, and not `} ,`.
+- In vim, the comma rule doesn't apply: Vim looks only under the cursor.
+
+**At handoff, 2026-10-22.** Two points came back across review rounds,
+and the user picked the recommended option for each (`mine (approved)`):
+
+- **Keys keep the clicked pair lit.** A key that moved the cursor cleared
+  the pair (R10), so only the wheel or the scrollbar scrolled to a lit
+  partner; ↓ or PageDown turned it off.
+  - Now `clicked` holds the real line it was made on, and the pair is
+    anchored there, not at the cursor.
+  - Every click forgets it, a fold arrow's included (`click_row`), and so
+    does a view switch (`set_mode`); `cursor_moved` no longer does.
+  - Review rounds 4–6 kept finding one more event that should retire the
+    long-lived click. So the rule is inverted: the click records what it
+    depends on, and lights only while that is unchanged.
+    - `record_click` resolves the click once, when it's made. A click on
+      the line's trailing blanks or `\r` (where a click past the end
+      lands) counts as one on its last other char. That char names itself
+      when it's a bracket, and a line-end `,` names the bracket before it
+      (R20). Any other char records nothing.
+    - A Tree view click holds the tree it was made on (`tree_epoch`), so a
+      swap retires it. A fold doesn't, because it keeps every full line's
+      index, and R13 darkens a clicked line a fold hides. (Round 6 also
+      held `tree_edits`. Round 7 found that a no-op mutable borrow, such as
+      a search step's, retired the click, so it was dropped.) A Raw or
+      Headers click holds no tree, since those lines never change.
+    - The vim profile forgets it (`Response::set_vim_cursor`, every
+      frame, whichever screen shows), so a switch back to arrows lights no
+      stale pair.
+  - The bracket memo keys arrows on the click and the scroll. A key that
+    keeps the pair doesn't walk again, but a scroll re-walks the rows in
+    view on Raw and Headers, as in #24.
+  - Only an arrows click on a line's own text records one. A click in vim
+    doesn't, so a later switch to arrows doesn't light a stale pair. Nor
+    does a click on a closed fold's summary, so opening that fold doesn't
+    light its column 0 (review round 4).
+  - A fold that hides the clicked line darkens the pair (R13).
+  - Cost: the highlight no longer follows the cursor row.
+- **R20 is a line-end comma.** Only a `,` that ends its line (blanks may
+  follow) takes the bracket before it. Before, any `,` right after a
+  bracket did, so a click on the comma in Raw's `f(a),g(b)` lit `(a)`.
