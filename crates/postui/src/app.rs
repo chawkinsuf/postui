@@ -67,6 +67,20 @@ pub struct Drag {
     pub horizontal: bool,
 }
 
+/// A live pane resize (task #90): armed by a press on one of the two
+/// handles, driven by motion, and ended — kept and saved — by the release
+/// or by any lost-release cleanup (spec P2, P2a).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ResizeDrag {
+    /// The sidebar gutter: the pointer's column is the new gutter column.
+    Sidebar,
+    /// The response header strip. `grab` is the pressed row minus the
+    /// strip's top row, so the strip keeps its place under the pointer;
+    /// `start` is the split at the press, whose share a drag into a
+    /// minimized end keeps (E9a).
+    Split { grab: u16, start: crate::split::SplitState },
+}
+
 /// Which text surface a left-button drag is sweeping a selection over,
 /// armed by the `Down(Left)` that started the sweep and cleared on
 /// `Up(Left)` — the text-selection sibling of the scrollbar [`Drag`].
@@ -350,6 +364,9 @@ pub struct App {
     pub drag: Option<Drag>,
     /// A live text-selection sweep (which surface it is over), or `None`.
     pub text_drag: Option<TextDrag>,
+    /// A live pane resize (the sidebar gutter or the response header
+    /// strip), or `None`.
+    pub resize: Option<ResizeDrag>,
     /// A left press on a sidebar request row: `(row index, slug)`. Armed
     /// by `on_hit`, cleared on release; becomes a live row drag the moment
     /// the pointer moves onto another row (see `mouse.rs`).
@@ -1760,6 +1777,7 @@ impl App {
             tip_revealed: None,
             drag: None,
             text_drag: None,
+            resize: None,
             sidebar_press: None,
             manage_press: None,
             table_collapsed: false,
@@ -2265,6 +2283,98 @@ impl App {
             self.persist_split();
         }
         next != prev
+    }
+
+    /// Sets the split to `s` with no easing: a live drag's line follows
+    /// the pointer row by row (spec E5, E14). The three anims snap to the
+    /// new values and their `*_target` fields follow, so the `sync_*`
+    /// passes `update` runs find nothing to ease. Saves nothing; the drag
+    /// saves once at its end (P2).
+    fn set_split_now(&mut self, s: crate::split::SplitState) {
+        self.table_collapsed = s.editor_minimized;
+        self.session.response.collapsed = s.response_minimized;
+        self.split_ratio = s.ratio;
+        let pole = |on: bool| if on { 1.0 } else { 0.0 };
+        self.anims.snap(AnimKey::PaneCollapse, pole(s.editor_minimized));
+        self.anims.snap(AnimKey::ResponseCollapse, pole(s.response_minimized));
+        self.anims.snap(AnimKey::SplitRatio, s.ratio);
+        self.pane_collapsed_target = s.editor_minimized;
+        self.response_collapsed_target = s.response_minimized;
+        self.split_ratio_target = s.ratio;
+    }
+
+    /// Sets the sidebar to `want` columns, clamped to what the last frame's
+    /// body can hold (spec S5). Returns whether the width changed; with no
+    /// frame drawn yet there is no body to measure, and nothing changes.
+    fn set_sidebar_cols(&mut self, want: i32) -> bool {
+        let (Some(sidebar), Some(editor)) = (
+            self.hits.rect_of(&Hit::Pane(PaneId::Sidebar)),
+            self.hits.rect_of(&Hit::Pane(PaneId::Editor)),
+        ) else {
+            return false;
+        };
+        let body = sidebar.width + 1 + editor.width;
+        let next = Some(crate::layout::clamp_sidebar_cols(body, want));
+        let changed = next != self.sidebar_width;
+        self.sidebar_width = next;
+        changed
+    }
+
+    /// Records the sidebar width as the project's persisted layout
+    /// preference (`.local/state.toml`'s `sidebar_width`). Best-effort,
+    /// like every local-state save.
+    fn persist_sidebar(&mut self) {
+        let cols = self.sidebar_width;
+        if let Some(p) = self.project_mut() {
+            p.set_sidebar_width(cols);
+        }
+    }
+
+    /// Moves the live resize's divider to the pointer at (`column`, `row`),
+    /// measured against the last frame. Returns whether a size changed.
+    fn resize_to(&mut self, column: u16, row: u16) -> bool {
+        match self.resize {
+            None => false,
+            Some(ResizeDrag::Sidebar) => {
+                let Some(sidebar) = self.hits.rect_of(&Hit::Pane(PaneId::Sidebar)) else {
+                    return false;
+                };
+                self.set_sidebar_cols(i32::from(column) - i32::from(sidebar.x))
+            }
+            Some(ResizeDrag::Split { grab, start }) => {
+                let (Some(editor), Some(response)) = (
+                    self.hits.rect_of(&Hit::Pane(PaneId::Editor)),
+                    self.hits.rect_of(&Hit::Pane(PaneId::Response)),
+                ) else {
+                    return false;
+                };
+                let main = editor.union(response);
+                let editor_rows = i32::from(row) - i32::from(grab) - i32::from(main.y);
+                let next = crate::layout::split_for_editor_rows(start, main.height, editor_rows);
+                if next == self.split_state() {
+                    return false;
+                }
+                self.set_split_now(next);
+                true
+            }
+        }
+    }
+
+    /// Ends the live resize, keeping the size it reached, and saves it
+    /// (spec P2, P2a). Every way a resize ends comes through here: the
+    /// release and each lost-release cleanup. Returns whether one was live.
+    fn finish_resize(&mut self) -> bool {
+        match self.resize.take() {
+            None => false,
+            Some(ResizeDrag::Sidebar) => {
+                self.persist_sidebar();
+                true
+            }
+            Some(ResizeDrag::Split { .. }) => {
+                self.persist_split();
+                true
+            }
+        }
     }
 
     /// Keeps `AnimKey::SplitRatio` chasing `split_ratio`'s editor share
@@ -11947,6 +12057,8 @@ mod mouse;
 #[cfg(test)]
 mod pane_tests;
 mod panes;
+#[cfg(test)]
+mod resize_tests;
 #[cfg(test)]
 mod response_conformance_tests;
 mod router;

@@ -9178,7 +9178,7 @@ fn an_arrows_keys_toml_letter_wins_over_a_response_line_selection() {
     assert!(!app.should_quit);
 }
 
-fn ready_response(app: &mut App, body: &str) {
+pub(super) fn ready_response(app: &mut App, body: &str) {
     app.session.response.set_state(
         ResponseState::Ready(Box::new(crate::http::ResponseData {
             status: 200,
@@ -17765,10 +17765,11 @@ fn clicking_the_lit_chip_restores_the_split() {
 }
 
 /// A press on either drag handle (the response header strip, the sidebar
-/// gutter) is harmless until the drag exists: it moves no focus and
-/// changes no size.
+/// gutter) only arms the resize: it moves no focus and changes no size
+/// (a click on the strip focuses the response on release; see
+/// `resize_tests`).
 #[test]
-fn a_press_on_a_drag_handle_changes_nothing_yet() {
+fn a_press_on_a_drag_handle_moves_nothing() {
     for hit in [Hit::SplitHandle, Hit::SidebarGutter] {
         let mut app = App::new_for_test();
         app.update(Action::FocusPane(PaneId::Editor));

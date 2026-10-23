@@ -166,6 +166,12 @@ impl App {
                 if self.sidebar.drag.is_some() {
                     return self.sidebar_drag_to(m.column, m.row);
                 }
+                // So does a live pane resize: the divider follows the
+                // pointer wherever it goes, and hover stays frozen on the
+                // handle (it stays lit) until the release.
+                if self.resize.is_some() {
+                    return self.resize_to(m.column, m.row) && self.update(Action::Render);
+                }
                 // A press armed on a row becomes a drag the moment the
                 // pointer reaches a *different* row. The `hit_at` check
                 // keeps a press-then-wander over the header (or any other
@@ -178,10 +184,11 @@ impl App {
                 // press whose request is gone promotes nothing. A modal
                 // opened by the press itself (a broken row's error) owns
                 // the pointer, so nothing promotes under one either.
-                // A live thumb drag or text sweep owns the button as well:
-                // a press left armed by a lost release never promotes over
-                // one of those.
-                let other_drag = self.drag.is_some() || self.text_drag.is_some();
+                // A live thumb drag, text sweep or pane resize owns the
+                // button as well: a press left armed by a lost release
+                // never promotes over one of those.
+                let other_drag =
+                    self.drag.is_some() || self.text_drag.is_some() || self.resize.is_some();
                 if let Some((_, pressed)) = self.sidebar_press.clone()
                     && self.modals.is_empty()
                     && !other_drag
@@ -322,6 +329,8 @@ impl App {
                 // as Esc's is, so the filter typed and the switch are one
                 // step, by click as by key (task #64 records only a close
                 // that comes with an edit elsewhere).
+                // A resize handle is exempt as a scrollbar is: a resize
+                // press disturbs nothing.
                 let jq_blurred = self.session.response.jq_focused()
                     && self.modals.is_empty()
                     && !matches!(
@@ -334,6 +343,8 @@ impl App {
                                 | Hit::ScrollbarTrack(..)
                                 | Hit::HScrollThumb(_)
                                 | Hit::HScrollTrack(..)
+                                | Hit::SplitHandle
+                                | Hit::SidebarGutter
                         )
                     );
                 if jq_blurred {
@@ -429,7 +440,8 @@ impl App {
                 // The app cannot recover a key it never receives, so a
                 // right click is the in-band cancel.
                 // The same lost release then leaves every other drag kind
-                // live too (a thumb drag, a text sweep) and would leave an
+                // live too (a thumb drag, a text sweep, a pane resize, which
+                // keeps the size it reached and saves it) and would leave an
                 // armed press ready to promote into a drag out from under
                 // the menu this click is about to open: all of it ends
                 // here, exactly as a `Down(Left)` ends it.
@@ -581,6 +593,23 @@ impl App {
                 self.manage_press = None;
                 let had_text = self.text_drag.take().is_some();
                 let ended = self.drag.take().is_some() || had_text;
+                // A resize ends where it got to, saved. A strip press whose
+                // line never moved was a click, and a click on the strip
+                // focuses the response, as it did before the strip was a
+                // handle (amendment T4-1). Hover was frozen on the handle
+                // for the drag: it re-resolves under the pointer now.
+                if self.resize.is_some() {
+                    let clicked = matches!(
+                        self.resize,
+                        Some(ResizeDrag::Split { start, .. }) if start == self.split_state()
+                    );
+                    self.finish_resize();
+                    if clicked {
+                        self.update(Action::FocusPane(PaneId::Response));
+                    }
+                    self.resync_hover();
+                    return true;
+                }
                 // A row drag writes its new order only when it is dropped
                 // on the sidebar; a release anywhere else cancels it.
                 if self.sidebar.drag.is_some() {
@@ -646,9 +675,10 @@ impl App {
     }
 
     /// Ends every drag a lost button release can leave live — the two row
-    /// drags, a scrollbar thumb drag, a text sweep — and disarms both row
-    /// presses, because a fresh button press (or a focus loss) proves the
-    /// button that started them is no longer held. Nothing is written.
+    /// drags, a scrollbar thumb drag, a text sweep, a pane resize — and
+    /// disarms both row presses, because a fresh button press (or a focus
+    /// loss) proves the button that started them is no longer held.
+    /// Nothing is written but a resize's size, which is kept and saved.
     ///
     /// `hit` is the click being handled, resolved against the last frame.
     /// A live row drag painted that frame in its *preview* order and the
@@ -688,6 +718,9 @@ impl App {
         self.manage_press = None;
         self.drag = None;
         self.text_drag = None;
+        // A resize is applied live, so it ends where it got to and is
+        // saved, like a thumb drag and unlike a row reorder (spec P2a).
+        self.finish_resize();
         hit
     }
 
@@ -742,7 +775,8 @@ impl App {
         let live = self.sidebar.drag.is_some()
             || self.manage.list.drag.is_some()
             || self.drag.is_some()
-            || self.text_drag.is_some();
+            || self.text_drag.is_some()
+            || self.resize.is_some();
         let lit = self.hovered.is_some() || self.hovered_token.is_some();
         self.cancel_stale_drags(None);
         self.hovered = None;
@@ -771,6 +805,7 @@ impl App {
     pub fn resync_hover(&mut self) -> bool {
         if self.drag.is_some()
             || self.text_drag.is_some()
+            || self.resize.is_some()
             || self.sidebar.drag.is_some()
             || self.manage.list.drag.is_some()
         {
@@ -800,12 +835,17 @@ impl App {
     /// frame. Pure aside from updating `last_pointer_shape`, so it's
     /// testable without a terminal. A live sidebar row drag overrides the
     /// hover shape with the closed hand, since hover is frozen for the
-    /// length of the drag.
+    /// length of the drag; a live pane resize keeps its handle's resize
+    /// shape wherever the pointer wanders (spec S3, E4).
     pub fn pointer_shape_update(&mut self) -> Option<PointerShape> {
         let shape = if self.sidebar.drag.is_some() || self.manage.list.drag.is_some() {
             PointerShape::Grabbing
         } else {
-            PointerShape::for_hit(self.hovered.as_ref())
+            match self.resize {
+                Some(ResizeDrag::Sidebar) => PointerShape::ColResize,
+                Some(ResizeDrag::Split { .. }) => PointerShape::RowResize,
+                None => PointerShape::for_hit(self.hovered.as_ref()),
+            }
         };
         if shape == self.last_pointer_shape {
             return None;
@@ -1688,9 +1728,27 @@ impl App {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.update(Action::SplitStop(stop))
             }
-            // The drag handles only exist so far: a press on one changes
-            // nothing (the drag arrives with the resize state).
-            Hit::SplitHandle | Hit::SidebarGutter => self.update(Action::Render),
+            // A press on a resize handle arms the drag and moves no focus
+            // (a click on the strip focuses the response on release). The
+            // handle is the hovered hit for the length of the drag, so the
+            // strip stays lit wherever the pointer goes.
+            Hit::SidebarGutter | Hit::SplitHandle => {
+                self.resize = Some(match hit {
+                    Hit::SidebarGutter => ResizeDrag::Sidebar,
+                    _ => {
+                        let top = self.hits.rect_of(&Hit::SplitHandle).map_or(m.row, |r| r.y);
+                        ResizeDrag::Split {
+                            grab: m.row.saturating_sub(top),
+                            start: self.split_state(),
+                        }
+                    }
+                });
+                if self.hovered.as_ref() != Some(&hit) {
+                    self.hovered = Some(hit);
+                    self.begin_hover_fade();
+                }
+                self.update(Action::Render)
+            }
             Hit::UrlBar => {
                 let was_focused = self.editor.url_open();
                 // `Action::FocusUrl` is exactly "focus Editor, sub-focus
