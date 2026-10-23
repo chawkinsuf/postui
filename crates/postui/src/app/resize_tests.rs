@@ -897,11 +897,11 @@ fn a_strip_jitter_after_a_redraw_mid_ease_keeps_the_cycled_stop() {
     assert_eq!(app.split_state(), cycled);
 }
 
-/// A strip pressed mid-ease and dragged moves the line from where the
-/// split settles, by the rows the pointer moved: the grab is measured
-/// against the settled strip, as every motion is, not the drawn one.
+/// E5: a strip pressed mid-ease follows the pointer from where it was
+/// drawn: dragged two rows down, the line is two rows below the drawn line
+/// the user grabbed, not below where the ease would have settled.
 #[test]
-fn a_strip_drag_pressed_mid_ease_moves_from_the_settled_line() {
+fn a_strip_drag_pressed_mid_ease_follows_the_pointer_from_the_drawn_line() {
     use crate::split::SplitStop;
     const TALL: u16 = 100;
     let mut target = App::new_for_test_with_anims(false);
@@ -914,14 +914,17 @@ fn a_strip_drag_pressed_mid_ease_moves_from_the_settled_line() {
     render_at(&mut app, 120, TALL);
     assert!(app.update(Action::CycleSplit));
     render_at(&mut app, 120, TALL);
-    assert_ne!(pane_rows(&app, PaneId::Editor), target_rows, "the frame is mid-ease");
+    let pressed_rows = pane_rows(&app, PaneId::Editor);
+    assert_ne!(pressed_rows, target_rows, "the frame is mid-ease");
     let (x, y) = handle_cell(&app);
     app.handle_mouse(left_down(x, y));
     app.handle_mouse(left_drag(x, y + 2));
+    render_at(&mut app, 120, TALL);
+    assert_eq!(pane_rows(&app, PaneId::Editor), pressed_rows + 2, "under the pointer");
     app.handle_mouse(left_up(x, y + 2));
     app.anims.finish_all();
     render_at(&mut app, 120, TALL);
-    assert_eq!(pane_rows(&app, PaneId::Editor), target_rows + 2);
+    assert_eq!(pane_rows(&app, PaneId::Editor), pressed_rows + 2, "and it stays there");
 }
 
 /// K2: once a drag has moved the line, the pressed row is an ordinary

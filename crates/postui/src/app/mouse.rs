@@ -1779,11 +1779,14 @@ impl App {
                 let kind = match hit {
                     Hit::SidebarGutter => ResizeHandle::Sidebar,
                     _ => {
-                        // Where the strip settles, not where this frame drew
-                        // it: every motion turns the pointer back into rows
-                        // against the settled layout, and mid-ease the drawn
-                        // strip is still on its way there.
-                        let top = self.settled_layout().map_or(m.row, |l| l.response.y);
+                        // Where this frame drew the strip, not where it will
+                        // settle: the user grabs what they see. The first
+                        // motion snaps the split (`set_split_now`), so from
+                        // then on drawn and settled agree, and measuring
+                        // from the drawn strip keeps it under the pointer
+                        // (spec E5). Measuring from the settled strip would
+                        // put the line the ease's remaining rows away.
+                        let top = self.hits.rect_of(&Hit::SplitHandle).map_or(m.row, |r| r.y);
                         ResizeHandle::Split {
                             grab: m.row.saturating_sub(top),
                             press: m.row,
