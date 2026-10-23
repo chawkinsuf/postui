@@ -107,7 +107,9 @@ impl App {
             self.keymap.lookup_override(&combo)?
         };
         match self.screen {
-            Screen::Main => Some(action),
+            // The binding takes the key's context, as in today's routing
+            // (`App::key_action`, spec S6a).
+            Screen::Main => Some(self.key_action(action)),
             Screen::Manage => screen_escape_whitelist(&action).then_some(action),
             Screen::Testbed => None,
         }

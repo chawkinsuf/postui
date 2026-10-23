@@ -17689,10 +17689,9 @@ fn toggle_response_collapse_flips_the_flag_and_eases_the_anim() {
     assert!(!app.session.response.collapsed, "toggles back open");
 }
 
-/// `Action::SplitStop` (the split control's five chips) drives the
-/// five-state split: a ratio chip moves the stop and eases
-/// `AnimKey::SplitRatio`; the endpoint chips set the same flags the old
-/// toggles did, keeping the ratio sticky underneath.
+/// `Action::SplitStop` drives the split: a ratio stop moves the share and
+/// eases `AnimKey::SplitRatio`; the two endpoint chips set the same flags
+/// the old toggles did, keeping the ratio sticky underneath.
 #[test]
 fn split_stops_update_the_split_and_ease_the_ratio_anim() {
     use crate::split::SplitStop;

@@ -340,11 +340,10 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         {
             text("Import curl from clipboard")
         }
-        // `alt+w` steps the focused sidebar's width (spec S6); its chip is
-        // the sidebar footer's.
-        Hit::FooterChip(Action::CycleSplit)
-            if ctx.spell.surface == crate::keyroute::Surface::Sidebar =>
-        {
+        // The sidebar footer's `alt+w width` chip dispatches a sidebar
+        // step (spec S6, S6a), the one place a `PaneResize` is a chip: it
+        // shows only while the sidebar has focus.
+        Hit::FooterChip(Action::PaneResize { dir: crate::action::ResizeDir::Wider, .. }) => {
             text("Widen the sidebar")
         }
         Hit::FooterChip(action) => of(action.clone()),
@@ -756,7 +755,7 @@ mod tests {
     }
 
     /// A chip action the palette doesn't list still gets real words, not
-    /// the `Debug` last resort — including the sidebar's `alt+w` chip.
+    /// the `Debug` last resort.
     #[test]
     fn chip_actions_outside_the_palette_use_the_fallback_wording() {
         let keymap = Keymap::default_bindings();
@@ -776,7 +775,7 @@ mod tests {
     }
 
     /// The sidebar's `alt+w width` chip steps the sidebar, not the split
-    /// (spec S6), so its hover says that.
+    /// (spec S6, S6a), so its hover says that.
     #[test]
     fn the_sidebar_width_chip_names_what_it_does() {
         let keymap = Keymap::default_bindings();
@@ -787,8 +786,12 @@ mod tests {
             },
             ..ctx()
         };
+        let widen = Action::PaneResize {
+            dir: crate::action::ResizeDir::Wider,
+            count: crate::layout::SIDEBAR_STEP_COLS,
+        };
         assert_eq!(
-            hint_for(&Hit::FooterChip(Action::CycleSplit), &keymap, &sidebar).unwrap(),
+            hint_for(&Hit::FooterChip(widen), &keymap, &sidebar).unwrap(),
             "Widen the sidebar"
         );
     }

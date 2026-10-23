@@ -1,5 +1,5 @@
-//! The main column's editor/response split state and the five-stop
-//! split control's state transitions.
+//! The main column's editor/response split state, its five keyboard
+//! stops, and the two-chip split control's state transitions.
 //!
 //! The editor's share of the column is a free `f32`. Five of its values
 //! are named stops, in the keyboard cycle: 100/0 (response minimized to
@@ -12,9 +12,11 @@
 //! editor pane's fixed tab-bar row so they never move out from under the
 //! pointer.
 
-/// One of the five named split stops, named by the editor's share —
-/// and one chip of the split control, in on-screen order (the boundary
-/// slides down left to right).
+/// One of the five named split stops, named by the editor's share, in
+/// the keyboard cycle's on-screen order (the boundary slides down). Only
+/// the two ends, [`Self::EditorFull`] and [`Self::ResponseFull`], are
+/// chips of the split control (`Hit::SplitStop`); the three between are
+/// keyboard stops only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplitStop {
     /// 100/0 — response minimized to its header strip.

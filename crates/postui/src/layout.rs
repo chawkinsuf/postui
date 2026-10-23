@@ -107,12 +107,7 @@ pub fn compute_layout(
     // "editor at 25%" means a quarter of the usable space for the table,
     // not a quarter minus the address bar.
     let expanded = {
-        let editor_chrome = editor::CHROME_HEIGHT.min(cols[2].height);
-        let response_chrome = crate::components::response::HEADER_STRIP_HEIGHT;
-        let content = cols[2].height.saturating_sub(editor_chrome).saturating_sub(response_chrome);
-        let editor_h =
-            editor_chrome + (content as f32 * editor_share.clamp(0.0, 1.0)).round() as u16;
-        let editor_h = editor_h.min(cols[2].height);
+        let editor_h = editor_rows_for(cols[2].height, editor_share);
         [
             Rect::new(cols[2].x, cols[2].y, cols[2].width, editor_h),
             Rect::new(
@@ -201,6 +196,19 @@ pub fn editor_share_for(column_height: u16, editor_rows: u16) -> f32 {
     }
     let editor_content = editor_rows.saturating_sub(editor::CHROME_HEIGHT);
     (f32::from(editor_content) / f32::from(content)).clamp(0.0, 1.0)
+}
+
+/// The editor's rows in a `column_height`-row column at `editor_share`
+/// with both panes showing: [`compute_layout`]'s expanded split, which
+/// calls it, and the forward direction of [`editor_share_for`]. A resize
+/// that counts rows reads it from the split's state, since a frame drawn
+/// mid-ease shows rows the state has already left (review round 2 G6).
+pub fn editor_rows_for(column_height: u16, editor_share: f32) -> u16 {
+    let editor_chrome = editor::CHROME_HEIGHT.min(column_height);
+    let response_chrome = crate::components::response::HEADER_STRIP_HEIGHT;
+    let content = column_height.saturating_sub(editor_chrome).saturating_sub(response_chrome);
+    let editor_h = editor_chrome + (content as f32 * editor_share.clamp(0.0, 1.0)).round() as u16;
+    editor_h.min(column_height)
 }
 
 /// The split a drag of the editor/response boundary to `editor_rows` rows
@@ -515,6 +523,31 @@ mod tests {
                 let back = editor_share_for(column_height, h);
                 let again = compute_layout(area, 0.0, 0.0, back, None);
                 assert_eq!(again.editor.height, h, "column {column_height}, share {share}");
+            }
+        }
+    }
+
+    /// Review round 2 G6: the forward direction gives the rows the layout
+    /// draws for a share, so a resize can count from the split's state.
+    #[test]
+    fn editor_rows_for_agrees_with_the_layout() {
+        let chrome = editor::CHROME_HEIGHT + crate::components::response::HEADER_STRIP_HEIGHT;
+        for column_height in [34u16, 20, 13, chrome, chrome - 1, 0] {
+            let area = Rect::new(
+                0,
+                0,
+                120,
+                column_height
+                    + crate::components::header_bar::HEADER_HEIGHT
+                    + crate::components::footer::FOOTER_HEIGHT,
+            );
+            for share in [0.0, 0.1, 0.25, 0.3, 0.5, 0.55, 0.6, 0.75, 1.0] {
+                let drawn = compute_layout(area, 0.0, 0.0, share, None).editor.height;
+                assert_eq!(
+                    editor_rows_for(column_height, share),
+                    drawn,
+                    "column {column_height}, share {share}"
+                );
             }
         }
     }

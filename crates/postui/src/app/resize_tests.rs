@@ -127,7 +127,7 @@ fn widening_a_default_wider_than_the_limit_moves_nothing() {
         drawn > crate::layout::clamp_sidebar_cols(body, i32::MAX),
         "the default ({drawn}) is past the limit"
     );
-    assert!(!app.update(Action::CycleSplit), "alt+w widens nothing");
+    press(&mut app, "<A-w>");
     assert_eq!(app.sidebar_width, None);
     render_at(&mut app, WIDE, 30);
     assert_eq!(sidebar_cols(&app), drawn);
@@ -579,9 +579,18 @@ fn pane_rows(app: &App, pane: PaneId) -> u16 {
     rect(app, &Hit::Pane(pane)).height
 }
 
-/// S6: with the sidebar focused, `alt+w` widens it and `shift+alt+w`
-/// narrows it a step at a time from the width on screen, stopping at the
-/// limit with no wrap. The split never moves.
+/// Presses `keys` (vim notation, `<A-w>` for alt+w and `<A-W>` for
+/// shift+alt+w) through `handle_key`, with no frame after.
+fn press(app: &mut App, keys: &str) {
+    for ev in crate::keyroute::notation::events(keys) {
+        app.handle_key(ev);
+    }
+}
+
+/// S6, S6a: with the sidebar focused, the `alt+w` key widens it and
+/// `shift+alt+w` narrows it a step at a time from the width on screen,
+/// stopping at the limit with no wrap. The split never moves. (The vim
+/// profile binds no `alt+w`: its keymap drops the split chords.)
 #[test]
 fn alt_w_in_the_sidebar_steps_the_width() {
     let step = crate::layout::SIDEBAR_STEP_COLS;
@@ -590,22 +599,21 @@ fn alt_w_in_the_sidebar_steps_the_width() {
     render(&mut app);
     let w = sidebar_cols(&app);
     let split = app.split_state();
-    assert!(app.update(Action::CycleSplit));
+    press(&mut app, "<A-w>");
     assert_eq!(app.sidebar_width, Some(w + step), "from the default's width on screen");
     assert_eq!(saved_width(&app), Some(w + step), "saved on the step");
     render(&mut app);
-    app.update(Action::CycleSplitBack);
+    press(&mut app, "<A-W>");
     render(&mut app);
-    app.update(Action::CycleSplitBack);
+    press(&mut app, "<A-W>");
     render(&mut app);
     assert_eq!(app.sidebar_width, Some(w - step));
     for _ in 0..40 {
-        app.update(Action::CycleSplit);
-        render(&mut app);
+        type_keys(&mut app, "<A-w>");
     }
     assert_eq!(app.sidebar_width, Some(79), "the limit at 120 wide");
-    assert!(!app.update(Action::CycleSplit), "no wrap");
-    assert_eq!(app.sidebar_width, Some(79));
+    type_keys(&mut app, "<A-w>");
+    assert_eq!(app.sidebar_width, Some(79), "no wrap");
     assert_eq!(app.split_state(), split, "the split never moved");
 }
 
@@ -619,13 +627,14 @@ fn a_step_at_the_limit_keeps_a_squeezed_saved_width() {
     app.update(Action::FocusPane(PaneId::Sidebar));
     render(&mut app);
     assert_eq!(sidebar_cols(&app), 79, "squeezed for the frame");
-    assert!(!app.update(Action::CycleSplit));
+    press(&mut app, "<A-w>");
     assert_eq!(app.sidebar_width, Some(100));
-    assert!(app.update(Action::CycleSplitBack));
+    press(&mut app, "<A-W>");
     assert_eq!(app.sidebar_width, Some(75), "a real step starts from the screen");
 }
 
-/// E11: anywhere but the sidebar, `alt+w` cycles the split as before.
+/// E11: anywhere but the sidebar, the `alt+w` key cycles the split as
+/// before.
 #[test]
 fn alt_w_elsewhere_still_cycles_the_split() {
     use crate::split::SplitStop;
@@ -633,9 +642,47 @@ fn alt_w_elsewhere_still_cycles_the_split() {
     app.update(Action::FocusPane(PaneId::Editor));
     render(&mut app);
     assert_eq!(app.split_state().stop(), Some(SplitStop::Even));
-    assert!(app.update(Action::CycleSplit));
+    press(&mut app, "<A-w>");
     assert_eq!(app.split_state().stop(), Some(SplitStop::ResponseBig));
     assert_eq!(app.sidebar_width, None, "the sidebar is untouched");
+}
+
+/// S6a (review round 2 G1): the sidebar context belongs to the key. The
+/// split action itself always moves the split, so Vim's `:split` with the
+/// sidebar focused cycles the split and leaves the sidebar alone.
+#[test]
+fn ex_split_in_the_sidebar_cycles_the_split() {
+    use crate::split::SplitStop;
+    let mut app = vim_at(PaneId::Sidebar);
+    let w = sidebar_cols(&app);
+    assert_eq!(app.split_state().stop(), Some(SplitStop::Even));
+    type_keys(&mut app, ":split<CR>");
+    assert!(app.modals.is_empty(), "the line ran and closed");
+    assert_eq!(app.split_state().stop(), Some(SplitStop::ResponseBig));
+    assert_eq!((app.sidebar_width, sidebar_cols(&app)), (None, w), "the sidebar is untouched");
+    assert_eq!(app.focus, PaneId::Sidebar);
+}
+
+/// S6, S6a: the sidebar footer's `alt+w width` chip widens the sidebar a
+/// step, as its key does there. Wide, so the footer has room for it.
+#[test]
+fn a_click_on_the_sidebar_width_chip_widens_the_sidebar() {
+    let mut app = App::new_for_test();
+    app.update(Action::FocusPane(PaneId::Sidebar));
+    render_at(&mut app, 240, 40);
+    let w = sidebar_cols(&app);
+    let split = app.split_state();
+    let chip = rect(
+        &app,
+        &Hit::FooterChip(Action::PaneResize {
+            dir: crate::action::ResizeDir::Wider,
+            count: crate::layout::SIDEBAR_STEP_COLS,
+        }),
+    );
+    app.handle_mouse(left_down(chip.x, chip.y));
+    app.handle_mouse(left_up(chip.x, chip.y));
+    assert_eq!(app.sidebar_width, Some(w + crate::layout::SIDEBAR_STEP_COLS));
+    assert_eq!(app.split_state(), split, "the split never moved");
 }
 
 /// S7, E13: the plan's Vim 9.1 table, one assertion per row. `>`/`<` act
@@ -726,6 +773,36 @@ fn huge_vim_counts_clamp() {
     let mut app = vim_at(PaneId::Editor);
     type_keys(&mut app, "500<C-w>-");
     assert!(app.table_collapsed, "response only");
+}
+
+/// Review round 2 G6: `<C-w>+` right after an eased split change counts
+/// from the split the state holds, not from the frame partway through the
+/// ease: the editor ends one row taller than the stop `alt+w` went to. Tall,
+/// so the two stops are far apart in rows.
+#[test]
+fn ctrl_w_plus_mid_ease_counts_from_the_target() {
+    use crate::split::SplitStop;
+    const TALL: u16 = 100;
+    // The stop's settled height, from an app that does not ease.
+    let mut target = App::new_for_test_with_anims(false);
+    target.update(Action::SplitStop(SplitStop::ResponseBig));
+    render_at(&mut target, 120, TALL);
+    let target_rows = pane_rows(&target, PaneId::Editor);
+
+    let mut app = App::new_for_test_with_anims(true);
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.update(Action::FocusPane(PaneId::Editor));
+    render_at(&mut app, 120, TALL);
+    assert_eq!(app.split_state().stop(), Some(SplitStop::Even));
+    assert!(app.update(Action::CycleSplit));
+    assert_eq!(app.split_state().stop(), Some(SplitStop::ResponseBig));
+    render_at(&mut app, 120, TALL);
+    assert_ne!(pane_rows(&app, PaneId::Editor), target_rows, "the frame is mid-ease");
+    for ev in crate::keyroute::notation::events("<C-w>+") {
+        app.handle_key(ev);
+    }
+    render_at(&mut app, 120, TALL);
+    assert_eq!(pane_rows(&app, PaneId::Editor), target_rows + 1);
 }
 
 /// E7: from "editor only", `<C-w>+` on the response's strip grows it by

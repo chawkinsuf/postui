@@ -2264,9 +2264,10 @@ impl App {
         }
     }
 
-    /// Jumps the split to `stop` — the body of `Action::SplitStop` (a
-    /// control chip click) and the ▲/▼ steps. Returns whether anything
-    /// actually moved.
+    /// Jumps the split to `stop`, or restores the split when `stop` is the
+    /// lit end ([`crate::split::SplitState::apply`]) — the body of
+    /// `Action::SplitStop`, a click on one of the split control's two end
+    /// chips. Returns whether anything actually moved.
     fn apply_split_stop(&mut self, stop: crate::split::SplitStop) -> bool {
         self.apply_split_state(self.split_state().apply(stop))
     }
@@ -2351,11 +2352,25 @@ impl App {
         }
     }
 
-    /// Whether `alt+w` / `shift+alt+w` step the sidebar's width rather
-    /// than cycle the split: the sidebar has focus on the main screen
-    /// (spec S6).
-    fn alt_w_steps_the_sidebar(&self) -> bool {
-        self.focus == PaneId::Sidebar && self.screen == Screen::Main
+    /// What a key's keymap binding means where the keyboard is: the one
+    /// place a key's action takes context, applied wherever a keymap
+    /// lookup becomes a key's action (`handle_key_routed`'s `global`,
+    /// `App::user_bare`). With the sidebar focused on the main screen, the
+    /// split keys (`alt+w`, `shift+alt+w`, or whatever keys.toml binds to
+    /// `cycle_split` / `cycle_split_back`) step the sidebar's width.
+    ///
+    /// The context belongs to the key, not to the split action (spec S6,
+    /// S6a): `:split`, the palette and the chips dispatch their action
+    /// directly, never through here, so they always mean the split.
+    pub(crate) fn key_action(&self, action: Action) -> Action {
+        use crate::action::ResizeDir;
+        let sidebar = self.focus == PaneId::Sidebar && self.screen == Screen::Main;
+        let dir = match action {
+            Action::CycleSplit if sidebar => ResizeDir::Wider,
+            Action::CycleSplitBack if sidebar => ResizeDir::Narrower,
+            _ => return action,
+        };
+        Action::PaneResize { dir, count: crate::layout::SIDEBAR_STEP_COLS }
     }
 
     /// Moves the sidebar's edge `delta` columns from where the last frame
@@ -2376,13 +2391,19 @@ impl App {
     }
 
     /// Moves the editor/response line `editor_delta` rows down (up when
-    /// negative) from where the last frame drew it, un-eased, and saves a
-    /// change (spec E13, P2). A minimized pane counts from its snap: the
+    /// negative) from where the split's state puts it, un-eased, and saves
+    /// a change (spec E13, P2). A minimized pane counts from its snap: the
     /// editor from its chrome, the response from its full header strip, so
     /// one row out of either end shows one row of content. Past either end
     /// it snaps there, keeping the share (E6, E9a).
+    ///
+    /// The rows come from the state at the last frame's column height, not
+    /// from the frame's editor rect: right after an eased change (`alt+w`,
+    /// a chip) that rect is partway through the ease, and counting from it
+    /// would land N rows from an in-between height (review round 2 G6). The
+    /// column's height never eases, so it is safe to read from the frame.
     fn resize_split_rows(&mut self, editor_delta: i32) -> bool {
-        let Some((column, editor)) = self.split_column() else {
+        let Some((column, _)) = self.split_column() else {
             return false;
         };
         let now = self.split_state();
@@ -2391,7 +2412,7 @@ impl App {
         } else if now.response_minimized {
             column.height.saturating_sub(crate::components::response::HEADER_STRIP_HEIGHT)
         } else {
-            editor.height
+            crate::layout::editor_rows_for(column.height, now.ratio)
         };
         let next = crate::layout::split_for_editor_rows(
             now,
@@ -3807,14 +3828,9 @@ impl App {
                 true
             }
             Action::SplitStop(stop) => self.apply_split_stop(stop),
-            // `alt+w` is context-based (spec S6): the focused sidebar's
-            // width, else the split (E11).
-            Action::CycleSplit if self.alt_w_steps_the_sidebar() => {
-                self.step_sidebar(i32::from(crate::layout::SIDEBAR_STEP_COLS))
-            }
-            Action::CycleSplitBack if self.alt_w_steps_the_sidebar() => {
-                self.step_sidebar(-i32::from(crate::layout::SIDEBAR_STEP_COLS))
-            }
+            // Always the split (E11). The `alt+w` key's sidebar meaning is
+            // the key's, applied before it gets here (`App::key_action`,
+            // spec S6a).
             Action::CycleSplit => self.apply_split_state(self.split_state().cycled(true)),
             Action::CycleSplitBack => self.apply_split_state(self.split_state().cycled(false)),
             Action::PaneResize { dir, count } => self.pane_resize(dir, count),
@@ -10861,8 +10877,9 @@ impl App {
         let combo = KeyCombo::from_event(&ev);
         // A replayed key reads the keymap again: the keymap is only ever
         // swapped by an action, never mid-lookup, so this is the same
-        // "one read per key" the first lookup is.
-        let global = self.keymap.lookup(&combo);
+        // "one read per key" the first lookup is. The binding then takes
+        // the key's context (`App::key_action`, spec S6a).
+        let global = self.keymap.lookup(&combo).map(|a| self.key_action(a));
         let modified = ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
 
         // 1b. A bound paste combo digs past the layers below: modals and

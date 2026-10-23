@@ -268,15 +268,14 @@ pub enum Action {
     /// ([`crate::split::SplitState::apply`]) and persists the result as
     /// the project's layout preference.
     SplitStop(crate::split::SplitStop),
-    /// `alt+w`, context-based (spec S6, E11): with the sidebar focused on
-    /// the main screen it widens the sidebar a step, stopping at the limit
-    /// (the sidebar footer's `width` chip). Anywhere else it steps the
-    /// split to the next stop in on-screen order, wrapping: one key walks
-    /// the boundary down the column and back around. Vim's `:split` is
-    /// this action too, so it follows the same context.
+    /// Steps the split to the next stop in on-screen order, wrapping: one
+    /// key walks the boundary down the column and back around (spec E11).
+    /// Always the split, from any surface (`:split`, the palette). The
+    /// `alt+w` key bound to it is context-based instead: with the sidebar
+    /// focused it widens the sidebar (`App::key_action`, spec S6, S6a).
     CycleSplit,
-    /// [`Self::CycleSplit`] run the other way (shift+alt+w): narrows the
-    /// focused sidebar, or steps the split to the previous stop.
+    /// [`Self::CycleSplit`] run the other way (shift+alt+w, `:splitback`):
+    /// steps the split to the previous stop.
     CycleSplitBack,
     /// Start a new row on the active table tab (Params/Headers/Vars):
     /// focuses the editor's table and begins editing the ghost row's key
