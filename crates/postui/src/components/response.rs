@@ -700,7 +700,9 @@ pub struct ReadyView {
     ///
     /// A key that moves the cursor keeps it, so paging to a lit partner
     /// finds it lit (#89). Every click replaces it (`click_row`, or the
-    /// press off the text), and a vim draw forgets it. Only an arrows click
+    /// press off the text), and the vim profile forgets it
+    /// (`Response::set_vim_cursor`, which `ui::draw` calls every frame on
+    /// any screen, the pane drawn or not). Only an arrows click
     /// that names a bracket on a line's own text records one
     /// (`record_click`).
     clicked: Option<Clicked>,
@@ -1216,15 +1218,26 @@ impl ReadyView {
             }
         };
         let Some(text) = text else { return };
-        let Some(end) = text.chars().rev().position(|c| !c.is_whitespace()) else { return };
-        let end = text.chars().count() - 1 - end;
-        let col = col.min(end);
-        let char_at = |col: usize| text.chars().nth(col);
-        let col = match char_at(col) {
-            Some(',') if col == end => col.checked_sub(1),
-            _ => Some(col),
+        // One pass: the char at `col` and the one before it, and the line's
+        // last non-blank char and the one before that.
+        let (mut at, mut last) = (None, None);
+        let mut prev = None;
+        for (i, c) in text.chars().enumerate() {
+            if i == col {
+                at = Some((col, c, prev));
+            }
+            if !c.is_whitespace() {
+                last = Some((i, c, prev));
+            }
+            prev = Some(c);
+        }
+        let Some(last) = last else { return };
+        // On the trailing blanks, or past the end: the last other char.
+        let (col, c, before) = if col >= last.0 { last } else { at.unwrap_or(last) };
+        let col = match c {
+            ',' if col == last.0 => before.filter(|&b| is_bracket(b)).map(|_| col - 1),
+            c => is_bracket(c).then_some(col),
         };
-        let col = col.filter(|&col| char_at(col).is_some_and(is_bracket));
         let tree = (self.mode == ViewMode::Pretty).then_some(self.tree_epoch);
         self.clicked = col.map(|col| Clicked { tree, line, col });
     }
@@ -1232,24 +1245,24 @@ impl ReadyView {
     /// [`ReadyView::bracket_pair`], worked out again only when what it reads
     /// changed since the last frame.
     fn lit_pair(&mut self, vim: bool) -> Option<(crate::text::Pos, crate::text::Pos)> {
-        // Each profile's own inputs: vim reads its cursor, arrows the click.
+        // Each profile's own start: vim reads its cursor, arrows the click.
         // A key in arrows keeps the click (#89), so it never walks again.
-        let (cursor, fold_line, at_col, want, visual) = if vim {
-            (self.cursor, self.fold_line, self.at_col, self.want, self.line_anchor.is_some())
+        let start = if vim {
+            BracketStart::Vim {
+                cursor: self.cursor,
+                fold_line: self.fold_line,
+                at_col: self.at_col,
+                want: self.want,
+                visual: self.line_anchor.is_some(),
+            }
         } else {
-            (0, None, None, 0, false)
+            BracketStart::Arrows { clicked: self.clicked }
         };
         let inputs = BracketInputs {
-            vim,
+            start,
             mode: self.mode,
             tree_epoch: self.tree_epoch,
             tree_edits: self.tree_edits,
-            cursor,
-            fold_line,
-            at_col,
-            want,
-            visual,
-            clicked: if vim { None } else { self.clicked },
             scroll: self.scroll,
             height: self.height,
         };
@@ -1317,7 +1330,11 @@ impl ReadyView {
         }
         // Vim's matchparen: the partner in the rows in view, or nothing
         // (R5). Rows only: a bracket scrolled out sideways still counts, as
-        // in Vim's `nowrap` window.
+        // in Vim's `nowrap` window. From inside a string nothing is skipped
+        // (R4, Vim with JSON syntax, probe N3), so a string's unbalanced
+        // `[` can pair with a container's `]` in view, as in Vim. Both
+        // profiles keep that one rule rather than a string rule of their
+        // own, which misread non-JSON Raw text (#89 review round 2).
         let last = self.visible_len().checked_sub(1)?;
         let rows = self.scroll..=(self.scroll + self.height.max(1) - 1).min(last);
         Some((at, partner_of(self, at, rows)?))
@@ -2471,18 +2488,28 @@ struct LineMatches {
 /// `tree_edits`). A new input to `bracket_pair` belongs here too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BracketInputs {
-    vim: bool,
+    start: BracketStart,
     mode: ViewMode,
     tree_epoch: u64,
     tree_edits: u64,
-    cursor: usize,
-    fold_line: Option<usize>,
-    at_col: Option<(usize, usize)>,
-    want: usize,
-    visual: bool,
-    clicked: Option<Clicked>,
     scroll: usize,
     height: usize,
+}
+
+/// Where each profile's pair starts, as [`ReadyView::bracket_pair`] reads
+/// it: Vim's cursor and its column's inputs, or arrows' click.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BracketStart {
+    Vim {
+        cursor: usize,
+        fold_line: Option<usize>,
+        at_col: Option<(usize, usize)>,
+        want: usize,
+        visual: bool,
+    },
+    Arrows {
+        clicked: Option<Clicked>,
+    },
 }
 
 /// The bracket an arrows click named, as (real line, char) of the view it

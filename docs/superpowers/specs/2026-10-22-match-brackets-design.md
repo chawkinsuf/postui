@@ -116,9 +116,11 @@ pub(crate) fn partner_of<B: Lines + ?Sized>(
 ```
 
 (The #89 cleanup split these apart; they began as one `matching_pair`
-with a `before` flag. The body, the response and R20's comma rule each
-pick their bracket with `bracket_at`; R20 is `before` switched on for a
-clicked `,`.)
+with a `before` flag. The body picks its bracket with `bracket_at`. The
+response picks its own: Vim's cursor char, or the bracket an arrows click
+named, which `ReadyView::record_click` settles once, R20's line-end comma
+included. Both find the partner with `partner_of`, or the tree on the
+arrows tree view (R19).)
 
 It is its own walk, not `find_match`. It counts the bracket and its partner
 forward or backward, and with R4 it skips positions inside a string, worked
