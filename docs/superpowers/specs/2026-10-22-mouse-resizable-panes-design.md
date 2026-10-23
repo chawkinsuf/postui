@@ -1,0 +1,143 @@
+# Mouse-resizable panes (#90)
+
+## 1. Why
+
+The request sidebar is too wide on the user's large screen. It is a fixed
+28% of the window (`layout.rs`, `Percentage(28)`), and lowering the
+percentage would make it too narrow on a small screen (the user: "its too
+large on my large screen. but would be too small on a small screen if i
+adjusted it"). The user tests small screens by resizing the window on the
+same machine.
+
+Once one divider can be dragged, the other has to be too (the user: "if we
+make that draggable, we have to make both of them"). So this covers both
+dividers:
+
+- **Sidebar | main**: the 1-column gutter between the sidebar and the
+  editor/response column.
+- **Editor / response**: the boundary between the two main panes, today
+  set only by the five-stop split control (`split.rs`,
+  `paint/split_control.rs`), the `alt+w` cycle and the response header's
+  ▲/▼ step pill.
+
+Success: the user drags the sidebar to the width the request names need,
+and it stays that width on any window size. The user drags the response
+header to put the line where they want it. Someone who never touches a mouse
+can do both from the keyboard (the user: "some people will use this app and
+never touch a mouse").
+
+## 2. What exists
+
+- **Drags.** `app/mouse.rs` already runs four drag kinds: scrollbar thumbs
+  (`App::drag`), text sweeps (`App::text_drag`), sidebar row reorder and
+  Manage row reorder. Each follows the same lifecycle: armed on
+  `Down(Left)`, driven by `Moved | Drag(Left)`, ended on `Up(Left)`.
+  Lost releases are cleaned up in `cancel_stale_drags` and in the
+  right-click cancel (the Ghostty/Linux quirks).
+- **Layout.** `layout::compute_layout(area, collapse_t, response_t,
+  editor_share)` runs every frame. The hit map is rebuilt with it.
+- **Split state.** `split::SplitState { editor_minimized,
+  response_minimized, ratio: SplitRatio }`, where `SplitRatio` is one of
+  three stops (0.75 / 0.50 / 0.25). The ratio is sticky through the
+  minimized endpoints. `AnimKey::SplitRatio`, `PaneCollapse` and
+  `ResponseCollapse` ease every change. The state is saved per project as
+  a token (`even`, `editor-big`, …) in `.local/state.toml`
+  (`LocalState::main_split`). Today a minimized token loses the sticky
+  ratio.
+- **Pointer shapes.** `hit::PointerShape` sends Kitty OSC 22 (`default`,
+  `pointer`, `text`, `grabbing`).
+- **The response header strip** (`response.rs::draw_header_strip`) is 3
+  rows on `theme.panel`:
+  - row 0: the status chip, timing, size, media type and URL as plain
+    text, then the ▲/▼ step pill at the right end;
+  - row 1: the Tree/Raw/Headers tabs, right-aligned;
+  - row 2: the icon actions (search/edit/save/copy/filter) on the left and
+    the tabs' underline on the right.
+
+  When the response is minimized, the strip is row 0 only
+  (`response::COLLAPSED_HEIGHT = 1`). The not-yet-ready pane draws the
+  same row 0 (a `—`/`failed`/spinner chip plus the pill).
+
+## 3. Decisions
+
+Attribution: **user** = the user said it; **mine (approved)** = I proposed
+it and the user approved the whole design ("looks right, write it up");
+**builder** = left to the implementer.
+
+### 3.1 Sidebar | main
+
+| # | Decision | From |
+|---|---|---|
+| S1 | The gutter column is the handle. Press on it and drag sideways to set the sidebar width. | mine (approved) |
+| S2 | The gutter's look does not change: no hover highlight, no new glyph. The colour edge already shows where it is (the user: "i dont think we need to change anything about the line between the sidebar. there is already an edge there in the colors"). | user |
+| S3 | The pointer shows a left-right resize shape (OSC 22 `ew-resize`) over the gutter and during the drag. It is not a paint change, so it is outside S2. Terminals without OSC 22 ignore it. | mine (approved) |
+| S4 | The width is a **column count**, not a percentage, so it means the same thing on any window size. Until the user sets one, the sidebar keeps today's 28%. | mine (approved) |
+| S5 | Limits: the sidebar is at least about 16 columns, and the main column keeps at least about 40. When the window is too narrow for the saved width, the sidebar is squeezed for that frame, and the saved width is unchanged. Exact numbers are the builder's. | mine (approved); numbers: builder |
+| S6 | Keyboard, both profiles: `alt+w` is context-based. While the sidebar has focus, `alt+w` widens the sidebar and `shift+alt+w` narrows it, a few columns per press, stopping at the limits (S5) with no wrap. Anywhere else, `alt+w` cycles the editor/response split as before (E11), so the split can't be cycled while the sidebar has focus. The sidebar's footer advertises `alt+w` as the width key. There are no separate sidebar-width keys, which keeps the footer short. Step size: builder. The first press from the unset 28% default starts from the width on screen. | user (context-based on `alt+w`, step a few columns, no separate keys) |
+| S7 | Vim profile: the context-based `alt+w` (S6) works there too, because the `alt` keys are one shared keymap. In addition, `ctrl+w <` and `ctrl+w >` (with counts) resize as Vim 9.1 does. In Vim they act on the current window, so with the editor or response focused, `ctrl+w >` widens that window and the sidebar narrows. Probe Vim for the exact semantics. The project rule is that every vim-profile choice matches Vim and is never asked of the user. | rule (follow what Vim does) |
+
+### 3.2 Editor / response
+
+| # | Decision | From |
+|---|---|---|
+| E1 | The response header strip is the handle, because it is always visible and sits in the middle (the user). The **whole strip** is draggable (the user asked "maybe the whole thing can actually trigger a drag?"), including the not-yet-ready and minimized one-row strip. | user |
+| E2 | The tabs and icon buttons on the strip stay buttons: a press on one never starts a drag, so a click that wobbles a little never resizes. Everything else on the strip starts a drag: blank space, the status facts and the grip. | mine (approved) |
+| E3 | A grip glyph sits at the right end of row 0, where the ▲/▼ pill is today (the user: "move the drag handle to the right"). It is a hint only. Glyph choice: builder, one-cell (memory: no VS16 emoji). | user; glyph: builder |
+| E4 | Hover over a draggable part of the strip: the strip warms slightly, the grip lights up, and the pointer shows an up-down resize shape (`ns-resize`), as approved on the mockup. | mine (approved) |
+| E5 | The line follows the pointer row by row with no snapping to stops and no easing during the drag. The ratio becomes free (any share), not one of three stops. | mine (approved) |
+| E6 | Dragging into the editor's chrome (address bar + tab bar) lands on "response only" (editor minimized). Dragging into the bottom, so the response would lose its header strip, lands on "editor only" (response minimized). These are the same states the chips give. Snap thresholds: builder. | mine (approved) |
+| E7 | Dragging the strip out of either minimized state restores the split to where the pointer is. | mine (approved) |
+| E8 | The five-chip split control is replaced by **two chips**: the two end stops, "editor only" (▁▁) and "response only" (▇▇), in their current spot at the right of the editor's tab bar. The `alt+w` label is removed (the user: "c but no 'alt-w' in the header"). | user |
+| E9 | The lit chip shows the active minimized state. Clicking the lit chip again restores the dragged split. Today a re-click is a no-op. | mine (approved) |
+| E9a | The "dragged split" that E9 restores is the last share the split **settled** at, never a share the pointer passed on its way into a snap. A drag that ends minimized (E6) keeps the share the split had before that drag began, so a restore never brings back a response only a row or two tall. A keyboard step into an end stop keeps the share it left, as the sticky ratio does today. This share is also what P3 saves and what the collapse animation eases from. | mine (builder check) |
+| E10 | The ▲/▼ step pill in the response header is removed (the user picked option C, which drops it). `Hit::SplitStep` and `Action::SplitStep` go with it, unless the builder finds another caller. | user |
+| E11 | Keyboard: outside the sidebar (S6), `alt+w` / `shift+alt+w` keep cycling the five stops 100/75/50/25/0 (the user: stops "stay for the keyboard"). From a dragged share between stops, the next press goes to the nearest stop in that direction. | user (stops for keyboard); in-between rule: mine (approved) |
+| E12 | With the label gone, hovering a chip names `alt+w` in the footer, so the key can still be discovered. | mine (approved) |
+| E13 | Vim profile: `ctrl+w +` / `ctrl+w -` (with counts) resize the editor/response line as Vim 9.1 does, following the current window. Probe Vim. Other `ctrl+w` sizing keys (`=`, `_`, `\|`) are out of scope unless the builder finds them trivial. | rule (follow what Vim does); scope: mine (approved) |
+| E14 | Chip clicks and keyboard stops still ease as today. Only a live drag is un-eased. | mine (approved) |
+
+### 3.3 Saving
+
+| # | Decision | From |
+|---|---|---|
+| P1 | Both sizes are saved per project in `.local/state.toml`, next to `main_split`. Per-project is enough because the small-screen case is one machine with a resized window (the user). | user (one machine); placement: mine (approved) |
+| P2 | Saved once when a drag ends, or on a keyboard step, never on every motion event. | mine (approved) |
+| P2a | A resize drag that ends any way other than a release keeps where it got to and saves it, like a scrollbar drag, not like a row reorder (which reverts). That covers a lost release caught by `cancel_stale_drags`, the right-click cancel and `on_focus_lost`. Each of those sites saves. A resize is applied live, so what's on screen is what the user chose. Esc does not cancel a resize drag. | mine (builder check) |
+| P3 | The split is saved as its exact share plus the minimized state, so a minimized split restores to the dragged share after a restart (today's token drops it). Old tokens (`even`, `editor-big`, `editor-full`, …) still load. Token format: builder. | mine (approved); format: builder |
+| P3a | Pane sizes stay out of undo entirely (the user: "i dont think resizes normally count in undo in other apps"). Today a journaled op (e.g. a space rename) snapshots the whole `.local/state.toml`, and undoing it puts the old `main_split` back into core memory through `Project::reload_all` (`postui-core/src/project/mod.rs`, ~line 798). The app never reseeds from it, so the screen keeps the current split but the next local-state write saves the stale one, and the next launch opens with it. This is an existing bug. Fix it here for both `main_split` and the new sidebar width: `reload_all` keeps the in-memory sizes, and the test `undo_of_a_space_rename_puts_the_local_state_back` (`project/undo.rs`) stops asserting that `main_split` comes back. Instead, it asserts that the size undo found is the size that stays. | user (sizes out of undo); fix shape: mine |
+| P4 | The sidebar width is a new `LocalState` field, written through `postui_core::project::Project` like `set_main_split` (file-access rule in `CLAUDE.md`). An unparseable value is reported, never silently defaulted and overwritten (memory: parse errors never default). | mine (approved) / project rules |
+
+## 4. Goals, non-goals, anti-goals
+
+**Goals:** both dividers draggable; both resizable from the keyboard in
+both profiles; widths and the split remembered per project.
+
+**Non-goals:**
+- Resizing anything else: the header bar, the footer, the table's
+  columns, the Manage screen.
+- Collapsing the sidebar entirely.
+- Any change to the sidebar edge's look (S2).
+
+**Anti-goals (a failure even if it works):**
+- A tab or icon click that turns into a resize (E2).
+- A drag that lags the pointer because it eases (E5, E14).
+- A drag state that a lost release leaves live. The new drag kind must be
+  cleared everywhere the others are: `Up(Left)`, `cancel_stale_drags`,
+  and the right-click cancel. List every reader of the new state first
+  (memory: new state needs a consumer audit).
+- Anything that only the mouse can do (memory: no mouse-only and no
+  vim-only UI).
+
+## 5. Left to the builder
+
+- Step sizes, limits and snap thresholds (S5, S6, E6).
+- The grip glyph (E3) and the exact hover tint (E4), within the theme's
+  existing hover ladder.
+- The saved split's token format (P3).
+- How the drag state is shaped: one new enum next to `Drag`, or a variant
+  of it.
+- Whether the sidebar's scrollbar column, right next to the gutter, needs
+  any hit-priority care. The gutter is one column wide, like a tmux pane
+  border.
+- Rewriting the tests that cover the five-chip control, the step pill
+  and fixed-coordinate clicks.
