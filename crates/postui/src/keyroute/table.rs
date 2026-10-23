@@ -953,8 +953,7 @@ pub fn keys_for(profile: KeyProfile, surface: Surface, action: &Action) -> Optio
 
 /// [`keys_for`] on a surface class: a field class in idle Normal (plan M4b
 /// Deviation 21). A tab row spells `CycleTabs` whether or not it leaves a
-/// field; the `o` reopen row spells `ReopenField`; a counted row spells
-/// the action it runs with no count (`<C-w>>` is `PaneResize { Wider, 1 }`).
+/// field; the `o` reopen row spells `ReopenField`.
 pub fn keys_for_class(
     profile: KeyProfile,
     class: Surfaces,
@@ -967,7 +966,6 @@ pub fn keys_for_class(
                 && b.on.overlaps(class)
                 && match b.intent {
                     Intent::Act(f) | Intent::CloseThen(f) => f() == *action,
-                    Intent::Counted(f) => f(None) == *action,
                     Intent::Verb(v) => {
                         matches!(action, Action::OnSelection(w) if w.kind() == v.kind())
                     }

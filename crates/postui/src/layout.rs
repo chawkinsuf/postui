@@ -170,8 +170,9 @@ pub const SIDEBAR_MIN_COLS: u16 = 16;
 /// The narrowest the main column (editor/response) may be squeezed to by
 /// the sidebar.
 pub const MAIN_MIN_COLS: u16 = 40;
-/// One keyboard step of the sidebar width.
-pub const SIDEBAR_STEP_COLS: u16 = 4;
+/// One keyboard step of the sidebar width: `Action::StepSidebar`'s size
+/// either way (signed, as that action is).
+pub const SIDEBAR_STEP_COLS: i16 = 4;
 
 /// Clamps a wanted sidebar width to what a `body_width`-wide body can hold:
 /// at least [`SIDEBAR_MIN_COLS`] and at most what leaves the gutter and

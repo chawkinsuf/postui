@@ -1317,6 +1317,7 @@ impl App {
                 _ => crate::hint::TipEditVerb::default(),
             },
             spell: self.spell_ctx(),
+            split_keys_step_sidebar: self.split_keys_step_sidebar(),
         }
     }
 
@@ -2161,9 +2162,7 @@ impl App {
         // Display copy for the split control — the app state stays the
         // authority, the editor only lights a chip from it.
         self.editor.split = self.split_state();
-        self.sync_pane_collapse_anim();
-        self.sync_response_collapse_anim();
-        self.sync_split_ratio_anim();
+        self.sync_split_anims(false);
         self.sync_editor_tab_underline();
         // Any toast pushed by `apply(action)` above gets its slide-in
         // started here rather than inside `Toasts::push` itself — `push`
@@ -2179,15 +2178,20 @@ impl App {
     /// (`Action::ToggleTableCollapse`/the `⌄ hide` chip), retargets the
     /// anim from wherever it currently sits to the new pole over
     /// `ui_settings.anim_ms.pane_collapse` (120ms by default). Called on
-    /// every `update`, not just the toggle action.
-    fn sync_pane_collapse_anim(&mut self) {
+    /// every `update`, not just the toggle action. With `snap` it jumps
+    /// to the pole instead, eased or settled (see [`Self::sync_split_anims`]).
+    fn sync_pane_collapse_anim(&mut self, snap: bool) {
         let target = self.table_collapsed;
-        if target == self.pane_collapsed_target {
+        if target == self.pane_collapsed_target && !snap {
             return;
         }
         self.pane_collapsed_target = target;
         let now = Instant::now();
         let target_v = if target { 1.0 } else { 0.0 };
+        if snap {
+            self.anims.snap(AnimKey::PaneCollapse, target_v);
+            return;
+        }
         if self.anims.value(AnimKey::PaneCollapse, now).is_none() {
             self.anims.snap(AnimKey::PaneCollapse, 1.0 - target_v);
         }
@@ -2204,14 +2208,18 @@ impl App {
     /// chases `table_collapsed`. The flag lives on `session.response` but
     /// is a sticky layout preference (`session.sync_open` carries it
     /// across request switches).
-    fn sync_response_collapse_anim(&mut self) {
+    fn sync_response_collapse_anim(&mut self, snap: bool) {
         let target = self.session.response.collapsed;
-        if target == self.response_collapsed_target {
+        if target == self.response_collapsed_target && !snap {
             return;
         }
         self.response_collapsed_target = target;
         let now = Instant::now();
         let target_v = if target { 1.0 } else { 0.0 };
+        if snap {
+            self.anims.snap(AnimKey::ResponseCollapse, target_v);
+            return;
+        }
         if self.anims.value(AnimKey::ResponseCollapse, now).is_none() {
             self.anims.snap(AnimKey::ResponseCollapse, 1.0 - target_v);
         }
@@ -2298,18 +2306,21 @@ impl App {
 
     /// Sets the split to `s` with no easing: a live drag's line follows
     /// the pointer row by row (spec E5, E14). The three anims snap to the
-    /// new values and their `*_target` fields follow, so the `sync_*`
-    /// passes `update` runs find nothing to ease. Saves nothing; the drag
-    /// saves once at its end (P2).
+    /// new values and their targets follow, so the `sync_*` passes
+    /// `update` runs find nothing to ease. Saves nothing; the drag saves
+    /// once at its end (P2).
     fn set_split_now(&mut self, s: crate::split::SplitState) {
         self.set_split_fields(s);
-        let pole = |on: bool| if on { 1.0 } else { 0.0 };
-        self.anims.snap(AnimKey::PaneCollapse, pole(s.editor_minimized));
-        self.anims.snap(AnimKey::ResponseCollapse, pole(s.response_minimized));
-        self.anims.snap(AnimKey::SplitRatio, s.ratio);
-        self.pane_collapsed_target = s.editor_minimized;
-        self.response_collapsed_target = s.response_minimized;
-        self.split_ratio_target = s.ratio;
+        self.sync_split_anims(true);
+    }
+
+    /// Brings the split's three anims to the split fields — the one place
+    /// each anim's target is derived. `update` eases them (`snap` false);
+    /// a live drag snaps them, settled or mid-ease ([`Self::set_split_now`]).
+    fn sync_split_anims(&mut self, snap: bool) {
+        self.sync_pane_collapse_anim(snap);
+        self.sync_response_collapse_anim(snap);
+        self.sync_split_ratio_anim(snap);
     }
 
     /// Moves the sidebar's edge toward `want` columns, clamped to what the
@@ -2360,17 +2371,24 @@ impl App {
     /// `cycle_split` / `cycle_split_back`) step the sidebar's width.
     ///
     /// The context belongs to the key, not to the split action (spec S6,
-    /// S6a): `:split`, the palette and the chips dispatch their action
-    /// directly, never through here, so they always mean the split.
+    /// S6a): `:split` and the split chips dispatch their action directly,
+    /// never through here, so they always mean the split. The step is
+    /// `StepSidebar`, the palette's sidebar-only action (S6b), not vim's
+    /// `PaneResize`, which follows the current window.
     pub(crate) fn key_action(&self, action: Action) -> Action {
-        use crate::action::ResizeDir;
-        let sidebar = self.focus == PaneId::Sidebar && self.screen == Screen::Main;
-        let dir = match action {
-            Action::CycleSplit if sidebar => ResizeDir::Wider,
-            Action::CycleSplitBack if sidebar => ResizeDir::Narrower,
-            _ => return action,
-        };
-        Action::PaneResize { dir, count: crate::layout::SIDEBAR_STEP_COLS }
+        let step = crate::layout::SIDEBAR_STEP_COLS;
+        match action {
+            Action::CycleSplit if self.split_keys_step_sidebar() => Action::StepSidebar(step),
+            Action::CycleSplitBack if self.split_keys_step_sidebar() => Action::StepSidebar(-step),
+            _ => action,
+        }
+    }
+
+    /// Whether [`Self::key_action`] turns the split keys into sidebar
+    /// steps: the sidebar has focus on the main screen. The split chips'
+    /// hover reads it too, to leave those keys off (spec S6a).
+    fn split_keys_step_sidebar(&self) -> bool {
+        self.focus == PaneId::Sidebar && self.screen == Screen::Main
     }
 
     /// Moves the sidebar's edge `delta` columns from where the last frame
@@ -2531,14 +2549,18 @@ impl App {
     /// Keeps `AnimKey::SplitRatio` chasing `split_ratio`'s editor share
     /// the same way [`Self::sync_pane_collapse_anim`] chases
     /// `table_collapsed`: whenever the share changes, eases from wherever
-    /// it currently sits to the new share.
-    fn sync_split_ratio_anim(&mut self) {
+    /// it currently sits to the new share, or with `snap` jumps there.
+    fn sync_split_ratio_anim(&mut self, snap: bool) {
         let target = self.split_ratio;
-        if target == self.split_ratio_target {
+        if target == self.split_ratio_target && !snap {
             return;
         }
         let previous = self.split_ratio_target;
         self.split_ratio_target = target;
+        if snap {
+            self.anims.snap(AnimKey::SplitRatio, target);
+            return;
+        }
         let now = Instant::now();
         if self.anims.value(AnimKey::SplitRatio, now).is_none() {
             self.anims.snap(AnimKey::SplitRatio, previous);
@@ -3834,6 +3856,9 @@ impl App {
             Action::CycleSplit => self.apply_split_state(self.split_state().cycled(true)),
             Action::CycleSplitBack => self.apply_split_state(self.split_state().cycled(false)),
             Action::PaneResize { dir, count } => self.pane_resize(dir, count),
+            // Always the sidebar, wherever focus is (spec S6b). Off the main
+            // screen the last frame drew no sidebar, so nothing moves.
+            Action::StepSidebar(delta) => self.step_sidebar(i32::from(delta)),
             Action::FormatBody => {
                 self.no_coalesce = true;
                 // The body's own indent (spec 2026-10-15 R10).

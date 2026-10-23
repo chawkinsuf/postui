@@ -50,6 +50,9 @@ pub struct HintCtx {
     /// Where the keyboard is: the key a hint names is spelled for it
     /// (piece 4 spec §4.6).
     pub spell: crate::keyroute::SpellCtx,
+    /// The split keys' bindings step the sidebar here, not the split
+    /// (`App::key_action`, spec S6a), so a split hint must not name them.
+    pub split_keys_step_sidebar: bool,
 }
 
 /// What `Action::OpenVarTokenPopup` will open for a token, so the tip's
@@ -109,9 +112,15 @@ fn manage_noun(tab: Option<crate::components::manage::ManageTab>) -> &'static st
 pub fn hint_for(hit: &Hit, keymap: &Keymap, ctx: &HintCtx) -> Option<String> {
     match hint_source(hit, ctx)? {
         // The split chips name the key that cycles the split, so it can
-        // still be found with the `alt+w` pill gone.
+        // still be found with the `alt+w` pill gone. Where the keymap's
+        // split key steps the sidebar instead (spec S6a), that key is left
+        // off; vim's `:split` moves the split from anywhere, so it stays.
         Source::Text(s) if matches!(hit, Hit::SplitStop(_)) => {
-            let key = crate::keyroute::spell::spell(ctx.spell, &Action::CycleSplit, keymap);
+            let key =
+                crate::keyroute::spell::spell(ctx.spell, &Action::CycleSplit, keymap).filter(|k| {
+                    !ctx.split_keys_step_sidebar
+                        || keymap.combo_for_action(&Action::CycleSplit).as_ref() != Some(k)
+                });
             Some(match key {
                 Some(key) => format!("{s} \u{b7} {key}"),
                 None => s,
@@ -339,12 +348,6 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             if ctx.spell.surface == crate::keyroute::Surface::Sidebar =>
         {
             text("Import curl from clipboard")
-        }
-        // The sidebar footer's `alt+w width` chip dispatches a sidebar
-        // step (spec S6, S6a), the one place a `PaneResize` is a chip: it
-        // shows only while the sidebar has focus.
-        Hit::FooterChip(Action::PaneResize { dir: crate::action::ResizeDir::Wider, .. }) => {
-            text("Widen the sidebar")
         }
         Hit::FooterChip(action) => of(action.clone()),
 
@@ -774,25 +777,33 @@ mod tests {
         );
     }
 
-    /// The sidebar's `alt+w width` chip steps the sidebar, not the split
-    /// (spec S6, S6a), so its hover says that.
+    /// Spec S6a: while the sidebar has focus, `alt+w` steps the sidebar,
+    /// so the split chips leave it off. Vim's `:split` still moves the
+    /// split from there, so it stays.
     #[test]
-    fn the_sidebar_width_chip_names_what_it_does() {
-        let keymap = Keymap::default_bindings();
-        let sidebar = HintCtx {
+    fn split_chip_hints_leave_alt_w_off_while_it_steps_the_sidebar() {
+        use crate::config::KeyProfile;
+        let sidebar = |profile| HintCtx {
+            split_keys_step_sidebar: true,
             spell: crate::keyroute::SpellCtx {
+                profile,
                 surface: crate::keyroute::Surface::Sidebar,
                 ..Default::default()
             },
             ..ctx()
         };
-        let widen = Action::PaneResize {
-            dir: crate::action::ResizeDir::Wider,
-            count: crate::layout::SIDEBAR_STEP_COLS,
+        let arrows = Keymap::default_bindings_for(KeyProfile::Arrows);
+        let hint = |stop, on| {
+            hint_for(&Hit::SplitStop(stop), &arrows, &HintCtx { on, ..sidebar(KeyProfile::Arrows) })
         };
+        assert_eq!(hint(SplitStop::EditorFull, false).unwrap(), "Editor only");
+        assert_eq!(hint(SplitStop::ResponseFull, false).unwrap(), "Response only");
+        assert_eq!(hint(SplitStop::ResponseFull, true).unwrap(), "Restore the split");
+        let vim = Keymap::default_bindings_for(KeyProfile::Vim);
         assert_eq!(
-            hint_for(&Hit::FooterChip(widen), &keymap, &sidebar).unwrap(),
-            "Widen the sidebar"
+            hint_for(&Hit::SplitStop(SplitStop::EditorFull), &vim, &sidebar(KeyProfile::Vim))
+                .unwrap(),
+            "Editor only \u{b7} :split"
         );
     }
 

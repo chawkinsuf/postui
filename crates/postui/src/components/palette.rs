@@ -184,6 +184,20 @@ pub fn all_commands() -> Vec<Command> {
             description: "Collapse the editor pane to its address bar, or bring it back",
             action: Action::ToggleTableCollapse,
         },
+        // Spec S6b: the sidebar's width steps, findable here. No key column:
+        // `alt+w` steps the sidebar only while it has focus.
+        Command {
+            id: "sidebar-widen",
+            name: "Widen sidebar",
+            description: "Move the sidebar's edge a few columns right",
+            action: Action::StepSidebar(crate::layout::SIDEBAR_STEP_COLS),
+        },
+        Command {
+            id: "sidebar-narrow",
+            name: "Narrow sidebar",
+            description: "Move the sidebar's edge a few columns left",
+            action: Action::StepSidebar(-crate::layout::SIDEBAR_STEP_COLS),
+        },
         Command {
             id: "project-choose",
             name: "Project: choose…",
@@ -1074,6 +1088,23 @@ mod tests {
             .find(|c| c.id == "response-open-editor")
             .expect("response-open-editor command");
         assert_eq!(cmd.action, Action::OpenResponseInEditor);
+    }
+
+    /// Spec S6b: the sidebar's width steps are in the palette, so a
+    /// keyboard user can find them. They send the sidebar-only step, and
+    /// show no key: `alt+w` steps the sidebar only while it has focus, and
+    /// the key column has no focus to tell by.
+    #[test]
+    fn palette_carries_the_sidebar_width_steps() {
+        let step = crate::layout::SIDEBAR_STEP_COLS;
+        for (id, name, action) in [
+            ("sidebar-widen", "Widen sidebar", Action::StepSidebar(step)),
+            ("sidebar-narrow", "Narrow sidebar", Action::StepSidebar(-step)),
+        ] {
+            let cmd = all_commands().into_iter().find(|c| c.id == id).expect(id);
+            assert_eq!((cmd.name, cmd.action), (name, action), "{id}");
+            assert_eq!(keymap_action_name(id), None, "{id}: no key column");
+        }
     }
 
     #[test]

@@ -107,23 +107,6 @@ pub(crate) fn footer_chips(
                 Some(Action::PromptMoveSelectedRequestToSpace),
             ),
             (Key::Named("alt+\u{2191}\u{2193}"), "reorder", None),
-            // The key that widens the sidebar here, per profile (spec S6,
-            // S7): vim's `^W >` (its `<C-w>>` row), else arrows' `alt+w`,
-            // which is context-based and widens the focused sidebar
-            // (shift+alt+w narrows it). The vim keymap has no `alt+w`, so
-            // the split's `:split` must never stand in. The context is the
-            // key's (S6a), so the chip runs the sidebar step itself.
-            (
-                Key::OneOf(
-                    Action::PaneResize { dir: crate::action::ResizeDir::Wider, count: 1 },
-                    Action::CycleSplit,
-                ),
-                "width",
-                Some(Action::PaneResize {
-                    dir: crate::action::ResizeDir::Wider,
-                    count: crate::layout::SIDEBAR_STEP_COLS,
-                }),
-            ),
             // The sidebar takes no text: a paste there imports its curl
             // (spec 2026-10-15 curl import visibility V9).
             (Key::Of(Action::Paste), "import curl", Some(Action::Paste)),
@@ -1368,82 +1351,68 @@ mod tests {
         );
     }
 
-    /// `alt+w` is context-based (spec S6): with the sidebar focused it steps
-    /// the sidebar's width, and the sidebar's footer says so (vim's own key
-    /// there is `^W >`, S7). Elsewhere it cycles the split, whose chips name
-    /// the key on hover (E12), so the editor and response footers don't
-    /// carry it.
+    /// No footer carries a width chip, in either profile (spec S6, S7):
+    /// footers carry actions on the focused area's content, not window
+    /// keys. The sidebar's width keys are found in the palette (S6b), and
+    /// the split's `alt+w` on the split chips' hover (E12).
     #[test]
-    fn only_the_sidebar_footer_advertises_alt_w() {
-        let chips = |pane, url_focused| {
-            super::footer_chips(
-                pane,
-                false,
-                false,
-                Some("add header"),
-                url_focused,
-                false,
-                None,
-                JqBarState::Closed,
-                false,
+    fn no_footer_carries_a_width_chip() {
+        use crate::config::KeyProfile;
+        use crate::keyroute::Surface;
+        let sizes = |a: &Option<Action>| {
+            matches!(
+                a,
+                Some(
+                    Action::StepSidebar(_)
+                        | Action::PaneResize { .. }
+                        | Action::CycleSplit
+                        | Action::CycleSplitBack
+                )
             )
         };
-        let sidebar = chips(PaneId::Sidebar, false);
-        let widen = Action::PaneResize {
-            dir: crate::action::ResizeDir::Wider,
-            count: crate::layout::SIDEBAR_STEP_COLS,
-        };
-        assert!(
-            sidebar.iter().any(|(k, l, a)| matches!(k, Key::OneOf(_, Action::CycleSplit))
-                && *l == "width"
-                && *a == Some(widen.clone())),
-            "{sidebar:?}"
-        );
-        // Spec S7: each profile's own key that widens the sidebar. The vim
-        // keymap has no `alt+w`, and `:split` moves the split (S6a).
-        for (profile, want) in
-            [(crate::config::KeyProfile::Arrows, "alt+w"), (crate::config::KeyProfile::Vim, "^W >")]
-        {
-            let at = crate::keyroute::SpellCtx {
-                profile,
-                surface: crate::keyroute::Surface::Sidebar,
-                ..Default::default()
-            };
-            let painted = crate::keyroute::spell::resolve(
-                chips(PaneId::Sidebar, false),
-                at,
-                &crate::keys::Keymap::default_bindings_for(profile),
-            );
-            let width = painted.iter().find(|(_, l, _)| *l == "width").expect("a width chip");
-            assert_eq!(width.0, want, "{profile:?}: {painted:?}");
-            assert_eq!(width.2, Some(widen.clone()), "{profile:?}: the click widens");
-            assert!(!painted.iter().any(|(k, _, _)| k == ":split"), "{profile:?}: {painted:?}");
-        }
-        let spelled = footer_chips(
-            PaneId::Sidebar,
-            false,
-            false,
-            Some("add header"),
-            false,
-            false,
-            None,
-            JqBarState::Closed,
-            false,
-        );
-        let width = spelled.iter().position(|(_, l, _)| *l == "width").unwrap();
-        let curl = spelled.iter().position(|(_, l, _)| *l == "import curl").unwrap();
-        assert_eq!(spelled[width].0, "alt+w", "{spelled:?}");
-        assert_eq!(width + 1, curl, "just before the import curl chip");
-        for pane in [PaneId::Editor, PaneId::Response] {
+        for (pane, surface) in [
+            (PaneId::Sidebar, Surface::Sidebar),
+            (PaneId::Editor, Surface::UrlLine),
+            (PaneId::Response, Surface::Response(crate::components::response::ViewMode::Pretty)),
+        ] {
             for url_focused in [false, true] {
-                assert!(
-                    !chips(pane, url_focused).iter().any(|(k, _, a)| matches!(
-                        k,
-                        Key::Of(Action::CycleSplit) | Key::OneOf(_, Action::CycleSplit)
-                    ) || *a
-                        == Some(widen.clone())),
-                    "{pane:?} url_focused={url_focused} advertises alt+w"
+                let chips = super::footer_chips(
+                    pane,
+                    false,
+                    false,
+                    Some("add header"),
+                    url_focused,
+                    false,
+                    None,
+                    JqBarState::Closed,
+                    false,
                 );
+                let at = format!("{pane:?} url_focused={url_focused}");
+                assert!(
+                    !chips.iter().any(|(k, l, a)| *l == "width"
+                        || sizes(a)
+                        || matches!(
+                            k,
+                            Key::Of(Action::CycleSplit | Action::PaneResize { .. })
+                                | Key::OneOf(_, Action::CycleSplit | Action::PaneResize { .. })
+                                | Key::OneOf(Action::CycleSplit | Action::PaneResize { .. }, _)
+                        )),
+                    "{at}: {chips:?}"
+                );
+                for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+                    let painted = crate::keyroute::spell::resolve(
+                        chips.clone(),
+                        crate::keyroute::SpellCtx { profile, surface, ..Default::default() },
+                        &crate::keys::Keymap::default_bindings_for(profile),
+                    );
+                    assert!(
+                        !painted.iter().any(|(k, l, _)| *l == "width"
+                            || k.ends_with("+w")
+                            || k.starts_with("^W")
+                            || k.starts_with(":split")),
+                        "{at} {profile:?}: {painted:?}"
+                    );
+                }
             }
         }
     }

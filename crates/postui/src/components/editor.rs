@@ -6146,13 +6146,11 @@ url = "https://api.example.com/users""#,
 
         app.hovered = Some(Hit::TableCell { row: 0, col: 1 });
         let (_, content) = draw_wide(&mut app);
-        // The sidebar's chips leave room for the shorter form here (task
-        // #59: the message shortens to fit).
-        assert!(content.contains("Transfer-Encoding can't be set"), "{content}");
+        assert!(content.contains("Transfer-Encoding cannot be set manually"), "{content}");
 
         app.hovered = Some(Hit::TableCell { row: 1, col: 1 });
         let (terminal, content) = draw_wide(&mut app);
-        assert!(!content.contains("be set"), "{content}");
+        assert!(!content.contains("cannot be set manually"), "{content}");
         let key = app.hits.rect_of(&Hit::TableCell { row: 1, col: 0 }).unwrap();
         let buf = terminal.backend().buffer();
         assert_eq!(buf[(key.x, key.y)].fg, app.theme.text_muted, "drawn as any disabled row");

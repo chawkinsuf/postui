@@ -593,7 +593,7 @@ fn press(app: &mut App, keys: &str) {
 /// profile binds no `alt+w`: its keymap drops the split chords.)
 #[test]
 fn alt_w_in_the_sidebar_steps_the_width() {
-    let step = crate::layout::SIDEBAR_STEP_COLS;
+    let step = crate::layout::SIDEBAR_STEP_COLS.unsigned_abs();
     let mut app = App::new_for_test();
     app.update(Action::FocusPane(PaneId::Sidebar));
     render(&mut app);
@@ -663,26 +663,72 @@ fn ex_split_in_the_sidebar_cycles_the_split() {
     assert_eq!(app.focus, PaneId::Sidebar);
 }
 
-/// S6, S6a: the sidebar footer's `alt+w width` chip widens the sidebar a
-/// step, as its key does there. Wide, so the footer has room for it.
+/// S6a, S6b: in the sidebar, the split keys' bindings become the
+/// sidebar-only step, not vim's `PaneResize` (which follows the current
+/// window). Anywhere else they stay the split's.
 #[test]
-fn a_click_on_the_sidebar_width_chip_widens_the_sidebar() {
+fn the_split_keys_become_the_sidebar_step_in_the_sidebar() {
+    let step = crate::layout::SIDEBAR_STEP_COLS;
     let mut app = App::new_for_test();
     app.update(Action::FocusPane(PaneId::Sidebar));
-    render_at(&mut app, 240, 40);
-    let w = sidebar_cols(&app);
-    let split = app.split_state();
-    let chip = rect(
-        &app,
-        &Hit::FooterChip(Action::PaneResize {
-            dir: crate::action::ResizeDir::Wider,
-            count: crate::layout::SIDEBAR_STEP_COLS,
-        }),
-    );
-    app.handle_mouse(left_down(chip.x, chip.y));
-    app.handle_mouse(left_up(chip.x, chip.y));
-    assert_eq!(app.sidebar_width, Some(w + crate::layout::SIDEBAR_STEP_COLS));
+    assert_eq!(app.key_action(Action::CycleSplit), Action::StepSidebar(step));
+    assert_eq!(app.key_action(Action::CycleSplitBack), Action::StepSidebar(-step));
+    app.update(Action::FocusPane(PaneId::Editor));
+    assert_eq!(app.key_action(Action::CycleSplit), Action::CycleSplit);
+    assert_eq!(app.key_action(Action::CycleSplitBack), Action::CycleSplitBack);
+}
+
+/// S6b: `StepSidebar` always means the sidebar, wherever focus is. From
+/// the editor a positive step widens it (where vim's `ctrl+w >` from the
+/// editor narrows it, S7), and the step is saved.
+#[test]
+fn step_sidebar_from_the_editor_widens_the_sidebar() {
+    let step = crate::layout::SIDEBAR_STEP_COLS;
+    let mut app = App::new_for_test();
+    app.update(Action::FocusPane(PaneId::Editor));
+    render(&mut app);
+    let (w, split) = (sidebar_cols(&app), app.split_state());
+    assert!(app.update(Action::StepSidebar(step)));
+    let widened = w + step.unsigned_abs();
+    assert_eq!(app.sidebar_width, Some(widened));
+    assert_eq!(saved_width(&app), Some(widened), "saved on the step");
     assert_eq!(app.split_state(), split, "the split never moved");
+    assert_eq!(app.focus, PaneId::Editor);
+}
+
+/// S6a: the split chips' hover names `alt+w` only where it would move the
+/// split: not with the sidebar focused, as it is from the editor.
+#[test]
+fn the_split_chip_hint_names_alt_w_only_where_it_moves_the_split() {
+    let alt = crate::keys::alt_label();
+    let chip = Hit::SplitStop(crate::split::SplitStop::EditorFull);
+    let mut app = App::new_for_test();
+    let hint = |app: &App| crate::hint::hint_for(&chip, &app.keymap, &app.hint_ctx(&chip));
+    app.update(Action::FocusPane(PaneId::Sidebar));
+    assert_eq!(hint(&app).as_deref(), Some("Editor only"));
+    app.update(Action::FocusPane(PaneId::Editor));
+    assert_eq!(hint(&app), Some(format!("Editor only \u{b7} {alt}+w")));
+}
+
+/// S6b: the palette's "Widen sidebar" / "Narrow sidebar" run from the
+/// editor move the sidebar's edge a step the way they say.
+#[test]
+fn the_palette_widens_and_narrows_the_sidebar_from_the_editor() {
+    let step = i32::from(crate::layout::SIDEBAR_STEP_COLS);
+    for (id, delta) in [("sidebar-widen", step), ("sidebar-narrow", -step)] {
+        let mut app = App::new_for_test();
+        app.update(Action::FocusPane(PaneId::Editor));
+        render(&mut app);
+        let w = i32::from(sidebar_cols(&app));
+        app.update(Action::OpenPalette);
+        press(&mut app, "sidebar");
+        super::tests::select_palette_command(&mut app, id);
+        press(&mut app, "<CR>");
+        assert!(app.modals.is_empty(), "{id}: the palette ran and closed");
+        render(&mut app);
+        assert_eq!(i32::from(sidebar_cols(&app)), w + delta, "{id}");
+        assert_eq!(app.focus, PaneId::Editor, "{id}");
+    }
 }
 
 /// S7, E13: the plan's Vim 9.1 table, one assertion per row. `>`/`<` act

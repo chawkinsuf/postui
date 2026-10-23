@@ -100,6 +100,10 @@ pub struct Local {
     pub expanded: BTreeSet<String>,
     pub selections: IndexMap<String, IndexMap<String, String>>,
     pub shared_selections: IndexMap<String, String>,
+    /// The editor/response split. Pane sizes (this and `sidebar_width`)
+    /// live in the journaled `state.toml`, yet undo never restores them:
+    /// `reload_all` keeps them and writes them back (spec P3a; the
+    /// reasoning is at that write-back).
     pub main_split: Option<String>,
     /// The sidebar's width in columns; `None` = the default 28%.
     pub sidebar_width: Option<u16>,
@@ -842,6 +846,17 @@ impl Project {
                 None => {}
             }
         }
+        // Pane sizes are a view preference undo never restores (spec P3a),
+        // yet `.local/state.toml` is journaled whole, so the entry's copy
+        // just put back the sizes from before the op. The in-memory sizes
+        // were kept above; writing them back now keeps the file and the
+        // next launch on the size the screen shows. The cost: after a
+        // resize, each undo/redo records one extra state.toml write inside
+        // its recording window, which the redo inverts and then rewrites
+        // here again. The final state is the same either way. Moving the
+        // sizes out of the journaled file would avoid it, but that is the
+        // bigger change (a second local file, its own read and write
+        // paths), so this smaller one was chosen.
         if sizes_differ {
             let _ = self.persist_local_journaled();
         }

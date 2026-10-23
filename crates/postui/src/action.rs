@@ -168,6 +168,13 @@ pub enum Action {
         dir: ResizeDir,
         count: u16,
     },
+    /// Moves the sidebar's edge this many columns (narrower when
+    /// negative), whatever has focus (spec S6b): the palette's "Widen
+    /// sidebar" / "Narrow sidebar", and what `alt+w` / `shift+alt+w`
+    /// become while the sidebar has focus (`App::key_action`, S6a). Unlike
+    /// [`Self::PaneResize`], which follows Vim's current window, it always
+    /// means the sidebar.
+    StepSidebar(i16),
     ScrollPane(PaneId, i16),
     OpenPalette,
     /// Vim's `:` (spec §5.9): the palette in ex mode, its query read as a

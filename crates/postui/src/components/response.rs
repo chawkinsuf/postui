@@ -4505,7 +4505,7 @@ fn strip_face(ctx: &DrawCtx) -> (bool, ratatui::style::Color) {
 /// so the grip sits in the same place, and the text stops in the same
 /// place, in every state.
 fn draw_grip(buf: &mut ratatui::buffer::Buffer, area: Rect, hot: bool, t: &Theme) -> u16 {
-    let width = GRIP.chars().count() as u16;
+    let width = crate::ui::cells(GRIP) as u16;
     let x = area.right().saturating_sub(width + 1);
     if area.height == 0 {
         return area.x;
@@ -4514,12 +4514,8 @@ fn draw_grip(buf: &mut ratatui::buffer::Buffer, area: Rect, hot: bool, t: &Theme
         return area.right();
     }
     let fg = if hot { t.accent } else { t.text_disabled };
-    for (dx, glyph) in GRIP.chars().enumerate() {
-        if let Some(cell) = buf.cell_mut((x + dx as u16, area.y)) {
-            cell.set_symbol(&glyph.to_string());
-            cell.set_fg(fg);
-        }
-    }
+    // A style patch: the strip's background stays.
+    buf.set_string(x, area.y, GRIP, Style::default().fg(fg));
     x - 1
 }
 
