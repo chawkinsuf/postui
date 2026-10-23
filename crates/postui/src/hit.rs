@@ -108,14 +108,16 @@ pub enum Hit {
         row: usize,
         col: u8,
     },
-    /// One chip of the five-stop split control (see
+    /// One of the split control's two end chips (see
     /// [`crate::paint::SplitControl`]): click dispatches the matching
     /// `Action::SplitStop`.
     SplitStop(crate::split::SplitStop),
-    /// One of the response header's ▲/▼ nudge buttons (see
-    /// [`crate::paint::StepControl`]): click dispatches
-    /// `Action::SplitStep` with the same delta.
-    SplitStep(i8),
+    /// The response header strip as a whole, under its tabs and icon
+    /// buttons: the handle the editor/response line is dragged by.
+    SplitHandle,
+    /// The 1-column gutter between the sidebar and the main column: the
+    /// handle the sidebar's width is dragged by.
+    SidebarGutter,
     /// Raw mouse event forwarded to edtui (click-to-place, wheel).
     BodyEditor,
     ResponseTab(crate::components::response::ViewMode),

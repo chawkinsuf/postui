@@ -1194,27 +1194,21 @@ impl App {
     #[cfg(test)]
     pub(crate) fn mouse_dispatch_mirror() -> Vec<Action> {
         vec![
-            Action::Close,              // Hit::ModalOutside
-            Action::OpenProjectChooser, // Hit::HeaderProject
-            Action::CycleProject(1),    // Hit::HeaderProjectCycle
-            Action::OpenSpaceChooser,   // Hit::HeaderSpace
-            Action::CycleSpace(1),      // Hit::HeaderSpaceCycle
-            Action::OpenEnvChooser,     // Hit::HeaderEnv
-            Action::CycleEnv(1),        // Hit::HeaderEnvCycle
-            // The split control's own keycap pill (editor tab-bar row)
-            // registers Hit::FooterChip(CycleSplit) outside `footer_chips`,
-            // so the parity sweep's Group A never sees it.
-            Action::CycleSplit,
-            Action::SplitStep(1),  // Hit::SplitStep (response header ▲)
-            Action::SplitStep(-1), // Hit::SplitStep (response header ▼)
+            Action::Close,                    // Hit::ModalOutside
+            Action::OpenProjectChooser,       // Hit::HeaderProject
+            Action::CycleProject(1),          // Hit::HeaderProjectCycle
+            Action::OpenSpaceChooser,         // Hit::HeaderSpace
+            Action::CycleSpace(1),            // Hit::HeaderSpaceCycle
+            Action::OpenEnvChooser,           // Hit::HeaderEnv
+            Action::CycleEnv(1),              // Hit::HeaderEnvCycle
             Action::OpenManage { tab: None }, // Hit::HeaderManage
-            Action::OpenThemeChooser, // Hit::HeaderTheme
-            Action::OpenMethodDropdown, // Hit::MethodSelector
-            Action::FocusUrl,      // Hit::UrlBar
-            Action::Send,          // Hit::SendButton (not in flight)
-            Action::EditorTabSelect(0), // Hit::EditorTab, any draw position
-            Action::EditorTabSelect(1), // (converted through
-            Action::EditorTabSelect(2), //  EditorTab::from_draw_position(..).index())
+            Action::OpenThemeChooser,         // Hit::HeaderTheme
+            Action::OpenMethodDropdown,       // Hit::MethodSelector
+            Action::FocusUrl,                 // Hit::UrlBar
+            Action::Send,                     // Hit::SendButton (not in flight)
+            Action::EditorTabSelect(0),       // Hit::EditorTab, any draw position
+            Action::EditorTabSelect(1),       // (converted through
+            Action::EditorTabSelect(2),       //  EditorTab::from_draw_position(..).index())
             Action::EditorTabSelect(3),
             // The Environments/Spaces tabs' `+ New` button (Hit::ManageNew);
             // the rest of that face's hits either dispatch per-item actions
@@ -1266,7 +1260,8 @@ impl App {
                     // its own undo step, before it adds its row.
                     | Hit::AutoHeaderOverride(_)
                     | Hit::SplitStop(_)
-                    | Hit::SplitStep(_)
+                    | Hit::SplitHandle
+                    | Hit::SidebarGutter
                     | Hit::ScrollbarThumb(_)
                     | Hit::ScrollbarTrack(..)
                     | Hit::HScrollThumb(_)
@@ -1525,11 +1520,10 @@ impl App {
             }
             Hit::FooterChip(action) => {
                 // Chips that live inside the request panel (the Body
-                // toolbar row, the address bar's TLS lock, the split
-                // control's alt+w pill) focus the panel like any of its
-                // buttons. The footer's own chips are contextual — they
-                // describe the pane already focused — so they never move
-                // focus themselves.
+                // toolbar row, the address bar's TLS lock) focus the panel
+                // like any of its buttons. The footer's own chips are
+                // contextual — they describe the pane already focused — so
+                // they never move focus themselves.
                 if matches!(
                     action,
                     Action::FormatBody
@@ -1538,7 +1532,6 @@ impl App {
                         | Action::OpenBodyInEditor
                         | Action::BodyClear
                         | Action::ToggleInsecure
-                        | Action::CycleSplit
                 ) {
                     self.update(Action::FocusPane(PaneId::Editor));
                 }
@@ -1695,10 +1688,9 @@ impl App {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.update(Action::SplitStop(stop))
             }
-            Hit::SplitStep(delta) => {
-                self.update(Action::FocusPane(PaneId::Response));
-                self.update(Action::SplitStep(delta))
-            }
+            // The drag handles only exist so far: a press on one changes
+            // nothing (the drag arrives with the resize state).
+            Hit::SplitHandle | Hit::SidebarGutter => self.update(Action::Render),
             Hit::UrlBar => {
                 let was_focused = self.editor.url_open();
                 // `Action::FocusUrl` is exactly "focus Editor, sub-focus

@@ -254,8 +254,9 @@ pub enum Action {
     /// strip, editor taking the freed rows) and shown. Session-only —
     /// never persisted.
     ToggleResponseCollapse,
-    /// One of the split control's five chips was pressed: jumps the
-    /// column straight to that settled state
+    /// One of the split control's two end chips was pressed: jumps the
+    /// column straight to that settled state, or restores the split when
+    /// it is the lit one
     /// ([`crate::split::SplitState::apply`]) and persists the result as
     /// the project's layout preference.
     SplitStop(crate::split::SplitStop),
@@ -266,11 +267,6 @@ pub enum Action {
     /// Steps the split to the previous stop, wrapping — [`Self::CycleSplit`]
     /// run the other way (shift+alt+w).
     CycleSplitBack,
-    /// Nudges the split one stop *without* wrapping — the response
-    /// header's ▲ (`+1`, the response grows) and ▼ (`-1`) buttons
-    /// ([`crate::split::SplitStop::step`]). A no-op at the endpoint the
-    /// arrow points past.
-    SplitStep(i8),
     /// Start a new row on the active table tab (Params/Headers/Vars):
     /// focuses the editor's table and begins editing the ghost row's key
     /// cell, exactly like clicking "+ Add …". Inert on the Body tab.

@@ -108,6 +108,15 @@ fn manage_noun(tab: Option<crate::components::manage::ManageTab>) -> &'static st
 /// keycap — see [`shows_its_own_keycap`].
 pub fn hint_for(hit: &Hit, keymap: &Keymap, ctx: &HintCtx) -> Option<String> {
     match hint_source(hit, ctx)? {
+        // The split chips name the key that cycles the split, so it can
+        // still be found with the `alt+w` pill gone.
+        Source::Text(s) if matches!(hit, Hit::SplitStop(_)) => {
+            let key = crate::keyroute::spell::spell(ctx.spell, &Action::CycleSplit, keymap);
+            Some(match key {
+                Some(key) => format!("{s} \u{b7} {key}"),
+                None => s,
+            })
+        }
         Source::Text(s) => Some(s),
         Source::Of(action) => {
             Some(describe_action(&action, keymap, !shows_its_own_keycap(hit), ctx.spell))
@@ -253,6 +262,8 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         | Hit::TableCell { .. }
         | Hit::AutoHeaderRow(_)
         | Hit::BodyEditor
+        | Hit::SplitHandle
+        | Hit::SidebarGutter
         | Hit::JsonRow(_)
         | Hit::JsonArrow(_)
         | Hit::ScrollbarThumb(_)
@@ -426,16 +437,13 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::TableCheckbox(_) => text(if ctx.on { "Disable this row" } else { "Enable this row" }),
         Hit::TableCopy(_) => text("Copy this row's value"),
         Hit::TableDelete(_) => text("Delete this row"),
-        Hit::SplitStop(stop) => text(match stop {
-            SplitStop::EditorFull => "Editor full size",
-            SplitStop::EditorBig => "Split 75/25",
-            SplitStop::Even => "Split evenly",
-            SplitStop::ResponseBig => "Split 25/75",
-            SplitStop::ResponseFull => "Response full size",
+        // The chip's key (`· alt+w`) is appended by `hint_for`, which has
+        // the keymap. Only the two end chips exist; `on` is the lit one.
+        Hit::SplitStop(stop) => text(match (stop, ctx.on) {
+            (_, true) => "Restore the split",
+            (SplitStop::EditorFull, false) => "Editor only",
+            (_, false) => "Response only",
         }),
-        Hit::SplitStep(d) => {
-            text(if *d > 0 { "Give the response more room" } else { "Give the editor more room" })
-        }
         Hit::AutoHeaderCopy(_) => text("Copy this header's value"),
         Hit::AutoHeaderOverride(_) => text("Edit this header in the request"),
         Hit::AutoHeaderReveal => {
@@ -656,6 +664,28 @@ mod tests {
         }
     }
 
+    /// With the `alt+w` pill gone from the editor's tab bar, hovering a
+    /// split chip is where the key is named (spec E12). The lit chip
+    /// (`on`) restores the split instead.
+    #[test]
+    fn split_chip_hints_name_alt_w() {
+        let keymap = Keymap::default_bindings();
+        let alt = crate::keys::alt_label();
+        let hint = |stop, on| hint_for(&Hit::SplitStop(stop), &keymap, &HintCtx { on, ..ctx() });
+        assert_eq!(
+            hint(SplitStop::EditorFull, false).unwrap(),
+            format!("Editor only \u{b7} {alt}+w")
+        );
+        assert_eq!(
+            hint(SplitStop::ResponseFull, false).unwrap(),
+            format!("Response only \u{b7} {alt}+w")
+        );
+        assert_eq!(
+            hint(SplitStop::ResponseFull, true).unwrap(),
+            format!("Restore the split \u{b7} {alt}+w")
+        );
+    }
+
     /// A control that paints the key on itself doesn't repeat it: the
     /// Theme chip's own `alt+t` pill sits a hand's width from the footer.
     #[test]
@@ -719,8 +749,7 @@ mod tests {
     }
 
     /// A chip action the palette doesn't list still gets real words, not
-    /// the `Debug` last resort — including the `alt+w` split pill, which
-    /// is a `FooterChip` hit painted on the editor's tab strip.
+    /// the `Debug` last resort — including the sidebar's `alt+w` chip.
     #[test]
     fn chip_actions_outside_the_palette_use_the_fallback_wording() {
         let keymap = Keymap::default_bindings();
@@ -957,7 +986,7 @@ mod tests {
             Hit::ModalRemove,
             Hit::PickerPrimary,
             Hit::ResponseSearchNext,
-            Hit::SplitStep(1),
+            Hit::SplitStop(SplitStop::EditorFull),
             Hit::TipReveal("tok".into()),
             Hit::VmEntryRadio(0),
             Hit::VmPromoteBtn,

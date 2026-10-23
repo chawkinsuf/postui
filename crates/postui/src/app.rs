@@ -1238,6 +1238,9 @@ impl App {
                 matches!(self.sidebar.rows.get(*i), Some(Row::Folder { expanded: true, .. }))
             }
             Hit::AutoHeaderReveal => self.editor.computed.revealed,
+            // The lit end chip restores the split rather than jumping to
+            // that end.
+            Hit::SplitStop(stop) => self.split_state().stop() == Some(*stop),
             // The response toolbar acts on the tab that is up: copy,
             // save, the external editor and search all run over
             // `search_corpus`, the open tab's text. Read from the same
@@ -2132,10 +2135,9 @@ impl App {
         // editor, so the default is mirrored in on every update (spec
         // 2026-10-15 R6).
         self.editor.indent_default = self.ui_settings.default_indent();
-        // Display copies for the panes' split clusters — the app state
-        // stays the authority, the components only light segments from it.
+        // Display copy for the split control — the app state stays the
+        // authority, the editor only lights a chip from it.
         self.editor.split = self.split_state();
-        self.session.response.split = self.editor.split;
         self.sync_pane_collapse_anim();
         self.sync_response_collapse_anim();
         self.sync_split_ratio_anim();
@@ -3567,11 +3569,6 @@ impl App {
             Action::SplitStop(stop) => self.apply_split_stop(stop),
             Action::CycleSplit => self.apply_split_state(self.split_state().cycled(true)),
             Action::CycleSplitBack => self.apply_split_state(self.split_state().cycled(false)),
-            Action::SplitStep(delta) => match self.split_state().stop().and_then(|s| s.step(delta))
-            {
-                Some(stop) => self.apply_split_stop(stop),
-                None => false,
-            },
             Action::FormatBody => {
                 self.no_coalesce = true;
                 // The body's own indent (spec 2026-10-15 R10).

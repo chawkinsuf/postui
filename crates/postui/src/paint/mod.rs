@@ -39,10 +39,7 @@ pub use property::{
 };
 pub use ring::ring;
 pub use rows::{ListRow, RowHighlight};
-pub use split_control::{
-    SPLIT_CONTROL_WIDTH, SPLIT_SEGMENT_WIDTH, STEP_CONTROL_WIDTH, STEP_SEGMENT_WIDTH, SplitControl,
-    StepControl, split_glyph,
-};
+pub use split_control::{SPLIT_CONTROL_WIDTH, SPLIT_SEGMENT_WIDTH, SplitControl};
 
 /// How far a Disabled control's label/content blends toward its own fill
 /// from `theme.text_muted` (via `theme::mix`). Shared by [`Button`] and

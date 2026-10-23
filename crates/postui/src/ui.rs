@@ -101,6 +101,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             // panes — the surviving separator now that panes no longer
             // draw a `│` border of their own.
             crate::paint::fill(frame.buffer_mut(), layout.gutter, app.theme.page);
+            // It is also the sidebar's drag handle. Its look stays as it
+            // is (spec S2): the hit has no hover paint.
+            hits.register(layout.gutter, Hit::SidebarGutter);
             // Recomputed every draw the Headers tab is showing (spec §6,
             // Task 10): cheap (small N), and keeps the computed section
             // live across an env switch or an in-progress edit without

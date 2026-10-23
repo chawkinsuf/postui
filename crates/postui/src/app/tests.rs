@@ -17214,8 +17214,8 @@ fn the_new_entry_button_starts_the_ghost_row_and_edit_fields_opens_the_editor() 
 }
 
 /// Every button inside the request panel focuses it on click — send,
-/// copy-URL, the TLS lock, the split control and its alt+w pill, and the
-/// Body toolbar chips — not just its text surfaces (URL bar, tabs, tables).
+/// copy-URL, the TLS lock, the split control, and the Body toolbar chips
+/// — not just its text surfaces (URL bar, tabs, tables).
 #[tokio::test]
 async fn request_panel_buttons_focus_the_editor_pane() {
     let mut app = App::new_for_test();
@@ -17225,10 +17225,9 @@ async fn request_panel_buttons_focus_the_editor_pane() {
     let buttons = [
         Hit::SendButton,
         Hit::CopyUrl,
-        Hit::SplitStop(crate::split::SplitStop::Even),
+        Hit::SplitStop(crate::split::SplitStop::EditorFull),
         Hit::FooterChip(Action::ToggleInsecure),
         Hit::FooterChip(Action::FormatBody),
-        Hit::FooterChip(Action::CycleSplit),
     ];
     for hit in buttons {
         app.update(Action::FocusPane(PaneId::Response));
@@ -17274,9 +17273,11 @@ fn every_named_action_is_mouse_reachable() {
         // forward half is the `alt+←→ tabs` footer chip on every
         // strip, and each strip's tabs are clickable directly.
         Action::CycleTabs(-1),
-        // shift+alt+w walks the split stops backward; every stop is also a
-        // directly clickable chip on the split control (`Hit::SplitStop`),
-        // and the forward cycle's alt+w pill is the strip's mouse path.
+        // alt+w and shift+alt+w walk the split stops; the mouse's
+        // equivalents are the two end chips on the split control
+        // (`Hit::SplitStop`) and dragging the response header strip
+        // (`Hit::SplitHandle`), which reach every state the cycle does.
+        Action::CycleSplit,
         Action::CycleSplitBack,
     ];
 
@@ -17747,29 +17748,35 @@ fn cycle_split_steps_through_every_stop_and_wraps() {
     );
 }
 
-/// `Action::SplitStep` (the response header's ▲/▼ buttons) nudges the
-/// split exactly one stop per press and stalls at the endpoints rather
-/// than wrapping — the button at the edge is a no-op, not a jump across
-/// the column.
+/// Clicking the lit end chip again restores the split to the share it
+/// had (spec E9), through the real chip in the editor's tab-bar row.
 #[test]
-fn split_step_moves_one_stop_and_stalls_at_the_ends() {
-    use crate::split::SplitStop::*;
+fn clicking_the_lit_chip_restores_the_split() {
+    use crate::split::SplitStop;
     let mut app = App::new_for_test();
-    assert_eq!(app.split_state().stop(), Some(Even));
-    app.update(Action::SplitStep(1));
-    assert_eq!(app.split_state().stop(), Some(ResponseBig), "▲ grows the response");
-    app.update(Action::SplitStep(1));
-    assert_eq!(app.split_state().stop(), Some(ResponseFull));
-    assert!(app.table_collapsed);
-    app.update(Action::SplitStep(1));
-    assert_eq!(app.split_state().stop(), Some(ResponseFull), "stalls at the bottom stop");
-    for _ in 0..4 {
-        app.update(Action::SplitStep(-1));
+    app.split_ratio = 0.6;
+    click_hit(&mut app, Hit::SplitStop(SplitStop::EditorFull));
+    assert!(app.session.response.collapsed, "the first click minimizes the response");
+    assert!(!app.table_collapsed);
+    click_hit(&mut app, Hit::SplitStop(SplitStop::EditorFull));
+    assert!(!app.session.response.collapsed, "the lit chip restores both panes");
+    assert!(!app.table_collapsed);
+    assert_eq!(app.split_ratio, 0.6);
+}
+
+/// A press on either drag handle (the response header strip, the sidebar
+/// gutter) is harmless until the drag exists: it moves no focus and
+/// changes no size.
+#[test]
+fn a_press_on_a_drag_handle_changes_nothing_yet() {
+    for hit in [Hit::SplitHandle, Hit::SidebarGutter] {
+        let mut app = App::new_for_test();
+        app.update(Action::FocusPane(PaneId::Editor));
+        let (split, width) = (app.split_state(), app.sidebar_width);
+        click_hit(&mut app, hit.clone());
+        assert_eq!(app.focus, PaneId::Editor, "{hit:?} must not move focus");
+        assert_eq!((app.split_state(), app.sidebar_width), (split, width), "{hit:?}");
     }
-    assert_eq!(app.split_state().stop(), Some(EditorFull), "▼ shrinks the response");
-    assert!(app.session.response.collapsed);
-    app.update(Action::SplitStep(-1));
-    assert_eq!(app.split_state().stop(), Some(EditorFull), "stalls at the top stop");
 }
 
 /// The split is a persisted layout preference: chip presses and the
