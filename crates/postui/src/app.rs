@@ -75,10 +75,15 @@ pub struct Drag {
 /// not where the drag ends, decides whether the end saves: a drag that
 /// never moved anything was a click and has nothing to save, while one
 /// that moved saves even back where it began.
+///
+/// `tracked` records whether the drag has had `Drag(Left)` motion, which
+/// proves the terminal tracks the button: a bare `Moved` after it means
+/// the button is up and its release was lost.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ResizeDrag {
     pub kind: ResizeHandle,
     pub moved: bool,
+    pub tracked: bool,
 }
 
 /// Which handle a [`ResizeDrag`] is moving.
@@ -380,6 +385,12 @@ pub struct App {
     /// A live pane resize (the sidebar gutter or the response header
     /// strip), or `None`.
     pub resize: Option<ResizeDrag>,
+    /// The last `Screen::Main` frame's layout, written by each Main draw:
+    /// what every pane-sizing path (the drags, the keyboard and palette
+    /// steps) measures against. A frame of another screen leaves it, so a
+    /// sidebar step from the Manage screen still applies to the Main
+    /// layout. `None` before the first Main frame.
+    pub(crate) main_layout: Option<crate::layout::AppLayout>,
     /// A left press on a sidebar request row: `(row index, slug)`. Armed
     /// by `on_hit`, cleared on release; becomes a live row drag the moment
     /// the pointer moves onto another row (see `mouse.rs`).
@@ -1791,6 +1802,7 @@ impl App {
             drag: None,
             text_drag: None,
             resize: None,
+            main_layout: None,
             sidebar_press: None,
             manage_press: None,
             table_collapsed: false,
@@ -2331,9 +2343,9 @@ impl App {
     }
 
     /// Moves the sidebar's edge toward `want` columns, clamped to what the
-    /// last frame's body can hold (spec S5). Returns whether the edge
-    /// moved; with no frame drawn yet there is no body to measure, and
-    /// nothing changes.
+    /// last Main frame's body can hold (spec S5). Returns whether the edge
+    /// moved; with no Main frame drawn yet there is no body to measure,
+    /// and nothing changes.
     ///
     /// Measured against the edge on screen, not the stored width, and only
     /// ever the way the user asked: the clamp can land on the other side
@@ -2343,27 +2355,17 @@ impl App {
     /// into a fixed width. Either way nothing changes, the stored value
     /// included.
     fn set_sidebar_cols(&mut self, want: i32) -> bool {
-        let (Some(sidebar), Some(body)) =
-            (self.hits.rect_of(&Hit::Pane(PaneId::Sidebar)), self.drawn_body_cols())
-        else {
+        let Some(layout) = self.main_layout else {
             return false;
         };
-        let drawn = i32::from(sidebar.width);
-        let next = crate::layout::clamp_sidebar_cols(body, want);
+        let drawn = i32::from(layout.sidebar.width);
+        let next = crate::layout::clamp_sidebar_cols(layout.body.width, want);
         let step = i32::from(next) - drawn;
         if step == 0 || step.signum() != (want - drawn).signum() {
             return false;
         }
         self.sidebar_width = Some(next);
         true
-    }
-
-    /// The last frame's body width in columns: the sidebar, the gutter and
-    /// the main column. `None` before a frame is drawn.
-    fn drawn_body_cols(&self) -> Option<u16> {
-        let sidebar = self.hits.rect_of(&Hit::Pane(PaneId::Sidebar))?;
-        let editor = self.hits.rect_of(&Hit::Pane(PaneId::Editor))?;
-        Some(sidebar.width + 1 + editor.width)
     }
 
     /// Records the sidebar width as the project's persisted layout
@@ -2403,14 +2405,14 @@ impl App {
         self.focus == PaneId::Sidebar && self.screen == Screen::Main
     }
 
-    /// Moves the sidebar's edge `delta` columns from where the last frame
-    /// drew it, so the first step from the unset 28% default starts at the
-    /// width on screen (spec S6). It stops at the limits (S5) with no wrap,
-    /// and saves on a change (P2). A step that can't move the edge its way
-    /// changes nothing ([`Self::set_sidebar_cols`]), so a saved width the
-    /// window squeezes stays saved.
+    /// Moves the sidebar's edge `delta` columns from where the last Main
+    /// frame drew it, so the first step from the unset 28% default starts
+    /// at the width on screen (spec S6). It stops at the limits (S5) with
+    /// no wrap, and saves on a change (P2). A step that can't move the edge
+    /// its way changes nothing ([`Self::set_sidebar_cols`]), so a saved
+    /// width the window squeezes stays saved.
     fn step_sidebar(&mut self, delta: i32) -> bool {
-        let Some(drawn) = self.hits.rect_of(&Hit::Pane(PaneId::Sidebar)).map(|r| r.width) else {
+        let Some(drawn) = self.main_layout.map(|l| l.sidebar.width) else {
             return false;
         };
         if !self.set_sidebar_cols(i32::from(drawn) + delta) {
@@ -2441,7 +2443,7 @@ impl App {
     /// at, un-eased, through the same clamp and snaps as a drag, and saves
     /// a change: the body of every `ctrl+w` height key.
     fn move_split_line(&mut self, to: impl FnOnce(u16, i32) -> i32) -> bool {
-        let Some(column) = self.split_column() else {
+        let Some(column) = self.main_layout.map(|l| l.main) else {
             return false;
         };
         let now = self.split_state();
@@ -2463,16 +2465,6 @@ impl App {
         self.set_split_now(next);
         self.persist_split();
         true
-    }
-
-    /// The last frame's main column (editor over response): what the
-    /// row-counting ways of moving the split line (the strip drag, the
-    /// `ctrl+w` height keys) measure rows against. `None` before a frame
-    /// is drawn.
-    fn split_column(&self) -> Option<ratatui::layout::Rect> {
-        let editor = self.hits.rect_of(&Hit::Pane(PaneId::Editor))?;
-        let response = self.hits.rect_of(&Hit::Pane(PaneId::Response))?;
-        Some(editor.union(response))
     }
 
     /// Vim's `{N}<C-w>>` `<` `+` `-` (spec S7, E13), as Vim 9.1 resizes
@@ -2516,8 +2508,8 @@ impl App {
             (_, ResizeDir::Even) => {
                 let split = self.apply_split_stop(crate::split::SplitStop::Even);
                 let sidebar = self
-                    .drawn_body_cols()
-                    .is_some_and(|body| self.set_sidebar_cols((i32::from(body) - 1) / 2));
+                    .main_layout
+                    .is_some_and(|l| self.set_sidebar_cols((i32::from(l.body.width) - 1) / 2));
                 if sidebar {
                     self.persist_sidebar();
                 }
@@ -2544,10 +2536,10 @@ impl App {
         };
         match drag.kind {
             ResizeHandle::Sidebar => {
-                let Some(sidebar) = self.hits.rect_of(&Hit::Pane(PaneId::Sidebar)) else {
+                let Some(layout) = self.main_layout else {
                     return false;
                 };
-                self.set_sidebar_cols(i32::from(column) - i32::from(sidebar.x))
+                self.set_sidebar_cols(i32::from(column) - i32::from(layout.sidebar.x))
             }
             ResizeHandle::Split { grab, press, start } => {
                 // Motion on the pressed row before the drag has moved
@@ -2562,7 +2554,7 @@ impl App {
                 if !drag.moved && row == press {
                     return false;
                 }
-                let Some(main) = self.split_column() else {
+                let Some(main) = self.main_layout.map(|l| l.main) else {
                     return false;
                 };
                 let editor_rows = i32::from(row) - i32::from(grab) - i32::from(main.y);
@@ -3556,10 +3548,11 @@ impl App {
             Action::OpenPalette => {
                 use crate::components::modal::Modal;
                 use crate::components::palette::PaletteState;
-                self.push_modal(Modal::Palette(PaletteState::new(
-                    &self.usage,
-                    crate::usage::now(),
-                )));
+                // Whether the split keys step the sidebar is known only
+                // here, where the palette is opened from a focus.
+                let palette = PaletteState::new(&self.usage, crate::usage::now())
+                    .with_split_keys_step_sidebar(self.split_keys_step_sidebar());
+                self.push_modal(Modal::Palette(palette));
                 true
             }
             Action::Close => {

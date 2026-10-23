@@ -94,6 +94,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.session.response.set_vim_cursor(vim);
     match screen {
         Screen::Main => {
+            app.main_layout = Some(layout);
             hits.register(layout.sidebar, Hit::Pane(PaneId::Sidebar));
             hits.register(layout.editor, Hit::Pane(PaneId::Editor));
             hits.register(layout.response, Hit::Pane(PaneId::Response));

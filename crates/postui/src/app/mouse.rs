@@ -171,10 +171,20 @@ impl App {
                 // handle (it stays lit) until the release. It follows
                 // `Moved` too, for the reason this arm's header gives:
                 // terminals that don't track button state report a held
-                // drag as `Moved`. A release that never arrives is caught
-                // by the next press or a focus loss, which end the resize
-                // where it got to and save it (spec P2a).
-                if self.resize.is_some() {
+                // drag as `Moved`. Once this drag has had a `Drag(Left)`,
+                // though, the terminal does track it, so a bare `Moved`
+                // means the button is up and the release was lost (review
+                // round 7 M5): the resize ends there, as a release would,
+                // and the `Moved` is a hover. Any other lost release is
+                // caught by the next press or a focus loss. Every end keeps
+                // the size where it got to and saves it (spec P2a).
+                if let Some(drag) = &mut self.resize {
+                    if m.kind == MouseEventKind::Moved && drag.tracked {
+                        self.finish_resize();
+                        self.resync_hover();
+                        return true;
+                    }
+                    drag.tracked |= m.kind != MouseEventKind::Moved;
                     return self.resize_to(m.column, m.row) && self.update(Action::Render);
                 }
                 // A press armed on a row becomes a drag the moment the
@@ -1772,7 +1782,7 @@ impl App {
                         }
                     }
                 };
-                self.resize = Some(ResizeDrag { kind, moved: false });
+                self.resize = Some(ResizeDrag { kind, moved: false, tracked: false });
                 if self.hovered.as_ref() != Some(&hit) {
                     self.hovered = Some(hit);
                     self.begin_hover_fade();

@@ -529,6 +529,10 @@ pub struct PaletteState {
     /// changed: on the ex line, Enter with nothing typed runs only a
     /// picked row, as Vim's `:<CR>` runs nothing.
     picked: bool,
+    /// Whether the palette opened where the keymap's split keys step the
+    /// sidebar instead (`App::key_action`, spec S6a): the split rows then
+    /// show no key, since those keys would not run them.
+    split_keys_step_sidebar: bool,
     /// The `:` line's history as it stood when the line opened, oldest
     /// first (plan M5b Task 5). Empty for ctrl+p's palette.
     history: Vec<String>,
@@ -564,10 +568,17 @@ impl PaletteState {
             pinned: None,
             refused: None,
             picked: false,
+            split_keys_step_sidebar: false,
             history: Vec::new(),
             hist_at: None,
             lookfor: None,
         }
+    }
+
+    /// Records where the palette opened: whether the split keys step the
+    /// sidebar there (see the field).
+    pub fn with_split_keys_step_sidebar(self, split_keys_step_sidebar: bool) -> Self {
+        Self { split_keys_step_sidebar, ..self }
     }
 
     /// The same palette opened by vim's `:` (spec §5.9), reading its query
@@ -872,6 +883,16 @@ impl PaletteState {
         stepped
     }
 
+    /// The key `c`'s row shows: the combo the keymap binds to its action,
+    /// unless that key means something else where the palette opened.
+    pub(crate) fn key_column(&self, c: &Command, keymap: &crate::keys::Keymap) -> Option<String> {
+        let split = matches!(c.action, Action::CycleSplit | Action::CycleSplitBack);
+        if split && self.split_keys_step_sidebar {
+            return None;
+        }
+        keymap_action_name(c.id).and_then(|n| keymap.combo_for(n))
+    }
+
     #[cfg(test)]
     fn filtered_is_empty_for_test(&self) -> bool {
         self.filtered.is_empty()
@@ -967,11 +988,7 @@ impl PaletteState {
                 (0, Some(row)) => (row.caption, "Ex command", Some(format!(":{}", row.name))),
                 _ => {
                     let c = &self.filtered[i - self.offset()];
-                    (
-                        c.name,
-                        c.description,
-                        keymap_action_name(c.id).and_then(|n| keymap.combo_for(n)),
-                    )
+                    (c.name, c.description, self.key_column(c, keymap))
                 }
             };
             let title_row = list_area.y + ((i - self.scroll) as u16) * 2;
@@ -1108,8 +1125,7 @@ mod tests {
 
     /// Spec S6b: the sidebar's width steps are in the palette, so a
     /// keyboard user can find them. They send the sidebar-only step, and
-    /// show no key: `alt+w` steps the sidebar only while it has focus, and
-    /// the key column has no focus to tell by.
+    /// show no key: `alt+w` steps the sidebar only while it has focus.
     #[test]
     fn palette_carries_the_sidebar_width_steps() {
         let step = crate::layout::SIDEBAR_STEP_COLS;

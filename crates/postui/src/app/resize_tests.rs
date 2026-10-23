@@ -241,6 +241,52 @@ fn a_lost_release_keeps_the_size_and_ends_the_drag() {
     assert_eq!(saved_width(&app), Some(24), "and saving it");
 }
 
+/// Review round 7 M5 (P2a): a drag that has had `Drag(Left)` motion shows
+/// the terminal tracks the button, so a later bare `Moved` means the button
+/// is up and its release was lost. The resize ends there, kept and saved,
+/// and the `Moved` is a hover: its row or column moves nothing.
+#[test]
+fn a_bare_move_after_drag_motion_ends_the_resize() {
+    let mut app = App::new_for_test();
+    render(&mut app);
+    let editor = pane_rows(&app, PaneId::Editor);
+    let (x, y) = handle_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_drag(x, y + 3));
+    render(&mut app);
+    assert!(app.handle_mouse(moved(x, y + 6)), "the end repaints");
+    assert!(app.resize.is_none(), "the bare move ended the resize");
+    render(&mut app);
+    assert_eq!(pane_rows(&app, PaneId::Editor), editor + 3, "kept; the move's row moved nothing");
+    let saved = postui_core::fixtures::load_local_state(app.proj().root()).unwrap().main_split;
+    assert_eq!(saved, Some(app.split_state().to_token()), "saved");
+
+    let (x, y) = gutter_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_drag(24, y));
+    app.handle_mouse(moved(40, y));
+    assert!(app.resize.is_none(), "the gutter's too");
+    assert_eq!((app.sidebar_width, saved_width(&app)), (Some(24), Some(24)), "kept and saved");
+    assert_eq!(app.hovered, app.hits.hit_at_ignoring_var_tokens(40, y).cloned(), "a hover");
+}
+
+/// Review round 7 M5: a terminal that reports a held drag only as `Moved`
+/// (it doesn't track buttons) still drives the resize with it.
+#[test]
+fn a_moved_only_drag_still_follows_the_pointer() {
+    let mut app = App::new_for_test();
+    render(&mut app);
+    let (x, y) = gutter_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(moved(24, y));
+    render(&mut app);
+    app.handle_mouse(moved(30, y));
+    assert!(app.resize.is_some(), "still live");
+    assert_eq!(app.sidebar_width, Some(30), "following the pointer");
+    app.handle_mouse(left_up(30, y));
+    assert_eq!(saved_width(&app), Some(30));
+}
+
 #[test]
 fn right_click_and_focus_loss_end_a_resize_keeping_it() {
     for via_focus_loss in [false, true] {
@@ -946,6 +992,60 @@ fn the_palette_widens_and_narrows_the_sidebar_from_the_editor() {
         assert_eq!(i32::from(sidebar_cols(&app)), w + delta, "{id}");
         assert_eq!(app.focus, PaneId::Editor, "{id}");
     }
+}
+
+/// Review round 7 M4 (S6a): the palette's split rows name the split keys
+/// only where those keys move the split. Opened from the sidebar, where
+/// `alt+w` widens the sidebar, they show no key; from the editor they show
+/// `alt+w` and `alt+shift+w`.
+#[test]
+fn the_palette_names_the_split_keys_only_where_they_move_the_split() {
+    let alt = crate::keys::alt_label();
+    for (focus, keys) in [
+        (PaneId::Sidebar, [None, None]),
+        (PaneId::Editor, [Some(format!("{alt}+w")), Some(format!("{alt}+shift+w"))]),
+    ] {
+        let mut app = App::new_for_test();
+        app.update(Action::FocusPane(focus));
+        render(&mut app);
+        app.update(Action::OpenPalette);
+        let Some(Modal::Palette(palette)) = app.modals.top() else {
+            panic!("{focus:?}: the palette is open");
+        };
+        let shown = ["split-step", "split-step-back"].map(|id| {
+            let row = palette.filtered().iter().find(|c| c.id == id).expect(id);
+            palette.key_column(row, &app.keymap)
+        });
+        assert_eq!(shown, keys, "{focus:?}");
+    }
+}
+
+/// Review round 7 M2: sizing measures the last Main frame's layout, which
+/// a frame of another screen leaves in place (the sidebar width is a Main
+/// screen property), so a step from the Manage screen still moves the edge
+/// and is saved.
+#[test]
+fn step_sidebar_from_the_manage_screen_widens_the_sidebar() {
+    let step = crate::layout::SIDEBAR_STEP_COLS;
+    let mut app = App::new_for_test();
+    render(&mut app);
+    let w = sidebar_cols(&app);
+    app.update(Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Spaces) });
+    render(&mut app);
+    assert_eq!(app.screen, Screen::Manage);
+    assert!(app.update(Action::StepSidebar(step)));
+    let widened = w + step.unsigned_abs();
+    assert_eq!(app.sidebar_width, Some(widened));
+    assert_eq!(saved_width(&app), Some(widened), "saved on the step");
+}
+
+/// Review round 7 M2: with no Main frame ever drawn there is nothing to
+/// measure, and a step changes nothing.
+#[test]
+fn step_sidebar_before_any_frame_is_a_no_op() {
+    let mut app = App::new_for_test();
+    assert!(!app.update(Action::StepSidebar(crate::layout::SIDEBAR_STEP_COLS)));
+    assert_eq!(app.sidebar_width, None);
 }
 
 /// S7, E13: the plan's Vim 9.1 table, one assertion per row. `>`/`<` act

@@ -443,6 +443,69 @@ mod tests {
         assert_eq!(p2.local().sidebar_width, Some(40));
     }
 
+    /// An entry's op count and how many of its ops write `state.toml`.
+    type Counts = (usize, usize);
+
+    /// `e`'s [`Counts`].
+    fn op_counts(e: &Entry) -> Counts {
+        let state = e
+            .ops
+            .iter()
+            .filter(|op| matches!(op, Op::Text { path, .. } if path.as_str() == STATE_TOML))
+            .count();
+        (e.ops.len(), state)
+    }
+
+    /// A space rename whose entry rewrites `state.toml` (the space is the
+    /// active one) and a resize, then five undo/redo pairs, with `resize`
+    /// run before each undo and each redo. Returns the rename's entry's
+    /// counts and, per cycle, the counts of the entry the undo pushed and
+    /// the one the redo pushed.
+    fn cycle_counts(resize: impl Fn(&mut Project, u16)) -> (Counts, Vec<(Counts, Counts)>) {
+        let (_dir, mut p) = fixture();
+        p.set_active_space("auth");
+        p.persist_local().unwrap();
+        p.rename_space("auth", "Login").unwrap();
+        let first = op_counts(p.journal.peek_undo().unwrap());
+        p.set_sidebar_width(Some(30));
+        p.set_main_split(Some("70".into()));
+        let mut cycles = Vec::new();
+        for i in 0..5u16 {
+            resize(&mut p, 2 * i);
+            p.undo().unwrap().unwrap();
+            let undone = op_counts(p.journal.peek_redo().unwrap());
+            resize(&mut p, 2 * i + 1);
+            p.redo().unwrap().unwrap();
+            let redone = op_counts(p.journal.peek_undo().unwrap());
+            cycles.push((undone, redone));
+        }
+        (first, cycles)
+    }
+
+    /// Review round 7 M1: after a resize, `reload_all` writes the sizes
+    /// back inside the replay's recording window, so the first undo's entry
+    /// carries one more `state.toml` write than the op's. With no resize
+    /// between the undos and redos, that is where it stays.
+    #[test]
+    fn undo_redo_after_a_resize_keeps_entries_bounded() {
+        let (first, cycles) = cycle_counts(|_, _| {});
+        let settled = (first.0 + 1, first.1 + 1);
+        assert_eq!(cycles, vec![(settled, settled); 5], "the rename's entry: {first:?}");
+    }
+
+    /// Review round 7 M1: a resize before each undo and each redo makes the
+    /// write-back a new op every time, on top of every `state.toml` op the
+    /// entry already had, so each replay's entry is one op longer than the
+    /// last. Asserts the bounded behaviour, which today fails.
+    // round 7 M1: pins unbounded growth, decision pending
+    #[test]
+    #[ignore]
+    fn undo_redo_with_a_resize_between_keeps_entries_bounded() {
+        let (first, cycles) = cycle_counts(|p, n| p.set_sidebar_width(Some(31 + n)));
+        let settled = (first.0 + 1, first.1 + 1);
+        assert_eq!(cycles, vec![(settled, settled); 5], "the rename's entry: {first:?}");
+    }
+
     /// `.local/state.toml` does not exist yet when this op runs.
     /// `run_transaction` now materialises it from pre-op memory before any
     /// journaled write happens, so this op's own `state.toml` write is no

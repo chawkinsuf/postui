@@ -23,6 +23,7 @@ impl PaneId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppLayout {
     pub header: Rect,
     /// The full-width area between the header and footer, before it's
@@ -36,6 +37,9 @@ pub struct AppLayout {
     /// between them now that panes no longer paint a `│` border of their
     /// own.
     pub gutter: Rect,
+    /// The main column right of the gutter, which `editor` and `response`
+    /// split between them: what the split line's rows count against.
+    pub main: Rect,
     pub editor: Rect,
     pub response: Rect,
     pub footer: Rect,
@@ -159,6 +163,7 @@ pub fn compute_layout(
         body,
         sidebar: cols[0],
         gutter: cols[1],
+        main: cols[2],
         editor,
         response,
         footer: rows[2],
