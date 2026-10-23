@@ -594,15 +594,15 @@ impl App {
                 let had_text = self.text_drag.take().is_some();
                 let ended = self.drag.take().is_some() || had_text;
                 // A resize ends where it got to, saved. A strip press whose
-                // line never moved was a click, and a click on the strip
-                // focuses the response, as it did before the strip was a
-                // handle (amendment T4-1). Hover was frozen on the handle
-                // for the drag: it re-resolves under the pointer now.
+                // drag never moved the line was a click, and a click on the
+                // strip focuses the response, as it did before the strip
+                // was a handle (amendment T4-1). Asked of the drag, not of
+                // where it ended: one that moved and came back is no click.
+                // Hover was frozen on the handle for the drag: it
+                // re-resolves under the pointer now.
                 if self.resize.is_some() {
-                    let clicked = matches!(
-                        self.resize,
-                        Some(ResizeDrag::Split { start, .. }) if start == self.split_state()
-                    );
+                    let clicked =
+                        matches!(self.resize, Some(ResizeDrag::Split { moved: false, .. }));
                     self.finish_resize();
                     if clicked {
                         self.update(Action::FocusPane(PaneId::Response));
@@ -842,7 +842,7 @@ impl App {
             PointerShape::Grabbing
         } else {
             match self.resize {
-                Some(ResizeDrag::Sidebar) => PointerShape::ColResize,
+                Some(ResizeDrag::Sidebar { .. }) => PointerShape::ColResize,
                 Some(ResizeDrag::Split { .. }) => PointerShape::RowResize,
                 None => PointerShape::for_hit(self.hovered.as_ref()),
             }
@@ -1734,12 +1734,13 @@ impl App {
             // strip stays lit wherever the pointer goes.
             Hit::SidebarGutter | Hit::SplitHandle => {
                 self.resize = Some(match hit {
-                    Hit::SidebarGutter => ResizeDrag::Sidebar,
+                    Hit::SidebarGutter => ResizeDrag::Sidebar { moved: false },
                     _ => {
                         let top = self.hits.rect_of(&Hit::SplitHandle).map_or(m.row, |r| r.y);
                         ResizeDrag::Split {
                             grab: m.row.saturating_sub(top),
                             start: self.split_state(),
+                            moved: false,
                         }
                     }
                 });

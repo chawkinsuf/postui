@@ -89,23 +89,21 @@ impl Default for SplitState {
 }
 
 impl SplitState {
-    /// The editor's share as the column currently sits: 1.0 with the
-    /// response minimized, 0.0 with the editor minimized, else `ratio`.
-    pub fn position(self) -> f32 {
-        if self.response_minimized {
-            1.0
-        } else if self.editor_minimized {
-            0.0
-        } else {
-            self.ratio
-        }
-    }
-
     /// The stop this state sits at — the control's lit chip — or `None`
-    /// when a dragged share sits between stops.
+    /// when a dragged share sits between stops. The end stops are the
+    /// minimized flags, never a share: a free share at 1.0 or 0.0 (a
+    /// hand-written token) still shows both panes, so lighting an end chip
+    /// for it would offer "restore" where its click minimizes.
     pub fn stop(self) -> Option<SplitStop> {
-        let position = self.position();
-        SplitStop::ALL.into_iter().find(|s| (s.share() - position).abs() < STOP_TOLERANCE)
+        if self.response_minimized {
+            return Some(SplitStop::EditorFull);
+        }
+        if self.editor_minimized {
+            return Some(SplitStop::ResponseFull);
+        }
+        [SplitStop::EditorBig, SplitStop::Even, SplitStop::ResponseBig]
+            .into_iter()
+            .find(|s| (s.share() - self.ratio).abs() < STOP_TOLERANCE)
     }
 
     /// The state after clicking `stop`'s chip: a direct jump — every
@@ -142,15 +140,21 @@ impl SplitState {
             Some(stop) if forward => stop.next(),
             Some(stop) => stop.prev(),
             None => {
-                let position = self.position();
-                let found = if forward {
-                    SplitStop::ALL.into_iter().find(|s| s.share() < position)
-                } else {
-                    SplitStop::ALL.into_iter().rev().find(|s| s.share() > position)
+                // Only an unflagged state gets here (`stop` names every
+                // flagged one), and its minimized ends lie beyond any free
+                // share, even one of 1.0 or 0.0: rank them past the range
+                // so either way always finds a stop.
+                let rank = |s: SplitStop| match s {
+                    SplitStop::EditorFull => f32::INFINITY,
+                    SplitStop::ResponseFull => f32::NEG_INFINITY,
+                    middle => middle.share(),
                 };
-                // The ends are stops (1.0 and 0.0) and the share is in
-                // [0, 1], so one side always has a stop to go to.
-                found.expect("a share between stops has a stop each way")
+                let found = if forward {
+                    SplitStop::ALL.into_iter().find(|s| rank(*s) < self.ratio)
+                } else {
+                    SplitStop::ALL.into_iter().rev().find(|s| rank(*s) > self.ratio)
+                };
+                found.expect("a free share has a minimized end each way")
             }
         };
         self.apply(target)
@@ -296,6 +300,41 @@ mod tests {
         assert_eq!(s, SplitState { editor_minimized: true, ratio: 0.1, ..Default::default() });
         let s = ratio(0.9).cycled(false);
         assert_eq!(s, SplitState { response_minimized: true, ratio: 0.9, ..Default::default() });
+    }
+
+    /// Review F6: the end stops are the minimized flags, never a share. A
+    /// free share at either end (a token of `1` or `0`) shows both panes,
+    /// so no end chip is lit, and that end's chip minimizes.
+    #[test]
+    fn an_unflagged_share_at_an_end_is_no_stop() {
+        assert_eq!(ratio(1.0).stop(), None);
+        assert_eq!(ratio(0.0).stop(), None);
+        assert_eq!(ratio(0.9995).stop(), None);
+        assert_eq!(
+            ratio(1.0).apply(EditorFull),
+            SplitState { response_minimized: true, ratio: 1.0, ..Default::default() }
+        );
+        assert_eq!(
+            ratio(0.0).apply(ResponseFull),
+            SplitState { editor_minimized: true, ratio: 0.0, ..Default::default() }
+        );
+    }
+
+    /// From a free share at an end, the cycle still goes to the nearest
+    /// stop each way: the minimized end lies beyond the share, the middle
+    /// stops the other way.
+    #[test]
+    fn cycled_from_an_unflagged_end_share() {
+        assert_eq!(ratio(1.0).cycled(true), at(75));
+        assert_eq!(
+            ratio(1.0).cycled(false),
+            SplitState { response_minimized: true, ratio: 1.0, ..Default::default() }
+        );
+        assert_eq!(ratio(0.0).cycled(false), at(25));
+        assert_eq!(
+            ratio(0.0).cycled(true),
+            SplitState { editor_minimized: true, ratio: 0.0, ..Default::default() }
+        );
     }
 
     #[test]

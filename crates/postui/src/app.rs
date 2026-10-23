@@ -70,15 +70,21 @@ pub struct Drag {
 /// A live pane resize (task #90): armed by a press on one of the two
 /// handles, driven by motion, and ended — kept and saved — by the release
 /// or by any lost-release cleanup (spec P2, P2a).
+///
+/// `moved` records whether any motion of this drag changed a size. It,
+/// not where the drag ends, decides what the release means: a drag that
+/// never moved anything was a click (the strip's focuses the response) and
+/// has nothing to save, while one that moved is never a click, even back
+/// where it began.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ResizeDrag {
     /// The sidebar gutter: the pointer's column is the new gutter column.
-    Sidebar,
+    Sidebar { moved: bool },
     /// The response header strip. `grab` is the pressed row minus the
     /// strip's top row, so the strip keeps its place under the pointer;
     /// `start` is the split at the press, whose share a drag into a
     /// minimized end keeps (E9a).
-    Split { grab: u16, start: crate::split::SplitState },
+    Split { grab: u16, start: crate::split::SplitState, moved: bool },
 }
 
 /// Which text surface a left-button drag is sweeping a selection over,
@@ -2239,9 +2245,7 @@ impl App {
         else {
             return;
         };
-        self.table_collapsed = s.editor_minimized;
-        self.session.response.collapsed = s.response_minimized;
-        self.split_ratio = s.ratio;
+        self.set_split_fields(s);
     }
 
     /// Seeds the sidebar width from the project's saved preference
@@ -2273,9 +2277,7 @@ impl App {
     /// actually moved.
     fn apply_split_state(&mut self, next: crate::split::SplitState) -> bool {
         let prev = self.split_state();
-        self.table_collapsed = next.editor_minimized;
-        self.session.response.collapsed = next.response_minimized;
-        self.split_ratio = next.ratio;
+        self.set_split_fields(next);
         // `sync_pane_collapse_anim` / `sync_response_collapse_anim` /
         // `sync_split_ratio_anim` (run on every `update`) ease whichever
         // of the three the jump actually moved.
@@ -2285,15 +2287,22 @@ impl App {
         next != prev
     }
 
+    /// Stores `s` in the three fields [`Self::split_state`] reads — the
+    /// one place they are written together. Callers add what their change
+    /// needs: the save, or the un-eased snap.
+    fn set_split_fields(&mut self, s: crate::split::SplitState) {
+        self.table_collapsed = s.editor_minimized;
+        self.session.response.collapsed = s.response_minimized;
+        self.split_ratio = s.ratio;
+    }
+
     /// Sets the split to `s` with no easing: a live drag's line follows
     /// the pointer row by row (spec E5, E14). The three anims snap to the
     /// new values and their `*_target` fields follow, so the `sync_*`
     /// passes `update` runs find nothing to ease. Saves nothing; the drag
     /// saves once at its end (P2).
     fn set_split_now(&mut self, s: crate::split::SplitState) {
-        self.table_collapsed = s.editor_minimized;
-        self.session.response.collapsed = s.response_minimized;
-        self.split_ratio = s.ratio;
+        self.set_split_fields(s);
         let pole = |on: bool| if on { 1.0 } else { 0.0 };
         self.anims.snap(AnimKey::PaneCollapse, pole(s.editor_minimized));
         self.anims.snap(AnimKey::ResponseCollapse, pole(s.response_minimized));
@@ -2303,9 +2312,18 @@ impl App {
         self.split_ratio_target = s.ratio;
     }
 
-    /// Sets the sidebar to `want` columns, clamped to what the last frame's
-    /// body can hold (spec S5). Returns whether the width changed; with no
-    /// frame drawn yet there is no body to measure, and nothing changes.
+    /// Moves the sidebar's edge toward `want` columns, clamped to what the
+    /// last frame's body can hold (spec S5). Returns whether the edge
+    /// moved; with no frame drawn yet there is no body to measure, and
+    /// nothing changes.
+    ///
+    /// Measured against the edge on screen, not the stored width, and only
+    /// ever the way the user asked: the clamp can land on the other side
+    /// of the drawn edge (a 28% default wider than a narrow window's limit,
+    /// a saved width the window squeezes), and storing that would move the
+    /// edge against the user — or a no-op would turn the unset default
+    /// into a fixed width. Either way nothing changes, the stored value
+    /// included.
     fn set_sidebar_cols(&mut self, want: i32) -> bool {
         let (Some(sidebar), Some(editor)) = (
             self.hits.rect_of(&Hit::Pane(PaneId::Sidebar)),
@@ -2313,11 +2331,15 @@ impl App {
         ) else {
             return false;
         };
+        let drawn = i32::from(sidebar.width);
         let body = sidebar.width + 1 + editor.width;
-        let next = Some(crate::layout::clamp_sidebar_cols(body, want));
-        let changed = next != self.sidebar_width;
-        self.sidebar_width = next;
-        changed
+        let next = crate::layout::clamp_sidebar_cols(body, want);
+        let step = i32::from(next) - drawn;
+        if step == 0 || step.signum() != (want - drawn).signum() {
+            return false;
+        }
+        self.sidebar_width = Some(next);
+        true
     }
 
     /// Records the sidebar width as the project's persisted layout
@@ -2340,17 +2362,14 @@ impl App {
     /// Moves the sidebar's edge `delta` columns from where the last frame
     /// drew it, so the first step from the unset 28% default starts at the
     /// width on screen (spec S6). It stops at the limits (S5) with no wrap,
-    /// and saves on a change (P2). A step that leaves the edge where it is
-    /// drawn changes nothing, so a saved width the window squeezes stays
-    /// saved.
+    /// and saves on a change (P2). A step that can't move the edge its way
+    /// changes nothing ([`Self::set_sidebar_cols`]), so a saved width the
+    /// window squeezes stays saved.
     fn step_sidebar(&mut self, delta: i32) -> bool {
         let Some(drawn) = self.hits.rect_of(&Hit::Pane(PaneId::Sidebar)).map(|r| r.width) else {
             return false;
         };
-        let saved = self.sidebar_width;
-        self.set_sidebar_cols(i32::from(drawn) + delta);
-        if self.sidebar_width == Some(drawn) {
-            self.sidebar_width = saved;
+        if !self.set_sidebar_cols(i32::from(drawn) + delta) {
             return false;
         }
         self.persist_sidebar();
@@ -2364,13 +2383,9 @@ impl App {
     /// one row out of either end shows one row of content. Past either end
     /// it snaps there, keeping the share (E6, E9a).
     fn resize_split_rows(&mut self, editor_delta: i32) -> bool {
-        let (Some(editor), Some(response)) = (
-            self.hits.rect_of(&Hit::Pane(PaneId::Editor)),
-            self.hits.rect_of(&Hit::Pane(PaneId::Response)),
-        ) else {
+        let Some((column, editor)) = self.split_column() else {
             return false;
         };
-        let column = editor.union(response);
         let now = self.split_state();
         let editor_rows = if now.editor_minimized {
             crate::components::editor::CHROME_HEIGHT
@@ -2390,6 +2405,16 @@ impl App {
         self.set_split_now(next);
         self.persist_split();
         true
+    }
+
+    /// The last frame's main column (editor over response) and the
+    /// editor's rect in it — what both ways of moving the split line (the
+    /// strip drag, the `<C-w>+`/`-` step) measure rows against. `None`
+    /// before a frame is drawn.
+    fn split_column(&self) -> Option<(ratatui::layout::Rect, ratatui::layout::Rect)> {
+        let editor = self.hits.rect_of(&Hit::Pane(PaneId::Editor))?;
+        let response = self.hits.rect_of(&Hit::Pane(PaneId::Response))?;
+        Some((editor.union(response), editor))
     }
 
     /// Vim's `{N}<C-w>>` `<` `+` `-` (spec S7, E13), as Vim 9.1 resizes
@@ -2419,24 +2444,33 @@ impl App {
     }
 
     /// Moves the live resize's divider to the pointer at (`column`, `row`),
-    /// measured against the last frame. Returns whether a size changed.
+    /// measured against the last frame. Returns whether a size changed,
+    /// and records a change in the drag's `moved`.
     fn resize_to(&mut self, column: u16, row: u16) -> bool {
+        let changed = self.resize_divider_to(column, row);
+        if changed
+            && let Some(ResizeDrag::Sidebar { moved } | ResizeDrag::Split { moved, .. }) =
+                &mut self.resize
+        {
+            *moved = true;
+        }
+        changed
+    }
+
+    /// [`Self::resize_to`]'s size change, for whichever handle is live.
+    fn resize_divider_to(&mut self, column: u16, row: u16) -> bool {
         match self.resize {
             None => false,
-            Some(ResizeDrag::Sidebar) => {
+            Some(ResizeDrag::Sidebar { .. }) => {
                 let Some(sidebar) = self.hits.rect_of(&Hit::Pane(PaneId::Sidebar)) else {
                     return false;
                 };
                 self.set_sidebar_cols(i32::from(column) - i32::from(sidebar.x))
             }
-            Some(ResizeDrag::Split { grab, start }) => {
-                let (Some(editor), Some(response)) = (
-                    self.hits.rect_of(&Hit::Pane(PaneId::Editor)),
-                    self.hits.rect_of(&Hit::Pane(PaneId::Response)),
-                ) else {
+            Some(ResizeDrag::Split { grab, start, .. }) => {
+                let Some((main, editor)) = self.split_column() else {
                     return false;
                 };
-                let main = editor.union(response);
                 let editor_rows = i32::from(row) - i32::from(grab) - i32::from(main.y);
                 let next = crate::layout::split_for_editor_rows(start, main.height, editor_rows);
                 // A motion that leaves the line on the row it is drawn at
@@ -2458,19 +2492,20 @@ impl App {
 
     /// Ends the live resize, keeping the size it reached, and saves it
     /// (spec P2, P2a). Every way a resize ends comes through here: the
-    /// release and each lost-release cleanup. Returns whether one was live.
+    /// release and each lost-release cleanup. A drag that never moved
+    /// anything (a click on a handle, the usual way to focus the response)
+    /// has nothing new to save, so it writes no state file. Returns whether
+    /// one was live.
     fn finish_resize(&mut self) -> bool {
-        match self.resize.take() {
-            None => false,
-            Some(ResizeDrag::Sidebar) => {
-                self.persist_sidebar();
-                true
-            }
-            Some(ResizeDrag::Split { .. }) => {
-                self.persist_split();
-                true
-            }
+        let Some(drag) = self.resize.take() else {
+            return false;
+        };
+        match drag {
+            ResizeDrag::Sidebar { moved: true } => self.persist_sidebar(),
+            ResizeDrag::Split { moved: true, .. } => self.persist_split(),
+            ResizeDrag::Sidebar { moved: false } | ResizeDrag::Split { moved: false, .. } => {}
         }
+        true
     }
 
     /// Keeps `AnimKey::SplitRatio` chasing `split_ratio`'s editor share
@@ -9355,8 +9390,13 @@ impl App {
                 (TextSurface::Body, true)
             }
             // Only once there is response text to select: an empty pane
-            // (nothing sent yet, in flight, an error) offers no menu.
-            Hit::Pane(PaneId::Response) if self.session.response.view().is_some() => {
+            // (nothing sent yet, in flight, an error) offers no menu. The
+            // header strip is still the pane to a right click: it registers
+            // as the split handle over the pane's hit, and its facts and
+            // blank cells opened this menu before it was a handle.
+            Hit::Pane(PaneId::Response) | Hit::SplitHandle
+                if self.session.response.view().is_some() =>
+            {
                 (TextSurface::Response, false)
             }
             Hit::JsonRow(row) | Hit::JsonArrow(row) if self.session.response.view().is_some() => {

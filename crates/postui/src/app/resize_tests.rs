@@ -33,9 +33,14 @@ fn moved(x: u16, y: u16) -> MouseEvent {
 
 /// Renders `app` once at 120x40, as `tests.rs::render_once` does.
 fn render(app: &mut App) {
+    render_at(app, 120, 40);
+}
+
+/// Renders `app` once at `width`x`height`.
+fn render_at(app: &mut App, width: u16, height: u16) {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
 }
 
@@ -88,6 +93,53 @@ fn gutter_drag_clamps_to_the_limits() {
     app.handle_mouse(left_drag(119, y));
     assert_eq!(app.sidebar_width, Some(79), "120 wide leaves the gutter and 40 for the main");
     app.handle_mouse(left_up(119, y));
+}
+
+/// Review F1: a gutter press whose motion stays on the edge's column (a
+/// one-row vertical jitter) moves nothing. The unset 28% default stays
+/// unset, and a saved width the window squeezes stays saved.
+#[test]
+fn a_gutter_jitter_keeps_the_default_and_a_squeezed_saved_width() {
+    for saved in [None, Some(100)] {
+        let mut app = App::new_for_test();
+        app.sidebar_width = saved;
+        render(&mut app);
+        let (x, y) = gutter_cell(&app);
+        app.handle_mouse(left_down(x, y));
+        assert!(!app.handle_mouse(left_drag(x, y + 1)), "{saved:?}: nothing to repaint");
+        app.handle_mouse(left_up(x, y + 1));
+        assert_eq!(app.sidebar_width, saved);
+    }
+}
+
+/// Review F2: on a window too narrow for the 28% default (S5's limits
+/// allow less than it draws), a step or drag that asks to widen the
+/// sidebar never narrows it to the limit, nor saves a width.
+#[test]
+fn widening_a_default_wider_than_the_limit_moves_nothing() {
+    const WIDE: u16 = 50;
+    let mut app = App::new_for_test();
+    app.update(Action::FocusPane(PaneId::Sidebar));
+    render_at(&mut app, WIDE, 30);
+    let drawn = sidebar_cols(&app);
+    let body = drawn + 1 + rect(&app, &Hit::Pane(PaneId::Editor)).width;
+    assert!(
+        drawn > crate::layout::clamp_sidebar_cols(body, i32::MAX),
+        "the default ({drawn}) is past the limit"
+    );
+    assert!(!app.update(Action::CycleSplit), "alt+w widens nothing");
+    assert_eq!(app.sidebar_width, None);
+    render_at(&mut app, WIDE, 30);
+    assert_eq!(sidebar_cols(&app), drawn);
+
+    let g = rect(&app, &Hit::SidebarGutter);
+    let y = g.y + g.height / 2;
+    app.handle_mouse(left_down(g.x, y));
+    app.handle_mouse(left_drag(g.x + 6, y));
+    app.handle_mouse(left_up(g.x + 6, y));
+    assert_eq!(app.sidebar_width, None, "a rightward drag doesn't shrink it");
+    render_at(&mut app, WIDE, 30);
+    assert_eq!(sidebar_cols(&app), drawn);
 }
 
 /// The line follows the pointer row by row, un-eased (E5, E14): the frame
@@ -351,6 +403,68 @@ fn a_cancelled_strip_press_moves_no_focus() {
         assert!(app.resize.is_none());
         assert_eq!(app.focus, PaneId::Editor, "focus loss {via_focus_loss}");
     }
+}
+
+/// Review F3: a drag that moved the line is never a click, even when it
+/// comes back to where it began before the release.
+#[test]
+fn a_strip_drag_that_returns_to_its_start_moves_no_focus() {
+    let mut app = App::new_for_test();
+    app.update(Action::FocusPane(PaneId::Editor));
+    render(&mut app);
+    // Start from the share the drawn rows invert to, so the return lands
+    // on exactly the starting state (as the old click test compared).
+    let editor = rect(&app, &Hit::Pane(PaneId::Editor));
+    let column = editor.union(rect(&app, &Hit::Pane(PaneId::Response)));
+    app.split_ratio = crate::layout::editor_share_for(column.height, editor.height);
+    app.update(Action::Render);
+    render(&mut app);
+    let before = app.split_state();
+    let (x, y) = handle_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_drag(x, y + 3));
+    render(&mut app);
+    assert_ne!(app.split_state(), before, "the line moved");
+    app.handle_mouse(left_drag(x, y));
+    render(&mut app);
+    assert_eq!(app.split_state(), before, "and came back");
+    app.handle_mouse(left_up(x, y));
+    assert_eq!(app.focus, PaneId::Editor, "a drag keeps the focus");
+}
+
+/// Review F7: a press and release on either handle that moved nothing
+/// (the strip's click that focuses the response, a gutter click) writes
+/// no `.local/state.toml`.
+#[test]
+fn a_handle_click_writes_no_state() {
+    let mut app = App::new_for_test();
+    render(&mut app);
+    let state = app.proj().root().join(".local").join("state.toml");
+    let _ = std::fs::remove_file(&state);
+    let (x, y) = handle_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_up(x, y));
+    assert_eq!(app.focus, PaneId::Response, "the strip click still focuses");
+    let (x, y) = gutter_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_up(x, y));
+    assert!(!state.exists(), "nothing was saved");
+}
+
+/// Review F5: the strip is still the response pane to a right click. A
+/// blank cell of the header strip opens the response's Copy menu, as it
+/// did before the strip became the split handle.
+#[test]
+fn right_click_on_the_strip_opens_the_response_text_menu() {
+    let mut app = App::new_for_test();
+    super::tests::ready_response(&mut app, "plain text body");
+    render(&mut app);
+    let (x, y) = handle_cell(&app);
+    app.handle_mouse(right_down(x, y));
+    let Some(Modal::Dropdown(menu)) = app.modals.top() else {
+        panic!("expected the response's context menu");
+    };
+    assert_eq!(menu.items.first().map(|i| i.label.as_str()), Some("Copy"));
 }
 
 // -- The keyboard (spec S6, S7, E11, E13) --------------------------------
