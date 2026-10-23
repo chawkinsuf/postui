@@ -2377,10 +2377,10 @@ impl App {
     /// the way the want points or on the edge itself: no step or drag
     /// moves the edge against what was asked (spec S8).
     fn move_sidebar_edge(&mut self, to: impl FnOnce(u16, ratatui::layout::Rect) -> i32) -> bool {
-        let Some(body) = self.settled_layout().map(|l| l.body) else {
+        let Some(layout) = self.settled_layout() else {
             return false;
         };
-        let now = crate::layout::sidebar_cols(body.width, self.sidebar_width);
+        let (now, body) = (layout.sidebar.width, layout.body);
         let next = crate::layout::clamp_sidebar_cols(body.width, to(now, body));
         if next == now {
             return false;

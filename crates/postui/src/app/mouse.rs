@@ -1779,7 +1779,11 @@ impl App {
                 let kind = match hit {
                     Hit::SidebarGutter => ResizeHandle::Sidebar,
                     _ => {
-                        let top = self.hits.rect_of(&Hit::SplitHandle).map_or(m.row, |r| r.y);
+                        // Where the strip settles, not where this frame drew
+                        // it: every motion turns the pointer back into rows
+                        // against the settled layout, and mid-ease the drawn
+                        // strip is still on its way there.
+                        let top = self.settled_layout().map_or(m.row, |l| l.response.y);
                         ResizeHandle::Split {
                             grab: m.row.saturating_sub(top),
                             press: m.row,

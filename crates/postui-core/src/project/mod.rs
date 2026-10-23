@@ -1132,6 +1132,14 @@ impl Project {
         // Best effort, like every layout save. A failed write leaves the
         // split in memory (and in `state.toml` until its next write); the
         // next split change writes `layout.toml`.
+        //
+        // Written here at open, not at the first layout save: `state.toml`
+        // never serializes the old field, so any ordinary state write before
+        // a size change would drop the split. An open that is then abandoned
+        // (a project switch an open field refuses) leaves the file holding
+        // exactly the split `state.toml` holds, so the project's sizes are as
+        // they were. Opening already writes in that way when it creates a
+        // missing default environment.
         if migrate {
             let _ = project.persist_layout();
         }
