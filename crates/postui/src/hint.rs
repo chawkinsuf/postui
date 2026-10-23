@@ -340,6 +340,13 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         {
             text("Import curl from clipboard")
         }
+        // `alt+w` steps the focused sidebar's width (spec S6); its chip is
+        // the sidebar footer's.
+        Hit::FooterChip(Action::CycleSplit)
+            if ctx.spell.surface == crate::keyroute::Surface::Sidebar =>
+        {
+            text("Widen the sidebar")
+        }
         Hit::FooterChip(action) => of(action.clone()),
 
         // -- Manage screen --
@@ -765,6 +772,24 @@ mod tests {
         assert_eq!(
             hint_for(&Hit::FooterChip(Action::ToggleVarReveal), &keymap, &ctx()).unwrap(),
             "Reveal or hide the secret value"
+        );
+    }
+
+    /// The sidebar's `alt+w width` chip steps the sidebar, not the split
+    /// (spec S6), so its hover says that.
+    #[test]
+    fn the_sidebar_width_chip_names_what_it_does() {
+        let keymap = Keymap::default_bindings();
+        let sidebar = HintCtx {
+            spell: crate::keyroute::SpellCtx {
+                surface: crate::keyroute::Surface::Sidebar,
+                ..Default::default()
+            },
+            ..ctx()
+        };
+        assert_eq!(
+            hint_for(&Hit::FooterChip(Action::CycleSplit), &keymap, &sidebar).unwrap(),
+            "Widen the sidebar"
         );
     }
 

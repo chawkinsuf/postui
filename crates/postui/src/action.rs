@@ -160,6 +160,14 @@ pub enum Action {
     /// field open (the user's decision, 2026-10-05). On a closed surface
     /// there is no field to close (plan M5a Deviation 16).
     PaneMove(PaneDir),
+    /// Vim's `{N}<C-w>>` `<` `+` `-` (spec S7, E13): resizes the focused
+    /// pane by `count` columns or rows, as Vim 9.1 resizes the current
+    /// window in a `sidebar | editor/response` layout. Off the main screen
+    /// there is one window and nothing to resize.
+    PaneResize {
+        dir: ResizeDir,
+        count: u16,
+    },
     ScrollPane(PaneId, i16),
     OpenPalette,
     /// Vim's `:` (spec §5.9): the palette in ex mode, its query read as a
@@ -260,12 +268,15 @@ pub enum Action {
     /// ([`crate::split::SplitState::apply`]) and persists the result as
     /// the project's layout preference.
     SplitStop(crate::split::SplitStop),
-    /// Steps the split to the next stop in on-screen order, wrapping —
-    /// the keyboard route to the split control: one key (see the footer's
-    /// `split` chip) walks the boundary down the column and back around.
+    /// `alt+w`, context-based (spec S6, E11): with the sidebar focused on
+    /// the main screen it widens the sidebar a step, stopping at the limit
+    /// (the sidebar footer's `width` chip). Anywhere else it steps the
+    /// split to the next stop in on-screen order, wrapping: one key walks
+    /// the boundary down the column and back around. Vim's `:split` is
+    /// this action too, so it follows the same context.
     CycleSplit,
-    /// Steps the split to the previous stop, wrapping — [`Self::CycleSplit`]
-    /// run the other way (shift+alt+w).
+    /// [`Self::CycleSplit`] run the other way (shift+alt+w): narrows the
+    /// focused sidebar, or steps the split to the previous stop.
     CycleSplitBack,
     /// Start a new row on the active table tab (Params/Headers/Vars):
     /// focuses the editor's table and begins editing the ghost row's key
@@ -1366,6 +1377,16 @@ pub enum PaneDir {
     Next,
     Prev,
     Last,
+}
+
+/// Which way `ctrl+w` sizing keys resize the current window (spec S7,
+/// E13): `>` `<` its width, `+` `-` its height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeDir {
+    Wider,
+    Narrower,
+    Taller,
+    Shorter,
 }
 
 /// Which tab a vim tab key goes to (piece 4 spec §5.8).

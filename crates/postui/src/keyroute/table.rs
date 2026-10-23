@@ -7,7 +7,7 @@
 use super::ctx::Surface;
 use super::engine_glue::OpenSeat;
 use super::notation::{self, Tok};
-use crate::action::{Action, ColMove, PaneDir, Place, ResponseMotion, Verb};
+use crate::action::{Action, ColMove, PaneDir, Place, ResizeDir, ResponseMotion, Verb};
 use crate::config::KeyProfile;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::OnceLock;
@@ -430,6 +430,28 @@ fn copy_header() -> Action {
     Action::CopyResponseHeader
 }
 
+/// A `ctrl+w` sizing key's step: no count is one, and a count too big for
+/// the columns or rows of any screen saturates.
+fn resize_by(dir: ResizeDir, n: Option<usize>) -> Action {
+    Action::PaneResize { dir, count: u16::try_from(n.unwrap_or(1)).unwrap_or(u16::MAX) }
+}
+
+fn resize_wider(n: Option<usize>) -> Action {
+    resize_by(ResizeDir::Wider, n)
+}
+
+fn resize_narrower(n: Option<usize>) -> Action {
+    resize_by(ResizeDir::Narrower, n)
+}
+
+fn resize_taller(n: Option<usize>) -> Action {
+    resize_by(ResizeDir::Taller, n)
+}
+
+fn resize_shorter(n: Option<usize>) -> Action {
+    resize_by(ResizeDir::Shorter, n)
+}
+
 fn count1(n: Option<usize>) -> usize {
     n.unwrap_or(1).max(1)
 }
@@ -701,6 +723,12 @@ pub static TABLE: &[Binding] = &[
     pane("<C-w><Down>", PaneDir::Down),
     pane("<C-w><Up>", PaneDir::Up),
     pane("<C-w><Right>", PaneDir::Right),
+    // Spec S7 and E13 (task #90): Vim's window sizing, counted, on the
+    // current window. The app resolves which divider moves which way.
+    row("<C-w>>", Surfaces::WINDOWS, Intent::Counted(resize_wider), CountRule::Pass),
+    row("<C-w><lt>", Surfaces::WINDOWS, Intent::Counted(resize_narrower), CountRule::Pass),
+    row("<C-w>+", Surfaces::WINDOWS, Intent::Counted(resize_taller), CountRule::Pass),
+    row("<C-w>-", Surfaces::WINDOWS, Intent::Counted(resize_shorter), CountRule::Pass),
     row("<C-w><any>", Surfaces::FIELD_SCREEN, Intent::Swallow, CountRule::Ignore),
     // Key list §6: opening.
     row("o", Surfaces::OPENS_ROW, Intent::Key(Named::key(KeyCode::Enter)), CountRule::Ignore),

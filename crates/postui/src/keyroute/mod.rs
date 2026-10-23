@@ -799,6 +799,30 @@ mod tests {
         );
     }
 
+    /// Spec S7 and E13 (task #90): Vim's window sizing keys carry their
+    /// count, one with none; the app resolves them against the focused pane.
+    #[test]
+    fn ctrl_w_resize_keys_carry_their_count() {
+        use crate::action::ResizeDir;
+        let resize = |dir, count| run(vec![Step::Action(Action::PaneResize { dir, count })]);
+        let s = cx(Vim, Surface::Sidebar);
+        assert_eq!(feed(&mut Router::default(), &s, "<C-w>>"), resize(ResizeDir::Wider, 1));
+        assert_eq!(feed(&mut Router::default(), &s, "5<C-w><lt>"), resize(ResizeDir::Narrower, 5));
+        assert_eq!(feed(&mut Router::default(), &s, "<C-w>+"), resize(ResizeDir::Taller, 1));
+        assert_eq!(feed(&mut Router::default(), &s, "3<C-w>-"), resize(ResizeDir::Shorter, 3));
+        let resp = cx(Vim, Surface::Response(crate::components::response::ViewMode::Pretty));
+        assert_eq!(feed(&mut Router::default(), &resp, "2<C-w>+"), resize(ResizeDir::Taller, 2));
+        assert_eq!(
+            feed(&mut Router::default(), &in_url(Mode::Normal, false), "<C-w>-"),
+            resize(ResizeDir::Shorter, 1),
+            "from a screen field's idle Normal, as the window moves"
+        );
+        assert_eq!(
+            feed(&mut Router::default(), &cx(Arrows, Surface::Sidebar), "<C-w>"),
+            Resolved::Declined
+        );
+    }
+
     /// Plan M3a Deviation 9: the prefix keys never reach the engine.
     #[test]
     fn the_prefix_keys_are_notes_or_swallowed() {

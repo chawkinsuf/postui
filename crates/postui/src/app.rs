@@ -2330,6 +2330,94 @@ impl App {
         }
     }
 
+    /// Whether `alt+w` / `shift+alt+w` step the sidebar's width rather
+    /// than cycle the split: the sidebar has focus on the main screen
+    /// (spec S6).
+    fn alt_w_steps_the_sidebar(&self) -> bool {
+        self.focus == PaneId::Sidebar && self.screen == Screen::Main
+    }
+
+    /// Moves the sidebar's edge `delta` columns from where the last frame
+    /// drew it, so the first step from the unset 28% default starts at the
+    /// width on screen (spec S6). It stops at the limits (S5) with no wrap,
+    /// and saves on a change (P2). A step that leaves the edge where it is
+    /// drawn changes nothing, so a saved width the window squeezes stays
+    /// saved.
+    fn step_sidebar(&mut self, delta: i32) -> bool {
+        let Some(drawn) = self.hits.rect_of(&Hit::Pane(PaneId::Sidebar)).map(|r| r.width) else {
+            return false;
+        };
+        let saved = self.sidebar_width;
+        self.set_sidebar_cols(i32::from(drawn) + delta);
+        if self.sidebar_width == Some(drawn) {
+            self.sidebar_width = saved;
+            return false;
+        }
+        self.persist_sidebar();
+        true
+    }
+
+    /// Moves the editor/response line `editor_delta` rows down (up when
+    /// negative) from where the last frame drew it, un-eased, and saves a
+    /// change (spec E13, P2). A minimized pane counts from its snap: the
+    /// editor from its chrome, the response from its full header strip, so
+    /// one row out of either end shows one row of content. Past either end
+    /// it snaps there, keeping the share (E6, E9a).
+    fn resize_split_rows(&mut self, editor_delta: i32) -> bool {
+        let (Some(editor), Some(response)) = (
+            self.hits.rect_of(&Hit::Pane(PaneId::Editor)),
+            self.hits.rect_of(&Hit::Pane(PaneId::Response)),
+        ) else {
+            return false;
+        };
+        let column = editor.union(response);
+        let now = self.split_state();
+        let editor_rows = if now.editor_minimized {
+            crate::components::editor::CHROME_HEIGHT
+        } else if now.response_minimized {
+            column.height.saturating_sub(crate::components::response::HEADER_STRIP_HEIGHT)
+        } else {
+            editor.height
+        };
+        let next = crate::layout::split_for_editor_rows(
+            now,
+            column.height,
+            i32::from(editor_rows) + editor_delta,
+        );
+        if next == now {
+            return false;
+        }
+        self.set_split_now(next);
+        self.persist_split();
+        true
+    }
+
+    /// Vim's `{N}<C-w>>` `<` `+` `-` (spec S7, E13), as Vim 9.1 resizes
+    /// the current window in a `sidebar | editor/response` layout. `>` `<`
+    /// widen or narrow the focused pane, so from the editor or response
+    /// they move the sidebar's edge the other way. `+` `-` grow or shrink
+    /// the focused one of the editor and response; the sidebar is full
+    /// height, and Vim's `-` there gives rows to a command line postui
+    /// does not have, so both do nothing there.
+    fn pane_resize(&mut self, dir: crate::action::ResizeDir, count: u16) -> bool {
+        use crate::action::ResizeDir;
+        if self.screen != Screen::Main {
+            return false;
+        }
+        let n = i32::from(count);
+        match (self.focus, dir) {
+            (PaneId::Sidebar, ResizeDir::Wider) => self.step_sidebar(n),
+            (PaneId::Sidebar, ResizeDir::Narrower) => self.step_sidebar(-n),
+            (PaneId::Sidebar, ResizeDir::Taller | ResizeDir::Shorter) => false,
+            (PaneId::Editor | PaneId::Response, ResizeDir::Wider) => self.step_sidebar(-n),
+            (PaneId::Editor | PaneId::Response, ResizeDir::Narrower) => self.step_sidebar(n),
+            (PaneId::Editor, ResizeDir::Taller) => self.resize_split_rows(n),
+            (PaneId::Editor, ResizeDir::Shorter) => self.resize_split_rows(-n),
+            (PaneId::Response, ResizeDir::Taller) => self.resize_split_rows(-n),
+            (PaneId::Response, ResizeDir::Shorter) => self.resize_split_rows(n),
+        }
+    }
+
     /// Moves the live resize's divider to the pointer at (`column`, `row`),
     /// measured against the last frame. Returns whether a size changed.
     fn resize_to(&mut self, column: u16, row: u16) -> bool {
@@ -3685,8 +3773,17 @@ impl App {
                 true
             }
             Action::SplitStop(stop) => self.apply_split_stop(stop),
+            // `alt+w` is context-based (spec S6): the focused sidebar's
+            // width, else the split (E11).
+            Action::CycleSplit if self.alt_w_steps_the_sidebar() => {
+                self.step_sidebar(i32::from(crate::layout::SIDEBAR_STEP_COLS))
+            }
+            Action::CycleSplitBack if self.alt_w_steps_the_sidebar() => {
+                self.step_sidebar(-i32::from(crate::layout::SIDEBAR_STEP_COLS))
+            }
             Action::CycleSplit => self.apply_split_state(self.split_state().cycled(true)),
             Action::CycleSplitBack => self.apply_split_state(self.split_state().cycled(false)),
+            Action::PaneResize { dir, count } => self.pane_resize(dir, count),
             Action::FormatBody => {
                 self.no_coalesce = true;
                 // The body's own indent (spec 2026-10-15 R10).

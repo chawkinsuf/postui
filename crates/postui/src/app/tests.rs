@@ -17729,13 +17729,14 @@ fn split_stops_update_the_split_and_ease_the_ratio_anim() {
     assert_eq!(app.split_ratio, 0.25);
 }
 
-/// `Action::CycleSplit` (the footer's `alt+s` context chip) steps the
+/// `Action::CycleSplit` (alt+w, outside the sidebar: spec E11) steps the
 /// split through the five stops in on-screen order and wraps — the
 /// one-key keyboard route to every state the control's chips reach.
 #[test]
 fn cycle_split_steps_through_every_stop_and_wraps() {
     use crate::split::SplitStop::*;
     let mut app = App::new_for_test();
+    app.update(Action::FocusPane(PaneId::Editor));
     assert_eq!(app.split_state().stop(), Some(Even));
     let mut seen = vec![];
     for _ in 0..5 {
@@ -26706,7 +26707,7 @@ fn hover_env(app: &mut App) {
 fn hovering_a_button_shows_its_hint_between_the_chip_clusters() {
     let mut app = App::new_for_test();
     hover_manage(&mut app);
-    let row = rendered_row(&mut app, 160, FOOTER_ROW);
+    let row = rendered_row(&mut app, 176, FOOTER_ROW);
     let at = row.find(MANAGE_HINT).unwrap_or_else(|| panic!("hint shown: {row:?}"));
     let chips_end = row.find("reorder").unwrap() + "reorder".len();
     let palette = row.find("^P").unwrap();
@@ -26714,7 +26715,7 @@ fn hovering_a_button_shows_its_hint_between_the_chip_clusters() {
 
     let pane = app.hits.rect_of(&Hit::Pane(PaneId::Sidebar)).unwrap();
     app.handle_mouse(moved(pane.x + 2, pane.y + 6));
-    let row = rendered_row(&mut app, 160, FOOTER_ROW);
+    let row = rendered_row(&mut app, 176, FOOTER_ROW);
     assert!(!row.contains("Open or"), "hint gone off-hover: {row:?}");
 }
 
@@ -26726,9 +26727,9 @@ fn hovering_a_button_shows_its_hint_between_the_chip_clusters() {
 fn footer_hint_ellipsizes_above_the_lower_bound_and_is_left_out_below_it() {
     let mut app = App::new_for_test();
     hover_env(&mut app);
-    // 153 columns: the sidebar chips (`import curl` last) + commands/quit
+    // 169 columns: the sidebar chips (`import curl` last) + commands/quit
     // leave ~26 cells.
-    let row = rendered_row(&mut app, 153, FOOTER_ROW);
+    let row = rendered_row(&mut app, 169, FOOTER_ROW);
     assert!(row.contains("Switch to another en"), "head shown: {row:?}");
     assert!(row.contains('\u{2026}'), "ellipsized: {row:?}");
     assert!(row.contains("reorder"), "chips stay: {row:?}");
@@ -26793,7 +26794,7 @@ fn hover_hints_can_be_turned_off_in_config() {
 fn an_ellipsized_hint_keeps_a_gap_before_the_commands_chip() {
     let mut app = App::new_for_test();
     hover_env(&mut app);
-    let row = rendered_row(&mut app, 153, FOOTER_ROW);
+    let row = rendered_row(&mut app, 169, FOOTER_ROW);
     let end = row.find('\u{2026}').unwrap() + '\u{2026}'.len_utf8();
     let palette = row.find("^P").unwrap();
     assert!(
@@ -26812,7 +26813,7 @@ fn a_hovered_footer_chip_keeps_the_chip_row() {
     render_once(&mut app);
     let rename = app.hits.rect_of(&Hit::FooterChip(Action::PromptRenameRequest)).unwrap();
     app.handle_mouse(moved(rename.x, rename.y));
-    let row = rendered_row(&mut app, 160, FOOTER_ROW);
+    let row = rendered_row(&mut app, 176, FOOTER_ROW);
     assert!(row.contains("rename") && row.contains("reorder"), "chips stay: {row:?}");
     assert!(row.contains("Rename the"), "hint in the middle: {row:?}");
 

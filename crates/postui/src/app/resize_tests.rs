@@ -352,3 +352,198 @@ fn a_cancelled_strip_press_moves_no_focus() {
         assert_eq!(app.focus, PaneId::Editor, "focus loss {via_focus_loss}");
     }
 }
+
+// -- The keyboard (spec S6, S7, E11, E13) --------------------------------
+
+/// The app in the vim profile with `focus`, after a frame.
+fn vim_at(focus: PaneId) -> App {
+    let mut app = App::new_for_test();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.update(Action::FocusPane(focus));
+    render(&mut app);
+    app
+}
+
+/// Types `keys` (vim notation) through `handle_key`, then draws the frame
+/// the next key measures against, as the event loop does.
+fn type_keys(app: &mut App, keys: &str) {
+    for ev in crate::keyroute::notation::events(keys) {
+        app.handle_key(ev);
+    }
+    render(app);
+}
+
+fn sidebar_cols(app: &App) -> u16 {
+    rect(app, &Hit::Pane(PaneId::Sidebar)).width
+}
+
+fn pane_rows(app: &App, pane: PaneId) -> u16 {
+    rect(app, &Hit::Pane(pane)).height
+}
+
+/// S6: with the sidebar focused, `alt+w` widens it and `shift+alt+w`
+/// narrows it a step at a time from the width on screen, stopping at the
+/// limit with no wrap. The split never moves.
+#[test]
+fn alt_w_in_the_sidebar_steps_the_width() {
+    let step = crate::layout::SIDEBAR_STEP_COLS;
+    let mut app = App::new_for_test();
+    app.update(Action::FocusPane(PaneId::Sidebar));
+    render(&mut app);
+    let w = sidebar_cols(&app);
+    let split = app.split_state();
+    assert!(app.update(Action::CycleSplit));
+    assert_eq!(app.sidebar_width, Some(w + step), "from the default's width on screen");
+    assert_eq!(saved_width(&app), Some(w + step), "saved on the step");
+    render(&mut app);
+    app.update(Action::CycleSplitBack);
+    render(&mut app);
+    app.update(Action::CycleSplitBack);
+    render(&mut app);
+    assert_eq!(app.sidebar_width, Some(w - step));
+    for _ in 0..40 {
+        app.update(Action::CycleSplit);
+        render(&mut app);
+    }
+    assert_eq!(app.sidebar_width, Some(79), "the limit at 120 wide");
+    assert!(!app.update(Action::CycleSplit), "no wrap");
+    assert_eq!(app.sidebar_width, Some(79));
+    assert_eq!(app.split_state(), split, "the split never moved");
+}
+
+/// S5: a step that can't move the sidebar (a saved width squeezed by a
+/// narrow window, pushed further the same way) leaves the saved width as
+/// it was.
+#[test]
+fn a_step_at_the_limit_keeps_a_squeezed_saved_width() {
+    let mut app = App::new_for_test();
+    app.sidebar_width = Some(100);
+    app.update(Action::FocusPane(PaneId::Sidebar));
+    render(&mut app);
+    assert_eq!(sidebar_cols(&app), 79, "squeezed for the frame");
+    assert!(!app.update(Action::CycleSplit));
+    assert_eq!(app.sidebar_width, Some(100));
+    assert!(app.update(Action::CycleSplitBack));
+    assert_eq!(app.sidebar_width, Some(75), "a real step starts from the screen");
+}
+
+/// E11: anywhere but the sidebar, `alt+w` cycles the split as before.
+#[test]
+fn alt_w_elsewhere_still_cycles_the_split() {
+    use crate::split::SplitStop;
+    let mut app = App::new_for_test();
+    app.update(Action::FocusPane(PaneId::Editor));
+    render(&mut app);
+    assert_eq!(app.split_state().stop(), Some(SplitStop::Even));
+    assert!(app.update(Action::CycleSplit));
+    assert_eq!(app.split_state().stop(), Some(SplitStop::ResponseBig));
+    assert_eq!(app.sidebar_width, None, "the sidebar is untouched");
+}
+
+/// S7, E13: the plan's Vim 9.1 table, one assertion per row. `>`/`<` act
+/// on the current window, so from the editor or response they move the
+/// sidebar the other way; `+`/`-` move the editor/response line for the
+/// pane that has focus, and do nothing on the full-height sidebar.
+#[test]
+fn vim_ctrl_w_resizes_follow_the_current_window() {
+    // Sidebar: `N<C-w>>` / `<` → the sidebar ±N.
+    let mut app = vim_at(PaneId::Sidebar);
+    let w = sidebar_cols(&app);
+    type_keys(&mut app, "3<C-w>>");
+    assert_eq!(sidebar_cols(&app), w + 3);
+    type_keys(&mut app, "2<C-w><lt>");
+    assert_eq!(sidebar_cols(&app), w + 1);
+
+    // Editor or response: `N<C-w>>` / `<` → that window ±N, the sidebar ∓N.
+    for focus in [PaneId::Editor, PaneId::Response] {
+        let mut app = vim_at(focus);
+        let w = sidebar_cols(&app);
+        type_keys(&mut app, "3<C-w>>");
+        assert_eq!(sidebar_cols(&app), w - 3, "{focus:?}");
+        type_keys(&mut app, "<C-w><lt>");
+        assert_eq!(sidebar_cols(&app), w - 2, "{focus:?}");
+        assert_eq!(app.focus, focus, "the focus stays");
+    }
+
+    // Sidebar: `N<C-w>+` / `-` → nothing.
+    let mut app = vim_at(PaneId::Sidebar);
+    let (w, split) = (sidebar_cols(&app), app.split_state());
+    for keys in ["2<C-w>+", "2<C-w>-"] {
+        type_keys(&mut app, keys);
+        assert_eq!((sidebar_cols(&app), app.split_state()), (w, split), "{keys}");
+    }
+
+    // Editor: `N<C-w>+` / `-` → the editor ±N, the response ∓N.
+    let mut app = vim_at(PaneId::Editor);
+    let (e, r) = (pane_rows(&app, PaneId::Editor), pane_rows(&app, PaneId::Response));
+    type_keys(&mut app, "2<C-w>+");
+    assert_eq!(
+        (pane_rows(&app, PaneId::Editor), pane_rows(&app, PaneId::Response)),
+        (e + 2, r - 2)
+    );
+    type_keys(&mut app, "<C-w>-");
+    assert_eq!(
+        (pane_rows(&app, PaneId::Editor), pane_rows(&app, PaneId::Response)),
+        (e + 1, r - 1)
+    );
+
+    // Response: `N<C-w>+` / `-` → the response ±N, the editor ∓N.
+    let mut app = vim_at(PaneId::Response);
+    let (e, r) = (pane_rows(&app, PaneId::Editor), pane_rows(&app, PaneId::Response));
+    type_keys(&mut app, "2<C-w>+");
+    assert_eq!(
+        (pane_rows(&app, PaneId::Editor), pane_rows(&app, PaneId::Response)),
+        (e - 2, r + 2)
+    );
+    type_keys(&mut app, "<C-w>-");
+    assert_eq!(
+        (pane_rows(&app, PaneId::Editor), pane_rows(&app, PaneId::Response)),
+        (e - 1, r + 1)
+    );
+    assert_eq!(
+        postui_core::fixtures::load_local_state(app.proj().root()).unwrap().main_split,
+        Some(app.split_state().to_token()),
+        "each step is saved"
+    );
+}
+
+/// Review Focus 5: a huge count clamps to the sidebar's limits, or snaps
+/// the split to its minimized end, with no overflow.
+#[test]
+fn huge_vim_counts_clamp() {
+    let mut app = vim_at(PaneId::Sidebar);
+    type_keys(&mut app, "500<C-w>>");
+    assert_eq!(app.sidebar_width, Some(79));
+    type_keys(&mut app, "500<C-w><lt>");
+    assert_eq!(app.sidebar_width, Some(crate::layout::SIDEBAR_MIN_COLS));
+
+    let mut app = vim_at(PaneId::Editor);
+    let ratio = app.split_ratio;
+    type_keys(&mut app, "500<C-w>+");
+    assert!(app.session.response.collapsed, "editor only");
+    assert_eq!(app.split_ratio, ratio, "the minimized end keeps the share");
+    type_keys(&mut app, "500<C-w>>");
+    assert_eq!(app.sidebar_width, Some(crate::layout::SIDEBAR_MIN_COLS));
+
+    let mut app = vim_at(PaneId::Editor);
+    type_keys(&mut app, "500<C-w>-");
+    assert!(app.table_collapsed, "response only");
+}
+
+/// E7: from "editor only", `<C-w>+` on the response's strip grows it by
+/// one row below the strip.
+#[test]
+fn ctrl_w_plus_grows_a_minimized_response_from_its_strip() {
+    let mut app = vim_at(PaneId::Response);
+    app.update(Action::SplitStop(crate::split::SplitStop::EditorFull));
+    render(&mut app);
+    assert!(app.session.response.collapsed);
+    app.update(Action::FocusPane(PaneId::Response));
+    render(&mut app);
+    type_keys(&mut app, "<C-w>+");
+    assert!(!app.session.response.collapsed);
+    assert_eq!(
+        pane_rows(&app, PaneId::Response),
+        crate::components::response::HEADER_STRIP_HEIGHT + 1
+    );
+}

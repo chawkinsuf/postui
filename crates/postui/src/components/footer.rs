@@ -107,6 +107,10 @@ pub(crate) fn footer_chips(
                 Some(Action::PromptMoveSelectedRequestToSpace),
             ),
             (Key::Named("alt+\u{2191}\u{2193}"), "reorder", None),
+            // `alt+w` is context-based: here it widens the sidebar
+            // (shift+alt+w narrows it), elsewhere it cycles the split
+            // (spec S6).
+            (Key::Of(Action::CycleSplit), "width", Some(Action::CycleSplit)),
             // The sidebar takes no text: a paste there imports its curl
             // (spec 2026-10-15 curl import visibility V9).
             (Key::Of(Action::Paste), "import curl", Some(Action::Paste)),
@@ -139,8 +143,8 @@ pub(crate) fn footer_chips(
                     "vars",
                     Some(Action::OpenVarPicker { completing: false }),
                 ),
-                // The split cycle's alt+w is advertised beside the split
-                // control itself (the tab-bar row's keycap pill), not here.
+                // The split cycle's alt+w is named by the split chips'
+                // hover hints (spec E12), not here.
                 // Arrows are the primary route (method ← URL ↓ content)
                 // and get no chip of their own (2026-09-18: the old
                 // `↑↓←→ navigate` chip made way for the tab chord — the
@@ -1351,27 +1355,54 @@ mod tests {
         );
     }
 
-    /// The split shortcut is advertised beside the split control itself
-    /// (the editor tab-bar row's keycap pill), not as a footer chip — no
-    /// pane's footer list carries it.
+    /// `alt+w` is context-based (spec S6): with the sidebar focused it steps
+    /// the sidebar's width, and the sidebar's footer says so. Elsewhere it
+    /// cycles the split, whose chips name the key on hover (E12), so the
+    /// editor and response footers don't carry it.
     #[test]
-    fn no_footer_list_carries_the_split_chip() {
-        for pane in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
+    fn only_the_sidebar_footer_advertises_alt_w() {
+        let chips = |pane, url_focused| {
+            super::footer_chips(
+                pane,
+                false,
+                false,
+                Some("add header"),
+                url_focused,
+                false,
+                None,
+                JqBarState::Closed,
+                false,
+            )
+        };
+        let sidebar = chips(PaneId::Sidebar, false);
+        assert!(
+            sidebar.iter().any(|(k, l, a)| matches!(k, Key::Of(Action::CycleSplit))
+                && *l == "width"
+                && *a == Some(Action::CycleSplit)),
+            "{sidebar:?}"
+        );
+        let spelled = footer_chips(
+            PaneId::Sidebar,
+            false,
+            false,
+            Some("add header"),
+            false,
+            false,
+            None,
+            JqBarState::Closed,
+            false,
+        );
+        let width = spelled.iter().position(|(_, l, _)| *l == "width").unwrap();
+        let curl = spelled.iter().position(|(_, l, _)| *l == "import curl").unwrap();
+        assert_eq!(spelled[width].0, "alt+w", "{spelled:?}");
+        assert_eq!(width + 1, curl, "just before the import curl chip");
+        for pane in [PaneId::Editor, PaneId::Response] {
             for url_focused in [false, true] {
-                let chips = footer_chips(
-                    pane,
-                    false,
-                    false,
-                    Some("add header"),
-                    url_focused,
-                    false,
-                    None,
-                    JqBarState::Closed,
-                    false,
-                );
                 assert!(
-                    !chips.iter().any(|(_, _, a)| *a == Some(Action::CycleSplit)),
-                    "{pane:?} url_focused={url_focused} still advertises split"
+                    !chips(pane, url_focused)
+                        .iter()
+                        .any(|(_, _, a)| *a == Some(Action::CycleSplit)),
+                    "{pane:?} url_focused={url_focused} advertises alt+w"
                 );
             }
         }
