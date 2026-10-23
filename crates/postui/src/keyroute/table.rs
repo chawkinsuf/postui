@@ -458,8 +458,10 @@ fn resize_height(n: Option<usize>) -> Action {
     resize_by(ResizeDir::Height, Some(n.unwrap_or(usize::MAX)))
 }
 
-fn resize_even(n: Option<usize>) -> Action {
-    resize_by(ResizeDir::Even, n)
+/// `<C-w>=`: evening takes no size, so a typed count is dropped and the
+/// action is the same with or without one.
+fn resize_even() -> Action {
+    resize_by(ResizeDir::Even, None)
 }
 
 fn count1(n: Option<usize>) -> usize {
@@ -740,7 +742,7 @@ pub static TABLE: &[Binding] = &[
     row("<C-w>+", Surfaces::WINDOWS, Intent::Counted(resize_taller), CountRule::Pass),
     row("<C-w>-", Surfaces::WINDOWS, Intent::Counted(resize_shorter), CountRule::Pass),
     row("<C-w>_", Surfaces::WINDOWS, Intent::Counted(resize_height), CountRule::Pass),
-    row("<C-w>=", Surfaces::WINDOWS, Intent::Counted(resize_even), CountRule::Pass),
+    row("<C-w>=", Surfaces::WINDOWS, Intent::Act(resize_even), CountRule::Ignore),
     row("<C-w><any>", Surfaces::FIELD_SCREEN, Intent::Swallow, CountRule::Ignore),
     // Key list §6: opening.
     row("o", Surfaces::OPENS_ROW, Intent::Key(Named::key(KeyCode::Enter)), CountRule::Ignore),

@@ -178,13 +178,18 @@ impl App {
                 // and the `Moved` is a hover. Any other lost release is
                 // caught by the next press or a focus loss. Every end keeps
                 // the size where it got to and saves it (spec P2a).
+                // A key can also take the Main screen away mid-drag (`alt+r`
+                // to Manage, a dialog such as the palette): the resize ends
+                // at the next motion too, which then sizes nothing it can't
+                // show (review round 8 N4).
                 if let Some(drag) = &mut self.resize {
-                    if m.kind == MouseEventKind::Moved && drag.tracked {
+                    let lost = m.kind == MouseEventKind::Moved && drag.tracked;
+                    drag.tracked |= m.kind != MouseEventKind::Moved;
+                    if lost || self.screen != Screen::Main || !self.modals.is_empty() {
                         self.finish_resize();
                         self.resync_hover();
                         return true;
                     }
-                    drag.tracked |= m.kind != MouseEventKind::Moved;
                     return self.resize_to(m.column, m.row) && self.update(Action::Render);
                 }
                 // A press armed on a row becomes a drag the moment the

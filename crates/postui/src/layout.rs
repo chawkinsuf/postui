@@ -181,11 +181,14 @@ pub const SIDEBAR_STEP_COLS: i16 = 4;
 
 /// Clamps a wanted sidebar width to what a `body_width`-wide body can hold:
 /// at least [`SIDEBAR_MIN_COLS`] and at most what leaves the gutter and
-/// [`MAIN_MIN_COLS`] for the main column. A body too narrow for even the
-/// minimum squeezes the sidebar to whatever is left (possibly 0).
+/// [`MAIN_MIN_COLS`] for the main column. When the body can't hold both
+/// minimums the sidebar's wins (S5): the sidebar keeps [`SIDEBAR_MIN_COLS`]
+/// (or all but the gutter, on a body narrower still) and the main column
+/// takes what is left, so a saved width never makes the sidebar vanish.
 pub fn clamp_sidebar_cols(body_width: u16, want: i32) -> u16 {
-    let max = body_width.saturating_sub(1 + MAIN_MIN_COLS);
-    want.clamp(i32::from(SIDEBAR_MIN_COLS.min(max)), i32::from(max)) as u16
+    let lo = SIDEBAR_MIN_COLS.min(body_width.saturating_sub(1));
+    let hi = body_width.saturating_sub(1 + MAIN_MIN_COLS).max(lo);
+    want.clamp(i32::from(lo), i32::from(hi)) as u16
 }
 
 /// The inverse of the expanded split in [`compute_layout`]: the editor
@@ -522,7 +525,7 @@ mod tests {
             compute_layout(Rect::new(0, 0, width, 40), 0.0, 0.0, 0.5, Some(100)).sidebar.width
         };
         assert_eq!(at(120), 79);
-        assert_eq!(at(50), 9);
+        assert_eq!(at(50), 16);
     }
 
     #[test]
@@ -530,7 +533,27 @@ mod tests {
         assert_eq!(clamp_sidebar_cols(120, 5), 16);
         assert_eq!(clamp_sidebar_cols(120, 200), 79);
         assert_eq!(clamp_sidebar_cols(120, 30), 30);
-        assert_eq!(clamp_sidebar_cols(30, 20), 0);
+        assert_eq!(clamp_sidebar_cols(30, 20), 16);
+        assert_eq!(clamp_sidebar_cols(10, 20), 9);
+    }
+
+    /// S5 (round 8): a saved width never collapses the sidebar; when the
+    /// window can't hold both minimums, the sidebar's minimum wins.
+    #[test]
+    fn saved_width_never_collapses_the_sidebar() {
+        for width in 2..=60u16 {
+            for saved in [1, SIDEBAR_MIN_COLS, 30, 100] {
+                let l = compute_layout(Rect::new(0, 0, width, 40), 0.0, 0.0, 0.5, Some(saved));
+                assert!(l.sidebar.width > 0, "{width} wide, saved {saved}");
+                if width > SIDEBAR_MIN_COLS {
+                    assert!(
+                        l.sidebar.width >= SIDEBAR_MIN_COLS,
+                        "{width} wide, saved {saved}: {}",
+                        l.sidebar.width
+                    );
+                }
+            }
+        }
     }
 
     #[test]

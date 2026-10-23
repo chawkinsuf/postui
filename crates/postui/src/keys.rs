@@ -437,15 +437,13 @@ impl Keymap {
         self.bindings.get(combo).cloned()
     }
 
-    /// What `combo` is bound to when a `keys.toml` override put it there,
+    /// Whether `combo`'s binding is one a `keys.toml` override put there,
     /// never a default binding (plan M2 Deviation 18: in arrows only the
     /// user's letters beat the router's verb rows).
-    pub(crate) fn lookup_override(&self, combo: &KeyCombo) -> Option<Action> {
-        let action = self.bindings.get(combo)?;
-        self.overrides
-            .iter()
-            .any(|(a, combos)| a == action && combos.contains(combo))
-            .then(|| action.clone())
+    pub(crate) fn is_override(&self, combo: &KeyCombo) -> bool {
+        self.bindings.get(combo).is_some_and(|action| {
+            self.overrides.iter().any(|(a, combos)| a == action && combos.contains(combo))
+        })
     }
 
     pub fn bind(&mut self, combo: KeyCombo, action: Action) {

@@ -112,11 +112,13 @@ fn a_gutter_jitter_keeps_the_default_and_a_squeezed_saved_width() {
     }
 }
 
-/// Review F2: on a window too narrow for the 28% default (S5's limits
-/// allow less than it draws), a step or drag that asks to widen the
-/// sidebar never narrows it to the limit, nor saves a width.
+/// Review F2, at round 8's bounds: on a window narrow enough that the 28%
+/// default draws under the sidebar's minimum (S5 keeps the minimum, so the
+/// default can no longer draw past the upper limit), a step or drag that
+/// asks to narrow the sidebar never widens it to the minimum, nor saves a
+/// width. Asked to widen, it moves.
 #[test]
-fn widening_a_default_wider_than_the_limit_moves_nothing() {
+fn narrowing_a_default_under_the_minimum_moves_nothing() {
     const WIDE: u16 = 50;
     let mut app = App::new_for_test();
     app.update(Action::FocusPane(PaneId::Sidebar));
@@ -124,10 +126,10 @@ fn widening_a_default_wider_than_the_limit_moves_nothing() {
     let drawn = sidebar_cols(&app);
     let body = drawn + 1 + rect(&app, &Hit::Pane(PaneId::Editor)).width;
     assert!(
-        drawn > crate::layout::clamp_sidebar_cols(body, i32::MAX),
-        "the default ({drawn}) is past the limit"
+        drawn < crate::layout::clamp_sidebar_cols(body, 0),
+        "the default ({drawn}) is under the minimum"
     );
-    press(&mut app, "<A-w>");
+    press(&mut app, "<A-W>");
     assert_eq!(app.sidebar_width, None);
     render_at(&mut app, WIDE, 30);
     assert_eq!(sidebar_cols(&app), drawn);
@@ -135,11 +137,14 @@ fn widening_a_default_wider_than_the_limit_moves_nothing() {
     let g = rect(&app, &Hit::SidebarGutter);
     let y = g.y + g.height / 2;
     app.handle_mouse(left_down(g.x, y));
-    app.handle_mouse(left_drag(g.x + 6, y));
-    app.handle_mouse(left_up(g.x + 6, y));
-    assert_eq!(app.sidebar_width, None, "a rightward drag doesn't shrink it");
+    app.handle_mouse(left_drag(g.x - 6, y));
+    app.handle_mouse(left_up(g.x - 6, y));
+    assert_eq!(app.sidebar_width, None, "a leftward drag doesn't widen it");
     render_at(&mut app, WIDE, 30);
     assert_eq!(sidebar_cols(&app), drawn);
+
+    press(&mut app, "<A-w>");
+    assert_eq!(app.sidebar_width, Some(crate::layout::SIDEBAR_MIN_COLS), "widening moves");
 }
 
 /// The line follows the pointer row by row, un-eased (E5, E14): the frame
@@ -270,6 +275,27 @@ fn a_bare_move_after_drag_motion_ends_the_resize() {
     assert_eq!(app.hovered, app.hits.hit_at_ignoring_var_tokens(40, y).cloned(), "a hover");
 }
 
+/// Review round 8 N4 (P2a): a key that takes the Main screen away while the
+/// gutter is held (`alt+r` to Manage, `ctrl+p` to the palette) leaves the
+/// resize live until the next motion, which ends it where it got to, saved,
+/// and sizes nothing it can't show.
+#[test]
+fn a_motion_off_the_main_screen_ends_the_resize() {
+    for open in [Action::OpenManage { tab: None }, Action::OpenPalette] {
+        let mut app = App::new_for_test();
+        render(&mut app);
+        let (x, y) = gutter_cell(&app);
+        app.handle_mouse(left_down(x, y));
+        app.handle_mouse(left_drag(24, y));
+        render(&mut app);
+        app.update(open.clone());
+        assert!(app.handle_mouse(left_drag(40, y)), "{open:?}: the end repaints");
+        assert!(app.resize.is_none(), "{open:?}: the motion ended the resize");
+        assert_eq!(app.sidebar_width, Some(24), "{open:?}: kept, the motion moved nothing");
+        assert_eq!(saved_width(&app), Some(24), "{open:?}: saved");
+    }
+}
+
 /// Review round 7 M5: a terminal that reports a held drag only as `Moved`
 /// (it doesn't track buttons) still drives the resize with it.
 #[test]
@@ -331,6 +357,24 @@ fn a_project_switch_by_key_ends_a_live_resize_into_the_old_project() {
     assert_eq!(app.sidebar_width, None, "the next project's width is untouched");
     assert_eq!(width_in(b.path()), None, "and nothing saved into it");
     assert_eq!(app.split_state(), split);
+}
+
+/// Review round 8 N2 (task #92): a project with no saved split opens at the
+/// default 50/50 with both panes showing, as a project with no saved width
+/// opens at the default 28%. The previous project's split doesn't carry
+/// over, and the switch writes nothing into the next project.
+#[test]
+fn a_project_with_no_saved_split_opens_at_the_default() {
+    let (mut app, a, b) = super::tests::two_projects();
+    let split_a = SplitState { editor_minimized: false, response_minimized: true, ratio: 0.8 };
+    assert!(app.apply_split_state(split_a));
+    let layout_in = |root: &std::path::Path| postui_core::fixtures::load_layout(root).unwrap();
+    assert_eq!(layout_in(a.path()).main_split, Some(split_a.to_token()), "A saved its split");
+    render(&mut app);
+    press(&mut app, "<A-z>");
+    assert_eq!(app.proj().root(), b.path(), "switched");
+    assert_eq!(app.split_state(), SplitState::default(), "B opens at 50/50, both panes showing");
+    assert!(!b.path().join(".local").join("layout.toml").exists(), "B's layout.toml unwritten");
 }
 
 /// S3, E4: the handles show resize shapes, and a live drag keeps its
@@ -902,6 +946,21 @@ fn the_split_keys_become_the_sidebar_step_in_the_sidebar() {
     app.update(Action::FocusPane(PaneId::Editor));
     assert_eq!(app.key_action(Action::CycleSplit), Action::CycleSplit);
     assert_eq!(app.key_action(Action::CycleSplitBack), Action::CycleSplitBack);
+}
+
+/// Review round 8 N6: the one keymap read applies the key's context, and
+/// leaves every other binding, the quit key's included, as bound.
+#[test]
+fn the_keymap_read_applies_the_keys_context() {
+    use crate::keys::KeyCombo;
+    let combo = |s: &str| KeyCombo::parse(s).unwrap();
+    let mut app = App::new_for_test();
+    app.update(Action::FocusPane(PaneId::Sidebar));
+    let step = crate::layout::SIDEBAR_STEP_COLS;
+    assert_eq!(app.lookup_key(&combo("alt+w")), Some(Action::StepSidebar(step)));
+    assert_eq!(app.lookup_key(&combo("ctrl+c")), Some(Action::Quit));
+    app.update(Action::FocusPane(PaneId::Editor));
+    assert_eq!(app.lookup_key(&combo("alt+w")), Some(Action::CycleSplit));
 }
 
 /// S6b: `StepSidebar` always means the sidebar, wherever focus is. From

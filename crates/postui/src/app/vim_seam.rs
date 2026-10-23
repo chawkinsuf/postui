@@ -911,7 +911,7 @@ impl App {
         }
         let indent =
             (ev.code == KeyCode::Tab && ev.modifiers.is_empty()) || ev.code == KeyCode::BackTab;
-        match self.keymap.lookup(&KeyCombo::from_event(&ev)) {
+        match self.lookup_key(&KeyCombo::from_event(&ev)) {
             Some(a) if !indent => Ran::routed(self.update(a)),
             _ => Ran::default(),
         }
@@ -932,7 +932,7 @@ impl App {
         if id.is_modal() || id.insert_only() {
             return true;
         }
-        if self.keymap.lookup(&KeyCombo::from_event(ev)).is_some() {
+        if self.lookup_key(&KeyCombo::from_event(ev)).is_some() {
             return true;
         }
         let plain = ev.modifiers.difference(KeyModifiers::SHIFT).is_empty();

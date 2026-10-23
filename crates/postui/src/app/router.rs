@@ -101,15 +101,14 @@ impl App {
             return None;
         }
         let combo = KeyCombo::from_event(ev);
-        let action = if profile == crate::config::KeyProfile::Vim {
-            self.keymap.lookup(&combo)?
-        } else {
-            self.keymap.lookup_override(&combo)?
-        };
+        if profile != crate::config::KeyProfile::Vim && !self.keymap.is_override(&combo) {
+            return None;
+        }
+        // The binding takes the key's context, as in today's routing
+        // (`App::lookup_key`, spec S6a).
+        let action = self.lookup_key(&combo)?;
         match self.screen {
-            // The binding takes the key's context, as in today's routing
-            // (`App::key_action`, spec S6a).
-            Screen::Main => Some(self.key_action(action)),
+            Screen::Main => Some(action),
             Screen::Manage => screen_escape_whitelist(&action).then_some(action),
             Screen::Testbed => None,
         }

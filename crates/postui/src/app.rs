@@ -388,8 +388,9 @@ pub struct App {
     /// The last `Screen::Main` frame's layout, written by each Main draw:
     /// what every pane-sizing path (the drags, the keyboard and palette
     /// steps) measures against. A frame of another screen leaves it, so a
-    /// sidebar step from the Manage screen still applies to the Main
-    /// layout. `None` before the first Main frame.
+    /// sidebar step from the Manage screen still applies to the last Main
+    /// layout, and the next Main frame re-clamps the drawn width by S5 (the
+    /// window may have changed since). `None` before the first Main frame.
     pub(crate) main_layout: Option<crate::layout::AppLayout>,
     /// A left press on a sidebar request row: `(row index, slug)`. Armed
     /// by `on_hit`, cleared on release; becomes a live row drag the moment
@@ -2262,15 +2263,15 @@ impl App {
 
     /// Seeds the split from the project's saved layout preference — the
     /// reopen half of [`Self::persist_split`]. An absent or unrecognized
-    /// token leaves the default split in place.
+    /// token is the default split, as [`Self::seed_sidebar_from_project`]
+    /// does for the width, so a project switch drops the previous
+    /// project's split. Saves nothing.
     fn seed_split_from_project(&mut self) {
-        let Some(s) = self
+        let s = self
             .project()
             .and_then(|p| p.local().main_split.as_deref())
             .and_then(crate::split::SplitState::from_token)
-        else {
-            return;
-        };
+            .unwrap_or_default();
         self.set_split_fields(s);
     }
 
@@ -2349,11 +2350,16 @@ impl App {
     ///
     /// Measured against the edge on screen, not the stored width, and only
     /// ever the way the user asked: the clamp can land on the other side
-    /// of the drawn edge (a 28% default wider than a narrow window's limit,
-    /// a saved width the window squeezes), and storing that would move the
-    /// edge against the user — or a no-op would turn the unset default
-    /// into a fixed width. Either way nothing changes, the stored value
-    /// included.
+    /// of the drawn edge (a 28% default narrower than the minimum on a
+    /// narrow window, a saved width the window squeezes), and storing that
+    /// would move the edge against the user — or a no-op would turn the
+    /// unset default into a fixed width. Either way nothing changes, the
+    /// stored value included.
+    ///
+    /// Comparing against the drawn width is sound mid-drag: every motion
+    /// that changes the width returns true, and the event loop redraws
+    /// before it reads the next event, so whenever a motion arrives the
+    /// last Main frame drew the width the previous one stored.
     fn set_sidebar_cols(&mut self, want: i32) -> bool {
         let Some(layout) = self.main_layout else {
             return false;
@@ -2378,19 +2384,26 @@ impl App {
         }
     }
 
+    /// The action `combo`'s keymap binding gives the key where the keyboard
+    /// is: the one keymap read every key takes (`route_key`, its quit check
+    /// included, `handle_key_routed`, `App::user_bare`, and the vim seam's
+    /// forwarded keys), with [`Self::key_action`]'s context applied.
+    pub(crate) fn lookup_key(&self, combo: &KeyCombo) -> Option<Action> {
+        self.keymap.lookup(combo).map(|a| self.key_action(a))
+    }
+
     /// What a key's keymap binding means where the keyboard is: the one
-    /// place a key's action takes context, applied wherever a keymap
-    /// lookup becomes a key's action (`handle_key_routed`'s `global`,
-    /// `App::user_bare`). With the sidebar focused on the main screen, the
-    /// split keys (`alt+w`, `shift+alt+w`, or whatever keys.toml binds to
-    /// `cycle_split` / `cycle_split_back`) step the sidebar's width.
+    /// place a key's action takes context, applied by
+    /// [`Self::lookup_key`]. With the sidebar focused on the main screen,
+    /// the split keys (`alt+w`, `shift+alt+w`, or whatever keys.toml binds
+    /// to `cycle_split` / `cycle_split_back`) step the sidebar's width.
     ///
     /// The context belongs to the key, not to the split action (spec S6,
     /// S6a): `:split` and the split chips dispatch their action directly,
     /// never through here, so they always mean the split. The step is
     /// `StepSidebar`, the palette's sidebar-only action (S6b), not vim's
     /// `PaneResize`, which follows the current window.
-    pub(crate) fn key_action(&self, action: Action) -> Action {
+    fn key_action(&self, action: Action) -> Action {
         let step = crate::layout::SIDEBAR_STEP_COLS;
         match action {
             Action::CycleSplit if self.split_keys_step_sidebar() => Action::StepSidebar(step),
@@ -3902,7 +3915,8 @@ impl App {
             Action::CycleSplitBack => self.apply_split_state(self.split_state().cycled(false)),
             Action::PaneResize { dir, count } => self.pane_resize(dir, count),
             // Always the sidebar, wherever focus is (spec S6b). Off the main
-            // screen the last frame drew no sidebar, so nothing moves.
+            // screen it applies to the last Main layout (`main_layout`), and
+            // the next Main frame re-clamps the drawn width by S5.
             Action::StepSidebar(delta) => self.step_sidebar(i32::from(delta)),
             Action::FormatBody => {
                 self.no_coalesce = true;
@@ -10865,7 +10879,7 @@ impl App {
         // command) therefore cannot change the meaning of the key being
         // handled. That is the "never mid-key" guarantee — no copy, no
         // handshake, just ordering.
-        let global = self.keymap.lookup(&combo);
+        let global = self.lookup_key(&combo);
         let modified = ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
 
         // 1. A modified quit combo pre-empts everything — except that when
@@ -10953,9 +10967,9 @@ impl App {
         let combo = KeyCombo::from_event(&ev);
         // A replayed key reads the keymap again: the keymap is only ever
         // swapped by an action, never mid-lookup, so this is the same
-        // "one read per key" the first lookup is. The binding then takes
-        // the key's context (`App::key_action`, spec S6a).
-        let global = self.keymap.lookup(&combo).map(|a| self.key_action(a));
+        // "one read per key" the first lookup is. The binding takes the
+        // key's context (`App::lookup_key`, spec S6a).
+        let global = self.lookup_key(&combo);
         let modified = ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
 
         // 1b. A bound paste combo digs past the layers below: modals and

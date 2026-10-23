@@ -835,6 +835,11 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &s, "5<C-w>_"), resize(ResizeDir::Height, 5));
         assert_eq!(feed(&mut Router::default(), &s, "<C-w>="), resize(ResizeDir::Even, 1));
         assert_eq!(
+            feed(&mut Router::default(), &s, "5<C-w>="),
+            resize(ResizeDir::Even, 1),
+            "a count changes nothing, so the action carries none (review round 8 N8)"
+        );
+        assert_eq!(
             feed(&mut Router::default(), &in_url(Mode::Normal, false), "<C-w>="),
             resize(ResizeDir::Even, 1),
             "from a screen field's idle Normal, as the window moves"
