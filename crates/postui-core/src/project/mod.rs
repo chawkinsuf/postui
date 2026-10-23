@@ -1027,22 +1027,9 @@ impl Project {
         let state: LocalState = Self::read_doc(&mut disk, STATE_TOML, |t| {
             toml::from_str(t).map_err(|e| e.to_string())
         })?;
-        // `None` = no `layout.toml` yet. A project from before it kept the
-        // split in `state.toml`: carry that over (spec P3b) and write it to
-        // `layout.toml` below. `state.toml` is left as it is: the old field
-        // is never serialized, so its next ordinary write drops it, and
-        // `layout.toml` wins on every open after the migration.
-        let layout: Option<LayoutState> = Self::read_doc(&mut disk, LAYOUT_TOML, |t| {
-            toml::from_str(t).map(Some).map_err(|e| e.to_string())
+        let layout: LayoutState = Self::read_doc(&mut disk, LAYOUT_TOML, |t| {
+            toml::from_str(t).map_err(|e| e.to_string())
         })?;
-        let (layout, migrate) = match layout {
-            Some(layout) => (layout, false),
-            None => {
-                let main_split = state.legacy_main_split.clone();
-                let migrate = main_split.is_some();
-                (LayoutState { main_split, sidebar_width: None }, migrate)
-            }
-        };
         let secrets: IndexMap<String, IndexMap<String, String>> =
             Self::read_doc(&mut disk, SECRETS_TOML, |t| {
                 toml::from_str(t).map_err(|e| e.to_string())
@@ -1129,20 +1116,6 @@ impl Project {
             migration_declined: false,
             force_reload: false,
         };
-        // Best effort, like every layout save. A failed write leaves the
-        // split in memory (and in `state.toml` until its next write); the
-        // next split change writes `layout.toml`.
-        //
-        // Written here at open, not at the first layout save: `state.toml`
-        // never serializes the old field, so any ordinary state write before
-        // a size change would drop the split. An open that is then abandoned
-        // (a project switch an open field refuses) leaves the file holding
-        // exactly the split `state.toml` holds, so the project's sizes are as
-        // they were. Opening already writes in that way when it creates a
-        // missing default environment.
-        if migrate {
-            let _ = project.persist_layout();
-        }
         warnings.extend(project.prune_stale_selections(legacy_vars));
         project.stamp_watched();
         project.refresh_resolved();
@@ -1392,34 +1365,17 @@ mod tests {
         assert_eq!(read(&dir, ".local/layout.toml").as_deref(), Some("sidebar_width = \"wide\"\n"));
     }
 
-    /// A project from before `.local/layout.toml` kept its split in
-    /// `state.toml` (spec P3b): it opens at that split, and the open writes
-    /// it to `layout.toml` without touching `state.toml`, so a key the
-    /// state doesn't model survives just opening the project (review round
-    /// 8 N5). The next ordinary `state.toml` write drops the old field, and
-    /// a later open reads `layout.toml`, not the old field.
+    /// The sizes come from `.local/layout.toml` alone (spec P3b; postui is
+    /// unreleased, so no project keeps them anywhere older): a `main_split`
+    /// in `state.toml` is an unknown key, and opening writes no layout file.
     #[test]
-    fn an_old_state_toml_split_moves_to_layout_toml() {
+    fn the_sizes_come_from_layout_toml_only_and_open_writes_none() {
         let (dir, _p) = fixture();
         std::fs::create_dir_all(dir.path().join(".local")).unwrap();
-        let old = "main_split = \"0.6000\"\nspace = \"auth\"\nfrom_a_newer_postui = 1\n";
-        std::fs::write(dir.path().join(".local/state.toml"), old).unwrap();
-        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
-        assert_eq!(p.local().main_split.as_deref(), Some("0.6000"));
-        assert_eq!(p.local().active_space, "auth");
-        let layout = read(&dir, ".local/layout.toml").unwrap();
-        assert!(layout.contains("main_split = \"0.6000\""), "{layout}");
-        assert_eq!(read(&dir, ".local/state.toml").as_deref(), Some(old), "unchanged by the open");
-
-        p.set_expanded(["auth/x".to_string()].into_iter().collect());
-        let state = read(&dir, ".local/state.toml").unwrap();
-        assert!(!state.contains("main_split"), "{state}");
-        assert!(state.contains("space = \"auth\""), "{state}");
-
-        // The old field, written back by hand, loses to `layout.toml`.
-        std::fs::write(dir.path().join(".local/state.toml"), "main_split = \"0.2000\"\n").unwrap();
-        let (p2, _w) = Project::open(dir.path().to_path_buf()).unwrap();
-        assert_eq!(p2.local().main_split.as_deref(), Some("0.6000"));
+        std::fs::write(dir.path().join(".local/state.toml"), "main_split = \"0.6000\"\n").unwrap();
+        let (p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        assert_eq!(p.local().main_split, None);
+        assert!(read(&dir, ".local/layout.toml").is_none(), "the open wrote nothing");
     }
 
     #[test]

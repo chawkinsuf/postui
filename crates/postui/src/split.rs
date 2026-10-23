@@ -180,37 +180,26 @@ impl SplitState {
         }
     }
 
-    /// Parses [`Self::to_token`]'s output and the older stop names
-    /// (`even`, `editor-big`, `response-big`, `editor-full`,
-    /// `response-full`); `None` for anything else, so a hand-edited or
-    /// future token degrades to the default split.
+    /// Parses [`Self::to_token`]'s output; `None` for anything else, so a
+    /// hand-edited or future token degrades to the default split.
     pub fn from_token(token: &str) -> Option<SplitState> {
         let mut s = SplitState::default();
-        match token {
-            "even" => return Some(s),
-            "editor-big" => s.ratio = 0.75,
-            "response-big" => s.ratio = 0.25,
-            "editor-full" => s.response_minimized = true,
-            "response-full" => s.editor_minimized = true,
-            _ => {
-                let (share, minimized) = if let Some(rest) = token.strip_prefix("editor-full@") {
-                    (rest, Some(true))
-                } else if let Some(rest) = token.strip_prefix("response-full@") {
-                    (rest, Some(false))
-                } else {
-                    (token, None)
-                };
-                let share: f32 = share.parse().ok()?;
-                if !share.is_finite() || !(0.0..=1.0).contains(&share) {
-                    return None;
-                }
-                s.ratio = share;
-                match minimized {
-                    Some(true) => s.response_minimized = true,
-                    Some(false) => s.editor_minimized = true,
-                    None => {}
-                }
-            }
+        let (share, minimized) = if let Some(rest) = token.strip_prefix("editor-full@") {
+            (rest, Some(true))
+        } else if let Some(rest) = token.strip_prefix("response-full@") {
+            (rest, Some(false))
+        } else {
+            (token, None)
+        };
+        let share: f32 = share.parse().ok()?;
+        if !share.is_finite() || !(0.0..=1.0).contains(&share) {
+            return None;
+        }
+        s.ratio = share;
+        match minimized {
+            Some(true) => s.response_minimized = true,
+            Some(false) => s.editor_minimized = true,
+            None => {}
         }
         Some(s)
     }
@@ -405,24 +394,13 @@ mod tests {
         assert_eq!(SplitState::from_token("response-full@0.6000"), Some(s));
     }
 
-    #[test]
-    fn old_tokens_still_load() {
-        assert_eq!(SplitState::from_token("even"), Some(ratio(0.5)));
-        assert_eq!(SplitState::from_token("editor-big"), Some(ratio(0.75)));
-        assert_eq!(SplitState::from_token("response-big"), Some(ratio(0.25)));
-        assert_eq!(
-            SplitState::from_token("editor-full"),
-            Some(SplitState { response_minimized: true, ..Default::default() })
-        );
-        assert_eq!(
-            SplitState::from_token("response-full"),
-            Some(SplitState { editor_minimized: true, ..Default::default() })
-        );
-    }
-
+    /// The stop names main's split saved (`even`, `editor-full`, …) are
+    /// junk too: postui is unreleased, so no project keeps one.
     #[test]
     fn junk_tokens_are_rejected() {
-        for junk in ["sideways", "", "1.5", "-0.1", "NaN", "editor-full@x", "inf"] {
+        for junk in
+            ["sideways", "", "1.5", "-0.1", "NaN", "editor-full@x", "inf", "even", "editor-full"]
+        {
             assert_eq!(SplitState::from_token(junk), None, "{junk:?}");
         }
     }

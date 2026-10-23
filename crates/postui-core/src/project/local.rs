@@ -37,7 +37,6 @@ impl Project {
         let state = LocalState {
             environment: self.active_env.clone(),
             open_request: self.local.open_request.clone(),
-            legacy_main_split: None,
             expanded: self.local.expanded.iter().cloned().collect(),
             selections: self.local.selections.clone(),
             shared_selections: self.local.shared_selections.clone(),

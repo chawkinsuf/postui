@@ -216,11 +216,6 @@ pub(crate) fn display_taken(
 pub struct LocalState {
     pub environment: Option<String>,
     pub open_request: Option<String>,
-    /// The split as a project from before `.local/layout.toml` saved it
-    /// here: read once by `open` to carry it over (spec P3b), never
-    /// written back.
-    #[serde(rename = "main_split", skip_serializing)]
-    pub legacy_main_split: Option<String>,
     pub expanded: Vec<String>,
     /// Per-environment `name → selected option key`, shared by variables
     /// and groups (spec §1.3).
