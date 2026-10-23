@@ -300,8 +300,13 @@ and the user picked the recommended option for each (`mine (approved)`):
   partner; ↓ or PageDown turned it off.
   - Now `clicked` holds the real line it was made on, and the pair is
     anchored there, not at the cursor.
-  - A press, a tree swap (`set_body_tree`, `set_jq_tree`) and a view switch
-    (`set_mode`) forget it; `cursor_moved` no longer does.
+  - Every click forgets it, a fold arrow's included (`click_row`). So do a
+    view switch (`set_mode`) and, while the tree view shows, a tree swap.
+    `cursor_moved` no longer does.
+  - Only an arrows click on a line's own text records one. A click in vim
+    doesn't, so a later switch to arrows doesn't light a stale pair. Nor
+    does a click on a closed fold's summary, so opening that fold doesn't
+    light its column 0 (review round 4).
   - A fold that hides the clicked line darkens the pair (R13).
   - Cost: the highlight no longer follows the cursor row.
 - **R20 is a line-end comma.** Only a `,` that ends its line (blanks may

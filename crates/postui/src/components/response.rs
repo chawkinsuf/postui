@@ -698,8 +698,10 @@ pub struct ReadyView {
     /// matching brackets, R10). Not `at_col`, which arrows' PageUp and
     /// PageDown also set (on the first non-blank, often a `}`), and which
     /// arrows' search starts from. A key that moves the cursor keeps it,
-    /// so paging to a lit partner finds it lit (#89). The next press, a
-    /// tree swap and a view switch forget it.
+    /// so paging to a lit partner finds it lit (#89). Every click forgets
+    /// it (`click_row`, or the press off the text), and so do a view switch
+    /// and, on the tree view, a tree swap. Only an arrows click on a line's
+    /// own text (not a closed fold's summary) records one.
     clicked: Option<(usize, usize)>,
     /// The V anchor's column, as Vim's Visual start has one (`o` goes there).
     anchor_col: usize,
@@ -938,8 +940,15 @@ impl ReadyView {
     fn set_body_tree(&mut self, tree: Option<JsonTree>) {
         self.tree = tree;
         self.tree_epoch += 1;
-        // The clicked line named a line of the old tree.
-        self.clicked = None;
+        self.forget_tree_click();
+    }
+
+    /// A click on the tree view named a line of the old tree; one on Raw
+    /// or Headers still names its text.
+    fn forget_tree_click(&mut self) {
+        if self.mode == ViewMode::Pretty {
+            self.clicked = None;
+        }
     }
 
     /// Swaps the filtered tree in (or out), bumping the epoch only when
@@ -949,7 +958,7 @@ impl ReadyView {
         self.cursor_moved();
         if tree.is_some() || self.jq_tree.is_some() {
             self.tree_epoch += 1;
-            self.clicked = None;
+            self.forget_tree_click();
         }
         self.jq_tree = tree;
     }
@@ -3588,6 +3597,9 @@ impl Response {
             return;
         };
         view.cursor_moved();
+        // Every click forgets the last clicked char, a fold arrow's too
+        // (R10); only an arrows click on a line's own text records one.
+        view.clicked = None;
         view.cursor = row.min(view.visible_len().saturating_sub(1));
         let cursor = view.cursor;
         // A click on the text puts Vim's hidden column on the clicked char,
@@ -3598,7 +3610,9 @@ impl Response {
             let len =
                 view.real_line().and_then(|l| view.buffer_line(l)).map_or(0, |t| t.chars().count());
             view.set_col(if folded { 0 } else { col.min(len.saturating_sub(1)) });
-            view.clicked = view.at_col;
+            if !folded && !self.vim_cursor {
+                view.clicked = view.at_col;
+            }
         }
         if toggle
             && view.mode == ViewMode::Pretty
@@ -10712,6 +10726,38 @@ mod tests {
         let view = r.view.as_mut().unwrap();
         view.active_tree_mut().unwrap().toggle(1);
         assert!(bracket_lit_at(&mut r, true, 2, 0), "now on line 2");
+    }
+
+    /// Since keys keep the clicked pair (#89), what forgets it: a click on
+    /// a fold arrow; a click on a closed fold's summary records nothing,
+    /// so opening it later lights nothing; a click in vim records nothing
+    /// for arrows to find later; a tree landing while Raw shows keeps the
+    /// Raw click.
+    #[test]
+    fn what_forgets_the_clicked_pair() {
+        // 0 `{`, 1 `"a": [`, 2–3, 4 `],`, 5 `"b": [`, 6–7, 8 `]`, 9 `}`.
+        let body = r#"{"a": [1, 2], "b": [3, 4]}"#;
+        let mut r = ready(body);
+        let open = col_of(&r, 1, '[');
+        click_cell(&mut r, 1, open);
+        assert!(bracket_lit_at(&mut r, true, 1, open));
+        r.click_row(5, true);
+        assert!(!bracket_lit_at(&mut r, true, 1, open), "a fold arrow's click");
+        let mut r = ready(body);
+        r.click_row(0, true);
+        click_cell(&mut r, 0, 0);
+        r.view.as_mut().unwrap().active_tree_mut().unwrap().toggle(0);
+        assert!(!bracket_lit_at(&mut r, true, 0, 0), "the summary's click, opened");
+        let mut r = ready(body);
+        r.vim_cursor = true;
+        click_cell(&mut r, 1, open);
+        r.motion(ResponseMotion::Lines(2));
+        r.vim_cursor = false;
+        assert!(!bracket_lit_at(&mut r, true, 1, open), "a vim click, read by arrows");
+        let mut r = ready("(a)");
+        click_cell(&mut r, 0, 0);
+        r.view.as_mut().unwrap().set_body_tree(None);
+        assert!(bracket_lit_at(&mut r, true, 0, 2), "a Raw click outlives a tree landing");
     }
 
     /// R13: a closed fold's line shows a summary, so it never lights.
