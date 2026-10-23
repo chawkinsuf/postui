@@ -677,27 +677,46 @@ fn alt_w_elsewhere_still_cycles_the_split() {
     assert_eq!(app.sidebar_width, None, "the sidebar is untouched");
 }
 
-/// Review round 4 I1: the first `alt+w` after a drag always moves the
-/// line. With 25 content rows dragged to 13, Even would draw 13 rows too,
-/// so the press goes on to 25/75; the mirror, `shift+alt+w` from 6 rows
-/// (where 25/75 draws 6), goes on to 50/50.
-#[test]
-fn the_first_alt_w_after_a_drag_always_moves_the_line() {
-    use crate::split::SplitStop;
-    let height = 25
+/// The screen height whose main column has `content` content rows.
+fn height_for_content(content: u16) -> u16 {
+    content
         + crate::components::editor::CHROME_HEIGHT
         + crate::components::response::HEADER_STRIP_HEIGHT
         + crate::components::header_bar::HEADER_HEIGHT
-        + crate::components::footer::FOOTER_HEIGHT;
-    for (rows, keys, lands) in
-        [(13.0, "<A-w>", SplitStop::ResponseBig), (6.0, "<A-W>", SplitStop::Even)]
-    {
+        + crate::components::footer::FOOTER_HEIGHT
+}
+
+/// Review round 4 I1, round 5 K1: a drag to the rows a stop draws stores
+/// that stop, so the first `alt+w` after it always moves the line. With 25
+/// content rows, a drag to 13 is Even (12.5 → 13), and the press goes on
+/// to 25/75; the mirror, a drag to 6 is 25/75 (6.25 → 6), and
+/// `shift+alt+w` goes on to 50/50. Each drag first leaves the row, so it
+/// arrives there by the drag's own inversion.
+#[test]
+fn the_first_alt_w_after_a_drag_always_moves_the_line() {
+    use crate::split::SplitStop;
+    let height = height_for_content(25);
+    for (rows, at, keys, lands) in [
+        (13, SplitStop::Even, "<A-w>", SplitStop::ResponseBig),
+        (6, SplitStop::ResponseBig, "<A-W>", SplitStop::Even),
+    ] {
         let mut app = App::new_for_test();
         app.update(Action::FocusPane(PaneId::Editor));
-        app.split_ratio = rows / 25.0;
-        app.update(Action::Render);
+        render_at(&mut app, 120, height);
+        let column = rect(&app, &Hit::Pane(PaneId::Editor)).y;
+        let (x, y) = handle_cell(&app);
+        let grab = y - rect(&app, &Hit::SplitHandle).y;
+        let to = |content: u16| column + crate::components::editor::CHROME_HEIGHT + content + grab;
+        app.handle_mouse(left_down(x, y));
+        app.handle_mouse(left_drag(x, to(rows + 2)));
+        render_at(&mut app, 120, height);
+        app.handle_mouse(left_drag(x, to(rows)));
+        app.handle_mouse(left_up(x, to(rows)));
         render_at(&mut app, 120, height);
         let before = pane_rows(&app, PaneId::Editor);
+        assert_eq!(before, crate::components::editor::CHROME_HEIGHT + rows, "dragged to {rows}");
+        assert_eq!(app.split_state().stop(), Some(at), "a drag to {rows} rows stores the stop");
+        app.update(Action::FocusPane(PaneId::Editor));
         press(&mut app, keys);
         assert_eq!(app.split_state().stop(), Some(lands), "{keys} from {rows} rows");
         app.anims.finish_all();
@@ -706,6 +725,109 @@ fn the_first_alt_w_after_a_drag_always_moves_the_line() {
     }
 }
 
+/// Review round 5 K1 (J1): on a column of 3 content rows, 75/25 and 50/50
+/// both draw 2 rows. Each `alt+w` press still changes the split (some may
+/// draw the same rows), and five presses visit every stop and wrap.
+#[test]
+fn alt_w_on_a_short_column_never_sticks() {
+    use crate::split::SplitStop;
+    let height = height_for_content(3);
+    let mut app = App::new_for_test();
+    app.update(Action::FocusPane(PaneId::Editor));
+    render_at(&mut app, 120, height);
+    assert_eq!(app.split_state().stop(), Some(SplitStop::Even));
+    let mut seen = Vec::new();
+    for _ in 0..5 {
+        let before = app.split_state();
+        press(&mut app, "<A-w>");
+        assert_ne!(app.split_state(), before, "the press after {seen:?} moved the split");
+        seen.push(app.split_state().stop());
+        app.anims.finish_all();
+        render_at(&mut app, 120, height);
+    }
+    assert_eq!(
+        seen,
+        [
+            Some(SplitStop::ResponseBig),
+            Some(SplitStop::ResponseFull),
+            Some(SplitStop::EditorFull),
+            Some(SplitStop::EditorBig),
+            Some(SplitStop::Even),
+        ]
+    );
+}
+
+/// Review round 5 K2: a strip click with a sideways jitter right after an
+/// eased `alt+w` (the frame still partway through the ease) moves
+/// nothing: the split stays the stop `alt+w` chose.
+#[test]
+fn a_strip_jitter_mid_ease_keeps_the_cycled_stop() {
+    use crate::split::SplitStop;
+    const TALL: u16 = 100;
+    let mut target = App::new_for_test_with_anims(false);
+    target.update(Action::SplitStop(SplitStop::ResponseBig));
+    render_at(&mut target, 120, TALL);
+    let target_rows = pane_rows(&target, PaneId::Editor);
+
+    let mut app = App::new_for_test_with_anims(true);
+    app.update(Action::FocusPane(PaneId::Editor));
+    render_at(&mut app, 120, TALL);
+    assert!(app.update(Action::CycleSplit));
+    let cycled = app.split_state();
+    assert_eq!(cycled.stop(), Some(SplitStop::ResponseBig));
+    render_at(&mut app, 120, TALL);
+    assert_ne!(pane_rows(&app, PaneId::Editor), target_rows, "the frame is mid-ease");
+    let (x, y) = handle_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_drag(x + 1, y));
+    app.handle_mouse(left_up(x + 1, y));
+    assert_eq!(app.split_state(), cycled);
+}
+
+/// Review round 5 K2 (J2): the event loop draws the ease's next frame
+/// between a strip press made mid-ease and its sideways jitter. The jitter
+/// is still a click: the split stays the stop `alt+w` chose, though no
+/// frame now draws the line on the pressed row.
+#[test]
+fn a_strip_jitter_after_a_redraw_mid_ease_keeps_the_cycled_stop() {
+    use crate::split::SplitStop;
+    const TALL: u16 = 100;
+    let mut app = App::new_for_test_with_anims(true);
+    app.update(Action::FocusPane(PaneId::Editor));
+    render_at(&mut app, 120, TALL);
+    assert!(app.update(Action::CycleSplit));
+    let cycled = app.split_state();
+    assert_eq!(cycled.stop(), Some(SplitStop::ResponseBig));
+    render_at(&mut app, 120, TALL);
+    let pressed_rows = pane_rows(&app, PaneId::Editor);
+    let (x, y) = handle_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    // The loop draws the next frame of the ease before the motion arrives.
+    app.anims.finish_all();
+    render_at(&mut app, 120, TALL);
+    assert_ne!(pane_rows(&app, PaneId::Editor), pressed_rows, "the line moved under the press");
+    assert!(!app.handle_mouse(left_drag(x + 1, y)), "nothing to repaint");
+    app.handle_mouse(left_up(x + 1, y));
+    assert_eq!(app.split_state(), cycled);
+}
+
+/// K2: once a drag has moved the line, the pressed row is an ordinary
+/// row. A drag that comes back to it puts the line back there.
+#[test]
+fn a_strip_drag_back_to_the_pressed_row_moves_the_line_back() {
+    let mut app = App::new_for_test();
+    render(&mut app);
+    let editor = pane_rows(&app, PaneId::Editor);
+    let (x, y) = handle_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_drag(x, y + 3));
+    render(&mut app);
+    assert!(app.handle_mouse(left_drag(x + 1, y)), "the line moves back");
+    render(&mut app);
+    assert_eq!(pane_rows(&app, PaneId::Editor), editor);
+    assert!(!app.handle_mouse(left_drag(x + 2, y)), "a jitter there after a move moves nothing");
+    app.handle_mouse(left_up(x + 2, y));
+}
 /// S6a (review round 2 G1): the sidebar context belongs to the key. The
 /// split action itself always moves the split, so Vim's `:split` with the
 /// sidebar focused cycles the split and leaves the sidebar alone.

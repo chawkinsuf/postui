@@ -1764,6 +1764,7 @@ impl App {
                         let top = self.hits.rect_of(&Hit::SplitHandle).map_or(m.row, |r| r.y);
                         ResizeHandle::Split {
                             grab: m.row.saturating_sub(top),
+                            press: m.row,
                             start: self.split_state(),
                         }
                     }
