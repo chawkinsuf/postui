@@ -113,6 +113,33 @@ it and the user approved the whole design ("looks right, write it up");
 | P3b | (2026-10-23, review round 7; replaces P3a's fix shape and P1/P4's placement) Pane sizes move out of the journaled `.local/state.toml` into their own file, **`.local/layout.toml`** (`main_split`, `sidebar_width`). The journal never records that file, so undo and redo never see the sizes, and `reload_all`'s write-back is deleted. A test had shown the write-back grows each undo/redo entry by one `state.toml` write per replay whenever resizes and undo/redo interleave. The file is written through `Project` (file-access rule), atomically, at once and best effort, like `set_main_split` today. A `layout.toml` that can't be parsed is reported, never defaulted and overwritten (P4). Migration: when `layout.toml` is absent, the sizes are read once from `state.toml`'s old `main_split` and written to `layout.toml`. Migration never rewrites `state.toml`; its next ordinary write drops the old field. The sizes still stay out of undo (P3a, the user's rule); only the mechanism changes. | mine (approved) |
 | P4 | The sidebar width is a new `LocalState` field, written through `postui_core::project::Project` like `set_main_split` (file-access rule in `CLAUDE.md`). An unparseable value is reported, never silently defaulted and overwritten (memory: parse errors never default). | mine (approved) / project rules |
 
+### 3.4 Rework after review round 9 (2026-10-23)
+
+Nine review rounds didn't converge. Most of the later findings came from
+two mechanisms that kept getting patched:
+
+1. **Sidebar sizing measured against a copy of the last Main frame**
+   (`App::main_layout`). Round 1 had the edge move only toward what was
+   asked, judged against the drawn width. Findings in rounds 2, 3, 5, 7,
+   8 and 9 trace back to that copy going stale. Round 9's O1: only Main
+   frames refresh the copy, so a palette "Widen sidebar" run twice from
+   the Manage screen widens once.
+2. **Where sizes come from was decided at each open, switch and init on
+   its own.** Round 6 seeded init from the new project's file, and round 8
+   reset an unsaved split to the default. Round 9's O2: together they throw
+   away the sizes chosen before "Create project", which main kept.
+
+The user chose to replace both mechanisms rather than patch them ("lets
+work on option 1"; the option was mine, so the rules below are `mine
+(approved)`). The review count restarts at round 1.
+
+| # | Decision | From |
+|---|---|---|
+| S8 | The sidebar's width on screen is a pure function of the saved width and the body's width: `layout::sidebar_cols(body_width, saved)`. `compute_layout` draws it, and every sizing path (the gutter drag, `alt+w`, the palette's Widen/Narrow, vim's `ctrl+w <`/`>`/`=`) reads the current width from it. A change is `clamp_sidebar_cols(body_width, wanted)`, stored only when it differs from the current width. The current width is always within S5's limits, and the clamp keeps it there, so a step or drag can only move the edge the way it was asked or not at all. No direction guard is needed and nothing compares against a drawn frame. A saved width the window squeezes stays saved until the user moves the edge narrower than what's on screen. | mine (approved) |
+| S8a | The body's width comes from the terminal's size, recorded by every frame of every screen (`App::term_area`), not by Main frames alone. The terminal's size changes only with a resize event, and the event loop redraws after a resize event before it reads the next event, so the record is never stale when a key or click reads it. The split's row maths (the strip drag, vim's `ctrl+w +`/`-`/`_`) read the main column from the same layout at that size, using the split's state rather than its eased values. | mine (approved) |
+| S8b | The unset default (S4's 28%) is clamped by S5's limits too, so it obeys the same function. On a window wide enough that the 28% is between the limits (59 columns and up), it draws exactly as before. On a narrower window the default sidebar is 16 columns rather than 28% of the body. This is what lets S8 drop the direction guard: an unclamped default could sit below the minimum, where a narrow step's clamp would widen it. | mine |
+| P5 | One rule for where the sizes come from when a project becomes the open one: **a project's saved sizes win; a project opened or switched to with nothing saved opens at the defaults; a project created in place ("Create project", `InitProjectHere`) keeps the sizes on screen and saves them as its own.** Startup's `InitDefault` creates its project before the first frame, when nothing has been sized, so it opens at the defaults like any project with nothing saved. This replaces round 6's seeding of init from the new project's file: a `layout.toml` another postui wrote into the folder before the init is overwritten by the sizes on screen. | mine (approved) |
+
 ## 4. Goals, non-goals, anti-goals
 
 **Goals:** both dividers draggable; both resizable from the keyboard in
