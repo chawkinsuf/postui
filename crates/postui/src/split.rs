@@ -169,24 +169,33 @@ impl SplitState {
     }
 
     /// One keyboard cycle press (spec E11): [`Self::cycled`], skipping on
-    /// to the next stop that way while a stop would draw the editor rows
-    /// the column draws now, so every press moves the line. `rows` gives
-    /// the editor rows a state draws at the current height. A drag keeps
-    /// its exact share, and at another window height a share can draw a
-    /// stop's rows, so only the press, at the height then, can tell
-    /// whether a stop moves the line.
+    /// to the next stop that way while a stop would look the same as the
+    /// column does now, so every press changes the screen. `looks` gives
+    /// what a state shows at the current height: its editor rows and which
+    /// pane is minimized (a minimized editor is as tall as a shown one with
+    /// no content rows, but it is not the same screen). A drag keeps its
+    /// exact share, and at another window height a share can draw a stop's
+    /// rows, so only the press, at the height then, can tell whether a
+    /// stop changes anything.
     ///
     /// Each candidate is applied to this state, never to a skipped one, so
     /// a minimized end keeps the share the press left (E9a), not a skipped
-    /// stop's. Tries every stop but this one's own; on a column too short
-    /// for any to move the line, it is the plain next stop.
-    pub fn cycled_moving(self, forward: bool, rows: impl Fn(SplitState) -> u16) -> SplitState {
-        let now = rows(self);
+    /// stop's. Tries every stop but the one this state sits at (between
+    /// stops, all five); on a column too short for any to change the
+    /// screen, it is the plain next stop.
+    pub fn cycled_moving<K: PartialEq>(
+        self,
+        forward: bool,
+        looks: impl Fn(SplitState) -> K,
+    ) -> SplitState {
+        let now = looks(self);
         let mut stop = self.cycle_target(forward);
-        for _ in 1..SplitStop::ALL.len() {
-            let next = self.apply(stop);
-            if rows(next) != now {
-                return next;
+        for _ in 0..SplitStop::ALL.len() {
+            if Some(stop) != self.stop() {
+                let next = self.apply(stop);
+                if looks(next) != now {
+                    return next;
+                }
             }
             stop = if forward { stop.next() } else { stop.prev() };
         }
@@ -439,6 +448,15 @@ mod tests {
         assert_eq!(at(50).cycled_moving(false, rows), at(100));
         assert_eq!(at(50).cycled_moving(false, rows).ratio, 0.5);
         assert_eq!(at(50).cycled_moving(true, |_| 3), at(50).cycled(true), "nothing moves");
+    }
+
+    /// Between stops a press has all five stops to try, the last that way
+    /// included: here only 75/25, the fifth forward from 0.6, looks
+    /// different.
+    #[test]
+    fn cycled_moving_from_between_stops_tries_all_five() {
+        let looks = |s: SplitState| s.stop() == Some(EditorBig);
+        assert_eq!(ratio(0.6).cycled_moving(true, looks), at(75));
     }
 
     /// The stop names main's split saved (`even`, `editor-full`, …) are

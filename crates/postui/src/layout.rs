@@ -166,8 +166,12 @@ pub fn compute_layout(
 /// The sidebar's narrowest width in columns.
 pub const SIDEBAR_MIN_COLS: u16 = 16;
 /// The narrowest the main column (editor/response) may be squeezed to by
-/// the sidebar.
-pub const MAIN_MIN_COLS: u16 = 40;
+/// the sidebar: wide enough that the editor's tab row (single-digit
+/// counts on its tabs, the Body badge, the "vars" indicator) ends clear of
+/// the split control at its right end, so the chips never paint over a
+/// tab or take its clicks (the editor's
+/// `the_tab_row_fits_beside_the_split_control_at_the_main_minimum`).
+pub const MAIN_MIN_COLS: u16 = 65;
 /// One keyboard step of the sidebar width: `Action::StepSidebar`'s size
 /// either way (signed, as that action is).
 pub const SIDEBAR_STEP_COLS: i16 = 4;
@@ -194,7 +198,7 @@ pub fn clamp_sidebar_cols(body_width: u16, want: i32) -> u16 {
 ///
 /// The default is ratatui's own split of the body into 28% / the gutter /
 /// 72%, whose rounding no plain formula matches, so it draws as it always
-/// has wherever the limits allow (59 columns and up). The solve costs no
+/// has wherever the limits allow (92 columns and up). The solve costs no
 /// more than the frame's own: ratatui caches layout solves by area and
 /// constraints, and the body width changes only with the window.
 pub fn sidebar_cols(body_width: u16, saved: Option<u16>) -> u16 {
@@ -507,8 +511,9 @@ mod tests {
         );
     }
 
-    /// S8b: from 59 columns up the default draws exactly the old 28% split;
-    /// below, it obeys the sidebar's minimum like a saved width does.
+    /// S8b: from 92 columns up the default draws exactly the old 28% split;
+    /// below, it obeys the limits like a saved width does (the main
+    /// column's 65 first, then the sidebar's 16).
     #[test]
     fn default_sidebar_is_still_28_percent_within_the_limits() {
         for width in 1..=400u16 {
@@ -530,11 +535,11 @@ mod tests {
                 ])
                 .split(body);
             let l = compute_layout(area, 0.0, 0.0, 0.5, None);
-            if width >= 59 {
+            let clamped = clamp_sidebar_cols(width, i32::from(old[0].width));
+            assert_eq!(l.sidebar.width, clamped, "{width} wide");
+            if width >= 92 {
                 assert_eq!(l.sidebar.width, old[0].width, "{width} wide");
                 assert_eq!(l.editor.width, old[2].width, "{width} wide");
-            } else {
-                assert_eq!(l.sidebar.width, clamp_sidebar_cols(width, 0), "{width} wide");
             }
             assert_eq!(l.sidebar.width, sidebar_cols(width, None), "{width} wide");
         }
@@ -556,14 +561,14 @@ mod tests {
         let at = |width| {
             compute_layout(Rect::new(0, 0, width, 40), 0.0, 0.0, 0.5, Some(100)).sidebar.width
         };
-        assert_eq!(at(120), 79);
+        assert_eq!(at(120), 120 - 1 - MAIN_MIN_COLS);
         assert_eq!(at(50), 16);
     }
 
     #[test]
     fn clamp_sidebar_cols_respects_both_limits() {
         assert_eq!(clamp_sidebar_cols(120, 5), 16);
-        assert_eq!(clamp_sidebar_cols(120, 200), 79);
+        assert_eq!(clamp_sidebar_cols(120, 200), 120 - 1 - MAIN_MIN_COLS);
         assert_eq!(clamp_sidebar_cols(120, 30), 30);
         assert_eq!(clamp_sidebar_cols(30, 20), 16);
         assert_eq!(clamp_sidebar_cols(10, 20), 9);

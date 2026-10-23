@@ -91,7 +91,11 @@ fn gutter_drag_clamps_to_the_limits() {
     assert_eq!(app.sidebar_width, Some(crate::layout::SIDEBAR_MIN_COLS));
     render(&mut app);
     app.handle_mouse(left_drag(119, y));
-    assert_eq!(app.sidebar_width, Some(79), "120 wide leaves the gutter and 40 for the main");
+    assert_eq!(
+        app.sidebar_width,
+        Some(120 - 1 - crate::layout::MAIN_MIN_COLS),
+        "120 wide leaves the gutter and the main column's minimum"
+    );
     app.handle_mouse(left_up(119, y));
 }
 
@@ -112,19 +116,21 @@ fn a_gutter_jitter_keeps_the_default_and_a_squeezed_saved_width() {
     }
 }
 
-/// Review F2, S8b: on a window narrow enough that 28% would be under the
-/// sidebar's minimum, the default draws the minimum, so a step or drag
-/// that asks to narrow it moves nothing and saves no width. Asked to
-/// widen, it moves.
+/// Review F2, S8b: on a window narrow enough that 28% would leave the main
+/// column under its minimum, the default draws the sidebar's upper limit,
+/// so a step or drag that asks to widen it moves nothing and saves no
+/// width. Asked to narrow, it moves.
 #[test]
-fn narrowing_a_default_at_the_minimum_moves_nothing() {
-    const WIDE: u16 = 58;
+fn widening_a_default_at_the_limit_moves_nothing() {
+    const WIDE: u16 = 85;
     let mut app = App::new_for_test();
     app.update(Action::FocusPane(PaneId::Sidebar));
     render_at(&mut app, WIDE, 30);
     let drawn = sidebar_cols(&app);
-    assert_eq!(drawn, crate::layout::SIDEBAR_MIN_COLS, "the default obeys the minimum");
-    press(&mut app, "<A-W>");
+    let widest = crate::layout::clamp_sidebar_cols(WIDE, i32::from(WIDE));
+    assert_eq!(drawn, widest, "the default obeys the main column's minimum");
+    assert!(drawn > crate::layout::SIDEBAR_MIN_COLS);
+    press(&mut app, "<A-w>");
     assert_eq!(app.sidebar_width, None);
     render_at(&mut app, WIDE, 30);
     assert_eq!(sidebar_cols(&app), drawn);
@@ -132,16 +138,16 @@ fn narrowing_a_default_at_the_minimum_moves_nothing() {
     let g = rect(&app, &Hit::SidebarGutter);
     let y = g.y + g.height / 2;
     app.handle_mouse(left_down(g.x, y));
-    app.handle_mouse(left_drag(g.x - 6, y));
-    app.handle_mouse(left_up(g.x - 6, y));
-    assert_eq!(app.sidebar_width, None, "a leftward drag saves nothing");
+    app.handle_mouse(left_drag(g.x + 6, y));
+    app.handle_mouse(left_up(g.x + 6, y));
+    assert_eq!(app.sidebar_width, None, "a rightward drag saves nothing");
     render_at(&mut app, WIDE, 30);
     assert_eq!(sidebar_cols(&app), drawn);
 
-    press(&mut app, "<A-w>");
-    let widest = crate::layout::clamp_sidebar_cols(WIDE, i32::from(WIDE));
-    assert!(widest > drawn);
-    assert_eq!(app.sidebar_width, Some(widest), "widening moves, to the limit");
+    press(&mut app, "<A-W>");
+    let narrower = crate::layout::clamp_sidebar_cols(WIDE, i32::from(drawn) - 4);
+    assert!(narrower < drawn);
+    assert_eq!(app.sidebar_width, Some(narrower), "narrowing moves");
 }
 
 /// The line follows the pointer row by row, un-eased (E5, E14): the frame
@@ -727,9 +733,10 @@ fn alt_w_in_the_sidebar_steps_the_width() {
     for _ in 0..40 {
         type_keys(&mut app, "<A-w>");
     }
-    assert_eq!(app.sidebar_width, Some(79), "the limit at 120 wide");
+    let limit = 120 - 1 - crate::layout::MAIN_MIN_COLS;
+    assert_eq!(app.sidebar_width, Some(limit), "the limit at 120 wide");
     type_keys(&mut app, "<A-w>");
-    assert_eq!(app.sidebar_width, Some(79), "no wrap");
+    assert_eq!(app.sidebar_width, Some(limit), "no wrap");
     assert_eq!(app.split_state(), split, "the split never moved");
 }
 
@@ -742,11 +749,12 @@ fn a_step_at_the_limit_keeps_a_squeezed_saved_width() {
     app.sidebar_width = Some(100);
     app.update(Action::FocusPane(PaneId::Sidebar));
     render(&mut app);
-    assert_eq!(sidebar_cols(&app), 79, "squeezed for the frame");
+    let limit = 120 - 1 - crate::layout::MAIN_MIN_COLS;
+    assert_eq!(sidebar_cols(&app), limit, "squeezed for the frame");
     press(&mut app, "<A-w>");
     assert_eq!(app.sidebar_width, Some(100));
     press(&mut app, "<A-W>");
-    assert_eq!(app.sidebar_width, Some(75), "a real step starts from the screen");
+    assert_eq!(app.sidebar_width, Some(limit - 4), "a real step starts from the screen");
 }
 
 /// E11: anywhere but the sidebar, the `alt+w` key cycles the split as
@@ -843,6 +851,28 @@ fn alt_w_after_a_window_resize_still_moves_the_line() {
     app.anims.finish_all();
     render_at(&mut app, 120, short);
     assert_ne!(pane_rows(&app, PaneId::Editor), before, "the line moved");
+}
+
+/// E11: a minimized editor is as tall as a shown one with no content rows,
+/// but it is another screen. On a column of 1 content row, 25/75 gives the
+/// editor none, and `alt+w` from there still goes to "editor minimized"
+/// rather than skipping it.
+#[test]
+fn alt_w_reaches_the_minimized_editor_on_a_short_column() {
+    use crate::split::SplitStop;
+    let height = height_for_content(1);
+    let mut app = App::new_for_test();
+    app.update(Action::FocusPane(PaneId::Editor));
+    app.update(Action::SplitStop(SplitStop::ResponseBig));
+    render_at(&mut app, 120, height);
+    assert_eq!(pane_rows(&app, PaneId::Editor), crate::components::editor::CHROME_HEIGHT);
+    assert_eq!(
+        crate::components::editor::COLLAPSED_HEIGHT,
+        crate::components::editor::CHROME_HEIGHT,
+        "the two draw the same rows"
+    );
+    press(&mut app, "<A-w>");
+    assert_eq!(app.split_state().stop(), Some(SplitStop::ResponseFull));
 }
 
 /// Review round 5 K1 (J1), E11: on a column of 3 content rows, 75/25 and
@@ -1319,7 +1349,7 @@ fn ctrl_w_equal_evens_a_dragged_share() {
 fn huge_vim_counts_clamp() {
     let mut app = vim_at(PaneId::Sidebar);
     type_keys(&mut app, "500<C-w>>");
-    assert_eq!(app.sidebar_width, Some(79));
+    assert_eq!(app.sidebar_width, Some(120 - 1 - crate::layout::MAIN_MIN_COLS));
     type_keys(&mut app, "500<C-w><lt>");
     assert_eq!(app.sidebar_width, Some(crate::layout::SIDEBAR_MIN_COLS));
 

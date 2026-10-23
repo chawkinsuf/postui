@@ -2304,7 +2304,7 @@ impl App {
     }
 
     /// The split one `alt+w` / `shift+alt+w` press steps to: the next stop
-    /// that way that moves the line at the terminal's current height
+    /// that way that changes the screen at the terminal's current height
     /// ([`crate::split::SplitState::cycled_moving`], spec E11). Before the
     /// first frame there is no height, and it is the plain next stop.
     fn cycled_split(&self, forward: bool) -> crate::split::SplitState {
@@ -2312,7 +2312,10 @@ impl App {
         if self.term_area.is_none() {
             return now.cycled(forward);
         }
-        now.cycled_moving(forward, |s| self.layout_at(s).map_or(0, |l| l.editor.height))
+        now.cycled_moving(forward, |s| {
+            let rows = self.layout_at(s).map_or(0, |l| l.editor.height);
+            (rows, s.editor_minimized, s.response_minimized)
+        })
     }
 
     /// Sets the split to `next` — the shared body of every split change

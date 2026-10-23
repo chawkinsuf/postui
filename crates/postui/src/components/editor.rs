@@ -5050,6 +5050,36 @@ mod tests {
     /// alike, so it never moves as the split changes. Its two chips run
     /// in stop order, the boundary at the top then at the bottom.
     #[test]
+    fn the_tab_row_fits_beside_the_split_control_at_the_main_minimum() {
+        // The widest everyday tab row: single-digit counts on the three
+        // counted tabs, the Body badge, and the "vars" indicator (S5's
+        // main-column minimum is sized for it).
+        let mut e = Editor { method: postui_core::model::Method::Post, ..Editor::default() };
+        for i in 0..9 {
+            let entry = || Entry { value: "1".into(), enabled: true };
+            e.params.insert(format!("p{i}"), entry());
+            e.headers.insert(format!("h{i}"), entry());
+            e.variables.insert(format!("v{i}"), entry());
+        }
+        e.set_body_text("{}");
+        e.substitute_body = true;
+        let hits = draw_editor_sized(&mut e, crate::layout::MAIN_MIN_COLS, 20);
+        let tabs_end = (0..DRAW_ORDER.len())
+            .filter_map(|i| hits.rect_of(&Hit::EditorTab(i)))
+            .map(|r| r.x + r.width)
+            .max()
+            .expect("tabs drawn");
+        // "vars " sits two cells after the last tab.
+        let vars_end = tabs_end + 2 + 5;
+        let [first, ..] = control_rects(&hits);
+        assert!(
+            vars_end < first.x,
+            "tabs and vars end at {vars_end}, the control starts at {}",
+            first.x
+        );
+    }
+
+    #[test]
     fn split_control_keeps_its_right_inset_in_every_state() {
         let mut e = Editor::default();
         let (_, hits) = draw_editor(&mut e);
