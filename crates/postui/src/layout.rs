@@ -194,7 +194,9 @@ pub fn clamp_sidebar_cols(body_width: u16, want: i32) -> u16 {
 ///
 /// The default is ratatui's own split of the body into 28% / the gutter /
 /// 72%, whose rounding no plain formula matches, so it draws as it always
-/// has wherever the limits allow (59 columns and up).
+/// has wherever the limits allow (59 columns and up). The solve costs no
+/// more than the frame's own: ratatui caches layout solves by area and
+/// constraints, and the body width changes only with the window.
 pub fn sidebar_cols(body_width: u16, saved: Option<u16>) -> u16 {
     let want = match saved {
         Some(w) => w,

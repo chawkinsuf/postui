@@ -602,7 +602,9 @@ impl HitMap {
         })
     }
 
-    /// Last-registered rect for `hit` — the test helper click tests use.
+    /// Last-registered rect for `hit`: where the last frame drew it. Click
+    /// tests use it, and so does the strip resize's grab (the strip as the
+    /// user saw it at the press).
     pub fn rect_of(&self, hit: &Hit) -> Option<Rect> {
         self.regions.iter().rev().find(|(_, h)| h == hit).map(|(rect, _)| *rect)
     }

@@ -4487,6 +4487,9 @@ const GRIP: &str = "\u{283F}\u{283F}";
 fn strip_face(ctx: &DrawCtx) -> (bool, ratatui::style::Color) {
     let t = ctx.theme;
     let hot = ctx.hovered == Some(&crate::hit::Hit::SplitHandle);
+    // Half way to the hover tone, not `paint::hover_surface`'s full lifted
+    // one: the whole three-row strip lights, so it warms only slightly
+    // (spec E4, as on the approved mockup); the grip carries the accent.
     let bg = if hot {
         crate::theme::mix(t.panel, t.control_hover, 0.5 * ctx.hover_t())
     } else {

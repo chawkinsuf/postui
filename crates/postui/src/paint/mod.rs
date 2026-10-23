@@ -127,8 +127,7 @@ fn ladder_step(theme: &Theme) -> f32 {
 /// tint source moves it by a lightness step you can actually see.
 ///
 /// One funnel for every keycap in the app (the footer's chip row, the app
-/// bar's cycle pills and composite buttons, the split control's `alt+w`),
-/// so they cannot drift apart.
+/// bar's cycle pills and composite buttons), so they cannot drift apart.
 pub fn keycap_face(theme: &Theme, hovered: bool, hover_t: f32) -> (Color, Color) {
     if !hovered {
         return (theme.text_muted, theme.control);

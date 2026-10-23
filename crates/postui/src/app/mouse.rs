@@ -1771,27 +1771,23 @@ impl App {
             // resize's. The handle is the hovered hit for the length of the
             // drag, so the strip stays lit wherever the pointer goes.
             Hit::SidebarGutter | Hit::SplitHandle => {
-                if hit == Hit::SplitHandle {
-                    self.press_response_pane(clicks.text, m, false);
-                } else {
+                let kind = if hit == Hit::SidebarGutter {
                     self.vim_separator_press();
-                }
-                let kind = match hit {
-                    Hit::SidebarGutter => ResizeHandle::Sidebar,
-                    _ => {
-                        // Where this frame drew the strip, not where it will
-                        // settle: the user grabs what they see. The first
-                        // motion snaps the split (`set_split_now`), so from
-                        // then on drawn and settled agree, and measuring
-                        // from the drawn strip keeps it under the pointer
-                        // (spec E5). Measuring from the settled strip would
-                        // put the line the ease's remaining rows away.
-                        let top = self.hits.rect_of(&Hit::SplitHandle).map_or(m.row, |r| r.y);
-                        ResizeHandle::Split {
-                            grab: m.row.saturating_sub(top),
-                            press: m.row,
-                            start: self.split_state(),
-                        }
+                    ResizeHandle::Sidebar
+                } else {
+                    self.press_response_pane(clicks.text, m, false);
+                    // Where this frame drew the strip, not where it will
+                    // settle: the user grabs what they see. The first motion
+                    // snaps the split (`set_split_now`), so from then on
+                    // drawn and settled agree, and measuring from the drawn
+                    // strip keeps it under the pointer (spec E5). Measuring
+                    // from the settled strip would put the line the ease's
+                    // remaining rows away.
+                    let top = self.hits.rect_of(&Hit::SplitHandle).map_or(m.row, |r| r.y);
+                    ResizeHandle::Split {
+                        grab: m.row.saturating_sub(top),
+                        press: m.row,
+                        start: self.split_state(),
                     }
                 };
                 self.resize = Some(ResizeDrag { kind, moved: false, tracked: false });
