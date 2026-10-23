@@ -50,9 +50,6 @@ pub struct HintCtx {
     /// Where the keyboard is: the key a hint names is spelled for it
     /// (piece 4 spec §4.6).
     pub spell: crate::keyroute::SpellCtx,
-    /// The split keys' bindings step the sidebar here, not the split
-    /// (`App::key_action`, spec S6a), so a split hint must not name them.
-    pub split_keys_step_sidebar: bool,
 }
 
 /// What `Action::OpenVarTokenPopup` will open for a token, so the tip's
@@ -111,22 +108,13 @@ fn manage_noun(tab: Option<crate::components::manage::ManageTab>) -> &'static st
 /// keycap — see [`shows_its_own_keycap`].
 pub fn hint_for(hit: &Hit, keymap: &Keymap, ctx: &HintCtx) -> Option<String> {
     match hint_source(hit, ctx)? {
-        // The split chips name the key that cycles the split, so it can
-        // still be found with the `alt+w` pill gone. Where the keymap's
-        // split key steps the sidebar instead (spec S6a), that key is left
-        // off; vim's `:split` moves the split from anywhere, so it stays.
-        Source::Text(s) if matches!(hit, Hit::SplitStop(_)) => {
-            let key =
-                crate::keyroute::spell::spell(ctx.spell, &Action::CycleSplit, keymap).filter(|k| {
-                    !ctx.split_keys_step_sidebar
-                        || keymap.combo_for_action(&Action::CycleSplit).as_ref() != Some(k)
-                });
-            Some(match key {
+        Source::Text(s) => Some(s),
+        Source::Keyed(s, action) => {
+            Some(match crate::keyroute::spell::spell(ctx.spell, &action, keymap) {
                 Some(key) => format!("{s} \u{b7} {key}"),
                 None => s,
             })
         }
-        Source::Text(s) => Some(s),
         Source::Of(action) => {
             Some(describe_action(&action, keymap, !shows_its_own_keycap(hit), ctx.spell))
         }
@@ -156,6 +144,9 @@ fn shows_its_own_keycap(hit: &Hit) -> bool {
 enum Source {
     /// A fixed line for a control with no single palette action.
     Text(String),
+    /// A fixed line, then the key of `action`, which does the same as
+    /// the control: for a control whose palette wording doesn't fit it.
+    Keyed(String, Action),
     /// A control that dispatches `action`: described like the palette does.
     Of(Action),
 }
@@ -238,8 +229,6 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::CancelSend => "Cancel the request in flight".to_string(),
         Action::CloseField => "Close the field, keeping what you typed".to_string(),
         Action::FocusUrl => "Edit the URL".to_string(),
-        Action::CycleSplit => "Step the editor/response split".to_string(),
-        Action::CycleSplitBack => "Step the split back".to_string(),
         Action::DeleteTableRow(_) => "Delete this row".to_string(),
         Action::ToggleVarReveal => "Reveal or hide the secret value".to_string(),
         // Closing switches the filter off — when there is one: an empty
@@ -446,13 +435,17 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::TableCheckbox(_) => text(if ctx.on { "Disable this row" } else { "Enable this row" }),
         Hit::TableCopy(_) => text("Copy this row's value"),
         Hit::TableDelete(_) => text("Delete this row"),
-        // The chip's key (`· alt+w`) is appended by `hint_for`, which has
-        // the keymap. Only the two end chips exist; `on` is the lit one.
-        Hit::SplitStop(stop) => text(match (stop, ctx.on) {
-            (_, true) => "Restore the split",
-            (SplitStop::EditorFull, false) => "Editor only",
-            (_, false) => "Response only",
-        }),
+        // The two end chips are the hide/show toggles (spec E12a): a click
+        // hides the other pane, and on the lit chip (`on`) shows it again
+        // at the share it had. Each carries its toggle's key.
+        Hit::SplitStop(stop) => {
+            let (pane, toggle) = match stop {
+                SplitStop::EditorFull => ("response", Action::ToggleResponseCollapse),
+                _ => ("editor", Action::ToggleTableCollapse),
+            };
+            let verb = if ctx.on { "Show" } else { "Hide" };
+            Some(Source::Keyed(format!("{verb} the {pane}"), toggle))
+        }
         Hit::AutoHeaderCopy(_) => text("Copy this header's value"),
         Hit::AutoHeaderOverride(_) => text("Edit this header in the request"),
         Hit::AutoHeaderReveal => {
@@ -673,25 +666,50 @@ mod tests {
         }
     }
 
-    /// With the `alt+w` pill gone from the editor's tab bar, hovering a
-    /// split chip is where the key is named (spec E12). The lit chip
-    /// (`on`) restores the split instead.
+    /// Spec E12a, E12b: the two split chips are the hide/show toggles, so
+    /// each hint says which pane a click hides (or, lit, shows again) and
+    /// carries that toggle's key as the profile spells it.
     #[test]
-    fn split_chip_hints_name_alt_w() {
-        let keymap = Keymap::default_bindings();
+    fn split_chip_hints_are_the_hide_show_toggles() {
+        use crate::config::KeyProfile;
         let alt = crate::keys::alt_label();
-        let hint = |stop, on| hint_for(&Hit::SplitStop(stop), &keymap, &HintCtx { on, ..ctx() });
+        for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+            let keymap = Keymap::default_bindings_for(profile);
+            let spell = crate::keyroute::SpellCtx { profile, ..Default::default() };
+            let hint = |stop, on| {
+                hint_for(&Hit::SplitStop(stop), &keymap, &HintCtx { on, spell, ..ctx() }).unwrap()
+            };
+            assert_eq!(
+                hint(SplitStop::EditorFull, false),
+                format!("Hide the response \u{b7} {alt}+shift+p"),
+                "{profile:?}"
+            );
+            assert_eq!(
+                hint(SplitStop::EditorFull, true),
+                format!("Show the response \u{b7} {alt}+shift+p"),
+                "{profile:?}"
+            );
+            assert_eq!(
+                hint(SplitStop::ResponseFull, false),
+                format!("Hide the editor \u{b7} {alt}+p"),
+                "{profile:?}"
+            );
+            assert_eq!(
+                hint(SplitStop::ResponseFull, true),
+                format!("Show the editor \u{b7} {alt}+p"),
+                "{profile:?}"
+            );
+        }
+    }
+
+    /// A toggle with no key in the active keymap leaves the key off.
+    #[test]
+    fn a_split_chip_hint_leaves_off_an_unbound_toggle_key() {
+        let mut keymap = Keymap::default_bindings();
+        keymap.apply_overrides("toggle_response_collapse = []").unwrap();
         assert_eq!(
-            hint(SplitStop::EditorFull, false).unwrap(),
-            format!("Editor only \u{b7} {alt}+w")
-        );
-        assert_eq!(
-            hint(SplitStop::ResponseFull, false).unwrap(),
-            format!("Response only \u{b7} {alt}+w")
-        );
-        assert_eq!(
-            hint(SplitStop::ResponseFull, true).unwrap(),
-            format!("Restore the split \u{b7} {alt}+w")
+            hint_for(&Hit::SplitStop(SplitStop::EditorFull), &keymap, &ctx()).unwrap(),
+            "Hide the response"
         );
     }
 
@@ -763,10 +781,6 @@ mod tests {
     fn chip_actions_outside_the_palette_use_the_fallback_wording() {
         let keymap = Keymap::default_bindings();
         assert_eq!(
-            hint_for(&Hit::FooterChip(Action::CycleSplit), &keymap, &ctx()).unwrap(),
-            "Step the editor/response split"
-        );
-        assert_eq!(
             hint_for(&Hit::FooterChip(Action::DeleteTableRow(3)), &keymap, &ctx()).unwrap(),
             "Delete this row"
         );
@@ -774,36 +788,6 @@ mod tests {
         assert_eq!(
             hint_for(&Hit::FooterChip(Action::ToggleVarReveal), &keymap, &ctx()).unwrap(),
             "Reveal or hide the secret value"
-        );
-    }
-
-    /// Spec S6a: while the sidebar has focus, `alt+w` steps the sidebar,
-    /// so the split chips leave it off. Vim's `:split` still moves the
-    /// split from there, so it stays.
-    #[test]
-    fn split_chip_hints_leave_alt_w_off_while_it_steps_the_sidebar() {
-        use crate::config::KeyProfile;
-        let sidebar = |profile| HintCtx {
-            split_keys_step_sidebar: true,
-            spell: crate::keyroute::SpellCtx {
-                profile,
-                surface: crate::keyroute::Surface::Sidebar,
-                ..Default::default()
-            },
-            ..ctx()
-        };
-        let arrows = Keymap::default_bindings_for(KeyProfile::Arrows);
-        let hint = |stop, on| {
-            hint_for(&Hit::SplitStop(stop), &arrows, &HintCtx { on, ..sidebar(KeyProfile::Arrows) })
-        };
-        assert_eq!(hint(SplitStop::EditorFull, false).unwrap(), "Editor only");
-        assert_eq!(hint(SplitStop::ResponseFull, false).unwrap(), "Response only");
-        assert_eq!(hint(SplitStop::ResponseFull, true).unwrap(), "Restore the split");
-        let vim = Keymap::default_bindings_for(KeyProfile::Vim);
-        assert_eq!(
-            hint_for(&Hit::SplitStop(SplitStop::EditorFull), &vim, &sidebar(KeyProfile::Vim))
-                .unwrap(),
-            "Editor only \u{b7} :split"
         );
     }
 

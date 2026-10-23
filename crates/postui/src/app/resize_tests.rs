@@ -261,6 +261,33 @@ fn right_click_and_focus_loss_end_a_resize_keeping_it() {
     }
 }
 
+/// Review round 4 I2: a key that switches project while the gutter is
+/// held ends the resize into the project being left, saved there. Later
+/// motion of the same held button resizes nothing in the next project.
+#[test]
+fn a_project_switch_by_key_ends_a_live_resize_into_the_old_project() {
+    let (mut app, a, b) = super::tests::two_projects();
+    render(&mut app);
+    let (x, y) = gutter_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_drag(24, y));
+    render(&mut app);
+    press(&mut app, "<A-z>");
+    assert_eq!(app.proj().root(), b.path(), "switched");
+    assert!(app.resize.is_none(), "the switch ended the resize");
+    let width_in = |root: &std::path::Path| {
+        postui_core::fixtures::load_local_state(root).unwrap().sidebar_width
+    };
+    assert_eq!(width_in(a.path()), Some(24), "saved into the project being left");
+    let split = app.split_state();
+    render(&mut app);
+    app.handle_mouse(left_drag(40, y));
+    app.handle_mouse(left_up(40, y));
+    assert_eq!(app.sidebar_width, None, "the next project's width is untouched");
+    assert_eq!(width_in(b.path()), None, "and nothing saved into it");
+    assert_eq!(app.split_state(), split);
+}
+
 /// S3, E4: the handles show resize shapes, and a live drag keeps its
 /// shape wherever the pointer wanders until the release.
 #[test]
@@ -359,7 +386,10 @@ fn a_strip_press_clicks_like_the_response_pane() {
     app.handle_mouse(left_down(x, y));
     assert!(app.session.response.selected_text().is_none(), "the selection is cleared");
     assert!(app.text_drag.is_none(), "the press arms no text sweep");
-    assert!(matches!(app.resize, Some(ResizeDrag::Split { .. })), "it arms the resize");
+    assert!(
+        matches!(app.resize, Some(ResizeDrag { kind: ResizeHandle::Split { .. }, .. })),
+        "it arms the resize"
+    );
     app.handle_mouse(left_up(x, y));
 
     // An open cell edit: closed (committed), its row deselected, the
@@ -372,7 +402,7 @@ fn a_strip_press_clicks_like_the_response_pane() {
     assert_eq!(app.editor.params.get("page").map(|e| e.value.as_str()), Some("19"), "saved");
     assert_eq!(app.editor.table.selected, None, "its row deselected");
     assert_eq!(app.editor.sub_focus, SubFocus::None, "the caret left the editor");
-    assert!(matches!(app.resize, Some(ResizeDrag::Split { .. })));
+    assert!(matches!(app.resize, Some(ResizeDrag { kind: ResizeHandle::Split { .. }, .. })));
     app.handle_mouse(left_up(x, y));
 
     // The jq bar: blurred.
@@ -647,6 +677,35 @@ fn alt_w_elsewhere_still_cycles_the_split() {
     assert_eq!(app.sidebar_width, None, "the sidebar is untouched");
 }
 
+/// Review round 4 I1: the first `alt+w` after a drag always moves the
+/// line. With 25 content rows dragged to 13, Even would draw 13 rows too,
+/// so the press goes on to 25/75; the mirror, `shift+alt+w` from 6 rows
+/// (where 25/75 draws 6), goes on to 50/50.
+#[test]
+fn the_first_alt_w_after_a_drag_always_moves_the_line() {
+    use crate::split::SplitStop;
+    let height = 25
+        + crate::components::editor::CHROME_HEIGHT
+        + crate::components::response::HEADER_STRIP_HEIGHT
+        + crate::components::header_bar::HEADER_HEIGHT
+        + crate::components::footer::FOOTER_HEIGHT;
+    for (rows, keys, lands) in
+        [(13.0, "<A-w>", SplitStop::ResponseBig), (6.0, "<A-W>", SplitStop::Even)]
+    {
+        let mut app = App::new_for_test();
+        app.update(Action::FocusPane(PaneId::Editor));
+        app.split_ratio = rows / 25.0;
+        app.update(Action::Render);
+        render_at(&mut app, 120, height);
+        let before = pane_rows(&app, PaneId::Editor);
+        press(&mut app, keys);
+        assert_eq!(app.split_state().stop(), Some(lands), "{keys} from {rows} rows");
+        app.anims.finish_all();
+        render_at(&mut app, 120, height);
+        assert_ne!(pane_rows(&app, PaneId::Editor), before, "{keys}: the line moved");
+    }
+}
+
 /// S6a (review round 2 G1): the sidebar context belongs to the key. The
 /// split action itself always moves the split, so Vim's `:split` with the
 /// sidebar focused cycles the split and leaves the sidebar alone.
@@ -696,18 +755,36 @@ fn step_sidebar_from_the_editor_widens_the_sidebar() {
     assert_eq!(app.focus, PaneId::Editor);
 }
 
-/// S6a: the split chips' hover names `alt+w` only where it would move the
-/// split: not with the sidebar focused, as it is from the editor.
+/// E12a, E12b: `shift+alt+p` hides the response and shows it again in both
+/// profiles, and the ▁▁ chip's hint names it, wherever focus is.
 #[test]
-fn the_split_chip_hint_names_alt_w_only_where_it_moves_the_split() {
+fn shift_alt_p_toggles_the_response_and_the_chip_hint_names_it() {
     let alt = crate::keys::alt_label();
     let chip = Hit::SplitStop(crate::split::SplitStop::EditorFull);
-    let mut app = App::new_for_test();
     let hint = |app: &App| crate::hint::hint_for(&chip, &app.keymap, &app.hint_ctx(&chip));
-    app.update(Action::FocusPane(PaneId::Sidebar));
-    assert_eq!(hint(&app).as_deref(), Some("Editor only"));
-    app.update(Action::FocusPane(PaneId::Editor));
-    assert_eq!(hint(&app), Some(format!("Editor only \u{b7} {alt}+w")));
+    for profile in [crate::config::KeyProfile::Arrows, crate::config::KeyProfile::Vim] {
+        for focus in [PaneId::Sidebar, PaneId::Editor] {
+            let mut app = App::new_for_test();
+            app.use_profile(profile);
+            app.update(Action::FocusPane(focus));
+            render(&mut app);
+            let before = app.split_state();
+            assert_eq!(
+                hint(&app),
+                Some(format!("Hide the response \u{b7} {alt}+shift+p")),
+                "{profile:?} {focus:?}"
+            );
+            press(&mut app, "<A-P>");
+            assert!(app.session.response.collapsed, "{profile:?} {focus:?}: hidden");
+            assert_eq!(
+                hint(&app),
+                Some(format!("Show the response \u{b7} {alt}+shift+p")),
+                "{profile:?} {focus:?}"
+            );
+            press(&mut app, "<A-P>");
+            assert_eq!(app.split_state(), before, "{profile:?} {focus:?}: shown again");
+        }
+    }
 }
 
 /// S6b: the palette's "Widen sidebar" / "Narrow sidebar" run from the
@@ -796,6 +873,56 @@ fn vim_ctrl_w_resizes_follow_the_current_window() {
         Some(app.split_state().to_token()),
         "each step is saved"
     );
+}
+
+/// E13 (review round 4): `<C-w>_` maximizes the current window: from the
+/// editor it minimizes the response, from the response the editor, and on
+/// the full-height sidebar it does nothing.
+#[test]
+fn ctrl_w_underscore_maximizes_the_current_window() {
+    let app = |focus| {
+        let mut app = vim_at(focus);
+        type_keys(&mut app, "<C-w>_");
+        app.split_state()
+    };
+    let editor = app(PaneId::Editor);
+    assert!(editor.response_minimized && !editor.editor_minimized, "editor: {editor:?}");
+    let response = app(PaneId::Response);
+    assert!(response.editor_minimized && !response.response_minimized, "response: {response:?}");
+    let mut sidebar = vim_at(PaneId::Sidebar);
+    let (w, split) = (sidebar_cols(&sidebar), sidebar.split_state());
+    type_keys(&mut sidebar, "<C-w>_");
+    assert_eq!((sidebar_cols(&sidebar), sidebar.split_state()), (w, split), "sidebar: no-op");
+}
+
+/// E13: `N<C-w>_` sets the focused pane's content rows to N: the editor
+/// below its chrome, the response below its header strip.
+#[test]
+fn ctrl_w_underscore_with_a_count_sets_the_content_rows() {
+    let mut app = vim_at(PaneId::Editor);
+    type_keys(&mut app, "5<C-w>_");
+    assert_eq!(pane_rows(&app, PaneId::Editor), crate::components::editor::CHROME_HEIGHT + 5);
+    let mut app = vim_at(PaneId::Response);
+    type_keys(&mut app, "5<C-w>_");
+    assert_eq!(
+        pane_rows(&app, PaneId::Response),
+        crate::components::response::HEADER_STRIP_HEIGHT + 5
+    );
+}
+
+/// E13: `<C-w>=` evens a dragged share to 50/50.
+#[test]
+fn ctrl_w_equal_evens_a_dragged_share() {
+    let mut app = vim_at(PaneId::Editor);
+    let (x, y) = handle_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_drag(x, y + 3));
+    app.handle_mouse(left_up(x, y + 3));
+    app.update(Action::FocusPane(PaneId::Editor));
+    render(&mut app);
+    assert_ne!(app.split_state(), SplitState::default(), "the drag moved the line");
+    type_keys(&mut app, "<C-w>=");
+    assert_eq!(app.split_state(), SplitState::default());
 }
 
 /// Review Focus 5: a huge count clamps to the sidebar's limits, or snaps

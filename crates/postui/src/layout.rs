@@ -189,9 +189,7 @@ pub fn clamp_sidebar_cols(body_width: u16, want: i32) -> u16 {
 /// so a column with no content rows answers `0.5` rather than dividing by
 /// zero.
 pub fn editor_share_for(column_height: u16, editor_rows: u16) -> f32 {
-    let content = column_height
-        .saturating_sub(editor::CHROME_HEIGHT)
-        .saturating_sub(crate::components::response::HEADER_STRIP_HEIGHT);
+    let content = content_rows(column_height);
     if content == 0 {
         return 0.5;
     }
@@ -206,10 +204,19 @@ pub fn editor_share_for(column_height: u16, editor_rows: u16) -> f32 {
 /// mid-ease shows rows the state has already left (review round 2 G6).
 pub fn editor_rows_for(column_height: u16, editor_share: f32) -> u16 {
     let editor_chrome = editor::CHROME_HEIGHT.min(column_height);
-    let response_chrome = crate::components::response::HEADER_STRIP_HEIGHT;
-    let content = column_height.saturating_sub(editor_chrome).saturating_sub(response_chrome);
+    let content = content_rows(column_height);
     let editor_h = editor_chrome + (content as f32 * editor_share.clamp(0.0, 1.0)).round() as u16;
     editor_h.min(column_height)
+}
+
+/// The rows a `column_height`-row main column has left after both panes'
+/// fixed chrome (the editor's address bar and tab bar, the response's
+/// header strip): what the split's share divides, in both directions
+/// ([`editor_rows_for`], [`editor_share_for`]).
+fn content_rows(column_height: u16) -> u16 {
+    column_height
+        .saturating_sub(editor::CHROME_HEIGHT)
+        .saturating_sub(crate::components::response::HEADER_STRIP_HEIGHT)
 }
 
 /// The split a drag of the editor/response boundary to `editor_rows` rows

@@ -168,7 +168,12 @@ impl App {
                 }
                 // So does a live pane resize: the divider follows the
                 // pointer wherever it goes, and hover stays frozen on the
-                // handle (it stays lit) until the release.
+                // handle (it stays lit) until the release. It follows
+                // `Moved` too, for the reason this arm's header gives:
+                // terminals that don't track button state report a held
+                // drag as `Moved`. A release that never arrives is caught
+                // by the next press or a focus loss, which end the resize
+                // where it got to and save it (spec P2a).
                 if self.resize.is_some() {
                     return self.resize_to(m.column, m.row) && self.update(Action::Render);
                 }
@@ -835,9 +840,9 @@ impl App {
         let shape = if self.sidebar.drag.is_some() || self.manage.list.drag.is_some() {
             PointerShape::Grabbing
         } else {
-            match self.resize {
-                Some(ResizeDrag::Sidebar { .. }) => PointerShape::ColResize,
-                Some(ResizeDrag::Split { .. }) => PointerShape::RowResize,
+            match self.resize.map(|drag| drag.kind) {
+                Some(ResizeHandle::Sidebar) => PointerShape::ColResize,
+                Some(ResizeHandle::Split { .. }) => PointerShape::RowResize,
                 None => PointerShape::for_hit(self.hovered.as_ref()),
             }
         };
@@ -1753,17 +1758,17 @@ impl App {
                 if hit == Hit::SplitHandle {
                     self.press_response_pane(clicks.text, m, false);
                 }
-                self.resize = Some(match hit {
-                    Hit::SidebarGutter => ResizeDrag::Sidebar { moved: false },
+                let kind = match hit {
+                    Hit::SidebarGutter => ResizeHandle::Sidebar,
                     _ => {
                         let top = self.hits.rect_of(&Hit::SplitHandle).map_or(m.row, |r| r.y);
-                        ResizeDrag::Split {
+                        ResizeHandle::Split {
                             grab: m.row.saturating_sub(top),
                             start: self.split_state(),
-                            moved: false,
                         }
                     }
-                });
+                };
+                self.resize = Some(ResizeDrag { kind, moved: false });
                 if self.hovered.as_ref() != Some(&hit) {
                     self.hovered = Some(hit);
                     self.begin_hover_fade();

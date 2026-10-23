@@ -184,6 +184,20 @@ pub fn all_commands() -> Vec<Command> {
             description: "Collapse the editor pane to its address bar, or bring it back",
             action: Action::ToggleTableCollapse,
         },
+        // Spec E12a: the split keys, findable here now that the split
+        // chips' hints name the hide/show toggles' keys instead.
+        Command {
+            id: "split-step",
+            name: "Step the split",
+            description: "Move the split line to the next stop",
+            action: Action::CycleSplit,
+        },
+        Command {
+            id: "split-step-back",
+            name: "Step the split back",
+            description: "Move the split line to the previous stop",
+            action: Action::CycleSplitBack,
+        },
         // Spec S6b: the sidebar's width steps, findable here. No key column:
         // `alt+w` steps the sidebar only while it has focus.
         Command {
@@ -406,6 +420,8 @@ pub(crate) fn keymap_action_name(command_id: &str) -> Option<&'static str> {
         "env-choose" => Some("env_choose"),
         "env-next" => Some("env_next"),
         "table-add-row" => Some("table_add_row"),
+        "split-step" => Some("cycle_split"),
+        "split-step-back" => Some("cycle_split_back"),
         "vars-insert" => Some("pick_variable"),
         "manage-variables" => Some("manage_open"),
         "theme-choose" => Some("theme_choose"),
@@ -1104,6 +1120,28 @@ mod tests {
             let cmd = all_commands().into_iter().find(|c| c.id == id).expect(id);
             assert_eq!((cmd.name, cmd.action), (name, action), "{id}");
             assert_eq!(keymap_action_name(id), None, "{id}: no key column");
+        }
+    }
+
+    /// Spec E12a: the split's keyboard steps are in the palette, whose key
+    /// column shows the keymap's split keys, so `alt+w` can be found with
+    /// the chip hints naming the hide/show toggles.
+    #[test]
+    fn palette_carries_the_split_steps_with_their_keys() {
+        let alt = crate::keys::alt_label();
+        let keymap = crate::keys::Keymap::default_bindings();
+        for (id, name, action, key) in [
+            ("split-step", "Step the split", Action::CycleSplit, format!("{alt}+w")),
+            (
+                "split-step-back",
+                "Step the split back",
+                Action::CycleSplitBack,
+                format!("{alt}+shift+w"),
+            ),
+        ] {
+            let cmd = all_commands().into_iter().find(|c| c.id == id).expect(id);
+            assert_eq!((cmd.name, cmd.action), (name, action), "{id}");
+            assert_eq!(keymap_action_name(id).and_then(|n| keymap.combo_for(n)), Some(key), "{id}");
         }
     }
 

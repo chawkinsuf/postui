@@ -823,6 +823,24 @@ mod tests {
         );
     }
 
+    /// E13 (review round 4): `<C-w>_` sets the current window's height, to
+    /// the count or, with none, as tall as it goes (Vim's 9999, saturated);
+    /// `<C-w>=` evens the split and needs no count.
+    #[test]
+    fn ctrl_w_underscore_and_equal_route_to_the_resize() {
+        use crate::action::ResizeDir;
+        let resize = |dir, count| run(vec![Step::Action(Action::PaneResize { dir, count })]);
+        let s = cx(Vim, Surface::Sidebar);
+        assert_eq!(feed(&mut Router::default(), &s, "<C-w>_"), resize(ResizeDir::Height, u16::MAX));
+        assert_eq!(feed(&mut Router::default(), &s, "5<C-w>_"), resize(ResizeDir::Height, 5));
+        assert_eq!(feed(&mut Router::default(), &s, "<C-w>="), resize(ResizeDir::Even, 1));
+        assert_eq!(
+            feed(&mut Router::default(), &in_url(Mode::Normal, false), "<C-w>="),
+            resize(ResizeDir::Even, 1),
+            "from a screen field's idle Normal, as the window moves"
+        );
+    }
+
     /// Plan M3a Deviation 9: the prefix keys never reach the engine.
     #[test]
     fn the_prefix_keys_are_notes_or_swallowed() {

@@ -97,15 +97,22 @@ impl SplitState {
     /// hand-written token) still shows both panes, so lighting an end chip
     /// for it would offer "restore" where its click minimizes.
     pub fn stop(self) -> Option<SplitStop> {
+        self.stop_by(&|share| share)
+    }
+
+    /// [`Self::stop`] with the middle stops told apart by `measure`: a
+    /// share sits at a middle stop when the two measure the same.
+    fn stop_by(self, measure: &impl Fn(f32) -> f32) -> Option<SplitStop> {
         if self.response_minimized {
             return Some(SplitStop::EditorFull);
         }
         if self.editor_minimized {
             return Some(SplitStop::ResponseFull);
         }
+        let here = measure(self.ratio);
         [SplitStop::EditorBig, SplitStop::Even, SplitStop::ResponseBig]
             .into_iter()
-            .find(|s| (s.share() - self.ratio).abs() < STOP_TOLERANCE)
+            .find(|s| (measure(s.share()) - here).abs() < STOP_TOLERANCE)
     }
 
     /// The state after clicking `stop`'s chip: a direct jump — every
@@ -133,28 +140,43 @@ impl SplitState {
         }
     }
 
-    /// The state after one keyboard cycle press. At a stop, the next (or
-    /// previous) stop, wrapping. Between stops, the nearest stop in that
-    /// direction: forward moves the boundary down the column, so it takes
-    /// the first stop with a smaller share than where the column sits.
+    /// The state after one keyboard cycle press, with shares compared as
+    /// they are: [`Self::cycled_by`] for a caller with no column to measure
+    /// rows in.
     pub fn cycled(self, forward: bool) -> SplitState {
-        let target = match self.stop() {
+        self.cycled_by(forward, |share| share)
+    }
+
+    /// The state after one keyboard cycle press, with shares compared by
+    /// `measure` (the editor rows the column draws for a share, or the
+    /// share itself). At a stop, the next (or previous) stop, wrapping.
+    /// Between stops, the nearest stop in that direction: forward moves the
+    /// boundary down the column, so it takes the first stop that measures
+    /// less than where the column sits.
+    ///
+    /// By rows, a dragged share that draws a middle stop's rows counts as
+    /// at that stop, so every press moves the line (review round 4 I1):
+    /// compared as shares, 13 of 25 rows (0.52) would go "forward" to
+    /// Even, whose 12.5 rows round to the same 13.
+    pub fn cycled_by(self, forward: bool, measure: impl Fn(f32) -> f32) -> SplitState {
+        let target = match self.stop_by(&measure) {
             Some(stop) if forward => stop.next(),
             Some(stop) => stop.prev(),
             None => {
-                // Only an unflagged state gets here (`stop` names every
+                // Only an unflagged state gets here (`stop_by` names every
                 // flagged one), and its minimized ends lie beyond any free
                 // share, even one of 1.0 or 0.0: rank them past the range
                 // so either way always finds a stop.
                 let rank = |s: SplitStop| match s {
                     SplitStop::EditorFull => f32::INFINITY,
                     SplitStop::ResponseFull => f32::NEG_INFINITY,
-                    middle => middle.share(),
+                    middle => measure(middle.share()),
                 };
+                let here = measure(self.ratio);
                 let found = if forward {
-                    SplitStop::ALL.into_iter().find(|s| rank(*s) < self.ratio)
+                    SplitStop::ALL.into_iter().find(|s| rank(*s) < here)
                 } else {
-                    SplitStop::ALL.into_iter().rev().find(|s| rank(*s) > self.ratio)
+                    SplitStop::ALL.into_iter().rev().find(|s| rank(*s) > here)
                 };
                 found.expect("a free share has a minimized end each way")
             }
@@ -302,6 +324,23 @@ mod tests {
         assert_eq!(s, SplitState { editor_minimized: true, ratio: 0.1, ..Default::default() });
         let s = ratio(0.9).cycled(false);
         assert_eq!(s, SplitState { response_minimized: true, ratio: 0.9, ..Default::default() });
+    }
+
+    /// Review round 4 I1: with the column's rows to go by, the walk is
+    /// decided by the rows drawn. 25 content rows dragged to 13 (0.52):
+    /// Even draws 12.5 → 13 rows too, so that counts as at Even, and
+    /// forward goes on to 25/75. Its mirror: dragged to 6 rows (0.24),
+    /// where 25/75 draws 6.25 → 6, back goes on to 50/50.
+    #[test]
+    fn cycled_by_rows_walks_from_the_stop_that_draws_the_same_rows() {
+        let rows = |share: f32| (25.0 * share).round();
+        assert_eq!(ratio(13.0 / 25.0).cycled(true), at(50), "by share: no row moves");
+        assert_eq!(ratio(13.0 / 25.0).cycled_by(true, rows), at(25));
+        assert_eq!(ratio(6.0 / 25.0).cycled(false), at(25), "by share: no row moves");
+        assert_eq!(ratio(6.0 / 25.0).cycled_by(false, rows), at(50));
+        // Between stops by rows too, the nearest stop that way.
+        assert_eq!(ratio(15.0 / 25.0).cycled_by(true, rows), at(50));
+        assert_eq!(ratio(15.0 / 25.0).cycled_by(false, rows), at(75));
     }
 
     /// Review F6: the end stops are the minimized flags, never a share. A

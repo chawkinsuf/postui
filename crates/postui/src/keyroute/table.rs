@@ -452,6 +452,16 @@ fn resize_shorter(n: Option<usize>) -> Action {
     resize_by(ResizeDir::Shorter, n)
 }
 
+/// `<C-w>_`: no count is Vim's 9999, as tall as the window goes, which
+/// saturates like a huge count.
+fn resize_height(n: Option<usize>) -> Action {
+    resize_by(ResizeDir::Height, Some(n.unwrap_or(usize::MAX)))
+}
+
+fn resize_even(n: Option<usize>) -> Action {
+    resize_by(ResizeDir::Even, n)
+}
+
 fn count1(n: Option<usize>) -> usize {
     n.unwrap_or(1).max(1)
 }
@@ -729,6 +739,8 @@ pub static TABLE: &[Binding] = &[
     row("<C-w><lt>", Surfaces::WINDOWS, Intent::Counted(resize_narrower), CountRule::Pass),
     row("<C-w>+", Surfaces::WINDOWS, Intent::Counted(resize_taller), CountRule::Pass),
     row("<C-w>-", Surfaces::WINDOWS, Intent::Counted(resize_shorter), CountRule::Pass),
+    row("<C-w>_", Surfaces::WINDOWS, Intent::Counted(resize_height), CountRule::Pass),
+    row("<C-w>=", Surfaces::WINDOWS, Intent::Counted(resize_even), CountRule::Pass),
     row("<C-w><any>", Surfaces::FIELD_SCREEN, Intent::Swallow, CountRule::Ignore),
     // Key list §6: opening.
     row("o", Surfaces::OPENS_ROW, Intent::Key(Named::key(KeyCode::Enter)), CountRule::Ignore),

@@ -160,8 +160,8 @@ pub enum Action {
     /// field open (the user's decision, 2026-10-05). On a closed surface
     /// there is no field to close (plan M5a Deviation 16).
     PaneMove(PaneDir),
-    /// Vim's `{N}<C-w>>` `<` `+` `-` (spec S7, E13): resizes the focused
-    /// pane by `count` columns or rows, as Vim 9.1 resizes the current
+    /// Vim's `{N}<C-w>>` `<` `+` `-` `_` `=` (spec S7, E13): resizes the
+    /// focused pane by (`_`: to) `count` columns or rows, as Vim 9.1 resizes the current
     /// window in a `sidebar | editor/response` layout. Off the main screen
     /// there is one window and nothing to resize.
     PaneResize {
@@ -1385,14 +1385,19 @@ pub enum PaneDir {
     Last,
 }
 
-/// Which way `ctrl+w` sizing keys resize the current window (spec S7,
-/// E13): `>` `<` its width, `+` `-` its height.
+/// How a `ctrl+w` sizing key resizes the current window (spec S7, E13):
+/// `>` `<` its width, `+` `-` its height, by the count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResizeDir {
     Wider,
     Narrower,
     Taller,
     Shorter,
+    /// `_`: the height set to the count, in the pane's content rows; with
+    /// no count, as tall as it goes (Vim's 9999).
+    Height,
+    /// `=`: the split evened to 50/50, from any window; no count.
+    Even,
 }
 
 /// Which tab a vim tab key goes to (piece 4 spec §5.8).

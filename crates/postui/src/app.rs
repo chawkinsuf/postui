@@ -76,14 +76,21 @@ pub struct Drag {
 /// never moved anything was a click and has nothing to save, while one
 /// that moved saves even back where it began.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ResizeDrag {
+pub struct ResizeDrag {
+    pub kind: ResizeHandle,
+    pub moved: bool,
+}
+
+/// Which handle a [`ResizeDrag`] is moving.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ResizeHandle {
     /// The sidebar gutter: the pointer's column is the new gutter column.
-    Sidebar { moved: bool },
+    Sidebar,
     /// The response header strip. `grab` is the pressed row minus the
     /// strip's top row, so the strip keeps its place under the pointer;
     /// `start` is the split at the press, whose share a drag into a
     /// minimized end keeps (E9a).
-    Split { grab: u16, start: crate::split::SplitState, moved: bool },
+    Split { grab: u16, start: crate::split::SplitState },
 }
 
 /// Which text surface a left-button drag is sweeping a selection over,
@@ -1317,7 +1324,6 @@ impl App {
                 _ => crate::hint::TipEditVerb::default(),
             },
             spell: self.spell_ctx(),
-            split_keys_step_sidebar: self.split_keys_step_sidebar(),
         }
     }
 
@@ -2295,6 +2301,21 @@ impl App {
         next != prev
     }
 
+    /// The split one keyboard cycle press goes to, decided by the editor
+    /// rows the last frame's column draws for each share, so a press from
+    /// a dragged share always moves the line (review round 4 I1). The
+    /// rows come from the state at the column's height, as the `ctrl+w`
+    /// steps count them. With no frame drawn yet, by share.
+    fn cycled_split(&self, forward: bool) -> crate::split::SplitState {
+        let now = self.split_state();
+        match self.split_column() {
+            Some((column, _)) => now.cycled_by(forward, |share| {
+                f32::from(crate::layout::editor_rows_for(column.height, share))
+            }),
+            None => now.cycled(forward),
+        }
+    }
+
     /// Stores `s` in the three fields [`Self::split_state`] reads — the
     /// one place they are written together. Callers add what their change
     /// needs: the save, or the un-eased snap.
@@ -2385,8 +2406,7 @@ impl App {
     }
 
     /// Whether [`Self::key_action`] turns the split keys into sidebar
-    /// steps: the sidebar has focus on the main screen. The split chips'
-    /// hover reads it too, to leave those keys off (spec S6a).
+    /// steps: the sidebar has focus on the main screen.
     fn split_keys_step_sidebar(&self) -> bool {
         self.focus == PaneId::Sidebar && self.screen == Screen::Main
     }
@@ -2421,6 +2441,14 @@ impl App {
     /// would land N rows from an in-between height (review round 2 G6). The
     /// column's height never eases, so it is safe to read from the frame.
     fn resize_split_rows(&mut self, editor_delta: i32) -> bool {
+        self.move_split_line(|_, editor_rows| editor_rows + editor_delta)
+    }
+
+    /// Moves the editor/response line to the editor rows `to` gives for
+    /// the column's height and the editor rows the split's state puts it
+    /// at, un-eased, through the same clamp and snaps as a drag, and saves
+    /// a change: the body of every `ctrl+w` height key.
+    fn move_split_line(&mut self, to: impl FnOnce(u16, i32) -> i32) -> bool {
         let Some((column, _)) = self.split_column() else {
             return false;
         };
@@ -2435,7 +2463,7 @@ impl App {
         let next = crate::layout::split_for_editor_rows(
             now,
             column.height,
-            i32::from(editor_rows) + editor_delta,
+            to(column.height, i32::from(editor_rows)),
         );
         if next == now {
             return false;
@@ -2446,9 +2474,9 @@ impl App {
     }
 
     /// The last frame's main column (editor over response) and the
-    /// editor's rect in it — what both ways of moving the split line (the
-    /// strip drag, the `<C-w>+`/`-` step) measure rows against. `None`
-    /// before a frame is drawn.
+    /// editor's rect in it — what every way of moving the split line (the
+    /// strip drag, the `ctrl+w` height keys, the keyboard cycle) measures
+    /// rows against. `None` before a frame is drawn.
     fn split_column(&self) -> Option<(ratatui::layout::Rect, ratatui::layout::Rect)> {
         let editor = self.hits.rect_of(&Hit::Pane(PaneId::Editor))?;
         let response = self.hits.rect_of(&Hit::Pane(PaneId::Response))?;
@@ -2461,7 +2489,9 @@ impl App {
     /// they move the sidebar's edge the other way. `+` `-` grow or shrink
     /// the focused one of the editor and response; the sidebar is full
     /// height, and Vim's `-` there gives rows to a command line postui
-    /// does not have, so both do nothing there.
+    /// does not have, so both do nothing there. `_` maximizes the focused
+    /// one, or sets its content rows to the count; on the sidebar it does
+    /// nothing. `=` evens the split from any window (E13).
     fn pane_resize(&mut self, dir: crate::action::ResizeDir, count: u16) -> bool {
         use crate::action::ResizeDir;
         if self.screen != Screen::Main {
@@ -2478,6 +2508,17 @@ impl App {
             (PaneId::Editor, ResizeDir::Shorter) => self.resize_split_rows(-n),
             (PaneId::Response, ResizeDir::Taller) => self.resize_split_rows(-n),
             (PaneId::Response, ResizeDir::Shorter) => self.resize_split_rows(n),
+            // `N_` counts the focused pane's content rows: the editor's
+            // below its chrome, the response's below its header strip.
+            (PaneId::Sidebar, ResizeDir::Height) => false,
+            (PaneId::Editor, ResizeDir::Height) => self.move_split_line(|_, _| {
+                i32::from(crate::components::editor::CHROME_HEIGHT).saturating_add(n)
+            }),
+            (PaneId::Response, ResizeDir::Height) => self.move_split_line(|column, _| {
+                i32::from(column) - i32::from(crate::components::response::HEADER_STRIP_HEIGHT) - n
+            }),
+            // Eased, like the keyboard stop it is (E14).
+            (_, ResizeDir::Even) => self.apply_split_stop(crate::split::SplitStop::Even),
         }
     }
 
@@ -2486,26 +2527,23 @@ impl App {
     /// and records a change in the drag's `moved`.
     fn resize_to(&mut self, column: u16, row: u16) -> bool {
         let changed = self.resize_divider_to(column, row);
-        if changed
-            && let Some(ResizeDrag::Sidebar { moved } | ResizeDrag::Split { moved, .. }) =
-                &mut self.resize
-        {
-            *moved = true;
+        if changed && let Some(drag) = &mut self.resize {
+            drag.moved = true;
         }
         changed
     }
 
     /// [`Self::resize_to`]'s size change, for whichever handle is live.
     fn resize_divider_to(&mut self, column: u16, row: u16) -> bool {
-        match self.resize {
+        match self.resize.map(|drag| drag.kind) {
             None => false,
-            Some(ResizeDrag::Sidebar { .. }) => {
+            Some(ResizeHandle::Sidebar) => {
                 let Some(sidebar) = self.hits.rect_of(&Hit::Pane(PaneId::Sidebar)) else {
                     return false;
                 };
                 self.set_sidebar_cols(i32::from(column) - i32::from(sidebar.x))
             }
-            Some(ResizeDrag::Split { grab, start, .. }) => {
+            Some(ResizeHandle::Split { grab, start }) => {
                 let Some((main, editor)) = self.split_column() else {
                     return false;
                 };
@@ -2538,10 +2576,11 @@ impl App {
         let Some(drag) = self.resize.take() else {
             return false;
         };
-        match drag {
-            ResizeDrag::Sidebar { moved: true } => self.persist_sidebar(),
-            ResizeDrag::Split { moved: true, .. } => self.persist_split(),
-            ResizeDrag::Sidebar { moved: false } | ResizeDrag::Split { moved: false, .. } => {}
+        if drag.moved {
+            match drag.kind {
+                ResizeHandle::Sidebar => self.persist_sidebar(),
+                ResizeHandle::Split { .. } => self.persist_split(),
+            }
         }
         true
     }
@@ -3853,8 +3892,8 @@ impl App {
             // Always the split (E11). The `alt+w` key's sidebar meaning is
             // the key's, applied before it gets here (`App::key_action`,
             // spec S6a).
-            Action::CycleSplit => self.apply_split_state(self.split_state().cycled(true)),
-            Action::CycleSplitBack => self.apply_split_state(self.split_state().cycled(false)),
+            Action::CycleSplit => self.apply_split_state(self.cycled_split(true)),
+            Action::CycleSplitBack => self.apply_split_state(self.cycled_split(false)),
             Action::PaneResize { dir, count } => self.pane_resize(dir, count),
             // Always the sidebar, wherever focus is (spec S6b). Off the main
             // screen the last frame drew no sidebar, so nothing moves.
@@ -5097,7 +5136,9 @@ impl App {
                 // A switch can land with the mouse button still held (alt+z
                 // cycles projects): every drag and armed press belongs to
                 // the project being left — a press left armed would promote
-                // into a drag of a same-named row in the next project.
+                // into a drag of a same-named row in the next project, and a
+                // live resize ends here, saved into the project it sized
+                // (P2a), before the next one's sizes are seeded below.
                 self.cancel_stale_drags(None);
                 self.history.clear();
                 self.marked_entry = None;

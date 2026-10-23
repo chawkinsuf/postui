@@ -139,8 +139,8 @@ pub(crate) fn footer_chips(
                     "vars",
                     Some(Action::OpenVarPicker { completing: false }),
                 ),
-                // The split cycle's alt+w is named by the split chips'
-                // hover hints (spec E12), not here.
+                // The split cycle's alt+w is found in the palette (spec
+                // E12a), not here.
                 // Arrows are the primary route (method ← URL ↓ content)
                 // and get no chip of their own (2026-09-18: the old
                 // `↑↓←→ navigate` chip made way for the tab chord — the
@@ -1353,8 +1353,8 @@ mod tests {
 
     /// No footer carries a width chip, in either profile (spec S6, S7):
     /// footers carry actions on the focused area's content, not window
-    /// keys. The sidebar's width keys are found in the palette (S6b), and
-    /// the split's `alt+w` on the split chips' hover (E12).
+    /// keys. The sidebar's width keys and the split's `alt+w` are found in
+    /// the palette (S6b, E12a).
     #[test]
     fn no_footer_carries_a_width_chip() {
         use crate::config::KeyProfile;

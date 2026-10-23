@@ -7490,7 +7490,7 @@ fn esc_on_idle_response_pane_does_nothing() {
     assert_eq!(action, None);
 }
 
-fn two_projects() -> (App, tempfile::TempDir, tempfile::TempDir) {
+pub(super) fn two_projects() -> (App, tempfile::TempDir, tempfile::TempDir) {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();

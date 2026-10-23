@@ -410,6 +410,9 @@ impl Keymap {
             ("alt+v", Action::OpenVarPicker { completing: false }),
             ("alt+a", Action::TableAddRow),
             ("alt+p", Action::ToggleTableCollapse),
+            // Hiding the response pairs with hiding the editor the way
+            // shift+alt+w pairs with alt+w (spec E12b).
+            ("shift+alt+p", Action::ToggleResponseCollapse),
             ("alt+w", Action::CycleSplit),
             ("shift+alt+w", Action::CycleSplitBack),
             ("alt+r", Action::OpenManage { tab: None }),
@@ -941,6 +944,8 @@ mod tests {
         assert_eq!(get("alt+t"), Some(Action::OpenThemeChooser));
         assert_eq!(get("alt+w"), Some(Action::CycleSplit));
         assert_eq!(get("shift+alt+w"), Some(Action::CycleSplitBack));
+        assert_eq!(get("alt+p"), Some(Action::ToggleTableCollapse));
+        assert_eq!(get("shift+alt+p"), Some(Action::ToggleResponseCollapse));
         assert_eq!(get("alt+d"), Some(Action::DiscardChanges));
         assert_eq!(get("alt+b"), None, "alt+b is reserved for word-left (ESC b)");
         assert_eq!(get("alt+f"), None, "alt+f is reserved for word-right (ESC f)");
@@ -1334,7 +1339,17 @@ mod tests {
         assert_eq!(get(Vim, "alt+right"), None, "gt steps the tabs in vim (plan M4a)");
         assert_eq!(get(Vim, "alt+left"), None);
         assert_eq!(get(Arrows, "alt+right"), Some(Action::CycleTabs(1)));
-        for combo in ["ctrl+c", "ctrl+v", "ctrl+o", "ctrl+p", "ctrl+z", "alt+t", "ctrl+1"] {
+        for combo in [
+            "ctrl+c",
+            "ctrl+v",
+            "ctrl+o",
+            "ctrl+p",
+            "ctrl+z",
+            "alt+t",
+            "ctrl+1",
+            "alt+p",
+            "shift+alt+p",
+        ] {
             assert_eq!(
                 get(Vim, combo),
                 get(Arrows, combo),
