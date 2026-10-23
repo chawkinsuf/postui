@@ -2376,6 +2376,12 @@ impl App {
     /// width, always within the clamp's limits, so the clamped want lies
     /// the way the want points or on the edge itself: no step or drag
     /// moves the edge against what was asked (spec S8).
+    ///
+    /// Measured from the screen, not the saved width, so a narrowing step
+    /// on a window that squeezes a wider saved width moves the edge at
+    /// once and saves what it shows. From the saved width the step would
+    /// land still past the limit, and the key would do nothing visible.
+    /// The wider width it replaces is the cost (S8).
     fn move_sidebar_edge(&mut self, to: impl FnOnce(u16, ratatui::layout::Rect) -> i32) -> bool {
         let Some(layout) = self.settled_layout() else {
             return false;
@@ -2528,47 +2534,42 @@ impl App {
     /// measured against [`Self::settled_layout`]. Returns whether a size changed,
     /// and records a change in the drag's `moved`.
     fn resize_to(&mut self, column: u16, row: u16) -> bool {
-        let changed = self.resize_divider_to(column, row);
+        let Some(drag) = self.resize else {
+            return false;
+        };
+        let changed = match drag.kind {
+            ResizeHandle::Sidebar => {
+                self.move_sidebar_edge(|_, body| i32::from(column) - i32::from(body.x))
+            }
+            // Motion on the pressed row before the drag has moved anything
+            // is a click's jitter, and moves nothing: the share the split
+            // holds need not be the one the pressed row inverts to, and a
+            // frame drawn since the press (an ease going on) need not draw
+            // the line there. The pressed row is known at the press, so no
+            // frame is asked (review round 5 K2). Once the drag has moved,
+            // every motion follows the pointer, and one on the same row
+            // inverts to the share already set, so `next == now` holds.
+            ResizeHandle::Split { press, .. } if !drag.moved && row == press => false,
+            ResizeHandle::Split { grab, start, .. } => {
+                match self.settled_layout().map(|l| l.main) {
+                    Some(main) => {
+                        let editor_rows = i32::from(row) - i32::from(grab) - i32::from(main.y);
+                        let next =
+                            crate::layout::split_for_editor_rows(start, main.height, editor_rows);
+                        let moves = next != self.split_state();
+                        if moves {
+                            self.set_split_now(next);
+                        }
+                        moves
+                    }
+                    None => false,
+                }
+            }
+        };
         if changed && let Some(drag) = &mut self.resize {
             drag.moved = true;
         }
         changed
-    }
-
-    /// [`Self::resize_to`]'s size change, for whichever handle is live.
-    fn resize_divider_to(&mut self, column: u16, row: u16) -> bool {
-        let Some(drag) = self.resize else {
-            return false;
-        };
-        match drag.kind {
-            ResizeHandle::Sidebar => {
-                self.move_sidebar_edge(|_, body| i32::from(column) - i32::from(body.x))
-            }
-            ResizeHandle::Split { grab, press, start } => {
-                // Motion on the pressed row before the drag has moved
-                // anything is a click's jitter, and moves nothing: the
-                // share the split holds need not be the one the pressed
-                // row inverts to, and a frame drawn since the press (an
-                // ease going on) need not draw the line there. The pressed
-                // row is known at the press, so no frame is asked (review
-                // round 5 K2). Once the drag has moved, every motion
-                // follows the pointer, and one on the same row inverts to
-                // the share already set, so `next == now` below holds.
-                if !drag.moved && row == press {
-                    return false;
-                }
-                let Some(main) = self.settled_layout().map(|l| l.main) else {
-                    return false;
-                };
-                let editor_rows = i32::from(row) - i32::from(grab) - i32::from(main.y);
-                let next = crate::layout::split_for_editor_rows(start, main.height, editor_rows);
-                if next == self.split_state() {
-                    return false;
-                }
-                self.set_split_now(next);
-                true
-            }
-        }
     }
 
     /// Ends the live resize, keeping the size it reached, and saves it

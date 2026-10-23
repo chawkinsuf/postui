@@ -5,7 +5,10 @@
 //!
 //! `.local/layout.toml`: the pane sizes (split, sidebar width). Written
 //! immediately on every change and never journaled, so undo and redo
-//! never see a size (spec P3b).
+//! never see a size (spec P3b). Read at open only: a reload leaves the
+//! sizes in memory alone, so this window's panes never jump because
+//! another postui on the project saved its own. The last window to save
+//! wins, as with any per-window size.
 
 use super::*;
 

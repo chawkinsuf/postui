@@ -204,11 +204,10 @@ impl App {
                 // press whose request is gone promotes nothing. A modal
                 // opened by the press itself (a broken row's error) owns
                 // the pointer, so nothing promotes under one either.
-                // A live thumb drag, text sweep or pane resize owns the
-                // button as well: a press left armed by a lost release
-                // never promotes over one of those.
-                let other_drag =
-                    self.drag.is_some() || self.text_drag.is_some() || self.resize.is_some();
+                // A live thumb drag or text sweep owns the button as well
+                // (a live pane resize returned above): a press left armed
+                // by a lost release never promotes over one of those.
+                let other_drag = self.drag.is_some() || self.text_drag.is_some();
                 if let Some((_, pressed)) = self.sidebar_press.clone()
                     && self.modals.is_empty()
                     && !other_drag
