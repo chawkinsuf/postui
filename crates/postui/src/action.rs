@@ -171,7 +171,7 @@ pub enum Action {
     /// Moves the sidebar's edge this many columns (narrower when
     /// negative), whatever has focus (spec S6b): the palette's "Widen
     /// sidebar" / "Narrow sidebar", and what `alt+w` / `shift+alt+w`
-    /// become while the sidebar has focus (`App::key_action`, S6a). Unlike
+    /// become while the sidebar has focus (`KeyContext::action`, S6a). Unlike
     /// [`Self::PaneResize`], which follows Vim's current window, it always
     /// means the sidebar.
     StepSidebar(i16),
@@ -279,7 +279,7 @@ pub enum Action {
     /// key walks the boundary down the column and back around (spec E11).
     /// Always the split, from any surface (`:split`, the palette). The
     /// `alt+w` key bound to it is context-based instead: with the sidebar
-    /// focused it widens the sidebar (`App::key_action`, spec S6, S6a).
+    /// focused it widens the sidebar (`KeyContext::action`, spec S6, S6a).
     CycleSplit,
     /// [`Self::CycleSplit`] run the other way (shift+alt+w, `:splitback`):
     /// steps the split to the previous stop.

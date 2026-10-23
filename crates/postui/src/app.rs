@@ -1022,12 +1022,13 @@ impl App {
             app.show_open_error();
             return app;
         }
+        // The project's saved pane sizes (P5), whether or not its spaces
+        // could be made below: its local state is loaded either way, and
+        // every later size save writes it back beside the one that moved.
+        app.seed_sizes_from_project();
         match app.project.as_mut().map(|p| p.ensure_spaces()) {
             Some(Ok(())) => {
                 app.refresh_sidebar();
-                // Restore this project's saved pane sizes alongside its
-                // open request.
-                app.seed_sizes_from_project();
                 // Restore the request that was open when this project was
                 // last used — the same restore a project *switch* already
                 // performs. Without it the sidebar draws a selection whose
@@ -2401,35 +2402,19 @@ impl App {
     /// The action `combo`'s keymap binding gives the key where the keyboard
     /// is: the one keymap read every key takes (`route_key`, its quit check
     /// included, `handle_key_routed`, `App::user_bare`, and the vim seam's
-    /// forwarded keys), with [`Self::key_action`]'s context applied.
+    /// forwarded keys), with [`Self::key_context`] applied.
     pub(crate) fn lookup_key(&self, combo: &KeyCombo) -> Option<Action> {
-        self.keymap.lookup(combo).map(|a| self.key_action(a))
+        self.keymap.lookup(combo).map(|a| self.key_context().action(a))
     }
 
-    /// What a key's keymap binding means where the keyboard is: the one
-    /// place a key's action takes context, applied by
-    /// [`Self::lookup_key`]. With the sidebar focused on the main screen,
-    /// the split keys (`alt+w`, `shift+alt+w`, or whatever keys.toml binds
-    /// to `cycle_split` / `cycle_split_back`) step the sidebar's width.
-    ///
-    /// The context belongs to the key, not to the split action (spec S6,
-    /// S6a): `:split` and the split chips dispatch their action directly,
-    /// never through here, so they always mean the split. The step is
-    /// `StepSidebar`, the palette's sidebar-only action (S6b), not vim's
-    /// `PaneResize`, which follows the current window.
-    fn key_action(&self, action: Action) -> Action {
-        let step = crate::layout::SIDEBAR_STEP_COLS;
-        match action {
-            Action::CycleSplit if self.split_keys_step_sidebar() => Action::StepSidebar(step),
-            Action::CycleSplitBack if self.split_keys_step_sidebar() => Action::StepSidebar(-step),
-            _ => action,
+    /// Where the keyboard is, for [`crate::keys::KeyContext::action`]: the
+    /// one input a key's action takes context from. Both palettes are
+    /// opened with it too, so their key column names a key only where it
+    /// runs the row.
+    pub(crate) fn key_context(&self) -> crate::keys::KeyContext {
+        crate::keys::KeyContext {
+            sidebar_on_main: self.focus == PaneId::Sidebar && self.screen == Screen::Main,
         }
-    }
-
-    /// Whether [`Self::key_action`] turns the split keys into sidebar
-    /// steps: the sidebar has focus on the main screen.
-    fn split_keys_step_sidebar(&self) -> bool {
-        self.focus == PaneId::Sidebar && self.screen == Screen::Main
     }
 
     /// Moves the sidebar's edge `delta` columns from the width on screen,
@@ -3566,10 +3551,10 @@ impl App {
             Action::OpenPalette => {
                 use crate::components::modal::Modal;
                 use crate::components::palette::PaletteState;
-                // Whether the split keys step the sidebar is known only
-                // here, where the palette is opened from a focus.
+                // Where the keys mean what is known only here, where the
+                // palette is opened from a focus.
                 let palette = PaletteState::new(&self.usage, crate::usage::now())
-                    .with_split_keys_step_sidebar(self.split_keys_step_sidebar());
+                    .with_key_context(self.key_context());
                 self.push_modal(Modal::Palette(palette));
                 true
             }
@@ -3914,7 +3899,7 @@ impl App {
             }
             Action::SplitStop(stop) => self.apply_split_stop(stop),
             // Always the split (E11). The `alt+w` key's sidebar meaning is
-            // the key's, applied before it gets here (`App::key_action`,
+            // the key's, applied before it gets here (`KeyContext::action`,
             // spec S6a).
             Action::CycleSplit => self.apply_split_state(self.split_state().cycled(true)),
             Action::CycleSplitBack => self.apply_split_state(self.split_state().cycled(false)),

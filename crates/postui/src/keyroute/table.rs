@@ -436,6 +436,9 @@ fn resize_by(dir: ResizeDir, n: Option<usize>) -> Action {
     Action::PaneResize { dir, count: u16::try_from(n.unwrap_or(1)).unwrap_or(u16::MAX) }
 }
 
+// One named fn per `ctrl+w` row, as the fold rows above have, so `TABLE`
+// reads across by name (`Intent::Counted(resize_wider)`) rather than by an
+// inline closure in each row.
 fn resize_wider(n: Option<usize>) -> Action {
     resize_by(ResizeDir::Wider, n)
 }

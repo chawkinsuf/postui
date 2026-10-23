@@ -529,10 +529,9 @@ pub struct PaletteState {
     /// changed: on the ex line, Enter with nothing typed runs only a
     /// picked row, as Vim's `:<CR>` runs nothing.
     picked: bool,
-    /// Whether the palette opened where the keymap's split keys step the
-    /// sidebar instead (`App::key_action`, spec S6a): the split rows then
-    /// show no key, since those keys would not run them.
-    split_keys_step_sidebar: bool,
+    /// Where the palette opened, for the key column: a row shows its key
+    /// only when the key means the row's action there (spec S6a).
+    key_context: crate::keys::KeyContext,
     /// The `:` line's history as it stood when the line opened, oldest
     /// first (plan M5b Task 5). Empty for ctrl+p's palette.
     history: Vec<String>,
@@ -568,17 +567,17 @@ impl PaletteState {
             pinned: None,
             refused: None,
             picked: false,
-            split_keys_step_sidebar: false,
+            key_context: crate::keys::KeyContext::default(),
             history: Vec::new(),
             hist_at: None,
             lookfor: None,
         }
     }
 
-    /// Records where the palette opened: whether the split keys step the
-    /// sidebar there (see the field).
-    pub fn with_split_keys_step_sidebar(self, split_keys_step_sidebar: bool) -> Self {
-        Self { split_keys_step_sidebar, ..self }
+    /// Records where the palette opened (`App::key_context`, see the
+    /// field).
+    pub fn with_key_context(self, key_context: crate::keys::KeyContext) -> Self {
+        Self { key_context, ..self }
     }
 
     /// The same palette opened by vim's `:` (spec §5.9), reading its query
@@ -884,10 +883,10 @@ impl PaletteState {
     }
 
     /// The key `c`'s row shows: the combo the keymap binds to its action,
-    /// unless that key means something else where the palette opened.
+    /// unless that key means something else where the palette opened (the
+    /// same [`crate::keys::KeyContext::action`] every key press takes).
     pub(crate) fn key_column(&self, c: &Command, keymap: &crate::keys::Keymap) -> Option<String> {
-        let split = matches!(c.action, Action::CycleSplit | Action::CycleSplitBack);
-        if split && self.split_keys_step_sidebar {
+        if self.key_context.action(c.action.clone()) != c.action {
             return None;
         }
         keymap_action_name(c.id).and_then(|n| keymap.combo_for(n))

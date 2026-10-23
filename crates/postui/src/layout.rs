@@ -268,6 +268,14 @@ fn content_rows(column_height: u16) -> u16 {
 /// minimized; within the response's header strip of the bottom the
 /// response is. Both snaps keep `start.ratio`, so restoring lands where
 /// the user left it. Anywhere between, both show at the matching share.
+///
+/// Leaving a minimized response therefore has a dead zone: its strip is
+/// one row ([`crate::components::response::COLLAPSED_HEIGHT`]), but a
+/// shown response needs its whole three-row header strip plus a content
+/// row, so the first two rows of an upward drag keep it minimized and the
+/// third opens it under the pointer. Any nearer, the
+/// strip couldn't be drawn whole. The cost is a pointer that leads the
+/// strip by those rows; it never leaves a wrong split.
 pub fn split_for_editor_rows(
     start: SplitState,
     column_height: u16,

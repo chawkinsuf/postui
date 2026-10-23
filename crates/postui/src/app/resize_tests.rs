@@ -938,11 +938,13 @@ fn the_split_keys_become_the_sidebar_step_in_the_sidebar() {
     let step = crate::layout::SIDEBAR_STEP_COLS;
     let mut app = App::new_for_test();
     app.update(Action::FocusPane(PaneId::Sidebar));
-    assert_eq!(app.key_action(Action::CycleSplit), Action::StepSidebar(step));
-    assert_eq!(app.key_action(Action::CycleSplitBack), Action::StepSidebar(-step));
+    let ctx = app.key_context();
+    assert_eq!(ctx.action(Action::CycleSplit), Action::StepSidebar(step));
+    assert_eq!(ctx.action(Action::CycleSplitBack), Action::StepSidebar(-step));
     app.update(Action::FocusPane(PaneId::Editor));
-    assert_eq!(app.key_action(Action::CycleSplit), Action::CycleSplit);
-    assert_eq!(app.key_action(Action::CycleSplitBack), Action::CycleSplitBack);
+    let ctx = app.key_context();
+    assert_eq!(ctx.action(Action::CycleSplit), Action::CycleSplit);
+    assert_eq!(ctx.action(Action::CycleSplitBack), Action::CycleSplitBack);
 }
 
 /// Review round 8 N6: the one keymap read applies the key's context, and
@@ -1046,6 +1048,29 @@ fn the_palette_widens_and_narrows_the_sidebar_from_the_editor() {
         render(&mut app);
         assert_eq!(i32::from(sidebar_cols(&app)), w + delta, "{id}");
         assert_eq!(app.focus, PaneId::Editor, "{id}");
+    }
+}
+
+/// S6a: the vim `:` palette's key column takes the same key context as
+/// ctrl+p's. With a keys.toml that binds the split keys in vim (the arrows
+/// defaults stand in for it), the split rows show no key while the sidebar
+/// has focus, where that key widens the sidebar, and show it from the
+/// editor.
+#[test]
+fn the_ex_palette_names_the_split_keys_only_where_they_move_the_split() {
+    for (focus, shown) in [(PaneId::Sidebar, false), (PaneId::Editor, true)] {
+        let mut app = App::new_for_test();
+        app.use_profile(crate::config::KeyProfile::Vim);
+        app.keymap = crate::keys::Keymap::default_bindings();
+        app.update(Action::FocusPane(focus));
+        render(&mut app);
+        app.update(Action::OpenExPalette);
+        let Some(Modal::Palette(palette)) = app.modals.top() else {
+            panic!("{focus:?}: the palette is open");
+        };
+        assert!(palette.is_ex());
+        let row = palette.filtered().iter().find(|c| c.id == "split-step").expect("split-step");
+        assert_eq!(palette.key_column(row, &app.keymap).is_some(), shown, "{focus:?}");
     }
 }
 
@@ -1367,6 +1392,31 @@ fn init_project_here_keeps_and_saves_the_sizes_on_screen() {
     assert_eq!(saved.main_split.as_deref().and_then(SplitState::from_token), Some(split));
     render(&mut app);
     assert_eq!(sidebar_cols(&app), 24, "drawn");
+}
+
+/// P5: a launch takes the project's saved sizes even when its spaces can't
+/// be made (here `requests` is a file), so the screen draws what the
+/// project's local state holds, and the next size save can't write a
+/// width that was never on screen.
+#[test]
+fn a_launch_seeds_the_sizes_when_the_spaces_fail() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("requests"), "").unwrap();
+    let mut layout = postui_core::fixtures::load_layout(dir.path()).unwrap();
+    layout.main_split = Some(
+        SplitState { editor_minimized: false, response_minimized: false, ratio: 0.6 }.to_token(),
+    );
+    layout.sidebar_width = Some(34);
+    postui_core::fixtures::save_layout(dir.path(), &layout).unwrap();
+    let app = App::with_root(tx, dir.path().to_path_buf());
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains("could not open project")),
+        "the spaces failed: {:?}",
+        app.toasts.messages()
+    );
+    assert_eq!(app.sidebar_width, Some(34));
+    assert_eq!(app.split_ratio, 0.6);
 }
 
 /// Audit (spec P2a): a quit while a resize is live ends it where it got

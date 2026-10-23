@@ -208,6 +208,38 @@ pub fn fold_text_nav_bytes(ev: KeyEvent, macos: bool) -> KeyEvent {
     }
 }
 
+/// Where the keyboard is, as far as a key's binding is concerned
+/// (`App::key_context`). [`Self::action`] is the one place a key's action
+/// takes context: every key press reads its binding through it
+/// (`App::lookup_key`), and the palettes' key column checks a row's key
+/// against it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyContext {
+    /// The sidebar has focus on the main screen.
+    pub sidebar_on_main: bool,
+}
+
+impl KeyContext {
+    /// What a key bound to `action` does here. With the sidebar focused on
+    /// the main screen, the split keys (`alt+w`, `shift+alt+w`, or whatever
+    /// keys.toml binds to `cycle_split` / `cycle_split_back`) step the
+    /// sidebar's width.
+    ///
+    /// The context belongs to the key, not to the split action (spec S6,
+    /// S6a): `:split` and the split chips dispatch their action directly,
+    /// never through here, so they always mean the split. The step is
+    /// `StepSidebar`, the palette's sidebar-only action (S6b), not vim's
+    /// `PaneResize`, which follows the current window.
+    pub fn action(self, action: Action) -> Action {
+        let step = crate::layout::SIDEBAR_STEP_COLS;
+        match action {
+            Action::CycleSplit if self.sidebar_on_main => Action::StepSidebar(step),
+            Action::CycleSplitBack if self.sidebar_on_main => Action::StepSidebar(-step),
+            _ => action,
+        }
+    }
+}
+
 /// `PartialEq` compares the bindings: a live reload uses it to tell a
 /// keys.toml that changed from one that was merely re-read, and only
 /// re-issues its advisories for the former.

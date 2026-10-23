@@ -1369,12 +1369,15 @@ impl App {
                 self.vim.ex_over_visual |= self.profile() == KeyProfile::Vim
                     && self.focus == PaneId::Response
                     && self.session.response.line_selection();
-                self.push_modal(Modal::Palette(PaletteState::new_ex(
-                    &self.usage,
-                    crate::usage::now(),
-                    scope,
-                    self.vim.cmdline_history.lines(),
-                )));
+                self.push_modal(Modal::Palette(
+                    PaletteState::new_ex(
+                        &self.usage,
+                        crate::usage::now(),
+                        scope,
+                        self.vim.cmdline_history.lines(),
+                    )
+                    .with_key_context(self.key_context()),
+                ));
                 true
             }
             Action::NoHlSearch => {
