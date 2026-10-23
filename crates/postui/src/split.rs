@@ -137,12 +137,15 @@ impl SplitState {
     /// previous) stop, wrapping. Between stops, the nearest stop in that
     /// direction: forward moves the boundary down the column, so it takes
     /// the first stop with a smaller share than where the column sits.
-    ///
-    /// A drag or row step that lands on the rows a stop draws stores that
-    /// stop's share ([`crate::layout::editor_share_for`]), so a press from
-    /// there walks on from the stop and the line moves (review round 5 K1).
+    /// A key press takes [`Self::cycled_moving`], which skips a stop that
+    /// would leave the line where it is.
     pub fn cycled(self, forward: bool) -> SplitState {
-        let target = match self.stop() {
+        self.apply(self.cycle_target(forward))
+    }
+
+    /// The stop [`Self::cycled`] applies.
+    fn cycle_target(self, forward: bool) -> SplitStop {
+        match self.stop() {
             Some(stop) if forward => stop.next(),
             Some(stop) => stop.prev(),
             None => {
@@ -162,8 +165,32 @@ impl SplitState {
                 };
                 found.expect("a free share has a minimized end each way")
             }
-        };
-        self.apply(target)
+        }
+    }
+
+    /// One keyboard cycle press (spec E11): [`Self::cycled`], skipping on
+    /// to the next stop that way while a stop would draw the editor rows
+    /// the column draws now, so every press moves the line. `rows` gives
+    /// the editor rows a state draws at the current height. A drag keeps
+    /// its exact share, and at another window height a share can draw a
+    /// stop's rows, so only the press, at the height then, can tell
+    /// whether a stop moves the line.
+    ///
+    /// Each candidate is applied to this state, never to a skipped one, so
+    /// a minimized end keeps the share the press left (E9a), not a skipped
+    /// stop's. Tries every stop but this one's own; on a column too short
+    /// for any to move the line, it is the plain next stop.
+    pub fn cycled_moving(self, forward: bool, rows: impl Fn(SplitState) -> u16) -> SplitState {
+        let now = rows(self);
+        let mut stop = self.cycle_target(forward);
+        for _ in 1..SplitStop::ALL.len() {
+            let next = self.apply(stop);
+            if rows(next) != now {
+                return next;
+            }
+            stop = if forward { stop.next() } else { stop.prev() };
+        }
+        self.cycled(forward)
     }
 
     /// This state as the stable token stored in the project's
@@ -392,6 +419,26 @@ mod tests {
         let s = SplitState { editor_minimized: true, ratio: 0.6, ..Default::default() };
         assert_eq!(s.to_token(), "response-full@0.6000");
         assert_eq!(SplitState::from_token("response-full@0.6000"), Some(s));
+    }
+
+    /// E11: a press skips each stop that draws the rows drawn now, and on a
+    /// column where no stop moves the line it is the plain next stop.
+    #[test]
+    fn cycled_moving_skips_stops_that_draw_the_same_rows() {
+        // 75/25 and 50/50 draw the same rows here; every other state differs.
+        let rows = |s: SplitState| match s.stop() {
+            Some(EditorBig | Even) => 2,
+            Some(EditorFull) => 9,
+            Some(ResponseFull) => 0,
+            _ => (s.ratio * 4.0).round() as u16,
+        };
+        assert_eq!(at(75).cycled_moving(true, rows), at(25), "50/50 skipped");
+        assert_eq!(at(25).cycled_moving(false, rows), at(50), "the next stop, when it moves");
+        // 75/25 skipped, and the minimized end keeps the 50/50 share the
+        // press left (E9a), not the skipped stop's 75/25.
+        assert_eq!(at(50).cycled_moving(false, rows), at(100));
+        assert_eq!(at(50).cycled_moving(false, rows).ratio, 0.5);
+        assert_eq!(at(50).cycled_moving(true, |_| 3), at(50).cycled(true), "nothing moves");
     }
 
     /// The stop names main's split saved (`even`, `editor-full`, …) are

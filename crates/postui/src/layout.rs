@@ -1,5 +1,5 @@
 use crate::components::editor;
-use crate::split::{SplitState, SplitStop};
+use crate::split::SplitState;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,26 +221,17 @@ pub fn sidebar_cols(body_width: u16, saved: Option<u16>) -> u16 {
 /// so a column with no content rows answers `0.5` rather than dividing by
 /// zero.
 ///
-/// Rows a middle stop draws at this height answer that stop's exact
-/// share (on a tie, the stop nearest `rows / content`), so a drag or row
-/// step that lands on a stop's rows leaves the split at that stop and the
-/// keyboard cycle walks on from it (review round 5 K1). This moves the
-/// stored value only, never the line: the stop draws exactly these rows,
-/// so the line still follows the pointer row by row with no snapping
-/// (spec E5).
+/// The share is exactly `rows / content`, never snapped to a stop that
+/// draws the same rows (the user, 2026-10-23: "I do not want any snapping
+/// when dragging"). Whether a keyboard stop would move the line is decided
+/// at the press, at the height then ([`SplitState::cycled_moving`]).
 pub fn editor_share_for(column_height: u16, editor_rows: u16) -> f32 {
     let content = content_rows(column_height);
     if content == 0 {
         return 0.5;
     }
     let editor_content = editor_rows.saturating_sub(editor::CHROME_HEIGHT);
-    let share = (f32::from(editor_content) / f32::from(content)).clamp(0.0, 1.0);
-    [SplitStop::EditorBig, SplitStop::Even, SplitStop::ResponseBig]
-        .into_iter()
-        .map(SplitStop::share)
-        .filter(|&stop| editor_rows_for(column_height, stop) == editor_rows)
-        .min_by(|a, b| (a - share).abs().total_cmp(&(b - share).abs()))
-        .unwrap_or(share)
+    (f32::from(editor_content) / f32::from(content)).clamp(0.0, 1.0)
 }
 
 /// The editor's rows in a `column_height`-row column at `editor_share`
@@ -643,26 +634,20 @@ mod tests {
         }
     }
 
-    /// Review round 5 K1: rows a middle stop draws invert to that stop's
-    /// exact share, so the state knows it sits at the stop. Other rows
-    /// invert to `rows / content`. On a tie the stop nearest that wins.
+    /// No snapping when dragging (the user): rows a stop draws invert to
+    /// `rows / content` like any other rows, not to the stop's share.
     #[test]
-    fn editor_share_for_lands_on_a_stop_that_draws_the_rows() {
+    fn editor_share_for_never_snaps_to_a_stop() {
         let chrome = editor::CHROME_HEIGHT + crate::components::response::HEADER_STRIP_HEIGHT;
         let share = |content: u16, rows: u16| {
             editor_share_for(content + chrome, editor::CHROME_HEIGHT + rows)
         };
         // 25 content rows: Even draws 12.5 → 13, 25/75 6.25 → 6, 75/25 18.75 → 19.
-        assert_eq!(share(25, 13), 0.5);
-        assert_eq!(share(25, 6), 0.25);
-        assert_eq!(share(25, 19), 0.75);
-        assert_eq!(share(25, 14), 14.0 / 25.0);
+        assert_eq!(share(25, 13), 13.0 / 25.0);
+        assert_eq!(share(25, 6), 6.0 / 25.0);
+        assert_eq!(share(25, 19), 19.0 / 25.0);
         assert_eq!(share(25, 0), 0.0);
         assert_eq!(share(25, 25), 1.0);
-        // 3 content rows: 75/25 (2.25) and 50/50 (1.5) both draw 2; 2/3 is
-        // nearer 0.75.
-        assert_eq!(share(3, 2), 0.75);
-        assert_eq!(share(3, 1), 0.25);
     }
 
     #[test]

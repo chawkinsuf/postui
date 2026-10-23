@@ -2303,6 +2303,18 @@ impl App {
         self.apply_split_state(self.split_state().apply(stop))
     }
 
+    /// The split one `alt+w` / `shift+alt+w` press steps to: the next stop
+    /// that way that moves the line at the terminal's current height
+    /// ([`crate::split::SplitState::cycled_moving`], spec E11). Before the
+    /// first frame there is no height, and it is the plain next stop.
+    fn cycled_split(&self, forward: bool) -> crate::split::SplitState {
+        let now = self.split_state();
+        if self.term_area.is_none() {
+            return now.cycled(forward);
+        }
+        now.cycled_moving(forward, |s| self.layout_at(s).map_or(0, |l| l.editor.height))
+    }
+
     /// Sets the split to `next` — the shared body of every split change
     /// (chips, steps, the keyboard cycle). Returns whether anything
     /// actually moved.
@@ -2352,8 +2364,13 @@ impl App {
     /// function of the state and the terminal, so it is current on any
     /// screen. `None` before the first frame.
     fn settled_layout(&self) -> Option<crate::layout::AppLayout> {
+        self.layout_at(self.split_state())
+    }
+
+    /// [`Self::settled_layout`] for the split `s` instead of the current
+    /// one: where `s` would put the panes at the terminal's size.
+    fn layout_at(&self, s: crate::split::SplitState) -> Option<crate::layout::AppLayout> {
         let flag = |on: bool| if on { 1.0 } else { 0.0 };
-        let s = self.split_state();
         self.term_area.map(|area| {
             crate::layout::compute_layout(
                 area,
@@ -3902,8 +3919,8 @@ impl App {
             // Always the split (E11). The `alt+w` key's sidebar meaning is
             // the key's, applied before it gets here (`KeyContext::action`,
             // spec S6a).
-            Action::CycleSplit => self.apply_split_state(self.split_state().cycled(true)),
-            Action::CycleSplitBack => self.apply_split_state(self.split_state().cycled(false)),
+            Action::CycleSplit => self.apply_split_state(self.cycled_split(true)),
+            Action::CycleSplitBack => self.apply_split_state(self.cycled_split(false)),
             Action::PaneResize { dir, count } => self.pane_resize(dir, count),
             // Always the sidebar, wherever focus is and whichever screen
             // shows (spec S6b, S8a).

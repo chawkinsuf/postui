@@ -772,20 +772,20 @@ fn height_for_content(content: u16) -> u16 {
         + crate::components::footer::FOOTER_HEIGHT
 }
 
-/// Review round 4 I1, round 5 K1: a drag to the rows a stop draws stores
-/// that stop, so the first `alt+w` after it always moves the line. With 25
-/// content rows, a drag to 13 is Even (12.5 → 13), and the press goes on
-/// to 25/75; the mirror, a drag to 6 is 25/75 (6.25 → 6), and
-/// `shift+alt+w` goes on to 50/50. Each drag first leaves the row, so it
-/// arrives there by the drag's own inversion.
+/// Review round 4 I1, E11: a drag to the rows a stop draws keeps its exact
+/// share, with no snapping (the user), and the first `alt+w` after it
+/// still moves the line: the stop that draws those rows is skipped. With
+/// 25 content rows, a drag to 13 draws what Even does (12.5 → 13), and the
+/// press goes on to 25/75; the mirror, a drag to 6 draws 25/75's rows
+/// (6.25 → 6), and `shift+alt+w` goes on to 50/50. Each drag first leaves
+/// the row, so it arrives there by the drag's own inversion.
 #[test]
 fn the_first_alt_w_after_a_drag_always_moves_the_line() {
     use crate::split::SplitStop;
     let height = height_for_content(25);
-    for (rows, at, keys, lands) in [
-        (13, SplitStop::Even, "<A-w>", SplitStop::ResponseBig),
-        (6, SplitStop::ResponseBig, "<A-W>", SplitStop::Even),
-    ] {
+    for (rows, keys, lands) in
+        [(13, "<A-w>", SplitStop::ResponseBig), (6, "<A-W>", SplitStop::Even)]
+    {
         let mut app = App::new_for_test();
         app.update(Action::FocusPane(PaneId::Editor));
         render_at(&mut app, 120, height);
@@ -801,7 +801,7 @@ fn the_first_alt_w_after_a_drag_always_moves_the_line() {
         render_at(&mut app, 120, height);
         let before = pane_rows(&app, PaneId::Editor);
         assert_eq!(before, crate::components::editor::CHROME_HEIGHT + rows, "dragged to {rows}");
-        assert_eq!(app.split_state().stop(), Some(at), "a drag to {rows} rows stores the stop");
+        assert_eq!(app.split_ratio, f32::from(rows) / 25.0, "the exact share, no stop");
         app.update(Action::FocusPane(PaneId::Editor));
         press(&mut app, keys);
         assert_eq!(app.split_state().stop(), Some(lands), "{keys} from {rows} rows");
@@ -811,11 +811,45 @@ fn the_first_alt_w_after_a_drag_always_moves_the_line() {
     }
 }
 
-/// Review round 5 K1 (J1): on a column of 3 content rows, 75/25 and 50/50
-/// both draw 2 rows. Each `alt+w` press still changes the split (some may
-/// draw the same rows), and five presses visit every stop and wrap.
+/// New count, round 6 (E11): a share dragged at one height can draw a
+/// stop's rows at another. Dragged to 12 of 25 content rows (0.48, no
+/// stop's rows there), then the window shrinks to 20 content rows, where
+/// 0.48 draws 10 rows, as 50/50 does. `shift+alt+w` skips 50/50 and the
+/// line moves.
 #[test]
-fn alt_w_on_a_short_column_never_sticks() {
+fn alt_w_after_a_window_resize_still_moves_the_line() {
+    use crate::split::SplitStop;
+    let tall = height_for_content(25);
+    let short = height_for_content(20);
+    let mut app = App::new_for_test();
+    app.update(Action::FocusPane(PaneId::Editor));
+    render_at(&mut app, 120, tall);
+    let column = rect(&app, &Hit::Pane(PaneId::Editor)).y;
+    let (x, y) = handle_cell(&app);
+    let grab = y - rect(&app, &Hit::SplitHandle).y;
+    let to = column + crate::components::editor::CHROME_HEIGHT + 12 + grab;
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_drag(x, to));
+    app.handle_mouse(left_up(x, to));
+    assert_eq!(app.split_ratio, 12.0 / 25.0);
+    render_at(&mut app, 120, short);
+    let before = pane_rows(&app, PaneId::Editor);
+    let short_column = 20
+        + crate::components::editor::CHROME_HEIGHT
+        + crate::components::response::HEADER_STRIP_HEIGHT;
+    assert_eq!(before, crate::layout::editor_rows_for(short_column, 0.5), "draws 50/50's rows");
+    press(&mut app, "<A-W>");
+    assert_eq!(app.split_state().stop(), Some(SplitStop::EditorBig), "50/50 skipped");
+    app.anims.finish_all();
+    render_at(&mut app, 120, short);
+    assert_ne!(pane_rows(&app, PaneId::Editor), before, "the line moved");
+}
+
+/// Review round 5 K1 (J1), E11: on a column of 3 content rows, 75/25 and
+/// 50/50 both draw 2 rows. Every `alt+w` press moves the line, so from
+/// 75/25 the press skips 50/50 for 25/75.
+#[test]
+fn alt_w_on_a_short_column_always_moves_the_line() {
     use crate::split::SplitStop;
     let height = height_for_content(3);
     let mut app = App::new_for_test();
@@ -824,12 +858,12 @@ fn alt_w_on_a_short_column_never_sticks() {
     assert_eq!(app.split_state().stop(), Some(SplitStop::Even));
     let mut seen = Vec::new();
     for _ in 0..5 {
-        let before = app.split_state();
+        let before = pane_rows(&app, PaneId::Editor);
         press(&mut app, "<A-w>");
-        assert_ne!(app.split_state(), before, "the press after {seen:?} moved the split");
         seen.push(app.split_state().stop());
         app.anims.finish_all();
         render_at(&mut app, 120, height);
+        assert_ne!(pane_rows(&app, PaneId::Editor), before, "the press to {seen:?} moved it");
     }
     assert_eq!(
         seen,
@@ -838,7 +872,7 @@ fn alt_w_on_a_short_column_never_sticks() {
             Some(SplitStop::ResponseFull),
             Some(SplitStop::EditorFull),
             Some(SplitStop::EditorBig),
-            Some(SplitStop::Even),
+            Some(SplitStop::ResponseBig),
         ]
     );
 }
