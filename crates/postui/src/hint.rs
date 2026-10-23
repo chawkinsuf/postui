@@ -865,11 +865,9 @@ mod tests {
                 }
             }
         }
-        // The split pill and the always-present right-hand pair, which
-        // `footer_chips` doesn't list.
+        // The always-present right-hand pair, which `footer_chips` doesn't
+        // list.
         for action in [
-            Action::CycleSplit,
-            Action::CycleSplitBack,
             Action::OpenPalette,
             Action::OpenExPalette,
             Action::Quit,
@@ -998,7 +996,6 @@ mod tests {
             Hit::PickerPrimary,
             Hit::PickerHidden,
             Hit::VmSecretToggle,
-            Hit::FooterChip(Action::CycleSplit),
             Hit::ManageMoveAll,
             Hit::ManageEnvTls(Some(postui_core::project::TlsPolicy::Insecure)),
             Hit::AutoHeaderReveal,

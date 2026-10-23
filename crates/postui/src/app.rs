@@ -2267,7 +2267,8 @@ impl App {
     /// sizes win, and a size it has not saved (or an unrecognized split
     /// token) is the default, so a switch never carries the previous
     /// project's sizes over. A project created in place takes the other
-    /// half of the rule, [`Self::adopt_sizes_into_project`]. Saves nothing.
+    /// half of the rule: `InitProjectHere` saves the sizes on screen as its
+    /// own ([`Self::persist_sizes`]). Saves nothing.
     fn seed_sizes_from_project(&mut self) {
         let local = self.project().map(|p| p.local());
         let split = local
@@ -2276,13 +2277,6 @@ impl App {
             .unwrap_or_default();
         self.sidebar_width = local.and_then(|l| l.sidebar_width);
         self.set_split_fields(split);
-    }
-
-    /// Saves the sizes on screen as the open project's own: a project
-    /// created in place keeps what the user sized before creating it
-    /// (spec P5), whatever its folder's `.local/layout.toml` held.
-    fn adopt_sizes_into_project(&mut self) {
-        self.persist_sizes();
     }
 
     /// The whole split state the split control reads and drives — the
@@ -4937,8 +4931,9 @@ impl App {
                         }
                         self.refresh_sidebar();
                         // Created in place: the sizes on screen become the
-                        // new project's (spec P5).
-                        self.adopt_sizes_into_project();
+                        // new project's (spec P5), whatever its folder's
+                        // `.local/layout.toml` held.
+                        self.persist_sizes();
                         // The project was opened on a bare directory, before
                         // init wrote the stock `default` env: land in it now,
                         // as an open of the finished project would.
