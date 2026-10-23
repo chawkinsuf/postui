@@ -17694,14 +17694,14 @@ fn toggle_response_collapse_flips_the_flag_and_eases_the_anim() {
 /// toggles did, keeping the ratio sticky underneath.
 #[test]
 fn split_stops_update_the_split_and_ease_the_ratio_anim() {
-    use crate::split::{SplitRatio, SplitStop};
+    use crate::split::SplitStop;
     let mut app = App::new_for_test_with_anims(true);
-    assert_eq!(app.split_ratio, SplitRatio::Even);
+    assert_eq!(app.split_ratio, 0.5);
 
     // 75/25 from 50/50 shrinks the response to its quarter, easing the
     // ratio rather than snapping.
     app.update(Action::SplitStop(SplitStop::EditorBig));
-    assert_eq!(app.split_ratio, SplitRatio::EditorBig);
+    assert_eq!(app.split_ratio, 0.75);
     assert!(!app.session.response.collapsed);
     assert!(!app.table_collapsed);
     let now = std::time::Instant::now();
@@ -17714,7 +17714,7 @@ fn split_stops_update_the_split_and_ease_the_ratio_anim() {
     // toggle; the ratio stop survives underneath.
     app.update(Action::SplitStop(SplitStop::EditorFull));
     assert!(app.session.response.collapsed);
-    assert_eq!(app.split_ratio, SplitRatio::EditorBig, "ratio is sticky");
+    assert_eq!(app.split_ratio, 0.75, "ratio is sticky");
 
     // The response-full chip gives the response the whole column by
     // minimizing the editor — one click from the opposite endpoint.
@@ -17725,7 +17725,7 @@ fn split_stops_update_the_split_and_ease_the_ratio_anim() {
     // A ratio chip reopens both panes straight at its stop.
     app.update(Action::SplitStop(SplitStop::ResponseBig));
     assert!(!app.table_collapsed);
-    assert_eq!(app.split_ratio, SplitRatio::ResponseBig);
+    assert_eq!(app.split_ratio, 0.25);
 }
 
 /// `Action::CycleSplit` (the footer's `alt+s` context chip) steps the
@@ -17735,13 +17735,16 @@ fn split_stops_update_the_split_and_ease_the_ratio_anim() {
 fn cycle_split_steps_through_every_stop_and_wraps() {
     use crate::split::SplitStop::*;
     let mut app = App::new_for_test();
-    assert_eq!(app.split_state().stop(), Even);
+    assert_eq!(app.split_state().stop(), Some(Even));
     let mut seen = vec![];
     for _ in 0..5 {
         app.update(Action::CycleSplit);
         seen.push(app.split_state().stop());
     }
-    assert_eq!(seen, [ResponseBig, ResponseFull, EditorFull, EditorBig, Even]);
+    assert_eq!(
+        seen,
+        [Some(ResponseBig), Some(ResponseFull), Some(EditorFull), Some(EditorBig), Some(Even)]
+    );
 }
 
 /// `Action::SplitStep` (the response header's ▲/▼ buttons) nudges the
@@ -17752,21 +17755,21 @@ fn cycle_split_steps_through_every_stop_and_wraps() {
 fn split_step_moves_one_stop_and_stalls_at_the_ends() {
     use crate::split::SplitStop::*;
     let mut app = App::new_for_test();
-    assert_eq!(app.split_state().stop(), Even);
+    assert_eq!(app.split_state().stop(), Some(Even));
     app.update(Action::SplitStep(1));
-    assert_eq!(app.split_state().stop(), ResponseBig, "▲ grows the response");
+    assert_eq!(app.split_state().stop(), Some(ResponseBig), "▲ grows the response");
     app.update(Action::SplitStep(1));
-    assert_eq!(app.split_state().stop(), ResponseFull);
+    assert_eq!(app.split_state().stop(), Some(ResponseFull));
     assert!(app.table_collapsed);
     app.update(Action::SplitStep(1));
-    assert_eq!(app.split_state().stop(), ResponseFull, "stalls at the bottom stop");
+    assert_eq!(app.split_state().stop(), Some(ResponseFull), "stalls at the bottom stop");
     for _ in 0..4 {
         app.update(Action::SplitStep(-1));
     }
-    assert_eq!(app.split_state().stop(), EditorFull, "▼ shrinks the response");
+    assert_eq!(app.split_state().stop(), Some(EditorFull), "▼ shrinks the response");
     assert!(app.session.response.collapsed);
     app.update(Action::SplitStep(-1));
-    assert_eq!(app.split_state().stop(), EditorFull, "stalls at the top stop");
+    assert_eq!(app.split_state().stop(), Some(EditorFull), "stalls at the top stop");
 }
 
 /// The split is a persisted layout preference: chip presses and the
@@ -17780,10 +17783,10 @@ fn split_persists_to_local_state_and_reseeds_on_open() {
     let root = app.proj().root().to_path_buf();
     let saved =
         |root: &std::path::Path| postui_core::fixtures::load_local_state(root).unwrap().main_split;
-    assert_eq!(saved(&root).as_deref(), Some("editor-big"));
+    assert_eq!(saved(&root).as_deref(), Some("0.7500"));
 
     app.update(Action::ToggleResponseCollapse);
-    assert_eq!(saved(&root).as_deref(), Some("editor-full"));
+    assert_eq!(saved(&root).as_deref(), Some("editor-full@0.7500"));
 
     // A fresh app on the same root wakes up with the saved split.
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();

@@ -91,6 +91,7 @@ impl SplitControl {
             let rect = Rect::new(x + 1 + i * SPLIT_SEGMENT_WIDTH, y, SPLIT_SEGMENT_WIDTH, 1);
             i += 1;
             let hovered = self.hovered == Some(stop);
+            let lit = active == Some(stop);
             // The mini-picture fully covers its own cells, so hover and
             // "lit" are the picture's own tones changing. The tones follow
             // the app's glyph-on-button idiom, with the editor's share as
@@ -105,7 +106,7 @@ impl SplitControl {
             // fill, full `text_muted` reads too hot as a solid 2-cell
             // block (it's a mass, not a glyph stroke).
             let resting_mass = crate::theme::mix(theme.text_disabled, theme.text_muted, 0.5);
-            let (editor_tone, response_tone) = if active == stop {
+            let (editor_tone, response_tone) = if lit {
                 (theme.accent, theme.selection)
             } else if hovered {
                 (theme.text_muted, theme.control_hover)
@@ -152,7 +153,7 @@ impl StepControl {
         [(1i8, "\u{25B2}"), (-1i8, "\u{25BC}")].map(|(delta, arrow)| {
             let rect = Rect::new(x + 1 + i * STEP_SEGMENT_WIDTH, y, STEP_SEGMENT_WIDTH, 1);
             i += 1;
-            let live = current.step(delta).is_some();
+            let live = current.and_then(|s| s.step(delta)).is_some();
             let (fg, bg) = if !live {
                 (theme.text_disabled, theme.control)
             } else if self.hovered == Some(delta) {

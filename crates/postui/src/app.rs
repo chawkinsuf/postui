@@ -375,10 +375,10 @@ pub struct App {
     /// The editor's share of the main column while both panes are shown —
     /// the split's settled ratio stop (see [`crate::split`]). Sticky
     /// through minimize/expand so re-opening lands where the user left it.
-    pub split_ratio: crate::split::SplitRatio,
+    pub split_ratio: f32,
     /// The last `split_ratio` value `AnimKey::SplitRatio` was driven
     /// toward — see [`Self::sync_split_ratio_anim`].
-    split_ratio_target: crate::split::SplitRatio,
+    split_ratio_target: f32,
     /// The most recent left press, for the click counts
     /// ([`mouse::count_clicks`]).
     last_click: Option<mouse::LastClick>,
@@ -1758,8 +1758,8 @@ impl App {
             table_collapsed: false,
             pane_collapsed_target: false,
             response_collapsed_target: false,
-            split_ratio: crate::split::SplitRatio::default(),
-            split_ratio_target: crate::split::SplitRatio::default(),
+            split_ratio: crate::split::SplitState::default().ratio,
+            split_ratio_target: crate::split::SplitState::default().ratio,
             last_click: None,
             last_action_failed: false,
             last_loose_warning: None,
@@ -2197,7 +2197,7 @@ impl App {
     /// preference (`.local/state.toml`'s `main_split`). Best-effort, like
     /// every local-state save.
     fn persist_split(&mut self) {
-        let token = self.split_state().to_token().to_string();
+        let token = self.split_state().to_token();
         if let Some(p) = self.project_mut() {
             p.set_main_split(Some(token));
         }
@@ -2229,12 +2229,18 @@ impl App {
         }
     }
 
-    /// Jumps the split to `stop` — the shared body of `Action::SplitStop`
-    /// (a control chip click) and `Action::CycleSplit` (the keyboard
-    /// cycle). Returns whether anything actually moved.
+    /// Jumps the split to `stop` — the body of `Action::SplitStop` (a
+    /// control chip click) and the ▲/▼ steps. Returns whether anything
+    /// actually moved.
     fn apply_split_stop(&mut self, stop: crate::split::SplitStop) -> bool {
+        self.apply_split_state(self.split_state().apply(stop))
+    }
+
+    /// Sets the split to `next` — the shared body of every split change
+    /// (chips, steps, the keyboard cycle). Returns whether anything
+    /// actually moved.
+    fn apply_split_state(&mut self, next: crate::split::SplitState) -> bool {
         let prev = self.split_state();
-        let next = prev.apply(stop);
         self.table_collapsed = next.editor_minimized;
         self.session.response.collapsed = next.response_minimized;
         self.split_ratio = next.ratio;
@@ -2260,11 +2266,11 @@ impl App {
         self.split_ratio_target = target;
         let now = Instant::now();
         if self.anims.value(AnimKey::SplitRatio, now).is_none() {
-            self.anims.snap(AnimKey::SplitRatio, previous.editor_share());
+            self.anims.snap(AnimKey::SplitRatio, previous);
         }
         self.anims.retarget(
             AnimKey::SplitRatio,
-            target.editor_share(),
+            target,
             self.ui_settings.anim_ms.pane_collapse,
             now,
         );
@@ -3547,9 +3553,10 @@ impl App {
                 true
             }
             Action::SplitStop(stop) => self.apply_split_stop(stop),
-            Action::CycleSplit => self.apply_split_stop(self.split_state().stop().next()),
-            Action::CycleSplitBack => self.apply_split_stop(self.split_state().stop().prev()),
-            Action::SplitStep(delta) => match self.split_state().stop().step(delta) {
+            Action::CycleSplit => self.apply_split_state(self.split_state().cycled(true)),
+            Action::CycleSplitBack => self.apply_split_state(self.split_state().cycled(false)),
+            Action::SplitStep(delta) => match self.split_state().stop().and_then(|s| s.step(delta))
+            {
                 Some(stop) => self.apply_split_stop(stop),
                 None => false,
             },

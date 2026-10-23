@@ -45,8 +45,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         now,
         if app.session.response.collapsed { 1.0 } else { 0.0 },
     );
-    let ratio_t =
-        app.anims.value_or(crate::anim::AnimKey::SplitRatio, now, app.split_ratio.editor_share());
+    let ratio_t = app.anims.value_or(crate::anim::AnimKey::SplitRatio, now, app.split_ratio);
     let layout = compute_layout(frame.area(), collapse_t, response_t, ratio_t);
     let focus = app.focus;
     let screen = app.screen;
