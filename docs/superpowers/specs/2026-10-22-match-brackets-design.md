@@ -247,7 +247,7 @@ when the partner is off screen, and looks only under the cursor.
 | # | Rule | From |
 |---|---|---|
 | R19 | Arrows response, Tree view: a clicked container bracket lights with its partner wherever the partner is, on screen or not. Scrolling brings the lit partner into view. This replaces R5 there. Raw, Headers, a bracket inside a string, the vim response and the body keep R5 (a one-line Raw body's partner is on the clicked row, so it lights). | you (the ask); arrows-response-only is mine (approved); Tree-view-only is mine (approved, review round 2) |
-| R20 | Arrows response: a click on a `,` that directly follows a bracket and ends its line (blanks may follow it), which includes a click past the end of a `},` or `],` line since that lands on the `,`, lights that bracket's pair. A mid-line `,` takes nothing. | you (the ask); response-only, comma-only and line-end-only are mine (approved) |
+| R20 | Arrows response: a click on a `,` that directly follows a bracket and ends its line lights that bracket's pair. Blanks and a CRLF's `\r` may follow the `,`, and a click on them, or past the end of the line, counts too. A mid-line `,` takes nothing. | you (the ask); response-only, comma-only and line-end-only are mine (approved) |
 
 **Design.**
 
@@ -302,12 +302,21 @@ and the user picked the recommended option for each (`mine (approved)`):
     anchored there, not at the cursor.
   - Every click forgets it, a fold arrow's included (`click_row`), and so
     does a view switch (`set_mode`); `cursor_moved` no longer does.
-  - A click carries the mode and the tree it was made on (`Clicked`), and
-    lights only while both still match. So a tree swap retires a Tree view
-    click and leaves a Raw one, with no clear at each tree writer (review
-    round 5).
-  - The bracket memo keys arrows on the click alone, so a key that keeps
-    the pair never walks again.
+  - Review rounds 4–6 kept finding one more event that should retire the
+    long-lived click. So the rule is inverted: the click records what it
+    depends on, and lights only while that is unchanged.
+    - `record_click` resolves the click once, when it's made. It records
+      the clicked bracket, or for R20 the bracket before a line-end `,`
+      (trailing blanks and `\r` included), and nothing for any other char.
+    - A Tree view click holds the tree and its folds (`tree_epoch`,
+      `tree_edits`). A swap or any fold since then retires it: coarser
+      than tracking what moved, never a wrong pair. A Raw or Headers click
+      holds no tree, since those lines never change.
+    - A vim-profile draw forgets it, so a switch back to arrows lights no
+      stale pair.
+  - The bracket memo keys arrows on the click and the scroll. A key that
+    keeps the pair doesn't walk again, but a scroll re-walks the rows in
+    view on Raw and Headers, as in #24.
   - Only an arrows click on a line's own text records one. A click in vim
     doesn't, so a later switch to arrows doesn't light a stale pair. Nor
     does a click on a closed fold's summary, so opening that fold doesn't
