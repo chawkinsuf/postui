@@ -385,13 +385,12 @@ pub struct App {
     /// A live pane resize (the sidebar gutter or the response header
     /// strip), or `None`.
     pub resize: Option<ResizeDrag>,
-    /// The last `Screen::Main` frame's layout, written by each Main draw:
-    /// what every pane-sizing path (the drags, the keyboard and palette
-    /// steps) measures against. A frame of another screen leaves it, so a
-    /// sidebar step from the Manage screen still applies to the last Main
-    /// layout, and the next Main frame re-clamps the drawn width by S5 (the
-    /// window may have changed since). `None` before the first Main frame.
-    pub(crate) main_layout: Option<crate::layout::AppLayout>,
+    /// The terminal's size, written by every frame of every screen: what
+    /// [`Self::settled_layout`] lays the panes out in (spec S8a). It
+    /// changes only with a resize event, and the event loop draws after
+    /// one before it reads the next event, so a key or click never sees a
+    /// stale size. `None` before the first frame.
+    pub(crate) term_area: Option<ratatui::layout::Rect>,
     /// A left press on a sidebar request row: `(row index, slug)`. Armed
     /// by `on_hit`, cleared on release; becomes a live row drag the moment
     /// the pointer moves onto another row (see `mouse.rs`).
@@ -1026,10 +1025,9 @@ impl App {
         match app.project.as_mut().map(|p| p.ensure_spaces()) {
             Some(Ok(())) => {
                 app.refresh_sidebar();
-                // Restore this project's saved layout split alongside its
+                // Restore this project's saved pane sizes alongside its
                 // open request.
-                app.seed_split_from_project();
-                app.seed_sidebar_from_project();
+                app.seed_sizes_from_project();
                 // Restore the request that was open when this project was
                 // last used — the same restore a project *switch* already
                 // performs. Without it the sidebar draws a selection whose
@@ -1803,7 +1801,7 @@ impl App {
             drag: None,
             text_drag: None,
             resize: None,
-            main_layout: None,
+            term_area: None,
             sidebar_press: None,
             manage_press: None,
             table_collapsed: false,
@@ -2261,25 +2259,29 @@ impl App {
         }
     }
 
-    /// Seeds the split from the project's saved layout preference — the
-    /// reopen half of [`Self::persist_split`]. An absent or unrecognized
-    /// token is the default split, as [`Self::seed_sidebar_from_project`]
-    /// does for the width, so a project switch drops the previous
-    /// project's split. Saves nothing.
-    fn seed_split_from_project(&mut self) {
-        let s = self
-            .project()
-            .and_then(|p| p.local().main_split.as_deref())
+    /// Takes the pane sizes of a project opened or switched to — the
+    /// reopen half of [`Self::persist_split`] and
+    /// [`Self::persist_sidebar`]. Spec P5's one rule: the project's saved
+    /// sizes win, and a size it has not saved (or an unrecognized split
+    /// token) is the default, so a switch never carries the previous
+    /// project's sizes over. A project created in place takes the other
+    /// half of the rule, [`Self::adopt_sizes_into_project`]. Saves nothing.
+    fn seed_sizes_from_project(&mut self) {
+        let local = self.project().map(|p| p.local());
+        let split = local
+            .and_then(|l| l.main_split.as_deref())
             .and_then(crate::split::SplitState::from_token)
             .unwrap_or_default();
-        self.set_split_fields(s);
+        self.sidebar_width = local.and_then(|l| l.sidebar_width);
+        self.set_split_fields(split);
     }
 
-    /// Seeds the sidebar width from the project's saved preference
-    /// (`.local/layout.toml`'s `sidebar_width`). No saved width is the
-    /// default 28%, so a project switch drops the previous project's.
-    fn seed_sidebar_from_project(&mut self) {
-        self.sidebar_width = self.project().and_then(|p| p.local().sidebar_width);
+    /// Saves the sizes on screen as the open project's own: a project
+    /// created in place keeps what the user sized before creating it
+    /// (spec P5), whatever its folder's `.local/layout.toml` held.
+    fn adopt_sizes_into_project(&mut self) {
+        self.persist_split();
+        self.persist_sidebar();
     }
 
     /// The whole split state the split control reads and drives — the
@@ -2343,31 +2345,43 @@ impl App {
         self.sync_split_ratio_anim(snap);
     }
 
-    /// Moves the sidebar's edge toward `want` columns, clamped to what the
-    /// last Main frame's body can hold (spec S5). Returns whether the edge
-    /// moved; with no Main frame drawn yet there is no body to measure,
-    /// and nothing changes.
+    /// The layout the sizes put on screen at the terminal's size, with
+    /// every ease settled: what each pane-sizing path (the drags, the
+    /// keyboard and palette steps) measures against (spec S8, S8a). A pure
+    /// function of the state and the terminal, so it is current on any
+    /// screen. `None` before the first frame.
+    fn settled_layout(&self) -> Option<crate::layout::AppLayout> {
+        let flag = |on: bool| if on { 1.0 } else { 0.0 };
+        let s = self.split_state();
+        self.term_area.map(|area| {
+            crate::layout::compute_layout(
+                area,
+                flag(s.editor_minimized),
+                flag(s.response_minimized),
+                s.ratio,
+                self.sidebar_width,
+            )
+        })
+    }
+
+    /// Moves the sidebar's edge to the columns `to` wants, given the width
+    /// on screen and the body, clamped by S5. Stores the width only when
+    /// it differs from the one on screen, so a want the clamp can't reach
+    /// leaves the default unset and a squeezed saved width saved. Returns
+    /// whether the edge moved; before the first frame there is no body to
+    /// measure, and nothing changes.
     ///
-    /// Measured against the edge on screen, not the stored width, and only
-    /// ever the way the user asked: the clamp can land on the other side
-    /// of the drawn edge (a 28% default narrower than the minimum on a
-    /// narrow window, a saved width the window squeezes), and storing that
-    /// would move the edge against the user — or a no-op would turn the
-    /// unset default into a fixed width. Either way nothing changes, the
-    /// stored value included.
-    ///
-    /// Comparing against the drawn width is sound mid-drag: every motion
-    /// that changes the width returns true, and the event loop redraws
-    /// before it reads the next event, so whenever a motion arrives the
-    /// last Main frame drew the width the previous one stored.
-    fn set_sidebar_cols(&mut self, want: i32) -> bool {
-        let Some(layout) = self.main_layout else {
+    /// The width on screen is [`crate::layout::sidebar_cols`] of the saved
+    /// width, always within the clamp's limits, so the clamped want lies
+    /// the way the want points or on the edge itself: no step or drag
+    /// moves the edge against what was asked (spec S8).
+    fn move_sidebar_edge(&mut self, to: impl FnOnce(u16, ratatui::layout::Rect) -> i32) -> bool {
+        let Some(body) = self.settled_layout().map(|l| l.body) else {
             return false;
         };
-        let drawn = i32::from(layout.sidebar.width);
-        let next = crate::layout::clamp_sidebar_cols(layout.body.width, want);
-        let step = i32::from(next) - drawn;
-        if step == 0 || step.signum() != (want - drawn).signum() {
+        let now = crate::layout::sidebar_cols(body.width, self.sidebar_width);
+        let next = crate::layout::clamp_sidebar_cols(body.width, to(now, body));
+        if next == now {
             return false;
         }
         self.sidebar_width = Some(next);
@@ -2418,17 +2432,14 @@ impl App {
         self.focus == PaneId::Sidebar && self.screen == Screen::Main
     }
 
-    /// Moves the sidebar's edge `delta` columns from where the last Main
-    /// frame drew it, so the first step from the unset 28% default starts
-    /// at the width on screen (spec S6). It stops at the limits (S5) with
-    /// no wrap, and saves on a change (P2). A step that can't move the edge
-    /// its way changes nothing ([`Self::set_sidebar_cols`]), so a saved
-    /// width the window squeezes stays saved.
+    /// Moves the sidebar's edge `delta` columns from the width on screen,
+    /// so the first step from the unset 28% default starts there (spec S6).
+    /// It stops at the limits (S5) with no wrap, and saves on a change
+    /// (P2). A step the limits stop changes nothing
+    /// ([`Self::move_sidebar_edge`]), so a saved width the window squeezes
+    /// stays saved.
     fn step_sidebar(&mut self, delta: i32) -> bool {
-        let Some(drawn) = self.main_layout.map(|l| l.sidebar.width) else {
-            return false;
-        };
-        if !self.set_sidebar_cols(i32::from(drawn) + delta) {
+        if !self.move_sidebar_edge(|now, _| i32::from(now) + delta) {
             return false;
         }
         self.persist_sidebar();
@@ -2442,11 +2453,10 @@ impl App {
     /// one row out of either end shows one row of content. Past either end
     /// it snaps there, keeping the share (E6, E9a).
     ///
-    /// The rows come from the state at the last frame's column height, not
-    /// from the frame's editor rect: right after an eased change (`alt+w`,
+    /// The rows come from the state at the settled layout's column height,
+    /// not from a drawn editor rect: right after an eased change (`alt+w`,
     /// a chip) that rect is partway through the ease, and counting from it
-    /// would land N rows from an in-between height (review round 2 G6). The
-    /// column's height never eases, so it is safe to read from the frame.
+    /// would land N rows from an in-between height (review round 2 G6).
     fn resize_split_rows(&mut self, editor_delta: i32) -> bool {
         self.move_split_line(|_, editor_rows| editor_rows + editor_delta)
     }
@@ -2456,7 +2466,7 @@ impl App {
     /// at, un-eased, through the same clamp and snaps as a drag, and saves
     /// a change: the body of every `ctrl+w` height key.
     fn move_split_line(&mut self, to: impl FnOnce(u16, i32) -> i32) -> bool {
-        let Some(column) = self.main_layout.map(|l| l.main) else {
+        let Some(column) = self.settled_layout().map(|l| l.main) else {
             return false;
         };
         let now = self.split_state();
@@ -2520,9 +2530,7 @@ impl App {
             // windows equally wide too.
             (_, ResizeDir::Even) => {
                 let split = self.apply_split_stop(crate::split::SplitStop::Even);
-                let sidebar = self
-                    .main_layout
-                    .is_some_and(|l| self.set_sidebar_cols((i32::from(l.body.width) - 1) / 2));
+                let sidebar = self.move_sidebar_edge(|_, body| (i32::from(body.width) - 1) / 2);
                 if sidebar {
                     self.persist_sidebar();
                 }
@@ -2532,7 +2540,7 @@ impl App {
     }
 
     /// Moves the live resize's divider to the pointer at (`column`, `row`),
-    /// measured against the last frame. Returns whether a size changed,
+    /// measured against [`Self::settled_layout`]. Returns whether a size changed,
     /// and records a change in the drag's `moved`.
     fn resize_to(&mut self, column: u16, row: u16) -> bool {
         let changed = self.resize_divider_to(column, row);
@@ -2549,10 +2557,7 @@ impl App {
         };
         match drag.kind {
             ResizeHandle::Sidebar => {
-                let Some(layout) = self.main_layout else {
-                    return false;
-                };
-                self.set_sidebar_cols(i32::from(column) - i32::from(layout.sidebar.x))
+                self.move_sidebar_edge(|_, body| i32::from(column) - i32::from(body.x))
             }
             ResizeHandle::Split { grab, press, start } => {
                 // Motion on the pressed row before the drag has moved
@@ -2567,7 +2572,7 @@ impl App {
                 if !drag.moved && row == press {
                     return false;
                 }
-                let Some(main) = self.main_layout.map(|l| l.main) else {
+                let Some(main) = self.settled_layout().map(|l| l.main) else {
                     return false;
                 };
                 let editor_rows = i32::from(row) - i32::from(grab) - i32::from(main.y);
@@ -3914,9 +3919,8 @@ impl App {
             Action::CycleSplit => self.apply_split_state(self.split_state().cycled(true)),
             Action::CycleSplitBack => self.apply_split_state(self.split_state().cycled(false)),
             Action::PaneResize { dir, count } => self.pane_resize(dir, count),
-            // Always the sidebar, wherever focus is (spec S6b). Off the main
-            // screen it applies to the last Main layout (`main_layout`), and
-            // the next Main frame re-clamps the drawn width by S5.
+            // Always the sidebar, wherever focus is and whichever screen
+            // shows (spec S6b, S8a).
             Action::StepSidebar(delta) => self.step_sidebar(i32::from(delta)),
             Action::FormatBody => {
                 self.no_coalesce = true;
@@ -4937,10 +4941,9 @@ impl App {
                                 .push(format!("could not open project: {e}"), ToastKind::Error);
                         }
                         self.refresh_sidebar();
-                        // The sizes are the new project's local state, as
-                        // every other open seeds them.
-                        self.seed_split_from_project();
-                        self.seed_sidebar_from_project();
+                        // Created in place: the sizes on screen become the
+                        // new project's (spec P5).
+                        self.adopt_sizes_into_project();
                         // The project was opened on a bare directory, before
                         // init wrote the stock `default` env: land in it now,
                         // as an open of the finished project would.
@@ -5200,11 +5203,9 @@ impl App {
                     }
                     None => {}
                 }
-                // The layout split is per-project local state too: restore
-                // the incoming project's saved split alongside its open
-                // request.
-                self.seed_split_from_project();
-                self.seed_sidebar_from_project();
+                // The pane sizes are per-project local state too: restore
+                // the incoming project's alongside its open request (P5).
+                self.seed_sizes_from_project();
                 let open = self
                     .project()
                     .and_then(|p| p.local().open_request.clone())

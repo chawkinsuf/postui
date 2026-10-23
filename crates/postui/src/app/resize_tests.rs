@@ -112,23 +112,18 @@ fn a_gutter_jitter_keeps_the_default_and_a_squeezed_saved_width() {
     }
 }
 
-/// Review F2, at round 8's bounds: on a window narrow enough that the 28%
-/// default draws under the sidebar's minimum (S5 keeps the minimum, so the
-/// default can no longer draw past the upper limit), a step or drag that
-/// asks to narrow the sidebar never widens it to the minimum, nor saves a
-/// width. Asked to widen, it moves.
+/// Review F2, S8b: on a window narrow enough that 28% would be under the
+/// sidebar's minimum, the default draws the minimum, so a step or drag
+/// that asks to narrow it moves nothing and saves no width. Asked to
+/// widen, it moves.
 #[test]
-fn narrowing_a_default_under_the_minimum_moves_nothing() {
-    const WIDE: u16 = 50;
+fn narrowing_a_default_at_the_minimum_moves_nothing() {
+    const WIDE: u16 = 58;
     let mut app = App::new_for_test();
     app.update(Action::FocusPane(PaneId::Sidebar));
     render_at(&mut app, WIDE, 30);
     let drawn = sidebar_cols(&app);
-    let body = drawn + 1 + rect(&app, &Hit::Pane(PaneId::Editor)).width;
-    assert!(
-        drawn < crate::layout::clamp_sidebar_cols(body, 0),
-        "the default ({drawn}) is under the minimum"
-    );
+    assert_eq!(drawn, crate::layout::SIDEBAR_MIN_COLS, "the default obeys the minimum");
     press(&mut app, "<A-W>");
     assert_eq!(app.sidebar_width, None);
     render_at(&mut app, WIDE, 30);
@@ -139,12 +134,14 @@ fn narrowing_a_default_under_the_minimum_moves_nothing() {
     app.handle_mouse(left_down(g.x, y));
     app.handle_mouse(left_drag(g.x - 6, y));
     app.handle_mouse(left_up(g.x - 6, y));
-    assert_eq!(app.sidebar_width, None, "a leftward drag doesn't widen it");
+    assert_eq!(app.sidebar_width, None, "a leftward drag saves nothing");
     render_at(&mut app, WIDE, 30);
     assert_eq!(sidebar_cols(&app), drawn);
 
     press(&mut app, "<A-w>");
-    assert_eq!(app.sidebar_width, Some(crate::layout::SIDEBAR_MIN_COLS), "widening moves");
+    let widest = crate::layout::clamp_sidebar_cols(WIDE, i32::from(WIDE));
+    assert!(widest > drawn);
+    assert_eq!(app.sidebar_width, Some(widest), "widening moves, to the limit");
 }
 
 /// The line follows the pointer row by row, un-eased (E5, E14): the frame
@@ -1078,26 +1075,30 @@ fn the_palette_names_the_split_keys_only_where_they_move_the_split() {
     }
 }
 
-/// Review round 7 M2: sizing measures the last Main frame's layout, which
-/// a frame of another screen leaves in place (the sidebar width is a Main
-/// screen property), so a step from the Manage screen still moves the edge
-/// and is saved.
+/// Review round 7 M2, round 9 O1 (S8, S8a): a step from the Manage screen
+/// moves the edge and is saved, and each further step moves it again: the
+/// width comes from the saved width and the terminal, which every screen's
+/// frame records, not from a Main frame. Main is never drawn here.
 #[test]
-fn step_sidebar_from_the_manage_screen_widens_the_sidebar() {
+fn step_sidebar_from_the_manage_screen_widens_the_sidebar_each_time() {
     let step = crate::layout::SIDEBAR_STEP_COLS;
     let mut app = App::new_for_test();
-    render(&mut app);
-    let w = sidebar_cols(&app);
     app.update(Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Spaces) });
     render(&mut app);
     assert_eq!(app.screen, Screen::Manage);
+    let w = crate::layout::sidebar_cols(120, None);
     assert!(app.update(Action::StepSidebar(step)));
-    let widened = w + step.unsigned_abs();
-    assert_eq!(app.sidebar_width, Some(widened));
+    render(&mut app);
+    assert!(app.update(Action::StepSidebar(step)));
+    let widened = w + 2 * step.unsigned_abs();
+    assert_eq!(app.sidebar_width, Some(widened), "two steps, two moves");
     assert_eq!(saved_width(&app), Some(widened), "saved on the step");
+    app.update(Action::CloseScreen);
+    render(&mut app);
+    assert_eq!(sidebar_cols(&app), widened, "Main draws it");
 }
 
-/// Review round 7 M2: with no Main frame ever drawn there is nothing to
+/// Review round 7 M2: with no frame ever drawn there is nothing to
 /// measure, and a step changes nothing.
 #[test]
 fn step_sidebar_before_any_frame_is_a_no_op() {
@@ -1329,13 +1330,13 @@ fn a_vim_gutter_drag_keeps_the_bodys_visual_and_operator() {
     assert_eq!(app.editor.body_text(), "{\n}", "the `d` before the press and the one after");
 }
 
-/// Review round 6 L3: creating the project in place seeds both sizes from
-/// its local state, as every other open does, so the screen draws what
-/// `.local/layout.toml` holds. The drags alone save what they draw, so the
-/// file is also written from outside before the init (another postui on
-/// the same folder), which only a seed picks up.
+/// Review round 9 O2 (P5): a project created in place keeps the sizes on
+/// screen and saves them as its own, over whatever its folder's
+/// `.local/layout.toml` held (here another postui's sizes, written from
+/// outside before the init). Main kept them; rounds 6 and 8 had the init
+/// seed from the file, and a size with nothing in it fell to the default.
 #[test]
-fn init_project_here_draws_the_sizes_its_state_holds() {
+fn init_project_here_keeps_and_saves_the_sizes_on_screen() {
     let mut app = App::new_for_test();
     assert!(!postui_core::project::Project::is_project(app.proj().root()));
     render(&mut app);
@@ -1348,9 +1349,10 @@ fn init_project_here_draws_the_sizes_its_state_holds() {
     app.handle_mouse(left_down(x, y));
     app.handle_mouse(left_drag(x, y + 3));
     app.handle_mouse(left_up(x, y + 3));
+    let split = app.split_state();
+    assert_ne!(split, SplitState::default(), "the drag moved the line");
     let root = app.proj().root().to_path_buf();
     let mut outside = postui_core::fixtures::load_layout(&root).unwrap();
-    assert_eq!(outside.sidebar_width, Some(24), "the drag saved");
     outside.sidebar_width = Some(30);
     outside.main_split = Some(
         SplitState { editor_minimized: false, response_minimized: true, ratio: 0.6 }.to_token(),
@@ -1358,13 +1360,13 @@ fn init_project_here_draws_the_sizes_its_state_holds() {
     postui_core::fixtures::save_layout(&root, &outside).unwrap();
     app.update(Action::InitProjectHere);
     assert!(postui_core::project::Project::is_project(app.proj().root()));
-    let state = postui_core::fixtures::load_layout(app.proj().root()).unwrap();
-    assert_eq!(app.sidebar_width, state.sidebar_width, "the width the state holds");
-    let split = state.main_split.as_deref().and_then(SplitState::from_token);
-    assert_eq!(Some(app.split_state()), split, "the split the state holds");
+    assert_eq!(app.sidebar_width, Some(24), "the width on screen");
+    assert_eq!(app.split_state(), split, "the split on screen");
+    let saved = postui_core::fixtures::load_layout(app.proj().root()).unwrap();
+    assert_eq!(saved.sidebar_width, Some(24), "saved as the project's");
+    assert_eq!(saved.main_split.as_deref().and_then(SplitState::from_token), Some(split));
     render(&mut app);
-    let drawn = sidebar_cols(&app);
-    assert_eq!(Some(drawn), state.sidebar_width, "drawn");
+    assert_eq!(sidebar_cols(&app), 24, "drawn");
 }
 
 /// Audit (spec P2a): a quit while a resize is live ends it where it got

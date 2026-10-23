@@ -46,6 +46,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         if app.session.response.collapsed { 1.0 } else { 0.0 },
     );
     let ratio_t = app.anims.value_or(crate::anim::AnimKey::SplitRatio, now, app.split_ratio);
+    app.term_area = Some(frame.area());
     let layout = compute_layout(frame.area(), collapse_t, response_t, ratio_t, app.sidebar_width);
     let focus = app.focus;
     let screen = app.screen;
@@ -94,7 +95,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.session.response.set_vim_cursor(vim);
     match screen {
         Screen::Main => {
-            app.main_layout = Some(layout);
             hits.register(layout.sidebar, Hit::Pane(PaneId::Sidebar));
             hits.register(layout.editor, Hit::Pane(PaneId::Editor));
             hits.register(layout.response, Hit::Pane(PaneId::Response));

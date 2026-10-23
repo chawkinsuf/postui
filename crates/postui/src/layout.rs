@@ -67,16 +67,15 @@ pub struct AppLayout {
 /// Applied after (and overriding) `collapse_t`'s split: with both at `1.0`
 /// the editor keeps the leftover rows as empty page below its strip.
 ///
-/// `sidebar_cols` is the saved sidebar width in columns. `None` keeps the
-/// default 28% split; `Some(w)` gives the sidebar `w` columns, squeezed by
-/// [`clamp_sidebar_cols`] when the window can't hold them (the saved value
-/// itself is never touched here).
+/// `saved_sidebar` is the saved sidebar width in columns, `None` for the
+/// default 28%. The sidebar draws [`sidebar_cols`] of it (the saved
+/// value itself is never touched here).
 pub fn compute_layout(
     area: Rect,
     collapse_t: f32,
     response_t: f32,
     editor_share: f32,
-    sidebar_cols: Option<u16>,
+    saved_sidebar: Option<u16>,
 ) -> AppLayout {
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -87,18 +86,12 @@ pub fn compute_layout(
         ])
         .split(area);
     let body = rows[1];
-    let (sidebar_c, main_c) = match sidebar_cols {
-        None => (Constraint::Percentage(28), Constraint::Percentage(72)),
-        Some(w) => {
-            (Constraint::Length(clamp_sidebar_cols(body.width, i32::from(w))), Constraint::Min(0))
-        }
-    };
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            sidebar_c,
+            Constraint::Length(sidebar_cols(body.width, saved_sidebar)),
             Constraint::Length(1), // painted gutter separating sidebar from main
-            main_c,
+            Constraint::Min(0),
         ])
         .split(body);
     let t = collapse_t.clamp(0.0, 1.0);
@@ -189,6 +182,35 @@ pub fn clamp_sidebar_cols(body_width: u16, want: i32) -> u16 {
     let lo = SIDEBAR_MIN_COLS.min(body_width.saturating_sub(1));
     let hi = body_width.saturating_sub(1 + MAIN_MIN_COLS).max(lo);
     want.clamp(i32::from(lo), i32::from(hi)) as u16
+}
+
+/// The sidebar's width in a `body_width`-wide body: the `saved` width, or
+/// the default 28% when there is none, clamped by [`clamp_sidebar_cols`]
+/// either way (spec S8, S8b). [`compute_layout`] draws it, and every
+/// sizing path reads the current width from it, so the width on screen is
+/// a function of the saved width and the terminal alone, never of an
+/// earlier frame. Being within the clamp's limits, it is moved by a
+/// clamped want only the way the want points, or not at all.
+///
+/// The default is ratatui's own split of the body into 28% / the gutter /
+/// 72%, whose rounding no plain formula matches, so it draws as it always
+/// has wherever the limits allow (59 columns and up).
+pub fn sidebar_cols(body_width: u16, saved: Option<u16>) -> u16 {
+    let want = match saved {
+        Some(w) => w,
+        None => {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(28),
+                    Constraint::Length(1),
+                    Constraint::Percentage(72),
+                ])
+                .split(Rect::new(0, 0, body_width, 1))[0]
+                .width
+        }
+    };
+    clamp_sidebar_cols(body_width, i32::from(want))
 }
 
 /// The inverse of the expanded split in [`compute_layout`]: the editor
@@ -484,28 +506,37 @@ mod tests {
         );
     }
 
+    /// S8b: from 59 columns up the default draws exactly the old 28% split;
+    /// below, it obeys the sidebar's minimum like a saved width does.
     #[test]
-    fn default_sidebar_is_still_28_percent() {
-        let area = Rect::new(0, 0, 120, 40);
-        let body = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(crate::components::header_bar::HEADER_HEIGHT),
-                Constraint::Min(0),
-                Constraint::Length(crate::components::footer::FOOTER_HEIGHT),
-            ])
-            .split(area)[1];
-        let old = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(28),
-                Constraint::Length(1),
-                Constraint::Percentage(72),
-            ])
-            .split(body);
-        let l = compute_layout(area, 0.0, 0.0, 0.5, None);
-        assert_eq!(l.sidebar.width, old[0].width);
-        assert_eq!(l.editor.width, old[2].width);
+    fn default_sidebar_is_still_28_percent_within_the_limits() {
+        for width in 1..=400u16 {
+            let area = Rect::new(0, 0, width, 40);
+            let body = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(crate::components::header_bar::HEADER_HEIGHT),
+                    Constraint::Min(0),
+                    Constraint::Length(crate::components::footer::FOOTER_HEIGHT),
+                ])
+                .split(area)[1];
+            let old = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(28),
+                    Constraint::Length(1),
+                    Constraint::Percentage(72),
+                ])
+                .split(body);
+            let l = compute_layout(area, 0.0, 0.0, 0.5, None);
+            if width >= 59 {
+                assert_eq!(l.sidebar.width, old[0].width, "{width} wide");
+                assert_eq!(l.editor.width, old[2].width, "{width} wide");
+            } else {
+                assert_eq!(l.sidebar.width, clamp_sidebar_cols(width, 0), "{width} wide");
+            }
+            assert_eq!(l.sidebar.width, sidebar_cols(width, None), "{width} wide");
+        }
     }
 
     #[test]
