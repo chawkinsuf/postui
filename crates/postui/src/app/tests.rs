@@ -17766,17 +17766,18 @@ fn clicking_the_lit_chip_restores_the_split() {
 }
 
 /// A press on either drag handle (the response header strip, the sidebar
-/// gutter) only arms the resize: it moves no focus and changes no size
-/// (a click on the strip focuses the response on release; see
-/// `resize_tests`).
+/// gutter) changes no size. The gutter's moves no focus either; the
+/// strip's clicks as the response pane always did and focuses it (spec
+/// E2a; see `resize_tests`).
 #[test]
 fn a_press_on_a_drag_handle_moves_nothing() {
-    for hit in [Hit::SplitHandle, Hit::SidebarGutter] {
+    for (hit, focus) in [(Hit::SplitHandle, PaneId::Response), (Hit::SidebarGutter, PaneId::Editor)]
+    {
         let mut app = App::new_for_test();
         app.update(Action::FocusPane(PaneId::Editor));
         let (split, width) = (app.split_state(), app.sidebar_width);
         click_hit(&mut app, hit.clone());
-        assert_eq!(app.focus, PaneId::Editor, "{hit:?} must not move focus");
+        assert_eq!(app.focus, focus, "{hit:?}");
         assert_eq!((app.split_state(), app.sidebar_width), (split, width), "{hit:?}");
     }
 }

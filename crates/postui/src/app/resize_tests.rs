@@ -292,29 +292,121 @@ fn resize_handles_show_resize_pointers() {
     app.handle_mouse(left_up(90, gy));
 }
 
-/// A resize press is not a click away: an open cell stays open.
-#[test]
-fn a_resize_press_leaves_an_open_cell_edit_open() {
+/// The app with a Params cell edit open and the editor focused, after a
+/// frame.
+fn editing_a_cell() -> App {
     use crate::components::table_editor::{CellEdit, Col};
-    for handle in [Hit::SidebarGutter, Hit::SplitHandle] {
-        let mut app = App::new_for_test();
-        app.editor
-            .params
-            .insert("page".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
-        app.editor.active_tab = EditorTab::Params;
-        app.focus = PaneId::Editor;
-        app.editor.sub_focus = SubFocus::Content;
-        app.editor.table.selected = Some(0);
-        app.editor.table.editing =
-            Some(CellEdit { row: 0, col: Col::Value, input: LineInput::new("19") });
-        render(&mut app);
-        let (x, y) =
-            if handle == Hit::SidebarGutter { gutter_cell(&app) } else { handle_cell(&app) };
-        app.handle_mouse(left_down(x, y));
-        assert!(app.resize.is_some(), "{handle:?}: a resize armed");
-        assert!(app.editor.table.editing.is_some(), "{handle:?}: the cell is still open");
-        assert_eq!(app.editor.table.selected, Some(0), "{handle:?}: and its row selected");
-    }
+    let mut app = App::new_for_test();
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    app.editor.active_tab = EditorTab::Params;
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(0);
+    app.editor.table.editing =
+        Some(CellEdit { row: 0, col: Col::Value, input: LineInput::new("19") });
+    render(&mut app);
+    app
+}
+
+/// A gutter press is not a click away: a click there never did anything,
+/// so an open cell stays open (E2a).
+#[test]
+fn a_gutter_press_leaves_an_open_cell_edit_open() {
+    let mut app = editing_a_cell();
+    let (x, y) = gutter_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    assert!(app.resize.is_some(), "a resize armed");
+    assert!(app.editor.table.editing.is_some(), "the cell is still open");
+    assert_eq!(app.editor.table.selected, Some(0), "and its row selected");
+    assert_eq!(app.focus, PaneId::Editor, "no focus moved");
+}
+
+/// E2a: a press on the strip first does what a click there always did —
+/// focuses the response, clears its selection and lit bracket pair, and
+/// clicks away from an open cell edit or the jq bar — then arms the drag.
+#[test]
+fn a_strip_press_clicks_like_the_response_pane() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    // A lit bracket pair, then a selection: each cleared by a strip press.
+    let mut app = App::new_for_test();
+    super::tests::ready_response(&mut app, "x\n(a\nb)"); // not JSON -> Raw view
+    render(&mut app);
+    let area = app.session.response.view().unwrap().last_area.expect("body area recorded");
+    let partner_lit = |app: &mut App| {
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let cell = terminal.backend().buffer()[(area.x + 1, area.y + 2)].clone();
+        assert_eq!(cell.symbol(), ")");
+        (cell.fg, cell.bg) == (app.theme.on_accent, app.theme.accent)
+    };
+    app.handle_mouse(left_down(area.x, area.y + 1));
+    app.handle_mouse(left_up(area.x, area.y + 1));
+    assert!(partner_lit(&mut app), "the click lit the pair");
+    let (x, y) = handle_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_up(x, y));
+    assert!(!partner_lit(&mut app), "the strip press cleared the lit pair");
+
+    app.handle_mouse(left_down(area.x, area.y));
+    app.handle_mouse(left_down(area.x, area.y)); // double click: "x"
+    app.handle_mouse(left_up(area.x, area.y));
+    assert_eq!(app.session.response.selected_text().as_deref(), Some("x"));
+    render(&mut app);
+    app.handle_mouse(left_down(x, y));
+    assert!(app.session.response.selected_text().is_none(), "the selection is cleared");
+    assert!(app.text_drag.is_none(), "the press arms no text sweep");
+    assert!(matches!(app.resize, Some(ResizeDrag::Split { .. })), "it arms the resize");
+    app.handle_mouse(left_up(x, y));
+
+    // An open cell edit: closed (committed), its row deselected, the
+    // caret out of the editor, the focus on the response — at the press.
+    let mut app = editing_a_cell();
+    let (x, y) = handle_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    assert_eq!(app.focus, PaneId::Response, "the press focuses the response");
+    assert!(app.editor.table.editing.is_none(), "the cell edit is closed");
+    assert_eq!(app.editor.params.get("page").map(|e| e.value.as_str()), Some("19"), "saved");
+    assert_eq!(app.editor.table.selected, None, "its row deselected");
+    assert_eq!(app.editor.sub_focus, SubFocus::None, "the caret left the editor");
+    assert!(matches!(app.resize, Some(ResizeDrag::Split { .. })));
+    app.handle_mouse(left_up(x, y));
+
+    // The jq bar: blurred.
+    let mut app = App::new_for_test();
+    super::tests::ready_response(&mut app, r#"{"a": [1, 2]}"#);
+    app.focus = PaneId::Response;
+    assert!(app.session.response.set_jq_focus(true));
+    render(&mut app);
+    let (x, y) = handle_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    assert!(!app.session.response.jq_focused(), "the jq bar blurred");
+    assert!(app.resize.is_some());
+    app.handle_mouse(left_up(x, y));
+}
+
+/// E2a: the click comes first and the drag still follows: an open cell
+/// closes at the press, and the line then moves with the pointer and is
+/// saved at the release.
+#[test]
+fn a_strip_drag_still_resizes_after_the_click() {
+    let mut app = editing_a_cell();
+    let editor = rect(&app, &Hit::Pane(PaneId::Editor));
+    let (x, y) = handle_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    assert!(app.editor.table.editing.is_none(), "the click closed the cell");
+    render(&mut app);
+    app.handle_mouse(left_drag(x, y + 3));
+    render(&mut app);
+    assert_eq!(rect(&app, &Hit::Pane(PaneId::Editor)).height, editor.height + 3);
+    app.handle_mouse(left_up(x, y + 3));
+    assert!(app.resize.is_none());
+    assert_eq!(app.focus, PaneId::Response);
+    let saved = postui_core::fixtures::load_local_state(app.proj().root()).unwrap().main_split;
+    assert_eq!(saved, Some(app.split_state().to_token()));
 }
 
 /// P2: a finished drag is saved once, at its end.
@@ -341,9 +433,8 @@ fn a_finished_resize_is_saved() {
     assert!(!loaded.editor_minimized && !loaded.response_minimized);
 }
 
-/// Amendment (ruling T4-1): a click on the strip, a press and release
-/// that never moved the line, focuses the response as it always has. A
-/// drag that moved it leaves the focus where it was.
+/// E2a: a click on the strip focuses the response at the press, as it
+/// always has; the release that follows moves nothing.
 #[test]
 fn a_click_on_the_strip_focuses_the_response() {
     let mut app = App::new_for_test();
@@ -352,24 +443,15 @@ fn a_click_on_the_strip_focuses_the_response() {
     let before = app.split_state();
     let (x, y) = handle_cell(&app);
     app.handle_mouse(left_down(x, y));
-    assert_eq!(app.focus, PaneId::Editor, "the press moves no focus");
+    assert_eq!(app.focus, PaneId::Response, "the press focuses the response");
     app.handle_mouse(left_up(x, y));
     assert_eq!(app.focus, PaneId::Response);
     assert_eq!(app.split_state(), before);
-
-    app.update(Action::FocusPane(PaneId::Editor));
-    render(&mut app);
-    let (x, y) = handle_cell(&app);
-    app.handle_mouse(left_down(x, y));
-    app.handle_mouse(left_drag(x, y + 2));
-    app.handle_mouse(left_up(x, y + 2));
-    assert_ne!(app.split_state(), before, "the line moved");
-    assert_eq!(app.focus, PaneId::Editor, "a drag keeps the focus");
 }
 
 /// A click with a sideways jitter is still a click: a motion that leaves
-/// the line on its row recomputes no share, so the split is untouched and
-/// the release focuses the response.
+/// the line on its row recomputes no share, so the split is untouched (and
+/// the press focused the response).
 #[test]
 fn a_sideways_jitter_on_the_strip_moves_nothing() {
     let mut app = App::new_for_test();
@@ -381,17 +463,18 @@ fn a_sideways_jitter_on_the_strip_moves_nothing() {
     assert!(!app.handle_mouse(left_drag(x + 1, y)), "nothing to repaint");
     app.handle_mouse(left_up(x + 1, y));
     assert_eq!(app.split_state(), before, "the share is not rewritten");
-    assert_eq!(app.focus, PaneId::Response, "it was a click");
+    assert_eq!(app.focus, PaneId::Response, "the press focused the response");
 }
 
-/// A right click or focus loss is never a click on the strip: only the
-/// release focuses the response.
+/// A right click or focus loss ends a strip press's resize; an unmoved
+/// one has nothing to save.
 #[test]
-fn a_cancelled_strip_press_moves_no_focus() {
+fn a_cancelled_strip_press_ends_the_resize() {
     for via_focus_loss in [false, true] {
         let mut app = App::new_for_test();
-        app.update(Action::FocusPane(PaneId::Editor));
         render(&mut app);
+        let state = app.proj().root().join(".local").join("state.toml");
+        let _ = std::fs::remove_file(&state);
         let (x, y) = handle_cell(&app);
         app.handle_mouse(left_down(x, y));
         if via_focus_loss {
@@ -400,25 +483,26 @@ fn a_cancelled_strip_press_moves_no_focus() {
             let editor = rect(&app, &Hit::Pane(PaneId::Editor));
             app.handle_mouse(right_down(editor.x + 2, editor.y + 1));
         }
-        assert!(app.resize.is_none());
-        assert_eq!(app.focus, PaneId::Editor, "focus loss {via_focus_loss}");
+        assert!(app.resize.is_none(), "focus loss {via_focus_loss}");
+        assert!(!state.exists(), "focus loss {via_focus_loss}: nothing saved");
     }
 }
 
-/// Review F3: a drag that moved the line is never a click, even when it
-/// comes back to where it began before the release.
+/// Review F3/F7: whether a drag moved, not where it ended, decides the
+/// save: one that moves the line and brings it back is still saved.
 #[test]
-fn a_strip_drag_that_returns_to_its_start_moves_no_focus() {
+fn a_strip_drag_that_returns_to_its_start_is_still_saved() {
     let mut app = App::new_for_test();
-    app.update(Action::FocusPane(PaneId::Editor));
     render(&mut app);
     // Start from the share the drawn rows invert to, so the return lands
-    // on exactly the starting state (as the old click test compared).
+    // on exactly the starting state.
     let editor = rect(&app, &Hit::Pane(PaneId::Editor));
     let column = editor.union(rect(&app, &Hit::Pane(PaneId::Response)));
     app.split_ratio = crate::layout::editor_share_for(column.height, editor.height);
     app.update(Action::Render);
     render(&mut app);
+    let state = app.proj().root().join(".local").join("state.toml");
+    let _ = std::fs::remove_file(&state);
     let before = app.split_state();
     let (x, y) = handle_cell(&app);
     app.handle_mouse(left_down(x, y));
@@ -429,12 +513,12 @@ fn a_strip_drag_that_returns_to_its_start_moves_no_focus() {
     render(&mut app);
     assert_eq!(app.split_state(), before, "and came back");
     app.handle_mouse(left_up(x, y));
-    assert_eq!(app.focus, PaneId::Editor, "a drag keeps the focus");
+    let saved = postui_core::fixtures::load_local_state(app.proj().root()).unwrap().main_split;
+    assert_eq!(saved, Some(before.to_token()), "saved where it ended");
 }
 
 /// Review F7: a press and release on either handle that moved nothing
-/// (the strip's click that focuses the response, a gutter click) writes
-/// no `.local/state.toml`.
+/// (a strip click, a gutter click) writes no `.local/state.toml`.
 #[test]
 fn a_handle_click_writes_no_state() {
     let mut app = App::new_for_test();

@@ -329,8 +329,10 @@ impl App {
                 // as Esc's is, so the filter typed and the switch are one
                 // step, by click as by key (task #64 records only a close
                 // that comes with an edit elsewhere).
-                // A resize handle is exempt as a scrollbar is: a resize
-                // press disturbs nothing.
+                // The sidebar gutter is exempt as a scrollbar is: a press
+                // there disturbs nothing. The response's header strip is
+                // not: a press there clicks as it always did before it
+                // was the split handle, then drags (spec E2a).
                 let jq_blurred = self.session.response.jq_focused()
                     && self.modals.is_empty()
                     && !matches!(
@@ -343,7 +345,6 @@ impl App {
                                 | Hit::ScrollbarTrack(..)
                                 | Hit::HScrollThumb(_)
                                 | Hit::HScrollTrack(..)
-                                | Hit::SplitHandle
                                 | Hit::SidebarGutter
                         )
                     );
@@ -593,20 +594,13 @@ impl App {
                 self.manage_press = None;
                 let had_text = self.text_drag.take().is_some();
                 let ended = self.drag.take().is_some() || had_text;
-                // A resize ends where it got to, saved. A strip press whose
-                // drag never moved the line was a click, and a click on the
-                // strip focuses the response, as it did before the strip
-                // was a handle (amendment T4-1). Asked of the drag, not of
-                // where it ended: one that moved and came back is no click.
-                // Hover was frozen on the handle for the drag: it
-                // re-resolves under the pointer now.
+                // A resize ends where it got to, saved if it moved. The
+                // strip's click already happened at the press (spec E2a),
+                // so the release adds nothing to it. Hover was frozen on
+                // the handle for the drag: it re-resolves under the
+                // pointer now.
                 if self.resize.is_some() {
-                    let clicked =
-                        matches!(self.resize, Some(ResizeDrag::Split { moved: false, .. }));
                     self.finish_resize();
-                    if clicked {
-                        self.update(Action::FocusPane(PaneId::Response));
-                    }
                     self.resync_hover();
                     return true;
                 }
@@ -1215,6 +1209,41 @@ impl App {
         }
     }
 
+    /// A left press on the response pane: its bare content, or its header
+    /// strip, which is the split handle and clicks first (spec E2a). The
+    /// one path for both, so the strip's click can't drift from the
+    /// pane's.
+    ///
+    /// A press on the bare content (Raw and Headers register no per-row
+    /// hits) anchors a selection and puts the cursor on the clicked char,
+    /// exactly like a JsonRow click does in Pretty (spec 2026-10-22,
+    /// matching brackets, R18). A double click too, as Pretty's does: the
+    /// cursor takes the word's start, where the anchor is. R18 asks for
+    /// one path for all three views, so this matches Pretty rather than a
+    /// view of its own. A click below the text anchors on the last line's
+    /// end (`cell_at`'s clamp, as the selection's anchor always has), so
+    /// the cursor goes there, as an editor's caret does. A press off the
+    /// text (the strip) anchors nothing but still clears the selection and
+    /// the lit bracket pair. `sweep` arms the selection sweep on an
+    /// anchor; the strip passes `false`, as its motion is the resize's.
+    /// Either way the response takes the focus.
+    fn press_response_pane(
+        &mut self,
+        clicks: u8,
+        m: ratatui::crossterm::event::MouseEvent,
+        sweep: bool,
+    ) {
+        if self.response_click_selection(clicks, m) {
+            if sweep {
+                self.text_drag = Some(TextDrag::Response);
+            }
+            if let Some(row) = self.session.response.anchor_line() {
+                self.update(Action::JsonRowClicked { row, toggle: false });
+            }
+        }
+        self.update(Action::FocusPane(PaneId::Response));
+    }
+
     /// The `▼`/`▲` search buttons: focus the response pane and step the
     /// match cycle, exactly as `n`/`N` do.
     fn step_response_search(&mut self, delta: i32) -> bool {
@@ -1300,7 +1329,7 @@ impl App {
                     // its own undo step, before it adds its row.
                     | Hit::AutoHeaderOverride(_)
                     | Hit::SplitStop(_)
-                    | Hit::SplitHandle
+                    // Not the strip: a press there clicks away (E2a).
                     | Hit::SidebarGutter
                     | Hit::ScrollbarThumb(_)
                     | Hit::ScrollbarTrack(..)
@@ -1382,26 +1411,11 @@ impl App {
             self.move_editor_caret(SubFocus::None);
         }
         match hit {
-            Hit::Pane(p) => {
-                // A click on the response pane's bare content (Raw and
-                // Headers register no per-row hits) anchors a selection
-                // sweep and puts the cursor on the clicked char, exactly
-                // like a JsonRow click does in Pretty (spec 2026-10-22,
-                // matching brackets, R18). A double click too, as Pretty's
-                // does: the cursor takes the word's start, where the
-                // anchor is. R18 asks for one path for all three views,
-                // so this matches Pretty rather than a view of its own. A
-                // click below the text anchors on the last line's end
-                // (`cell_at`'s clamp, as the selection's anchor always
-                // has), so the cursor goes there, as an editor's caret does.
-                if p == PaneId::Response && self.response_click_selection(clicks.text, m) {
-                    self.text_drag = Some(TextDrag::Response);
-                    if let Some(row) = self.session.response.anchor_line() {
-                        self.update(Action::JsonRowClicked { row, toggle: false });
-                    }
-                }
-                self.update(Action::FocusPane(p))
+            Hit::Pane(PaneId::Response) => {
+                self.press_response_pane(clicks.text, m, true);
+                true
             }
+            Hit::Pane(p) => self.update(Action::FocusPane(p)),
             Hit::BodyEditor => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 // The caret, a double click's word, and a sweep armed:
@@ -1728,11 +1742,17 @@ impl App {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.update(Action::SplitStop(stop))
             }
-            // A press on a resize handle arms the drag and moves no focus
-            // (a click on the strip focuses the response on release). The
+            // A press on a resize handle arms the drag. The gutter's moves
+            // no focus: a click there never did anything. The strip is the
+            // response pane's header, so its press first clicks as the
+            // pane's does (spec E2a; the click-away above already ran for
+            // it), arming no text sweep: the motion is the resize's. The
             // handle is the hovered hit for the length of the drag, so the
             // strip stays lit wherever the pointer goes.
             Hit::SidebarGutter | Hit::SplitHandle => {
+                if hit == Hit::SplitHandle {
+                    self.press_response_pane(clicks.text, m, false);
+                }
                 self.resize = Some(match hit {
                     Hit::SidebarGutter => ResizeDrag::Sidebar { moved: false },
                     _ => {

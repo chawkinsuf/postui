@@ -72,10 +72,9 @@ pub struct Drag {
 /// or by any lost-release cleanup (spec P2, P2a).
 ///
 /// `moved` records whether any motion of this drag changed a size. It,
-/// not where the drag ends, decides what the release means: a drag that
-/// never moved anything was a click (the strip's focuses the response) and
-/// has nothing to save, while one that moved is never a click, even back
-/// where it began.
+/// not where the drag ends, decides whether the end saves: a drag that
+/// never moved anything was a click and has nothing to save, while one
+/// that moved saves even back where it began.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ResizeDrag {
     /// The sidebar gutter: the pointer's column is the new gutter column.
@@ -2493,9 +2492,9 @@ impl App {
     /// Ends the live resize, keeping the size it reached, and saves it
     /// (spec P2, P2a). Every way a resize ends comes through here: the
     /// release and each lost-release cleanup. A drag that never moved
-    /// anything (a click on a handle, the usual way to focus the response)
-    /// has nothing new to save, so it writes no state file. Returns whether
-    /// one was live.
+    /// anything (a click on a handle, the strip's being the usual way to
+    /// focus the response) has nothing new to save, so it writes no state
+    /// file. Returns whether one was live.
     fn finish_resize(&mut self) -> bool {
         let Some(drag) = self.resize.take() else {
             return false;
