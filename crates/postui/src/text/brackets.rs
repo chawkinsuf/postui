@@ -49,6 +49,11 @@ pub(crate) fn bracket_at(line: &[char], col: usize, before: bool) -> Option<usiz
 /// matching brackets, R3–R6). `None` when `at` holds no bracket, or the
 /// partner isn't on `rows`.
 ///
+/// Apart from [`bracket_at`] on purpose: its callers do different work
+/// between the two steps. The body measures the rows in view only once a
+/// bracket is found. The response picks with its own rules (R20's comma)
+/// and asks the tree before it walks (R19).
+///
 /// Not [`find_match`]: that is `%`, whose quote parity reads a string's
 /// bracket differently from matchparen's syntax test (probe N3). A string
 /// here is a run between unescaped `"` on one line, which is exact for

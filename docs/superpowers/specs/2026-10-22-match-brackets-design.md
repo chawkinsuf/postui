@@ -68,7 +68,7 @@ Two consequences:
 | R7 | The body lights only while it has focus. | mine (approved) |
 | R8 | Style: `on_accent` text on an `accent` background. Visual, the search landing and search matches paint over it. The cell under the body's caret keeps the caret's look (edtui reverses it), as Vim's cursor covers its own bracket, so only the partner shows the plain style there. | mine (approved) |
 | R9 | Response: a click on a bracket lights it and its partner. | you |
-| R10 | Response, arrows: the pair lights only from a click. The next click moves it or clears it. A new response, a new tree (jq) and a view switch clear it. Scrolling keeps it, and since #89 so does a key that moves the cursor (amended 2026-10-22, §6). A key never lights a pair of its own: arrows' PageDown puts the column on the first non-blank, often a `}`, and that must not light. | mine (approved) |
+| R10 | Response, arrows: the pair lights only from a click. The next click moves it or clears it. A new response and a view switch clear it, and so does a new tree (jq, a parse landing) for a click made on the Tree view; a Raw or Headers click outlives a tree swap, since its text didn't change. Scrolling keeps it, and since #89 so does a key that moves the cursor (amended 2026-10-22, §6). A key never lights a pair of its own: arrows' PageDown puts the column on the first non-blank, often a `}`, and that must not light. | mine (approved) |
 | R11 | Response, vim: Vim's cursor column (`cur_col`) drives it, so `%`, `l` or `j` onto a bracket lights the pair, as Vim does. | Vim |
 | R12 | Response: works in Pretty, Raw and Headers. | mine (approved) |
 | R13 | Response: a closed fold's line never lights (it shows a summary, not its text). | mine (approved) |
@@ -300,9 +300,14 @@ and the user picked the recommended option for each (`mine (approved)`):
   partner; ↓ or PageDown turned it off.
   - Now `clicked` holds the real line it was made on, and the pair is
     anchored there, not at the cursor.
-  - Every click forgets it, a fold arrow's included (`click_row`). So do a
-    view switch (`set_mode`) and, while the tree view shows, a tree swap.
-    `cursor_moved` no longer does.
+  - Every click forgets it, a fold arrow's included (`click_row`), and so
+    does a view switch (`set_mode`); `cursor_moved` no longer does.
+  - A click carries the mode and the tree it was made on (`Clicked`), and
+    lights only while both still match. So a tree swap retires a Tree view
+    click and leaves a Raw one, with no clear at each tree writer (review
+    round 5).
+  - The bracket memo keys arrows on the click alone, so a key that keeps
+    the pair never walks again.
   - Only an arrows click on a line's own text records one. A click in vim
     doesn't, so a later switch to arrows doesn't light a stale pair. Nor
     does a click on a closed fold's summary, so opening that fold doesn't

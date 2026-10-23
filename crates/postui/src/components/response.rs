@@ -693,16 +693,16 @@ pub struct ReadyView {
     /// Vim's `w_curswant`: the display column a move to another line lands
     /// on (the line's last char when shorter), `usize::MAX` after `$`.
     want: usize,
-    /// The char a click put the cursor on, as (real line, char): what
-    /// lights a bracket pair in the arrows profile (spec 2026-10-22,
-    /// matching brackets, R10). Not `at_col`, which arrows' PageUp and
-    /// PageDown also set (on the first non-blank, often a `}`), and which
-    /// arrows' search starts from. A key that moves the cursor keeps it,
-    /// so paging to a lit partner finds it lit (#89). Every click forgets
-    /// it (`click_row`, or the press off the text), and so do a view switch
-    /// and, on the tree view, a tree swap. Only an arrows click on a line's
-    /// own text (not a closed fold's summary) records one.
-    clicked: Option<(usize, usize)>,
+    /// The char a click put the cursor on: what lights a bracket pair in
+    /// the arrows profile (spec 2026-10-22, matching brackets, R10). Not
+    /// `at_col`, which arrows' PageUp and PageDown also set (on the first
+    /// non-blank, often a `}`), and which arrows' search starts from.
+    ///
+    /// A key that moves the cursor keeps it, so paging to a lit partner
+    /// finds it lit (#89). Every click replaces it (`click_row`, or the
+    /// press off the text). Only an arrows click on a line's own text (not
+    /// a closed fold's summary) records one.
+    clicked: Option<Clicked>,
     /// The V anchor's column, as Vim's Visual start has one (`o` goes there).
     anchor_col: usize,
     /// A note for the app to toast (Vim's message line): a wrap, a miss.
@@ -940,15 +940,6 @@ impl ReadyView {
     fn set_body_tree(&mut self, tree: Option<JsonTree>) {
         self.tree = tree;
         self.tree_epoch += 1;
-        self.forget_tree_click();
-    }
-
-    /// A click on the tree view named a line of the old tree; one on Raw
-    /// or Headers still names its text.
-    fn forget_tree_click(&mut self) {
-        if self.mode == ViewMode::Pretty {
-            self.clicked = None;
-        }
     }
 
     /// Swaps the filtered tree in (or out), bumping the epoch only when
@@ -958,7 +949,6 @@ impl ReadyView {
         self.cursor_moved();
         if tree.is_some() || self.jq_tree.is_some() {
             self.tree_epoch += 1;
-            self.forget_tree_click();
         }
         self.jq_tree = tree;
     }
@@ -1208,17 +1198,24 @@ impl ReadyView {
     /// [`ReadyView::bracket_pair`], worked out again only when what it reads
     /// changed since the last frame.
     fn lit_pair(&mut self, vim: bool) -> Option<(crate::text::Pos, crate::text::Pos)> {
+        // Each profile's own inputs: vim reads its cursor, arrows the click.
+        // A key in arrows keeps the click (#89), so it never walks again.
+        let (cursor, fold_line, at_col, want, visual) = if vim {
+            (self.cursor, self.fold_line, self.at_col, self.want, self.line_anchor.is_some())
+        } else {
+            (0, None, None, 0, false)
+        };
         let inputs = BracketInputs {
             vim,
             mode: self.mode,
             tree_epoch: self.tree_epoch,
             tree_edits: self.tree_edits,
-            cursor: self.cursor,
-            fold_line: self.fold_line,
-            at_col: self.at_col,
-            want: self.want,
-            visual: self.line_anchor.is_some(),
-            clicked: self.clicked,
+            cursor,
+            fold_line,
+            at_col,
+            want,
+            visual,
+            clicked: if vim { None } else { self.clicked },
             scroll: self.scroll,
             height: self.height,
         };
@@ -1247,7 +1244,12 @@ impl ReadyView {
         let (line, row, col) = if vim {
             (self.real_line()?, self.cursor, self.cur_col())
         } else {
-            let (line, col) = self.clicked?;
+            // A click names a line of the view it was made on: of the tree
+            // then on screen, on the tree view.
+            let Clicked { line, col, .. } = self.clicked.filter(|c| {
+                c.mode == self.mode
+                    && (c.mode != ViewMode::Pretty || c.tree_epoch == self.tree_epoch)
+            })?;
             let row = match self.mode {
                 ViewMode::Pretty => self.active_tree()?.visible_index_of(line)?,
                 _ => line,
@@ -1756,8 +1758,8 @@ impl ReadyView {
             return;
         }
         self.mode = mode;
-        // Selection coordinates live in the old mode's line space, and so
-        // does the clicked char.
+        // Selection coordinates live in the old mode's line space. A view
+        // switch forgets the click too (R10), not only hides it.
         self.clear_sel();
         self.clicked = None;
         if mode != ViewMode::Headers {
@@ -2450,9 +2452,23 @@ struct BracketInputs {
     at_col: Option<(usize, usize)>,
     want: usize,
     visual: bool,
-    clicked: Option<(usize, usize)>,
+    clicked: Option<Clicked>,
     scroll: usize,
     height: usize,
+}
+
+/// A click's char as (real line, char), with the view it names a line of:
+/// the mode, and on the tree view the tree then on screen. A tree swap
+/// (a jq run, a parse landing) leaves a tree click naming another tree's
+/// line, so it lights only while both still match (`bracket_pair`); a
+/// click on Raw or Headers outlives one. A view switch forgets it
+/// outright (`set_mode`, R10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Clicked {
+    mode: ViewMode,
+    tree_epoch: u64,
+    line: usize,
+    col: usize,
 }
 
 impl LineMatches {
@@ -3611,7 +3627,12 @@ impl Response {
                 view.real_line().and_then(|l| view.buffer_line(l)).map_or(0, |t| t.chars().count());
             view.set_col(if folded { 0 } else { col.min(len.saturating_sub(1)) });
             if !folded && !self.vim_cursor {
-                view.clicked = view.at_col;
+                view.clicked = view.at_col.map(|(line, col)| Clicked {
+                    mode: view.mode,
+                    tree_epoch: view.tree_epoch,
+                    line,
+                    col,
+                });
             }
         }
         if toggle
@@ -10758,6 +10779,11 @@ mod tests {
         click_cell(&mut r, 0, 0);
         r.view.as_mut().unwrap().set_body_tree(None);
         assert!(bracket_lit_at(&mut r, true, 0, 2), "a Raw click outlives a tree landing");
+        let mut r = ready(body);
+        click_cell(&mut r, 1, open);
+        let same = JsonTree::parse(body);
+        r.view.as_mut().unwrap().set_body_tree(same);
+        assert!(!bracket_lit_at(&mut r, true, 1, open), "a tree click, after a tree swap");
     }
 
     /// R13: a closed fold's line shows a summary, so it never lights.
