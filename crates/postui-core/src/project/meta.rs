@@ -220,6 +220,9 @@ pub struct LocalState {
     /// token owned by the UI layer (postui's `split` module); `None` (or
     /// a token the UI doesn't recognize) means the default split.
     pub main_split: Option<String>,
+    /// The sidebar's width in columns, last set by a drag or key; `None`
+    /// = the default 28%.
+    pub sidebar_width: Option<u16>,
     pub expanded: Vec<String>,
     /// Per-environment `name → selected option key`, shared by variables
     /// and groups (spec §1.3).

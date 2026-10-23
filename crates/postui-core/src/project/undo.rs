@@ -418,6 +418,31 @@ mod tests {
         assert_eq!(p.spaces(), ["main", "auth"]);
     }
 
+    #[test]
+    fn undo_and_redo_keep_the_pane_sizes_set_after_the_op() {
+        let (dir, mut p) = fixture();
+        p.set_main_split(Some("60".into()));
+        p.set_sidebar_width(Some(30));
+        p.persist_local().unwrap();
+        p.rename_space("auth", "Login").unwrap();
+        p.set_main_split(Some("70".into()));
+        p.set_sidebar_width(Some(40));
+        p.undo().unwrap();
+        assert_eq!(p.local().main_split.as_deref(), Some("70"));
+        assert_eq!(p.local().sidebar_width, Some(40));
+        let text = read(&dir, ".local/state.toml").unwrap();
+        assert!(
+            text.contains("main_split = \"70\"") && text.contains("sidebar_width = 40"),
+            "{text}"
+        );
+        p.redo().unwrap();
+        assert_eq!(p.local().main_split.as_deref(), Some("70"));
+        assert_eq!(p.local().sidebar_width, Some(40));
+        let (p2, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        assert_eq!(p2.local().main_split.as_deref(), Some("70"));
+        assert_eq!(p2.local().sidebar_width, Some(40));
+    }
+
     /// `.local/state.toml` does not exist yet when this op runs.
     /// `run_transaction` now materialises it from pre-op memory before any
     /// journaled write happens, so this op's own `state.toml` write is no

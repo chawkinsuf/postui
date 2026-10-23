@@ -21,6 +21,7 @@ impl Project {
             environment: self.active_env.clone(),
             open_request: self.local.open_request.clone(),
             main_split: self.local.main_split.clone(),
+            sidebar_width: self.local.sidebar_width,
             expanded: self.local.expanded.iter().cloned().collect(),
             selections: self.local.selections.clone(),
             shared_selections: self.local.shared_selections.clone(),
@@ -72,6 +73,11 @@ impl Project {
 
     pub fn set_main_split(&mut self, token: Option<String>) {
         self.local.main_split = token;
+        let _ = self.persist_local();
+    }
+
+    pub fn set_sidebar_width(&mut self, cols: Option<u16>) {
+        self.local.sidebar_width = cols;
         let _ = self.persist_local();
     }
 
@@ -157,6 +163,7 @@ mod tests {
         p.record_space_open(Some("auth/login"));
         p.set_expanded(["auth/sub".to_string()].into_iter().collect());
         p.set_main_split(Some("60".into()));
+        p.set_sidebar_width(Some(34));
         p.persist_local().unwrap();
         let text = read(&dir, ".local/state.toml").unwrap();
         assert!(text.contains("space = \"auth\""), "{text}");
@@ -167,6 +174,7 @@ mod tests {
         assert_eq!(p2.local().space_open.get("auth").map(String::as_str), Some("auth/login"));
         assert!(p2.local().expanded.contains("auth/sub"));
         assert_eq!(p2.local().main_split.as_deref(), Some("60"));
+        assert_eq!(p2.local().sidebar_width, Some(34));
     }
 
     /// The app's setters are fire-and-forget: it never calls a separate
@@ -177,6 +185,8 @@ mod tests {
         assert!(read(&dir, ".local/state.toml").is_none(), "nothing written yet");
         p.set_main_split(Some("60".into()));
         assert!(read(&dir, ".local/state.toml").unwrap().contains("main_split = \"60\""));
+        p.set_sidebar_width(Some(34));
+        assert!(read(&dir, ".local/state.toml").unwrap().contains("sidebar_width = 34"));
         p.set_expanded(["main/deep".to_string()].into_iter().collect());
         assert!(read(&dir, ".local/state.toml").unwrap().contains("main/deep"));
         p.set_open_request(Some("main/ping"));

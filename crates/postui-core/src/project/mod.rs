@@ -101,6 +101,8 @@ pub struct Local {
     pub selections: IndexMap<String, IndexMap<String, String>>,
     pub shared_selections: IndexMap<String, String>,
     pub main_split: Option<String>,
+    /// The sidebar's width in columns; `None` = the default 28%.
+    pub sidebar_width: Option<u16>,
     /// The request the editor has open, as last told to the project.
     pub open_request: Option<String>,
 }
@@ -786,8 +788,12 @@ impl Project {
     /// entry's own restored local state rather than overwriting it. The
     /// restored `environment` is applied last, once `reload_documents`
     /// has refreshed the environment list it must be checked against.
+    /// Pane sizes (`main_split`, `sidebar_width`) are a view preference
+    /// undo never restores: the in-memory values stay, and the file is
+    /// rewritten with them when the entry's copy differed (spec P3a).
     pub(crate) fn reload_all(&mut self) -> Vec<Warning> {
         let mut warnings = Vec::new();
+        let mut sizes_differ = false;
         // `None` = the read/parse failed, leave `active_env` untouched;
         // `Some(env)` = what `.local/state.toml` said it should be.
         let mut restored_environment: Option<Option<String>> = None;
@@ -795,7 +801,8 @@ impl Project {
             Ok(text) => match toml::from_str::<LocalState>(&text.unwrap_or_default()) {
                 Ok(state) => {
                     self.local.open_request = state.open_request;
-                    self.local.main_split = state.main_split;
+                    sizes_differ = state.main_split != self.local.main_split
+                        || state.sidebar_width != self.local.sidebar_width;
                     self.local.expanded = state.expanded.into_iter().collect();
                     self.local.selections = state.selections;
                     self.local.shared_selections = state.shared_selections;
@@ -834,6 +841,9 @@ impl Project {
                 // `apply_meta_active_env`, from the entry's own record.
                 None => {}
             }
+        }
+        if sizes_differ {
+            let _ = self.persist_local_journaled();
         }
         self.relist();
         self.reload_held_requests();
@@ -1098,6 +1108,7 @@ impl Project {
                 selections: state.selections,
                 shared_selections: state.shared_selections,
                 main_split: state.main_split,
+                sidebar_width: state.sidebar_width,
                 open_request,
             },
             journal: Journal::new(),
