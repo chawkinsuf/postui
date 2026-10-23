@@ -60,7 +60,8 @@ pub(crate) struct VimState {
     /// engine settles at its end (`vim_mouse_end`).
     text_mouse: Option<(FieldId, Pos, Mouse)>,
     /// This event's left press landed on a window separator (the sidebar
-    /// gutter), which `vim_mouse_end` does not settle as a click.
+    /// gutter, or the response's header strip), which `vim_mouse_end` does
+    /// not settle as a click.
     separator_press: bool,
 }
 
@@ -1025,7 +1026,8 @@ impl App {
         self.sync_session(None, Cause::Mouse(how));
     }
 
-    /// A left press on a window separator, the sidebar gutter (spec S7):
+    /// A left press on a window separator (`App::is_separator_press`, spec
+    /// S7): the sidebar gutter, or in vim the response's header strip.
     /// Vim keeps Visual mode and a pending operator through a press there,
     /// so the end of the event settles nothing.
     pub(super) fn vim_separator_press(&mut self) {

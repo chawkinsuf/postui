@@ -99,6 +99,14 @@ impl Project {
         let _ = self.persist_layout();
     }
 
+    /// Both pane sizes at once, in one write of `.local/layout.toml`: the
+    /// app's one save of what it shows.
+    pub fn set_pane_sizes(&mut self, main_split: Option<String>, sidebar_width: Option<u16>) {
+        self.local.main_split = main_split;
+        self.local.sidebar_width = sidebar_width;
+        let _ = self.persist_layout();
+    }
+
     pub fn selections_for(&self, env: &str) -> &IndexMap<String, String> {
         static EMPTY: std::sync::OnceLock<IndexMap<String, String>> = std::sync::OnceLock::new();
         self.local.selections.get(env).unwrap_or_else(|| EMPTY.get_or_init(IndexMap::new))
@@ -210,6 +218,21 @@ mod tests {
         p.set_expanded(["main/deep".to_string()].into_iter().collect());
         let state = read(&dir, ".local/state.toml").unwrap();
         assert!(!state.contains("main_split") && !state.contains("sidebar_width"), "{state}");
+        let (p2, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        assert_eq!(p2.local().main_split.as_deref(), Some("0.6000"));
+        assert_eq!(p2.local().sidebar_width, Some(34));
+    }
+
+    /// `set_pane_sizes` writes both sizes in one go, and a reopen reads both.
+    #[test]
+    fn set_pane_sizes_writes_both_at_once() {
+        let (dir, mut p) = fixture();
+        p.set_pane_sizes(Some("0.6000".into()), Some(34));
+        let layout = read(&dir, ".local/layout.toml").unwrap();
+        assert!(
+            layout.contains("main_split = \"0.6000\"") && layout.contains("sidebar_width = 34"),
+            "{layout}"
+        );
         let (p2, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         assert_eq!(p2.local().main_split.as_deref(), Some("0.6000"));
         assert_eq!(p2.local().sidebar_width, Some(34));

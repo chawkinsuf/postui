@@ -1513,6 +1513,39 @@ fn a_launch_seeds_the_sizes_when_the_spaces_fail() {
     assert_eq!(app.split_ratio, 0.6);
 }
 
+/// Rework round 8 (S7): in vim the response's header strip is the editor
+/// window's status line, and Vim 9.1 keeps the current window and Visual
+/// mode through a press there. A strip drag keeps the body's Visual
+/// selection and the editor's focus, and a press keeps a pending operator,
+/// as the gutter does.
+#[test]
+fn a_vim_strip_drag_keeps_the_bodys_visual_focus_and_operator() {
+    use super::key_matrix_tests::{Fixture, build, draw, feed};
+    let mut app = build(Fixture::Body);
+    app.use_profile(crate::config::KeyProfile::Vim);
+    draw(&mut app);
+    feed(&mut app, "jwvll");
+    assert_eq!(app.mode_indicator(), Some("VISUAL"));
+    let selection = app.editor.body_visual;
+    let split = app.split_state();
+    let (x, y) = handle_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_drag(x, y + 2));
+    app.handle_mouse(left_up(x, y + 2));
+    assert_ne!(app.split_state(), split, "the drag resized");
+    assert_eq!(app.mode_indicator(), Some("VISUAL"), "still Visual");
+    assert_eq!(app.editor.body_visual, selection, "the selection is unchanged");
+    assert_eq!(app.focus, PaneId::Editor, "the editor keeps focus");
+
+    feed(&mut app, "<Esc>d");
+    draw(&mut app);
+    let (x, y) = handle_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    app.handle_mouse(left_up(x, y));
+    feed(&mut app, "d");
+    assert_eq!(app.editor.body_text(), "{\n}", "the `d` before the press and the one after");
+}
+
 /// Audit (spec P2a): a quit while a resize is live ends it where it got
 /// to, saved, as every other end of a resize does.
 #[test]

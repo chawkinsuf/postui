@@ -348,12 +348,11 @@ impl App {
                 // as Esc's is, so the filter typed and the switch are one
                 // step, by click as by key (task #64 records only a close
                 // that comes with an edit elsewhere).
-                // The sidebar gutter is exempt as a scrollbar is: a press
-                // there disturbs nothing. The response's header strip is
-                // not: a press there clicks as it always did before it
-                // was the split handle, then drags (spec E2a).
+                // A press on a window separator is exempt as a scrollbar is:
+                // it disturbs nothing ([`Self::is_separator_press`]).
                 let jq_blurred = self.session.response.jq_focused()
                     && self.modals.is_empty()
+                    && !hit.as_ref().is_some_and(|h| self.is_separator_press(h))
                     && !matches!(
                         hit,
                         Some(
@@ -364,7 +363,6 @@ impl App {
                                 | Hit::ScrollbarTrack(..)
                                 | Hit::HScrollThumb(_)
                                 | Hit::HScrollTrack(..)
-                                | Hit::SidebarGutter
                         )
                     );
                 if jq_blurred {
@@ -1310,6 +1308,23 @@ impl App {
         ]
     }
 
+    /// Whether a left press on `hit` lands on a window separator (spec S7):
+    /// it moves a divider and nothing else, so it clicks nothing away and
+    /// moves no focus. The sidebar gutter is one in both profiles, since a
+    /// click there never did anything. In vim the response's header strip
+    /// is one too: it is the editor window's status line, and Vim 9.1 keeps
+    /// the current window and Visual mode through a press on a status line
+    /// (probed with `test_setmouse`, both the current window's and the one
+    /// above it). Outside vim the strip is the response pane's header, and
+    /// a press there clicks first (E2a).
+    fn is_separator_press(&self, hit: &Hit) -> bool {
+        match hit {
+            Hit::SidebarGutter => true,
+            Hit::SplitHandle => self.profile() == crate::config::KeyProfile::Vim,
+            _ => false,
+        }
+    }
+
     /// The central click dispatch: maps a resolved `Hit` (plus click count
     /// and the raw event, for hits that need to forward it) to app state
     /// changes. Only `Pane` and `BodyEditor` are wired up so far; later
@@ -1351,8 +1366,6 @@ impl App {
                     // its own undo step, before it adds its row.
                     | Hit::AutoHeaderOverride(_)
                     | Hit::SplitStop(_)
-                    // Not the strip: a press there clicks away (E2a).
-                    | Hit::SidebarGutter
                     | Hit::ScrollbarThumb(_)
                     | Hit::ScrollbarTrack(..)
                     | Hit::HScrollThumb(_)
@@ -1365,7 +1378,10 @@ impl App {
             )
             // The tooltip floats over the rows: clicking one of its pills
             // must neither commit the cell under edit nor drop the selection.
-            || hit.is_float_overlay();
+            || hit.is_float_overlay()
+            // A press on a window separator moves a divider and nothing
+            // else.
+            || self.is_separator_press(&hit);
         if !keeps_table_selection {
             self.commit_table_edit();
             self.editor.table.selected = None;
@@ -1761,20 +1777,23 @@ impl App {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.update(Action::SplitStop(stop))
             }
-            // A press on a resize handle arms the drag. The gutter's moves
-            // no focus: a click there never did anything, and in vim it is
-            // a press on a window separator, no click either (spec S7). The
-            // strip is the response pane's header, so its press first
-            // clicks as the pane's does (spec E2a; the click-away above
-            // already ran for it), arming no text sweep: the motion is the
-            // resize's. The handle is the hovered hit for the length of the
-            // drag, so the strip stays lit wherever the pointer goes.
+            // A press on a resize handle arms the drag. A press on a window
+            // separator ([`Self::is_separator_press`]) moves no focus and
+            // clicks nothing. Otherwise (the strip, outside vim) it is the
+            // response pane's header, so its press first clicks as the
+            // pane's does (spec E2a; the click-away above already ran for
+            // it), arming no text sweep: the motion is the resize's. The
+            // handle is the hovered hit for the length of the drag, so it
+            // stays lit wherever the pointer goes.
             Hit::SidebarGutter | Hit::SplitHandle => {
-                let kind = if hit == Hit::SidebarGutter {
+                if self.is_separator_press(&hit) {
                     self.vim_separator_press();
-                    ResizeHandle::Sidebar
                 } else {
                     self.press_response_pane(clicks.text, m, false);
+                }
+                let kind = if hit == Hit::SidebarGutter {
+                    ResizeHandle::Sidebar
+                } else {
                     // Where this frame drew the strip, not where it will
                     // settle: the user grabs what they see. The first motion
                     // snaps the split (`set_split_now`), so from then on

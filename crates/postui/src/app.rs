@@ -2250,19 +2250,20 @@ impl App {
         );
     }
 
-    /// Records the current split as the project's persisted layout
-    /// preference (`.local/layout.toml`'s `main_split`). Best-effort, like
-    /// every local-state save.
-    fn persist_split(&mut self) {
+    /// Records both pane sizes the app holds, the split and the sidebar
+    /// width, as the project's (`.local/layout.toml`), in one write: the
+    /// one save behind every size change. Best-effort, like every
+    /// local-state save.
+    fn persist_sizes(&mut self) {
         let token = self.split_state().to_token();
+        let width = self.sidebar_width;
         if let Some(p) = self.project_mut() {
-            p.set_main_split(Some(token));
+            p.set_pane_sizes(Some(token), width);
         }
     }
 
     /// Takes the pane sizes of a project opened or switched to — the
-    /// reopen half of [`Self::persist_split`] and
-    /// [`Self::persist_sidebar`]. Spec P5's one rule: the project's saved
+    /// reopen half of [`Self::persist_sizes`]. Spec P5's one rule: the project's saved
     /// sizes win, and a size it has not saved (or an unrecognized split
     /// token) is the default, so a switch never carries the previous
     /// project's sizes over. A project created in place takes the other
@@ -2281,8 +2282,7 @@ impl App {
     /// created in place keeps what the user sized before creating it
     /// (spec P5), whatever its folder's `.local/layout.toml` held.
     fn adopt_sizes_into_project(&mut self) {
-        self.persist_split();
-        self.persist_sidebar();
+        self.persist_sizes();
     }
 
     /// The whole split state the split control reads and drives — the
@@ -2328,7 +2328,7 @@ impl App {
         // `sync_split_ratio_anim` (run on every `update`) ease whichever
         // of the three the jump actually moved.
         if next != prev {
-            self.persist_split();
+            self.persist_sizes();
         }
         next != prev
     }
@@ -2415,16 +2415,6 @@ impl App {
         true
     }
 
-    /// Records the sidebar width as the project's persisted layout
-    /// preference (`.local/layout.toml`'s `sidebar_width`). Best-effort,
-    /// like every local-state save.
-    fn persist_sidebar(&mut self) {
-        let cols = self.sidebar_width;
-        if let Some(p) = self.project_mut() {
-            p.set_sidebar_width(cols);
-        }
-    }
-
     /// The action `combo`'s keymap binding gives the key where the keyboard
     /// is: the one keymap read every key takes (`route_key`, its quit check
     /// included, `handle_key_routed`, `App::user_bare`, and the vim seam's
@@ -2453,7 +2443,7 @@ impl App {
         if !self.move_sidebar_edge(|now, _| i32::from(now) + delta) {
             return false;
         }
-        self.persist_sidebar();
+        self.persist_sizes();
         true
     }
 
@@ -2497,7 +2487,7 @@ impl App {
             return false;
         }
         self.set_split_now(next);
-        self.persist_split();
+        self.persist_sizes();
         true
     }
 
@@ -2540,10 +2530,12 @@ impl App {
             // sidebar takes half the body, as Vim's CTRL-W = makes all
             // windows equally wide too.
             (_, ResizeDir::Even) => {
-                let split = self.apply_split_stop(crate::split::SplitStop::Even);
+                let prev = self.split_state();
+                self.set_split_fields(prev.apply(crate::split::SplitStop::Even));
+                let split = self.split_state() != prev;
                 let sidebar = self.move_sidebar_edge(|_, body| (i32::from(body.width) - 1) / 2);
-                if sidebar {
-                    self.persist_sidebar();
+                if split || sidebar {
+                    self.persist_sizes();
                 }
                 split || sidebar
             }
@@ -2603,10 +2595,7 @@ impl App {
             return false;
         };
         if drag.moved {
-            match drag.kind {
-                ResizeHandle::Sidebar => self.persist_sidebar(),
-                ResizeHandle::Split { .. } => self.persist_split(),
-            }
+            self.persist_sizes();
         }
         true
     }
@@ -3900,7 +3889,7 @@ impl App {
                 if self.table_collapsed && self.session.response.collapsed {
                     self.session.response.collapsed = false;
                 }
-                self.persist_split();
+                self.persist_sizes();
                 true
             }
             Action::ToggleResponseCollapse => {
@@ -3915,7 +3904,7 @@ impl App {
                 if self.session.response.collapsed && self.table_collapsed {
                     self.table_collapsed = false;
                 }
-                self.persist_split();
+                self.persist_sizes();
                 true
             }
             Action::SplitStop(stop) => self.apply_split_stop(stop),
