@@ -6396,8 +6396,13 @@ url = "https://api.example.com/users""#,
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
 
-        let layout =
-            crate::layout::compute_layout(ratatui::layout::Rect::new(0, 0, 120, 40), 0.0, 0.0, 0.5);
+        let layout = crate::layout::compute_layout(
+            ratatui::layout::Rect::new(0, 0, 120, 40),
+            0.0,
+            0.0,
+            0.5,
+            None,
+        );
         let buf = terminal.backend().buffer();
         // Deep into the pane's lower region, well past the address bar, tab
         // bar, and the empty table's few header/ghost/edge rows.

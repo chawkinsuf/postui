@@ -17795,6 +17795,26 @@ fn split_persists_to_local_state_and_reseeds_on_open() {
     drop(app); // keeps the temp project alive until the reopened app is done
 }
 
+/// The sidebar's saved width is a per-project layout preference: opening a
+/// project with `sidebar_width` in its local state draws the sidebar that
+/// many columns wide.
+#[test]
+fn a_saved_sidebar_width_draws_from_the_project() {
+    let app = App::new_for_test();
+    let root = app.proj().root().to_path_buf();
+    let mut state = postui_core::fixtures::load_local_state(&root).unwrap();
+    state.sidebar_width = Some(30);
+    postui_core::fixtures::save_local_state(&root, &state).unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut reopened = App::with_root(tx, root.clone());
+    assert_eq!(reopened.sidebar_width, Some(30));
+    render_once(&mut reopened);
+    let sidebar = reopened.hits.rect_of(&Hit::Pane(PaneId::Sidebar)).unwrap();
+    assert_eq!(sidebar.width, 30);
+    drop(app); // keeps the temp project alive until the reopened app is done
+}
+
 /// A tab switch that changes whether the table is actually showing (while
 /// `table_collapsed` itself stays put) must also ease `PaneCollapse` --
 /// switching onto the Body tab always keeps the normal 50/50 split

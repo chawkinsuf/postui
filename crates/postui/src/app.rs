@@ -373,9 +373,12 @@ pub struct App {
     /// collapse anim — see [`Self::sync_response_collapse_anim`].
     response_collapsed_target: bool,
     /// The editor's share of the main column while both panes are shown —
-    /// the split's settled ratio stop (see [`crate::split`]). Sticky
+    /// the split's free share, 0 to 1 (see [`crate::split`]). Sticky
     /// through minimize/expand so re-opening lands where the user left it.
     pub split_ratio: f32,
+    /// The sidebar's saved width in columns; `None` is the default 28%.
+    /// Set by a drag or key, seeded from and saved to the project.
+    pub sidebar_width: Option<u16>,
     /// The last `split_ratio` value `AnimKey::SplitRatio` was driven
     /// toward — see [`Self::sync_split_ratio_anim`].
     split_ratio_target: f32,
@@ -984,6 +987,7 @@ impl App {
                 // Restore this project's saved layout split alongside its
                 // open request.
                 app.seed_split_from_project();
+                app.seed_sidebar_from_project();
                 // Restore the request that was open when this project was
                 // last used — the same restore a project *switch* already
                 // performs. Without it the sidebar draws a selection whose
@@ -1759,6 +1763,7 @@ impl App {
             pane_collapsed_target: false,
             response_collapsed_target: false,
             split_ratio: crate::split::SplitState::default().ratio,
+            sidebar_width: None,
             split_ratio_target: crate::split::SplitState::default().ratio,
             last_click: None,
             last_action_failed: false,
@@ -2219,8 +2224,15 @@ impl App {
         self.split_ratio = s.ratio;
     }
 
+    /// Seeds the sidebar width from the project's saved preference
+    /// (`.local/state.toml`'s `sidebar_width`). No saved width is the
+    /// default 28%, so a project switch drops the previous project's.
+    fn seed_sidebar_from_project(&mut self) {
+        self.sidebar_width = self.project().and_then(|p| p.local().sidebar_width);
+    }
+
     /// The whole split state the split control reads and drives — the
-    /// two endpoint flags plus the ratio stop, in one value.
+    /// two endpoint flags plus the free editor share, in one value.
     pub fn split_state(&self) -> crate::split::SplitState {
         crate::split::SplitState {
             editor_minimized: self.table_collapsed,
@@ -2255,8 +2267,8 @@ impl App {
 
     /// Keeps `AnimKey::SplitRatio` chasing `split_ratio`'s editor share
     /// the same way [`Self::sync_pane_collapse_anim`] chases
-    /// `table_collapsed`: whenever the stop changes, eases from wherever
-    /// the share currently sits to the new stop.
+    /// `table_collapsed`: whenever the share changes, eases from wherever
+    /// it currently sits to the new share.
     fn sync_split_ratio_anim(&mut self) {
         let target = self.split_ratio;
         if target == self.split_ratio_target {
@@ -4840,6 +4852,7 @@ impl App {
                 // the incoming project's saved split alongside its open
                 // request.
                 self.seed_split_from_project();
+                self.seed_sidebar_from_project();
                 let open = self
                     .project()
                     .and_then(|p| p.local().open_request.clone())

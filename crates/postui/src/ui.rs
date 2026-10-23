@@ -46,7 +46,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         if app.session.response.collapsed { 1.0 } else { 0.0 },
     );
     let ratio_t = app.anims.value_or(crate::anim::AnimKey::SplitRatio, now, app.split_ratio);
-    let layout = compute_layout(frame.area(), collapse_t, response_t, ratio_t);
+    let layout = compute_layout(frame.area(), collapse_t, response_t, ratio_t, app.sidebar_width);
     let focus = app.focus;
     let screen = app.screen;
     let mut hits = std::mem::take(&mut app.hits);
@@ -1541,8 +1541,13 @@ mod tests {
         let mut app = App::new_for_test();
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
-        let layout =
-            crate::layout::compute_layout(ratatui::layout::Rect::new(0, 0, 120, 40), 0.0, 0.0, 0.5);
+        let layout = crate::layout::compute_layout(
+            ratatui::layout::Rect::new(0, 0, 120, 40),
+            0.0,
+            0.0,
+            0.5,
+            None,
+        );
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let buf = terminal.backend().buffer();
 

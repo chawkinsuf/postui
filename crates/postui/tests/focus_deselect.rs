@@ -135,7 +135,7 @@ fn typing_while_blurred_reaches_no_input() {
 /// lifted fill color (the URL input's focus indicator).
 fn has_lifted_url_fill(term: &Terminal<TestBackend>, app: &App, pane: PaneId) -> bool {
     let area = term.backend().buffer().area;
-    let layout = postui::layout::compute_layout(area, 0.0, 0.0, 0.5);
+    let layout = postui::layout::compute_layout(area, 0.0, 0.0, 0.5, None);
     let r = match pane {
         PaneId::Sidebar => layout.sidebar,
         PaneId::Editor => layout.editor,
@@ -186,7 +186,7 @@ fn url_focus_lift_paints_only_when_the_editor_pane_is_focused() {
 /// other panes' columns don't.
 fn pane_has_focus_bar(term: &Terminal<TestBackend>, app: &App, pane: PaneId) -> bool {
     let area = term.backend().buffer().area;
-    let layout = postui::layout::compute_layout(area, 0.0, 0.0, 0.5);
+    let layout = postui::layout::compute_layout(area, 0.0, 0.0, 0.5, None);
     let r = match pane {
         PaneId::Sidebar => layout.sidebar,
         PaneId::Editor => layout.editor,
@@ -226,7 +226,7 @@ fn focus_bar_stays_visible_over_the_new_request_button() {
     let mut app = App::new_for_test();
     assert_eq!(app.focus, PaneId::Sidebar);
     let term = render(&mut app);
-    let layout = postui::layout::compute_layout(term.backend().buffer().area, 0.0, 0.0, 0.5);
+    let layout = postui::layout::compute_layout(term.backend().buffer().area, 0.0, 0.0, 0.5, None);
     let r = layout.sidebar;
     let buf = term.backend().buffer();
     for y in r.y..r.y + r.height {
@@ -263,7 +263,7 @@ fn selected_request_marker_sits_beside_the_sidebar_focus_bar() {
     app.sidebar.open_slug = Some("go".into());
     assert_eq!(app.focus, PaneId::Sidebar);
     let term = render(&mut app);
-    let layout = postui::layout::compute_layout(term.backend().buffer().area, 0.0, 0.0, 0.5);
+    let layout = postui::layout::compute_layout(term.backend().buffer().area, 0.0, 0.0, 0.5, None);
     let r = layout.sidebar;
     let buf = term.backend().buffer();
     for y in r.y..r.y + r.height {
@@ -312,7 +312,7 @@ fn hovering_a_row_leaves_the_sidebar_focus_bar_clean() {
     app.hovered = Some(Hit::SidebarRow(1));
     assert_eq!(app.focus, PaneId::Sidebar);
     let term = render(&mut app);
-    let layout = postui::layout::compute_layout(term.backend().buffer().area, 0.0, 0.0, 0.5);
+    let layout = postui::layout::compute_layout(term.backend().buffer().area, 0.0, 0.0, 0.5, None);
     let r = layout.sidebar;
     let buf = term.backend().buffer();
     for y in r.y..r.y + r.height {
