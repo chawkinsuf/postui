@@ -2549,8 +2549,8 @@ pub struct Response {
     /// Whether the pane is hidden — collapsed to just its header strip,
     /// with the editor taking the freed rows (`Action::ToggleResponseCollapse`).
     /// A sticky layout preference: `Session::sync_open` carries it across
-    /// request switches instead of swapping it with the response.
-    /// Session-only — never persisted.
+    /// request switches instead of swapping it with the response. Saved
+    /// with the split, as the project's pane sizes (`App::persist_sizes`).
     pub collapsed: bool,
     /// Display copy of the profile, refreshed by the frame before every
     /// draw ([`Response::set_vim_cursor`]): whether Vim's cursor column,

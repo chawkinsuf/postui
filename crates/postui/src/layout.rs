@@ -254,6 +254,15 @@ pub fn editor_rows_for(column_height: u16, editor_share: f32) -> u16 {
 /// fixed chrome (the editor's address bar and tab bar, the response's
 /// header strip): what the split's share divides, in both directions
 /// ([`editor_rows_for`], [`editor_share_for`]).
+///
+/// The response's chrome is always counted as the ready response's
+/// [`crate::components::response::HEADER_STRIP_HEIGHT`] rows, even while
+/// it is empty, in flight or failed and draws a one-row strip. That keeps
+/// a share at the same rows whatever state the response is in, so the
+/// line never moves when a response lands or a send starts. The cost is
+/// paid only before a response is ready: a drag minimizes the response
+/// two rows sooner than its one-row strip needs, and vim's `{N}<C-w>_` on
+/// the response shows the rows it would under a ready strip.
 fn content_rows(column_height: u16) -> u16 {
     column_height
         .saturating_sub(editor::CHROME_HEIGHT)

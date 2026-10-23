@@ -16,11 +16,7 @@ impl Project {
     /// Writes `.local/layout.toml` from memory. Never journaled, so it is
     /// never part of an undo entry, whatever window it runs in.
     pub(crate) fn persist_layout(&mut self) -> Result<(), Error> {
-        let layout = LayoutState {
-            main_split: self.local.main_split.clone(),
-            sidebar_width: self.local.sidebar_width,
-        };
-        let text = toml::to_string(&layout).expect("LayoutState always serializes");
+        let text = toml::to_string(&self.local.layout).expect("LayoutState always serializes");
         self.disk.write(&rel(LAYOUT_TOML)?, &text)?;
         Ok(())
     }
@@ -89,21 +85,10 @@ impl Project {
         let _ = self.persist_local();
     }
 
-    pub fn set_main_split(&mut self, token: Option<String>) {
-        self.local.main_split = token;
-        let _ = self.persist_layout();
-    }
-
-    pub fn set_sidebar_width(&mut self, cols: Option<u16>) {
-        self.local.sidebar_width = cols;
-        let _ = self.persist_layout();
-    }
-
-    /// Both pane sizes at once, in one write of `.local/layout.toml`: the
-    /// app's one save of what it shows.
-    pub fn set_pane_sizes(&mut self, main_split: Option<String>, sidebar_width: Option<u16>) {
-        self.local.main_split = main_split;
-        self.local.sidebar_width = sidebar_width;
+    /// The pane sizes, all at once, in one write of `.local/layout.toml`:
+    /// the app's one save of what it shows.
+    pub fn set_pane_sizes(&mut self, layout: LayoutState) {
+        self.local.layout = layout;
         let _ = self.persist_layout();
     }
 
@@ -178,7 +163,7 @@ impl Project {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{fixture, read};
+    use super::super::tests::{fixture, read, sizes};
     use super::*;
 
     #[test]
@@ -188,8 +173,7 @@ mod tests {
         p.set_open_request(Some("auth/login"));
         p.record_space_open(Some("auth/login"));
         p.set_expanded(["auth/sub".to_string()].into_iter().collect());
-        p.set_main_split(Some("60".into()));
-        p.set_sidebar_width(Some(34));
+        p.set_pane_sizes(sizes("60", 34));
         p.persist_local().unwrap();
         let text = read(&dir, ".local/state.toml").unwrap();
         assert!(text.contains("space = \"auth\""), "{text}");
@@ -199,17 +183,16 @@ mod tests {
         assert_eq!(p2.local().open_request.as_deref(), Some("auth/login"));
         assert_eq!(p2.local().space_open.get("auth").map(String::as_str), Some("auth/login"));
         assert!(p2.local().expanded.contains("auth/sub"));
-        assert_eq!(p2.local().main_split.as_deref(), Some("60"));
-        assert_eq!(p2.local().sidebar_width, Some(34));
+        assert_eq!(p2.local().layout, sizes("60", 34));
     }
 
-    /// The pane sizes live in `.local/layout.toml`, never in the journaled
-    /// `state.toml` (spec P3b), and a reopen reads them back from there.
+    /// The pane sizes, both in one write, live in `.local/layout.toml`,
+    /// never in the journaled `state.toml` (spec P3b), and a reopen reads
+    /// them back from there.
     #[test]
     fn pane_sizes_round_trip_through_layout_toml() {
         let (dir, mut p) = fixture();
-        p.set_main_split(Some("0.6000".into()));
-        p.set_sidebar_width(Some(34));
+        p.set_pane_sizes(sizes("0.6000", 34));
         let layout = read(&dir, ".local/layout.toml").unwrap();
         assert!(
             layout.contains("main_split = \"0.6000\"") && layout.contains("sidebar_width = 34"),
@@ -219,23 +202,7 @@ mod tests {
         let state = read(&dir, ".local/state.toml").unwrap();
         assert!(!state.contains("main_split") && !state.contains("sidebar_width"), "{state}");
         let (p2, _w) = Project::open(dir.path().to_path_buf()).unwrap();
-        assert_eq!(p2.local().main_split.as_deref(), Some("0.6000"));
-        assert_eq!(p2.local().sidebar_width, Some(34));
-    }
-
-    /// `set_pane_sizes` writes both sizes in one go, and a reopen reads both.
-    #[test]
-    fn set_pane_sizes_writes_both_at_once() {
-        let (dir, mut p) = fixture();
-        p.set_pane_sizes(Some("0.6000".into()), Some(34));
-        let layout = read(&dir, ".local/layout.toml").unwrap();
-        assert!(
-            layout.contains("main_split = \"0.6000\"") && layout.contains("sidebar_width = 34"),
-            "{layout}"
-        );
-        let (p2, _w) = Project::open(dir.path().to_path_buf()).unwrap();
-        assert_eq!(p2.local().main_split.as_deref(), Some("0.6000"));
-        assert_eq!(p2.local().sidebar_width, Some(34));
+        assert_eq!(p2.local().layout, sizes("0.6000", 34));
     }
 
     /// The app's setters are fire-and-forget: it never calls a separate
@@ -245,10 +212,8 @@ mod tests {
     fn every_local_setter_writes_its_file_at_once() {
         let (dir, mut p) = fixture();
         assert!(read(&dir, ".local/state.toml").is_none(), "nothing written yet");
-        p.set_main_split(Some("60".into()));
+        p.set_pane_sizes(sizes("60", 34));
         assert!(read(&dir, ".local/layout.toml").unwrap().contains("main_split = \"60\""));
-        p.set_sidebar_width(Some(34));
-        assert!(read(&dir, ".local/layout.toml").unwrap().contains("sidebar_width = 34"));
         assert!(read(&dir, ".local/state.toml").is_none(), "a size writes no state.toml");
         p.set_expanded(["main/deep".to_string()].into_iter().collect());
         assert!(read(&dir, ".local/state.toml").unwrap().contains("main/deep"));

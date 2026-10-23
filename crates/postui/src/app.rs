@@ -403,7 +403,8 @@ pub struct App {
     pub manage_press: Option<(usize, String)>,
     /// Whether the active tab's params/headers table body is collapsed
     /// (tab strip + its count chip stay visible; only the table itself is
-    /// hidden). Session-only — never persisted.
+    /// hidden): the split's editor-minimized end, saved with the split
+    /// ([`Self::persist_sizes`]).
     pub table_collapsed: bool,
     /// The last `table_collapsed` value `AnimKey::PaneCollapse` was driven
     /// toward, tracked so `update` can tell when it flips
@@ -2255,10 +2256,12 @@ impl App {
     /// one save behind every size change. Best-effort, like every
     /// local-state save.
     fn persist_sizes(&mut self) {
-        let token = self.split_state().to_token();
-        let width = self.sidebar_width;
+        let layout = postui_core::project::LayoutState {
+            main_split: Some(self.split_state().to_token()),
+            sidebar_width: self.sidebar_width,
+        };
         if let Some(p) = self.project_mut() {
-            p.set_pane_sizes(Some(token), width);
+            p.set_pane_sizes(layout);
         }
     }
 
@@ -2270,12 +2273,12 @@ impl App {
     /// half of the rule: `InitProjectHere` saves the sizes on screen as its
     /// own ([`Self::persist_sizes`]). Saves nothing.
     fn seed_sizes_from_project(&mut self) {
-        let local = self.project().map(|p| p.local());
-        let split = local
+        let layout = self.project().map(|p| &p.local().layout);
+        let split = layout
             .and_then(|l| l.main_split.as_deref())
             .and_then(crate::split::SplitState::from_token)
             .unwrap_or_default();
-        self.sidebar_width = local.and_then(|l| l.sidebar_width);
+        self.sidebar_width = layout.and_then(|l| l.sidebar_width);
         self.set_split_fields(split);
     }
 

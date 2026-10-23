@@ -263,11 +263,12 @@ pub enum Action {
     CycleMethod,
     FocusUrl,
     /// Toggles `App::table_collapsed` (params/headers table body vs. tab
-    /// strip only). Session-only — never persisted.
+    /// strip only). Saved with the split, as the project's pane sizes
+    /// (spec P3).
     ToggleTableCollapse,
     /// Toggles the Response pane between hidden (collapsed to its header
-    /// strip, editor taking the freed rows) and shown. Session-only —
-    /// never persisted.
+    /// strip, editor taking the freed rows) and shown. Saved with the
+    /// split, as the project's pane sizes (spec P3).
     ToggleResponseCollapse,
     /// One of the split control's two end chips was pressed: jumps the
     /// column straight to that settled state, or restores the split when

@@ -258,7 +258,7 @@ impl Project {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{fixture, read};
+    use super::super::tests::{fixture, read, sizes};
     use super::*;
     use crate::varedit;
 
@@ -406,7 +406,7 @@ mod tests {
         p.set_active_space("auth");
         p.record_space_open(Some("auth/login"));
         p.set_open_request(Some("auth/login"));
-        p.set_main_split(Some("60".into()));
+        p.set_pane_sizes(sizes("60", 30));
         p.persist_local().unwrap();
         p.rename_space("auth", "Login").unwrap();
         p.undo().unwrap();
@@ -414,33 +414,28 @@ mod tests {
         assert_eq!(p.local().active_space, "auth");
         assert_eq!(p.local().space_open.get("auth").map(String::as_str), Some("auth/login"));
         assert_eq!(p.local().open_request.as_deref(), Some("auth/login"));
-        assert_eq!(p.local().main_split.as_deref(), Some("60"));
+        assert_eq!(p.local().layout, sizes("60", 30));
         assert_eq!(p.spaces(), ["main", "auth"]);
     }
 
     #[test]
     fn undo_and_redo_keep_the_pane_sizes_set_after_the_op() {
         let (dir, mut p) = fixture();
-        p.set_main_split(Some("60".into()));
-        p.set_sidebar_width(Some(30));
+        p.set_pane_sizes(sizes("60", 30));
         p.persist_local().unwrap();
         p.rename_space("auth", "Login").unwrap();
-        p.set_main_split(Some("70".into()));
-        p.set_sidebar_width(Some(40));
+        p.set_pane_sizes(sizes("70", 40));
         p.undo().unwrap();
-        assert_eq!(p.local().main_split.as_deref(), Some("70"));
-        assert_eq!(p.local().sidebar_width, Some(40));
+        assert_eq!(p.local().layout, sizes("70", 40));
         let text = read(&dir, ".local/layout.toml").unwrap();
         assert!(
             text.contains("main_split = \"70\"") && text.contains("sidebar_width = 40"),
             "{text}"
         );
         p.redo().unwrap();
-        assert_eq!(p.local().main_split.as_deref(), Some("70"));
-        assert_eq!(p.local().sidebar_width, Some(40));
+        assert_eq!(p.local().layout, sizes("70", 40));
         let (p2, _w) = Project::open(dir.path().to_path_buf()).unwrap();
-        assert_eq!(p2.local().main_split.as_deref(), Some("70"));
-        assert_eq!(p2.local().sidebar_width, Some(40));
+        assert_eq!(p2.local().layout, sizes("70", 40));
     }
 
     /// An entry's op count and how many of its ops write `state.toml`.
@@ -467,8 +462,7 @@ mod tests {
         p.persist_local().unwrap();
         p.rename_space("auth", "Login").unwrap();
         let first = op_counts(p.journal.peek_undo().unwrap());
-        p.set_sidebar_width(Some(30));
-        p.set_main_split(Some("70".into()));
+        p.set_pane_sizes(sizes("70", 30));
         let mut cycles = Vec::new();
         for i in 0..5u16 {
             resize(&mut p, 2 * i);
@@ -497,7 +491,7 @@ mod tests {
     /// unjournaled `layout.toml` (spec P3b), so no replay ever records them.
     #[test]
     fn undo_redo_with_a_resize_between_keeps_entries_bounded() {
-        let (first, cycles) = cycle_counts(|p, n| p.set_sidebar_width(Some(31 + n)));
+        let (first, cycles) = cycle_counts(|p, n| p.set_pane_sizes(sizes("70", 31 + n)));
         assert_eq!(cycles, vec![(first, first); 5], "the rename's entry: {first:?}");
     }
 

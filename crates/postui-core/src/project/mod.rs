@@ -101,12 +101,9 @@ pub struct Local {
     pub expanded: BTreeSet<String>,
     pub selections: IndexMap<String, IndexMap<String, String>>,
     pub shared_selections: IndexMap<String, String>,
-    /// The editor/response split. Pane sizes (this and `sidebar_width`)
-    /// live in the unjournaled `layout.toml`, so undo never restores them
-    /// (spec P3a, P3b).
-    pub main_split: Option<String>,
-    /// The sidebar's width in columns; `None` = the default 28%.
-    pub sidebar_width: Option<u16>,
+    /// The pane sizes, as `layout.toml` holds them. They live in that
+    /// unjournaled file, so undo never restores them (spec P3a, P3b).
+    pub layout: LayoutState,
     /// The request the editor has open, as last told to the project.
     pub open_request: Option<String>,
 }
@@ -1106,8 +1103,7 @@ impl Project {
                 expanded: state.expanded.into_iter().collect(),
                 selections: state.selections,
                 shared_selections: state.shared_selections,
-                main_split: layout.main_split,
-                sidebar_width: layout.sidebar_width,
+                layout,
                 open_request,
             },
             journal: Journal::new(),
@@ -1318,6 +1314,11 @@ mod tests {
         std::fs::read_to_string(dir.path().join(rel)).ok()
     }
 
+    /// Pane sizes with both set: the split token and the sidebar width.
+    pub(crate) fn sizes(split: &str, width: u16) -> LayoutState {
+        LayoutState { main_split: Some(split.into()), sidebar_width: Some(width) }
+    }
+
     #[test]
     fn open_loads_every_document_and_lands_in_the_first_environment() {
         let (_d, p) = fixture();
@@ -1374,7 +1375,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".local")).unwrap();
         std::fs::write(dir.path().join(".local/state.toml"), "main_split = \"0.6000\"\n").unwrap();
         let (p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
-        assert_eq!(p.local().main_split, None);
+        assert_eq!(p.local().layout.main_split, None);
         assert!(read(&dir, ".local/layout.toml").is_none(), "the open wrote nothing");
     }
 
