@@ -315,6 +315,23 @@ fn a_click_on_the_strip_focuses_the_response() {
     assert_eq!(app.focus, PaneId::Editor, "a drag keeps the focus");
 }
 
+/// A click with a sideways jitter is still a click: a motion that leaves
+/// the line on its row recomputes no share, so the split is untouched and
+/// the release focuses the response.
+#[test]
+fn a_sideways_jitter_on_the_strip_moves_nothing() {
+    let mut app = App::new_for_test();
+    app.update(Action::FocusPane(PaneId::Editor));
+    render(&mut app);
+    let before = app.split_state();
+    let (x, y) = handle_cell(&app);
+    app.handle_mouse(left_down(x, y));
+    assert!(!app.handle_mouse(left_drag(x + 1, y)), "nothing to repaint");
+    app.handle_mouse(left_up(x + 1, y));
+    assert_eq!(app.split_state(), before, "the share is not rewritten");
+    assert_eq!(app.focus, PaneId::Response, "it was a click");
+}
+
 /// A right click or focus loss is never a click on the strip: only the
 /// release focuses the response.
 #[test]

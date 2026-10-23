@@ -2351,7 +2351,15 @@ impl App {
                 let main = editor.union(response);
                 let editor_rows = i32::from(row) - i32::from(grab) - i32::from(main.y);
                 let next = crate::layout::split_for_editor_rows(start, main.height, editor_rows);
-                if next == self.split_state() {
+                // A motion that leaves the line on the row it is drawn at
+                // (a sideways jitter of a click) moves nothing: the share
+                // the screen shows need not be the one its rows invert to,
+                // and recomputing it would rewrite the split unseen.
+                let now = self.split_state();
+                let line_stays = next.editor_minimized == now.editor_minimized
+                    && next.response_minimized == now.response_minimized
+                    && editor_rows == i32::from(editor.height);
+                if line_stays || next == now {
                     return false;
                 }
                 self.set_split_now(next);
