@@ -2251,7 +2251,7 @@ impl App {
     }
 
     /// Records the current split as the project's persisted layout
-    /// preference (`.local/state.toml`'s `main_split`). Best-effort, like
+    /// preference (`.local/layout.toml`'s `main_split`). Best-effort, like
     /// every local-state save.
     fn persist_split(&mut self) {
         let token = self.split_state().to_token();
@@ -2275,7 +2275,7 @@ impl App {
     }
 
     /// Seeds the sidebar width from the project's saved preference
-    /// (`.local/state.toml`'s `sidebar_width`). No saved width is the
+    /// (`.local/layout.toml`'s `sidebar_width`). No saved width is the
     /// default 28%, so a project switch drops the previous project's.
     fn seed_sidebar_from_project(&mut self) {
         self.sidebar_width = self.project().and_then(|p| p.local().sidebar_width);
@@ -2369,7 +2369,7 @@ impl App {
     }
 
     /// Records the sidebar width as the project's persisted layout
-    /// preference (`.local/state.toml`'s `sidebar_width`). Best-effort,
+    /// preference (`.local/layout.toml`'s `sidebar_width`). Best-effort,
     /// like every local-state save.
     fn persist_sidebar(&mut self) {
         let cols = self.sidebar_width;

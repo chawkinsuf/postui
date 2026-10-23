@@ -65,7 +65,7 @@ fn gutter_cell(app: &App) -> (u16, u16) {
 }
 
 fn saved_width(app: &App) -> Option<u16> {
-    postui_core::fixtures::load_local_state(app.proj().root()).unwrap().sidebar_width
+    postui_core::fixtures::load_layout(app.proj().root()).unwrap().sidebar_width
 }
 
 #[test]
@@ -258,7 +258,7 @@ fn a_bare_move_after_drag_motion_ends_the_resize() {
     assert!(app.resize.is_none(), "the bare move ended the resize");
     render(&mut app);
     assert_eq!(pane_rows(&app, PaneId::Editor), editor + 3, "kept; the move's row moved nothing");
-    let saved = postui_core::fixtures::load_local_state(app.proj().root()).unwrap().main_split;
+    let saved = postui_core::fixtures::load_layout(app.proj().root()).unwrap().main_split;
     assert_eq!(saved, Some(app.split_state().to_token()), "saved");
 
     let (x, y) = gutter_cell(&app);
@@ -321,9 +321,8 @@ fn a_project_switch_by_key_ends_a_live_resize_into_the_old_project() {
     press(&mut app, "<A-z>");
     assert_eq!(app.proj().root(), b.path(), "switched");
     assert!(app.resize.is_none(), "the switch ended the resize");
-    let width_in = |root: &std::path::Path| {
-        postui_core::fixtures::load_local_state(root).unwrap().sidebar_width
-    };
+    let width_in =
+        |root: &std::path::Path| postui_core::fixtures::load_layout(root).unwrap().sidebar_width;
     assert_eq!(width_in(a.path()), Some(24), "saved into the project being left");
     let split = app.split_state();
     render(&mut app);
@@ -481,7 +480,7 @@ fn a_strip_drag_still_resizes_after_the_click() {
     app.handle_mouse(left_up(x, y + 3));
     assert!(app.resize.is_none());
     assert_eq!(app.focus, PaneId::Response);
-    let saved = postui_core::fixtures::load_local_state(app.proj().root()).unwrap().main_split;
+    let saved = postui_core::fixtures::load_layout(app.proj().root()).unwrap().main_split;
     assert_eq!(saved, Some(app.split_state().to_token()));
 }
 
@@ -502,7 +501,7 @@ fn a_finished_resize_is_saved() {
     app.handle_mouse(left_down(x, y));
     app.handle_mouse(left_drag(x, y + 3));
     app.handle_mouse(left_up(x, y + 3));
-    let saved = postui_core::fixtures::load_local_state(app.proj().root()).unwrap().main_split;
+    let saved = postui_core::fixtures::load_layout(app.proj().root()).unwrap().main_split;
     assert_eq!(saved, Some(app.split_state().to_token()));
     let loaded = SplitState::from_token(saved.as_deref().unwrap()).unwrap();
     assert!((loaded.ratio - app.split_ratio).abs() < 1e-4, "{loaded:?}");
@@ -549,8 +548,8 @@ fn a_cancelled_strip_press_ends_the_resize() {
     for via_focus_loss in [false, true] {
         let mut app = App::new_for_test();
         render(&mut app);
-        let state = app.proj().root().join(".local").join("state.toml");
-        let _ = std::fs::remove_file(&state);
+        let layout = app.proj().root().join(".local").join("layout.toml");
+        let _ = std::fs::remove_file(&layout);
         let (x, y) = handle_cell(&app);
         app.handle_mouse(left_down(x, y));
         if via_focus_loss {
@@ -560,7 +559,7 @@ fn a_cancelled_strip_press_ends_the_resize() {
             app.handle_mouse(right_down(editor.x + 2, editor.y + 1));
         }
         assert!(app.resize.is_none(), "focus loss {via_focus_loss}");
-        assert!(!state.exists(), "focus loss {via_focus_loss}: nothing saved");
+        assert!(!layout.exists(), "focus loss {via_focus_loss}: nothing saved");
     }
 }
 
@@ -577,8 +576,8 @@ fn a_strip_drag_that_returns_to_its_start_is_still_saved() {
     app.split_ratio = crate::layout::editor_share_for(column.height, editor.height);
     app.update(Action::Render);
     render(&mut app);
-    let state = app.proj().root().join(".local").join("state.toml");
-    let _ = std::fs::remove_file(&state);
+    let layout = app.proj().root().join(".local").join("layout.toml");
+    let _ = std::fs::remove_file(&layout);
     let before = app.split_state();
     let (x, y) = handle_cell(&app);
     app.handle_mouse(left_down(x, y));
@@ -589,18 +588,18 @@ fn a_strip_drag_that_returns_to_its_start_is_still_saved() {
     render(&mut app);
     assert_eq!(app.split_state(), before, "and came back");
     app.handle_mouse(left_up(x, y));
-    let saved = postui_core::fixtures::load_local_state(app.proj().root()).unwrap().main_split;
+    let saved = postui_core::fixtures::load_layout(app.proj().root()).unwrap().main_split;
     assert_eq!(saved, Some(before.to_token()), "saved where it ended");
 }
 
 /// Review F7: a press and release on either handle that moved nothing
-/// (a strip click, a gutter click) writes no `.local/state.toml`.
+/// (a strip click, a gutter click) writes no `.local/layout.toml`.
 #[test]
 fn a_handle_click_writes_no_state() {
     let mut app = App::new_for_test();
     render(&mut app);
-    let state = app.proj().root().join(".local").join("state.toml");
-    let _ = std::fs::remove_file(&state);
+    let layout = app.proj().root().join(".local").join("layout.toml");
+    let _ = std::fs::remove_file(&layout);
     let (x, y) = handle_cell(&app);
     app.handle_mouse(left_down(x, y));
     app.handle_mouse(left_up(x, y));
@@ -608,7 +607,7 @@ fn a_handle_click_writes_no_state() {
     let (x, y) = gutter_cell(&app);
     app.handle_mouse(left_down(x, y));
     app.handle_mouse(left_up(x, y));
-    assert!(!state.exists(), "nothing was saved");
+    assert!(!layout.exists(), "nothing was saved");
 }
 
 /// Review F5: the strip is still the response pane to a right click. A
@@ -1109,7 +1108,7 @@ fn vim_ctrl_w_resizes_follow_the_current_window() {
         (e - 1, r + 1)
     );
     assert_eq!(
-        postui_core::fixtures::load_local_state(app.proj().root()).unwrap().main_split,
+        postui_core::fixtures::load_layout(app.proj().root()).unwrap().main_split,
         Some(app.split_state().to_token()),
         "each step is saved"
     );
@@ -1273,7 +1272,7 @@ fn a_vim_gutter_drag_keeps_the_bodys_visual_and_operator() {
 
 /// Review round 6 L3: creating the project in place seeds both sizes from
 /// its local state, as every other open does, so the screen draws what
-/// `.local/state.toml` holds. The drags alone save what they draw, so the
+/// `.local/layout.toml` holds. The drags alone save what they draw, so the
 /// file is also written from outside before the init (another postui on
 /// the same folder), which only a seed picks up.
 #[test]
@@ -1291,16 +1290,16 @@ fn init_project_here_draws_the_sizes_its_state_holds() {
     app.handle_mouse(left_drag(x, y + 3));
     app.handle_mouse(left_up(x, y + 3));
     let root = app.proj().root().to_path_buf();
-    let mut outside = postui_core::fixtures::load_local_state(&root).unwrap();
+    let mut outside = postui_core::fixtures::load_layout(&root).unwrap();
     assert_eq!(outside.sidebar_width, Some(24), "the drag saved");
     outside.sidebar_width = Some(30);
     outside.main_split = Some(
         SplitState { editor_minimized: false, response_minimized: true, ratio: 0.6 }.to_token(),
     );
-    postui_core::fixtures::save_local_state(&root, &outside).unwrap();
+    postui_core::fixtures::save_layout(&root, &outside).unwrap();
     app.update(Action::InitProjectHere);
     assert!(postui_core::project::Project::is_project(app.proj().root()));
-    let state = postui_core::fixtures::load_local_state(app.proj().root()).unwrap();
+    let state = postui_core::fixtures::load_layout(app.proj().root()).unwrap();
     assert_eq!(app.sidebar_width, state.sidebar_width, "the width the state holds");
     let split = state.main_split.as_deref().and_then(SplitState::from_token);
     assert_eq!(Some(app.split_state()), split, "the split the state holds");

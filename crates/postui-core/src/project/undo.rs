@@ -430,7 +430,7 @@ mod tests {
         p.undo().unwrap();
         assert_eq!(p.local().main_split.as_deref(), Some("70"));
         assert_eq!(p.local().sidebar_width, Some(40));
-        let text = read(&dir, ".local/state.toml").unwrap();
+        let text = read(&dir, ".local/layout.toml").unwrap();
         assert!(
             text.contains("main_split = \"70\"") && text.contains("sidebar_width = 40"),
             "{text}"
@@ -482,28 +482,23 @@ mod tests {
         (first, cycles)
     }
 
-    /// Review round 7 M1: after a resize, `reload_all` writes the sizes
-    /// back inside the replay's recording window, so the first undo's entry
-    /// carries one more `state.toml` write than the op's. With no resize
-    /// between the undos and redos, that is where it stays.
+    /// Review round 7 M1: a resize after the op never reaches the journal
+    /// (the sizes live in `layout.toml`, spec P3b), so every replay's entry
+    /// is exactly the op's own.
     #[test]
     fn undo_redo_after_a_resize_keeps_entries_bounded() {
         let (first, cycles) = cycle_counts(|_, _| {});
-        let settled = (first.0 + 1, first.1 + 1);
-        assert_eq!(cycles, vec![(settled, settled); 5], "the rename's entry: {first:?}");
+        assert_eq!(cycles, vec![(first, first); 5], "the rename's entry: {first:?}");
     }
 
-    /// Review round 7 M1: a resize before each undo and each redo makes the
-    /// write-back a new op every time, on top of every `state.toml` op the
-    /// entry already had, so each replay's entry is one op longer than the
-    /// last. Asserts the bounded behaviour, which today fails.
-    // round 7 M1: pins unbounded growth, decision pending
+    /// Review round 7 M1: a resize before each undo and each redo used to
+    /// make `reload_all`'s write-back a new op every time, so each replay's
+    /// entry was one op longer than the last. The sizes now live in the
+    /// unjournaled `layout.toml` (spec P3b), so no replay ever records them.
     #[test]
-    #[ignore]
     fn undo_redo_with_a_resize_between_keeps_entries_bounded() {
         let (first, cycles) = cycle_counts(|p, n| p.set_sidebar_width(Some(31 + n)));
-        let settled = (first.0 + 1, first.1 + 1);
-        assert_eq!(cycles, vec![(settled, settled); 5], "the rename's entry: {first:?}");
+        assert_eq!(cycles, vec![(first, first); 5], "the rename's entry: {first:?}");
     }
 
     /// `.local/state.toml` does not exist yet when this op runs.

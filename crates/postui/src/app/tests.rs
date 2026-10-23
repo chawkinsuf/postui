@@ -17782,7 +17782,7 @@ fn a_press_on_a_drag_handle_moves_nothing() {
 }
 
 /// The split is a persisted layout preference: chip presses and the
-/// keyboard toggles record it in the project's `.local/state.toml`, and
+/// keyboard toggles record it in the project's `.local/layout.toml`, and
 /// opening the project seeds the split back from it.
 #[test]
 fn split_persists_to_local_state_and_reseeds_on_open() {
@@ -17791,7 +17791,7 @@ fn split_persists_to_local_state_and_reseeds_on_open() {
     app.update(Action::SplitStop(SplitStop::EditorBig));
     let root = app.proj().root().to_path_buf();
     let saved =
-        |root: &std::path::Path| postui_core::fixtures::load_local_state(root).unwrap().main_split;
+        |root: &std::path::Path| postui_core::fixtures::load_layout(root).unwrap().main_split;
     assert_eq!(saved(&root).as_deref(), Some("0.7500"));
 
     app.update(Action::ToggleResponseCollapse);
@@ -17805,15 +17805,15 @@ fn split_persists_to_local_state_and_reseeds_on_open() {
 }
 
 /// The sidebar's saved width is a per-project layout preference: opening a
-/// project with `sidebar_width` in its local state draws the sidebar that
-/// many columns wide.
+/// project with `sidebar_width` in its `.local/layout.toml` draws the
+/// sidebar that many columns wide.
 #[test]
 fn a_saved_sidebar_width_draws_from_the_project() {
     let app = App::new_for_test();
     let root = app.proj().root().to_path_buf();
-    let mut state = postui_core::fixtures::load_local_state(&root).unwrap();
-    state.sidebar_width = Some(30);
-    postui_core::fixtures::save_local_state(&root, &state).unwrap();
+    let mut layout = postui_core::fixtures::load_layout(&root).unwrap();
+    layout.sidebar_width = Some(30);
+    postui_core::fixtures::save_layout(&root, &layout).unwrap();
 
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut reopened = App::with_root(tx, root.clone());

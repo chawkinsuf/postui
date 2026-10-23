@@ -8,9 +8,9 @@
 use crate::model::HttpRequest;
 use crate::order::{OrderEdit, level_of, merge_level, space_order, write_order};
 use crate::project::{
-    DEFAULT_ENVIRONMENT, DEFAULT_SPACE, Kind, ListChange, LocalState, Project, ProjectError,
-    ProjectMeta, display_name_of, display_taken, env_display, environment_path, set_item_name,
-    slug_array, space_dir, space_display, unique_slug_among, valid_space_name,
+    DEFAULT_ENVIRONMENT, DEFAULT_SPACE, Kind, LayoutState, ListChange, LocalState, Project,
+    ProjectError, ProjectMeta, display_name_of, display_taken, env_display, environment_path,
+    set_item_name, slug_array, space_dir, space_display, unique_slug_among, valid_space_name,
 };
 use crate::storage::{
     RequestListing, StorageError, request_path, requests_dir, space_of, validate_slug,
@@ -79,7 +79,8 @@ pub fn trash(root: &Path, path: &Path) -> std::io::Result<Trashed> {
 
 // ---------------------------------------------------------------------
 // Project-level files: `project.toml`, `variables.toml`,
-// `environments/*.toml`, `.local/state.toml`, `.local/secrets.toml`.
+// `environments/*.toml`, `.local/state.toml`, `.local/layout.toml`,
+// `.local/secrets.toml`.
 // ---------------------------------------------------------------------
 
 /// Reads `path`; missing file yields `Ok(None)`, any other IO error is
@@ -341,6 +342,22 @@ pub fn save_local_state(root: &Path, state: &LocalState) -> std::io::Result<()> 
     std::fs::create_dir_all(&dir)?;
     let contents = toml::to_string(state).expect("LocalState always serializes");
     write_atomic(&dir.join("state.toml"), contents.as_bytes())
+}
+
+/// Loads `.local/layout.toml`, the pane sizes (spec P3b). Missing file
+/// yields the default (no saved sizes).
+pub fn load_layout(root: &Path) -> Result<LayoutState, ProjectError> {
+    match read_optional(&root.join(".local").join("layout.toml"))? {
+        None => Ok(LayoutState::default()),
+        Some(contents) => toml::from_str(&contents).map_err(|e| ProjectError::Parse(e.to_string())),
+    }
+}
+
+pub fn save_layout(root: &Path, layout: &LayoutState) -> std::io::Result<()> {
+    let dir = root.join(".local");
+    std::fs::create_dir_all(&dir)?;
+    let contents = toml::to_string(layout).expect("LayoutState always serializes");
+    write_atomic(&dir.join("layout.toml"), contents.as_bytes())
 }
 
 /// Loads `.local/secrets.toml`: env → name → value. Missing file yields an
@@ -913,7 +930,6 @@ mod tests {
         let state = LocalState {
             environment: Some("qa".into()),
             open_request: Some("users/list".into()),
-            main_split: Some("editor-big".into()),
             expanded: vec!["users".into()],
             selections,
             ..Default::default()

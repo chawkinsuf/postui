@@ -1,10 +1,27 @@
 //! `.local/state.toml`: the machine-owned UI state (active space and
-//! environment, per-space open request, expanded folders, selections,
-//! split). Written immediately on every change, never journaled.
+//! environment, per-space open request, expanded folders, selections).
+//! Written immediately on every change; journaled only by the cascades
+//! that must put it back (`persist_local_journaled`).
+//!
+//! `.local/layout.toml`: the pane sizes (split, sidebar width). Written
+//! immediately on every change and never journaled, so undo and redo
+//! never see a size (spec P3b).
 
 use super::*;
 
 impl Project {
+    /// Writes `.local/layout.toml` from memory. Never journaled, so it is
+    /// never part of an undo entry, whatever window it runs in.
+    pub(crate) fn persist_layout(&mut self) -> Result<(), Error> {
+        let layout = LayoutState {
+            main_split: self.local.main_split.clone(),
+            sidebar_width: self.local.sidebar_width,
+        };
+        let text = toml::to_string(&layout).expect("LayoutState always serializes");
+        self.disk.write(&rel(LAYOUT_TOML)?, &text)?;
+        Ok(())
+    }
+
     /// Writes `.local/state.toml` from memory. Best effort at the call
     /// sites that were best effort before; callers that want the error
     /// get it.
@@ -20,8 +37,7 @@ impl Project {
         let state = LocalState {
             environment: self.active_env.clone(),
             open_request: self.local.open_request.clone(),
-            main_split: self.local.main_split.clone(),
-            sidebar_width: self.local.sidebar_width,
+            legacy_main_split: None,
             expanded: self.local.expanded.iter().cloned().collect(),
             selections: self.local.selections.clone(),
             shared_selections: self.local.shared_selections.clone(),
@@ -73,12 +89,12 @@ impl Project {
 
     pub fn set_main_split(&mut self, token: Option<String>) {
         self.local.main_split = token;
-        let _ = self.persist_local();
+        let _ = self.persist_layout();
     }
 
     pub fn set_sidebar_width(&mut self, cols: Option<u16>) {
         self.local.sidebar_width = cols;
-        let _ = self.persist_local();
+        let _ = self.persist_layout();
     }
 
     pub fn selections_for(&self, env: &str) -> &IndexMap<String, String> {
@@ -177,16 +193,38 @@ mod tests {
         assert_eq!(p2.local().sidebar_width, Some(34));
     }
 
-    /// The app's setters are fire-and-forget: it never calls a separate
-    /// save, so each one must land in `.local/state.toml` at once.
+    /// The pane sizes live in `.local/layout.toml`, never in the journaled
+    /// `state.toml` (spec P3b), and a reopen reads them back from there.
     #[test]
-    fn every_local_setter_writes_state_toml_at_once() {
+    fn pane_sizes_round_trip_through_layout_toml() {
+        let (dir, mut p) = fixture();
+        p.set_main_split(Some("0.6000".into()));
+        p.set_sidebar_width(Some(34));
+        let layout = read(&dir, ".local/layout.toml").unwrap();
+        assert!(
+            layout.contains("main_split = \"0.6000\"") && layout.contains("sidebar_width = 34"),
+            "{layout}"
+        );
+        p.set_expanded(["main/deep".to_string()].into_iter().collect());
+        let state = read(&dir, ".local/state.toml").unwrap();
+        assert!(!state.contains("main_split") && !state.contains("sidebar_width"), "{state}");
+        let (p2, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        assert_eq!(p2.local().main_split.as_deref(), Some("0.6000"));
+        assert_eq!(p2.local().sidebar_width, Some(34));
+    }
+
+    /// The app's setters are fire-and-forget: it never calls a separate
+    /// save, so each one must land on disk at once: the pane sizes in
+    /// `.local/layout.toml`, the rest in `.local/state.toml`.
+    #[test]
+    fn every_local_setter_writes_its_file_at_once() {
         let (dir, mut p) = fixture();
         assert!(read(&dir, ".local/state.toml").is_none(), "nothing written yet");
         p.set_main_split(Some("60".into()));
-        assert!(read(&dir, ".local/state.toml").unwrap().contains("main_split = \"60\""));
+        assert!(read(&dir, ".local/layout.toml").unwrap().contains("main_split = \"60\""));
         p.set_sidebar_width(Some(34));
-        assert!(read(&dir, ".local/state.toml").unwrap().contains("sidebar_width = 34"));
+        assert!(read(&dir, ".local/layout.toml").unwrap().contains("sidebar_width = 34"));
+        assert!(read(&dir, ".local/state.toml").is_none(), "a size writes no state.toml");
         p.set_expanded(["main/deep".to_string()].into_iter().collect());
         assert!(read(&dir, ".local/state.toml").unwrap().contains("main/deep"));
         p.set_open_request(Some("main/ping"));

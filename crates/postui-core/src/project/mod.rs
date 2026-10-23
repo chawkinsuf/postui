@@ -91,8 +91,9 @@ impl std::fmt::Display for OpenError {
     }
 }
 
-/// The per-project, machine-owned state from `.local/state.toml`.
-/// Data only; `Project` persists it (Task 6).
+/// The per-project, machine-owned state from `.local/state.toml`, plus
+/// the pane sizes from `.local/layout.toml`. Data only; `Project`
+/// persists it (Task 6).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Local {
     pub active_space: String,
@@ -101,9 +102,8 @@ pub struct Local {
     pub selections: IndexMap<String, IndexMap<String, String>>,
     pub shared_selections: IndexMap<String, String>,
     /// The editor/response split. Pane sizes (this and `sidebar_width`)
-    /// live in the journaled `state.toml`, yet undo never restores them:
-    /// `reload_all` keeps them and writes them back (spec P3a; the
-    /// reasoning is at that write-back).
+    /// live in the unjournaled `layout.toml`, so undo never restores them
+    /// (spec P3a, P3b).
     pub main_split: Option<String>,
     /// The sidebar's width in columns; `None` = the default 28%.
     pub sidebar_width: Option<u16>,
@@ -193,6 +193,7 @@ pub(crate) const VARIABLES_TOML: &str = "variables.toml";
 pub(crate) const ENVIRONMENTS_DIR: &str = "environments";
 pub(crate) const REQUESTS_DIR: &str = "requests";
 pub(crate) const STATE_TOML: &str = ".local/state.toml";
+pub(crate) const LAYOUT_TOML: &str = ".local/layout.toml";
 pub(crate) const SECRETS_TOML: &str = ".local/secrets.toml";
 
 pub(crate) fn rel(s: &str) -> Result<RelPath, Error> {
@@ -792,12 +793,8 @@ impl Project {
     /// entry's own restored local state rather than overwriting it. The
     /// restored `environment` is applied last, once `reload_documents`
     /// has refreshed the environment list it must be checked against.
-    /// Pane sizes (`main_split`, `sidebar_width`) are a view preference
-    /// undo never restores: the in-memory values stay, and the file is
-    /// rewritten with them when the entry's copy differed (spec P3a).
     pub(crate) fn reload_all(&mut self) -> Vec<Warning> {
         let mut warnings = Vec::new();
-        let mut sizes_differ = false;
         // `None` = the read/parse failed, leave `active_env` untouched;
         // `Some(env)` = what `.local/state.toml` said it should be.
         let mut restored_environment: Option<Option<String>> = None;
@@ -805,8 +802,6 @@ impl Project {
             Ok(text) => match toml::from_str::<LocalState>(&text.unwrap_or_default()) {
                 Ok(state) => {
                     self.local.open_request = state.open_request;
-                    sizes_differ = state.main_split != self.local.main_split
-                        || state.sidebar_width != self.local.sidebar_width;
                     self.local.expanded = state.expanded.into_iter().collect();
                     self.local.selections = state.selections;
                     self.local.shared_selections = state.shared_selections;
@@ -845,20 +840,6 @@ impl Project {
                 // `apply_meta_active_env`, from the entry's own record.
                 None => {}
             }
-        }
-        // Pane sizes are a view preference undo never restores (spec P3a),
-        // yet `.local/state.toml` is journaled whole, so the entry's copy
-        // just put back the sizes from before the op. The in-memory sizes
-        // were kept above; writing them back now keeps the file and the
-        // next launch on the size the screen shows. The cost: after a
-        // resize, each undo/redo records one extra state.toml write inside
-        // its recording window, which the redo inverts and then rewrites
-        // here again. The final state is the same either way. Moving the
-        // sizes out of the journaled file would avoid it, but that is the
-        // bigger change (a second local file, its own read and write
-        // paths), so this smaller one was chosen.
-        if sizes_differ {
-            let _ = self.persist_local_journaled();
         }
         self.relist();
         self.reload_held_requests();
@@ -1046,6 +1027,23 @@ impl Project {
         let state: LocalState = Self::read_doc(&mut disk, STATE_TOML, |t| {
             toml::from_str(t).map_err(|e| e.to_string())
         })?;
+        // `None` = no `layout.toml` yet. A project from before it kept the
+        // split in `state.toml`: carry that over (spec P3b), and remember
+        // `state.toml`'s text without it, written only once `layout.toml`
+        // has it, so the split is always in one file or the other.
+        let layout: Option<LayoutState> = Self::read_doc(&mut disk, LAYOUT_TOML, |t| {
+            toml::from_str(t).map(Some).map_err(|e| e.to_string())
+        })?;
+        let (layout, migrated_state) = match layout {
+            Some(layout) => (layout, None),
+            None => {
+                let main_split = state.legacy_main_split.clone();
+                let stripped = main_split
+                    .is_some()
+                    .then(|| toml::to_string(&state).expect("LocalState always serializes"));
+                (LayoutState { main_split, sidebar_width: None }, stripped)
+            }
+        };
         let secrets: IndexMap<String, IndexMap<String, String>> =
             Self::read_doc(&mut disk, SECRETS_TOML, |t| {
                 toml::from_str(t).map_err(|e| e.to_string())
@@ -1122,8 +1120,8 @@ impl Project {
                 expanded: state.expanded.into_iter().collect(),
                 selections: state.selections,
                 shared_selections: state.shared_selections,
-                main_split: state.main_split,
-                sidebar_width: state.sidebar_width,
+                main_split: layout.main_split,
+                sidebar_width: layout.sidebar_width,
                 open_request,
             },
             journal: Journal::new(),
@@ -1132,6 +1130,14 @@ impl Project {
             migration_declined: false,
             force_reload: false,
         };
+        // Best effort, before anything below can persist `state.toml`. A
+        // failed `layout.toml` write leaves `state.toml` as it was; the
+        // split is in memory and the next resize writes `layout.toml`.
+        if let Some(text) = migrated_state
+            && project.persist_layout().is_ok()
+        {
+            let _ = project.disk.write(&RelPath::new(STATE_TOML).expect("constant"), &text);
+        }
         warnings.extend(project.prune_stale_selections(legacy_vars));
         project.stamp_watched();
         project.refresh_resolved();
@@ -1365,6 +1371,51 @@ mod tests {
         std::fs::write(dir.path().join(".local/state.toml"), "space = 3\n").unwrap();
         let err = Project::open(dir.path().to_path_buf()).unwrap_err();
         assert_eq!(err.file, ".local/state.toml");
+    }
+
+    /// An unparseable `.local/layout.toml` refuses the open like
+    /// `state.toml` does (spec P4), so it is never defaulted and then
+    /// overwritten.
+    #[test]
+    fn an_unparseable_layout_toml_refuses_the_open_and_is_left_alone() {
+        let (dir, _p) = fixture();
+        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
+        std::fs::write(dir.path().join(".local/layout.toml"), "sidebar_width = \"wide\"\n")
+            .unwrap();
+        let err = Project::open(dir.path().to_path_buf()).unwrap_err();
+        assert_eq!(err.file, ".local/layout.toml");
+        assert_eq!(read(&dir, ".local/layout.toml").as_deref(), Some("sidebar_width = \"wide\"\n"));
+    }
+
+    /// A project from before `.local/layout.toml` kept its split in
+    /// `state.toml` (spec P3b): it opens at that split, a `state.toml`
+    /// write before any resize does not lose it, and after a resize
+    /// `layout.toml` holds it and `state.toml` no longer does.
+    #[test]
+    fn an_old_state_toml_split_moves_to_layout_toml() {
+        let (dir, _p) = fixture();
+        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
+        std::fs::write(
+            dir.path().join(".local/state.toml"),
+            "main_split = \"0.6000\"\nspace = \"auth\"\n",
+        )
+        .unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        assert_eq!(p.local().main_split.as_deref(), Some("0.6000"));
+        assert_eq!(p.local().active_space, "auth");
+        p.set_expanded(["auth/x".to_string()].into_iter().collect());
+        p.set_sidebar_width(Some(30));
+        let layout = read(&dir, ".local/layout.toml").unwrap();
+        assert!(
+            layout.contains("main_split = \"0.6000\"") && layout.contains("sidebar_width = 30"),
+            "{layout}"
+        );
+        let state = read(&dir, ".local/state.toml").unwrap();
+        assert!(!state.contains("main_split"), "{state}");
+        assert!(state.contains("space = \"auth\""), "{state}");
+        let (p2, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        assert_eq!(p2.local().main_split.as_deref(), Some("0.6000"));
+        assert_eq!(p2.local().sidebar_width, Some(30));
     }
 
     #[test]

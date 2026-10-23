@@ -216,13 +216,11 @@ pub(crate) fn display_taken(
 pub struct LocalState {
     pub environment: Option<String>,
     pub open_request: Option<String>,
-    /// The editor/response split the UI last settled on, as an opaque
-    /// token owned by the UI layer (postui's `split` module); `None` (or
-    /// a token the UI doesn't recognize) means the default split.
-    pub main_split: Option<String>,
-    /// The sidebar's width in columns, last set by a drag or key; `None`
-    /// = the default 28%.
-    pub sidebar_width: Option<u16>,
+    /// The split as a project from before `.local/layout.toml` saved it
+    /// here: read once by `open` to carry it over (spec P3b), never
+    /// written back.
+    #[serde(rename = "main_split", skip_serializing)]
+    pub legacy_main_split: Option<String>,
     pub expanded: Vec<String>,
     /// Per-environment `name → selected option key`, shared by variables
     /// and groups (spec §1.3).
@@ -235,6 +233,21 @@ pub struct LocalState {
     pub space: Option<String>,
     /// space → the request last open in it.
     pub space_open: IndexMap<String, String>,
+}
+
+/// The per-project pane sizes from `.local/layout.toml` (spec P3b). Kept
+/// apart from `LocalState` because the journal records `state.toml` whole
+/// and undo never restores a size: this file is never journaled.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LayoutState {
+    /// The editor/response split the UI last settled on, as an opaque
+    /// token owned by the UI layer (postui's `split` module); `None` (or
+    /// a token the UI doesn't recognize) means the default split.
+    pub main_split: Option<String>,
+    /// The sidebar's width in columns, last set by a drag or key; `None`
+    /// = the default 28%.
+    pub sidebar_width: Option<u16>,
 }
 
 impl LocalState {
