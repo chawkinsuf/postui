@@ -1196,25 +1196,36 @@ impl ReadyView {
         }
     }
 
-    /// Records the bracket an arrows click at Vim's column names (R10, R20):
-    /// the clicked char when it is one, or the bracket right before a `,`
-    /// that ends its line. Blanks and a CRLF's `\r` may follow that `,`, and
-    /// a click past the end lands on the last of them. Anything else records
-    /// nothing. On the tree view the click holds the tree and its folds as
-    /// they are now, and lights only while they stay so (`bracket_pair`).
+    /// Records the bracket an arrows click at Vim's column names (R10, R20).
+    /// A click on the line's trailing blanks (a CRLF's `\r` among them; a
+    /// click past the end lands on the last of them) counts as one on its
+    /// last other char. That char, or the clicked one, names itself when
+    /// it's a bracket. A `,` that ends the line names the bracket right
+    /// before it. Anything else records nothing. A tree view click holds
+    /// the tree it was made on (`Clicked`).
     fn record_click(&mut self) {
         use crate::text::brackets::is_bracket;
         let Some((line, col)) = self.at_col else { return };
-        let Some(text) = self.buffer_line(line) else { return };
-        let chars: Vec<char> = text.chars().collect();
-        let bracket = |col: usize| chars.get(col).is_some_and(|&c| is_bracket(c));
-        let col = match chars.iter().rposition(|c| !c.is_whitespace()) {
-            Some(end) if col >= end && chars[end] == ',' => {
-                end.checked_sub(1).filter(|&before| bracket(before))
+        // Borrowed where it can be: a raw line can be megabytes long.
+        let owned;
+        let text = match self.mode {
+            ViewMode::Raw => self.raw_lines.get(line).map(String::as_str),
+            _ => {
+                owned = self.buffer_line(line);
+                owned.as_deref()
             }
-            _ => Some(col).filter(|&col| bracket(col)),
         };
-        let tree = (self.mode == ViewMode::Pretty).then_some((self.tree_epoch, self.tree_edits));
+        let Some(text) = text else { return };
+        let Some(end) = text.chars().rev().position(|c| !c.is_whitespace()) else { return };
+        let end = text.chars().count() - 1 - end;
+        let col = col.min(end);
+        let char_at = |col: usize| text.chars().nth(col);
+        let col = match char_at(col) {
+            Some(',') if col == end => col.checked_sub(1),
+            _ => Some(col),
+        };
+        let col = col.filter(|&col| char_at(col).is_some_and(is_bracket));
+        let tree = (self.mode == ViewMode::Pretty).then_some(self.tree_epoch);
         self.clicked = col.map(|col| Clicked { tree, line, col });
     }
 
@@ -1276,11 +1287,12 @@ impl ReadyView {
             (line, self.cursor, col)
         } else {
             // The clicked bracket, wherever the cursor has moved since
-            // (#89). A tree view click lights only while the tree and its
-            // folds are as they were: its line names a line of that tree.
-            let tree_now = (self.tree_epoch, self.tree_edits);
+            // (#89). A tree view click lights only while its tree is on
+            // screen: its line names a line of that tree. Folds keep a
+            // full line's index, so they don't retire it (R13 darkens a
+            // hidden one).
             let Clicked { line, col, .. } =
-                self.clicked.filter(|c| c.tree.is_none_or(|tree| tree == tree_now))?;
+                self.clicked.filter(|c| c.tree.is_none_or(|tree| tree == self.tree_epoch))?;
             let row = match self.mode {
                 ViewMode::Pretty => self.active_tree()?.visible_index_of(line)?,
                 _ => line,
@@ -2476,15 +2488,14 @@ struct BracketInputs {
 /// The bracket an arrows click named, as (real line, char) of the view it
 /// was made on (`ReadyView::record_click`).
 ///
-/// On the tree view it also holds the tree and its folds as they were
-/// (`tree_epoch`, `tree_edits`). A swap (a jq run, a parse landing) or a
-/// fold since then retires it: its line named a line of that tree. That
-/// is coarser than tracking what moved, but it never lights a wrong pair.
-/// Raw and Headers lines never change, so a click there has no tree. A
-/// view switch forgets it outright (`set_mode`, R10).
+/// On the tree view it also holds the tree it was made on (`tree_epoch`). A
+/// swap since then (a jq run, a parse landing) retires it: its line named
+/// a line of the old tree. A fold doesn't, since it keeps every full line's
+/// index. Raw and Headers lines never change, so a click there has no
+/// tree. A view switch forgets it outright (`set_mode`, R10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Clicked {
-    tree: Option<(u64, u64)>,
+    tree: Option<u64>,
     line: usize,
     col: usize,
 }
@@ -2520,9 +2531,10 @@ pub struct Response {
     /// authority; `collapsed` above is still this pane's own flag.
     pub split: crate::split::SplitState,
     /// Display copy of the profile, refreshed by the frame before every
-    /// draw: whether Vim's cursor column, rather than a click, lights a
-    /// bracket pair (spec 2026-10-22, matching brackets, R10, R11).
-    pub vim_cursor: bool,
+    /// draw ([`Response::set_vim_cursor`]): whether Vim's cursor column,
+    /// rather than a click, lights a bracket pair (spec 2026-10-22,
+    /// matching brackets, R10, R11).
+    vim_cursor: bool,
     /// The jq filter bar. Lives here rather than on `ReadyView` so it
     /// survives a new response landing in the same slot — the filter the
     /// user typed keeps working (once reconciled) against the new body,
@@ -3715,6 +3727,16 @@ impl Response {
         }
     }
 
+    /// Refreshes the profile copy, every frame, the pane drawn or not. Vim
+    /// has no click to light: the vim profile forgets a click arrows
+    /// recorded, so a switch back lights no stale pair.
+    pub fn set_vim_cursor(&mut self, vim: bool) {
+        self.vim_cursor = vim;
+        if let Some(view) = self.view.as_mut().filter(|_| vim) {
+            view.clicked = None;
+        }
+    }
+
     /// The visible line the last click anchored on, for the app to put the
     /// cursor there (`click_row`).
     pub fn anchor_line(&self) -> Option<usize> {
@@ -4371,11 +4393,6 @@ impl Component for Response {
         // drawn unscrolled.
         if view.mode == ViewMode::Raw && view.h_scroll > 0 {
             view.index_raw_rows(view.scroll..view.scroll + view.height);
-        }
-        // Vim has no click to light: a click arrows recorded is forgotten
-        // once the profile is vim, so a switch back lights no stale pair.
-        if self.vim_cursor {
-            view.clicked = None;
         }
         let pair = if ctx.focused { view.lit_pair(self.vim_cursor) } else { None };
         let body = body_lines(view, t, ctx.focused, ctx.hovered, hits, body_area, pair);
@@ -10745,6 +10762,9 @@ mod tests {
         let mut r = ready("f(a),\r\nx");
         click_cell(&mut r, 0, 20);
         assert!(bracket_lit_at(&mut r, true, 0, 3), "past the end of a CRLF line");
+        let mut r = ready("(\r\n)\r\n");
+        click_cell(&mut r, 1, 20);
+        assert!(bracket_lit_at(&mut r, true, 0, 0), "past a bare `)` and its `\\r`");
     }
 
     /// A press on the pane off the text (above the body rect: a click
@@ -10807,15 +10827,19 @@ mod tests {
         let same = JsonTree::parse(body);
         r.view.as_mut().unwrap().set_body_tree(same);
         assert!(!bracket_lit_at(&mut r, true, 1, open), "a tree click, after a tree swap");
+        // A fold keeps every full line's index, so it keeps the click; so
+        // does a mutable look at the tree that changes nothing (a search
+        // step's).
         let mut r = ready(body);
         click_cell(&mut r, 1, open);
         r.view.as_mut().unwrap().active_tree_mut().unwrap().toggle(5);
-        assert!(!bracket_lit_at(&mut r, true, 1, open), "a tree click, after a fold");
+        assert!(bracket_lit_at(&mut r, true, 1, open), "a tree click, after another fold");
+        let _ = r.view.as_mut().unwrap().active_tree_mut();
+        assert!(bracket_lit_at(&mut r, true, 1, open), "after a no-op mutable look");
         let mut r = ready(body);
         click_cell(&mut r, 1, open);
-        r.vim_cursor = true;
-        bracket_lit_at(&mut r, true, 0, 0);
-        r.vim_cursor = false;
+        r.set_vim_cursor(true);
+        r.set_vim_cursor(false);
         assert!(!bracket_lit_at(&mut r, true, 1, open), "an arrows click, after a vim spell");
     }
 

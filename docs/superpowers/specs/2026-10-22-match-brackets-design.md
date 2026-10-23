@@ -305,14 +305,19 @@ and the user picked the recommended option for each (`mine (approved)`):
   - Review rounds 4–6 kept finding one more event that should retire the
     long-lived click. So the rule is inverted: the click records what it
     depends on, and lights only while that is unchanged.
-    - `record_click` resolves the click once, when it's made. It records
-      the clicked bracket, or for R20 the bracket before a line-end `,`
-      (trailing blanks and `\r` included), and nothing for any other char.
-    - A Tree view click holds the tree and its folds (`tree_epoch`,
-      `tree_edits`). A swap or any fold since then retires it: coarser
-      than tracking what moved, never a wrong pair. A Raw or Headers click
-      holds no tree, since those lines never change.
-    - A vim-profile draw forgets it, so a switch back to arrows lights no
+    - `record_click` resolves the click once, when it's made. A click on
+      the line's trailing blanks or `\r` (where a click past the end
+      lands) counts as one on its last other char. That char names itself
+      when it's a bracket, and a line-end `,` names the bracket before it
+      (R20). Any other char records nothing.
+    - A Tree view click holds the tree it was made on (`tree_epoch`), so a
+      swap retires it. A fold doesn't, because it keeps every full line's
+      index, and R13 darkens a clicked line a fold hides. (Round 6 also
+      held `tree_edits`. Round 7 found that a no-op mutable borrow, such as
+      a search step's, retired the click, so it was dropped.) A Raw or
+      Headers click holds no tree, since those lines never change.
+    - The vim profile forgets it (`Response::set_vim_cursor`, every
+      frame, whichever screen shows), so a switch back to arrows lights no
       stale pair.
   - The bracket memo keys arrows on the click and the scroll. A key that
     keeps the pair doesn't walk again, but a scroll re-walks the rows in
