@@ -690,8 +690,11 @@ fn the_gaps_between_the_strips_controls_never_resize() {
     for (x, y) in [(icon.right(), icon.y), (tab.right(), tab.y)] {
         assert_eq!(app.hits.hit_at(x, y), Some(&Hit::StripControls), "({x}, {y})");
         let before = app.split_state();
+        let (hx, hy) = handle_cell(&app);
+        app.handle_mouse(moved(hx, hy));
+        assert_eq!(app.pointer_shape_update(), Some(PointerShape::RowResize), "the handle");
         app.handle_mouse(moved(x, y));
-        assert_ne!(app.pointer_shape_update(), Some(PointerShape::RowResize), "({x}, {y})");
+        assert_eq!(app.pointer_shape_update(), Some(PointerShape::Default), "({x}, {y})");
         app.handle_mouse(left_down(x, y));
         assert!(app.resize.is_none(), "({x}, {y}): no resize armed");
         assert_eq!(app.focus, PaneId::Response, "({x}, {y}): the press still focuses");

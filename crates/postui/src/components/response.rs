@@ -4617,26 +4617,27 @@ fn draw_header_strip(
         return;
     }
 
+    // Row 1 (right) + row 2 (its underline): the response tabs,
+    // right-aligned. Their band goes down before the icons do: on a
+    // narrow strip its margin reaches the last icon, which must stay on
+    // top.
+    let (tabs, modes) = response_tab_defs(view, bar, t);
+    let tabs_width = tabstrip_width(&tabs);
+    let tabs_x = area.right().saturating_sub(tabs_width).max(area.x);
+    let tabstrip_area = Rect::new(tabs_x, area.y + 1, tabs_width, 2);
+    register_control_band(hits, area, tabstrip_area);
+
     // Row 2 (left): the icon actions, on the stretch of the underline row
     // the tabs' rule doesn't reach.
     let jq_available = view.has_tree_view() && view.mode == ViewMode::Pretty;
     draw_header_actions(frame, hits, area, jq_available, jq_open, bg, ctx);
 
     let buf = frame.buffer_mut();
-    let row1_y = area.y + 1;
-
-    // Row 1 (right) + row 2 (its underline): the response tabs,
-    // right-aligned.
-    let (tabs, modes) = response_tab_defs(view, bar, t);
-
-    let tabs_width = tabstrip_width(&tabs);
-    let tabs_x = area.right().saturating_sub(tabs_width).max(area.x);
     let active = modes.iter().position(|m| *m == view.mode).unwrap_or(0);
     let hovered = match ctx.hovered {
         Some(crate::hit::Hit::ResponseTab(m)) => modes.iter().position(|mode| mode == m),
         _ => None,
     };
-    let tabstrip_area = Rect::new(tabs_x, row1_y, tabs_width, 2);
     let spans = crate::paint::TabStrip::spans(&tabs);
     let (static_left, static_width) =
         spans.get(active).map(|(x, w)| (*x as f32, *w as f32)).unwrap_or((0.0, 0.0));
@@ -4665,7 +4666,6 @@ fn draw_header_strip(
         right_anchored: 0,
     }
     .paint(buf, tabstrip_area, bg, t);
-    register_control_band(hits, area, &rects);
     for (rect, mode) in rects.into_iter().zip(modes) {
         hits.register(rect, crate::hit::Hit::ResponseTab(mode));
     }
@@ -4774,22 +4774,23 @@ fn draw_header_actions(
         rects.push((rect, hit));
         x += w + 1;
     }
-    let group: Vec<Rect> = rects.iter().map(|(rect, _)| *rect).collect();
-    register_control_band(hits, area, &group);
+    if let Some(group) = rects.iter().map(|(rect, _)| *rect).reduce(Rect::union) {
+        register_control_band(hits, area, group);
+    }
     for (rect, hit) in rects {
         hits.register(rect, hit);
     }
 }
 
 /// Registers [`crate::hit::Hit::StripControls`] under one of the header
-/// strip's control groups, before the group's own hits so they sit on
-/// top: from a cell left of the first control to a cell right of the
-/// last, on the rows they use, clipped to the `strip`. The strip is the
-/// split handle everywhere else, and a handle in the one-cell gaps
-/// between the controls turned a press that just missed one into a drag
-/// (task #95).
-fn register_control_band(hits: &mut crate::hit::HitMap, strip: Rect, group: &[Rect]) {
-    let Some(span) = group.iter().copied().reduce(|a, b| a.union(b)) else { return };
+/// strip's control groups (`span`, the group's bounding rect): from a
+/// cell left of its first control to a cell right of its last, on the
+/// rows it uses, clipped to the `strip`. The strip is the split handle
+/// everywhere else, and a handle in the one-cell gaps between the
+/// controls turned a press that just missed one into a drag (task #95).
+/// Both bands are registered before any control, so a margin that
+/// reaches the other group on a narrow strip never covers a control.
+fn register_control_band(hits: &mut crate::hit::HitMap, strip: Rect, span: Rect) {
     let x = span.x.saturating_sub(1);
     let band = Rect::new(x, span.y, span.right() + 1 - x, span.height).intersection(strip);
     hits.register(band, crate::hit::Hit::StripControls);
@@ -7123,6 +7124,11 @@ mod tests {
 
     /// Draws `resp` at 60x20 and returns the frame's hits.
     fn render_hits(resp: &mut Response) -> crate::hit::HitMap {
+        render_hits_at(resp, 60)
+    }
+
+    /// [`render_hits`] on a pane `width` cells wide.
+    fn render_hits_at(resp: &mut Response, width: u16) -> crate::hit::HitMap {
         let theme = Theme::dark();
         let ctx = DrawCtx {
             theme: &theme,
@@ -7133,7 +7139,7 @@ mod tests {
             anims: test_anims(),
             now: std::time::Instant::now(),
         };
-        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal.draw(|f| resp.draw(f, f.area(), &ctx, &mut hits)).unwrap();
         hits
@@ -8752,6 +8758,35 @@ mod tests {
             assert_eq!(at(tree.x - 2, row), Some(Hit::SplitHandle), "past the margin");
         }
         assert_eq!(at(tree.x, tree.y - 1), Some(Hit::SplitHandle), "row 0 above the tabs");
+    }
+
+    /// On a strip narrow enough that the two groups' margins reach the
+    /// other group, every cell of every control is still that control: no
+    /// band sits on top of a button or a tab.
+    #[test]
+    fn a_narrow_strips_bands_never_cover_a_control() {
+        use crate::hit::Hit;
+        let mut r = ready(r#"{"a": 1}"#);
+        let controls = HEADER_ACTIONS
+            .iter()
+            .map(|(_, hit)| hit.clone())
+            .chain([ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers].map(Hit::ResponseTab));
+        let controls: Vec<Hit> = controls.collect();
+        for width in 36..=50 {
+            let hits = render_hits_at(&mut r, width);
+            for hit in &controls {
+                let rect = hits.rect_of(hit).unwrap_or_else(|| panic!("{width}: {hit:?} drawn"));
+                for x in rect.x..rect.right().min(width) {
+                    for y in rect.y..rect.bottom() {
+                        let got = hits.hit_at(x, y);
+                        if got.is_some_and(|h| controls.contains(h)) {
+                            continue; // a control over a control: the strip overflowing
+                        }
+                        panic!("{width}: ({x}, {y}) of {hit:?} hits {got:?}");
+                    }
+                }
+            }
+        }
     }
 
     /// Over the strip's draggable part the strip warms toward the hover

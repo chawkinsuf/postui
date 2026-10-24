@@ -119,7 +119,11 @@ pub enum Hit {
     /// buttons, the tabs), one cell wider than the group on each side: the
     /// strip minus the drag, so a press that just misses a control, in a
     /// gap or at a group's edge, clicks as the strip does but moves no
-    /// line (task #95).
+    /// line (task #95). Its own variant, not a flag on `SplitHandle`, so
+    /// `SplitHandle` keeps meaning the draggable strip wherever it is
+    /// matched or looked up (the hover warm, the resize pointer, the grab's
+    /// `rect_of`); a match that means the strip as the pane's header (a
+    /// press, the right-click menu) names both.
     StripControls,
     /// The 1-column gutter between the sidebar and the main column: the
     /// handle the sidebar's width is dragged by.
