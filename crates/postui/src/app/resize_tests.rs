@@ -673,6 +673,58 @@ fn right_click_on_the_strip_opens_the_response_text_menu() {
     assert_eq!(menu.items.first().map(|i| i.label.as_str()), Some("Copy"));
 }
 
+/// Task #95: the cell between two icons and the cell between two tabs are
+/// the strip's control band, not the handle. A press-and-drag there clicks
+/// as the strip does (the response takes focus) but moves no line, the
+/// pointer stays the plain arrow, and a right click is still the
+/// response's menu.
+#[test]
+fn the_gaps_between_the_strips_controls_never_resize() {
+    use crate::components::response::ViewMode;
+    let mut app = App::new_for_test();
+    super::tests::ready_response(&mut app, r#"{"a": 1}"#);
+    app.update(Action::FocusPane(PaneId::Editor));
+    render(&mut app);
+    let icon = rect(&app, &Hit::ResponseSearchButton);
+    let tab = rect(&app, &Hit::ResponseTab(ViewMode::Pretty));
+    for (x, y) in [(icon.right(), icon.y), (tab.right(), tab.y)] {
+        assert_eq!(app.hits.hit_at(x, y), Some(&Hit::StripControls), "({x}, {y})");
+        let before = app.split_state();
+        app.handle_mouse(moved(x, y));
+        assert_ne!(app.pointer_shape_update(), Some(PointerShape::RowResize), "({x}, {y})");
+        app.handle_mouse(left_down(x, y));
+        assert!(app.resize.is_none(), "({x}, {y}): no resize armed");
+        assert_eq!(app.focus, PaneId::Response, "({x}, {y}): the press still focuses");
+        app.handle_mouse(left_drag(x, y + 4));
+        app.handle_mouse(left_up(x, y + 4));
+        assert_eq!(app.split_state(), before, "({x}, {y}): the line stays");
+        app.update(Action::FocusPane(PaneId::Editor));
+        render(&mut app);
+
+        app.handle_mouse(right_down(x, y));
+        let Some(Modal::Dropdown(menu)) = app.modals.top() else {
+            panic!("({x}, {y}): expected the response's context menu");
+        };
+        assert_eq!(menu.items.first().map(|i| i.label.as_str()), Some("Copy"));
+        app.update(Action::CancelTopModal);
+        render(&mut app);
+    }
+}
+
+/// Task #95, vim: a press on the control band is the strip's status-line
+/// press without the drag, so the current window stays.
+#[test]
+fn a_vim_press_between_the_strips_controls_keeps_the_window() {
+    let mut app = vim_at(PaneId::Editor);
+    super::tests::ready_response(&mut app, r#"{"a": 1}"#);
+    render(&mut app);
+    let icon = rect(&app, &Hit::ResponseSearchButton);
+    app.handle_mouse(left_down(icon.right(), icon.y));
+    assert!(app.resize.is_none(), "no resize armed");
+    assert_eq!(app.focus, PaneId::Editor, "the current window stays");
+    app.handle_mouse(left_up(icon.right(), icon.y));
+}
+
 // -- The keyboard (spec S6, S7, E11, E13) --------------------------------
 
 /// The app in the vim profile with `focus`, after a frame.

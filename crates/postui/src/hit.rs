@@ -115,6 +115,12 @@ pub enum Hit {
     /// The response header strip as a whole, under its tabs and icon
     /// buttons: the handle the editor/response line is dragged by.
     SplitHandle,
+    /// The band under each of the header strip's control groups (the icon
+    /// buttons, the tabs), one cell wider than the group on each side: the
+    /// strip minus the drag, so a press that just misses a control, in a
+    /// gap or at a group's edge, clicks as the strip does but moves no
+    /// line (task #95).
+    StripControls,
     /// The 1-column gutter between the sidebar and the main column: the
     /// handle the sidebar's width is dragged by.
     SidebarGutter,
@@ -424,8 +430,10 @@ impl PointerShape {
             // The variable tooltip's panel between its pills: a click there
             // is only swallowed, so it is chrome, not a button.
             // An auto header row is a surface, hovered only for the footer.
+            // The strip's control band is the strip without the drag.
             Some(
                 Hit::Pane(_)
+                | Hit::StripControls
                 | Hit::ModalOutside
                 | Hit::ModalBody
                 | Hit::TipPanel(_)

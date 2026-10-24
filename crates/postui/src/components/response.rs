@@ -4584,7 +4584,9 @@ fn draw_status_row(
 /// underline on the right and the icon actions (search / edit / save /
 /// copy) on the left, directly above the body they act on. The whole
 /// strip is registered first as the [`crate::hit::Hit::SplitHandle`], so
-/// the tabs and icons registered after it sit on top.
+/// the tabs and icons registered after it sit on top, each group on a
+/// [`register_control_band`] that keeps the gaps between them from
+/// dragging.
 #[allow(clippy::too_many_arguments)] // one display-state flag per row feature, all from `Response`
 fn draw_header_strip(
     frame: &mut Frame,
@@ -4663,6 +4665,7 @@ fn draw_header_strip(
         right_anchored: 0,
     }
     .paint(buf, tabstrip_area, bg, t);
+    register_control_band(hits, area, &rects);
     for (rect, mode) in rects.into_iter().zip(modes) {
         hits.register(rect, crate::hit::Hit::ResponseTab(mode));
     }
@@ -4771,9 +4774,25 @@ fn draw_header_actions(
         rects.push((rect, hit));
         x += w + 1;
     }
+    let group: Vec<Rect> = rects.iter().map(|(rect, _)| *rect).collect();
+    register_control_band(hits, area, &group);
     for (rect, hit) in rects {
         hits.register(rect, hit);
     }
+}
+
+/// Registers [`crate::hit::Hit::StripControls`] under one of the header
+/// strip's control groups, before the group's own hits so they sit on
+/// top: from a cell left of the first control to a cell right of the
+/// last, on the rows they use, clipped to the `strip`. The strip is the
+/// split handle everywhere else, and a handle in the one-cell gaps
+/// between the controls turned a press that just missed one into a drag
+/// (task #95).
+fn register_control_band(hits: &mut crate::hit::HitMap, strip: Rect, group: &[Rect]) {
+    let Some(span) = group.iter().copied().reduce(|a, b| a.union(b)) else { return };
+    let x = span.x.saturating_sub(1);
+    let band = Rect::new(x, span.y, span.right() + 1 - x, span.height).intersection(strip);
+    hits.register(band, crate::hit::Hit::StripControls);
 }
 
 fn human_elapsed(d: Duration) -> String {
@@ -8700,6 +8719,39 @@ mod tests {
         let strip = hits.rect_of(&Hit::SplitHandle).expect("handle on the pending strip");
         assert_eq!((strip.y, strip.height), (0, 1));
         assert_eq!(hits.hit_at(30, 0), Some(&Hit::SplitHandle));
+    }
+
+    /// Task #95: the icon group and the tab group each sit on a band that
+    /// is not the handle, so the gaps between their controls and one cell
+    /// around each group don't drag. Past that margin, and on the rows
+    /// the groups don't use, the strip is still the handle.
+    #[test]
+    fn the_strips_control_groups_are_carved_out_of_the_handle() {
+        use crate::hit::Hit;
+        let mut r = ready(r#"{"a": 1}"#);
+        let hits = render_hits(&mut r);
+        let at = |x: u16, y: u16| hits.hit_at(x, y).cloned();
+
+        let first = hits.rect_of(&Hit::ResponseSearchButton).unwrap();
+        let second = hits.rect_of(&Hit::ResponseEditorButton).unwrap();
+        let last = hits.rect_of(&Hit::ResponseJqButton).expect("jq is offered on a JSON tree");
+        let y = first.y;
+        assert_eq!(at(first.right(), y), Some(Hit::StripControls), "between two icons");
+        assert_eq!(second.x, first.right() + 1, "a one-cell gap");
+        assert_eq!(at(first.x - 1, y), Some(Hit::StripControls), "the margin before");
+        assert_eq!(at(last.right(), y), Some(Hit::StripControls), "the margin after");
+        assert_eq!(at(last.right() + 1, y), Some(Hit::SplitHandle), "past the margin");
+        assert_eq!(at(first.x, y - 1), Some(Hit::SplitHandle), "the row above the icons");
+
+        let tree = hits.rect_of(&Hit::ResponseTab(ViewMode::Pretty)).unwrap();
+        let raw = hits.rect_of(&Hit::ResponseTab(ViewMode::Raw)).unwrap();
+        assert!(raw.x > tree.right(), "a gap between the tabs");
+        for row in [tree.y, tree.y + 1] {
+            assert_eq!(at(tree.right(), row), Some(Hit::StripControls), "between two tabs");
+            assert_eq!(at(tree.x - 1, row), Some(Hit::StripControls), "the margin before");
+            assert_eq!(at(tree.x - 2, row), Some(Hit::SplitHandle), "past the margin");
+        }
+        assert_eq!(at(tree.x, tree.y - 1), Some(Hit::SplitHandle), "row 0 above the tabs");
     }
 
     /// Over the strip's draggable part the strip warms toward the hover

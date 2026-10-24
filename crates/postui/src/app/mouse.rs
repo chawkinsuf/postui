@@ -1320,7 +1320,9 @@ impl App {
     fn is_separator_press(&self, hit: &Hit) -> bool {
         match hit {
             Hit::SidebarGutter => true,
-            Hit::SplitHandle => self.profile() == crate::config::KeyProfile::Vim,
+            Hit::SplitHandle | Hit::StripControls => {
+                self.profile() == crate::config::KeyProfile::Vim
+            }
             _ => false,
         }
     }
@@ -1784,28 +1786,32 @@ impl App {
             // pane's does (spec E2a; the click-away above already ran for
             // it), arming no text sweep: the motion is the resize's. The
             // handle is the hovered hit for the length of the drag, so it
-            // stays lit wherever the pointer goes.
-            Hit::SidebarGutter | Hit::SplitHandle => {
+            // stays lit wherever the pointer goes. The strip's control band
+            // presses as the strip does and stops there: it arms no drag
+            // (task #95).
+            Hit::SidebarGutter | Hit::SplitHandle | Hit::StripControls => {
                 if self.is_separator_press(&hit) {
                     self.vim_separator_press();
                 } else {
                     self.press_response_pane(clicks.text, m, false);
                 }
-                let kind = if hit == Hit::SidebarGutter {
-                    ResizeHandle::Sidebar
-                } else {
-                    // Where this frame drew the strip, not where it will
-                    // settle: the user grabs what they see. The first motion
-                    // snaps the split (`set_split_now`), so from then on
-                    // drawn and settled agree, and measuring from the drawn
-                    // strip keeps it under the pointer (spec E5). Measuring
-                    // from the settled strip would put the line the ease's
-                    // remaining rows away.
-                    let top = self.hits.rect_of(&Hit::SplitHandle).map_or(m.row, |r| r.y);
-                    ResizeHandle::Split {
-                        grab: m.row.saturating_sub(top),
-                        press: m.row,
-                        start: self.split_state(),
+                let kind = match hit {
+                    Hit::StripControls => return self.update(Action::Render),
+                    Hit::SidebarGutter => ResizeHandle::Sidebar,
+                    _ => {
+                        // Where this frame drew the strip, not where it will
+                        // settle: the user grabs what they see. The first motion
+                        // snaps the split (`set_split_now`), so from then on
+                        // drawn and settled agree, and measuring from the drawn
+                        // strip keeps it under the pointer (spec E5). Measuring
+                        // from the settled strip would put the line the ease's
+                        // remaining rows away.
+                        let top = self.hits.rect_of(&Hit::SplitHandle).map_or(m.row, |r| r.y);
+                        ResizeHandle::Split {
+                            grab: m.row.saturating_sub(top),
+                            press: m.row,
+                            start: self.split_state(),
+                        }
                     }
                 };
                 self.resize = Some(ResizeDrag { kind, moved: false, tracked: false });
