@@ -5915,6 +5915,9 @@ impl App {
                 // bar as a click on the text does (`Hit::ResponseJqClear`).
                 self.no_coalesce = true;
                 self.editor.jq.clear();
+                // Said, as a deleted view is: from the palette or the menu
+                // the scratch may not be on screen to see it go.
+                self.toasts.push(format!("Scratch cleared{}", self.undo_hint()), ToastKind::Info);
                 true
             }
             Action::JqApply(text) => {

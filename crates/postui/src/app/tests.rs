@@ -24159,6 +24159,8 @@ fn clearing_the_scratch_from_the_palette_moves_nothing_else() {
     app.focus = PaneId::Sidebar;
     app.update(Action::ClearJqScratch);
     assert_eq!(app.editor.jq, "");
+    let said = app.toasts.last_message().unwrap_or_default();
+    assert!(said.starts_with("Scratch cleared"), "said, as a delete is: {said:?}");
     assert!(!app.editor.jq_enabled, "the switch stays off");
     assert_eq!(app.focus, PaneId::Sidebar);
     assert!(!app.session.response.jq_focused());

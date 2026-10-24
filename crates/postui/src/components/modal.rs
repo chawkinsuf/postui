@@ -635,7 +635,10 @@ impl MenuItem {
         Self { buttons, ..self }
     }
 
-    /// The row with a rename and a delete, the views menu's pair.
+    /// The row with a rename and a delete, for the dropdown machinery's own
+    /// tests (layout, keys, footer). It is not the views menu's copy, and
+    /// not meant to be: `App::open_jq_views` builds that menu's buttons,
+    /// and the app tests check their words and actions on the real menu.
     #[cfg(test)]
     pub fn with_rename_delete(self, rename: Action, delete: Action) -> Self {
         use crate::action::Verb;
@@ -5182,21 +5185,19 @@ mod tests {
         assert!(hits.rect_of(&Hit::row_rename(2)).is_none(), "no actions, hovered or not");
     }
 
-    /// Amendment B9: rows with different buttons right-align them, in their
-    /// listed order, and every row reserves the widest row's cells. A row
-    /// with one button has it in the last cell.
     /// The views menu's shape: a scratch row that clears on `d`, then a
-    /// view row that copies, renames and deletes.
+    /// view row that copies, renames and deletes. Each action is a toast
+    /// naming its button.
     fn scratch_and_view_items(toast: impl Fn(&str) -> Action) -> Vec<MenuItem> {
         use crate::action::Verb;
         let delete = Verb::Delete { count: 1 };
         vec![
             MenuItem::new("scratch", Action::Render).with_buttons(vec![
-                RowButton::new(delete, "clear", crate::glyph::CLOSE, "Clear", toast("c"))
+                RowButton::new(delete, "clear", crate::glyph::CLOSE, "Clear", toast("clear"))
                     .destructive(),
             ]),
             MenuItem::new("names", Action::Render).with_buttons(vec![
-                RowButton::new(Verb::CopyToScratch, "copy", crate::glyph::COPY, "Copy", toast("y")),
+                RowButton::new(Verb::CopyToScratch, "copy", crate::glyph::COPY, "Copy", toast("c")),
                 RowButton::new(Verb::Rename, "rename", crate::glyph::PENCIL, "Rename", toast("r")),
                 RowButton::new(delete, "delete", crate::glyph::DELETE, "Del", toast("d"))
                     .destructive(),
@@ -5204,6 +5205,9 @@ mod tests {
         ]
     }
 
+    /// Amendment B9: rows with different buttons right-align them, in their
+    /// listed order, and every row reserves the widest row's cells. A row
+    /// with one button has it in the last cell.
     #[test]
     fn rows_lay_their_own_buttons_out_from_the_right() {
         use crate::hit::Hit;
