@@ -345,6 +345,18 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::RevertJqView,
         },
         Command {
+            id: "response-jq-copy-to-scratch",
+            name: "Response: copy jq view to scratch",
+            description: "Put the current jq view's filter in the scratch to try changes there",
+            action: Action::CopyJqViewToScratch(None),
+        },
+        Command {
+            id: "response-jq-clear-scratch",
+            name: "Response: clear jq scratch",
+            description: "Empty the request's scratch jq filter",
+            action: Action::ClearJqScratch,
+        },
+        Command {
             id: "manage-variables",
             name: "Manage: variables",
             description: "Open the Manage screen's Variables tab",

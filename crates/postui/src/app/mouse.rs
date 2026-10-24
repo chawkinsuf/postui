@@ -989,8 +989,8 @@ impl App {
             return Some((area.x, area.width));
         }
         let area = self.hits.rect_of(&field_hit(field)?)?;
-        // The jq bar's hit covers its text window only, past the chip
-        // (`response::draw_jq_bar`), so it takes the area as it is.
+        // The jq bar's field rect is its text window, past the `jq `
+        // label (`response::draw_jq_bar`), so it takes the area as it is.
         Some(match field {
             FieldId::ModalInput(_) => (area.x + 2, area.width.saturating_sub(2)),
             FieldId::VmForm(_) | FieldId::Settings(_) => {
@@ -1879,15 +1879,10 @@ impl App {
                 // right-click selection settled).
                 self.close_dropdown_and_run(action)
             }
-            // A row's own rename or delete (jq views spec 17): it runs once
-            // the menu is gone, as the row's own action does.
-            Hit::DropdownRowRename(i) | Hit::DropdownRowDelete(i) => {
-                let verb = if matches!(hit, Hit::DropdownRowRename(_)) {
-                    crate::action::Verb::Rename
-                } else {
-                    crate::action::Verb::Delete { count: 1 }
-                };
-                let Some(action) = self.modals.dropdown_row_action(i, verb) else { return false };
+            // A row's own button (jq views spec 17): it runs once the menu
+            // is gone, as the row's own action does.
+            Hit::DropdownRowButton { row, verb } => {
+                let Some(action) = self.modals.dropdown_row_action(row, verb) else { return false };
                 self.close_dropdown_and_run(action)
             }
             Hit::ModalOutside => {
@@ -2237,14 +2232,34 @@ impl App {
                 if !self.session.response.set_jq_focus(true) {
                     return false;
                 }
-                // The bar's rect is the text window, past the chip, drawn
-                // from 0 unfocused and following the caret once focused.
+                // The bar's rect is the text window, past the `jq ` label
+                // (a press on the label maps to the window's first column),
+                // drawn from 0 unfocused and following the caret once
+                // focused.
                 self.press_text(FieldId::Jq, m, clicks, was_focused);
                 self.update(Action::Render)
             }
             Hit::ResponseJqAiButton => self.update(Action::OpenJqDescribe),
             Hit::ResponseJqChip => self.update(Action::OpenJqViews),
             Hit::ResponseJqRevert => self.update(Action::RevertJqView),
+            Hit::ResponseJqCopy => self.update(Action::CopyJqViewToScratch(None)),
+            // The bar's ✕ is a press on the bar, like a search box's: the
+            // scratch clears and the bar takes the caret, as a click on its
+            // text gives it, so the emptied bar stays up to type into. A bar
+            // the pointer can reach is drawn, so it can take the caret
+            // (amendment B8).
+            Hit::ResponseJqClear => {
+                // A refused clear (an open input that would not close, #75,
+                // or nothing left to clear) moves the caret nowhere.
+                self.last_action_failed = false;
+                let cleared = self.update(Action::ClearJqScratch);
+                if self.last_action_failed {
+                    return cleared;
+                }
+                self.update(Action::FocusPane(PaneId::Response));
+                self.session.response.set_jq_focus(true);
+                self.update(Action::Render)
+            }
             Hit::HeaderCopy(i) => {
                 self.update(Action::CopyToClipboard(CopyTarget::ResponseHeader(i)))
             }

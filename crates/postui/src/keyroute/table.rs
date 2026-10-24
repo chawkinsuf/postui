@@ -894,7 +894,10 @@ pub static TABLE: &[Binding] = &[
     // list letters (`r` in both profiles; `d`, vim's `dd`). One row is
     // deleted at a time: `dd` takes the Manage lists' count rule, though a
     // menu builds no count (`takes_count`), so the refusal is a backstop.
+    // Amendment B9: `c` copies the row's view to the scratch, one letter
+    // in both profiles.
     both("r", Surfaces::MENU, Intent::Verb(Verb::Rename)),
+    both("c", Surfaces::MENU, Intent::Verb(Verb::CopyToScratch)),
     row("dd", Surfaces::MENU, Intent::Verb(Verb::Delete { count: 1 }), CountRule::Refuse(NO_COUNTED_DELETE)),
     arrows("d", Surfaces::MENU, Intent::Verb(Verb::Delete { count: 1 })),
     // Spec §5.6 (plan M3b Deviation 3): a selected dialog field reopens,

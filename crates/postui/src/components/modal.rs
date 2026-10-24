@@ -576,42 +576,97 @@ pub enum Modal {
 /// the muted text color, takes no hover fill, and neither a click nor Enter
 /// activates it or closes the menu.
 ///
-/// `rename` and `delete` are the row's own actions (jq views spec 17): the
-/// highlighted or hovered row paints them as ✎ and a delete icon, and `r`
-/// and `d` (vim's `dd`) run them through `Surface::Menu`. Both `None` on a
-/// plain row. `noun` names what such a row is ("view"), for its buttons'
-/// tooltips ("Rename this view"); empty on a plain row.
+/// `buttons` are the row's own actions (jq views spec 17, amendment B9):
+/// the highlighted or hovered row paints them right-aligned, and each one's
+/// verb key (`c`, `r`, `d` / vim's `dd`) runs it through `Surface::Menu`.
+/// Empty on a plain row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MenuItem {
     pub label: String,
     pub action: Option<Action>,
-    pub rename: Option<Action>,
-    pub delete: Option<Action>,
-    pub noun: &'static str,
+    pub buttons: Vec<RowButton>,
+}
+
+/// One of a dropdown row's own buttons: the verb whose key runs it, the
+/// word the footer's chip for that key says (`delete`, or `clear` for the
+/// scratch's), its one-cell glyph, its tooltip's words and what it does. A
+/// `destructive` one inverts onto error red under the pointer, the rest
+/// onto accent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowButton {
+    pub verb: crate::action::Verb,
+    pub word: &'static str,
+    pub glyph: &'static str,
+    pub tip: &'static str,
+    pub action: Action,
+    pub destructive: bool,
+}
+
+impl RowButton {
+    pub fn new(
+        verb: crate::action::Verb,
+        word: &'static str,
+        glyph: &'static str,
+        tip: &'static str,
+        action: Action,
+    ) -> Self {
+        Self { verb, word, glyph, tip, action, destructive: false }
+    }
+
+    /// A removal: red under the pointer.
+    pub fn destructive(self) -> Self {
+        Self { destructive: true, ..self }
+    }
 }
 
 impl MenuItem {
     pub fn new(label: impl Into<String>, action: Action) -> Self {
-        Self { label: label.into(), action: Some(action), rename: None, delete: None, noun: "" }
+        Self { label: label.into(), action: Some(action), buttons: Vec::new() }
     }
 
     /// A row that is shown but cannot be chosen — e.g. "Open" on a request
     /// whose file doesn't parse.
     pub fn disabled(label: impl Into<String>) -> Self {
-        Self { label: label.into(), action: None, rename: None, delete: None, noun: "" }
+        Self { label: label.into(), action: None, buttons: Vec::new() }
     }
 
-    /// The row with its own rename and delete, acting on a `noun`.
-    pub fn with_row_actions(self, noun: &'static str, rename: Action, delete: Action) -> Self {
-        Self { rename: Some(rename), delete: Some(delete), noun, ..self }
+    /// The row with its own buttons, painted left to right in this order.
+    pub fn with_buttons(self, buttons: Vec<RowButton>) -> Self {
+        Self { buttons, ..self }
+    }
+
+    /// The row with a rename and a delete, for the dropdown machinery's own
+    /// tests (layout, keys, footer). It is not the views menu's copy, and
+    /// not meant to be: `App::open_jq_views` builds that menu's buttons,
+    /// and the app tests check their words and actions on the real menu.
+    #[cfg(test)]
+    pub fn with_rename_delete(self, rename: Action, delete: Action) -> Self {
+        use crate::action::Verb;
+        self.with_buttons(vec![
+            RowButton::new(Verb::Rename, "rename", crate::glyph::PENCIL, "Rename", rename),
+            RowButton::new(
+                Verb::Delete { count: 1 },
+                "delete",
+                crate::glyph::DELETE,
+                "Delete",
+                delete,
+            )
+            .destructive(),
+        ])
     }
 
     pub fn is_enabled(&self) -> bool {
         self.action.is_some()
     }
 
-    fn has_row_actions(&self) -> bool {
-        self.rename.is_some() || self.delete.is_some()
+    /// The row's own button for `verb` (whatever its count).
+    pub fn button(&self, verb: crate::action::Verb) -> Option<&RowButton> {
+        self.buttons.iter().find(|b| b.verb.kind() == verb.kind())
+    }
+
+    /// The cells the row's own buttons take: a space and a glyph each.
+    fn buttons_width(&self) -> u16 {
+        ROW_BUTTON_W * self.buttons.len() as u16
     }
 }
 
@@ -656,11 +711,30 @@ impl DropdownState {
         self.items.iter().rposition(MenuItem::is_enabled)
     }
 
-    /// Whether some row carries its own rename or delete: the popup is
-    /// then wider for their buttons, advertises their keys and binds them
-    /// (`Surface::Menu`).
+    /// Whether some row carries its own buttons: the popup is then wider
+    /// for them, advertises their keys and binds them (`Surface::Menu`).
     pub(crate) fn has_row_actions(&self) -> bool {
-        self.items.iter().any(MenuItem::has_row_actions)
+        self.items.iter().any(|item| !item.buttons.is_empty())
+    }
+
+    /// Every word `verb`'s buttons go by, in row order, joined by `/`
+    /// (`clear/delete`); empty when no row has one. The footer's chip for
+    /// the verb's key says it, and so does the refusal on a row without
+    /// one ([`ModalStack::dropdown_refusal`]).
+    pub(crate) fn verb_words(&self, verb: crate::action::Verb) -> String {
+        let mut words: Vec<&str> = Vec::new();
+        for word in self.items.iter().filter_map(|i| i.button(verb)).map(|b| b.word) {
+            if !words.contains(&word) {
+                words.push(word);
+            }
+        }
+        words.join("/")
+    }
+
+    /// The cells the widest row's own buttons take, which every row
+    /// reserves so the labels' column holds.
+    fn buttons_width(&self) -> u16 {
+        self.items.iter().map(MenuItem::buttons_width).max().unwrap_or(0)
     }
 }
 
@@ -1867,20 +1941,39 @@ impl ModalStack {
                 (Key::Named("enter"), "run", None),
                 (Key::Named("esc"), "close", None),
             ],
-            // Rows with their own rename and delete (jq views spec 17): the
-            // chips are the only signpost for their keys. Its highlight
-            // moves with `j/k` in vim (a dropdown has no ^N/^P).
-            Modal::Dropdown(state) if state.has_row_actions() => vec![
-                (Key::Nav(Nav::UpDown), "navigate", None),
-                (Key::Named("enter"), "select", None),
-                (Key::Of(Action::OnSelection(crate::action::Verb::Rename)), "rename", None),
-                (
-                    Key::Of(Action::OnSelection(crate::action::Verb::Delete { count: 1 })),
-                    "delete",
-                    None,
-                ),
-                (Key::Named("esc"), "close", None),
-            ],
+            // Rows with their own buttons (jq views spec 17, amendment B9):
+            // the chips are the only signpost for their keys, one per verb
+            // some row has, whichever row is highlighted, so the footer
+            // holds still as the highlight moves. Its highlight moves with
+            // `j/k` in vim (a dropdown has no ^N/^P).
+            //
+            // A chip says every word its key's buttons go by, in row order
+            // (`clear/delete`: the scratch's `d` clears, a view's deletes).
+            Modal::Dropdown(state) if state.has_row_actions() => {
+                use crate::action::Verb;
+                let mut chips = vec![
+                    (Key::Nav(Nav::UpDown), "navigate".to_string(), None),
+                    (Key::Named("enter"), "select".to_string(), None),
+                ];
+                // Every verb some row's button has, so a new kind of row
+                // button brings its chip with it, in the order the buttons
+                // read: the fullest row's left to right, then any verb only
+                // a shorter row has.
+                let mut rows: Vec<&MenuItem> = state.items.iter().collect();
+                rows.sort_by_key(|i| std::cmp::Reverse(i.buttons.len()));
+                let mut verbs: Vec<Verb> = Vec::new();
+                for verb in rows.iter().flat_map(|i| i.buttons.iter().map(|b| b.verb.kind())) {
+                    if !verbs.contains(&verb) {
+                        verbs.push(verb);
+                    }
+                }
+                for verb in verbs {
+                    let words = state.verb_words(verb);
+                    chips.push((Key::Of(Action::OnSelection(verb)), words, None));
+                }
+                chips.push((Key::Named("esc"), "close".to_string(), None));
+                return Some(chips);
+            }
             // An anchored popup, not a screen-owning modal: the screen's
             // own chips stay put (and nothing dims).
             Modal::Dropdown(_) => return None,
@@ -2654,10 +2747,10 @@ impl ModalStack {
         self.stack.last_mut()
     }
 
-    /// The highlighted row's own rename or delete on the dropdown on top
-    /// (jq views spec 17): what `r` and `d`/`dd` resolve to on
-    /// `Surface::Menu`. `None` for any other verb, a row without that
-    /// action, or no dropdown on top.
+    /// The highlighted row's own button for `verb` on the dropdown on top
+    /// (jq views spec 17, amendment B9): what `c`, `r` and `d`/`dd`
+    /// resolve to on `Surface::Menu`. `None` for a row without that
+    /// button, or no dropdown on top.
     pub fn dropdown_verb_action(&self, verb: crate::action::Verb) -> Option<Action> {
         let Some(Modal::Dropdown(state)) = self.top() else {
             return None;
@@ -2665,20 +2758,35 @@ impl ModalStack {
         self.dropdown_row_action(state.selected, verb)
     }
 
-    /// Row `row`'s own rename (`Verb::Rename`) or delete (`Verb::Delete`)
-    /// on the dropdown on top: the keyboard's [`Self::dropdown_verb_action`]
-    /// and a click on the row's ✎ or delete button both read it here.
-    pub fn dropdown_row_action(&self, row: usize, verb: crate::action::Verb) -> Option<Action> {
-        use crate::action::Verb;
+    /// Row `row`'s own button for `verb` on the dropdown on top: the
+    /// keyboard's [`Self::dropdown_verb_action`], a click on the button
+    /// and its tooltip all read it here.
+    pub fn dropdown_row_button(&self, row: usize, verb: crate::action::Verb) -> Option<&RowButton> {
         let Some(Modal::Dropdown(state)) = self.top() else {
             return None;
         };
-        let item = state.items.get(row)?;
-        match verb {
-            Verb::Rename => item.rename.clone(),
-            Verb::Delete { .. } => item.delete.clone(),
-            _ => None,
+        state.items.get(row)?.button(verb)
+    }
+
+    /// What a `verb` key on the highlighted row says when the row has no
+    /// button for it, in the menu's own words for the verb ("Nothing to
+    /// rename on this row"), so any dropdown with row buttons says the
+    /// right thing.
+    pub fn dropdown_refusal(&self, verb: crate::action::Verb) -> String {
+        let words = match self.top() {
+            Some(Modal::Dropdown(state)) => state.verb_words(verb),
+            _ => String::new(),
+        };
+        if words.is_empty() {
+            "Nothing to do on this row".to_string()
+        } else {
+            format!("Nothing to {words} on this row")
         }
+    }
+
+    /// The action of [`Self::dropdown_row_button`].
+    pub fn dropdown_row_action(&self, row: usize, verb: crate::action::Verb) -> Option<Action> {
+        self.dropdown_row_button(row, verb).map(|b| b.action.clone())
     }
 
     /// Scrolls the top modal's list by `delta` lines (positive = down),
@@ -3586,9 +3694,9 @@ fn draw_dropdown(
     // breathing room: 2 columns of panel each side of the rows and a blank
     // margin row above and below, on top of the 1-cell panel edge —
     // without it, glyphs on the page underneath sit flush against the
-    // rows and read as part of the menu. Rows with their own rename and
-    // delete take `ROW_ACTIONS_W` cells more for the two buttons.
-    let actions_w = if state.has_row_actions() { ROW_ACTIONS_W } else { 0 };
+    // rows and read as part of the menu. Rows with their own buttons take
+    // the widest row's cells more for them.
+    let actions_w = state.buttons_width();
     let width = (max_label + 10 + actions_w).min(screen.width);
     let height = (state.items.len() as u16 + 4).min(screen.height);
 
@@ -3657,8 +3765,7 @@ fn draw_dropdown(
             && hovered.is_some_and(|h| {
                 matches!(h,
                     crate::hit::Hit::DropdownRow(j)
-                    | crate::hit::Hit::DropdownRowRename(j)
-                    | crate::hit::Hit::DropdownRowDelete(j) if *j == i)
+                    | crate::hit::Hit::DropdownRowButton { row: j, .. } if *j == i)
             });
         // A disabled row takes no fill at all: no cursor highlight, no hover
         // response — the only affordance it has is looking muted.
@@ -3712,28 +3819,29 @@ fn draw_dropdown(
             // Only a row with its own buttons gives their cells up.
             crate::ui::clip(
                 &format!("{marker}{label}"),
-                row_area.width.saturating_sub(if item.has_row_actions() { actions_w } else { 0 }),
+                row_area.width.saturating_sub(if item.buttons.is_empty() { 0 } else { actions_w }),
             ),
             fg,
             row_fill,
             selected,
         );
-        if (selected || row_hovered) && row_area.width >= ROW_ACTIONS_W {
-            draw_row_actions(frame, hits, hovered, theme, item, i, row_area, row_fill);
+        if (selected || row_hovered) && row_area.width >= item.buttons_width() {
+            draw_row_buttons(frame, hits, hovered, theme, item, i, row_area, row_fill);
         }
     }
 }
 
-/// The cells a dropdown row's own buttons take: a space, ✎, a space, the
-/// delete icon.
-const ROW_ACTIONS_W: u16 = 4;
+/// The cells each of a dropdown row's own buttons takes: a space and its
+/// glyph.
+const ROW_BUTTON_W: u16 = 2;
 
-/// Row `i`'s own ✎ and delete icon (jq views spec 17), right-aligned in
-/// `row_area` one space apart, each registered over the row's own hit so
-/// a click on it is the button's. A directly-hovered button inverts onto
-/// accent (error red for the delete), as the table rows' buttons do.
+/// Row `i`'s own buttons (jq views spec 17, amendment B9), right-aligned in
+/// `row_area` one space apart in their listed order, each registered over
+/// the row's own hit so a click on it is the button's. A directly-hovered
+/// button inverts onto accent (error red for a destructive one), as the
+/// table rows' buttons do.
 #[allow(clippy::too_many_arguments)]
-fn draw_row_actions(
+fn draw_row_buttons(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
     hovered: Option<&crate::hit::Hit>,
@@ -3743,33 +3851,17 @@ fn draw_row_actions(
     row_area: Rect,
     row_fill: ratatui::style::Color,
 ) {
-    let delete_x = row_area.x + row_area.width - 1;
-    let buttons = [
-        (
-            delete_x - 2,
-            crate::glyph::PENCIL,
-            crate::hit::Hit::DropdownRowRename(i),
-            &item.rename,
-            theme.accent,
-        ),
-        (
-            delete_x,
-            crate::glyph::DELETE,
-            crate::hit::Hit::DropdownRowDelete(i),
-            &item.delete,
-            theme.error,
-        ),
-    ];
-    for (x, glyph, hit, action, hot) in buttons {
-        if action.is_none() {
-            continue;
-        }
+    let first_x = row_area.right() - item.buttons_width() + 1;
+    for (k, button) in item.buttons.iter().enumerate() {
+        let x = first_x + ROW_BUTTON_W * k as u16;
+        let hit = crate::hit::Hit::DropdownRowButton { row: i, verb: button.verb };
+        let hot = if button.destructive { theme.error } else { theme.accent };
         let (fg, bg) = if hovered == Some(&hit) {
             (theme.on_accent, hot)
         } else {
             (theme.text_muted, row_fill)
         };
-        paint::text(frame.buffer_mut(), x, row_area.y, glyph, fg, bg, false);
+        paint::text(frame.buffer_mut(), x, row_area.y, button.glyph, fg, bg, false);
         hits.register(Rect::new(x, row_area.y, 1, 1), hit);
     }
 }
@@ -5038,13 +5130,11 @@ mod tests {
     /// Two rows with their own rename and delete, then a plain one.
     fn row_action_items() -> Vec<MenuItem> {
         vec![
-            MenuItem::new("alpha", Action::Render).with_row_actions(
-                "item",
+            MenuItem::new("alpha", Action::Render).with_rename_delete(
                 Action::ShowToast("rename alpha".into(), crate::components::toast::ToastKind::Info),
                 Action::ShowToast("delete alpha".into(), crate::components::toast::ToastKind::Info),
             ),
-            MenuItem::new("beta", Action::Render).with_row_actions(
-                "item",
+            MenuItem::new("beta", Action::Render).with_rename_delete(
                 Action::ShowToast("rename beta".into(), crate::components::toast::ToastKind::Info),
                 Action::ShowToast("delete beta".into(), crate::components::toast::ToastKind::Info),
             ),
@@ -5075,8 +5165,8 @@ mod tests {
             (terminal.backend().buffer().clone(), hits)
         };
         let (buf, hits) = draw(None);
-        let rename = hits.rect_of(&Hit::DropdownRowRename(0)).expect("row 0's rename");
-        let delete = hits.rect_of(&Hit::DropdownRowDelete(0)).expect("row 0's delete");
+        let rename = hits.rect_of(&Hit::row_rename(0)).expect("row 0's rename");
+        let delete = hits.rect_of(&Hit::row_delete(0)).expect("row 0's delete");
         assert_eq!(buf[(rename.x, rename.y)].symbol(), crate::glyph::PENCIL);
         assert_eq!(buf[(delete.x, delete.y)].symbol(), crate::glyph::DELETE);
         assert_eq!(delete.x, rename.x + 2, "one space between the two");
@@ -5084,13 +5174,13 @@ mod tests {
         assert_eq!(delete.x, row0.x + row0.width - 1, "right-aligned in the row");
         assert_eq!(
             hits.hit_at(rename.x, rename.y),
-            Some(&Hit::DropdownRowRename(0)),
+            Some(&Hit::row_rename(0)),
             "the button wins over its row"
         );
-        assert_eq!(hits.hit_at(delete.x, delete.y), Some(&Hit::DropdownRowDelete(0)));
+        assert_eq!(hits.hit_at(delete.x, delete.y), Some(&Hit::row_delete(0)));
         for i in [1, 2] {
-            assert!(hits.rect_of(&Hit::DropdownRowRename(i)).is_none(), "row {i}");
-            assert!(hits.rect_of(&Hit::DropdownRowDelete(i)).is_none(), "row {i}");
+            assert!(hits.rect_of(&Hit::row_rename(i)).is_none(), "row {i}");
+            assert!(hits.rect_of(&Hit::row_delete(i)).is_none(), "row {i}");
         }
         let row2 = hits.rect_of(&Hit::DropdownRow(2)).unwrap();
         assert!(
@@ -5102,17 +5192,70 @@ mod tests {
         );
 
         let (_, hits) = draw(Some(&Hit::DropdownRow(1)));
-        assert!(hits.rect_of(&Hit::DropdownRowRename(1)).is_some(), "the hovered row's pair");
-        assert!(hits.rect_of(&Hit::DropdownRowDelete(1)).is_some());
-        assert!(
-            hits.rect_of(&Hit::DropdownRowRename(0)).is_some(),
-            "the highlighted row keeps its"
-        );
+        assert!(hits.rect_of(&Hit::row_rename(1)).is_some(), "the hovered row's pair");
+        assert!(hits.rect_of(&Hit::row_delete(1)).is_some());
+        assert!(hits.rect_of(&Hit::row_rename(0)).is_some(), "the highlighted row keeps its");
         // Hovering a row's own button keeps the pair up under the pointer.
-        let (_, hits) = draw(Some(&Hit::DropdownRowDelete(1)));
-        assert!(hits.rect_of(&Hit::DropdownRowDelete(1)).is_some());
+        let (_, hits) = draw(Some(&Hit::row_delete(1)));
+        assert!(hits.rect_of(&Hit::row_delete(1)).is_some());
         let (_, hits) = draw(Some(&Hit::DropdownRow(2)));
-        assert!(hits.rect_of(&Hit::DropdownRowRename(2)).is_none(), "no actions, hovered or not");
+        assert!(hits.rect_of(&Hit::row_rename(2)).is_none(), "no actions, hovered or not");
+    }
+
+    /// The views menu's shape: a scratch row that clears on `d`, then a
+    /// view row that copies, renames and deletes. Each action is a toast
+    /// naming its button.
+    fn scratch_and_view_items(toast: impl Fn(&str) -> Action) -> Vec<MenuItem> {
+        use crate::action::Verb;
+        let delete = Verb::Delete { count: 1 };
+        vec![
+            MenuItem::new("scratch", Action::Render).with_buttons(vec![
+                RowButton::new(delete, "clear", crate::glyph::CLOSE, "Clear", toast("clear"))
+                    .destructive(),
+            ]),
+            MenuItem::new("names", Action::Render).with_buttons(vec![
+                RowButton::new(Verb::CopyToScratch, "copy", crate::glyph::COPY, "Copy", toast("c")),
+                RowButton::new(Verb::Rename, "rename", crate::glyph::PENCIL, "Rename", toast("r")),
+                RowButton::new(delete, "delete", crate::glyph::DELETE, "Del", toast("d"))
+                    .destructive(),
+            ]),
+        ]
+    }
+
+    /// Amendment B9: rows with different buttons right-align them, in their
+    /// listed order, and every row reserves the widest row's cells. A row
+    /// with one button has it in the last cell.
+    #[test]
+    fn rows_lay_their_own_buttons_out_from_the_right() {
+        use crate::hit::Hit;
+        let screen = Rect::new(0, 0, 80, 24);
+        let toast =
+            |s: &str| Action::ShowToast(s.to_string(), crate::components::toast::ToastKind::Info);
+        let items = scratch_and_view_items(toast);
+        let state =
+            DropdownState { anchor: Rect::new(10, 5, 8, 1), items, selected: 0, current: None };
+        let draw = |hovered: Option<&Hit>| {
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal
+                .draw(|f| draw_dropdown(f, screen, &Theme::dark(), &mut hits, hovered, &state))
+                .unwrap();
+            (terminal.backend().buffer().clone(), hits)
+        };
+        let (buf, hits) = draw(Some(&Hit::DropdownRow(1)));
+        let row0 = hits.rect_of(&Hit::DropdownRow(0)).unwrap();
+        let clear = hits.rect_of(&Hit::row_delete(0)).expect("the scratch row's one button");
+        assert_eq!(clear.x, row0.right() - 1, "in the last cell");
+        assert_eq!(buf[(clear.x, clear.y)].symbol(), crate::glyph::CLOSE);
+        let copy = hits.rect_of(&Hit::row_copy(1)).unwrap();
+        let rename = hits.rect_of(&Hit::row_rename(1)).unwrap();
+        let delete = hits.rect_of(&Hit::row_delete(1)).unwrap();
+        assert_eq!((copy.x + 2, rename.x + 2), (rename.x, delete.x), "listed order, a space apart");
+        assert_eq!(delete.x, clear.x, "both rows end at the same cell");
+        assert_eq!(buf[(copy.x, copy.y)].symbol(), crate::glyph::COPY);
+        // Every row reserves the three buttons' cells: the label's room
+        // ends before the copy's column on both.
+        assert_eq!(state.buttons_width(), 6);
     }
 
     /// The row actions widen the popup by the four cells their buttons take.
@@ -5178,6 +5321,28 @@ mod tests {
             "vim's dropdown moves with j/k (a dropdown takes no ^N/^P)"
         );
         assert!(chips(dropdown_items()).is_none(), "a plain dropdown has none");
+        // Amendment B9: a row that copies to the scratch brings a `c` chip,
+        // whichever row is highlighted; the `d` chip says both words
+        // its buttons go by, and only the scratch's when it is alone.
+        let spelled = |items: Vec<MenuItem>| -> Vec<String> {
+            crate::keyroute::spell::spelled_on(
+                crate::keyroute::Surface::Menu,
+                chips(items).unwrap(),
+            )
+            .into_iter()
+            .map(|(k, l, _)| format!("{k} {l}"))
+            .collect()
+        };
+        let items = scratch_and_view_items(|_| Action::Render);
+        assert_eq!(
+            spelled(items.clone()),
+            ["↑↓ navigate", "enter select", "c copy", "r rename", "d clear/delete", "esc close"]
+        );
+        assert_eq!(
+            spelled(items[..1].to_vec()),
+            ["↑↓ navigate", "enter select", "d clear", "esc close"],
+            "a scratch alone with text: its `d` is a clear"
+        );
     }
 
     /// `r` and `d`/`dd` run the highlighted row's own action, and nothing

@@ -2,9 +2,80 @@
 
 Date: 2026-10-23
 Status: approved 2026-10-23; amended 2026-10-24 (the scratch is file
-content, below), amendment approved 2026-10-24
-Task: #96
+content, below), amendment approved 2026-10-24; amended again 2026-10-24
+(#101, the bar's layout, copy to scratch and clear), approved in chat
+Task: #96, #101
 Builds on: `2026-09-03-jq-response-filter-design.md`
+
+## Amendment 2026-10-24 (#101): the chip moves right, copy to scratch, clear
+
+**Supersedes** decision 14's chip placement and `●` mark, and amendment
+A8's mark. The ↺ stays.
+
+### Why
+
+From the user's manual testing after #96: "i dont like the drop down and
+dirty marker to the left of the text. it means the text moves around
+sometimes … move that over to the right side where there are already
+buttons and such." And: "im not sure we need a dirty marker since the
+revert button will appear." And the missing piece: "i need a way to take
+the current view, and just copy it to scratch so i can play without
+editing it", "and maybe a way to clear the scratch entry." Mockups:
+https://claude.ai/artifact/3m9qXasb5A6nhgPHH4zvw2 (option A there is this
+amendment; option B, views that never change from typing, was turned
+down).
+
+### Rules
+
+| # | Rule | Source |
+|---|---|---|
+| B1 | The filter text starts in one column whatever is current: after a fixed `jq ` label at the bar's left, the one `main` had before views. Nothing left of the text changes width. | you (move it right); the label mine (approved) |
+| B2 | The right side reads `[↺] [name ▾] [slot] [AI]`, the AI button fixed at the far right as today. The chip opens the views dropdown, as before. | you (right side); the order mine (approved) |
+| B3 | No `●` mark. The ↺, shown while the current filter differs from its saved text, is the only sign. The ↺ takes its cells from the end of the text window. | you |
+| B4 | The slot (a button's three-cell pill and a gap, as the ↺ takes) is always reserved: `⧉` copy to scratch on any view, `✕` clear on a scratch with text, blank on an empty scratch. Its width never changes, so the chip never moves when it switches. | mine (approved) |
+| B5 | A slow run's spinner takes the chip's `▾`, as it does now (one cell either way). | decision 14 amendment, unchanged |
+| B6 | On a narrow bar the text keeps at least half the row: the chip's label is cut first (as now), then the ↺ and the slot drop, then the AI button, as the ↺ drops today. | mine |
+| B7 | **Copy to scratch** puts a view's filter as it stands (unsaved edits included) into the scratch, makes the scratch current and switches the filter on. The view is untouched. One undo step: undo brings the old scratch back and the view current again, as a menu action's landing does (decision 8). *Round 6, mine:* a copy says `Copied "<name>" to the scratch` with the undo hint, as a clear does. | you (copy); the details mine (approved) |
+| B8 | **Clear** empties the scratch. One undo step, never asks (standing rule). What is current does not change; clearing the current scratch puts the caret in the bar, so an empty bar with no views stays up to type in. An already empty scratch refuses with a toast. *Amended (#101 after review round 3), mine (approved):* the clear itself only empties the scratch, from anywhere: focus, the switch and what is current stay put. The bar's ✕ is a press on the bar, so its click also gives the bar the caret, as a click on the text does, and the emptied bar stays up. (Rounds 1–3 each found a case where the clear moving focus from the palette or menu went wrong: a bar that could not take the caret, a switched-off filter, a collapsed pane.) *Round 4, mine:* a clear says "Scratch cleared" with the undo hint, as a deleted view does, since from the palette or the menu the scratch may not be on screen. | you (clear); never asks the standing rule; the rest mine (approved), "current unchanged" and the empty refusal mine |
+| B9 | In the dropdown, a view row's own buttons are `⧉` `✎` and the delete icon, with keys `c`, `r` and `d` (`dd` in vim), the same letters in both profiles. The scratch row has one, `✕` clear, on `d`/`dd`: the scratch cannot be deleted, so its delete clears it. The footer gains a `copy` chip beside rename and delete. *Amended (#101 review round 1), mine:* a key's chip names every word its buttons go by, in row order: `d clear/delete` with views and a scratch with text, `d clear` for the scratch alone. | mine (approved) |
+| B10 | The palette gets "Response: copy jq view to scratch" (the current view; on the scratch it refuses with a toast) and "Response: clear jq scratch". | mine (approved) |
+| B11 | The focused bar gets no new keys: typing goes into the filter. | mine (approved) |
+
+### Design
+
+- `JqChip` keeps `modified` (it places the ↺ and the footer's revert
+  chip) and gains whether a view is current, for the slot. Its text loses
+  the mark.
+- `jq_bar_layout` lays out `jq `, the text window, the ↺, the chip, the
+  slot and the AI button, in that order; `Response::jq_chip_rect` still
+  predicts the dropdown's anchor from it. New hits `ResponseJqCopy` and
+  `ResponseJqClear` for the slot.
+- New actions `CopyJqViewToScratch(Option<String>)` (`None` = the current
+  view) and `ClearJqScratch`, each one undo step, closing open inputs
+  first as the other view actions do (#75). New editor methods do the
+  edit.
+- A dropdown row's own buttons become a list (`MenuItem`'s rename and
+  delete fields are replaced by row buttons, each a verb, a glyph, a tip
+  and an action), and `Hit::DropdownRowRename`/`DropdownRowDelete` become
+  one `Hit::DropdownRowButton { row, verb }`. The keyboard (`r`, `c`,
+  `d`) and a click both find a row's button by its verb, as they do now.
+- New `Verb::CopyToScratch`, bound to `c` on `Surface::Menu` in both
+  profiles.
+
+### Tests
+
+- The text's start column is the same on the scratch, on a view, on an
+  edited view and with a long view name; nothing paints a `●`.
+- The slot shows `⧉` on a view, `✕` on a scratch with text, nothing on an
+  empty scratch, and the chip's column does not change between them.
+- Copy from the bar's `⧉`, from a dropdown row (`c` and a click) and from
+  the palette: the scratch holds the view's filter, the scratch is current
+  and on, the view is unchanged; one undo restores the old scratch and the
+  view current.
+- Clear from the bar's `✕`, the scratch row (`d`/`dd` and a click) and the
+  palette: one undo step, current unchanged; the empty refusal; the caret
+  in the bar after clearing the current scratch.
+- The dropdown's footer advertises copy; the tooltips name the buttons.
 
 ## Amendment 2026-10-24: the scratch is file content
 

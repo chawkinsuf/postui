@@ -665,8 +665,7 @@ pub(super) fn build(f: Fixture) -> App {
                 use crate::components::modal::{DropdownState, MenuItem};
                 let toast = |s: String| Action::ShowToast(s, ToastKind::Info);
                 let item = |name: &str| {
-                    MenuItem::new(name, Action::Render).with_row_actions(
-                        "item",
+                    MenuItem::new(name, Action::Render).with_rename_delete(
                         toast(format!("rename {name}")),
                         toast(format!("delete {name}")),
                     )

@@ -272,36 +272,45 @@ impl JqCompletion {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JqChip {
     pub label: String,
+    /// The current filter differs from its saved text: the bar shows the
+    /// ↺ (amendment B3; there is no mark on the chip).
     pub modified: bool,
     pub has_views: bool,
+    /// A view is current, not the scratch: the bar's slot holds copy to
+    /// scratch rather than clear (amendment B4).
+    pub on_view: bool,
+    /// The request's scratch holds text: the bar's slot on the scratch
+    /// holds clear. The editor's answer, which the views menu's clear row
+    /// reads too.
+    pub scratch_has_text: bool,
 }
 
 impl JqChip {
     /// Longest label shown, in cells; a longer one is cut and gets `…`.
     const LABEL_CELLS: usize = 16;
+    /// The narrowest chip: a label cut to its `…`, then ` ▾ `.
+    const MIN_WIDTH: u16 = 4;
 
-    /// The chip as drawn in a bar row `room` cells wide: `label`, ` ●` when
-    /// edited, then `caret` (the `▾`, or the spinner frame while a run is
-    /// slow — one cell either way, so the filter text never shifts) and a
-    /// space. The label is cut, with `…`, to [`Self::LABEL_CELLS`] and to
-    /// what leaves the filter text at least half the row.
-    fn text(&self, caret: &str, room: u16) -> String {
-        let mark = if self.modified { " ●" } else { "" };
-        // " ▾ " around the caret, and the `…` a cut label gains.
-        let decor = crate::ui::cells(mark) + 3 + 1;
-        let fits = (usize::from(room) / 2).saturating_sub(decor).min(Self::LABEL_CELLS);
-        let label = if crate::ui::cells(&self.label) > fits {
-            format!("{}…", crate::ui::take_cells(&self.label, fits))
+    /// The chip as drawn in at most `max` cells: `label`, then `caret`
+    /// (the `▾`, or the spinner frame while a run is slow — one cell
+    /// either way, so nothing moves) and a space. The label is cut, with
+    /// `…`, to [`Self::LABEL_CELLS`] and to what fits in `max`.
+    fn text(&self, caret: &str, max: u16) -> String {
+        // " ▾ " around the caret.
+        let room = usize::from(max).saturating_sub(3);
+        let cap = Self::LABEL_CELLS.min(room);
+        let label = if crate::ui::cells(&self.label) > cap {
+            format!("{}…", crate::ui::take_cells(&self.label, cap.min(room.saturating_sub(1))))
         } else {
             self.label.clone()
         };
-        format!("{label}{mark} {caret} ")
+        format!("{label} {caret} ")
     }
 
-    /// The chip's width in cells in a bar row `room` cells wide (caret and
-    /// spinner frame are one each).
-    fn width(&self, room: u16) -> u16 {
-        crate::ui::cells(&self.text("▾", room)) as u16
+    /// The chip's width in cells drawn in at most `max` (caret and spinner
+    /// frame are one each).
+    fn width(&self, max: u16) -> u16 {
+        (crate::ui::cells(&self.text("▾", max)) as u16).min(max)
     }
 }
 
@@ -2795,8 +2804,8 @@ impl Response {
     }
 
     /// Whether the current filter, view or scratch, has unsaved edits: what
-    /// the chip's ● and the ↺ show, for the footer's revert chip to read the
-    /// same answer.
+    /// the bar's ↺ shows, for the footer's revert chip to read the same
+    /// answer.
     pub fn jq_chip_modified(&self) -> bool {
         self.jq.chip.modified
     }
@@ -2804,6 +2813,12 @@ impl Response {
     /// Where the next frame draws the bar's chip in a pane drawn at
     /// `pane`: the bar's row under the header strip (see `draw`), for a
     /// menu that hangs off a chip no frame has drawn yet.
+    ///
+    /// The chip sits right-aligned, so where it starts depends on its
+    /// label. The stored chip is the one the next frame draws: `sync_jq`
+    /// pushed it at the end of the last update, and the only action that
+    /// asks (`OpenJqViews`, opening a closed bar first) changes neither the
+    /// current filter nor whether it is edited before it asks.
     pub fn jq_chip_rect(&self, pane: Rect) -> Rect {
         let bar = ready_rows(super::pane_inner(pane), 1, false)[1];
         jq_bar_layout(&self.jq, bar).chip
@@ -5399,26 +5414,40 @@ fn highlighted(pieces: Vec<(String, Style)>, hits: &LineMatches) -> Line<'static
     Line::from(spans)
 }
 
-/// The width of an edited view's revert button and its gap: it sits left
-/// of the AI button, a cell apart, and the text gives up its width.
-fn jq_revert_width(bar: &JqBar) -> u16 {
-    if bar.chip.modified { crate::ui::cells(crate::glyph::REVERT_PILL) as u16 + 1 } else { 0 }
-}
+/// The bar's fixed label, left of the filter text (amendment B1).
+const JQ_LABEL: &str = "jq ";
+
+/// The cells the ↺ and the slot each take: the three-cell pill they paint
+/// (a one-cell icon padded each side, `glyph`'s rule) and the gap after
+/// it. A constant on the draw path; `the_bar_button_width_is_its_pills`
+/// checks it against the pills themselves.
+const JQ_BUTTON_W: u16 = 4;
 
 /// Where each part of the jq bar sits on a bar drawn at `area` (its rows):
 /// the one computation [`draw_jq_bar`] paints and registers from, and the
-/// views menu's anchor ([`Response::jq_chip_rect`]) predicts with. The chip
-/// is cut to the room it has, so the text window always starts inside the
-/// row, right after it.
+/// views menu's anchor ([`Response::jq_chip_rect`]) predicts with.
+///
+/// The row reads `jq ` text `[↺] [name ▾] [slot] [AI]` (amendment B2).
+/// Everything whose width changes sits right of the text, so the text's
+/// first column never moves: picking a view, editing it, or a long name
+/// only narrows the text window from its right end. The slot is always
+/// reserved, whichever of copy and clear it holds or neither (B4), so the
+/// chip does not move when it switches. The text keeps at least half of
+/// what the label and the AI button leave (B6): the chip's label is cut
+/// to fit the other half, and on a bar too narrow for even a cut chip
+/// beside them, the ↺ and then the slot give their cells up.
+#[derive(Debug)]
 struct JqBarLayout {
-    /// The chip and the text window together: what the AI button (and an
-    /// edited filter's revert) leave of the first row.
-    line: Rect,
+    /// The `jq ` label.
+    label: Rect,
     chip: Rect,
-    /// The filter text's window, past the chip.
+    /// The filter text's window, past the label.
     text: Rect,
     /// The ↺, while the current filter is edited and there is room.
     revert: Option<Rect>,
+    /// The copy or clear button's cell, while there is room. Reserved
+    /// even when it shows nothing.
+    slot: Option<Rect>,
     ai: Option<Rect>,
     /// The second row, from the text's column: the error, the note or
     /// menu mode's candidates. `None` on a one-row bar.
@@ -5426,31 +5455,54 @@ struct JqBarLayout {
 }
 
 fn jq_bar_layout(bar: &JqBar, area: Rect) -> JqBarLayout {
+    let row = Rect { height: area.height.min(1), ..area };
     let ai_w = crate::ui::cells(crate::glyph::CREATION_PILL) as u16;
-    // The ↺'s cells only when it is drawn: a bar too narrow for it gives
-    // them to the text.
-    let revert_w = Some(jq_revert_width(bar)).filter(|&w| w > 0 && area.width > ai_w + w);
-    let line_w = area.width.saturating_sub(ai_w + 1 + revert_w.unwrap_or(0));
-    let line = Rect { width: line_w, height: area.height.min(1), ..area };
-    let chip = Rect { width: bar.chip.width(line_w).min(line_w), ..line };
-    let text = Rect { x: chip.right(), width: line_w - chip.width, ..line };
-    let revert = revert_w.map(|w| Rect::new(area.right() - ai_w - w, area.y, w - 1, 1));
     let ai = (area.width > ai_w).then(|| Rect::new(area.right() - ai_w, area.y, ai_w, 1));
+    // On a bar narrower than the label and the AI button, the label is cut.
+    let label_room = area.width.saturating_sub(ai.map_or(0, |r| r.width));
+    let label = Rect { width: (crate::ui::cells(JQ_LABEL) as u16).min(label_room), ..row };
+    // What the text and the controls between it and the AI button share,
+    // past the gap the text keeps before them.
+    let shared = area.width.saturating_sub(label.width + ai.map_or(0, |r| r.width) + 1);
+    let room = shared / 2;
+    // The ↺'s cells are held back from the chip whether it shows or not,
+    // so the chip never changes as the filter is edited: a shown ↺ takes
+    // its cells from the text window (B3), which still keeps half, since
+    // the chip never gets more than `room` less them.
+    let mut revert_room = JQ_BUTTON_W;
+    let mut slot_w = JQ_BUTTON_W;
+    if room < JqChip::MIN_WIDTH + revert_room + slot_w {
+        revert_room = 0;
+    }
+    if room < JqChip::MIN_WIDTH + slot_w {
+        slot_w = 0;
+    }
+    let revert_w = if bar.chip.modified { revert_room } else { 0 };
+    let chip_w = bar.chip.width(room - revert_room - slot_w);
+    let text_w = shared - (revert_w + chip_w + slot_w);
+    let text = Rect { x: label.right(), width: text_w, ..row };
+    let end = ai.map_or(area.right(), |ai| ai.x);
+    let pill = |x: u16| Rect::new(x, area.y, JQ_BUTTON_W - 1, 1);
+    let slot = (slot_w > 0).then(|| pill(end - slot_w));
+    let chip = Rect::new(end - slot_w - chip_w, area.y, chip_w, row.height);
+    let revert = (revert_w > 0).then(|| pill(chip.x - revert_w));
     let under = (area.height >= 2).then(|| Rect {
         x: text.x,
         y: area.y + 1,
         width: area.right().saturating_sub(text.x),
         height: 1,
     });
-    JqBarLayout { line, chip, text, revert, ai, under }
+    JqBarLayout { label, chip, text, revert, slot, ai, under }
 }
 
-/// The jq filter bar: a `jq ` chip, the live filter text (or the "asking…"
-/// spinner while an AI request is pending), and the `󰙴` AI button
-/// right-aligned. A second row — when the bar reserved one — shows the
-/// last error's message, with its span (when known) underlined in the bar
-/// text above it. An incomplete filter with the caret at its end is drawn
-/// muted, since it is still being typed.
+/// The jq filter bar: the `jq ` label, the live filter text (or the
+/// "asking…" spinner while an AI request is pending), then right-aligned
+/// the ↺ of an edited filter, the chip naming the current filter, the copy
+/// or clear slot and the `󰙴` AI button ([`JqBarLayout`]). A second row —
+/// when the bar reserved one — shows the last error's message, with its
+/// span (when known) underlined in the bar text above it. An incomplete
+/// filter with the caret at its end is drawn muted, since it is still
+/// being typed.
 fn draw_jq_bar(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
@@ -5467,12 +5519,12 @@ fn draw_jq_bar(
     const AI: &str = crate::glyph::CREATION_PILL;
     const REVERT: &str = crate::glyph::REVERT_PILL;
     let layout = jq_bar_layout(bar, area);
-    let row = layout.line;
+    // The label and the text window: the row the text spans are laid on.
+    let row = Rect { width: layout.label.width + layout.text.width, ..layout.label };
     let chip_color = if bar.stale { t.text_muted } else { t.accent };
-    // A background run past its grace period takes over the chip's caret —
-    // the spinner sits right beside the text being typed, where the wait
-    // is felt, and a run that finishes sooner never flickers it. Both are
-    // one cell, so the text never shifts.
+    // A background run past its grace period takes over the chip's caret,
+    // and a run that finishes sooner never flickers it. Both are one cell,
+    // so nothing moves.
     let spinning = bar.running_long(ctx.now);
     let caret_glyph = if spinning {
         let frame_i = (ctx.now.saturating_duration_since(bar.pending_since).as_millis() / 100)
@@ -5482,10 +5534,15 @@ fn draw_jq_bar(
     } else {
         "▾".to_string()
     };
-    let chip_text = bar.chip.text(&caret_glyph, row.width);
+    let chip_text = bar.chip.text(&caret_glyph, layout.chip.width);
     let chip_text = crate::ui::take_cells(&chip_text, usize::from(layout.chip.width)).to_string();
-    let mut spans = vec![Span::styled(chip_text, Style::default().fg(chip_color))];
+    frame.render_widget(
+        Paragraph::new(Span::styled(chip_text, Style::default().fg(chip_color))),
+        layout.chip,
+    );
     hits.register(layout.chip, crate::hit::Hit::ResponseJqChip);
+    let label = crate::ui::take_cells(JQ_LABEL, usize::from(layout.label.width)).to_string();
+    let mut spans = vec![Span::styled(label, Style::default().fg(chip_color))];
     let (text_x, w) = (layout.text.x, layout.text.width);
     if let Some(started) = bar.ai_asking {
         let frame_i =
@@ -5522,6 +5579,11 @@ fn draw_jq_bar(
         }
         frame.render_widget(Paragraph::new(Line::from(spans)), row);
     }
+    // The label is the bar's too: a click there focuses it (the caret at
+    // the text window's first column), a right-click opens its text menu. It goes in
+    // first, so the field's rect (`rect_of`, the last one) is the text
+    // window, which a press maps columns from.
+    hits.register(layout.label, crate::hit::Hit::ResponseJqBar);
     hits.register(layout.text, crate::hit::Hit::ResponseJqBar);
     if let Some(revert_area) = layout.revert {
         crate::paint::action(
@@ -5534,6 +5596,29 @@ fn draw_jq_bar(
             t,
         );
         hits.register(revert_area, crate::hit::Hit::ResponseJqRevert);
+    }
+    // On a view, copy it to the scratch; on a scratch with text, clear it;
+    // on an empty scratch the reserved cell stays blank (amendment B4).
+    // "With text" is the editor's answer, through the chip, the one the
+    // clear itself and the views menu's clear row go by.
+    let slot_button = if bar.chip.on_view {
+        Some((crate::glyph::COPY_PILL, crate::hit::Hit::ResponseJqCopy))
+    } else if bar.chip.scratch_has_text {
+        Some((crate::glyph::CLOSE_PILL, crate::hit::Hit::ResponseJqClear))
+    } else {
+        None
+    };
+    if let (Some(slot_area), Some((glyph, hit))) = (layout.slot, slot_button) {
+        crate::paint::action(
+            frame.buffer_mut(),
+            slot_area,
+            glyph,
+            hit.clone(),
+            ctx.hovered,
+            t.page,
+            t,
+        );
+        hits.register(slot_area, hit);
     }
     if let Some(ai_area) = layout.ai {
         crate::paint::action(
@@ -5559,7 +5644,7 @@ fn draw_jq_bar(
     }
     // A filter with nothing to show reads as an error to the user — the
     // tree they're looking at isn't its output — so it's drawn like one.
-    // The note and the error sit under the filter text, past the chip, as
+    // The note and the error sit under the filter text, past the label, as
     // the menu row's candidates do.
     if bar.note.is_some() && bar.error.is_none() {
         frame.render_widget(
@@ -5601,8 +5686,8 @@ fn draw_jq_bar(
             let leading_ws = text.len() - text.trim_start().len();
             let bytes = span.start.saturating_add(leading_ws)..span.end.saturating_add(leading_ws);
             if let Some(cols) = bar.input.span_columns(bar.focused, w, bytes) {
-                // Past the chip, clipped to the row: one too narrow for the
-                // chip has no text, so no underline.
+                // Clipped to the text window: one too narrow for any text
+                // has no underline.
                 for x in text_x + cols.start..(text_x + cols.end).min(row.right()) {
                     frame.buffer_mut()[(x, row.y)]
                         .set_style(Style::default().add_modifier(Modifier::UNDERLINED).fg(t.error));
@@ -5614,7 +5699,7 @@ fn draw_jq_bar(
 }
 
 /// One chip per candidate, aligned under the bar text (from `x0`, past the
-/// filter chip), the selected one (if any) filled. The row is a window over
+/// `jq ` label), the selected one (if any) filled. The row is a window over
 /// the chips that scrolls like a list: from `prev` (its last offset) it
 /// moves only when the selected chip is out of view, and only as far as
 /// it must — right until the chip's end is in, left until its start is —
@@ -9987,14 +10072,14 @@ mod tests {
         r.set_jq_tab(JqTab::Menu);
         type_jq(&mut r, ".");
         bar_key(&mut r, key(KeyCode::Tab));
-        // 31 columns: the pane inset takes 2 and the row's indent past
-        // the `scratch ▾ ` chip 10, leaving 19 cells.
+        // 24 columns: the pane inset takes 2 and the row's indent past
+        // the `jq ` label 3, leaving 19 cells.
         // Chips are ` alpha `, ` bravo `, ` charlie `…
         // one column apart (15 cells for the first two, 25 with the
         // third), so the first two fit and `charlie` does not.
         // Chips are padded (` alpha `), which tells them apart from the
         // bar's own `.alpha`.
-        const MENU_W: u16 = 31;
+        const MENU_W: u16 = 24;
         let text = render_sized(&mut r, MENU_W, 20);
         let row = text
             .lines()
@@ -10282,7 +10367,7 @@ mod tests {
     }
 
     /// Renders `r` and reads its jq bar row: the column the filter text
-    /// starts at (past the chip's caret and its space), the underlined
+    /// starts at (past the `jq ` label), the underlined
     /// columns, and the row's cell symbols.
     fn jq_bar_underline(r: &mut Response) -> (u16, Vec<u16>, Vec<String>) {
         let (_, buf) = render_buf(r);
@@ -10291,15 +10376,17 @@ mod tests {
                 (0..buf.area.width).find(|&x| buf[(x, y)].symbol() == "▾").map(|x| (x, y))
             })
             .collect();
-        let [(caret_x, y)] = carets[..] else {
+        let [(_, y)] = carets[..] else {
             panic!("one chip caret on screen, the bar's: {carets:?}");
         };
-        let chip_x = caret_x + 2;
+        // The text starts past the `jq ` label, its row's first `j`.
+        let label_x = (0..buf.area.width).find(|&x| buf[(x, y)].symbol() == "j").expect("label");
+        let text_x = label_x + 3;
         let underlined = (0..buf.area.width)
             .filter(|&x| buf[(x, y)].modifier.contains(Modifier::UNDERLINED))
             .collect();
         let row = (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect();
-        (chip_x, underlined, row)
+        (text_x, underlined, row)
     }
 
     /// A stale error (and its span) from a filter typed against one
@@ -10419,28 +10506,113 @@ mod tests {
         (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect()
     }
 
-    fn chip(label: &str, modified: bool, has_views: bool) -> JqChip {
-        JqChip { label: label.into(), modified, has_views }
+    /// `JQ_BUTTON_W` is each pill the ↺ and the slot paint, plus its gap.
+    #[test]
+    fn the_bar_button_width_is_its_pills() {
+        use crate::glyph::{CLOSE_PILL, COPY_PILL, REVERT_PILL};
+        for pill in [REVERT_PILL, COPY_PILL, CLOSE_PILL] {
+            assert_eq!(crate::ui::cells(pill) as u16 + 1, JQ_BUTTON_W, "{pill:?}");
+        }
     }
 
+    /// A chip for `label`: on a view unless it is the scratch's, with a
+    /// scratch that holds text.
+    fn chip(label: &str, modified: bool, has_views: bool) -> JqChip {
+        let on_view = label != postui_core::model::JqView::SCRATCH;
+        JqChip { label: label.into(), modified, has_views, on_view, scratch_has_text: true }
+    }
+
+    /// Amendment B1, B2: the text starts after the `jq ` label, and the
+    /// chip naming the filter sits right of it, before the slot and the
+    /// AI button.
     #[test]
-    fn the_chip_names_the_filter_and_the_text_starts_after_it() {
+    fn the_text_starts_after_the_label_and_the_chip_sits_on_the_right() {
+        use crate::hit::Hit;
         let mut r = ready(ITEMS);
         r.open_jq();
         r.set_jq_text(".data");
         r.set_jq_chip(chip("names", false, true));
         let hits = render_hits(&mut r);
-        let chip_rect = hits.rect_of(&crate::hit::Hit::ResponseJqChip).expect("chip hit");
-        let bar_rect = hits.rect_of(&crate::hit::Hit::ResponseJqBar).expect("bar hit");
+        let chip_rect = hits.rect_of(&Hit::ResponseJqChip).expect("chip hit");
+        let bar_rect = hits.rect_of(&Hit::ResponseJqBar).expect("bar hit");
+        let copy = hits.rect_of(&Hit::ResponseJqCopy).expect("a view's slot copies");
+        let ai = hits.rect_of(&Hit::ResponseJqAiButton).expect("ai hit");
         assert_eq!(chip_rect.y, bar_rect.y);
-        assert_eq!(bar_rect.x, chip_rect.x + 8, "the text starts right after `names ▾ `");
-        assert_eq!(chip_rect.width, 8);
+        assert_eq!(chip_rect.width, 8, "`names ▾ `");
+        assert!(bar_rect.right() < chip_rect.x, "the chip is right of the text window");
+        assert_eq!((chip_rect.right(), copy.x + 4), (copy.x, ai.x), "chip, slot and a gap, AI");
         let (_, buf) = render_buf(&mut r);
         let row = row_text(&buf, bar_rect.y);
-        assert!(row.contains("names ▾ .data"), "{row}");
+        let text_col = row.find(".data").map(|b| row[..b].chars().count() as u16);
+        assert_eq!(text_col, Some(bar_rect.x), "{row}");
+        assert_eq!(&row[row.find("jq ").unwrap()..][..8], "jq .data", "{row}");
+        assert!(row.contains("names ▾ "), "{row}");
     }
 
-    /// The error row starts where the filter text does, past the chip,
+    /// Amendment B1, B3: whatever is current, edited or not, and however
+    /// long its name, the filter text starts in the same column, and no
+    /// mark is painted.
+    #[test]
+    fn the_text_starts_in_one_column_whatever_the_chip_says() {
+        let mut r = ready(ITEMS);
+        r.open_jq();
+        r.set_jq_text(".data");
+        let mut starts = Vec::new();
+        for c in [
+            chip("scratch", false, true),
+            chip("names", false, true),
+            chip("names", true, true),
+            chip("a rather long view name", true, true),
+        ] {
+            r.set_jq_chip(c);
+            let hits = render_hits(&mut r);
+            let bar = hits.rect_of(&crate::hit::Hit::ResponseJqBar).expect("bar hit");
+            let (_, buf) = render_buf(&mut r);
+            let row = row_text(&buf, bar.y);
+            assert!(!row.contains('\u{25cf}'), "no mark: {row}");
+            starts.push(bar.x);
+        }
+        assert!(starts.windows(2).all(|w| w[0] == w[1]), "{starts:?}");
+    }
+
+    /// Amendment B4: the slot copies on a view, clears a scratch with text,
+    /// and is blank on an empty scratch; it is reserved either way, so the
+    /// chip does not move between them.
+    #[test]
+    fn the_slot_copies_a_view_clears_the_scratch_and_holds_the_chips_place() {
+        use crate::hit::Hit;
+        let mut r = ready(ITEMS);
+        r.open_jq();
+        r.set_jq_text(".data");
+        r.set_jq_chip(chip("names", false, true));
+        let hits = render_hits(&mut r);
+        let on_view = hits.rect_of(&Hit::ResponseJqChip).unwrap();
+        let copy = hits.rect_of(&Hit::ResponseJqCopy).expect("copy on a view");
+        assert!(hits.rect_of(&Hit::ResponseJqClear).is_none());
+        let (_, buf) = render_buf(&mut r);
+        assert_eq!(buf[(copy.x + 1, copy.y)].symbol(), crate::glyph::COPY, "its pill's glyph");
+
+        // "scratch" and "names" differ in width, so compare right edges.
+        r.set_jq_chip(chip("scratch", false, true));
+        let hits = render_hits(&mut r);
+        let clear = hits.rect_of(&Hit::ResponseJqClear).expect("clear on a scratch with text");
+        assert!(hits.rect_of(&Hit::ResponseJqCopy).is_none());
+        assert_eq!(clear, copy, "one slot");
+        let with_text = hits.rect_of(&Hit::ResponseJqChip).unwrap();
+        assert_eq!(with_text.right(), on_view.right());
+        let (_, buf) = render_buf(&mut r);
+        assert_eq!(buf[(clear.x + 1, clear.y)].symbol(), crate::glyph::CLOSE);
+
+        r.set_jq_text("");
+        r.set_jq_chip(JqChip { scratch_has_text: false, ..chip("scratch", false, true) });
+        let hits = render_hits(&mut r);
+        assert!(hits.rect_of(&Hit::ResponseJqClear).is_none(), "nothing to clear");
+        assert!(hits.rect_of(&Hit::ResponseJqCopy).is_none());
+        let empty = hits.rect_of(&Hit::ResponseJqChip).unwrap();
+        assert_eq!(empty, with_text, "the blank slot keeps its cells");
+    }
+
+    /// The error row starts where the filter text does, past the label,
     /// whatever the chip's width.
     #[test]
     fn the_error_message_sits_under_the_filter_text() {
@@ -10474,18 +10646,43 @@ mod tests {
         assert!(bar.width >= ".data".len() as u16, "{bar:?}");
     }
 
-    /// Too narrow even for a cut chip: the text window still starts inside
-    /// the bar row, never over the buttons to its right.
+    /// Too narrow even for a cut chip beside the buttons: the ↺ and then
+    /// the slot give their cells up (amendment B6), and nothing the bar
+    /// registers overlaps anything else.
     #[test]
-    fn a_bar_too_narrow_for_the_chip_keeps_the_text_window_inside_the_row() {
+    fn a_bar_too_narrow_for_its_controls_drops_them_without_overlap() {
+        use crate::hit::Hit;
         let mut r = ready(ITEMS);
         r.open_jq();
-        r.set_jq_chip(chip("names", true, true));
-        for width in 8..14 {
-            let hits = render_hits_at(&mut r, width);
-            let Some(chip_rect) = hits.rect_of(&crate::hit::Hit::ResponseJqChip) else { continue };
-            if let Some(bar) = hits.rect_of(&crate::hit::Hit::ResponseJqBar) {
-                assert!(bar.x <= chip_rect.right(), "width {width}: {chip_rect:?} {bar:?}");
+        r.set_jq_text(".data");
+        // A view's slot copies, the scratch's clears: both are checked.
+        for (label, slot) in [("names", Hit::ResponseJqCopy), ("scratch", Hit::ResponseJqClear)] {
+            r.set_jq_chip(chip(label, true, true));
+            for width in 3..40 {
+                let hits = render_hits_at(&mut r, width);
+                // The `jq ` label never runs under the AI button.
+                let layout = jq_bar_layout(r.jq_bar(), Rect::new(0, 0, width, 2));
+                if let Some(ai) = layout.ai {
+                    assert!(layout.label.right() <= ai.x, "{label} at {width}: {layout:?}");
+                }
+                let rects: Vec<Rect> = [
+                    Hit::ResponseJqBar,
+                    Hit::ResponseJqRevert,
+                    Hit::ResponseJqChip,
+                    slot.clone(),
+                    Hit::ResponseJqAiButton,
+                ]
+                .iter()
+                .filter_map(|h| hits.rect_of(h))
+                .filter(|r| r.width > 0)
+                .collect();
+                assert!(
+                    rects.windows(2).all(|w| w[0].right() <= w[1].x),
+                    "{label} at width {width}: left to right, apart: {rects:?}"
+                );
+                if hits.rect_of(&Hit::ResponseJqRevert).is_some() {
+                    assert!(hits.rect_of(&slot).is_some(), "{label}: the ↺ drops first");
+                }
             }
         }
     }
@@ -10495,30 +10692,54 @@ mod tests {
         let mut r = ready(ITEMS);
         r.open_jq();
         r.set_jq_chip(chip("abcdefghijklmnopqrstuvwxyz", false, true));
-        let (_, buf) = render_buf(&mut r);
-        let hits = render_hits(&mut r);
-        let y = hits.rect_of(&crate::hit::Hit::ResponseJqChip).expect("chip hit").y;
-        assert!(row_text(&buf, y).contains("abcdefghijklmnop… ▾ "), "{}", row_text(&buf, y));
+        // Wide enough that the cap, not the room, cuts it.
+        let text = render_sized(&mut r, 100, 20);
+        assert!(text.contains("abcdefghijklmnop… ▾ "), "{text}");
     }
 
+    /// Amendment B3: an edited filter shows the ↺ left of the chip, which
+    /// takes its cells from the end of the text window; the chip itself
+    /// does not move.
     #[test]
-    fn a_modified_view_shows_the_mark_and_a_revert_button() {
+    fn a_modified_view_shows_a_revert_button_left_of_the_chip() {
+        use crate::hit::Hit;
         let mut r = ready(ITEMS);
         r.open_jq();
         r.set_jq_text(".data");
-        r.set_jq_chip(chip("names", true, true));
-        let hits = render_hits(&mut r);
-        let revert = hits.rect_of(&crate::hit::Hit::ResponseJqRevert).expect("revert hit");
-        let ai = hits.rect_of(&crate::hit::Hit::ResponseJqAiButton).expect("ai hit");
-        assert!(revert.right() < ai.x, "revert sits left of the AI button");
-        let bar = hits.rect_of(&crate::hit::Hit::ResponseJqBar).expect("bar hit");
-        assert!(bar.right() <= revert.x, "the text window gives up the revert's width");
-        let (_, buf) = render_buf(&mut r);
-        assert!(row_text(&buf, bar.y).contains("names ● ▾ "), "{}", row_text(&buf, bar.y));
-
         r.set_jq_chip(chip("names", false, true));
         let hits = render_hits(&mut r);
-        assert!(hits.rect_of(&crate::hit::Hit::ResponseJqRevert).is_none());
+        assert!(hits.rect_of(&Hit::ResponseJqRevert).is_none());
+        let clean_chip = hits.rect_of(&Hit::ResponseJqChip).unwrap();
+        let clean_bar = hits.rect_of(&Hit::ResponseJqBar).unwrap();
+
+        r.set_jq_chip(chip("names", true, true));
+        let hits = render_hits(&mut r);
+        let revert = hits.rect_of(&Hit::ResponseJqRevert).expect("revert hit");
+        let chip_rect = hits.rect_of(&Hit::ResponseJqChip).unwrap();
+        let bar = hits.rect_of(&Hit::ResponseJqBar).unwrap();
+        assert_eq!(chip_rect, clean_chip, "the chip holds still");
+        assert_eq!(revert.x + 4, chip_rect.x, "the ↺'s pill, then a space, then the chip");
+        assert!(bar.right() < revert.x, "the text window gives up the revert's width");
+        assert_eq!((bar.x, bar.width + 4), (clean_bar.x, clean_bar.width));
+        let (_, buf) = render_buf(&mut r);
+        assert!(row_text(&buf, bar.y).contains("names ▾ "), "{}", row_text(&buf, bar.y));
+
+        // A long name on any width: the ↺ appearing never cuts the chip's
+        // label further or moves it; the text window gives the cells up.
+        for width in 20..90 {
+            r.set_jq_chip(chip("a rather long view name", false, true));
+            let clean = render_hits_at(&mut r, width);
+            r.set_jq_chip(chip("a rather long view name", true, true));
+            let edited = render_hits_at(&mut r, width);
+            assert_eq!(
+                edited.rect_of(&Hit::ResponseJqChip),
+                clean.rect_of(&Hit::ResponseJqChip),
+                "width {width}"
+            );
+            let (clean_bar, edited_bar) =
+                (clean.rect_of(&Hit::ResponseJqBar), edited.rect_of(&Hit::ResponseJqBar));
+            assert_eq!(edited_bar.map(|b| b.x), clean_bar.map(|b| b.x), "width {width}");
+        }
     }
 
     #[test]
@@ -11571,12 +11792,13 @@ mod tests {
         let mut r = ready(ITEMS);
         r.set_jq_tab(JqTab::Cycle);
         type_jq(&mut r, ".data.");
-        // 25 columns: the pane's 1-column-each-side inset (pane_surface)
-        // takes 2, the ` 󰙴 ` chip plus its gap take 4, and `scratch ▾ `
-        // takes 10, leaving the input 9 cells; `.data.` uses 6 (the caret
+        // 26 columns: the pane's 1-column-each-side inset (pane_surface)
+        // takes 2, the `jq ` label 3, the ` 󰙴 ` button plus the text's
+        // gap 4, and the right half of the other 17 the chip and the slot
+        // (8), leaving the input 9 cells; `.data.` uses 6 (the caret
         // is the terminal cursor, on the ghost's first cell, not a cell of
         // its own), so the ghost is cut to three characters.
-        let text = render_sized(&mut r, 25, 20);
+        let text = render_sized(&mut r, 26, 20);
         let bar_line = text
             .lines()
             .find(|l| l.contains(".data.ite"))
