@@ -9491,9 +9491,10 @@ impl App {
             // Only once there is response text to select: an empty pane
             // (nothing sent yet, in flight, an error) offers no menu. The
             // header strip is still the pane to a right click: it registers
-            // as the split handle over the pane's hit, and its facts and
-            // blank cells opened this menu before it was a handle.
-            Hit::Pane(PaneId::Response) | Hit::SplitHandle
+            // as the split handle (and its control band) over the pane's
+            // hit, and its facts and blank cells opened this menu before it
+            // was a handle.
+            Hit::Pane(PaneId::Response) | Hit::SplitHandle | Hit::StripControls
                 if self.session.response.view().is_some() =>
             {
                 (TextSurface::Response, false)

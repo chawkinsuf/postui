@@ -261,6 +261,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         | Hit::AutoHeaderRow(_)
         | Hit::BodyEditor
         | Hit::SplitHandle
+        | Hit::StripControls
         | Hit::SidebarGutter
         | Hit::JsonRow(_)
         | Hit::JsonArrow(_)

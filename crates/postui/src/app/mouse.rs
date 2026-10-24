@@ -1317,11 +1317,34 @@ impl App {
     /// (probed with `test_setmouse`, both the current window's and the one
     /// above it). Outside vim the strip is the response pane's header, and
     /// a press there clicks first (E2a).
+    ///
+    /// The strip's control band (task #95) is the status line's press
+    /// without its drag in vim too. A Vim status line drags anywhere, but
+    /// it holds no buttons, so it has no rule for the cells between them;
+    /// the strip's buttons already don't drag in vim (E2), and the band is
+    /// the area around them, so it follows the buttons in both profiles.
     fn is_separator_press(&self, hit: &Hit) -> bool {
         match hit {
             Hit::SidebarGutter => true,
-            Hit::SplitHandle => self.profile() == crate::config::KeyProfile::Vim,
+            Hit::SplitHandle | Hit::StripControls => {
+                self.profile() == crate::config::KeyProfile::Vim
+            }
             _ => false,
+        }
+    }
+
+    /// The press on a resize handle or the strip's control band, before
+    /// any drag. A press on a window separator
+    /// ([`Self::is_separator_press`]) moves no focus and clicks nothing.
+    /// Otherwise (the strip, outside vim) it is the response pane's header,
+    /// so its press clicks as the pane's does (spec E2a; the click-away in
+    /// [`Self::on_hit`] already ran for it), arming no text sweep: the
+    /// motion is the resize's, or nothing's.
+    fn press_handle(&mut self, hit: &Hit, clicks: u8, m: ratatui::crossterm::event::MouseEvent) {
+        if self.is_separator_press(hit) {
+            self.vim_separator_press();
+        } else {
+            self.press_response_pane(clicks, m, false);
         }
     }
 
@@ -1777,20 +1800,18 @@ impl App {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.update(Action::SplitStop(stop))
             }
-            // A press on a resize handle arms the drag. A press on a window
-            // separator ([`Self::is_separator_press`]) moves no focus and
-            // clicks nothing. Otherwise (the strip, outside vim) it is the
-            // response pane's header, so its press first clicks as the
-            // pane's does (spec E2a; the click-away above already ran for
-            // it), arming no text sweep: the motion is the resize's. The
-            // handle is the hovered hit for the length of the drag, so it
-            // stays lit wherever the pointer goes.
+            // The strip's control band (task #95): the strip's press without
+            // the drag.
+            Hit::StripControls => {
+                self.press_handle(&hit, clicks.text, m);
+                self.update(Action::Render)
+            }
+            // A press on a resize handle arms the drag, after the handle's
+            // own press ([`Self::press_handle`]). The handle is the hovered
+            // hit for the length of the drag, so it stays lit wherever the
+            // pointer goes.
             Hit::SidebarGutter | Hit::SplitHandle => {
-                if self.is_separator_press(&hit) {
-                    self.vim_separator_press();
-                } else {
-                    self.press_response_pane(clicks.text, m, false);
-                }
+                self.press_handle(&hit, clicks.text, m);
                 let kind = if hit == Hit::SidebarGutter {
                     ResizeHandle::Sidebar
                 } else {
