@@ -4617,27 +4617,26 @@ fn draw_header_strip(
         return;
     }
 
-    // Row 1 (right) + row 2 (its underline): the response tabs,
-    // right-aligned. Their band goes down before the icons do: on a
-    // narrow strip its margin reaches the last icon, which must stay on
-    // top.
-    let (tabs, modes) = response_tab_defs(view, bar, t);
-    let tabs_width = tabstrip_width(&tabs);
-    let tabs_x = area.right().saturating_sub(tabs_width).max(area.x);
-    let tabstrip_area = Rect::new(tabs_x, area.y + 1, tabs_width, 2);
-    register_control_band(hits, area, tabstrip_area);
-
     // Row 2 (left): the icon actions, on the stretch of the underline row
     // the tabs' rule doesn't reach.
     let jq_available = view.has_tree_view() && view.mode == ViewMode::Pretty;
-    draw_header_actions(frame, hits, area, jq_available, jq_open, bg, ctx);
+    let icons = draw_header_actions(frame, area, jq_available, jq_open, bg, ctx);
 
     let buf = frame.buffer_mut();
+    let row1_y = area.y + 1;
+
+    // Row 1 (right) + row 2 (its underline): the response tabs,
+    // right-aligned.
+    let (tabs, modes) = response_tab_defs(view, bar, t);
+
+    let tabs_width = tabstrip_width(&tabs);
+    let tabs_x = area.right().saturating_sub(tabs_width).max(area.x);
     let active = modes.iter().position(|m| *m == view.mode).unwrap_or(0);
     let hovered = match ctx.hovered {
         Some(crate::hit::Hit::ResponseTab(m)) => modes.iter().position(|mode| mode == m),
         _ => None,
     };
+    let tabstrip_area = Rect::new(tabs_x, row1_y, tabs_width, 2);
     let spans = crate::paint::TabStrip::spans(&tabs);
     let (static_left, static_width) =
         spans.get(active).map(|(x, w)| (*x as f32, *w as f32)).unwrap_or((0.0, 0.0));
@@ -4666,8 +4665,18 @@ fn draw_header_strip(
         right_anchored: 0,
     }
     .paint(buf, tabstrip_area, bg, t);
-    for (rect, mode) in rects.into_iter().zip(modes) {
-        hits.register(rect, crate::hit::Hit::ResponseTab(mode));
+    let tab_hits: Vec<_> =
+        rects.into_iter().zip(modes).map(|(r, m)| (r, crate::hit::Hit::ResponseTab(m))).collect();
+
+    // The groups' hits, all in one place and from the painted rects: both
+    // bands first, then every control on top. On a narrow strip one
+    // group's margin reaches the other group, and a control must still
+    // win there.
+    for group in [&icons, &tab_hits] {
+        register_control_band(hits, area, group);
+    }
+    for (rect, hit) in icons.into_iter().chain(tab_hits) {
+        hits.register(rect, hit);
     }
 }
 
@@ -4741,15 +4750,16 @@ const HEADER_ACTIONS: [(&str, crate::hit::Hit); 5] = [
 /// (inverted) state while `jq_open`: the bar is showing, so a click
 /// closes it. That covers a filtered tree (explained even when the bar
 /// has scrolled out of mind) and an empty bar just opened (task #3).
+/// Answers each button's rect and hit for [`draw_header_strip`] to
+/// register, after both groups' bands.
 fn draw_header_actions(
     frame: &mut Frame,
-    hits: &mut crate::hit::HitMap,
     area: Rect,
     jq_available: bool,
     jq_open: bool,
     bg: ratatui::style::Color,
     ctx: &DrawCtx,
-) {
+) -> Vec<(Rect, crate::hit::Hit)> {
     let y = area.y + 2;
     let mut x = area.x + 1;
     let buf = frame.buffer_mut();
@@ -4774,23 +4784,21 @@ fn draw_header_actions(
         rects.push((rect, hit));
         x += w + 1;
     }
-    if let Some(group) = rects.iter().map(|(rect, _)| *rect).reduce(Rect::union) {
-        register_control_band(hits, area, group);
-    }
-    for (rect, hit) in rects {
-        hits.register(rect, hit);
-    }
+    rects
 }
 
 /// Registers [`crate::hit::Hit::StripControls`] under one of the header
-/// strip's control groups (`span`, the group's bounding rect): from a
-/// cell left of its first control to a cell right of its last, on the
-/// rows it uses, clipped to the `strip`. The strip is the split handle
+/// strip's control groups (`group`, its controls' rects): from a cell
+/// left of its first control to a cell right of its last, on the rows
+/// they use, clipped to the `strip`. The strip is the split handle
 /// everywhere else, and a handle in the one-cell gaps between the
 /// controls turned a press that just missed one into a drag (task #95).
-/// Both bands are registered before any control, so a margin that
-/// reaches the other group on a narrow strip never covers a control.
-fn register_control_band(hits: &mut crate::hit::HitMap, strip: Rect, span: Rect) {
+fn register_control_band(
+    hits: &mut crate::hit::HitMap,
+    strip: Rect,
+    group: &[(Rect, crate::hit::Hit)],
+) {
+    let Some(span) = group.iter().map(|(rect, _)| *rect).reduce(Rect::union) else { return };
     let x = span.x.saturating_sub(1);
     let width = span.right().saturating_add(1) - x;
     let band = Rect::new(x, span.y, width, span.height).intersection(strip);
@@ -8773,7 +8781,9 @@ mod tests {
             .map(|(_, hit)| hit.clone())
             .chain([ViewMode::Pretty, ViewMode::Raw, ViewMode::Headers].map(Hit::ResponseTab));
         let controls: Vec<Hit> = controls.collect();
-        for width in 36..=50 {
+        // Wide enough for the groups to sit apart down to where they
+        // overlap, whatever today's label widths put the meeting point at.
+        for width in 24..=80 {
             let hits = render_hits_at(&mut r, width);
             for hit in &controls {
                 let rect = hits.rect_of(hit).unwrap_or_else(|| panic!("{width}: {hit:?} drawn"));

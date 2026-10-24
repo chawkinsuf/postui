@@ -715,17 +715,26 @@ fn the_gaps_between_the_strips_controls_never_resize() {
 }
 
 /// Task #95, vim: a press on the control band is the strip's status-line
-/// press without the drag, so the current window stays.
+/// press without the drag, so the current window, its Visual mode and its
+/// selection all stay.
 #[test]
 fn a_vim_press_between_the_strips_controls_keeps_the_window() {
-    let mut app = vim_at(PaneId::Editor);
+    use super::key_matrix_tests::{Fixture, build, draw, feed};
+    let mut app = build(Fixture::Body);
+    app.use_profile(crate::config::KeyProfile::Vim);
     super::tests::ready_response(&mut app, r#"{"a": 1}"#);
-    render(&mut app);
+    draw(&mut app);
+    feed(&mut app, "jwvll");
+    assert_eq!(app.mode_indicator(), Some("VISUAL"));
+    let selection = app.editor.body_visual;
     let icon = rect(&app, &Hit::ResponseSearchButton);
+    assert_eq!(app.hits.hit_at(icon.right(), icon.y), Some(&Hit::StripControls));
     app.handle_mouse(left_down(icon.right(), icon.y));
     assert!(app.resize.is_none(), "no resize armed");
-    assert_eq!(app.focus, PaneId::Editor, "the current window stays");
     app.handle_mouse(left_up(icon.right(), icon.y));
+    assert_eq!(app.focus, PaneId::Editor, "the current window stays");
+    assert_eq!(app.mode_indicator(), Some("VISUAL"), "still Visual");
+    assert_eq!(app.editor.body_visual, selection, "the selection is unchanged");
 }
 
 // -- The keyboard (spec S6, S7, E11, E13) --------------------------------
