@@ -1189,6 +1189,30 @@ pub enum Action {
     /// (gated on the response being JSON and the configured `ai_cmd`'s
     /// program being found on PATH).
     OpenJqDescribe,
+    /// The jq bar's chip: opens the dropdown of the request's jq views.
+    OpenJqViews,
+    /// The jq bar's revert button: puts the current view back to its
+    /// saved filter (one undo step).
+    RevertJqView,
+    /// A views dropdown row: makes that view current (`None` = the
+    /// scratch) and switches the filter on. A request edit like any other
+    /// (jq views amendment A4).
+    PickJqView(Option<String>),
+    /// The dropdown's `+ save as view…` row: opens the name prompt.
+    PromptSaveJqView,
+    /// The save-as prompt's Enter: saves the bar's filter as a new view
+    /// under that name and makes it current (spec 6). A taken or blank
+    /// name keeps the prompt.
+    SaveJqView(String),
+    /// A view row's rename (✎ / `r`): opens the prompt prefilled with it.
+    PromptRenameJqView(String),
+    /// The rename prompt's Enter. A taken or blank name keeps the prompt.
+    RenameJqView {
+        from: String,
+        to: String,
+    },
+    /// A view row's delete (`d` / `dd`): removes it, never asking.
+    DeleteJqView(String),
     /// The describe prompt's Enter: asks for confirmation before the first
     /// AI call ever made (`ui_settings.ai_confirmed`), then runs it.
     ConfirmJqDescribe(String),

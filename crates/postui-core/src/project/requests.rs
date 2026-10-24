@@ -798,6 +798,8 @@ mod tests {
             insecure: false,
             jq: None,
             jq_enabled: true,
+            jq_views: Vec::new(),
+            jq_current: None,
             params: Default::default(),
             headers: Default::default(),
             variables: Default::default(),

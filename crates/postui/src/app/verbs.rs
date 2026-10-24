@@ -35,6 +35,8 @@ impl App {
                     self.editor.slug.is_some().then(|| self.editor.current_request());
                 self.varmanager.verb_action(self.project()?, open_request.as_ref(), verb)
             }
+            // A dropdown's highlighted row: its own rename or delete.
+            Surface::Menu => self.modals.dropdown_verb_action(verb),
             _ => None,
         }
     }

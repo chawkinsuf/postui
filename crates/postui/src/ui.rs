@@ -304,6 +304,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         pane.url_selected,
         pane.table_row_selected,
         pane.jq_bar,
+        pane.jq_modified,
         pane.field_open,
         vm_chips,
         globals_live,
@@ -960,6 +961,7 @@ pub(crate) struct PaneChipArgs {
     pub url_selected: bool,
     pub table_row_selected: Option<(usize, bool)>,
     pub jq_bar: crate::components::footer::JqBarState,
+    pub jq_modified: bool,
     pub field_open: bool,
 }
 
@@ -1017,6 +1019,9 @@ impl PaneChipArgs {
             } else {
                 JqBarState::Closed
             },
+            // What the chip's ● and the ↺ show (`App::sync_jq`): the
+            // current view has unsaved edits.
+            jq_modified: response.jq_chip_modified(),
             // A text field of this pane's own owns Esc: it says `esc done`.
             field_open: app.pane_field_open(focus),
         }
@@ -1035,6 +1040,7 @@ impl PaneChipArgs {
             self.url_selected,
             self.table_row_selected,
             self.jq_bar,
+            self.jq_modified,
             self.field_open,
         )
         .into_iter()

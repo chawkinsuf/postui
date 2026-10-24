@@ -292,7 +292,7 @@ impl App {
     /// body's engine state goes with the old one: a scratch has no slug
     /// for `Glue::own_body` to tell it from the scratch before.
     fn fresh_scratch(&mut self) {
-        self.editor = Editor::default();
+        self.editor = self.editor.fresh();
         self.shadow = None;
         self.vim_drop_body();
     }

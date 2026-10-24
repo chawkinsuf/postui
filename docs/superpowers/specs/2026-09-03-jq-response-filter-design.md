@@ -331,6 +331,12 @@ the request modified and `ctrl+s` persists it; discard restores it. Undo
 treats a bar edit like a URL-bar edit (one undo entry per pause in
 typing, using the existing coalescing).
 
+*Amended 2026-10-24 (#96):* commit a3aa6ca had since masked `jq` and
+`jq_enabled` out of dirty tracking. The jq views amendment
+(`2026-10-23-jq-views-design.md`, A2, the user's) restores this
+section's rule: the filter, now the scratch view, and its switch dirty
+the request.
+
 ## Error handling summary
 
 - Syntax / unknown function: shown under the bar with a span underline;

@@ -613,6 +613,8 @@ fn build(
             insecure,
             jq: None,
             jq_enabled: true,
+            jq_views: Vec::new(),
+            jq_current: None,
             params: IndexMap::new(),
             headers,
             variables: IndexMap::new(),

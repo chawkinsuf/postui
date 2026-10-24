@@ -72,6 +72,10 @@ pub(crate) fn footer_chips(
     // The response pane's jq bar: focused swaps the chip set for the bar's
     // own (apply/cancel/unfilter/describe); open adds the `close` chip.
     jq_bar: JqBarState,
+    // The bar's current filter, a view or the scratch, has unsaved edits:
+    // the focused bar offers its revert (jq views spec 5, amendment A8), as
+    // the ↺ button does.
+    jq_modified: bool,
     // *This pane's* own text field owns the caret — `App::pane_field_open`,
     // not the app-wide `field_open` (a live cell edit survives a jump to
     // the response pane, and must not put the editor's chips on its row).
@@ -267,6 +271,19 @@ pub(crate) fn footer_chips(
                         None,
                     ),
                     (Key::Named("esc"), "done", Some(Action::CloseField)),
+                    (Key::Of(Action::OpenJqViews), "views", Some(Action::OpenJqViews)),
+                ]);
+                // The bar's ↺, keycapped with its glyph as describe is, beside
+                // the views it acts on: the row's end drops first on a
+                // narrow footer, and this is the chip the edit is about.
+                if jq_modified {
+                    chips.push((
+                        Key::Named(crate::glyph::REVERT),
+                        "revert",
+                        Some(Action::RevertJqView),
+                    ));
+                }
+                chips.extend([
                     (Key::Of(Action::ToggleJqBar), "unfilter", Some(Action::ToggleJqBar)),
                     (Key::Named(crate::glyph::CREATION), "describe…", Some(Action::OpenJqDescribe)),
                 ]);
@@ -356,6 +373,8 @@ pub fn draw_footer(
     table_row_selected: Option<(usize, bool)>,
     // See `footer_chips`: where the response pane's jq bar is.
     jq_bar: JqBarState,
+    // See `footer_chips`: the bar's view has unsaved edits to revert.
+    jq_modified: bool,
     // See `footer_chips`: this pane's own text field owns the caret, so
     // Esc is its.
     field_open: bool,
@@ -481,6 +500,7 @@ pub fn draw_footer(
             url_selected,
             table_row_selected,
             jq_bar,
+            jq_modified,
             field_open,
         )
         .into_iter()
@@ -707,6 +727,7 @@ mod tests {
                 url_selected,
                 table_row_selected,
                 jq_bar,
+                false,
                 field_open,
             ),
         )
@@ -785,6 +806,7 @@ mod tests {
                         false,
                         None,
                         JqBarState::Closed,
+                        false,
                         false,
                         Some(chips),
                         true,
@@ -866,6 +888,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     false,
                     None,
                     true,
@@ -1020,6 +1043,56 @@ mod tests {
         assert_eq!(&closer[2..], &focused[..]);
     }
 
+    /// The focused bar offers the views dropdown right after its own
+    /// apply and done (jq views spec 16).
+    #[test]
+    fn the_focused_bar_advertises_views_in_the_footer() {
+        let chips = footer_chips(
+            PaneId::Response,
+            false,
+            false,
+            None,
+            false,
+            false,
+            None,
+            JqBarState::Focused,
+            true,
+        );
+        let labels: Vec<&str> = chips.iter().map(|(_, l, _)| *l).collect();
+        assert_eq!(&labels[..3], &["apply", "done", "views"], "{chips:?}");
+        assert_eq!(chips[2].0, "alt+shift+j");
+        assert_eq!(chips[2].2, Some(Action::OpenJqViews));
+    }
+
+    /// An edited view's revert joins the focused bar's chips beside views,
+    /// keycapped with the bar's ↺ glyph; never on an unedited bar.
+    #[test]
+    fn the_focused_bar_on_an_edited_view_advertises_revert() {
+        let labels = |modified: bool| {
+            super::footer_chips(
+                PaneId::Response,
+                false,
+                false,
+                None,
+                false,
+                false,
+                None,
+                JqBarState::Focused,
+                modified,
+                true,
+            )
+            .into_iter()
+            .map(|(k, l, a)| (l, k, a))
+            .collect::<Vec<_>>()
+        };
+        let edited = labels(true);
+        let names: Vec<&str> = edited.iter().map(|(l, _, _)| *l).collect();
+        assert_eq!(names, ["apply", "done", "views", "revert", "unfilter", "describe…"]);
+        assert_eq!(edited[3].1, Key::Named(crate::glyph::REVERT));
+        assert_eq!(edited[3].2, Some(Action::RevertJqView));
+        assert!(labels(false).iter().all(|(l, _, _)| *l != "revert"));
+    }
+
     /// With an AI describe outstanding the bar's Esc cancels the request,
     /// so the chip names that action — never a `done` that would abort it.
     #[test]
@@ -1074,6 +1147,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     false,
                     None,
                     true,
@@ -1386,6 +1460,7 @@ mod tests {
                     None,
                     JqBarState::Closed,
                     false,
+                    false,
                 );
                 let at = format!("{pane:?} url_focused={url_focused}");
                 assert!(
@@ -1535,6 +1610,7 @@ mod tests {
                     None,
                     JqBarState::Closed,
                     false,
+                    false,
                     None,
                     true,
                     true,
@@ -1576,6 +1652,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     false,
                     None,
                     true,
@@ -1626,6 +1703,7 @@ mod tests {
                     None,
                     JqBarState::Closed,
                     false,
+                    false,
                     None,
                     true,
                     true,
@@ -1669,6 +1747,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     false,
                     None,
                     true,
@@ -1748,6 +1827,7 @@ mod tests {
                     None,
                     JqBarState::Closed,
                     false,
+                    false,
                     None,
                     true,
                     true,
@@ -1808,6 +1888,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     false,
                     None,
                     true,
@@ -1910,6 +1991,7 @@ mod tests {
                     None,
                     JqBarState::Closed,
                     false,
+                    false,
                     None,
                     true,
                     true,
@@ -1966,6 +2048,7 @@ mod tests {
                         false,
                         None,
                         JqBarState::Closed,
+                        false,
                         false,
                         None,
                         true,

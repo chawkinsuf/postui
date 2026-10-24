@@ -1336,6 +1336,13 @@ impl App {
                 Hit::TipEdit(name) => self.tip_edit_verb(name),
                 _ => crate::hint::TipEditVerb::default(),
             },
+            row_noun: match (hit, self.modals.top()) {
+                (
+                    Hit::DropdownRowRename(i) | Hit::DropdownRowDelete(i),
+                    Some(Modal::Dropdown(state)),
+                ) => state.items.get(*i).map_or("", |item| item.noun),
+                _ => "",
+            },
             spell: self.spell_ctx(),
         }
     }
@@ -1998,32 +2005,47 @@ impl App {
         changed || regated || asked
     }
 
-    /// Keeps the response pane's jq bar and the editor's `jq` field in
-    /// step, and the view in step with both — the one place the filter is
-    /// applied. Bar edits flow into the editor (they are request edits);
-    /// everything else (open request, undo, discard, a new response) flows
-    /// the editor into the bar. Blurs the bar whenever focus has moved off
-    /// the response pane. Cheap when nothing changed: a couple of string
-    /// compares.
+    /// Keeps the response pane's jq bar and the editor's current filter
+    /// (the current view's, or the scratch) in step, and the response view
+    /// in step with both — the one place the filter is applied. Bar edits
+    /// flow into the editor; everything else (open request, undo, discard,
+    /// a new response) flows the editor into the bar. Blurs the bar
+    /// whenever focus has moved off the response pane. Cheap when nothing
+    /// changed: string compares and a few short clones.
     pub(crate) fn sync_jq(&mut self) {
         if self.focus != PaneId::Response {
             self.session.response.set_jq_focus(false);
         }
         let response = &mut self.session.response;
         if response.take_jq_edited() {
-            self.editor.jq = response.jq_text().to_string();
+            self.editor.set_jq_filter(response.jq_text());
             self.editor.jq_enabled = response.jq_enabled();
         } else {
-            if response.jq_text() != self.editor.jq {
-                response.set_jq_text(&self.editor.jq);
+            if response.jq_text() != self.editor.jq_filter() {
+                response.set_jq_text(self.editor.jq_filter());
             }
             if response.jq_enabled() != self.editor.jq_enabled {
                 response.set_jq_enabled(self.editor.jq_enabled);
             }
         }
+        // The chip names the filter the bar now holds, so it is pushed after
+        // the text is carried over (a typed edit marks its view at once).
+        // Rebuilt on every update, the idle tick's too: a short label and a
+        // scan of a request's few views. Comparing first would keep a second
+        // copy of what the chip is made of.
+        let current = self.editor.jq_current_name();
+        response.set_jq_chip(crate::components::response::JqChip {
+            label: current.unwrap_or(postui_core::model::JqView::SCRATCH).to_string(),
+            modified: self.editor.jq_current_modified(),
+            has_views: !self.editor.jq_views.is_empty(),
+        });
         // A switched-off filter is applied as no filter: the text stays in
         // the bar (closed), the tree shows the full body.
-        let code = if self.editor.jq_enabled { self.editor.jq.clone() } else { String::new() };
+        let code = if self.editor.jq_enabled {
+            self.editor.jq_filter().to_string()
+        } else {
+            String::new()
+        };
         // Every run and key fetch goes to the blocking pool (see
         // `JQ_SYNC_BYTES`): a filter's cost is unbounded whatever the
         // body's size, and the UI thread must stay free to take the Esc.
@@ -2037,6 +2059,105 @@ impl App {
         {
             self.spawn_jq_complete(req);
         }
+    }
+
+    /// Lands a menu action's or the AI's filter (`JqApply`, `JqTeeUp`,
+    /// `JqAiFinished`) in the bar as the scratch, and makes the scratch
+    /// current: such an action never rewrites a saved view (spec 8). The
+    /// text was built from the bar, so from the current view's filter.
+    ///
+    /// On the scratch the text joins the bar's edit session, as it always
+    /// has. Coming off a view, the switch must be one app-history step,
+    /// so that one undo brings back the old scratch with the view current.
+    /// Typing already made on the view in a focused bar is recorded first
+    /// as its own step, and the landed text ends the session again. The
+    /// caret and focus stay. Left in the session, a ctrl+z in the bar would
+    /// write the view's filter into the scratch instead.
+    ///
+    /// Only while the bar has the caret, where the text session the flush
+    /// ends is the bar's: an AI reply can land while the caret is in
+    /// another field (a table cell being typed in), which it must not
+    /// close. There the landing joins whatever step that field's close
+    /// records: coarser, never wrong.
+    fn land_jq_in_scratch(&mut self, text: &str, cursor: usize) {
+        let off_view_in_bar =
+            self.editor.jq_current.is_some() && self.session.response.jq_focused();
+        if off_view_in_bar {
+            self.flush_text_session();
+        }
+        self.editor.jq_current = None;
+        self.session.response.set_jq_text_with_cursor(text, cursor);
+        if off_view_in_bar {
+            self.session.response.end_jq_edit_session();
+        }
+    }
+
+    /// Pushes the views dropdown (spec 16): `scratch`, the views in saved
+    /// order (each with its own rename and delete, spec 17), a divider and
+    /// `+ save as view…`, disabled while the bar is empty (spec 18). It
+    /// hangs off the chip the last frame drew, else, on a bar opened in
+    /// this same action, off where the next frame draws it.
+    fn open_jq_views(&mut self) {
+        use crate::components::modal::{DropdownState, MenuItem};
+        use ratatui::layout::Rect;
+        const SAVE_AS: &str = "+ save as view\u{2026}";
+        let mut items =
+            vec![MenuItem::new(postui_core::model::JqView::SCRATCH, Action::PickJqView(None))];
+        for view in &self.editor.jq_views {
+            let name = view.name.clone();
+            items.push(
+                MenuItem::new(name.clone(), Action::PickJqView(Some(name.clone())))
+                    .with_row_actions(
+                        "view",
+                        Action::PromptRenameJqView(name.clone()),
+                        Action::DeleteJqView(name),
+                    ),
+            );
+        }
+        let widest =
+            items.iter().map(|i| crate::ui::cells(&i.label)).chain([crate::ui::cells(SAVE_AS)]);
+        items.push(MenuItem::disabled("\u{2500}".repeat(widest.max().unwrap_or(0))));
+        items.push(if self.editor.jq_filter().is_empty() {
+            MenuItem::disabled(SAVE_AS)
+        } else {
+            MenuItem::new(SAVE_AS, Action::PromptSaveJqView)
+        });
+        let current = self.editor.current_view().map_or(0, |i| i + 1);
+        // A collapsed response pane still draws and registers its header,
+        // so the pane's rect is there whenever a frame has drawn the app;
+        // the zero rect is for an app no frame has drawn (a bare test app),
+        // which `draw_dropdown` clamps on screen, as the method and env
+        // dropdowns' zero rects are.
+        let anchor = self.hits.rect_of(&Hit::ResponseJqChip).unwrap_or_else(|| {
+            self.hits
+                .rect_of(&Hit::Pane(PaneId::Response))
+                .map_or_else(Rect::default, |pane| self.session.response.jq_chip_rect(pane))
+        });
+        self.push_modal(Modal::Dropdown(DropdownState {
+            anchor,
+            items,
+            selected: current,
+            current: Some(current),
+        }));
+    }
+
+    /// Spec 18: a name the editor refused for a view keeps the prompt, with
+    /// a toast saying why. A blank one says it in the words and kind the
+    /// shared prompt's own refusal uses (the prompt refuses a blank name
+    /// before sending; this covers any other sender of the action).
+    fn refuse_view_name(&mut self, name: &str, why: postui_core::model::ViewNameRefusal) {
+        use postui_core::model::ViewNameRefusal as R;
+        let name = name.trim();
+        let (text, kind) = match why {
+            R::Blank => (crate::components::modal::type_first("name"), ToastKind::Info),
+            R::Control => {
+                ("A view name cannot hold a control character".to_string(), ToastKind::Error)
+            }
+            R::Scratch => (format!("\"{name}\" is the scratch filter's name"), ToastKind::Error),
+            R::Taken => (format!("a view named \"{name}\" already exists"), ToastKind::Error),
+        };
+        self.toasts.push(text, kind);
+        self.last_action_failed = true;
     }
 
     /// Hands a body too big to parse on the UI thread to a blocking
@@ -3786,7 +3907,7 @@ impl App {
                     "txt"
                 };
                 self.open_save_picker(
-                    "Save response view",
+                    "Save response to file",
                     crate::components::file_picker::PickerTarget::SaveView,
                     &format!("{slug}-response.{ext}"),
                 )
@@ -4426,15 +4547,30 @@ impl App {
                 }
                 true
             }
-            Action::OnSelection(verb) => match self.selection_action(self.surface(), verb) {
-                Some(a) => {
-                    if matches!(verb, crate::action::Verb::Add | crate::action::Verb::AddAlt) {
-                        self.vim_open_next_in_insert();
+            Action::OnSelection(verb) => {
+                let surface = self.surface();
+                match self.selection_action(surface, verb) {
+                    Some(a) => {
+                        if matches!(verb, crate::action::Verb::Add | crate::action::Verb::AddAlt) {
+                            self.vim_open_next_in_insert();
+                        }
+                        // A dropdown row's own action closes the menu the way
+                        // Enter on a row does, so the close's housekeeping
+                        // (a parked field's session made live first) runs.
+                        if surface == crate::keyroute::Surface::Menu {
+                            return self.close_dropdown_and_run(a);
+                        }
+                        self.apply(a)
                     }
-                    self.apply(a)
+                    // The menu's footer offers `r` and `d` for its view rows;
+                    // on the scratch row (or save as) they say why not.
+                    None if surface == crate::keyroute::Surface::Menu => {
+                        self.toasts.push("Only a view can be renamed or deleted", ToastKind::Info);
+                        true
+                    }
+                    None => false,
                 }
-                None => false,
-            },
+            }
             Action::PromptMoveSelectedRequestToSpace => {
                 if let Some(slug) = self.sidebar.selected_slug() {
                     self.apply(Action::PromptMoveRequestToSpace(slug));
@@ -4523,6 +4659,8 @@ impl App {
                     insecure: false,
                     jq: None,
                     jq_enabled: true,
+                    jq_views: Vec::new(),
+                    jq_current: None,
                     params: Default::default(),
                     headers: Default::default(),
                     variables: Default::default(),
@@ -5539,18 +5677,170 @@ impl App {
                 self.session.response.open_jq();
                 true
             }
+            Action::OpenJqViews => {
+                // Opening a closed bar switches the filter on, a request
+                // edit (amendment A4), so open inputs close first (#75).
+                if !self.close_inputs_or_stop(true) {
+                    return true;
+                }
+                if let Some(why) = self.session.response.jq_blocked_reason() {
+                    self.toasts.push(why, ToastKind::Info);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                // A collapsed pane draws no bar, so there is no chip for the
+                // menu to hang off and no filter to see a pick change.
+                if self.session.response.collapsed {
+                    self.toasts.push("Show the response pane to pick a jq view", ToastKind::Info);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                // The dropdown hangs off the bar's chip, so a closed bar
+                // opens first, as alt+q opens it: switched on, and so an
+                // undo step, like every flip of the switch (amendment A4).
+                // Opening the menu without the bar would hang it off a chip
+                // nobody can see.
+                if !self.session.response.jq_open() {
+                    self.dispatch(Action::FocusPane(PaneId::Response));
+                    self.session.response.open_jq();
+                }
+                self.open_jq_views();
+                true
+            }
+            Action::PickJqView(name) => {
+                if !self.close_inputs_or_stop(true) {
+                    return true;
+                }
+                self.editor.jq_pick(name.as_deref());
+                true
+            }
+            Action::PromptSaveJqView => {
+                if !self.close_inputs_or_stop(true) {
+                    return true;
+                }
+                // The palette reaches this without the dropdown, so its
+                // rules hold here too: only where the bar can show, and
+                // never with an empty bar (spec 18).
+                if let Some(why) = self.session.response.jq_blocked_reason() {
+                    self.toasts.push(why, ToastKind::Info);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                if self.editor.jq_filter().is_empty() {
+                    self.toasts.push("Nothing to save: the jq bar is empty", ToastKind::Info);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                self.push_modal(Modal::Prompt {
+                    title: "Save as view".into(),
+                    input: LineInput::new(""),
+                    kind: PromptKind::SaveJqView,
+                    revealed: false,
+                });
+                true
+            }
+            Action::SaveJqView(name) => {
+                if !self.close_inputs_or_stop(true) {
+                    return true;
+                }
+                // The bar is not re-checked for text: the menu and the
+                // palette offer Save as only with some (spec 18), and a view
+                // whose filter emptied meanwhile, or came from another sender,
+                // is an empty view, which spec 26 allows.
+                // Its own step, like every view edit made from the menu.
+                match self.editor.jq_save_as(&name) {
+                    Ok(()) => self.no_coalesce = true,
+                    Err(why) => self.refuse_view_name(&name, why),
+                }
+                true
+            }
+            Action::PromptRenameJqView(from) => {
+                if !self.close_inputs_or_stop(true) {
+                    return true;
+                }
+                self.push_modal(Modal::Prompt {
+                    title: "Rename view".into(),
+                    input: LineInput::new(&from),
+                    kind: PromptKind::RenameJqView { from },
+                    revealed: false,
+                });
+                true
+            }
+            Action::RenameJqView { from, to } => {
+                if !self.close_inputs_or_stop(true) {
+                    return true;
+                }
+                // The view went while its prompt was up (a reload, a discard).
+                // Not a failure: a failed action puts its prompt back, and
+                // this one could never succeed, whatever name was typed. The
+                // prompt closes.
+                if self.editor.jq_views.iter().all(|v| v.name != from) {
+                    self.toasts
+                        .push(format!("No view named \"{from}\" to rename"), ToastKind::Info);
+                    return true;
+                }
+                match self.editor.jq_rename(&from, &to) {
+                    Ok(()) => self.no_coalesce = true,
+                    Err(why) => self.refuse_view_name(&to, why),
+                }
+                true
+            }
+            Action::DeleteJqView(name) => {
+                if !self.close_inputs_or_stop(true) {
+                    return true;
+                }
+                // A name no view has any more (a reload under the menu)
+                // deletes nothing, so it says nothing.
+                if self.editor.jq_delete(&name) {
+                    self.no_coalesce = true;
+                    self.toasts.push(
+                        format!("View \"{name}\" deleted{}", self.undo_hint()),
+                        ToastKind::Info,
+                    );
+                }
+                true
+            }
+            Action::RevertJqView => {
+                if !self.close_inputs_or_stop(true) {
+                    return true;
+                }
+                // The palette reaches this whatever is current; the ↺ and
+                // the footer chip only show on an edited filter.
+                let which = match self.editor.jq_current_name() {
+                    Some(name) => format!("view \"{name}\""),
+                    None => "the scratch".to_string(),
+                };
+                let refusal = match self.editor.jq_current_saved() {
+                    None => Some(format!("Nothing to revert: {which} is not saved yet")),
+                    Some(_) if !self.editor.jq_current_modified() => {
+                        Some(format!("Nothing to revert: {which} is unchanged"))
+                    }
+                    Some(_) => None,
+                };
+                if let Some(why) = refusal {
+                    self.toasts.push(why, ToastKind::Info);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                // Its own step: joining the typing's would make undo skip
+                // past the edit it is meant to bring back.
+                self.no_coalesce = true;
+                self.editor.jq_revert();
+                true
+            }
             Action::JqApply(text) => {
                 let cursor = text.chars().count();
-                self.session.response.set_jq_text_with_cursor(&text, cursor);
+                self.land_jq_in_scratch(&text, cursor);
                 true // sync_jq applies it
             }
             Action::JqTeeUp { text, cursor } => {
                 // Focus before the text lands, so the tee-up joins the
                 // bar's edit session and ctrl+z walks it back to the
-                // filter that was there.
+                // filter that was there (on the scratch; see
+                // `land_jq_in_scratch` for a view).
                 self.dispatch(Action::FocusPane(PaneId::Response));
                 self.session.response.set_jq_focus(true);
-                self.session.response.set_jq_text_with_cursor(&text, cursor);
+                self.land_jq_in_scratch(&text, cursor);
                 true
             }
             Action::JqRunFinished { generation, run, result } => {
@@ -5758,7 +6048,7 @@ impl App {
                 match result.map(|reply| postui_core::jq::ai::extract_filter(&reply)) {
                     Ok(Some(filter)) => {
                         let cursor = filter.chars().count();
-                        self.session.response.set_jq_text_with_cursor(&filter, cursor);
+                        self.land_jq_in_scratch(&filter, cursor);
                         self.session.response.set_jq_focus(true);
                     }
                     Ok(None) => {
@@ -9503,7 +9793,9 @@ impl App {
                 jq_row = Some(*row);
                 (TextSurface::Response, false)
             }
-            Hit::ResponseJqBar => {
+            // The chip is the bar's own, as the `jq ` label it replaced was
+            // part of its row: a right-click there is the bar's text menu.
+            Hit::ResponseJqBar | Hit::ResponseJqChip => {
                 self.update(Action::FocusPane(PaneId::Response));
                 if !self.session.response.set_jq_focus(true) {
                     return None;
@@ -11838,6 +12130,18 @@ impl App {
     /// draw.
     fn set_sidebar_selected(&mut self, i: usize) {
         self.sidebar.select_row(i);
+    }
+
+    /// Closes the dropdown on top and runs `action`, one of its rows' own
+    /// (rename, delete), through [`Self::apply_modal_result`]: the close
+    /// Enter on a row makes, so a key verb and a button click on the row
+    /// get the same housekeeping.
+    pub(crate) fn close_dropdown_and_run(&mut self, action: Action) -> bool {
+        self.apply_modal_result(ModalResult {
+            actions: vec![action],
+            close: true,
+            ..Default::default()
+        })
     }
 
     /// Pops the top modal on `close` and dispatches each of `res`'s

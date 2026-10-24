@@ -12,7 +12,7 @@ use edtui::{
     EditorEventHandler, EditorMode, EditorState, EditorTheme, EditorView, LineNumbers, Lines,
 };
 use indexmap::IndexMap;
-use postui_core::model::{Body, Entry, HttpRequest, Method};
+use postui_core::model::{Body, Entry, HttpRequest, JqView, Method, ViewNameRefusal};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -137,12 +137,27 @@ pub struct Editor {
     /// Whether TLS certificate verification is skipped at send time
     /// (`insecure = true` in the request TOML).
     pub insecure: bool,
-    /// The jq filter bar's text, mirrored from the response pane; empty is
-    /// no filter.
+    /// The scratch: the request's unnamed view (jq views amendment A1),
+    /// what the bar shows while no view is current. Empty is no filter.
+    /// File content: editing it dirties the request.
     pub jq: String,
-    /// Whether that filter is switched on. Closing the bar switches it off
-    /// and keeps the text; `false` only means something with text to keep.
+    /// Whether the bar's filter, the scratch or the current view, is
+    /// switched on. Closing the bar switches it off and keeps the text.
+    /// File content, as a plain edit (amendment A4).
     pub jq_enabled: bool,
+    /// The request's saved jq views (spec 1), in saved order. File
+    /// content: editing one dirties the request. Each carries an
+    /// in-memory `id` (see `next_view_id`) so revert and the modified
+    /// mark find its saved text through a rename.
+    pub jq_views: Vec<JqView>,
+    /// The view the bar shows and edits, by name; `None` (or a name no
+    /// view has) is the scratch. File content, as a plain edit (A4).
+    pub jq_current: Option<String>,
+    /// The id the next view gets, a new one or one `load` numbers: past
+    /// every id this editor (and any it replaced, [`Self::fresh`]) ever
+    /// handed out or took in (a load, a snapshot), so an id never names two views
+    /// while the app's undo history can still apply a snapshot.
+    next_view_id: u64,
     /// The active environment's TLS force, mirrored in before each draw
     /// (`ui.rs`) so the padlock can show the *effective* state: the force
     /// when there is one, else `insecure`. Not part of the request.
@@ -331,7 +346,11 @@ impl Default for Editor {
             substitute_body: false,
             insecure: false,
             jq: String::new(),
+            // A never-saved scratch is on, as the bar always was.
             jq_enabled: true,
+            jq_views: Vec::new(),
+            jq_current: None,
+            next_view_id: 1,
             env_tls: None,
             params: IndexMap::new(),
             headers: IndexMap::new(),
@@ -462,7 +481,26 @@ impl Editor {
     /// a different request must not carry an earlier reveal along with it
     /// -- the same re-masking-on-context-switch the Variable Manager's own
     /// scoped reveal already does.
-    pub fn load(&mut self, slug: Option<String>, req: HttpRequest) {
+    pub fn load(&mut self, slug: Option<String>, mut req: HttpRequest) {
+        // Ids before both the fields and `saved` take the views, so a view
+        // finds its saved text by id. A request from memory (Discard
+        // reloads `saved`) carries this editor's own ids: keep them, so
+        // undo across the reload finds the same saved texts. One read
+        // from disk has none (all 0): number from the counter, never from
+        // 1 again, so an older snapshot's id never names another view.
+        let mut ids: Vec<u64> = req.jq_views.iter().map(|v| v.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let own = ids.len() == req.jq_views.len() && !ids.contains(&0);
+        if own {
+            let past = ids.last().map_or(0, |id| id + 1);
+            self.next_view_id = self.next_view_id.max(past);
+        } else {
+            for view in &mut req.jq_views {
+                view.id = self.next_view_id;
+                self.next_view_id += 1;
+            }
+        }
         self.slug = slug;
         self.name = req.name.clone();
         self.method = req.method;
@@ -471,6 +509,8 @@ impl Editor {
         self.insecure = req.insecure;
         self.jq = req.jq.clone().unwrap_or_default();
         self.jq_enabled = req.jq_enabled;
+        self.jq_views = req.jq_views.clone();
+        self.jq_current = req.jq_current.clone();
         self.params = req.params.clone();
         self.headers = req.headers.clone();
         self.variables = req.variables.clone();
@@ -510,6 +550,12 @@ impl Editor {
         self.insecure = req.insecure;
         self.jq = req.jq.clone().unwrap_or_default();
         self.jq_enabled = req.jq_enabled;
+        // The snapshot's ids are this editor's own (it recorded them), so
+        // they keep matching `saved`; new views go past every one of them.
+        self.jq_views = req.jq_views.clone();
+        self.jq_current = req.jq_current.clone();
+        let past = self.jq_views.iter().map(|v| v.id + 1).max().unwrap_or(0);
+        self.next_view_id = self.next_view_id.max(past);
         self.params = req.params.clone();
         self.headers = req.headers.clone();
         self.variables = req.variables.clone();
@@ -606,8 +652,11 @@ impl Editor {
             url: self.url.text().to_string(),
             substitute_body: self.substitute_body,
             insecure: self.insecure,
+            // The switch as held: the file writes it as it is (A5).
             jq: (!self.jq.is_empty()).then(|| self.jq.clone()),
-            jq_enabled: self.jq.is_empty() || self.jq_enabled,
+            jq_enabled: self.jq_enabled,
+            jq_views: self.jq_views.clone(),
+            jq_current: self.jq_current.clone(),
             params: self.params.clone(),
             headers: self.headers.clone(),
             variables: self.variables.clone(),
@@ -718,15 +767,10 @@ impl Editor {
     /// loaded and then changed counts as dirty.
     pub fn is_dirty(&self) -> bool {
         match &self.saved {
-            Some(s) => {
-                // The jq filter is a view setting that travels with the
-                // file but never counts as an edit: compare with it
-                // masked to the saved value.
-                let mut now = self.current_request();
-                now.jq = s.jq.clone();
-                now.jq_enabled = s.jq_enabled;
-                *s != now
-            }
+            // Every jq field is file content (jq views amendment): the
+            // scratch, the switch, the current view and the views compare
+            // like any field.
+            Some(s) => *s != self.current_request(),
             None => false,
         }
     }
@@ -761,7 +805,167 @@ impl Editor {
                 && self.headers.is_empty()
                 && self.variables.is_empty()
                 && self.body_text().is_empty()
-                && self.jq.is_empty())
+                && self.jq.is_empty()
+                && self.jq_views.is_empty())
+    }
+
+    /// A blank editor that keeps this one's view-id counter, for replacing
+    /// the editor wholesale: the app's undo history outlives the editor,
+    /// so ids must never restart while it can still apply a snapshot.
+    pub fn fresh(&self) -> Self {
+        Self { next_view_id: self.next_view_id, ..Self::default() }
+    }
+
+    /// The current view's index in `jq_views`; `None` is the scratch.
+    pub fn current_view(&self) -> Option<usize> {
+        let name = self.jq_current.as_deref()?;
+        self.jq_views.iter().position(|v| v.name == name)
+    }
+
+    /// The current view's name, `None` for the scratch: what the bar shows,
+    /// so a `jq_current` naming no view reads as the scratch here too.
+    pub fn jq_current_name(&self) -> Option<&str> {
+        self.current_view().map(|i| self.jq_views[i].name.as_str())
+    }
+
+    /// The filter the bar shows: the current view's, or the scratch.
+    pub fn jq_filter(&self) -> &str {
+        match self.current_view() {
+            Some(i) => &self.jq_views[i].filter,
+            None => &self.jq,
+        }
+    }
+
+    /// Writes the bar's text into the current view, or the scratch.
+    pub fn set_jq_filter(&mut self, text: &str) {
+        match self.current_view() {
+            Some(i) => self.jq_views[i].filter = text.to_string(),
+            None => self.jq = text.to_string(),
+        }
+    }
+
+    /// Makes `name` current (`None` = the scratch) and switches the filter
+    /// on (spec 16). A name no view has picks the scratch.
+    pub fn jq_pick(&mut self, name: Option<&str>) {
+        self.jq_current =
+            name.filter(|n| self.jq_views.iter().any(|v| v.name == *n)).map(str::to_string);
+        self.jq_enabled = true;
+    }
+
+    /// The view's filter in the saved snapshot, matched by id only
+    /// (survives a rename). `None` for a view saved since (spec 24).
+    ///
+    /// By id only, never by name: a name can pass from a deleted view to
+    /// another one, and then revert would write the wrong text. The cost:
+    /// an unsaved buffer seated over a request freshly read from disk (an
+    /// undo's landing) carries ids from before the read, so its views show
+    /// no modified mark and no revert until the next save. Coarser, never
+    /// wrong. The app asks by id ([`Self::jq_current_saved`]); tests ask
+    /// by name.
+    #[cfg(test)]
+    pub fn jq_saved_filter(&self, name: &str) -> Option<&str> {
+        self.jq_saved_filter_of(self.jq_views.iter().find(|v| v.name == name)?.id)
+    }
+
+    /// [`Self::jq_saved_filter`] for the view with in-memory `id`.
+    fn jq_saved_filter_of(&self, id: u64) -> Option<&str> {
+        let saved = self.saved.as_ref()?.jq_views.iter().find(|v| v.id == id)?;
+        Some(&saved.filter)
+    }
+
+    /// The view has a saved text and its filter differs from it (spec 5,
+    /// 25: the filter only, never the name). The app asks about the current
+    /// filter only ([`Self::jq_current_modified`]); tests ask about any.
+    #[cfg(test)]
+    pub fn jq_modified(&self, name: &str) -> bool {
+        let Some(saved) = self.jq_saved_filter(name) else { return false };
+        self.jq_views.iter().any(|v| v.name == name && v.filter != saved)
+    }
+
+    /// The current filter's saved text: the current view's
+    /// ([`Self::jq_saved_filter`]), or the scratch's, which a saved request
+    /// always has (empty when it had none; amendment A8). `None` for a view
+    /// saved since, or a request never saved.
+    pub fn jq_current_saved(&self) -> Option<&str> {
+        match self.current_view() {
+            Some(i) => self.jq_saved_filter_of(self.jq_views[i].id),
+            None => Some(self.saved.as_ref()?.jq.as_deref().unwrap_or("")),
+        }
+    }
+
+    /// Whether the current filter, view or scratch, differs from its saved
+    /// text: the chip's ● and the ↺ (spec 5, amendment A8).
+    pub fn jq_current_modified(&self) -> bool {
+        self.jq_current_saved().is_some_and(|saved| saved != self.jq_filter())
+    }
+
+    /// Why `name` may not name a view on this request beside every view but
+    /// `except` (a rename's own), or `None`: [`JqView::name_refusal`], the
+    /// rule the file reader applies too (spec 18).
+    pub fn jq_name_refusal(&self, name: &str, except: Option<&str>) -> Option<ViewNameRefusal> {
+        let others =
+            self.jq_views.iter().map(|v| v.name.as_str()).filter(|other| Some(*other) != except);
+        // The name as it will be stored: save-as and rename trim it, so a
+        // pasted trailing newline is no control character in it.
+        JqView::name_refusal(name.trim(), others)
+    }
+
+    /// Spec decision 6 and amendment A9. Err with the refusal when the
+    /// name may not be a view's. From a modified view or scratch, the edits
+    /// move to the new view and the source goes back to its saved text; one
+    /// with no saved text keeps it (a copy). The new view is current and
+    /// switched on, as a pick makes a view (spec 16): saving it from the
+    /// palette with the bar closed shows what was saved.
+    pub fn jq_save_as(&mut self, name: &str) -> Result<(), ViewNameRefusal> {
+        if let Some(why) = self.jq_name_refusal(name, None) {
+            return Err(why);
+        }
+        let filter = self.jq_filter().to_string();
+        if let Some(saved) = self.jq_current_saved().map(str::to_string) {
+            self.set_jq_filter(&saved);
+        }
+        let name = name.trim().to_string();
+        self.jq_views.push(JqView { name: name.clone(), filter, id: self.next_view_id });
+        self.next_view_id += 1;
+        self.jq_current = Some(name);
+        self.jq_enabled = true;
+        Ok(())
+    }
+
+    /// Renames view `from` to `to` (trimmed). Err with the refusal when
+    /// `to` may not be its name. The view stays current if it was, and
+    /// keeps its id, so revert still finds its saved text (spec 23).
+    pub fn jq_rename(&mut self, from: &str, to: &str) -> Result<(), ViewNameRefusal> {
+        if let Some(why) = self.jq_name_refusal(to, Some(from)) {
+            return Err(why);
+        }
+        let to = to.trim().to_string();
+        if let Some(view) = self.jq_views.iter_mut().find(|v| v.name == from) {
+            view.name = to.clone();
+            if self.jq_current.as_deref() == Some(from) {
+                self.jq_current = Some(to);
+            }
+        }
+        Ok(())
+    }
+
+    /// Removes the view; the scratch becomes current if it was. `false`
+    /// when no view has `name`.
+    pub fn jq_delete(&mut self, name: &str) -> bool {
+        let before = self.jq_views.len();
+        self.jq_views.retain(|v| v.name != name);
+        if self.jq_current.as_deref() == Some(name) {
+            self.jq_current = None;
+        }
+        self.jq_views.len() != before
+    }
+
+    /// The current filter, view or scratch, back to its saved text; no-op
+    /// when it has none.
+    pub fn jq_revert(&mut self) {
+        if let Some(saved) = self.jq_current_saved().map(str::to_string) {
+            self.set_jq_filter(&saved);
+        }
     }
 
     /// The name of the `{{token}}` the keyboard caret is currently sitting
@@ -5244,15 +5448,32 @@ mod tests {
         assert_eq!(ed.jq, ".a");
         assert_eq!(ed.current_request().jq, Some(".a".into()));
         ed.jq.clear();
-        assert_eq!(ed.current_request().jq, None, "an empty bar is no filter");
-        assert!(!ed.is_dirty(), "clearing the filter is a view setting, not an edit");
+        assert_eq!(ed.current_request().jq, None, "an empty scratch is no filter");
+        assert!(ed.is_dirty(), "the scratch is the request's (amendment A2)");
         req.jq = None;
         ed.apply_snapshot(&req);
         assert_eq!(ed.jq, "");
     }
 
+    /// Amendment A5: the file holds the switch as the editor does, so a
+    /// file switched off with nothing to filter, or with a hand-written
+    /// `jq = ""`, opens clean and saves back as it was read.
     #[test]
-    fn jq_enabled_round_trips_and_never_dirties_the_request() {
+    fn a_switched_off_file_with_nothing_to_filter_opens_clean_and_round_trips() {
+        let text = "method = \"GET\"\nurl = \"u\"\njq = \"\"\njq_enabled = false\n";
+        let read = HttpRequest::from_toml_str(text).unwrap();
+        let mut ed = Editor::default();
+        ed.load(Some("s".into()), read);
+        assert!(!ed.is_dirty(), "opens clean");
+        assert!(!ed.jq_enabled);
+        let saved = ed.current_request().to_toml_string();
+        assert_eq!(HttpRequest::from_toml_str(&saved).unwrap(), ed.current_request());
+        assert!(saved.contains("jq_enabled = false") && !saved.contains("jq ="), "{saved}");
+    }
+
+    /// Amendment A4: the switch is file content, a plain edit.
+    #[test]
+    fn jq_enabled_round_trips_and_a_flip_dirties_the_request() {
         let mut ed = Editor::default();
         let req = HttpRequest {
             jq: Some(".a".into()),
@@ -5265,28 +5486,21 @@ mod tests {
         assert!(!ed.current_request().jq_enabled);
         assert!(!ed.is_dirty());
         ed.jq_enabled = true;
-        assert!(!ed.is_dirty(), "switching the filter on is a view setting, not an edit");
-        ed.jq.clear();
+        assert!(ed.is_dirty(), "switching the filter on is an edit");
         ed.jq_enabled = false;
-        assert!(
-            ed.current_request().jq_enabled,
-            "off with no filter normalises to on: there is nothing to switch off"
-        );
-        assert!(!ed.is_dirty(), "still just jq settings, still not dirty");
+        assert!(!ed.is_dirty(), "and back is clean again");
         ed.apply_snapshot(&req);
         assert!(!ed.jq_enabled);
     }
 
     #[test]
-    fn changing_the_jq_filter_alone_is_not_dirty() {
+    fn changing_the_jq_filter_alone_dirties_the_request() {
         let mut ed = Editor::default();
         ed.load(None, HttpRequest { url: "http://x".into(), ..Default::default() });
         ed.mark_saved();
         ed.jq = ".meta".into();
-        assert!(!ed.is_dirty());
-        ed.url.set_text("http://y");
-        assert!(ed.is_dirty(), "a real edit still is");
-        assert_eq!(ed.current_request().jq.as_deref(), Some(".meta"), "the filter still saves");
+        assert!(ed.is_dirty(), "amendment A2: the scratch is the request's");
+        assert_eq!(ed.current_request().jq.as_deref(), Some(".meta"), "the filter saves");
     }
 
     #[test]
@@ -5295,6 +5509,362 @@ mod tests {
         assert!(!ed.is_scratch_dirty());
         ed.jq = ".a".into();
         assert!(ed.is_scratch_dirty());
+    }
+
+    /// A saved request with two views, `names` and `ids`, the scratch
+    /// current.
+    fn editor_with_views() -> Editor {
+        let mut ed = Editor::default();
+        let view = |name: &str, filter: &str| postui_core::model::JqView {
+            name: name.into(),
+            filter: filter.into(),
+            id: 0,
+        };
+        ed.load(
+            Some("r".into()),
+            HttpRequest {
+                url: "http://x".into(),
+                jq_views: vec![view("names", ".items[].name"), view("ids", ".items[].id")],
+                ..Default::default()
+            },
+        );
+        ed.mark_saved();
+        ed
+    }
+
+    #[test]
+    fn load_assigns_ids_and_every_jq_change_dirties() {
+        let mut ed = editor_with_views();
+        let ids: Vec<u64> = ed.jq_views.iter().map(|v| v.id).collect();
+        assert_eq!(ids, [1, 2], "load numbers the views");
+        ed.jq_pick(Some("names"));
+        assert!(ed.jq_enabled, "picking switches the filter on");
+        assert!(ed.is_dirty(), "amendment A4: picking is an edit");
+        ed.mark_saved();
+        ed.jq = ".x".into();
+        assert!(ed.is_dirty(), "the scratch is the request's even while a view is current");
+        ed.mark_saved();
+        assert_eq!(ed.jq_filter(), ".items[].name");
+        ed.set_jq_filter(".items[].name | length");
+        assert!(ed.is_dirty());
+        assert!(ed.jq_modified("names"));
+        assert!(!ed.jq_modified("ids"));
+        assert_eq!(ed.jq, ".x", "the scratch is untouched");
+        ed.jq_pick(None);
+        assert_eq!(ed.jq_filter(), ".x", "the scratch is current again");
+        ed.set_jq_filter(".y");
+        assert_eq!(ed.jq, ".y", "the bar writes the scratch");
+    }
+
+    /// `saved` with the ids a read from disk has (none).
+    fn as_from_disk(req: &HttpRequest) -> HttpRequest {
+        let mut req = req.clone();
+        for view in &mut req.jq_views {
+            view.id = 0;
+        }
+        req
+    }
+
+    #[test]
+    fn undoing_a_discard_keeps_the_modified_mark_and_revert() {
+        // names=1, ids=2; add c (3), delete names, save: saved is [ids, c].
+        let mut ed = editor_with_views();
+        ed.jq_save_as("c").unwrap();
+        ed.jq_delete("names");
+        ed.mark_saved();
+        // Edit ids, then discard: the reload takes `saved` from memory.
+        ed.jq_pick(Some("ids"));
+        ed.set_jq_filter(".edited");
+        assert!(ed.jq_modified("ids"));
+        let before_discard = ed.current_request();
+        let ids_before: Vec<u64> = before_discard.jq_views.iter().map(|v| v.id).collect();
+        let saved = ed.saved.clone().unwrap();
+        ed.load(Some("r".into()), saved);
+        let ids_after: Vec<u64> = ed.jq_views.iter().map(|v| v.id).collect();
+        assert_eq!(ids_after, ids_before, "a request from memory keeps its own ids");
+        assert!(!ed.jq_modified("ids"), "discarded");
+        // Undoing the discard puts the edited snapshot back, exactly.
+        ed.apply_snapshot(&before_discard);
+        assert_eq!(ed.current_request(), before_discard);
+        assert_eq!(ed.jq_saved_filter("ids"), Some(".items[].id"), "its own saved text");
+        assert_eq!(ed.jq_saved_filter("c"), Some(""), "and c's its own");
+        assert!(ed.jq_modified("ids"), "the mark is back");
+        ed.jq_revert();
+        assert_eq!(ed.jq_filter(), ".items[].id", "revert still works");
+        ed.jq_save_as("d").unwrap();
+        let ids: Vec<u64> = ed.jq_views.iter().map(|v| v.id).collect();
+        let mut unique = ids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len(), "a new view takes a fresh id: {ids:?}");
+    }
+
+    #[test]
+    fn a_view_made_since_the_save_under_a_deleted_views_name_has_no_saved_text() {
+        let mut ed = editor_with_views();
+        ed.jq = ".s".into();
+        ed.jq_delete("names");
+        ed.jq_save_as("names").unwrap();
+        assert_eq!(ed.jq_saved_filter("names"), None, "spec 24: saved since, no saved text");
+        assert!(!ed.jq_modified("names"), "no mark");
+        ed.jq_revert();
+        assert_eq!(ed.jq_filter(), ".s", "revert does nothing");
+    }
+
+    #[test]
+    fn a_buffer_over_a_request_read_from_disk_has_no_saved_text() {
+        // An undo's landing: the editor is replaced, the request read from
+        // disk (fresh ids), and an unsaved buffer from before seated on it.
+        // Its ids match nothing saved, and matching is by id only (a name
+        // can pass to another view): no mark, no revert until the next
+        // save. Coarser, never wrong.
+        let mut ed = editor_with_views();
+        ed.jq_pick(Some("names"));
+        ed.set_jq_filter(".edited");
+        let buffer = ed.current_request();
+        let old_ids: Vec<u64> = buffer.jq_views.iter().map(|v| v.id).collect();
+        let disk = as_from_disk(ed.saved.as_ref().unwrap());
+        let mut ed = ed.fresh();
+        ed.load(Some("r".into()), disk);
+        let new_ids: Vec<u64> = ed.jq_views.iter().map(|v| v.id).collect();
+        assert!(
+            new_ids.iter().all(|n| old_ids.iter().all(|o| n > o)),
+            "a read from disk numbers past every earlier id: {old_ids:?} then {new_ids:?}"
+        );
+        ed.apply_snapshot(&buffer);
+        assert_eq!(ed.jq_saved_filter("names"), None, "never matched by name");
+        assert!(!ed.jq_modified("names"), "no mark");
+        ed.jq_revert();
+        assert_eq!(ed.jq_filter(), ".edited", "revert does nothing");
+        assert!(ed.is_dirty(), "the request's own dirty mark still shows the edit");
+    }
+
+    #[test]
+    fn a_name_passed_from_a_deleted_view_to_another_never_carries_its_saved_text() {
+        // The case a name fallback got wrong: undo back past a save that
+        // followed delete-names-then-rename-ids-to-names.
+        let mut ed = editor_with_views();
+        let before = ed.current_request();
+        ed.jq_delete("names");
+        ed.jq_rename("ids", "names").unwrap();
+        ed.mark_saved();
+        ed.apply_snapshot(&before);
+        assert_eq!(ed.jq_saved_filter("names"), None, "view 1 was deleted before the save");
+        assert_eq!(ed.jq_saved_filter("ids"), Some(".items[].id"), "view 2, by id");
+    }
+
+    #[test]
+    fn load_renumbers_from_the_counter_when_any_id_is_zero_or_repeated() {
+        let mut ed = editor_with_views();
+        let mut req = ed.saved.clone().unwrap();
+        req.jq_views[1].id = req.jq_views[0].id;
+        ed.load(Some("r".into()), req.clone());
+        let ids: Vec<u64> = ed.jq_views.iter().map(|v| v.id).collect();
+        assert_eq!(ids, [3, 4], "a repeated id: numbered past every earlier one");
+        req.jq_views[0].id = 0;
+        req.jq_views[1].id = 9;
+        ed.load(Some("r".into()), req);
+        let ids: Vec<u64> = ed.jq_views.iter().map(|v| v.id).collect();
+        assert_eq!(ids, [5, 6], "an id of 0: numbered too");
+        assert_eq!(ed.saved.as_ref().unwrap().jq_views[1].id, 6, "saved gets the same ids");
+    }
+
+    #[test]
+    fn a_fresh_editor_keeps_numbering_past_the_one_it_replaces() {
+        let ed = editor_with_views();
+        let first: Vec<u64> = ed.jq_views.iter().map(|v| v.id).collect();
+        let disk = as_from_disk(ed.saved.as_ref().unwrap());
+        let mut next = ed.fresh();
+        assert!(next.jq_views.is_empty() && next.saved.is_none(), "blank");
+        next.load(Some("r".into()), disk);
+        let again: Vec<u64> = next.jq_views.iter().map(|v| v.id).collect();
+        assert!(
+            again.iter().all(|n| first.iter().all(|o| n > o)),
+            "ids never restart across a replacement: {first:?} then {again:?}"
+        );
+    }
+
+    #[test]
+    fn the_filter_falls_back_to_the_scratch_when_the_current_view_is_gone() {
+        let mut ed = editor_with_views();
+        ed.jq = ".s".into();
+        ed.jq_current = Some("gone".into());
+        assert_eq!(ed.jq_filter(), ".s");
+        assert_eq!(ed.jq_current_name(), None, "named as the scratch too");
+        ed.set_jq_filter(".t");
+        assert_eq!(ed.jq, ".t");
+        assert_eq!(ed.jq_views[0].filter, ".items[].name", "no view is touched");
+    }
+
+    #[test]
+    fn current_request_carries_the_views_the_scratch_and_the_switch_as_held() {
+        let mut ed = editor_with_views();
+        ed.jq_pick(Some("ids"));
+        ed.jq_enabled = false;
+        let req = ed.current_request();
+        assert_eq!(req.jq_views, ed.jq_views);
+        assert_eq!(req.jq_views[1].id, 2, "the ids ride along for undo");
+        assert_eq!(req.jq_current.as_deref(), Some("ids"));
+        assert_eq!(req.jq, None, "an empty scratch is none");
+        assert!(!req.jq_enabled, "off stays off: the switch also governs views");
+    }
+
+    #[test]
+    fn apply_snapshot_takes_the_views_with_their_ids_and_new_views_never_reuse_one() {
+        let mut ed = editor_with_views();
+        let mut snap = ed.current_request();
+        snap.jq_views[1].id = 9;
+        snap.jq_current = Some("ids".into());
+        snap.jq = Some(".s".into());
+        ed.apply_snapshot(&snap);
+        assert_eq!(ed.jq_views[1].id, 9);
+        assert_eq!(ed.jq_current.as_deref(), Some("ids"));
+        assert_eq!(ed.jq, ".s");
+        ed.jq_save_as("more").unwrap();
+        assert_eq!(ed.jq_views.last().unwrap().id, 10, "past every id the snapshot held");
+    }
+
+    #[test]
+    fn revert_restores_only_the_current_views_filter_even_after_a_rename() {
+        let mut ed = editor_with_views();
+        ed.jq_pick(Some("names"));
+        ed.set_jq_filter(".changed");
+        ed.jq_rename("names", "Names2").unwrap();
+        assert_eq!(ed.jq_saved_filter("Names2"), Some(".items[].name"), "matched by id");
+        assert!(ed.jq_modified("Names2"));
+        ed.jq_revert();
+        assert_eq!(ed.jq_filter(), ".items[].name");
+        assert_eq!(ed.jq_current.as_deref(), Some("Names2"), "revert keeps the name");
+        assert!(!ed.jq_modified("Names2"));
+    }
+
+    /// Amendment A8: the scratch has a saved text like a view; a
+    /// never-saved request has none.
+    #[test]
+    fn an_edited_scratch_is_marked_and_reverts_to_its_saved_text() {
+        let mut ed = editor_with_views();
+        ed.jq = ".s".into();
+        ed.mark_saved();
+        assert!(!ed.jq_current_modified());
+        ed.set_jq_filter(".t");
+        assert!(ed.jq_current_modified(), "the mark");
+        ed.jq_revert();
+        assert_eq!(ed.jq, ".s");
+        assert!(!ed.jq_current_modified() && !ed.is_dirty());
+
+        let mut never = Editor { jq: ".a".into(), ..Editor::default() };
+        assert_eq!(never.jq_current_saved(), None, "no saved text");
+        assert!(!never.jq_current_modified());
+        never.jq_revert();
+        assert_eq!(never.jq, ".a", "revert does nothing");
+    }
+
+    #[test]
+    fn save_as_from_a_modified_view_moves_the_edits() {
+        let mut ed = editor_with_views();
+        ed.jq_pick(Some("names"));
+        ed.set_jq_filter(".items[].name | length");
+        ed.jq_save_as("name count").unwrap();
+        assert_eq!(ed.jq_current.as_deref(), Some("name count"));
+        assert_eq!(ed.jq_filter(), ".items[].name | length");
+        assert_eq!(ed.jq_saved_filter("names"), Some(".items[].name"));
+        assert!(!ed.jq_modified("names"), "the source went back to its saved text");
+        assert!(!ed.jq_modified("name count"), "a never-saved view has no saved text");
+        assert_eq!(ed.jq_saved_filter("name count"), None);
+    }
+
+    #[test]
+    fn save_as_from_an_unedited_view_is_a_copy() {
+        let mut ed = editor_with_views();
+        ed.jq_pick(Some("ids"));
+        ed.jq_save_as("ids again").unwrap();
+        assert_eq!(ed.jq_views.len(), 3);
+        assert_eq!(ed.jq_views[1].filter, ".items[].id");
+        assert_eq!(ed.jq_views[2].filter, ".items[].id");
+        assert_eq!(ed.jq_current.as_deref(), Some("ids again"));
+    }
+
+    /// Amendment A9: an edited scratch's edits move to the new view, as a
+    /// view's do; a never-saved scratch is copied and keeps its text.
+    #[test]
+    fn save_as_from_an_edited_scratch_moves_the_edits_and_refuses_a_taken_name() {
+        let mut ed = editor_with_views();
+        ed.jq = ".s".into();
+        assert_eq!(
+            ed.jq_save_as(" NAMES "),
+            Err(ViewNameRefusal::Taken),
+            "taken ignoring case and spaces"
+        );
+        assert_eq!(ed.jq_views.len(), 2, "a refused save adds nothing");
+        ed.jq_save_as(" s ").unwrap();
+        assert_eq!(ed.jq, "", "the scratch is back to its saved text (none)");
+        assert_eq!(ed.jq_views.last().unwrap().filter, ".s");
+        assert_eq!(ed.jq_views.last().unwrap().name, "s", "the name is trimmed");
+        assert_eq!(ed.jq_current.as_deref(), Some("s"));
+        assert!(ed.is_dirty(), "a new view is a request edit");
+
+        let mut never = Editor { jq: ".a".into(), ..Editor::default() };
+        never.jq_save_as("v").unwrap();
+        assert_eq!(never.jq, ".a", "no saved text to go back to: a copy");
+        assert_eq!(never.jq_views[0].filter, ".a");
+
+        let mut off = editor_with_views();
+        off.jq = ".s".into();
+        off.jq_enabled = false;
+        off.jq_save_as("shown").unwrap();
+        assert!(off.jq_enabled, "the new view is switched on, as a pick is");
+    }
+
+    #[test]
+    fn rename_refuses_another_views_name_but_not_its_own() {
+        use ViewNameRefusal::{Blank, Scratch, Taken};
+        let mut ed = editor_with_views();
+        assert_eq!(ed.jq_name_refusal("IDS", None), Some(Taken));
+        assert_eq!(
+            ed.jq_name_refusal("ids", Some("ids")),
+            None,
+            "a view never collides with itself"
+        );
+        assert_eq!(ed.jq_name_refusal("other", None), None);
+        assert_eq!(ed.jq_name_refusal(" Scratch ", None), Some(Scratch), "never a view's");
+        assert_eq!(ed.jq_save_as("scratch"), Err(Scratch));
+        assert_eq!(ed.jq_save_as("  "), Err(Blank), "the editor refuses a blank name itself");
+        assert_eq!(ed.jq_rename("names", ""), Err(Blank));
+        assert_eq!(ed.jq_name_refusal("x\ty", None), Some(ViewNameRefusal::Control));
+        assert_eq!(ed.jq_name_refusal("pasted\n", None), None, "trimmed as it is stored");
+        ed.jq_save_as("ärger").unwrap();
+        assert_eq!(ed.jq_name_refusal("Ärger", None), Some(Taken), "case is compared past ASCII");
+        assert!(ed.jq_delete("ärger"));
+        assert!(!ed.jq_delete("ärger"), "a name no view has deletes nothing");
+        assert_eq!(ed.jq_rename("names", " Ids "), Err(Taken));
+        ed.jq_rename("ids", "IDs").unwrap();
+        assert_eq!(ed.jq_views[1].name, "IDs", "a case change of its own name is fine");
+        assert_eq!(ed.jq_current, None, "renaming a view that is not current picks nothing");
+        assert!(ed.is_dirty(), "a rename is a request edit");
+    }
+
+    #[test]
+    fn deleting_the_current_view_falls_back_to_the_scratch() {
+        let mut ed = editor_with_views();
+        ed.jq = ".s".into();
+        ed.jq_pick(Some("ids"));
+        ed.jq_delete("ids");
+        assert_eq!(ed.jq_current, None);
+        assert_eq!(ed.jq_views.len(), 1);
+        assert_eq!(ed.jq_filter(), ".s", "the scratch is unchanged");
+        assert!(ed.is_dirty(), "a delete is a request edit");
+    }
+
+    #[test]
+    fn a_scratch_editor_with_only_views_or_a_scratch_counts_as_unsaved_work() {
+        let mut ed = Editor::default();
+        assert!(!ed.is_scratch_dirty());
+        ed.jq_save_as("v").unwrap();
+        assert!(ed.is_scratch_dirty(), "a view is content");
+        ed.jq_delete("v");
+        assert!(!ed.is_scratch_dirty());
+        ed.jq = ".a".into();
+        assert!(ed.is_scratch_dirty(), "a scratch is content");
     }
 
     #[test]

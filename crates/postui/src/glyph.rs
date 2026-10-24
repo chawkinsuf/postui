@@ -37,6 +37,7 @@ icons! {
     EYE / EYE_PILL = "\u{F06D0}", "nf-md-eye";
     EYE_OFF / EYE_OFF_PILL = "\u{F06D1}", "nf-md-eye_off";
     CREATION / CREATION_PILL = "\u{F0674}", "nf-md-creation";
+    REVERT / REVERT_PILL = "\u{F054C}", "nf-md-undo";
     FOLDER / FOLDER_PILL = "\u{F024B}", "nf-md-folder";
     CHECKBOX / CHECKBOX_PILL = "\u{F0132}", "nf-md-checkbox_marked";
     CHECKBOX_OFF / CHECKBOX_OFF_PILL = "\u{F0131}", "nf-md-checkbox_blank_outline";

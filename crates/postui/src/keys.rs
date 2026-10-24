@@ -330,6 +330,7 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ("redo", Action::Redo),
         ("toggle_jq_bar", Action::ToggleJqBar),
         ("open_jq_bar", Action::OpenJqBar),
+        ("open_jq_views", Action::OpenJqViews),
     ]
 }
 
@@ -454,6 +455,7 @@ impl Keymap {
             ("ctrl+shift+z", Action::Redo),
             ("alt+q", Action::OpenJqBar),
             ("alt+shift+q", Action::ToggleJqBar),
+            ("alt+shift+j", Action::OpenJqViews),
         ];
         let mut map = Self { bindings: HashMap::new(), overrides: Vec::new() };
         for (s, a) in defaults {
@@ -1017,6 +1019,27 @@ mod tests {
         assert_eq!(get("ctrl+y"), None, "ctrl+y is deliberately unbound");
         assert_eq!(get("alt+q"), Some(Action::OpenJqBar));
         assert_eq!(get("alt+shift+q"), Some(Action::ToggleJqBar));
+    }
+
+    /// jq views: the dropdown has a chord, the same in both profiles, and
+    /// a name `keys.toml` can rebind.
+    #[test]
+    fn alt_shift_j_opens_the_jq_views_in_both_profiles() {
+        for profile in [crate::config::KeyProfile::Arrows, crate::config::KeyProfile::Vim] {
+            let m = Keymap::default_bindings_for(profile);
+            assert_eq!(
+                m.lookup(&KeyCombo::parse("alt+shift+j").unwrap()),
+                Some(Action::OpenJqViews),
+                "{profile:?}"
+            );
+        }
+        assert!(
+            named_actions().iter().any(|(n, a)| *n == "open_jq_views" && *a == Action::OpenJqViews)
+        );
+        assert_eq!(
+            Keymap::default_bindings().combo_for("open_jq_views"),
+            Some("alt+shift+j".to_string())
+        );
     }
 
     #[test]

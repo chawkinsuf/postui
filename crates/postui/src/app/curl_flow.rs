@@ -365,6 +365,8 @@ impl App {
             name: current.name.clone(),
             jq: current.jq.clone(),
             jq_enabled: current.jq_enabled,
+            jq_views: current.jq_views.clone(),
+            jq_current: current.jq_current.clone(),
             variables: current.variables.clone(),
             ..import.request
         };

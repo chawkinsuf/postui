@@ -2107,6 +2107,7 @@ fn the_footer_field_flag_is_pane_local() {
         false,
         None,
         crate::components::footer::JqBarState::Open,
+        false,
         app.pane_field_open(PaneId::Response),
     ));
     assert!(
@@ -3642,19 +3643,20 @@ fn vims_discard_hint_names_u_and_u_undoes_the_discard() {
     assert_eq!(app.editor.body_text(), edited, "the hint's key undoes the discard");
 }
 
+/// The jq views amendment (A2, the user's): the scratch is the request's,
+/// so applying a filter is an edit like any other.
 #[test]
-fn applying_a_jq_filter_never_dirties_the_request_or_gates_quit() {
+fn applying_a_jq_filter_dirties_the_request_and_gates_quit() {
     let mut app = App::new_for_test();
     postui_core::fixtures::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.update(Action::JqApply(".meta".into()));
     assert_eq!(app.editor.jq, ".meta", "the filter landed on the editor");
-    assert!(!app.editor.is_dirty(), "a jq filter change is a view setting, not an edit");
-    assert!(!app.sidebar.open_dirty, "the sidebar row shows no dirty dot");
+    assert!(app.editor.is_dirty(), "a jq filter change is a request edit");
     app.update(Action::Quit);
-    assert!(app.modals.is_empty(), "no unsaved-changes gate");
-    assert!(app.should_quit, "quit proceeds without asking");
+    assert!(!app.modals.is_empty(), "the unsaved-changes gate asks");
+    assert!(!app.should_quit);
 }
 
 #[test]
@@ -9928,6 +9930,101 @@ fn click_method_selector_opens_dropdown_then_click_row_sets_method() {
     app.handle_mouse(left_down(row3.x, row3.y));
     assert_eq!(app.editor.method, postui_core::model::Method::Patch);
     assert!(app.modals.is_empty());
+}
+
+/// A dropdown whose two rows carry their own rename and delete (spec 17),
+/// each a toast that names it, as the jq views menu will.
+fn push_row_action_menu(app: &mut App) {
+    use crate::components::modal::{DropdownState, MenuItem};
+    let toast = |s: &str| Action::ShowToast(s.to_string(), ToastKind::Info);
+    let item = |name: &str| {
+        MenuItem::new(name, Action::Render).with_row_actions(
+            "item",
+            toast(&format!("rename {name}")),
+            toast(&format!("delete {name}")),
+        )
+    };
+    app.push_modal(Modal::Dropdown(DropdownState {
+        anchor: ratatui::layout::Rect::new(10, 5, 8, 1),
+        items: vec![item("alpha"), item("beta")],
+        selected: 0,
+        current: None,
+    }));
+}
+
+/// Spec 17: on a dropdown the keyboard is on `Surface::Menu`, where `r`
+/// renames and `d` (vim's `dd`) deletes the highlighted row: its own
+/// action runs once the menu is gone, as a row click's does.
+#[test]
+fn r_and_d_in_a_dropdown_run_the_highlighted_rows_actions_and_close_it() {
+    use crate::config::KeyProfile;
+    use crate::keyroute::Surface;
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = App::new_for_test();
+        app.use_profile(profile);
+        push_row_action_menu(&mut app);
+        assert_eq!(app.surface(), Surface::Menu, "{profile:?}");
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        press(&mut app, 'r');
+        assert!(app.modals.is_empty(), "{profile:?}: r closes the menu");
+        assert!(
+            app.toasts.messages().contains(&"rename beta"),
+            "{profile:?}: the highlighted row's"
+        );
+
+        push_row_action_menu(&mut app);
+        let delete: &[char] = if profile == KeyProfile::Vim { &['d', 'd'] } else { &['d'] };
+        for (i, c) in delete.iter().enumerate() {
+            assert!(!app.modals.is_empty(), "{profile:?}: open until the delete completes ({i})");
+            press(&mut app, *c);
+        }
+        assert!(app.modals.is_empty(), "{profile:?}: the delete closes the menu");
+        assert!(app.toasts.messages().contains(&"delete alpha"), "{profile:?}");
+    }
+}
+
+/// A plain dropdown (the method menu) has no row actions: `r` and `d`
+/// do nothing there and leave it open.
+#[test]
+fn r_and_d_on_a_plain_dropdown_do_nothing() {
+    use crate::config::KeyProfile;
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = App::new_for_test();
+        app.use_profile(profile);
+        let method = app.editor.method;
+        app.update(Action::OpenMethodDropdown);
+        assert_eq!(
+            app.surface(),
+            crate::keyroute::Surface::Picker,
+            "{profile:?}: a plain picker, which binds no r or d (no pending d either)"
+        );
+        for c in ['r', 'd', 'd'] {
+            press(&mut app, c);
+        }
+        assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "{profile:?}");
+        assert_eq!(app.editor.method, method, "{profile:?}");
+    }
+}
+
+/// Spec 17: a row's delete icon is a click target: it runs that row's
+/// delete and closes the menu, and the row's own action does not run.
+#[test]
+fn clicking_a_rows_delete_runs_it_and_closes_the_menu() {
+    let mut app = App::new_for_test();
+    push_row_action_menu(&mut app);
+    click_hit(&mut app, Hit::DropdownRowDelete(0));
+    assert!(app.modals.is_empty());
+    assert!(app.toasts.messages().contains(&"delete alpha"));
+    assert!(!app.toasts.messages().contains(&"rename alpha"), "only the clicked button ran");
+
+    // Row 1's buttons show once the pointer is over it.
+    push_row_action_menu(&mut app);
+    render_once(&mut app);
+    let row1 = app.hits.rect_of(&Hit::DropdownRow(1)).unwrap();
+    app.handle_mouse(moved(row1.x + 1, row1.y));
+    click_hit(&mut app, Hit::DropdownRowRename(1));
+    assert!(app.modals.is_empty());
+    assert!(app.toasts.messages().contains(&"rename beta"));
 }
 
 /// A dropdown has no open transition and every close path is instant: no
@@ -17328,6 +17425,7 @@ fn every_named_action_is_mouse_reachable() {
                 None,
                 crate::components::footer::JqBarState::Closed,
                 false,
+                false,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -17345,12 +17443,14 @@ fn every_named_action_is_mouse_reachable() {
                 None,
                 crate::components::footer::JqBarState::Closed,
                 false,
+                false,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
         );
         // The response pane's jq-bar-focused chip set swaps in its own
-        // actions (done/tree/describe) — enumerate those too.
+        // actions (done/tree/describe, revert on an edited view) —
+        // enumerate those too.
         mouse_reachable.extend(
             crate::components::footer::footer_chips(
                 pane,
@@ -17361,6 +17461,7 @@ fn every_named_action_is_mouse_reachable() {
                 false,
                 None,
                 crate::components::footer::JqBarState::Focused,
+                true,
                 false,
             )
             .into_iter()
@@ -21880,7 +21981,7 @@ fn alt_q_focuses_the_jq_bar_and_typing_filters_the_tree_live() {
     type_str(&mut app, ".data.total");
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
     assert_eq!(app.editor.jq, ".data.total", "the bar mirrors into the request");
-    assert!(!app.editor.is_dirty(), "a jq filter change is a view setting, not an edit");
+    assert!(app.editor.is_dirty(), "a jq filter change is a request edit (views A2)");
     app.handle_key(alt('q'));
     assert!(
         app.session.response.jq_focused(),
@@ -22326,11 +22427,13 @@ fn a_null_or_empty_result_keeps_the_full_body_with_a_note() {
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
         let rect = app.hits.rect_of(&Hit::ResponseJqBar).expect("bar row registered");
         let buf = terminal.backend().buffer();
-        let row: String = (rect.x..rect.x + rect.width)
+        // The note starts at the bar's left edge, under the chip.
+        let left = app.hits.rect_of(&Hit::ResponseJqChip).expect("chip registered").x;
+        let row: String = (left..rect.x + rect.width)
             .map(|x| buf.cell((x, rect.y + 1)).unwrap().symbol().to_string())
             .collect();
         assert!(row.contains("invalid filter"), "{row:?}");
-        let x = rect.x + row.find("invalid").unwrap() as u16;
+        let x = left + row.find("invalid").unwrap() as u16;
         assert_eq!(buf.cell((x, rect.y + 1)).unwrap().fg, app.theme.error);
     }
     // A list of nulls is no better.
@@ -22376,6 +22479,7 @@ fn the_focused_bar_advertises_enter_apply_and_esc_done() {
         None,
         crate::components::footer::JqBarState::Focused,
         false,
+        false,
     ));
     let keys: Vec<(&str, &str)> = chips.iter().map(|(k, l, _)| (k.as_str(), *l)).collect();
     assert_eq!(
@@ -22383,6 +22487,7 @@ fn the_focused_bar_advertises_enter_apply_and_esc_done() {
         vec![
             ("enter", "apply"),
             ("esc", "done"),
+            ("alt+shift+j", "views"),
             ("alt+shift+q", "unfilter"),
             ("\u{F0674}", "describe…")
         ],
@@ -22702,6 +22807,7 @@ fn the_footer_and_palette_reach_the_jq_bar() {
         None,
         crate::components::footer::JqBarState::Closed,
         false,
+        false,
     ));
     assert!(
         chips
@@ -22829,7 +22935,7 @@ fn clicking_in_the_jq_bar_places_the_caret_and_dragging_selects() {
     app.update(Action::JqApply(".data.total".into()));
     render_once(&mut app);
     let rect = app.hits.rect_of(&Hit::ResponseJqBar).expect("bar row registered");
-    let text_x = rect.x + 3; // after the `jq ` prefix
+    let text_x = rect.x; // the bar's rect is the text, past the chip
 
     // A click focuses the bar and puts the caret under the pointer.
     app.handle_mouse(left_down(text_x + 1, rect.y));
@@ -22931,6 +23037,7 @@ fn the_response_footer_always_offers_alt_q_filter_and_close_only_while_open() {
             false,
             None,
             state,
+            false,
             false,
         ))
     };
@@ -23034,6 +23141,962 @@ fn the_structural_menu_is_absent_on_raw_and_non_json_views() {
     let area = app.session.response.view().unwrap().last_area.unwrap();
     app.handle_mouse(right_down(area.x + 1, area.y));
     assert_eq!(menu_labels(&app)[0], "Copy");
+}
+
+// --- jq views: the scratch, current view and switch in the request file
+// (amendment A1–A12; spec 8, 27, 30, 31) ---
+
+/// An app on a project holding `main/r`: `jq` keys (`jq`, `jq_enabled`,
+/// `jq_current`, as the file spells them) over two saved views, `names`
+/// and `total`. `main/r` is open over a ready JSON response, the shadow
+/// seeded.
+fn views_app(jq: &str) -> App {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    std::fs::write(
+        dir.path().join("requests/main/r.toml"),
+        format!(
+            "url = \"https://x/r\"\n{jq}\n\n\
+             [[jq_view]]\nname = \"names\"\nfilter = \".data.items[].status\"\n\n\
+             [[jq_view]]\nname = \"total\"\nfilter = \".data.total\"\n"
+        ),
+    )
+    .unwrap();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app._test_rx = Some(rx);
+    app._test_dir = Some(dir);
+    app.update(Action::ForceOpenRequest("main/r".into()));
+    ready_response(&mut app, JQ_BODY);
+    app.sync_jq();
+    app.capture_undo(); // seed the shadow
+    app
+}
+
+fn view_filter(app: &App, name: &str) -> String {
+    app.editor.jq_views.iter().find(|v| v.name == name).expect("the view").filter.clone()
+}
+
+/// Amendment A2–A3: the scratch is the request's `jq` line.
+#[test]
+fn the_scratch_dirties_saves_and_reopens() {
+    let mut app = App::new_for_test();
+    let root = app.proj().root().to_path_buf();
+    postui_core::fixtures::save_request(&root, "main/r", &req("https://x/r")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/r".into()));
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::JqApply(".data.total".into()));
+    assert_eq!(app.editor.jq, ".data.total");
+    assert!(app.editor.is_dirty(), "the scratch is the request's");
+    app.update(Action::SaveRequest);
+    let file = std::fs::read_to_string(root.join("requests/main/r.toml")).unwrap();
+    assert!(file.contains("jq = \".data.total\""), "{file}");
+    assert!(!root.join(".local/jq.toml").exists(), "no local file any more");
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut reopened = App::with_root(tx, root.clone());
+    reopened.update(Action::ForceOpenRequest("main/r".into()));
+    ready_response(&mut reopened, JQ_BODY);
+    reopened.sync_jq();
+    assert_eq!(reopened.editor.jq, ".data.total");
+    assert!(reopened.editor.jq_enabled);
+    assert_eq!(reopened.session.response.jq_text(), ".data.total");
+    drop(app); // keeps the temp project alive until the reopened app is done
+}
+
+/// Amendment A7: a file with views and no `jq_enabled` line is on, the
+/// scratch current, so the bar (with its chip and menu) shows (spec 15).
+#[test]
+fn a_request_with_views_and_no_switch_line_opens_on_with_the_scratch_current() {
+    let app = views_app("");
+    assert!(app.editor.jq_enabled);
+    assert_eq!(app.editor.jq_current, None);
+    assert_eq!(app.editor.jq, "");
+    assert!(app.session.response.jq_open(), "on with views shows the bar");
+    assert!(!app.editor.is_dirty());
+}
+
+/// On with an empty scratch and no views looks the same as off, and closing
+/// that empty bar switches nothing off: opening and closing it is no step.
+#[test]
+fn opening_and_closing_an_empty_bar_on_a_request_without_views_records_no_step() {
+    for profile in [crate::config::KeyProfile::Arrows, crate::config::KeyProfile::Vim] {
+        let mut app = App::new_for_test();
+        app.use_profile(profile);
+        let root = app.proj().root().to_path_buf();
+        postui_core::fixtures::save_request(&root, "main/r", &req("https://x/r")).unwrap();
+        app.update(Action::RefreshSidebar);
+        app.update(Action::ForceOpenRequest("main/r".into()));
+        ready_response(&mut app, JQ_BODY);
+        app.sync_jq();
+        app.capture_undo(); // seed the shadow
+        assert!(app.editor.jq_enabled, "{profile:?}: on, as a file without the line is");
+        let steps = app.history.undo_len();
+        app.handle_key(alt('q'));
+        assert!(app.session.response.jq_focused(), "{profile:?}");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!app.session.response.jq_focused(), "{profile:?}");
+        assert!(!app.capture_undo(), "{profile:?}: nothing to record");
+        assert_eq!(app.history.undo_len(), steps, "{profile:?}");
+    }
+}
+
+/// Amendment A3: an existing `jq` line is the scratch, as it is; the file
+/// opens clean and a save keeps the line. An old `.local/jq.toml` is
+/// ignored (A12).
+#[test]
+fn a_jq_line_is_the_scratch_and_an_old_local_file_is_ignored() {
+    let mut app = App::new_for_test();
+    let root = app.proj().root().to_path_buf();
+    let file = root.join("requests/main/r.toml");
+    std::fs::write(&file, "url = \"https://x/r\"\njq = \".a\"\n").unwrap();
+    std::fs::create_dir_all(root.join(".local")).unwrap();
+    std::fs::write(root.join(".local/jq.toml"), "[\"main/r\"]\nscratch = \".mine\"\n").unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/r".into()));
+    assert_eq!(app.editor.jq, ".a", "the line is the scratch");
+    assert!(app.editor.jq_enabled, "a line without jq_enabled is on");
+    assert_eq!(app.editor.jq_current, None);
+    assert!(!app.editor.is_dirty());
+
+    app.editor.url.set_text("https://x/r2");
+    app.update(Action::SaveRequest);
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.contains("jq = \".a\""), "the save keeps the line: {saved}");
+}
+
+#[test]
+fn editing_a_view_dirties_saves_and_reopens() {
+    let mut app = views_app("jq_enabled = false");
+    app.editor.jq_current = Some("names".into());
+    app.sync_jq();
+    assert_eq!(app.session.response.jq_text(), ".data.items[].status", "the bar shows the view");
+    let text = ".data.items[].id";
+    app.session.response.set_jq_text_with_cursor(text, text.len());
+    app.sync_jq();
+    assert_eq!(view_filter(&app, "names"), text, "the bar edits the view in place");
+    assert_eq!(app.editor.jq, "", "…not the scratch");
+    assert!(app.editor.is_dirty(), "a view is the request's");
+    app.update(Action::SaveRequest);
+    let on_disk = postui_core::fixtures::load_request(app.proj().root(), "main/r").unwrap();
+    assert_eq!(on_disk.jq_views[0].filter, text);
+    assert_eq!(on_disk.jq_current.as_deref(), Some("names"), "what is current is saved too");
+
+    let root = app.proj().root().to_path_buf();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut reopened = App::with_root(tx, root);
+    reopened.update(Action::ForceOpenRequest("main/r".into()));
+    ready_response(&mut reopened, JQ_BODY);
+    reopened.sync_jq();
+    assert_eq!(reopened.editor.jq_current.as_deref(), Some("names"), "what is current is kept");
+    assert_eq!(reopened.session.response.jq_text(), text);
+    drop(app);
+}
+
+/// Amendment A4: a pick is a plain edit, one undo step, and dirties.
+#[test]
+fn picking_a_view_is_an_undo_step_and_dirties() {
+    let mut app = views_app("jq_enabled = false");
+    let steps = app.history.undo_len();
+    app.editor.jq_pick(Some("names"));
+    assert!(app.capture_undo(), "a pick is an edit");
+    assert_eq!(app.history.undo_len(), steps + 1);
+    assert!(app.editor.is_dirty());
+    app.editor.jq_pick(Some("total"));
+    assert!(app.capture_undo());
+    app.update(Action::Undo);
+    assert_eq!(app.editor.jq_current.as_deref(), Some("names"), "back to the view before");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.jq_current, None);
+    assert!(!app.editor.jq_enabled, "and the switch the pick turned on");
+    assert!(!app.editor.is_dirty());
+}
+
+#[test]
+fn a_menu_action_on_a_view_goes_to_the_scratch_and_one_undo_restores_both() {
+    let mut app = views_app("jq = \".old\"\njq_current = \"names\"");
+    assert_eq!(app.editor.jq_current.as_deref(), Some("names"));
+    assert_eq!(app.session.response.jq_text(), ".data.items[].status");
+    let steps = app.history.undo_len();
+    app.focus = PaneId::Response;
+    app.update(Action::JqApply(".data.items[].status | length".into()));
+    assert_eq!(app.editor.jq_current, None, "spec 8: the scratch is current");
+    assert_eq!(app.editor.jq, ".data.items[].status | length");
+    assert_eq!(view_filter(&app, "names"), ".data.items[].status", "the view is untouched");
+    assert!(app.editor.is_dirty(), "amendment A10: a request edit now");
+    assert!(app.capture_undo());
+    assert_eq!(app.history.undo_len(), steps + 1);
+    app.update(Action::Undo);
+    assert_eq!(app.editor.jq_current.as_deref(), Some("names"));
+    assert_eq!(app.editor.jq, ".old");
+    assert_eq!(app.session.response.jq_text(), ".data.items[].status");
+}
+
+#[test]
+fn a_tee_up_on_a_view_goes_to_the_scratch() {
+    let mut app = views_app("jq = \".old\"\njq_current = \"names\"");
+    assert_eq!(app.editor.jq_current.as_deref(), Some("names"));
+    app.update(Action::JqTeeUp { text: "map(select(.x == ))".into(), cursor: 17 });
+    assert_eq!(app.editor.jq_current, None);
+    assert_eq!(app.editor.jq, "map(select(.x == ))");
+    assert_eq!(view_filter(&app, "names"), ".data.items[].status");
+    app.capture_undo(); // the event's end
+    one_ctrl_z_brings_back_the_view(&mut app, ".data.items[].status");
+}
+
+/// Spec 8: in the focused bar, one ctrl+z after a menu action or an AI
+/// reply on `names` puts back the old scratch `.old` and makes `names`
+/// (holding `filter`) current again, never the view's text in the scratch.
+fn one_ctrl_z_brings_back_the_view(app: &mut App, filter: &str) {
+    assert!(app.session.response.jq_focused(), "the bar has the caret");
+    app.handle_key(ctrl('z'));
+    app.sync_jq();
+    assert_eq!(app.editor.jq_current.as_deref(), Some("names"));
+    assert_eq!(app.editor.jq, ".old");
+    assert_eq!(view_filter(app, "names"), filter);
+    assert_eq!(app.session.response.jq_text(), filter);
+    assert!(app.session.response.jq_focused(), "…and keeps the caret");
+}
+
+#[test]
+fn a_menu_action_on_a_view_in_a_focused_bar_is_one_undo_step_after_its_typing() {
+    let mut app = views_app("jq = \".old\"\njq_current = \"names\"");
+    app.handle_key(alt('q'));
+    type_str(&mut app, "x");
+    assert_eq!(view_filter(&app, "names"), ".data.items[].statusx", "typed into the view");
+    app.update(Action::JqApply(".data.total".into()));
+    app.capture_undo(); // the event's end
+    assert_eq!(app.editor.jq_current, None);
+    assert_eq!(app.editor.jq, ".data.total");
+    assert_eq!(view_filter(&app, "names"), ".data.items[].statusx");
+    // The typing was its own step: the first ctrl+z keeps it…
+    one_ctrl_z_brings_back_the_view(&mut app, ".data.items[].statusx");
+    // …and the next one takes it back.
+    app.handle_key(ctrl('z'));
+    app.sync_jq();
+    assert_eq!(view_filter(&app, "names"), ".data.items[].status");
+    assert_eq!(app.editor.jq_current.as_deref(), Some("names"));
+}
+
+/// The vim profile: the engine's session on the bar ends with the landing
+/// too, so neither `u` nor ctrl+z writes the view's text into the scratch.
+#[test]
+fn a_menu_action_on_a_view_in_a_vim_bar_never_undoes_the_view_into_the_scratch() {
+    for (normal, undo) in [(false, ctrl('z')), (true, ctrl('z')), (true, plain('u'))] {
+        let mut app = views_app("jq = \".old\"\njq_current = \"names\"");
+        app.use_profile(crate::config::KeyProfile::Vim);
+        app.handle_key(alt('q')); // opens in Insert
+        type_str(&mut app, "x");
+        assert_eq!(view_filter(&app, "names"), ".data.items[].statusx", "typed into the view");
+        app.update(Action::JqApply(".data.total".into()));
+        app.capture_undo(); // the event's end
+        assert_eq!(app.editor.jq_current, None);
+        assert_eq!(app.editor.jq, ".data.total");
+        if normal {
+            app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        }
+        app.handle_key(undo);
+        app.sync_jq();
+        assert_ne!(app.editor.jq, ".data.items[].statusx", "{undo:?}: the view's text");
+        assert_eq!(app.editor.jq_current.as_deref(), Some("names"), "{undo:?}");
+        assert_eq!(app.editor.jq, ".old", "{undo:?}");
+        assert_eq!(view_filter(&app, "names"), ".data.items[].statusx", "{undo:?}");
+    }
+}
+
+/// The same with nothing typed on the view first: the engine holds no
+/// edit, and its undo still never brings the view's text into the scratch.
+#[test]
+fn a_menu_action_on_an_untouched_view_in_a_vim_bar_never_undoes_the_view_into_the_scratch() {
+    for (normal, undo) in [(false, ctrl('z')), (true, ctrl('z')), (true, plain('u'))] {
+        let mut app = views_app("jq = \".old\"\njq_current = \"names\"");
+        app.use_profile(crate::config::KeyProfile::Vim);
+        app.handle_key(alt('q')); // opens in Insert
+        app.update(Action::JqApply(".data.total".into()));
+        app.capture_undo(); // the event's end
+        if normal {
+            app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        }
+        app.handle_key(undo);
+        app.sync_jq();
+        assert_ne!(app.editor.jq, ".data.items[].status", "{undo:?}: the view's text");
+        assert_eq!(app.editor.jq_current.as_deref(), Some("names"), "{undo:?}");
+        assert_eq!(app.editor.jq, ".old", "{undo:?}");
+    }
+}
+
+/// Opening the views menu can switch the filter on, a request edit, so an
+/// open input closes first (#75), as every other view action does: here
+/// the bar is already open, so no focus move would close it.
+#[test]
+fn opening_the_views_menu_closes_an_open_cell_first() {
+    let mut app = views_app("");
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Params;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(0);
+    app.editor.table.begin_edit_selected(&app.editor.params.clone());
+    app.update(Action::OpenJqViews);
+    assert!(app.editor.table.editing.is_none(), "the cell closed, saved");
+    assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))));
+}
+
+/// A reply that lands while the caret is elsewhere (an AI reply arrives
+/// as the user types in a table cell) leaves that cell open: only the
+/// bar's own typing is recorded before the landing.
+#[test]
+fn a_landing_on_a_view_leaves_a_cell_being_typed_in_open() {
+    let mut app = views_app("jq = \".old\"\njq_current = \"names\"");
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Params;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(0);
+    app.editor.table.begin_edit_selected(&app.editor.params.clone());
+    assert!(app.editor.table.editing.is_some());
+    app.update(Action::JqApply(".data.total".into()));
+    assert_eq!(app.editor.jq_current, None, "landed in the scratch");
+    assert!(app.editor.table.editing.is_some(), "the cell is still open");
+}
+
+#[tokio::test]
+async fn an_ai_reply_on_a_view_goes_to_the_scratch() {
+    let mut app = views_app("jq = \".old\"\njq_current = \"names\"");
+    assert_eq!(app.editor.jq_current.as_deref(), Some("names"));
+    stub_ai(&mut app, "echo '.data.total'");
+    app.update(Action::RunJqDescribe("just the total".into()));
+    let action = drain_ai(&mut app).await;
+    assert!(matches!(action, Action::JqAiFinished { request, .. } if request == app.ai_request));
+    app.update(action);
+    assert_eq!(app.editor.jq_current, None);
+    assert_eq!(app.editor.jq, ".data.total");
+    assert_eq!(view_filter(&app, "names"), ".data.items[].status");
+    assert_eq!(app.session.response.jq_text(), ".data.total");
+    app.capture_undo(); // the event's end
+    one_ctrl_z_brings_back_the_view(&mut app, ".data.items[].status");
+}
+
+/// Amendment A2, A4: a discard puts back the saved scratch, switch and
+/// current view, as it puts back any field.
+#[test]
+fn discard_puts_back_the_saved_scratch_switch_and_current_view() {
+    let mut app = views_app("jq = \".s\"\njq_enabled = false");
+    app.editor.jq_save_as("mine").unwrap();
+    app.editor.jq_enabled = true;
+    app.editor.jq = ".t".into();
+    app.capture_undo();
+    assert!(app.editor.is_dirty());
+    app.update(Action::DiscardChanges);
+    assert!(app.editor.jq_views.iter().all(|v| v.name != "mine"), "the unsaved view goes");
+    assert_eq!(app.editor.jq_current, None, "the saved current: the scratch");
+    assert_eq!(app.editor.jq, ".s", "the saved scratch");
+    assert!(!app.editor.jq_enabled, "the saved switch");
+    assert!(!app.editor.is_dirty());
+}
+
+#[test]
+fn clicking_revert_restores_the_view_and_undo_brings_the_edit_back() {
+    let mut app = views_app("jq = \".s\"\njq_current = \"names\"");
+    app.editor.set_jq_filter(".edited");
+    app.sync_jq();
+    app.capture_undo();
+    assert!(app.editor.jq_modified("names"));
+    render_once(&mut app);
+    assert!(app.hits.rect_of(&Hit::ResponseJqRevert).is_some(), "an edited view offers revert");
+
+    let steps = app.history.undo_len();
+    click_hit(&mut app, Hit::ResponseJqRevert);
+    app.capture_undo(); // the event's end
+    assert_eq!(view_filter(&app, "names"), ".data.items[].status", "back to the saved filter");
+    assert_eq!(app.session.response.jq_text(), ".data.items[].status");
+    assert!(!app.editor.jq_modified("names") && !app.editor.is_dirty());
+    assert_eq!(app.editor.jq, ".s", "the scratch is untouched");
+    assert_eq!(app.history.undo_len(), steps + 1, "revert is one undo step");
+    render_once(&mut app);
+    assert!(app.hits.rect_of(&Hit::ResponseJqRevert).is_none(), "nothing left to revert");
+
+    app.update(Action::Undo);
+    assert_eq!(view_filter(&app, "names"), ".edited", "undo brings the edit back");
+    assert_eq!(app.session.response.jq_text(), ".edited");
+    assert!(app.editor.jq_modified("names"));
+}
+
+/// The chip and ↺ are the bar's own: a click on either while typing in the
+/// bar keeps the caret, as the old `jq ` label (part of the bar's row) did.
+#[test]
+fn clicking_the_chip_or_revert_keeps_a_focused_bar_focused() {
+    let mut app = views_app("jq = \".s\"\njq_current = \"names\"");
+    app.handle_key(alt('q'));
+    type_str(&mut app, "x");
+    render_once(&mut app);
+    click_hit(&mut app, Hit::ResponseJqChip);
+    assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "the menu opens");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.session.response.jq_focused(), "the chip kept the caret");
+    render_once(&mut app);
+    click_hit(&mut app, Hit::ResponseJqRevert);
+    app.capture_undo(); // the event's end
+    assert_eq!(view_filter(&app, "names"), ".data.items[].status", "reverted");
+    assert!(app.session.response.jq_focused(), "the revert kept the caret");
+    // The footer's chips for the same two are the bar's own too.
+    render_once(&mut app);
+    click_hit(&mut app, Hit::FooterChip(Action::OpenJqViews));
+    assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.session.response.jq_focused(), "the footer's views chip kept the caret");
+    // As is everything else on the bar's row, and every footer chip.
+    for hit in [Hit::ResponseJqAiButton, Hit::FooterChip(Action::OpenJqDescribe)] {
+        render_once(&mut app);
+        click_hit(&mut app, hit.clone());
+        assert!(!app.modals.is_empty(), "{hit:?} opened its prompt");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.session.response.jq_focused(), "{hit:?} kept the caret");
+    }
+    app.handle_key(ctrl('z'));
+    app.sync_jq();
+    assert_eq!(view_filter(&app, "names"), ".data.items[].statusx", "the typing was its own step");
+}
+
+/// Revert's keyboard route: the palette's "revert jq filter", which refuses
+/// with an Info toast where there is nothing to revert.
+#[test]
+fn the_palette_reverts_an_edited_view_and_refuses_otherwise() {
+    let run_revert = |app: &mut App| {
+        app.last_action_failed = false;
+        app.update(Action::OpenPalette);
+        type_str(app, "revert jq filter");
+        select_palette_command(app, "response-jq-revert-view");
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.sync_jq();
+    };
+    let refused = |app: &App, why: &str| {
+        assert_eq!(app.toasts.last_message(), Some(why));
+        assert_eq!(*app.toasts.entries().last().unwrap().1, ToastKind::Info);
+        assert!(app.last_action_failed);
+    };
+    let mut app = views_app("jq = \".s\"\njq_current = \"names\"");
+    app.editor.set_jq_filter(".edited");
+    app.sync_jq();
+    app.capture_undo();
+    let steps = app.history.undo_len();
+    run_revert(&mut app);
+    app.capture_undo();
+    assert_eq!(view_filter(&app, "names"), ".data.items[].status", "back to the saved filter");
+    assert_eq!(app.session.response.jq_text(), ".data.items[].status");
+    assert!(!app.last_action_failed);
+    assert_eq!(app.history.undo_len(), steps + 1, "one undo step");
+
+    run_revert(&mut app);
+    refused(&app, "Nothing to revert: view \"names\" is unchanged");
+    assert_eq!(app.history.undo_len(), steps + 1);
+
+    app.update(Action::PickJqView(None));
+    run_revert(&mut app);
+    refused(&app, "Nothing to revert: the scratch is unchanged");
+    assert_eq!(app.editor.jq, ".s");
+    // Amendment A8: an edited scratch reverts like a view.
+    app.editor.set_jq_filter(".t");
+    run_revert(&mut app);
+    assert!(!app.last_action_failed);
+    assert_eq!(app.editor.jq, ".s");
+
+    app.editor.jq_save_as("fresh").unwrap();
+    run_revert(&mut app);
+    refused(&app, "Nothing to revert: view \"fresh\" is not saved yet");
+}
+
+/// The focused bar advertises revert in its footer while the current view
+/// has unsaved edits, and the chip reverts it.
+#[test]
+fn the_focused_bar_offers_a_revert_chip_on_an_edited_view() {
+    let revert_chip = |app: &App| {
+        crate::ui::footer_chips_of(app)
+            .into_iter()
+            .any(|(_, l, a)| l == "revert" && a == Some(Action::RevertJqView))
+    };
+    let mut app = views_app("jq = \".s\"\njq_current = \"names\"");
+    app.handle_key(alt('q'));
+    assert!(app.session.response.jq_focused());
+    assert!(!revert_chip(&app), "an unedited view has nothing to revert");
+    type_str(&mut app, "x");
+    assert!(app.editor.jq_modified("names"));
+    assert!(revert_chip(&app), "an edited view offers it");
+    let row = rendered_row(&mut app, 120, FOOTER_ROW);
+    assert!(row.contains("revert"), "{row:?}");
+    render_once(&mut app);
+    click_hit(&mut app, Hit::FooterChip(Action::RevertJqView));
+    app.sync_jq();
+    assert_eq!(view_filter(&app, "names"), ".data.items[].status");
+    assert!(!revert_chip(&app), "gone once reverted");
+
+    app.update(Action::PickJqView(None));
+    app.handle_key(alt('q'));
+    assert!(!revert_chip(&app), "an unedited scratch has nothing to revert");
+    type_str(&mut app, "x");
+    assert!(revert_chip(&app), "amendment A8: an edited scratch offers it too");
+}
+
+#[test]
+fn discard_keeps_the_saved_current_view() {
+    let mut app = views_app("jq = \".s\"\njq_current = \"names\"");
+    app.editor.set_jq_filter(".edited");
+    app.capture_undo();
+    app.update(Action::DiscardChanges);
+    assert_eq!(app.editor.jq_current.as_deref(), Some("names"));
+    assert_eq!(view_filter(&app, "names"), ".data.items[].status");
+    assert_eq!(app.editor.jq, ".s");
+    assert!(app.editor.jq_enabled);
+}
+
+#[test]
+fn reload_takes_the_files_scratch_switch_and_current_view() {
+    let mut app = views_app("jq = \".s\"\njq_current = \"names\"");
+    app.editor.set_jq_filter(".edited");
+    app.capture_undo();
+    app.update(Action::ReloadOpenRequest);
+    assert_eq!(view_filter(&app, "names"), ".data.items[].status", "the file's view");
+    assert_eq!(app.editor.jq_current.as_deref(), Some("names"));
+    assert_eq!(app.editor.jq, ".s");
+    assert!(app.editor.jq_enabled);
+    assert!(!app.editor.is_dirty());
+}
+
+#[test]
+fn a_remembered_view_that_is_gone_opens_on_the_scratch() {
+    let app = views_app("jq = \".s\"\njq_current = \"deleted\"");
+    assert_eq!(app.editor.jq_current, None, "spec 27");
+    assert_eq!(app.editor.jq, ".s");
+    assert_eq!(app.session.response.jq_text(), ".s");
+}
+
+#[test]
+fn a_never_saved_request_keeps_its_scratch_once_saved() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::JqApply(".data.total".into()));
+    assert_eq!(app.editor.slug, None);
+    app.update(Action::SaveRequestAs("r".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/r"));
+    assert_eq!(app.editor.jq, ".data.total", "the scratch rides the save");
+    assert!(app.editor.jq_enabled);
+    let on_disk = postui_core::fixtures::load_request(app.proj().root(), "main/r").unwrap();
+    assert_eq!(on_disk.jq.as_deref(), Some(".data.total"));
+}
+
+/// The scratch is the file's, so it follows the request through a rename
+/// and comes back with an undone delete; a new request created at a
+/// deleted one's name starts bare.
+#[test]
+fn the_scratch_follows_its_request_through_rename_and_delete() {
+    let mut app = views_app("jq = \".s\"\njq_current = \"names\"");
+    app.update(Action::RenameRequest { from: "main/r".into(), to: "q".into() });
+    assert_eq!(app.editor.slug.as_deref(), Some("main/q"));
+    let moved = postui_core::fixtures::load_request(app.proj().root(), "main/q").unwrap();
+    assert_eq!((moved.jq.as_deref(), moved.jq_current.as_deref()), (Some(".s"), Some("names")));
+
+    app.update(Action::DeleteRequest("main/q".into()));
+    app.update(Action::ForceCreateRequest("q".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/q"));
+    assert_eq!(app.editor.jq, "", "a new request starts bare");
+    assert!(app.editor.jq_views.is_empty());
+    app.update(Action::Undo); // the create
+    app.update(Action::Undo); // the delete
+    app.update(Action::ForceOpenRequest("main/q".into()));
+    assert_eq!(app.editor.jq, ".s", "back with its file");
+    assert_eq!(app.editor.jq_current.as_deref(), Some("names"));
+}
+
+// --- jq views: the dropdown, its actions and the copy (spec 6, 7, 13,
+// 16–18, 22, 23) ---
+
+/// The open views dropdown.
+fn views_menu(app: &App) -> &crate::components::modal::DropdownState {
+    match app.modals.top() {
+        Some(Modal::Dropdown(state)) => state,
+        _ => panic!("expected the views dropdown"),
+    }
+}
+
+/// The open one-field prompt's (title, text).
+fn view_prompt(app: &App) -> (String, String) {
+    match app.modals.top() {
+        Some(Modal::Prompt { title, input, .. }) => (title.clone(), input.text().to_string()),
+        _ => panic!("expected a prompt"),
+    }
+}
+
+fn set_view_prompt(app: &mut App, text: &str) {
+    let Some(Modal::Prompt { input, .. }) = app.modals.top_mut() else { panic!("a prompt") };
+    *input = LineInput::new(text);
+}
+
+#[test]
+fn the_views_dropdown_lists_scratch_views_divider_and_save_as() {
+    let mut app = views_app("jq = \".s\"\njq_current = \"names\"");
+    app.update(Action::OpenJqViews);
+    let menu = views_menu(&app);
+    let labels: Vec<&str> = menu.items.iter().map(|i| i.label.as_str()).collect();
+    let divider = "\u{2500}".repeat(crate::ui::cells("+ save as view\u{2026}"));
+    assert_eq!(labels, ["scratch", "names", "total", divider.as_str(), "+ save as view\u{2026}"]);
+    assert_eq!(menu.current, Some(1), "the current view is marked");
+    assert_eq!(menu.selected, 1, "…and highlighted");
+    assert_eq!(menu.items[0].action, Some(Action::PickJqView(None)));
+    assert_eq!((menu.items[0].rename.clone(), menu.items[0].delete.clone()), (None, None));
+    assert_eq!(menu.items[1].action, Some(Action::PickJqView(Some("names".into()))));
+    assert_eq!(menu.items[1].rename, Some(Action::PromptRenameJqView("names".into())));
+    assert_eq!(menu.items[1].delete, Some(Action::DeleteJqView("names".into())));
+    assert_eq!(menu.items[2].delete, Some(Action::DeleteJqView("total".into())));
+    assert!(!menu.items[3].is_enabled(), "the divider is not a row");
+    assert_eq!(menu.items[4].action, Some(Action::PromptSaveJqView));
+
+    // Anchored on the chip the last frame drew.
+    app.update(Action::Close);
+    render_once(&mut app);
+    let chip = app.hits.rect_of(&Hit::ResponseJqChip).expect("the chip shows");
+    app.update(Action::OpenJqViews);
+    assert_eq!(views_menu(&app).anchor, chip);
+}
+
+#[test]
+fn save_as_is_disabled_while_the_bar_is_empty() {
+    let mut app = views_app("");
+    app.update(Action::OpenJqViews);
+    let save = views_menu(&app).items.last().unwrap().clone();
+    assert_eq!(save.label, "+ save as view\u{2026}");
+    assert!(!save.is_enabled(), "nothing to save");
+    app.update(Action::Close);
+    app.update(Action::JqApply(".data.total".into()));
+    app.update(Action::OpenJqViews);
+    assert_eq!(views_menu(&app).items.last().unwrap().action, Some(Action::PromptSaveJqView));
+}
+
+/// Spec 18 holds off the dropdown too: the palette's "save filter as
+/// view…" refuses on an empty bar, and where the bar cannot show.
+#[test]
+fn the_palettes_save_as_view_refuses_an_empty_bar() {
+    let mut app = views_app("");
+    app.update(Action::OpenPalette);
+    type_str(&mut app, "save filter as view");
+    select_palette_command(&mut app, "response-jq-save-view");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.modals.is_empty(), "no prompt");
+    assert_eq!(app.toasts.last_message(), Some("Nothing to save: the jq bar is empty"));
+    assert_eq!(*app.toasts.entries().last().unwrap().1, ToastKind::Info);
+    assert!(app.last_action_failed);
+    assert_eq!(app.editor.jq_views.len(), 2);
+
+    let mut app = App::new_for_test();
+    ready_response(&mut app, "plain");
+    app.update(Action::PromptSaveJqView);
+    assert!(app.modals.is_empty(), "no prompt where the bar cannot show");
+    assert_eq!(app.toasts.last_message(), Some("The response is not JSON"));
+    assert!(app.last_action_failed);
+
+    // The menu itself refuses the same way, so a sequence stops there too.
+    app.last_action_failed = false;
+    app.update(Action::OpenJqViews);
+    assert!(app.modals.is_empty(), "no menu where the bar cannot show");
+    assert!(app.last_action_failed);
+
+    // Nor on a collapsed pane, which draws no bar for the menu to hang off.
+    let mut app = views_app("");
+    app.update(Action::ToggleResponseCollapse);
+    app.update(Action::OpenJqViews);
+    assert!(app.modals.is_empty());
+    assert_eq!(app.toasts.last_message(), Some("Show the response pane to pick a jq view"));
+    assert!(app.last_action_failed);
+}
+
+#[test]
+fn a_view_named_scratch_keeps_the_prompt_and_a_stale_delete_says_nothing() {
+    let mut app = views_app("jq = \".s\"");
+    app.update(Action::SaveJqView(" Scratch".into()));
+    assert_eq!(app.toasts.last_message(), Some("\"Scratch\" is the scratch filter's name"));
+    assert!(app.last_action_failed);
+    assert_eq!(app.editor.jq_views.len(), 2);
+
+    let toasts = app.toasts.messages().len();
+    app.update(Action::DeleteJqView("gone".into()));
+    assert_eq!(app.toasts.messages().len(), toasts, "nothing was deleted, so no toast");
+    assert_eq!(app.editor.jq_views.len(), 2);
+}
+
+#[test]
+fn picking_a_row_makes_it_current_and_switches_the_filter_on() {
+    let mut app = views_app("jq = \".s\"");
+    app.update(Action::OpenJqViews);
+    assert_eq!(views_menu(&app).current, Some(0), "the scratch is current");
+    app.capture_undo();
+    let steps = app.history.undo_len();
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
+    assert_eq!(app.editor.jq_current.as_deref(), Some("names"));
+    assert!(app.editor.jq_enabled);
+    assert_eq!(app.session.response.jq_text(), ".data.items[].status");
+    assert!(app.capture_undo(), "amendment A4: a pick is an edit");
+    assert_eq!(app.history.undo_len(), steps + 1);
+
+    // Back to the scratch from a switched-off filter: picking switches it on.
+    app.editor.jq_enabled = false;
+    app.update(Action::PickJqView(None));
+    assert_eq!(app.editor.jq_current, None);
+    assert!(app.editor.jq_enabled);
+    assert_eq!(app.session.response.jq_text(), ".s");
+}
+
+#[test]
+fn save_as_view_names_a_new_view_and_makes_it_current() {
+    let mut app = views_app("jq = \".data.total\"");
+    app.update(Action::PromptSaveJqView);
+    assert_eq!(view_prompt(&app), ("Save as view".into(), String::new()));
+    set_view_prompt(&mut app, "count");
+    app.update(Action::ConfirmTopModal);
+    assert!(app.modals.is_empty());
+    assert_eq!(app.editor.jq_current.as_deref(), Some("count"));
+    assert_eq!(view_filter(&app, "count"), ".data.total");
+    assert_eq!(app.editor.jq, ".data.total", "spec 6: the scratch keeps its text");
+    assert!(app.editor.is_dirty(), "a view is the request's");
+    app.capture_undo();
+    app.update(Action::Undo);
+    assert!(app.editor.jq_views.iter().all(|v| v.name != "count"), "one undo takes it back");
+    assert_eq!(app.editor.jq_current, None);
+}
+
+#[test]
+fn a_taken_view_name_keeps_the_prompt() {
+    let mut app = views_app("jq = \".data.total\"");
+    app.update(Action::PromptSaveJqView);
+    set_view_prompt(&mut app, "NAMES");
+    app.update(Action::ConfirmTopModal);
+    assert_eq!(view_prompt(&app), ("Save as view".into(), "NAMES".into()));
+    assert_eq!(app.toasts.last_message(), Some("a view named \"NAMES\" already exists"));
+    assert_eq!(*app.toasts.entries().last().unwrap().1, ToastKind::Error);
+    assert_eq!(app.editor.jq_views.len(), 2, "nothing saved");
+
+    // A blank name keeps the prompt too.
+    set_view_prompt(&mut app, "   ");
+    app.update(Action::ConfirmTopModal);
+    assert_eq!(view_prompt(&app).0, "Save as view");
+    assert_eq!(app.toasts.last_message(), Some("Type a name first"));
+    app.update(Action::CancelTopModal);
+
+    // Rename: another view's name, ignoring case, or a blank one.
+    app.update(Action::PromptRenameJqView("names".into()));
+    assert_eq!(view_prompt(&app), ("Rename view".into(), "names".into()));
+    set_view_prompt(&mut app, " Total ");
+    app.update(Action::ConfirmTopModal);
+    assert_eq!(view_prompt(&app), ("Rename view".into(), " Total ".into()));
+    assert_eq!(app.toasts.last_message(), Some("a view named \"Total\" already exists"));
+    set_view_prompt(&mut app, "");
+    app.update(Action::ConfirmTopModal);
+    assert_eq!(view_prompt(&app).0, "Rename view");
+    app.update(Action::CancelTopModal);
+    assert!(app.editor.jq_views.iter().any(|v| v.name == "names"), "nothing renamed");
+
+    // The actions themselves refuse a blank name, whoever sends it.
+    for action in [
+        Action::SaveJqView("  ".into()),
+        Action::RenameJqView { from: "names".into(), to: " ".into() },
+    ] {
+        app.last_action_failed = false;
+        app.update(action);
+        assert!(app.last_action_failed);
+        assert_eq!(app.toasts.last_message(), Some("Type a name first"));
+        assert_eq!(*app.toasts.entries().last().unwrap().1, ToastKind::Info, "as the prompt's");
+    }
+    let names: Vec<&str> = app.editor.jq_views.iter().map(|v| v.name.as_str()).collect();
+    assert_eq!(names, ["names", "total"]);
+}
+
+#[test]
+fn rename_keeps_the_view_current_and_delete_toasts_an_undo_hint() {
+    let mut app = views_app("jq = \".s\"\njq_current = \"names\"");
+    app.update(Action::PromptRenameJqView("names".into()));
+    set_view_prompt(&mut app, "statuses");
+    app.update(Action::ConfirmTopModal);
+    assert_eq!(app.editor.jq_current.as_deref(), Some("statuses"), "spec 23");
+    assert_eq!(view_filter(&app, "statuses"), ".data.items[].status");
+    assert!(app.editor.is_dirty());
+    app.capture_undo();
+    let steps = app.history.undo_len();
+
+    app.update(Action::DeleteJqView("statuses".into()));
+    assert_eq!(app.toasts.last_message(), Some("View \"statuses\" deleted \u{2014} ^Z undoes"));
+    assert_eq!(app.editor.jq_current, None, "spec 22: the scratch is current");
+    assert_eq!(app.editor.jq, ".s", "…unchanged");
+    assert_eq!(app.session.response.jq_text(), ".s");
+    app.capture_undo();
+    assert_eq!(app.history.undo_len(), steps + 1, "the delete is its own step");
+
+    app.update(Action::Undo);
+    assert_eq!(view_filter(&app, "statuses"), ".data.items[].status", "undo restores it");
+    assert_eq!(app.editor.jq_current.as_deref(), Some("statuses"));
+    app.update(Action::Undo);
+    assert!(app.editor.jq_views.iter().any(|v| v.name == "names"), "and the rename");
+    assert_eq!(app.editor.jq_current.as_deref(), Some("names"));
+}
+
+/// A view that went while its rename prompt was up: Enter toasts why and
+/// closes the prompt, which could never succeed, rather than putting it
+/// back the way a refused name does.
+#[test]
+fn renaming_a_view_that_went_under_its_prompt_closes_the_prompt() {
+    let mut app = views_app("jq = \".s\"");
+    app.update(Action::PromptRenameJqView("names".into()));
+    app.editor.jq_delete("names"); // a reload or discard under the prompt
+    set_view_prompt(&mut app, "statuses");
+    app.update(Action::ConfirmTopModal);
+    assert!(app.modals.is_empty(), "the prompt does not come back");
+    assert_eq!(app.toasts.last_message(), Some("No view named \"names\" to rename"));
+    assert!(app.editor.jq_views.iter().all(|v| v.name != "statuses"));
+}
+
+/// Spec 17 and the acceptance: rename and delete from the dropdown itself,
+/// by keyboard in both profiles and by mouse.
+#[test]
+fn the_views_dropdown_renames_and_deletes_by_keyboard_and_mouse() {
+    use crate::config::KeyProfile;
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = views_app("jq = \".s\"");
+        app.use_profile(profile);
+        app.update(Action::OpenJqViews);
+        // The scratch row (highlighted first) has neither: the key says so.
+        press(&mut app, 'r');
+        assert_eq!(app.toasts.last_message(), Some("Only a view can be renamed or deleted"));
+        assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "{profile:?}: still open");
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        press(&mut app, 'r');
+        assert_eq!(view_prompt(&app), ("Rename view".into(), "names".into()), "{profile:?}");
+        app.update(Action::CancelTopModal);
+
+        app.update(Action::OpenJqViews);
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let delete: &[char] = if profile == KeyProfile::Vim { &['d', 'd'] } else { &['d'] };
+        for c in delete {
+            press(&mut app, *c);
+        }
+        assert!(app.modals.is_empty(), "{profile:?}");
+        let names: Vec<&str> = app.editor.jq_views.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(names, ["names"], "{profile:?}: delete never asks");
+    }
+
+    let mut app = views_app("jq = \".s\"");
+    click_hit(&mut app, Hit::ResponseJqChip);
+    assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "the chip opens it");
+    hover_row_then_click(&mut app, Hit::DropdownRow(2), Hit::DropdownRowDelete(2));
+    assert!(app.modals.is_empty());
+    assert!(app.editor.jq_views.iter().all(|v| v.name != "total"));
+    click_hit(&mut app, Hit::ResponseJqChip);
+    hover_row_then_click(&mut app, Hit::DropdownRow(1), Hit::DropdownRowRename(1));
+    assert_eq!(view_prompt(&app), ("Rename view".into(), "names".into()));
+}
+
+/// Spec 13: "view" is the word the user sees, the row buttons' tooltips
+/// included; the generic menu machinery takes the noun from the row.
+#[test]
+fn the_views_dropdowns_row_buttons_say_view() {
+    let mut app = views_app("jq = \".s\"");
+    app.update(Action::OpenJqViews);
+    render_once(&mut app);
+    let row = app.hits.rect_of(&Hit::DropdownRow(1)).unwrap();
+    app.handle_mouse(moved(row.x + 1, row.y));
+    render_once(&mut app);
+    let hint = |app: &App, hit: &Hit| crate::hint::hint_for(hit, &app.keymap, &app.hint_ctx(hit));
+    let rename = hint(&app, &Hit::DropdownRowRename(1)).unwrap();
+    let delete = hint(&app, &Hit::DropdownRowDelete(1)).unwrap();
+    assert!(rename.starts_with("Rename this view"), "{rename:?}");
+    assert!(delete.starts_with("Delete this view"), "{delete:?}");
+}
+
+#[test]
+fn opening_views_from_a_closed_bar_opens_the_bar_first() {
+    let mut app = views_app("jq_enabled = false");
+    assert!(!app.session.response.jq_open());
+    render_once(&mut app);
+    assert!(app.hits.rect_of(&Hit::ResponseJqChip).is_none(), "no chip drawn yet");
+    app.update(Action::OpenJqViews);
+    assert!(app.session.response.jq_open(), "the bar shows, with its chip");
+    assert!(app.editor.jq_enabled);
+    assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))));
+    // It hangs off where the chip is drawn, as a click on the chip has it.
+    let anchor = views_menu(&app).anchor;
+    app.update(Action::Close);
+    render_once(&mut app);
+    assert_eq!(Some(anchor), app.hits.rect_of(&Hit::ResponseJqChip));
+
+    // The key and the palette reach it too, in both profiles.
+    use crate::config::KeyProfile;
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = views_app("jq_enabled = false");
+        app.use_profile(profile);
+        app.handle_key(alt_shift('j'));
+        assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "{profile:?}");
+        assert!(app.session.response.jq_open(), "{profile:?}");
+    }
+    let mut app = views_app("jq_enabled = false");
+    app.update(Action::OpenPalette);
+    type_str(&mut app, "jq views");
+    select_palette_command(&mut app, "response-jq-views");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))));
+    app.update(Action::Close);
+    app.update(Action::JqApply(".data.total".into()));
+    app.update(Action::OpenPalette);
+    type_str(&mut app, "save filter as view");
+    select_palette_command(&mut app, "response-jq-save-view");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(view_prompt(&app).0, "Save as view");
+
+    // A response jq cannot filter refuses, as alt+q does.
+    let mut app = App::new_for_test();
+    ready_response(&mut app, "plain");
+    app.update(Action::OpenJqViews);
+    assert!(app.modals.is_empty());
+    assert_eq!(app.toasts.last_message(), Some("The response is not JSON"));
+}
+
+#[test]
+fn the_focused_bar_advertises_views_in_the_footer() {
+    let mut app = views_app("jq = \".s\"");
+    app.handle_key(alt('q'));
+    assert!(app.session.response.jq_focused());
+    render_once(&mut app);
+    click_hit(&mut app, Hit::FooterChip(Action::OpenJqViews));
+    assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "the chip opens the dropdown");
+
+    // The chip's key works from inside the bar, in both profiles, and a
+    // pick lands in the bar.
+    use crate::config::KeyProfile;
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = views_app("jq = \".s\"");
+        app.use_profile(profile);
+        app.handle_key(alt('q'));
+        assert!(app.session.response.jq_focused(), "{profile:?}");
+        app.handle_key(alt_shift('j'));
+        assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "{profile:?}");
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.modals.is_empty(), "{profile:?}");
+        assert_eq!(app.editor.jq_current.as_deref(), Some("names"), "{profile:?}");
+        assert_eq!(app.session.response.jq_text(), ".data.items[].status", "{profile:?}");
+    }
+}
+
+#[test]
+fn the_response_export_picker_reads_save_response_to_file() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, r#"{"a": 1}"#);
+    app.update(Action::PromptSaveView);
+    let Some(Modal::FilePicker(picker)) = app.modals.top() else { panic!("the file picker") };
+    assert_eq!(picker.title(), "Save response to file");
 }
 
 // --- "Describe a filter…" via the configured AI command ---

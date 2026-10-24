@@ -163,6 +163,70 @@ pub enum Body {
     Json { text: String },
 }
 
+/// A named jq filter saved in the request file.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JqView {
+    pub name: String,
+    pub filter: String,
+    /// In-memory identity (Editor assigns it); never read or written.
+    #[serde(skip)]
+    pub id: u64,
+}
+
+impl JqView {
+    /// The scratch filter's name, as the chip and the views menu say it:
+    /// never a view's ([`Self::name_key`] of one is never this).
+    pub const SCRATCH: &str = "scratch";
+
+    /// What two view names are compared by: trimmed, ignoring case
+    /// (Unicode, as request names are). One request never holds two views
+    /// with the same key (spec 18).
+    pub fn name_key(name: &str) -> String {
+        name.trim().to_lowercase()
+    }
+
+    /// Why `name` may not name a view beside `others` (the other views'
+    /// names), or `None`: blank, holding a control character (a tab, an
+    /// escape: the chip and the menu paint the name as it is), the
+    /// scratch's own, or another's by [`Self::name_key`] (spec 18). The one
+    /// rule the file reader and the editor's save-as and rename apply, so
+    /// the app never writes a name its reader refuses.
+    pub fn name_refusal<'a>(
+        name: &str,
+        others: impl IntoIterator<Item = &'a str>,
+    ) -> Option<ViewNameRefusal> {
+        let key = Self::name_key(name);
+        if key.is_empty() {
+            return Some(ViewNameRefusal::Blank);
+        }
+        if name.chars().any(char::is_control) {
+            return Some(ViewNameRefusal::Control);
+        }
+        if key == Self::SCRATCH {
+            return Some(ViewNameRefusal::Scratch);
+        }
+        others.into_iter().any(|o| Self::name_key(o) == key).then_some(ViewNameRefusal::Taken)
+    }
+}
+
+/// See [`JqView::name_refusal`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewNameRefusal {
+    Blank,
+    Control,
+    Scratch,
+    Taken,
+}
+
+impl PartialEq for JqView {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.filter == other.filter
+    }
+}
+
+impl Eq for JqView {}
+
 /// See the serialization warning on [`Entry`]: the derived `Serialize` here
 /// emits `[params.*]`/`[headers.*]` sub-table sections and is not
 /// order-preserving. Persist requests with [`HttpRequest::to_toml_string`],
@@ -189,16 +253,33 @@ pub struct HttpRequest {
     /// the default and is omitted from the TOML.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub insecure: bool,
-    /// The response pane's jq filter for this request (spec: jq response
-    /// filter). View-only — never affects what is sent. `None`/empty is no
-    /// filter and is omitted from the TOML.
+    /// The scratch jq filter: the request's unnamed view, which cannot be
+    /// renamed or deleted (jq views spec, amendment A1). `None`/empty is no
+    /// filter and is omitted from the TOML. View-only: never affects what
+    /// is sent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jq: Option<String>,
-    /// Whether `jq` is switched on. Closing the bar switches the filter
-    /// off without deleting its text; `true` is the default and is omitted
-    /// from the TOML, as is `false` when there is no filter to switch off.
+    /// Whether the jq filter is switched on (the bar's switch). `true` is
+    /// the default and is omitted; `false` is written as it is, whatever
+    /// there is to filter by, so the file holds what the editor does
+    /// (amendment A5).
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub jq_enabled: bool,
+    /// The saved jq views, written to the request file as `[[jq_view]]`.
+    /// A name the app would refuse (blank, `scratch`, or two alike, trimmed
+    /// and ignoring case) refuses the read: the app names a view by its
+    /// name, as the TOML names a header by its key.
+    #[serde(
+        default,
+        rename = "jq_view",
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "valid_view_names"
+    )]
+    pub jq_views: Vec<JqView>,
+    /// The current view's name; `None` is the scratch, and is omitted. A
+    /// name no view has reads as the scratch ([`Self::from_toml_str`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jq_current: Option<String>,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub params: IndexMap<String, Entry>,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
@@ -217,9 +298,47 @@ fn is_true(b: &bool) -> bool {
     *b
 }
 
+/// The file holds only names the app would accept (spec 18): none blank,
+/// none `scratch`, no two alike.
+fn valid_view_names<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<JqView>, D::Error> {
+    let views = Vec::<JqView>::deserialize(d)?;
+    for (i, v) in views.iter().enumerate() {
+        let earlier = views[..i].iter().map(|w| w.name.as_str());
+        let why = match JqView::name_refusal(&v.name, earlier) {
+            None => continue,
+            Some(ViewNameRefusal::Blank) => "a jq view has a blank name".to_string(),
+            Some(ViewNameRefusal::Control) => {
+                format!("the jq view name {:?} holds a control character", v.name)
+            }
+            Some(ViewNameRefusal::Scratch) => {
+                format!("a jq view is named {:?}, the scratch filter's name", v.name.trim())
+            }
+            Some(ViewNameRefusal::Taken) => {
+                format!("two jq views are named {:?}", v.name.trim())
+            }
+        };
+        return Err(serde::de::Error::custom(why));
+    }
+    Ok(views)
+}
+
 impl HttpRequest {
+    /// Reads a request file. `jq_current` names its view as views are
+    /// compared ([`JqView::name_key`]), and reads as that view's own name; one
+    /// that names no view (a merge, a hand edit) reads as the scratch (spec
+    /// 27, amendment A6). Either way the request opens clean; its next save
+    /// writes the view's own name, or drops the line. A hand-written
+    /// `jq = ""` reads as no scratch, as the writer never writes one.
     pub fn from_toml_str(s: &str) -> Result<Self, toml::de::Error> {
-        toml::from_str(s)
+        let mut req: Self = toml::from_str(s)?;
+        if req.jq.as_deref() == Some("") {
+            req.jq = None;
+        }
+        req.jq_current = req.jq_current.as_deref().and_then(|current| {
+            let key = JqView::name_key(current);
+            req.jq_views.iter().find(|v| JqView::name_key(&v.name) == key).map(|v| v.name.clone())
+        });
+        Ok(req)
     }
 
     /// Hand-built with toml_edit for exact formatting control: enabled entries
@@ -239,11 +358,25 @@ impl HttpRequest {
         if self.insecure {
             doc["insecure"] = value(true);
         }
-        if let Some(jq) = self.jq.as_deref().filter(|s| !s.is_empty()) {
+        let scratch = self.jq.as_deref().filter(|s| !s.is_empty());
+        if let Some(jq) = scratch {
             doc["jq"] = value(jq);
-            if !self.jq_enabled {
-                doc["jq_enabled"] = value(false);
+        }
+        if !self.jq_enabled {
+            doc["jq_enabled"] = value(false);
+        }
+        if let Some(current) = &self.jq_current {
+            doc["jq_current"] = value(current);
+        }
+        if !self.jq_views.is_empty() {
+            let mut views = toml_edit::ArrayOfTables::new();
+            for v in &self.jq_views {
+                let mut t = Table::new();
+                t["name"] = value(v.name.as_str());
+                t["filter"] = value(v.filter.as_str());
+                views.push(t);
             }
+            doc["jq_view"] = Item::ArrayOfTables(views);
         }
         let kv_table = |map: &IndexMap<String, Entry>| {
             let mut t = Table::new();
@@ -298,6 +431,8 @@ mod tests {
             insecure: false,
             jq: None,
             jq_enabled: true,
+            jq_views: Vec::new(),
+            jq_current: None,
             params,
             headers,
             variables: IndexMap::new(),
@@ -429,6 +564,33 @@ mod tests {
     }
 
     #[test]
+    fn views_round_trip_as_an_array_of_tables_after_the_plain_keys() {
+        let mut req = sample();
+        req.insecure = true;
+        req.jq_views = vec![
+            JqView { name: "names".into(), filter: ".items[].name".into(), id: 0 },
+            JqView {
+                name: "active users".into(),
+                filter: ".items[] | select(.active)".into(),
+                id: 0,
+            },
+        ];
+        let out = req.to_toml_string();
+        let insecure_at = out.find("insecure = true").unwrap();
+        let first =
+            out.find("[[jq_view]]\nname = \"names\"\nfilter = \".items[].name\"").expect(&out);
+        assert!(insecure_at < first, "{out}");
+        assert!(first < out.find("[params]").unwrap(), "{out}");
+        assert_eq!(out.matches("[[jq_view]]").count(), 2, "{out}");
+        assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
+    }
+
+    #[test]
+    fn no_views_writes_no_jq_view_table() {
+        assert!(!sample().to_toml_string().contains("jq_view"));
+    }
+
+    #[test]
     fn jq_defaults_none_and_is_omitted_from_toml() {
         let req = sample();
         assert_eq!(req.jq, None);
@@ -437,34 +599,98 @@ mod tests {
         assert_eq!(HttpRequest::from_toml_str(&out).unwrap().jq, None);
     }
 
+    /// Amendment A3–A6: the scratch, the switch and the current view are
+    /// plain keys after `insecure`, before the views' tables.
     #[test]
-    fn jq_round_trips_after_insecure_and_before_the_tables() {
+    fn the_scratch_switch_and_current_view_round_trip_before_the_views() {
         let mut req = sample();
         req.insecure = true;
         req.jq = Some(".data | length".into());
+        req.jq_enabled = false;
+        req.jq_views = vec![JqView { name: "names".into(), filter: ".n".into(), id: 0 }];
+        req.jq_current = Some("names".into());
         let out = req.to_toml_string();
-        let insecure_at = out.find("insecure = true").unwrap();
-        let jq_at = out.find("jq = \".data | length\"").expect("jq line:\n{out}");
-        let params_at = out.find("[params]").unwrap_or(usize::MAX);
-        assert!(insecure_at < jq_at && jq_at < params_at, "{out}");
+        let at = |s: &str| out.find(s).unwrap_or_else(|| panic!("{s}:\n{out}"));
+        let order = [
+            at("insecure = true"),
+            at("jq = \".data | length\""),
+            at("jq_enabled = false"),
+            at("jq_current = \"names\""),
+            at("[[jq_view]]"),
+            at("[params]"),
+        ];
+        assert!(order.is_sorted(), "{out}");
         assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
     }
 
+    /// Amendment A5: off is written as it is, so the file round-trips what
+    /// the editor holds even with nothing to filter.
     #[test]
-    fn jq_enabled_defaults_true_and_only_false_is_written_beside_a_filter() {
+    fn jq_enabled_defaults_true_and_off_is_always_written() {
         let mut req = sample();
         assert!(req.jq_enabled);
         req.jq_enabled = false;
         let out = req.to_toml_string();
-        assert!(!out.contains("jq_enabled"), "off without a filter is meaningless:\n{out}");
-        req.jq = Some(".a".into());
-        let out = req.to_toml_string();
-        let jq_at = out.find("jq = \".a\"").expect("jq line:\n{out}");
-        let enabled_at = out.find("jq_enabled = false").expect("jq_enabled line:\n{out}");
-        assert!(jq_at < enabled_at, "{out}");
+        assert!(out.contains("jq_enabled = false"), "even with nothing to filter:\n{out}");
         assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
+        req.jq = Some(".a".into());
+        assert_eq!(HttpRequest::from_toml_str(&req.to_toml_string()).unwrap(), req);
         req.jq_enabled = true;
         assert!(!req.to_toml_string().contains("jq_enabled"), "on is the default");
+    }
+
+    #[test]
+    fn a_hand_written_empty_jq_reads_as_no_scratch() {
+        let back =
+            HttpRequest::from_toml_str("method = \"GET\"\nurl = \"u\"\njq = \"\"\n").unwrap();
+        assert_eq!(back.jq, None);
+    }
+
+    /// Amendment A6: a current view the file does not have reads as the
+    /// scratch.
+    #[test]
+    fn a_jq_current_naming_no_view_reads_as_the_scratch() {
+        let back = HttpRequest::from_toml_str(
+            "method = \"GET\"\nurl = \"u\"\njq_current = \"gone\"\n\n[[jq_view]]\nname = \"here\"\nfilter = \".\"\n",
+        )
+        .unwrap();
+        assert_eq!(back.jq_current, None);
+        assert_eq!(back.jq_views.len(), 1);
+
+        let cased = HttpRequest::from_toml_str(
+            "method = \"GET\"\nurl = \"u\"\njq_current = \" Here\"\n\n[[jq_view]]\nname = \"here\"\nfilter = \".\"\n",
+        )
+        .unwrap();
+        assert_eq!(cased.jq_current.as_deref(), Some("here"), "matched as names compare");
+    }
+
+    #[test]
+    fn two_views_with_one_name_refuse_the_read() {
+        let text = "method = \"GET\"\nurl = \"u\"\n\n[[jq_view]]\nname = \"Ärger\"\nfilter = \".a\"\n\n[[jq_view]]\nname = \" ärger \"\nfilter = \".b\"\n";
+        let err = HttpRequest::from_toml_str(text).unwrap_err();
+        assert!(err.to_string().contains("two jq views are named \"ärger\""), "{err}");
+    }
+
+    #[test]
+    fn a_blank_or_scratch_view_name_refuses_the_read() {
+        let view = |name: &str| {
+            format!(
+                "method = \"GET\"\nurl = \"u\"\n\n[[jq_view]]\nname = \"{name}\"\nfilter = \".\"\n"
+            )
+        };
+        let blank = HttpRequest::from_toml_str(&view("  ")).unwrap_err();
+        assert!(blank.to_string().contains("a jq view has a blank name"), "{blank}");
+        let scratch = HttpRequest::from_toml_str(&view("Scratch")).unwrap_err();
+        assert!(scratch.to_string().contains("the scratch filter's name"), "{scratch}");
+        let tab = HttpRequest::from_toml_str(&view("a\\tb")).unwrap_err();
+        assert!(tab.to_string().contains("holds a control character"), "{tab}");
+    }
+
+    #[test]
+    fn view_equality_ignores_the_in_memory_id() {
+        let a = JqView { name: "n".into(), filter: ".".into(), id: 1 };
+        let b = JqView { id: 7, ..a.clone() };
+        assert_eq!(a, b);
     }
 
     #[test]

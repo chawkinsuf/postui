@@ -87,8 +87,11 @@ pub enum Surface {
     Form,
     /// A message, a confirm, the startup gates, the keyboard question.
     Dialog,
-    /// The palette, a chooser, the file picker, the `{{` picker, a dropdown.
+    /// The palette, a chooser, the file picker, the `{{` picker.
     Picker,
+    /// An anchored dropdown (`Modal::Dropdown`): a field-less picker whose
+    /// rows may carry their own rename and delete (jq views spec 17).
+    Menu,
     /// The testbed.
     #[default]
     Other,
@@ -196,7 +199,7 @@ pub struct EngineView {
 impl Surface {
     /// One surface of every kind, for tests that walk the table.
     #[cfg(test)]
-    pub(crate) const SAMPLES: [Surface; 18] = [
+    pub(crate) const SAMPLES: [Surface; 19] = [
         Surface::Sidebar,
         Surface::UrlLine,
         Surface::Method,
@@ -214,6 +217,7 @@ impl Surface {
         Surface::Form,
         Surface::Dialog,
         Surface::Picker,
+        Surface::Menu,
         Surface::Other,
     ];
 }

@@ -101,6 +101,11 @@ pub trait Component {
 /// instead of a `│` glyph.
 pub fn pane_surface(buf: &mut Buffer, area: Rect, theme: &Theme) -> Rect {
     fill(buf, area, theme.page);
+    pane_inner(area)
+}
+
+/// The rect [`pane_surface`] hands a pane's content, without painting.
+pub fn pane_inner(area: Rect) -> Rect {
     Rect { x: area.x + 1, width: area.width.saturating_sub(2), ..area }
 }
 

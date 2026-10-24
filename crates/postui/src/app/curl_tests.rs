@@ -795,6 +795,31 @@ fn replace_puts_the_curl_in_the_editor_and_keeps_name_jq_and_request_variables()
     assert!(!app.editor_holds_unsaved());
 }
 
+/// Spec 30, amendment A11: the views, the scratch, what is current and
+/// the switch all ride through a replace.
+#[test]
+fn replace_with_curl_keeps_views_scratch_and_current() {
+    let mut app = app_with_clip("curl https://x/new");
+    let kept = postui_core::model::HttpRequest::from_toml_str(
+        "url = \"https://x/old\"\n\n[[jq_view]]\nname = \"names\"\nfilter = \".items[].name\"\n",
+    )
+    .unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), "main/kept", &kept).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/kept".into()));
+    app.editor.jq = ".s".into();
+    app.editor.jq_pick(Some("names"));
+    app.capture_undo();
+    let before = app.editor.current_request();
+    replace(&mut app, None);
+    let now = app.editor.current_request();
+    assert_eq!(now.url, "https://x/new");
+    assert_eq!(now.jq_views, before.jq_views);
+    assert_eq!(now.jq.as_deref(), Some(".s"));
+    assert_eq!(now.jq_current.as_deref(), Some("names"));
+    assert!(now.jq_enabled);
+}
+
 #[test]
 fn undo_restores_the_edits_first_then_the_declarations() {
     let mut app = kept_app("export TOKEN=abc\ncurl -H \"A: $TOKEN\" https://x/new");

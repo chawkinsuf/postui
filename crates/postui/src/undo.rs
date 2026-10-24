@@ -213,30 +213,61 @@ pub enum CoalesceKey {
     Url,
     Body,
     Name,
+    /// The scratch filter.
     Jq,
+    /// One view's filter, by its in-memory id.
+    JqView(u64),
 }
 
-/// `Some(key)` when exactly one of `url`/`body`/`name`/`jq` differs between
-/// `before` and `after`; `None` otherwise (method, table maps,
-/// `substitute_body`, or multiple fields at once — those never coalesce).
+/// `Some(key)` when exactly one of `url`/`body`/`name`/`jq` (the scratch)
+/// differs between `before` and `after`, or only one view's filter does
+/// (same views, same ids and names); `None` otherwise (method, table maps,
+/// `substitute_body`, the switch, the current view, a view added, removed
+/// or renamed, or multiple fields at once — those never coalesce).
 pub fn coalesce_key(before: &HttpRequest, after: &HttpRequest) -> Option<CoalesceKey> {
     let url = before.url != after.url;
     let body = before.body != after.body;
     let name = before.name != after.name;
     let jq = before.jq != after.jq;
+    let view = (before.jq_views != after.jq_views).then(|| one_view_filter(before, after));
     let other = before.method != after.method
         || before.substitute_body != after.substitute_body
         || before.insecure != after.insecure
+        || before.jq_enabled != after.jq_enabled
+        || before.jq_current != after.jq_current
         || before.params != after.params
         || before.headers != after.headers
-        || before.variables != after.variables;
-    match (url, body, name, jq, other) {
-        (true, false, false, false, false) => Some(CoalesceKey::Url),
-        (false, true, false, false, false) => Some(CoalesceKey::Body),
-        (false, false, true, false, false) => Some(CoalesceKey::Name),
-        (false, false, false, true, false) => Some(CoalesceKey::Jq),
+        || before.variables != after.variables
+        || view == Some(None);
+    match (url, body, name, jq, view.flatten(), other) {
+        (true, false, false, false, None, false) => Some(CoalesceKey::Url),
+        (false, true, false, false, None, false) => Some(CoalesceKey::Body),
+        (false, false, true, false, None, false) => Some(CoalesceKey::Name),
+        (false, false, false, true, None, false) => Some(CoalesceKey::Jq),
+        (false, false, false, false, Some(id), false) => Some(CoalesceKey::JqView(id)),
         _ => None,
     }
+}
+
+/// The id of the one view whose filter alone differs, when the views are
+/// otherwise the same (length, ids, names); `None` for anything else.
+fn one_view_filter(before: &HttpRequest, after: &HttpRequest) -> Option<u64> {
+    if before.jq_views.len() != after.jq_views.len() {
+        return None;
+    }
+    let mut changed = None;
+    for (b, a) in before.jq_views.iter().zip(&after.jq_views) {
+        if b.id != a.id || b.name != a.name {
+            return None;
+        }
+        if b.filter != a.filter {
+            if changed.is_some() {
+                return None;
+            }
+            changed = Some(b.id);
+        }
+    }
+    changed
 }
 
 /// Undo/redo stacks with typing-burst coalescing and a 200-step cap.
@@ -438,6 +469,8 @@ mod tests {
             insecure: false,
             jq: None,
             jq_enabled: true,
+            jq_views: Vec::new(),
+            jq_current: None,
             params: Default::default(),
             headers: Default::default(),
             variables: Default::default(),
@@ -623,6 +656,54 @@ mod tests {
         assert_eq!(coalesce_key(&before, &after), Some(CoalesceKey::Jq));
         after.url.push('x');
         assert_eq!(coalesce_key(&before, &after), None, "two fields at once never coalesce");
+    }
+
+    fn with_views(views: &[(u64, &str, &str)]) -> HttpRequest {
+        let mut r = req("a");
+        r.jq_views = views
+            .iter()
+            .map(|&(id, name, filter)| postui_core::model::JqView {
+                name: name.into(),
+                filter: filter.into(),
+                id,
+            })
+            .collect();
+        r
+    }
+
+    #[test]
+    fn a_single_view_edit_coalesces_under_its_id_and_a_scratch_edit_under_jq() {
+        let before = with_views(&[(1, "a", ".a"), (2, "b", ".b")]);
+        let edit = |id: u64, filter: &str| {
+            let mut r = before.clone();
+            r.jq_views.iter_mut().find(|v| v.id == id).unwrap().filter = filter.into();
+            r
+        };
+        assert_eq!(coalesce_key(&before, &edit(2, ".bx")), Some(CoalesceKey::JqView(2)));
+        assert_eq!(coalesce_key(&before, &edit(1, ".ax")), Some(CoalesceKey::JqView(1)));
+
+        let mut scratch = before.clone();
+        scratch.jq = Some(".s".into());
+        assert_eq!(coalesce_key(&before, &scratch), Some(CoalesceKey::Jq));
+
+        let mut both = edit(1, ".ax");
+        both.jq_views[1].filter = ".bx".into();
+        assert_eq!(coalesce_key(&before, &both), None, "two views at once never coalesce");
+
+        let mut renamed = before.clone();
+        renamed.jq_views[0].name = "A".into();
+        assert_eq!(coalesce_key(&before, &renamed), None, "a rename is not typing");
+
+        let added = with_views(&[(1, "a", ".a"), (2, "b", ".b"), (3, "c", ".c")]);
+        assert_eq!(coalesce_key(&before, &added), None, "an added view is not typing");
+
+        let mut picked = edit(1, ".ax");
+        picked.jq_current = Some("a".into());
+        assert_eq!(coalesce_key(&before, &picked), None, "a pick alongside counts as other");
+
+        let mut switched = scratch.clone();
+        switched.jq_enabled = false;
+        assert_eq!(coalesce_key(&before, &switched), None, "the switch counts as other");
     }
 
     #[test]

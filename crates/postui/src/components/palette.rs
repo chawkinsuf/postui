@@ -327,6 +327,24 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::OpenJqDescribe,
         },
         Command {
+            id: "response-jq-views",
+            name: "Response: jq views…",
+            description: "Pick, save, rename or delete the request's jq views",
+            action: Action::OpenJqViews,
+        },
+        Command {
+            id: "response-jq-save-view",
+            name: "Response: save filter as view…",
+            description: "Save the jq bar's filter as a named view on the request",
+            action: Action::PromptSaveJqView,
+        },
+        Command {
+            id: "response-jq-revert-view",
+            name: "Response: revert jq filter",
+            description: "Put the current jq filter, view or scratch, back to its saved text",
+            action: Action::RevertJqView,
+        },
+        Command {
             id: "manage-variables",
             name: "Manage: variables",
             description: "Open the Manage screen's Variables tab",

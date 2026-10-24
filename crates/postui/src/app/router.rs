@@ -238,6 +238,10 @@ impl App {
             Some(Modal::NewProject { .. } | Modal::MultiPrompt { .. } | Modal::FieldsEditor(_)) => {
                 Surface::Form
             }
+            // Only a dropdown whose rows carry their own rename and delete
+            // (the jq views menu) binds `r` and `d`; every other one is the
+            // plain picker it always was, so a `d` there starts nothing.
+            Some(Modal::Dropdown(state)) if state.has_row_actions() => Surface::Menu,
             Some(
                 Modal::Palette(_)
                 | Modal::Chooser(_)

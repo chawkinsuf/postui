@@ -169,6 +169,9 @@ impl Surfaces {
     pub const FIELD_SCREEN: Self = Self(1 << 21);
     /// The response with a line selection up (plan M5a Deviation 11).
     pub const RESPONSE_LINES: Self = Self(1 << 22);
+    /// An anchored dropdown (jq views spec 17): moves as a field-less
+    /// picker does, and its rows may rename and delete.
+    pub const MENU: Self = Self(1 << 23);
 
     /// Every surface whose rows or controls the keyboard walks: vim's
     /// motions bind here, and in vim a bare char with no row is
@@ -247,6 +250,7 @@ impl Surfaces {
             Surface::Form => Self::FORM,
             Surface::Dialog => Self::DIALOG,
             Surface::Picker => Self::PICKER,
+            Surface::Menu => Self::MENU,
             Surface::Other => Self::OTHER,
         }
     }
@@ -876,16 +880,23 @@ pub static TABLE: &[Binding] = &[
     row("<CR>", Surfaces::PROMPT.or(Surfaces::FIELD_PROMPT), Intent::Act(confirm_top), CountRule::Ignore),
     row("<Esc>", Surfaces::FIELD_PROMPT, Intent::Act(cancel_top), CountRule::Ignore),
     // Spec §5.10 and §4.5: a dialog's stops, its buttons and a field-less
-    // picker (the dropdown, the theme picker) move with vim's keys;
+    // picker (the theme picker, a dropdown's menu) move with vim's keys;
     // modal.rs no longer aliases them. A dialog's own answer letters come
     // first (`answers`). `h`/`l` on a picker flip the theme picker's
     // dark/light set (task #6).
-    row("j", Surfaces::FORMS.or(Surfaces::DIALOG).or(Surfaces::PICKER), Intent::Key(DOWN), CountRule::Ignore),
-    row("k", Surfaces::FORMS.or(Surfaces::DIALOG).or(Surfaces::PICKER), Intent::Key(UP), CountRule::Ignore),
-    row("h", Surfaces::FORMS.or(Surfaces::DIALOG).or(Surfaces::PICKER), Intent::Key(LEFT), CountRule::Ignore),
-    row("l", Surfaces::FORMS.or(Surfaces::DIALOG).or(Surfaces::PICKER), Intent::Key(RIGHT), CountRule::Ignore),
-    row("G", Surfaces::DIALOG.or(Surfaces::PICKER), Intent::Key(END), CountRule::Ignore),
-    row("gg", Surfaces::PICKER, Intent::Key(HOME), CountRule::Ignore),
+    row("j", Surfaces::FORMS.or(Surfaces::DIALOG).or(Surfaces::PICKER).or(Surfaces::MENU), Intent::Key(DOWN), CountRule::Ignore),
+    row("k", Surfaces::FORMS.or(Surfaces::DIALOG).or(Surfaces::PICKER).or(Surfaces::MENU), Intent::Key(UP), CountRule::Ignore),
+    row("h", Surfaces::FORMS.or(Surfaces::DIALOG).or(Surfaces::PICKER).or(Surfaces::MENU), Intent::Key(LEFT), CountRule::Ignore),
+    row("l", Surfaces::FORMS.or(Surfaces::DIALOG).or(Surfaces::PICKER).or(Surfaces::MENU), Intent::Key(RIGHT), CountRule::Ignore),
+    row("G", Surfaces::DIALOG.or(Surfaces::PICKER).or(Surfaces::MENU), Intent::Key(END), CountRule::Ignore),
+    row("gg", Surfaces::PICKER.or(Surfaces::MENU), Intent::Key(HOME), CountRule::Ignore),
+    // jq views spec 17: a dropdown row's own rename and delete, with the
+    // list letters (`r` in both profiles; `d`, vim's `dd`). One row is
+    // deleted at a time: `dd` takes the Manage lists' count rule, though a
+    // menu builds no count (`takes_count`), so the refusal is a backstop.
+    both("r", Surfaces::MENU, Intent::Verb(Verb::Rename)),
+    row("dd", Surfaces::MENU, Intent::Verb(Verb::Delete { count: 1 }), CountRule::Refuse(NO_COUNTED_DELETE)),
+    arrows("d", Surfaces::MENU, Intent::Verb(Verb::Delete { count: 1 })),
     // Spec §5.6 (plan M3b Deviation 3): a selected dialog field reopens,
     // `o` in Normal, `i a I A` in Insert seated as on the URL line.
     row("o", Surfaces::FORMS, Intent::Reopen(None), CountRule::Ignore),
@@ -1322,6 +1333,38 @@ mod tests {
         assert!(vim_first_chars().contains(&'d') && vim_first_chars().contains(&'y'));
     }
 
+    /// Spec 17: a dropdown's rows rename with `r` in both profiles and
+    /// delete with the list letters (`d`, vim's `dd`, which refuses a
+    /// count); vim moves its highlight with the picker's keys.
+    #[test]
+    fn the_menu_surface_spells_rename_and_delete_per_profile() {
+        use crate::action::Verb;
+        use KeyProfile::{Arrows, Vim};
+        let rename = Action::OnSelection(Verb::Rename);
+        let del = Action::OnSelection(Verb::Delete { count: 1 });
+        assert_eq!(keys_for(Arrows, Surface::Menu, &rename), Some("r"));
+        assert_eq!(keys_for(Vim, Surface::Menu, &rename), Some("r"));
+        assert_eq!(keys_for(Arrows, Surface::Menu, &del), Some("d"));
+        assert_eq!(keys_for(Vim, Surface::Menu, &del), Some("dd"));
+        assert!(matches!(
+            lookup(&notation::parse("dd"), Vim, Surface::Menu),
+            Match::Complete(b) if b.count == CountRule::Refuse(NO_COUNTED_DELETE)
+        ));
+        for (keys, named) in
+            [("j", DOWN), ("k", UP), ("h", LEFT), ("l", RIGHT), ("G", END), ("gg", HOME)]
+        {
+            assert!(
+                matches!(
+                    lookup(&notation::parse(keys), Vim, Surface::Menu),
+                    Match::Complete(b) if matches!(b.intent, Intent::Key(n) if n == named)
+                ),
+                "{keys}"
+            );
+        }
+        assert_eq!(keys_for(Vim, Surface::Menu, &Action::Undo), None, "no app undo on a menu");
+        assert!(!takes_count(Surface::Menu), "a menu is not a navigation surface");
+    }
+
     #[test]
     fn lookups_find_rows_prefixes_and_misses() {
         use KeyProfile::Vim;
@@ -1336,7 +1379,7 @@ mod tests {
         ));
         assert!(
             matches!(lookup(&[Tok::Char('j')], Vim, Surface::Picker), Match::Complete(b) if b.keys == "j"),
-            "a field-less picker (the dropdown) moves; a query box never reaches the table"
+            "a field-less picker (the theme picker) moves; a query box never reaches the table"
         );
         assert_eq!(keys_for(Vim, Surface::Sidebar, &Action::Undo), Some("u"));
         assert_eq!(keys_for(Vim, Surface::Picker, &Action::Undo), None);

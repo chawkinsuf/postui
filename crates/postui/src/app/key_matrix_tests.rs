@@ -24,6 +24,10 @@ pub(super) enum Fixture {
     SidebarThreeBetaOpen,
     /// `SidebarThree` with a y/n confirm on top; `y` toasts "yes".
     ConfirmYesNo,
+    /// `SidebarThree` with a dropdown on top whose rows alpha and beta
+    /// carry their own rename and delete (jq views spec 17), each a toast
+    /// naming it ("rename beta"); the highlight on alpha.
+    RowMenu,
     /// Headers a, b, c on an open request; the content focused on row 1.
     TableThreeHeaders,
     /// `TableThreeHeaders`, then row 0 deleted as one undo step.
@@ -538,6 +542,13 @@ const CASES: &[Case] = &[
     vim("D.picker", SidebarThree, ":<Esc>", &[NoModal]),
     arrows("D.picker", SidebarThree, "<C-p>xyz", &[PaletteQuery("xyz")]),
     arrows("D.picker", SidebarThree, "<C-p><C-n>", &[PaletteRow(1)]),
+    // jq views spec 17: a dropdown row's own rename and delete.
+    vim("D.picker", RowMenu, "jr", &[NoModal, Toast("rename beta")]),
+    vim("D.picker", RowMenu, "d", &[ModalOpen, Echo("d"), NoToast]),
+    vim("D.picker", RowMenu, "dd", &[NoModal, Toast("delete alpha")]),
+    vim("D.picker", RowMenu, "jGggdd", &[NoModal, Toast("delete alpha")]),
+    arrows("D.picker", RowMenu, "<Down>r", &[NoModal, Toast("rename beta")]),
+    arrows("D.picker", RowMenu, "d", &[NoModal, Toast("delete alpha")]),
     vim("D.confirm", ConfirmYesNo, "y", &[NoModal, Toast("yes")]),
     vim("D.confirm", ConfirmYesNo, "jx", &[Dialog, NoToast]),
     vim("D.confirm", ConfirmYesNo, "<Esc>", &[NoModal, NoToast]),
@@ -592,7 +603,7 @@ pub(super) fn build(f: Fixture) -> App {
         _ => App::new_for_test(),
     };
     match f {
-        SidebarThree | SidebarFolder | SidebarThreeBetaOpen | ConfirmYesNo => {
+        SidebarThree | SidebarFolder | SidebarThreeBetaOpen | ConfirmYesNo | RowMenu => {
             for slug in ["main/alpha", "main/beta", "main/gamma"] {
                 postui_core::fixtures::save_request(app.proj().root(), slug, &req("https://x/1"))
                     .unwrap();
@@ -649,6 +660,23 @@ pub(super) fn build(f: Fixture) -> App {
                         ('n', "No".into(), vec![]),
                     ],
                 });
+            }
+            if matches!(f, RowMenu) {
+                use crate::components::modal::{DropdownState, MenuItem};
+                let toast = |s: String| Action::ShowToast(s, ToastKind::Info);
+                let item = |name: &str| {
+                    MenuItem::new(name, Action::Render).with_row_actions(
+                        "item",
+                        toast(format!("rename {name}")),
+                        toast(format!("delete {name}")),
+                    )
+                };
+                app.push_modal(Modal::Dropdown(DropdownState {
+                    anchor: ratatui::layout::Rect::new(10, 5, 8, 1),
+                    items: vec![item("alpha"), item("beta")],
+                    selected: 0,
+                    current: None,
+                }));
             }
         }
         TableThreeHeaders | TableAfterDelete | Method | UrlLine => {
@@ -1415,6 +1443,7 @@ fn every_painted_keycap_resolves_to_its_chip() {
         VarGrid,
         VarForm,
         Settings,
+        RowMenu,
     ];
     for profile in [KeyProfile::Vim, KeyProfile::Arrows] {
         let mut checked = 0;

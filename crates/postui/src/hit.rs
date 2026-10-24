@@ -176,6 +176,12 @@ pub enum Hit {
     /// Signed page delta in columns applied on click (±viewport width).
     HScrollTrack(PaneId, i16),
     DropdownRow(usize),
+    /// Row `i`'s ✎ on a dropdown whose rows carry their own rename and
+    /// delete (jq views spec 17): painted on the highlighted or hovered
+    /// row, registered over its `DropdownRow`.
+    DropdownRowRename(usize),
+    /// Row `i`'s delete icon, beside its ✎.
+    DropdownRowDelete(usize),
     ChooserRow(usize),
     /// The chooser's optional title-row toggle label (the theme picker's
     /// dark/light filter): click dispatches the toggle's action without
@@ -360,6 +366,11 @@ pub enum Hit {
     /// The jq bar's `󰙴` button: asks the AI to turn a plain-language
     /// description into a filter (the describe-a-filter task).
     ResponseJqAiButton,
+    /// The jq bar's chip naming the current filter: opens the views menu.
+    ResponseJqChip,
+    /// The jq bar's `󰕌` button, shown while the current view is edited:
+    /// puts the view back to its saved filter.
+    ResponseJqRevert,
 }
 
 /// A terminal pointer-shape hint (Kitty's OSC 22 protocol, `\x1b]22;{shape}\x07`),
@@ -582,16 +593,22 @@ impl HitMap {
     }
 
     /// Topmost hit containing the point, skipping the modal layer
-    /// (`ModalOutside`/`ModalBody`/`DropdownRow`) as well as `VarToken`
-    /// overlays: what a click would land on if the open modal weren't
-    /// there. Used by right-click re-targeting — a right click while a
-    /// context menu is open dismisses it and acts on the control
-    /// underneath, whose hits are still registered below the overlay.
+    /// (`ModalOutside`/`ModalBody`/`DropdownRow` and a row's buttons) as
+    /// well as `VarToken` overlays: what a click would land on if the open
+    /// modal weren't there. Used by right-click re-targeting — a right
+    /// click while a context menu is open dismisses it and acts on the
+    /// control underneath, whose hits are still registered below the
+    /// overlay.
     pub fn hit_at_under_modal(&self, x: u16, y: u16) -> Option<&Hit> {
         self.hit_at_where(x, y, |hit| {
             matches!(
                 hit,
-                Hit::VarToken(_) | Hit::ModalOutside | Hit::ModalBody | Hit::DropdownRow(_)
+                Hit::VarToken(_)
+                    | Hit::ModalOutside
+                    | Hit::ModalBody
+                    | Hit::DropdownRow(_)
+                    | Hit::DropdownRowRename(_)
+                    | Hit::DropdownRowDelete(_)
             )
         })
     }

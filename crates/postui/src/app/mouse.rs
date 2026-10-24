@@ -348,17 +348,28 @@ impl App {
                 // as Esc's is, so the filter typed and the switch are one
                 // step, by click as by key (task #64 records only a close
                 // that comes with an edit elsewhere).
+                // Two rules cover the rest, rather than a list of controls.
+                // Anything on the bar's own row (its text, the chip, the ↺,
+                // the AI button) is the bar's: what it does, it does with
+                // the caret kept, as its key does. And so is every footer
+                // chip: while the bar is focused, the footer is the bar's
+                // own chip set (its `views`, `revert`, `unfilter`,
+                // `describe…`), and its `commands` and `quit` keep the
+                // caret as their keys do.
                 // A press on a window separator is exempt as a scrollbar is:
                 // it disturbs nothing ([`Self::is_separator_press`]).
+                let on_bar_row = self.hits.rect_of(&Hit::ResponseJqBar).is_some_and(|bar| {
+                    bar.y == m.row && self.hits.pane_at(m.column, m.row) == Some(PaneId::Response)
+                });
                 let jq_blurred = self.session.response.jq_focused()
                     && self.modals.is_empty()
+                    && !on_bar_row
                     && !hit.as_ref().is_some_and(|h| self.is_separator_press(h))
                     && !matches!(
                         hit,
                         Some(
-                            Hit::ResponseJqBar
-                                | Hit::ResponseJqButton
-                                | Hit::FooterChip(Action::ToggleJqBar)
+                            Hit::ResponseJqButton
+                                | Hit::FooterChip(_)
                                 | Hit::ScrollbarThumb(_)
                                 | Hit::ScrollbarTrack(..)
                                 | Hit::HScrollThumb(_)
@@ -978,8 +989,9 @@ impl App {
             return Some((area.x, area.width));
         }
         let area = self.hits.rect_of(&field_hit(field)?)?;
+        // The jq bar's hit covers its text window only, past the chip
+        // (`response::draw_jq_bar`), so it takes the area as it is.
         Some(match field {
-            FieldId::Jq => jq_bar_text_geometry(area),
             FieldId::ModalInput(_) => (area.x + 2, area.width.saturating_sub(2)),
             FieldId::VmForm(_) | FieldId::Settings(_) => {
                 (area.x + WELL_PAD, area.width.saturating_sub(WELL_PAD * 2))
@@ -1862,10 +1874,21 @@ impl App {
                 let Some(action) = state.items.get(i).and_then(|it| it.action.clone()) else {
                     return false;
                 };
-                self.modals.pop();
-                // Overlay close is always instant.
-                self.anims.snap(AnimKey::ModalOpen, 1.0);
-                self.update(action)
+                // Closed as Enter on the row closes it, housekeeping and all
+                // (a parked field's session made live, the sidebar's
+                // right-click selection settled).
+                self.close_dropdown_and_run(action)
+            }
+            // A row's own rename or delete (jq views spec 17): it runs once
+            // the menu is gone, as the row's own action does.
+            Hit::DropdownRowRename(i) | Hit::DropdownRowDelete(i) => {
+                let verb = if matches!(hit, Hit::DropdownRowRename(_)) {
+                    crate::action::Verb::Rename
+                } else {
+                    crate::action::Verb::Delete { count: 1 }
+                };
+                let Some(action) = self.modals.dropdown_row_action(i, verb) else { return false };
+                self.close_dropdown_and_run(action)
             }
             Hit::ModalOutside => {
                 if !self.modals.top_is_dismissable() {
@@ -2214,12 +2237,14 @@ impl App {
                 if !self.session.response.set_jq_focus(true) {
                     return false;
                 }
-                // The text sits after the `jq ` chip, drawn from 0
-                // unfocused and following the caret once focused.
+                // The bar's rect is the text window, past the chip, drawn
+                // from 0 unfocused and following the caret once focused.
                 self.press_text(FieldId::Jq, m, clicks, was_focused);
                 self.update(Action::Render)
             }
             Hit::ResponseJqAiButton => self.update(Action::OpenJqDescribe),
+            Hit::ResponseJqChip => self.update(Action::OpenJqViews),
+            Hit::ResponseJqRevert => self.update(Action::RevertJqView),
             Hit::HeaderCopy(i) => {
                 self.update(Action::CopyToClipboard(CopyTarget::ResponseHeader(i)))
             }
@@ -2463,11 +2488,4 @@ impl App {
             }
         }
     }
-}
-
-/// Where the jq bar's text starts and how wide it is, given the bar row's
-/// hit rect: the text follows the 3-cell `jq ` chip
-/// (`response::draw_jq_bar`).
-fn jq_bar_text_geometry(area: ratatui::layout::Rect) -> (u16, u16) {
-    (area.x + 3, area.width.saturating_sub(3))
 }
