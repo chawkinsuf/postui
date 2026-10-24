@@ -5465,13 +5465,12 @@ fn jq_bar_layout(bar: &JqBar, area: Rect) -> JqBarLayout {
     // past the gap the text keeps before them.
     let shared = area.width.saturating_sub(label.width + ai.map_or(0, |r| r.width) + 1);
     let room = shared / 2;
-    let button_w = JQ_BUTTON_W;
     // The ↺'s cells are held back from the chip whether it shows or not,
     // so the chip never changes as the filter is edited: a shown ↺ takes
     // its cells from the text window (B3), which still keeps half, since
     // the chip never gets more than `room` less them.
-    let mut revert_room = button_w;
-    let mut slot_w = button_w;
+    let mut revert_room = JQ_BUTTON_W;
+    let mut slot_w = JQ_BUTTON_W;
     if room < JqChip::MIN_WIDTH + revert_room + slot_w {
         revert_room = 0;
     }
@@ -5483,7 +5482,7 @@ fn jq_bar_layout(bar: &JqBar, area: Rect) -> JqBarLayout {
     let text_w = shared - (revert_w + chip_w + slot_w);
     let text = Rect { x: label.right(), width: text_w, ..row };
     let end = ai.map_or(area.right(), |ai| ai.x);
-    let pill = |x: u16| Rect::new(x, area.y, button_w - 1, 1);
+    let pill = |x: u16| Rect::new(x, area.y, JQ_BUTTON_W - 1, 1);
     let slot = (slot_w > 0).then(|| pill(end - slot_w));
     let chip = Rect::new(end - slot_w - chip_w, area.y, chip_w, row.height);
     let revert = (revert_w > 0).then(|| pill(chip.x - revert_w));

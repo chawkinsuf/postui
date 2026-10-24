@@ -643,18 +643,12 @@ impl MenuItem {
     pub fn with_rename_delete(self, rename: Action, delete: Action) -> Self {
         use crate::action::Verb;
         self.with_buttons(vec![
-            RowButton::new(
-                Verb::Rename,
-                "rename",
-                crate::glyph::PENCIL,
-                "Rename this view",
-                rename,
-            ),
+            RowButton::new(Verb::Rename, "rename", crate::glyph::PENCIL, "Rename", rename),
             RowButton::new(
                 Verb::Delete { count: 1 },
                 "delete",
                 crate::glyph::DELETE,
-                "Delete this view",
+                "Delete",
                 delete,
             )
             .destructive(),

@@ -2249,10 +2249,11 @@ impl App {
             // the pointer can reach is drawn, so it can take the caret
             // (amendment B8).
             Hit::ResponseJqClear => {
+                // A refused clear (an open input that would not close, #75,
+                // or nothing left to clear) moves the caret nowhere.
+                self.last_action_failed = false;
                 let cleared = self.update(Action::ClearJqScratch);
-                // An open input that refused to close stops the clear (#75),
-                // and the caret stays with it.
-                if !self.editor.jq.is_empty() {
+                if self.last_action_failed {
                     return cleared;
                 }
                 self.update(Action::FocusPane(PaneId::Response));

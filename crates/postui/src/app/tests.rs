@@ -24046,6 +24046,8 @@ fn copying_a_view_to_the_scratch_leaves_the_view_and_undoes_in_one_step() {
     app.capture_undo();
     click_hit(&mut app, Hit::ResponseJqCopy);
     assert_eq!(app.editor.jq, ".data.items[].status | ascii", "the view as it stands");
+    let said = app.toasts.last_message().unwrap_or_default();
+    assert!(said.starts_with("Copied \"names\" to the scratch"), "{said:?}");
     assert_eq!(app.editor.jq_current_name(), None, "the scratch is current");
     assert!(app.editor.jq_enabled);
     assert_eq!(view_filter(&app, "names"), ".data.items[].status | ascii", "the view is kept");

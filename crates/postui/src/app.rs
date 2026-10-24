@@ -5888,6 +5888,12 @@ impl App {
                 // closing on the reload's new state shows it.
                 if self.editor.jq_copy_to_scratch(&name) {
                     self.no_coalesce = true;
+                    // Said, as a clear is: from the palette the bar may not
+                    // be on screen to show the scratch it replaced.
+                    self.toasts.push(
+                        format!("Copied \"{name}\" to the scratch{}", self.undo_hint()),
+                        ToastKind::Info,
+                    );
                 }
                 true
             }
