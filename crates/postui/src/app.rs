@@ -2038,6 +2038,7 @@ impl App {
             modified: self.editor.jq_current_modified(),
             has_views: !self.editor.jq_views.is_empty(),
             on_view: current.is_some(),
+            scratch_has_text: !self.editor.jq.is_empty(),
         });
         // A switched-off filter is applied as no filter: the text stays in
         // the bar (closed), the tree shows the full body.
@@ -5908,24 +5909,12 @@ impl App {
                     self.last_action_failed = true;
                     return true;
                 }
-                // Its own step, never asking (amendment B8).
+                // Its own step, never asking (amendment B8). The clear is all
+                // it does, wherever it comes from: focus stays put. The bar's
+                // own ✕ is a click on the bar, and its handler focuses the
+                // bar as a click on the text does (`Hit::ResponseJqClear`).
                 self.no_coalesce = true;
                 self.editor.jq.clear();
-                // Clearing the scratch on screen puts the caret in the bar:
-                // an empty scratch with no views would otherwise take the
-                // bar away, and a cleared filter is one to type afresh.
-                // It opens the bar the way alt+q does (`OpenJqBar`: focused
-                // and switched on, so what is typed next filters), and only
-                // where the bar can show; elsewhere the clear is all it
-                // does. The bar takes the cleared text first: opening marks
-                // it edited, and `sync_jq` then carries the bar's text into
-                // the editor.
-                if self.editor.jq_current_name().is_none()
-                    && self.session.response.jq_blocked_reason().is_none()
-                {
-                    self.sync_jq();
-                    self.dispatch(Action::OpenJqBar);
-                }
                 true
             }
             Action::JqApply(text) => {

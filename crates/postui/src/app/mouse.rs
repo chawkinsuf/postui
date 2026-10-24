@@ -2243,7 +2243,22 @@ impl App {
             Hit::ResponseJqChip => self.update(Action::OpenJqViews),
             Hit::ResponseJqRevert => self.update(Action::RevertJqView),
             Hit::ResponseJqCopy => self.update(Action::CopyJqViewToScratch(None)),
-            Hit::ResponseJqClear => self.update(Action::ClearJqScratch),
+            // The bar's ✕ is a press on the bar, like a search box's: the
+            // scratch clears and the bar takes the caret, as a click on its
+            // text gives it, so the emptied bar stays up to type into. A bar
+            // the pointer can reach is drawn, so it can take the caret
+            // (amendment B8).
+            Hit::ResponseJqClear => {
+                let cleared = self.update(Action::ClearJqScratch);
+                // An open input that refused to close stops the clear (#75),
+                // and the caret stays with it.
+                if !self.editor.jq.is_empty() {
+                    return cleared;
+                }
+                self.update(Action::FocusPane(PaneId::Response));
+                self.session.response.set_jq_focus(true);
+                self.update(Action::Render)
+            }
             Hit::HeaderCopy(i) => {
                 self.update(Action::CopyToClipboard(CopyTarget::ResponseHeader(i)))
             }

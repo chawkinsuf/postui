@@ -1944,9 +1944,19 @@ impl ModalStack {
                     (Key::Nav(Nav::UpDown), "navigate".to_string(), None),
                     (Key::Named("enter"), "select".to_string(), None),
                 ];
-                // Every verb some row's button has, in `Verb::ALL`'s order,
-                // so a new kind of row button brings its chip with it.
-                for verb in Verb::ALL {
+                // Every verb some row's button has, so a new kind of row
+                // button brings its chip with it, in the order the buttons
+                // read: the fullest row's left to right, then any verb only
+                // a shorter row has.
+                let mut rows: Vec<&MenuItem> = state.items.iter().collect();
+                rows.sort_by_key(|i| std::cmp::Reverse(i.buttons.len()));
+                let mut verbs: Vec<Verb> = Vec::new();
+                for verb in rows.iter().flat_map(|i| i.buttons.iter().map(|b| b.verb.kind())) {
+                    if !verbs.contains(&verb) {
+                        verbs.push(verb);
+                    }
+                }
+                for verb in verbs {
                     let mut words: Vec<&str> = Vec::new();
                     for word in state.items.iter().filter_map(|i| i.button(verb)).map(|b| b.word) {
                         if !words.contains(&word) {
@@ -5305,7 +5315,7 @@ mod tests {
         let items = scratch_and_view_items(|_| Action::Render);
         assert_eq!(
             spelled(items.clone()),
-            ["↑↓ navigate", "enter select", "r rename", "d clear/delete", "c copy", "esc close"]
+            ["↑↓ navigate", "enter select", "c copy", "r rename", "d clear/delete", "esc close"]
         );
         assert_eq!(
             spelled(items[..1].to_vec()),

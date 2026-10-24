@@ -279,6 +279,10 @@ pub struct JqChip {
     /// A view is current, not the scratch: the bar's slot holds copy to
     /// scratch rather than clear (amendment B4).
     pub on_view: bool,
+    /// The request's scratch holds text: the bar's slot on the scratch
+    /// holds clear. The editor's answer, which the views menu's clear row
+    /// reads too.
+    pub scratch_has_text: bool,
 }
 
 impl JqChip {
@@ -5458,15 +5462,20 @@ fn jq_bar_layout(bar: &JqBar, area: Rect) -> JqBarLayout {
     let shared = area.width.saturating_sub(label.width + ai.map_or(0, |r| r.width) + 1);
     let room = shared / 2;
     let button_w = jq_button_w();
-    let mut revert_w = if bar.chip.modified { button_w } else { 0 };
+    // The ↺'s cells are held back from the chip whether it shows or not,
+    // so the chip never changes as the filter is edited: a shown ↺ takes
+    // its cells from the text window (B3), which still keeps half, since
+    // the chip never gets more than `room` less them.
+    let mut revert_room = button_w;
     let mut slot_w = button_w;
-    if room < JqChip::MIN_WIDTH + revert_w + slot_w {
-        revert_w = 0;
+    if room < JqChip::MIN_WIDTH + revert_room + slot_w {
+        revert_room = 0;
     }
     if room < JqChip::MIN_WIDTH + slot_w {
         slot_w = 0;
     }
-    let chip_w = bar.chip.width(room - revert_w - slot_w);
+    let revert_w = if bar.chip.modified { revert_room } else { 0 };
+    let chip_w = bar.chip.width(room - revert_room - slot_w);
     let text_w = shared - (revert_w + chip_w + slot_w);
     let text = Rect { x: label.right(), width: text_w, ..row };
     let end = ai.map_or(area.right(), |ai| ai.x);
@@ -5587,12 +5596,11 @@ fn draw_jq_bar(
     }
     // On a view, copy it to the scratch; on a scratch with text, clear it;
     // on an empty scratch the reserved cell stays blank (amendment B4).
-    // "With text" reads the bar's own text, what the user sees beside the
-    // button; the views menu asks the editor's scratch, which `sync_jq`
-    // makes the same text at the end of every update, before any draw.
+    // "With text" is the editor's answer, through the chip, the one the
+    // clear itself and the views menu's clear row go by.
     let slot_button = if bar.chip.on_view {
         Some((crate::glyph::COPY_PILL, crate::hit::Hit::ResponseJqCopy))
-    } else if !bar.input.text().is_empty() {
+    } else if bar.chip.scratch_has_text {
         Some((crate::glyph::CLOSE_PILL, crate::hit::Hit::ResponseJqClear))
     } else {
         None
@@ -10495,10 +10503,11 @@ mod tests {
         (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect()
     }
 
-    /// A chip for `label`: on a view unless it is the scratch's.
+    /// A chip for `label`: on a view unless it is the scratch's, with a
+    /// scratch that holds text.
     fn chip(label: &str, modified: bool, has_views: bool) -> JqChip {
         let on_view = label != postui_core::model::JqView::SCRATCH;
-        JqChip { label: label.into(), modified, has_views, on_view }
+        JqChip { label: label.into(), modified, has_views, on_view, scratch_has_text: true }
     }
 
     /// Amendment B1, B2: the text starts after the `jq ` label, and the
@@ -10583,6 +10592,7 @@ mod tests {
         assert_eq!(buf[(clear.x + 1, clear.y)].symbol(), crate::glyph::CLOSE);
 
         r.set_jq_text("");
+        r.set_jq_chip(JqChip { scratch_has_text: false, ..chip("scratch", false, true) });
         let hits = render_hits(&mut r);
         assert!(hits.rect_of(&Hit::ResponseJqClear).is_none(), "nothing to clear");
         assert!(hits.rect_of(&Hit::ResponseJqCopy).is_none());
@@ -10670,10 +10680,9 @@ mod tests {
         let mut r = ready(ITEMS);
         r.open_jq();
         r.set_jq_chip(chip("abcdefghijklmnopqrstuvwxyz", false, true));
-        let (_, buf) = render_buf(&mut r);
-        let hits = render_hits(&mut r);
-        let y = hits.rect_of(&crate::hit::Hit::ResponseJqChip).expect("chip hit").y;
-        assert!(row_text(&buf, y).contains("abcdefghijklmnop… ▾ "), "{}", row_text(&buf, y));
+        // Wide enough that the cap, not the room, cuts it.
+        let text = render_sized(&mut r, 100, 20);
+        assert!(text.contains("abcdefghijklmnop… ▾ "), "{text}");
     }
 
     /// Amendment B3: an edited filter shows the ↺ left of the chip, which
@@ -10702,6 +10711,23 @@ mod tests {
         assert_eq!((bar.x, bar.width + 4), (clean_bar.x, clean_bar.width));
         let (_, buf) = render_buf(&mut r);
         assert!(row_text(&buf, bar.y).contains("names ▾ "), "{}", row_text(&buf, bar.y));
+
+        // A long name on any width: the ↺ appearing never cuts the chip's
+        // label further or moves it; the text window gives the cells up.
+        for width in 20..90 {
+            r.set_jq_chip(chip("a rather long view name", false, true));
+            let clean = render_hits_at(&mut r, width);
+            r.set_jq_chip(chip("a rather long view name", true, true));
+            let edited = render_hits_at(&mut r, width);
+            assert_eq!(
+                edited.rect_of(&Hit::ResponseJqChip),
+                clean.rect_of(&Hit::ResponseJqChip),
+                "width {width}"
+            );
+            let (clean_bar, edited_bar) =
+                (clean.rect_of(&Hit::ResponseJqBar), edited.rect_of(&Hit::ResponseJqBar));
+            assert_eq!(edited_bar.map(|b| b.x), clean_bar.map(|b| b.x), "width {width}");
+        }
     }
 
     #[test]

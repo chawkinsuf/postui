@@ -24151,27 +24151,38 @@ fn clearing_the_scratch_from_the_dropdown_keeps_the_current_view() {
     assert!(app.last_action_failed);
 }
 
-/// A clear from the palette while the filter is switched off opens the
-/// bar as alt+q does: switched on, so the next filter typed applies. One
-/// undo puts the text and the switch back.
+/// Amendment B8 (round 3): a clear that is not the bar's ✕ clears and does
+/// nothing else: focus, the switch and what is current stay put.
 #[test]
-fn clearing_a_switched_off_scratch_opens_the_bar_switched_on() {
+fn clearing_the_scratch_from_the_palette_moves_nothing_else() {
     let mut app = views_app("jq = \".s\"\njq_enabled = false");
     app.focus = PaneId::Sidebar;
     app.update(Action::ClearJqScratch);
-    assert_eq!(app.editor.jq, "", "the clear is not undone by the open");
-    assert!(app.editor.jq_enabled, "switched on");
-    assert!(app.session.response.jq_focused());
+    assert_eq!(app.editor.jq, "");
+    assert!(!app.editor.jq_enabled, "the switch stays off");
+    assert_eq!(app.focus, PaneId::Sidebar);
+    assert!(!app.session.response.jq_focused());
     app.update(Action::Undo);
     assert_eq!(app.editor.jq, ".s", "one undo");
-    assert!(!app.editor.jq_enabled, "…puts the switch back off too");
+}
 
-    let mut app = views_app("jq = \".s\"\njq_enabled = false");
-    app.update(Action::ClearJqScratch);
-    type_str(&mut app, ".data.total");
-    assert_eq!(app.editor.jq, ".data.total");
-    let shown = app.session.response.view().unwrap().view_text();
-    assert!(!shown.contains("items"), "the typed filter applies: {shown}");
+/// The bar's ✕ on a request with no views: the emptied bar keeps the
+/// caret, so it stays up to type into rather than closing under the
+/// pointer.
+#[test]
+fn the_bars_clear_keeps_an_emptied_bar_up_with_no_views() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::JqApply(".data.total".into()));
+    app.focus = PaneId::Sidebar;
+    app.session.response.set_jq_focus(false);
+    render_once(&mut app);
+    assert!(app.editor.jq_views.is_empty());
+    click_hit(&mut app, Hit::ResponseJqClear);
+    assert_eq!(app.editor.jq, "");
+    assert!(app.session.response.jq_focused(), "the caret is in the bar");
+    assert!(app.session.response.jq_open(), "the bar stays up");
+    assert_eq!(app.focus, PaneId::Response);
 }
 
 /// Where the bar cannot take the caret (the response is not JSON), a
