@@ -960,6 +960,17 @@ impl Editor {
         self.jq_views.len() != before
     }
 
+    /// Amendment B7: view `name`'s filter as it stands into the scratch,
+    /// the scratch current and switched on; the view is untouched. `false`
+    /// when no view has `name`.
+    pub fn jq_copy_to_scratch(&mut self, name: &str) -> bool {
+        let Some(view) = self.jq_views.iter().find(|v| v.name == name) else { return false };
+        self.jq = view.filter.clone();
+        self.jq_current = None;
+        self.jq_enabled = true;
+        true
+    }
+
     /// The current filter, view or scratch, back to its saved text; no-op
     /// when it has none.
     pub fn jq_revert(&mut self) {

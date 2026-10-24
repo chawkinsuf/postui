@@ -32,7 +32,7 @@ down).
 | B1 | The filter text starts in one column whatever is current: after a fixed `jq ` label at the bar's left, the one `main` had before views. Nothing left of the text changes width. | you (move it right); the label mine (approved) |
 | B2 | The right side reads `[↺] [name ▾] [slot] [AI]`, the AI button fixed at the far right as today. The chip opens the views dropdown, as before. | you (right side); the order mine (approved) |
 | B3 | No `●` mark. The ↺, shown while the current filter differs from its saved text, is the only sign. The ↺ takes its cells from the end of the text window. | you |
-| B4 | The slot is two cells, always reserved: `⧉` copy to scratch on any view, `✕` clear on a scratch with text, blank on an empty scratch. Its width never changes, so the chip never moves when it switches. | mine (approved) |
+| B4 | The slot (a button's three-cell pill and a gap, as the ↺ takes) is always reserved: `⧉` copy to scratch on any view, `✕` clear on a scratch with text, blank on an empty scratch. Its width never changes, so the chip never moves when it switches. | mine (approved) |
 | B5 | A slow run's spinner takes the chip's `▾`, as it does now (one cell either way). | decision 14 amendment, unchanged |
 | B6 | On a narrow bar the text keeps at least half the row: the chip's label is cut first (as now), then the ↺ and the slot drop, then the AI button, as the ↺ drops today. | mine |
 | B7 | **Copy to scratch** puts a view's filter as it stands (unsaved edits included) into the scratch, makes the scratch current and switches the filter on. The view is untouched. One undo step: undo brings the old scratch back and the view current again, as a menu action's landing does (decision 8). | you (copy); the details mine (approved) |

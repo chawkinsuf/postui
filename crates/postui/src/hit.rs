@@ -176,12 +176,13 @@ pub enum Hit {
     /// Signed page delta in columns applied on click (±viewport width).
     HScrollTrack(PaneId, i16),
     DropdownRow(usize),
-    /// Row `i`'s ✎ on a dropdown whose rows carry their own rename and
-    /// delete (jq views spec 17): painted on the highlighted or hovered
-    /// row, registered over its `DropdownRow`.
-    DropdownRowRename(usize),
-    /// Row `i`'s delete icon, beside its ✎.
-    DropdownRowDelete(usize),
+    /// Dropdown row `row`'s own button for `verb` (`MenuItem::buttons`, jq
+    /// views spec 17): painted on the highlighted or hovered row,
+    /// registered over its `DropdownRow`.
+    DropdownRowButton {
+        row: usize,
+        verb: crate::action::Verb,
+    },
     ChooserRow(usize),
     /// The chooser's optional title-row toggle label (the theme picker's
     /// dark/light filter): click dispatches the toggle's action without
@@ -371,6 +372,28 @@ pub enum Hit {
     /// The jq bar's `󰕌` button, shown while the current view is edited:
     /// puts the view back to its saved filter.
     ResponseJqRevert,
+    /// The jq bar's slot on a view: copies the view to the scratch.
+    ResponseJqCopy,
+    /// The jq bar's slot on a scratch with text: clears the scratch.
+    ResponseJqClear,
+}
+
+#[cfg(test)]
+impl Hit {
+    /// Dropdown row `row`'s rename button.
+    pub fn row_rename(row: usize) -> Self {
+        Hit::DropdownRowButton { row, verb: crate::action::Verb::Rename }
+    }
+
+    /// Dropdown row `row`'s delete button (the scratch row's clear).
+    pub fn row_delete(row: usize) -> Self {
+        Hit::DropdownRowButton { row, verb: crate::action::Verb::Delete { count: 1 } }
+    }
+
+    /// Dropdown row `row`'s copy to scratch button.
+    pub fn row_copy(row: usize) -> Self {
+        Hit::DropdownRowButton { row, verb: crate::action::Verb::CopyToScratch }
+    }
 }
 
 /// A terminal pointer-shape hint (Kitty's OSC 22 protocol, `\x1b]22;{shape}\x07`),
@@ -607,8 +630,7 @@ impl HitMap {
                     | Hit::ModalOutside
                     | Hit::ModalBody
                     | Hit::DropdownRow(_)
-                    | Hit::DropdownRowRename(_)
-                    | Hit::DropdownRowDelete(_)
+                    | Hit::DropdownRowButton { .. }
             )
         })
     }

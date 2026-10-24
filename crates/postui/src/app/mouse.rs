@@ -1879,15 +1879,10 @@ impl App {
                 // right-click selection settled).
                 self.close_dropdown_and_run(action)
             }
-            // A row's own rename or delete (jq views spec 17): it runs once
-            // the menu is gone, as the row's own action does.
-            Hit::DropdownRowRename(i) | Hit::DropdownRowDelete(i) => {
-                let verb = if matches!(hit, Hit::DropdownRowRename(_)) {
-                    crate::action::Verb::Rename
-                } else {
-                    crate::action::Verb::Delete { count: 1 }
-                };
-                let Some(action) = self.modals.dropdown_row_action(i, verb) else { return false };
+            // A row's own button (jq views spec 17): it runs once the menu
+            // is gone, as the row's own action does.
+            Hit::DropdownRowButton { row, verb } => {
+                let Some(action) = self.modals.dropdown_row_action(row, verb) else { return false };
                 self.close_dropdown_and_run(action)
             }
             Hit::ModalOutside => {
@@ -2245,6 +2240,8 @@ impl App {
             Hit::ResponseJqAiButton => self.update(Action::OpenJqDescribe),
             Hit::ResponseJqChip => self.update(Action::OpenJqViews),
             Hit::ResponseJqRevert => self.update(Action::RevertJqView),
+            Hit::ResponseJqCopy => self.update(Action::CopyJqViewToScratch(None)),
+            Hit::ResponseJqClear => self.update(Action::ClearJqScratch),
             Hit::HeaderCopy(i) => {
                 self.update(Action::CopyToClipboard(CopyTarget::ResponseHeader(i)))
             }

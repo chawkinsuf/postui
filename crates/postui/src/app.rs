@@ -1336,11 +1336,10 @@ impl App {
                 Hit::TipEdit(name) => self.tip_edit_verb(name),
                 _ => crate::hint::TipEditVerb::default(),
             },
-            row_noun: match (hit, self.modals.top()) {
-                (
-                    Hit::DropdownRowRename(i) | Hit::DropdownRowDelete(i),
-                    Some(Modal::Dropdown(state)),
-                ) => state.items.get(*i).map_or("", |item| item.noun),
+            row_tip: match hit {
+                Hit::DropdownRowButton { row, verb } => {
+                    self.modals.dropdown_row_button(*row, *verb).map_or("", |b| b.tip)
+                }
                 _ => "",
             },
             spell: self.spell_ctx(),
@@ -2038,6 +2037,7 @@ impl App {
             label: current.unwrap_or(postui_core::model::JqView::SCRATCH).to_string(),
             modified: self.editor.jq_current_modified(),
             has_views: !self.editor.jq_views.is_empty(),
+            on_view: current.is_some(),
         });
         // A switched-off filter is applied as no filter: the text stays in
         // the bar (closed), the tree shows the full body.
@@ -2093,25 +2093,53 @@ impl App {
     }
 
     /// Pushes the views dropdown (spec 16): `scratch`, the views in saved
-    /// order (each with its own rename and delete, spec 17), a divider and
-    /// `+ save as view…`, disabled while the bar is empty (spec 18). It
+    /// order, a divider and `+ save as view…`, disabled while the bar is
+    /// empty (spec 18). Each view row has its own copy to scratch, rename
+    /// and delete, and the scratch row its clear (spec 17, amendment B9):
+    /// the scratch cannot be deleted, so its delete key clears it. It
     /// hangs off the chip the last frame drew, else, on a bar opened in
     /// this same action, off where the next frame draws it.
     fn open_jq_views(&mut self) {
-        use crate::components::modal::{DropdownState, MenuItem};
+        use crate::action::Verb;
+        use crate::components::modal::{DropdownState, MenuItem, RowButton};
         use ratatui::layout::Rect;
         const SAVE_AS: &str = "+ save as view\u{2026}";
-        let mut items =
-            vec![MenuItem::new(postui_core::model::JqView::SCRATCH, Action::PickJqView(None))];
+        let delete = Verb::Delete { count: 1 };
+        // Only a scratch with text has a clear, as the bar's slot does.
+        let clear = (!self.editor.jq.is_empty()).then(|| {
+            RowButton::new(delete, crate::glyph::CLOSE, "Clear the scratch", Action::ClearJqScratch)
+                .destructive()
+        });
+        let mut items = vec![
+            MenuItem::new(postui_core::model::JqView::SCRATCH, Action::PickJqView(None))
+                .with_buttons(clear.into_iter().collect()),
+        ];
         for view in &self.editor.jq_views {
             let name = view.name.clone();
             items.push(
-                MenuItem::new(name.clone(), Action::PickJqView(Some(name.clone())))
-                    .with_row_actions(
-                        "view",
-                        Action::PromptRenameJqView(name.clone()),
-                        Action::DeleteJqView(name),
-                    ),
+                MenuItem::new(name.clone(), Action::PickJqView(Some(name.clone()))).with_buttons(
+                    vec![
+                        RowButton::new(
+                            Verb::CopyToScratch,
+                            crate::glyph::COPY,
+                            "Copy this view to the scratch",
+                            Action::CopyJqViewToScratch(Some(name.clone())),
+                        ),
+                        RowButton::new(
+                            Verb::Rename,
+                            crate::glyph::PENCIL,
+                            "Rename this view",
+                            Action::PromptRenameJqView(name.clone()),
+                        ),
+                        RowButton::new(
+                            delete,
+                            crate::glyph::DELETE,
+                            "Delete this view",
+                            Action::DeleteJqView(name),
+                        )
+                        .destructive(),
+                    ],
+                ),
             );
         }
         let widest =
@@ -4562,10 +4590,20 @@ impl App {
                         }
                         self.apply(a)
                     }
-                    // The menu's footer offers `r` and `d` for its view rows;
-                    // on the scratch row (or save as) they say why not.
+                    // The menu's footer offers `c`, `r` and `d` for its view
+                    // rows (and `d` for a scratch with text); on another row
+                    // they say why not.
                     None if surface == crate::keyroute::Surface::Menu => {
-                        self.toasts.push("Only a view can be renamed or deleted", ToastKind::Info);
+                        let why = match verb {
+                            crate::action::Verb::CopyToScratch => {
+                                "Only a view can be copied to the scratch"
+                            }
+                            crate::action::Verb::Delete { .. } => {
+                                "Only a view can be deleted, or a scratch with text cleared"
+                            }
+                            _ => "Only a view can be renamed",
+                        };
+                        self.toasts.push(why, ToastKind::Info);
                         true
                     }
                     None => false,
@@ -5826,6 +5864,47 @@ impl App {
                 // past the edit it is meant to bring back.
                 self.no_coalesce = true;
                 self.editor.jq_revert();
+                true
+            }
+            Action::CopyJqViewToScratch(name) => {
+                if !self.close_inputs_or_stop(true) {
+                    return true;
+                }
+                // The palette reaches this whatever is current; the ⧉ only
+                // shows on a view.
+                let Some(name) = name.or_else(|| self.editor.jq_current_name().map(str::to_string))
+                else {
+                    self.toasts.push("Nothing to copy: the scratch is current", ToastKind::Info);
+                    self.last_action_failed = true;
+                    return true;
+                };
+                // Its own step, so one undo brings back the old scratch with
+                // the view current (amendment B7). A name no view has any
+                // more (a reload under the menu) copies nothing.
+                if self.editor.jq_copy_to_scratch(&name) {
+                    self.no_coalesce = true;
+                }
+                true
+            }
+            Action::ClearJqScratch => {
+                if !self.close_inputs_or_stop(true) {
+                    return true;
+                }
+                if self.editor.jq.is_empty() {
+                    self.toasts.push("Nothing to clear: the scratch is empty", ToastKind::Info);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                // Its own step, never asking (amendment B8).
+                self.no_coalesce = true;
+                self.editor.jq.clear();
+                // Clearing the scratch on screen puts the caret in the bar:
+                // an empty scratch with no views would otherwise take the
+                // bar away, and a cleared filter is one to type afresh.
+                if self.editor.jq_current_name().is_none() {
+                    self.dispatch(Action::FocusPane(PaneId::Response));
+                    self.session.response.set_jq_focus(true);
+                }
                 true
             }
             Action::JqApply(text) => {

@@ -9938,11 +9938,8 @@ fn push_row_action_menu(app: &mut App) {
     use crate::components::modal::{DropdownState, MenuItem};
     let toast = |s: &str| Action::ShowToast(s.to_string(), ToastKind::Info);
     let item = |name: &str| {
-        MenuItem::new(name, Action::Render).with_row_actions(
-            "item",
-            toast(&format!("rename {name}")),
-            toast(&format!("delete {name}")),
-        )
+        MenuItem::new(name, Action::Render)
+            .with_rename_delete(toast(&format!("rename {name}")), toast(&format!("delete {name}")))
     };
     app.push_modal(Modal::Dropdown(DropdownState {
         anchor: ratatui::layout::Rect::new(10, 5, 8, 1),
@@ -10012,7 +10009,7 @@ fn r_and_d_on_a_plain_dropdown_do_nothing() {
 fn clicking_a_rows_delete_runs_it_and_closes_the_menu() {
     let mut app = App::new_for_test();
     push_row_action_menu(&mut app);
-    click_hit(&mut app, Hit::DropdownRowDelete(0));
+    click_hit(&mut app, Hit::row_delete(0));
     assert!(app.modals.is_empty());
     assert!(app.toasts.messages().contains(&"delete alpha"));
     assert!(!app.toasts.messages().contains(&"rename alpha"), "only the clicked button ran");
@@ -10022,7 +10019,7 @@ fn clicking_a_rows_delete_runs_it_and_closes_the_menu() {
     render_once(&mut app);
     let row1 = app.hits.rect_of(&Hit::DropdownRow(1)).unwrap();
     app.handle_mouse(moved(row1.x + 1, row1.y));
-    click_hit(&mut app, Hit::DropdownRowRename(1));
+    click_hit(&mut app, Hit::row_rename(1));
     assert!(app.modals.is_empty());
     assert!(app.toasts.messages().contains(&"rename beta"));
 }
@@ -22427,8 +22424,8 @@ fn a_null_or_empty_result_keeps_the_full_body_with_a_note() {
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
         let rect = app.hits.rect_of(&Hit::ResponseJqBar).expect("bar row registered");
         let buf = terminal.backend().buffer();
-        // The note starts at the bar's left edge, under the chip.
-        let left = app.hits.rect_of(&Hit::ResponseJqChip).expect("chip registered").x;
+        // The note starts under the filter text.
+        let left = rect.x;
         let row: String = (left..rect.x + rect.width)
             .map(|x| buf.cell((x, rect.y + 1)).unwrap().symbol().to_string())
             .collect();
@@ -23746,12 +23743,24 @@ fn the_views_dropdown_lists_scratch_views_divider_and_save_as() {
     assert_eq!(labels, ["scratch", "names", "total", divider.as_str(), "+ save as view\u{2026}"]);
     assert_eq!(menu.current, Some(1), "the current view is marked");
     assert_eq!(menu.selected, 1, "…and highlighted");
+    use crate::action::Verb;
+    let buttons = |i: usize| -> Vec<(Verb, Action)> {
+        menu.items[i].buttons.iter().map(|b| (b.verb, b.action.clone())).collect()
+    };
     assert_eq!(menu.items[0].action, Some(Action::PickJqView(None)));
-    assert_eq!((menu.items[0].rename.clone(), menu.items[0].delete.clone()), (None, None));
+    // Amendment B9: the scratch row's one button is its clear, on delete's
+    // key; each view row copies, renames and deletes.
+    assert_eq!(buttons(0), [(Verb::Delete { count: 1 }, Action::ClearJqScratch)]);
     assert_eq!(menu.items[1].action, Some(Action::PickJqView(Some("names".into()))));
-    assert_eq!(menu.items[1].rename, Some(Action::PromptRenameJqView("names".into())));
-    assert_eq!(menu.items[1].delete, Some(Action::DeleteJqView("names".into())));
-    assert_eq!(menu.items[2].delete, Some(Action::DeleteJqView("total".into())));
+    assert_eq!(
+        buttons(1),
+        [
+            (Verb::CopyToScratch, Action::CopyJqViewToScratch(Some("names".into()))),
+            (Verb::Rename, Action::PromptRenameJqView("names".into())),
+            (Verb::Delete { count: 1 }, Action::DeleteJqView("names".into())),
+        ]
+    );
+    assert_eq!(buttons(2)[2], (Verb::Delete { count: 1 }, Action::DeleteJqView("total".into())));
     assert!(!menu.items[3].is_enabled(), "the divider is not a row");
     assert_eq!(menu.items[4].action, Some(Action::PromptSaveJqView));
 
@@ -23967,9 +23976,9 @@ fn the_views_dropdown_renames_and_deletes_by_keyboard_and_mouse() {
         let mut app = views_app("jq = \".s\"");
         app.use_profile(profile);
         app.update(Action::OpenJqViews);
-        // The scratch row (highlighted first) has neither: the key says so.
+        // The scratch row (highlighted first) has no rename: the key says so.
         press(&mut app, 'r');
-        assert_eq!(app.toasts.last_message(), Some("Only a view can be renamed or deleted"));
+        assert_eq!(app.toasts.last_message(), Some("Only a view can be renamed"));
         assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "{profile:?}: still open");
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         press(&mut app, 'r');
@@ -23991,16 +24000,16 @@ fn the_views_dropdown_renames_and_deletes_by_keyboard_and_mouse() {
     let mut app = views_app("jq = \".s\"");
     click_hit(&mut app, Hit::ResponseJqChip);
     assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "the chip opens it");
-    hover_row_then_click(&mut app, Hit::DropdownRow(2), Hit::DropdownRowDelete(2));
+    hover_row_then_click(&mut app, Hit::DropdownRow(2), Hit::row_delete(2));
     assert!(app.modals.is_empty());
     assert!(app.editor.jq_views.iter().all(|v| v.name != "total"));
     click_hit(&mut app, Hit::ResponseJqChip);
-    hover_row_then_click(&mut app, Hit::DropdownRow(1), Hit::DropdownRowRename(1));
+    hover_row_then_click(&mut app, Hit::DropdownRow(1), Hit::row_rename(1));
     assert_eq!(view_prompt(&app), ("Rename view".into(), "names".into()));
 }
 
 /// Spec 13: "view" is the word the user sees, the row buttons' tooltips
-/// included; the generic menu machinery takes the noun from the row.
+/// included; each button carries its own words.
 #[test]
 fn the_views_dropdowns_row_buttons_say_view() {
     let mut app = views_app("jq = \".s\"");
@@ -24010,10 +24019,136 @@ fn the_views_dropdowns_row_buttons_say_view() {
     app.handle_mouse(moved(row.x + 1, row.y));
     render_once(&mut app);
     let hint = |app: &App, hit: &Hit| crate::hint::hint_for(hit, &app.keymap, &app.hint_ctx(hit));
-    let rename = hint(&app, &Hit::DropdownRowRename(1)).unwrap();
-    let delete = hint(&app, &Hit::DropdownRowDelete(1)).unwrap();
+    let rename = hint(&app, &Hit::row_rename(1)).unwrap();
+    let delete = hint(&app, &Hit::row_delete(1)).unwrap();
+    let copy = hint(&app, &Hit::row_copy(1)).unwrap();
     assert!(rename.starts_with("Rename this view"), "{rename:?}");
     assert!(delete.starts_with("Delete this view"), "{delete:?}");
+    assert_eq!(copy, "Copy this view to the scratch \u{b7} c");
+    // The scratch row's delete is its clear.
+    let row = app.hits.rect_of(&Hit::DropdownRow(0)).unwrap();
+    app.handle_mouse(moved(row.x + 1, row.y));
+    render_once(&mut app);
+    let clear = hint(&app, &Hit::row_delete(0)).unwrap();
+    assert!(clear.starts_with("Clear the scratch"), "{clear:?}");
+}
+
+/// Amendment B7: the bar's ⧉ on a view puts the view's filter, unsaved
+/// edits included, in the scratch and makes the scratch current and on;
+/// the view is untouched. One undo puts the old scratch back with the view
+/// current.
+#[test]
+fn copying_a_view_to_the_scratch_leaves_the_view_and_undoes_in_one_step() {
+    let mut app = views_app("jq = \".s\"\njq_current = \"names\"");
+    // An unsaved edit on the view, its own step.
+    app.editor.set_jq_filter(".data.items[].status | ascii");
+    app.sync_jq();
+    app.capture_undo();
+    click_hit(&mut app, Hit::ResponseJqCopy);
+    assert_eq!(app.editor.jq, ".data.items[].status | ascii", "the view as it stands");
+    assert_eq!(app.editor.jq_current_name(), None, "the scratch is current");
+    assert!(app.editor.jq_enabled);
+    assert_eq!(view_filter(&app, "names"), ".data.items[].status | ascii", "the view is kept");
+    assert_eq!(app.session.response.jq_text(), ".data.items[].status | ascii");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.jq, ".s", "one undo: the old scratch");
+    assert_eq!(app.editor.jq_current_name(), Some("names"), "…with the view current");
+    assert_eq!(view_filter(&app, "names"), ".data.items[].status | ascii");
+}
+
+/// Amendment B9: a view row copies itself to the scratch by `c` in both
+/// profiles and by its ⧉; the scratch row has no copy, and `c` says so.
+#[test]
+fn the_views_dropdown_copies_a_view_by_keyboard_and_mouse() {
+    use crate::config::KeyProfile;
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = views_app("jq = \".s\"");
+        app.use_profile(profile);
+        app.update(Action::OpenJqViews);
+        press(&mut app, 'c');
+        assert_eq!(app.toasts.last_message(), Some("Only a view can be copied to the scratch"));
+        assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "{profile:?}: still open");
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        press(&mut app, 'c');
+        assert!(app.modals.is_empty(), "{profile:?}");
+        assert_eq!(app.editor.jq, ".data.total", "{profile:?}");
+        assert_eq!(app.editor.jq_current_name(), None, "{profile:?}");
+    }
+
+    let mut app = views_app("jq = \".s\"");
+    click_hit(&mut app, Hit::ResponseJqChip);
+    hover_row_then_click(&mut app, Hit::DropdownRow(1), Hit::row_copy(1));
+    assert!(app.modals.is_empty());
+    assert_eq!(app.editor.jq, ".data.items[].status");
+    assert_eq!(view_filter(&app, "names"), ".data.items[].status");
+}
+
+/// Amendment B10: the palette's copy acts on the current view, and on
+/// the scratch it refuses.
+#[test]
+fn the_palettes_copy_to_scratch_takes_the_current_view_and_refuses_the_scratch() {
+    let mut app = views_app("jq = \".s\"");
+    app.update(Action::CopyJqViewToScratch(None));
+    assert_eq!(app.toasts.last_message(), Some("Nothing to copy: the scratch is current"));
+    assert!(app.last_action_failed);
+    assert_eq!(app.editor.jq, ".s");
+
+    let mut app = views_app("jq = \".s\"\njq_current = \"total\"");
+    app.update(Action::OpenPalette);
+    type_str(&mut app, "copy jq view");
+    select_palette_command(&mut app, "response-jq-copy-to-scratch");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.editor.jq, ".data.total");
+    assert_eq!(app.editor.jq_current_name(), None);
+}
+
+/// Amendment B8: the bar's ✕ empties the current scratch, never asking, as
+/// one undo step, and puts the caret in the bar so the empty bar stays up
+/// to type in.
+#[test]
+fn clearing_the_scratch_from_the_bar_empties_it_and_keeps_the_caret_there() {
+    let mut app = views_app("jq = \".s\"");
+    click_hit(&mut app, Hit::ResponseJqClear);
+    assert!(app.modals.is_empty(), "never asks");
+    assert_eq!(app.editor.jq, "");
+    assert!(app.session.response.jq_focused(), "the caret is in the bar");
+    assert!(app.session.response.jq_open());
+    app.update(Action::Undo);
+    assert_eq!(app.editor.jq, ".s", "one undo brings it back");
+}
+
+/// Amendment B8, B9: on a view, the scratch row's ✕ (and `d`) clears the
+/// scratch and leaves the view current; an empty scratch has no clear,
+/// and the palette's refuses it.
+#[test]
+fn clearing_the_scratch_from_the_dropdown_keeps_the_current_view() {
+    use crate::config::KeyProfile;
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        let mut app = views_app("jq = \".s\"\njq_current = \"names\"");
+        app.use_profile(profile);
+        app.update(Action::OpenJqViews);
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        let delete: &[char] = if profile == KeyProfile::Vim { &['d', 'd'] } else { &['d'] };
+        for c in delete {
+            press(&mut app, *c);
+        }
+        assert!(app.modals.is_empty(), "{profile:?}");
+        assert_eq!(app.editor.jq, "", "{profile:?}");
+        assert_eq!(app.editor.jq_current_name(), Some("names"), "{profile:?}: current unchanged");
+        assert_eq!(app.editor.jq_views.len(), 2, "{profile:?}: no view deleted");
+    }
+
+    let mut app = views_app("jq = \".s\"\njq_current = \"names\"");
+    click_hit(&mut app, Hit::ResponseJqChip);
+    hover_row_then_click(&mut app, Hit::DropdownRow(0), Hit::row_delete(0));
+    assert_eq!(app.editor.jq, "");
+    app.update(Action::OpenJqViews);
+    assert!(views_menu(&app).items[0].buttons.is_empty(), "nothing left to clear");
+    app.update(Action::Close);
+    app.update(Action::ClearJqScratch);
+    assert_eq!(app.toasts.last_message(), Some("Nothing to clear: the scratch is empty"));
+    assert!(app.last_action_failed);
 }
 
 #[test]

@@ -47,9 +47,9 @@ pub struct HintCtx {
     pub vm_noun: VmNoun,
     /// What the variable tooltip's `󰏫` pill opens for the token under it.
     pub tip_edit: TipEditVerb,
-    /// What the hovered dropdown row is (its `MenuItem::noun`), naming
-    /// what the row's rename and delete buttons act on.
-    pub row_noun: &'static str,
+    /// The hovered dropdown row button's tooltip words (its
+    /// `RowButton::tip`).
+    pub row_tip: &'static str,
     /// Where the keyboard is: the key a hint names is spelled for it
     /// (piece 4 spec §4.6).
     pub spell: crate::keyroute::SpellCtx,
@@ -201,6 +201,8 @@ fn short_description(action: &Action) -> Option<&'static str> {
         Action::OpenJqBar => "Filter the JSON with jq",
         Action::OpenJqViews => "Pick or save a jq view",
         Action::RevertJqView => "Revert this filter to its saved text",
+        Action::CopyJqViewToScratch(None) => "Copy this view to the scratch",
+        Action::ClearJqScratch => "Clear the scratch",
         Action::PromptNewRequest => "Create a request in this folder",
         // "Open" over "Switch to", matching the ^O the hint carries; the
         // space and env choosers keep "Switch to", since neither is a
@@ -442,14 +444,9 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::TableCopy(_) => text("Copy this row's value"),
         Hit::TableDelete(_) => text("Delete this row"),
         // A dropdown row's own buttons, with the menu's key for each.
-        Hit::DropdownRowRename(_) => Some(Source::Keyed(
-            format!("Rename this {}", ctx.row_noun),
-            Action::OnSelection(crate::action::Verb::Rename),
-        )),
-        Hit::DropdownRowDelete(_) => Some(Source::Keyed(
-            format!("Delete this {}", ctx.row_noun),
-            Action::OnSelection(crate::action::Verb::Delete { count: 1 }),
-        )),
+        Hit::DropdownRowButton { verb, .. } => {
+            Some(Source::Keyed(ctx.row_tip.to_string(), Action::OnSelection(*verb)))
+        }
         // The two end chips are the hide/show toggles (spec E12a): a click
         // hides the other pane, and on the lit chip (`on`) shows it again
         // at the share it had. Each carries its toggle's key. The middle
@@ -500,6 +497,8 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::ResponseJqAiButton => of(Action::OpenJqDescribe),
         Hit::ResponseJqChip => of(Action::OpenJqViews),
         Hit::ResponseJqRevert => of(Action::RevertJqView),
+        Hit::ResponseJqCopy => of(Action::CopyJqViewToScratch(None)),
+        Hit::ResponseJqClear => of(Action::ClearJqScratch),
 
         // -- Choosers, pickers, modals --
         Hit::ChooserToggle => text(if ctx.on {
@@ -693,24 +692,30 @@ mod tests {
         use crate::keyroute::{SpellCtx, Surface};
         for (profile, del) in [(KeyProfile::Arrows, "d"), (KeyProfile::Vim, "dd")] {
             let keymap = Keymap::default_bindings_for(profile);
-            let ctx = HintCtx {
+            let ctx = |row_tip| HintCtx {
                 spell: SpellCtx {
                     profile,
                     surface: Surface::Menu,
                     field: crate::keyroute::FieldSpell::None,
                 },
-                row_noun: "view",
+                row_tip,
                 ..ctx()
             };
             assert_eq!(
-                hint_for(&Hit::DropdownRowRename(0), &keymap, &ctx).as_deref(),
+                hint_for(&Hit::row_rename(0), &keymap, &ctx("Rename this view")).as_deref(),
                 Some("Rename this view \u{b7} r"),
                 "{profile:?}"
             );
             assert_eq!(
-                hint_for(&Hit::DropdownRowDelete(0), &keymap, &ctx),
+                hint_for(&Hit::row_delete(0), &keymap, &ctx("Delete this view")),
                 Some(format!("Delete this view \u{b7} {del}")),
                 "{profile:?}"
+            );
+            assert_eq!(
+                hint_for(&Hit::row_copy(0), &keymap, &ctx("Copy this view to the scratch"))
+                    .as_deref(),
+                Some("Copy this view to the scratch \u{b7} c"),
+                "{profile:?}: one letter in both profiles"
             );
         }
     }
@@ -1067,6 +1072,8 @@ mod tests {
             Hit::ResponseJqAiButton,
             Hit::ResponseJqChip,
             Hit::ResponseJqRevert,
+            Hit::ResponseJqCopy,
+            Hit::ResponseJqClear,
             Hit::ResponseEditorButton,
             Hit::CopyBodyButton,
             Hit::SaveBodyButton,
