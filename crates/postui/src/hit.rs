@@ -116,7 +116,8 @@ pub enum Hit {
     /// buttons: the handle the editor/response line is dragged by.
     SplitHandle,
     /// The band under each of the header strip's control groups (the icon
-    /// buttons, the tabs), one cell wider than the group on each side: the
+    /// buttons, the tabs), one cell wider than the group on each side
+    /// where the strip has that cell (it is clipped to the strip): the
     /// strip minus the drag, so a press that just misses a control, in a
     /// gap or at a group's edge, clicks as the strip does but moves no
     /// line (task #95). Its own variant, not a flag on `SplitHandle`, so

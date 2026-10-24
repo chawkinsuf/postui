@@ -1317,6 +1317,12 @@ impl App {
     /// (probed with `test_setmouse`, both the current window's and the one
     /// above it). Outside vim the strip is the response pane's header, and
     /// a press there clicks first (E2a).
+    ///
+    /// The strip's control band (task #95) is the status line's press
+    /// without its drag in vim too. A Vim status line drags anywhere, but
+    /// it holds no buttons, so it has no rule for the cells between them;
+    /// the strip's buttons already don't drag in vim (E2), and the band is
+    /// the area around them, so it follows the buttons in both profiles.
     fn is_separator_press(&self, hit: &Hit) -> bool {
         match hit {
             Hit::SidebarGutter => true,

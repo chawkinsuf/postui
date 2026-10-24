@@ -4792,7 +4792,8 @@ fn draw_header_actions(
 /// reaches the other group on a narrow strip never covers a control.
 fn register_control_band(hits: &mut crate::hit::HitMap, strip: Rect, span: Rect) {
     let x = span.x.saturating_sub(1);
-    let band = Rect::new(x, span.y, span.right() + 1 - x, span.height).intersection(strip);
+    let width = span.right().saturating_add(1) - x;
+    let band = Rect::new(x, span.y, width, span.height).intersection(strip);
     hits.register(band, crate::hit::Hit::StripControls);
 }
 
