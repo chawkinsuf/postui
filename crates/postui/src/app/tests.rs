@@ -24151,6 +24151,29 @@ fn clearing_the_scratch_from_the_dropdown_keeps_the_current_view() {
     assert!(app.last_action_failed);
 }
 
+/// A clear from the palette while the filter is switched off opens the
+/// bar as alt+q does: switched on, so the next filter typed applies. One
+/// undo puts the text and the switch back.
+#[test]
+fn clearing_a_switched_off_scratch_opens_the_bar_switched_on() {
+    let mut app = views_app("jq = \".s\"\njq_enabled = false");
+    app.focus = PaneId::Sidebar;
+    app.update(Action::ClearJqScratch);
+    assert_eq!(app.editor.jq, "", "the clear is not undone by the open");
+    assert!(app.editor.jq_enabled, "switched on");
+    assert!(app.session.response.jq_focused());
+    app.update(Action::Undo);
+    assert_eq!(app.editor.jq, ".s", "one undo");
+    assert!(!app.editor.jq_enabled, "…puts the switch back off too");
+
+    let mut app = views_app("jq = \".s\"\njq_enabled = false");
+    app.update(Action::ClearJqScratch);
+    type_str(&mut app, ".data.total");
+    assert_eq!(app.editor.jq, ".data.total");
+    let shown = app.session.response.view().unwrap().view_text();
+    assert!(!shown.contains("items"), "the typed filter applies: {shown}");
+}
+
 /// Where the bar cannot take the caret (the response is not JSON), a
 /// clear from the palette clears and leaves focus where it was.
 #[test]

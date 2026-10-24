@@ -5428,6 +5428,7 @@ fn jq_button_w() -> u16 {
 /// what the label and the AI button leave (B6): the chip's label is cut
 /// to fit the other half, and on a bar too narrow for even a cut chip
 /// beside them, the ↺ and then the slot give their cells up.
+#[derive(Debug)]
 struct JqBarLayout {
     /// The `jq ` label.
     label: Rect,
@@ -5449,7 +5450,9 @@ fn jq_bar_layout(bar: &JqBar, area: Rect) -> JqBarLayout {
     let row = Rect { height: area.height.min(1), ..area };
     let ai_w = crate::ui::cells(crate::glyph::CREATION_PILL) as u16;
     let ai = (area.width > ai_w).then(|| Rect::new(area.right() - ai_w, area.y, ai_w, 1));
-    let label = Rect { width: (crate::ui::cells(JQ_LABEL) as u16).min(area.width), ..row };
+    // On a bar narrower than the label and the AI button, the label is cut.
+    let label_room = area.width.saturating_sub(ai.map_or(0, |r| r.width));
+    let label = Rect { width: (crate::ui::cells(JQ_LABEL) as u16).min(label_room), ..row };
     // What the text and the controls between it and the AI button share,
     // past the gap the text keeps before them.
     let shared = area.width.saturating_sub(label.width + ai.map_or(0, |r| r.width) + 1);
@@ -5565,7 +5568,7 @@ fn draw_jq_bar(
         frame.render_widget(Paragraph::new(Line::from(spans)), row);
     }
     // The label is the bar's too: a click there focuses it (the caret at
-    // the text's start), a right-click opens its text menu. It goes in
+    // the text window's first column), a right-click opens its text menu. It goes in
     // first, so the field's rect (`rect_of`, the last one) is the text
     // window, which a press maps columns from.
     hits.register(layout.label, crate::hit::Hit::ResponseJqBar);
@@ -10633,8 +10636,13 @@ mod tests {
         // A view's slot copies, the scratch's clears: both are checked.
         for (label, slot) in [("names", Hit::ResponseJqCopy), ("scratch", Hit::ResponseJqClear)] {
             r.set_jq_chip(chip(label, true, true));
-            for width in 6..40 {
+            for width in 3..40 {
                 let hits = render_hits_at(&mut r, width);
+                // The `jq ` label never runs under the AI button.
+                let layout = jq_bar_layout(r.jq_bar(), Rect::new(0, 0, width, 2));
+                if let Some(ai) = layout.ai {
+                    assert!(layout.label.right() <= ai.x, "{label} at {width}: {layout:?}");
+                }
                 let rects: Vec<Rect> = [
                     Hit::ResponseJqBar,
                     Hit::ResponseJqRevert,

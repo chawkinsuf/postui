@@ -1944,7 +1944,9 @@ impl ModalStack {
                     (Key::Nav(Nav::UpDown), "navigate".to_string(), None),
                     (Key::Named("enter"), "select".to_string(), None),
                 ];
-                for verb in [Verb::CopyToScratch, Verb::Rename, Verb::Delete { count: 1 }] {
+                // Every verb some row's button has, in `Verb::ALL`'s order,
+                // so a new kind of row button brings its chip with it.
+                for verb in Verb::ALL {
                     let mut words: Vec<&str> = Vec::new();
                     for word in state.items.iter().filter_map(|i| i.button(verb)).map(|b| b.word) {
                         if !words.contains(&word) {
@@ -5289,7 +5291,7 @@ mod tests {
         );
         assert!(chips(dropdown_items()).is_none(), "a plain dropdown has none");
         // Amendment B9: a row that copies to the scratch brings a `c` chip,
-        // first, whichever row is highlighted; the `d` chip says both words
+        // whichever row is highlighted; the `d` chip says both words
         // its buttons go by, and only the scratch's when it is alone.
         let spelled = |items: Vec<MenuItem>| -> Vec<String> {
             crate::keyroute::spell::spelled_on(
@@ -5303,7 +5305,7 @@ mod tests {
         let items = scratch_and_view_items(|_| Action::Render);
         assert_eq!(
             spelled(items.clone()),
-            ["↑↓ navigate", "enter select", "c copy", "r rename", "d clear/delete", "esc close"]
+            ["↑↓ navigate", "enter select", "r rename", "d clear/delete", "c copy", "esc close"]
         );
         assert_eq!(
             spelled(items[..1].to_vec()),

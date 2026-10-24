@@ -4610,7 +4610,8 @@ impl App {
                             crate::action::Verb::Delete { .. } => {
                                 "Only a view can be deleted, or a scratch with text cleared"
                             }
-                            _ => "Only a view can be renamed",
+                            crate::action::Verb::Rename => "Only a view can be renamed",
+                            _ => "Nothing to do on this row",
                         };
                         self.toasts.push(why, ToastKind::Info);
                         true
@@ -5913,12 +5914,17 @@ impl App {
                 // Clearing the scratch on screen puts the caret in the bar:
                 // an empty scratch with no views would otherwise take the
                 // bar away, and a cleared filter is one to type afresh.
-                // Focus moves only where the bar can take the caret (a
-                // JSON response); elsewhere the clear is all it does.
+                // It opens the bar the way alt+q does (`OpenJqBar`: focused
+                // and switched on, so what is typed next filters), and only
+                // where the bar can show; elsewhere the clear is all it
+                // does. The bar takes the cleared text first: opening marks
+                // it edited, and `sync_jq` then carries the bar's text into
+                // the editor.
                 if self.editor.jq_current_name().is_none()
-                    && self.session.response.set_jq_focus(true)
+                    && self.session.response.jq_blocked_reason().is_none()
                 {
-                    self.dispatch(Action::FocusPane(PaneId::Response));
+                    self.sync_jq();
+                    self.dispatch(Action::OpenJqBar);
                 }
                 true
             }
