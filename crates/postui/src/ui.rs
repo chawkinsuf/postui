@@ -1019,8 +1019,8 @@ impl PaneChipArgs {
             } else {
                 JqBarState::Closed
             },
-            // What the chip's ● and the ↺ show (`App::sync_jq`): the
-            // current view has unsaved edits.
+            // What the bar's ↺ shows (`App::sync_jq`): the current
+            // filter has unsaved edits.
             jq_modified: response.jq_chip_modified(),
             // A text field of this pane's own owns Esc: it says `esc done`.
             field_open: app.pane_field_open(focus),

@@ -2107,8 +2107,14 @@ impl App {
         let delete = Verb::Delete { count: 1 };
         // Only a scratch with text has a clear, as the bar's slot does.
         let clear = (!self.editor.jq.is_empty()).then(|| {
-            RowButton::new(delete, crate::glyph::CLOSE, "Clear the scratch", Action::ClearJqScratch)
-                .destructive()
+            RowButton::new(
+                delete,
+                "clear",
+                crate::glyph::CLOSE,
+                "Clear the scratch",
+                Action::ClearJqScratch,
+            )
+            .destructive()
         });
         let mut items = vec![
             MenuItem::new(postui_core::model::JqView::SCRATCH, Action::PickJqView(None))
@@ -2121,18 +2127,21 @@ impl App {
                     vec![
                         RowButton::new(
                             Verb::CopyToScratch,
+                            "copy",
                             crate::glyph::COPY,
                             "Copy this view to the scratch",
                             Action::CopyJqViewToScratch(Some(name.clone())),
                         ),
                         RowButton::new(
                             Verb::Rename,
+                            "rename",
                             crate::glyph::PENCIL,
                             "Rename this view",
                             Action::PromptRenameJqView(name.clone()),
                         ),
                         RowButton::new(
                             delete,
+                            "delete",
                             crate::glyph::DELETE,
                             "Delete this view",
                             Action::DeleteJqView(name),
@@ -5880,7 +5889,10 @@ impl App {
                 };
                 // Its own step, so one undo brings back the old scratch with
                 // the view current (amendment B7). A name no view has any
-                // more (a reload under the menu) copies nothing.
+                // more (a reload under the menu) copies nothing and says
+                // nothing, as `DeleteJqView` does: the row the user chose
+                // is gone, there is nothing wrong to report, and the menu
+                // closing on the reload's new state shows it.
                 if self.editor.jq_copy_to_scratch(&name) {
                     self.no_coalesce = true;
                 }
@@ -5901,9 +5913,12 @@ impl App {
                 // Clearing the scratch on screen puts the caret in the bar:
                 // an empty scratch with no views would otherwise take the
                 // bar away, and a cleared filter is one to type afresh.
-                if self.editor.jq_current_name().is_none() {
+                // Focus moves only where the bar can take the caret (a
+                // JSON response); elsewhere the clear is all it does.
+                if self.editor.jq_current_name().is_none()
+                    && self.session.response.set_jq_focus(true)
+                {
                     self.dispatch(Action::FocusPane(PaneId::Response));
-                    self.session.response.set_jq_focus(true);
                 }
                 true
             }
@@ -9872,8 +9887,8 @@ impl App {
                 jq_row = Some(*row);
                 (TextSurface::Response, false)
             }
-            // The chip is the bar's own, as the `jq ` label it replaced was
-            // part of its row: a right-click there is the bar's text menu.
+            // The `jq ` label (a `ResponseJqBar` hit) and the chip are the
+            // bar's own row: a right-click there is the bar's text menu.
             Hit::ResponseJqBar | Hit::ResponseJqChip => {
                 self.update(Action::FocusPane(PaneId::Response));
                 if !self.session.response.set_jq_focus(true) {

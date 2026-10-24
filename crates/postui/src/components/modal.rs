@@ -587,12 +587,15 @@ pub struct MenuItem {
     pub buttons: Vec<RowButton>,
 }
 
-/// One of a dropdown row's own buttons: the verb whose key runs it, its
-/// one-cell glyph, its tooltip's words and what it does. A `destructive`
-/// one inverts onto error red under the pointer, the rest onto accent.
+/// One of a dropdown row's own buttons: the verb whose key runs it, the
+/// word the footer's chip for that key says (`delete`, or `clear` for the
+/// scratch's), its one-cell glyph, its tooltip's words and what it does. A
+/// `destructive` one inverts onto error red under the pointer, the rest
+/// onto accent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RowButton {
     pub verb: crate::action::Verb,
+    pub word: &'static str,
     pub glyph: &'static str,
     pub tip: &'static str,
     pub action: Action,
@@ -602,11 +605,12 @@ pub struct RowButton {
 impl RowButton {
     pub fn new(
         verb: crate::action::Verb,
+        word: &'static str,
         glyph: &'static str,
         tip: &'static str,
         action: Action,
     ) -> Self {
-        Self { verb, glyph, tip, action, destructive: false }
+        Self { verb, word, glyph, tip, action, destructive: false }
     }
 
     /// A removal: red under the pointer.
@@ -636,9 +640,16 @@ impl MenuItem {
     pub fn with_rename_delete(self, rename: Action, delete: Action) -> Self {
         use crate::action::Verb;
         self.with_buttons(vec![
-            RowButton::new(Verb::Rename, crate::glyph::PENCIL, "Rename this view", rename),
+            RowButton::new(
+                Verb::Rename,
+                "rename",
+                crate::glyph::PENCIL,
+                "Rename this view",
+                rename,
+            ),
             RowButton::new(
                 Verb::Delete { count: 1 },
+                "delete",
                 crate::glyph::DELETE,
                 "Delete this view",
                 delete,
@@ -1924,25 +1935,28 @@ impl ModalStack {
             // some row has, whichever row is highlighted, so the footer
             // holds still as the highlight moves. Its highlight moves with
             // `j/k` in vim (a dropdown has no ^N/^P).
+            //
+            // A chip says every word its key's buttons go by, in row order
+            // (`clear/delete`: the scratch's `d` clears, a view's deletes).
             Modal::Dropdown(state) if state.has_row_actions() => {
                 use crate::action::Verb;
-                let verbs = [
-                    (Verb::CopyToScratch, "copy"),
-                    (Verb::Rename, "rename"),
-                    (Verb::Delete { count: 1 }, "delete"),
-                ];
                 let mut chips = vec![
-                    (Key::Nav(Nav::UpDown), "navigate", None),
-                    (Key::Named("enter"), "select", None),
+                    (Key::Nav(Nav::UpDown), "navigate".to_string(), None),
+                    (Key::Named("enter"), "select".to_string(), None),
                 ];
-                chips.extend(
-                    verbs
-                        .into_iter()
-                        .filter(|(verb, _)| state.items.iter().any(|i| i.button(*verb).is_some()))
-                        .map(|(verb, label)| (Key::Of(Action::OnSelection(verb)), label, None)),
-                );
-                chips.push((Key::Named("esc"), "close", None));
-                chips
+                for verb in [Verb::CopyToScratch, Verb::Rename, Verb::Delete { count: 1 }] {
+                    let mut words: Vec<&str> = Vec::new();
+                    for word in state.items.iter().filter_map(|i| i.button(verb)).map(|b| b.word) {
+                        if !words.contains(&word) {
+                            words.push(word);
+                        }
+                    }
+                    if !words.is_empty() {
+                        chips.push((Key::Of(Action::OnSelection(verb)), words.join("/"), None));
+                    }
+                }
+                chips.push((Key::Named("esc"), "close".to_string(), None));
+                return Some(chips);
             }
             // An anchored popup, not a screen-owning modal: the screen's
             // own chips stay put (and nothing dims).
@@ -5159,25 +5173,32 @@ mod tests {
     /// Amendment B9: rows with different buttons right-align them, in their
     /// listed order, and every row reserves the widest row's cells. A row
     /// with one button has it in the last cell.
+    /// The views menu's shape: a scratch row that clears on `d`, then a
+    /// view row that copies, renames and deletes.
+    fn scratch_and_view_items(toast: impl Fn(&str) -> Action) -> Vec<MenuItem> {
+        use crate::action::Verb;
+        let delete = Verb::Delete { count: 1 };
+        vec![
+            MenuItem::new("scratch", Action::Render).with_buttons(vec![
+                RowButton::new(delete, "clear", crate::glyph::CLOSE, "Clear", toast("c"))
+                    .destructive(),
+            ]),
+            MenuItem::new("names", Action::Render).with_buttons(vec![
+                RowButton::new(Verb::CopyToScratch, "copy", crate::glyph::COPY, "Copy", toast("y")),
+                RowButton::new(Verb::Rename, "rename", crate::glyph::PENCIL, "Rename", toast("r")),
+                RowButton::new(delete, "delete", crate::glyph::DELETE, "Del", toast("d"))
+                    .destructive(),
+            ]),
+        ]
+    }
+
     #[test]
     fn rows_lay_their_own_buttons_out_from_the_right() {
-        use crate::action::Verb;
         use crate::hit::Hit;
         let screen = Rect::new(0, 0, 80, 24);
         let toast =
             |s: &str| Action::ShowToast(s.to_string(), crate::components::toast::ToastKind::Info);
-        let items = vec![
-            MenuItem::new("scratch", Action::Render).with_buttons(vec![
-                RowButton::new(Verb::Delete { count: 1 }, crate::glyph::CLOSE, "Clear", toast("c"))
-                    .destructive(),
-            ]),
-            MenuItem::new("names", Action::Render).with_buttons(vec![
-                RowButton::new(Verb::CopyToScratch, crate::glyph::COPY, "Copy", toast("y")),
-                RowButton::new(Verb::Rename, crate::glyph::PENCIL, "Rename", toast("r")),
-                RowButton::new(Verb::Delete { count: 1 }, crate::glyph::DELETE, "Del", toast("d"))
-                    .destructive(),
-            ]),
-        ];
+        let items = scratch_and_view_items(toast);
         let state =
             DropdownState { anchor: Rect::new(10, 5, 8, 1), items, selected: 0, current: None };
         let draw = |hovered: Option<&Hit>| {
@@ -5268,27 +5289,26 @@ mod tests {
         );
         assert!(chips(dropdown_items()).is_none(), "a plain dropdown has none");
         // Amendment B9: a row that copies to the scratch brings a `c` chip,
-        // first, whichever row is highlighted.
-        let mut items = row_action_items();
-        items[1].buttons.insert(
-            0,
-            RowButton::new(
-                crate::action::Verb::CopyToScratch,
-                crate::glyph::COPY,
-                "Copy",
-                Action::Render,
-            ),
-        );
-        let shown: Vec<String> = crate::keyroute::spell::spelled_on(
-            crate::keyroute::Surface::Menu,
-            chips(items).unwrap(),
-        )
-        .into_iter()
-        .map(|(k, l, _)| format!("{k} {l}"))
-        .collect();
+        // first, whichever row is highlighted; the `d` chip says both words
+        // its buttons go by, and only the scratch's when it is alone.
+        let spelled = |items: Vec<MenuItem>| -> Vec<String> {
+            crate::keyroute::spell::spelled_on(
+                crate::keyroute::Surface::Menu,
+                chips(items).unwrap(),
+            )
+            .into_iter()
+            .map(|(k, l, _)| format!("{k} {l}"))
+            .collect()
+        };
+        let items = scratch_and_view_items(|_| Action::Render);
         assert_eq!(
-            shown,
-            ["↑↓ navigate", "enter select", "c copy", "r rename", "d delete", "esc close"]
+            spelled(items.clone()),
+            ["↑↓ navigate", "enter select", "c copy", "r rename", "d clear/delete", "esc close"]
+        );
+        assert_eq!(
+            spelled(items[..1].to_vec()),
+            ["↑↓ navigate", "enter select", "d clear", "esc close"],
+            "a scratch alone with text: its `d` is a clear"
         );
     }
 

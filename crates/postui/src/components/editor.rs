@@ -894,7 +894,7 @@ impl Editor {
     }
 
     /// Whether the current filter, view or scratch, differs from its saved
-    /// text: the chip's ● and the ↺ (spec 5, amendment A8).
+    /// text: the bar's ↺ (spec 5, amendments A8 and B3).
     pub fn jq_current_modified(&self) -> bool {
         self.jq_current_saved().is_some_and(|saved| saved != self.jq_filter())
     }

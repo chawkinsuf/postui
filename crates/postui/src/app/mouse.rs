@@ -989,8 +989,8 @@ impl App {
             return Some((area.x, area.width));
         }
         let area = self.hits.rect_of(&field_hit(field)?)?;
-        // The jq bar's hit covers its text window only, past the chip
-        // (`response::draw_jq_bar`), so it takes the area as it is.
+        // The jq bar's field rect is its text window, past the `jq `
+        // label (`response::draw_jq_bar`), so it takes the area as it is.
         Some(match field {
             FieldId::ModalInput(_) => (area.x + 2, area.width.saturating_sub(2)),
             FieldId::VmForm(_) | FieldId::Settings(_) => {
@@ -2232,8 +2232,10 @@ impl App {
                 if !self.session.response.set_jq_focus(true) {
                     return false;
                 }
-                // The bar's rect is the text window, past the chip, drawn
-                // from 0 unfocused and following the caret once focused.
+                // The bar's rect is the text window, past the `jq ` label
+                // (a press on the label maps to the window's first column),
+                // drawn from 0 unfocused and following the caret once
+                // focused.
                 self.press_text(FieldId::Jq, m, clicks, was_focused);
                 self.update(Action::Render)
             }

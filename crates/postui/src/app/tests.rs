@@ -22932,7 +22932,7 @@ fn clicking_in_the_jq_bar_places_the_caret_and_dragging_selects() {
     app.update(Action::JqApply(".data.total".into()));
     render_once(&mut app);
     let rect = app.hits.rect_of(&Hit::ResponseJqBar).expect("bar row registered");
-    let text_x = rect.x; // the bar's rect is the text, past the chip
+    let text_x = rect.x; // the bar's rect is the text, past the label
 
     // A click focuses the bar and puts the caret under the pointer.
     app.handle_mouse(left_down(text_x + 1, rect.y));
@@ -24149,6 +24149,40 @@ fn clearing_the_scratch_from_the_dropdown_keeps_the_current_view() {
     app.update(Action::ClearJqScratch);
     assert_eq!(app.toasts.last_message(), Some("Nothing to clear: the scratch is empty"));
     assert!(app.last_action_failed);
+}
+
+/// Where the bar cannot take the caret (the response is not JSON), a
+/// clear from the palette clears and leaves focus where it was.
+#[test]
+fn clearing_the_scratch_where_the_bar_cannot_show_leaves_focus_alone() {
+    let mut app = views_app("jq = \".s\"");
+    ready_response(&mut app, "plain");
+    app.focus = PaneId::Sidebar;
+    app.update(Action::ClearJqScratch);
+    assert_eq!(app.editor.jq, "");
+    assert_eq!(app.focus, PaneId::Sidebar);
+    assert!(!app.session.response.jq_focused());
+}
+
+/// Amendment B1: the `jq ` label is the bar's own. A click on it focuses
+/// the bar with the caret at the text's start, and a right-click opens the
+/// bar's text menu.
+#[test]
+fn the_jq_label_is_part_of_the_bar() {
+    let mut app = views_app("jq = \".data.total\"");
+    app.focus = PaneId::Sidebar;
+    render_once(&mut app);
+    let text = app.hits.rect_of(&Hit::ResponseJqBar).expect("the text window");
+    assert_eq!(app.hits.hit_at(text.x - 3, text.y), Some(&Hit::ResponseJqBar), "the label");
+    app.handle_mouse(left_down(text.x - 2, text.y));
+    assert!(app.session.response.jq_focused());
+    assert_eq!(app.session.response.jq_bar().input.cursor(), 0, "the caret at the start");
+
+    app.focus = PaneId::Sidebar;
+    app.session.response.set_jq_focus(false);
+    render_once(&mut app);
+    assert!(app.handle_mouse(right_down(text.x - 2, text.y)));
+    assert_eq!(menu_labels(&app), vec!["Copy", "Paste"], "the bar's text menu");
 }
 
 #[test]
