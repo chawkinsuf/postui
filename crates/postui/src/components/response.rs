@@ -2813,6 +2813,12 @@ impl Response {
     /// Where the next frame draws the bar's chip in a pane drawn at
     /// `pane`: the bar's row under the header strip (see `draw`), for a
     /// menu that hangs off a chip no frame has drawn yet.
+    ///
+    /// The chip sits right-aligned, so where it starts depends on its
+    /// label. The stored chip is the one the next frame draws: `sync_jq`
+    /// pushed it at the end of the last update, and the only action that
+    /// asks (`OpenJqViews`, opening a closed bar first) changes neither the
+    /// current filter nor whether it is edited before it asks.
     pub fn jq_chip_rect(&self, pane: Rect) -> Rect {
         let bar = ready_rows(super::pane_inner(pane), 1, false)[1];
         jq_bar_layout(&self.jq, bar).chip
@@ -5411,13 +5417,11 @@ fn highlighted(pieces: Vec<(String, Style)>, hits: &LineMatches) -> Line<'static
 /// The bar's fixed label, left of the filter text (amendment B1).
 const JQ_LABEL: &str = "jq ";
 
-/// The cells the ↺ and the slot each take: the widest of the pills they
-/// paint, and the gap after it.
-fn jq_button_w() -> u16 {
-    use crate::glyph::{CLOSE_PILL, COPY_PILL, REVERT_PILL};
-    let widest = [REVERT_PILL, COPY_PILL, CLOSE_PILL].map(crate::ui::cells).into_iter().max();
-    widest.unwrap_or(0) as u16 + 1
-}
+/// The cells the ↺ and the slot each take: the three-cell pill they paint
+/// (a one-cell icon padded each side, `glyph`'s rule) and the gap after
+/// it. A constant on the draw path; `the_bar_button_width_is_its_pills`
+/// checks it against the pills themselves.
+const JQ_BUTTON_W: u16 = 4;
 
 /// Where each part of the jq bar sits on a bar drawn at `area` (its rows):
 /// the one computation [`draw_jq_bar`] paints and registers from, and the
@@ -5461,7 +5465,7 @@ fn jq_bar_layout(bar: &JqBar, area: Rect) -> JqBarLayout {
     // past the gap the text keeps before them.
     let shared = area.width.saturating_sub(label.width + ai.map_or(0, |r| r.width) + 1);
     let room = shared / 2;
-    let button_w = jq_button_w();
+    let button_w = JQ_BUTTON_W;
     // The ↺'s cells are held back from the chip whether it shows or not,
     // so the chip never changes as the filter is edited: a shown ↺ takes
     // its cells from the text window (B3), which still keeps half, since
@@ -10501,6 +10505,15 @@ mod tests {
     /// The cells of the buffer row `y`, joined.
     fn row_text(buf: &ratatui::buffer::Buffer, y: u16) -> String {
         (0..buf.area.width).map(|x| buf[(x, y)].symbol().to_string()).collect()
+    }
+
+    /// `JQ_BUTTON_W` is each pill the ↺ and the slot paint, plus its gap.
+    #[test]
+    fn the_bar_button_width_is_its_pills() {
+        use crate::glyph::{CLOSE_PILL, COPY_PILL, REVERT_PILL};
+        for pill in [REVERT_PILL, COPY_PILL, CLOSE_PILL] {
+            assert_eq!(crate::ui::cells(pill) as u16 + 1, JQ_BUTTON_W, "{pill:?}");
+        }
     }
 
     /// A chip for `label`: on a view unless it is the scratch's, with a

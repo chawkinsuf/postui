@@ -444,9 +444,9 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::TableCopy(_) => text("Copy this row's value"),
         Hit::TableDelete(_) => text("Delete this row"),
         // A dropdown row's own buttons, with the menu's key for each.
-        Hit::DropdownRowButton { verb, .. } => {
-            Some(Source::Keyed(ctx.row_tip.to_string(), Action::OnSelection(*verb)))
-        }
+        // No tip when the button is gone (a menu rebuilt under the pointer).
+        Hit::DropdownRowButton { verb, .. } => (!ctx.row_tip.is_empty())
+            .then(|| Source::Keyed(ctx.row_tip.to_string(), Action::OnSelection(*verb))),
         // The two end chips are the hide/show toggles (spec E12a): a click
         // hides the other pane, and on the lit chip (`on`) shows it again
         // at the share it had. Each carries its toggle's key. The middle

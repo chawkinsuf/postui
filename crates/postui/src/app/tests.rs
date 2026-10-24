@@ -23978,7 +23978,7 @@ fn the_views_dropdown_renames_and_deletes_by_keyboard_and_mouse() {
         app.update(Action::OpenJqViews);
         // The scratch row (highlighted first) has no rename: the key says so.
         press(&mut app, 'r');
-        assert_eq!(app.toasts.last_message(), Some("Only a view can be renamed"));
+        assert_eq!(app.toasts.last_message(), Some("Nothing to rename on this row"));
         assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "{profile:?}: still open");
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         press(&mut app, 'r');
@@ -24066,7 +24066,7 @@ fn the_views_dropdown_copies_a_view_by_keyboard_and_mouse() {
         app.use_profile(profile);
         app.update(Action::OpenJqViews);
         press(&mut app, 'c');
-        assert_eq!(app.toasts.last_message(), Some("Only a view can be copied to the scratch"));
+        assert_eq!(app.toasts.last_message(), Some("Nothing to copy on this row"));
         assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "{profile:?}: still open");
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));

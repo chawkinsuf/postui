@@ -4600,20 +4600,11 @@ impl App {
                         }
                         self.apply(a)
                     }
-                    // The menu's footer offers `c`, `r` and `d` for its view
-                    // rows (and `d` for a scratch with text); on another row
-                    // they say why not.
+                    // A menu's footer offers its row buttons' keys; on a row
+                    // without that button the key says so, in the menu's
+                    // own words for it.
                     None if surface == crate::keyroute::Surface::Menu => {
-                        let why = match verb {
-                            crate::action::Verb::CopyToScratch => {
-                                "Only a view can be copied to the scratch"
-                            }
-                            crate::action::Verb::Delete { .. } => {
-                                "Only a view can be deleted, or a scratch with text cleared"
-                            }
-                            crate::action::Verb::Rename => "Only a view can be renamed",
-                            _ => "Nothing to do on this row",
-                        };
+                        let why = self.modals.dropdown_refusal(verb);
                         self.toasts.push(why, ToastKind::Info);
                         true
                     }

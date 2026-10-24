@@ -723,6 +723,20 @@ impl DropdownState {
         self.items.iter().any(|item| !item.buttons.is_empty())
     }
 
+    /// Every word `verb`'s buttons go by, in row order, joined by `/`
+    /// (`clear/delete`); empty when no row has one. The footer's chip for
+    /// the verb's key says it, and so does the refusal on a row without
+    /// one ([`ModalStack::dropdown_refusal`]).
+    pub(crate) fn verb_words(&self, verb: crate::action::Verb) -> String {
+        let mut words: Vec<&str> = Vec::new();
+        for word in self.items.iter().filter_map(|i| i.button(verb)).map(|b| b.word) {
+            if !words.contains(&word) {
+                words.push(word);
+            }
+        }
+        words.join("/")
+    }
+
     /// The cells the widest row's own buttons take, which every row
     /// reserves so the labels' column holds.
     fn buttons_width(&self) -> u16 {
@@ -1960,15 +1974,8 @@ impl ModalStack {
                     }
                 }
                 for verb in verbs {
-                    let mut words: Vec<&str> = Vec::new();
-                    for word in state.items.iter().filter_map(|i| i.button(verb)).map(|b| b.word) {
-                        if !words.contains(&word) {
-                            words.push(word);
-                        }
-                    }
-                    if !words.is_empty() {
-                        chips.push((Key::Of(Action::OnSelection(verb)), words.join("/"), None));
-                    }
+                    let words = state.verb_words(verb);
+                    chips.push((Key::Of(Action::OnSelection(verb)), words, None));
                 }
                 chips.push((Key::Named("esc"), "close".to_string(), None));
                 return Some(chips);
@@ -2765,6 +2772,22 @@ impl ModalStack {
             return None;
         };
         state.items.get(row)?.button(verb)
+    }
+
+    /// What a `verb` key on the highlighted row says when the row has no
+    /// button for it, in the menu's own words for the verb ("Nothing to
+    /// rename on this row"), so any dropdown with row buttons says the
+    /// right thing.
+    pub fn dropdown_refusal(&self, verb: crate::action::Verb) -> String {
+        let words = match self.top() {
+            Some(Modal::Dropdown(state)) => state.verb_words(verb),
+            _ => String::new(),
+        };
+        if words.is_empty() {
+            "Nothing to do on this row".to_string()
+        } else {
+            format!("Nothing to {words} on this row")
+        }
     }
 
     /// The action of [`Self::dropdown_row_button`].
