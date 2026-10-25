@@ -30,8 +30,10 @@ targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-da
 # after skipped builds. The cost is that a failing tag still spends the
 # build runners.
 local-artifacts-jobs = ["./checks"]
-# Path that installers should place binaries in
-install-path = "CARGO_HOME"
+# Where the shell installer puts postui: ~/.local/bin, not dist's default
+# ~/.cargo/bin, since most users have no Rust toolchain (the user's
+# answer on #116, "Install to local bin").
+install-path = "~/.local/bin"
 # Whether to install an updater program
 install-updater = false
 

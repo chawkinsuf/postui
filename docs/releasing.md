@@ -26,8 +26,11 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/chawkinsuf/postui/relea
 brew install chawkinsuf/postui/postui
 ```
 
-The shell installer puts `postui` in `$CARGO_HOME/bin` (`~/.cargo/bin` by
-default) and adds that to `PATH`.
+The shell installer puts `postui` in `~/.local/bin` (`install-path` in
+`dist-workspace.toml`; `POSTUI_INSTALL_DIR` overrides it for one install)
+and adds that directory to `PATH` through an env script it keeps, with its
+install receipt, in `~/.config/postui/` (`$XDG_CONFIG_HOME/postui` when
+set).
 
 The configuration is `dist-workspace.toml`. `release.yml` is generated from
 it: never edit `release.yml` by hand. dist refuses to plan a release whose
@@ -47,7 +50,8 @@ Done once, by hand, before the first release:
    a default branch. dist manages everything else in it (`Formula/postui.rb`).
    Its commits are authored as `axo bot <admin+bot@axo.dev>`: dist's
    template sets that identity, and it can't be changed without editing
-   `release.yml`.
+   `release.yml`. That is accepted (the user's answer on #116: "Axo bot is
+   fine I guess").
 3. **Create a token that can push to the tap.** Either:
    - a fine-grained personal access token: resource owner `chawkinsuf`,
      repository access "Only select repositories" → `homebrew-postui`,
@@ -100,12 +104,44 @@ release will contain.
 
 ### Prereleases
 
-A version with a prerelease suffix goes through the same steps: set the
-workspace version to `1.2.3-rc.1`, commit with the lock file, merge, and
-tag `v1.2.3-rc.1`. It is published as a GitHub *prerelease*,
-and the Homebrew formula is **not** updated, so `brew` users stay on the
-last full release. Use one to try every release target and the installers
-before a real release. For a quick binary of main, each push's `build`
+A prerelease tries every release target and the shell installer before a
+real release. For example, `v0.1.1-rc.1`:
+
+1. Set `version = "0.1.1-rc.1"` under `[workspace.package]` in `Cargo.toml`
+   and run `cargo check` so `Cargo.lock` follows. Commit both, merge to
+   main and push main.
+2. Tag and push:
+
+   ```sh
+   git tag -a v0.1.1-rc.1 -m "postui 0.1.1-rc.1"
+   git push origin v0.1.1-rc.1
+   ```
+
+What dist does differently for a version with a prerelease suffix (dist
+reads `announcement_is_prerelease` from the version; `dist plan` shows it):
+
+- The gates, the four builds and the installers run exactly as for a full
+  release.
+- The GitHub Release is marked *prerelease*, so it isn't the repository's
+  "latest" release: the `releases/latest/download/...` URL above keeps
+  pointing at the last full release. Install the prerelease from its own
+  tag instead:
+
+  ```sh
+  curl --proto '=https' --tlsv1.2 -LsSf https://github.com/chawkinsuf/postui/releases/download/v0.1.1-rc.1/postui-installer.sh | sh
+  ```
+- The `publish-homebrew-formula` job is skipped (`publish-prereleases` is
+  off), so the tap is not touched and `brew` users stay on the last full
+  release. The release notes still print the `brew install` line, and
+  `postui.rb` is still attached to the release. A prerelease therefore
+  doesn't test the tap push or `HOMEBREW_TAP_TOKEN`; the first full release
+  does.
+
+Afterwards, set the version to the next real one (for example `0.1.1` or
+`1.0.0`) the usual way. A prerelease can be deleted from the Releases page
+when it is no longer wanted; delete its tag too.
+
+For a quick binary of main without a prerelease, each push's `build`
 workflow uploads `postui-macos-arm64` and `postui-linux-x86_64` artifacts
 (built with the same `dist` profile, but not release builds).
 
