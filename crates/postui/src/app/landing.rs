@@ -33,14 +33,6 @@ pub(crate) struct Landing {
     /// Once the cursor is placed, open the request under it over what
     /// `open` seated (a removal's scratch, §4.5).
     pub open_cursor: bool,
-    /// What the editor holds is not this project's: a project switch
-    /// swapped the project in under it. A request `open` that fails then
-    /// seats a scratch, as `Open::Scratch` does, rather than leaving the
-    /// editor where it was (task #99): kept, the old project's request
-    /// would sit under the new root, where a Save writes it over the file
-    /// of the same slug. Only the failure changes, so a restore that opens
-    /// keeps the editor's tab and focus as any open does.
-    pub editor_foreign: bool,
 }
 
 /// Proof that an op captured its before-view: `record_project_step` takes
@@ -305,20 +297,25 @@ impl App {
         self.vim_drop_body();
     }
 
-    /// A landing's scratch (§4.2 step 3): the held request is released,
-    /// then `buffer`, when given, is seated over a fresh scratch.
-    fn seat_scratch(&mut self, buffer: Option<Box<postui_core::model::HttpRequest>>) {
-        self.flush_field_session();
+    /// Lets go of the request the editor holds while its project is still
+    /// installed, for a project switch about to replace that project (task
+    /// #99). The landing after the swap then never sees the old project's
+    /// request: a restore that fails leaves this scratch, as the startup
+    /// restore's failure leaves the scratch the app starts on, and no step
+    /// of `land` reads the old slug against the new project's rows, spaces
+    /// or held requests. The editor keeps its tab and keyboard stop
+    /// ([`crate::components::editor::Editor::fresh_keeping_place`]), so a restore that opens lands
+    /// where an open always does.
+    pub(super) fn release_for_project_switch(&mut self) {
         if let Some(prev) = self.editor.slug.clone()
             && let Some(p) = self.project.as_mut()
         {
             p.close_request(&prev);
         }
-        self.fresh_scratch();
-        if let Some(buf) = buffer {
-            self.editor.apply_snapshot(&buf);
-            self.shadow = Some((None, *buf));
-        }
+        self.editor = self.editor.fresh_keeping_place();
+        self.shadow = None;
+        self.vim_drop_body();
+        // The kept tab may be one a scratch cannot show (Body on a GET).
         self.sync_active_tab();
     }
 
@@ -372,8 +369,7 @@ impl App {
     /// before any write check for unsaved edits first; a journaled arm
     /// lands after its own dirty gate already ran. `false` only when the
     /// request `l.open` names failed to open (toasted; the editor is left
-    /// where it was, or on a scratch when `l.editor_foreign`) or `l.space`
-    /// names no space.
+    /// where it was) or `l.space` names no space.
     pub(super) fn land(&mut self, l: Landing) -> bool {
         debug_assert!(
             !(self.op_in_flight && self.field_gate()),
@@ -437,23 +433,28 @@ impl App {
         let prev_open_row = self.sidebar.open_row().filter(|_| open_in_active);
         let mut landed = true;
         let asked_open = l.open.is_some();
-        let mut seated_scratch = false;
         match l.open {
-            Some(Open::Request { slug, buffer }) => {
-                landed = self.open_in_editor(slug, buffer);
-                if !landed && l.editor_foreign {
-                    self.seat_scratch(None);
-                    seated_scratch = true;
+            Some(Open::Request { slug, buffer }) => landed = self.open_in_editor(slug, buffer),
+            Some(Open::Scratch { buffer }) => {
+                self.flush_field_session();
+                if let Some(prev) = self.editor.slug.clone()
+                    && let Some(p) = self.project.as_mut()
+                {
+                    p.close_request(&prev);
                 }
+                self.fresh_scratch();
+                if let Some(buf) = buffer {
+                    self.editor.apply_snapshot(&buf);
+                    self.shadow = Some((None, *buf));
+                }
+                self.sync_active_tab();
             }
-            Some(Open::Scratch { buffer }) => self.seat_scratch(buffer),
             None => {}
         }
         self.sidebar.open_slug = self.editor.slug.clone();
         // A failed open left the editor unchanged (§4.2 step 3), so the
-        // open request did not change: no default aim, no persist. A
-        // foreign editor's failure seated a scratch, which is a change.
-        let open_changed = asked_open && (landed || seated_scratch);
+        // open request did not change: no default aim, no persist.
+        let open_changed = asked_open && landed;
 
         // 4. Rebuild once, with the cursor row's folders queued open.
         let aim = l.cursor.or(open_changed.then_some(CursorAim::OnOpen));

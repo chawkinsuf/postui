@@ -5361,11 +5361,15 @@ impl App {
                 // The row register names a request in the project being
                 // left, or a row of a request about to close.
                 self.yank = crate::yank::Register::Empty;
-                self.shadow = None;
                 let slug = self.editor.slug.clone();
                 if let Some(p) = self.project_mut() {
                     p.set_open_request(slug.as_deref());
                 }
+                // The editor's request is the outgoing project's: it goes
+                // now, while that project is still the one installed, so
+                // the landing below cannot keep it under the new root
+                // (task #99).
+                self.release_for_project_switch();
                 // Slugs are project-relative: a cached response carried
                 // across the switch could resurface under an unrelated
                 // request with the same slug.
@@ -5402,9 +5406,6 @@ impl App {
                         None => crate::undo::Open::Scratch { buffer: None },
                     }),
                     cursor: Some(CursorAim::OnOpen),
-                    // The editor still holds the outgoing project's request
-                    // (task #99): a restore that fails must not keep it.
-                    editor_foreign: true,
                     ..Landing::default()
                 });
                 self.registry.register(target);

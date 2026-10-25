@@ -816,6 +816,21 @@ impl Editor {
         Self { next_view_id: self.next_view_id, ..Self::default() }
     }
 
+    /// [`Self::fresh`] that keeps where the user is in the editor: the tab
+    /// they chose (and the one showing) and the keyboard's stop, which
+    /// [`Self::load`] also leaves alone. For dropping a request whose
+    /// project is going away (a project switch, task #99), so the next
+    /// open lands where the last one was. The table's row cursor is not
+    /// kept: it indexes the request being dropped.
+    pub fn fresh_keeping_place(&self) -> Self {
+        Self {
+            active_tab: self.active_tab,
+            preferred_tab: self.preferred_tab,
+            sub_focus: self.sub_focus,
+            ..self.fresh()
+        }
+    }
+
     /// The current view's index in `jq_views`; `None` with no view picked,
     /// when the bar holds the scratch.
     pub fn current_view(&self) -> Option<usize> {

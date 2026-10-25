@@ -378,11 +378,15 @@ These become thin callers of `land`:
   request the project still has. Across a switch that request is the
   outgoing project's, and the editor kept it under the incoming
   project's root, where a Save writes it over the file of the same
-  slug. So the switch's landing says the editor is foreign
-  (`Landing::editor_foreign`): a restore that fails then seats a
-  scratch, as the startup restore does (its editor starts as one),
-  with the cursor on the first row. A restore that opens is unchanged
-  and keeps the editor's tab and focus, as any open does.
+  slug. So the switch lets go of the editor's request while the
+  outgoing project is still installed (`release_for_project_switch`),
+  before the swap and the landing: a restore that fails then leaves a
+  scratch, as the startup restore does (its editor starts as one), with
+  the cursor on the first row, and no landing step reads the old slug
+  against the new project. The scratch keeps the editor's tab and
+  keyboard stop (`Editor::fresh_keeping_place`), so a restore that
+  opens lands where an open always does. As at startup, the failed
+  restore leaves nothing open, so local state stops naming it.
 - `jump_to_request_for_undo`: `land(open: Request(slug))`.
 
 ### 4.3 Recording a step

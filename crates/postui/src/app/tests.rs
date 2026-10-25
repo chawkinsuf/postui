@@ -4433,8 +4433,8 @@ fn a_switch_whose_restore_fails_lands_on_a_fresh_scratch() {
     assert!(on_disk.contains("https://b/users"), "beta's request is not overwritten: {on_disk}");
 }
 
-/// Task #99's fix changes only a failed restore: a switch whose restore
-/// opens keeps the editor's tab, as any open does.
+/// Task #99's fix changes only what the editor holds: a switch whose
+/// restore opens keeps the editor's tab, as any open does.
 #[test]
 fn a_switch_whose_restore_opens_keeps_the_editor_tab() {
     let (mut app, _a, b) = two_projects();
@@ -4448,10 +4448,12 @@ fn a_switch_whose_restore_opens_keeps_the_editor_tab() {
     .unwrap();
     app.editor.preferred_tab = EditorTab::Vars;
     app.editor.active_tab = EditorTab::Vars;
+    app.editor.sub_focus = crate::components::editor::SubFocus::Content;
     app.update(Action::ForceSwitchProject(b.path().to_path_buf()));
     assert_eq!(app.editor.slug.as_deref(), Some("main/pong"));
     assert_eq!(app.editor.preferred_tab, EditorTab::Vars);
     assert_eq!(app.editor.active_tab, EditorTab::Vars);
+    assert_eq!(app.editor.sub_focus, crate::components::editor::SubFocus::Content);
 }
 
 #[test]
