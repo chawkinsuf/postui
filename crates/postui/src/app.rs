@@ -2135,7 +2135,9 @@ impl App {
             items.push(MenuItem::disabled("\u{2500}".repeat(widest.max().unwrap_or(0))));
         }
         items.push(MenuItem::new(SAVE_AS, Action::PromptSaveJqView));
-        // On no view nothing is marked, and the first row is highlighted.
+        // On no view nothing is marked, and the first row is highlighted, as
+        // any dropdown opens on its first row. Its `d` deletes that view
+        // unasked, as every delete is, and undo brings it back.
         let current = self.editor.current_view();
         let selected = current.unwrap_or(0);
         // A collapsed response pane still draws and registers its header,
@@ -5749,11 +5751,9 @@ impl App {
                 if !self.close_inputs_or_stop(true) {
                     return true;
                 }
-                // The bar is not re-checked for text: the menu and the
-                // palette offer Save as only with some (spec 18), and a view
-                // whose filter emptied meanwhile, or came from another sender,
-                // is an empty view, which spec 26 allows.
-                // Its own step, like every view edit made from the menu.
+                // An empty bar saves an empty view to type into (amendment
+                // C10; spec 26 allows empty views). Its own step, like every
+                // view edit made from the menu.
                 match self.editor.jq_save_as(&name) {
                     Ok(()) => self.no_coalesce = true,
                     Err(why) => self.refuse_view_name(&name, why),

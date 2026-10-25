@@ -43,7 +43,6 @@ decision 6.)
 | C7 | The palette's clear is "Response: clear jq filter" (C4). | mine |
 | C8 | The no-view chip keeps the accent colour: muted already means a stale result. | mine (approved) |
 | C9 | No view name is reserved: "scratch" and "no view" are ordinary names, and the file reader takes them. A view named "no view" makes the chip read as if none is current; that is the name's owner's choice. (First built as a reserved "no view" with lookalike spacing folded; each review round then found another invisible lookalike, and with C5 there is no dropdown row for a view to be mistaken for.) | you ("Drop it", after review round 3) |
-
 | C10 | `+ save as view…` is enabled on an empty bar too, from the dropdown and the palette: it saves an empty view, current, for the typing to go into. *Supersedes* spec 18's "disabled while the bar is empty". (Review round 3: with no views and an empty bar, C5 left the dropdown with only a disabled row.) | you ("Can't we just enable the save as view even when there's empty filters?") |
 
 ### Design

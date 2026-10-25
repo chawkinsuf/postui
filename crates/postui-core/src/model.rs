@@ -189,9 +189,9 @@ impl JqView {
     /// Why `name` may not name a view beside `others` (the other views'
     /// names), or `None`: blank, holding a control character (a tab, an
     /// escape: the chip and the menu paint the name as it is), or another's
-    /// by [`Self::name_key`] (spec 18). The one
-    /// rule the file reader and the editor's save-as and rename apply, so
-    /// the app never writes a name its reader refuses.
+    /// by [`Self::name_key`] (spec 18). The one rule the file reader and the
+    /// editor's save-as and rename apply, so the app never writes a name its
+    /// reader refuses.
     pub fn name_refusal<'a>(
         name: &str,
         others: impl IntoIterator<Item = &'a str>,
@@ -263,9 +263,8 @@ pub struct HttpRequest {
     pub jq_enabled: bool,
     /// The saved jq views, written to the request file as `[[jq_view]]`.
     /// A name the app would refuse (blank, a control character, or two
-    /// alike, trimmed
-    /// and ignoring case) refuses the read: the app names a view by its
-    /// name, as the TOML names a header by its key.
+    /// alike, trimmed and ignoring case) refuses the read: the app names a
+    /// view by its name, as the TOML names a header by its key.
     #[serde(
         default,
         rename = "jq_view",
