@@ -3982,11 +3982,11 @@ impl App {
                 // Leaving a tab commits whatever cell was being typed — the
                 // reset that follows would otherwise drop it silently.
                 self.commit_table_edit();
-                let prev = self.editor.active_tab;
                 self.editor.active_tab = target;
                 self.editor.preferred_tab = target;
                 self.editor.table.reset();
-                self.retarget_editor_tab_underline(prev);
+                // The underline follows in the update's own pass
+                // (`sync_editor_tab_underline`), as every tab move does.
                 true
             }
             // Cycles the on-screen order over the enabled tabs (the Body tab
@@ -12033,8 +12033,9 @@ impl App {
     ///
     /// It moves only the tab, not the underline: the per-update
     /// [`Self::sync_editor_tab_underline`] glides it to wherever the tab
-    /// ends up, so a tab an event passes through on its way (a project
-    /// switch's empty GET between two POSTs, #117) starts no glide.
+    /// is when the update ends, so a tab an update passes through on its
+    /// way (a project switch's empty GET between two POSTs, #117) starts
+    /// no glide.
     fn sync_active_tab(&mut self) {
         let preferred = self.editor.preferred_tab;
         let target = if !self.editor.tab_enabled(preferred) {
@@ -12056,56 +12057,25 @@ impl App {
         }
     }
 
-    /// Retargets `AnimKey::TabUnderline`/`TabUnderlineWidth(EditorTabs)`
-    /// (Task 10: the strip's independent left/right edges — see the
-    /// reinterpretation note on `AnimKey::TabUnderline`) from `prev`'s span
-    /// toward the now-active tab's span, over the config-tunable
-    /// `ui_settings.anim_ms.tab_slide` (250ms by default) with in-out-cubic
-    /// easing. Called from both `Action::EditorTabSelect` and
-    /// `Action::EditorTabCycle` — the single place both keyboard cycling
-    /// and the click dispatch in `app/mouse.rs` funnel through — right
-    /// after `self.editor.active_tab` has already moved to the new tab, so
-    /// `prev` is the caller's only way to know where the strip glides from.
-    /// Only for a tab the user picks: a tab an event moves on its way
-    /// somewhere ([`Self::sync_active_tab`]) leaves the underline to
-    /// [`Self::sync_editor_tab_underline`], which sees only where the event
-    /// ends (#117).
-    fn retarget_editor_tab_underline(&mut self, prev: EditorTab) {
-        let spans = self.editor.tab_strip_spans();
-        let now = Instant::now();
-        let left_key = AnimKey::TabUnderline(StripId::EditorTabs);
-        let right_key = AnimKey::TabUnderlineWidth(StripId::EditorTabs);
-        // An untracked pair has no "current position" to chain from (e.g.
-        // the very first switch of the session) — seed both edges at
-        // `prev`'s span first, exactly like `retarget_sidebar_travel` seeds
-        // `ListTravel`; a move already in flight instead continues smoothly
-        // from wherever it actually is.
-        if self.anims.value(left_key, now).is_none()
-            && let Some((x, w)) = spans.get(prev.draw_position())
-        {
-            self.anims.snap(left_key, *x as f32);
-            self.anims.snap(right_key, (*x + *w) as f32);
-        }
-        let Some((x, w)) = spans.get(self.editor.active_tab.draw_position()) else {
-            return;
-        };
-        let dur = self.ui_settings.anim_ms.tab_slide;
-        self.anims.retarget_with(left_key, *x as f32, dur, now, Easing::InOutCubic);
-        self.anims.retarget_with(right_key, (*x + *w) as f32, dur, now, Easing::InOutCubic);
-    }
-
-    /// Keeps the editor tab underline pinned to the ACTIVE tab's current
-    /// span. A tab the user picks retargets it explicitly
-    /// ([`Self::retarget_editor_tab_underline`]); every other move comes
-    /// through here: a tab [`Self::sync_active_tab`] moved (a method change
-    /// off Body, which leaves the underline to this pass so a tab an event
-    /// only passes through starts no glide, #117), and spans that shift
-    /// with no switch at all — the Headers/Params/Vars counts differ per
-    /// request and change as rows are added, and the Body badge comes and
-    /// goes — which used to leave the underline parked at the previous
-    /// request's geometry after a request switch. Runs on every `update`
-    /// alongside the other sync_* passes, so it sees only the tab an event
-    /// ends on; a glide already headed to the right place is left alone,
+    /// The one mover of the editor tab underline
+    /// (`AnimKey::TabUnderline`/`TabUnderlineWidth(EditorTabs)`, the strip's
+    /// independent left/right edges — see the reinterpretation note on
+    /// `AnimKey::TabUnderline`): it glides both edges to the ACTIVE tab's
+    /// current span over `ui_settings.anim_ms.tab_slide` (250ms by default)
+    /// with in-out-cubic easing. Every move comes through here: a tab the
+    /// user picks (`Action::EditorTabSelect`, which `EditorTabCycle` and the
+    /// clicks in `app/mouse.rs` funnel into), a tab
+    /// [`Self::sync_active_tab`] moved (a method change off Body), and
+    /// spans that shift with no switch at all — the Headers/Params/Vars
+    /// counts differ per request and change as rows are added, and the Body
+    /// badge comes and goes — which used to leave the underline parked at
+    /// the previous request's geometry after a request switch.
+    ///
+    /// Runs at the end of every `update`, so it sees only the tab the
+    /// update ends on: a tab an update passes through (a project switch's
+    /// empty GET between two POSTs, #117) starts no glide. A key the router
+    /// runs as several updates (a vim count, `2u`) gets one glide per
+    /// update. A glide already headed to the right place is left alone,
     /// and an untracked pair snaps, in a branch of its own (see below).
     fn sync_editor_tab_underline(&mut self) {
         let spans = self.editor.tab_strip_spans();

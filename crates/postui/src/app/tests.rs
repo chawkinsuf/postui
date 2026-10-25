@@ -2951,7 +2951,13 @@ fn switching_editor_tabs_retargets_the_underline_slide() {
     let left_key = AnimKey::TabUnderline(StripId::EditorTabs);
     let right_key = AnimKey::TabUnderlineWidth(StripId::EditorTabs);
     let before = Instant::now();
-    assert!(app.anims.value(left_key, before).is_none(), "untouched before any switch");
+    assert!(app.anims.value(left_key, before).is_none(), "untouched before any update");
+    // As main.rs does before reading any input (the welcome toast): every
+    // update ends by placing the underline on the active tab, so a pick is
+    // never the first thing to place it (#117: that pass is its one mover).
+    app.update(Action::Tick);
+    let (hx, _) = app.editor.tab_strip_spans()[EditorTab::Headers.draw_position()];
+    assert_eq!(app.anims.value(left_key, Instant::now()), Some(hx as f32), "placed on Headers");
 
     app.update(Action::EditorTabSelect(EditorTab::Params.index()));
     assert_eq!(app.editor.active_tab, EditorTab::Params);
@@ -4526,10 +4532,15 @@ fn a_method_change_off_body_glides_the_underline_to_the_first_tab() {
     app.update(Action::SetMethod(postui_core::model::Method::Get));
     let first = EditorTab::from_draw_position(0);
     assert_eq!(app.editor.active_tab, first);
-    let (x, _) = app.editor.tab_strip_spans()[first.draw_position()];
-    let left_key = AnimKey::TabUnderline(StripId::EditorTabs);
-    assert_eq!(app.anims.target(left_key), Some(x as f32), "heading for the first tab");
-    assert!(!app.anims.is_done(left_key, Instant::now()), "a glide, not a jump");
+    let (x, w) = app.editor.tab_strip_spans()[first.draw_position()];
+    let now = Instant::now();
+    for (key, edge) in [
+        (AnimKey::TabUnderline(StripId::EditorTabs), x),
+        (AnimKey::TabUnderlineWidth(StripId::EditorTabs), x + w),
+    ] {
+        assert_eq!(app.anims.target(key), Some(edge as f32), "{key:?} heads for the first tab");
+        assert!(!app.anims.is_done(key, now), "{key:?}: a glide, not a jump");
+    }
 }
 
 /// Task #117: a restore that fails from a POST on Body leaves the
@@ -4554,6 +4565,10 @@ fn a_failed_restore_from_body_lands_the_scratch_on_a_tab_it_shows() {
     assert_eq!(app.editor.active_tab, EditorTab::Body);
     app.update(Action::ForceSwitchProject(b.path().to_path_buf()));
     assert_eq!(app.editor.slug, None, "the restore failed");
+    assert!(
+        rendered_text(&mut app).contains("could not open main/send"),
+        "the failed-open path, not a landing on a scratch"
+    );
     assert_ne!(app.editor.active_tab, EditorTab::Body, "a GET scratch cannot show Body");
     assert!(app.editor.tab_enabled(app.editor.active_tab));
 }
