@@ -23554,10 +23554,13 @@ fn clicking_the_chip_or_revert_keeps_a_focused_bar_focused() {
     assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.session.response.jq_focused(), "the footer's views chip kept the caret");
-    // As is everything else on the bar's row, and every footer chip.
+    // As is everything else on the bar's row, and every footer chip. The
+    // footer's describe sits past the clear chip, which 120 cells drop it
+    // for (amendment C13), so it is clicked on a wider frame.
     for hit in [Hit::ResponseJqAiButton, Hit::FooterChip(Action::OpenJqDescribe)] {
-        render_once(&mut app);
-        click_hit(&mut app, hit.clone());
+        rendered_row(&mut app, 160, 0);
+        let r = app.hits.rect_of(&hit).unwrap_or_else(|| panic!("no rect for {hit:?}"));
+        app.handle_mouse(left_down(r.x + 1, r.y));
         assert!(!app.modals.is_empty(), "{hit:?} opened its prompt");
         app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.session.response.jq_focused(), "{hit:?} kept the caret");
@@ -23628,9 +23631,8 @@ fn the_focused_bar_offers_a_clear_chip_while_there_is_something_to_clear() {
     app.handle_key(alt('q'));
     assert!(app.session.response.jq_focused());
     assert!(clear_chip(&app), "a view to leave");
-    // The chip is last, so a 120-cell footer drops it; its action is the
-    // bar's ✕'s.
-    app.update(Action::ClearJqFilter);
+    // Ahead of describe, so a 120-cell footer keeps it.
+    click_hit(&mut app, Hit::FooterChip(Action::ClearJqFilter));
     assert_eq!(app.editor.jq_current_name(), None);
     app.handle_key(alt('q'));
     assert!(app.session.response.jq_focused());

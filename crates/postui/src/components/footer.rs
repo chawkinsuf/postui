@@ -285,15 +285,12 @@ pub(crate) fn footer_chips(
                         Some(Action::RevertJqView),
                     ));
                 }
-                chips.extend([
-                    (Key::Of(Action::ToggleJqBar), "unfilter", Some(Action::ToggleJqBar)),
-                    (Key::Named(crate::glyph::CREATION), "describe…", Some(Action::OpenJqDescribe)),
-                ]);
+                chips.push((Key::Of(Action::ToggleJqBar), "unfilter", Some(Action::ToggleJqBar)));
                 // The bar's ✕, keycapped with its glyph as revert is: with
                 // no views row in the menu, the way to no view the keyboard
-                // finds (amendment C13; the palette reaches it too). Last,
-                // so on a narrow footer it drops before the bar's older
-                // chips do, which keep their places.
+                // finds (amendment C13; the palette reaches it too). Ahead
+                // of describe, so a 120-cell footer drops describe, which
+                // keeps its ✦ on the bar, rather than this.
                 if jq_clearable {
                     chips.push((
                         Key::Named(crate::glyph::CLOSE),
@@ -301,6 +298,11 @@ pub(crate) fn footer_chips(
                         Some(Action::ClearJqFilter),
                     ));
                 }
+                chips.push((
+                    Key::Named(crate::glyph::CREATION),
+                    "describe…",
+                    Some(Action::OpenJqDescribe),
+                ));
                 chips
             } else if field_open {
                 // The jq bar isn't focused, so the open field is the
@@ -1109,11 +1111,11 @@ mod tests {
         };
         let edited = labels(true, true);
         let names: Vec<&str> = edited.iter().map(|(l, _, _)| *l).collect();
-        assert_eq!(names, ["apply", "done", "views", "revert", "unfilter", "describe…", "clear"]);
+        assert_eq!(names, ["apply", "done", "views", "revert", "unfilter", "clear", "describe…"]);
         assert_eq!(edited[3].1, Key::Named(crate::glyph::REVERT));
         assert_eq!(edited[3].2, Some(Action::RevertJqView));
-        assert_eq!(edited[6].1, Key::Named(crate::glyph::CLOSE));
-        assert_eq!(edited[6].2, Some(Action::ClearJqFilter));
+        assert_eq!(edited[5].1, Key::Named(crate::glyph::CLOSE));
+        assert_eq!(edited[5].2, Some(Action::ClearJqFilter));
         let plain = labels(false, false);
         assert!(plain.iter().all(|(l, _, _)| *l != "revert" && *l != "clear"));
     }
