@@ -5,7 +5,9 @@ Releases are built and published by [dist](https://axodotdev.github.io/cargo-dis
 `.github/workflows/release.yml`, which:
 
 1. runs the same fmt, clippy and test gates as every push to main
-   (`.github/workflows/checks.yml`), alongside the builds;
+   (`.github/workflows/checks.yml`), alongside the builds. Clippy runs on
+   macOS and Linux, but the tests run on Linux only until they pass on
+   macOS (#106), so the macOS binaries ship without a test run on macOS;
 2. builds `postui` for four targets: `aarch64-apple-darwin` and
    `x86_64-apple-darwin` (both on the arm64 macOS runner),
    `x86_64-unknown-linux-gnu` (Ubuntu 22.04, so glibc 2.35 or newer) and
@@ -84,11 +86,13 @@ The GitHub Release itself needs no secret: `release.yml` asks for
    (`git tag -d v1.2.3`, `git push origin :refs/tags/v1.2.3`, tag again) or
    release the next patch version.
 
-   If the GitHub Release was created but a later job failed (most likely
-   `publish-homebrew-formula`, with an expired or missing
-   `HOMEBREW_TAP_TOKEN`), don't move the tag: the release already exists,
-   so a new run fails creating it. Fix the cause (store a new token) and
-   use "Re-run failed jobs" on that workflow run.
+   If a GitHub Release for the tag exists, even a partial one, don't move
+   the tag: a new run fails creating the release because it already
+   exists. The likely case is `publish-homebrew-formula` failing after the
+   release was made, with an expired or missing `HOMEBREW_TAP_TOKEN`: fix
+   the cause (store a new token) and use "Re-run failed jobs" on that
+   workflow run. To start over instead, delete the GitHub Release first,
+   then move the tag.
 
 Before tagging, `dist plan` (run from the repository root) shows what the
 release will contain.
