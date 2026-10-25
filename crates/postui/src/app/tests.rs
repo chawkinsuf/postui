@@ -4505,6 +4505,25 @@ fn a_post_to_post_switch_starts_no_underline_glide() {
     }
 }
 
+/// Task #117: `sync_active_tab` moves only the tab; a method change that
+/// moves it off Body still glides the underline, through the per-update
+/// `sync_editor_tab_underline`, to the tab it lands on.
+#[test]
+fn a_method_change_off_body_glides_the_underline_to_the_first_tab() {
+    let mut app = App::new_for_test_with_anims(true);
+    app.ui_settings.anim_ms.tab_slide = Duration::from_secs(3600);
+    app.update(Action::SetMethod(postui_core::model::Method::Post));
+    app.update(Action::EditorTabSelect(EditorTab::Body.index()));
+    app.anims.finish_all();
+    app.update(Action::SetMethod(postui_core::model::Method::Get));
+    let first = EditorTab::from_draw_position(0);
+    assert_eq!(app.editor.active_tab, first);
+    let (x, _) = app.editor.tab_strip_spans()[first.draw_position()];
+    let left_key = AnimKey::TabUnderline(StripId::EditorTabs);
+    assert_eq!(app.anims.target(left_key), Some(x as f32), "heading for the first tab");
+    assert!(!app.anims.is_done(left_key, Instant::now()), "a glide, not a jump");
+}
+
 /// Task #117: the switch's one tab sync comes after the landing, so a
 /// restore that fails from a POST on Body leaves the scratch (a GET) on a
 /// tab it can show.

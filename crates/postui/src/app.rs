@@ -12028,13 +12028,18 @@ impl App {
     }
 
     /// Re-derives the active editor tab from the user's preferred tab and
-    /// the current method, through the same commit-and-retarget path a
-    /// normal tab switch takes. Called after every path that can change
-    /// the method (cycle, dropdown select, request load, undo snapshot):
-    /// a preferred Body tab hops to the first tab while the method sends
-    /// no body, and comes back the moment it's enabled again — so
-    /// switching through a GET request never permanently loses the user's
-    /// place (`Editor::preferred_tab`).
+    /// the current method, committing an open cell as a normal tab switch
+    /// does. Called after every path that can change the method (cycle,
+    /// dropdown select, request load, undo snapshot): a preferred Body tab
+    /// hops to the first tab while the method sends no body, and comes
+    /// back the moment it's enabled again — so switching through a GET
+    /// request never permanently loses the user's place
+    /// (`Editor::preferred_tab`).
+    ///
+    /// It moves only the tab, not the underline: the per-update
+    /// [`Self::sync_editor_tab_underline`] glides it to wherever the tab
+    /// ends up, so a tab an event passes through on its way (a project
+    /// switch's empty GET between two POSTs, #117) starts no glide.
     fn sync_active_tab(&mut self) {
         let preferred = self.editor.preferred_tab;
         let target = if !self.editor.tab_enabled(preferred) {
@@ -12051,10 +12056,8 @@ impl App {
             // mid-replay and no cell commits into a request it was not
             // typed into.
             self.commit_table_edit();
-            let prev = self.editor.active_tab;
             self.editor.active_tab = target;
             self.editor.table.reset();
-            self.retarget_editor_tab_underline(prev);
         }
     }
 
