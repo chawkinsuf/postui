@@ -1,0 +1,9 @@
+# The one place the Rust version is set. rustup reads this file for every
+# cargo call in the repo: local builds, the build workflow and the dist
+# release builds all compile with this exact release. Bumping it is a
+# deliberate commit (docs/releasing.md says how); keep `rust-version` in
+# Cargo.toml at its minor version.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

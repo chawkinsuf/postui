@@ -7,78 +7,18 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# The jobs only read the code; artifact uploads use their own token.
+# The jobs only read the code.
 permissions:
   contents: read
 
 jobs:
-  # One job per OS runs every gate, so each OS lints its own cfg code and
-  # reuses one rust-cache for the dependencies. The toolchain follows
-  # stable on purpose: a lint a new release adds turns CI red until it is
-  # fixed, the same as one a change adds.
+  # fmt, clippy and the tests, defined once in checks.yml so a release tag
+  # runs exactly the same gates (release.yml calls it too).
+  #
+  # Binaries come only from release.yml (dist), on a version tag: there is
+  # no per-push build here. A push builds nothing to download; to try a
+  # build before a release, tag a prerelease such as v0.2.0-rc.1, which
+  # dist publishes as a GitHub prerelease and keeps out of the Homebrew
+  # tap (docs/releasing.md).
   check:
-    strategy:
-      # One OS failing should not hide whether the other passes.
-      fail-fast: false
-      matrix:
-        os: [macos-14, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
-    # A hung test fails here instead of holding the runner for 6 hours.
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      # rustfmt's output is the same on every OS. It runs before the cache
-      # restore so an unformatted push fails in seconds.
-      - name: Check formatting
-        if: runner.os == 'Linux'
-        run: cargo fmt --all --check
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Clippy
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
-
-      # --all-targets turns test-util on through the crates' self
-      # dev-dependencies, so the shipping build is linted on its own too.
-      - name: Clippy (shipping features)
-        run: cargo clippy --locked --workspace --lib --bins -- -D warnings
-
-      # Linux only until the suite passes on macOS: tests there spell keys
-      # the Linux way (`alt+`) where macOS shows `opt+` (#106).
-      - name: Test
-        if: runner.os == 'Linux'
-        run: cargo test --locked --workspace --no-fail-fast
-
-  build:
-    needs: check
-    strategy:
-      matrix:
-        include:
-          # macos-14 runners are Apple Silicon (arm64) — native aarch64 build.
-          - os: macos-14
-            artifact: postui-macos-arm64
-          - os: ubuntu-latest
-            artifact: postui-linux-x86_64
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Build
-        run: cargo build --locked --release -p postui
-
-      - name: Upload binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: target/release/postui
-          if-no-files-found: error
+    uses: ./.github/workflows/checks.yml

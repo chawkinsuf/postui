@@ -2,6 +2,9 @@
 name = "postui-core"
 edition.workspace = true
 version.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
 
 [features]
 # Exposes `postui_core::fixtures`, the former free functions that write and

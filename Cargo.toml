@@ -5,6 +5,15 @@ members = ["crates/postui-core", "crates/postui"]
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
+# The toolchain the code is built and tested with. rust-toolchain.toml pins
+# the exact release (local, CI and release builds all use it); this is its
+# minor version, so an older compiler says so instead of failing somewhere
+# in the build.
+rust-version = "1.97"
+# dist reads these for the GitHub Release and the Homebrew formula.
+repository = "https://github.com/chawkinsuf/postui"
+homepage = "https://github.com/chawkinsuf/postui"
+license = "MIT"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -26,3 +35,8 @@ percent-encoding = "2"
 jaq-core = "3"
 jaq-std = "3"
 jaq-json = { version = "2", features = ["sync"] }
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
