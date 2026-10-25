@@ -444,6 +444,8 @@ pub(crate) fn keymap_action_name(command_id: &str) -> Option<&'static str> {
         "env-choose" => Some("env_choose"),
         "env-next" => Some("env_next"),
         "table-add-row" => Some("table_add_row"),
+        "response-toggle" => Some("toggle_response_collapse"),
+        "editor-toggle" => Some("toggle_table_collapse"),
         "split-step" => Some("cycle_split"),
         "split-step-back" => Some("cycle_split_back"),
         "vars-insert" => Some("pick_variable"),
@@ -1181,6 +1183,24 @@ mod tests {
             let cmd = all_commands().into_iter().find(|c| c.id == id).expect(id);
             assert_eq!((cmd.name, cmd.action), (name, action), "{id}");
             assert_eq!(keymap_action_name(id).and_then(|n| keymap.combo_for(n)), Some(key), "{id}");
+        }
+    }
+
+    /// Task #91: the hide/show panel rows show the key that does the same
+    /// thing, `alt+p` and `shift+alt+p`, in both profiles (vim keeps both).
+    #[test]
+    fn the_hide_show_panel_rows_show_their_keys() {
+        let alt = crate::keys::alt_label();
+        let p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        for profile in [crate::config::KeyProfile::Arrows, crate::config::KeyProfile::Vim] {
+            let keymap = crate::keys::Keymap::default_bindings_for(profile);
+            for (id, key) in [
+                ("editor-toggle", format!("{alt}+p")),
+                ("response-toggle", format!("{alt}+shift+p")),
+            ] {
+                let cmd = all_commands().into_iter().find(|c| c.id == id).expect(id);
+                assert_eq!(p.key_column(&cmd, &keymap), Some(key), "{id} in {profile:?}");
+            }
         }
     }
 
