@@ -3985,7 +3985,7 @@ impl App {
                 self.editor.active_tab = target;
                 self.editor.preferred_tab = target;
                 self.editor.table.reset();
-                // The underline follows in the update's own pass
+                // The underline follows in this dispatch's tail
                 // (`sync_editor_tab_underline`), as every tab move does.
                 true
             }

@@ -4543,8 +4543,10 @@ fn a_method_change_off_body_glides_the_underline_to_the_first_tab() {
     }
 }
 
-/// Task #117: a restore that fails from a POST on Body leaves the
-/// switch's scratch (a GET) on a tab it can show.
+/// A restore that fails from a POST on Body leaves the switch's scratch
+/// (a GET) on a tab it can show: the tab sync in #99's release is what
+/// does it. #117 moved that sync away and back while settling where the
+/// underline is moved; this pins it against the next such move.
 #[test]
 fn a_failed_restore_from_body_lands_the_scratch_on_a_tab_it_shows() {
     let (mut app, a, b) = two_projects();
