@@ -347,18 +347,31 @@ fn edit_body_externally(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
 ) -> anyhow::Result<()> {
-    let path = postui::hostfs::editor_tempfile("postui-body-", ".json", &app.editor.body_text())?;
+    let sent = app.editor.body_text();
+    let path = postui::hostfs::editor_tempfile("postui-body-", ".json", &sent)?;
     let edited = run_editor(terminal, app, &path)?;
     postui::hostfs::remove_tempfile(&path);
     if let Some(text) = edited {
-        // Editors conventionally leave a trailing newline; keeping it
-        // would add a phantom blank line and a spurious dirty flag on
-        // every round-trip.
-        let text = text.strip_suffix('\n').unwrap_or(&text);
-        let text = text.strip_suffix('\r').unwrap_or(text);
-        app.editor.set_body_text(text);
+        app.editor.set_body_text(strip_added_newline(&sent, &text));
     }
     Ok(())
+}
+
+/// `edited`, less the line ending the editor added at its end.
+///
+/// Editors conventionally end a file with a newline (Vim's `fixeol`,
+/// nano), so a body sent without one comes back with one; keeping it
+/// would add a phantom blank line and a spurious dirty flag on every
+/// round-trip. A body `sent` *with* a trailing newline already ends its
+/// last line, and the editor keeps that newline rather than adding a
+/// second, so nothing of the editor's is there to strip (#29: stripping
+/// anyway took the body's own). The ending stripped is `\r\n` or `\n`; a
+/// lone `\r` is no editor's line ending, so it stays as text.
+fn strip_added_newline<'a>(sent: &str, edited: &'a str) -> &'a str {
+    if sent.ends_with('\n') {
+        return edited;
+    }
+    edited.strip_suffix("\r\n").or_else(|| edited.strip_suffix('\n')).unwrap_or(edited)
 }
 
 /// Hands the response pane's active tab's text to `$EDITOR`, view-only:
@@ -531,4 +544,36 @@ fn edit_config_externally(
     // caret warnings show up without any extra code here.
     app.update(Action::ReloadFromDisk);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_added_newline;
+
+    #[test]
+    fn the_newline_an_editor_adds_is_stripped() {
+        assert_eq!(strip_added_newline("{}", "{}\n"), "{}");
+        assert_eq!(strip_added_newline("{}", "{}\r\n"), "{}", "a CRLF editor's line ending");
+        assert_eq!(strip_added_newline("", ""), "", "an empty body stays empty");
+        assert_eq!(strip_added_newline("{}", "{}"), "{}", "an editor that adds none");
+        assert_eq!(
+            strip_added_newline("a", "a\n\n"),
+            "a\n",
+            "only the one the editor added: a blank last line typed in the editor stays"
+        );
+    }
+
+    /// #29: an editor keeps a newline the body already ended in rather
+    /// than adding a second, so there is nothing of its own to strip.
+    #[test]
+    fn a_body_s_own_trailing_newline_survives_the_round_trip() {
+        assert_eq!(strip_added_newline("{}\n", "{}\n"), "{}\n", "an editor that changes nothing");
+        assert_eq!(strip_added_newline("a\n", "a\nb\n"), "a\nb\n");
+        assert_eq!(strip_added_newline("a\n", "a"), "a", "an edit that removed it");
+    }
+
+    #[test]
+    fn a_lone_carriage_return_is_text_not_a_line_ending() {
+        assert_eq!(strip_added_newline("a", "a\r"), "a\r");
+    }
 }
