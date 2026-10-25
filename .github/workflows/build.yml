@@ -43,6 +43,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
+      # --all-targets turns test-util on through the crates' self
+      # dev-dependencies, so the shipping build is linted on its own too.
+      - name: Clippy (shipping features)
+        run: cargo clippy --locked --workspace --lib --bins -- -D warnings
+
       # Linux only until the suite passes on macOS: tests there spell keys
       # the Linux way (`alt+`) where macOS shows `opt+` (#106).
       - name: Test
@@ -60,6 +65,7 @@ jobs:
           - os: ubuntu-latest
             artifact: postui-linux-x86_64
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
