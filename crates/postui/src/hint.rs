@@ -201,8 +201,7 @@ fn short_description(action: &Action) -> Option<&'static str> {
         Action::OpenJqBar => "Filter the JSON with jq",
         Action::OpenJqViews => "Pick or save a jq view",
         Action::RevertJqView => "Revert this filter to its saved text",
-        Action::CopyJqViewToScratch(None) => "Copy this view to the scratch",
-        Action::ClearJqScratch => "Clear the scratch",
+        Action::ClearJqFilter => "Clear the filter",
         Action::PromptNewRequest => "Create a request in this folder",
         // "Open" over "Switch to", matching the ^O the hint carries; the
         // space and env choosers keep "Switch to", since neither is a
@@ -497,8 +496,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::ResponseJqAiButton => of(Action::OpenJqDescribe),
         Hit::ResponseJqChip => of(Action::OpenJqViews),
         Hit::ResponseJqRevert => of(Action::RevertJqView),
-        Hit::ResponseJqCopy => of(Action::CopyJqViewToScratch(None)),
-        Hit::ResponseJqClear => of(Action::ClearJqScratch),
+        Hit::ResponseJqClear => of(Action::ClearJqFilter),
 
         // -- Choosers, pickers, modals --
         Hit::ChooserToggle => text(if ctx.on {
@@ -710,12 +708,6 @@ mod tests {
                 hint_for(&Hit::row_delete(0), &keymap, &ctx("Delete this view")),
                 Some(format!("Delete this view \u{b7} {del}")),
                 "{profile:?}"
-            );
-            assert_eq!(
-                hint_for(&Hit::row_copy(0), &keymap, &ctx("Copy this view to the scratch"))
-                    .as_deref(),
-                Some("Copy this view to the scratch \u{b7} c"),
-                "{profile:?}: one letter in both profiles"
             );
         }
     }
@@ -1072,7 +1064,6 @@ mod tests {
             Hit::ResponseJqAiButton,
             Hit::ResponseJqChip,
             Hit::ResponseJqRevert,
-            Hit::ResponseJqCopy,
             Hit::ResponseJqClear,
             Hit::ResponseEditorButton,
             Hit::CopyBodyButton,

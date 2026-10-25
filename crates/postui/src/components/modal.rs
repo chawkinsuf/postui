@@ -5202,19 +5202,18 @@ mod tests {
         assert!(hits.rect_of(&Hit::row_rename(2)).is_none(), "no actions, hovered or not");
     }
 
-    /// The views menu's shape: a scratch row that clears on `d`, then a
-    /// view row that copies, renames and deletes. Each action is a toast
-    /// naming its button.
+    /// The views menu's shape: a no-view row that clears on `d`, then a
+    /// view row that renames and deletes. Each action is a toast naming its
+    /// button.
     fn scratch_and_view_items(toast: impl Fn(&str) -> Action) -> Vec<MenuItem> {
         use crate::action::Verb;
         let delete = Verb::Delete { count: 1 };
         vec![
-            MenuItem::new("scratch", Action::Render).with_buttons(vec![
+            MenuItem::new("no view", Action::Render).with_buttons(vec![
                 RowButton::new(delete, "clear", crate::glyph::CLOSE, "Clear", toast("clear"))
                     .destructive(),
             ]),
             MenuItem::new("names", Action::Render).with_buttons(vec![
-                RowButton::new(Verb::CopyToScratch, "copy", crate::glyph::COPY, "Copy", toast("c")),
                 RowButton::new(Verb::Rename, "rename", crate::glyph::PENCIL, "Rename", toast("r")),
                 RowButton::new(delete, "delete", crate::glyph::DELETE, "Del", toast("d"))
                     .destructive(),
@@ -5244,18 +5243,17 @@ mod tests {
         };
         let (buf, hits) = draw(Some(&Hit::DropdownRow(1)));
         let row0 = hits.rect_of(&Hit::DropdownRow(0)).unwrap();
-        let clear = hits.rect_of(&Hit::row_delete(0)).expect("the scratch row's one button");
+        let clear = hits.rect_of(&Hit::row_delete(0)).expect("the no-view row's one button");
         assert_eq!(clear.x, row0.right() - 1, "in the last cell");
         assert_eq!(buf[(clear.x, clear.y)].symbol(), crate::glyph::CLOSE);
-        let copy = hits.rect_of(&Hit::row_copy(1)).unwrap();
         let rename = hits.rect_of(&Hit::row_rename(1)).unwrap();
         let delete = hits.rect_of(&Hit::row_delete(1)).unwrap();
-        assert_eq!((copy.x + 2, rename.x + 2), (rename.x, delete.x), "listed order, a space apart");
+        assert_eq!(rename.x + 2, delete.x, "listed order, a space apart");
         assert_eq!(delete.x, clear.x, "both rows end at the same cell");
-        assert_eq!(buf[(copy.x, copy.y)].symbol(), crate::glyph::COPY);
-        // Every row reserves the three buttons' cells: the label's room
-        // ends before the copy's column on both.
-        assert_eq!(state.buttons_width(), 6);
+        assert_eq!(buf[(rename.x, rename.y)].symbol(), crate::glyph::PENCIL);
+        // Every row reserves the two buttons' cells: the label's room ends
+        // before the rename's column on both.
+        assert_eq!(state.buttons_width(), 4);
     }
 
     /// The row actions widen the popup by the four cells their buttons take.
@@ -5321,9 +5319,8 @@ mod tests {
             "vim's dropdown moves with j/k (a dropdown takes no ^N/^P)"
         );
         assert!(chips(dropdown_items()).is_none(), "a plain dropdown has none");
-        // Amendment B9: a row that copies to the scratch brings a `c` chip,
-        // whichever row is highlighted; the `d` chip says both words
-        // its buttons go by, and only the scratch's when it is alone.
+        // Amendment B9: the `d` chip says both words its buttons go by, and
+        // only the no-view row's when it is alone.
         let spelled = |items: Vec<MenuItem>| -> Vec<String> {
             crate::keyroute::spell::spelled_on(
                 crate::keyroute::Surface::Menu,
@@ -5336,12 +5333,12 @@ mod tests {
         let items = scratch_and_view_items(|_| Action::Render);
         assert_eq!(
             spelled(items.clone()),
-            ["↑↓ navigate", "enter select", "c copy", "r rename", "d clear/delete", "esc close"]
+            ["↑↓ navigate", "enter select", "r rename", "d clear/delete", "esc close"]
         );
         assert_eq!(
             spelled(items[..1].to_vec()),
             ["↑↓ navigate", "enter select", "d clear", "esc close"],
-            "a scratch alone with text: its `d` is a clear"
+            "a no-view row alone with text: its `d` is a clear"
         );
     }
 

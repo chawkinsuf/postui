@@ -960,15 +960,18 @@ impl Editor {
         self.jq_views.len() != before
     }
 
-    /// Amendment B7: view `name`'s filter as it stands into the scratch,
-    /// the scratch current and switched on; the view is untouched. `false`
-    /// when no view has `name`.
-    pub fn jq_copy_to_scratch(&mut self, name: &str) -> bool {
-        let Some(view) = self.jq_views.iter().find(|v| v.name == name) else { return false };
-        self.jq = view.filter.clone();
+    /// Whether [`Self::jq_clear_filter`] has anything to do: a view is
+    /// current, or the scratch holds text.
+    pub fn jq_clearable(&self) -> bool {
+        self.current_view().is_some() || !self.jq.is_empty()
+    }
+
+    /// Amendment C4: no view current, with an empty filter. The view that
+    /// was current keeps its filter, edits included; the switch is left
+    /// as it is.
+    pub fn jq_clear_filter(&mut self) {
         self.jq_current = None;
-        self.jq_enabled = true;
-        true
+        self.jq.clear();
     }
 
     /// The current filter, view or scratch, back to its saved text; no-op
@@ -5828,7 +5831,7 @@ mod tests {
 
     #[test]
     fn rename_refuses_another_views_name_but_not_its_own() {
-        use ViewNameRefusal::{Blank, Scratch, Taken};
+        use ViewNameRefusal::{Blank, Reserved, Taken};
         let mut ed = editor_with_views();
         assert_eq!(ed.jq_name_refusal("IDS", None), Some(Taken));
         assert_eq!(
@@ -5837,8 +5840,9 @@ mod tests {
             "a view never collides with itself"
         );
         assert_eq!(ed.jq_name_refusal("other", None), None);
-        assert_eq!(ed.jq_name_refusal(" Scratch ", None), Some(Scratch), "never a view's");
-        assert_eq!(ed.jq_save_as("scratch"), Err(Scratch));
+        assert_eq!(ed.jq_name_refusal(" No View ", None), Some(Reserved), "never a view's");
+        assert_eq!(ed.jq_save_as("no view"), Err(Reserved));
+        assert_eq!(ed.jq_name_refusal("scratch", None), None, "amendment C9");
         assert_eq!(ed.jq_save_as("  "), Err(Blank), "the editor refuses a blank name itself");
         assert_eq!(ed.jq_rename("names", ""), Err(Blank));
         assert_eq!(ed.jq_name_refusal("x\ty", None), Some(ViewNameRefusal::Control));

@@ -590,10 +590,8 @@ mod tests {
         assert_eq!(spelling(&Action::CycleSplitBack).as_deref(), Some(":splitback"));
         assert_eq!(spelling(&Action::Send).as_deref(), Some(":send"));
         assert_eq!(spelling(&Action::Undo), None);
-        // Copy to scratch lives on the views dropdown alone, where `:` does
-        // not open (`Surfaces::APP` leaves the menu out).
         for v in Verb::ALL {
-            let listed = !matches!(v, Verb::Yank | Verb::Put { .. } | Verb::CopyToScratch);
+            let listed = !matches!(v, Verb::Yank | Verb::Put { .. });
             assert_eq!(reaches(v), listed, "{v:?}");
         }
         let mut names: Vec<&str> = VERBS.iter().flat_map(|v| v.names.iter().copied()).collect();

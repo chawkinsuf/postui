@@ -264,7 +264,7 @@ impl JqCompletion {
     }
 }
 
-/// What the jq bar's chip names: the current filter (`scratch` or a view),
+/// What the jq bar's chip names: the current filter (`no view` or a view),
 /// whether that filter, view or scratch, has unsaved edits (amendment A8),
 /// and whether the request has any
 /// views at all. The app pushes it after every sync (`App::sync_jq`); the
@@ -276,13 +276,10 @@ pub struct JqChip {
     /// ↺ (amendment B3; there is no mark on the chip).
     pub modified: bool,
     pub has_views: bool,
-    /// A view is current, not the scratch: the bar's slot holds copy to
-    /// scratch rather than clear (amendment B4).
-    pub on_view: bool,
-    /// The request's scratch holds text: the bar's slot on the scratch
-    /// holds clear. The editor's answer, which the views menu's clear row
-    /// reads too.
-    pub scratch_has_text: bool,
+    /// The bar's slot holds the ✕ (amendment C3): a view is current, which
+    /// the clear leaves, or the scratch holds text, which it empties. The
+    /// editor's answer, the one the clear itself refuses by.
+    pub clearable: bool,
 }
 
 impl JqChip {
@@ -609,7 +606,7 @@ impl Default for JqBar {
             tab: JqTab::Menu,
             menu: None,
             menu_scroll: std::cell::Cell::new(0),
-            chip: JqChip { label: postui_core::model::JqView::SCRATCH.into(), ..JqChip::default() },
+            chip: JqChip { label: postui_core::model::JqView::NO_VIEW.into(), ..JqChip::default() },
         }
     }
 }
@@ -5597,28 +5594,19 @@ fn draw_jq_bar(
         );
         hits.register(revert_area, crate::hit::Hit::ResponseJqRevert);
     }
-    // On a view, copy it to the scratch; on a scratch with text, clear it;
-    // on an empty scratch the reserved cell stays blank (amendment B4).
-    // "With text" is the editor's answer, through the chip, the one the
-    // clear itself and the views menu's clear row go by.
-    let slot_button = if bar.chip.on_view {
-        Some((crate::glyph::COPY_PILL, crate::hit::Hit::ResponseJqCopy))
-    } else if bar.chip.scratch_has_text {
-        Some((crate::glyph::CLOSE_PILL, crate::hit::Hit::ResponseJqClear))
-    } else {
-        None
-    };
-    if let (Some(slot_area), Some((glyph, hit))) = (layout.slot, slot_button) {
+    // The ✕ while there is something to clear; on an empty no view the
+    // reserved cells stay blank (amendments B4, C3).
+    if let Some(slot_area) = layout.slot.filter(|_| bar.chip.clearable) {
         crate::paint::action(
             frame.buffer_mut(),
             slot_area,
-            glyph,
-            hit.clone(),
+            crate::glyph::CLOSE_PILL,
+            crate::hit::Hit::ResponseJqClear,
             ctx.hovered,
             t.page,
             t,
         );
-        hits.register(slot_area, hit);
+        hits.register(slot_area, crate::hit::Hit::ResponseJqClear);
     }
     if let Some(ai_area) = layout.ai {
         crate::paint::action(
@@ -10509,17 +10497,15 @@ mod tests {
     /// `JQ_BUTTON_W` is each pill the ↺ and the slot paint, plus its gap.
     #[test]
     fn the_bar_button_width_is_its_pills() {
-        use crate::glyph::{CLOSE_PILL, COPY_PILL, REVERT_PILL};
-        for pill in [REVERT_PILL, COPY_PILL, CLOSE_PILL] {
+        use crate::glyph::{CLOSE_PILL, REVERT_PILL};
+        for pill in [REVERT_PILL, CLOSE_PILL] {
             assert_eq!(crate::ui::cells(pill) as u16 + 1, JQ_BUTTON_W, "{pill:?}");
         }
     }
 
-    /// A chip for `label`: on a view unless it is the scratch's, with a
-    /// scratch that holds text.
+    /// A chip for `label` with something to clear.
     fn chip(label: &str, modified: bool, has_views: bool) -> JqChip {
-        let on_view = label != postui_core::model::JqView::SCRATCH;
-        JqChip { label: label.into(), modified, has_views, on_view, scratch_has_text: true }
+        JqChip { label: label.into(), modified, has_views, clearable: true }
     }
 
     /// Amendment B1, B2: the text starts after the `jq ` label, and the
@@ -10535,12 +10521,12 @@ mod tests {
         let hits = render_hits(&mut r);
         let chip_rect = hits.rect_of(&Hit::ResponseJqChip).expect("chip hit");
         let bar_rect = hits.rect_of(&Hit::ResponseJqBar).expect("bar hit");
-        let copy = hits.rect_of(&Hit::ResponseJqCopy).expect("a view's slot copies");
+        let clear = hits.rect_of(&Hit::ResponseJqClear).expect("a view's slot clears");
         let ai = hits.rect_of(&Hit::ResponseJqAiButton).expect("ai hit");
         assert_eq!(chip_rect.y, bar_rect.y);
         assert_eq!(chip_rect.width, 8, "`names ▾ `");
         assert!(bar_rect.right() < chip_rect.x, "the chip is right of the text window");
-        assert_eq!((chip_rect.right(), copy.x + 4), (copy.x, ai.x), "chip, slot and a gap, AI");
+        assert_eq!((chip_rect.right(), clear.x + 4), (clear.x, ai.x), "chip, slot and a gap, AI");
         let (_, buf) = render_buf(&mut r);
         let row = row_text(&buf, bar_rect.y);
         let text_col = row.find(".data").map(|b| row[..b].chars().count() as u16);
@@ -10559,7 +10545,7 @@ mod tests {
         r.set_jq_text(".data");
         let mut starts = Vec::new();
         for c in [
-            chip("scratch", false, true),
+            chip("no view", false, true),
             chip("names", false, true),
             chip("names", true, true),
             chip("a rather long view name", true, true),
@@ -10575,11 +10561,11 @@ mod tests {
         assert!(starts.windows(2).all(|w| w[0] == w[1]), "{starts:?}");
     }
 
-    /// Amendment B4: the slot copies on a view, clears a scratch with text,
-    /// and is blank on an empty scratch; it is reserved either way, so the
-    /// chip does not move between them.
+    /// Amendment B4, C3: the slot clears on a view and on no view with
+    /// text, and is blank on an empty no view; it is reserved either way,
+    /// so the chip does not move between them.
     #[test]
-    fn the_slot_copies_a_view_clears_the_scratch_and_holds_the_chips_place() {
+    fn the_slot_clears_and_holds_the_chips_place() {
         use crate::hit::Hit;
         let mut r = ready(ITEMS);
         r.open_jq();
@@ -10587,27 +10573,21 @@ mod tests {
         r.set_jq_chip(chip("names", false, true));
         let hits = render_hits(&mut r);
         let on_view = hits.rect_of(&Hit::ResponseJqChip).unwrap();
-        let copy = hits.rect_of(&Hit::ResponseJqCopy).expect("copy on a view");
-        assert!(hits.rect_of(&Hit::ResponseJqClear).is_none());
+        let clear = hits.rect_of(&Hit::ResponseJqClear).expect("clear on a view");
         let (_, buf) = render_buf(&mut r);
-        assert_eq!(buf[(copy.x + 1, copy.y)].symbol(), crate::glyph::COPY, "its pill's glyph");
+        assert_eq!(buf[(clear.x + 1, clear.y)].symbol(), crate::glyph::CLOSE, "its pill's glyph");
 
-        // "scratch" and "names" differ in width, so compare right edges.
-        r.set_jq_chip(chip("scratch", false, true));
+        // "no view" and "names" differ in width, so compare right edges.
+        r.set_jq_chip(chip("no view", false, true));
         let hits = render_hits(&mut r);
-        let clear = hits.rect_of(&Hit::ResponseJqClear).expect("clear on a scratch with text");
-        assert!(hits.rect_of(&Hit::ResponseJqCopy).is_none());
-        assert_eq!(clear, copy, "one slot");
         let with_text = hits.rect_of(&Hit::ResponseJqChip).unwrap();
+        assert_eq!(hits.rect_of(&Hit::ResponseJqClear), Some(clear), "one slot");
         assert_eq!(with_text.right(), on_view.right());
-        let (_, buf) = render_buf(&mut r);
-        assert_eq!(buf[(clear.x + 1, clear.y)].symbol(), crate::glyph::CLOSE);
 
         r.set_jq_text("");
-        r.set_jq_chip(JqChip { scratch_has_text: false, ..chip("scratch", false, true) });
+        r.set_jq_chip(JqChip { clearable: false, ..chip("no view", false, true) });
         let hits = render_hits(&mut r);
         assert!(hits.rect_of(&Hit::ResponseJqClear).is_none(), "nothing to clear");
-        assert!(hits.rect_of(&Hit::ResponseJqCopy).is_none());
         let empty = hits.rect_of(&Hit::ResponseJqChip).unwrap();
         assert_eq!(empty, with_text, "the blank slot keeps its cells");
     }
@@ -10655,8 +10635,9 @@ mod tests {
         let mut r = ready(ITEMS);
         r.open_jq();
         r.set_jq_text(".data");
-        // A view's slot copies, the scratch's clears: both are checked.
-        for (label, slot) in [("names", Hit::ResponseJqCopy), ("scratch", Hit::ResponseJqClear)] {
+        // A view's chip and the wider no view's are both checked.
+        let slot = Hit::ResponseJqClear;
+        for label in ["names", "no view"] {
             r.set_jq_chip(chip(label, true, true));
             for width in 3..40 {
                 let hits = render_hits_at(&mut r, width);
@@ -10746,19 +10727,19 @@ mod tests {
     fn the_bar_shows_while_on_with_views_even_when_the_filter_is_empty() {
         let mut r = ready(ITEMS);
         assert!(r.jq_enabled() && r.jq_text().is_empty() && !r.jq_open());
-        r.set_jq_chip(chip("scratch", false, true));
+        r.set_jq_chip(chip("no view", false, true));
         assert!(r.jq_open(), "on with views shows the bar");
         r.set_jq_enabled(false);
         assert!(!r.jq_open(), "switched off closes it");
         r.set_jq_enabled(true);
-        r.set_jq_chip(chip("scratch", false, false));
+        r.set_jq_chip(chip("no view", false, false));
         assert!(!r.jq_open(), "no views, no text: closed");
     }
 
     #[test]
     fn closing_an_empty_bar_with_views_switches_it_off() {
         let mut r = ready(ITEMS);
-        r.set_jq_chip(chip("scratch", false, true));
+        r.set_jq_chip(chip("no view", false, true));
         r.open_jq();
         let _ = r.take_jq_edited();
         r.close_jq();
