@@ -2134,11 +2134,12 @@ impl App {
             items.push(MenuItem::disabled("\u{2500}".repeat(widest.max().unwrap_or(0))));
         }
         items.push(MenuItem::new(SAVE_AS, Action::PromptSaveJqView));
-        // On no view nothing is marked, and the first row is highlighted, as
-        // any dropdown opens on its first row. Its `d` deletes that view
-        // unasked, as every delete is, and undo brings it back.
+        // On no view nothing is marked, and the save is highlighted
+        // (amendment C14): saving what was typed is the next step there,
+        // while Enter on a view would replace the typing (C12) and `d` would
+        // delete a view nobody moved to.
         let current = self.editor.current_view();
-        let selected = current.unwrap_or(0);
+        let selected = current.unwrap_or(items.len() - 1);
         // A collapsed response pane still draws and registers its header,
         // so the pane's rect is there whenever a frame has drawn the app;
         // the zero rect is for an app no frame has drawn (a bare test app),

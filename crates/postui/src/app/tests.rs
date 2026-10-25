@@ -23796,9 +23796,14 @@ fn the_views_dropdown_lists_views_divider_and_save_as() {
 
     // On no view nothing is marked, and the first view is highlighted.
     app.update(Action::Close);
+    // On no view nothing is marked and the save is highlighted (C14).
     app.update(Action::ClearJqFilter);
     app.update(Action::OpenJqViews);
-    assert_eq!((views_menu(&app).current, views_menu(&app).selected), (None, 0));
+    assert_eq!((views_menu(&app).current, views_menu(&app).selected), (None, 3));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(view_prompt(&app).0, "Save as view", "Enter saves, it picks nothing");
+    app.update(Action::CancelTopModal);
+    assert_eq!(app.editor.jq_current_name(), None);
 
     // With no views, no divider: the save alone.
     let mut app = App::new_for_test();
@@ -23900,6 +23905,7 @@ fn picking_a_row_makes_it_current_and_switches_the_filter_on() {
     assert_eq!(views_menu(&app).current, None, "no view is current");
     app.capture_undo();
     let steps = app.history.undo_len();
+    app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.jq_current.as_deref(), Some("names"));
@@ -24056,21 +24062,20 @@ fn the_views_dropdown_renames_and_deletes_by_keyboard_and_mouse() {
         let mut app = views_app("jq = \".s\"");
         app.use_profile(profile);
         app.update(Action::OpenJqViews);
-        // The save row (past the views and the divider) has no rename: the
-        // key says so.
-        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        // On no view the save row is highlighted (amendment C14), and it
+        // has no rename: the key says so.
         press(&mut app, 'r');
         assert_eq!(app.toasts.last_message(), Some("Nothing to rename on this row"));
         assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "{profile:?}: still open");
-        app.update(Action::Close);
-        app.update(Action::OpenJqViews);
+        // Up past the divider to "total", then "names".
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         press(&mut app, 'r');
         assert_eq!(view_prompt(&app), ("Rename view".into(), "names".into()), "{profile:?}");
         app.update(Action::CancelTopModal);
 
         app.update(Action::OpenJqViews);
-        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         let delete: &[char] = if profile == KeyProfile::Vim { &['d', 'd'] } else { &['d'] };
         for c in delete {
             press(&mut app, *c);
@@ -24146,7 +24151,7 @@ fn clearing_from_the_bar_on_a_view_leaves_it_for_an_empty_no_view() {
 fn the_views_dropdown_has_no_copy_key() {
     let mut app = views_app("jq = \".s\"");
     app.update(Action::OpenJqViews);
-    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     let toasts = app.toasts.messages().len();
     press(&mut app, 'c');
     assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "still open");
@@ -24337,6 +24342,9 @@ fn the_focused_bar_advertises_views_in_the_footer() {
         assert!(app.session.response.jq_focused(), "{profile:?}");
         app.handle_key(alt_shift('j'));
         assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "{profile:?}");
+        // From the highlighted save row up to "names" (amendment C14).
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.modals.is_empty(), "{profile:?}");
         assert_eq!(app.editor.jq_current.as_deref(), Some("names"), "{profile:?}");
