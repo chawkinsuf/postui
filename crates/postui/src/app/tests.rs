@@ -9939,6 +9939,48 @@ fn click_method_selector_opens_dropdown_then_click_row_sets_method() {
     assert!(app.modals.is_empty());
 }
 
+/// Task #97: the method dropdown opens over the Headers tab, whose
+/// overridden auto rows are struck through; none of that strike may show
+/// on the dropdown's face.
+#[test]
+fn the_method_dropdown_carries_no_strike_from_the_header_rows_under_it() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Modifier;
+
+    let mut app = App::new_for_test();
+    let root = app.proj().root().to_path_buf();
+    std::fs::write(
+        root.join("project.toml"),
+        "[default_headers]\nAccept = \"application/json\"\nX-Trace = \"a-long-default-header-value\"\n",
+    )
+    .unwrap();
+    app.resync_project();
+    app.editor.active_tab = EditorTab::Headers;
+    for name in ["Accept", "X-Trace"] {
+        app.editor
+            .headers
+            .insert(name.into(), postui_core::model::Entry { value: "x".into(), enabled: true });
+    }
+    app.update(Action::Render);
+
+    let struck_in = |terminal: &Terminal<TestBackend>, area: ratatui::layout::Rect| {
+        let buf = terminal.backend().buffer();
+        area.positions().filter(|&p| buf[p].modifier.contains(Modifier::CROSSED_OUT)).count()
+    };
+
+    let mut under = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    under.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+
+    app.update(Action::OpenMethodDropdown);
+    let mut over = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    over.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let panel = app.hits.rect_of(&Hit::ModalBody).expect("the dropdown drew");
+
+    assert!(struck_in(&under, panel) > 0, "the struck rows sit under the dropdown's panel");
+    assert_eq!(struck_in(&over, panel), 0, "no cell of the dropdown is struck");
+}
+
 /// A dropdown whose two rows carry their own rename and delete (spec 17),
 /// each a toast that names it, as the jq views menu will.
 fn push_row_action_menu(app: &mut App) {

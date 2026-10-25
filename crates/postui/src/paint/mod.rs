@@ -199,13 +199,21 @@ pub fn keycap_button(
     block
 }
 
-/// Fills every cell in `area` with a blank (" ") glyph on `bg`.
+/// Fills every cell in `area` with a blank (" ") glyph on `bg`, clearing
+/// the modifiers the cell had. A blank still shows a strike, an underline
+/// or a reverse, and [`text`] patches its style over the cell's rather than
+/// replacing it, so a modifier left here would run on through every panel
+/// filled over the page and the text painted on it (task #97: a struck
+/// header row's strike through the method dropdown). The scrub lives here
+/// rather than in `text` because a panel's margin and padding rows get no
+/// text at all: the dropdown's strike showed on its blank bottom margin.
 pub fn fill(buf: &mut Buffer, area: Rect, bg: Color) {
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             if let Some(cell) = buf.cell_mut((x, y)) {
                 cell.set_symbol(" ");
                 cell.set_bg(bg);
+                cell.modifier = ratatui::style::Modifier::empty();
             }
         }
     }
@@ -289,6 +297,25 @@ mod tests {
         assert_eq!(buf[(1, 0)].symbol(), "本");
         assert_eq!(text(&mut buf, 3, 0, "本番環境", fg, bg, false), 11);
         assert_eq!(text(&mut buf, 2, 3, "ab", fg, bg, false), 4);
+    }
+
+    /// `fill` leaves blank cells: whatever modifiers the page had there (a
+    /// struck header row, an underlined token) go with its glyphs, or a
+    /// panel filled over them, and the text it paints after, would carry
+    /// them on (task #97: a struck header row's strike ran through the
+    /// method dropdown's rows).
+    #[test]
+    fn fill_clears_the_modifiers_the_cells_had() {
+        use ratatui::style::{Modifier, Style};
+        let area = Rect::new(0, 0, 4, 1);
+        let mut buf = Buffer::empty(area);
+        let marks = Modifier::CROSSED_OUT | Modifier::UNDERLINED | Modifier::BOLD;
+        buf.set_string(0, 0, "abcd", Style::default().add_modifier(marks));
+        fill(&mut buf, area, Color::Black);
+        text(&mut buf, 0, 0, "GET", Color::White, Color::Black, false);
+        for x in 0..4 {
+            assert_eq!(buf[(x, 0)].modifier, Modifier::empty(), "cell {x}");
+        }
     }
 
     /// A resting keycap is `Chip`'s usual muted tint over `control`; a
