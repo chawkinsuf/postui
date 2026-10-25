@@ -2,8 +2,9 @@
 # Refuses a commit whose Rust code is not rustfmt-clean, the same check CI
 # runs. Installed by scripts/install-hooks.sh.
 
-# Nothing Rust staged: nothing to check.
-if ! git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.rs$|(^|/)rustfmt\.toml$'; then
+# Nothing Rust staged: nothing to check. rust-toolchain.toml counts, since
+# it picks the rustfmt release that does the formatting.
+if ! git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.rs$|(^|/)rustfmt\.toml$|(^|/)rust-toolchain\.toml$'; then
     exit 0
 fi
 

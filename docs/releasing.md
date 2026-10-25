@@ -43,6 +43,9 @@ Done once, by hand, before the first release:
 2. **Create the tap repository** `chawkinsuf/homebrew-postui` on GitHub:
    public (Homebrew clones it without credentials), with a README so it has
    a default branch. dist manages everything else in it (`Formula/postui.rb`).
+   Its commits are authored as `axo bot <admin+bot@axo.dev>`: dist's
+   template sets that identity, and it can't be changed without editing
+   `release.yml`.
 3. **Create a token that can push to the tap.** Either:
    - a fine-grained personal access token: resource owner `chawkinsuf`,
      repository access "Only select repositories" → `homebrew-postui`,

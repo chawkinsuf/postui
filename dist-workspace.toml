@@ -8,8 +8,6 @@ members = ["cargo:."]
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.33.1"
-# Only the app is released; postui-core is its library.
-packages = ["postui"]
 # CI backends to support
 ci = "github"
 # No pull requests here (branches merge into main locally), so release.yml

@@ -58,9 +58,10 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo fmt --all --check
 
-      # Only main saves the cache. A cache saved by a release run is scoped
-      # to its tag, which no later run reads, and it would use up the
-      # repository's cache quota and evict main's.
+      # Only main saves the cache. A cache saved by a release run (or a
+      # manual run on another branch) is scoped to that ref, which main
+      # never reads, and it would use up the repository's cache quota and
+      # evict main's. Those runs still restore main's cache.
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
