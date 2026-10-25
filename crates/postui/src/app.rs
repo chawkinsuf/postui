@@ -2163,7 +2163,6 @@ impl App {
             R::Control => {
                 ("A view name cannot hold a control character".to_string(), ToastKind::Error)
             }
-            R::Reserved => (format!("A view cannot be named \"{name}\""), ToastKind::Error),
             R::Taken => (format!("a view named \"{name}\" already exists"), ToastKind::Error),
         };
         self.toasts.push(text, kind);

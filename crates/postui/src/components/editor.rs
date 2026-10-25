@@ -5831,7 +5831,7 @@ mod tests {
 
     #[test]
     fn rename_refuses_another_views_name_but_not_its_own() {
-        use ViewNameRefusal::{Blank, Reserved, Taken};
+        use ViewNameRefusal::{Blank, Taken};
         let mut ed = editor_with_views();
         assert_eq!(ed.jq_name_refusal("IDS", None), Some(Taken));
         assert_eq!(
@@ -5840,9 +5840,7 @@ mod tests {
             "a view never collides with itself"
         );
         assert_eq!(ed.jq_name_refusal("other", None), None);
-        assert_eq!(ed.jq_name_refusal(" No View ", None), Some(Reserved), "never a view's");
-        assert_eq!(ed.jq_save_as("no view"), Err(Reserved));
-        assert_eq!(ed.jq_name_refusal("scratch", None), None, "amendment C9");
+        assert_eq!(ed.jq_name_refusal("no view", None), None, "amendment C9: none reserved");
         assert_eq!(ed.jq_save_as("  "), Err(Blank), "the editor refuses a blank name itself");
         assert_eq!(ed.jq_rename("names", ""), Err(Blank));
         assert_eq!(ed.jq_name_refusal("x\ty", None), Some(ViewNameRefusal::Control));

@@ -23845,16 +23845,14 @@ fn the_palettes_save_as_view_refuses_where_the_bar_cannot_show() {
 }
 
 #[test]
-fn a_view_named_no_view_keeps_the_prompt_and_a_stale_delete_says_nothing() {
+fn any_view_name_is_free_and_a_stale_delete_says_nothing() {
     let mut app = views_app("jq = \".s\"");
-    app.update(Action::SaveJqView(" No View".into()));
-    assert_eq!(app.toasts.last_message(), Some("A view cannot be named \"No View\""));
-    assert!(app.last_action_failed);
-    assert_eq!(app.editor.jq_views.len(), 2);
-    // Amendment C9: "scratch" is an ordinary name.
-    app.update(Action::SaveJqView("scratch".into()));
-    assert_eq!(app.editor.jq_current.as_deref(), Some("scratch"));
-    app.update(Action::DeleteJqView("scratch".into()));
+    // Amendment C9: no name is reserved, the chip's own included.
+    for name in ["no view", "scratch"] {
+        app.update(Action::SaveJqView(name.into()));
+        assert_eq!(app.editor.jq_current.as_deref(), Some(name));
+        app.update(Action::DeleteJqView(name.into()));
+    }
 
     let toasts = app.toasts.messages().len();
     app.update(Action::DeleteJqView("gone".into()));

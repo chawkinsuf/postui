@@ -5442,8 +5442,8 @@ struct JqBarLayout {
     text: Rect,
     /// The ↺, while the current filter is edited and there is room.
     revert: Option<Rect>,
-    /// The copy or clear button's cell, while there is room. Reserved
-    /// even when it shows nothing.
+    /// The clear button's cell, while there is room. Reserved even when it
+    /// shows nothing.
     slot: Option<Rect>,
     ai: Option<Rect>,
     /// The second row, from the text's column: the error, the note or

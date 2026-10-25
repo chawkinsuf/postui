@@ -42,14 +42,14 @@ decision 6.)
 | C6 | The clear says "Filter cleared" with the undo hint. | mine (approved) |
 | C7 | The palette's clear is "Response: clear jq filter" (C4). | mine |
 | C8 | The no-view chip keeps the accent colour: muted already means a stale result. | mine (approved) |
-| C9 | The reserved view name is "no view" (trimmed, any case), refused by save as, rename and the file reader, as "scratch" was; "scratch" is an ordinary name now. Pre-release, so no migration. *Round 1, mine:* any whitespace between the two words counts as the one space ("no  view", a no-break space), since it paints the same. | mine (approved) |
+| C9 | No view name is reserved: "scratch" and "no view" are ordinary names, and the file reader takes them. A view named "no view" makes the chip read as if none is current; that is the name's owner's choice. (First built as a reserved "no view" with lookalike spacing folded; each review round then found another invisible lookalike, and with C5 there is no dropdown row for a view to be mistaken for.) | you ("Drop it", after review round 3) |
 
 | C10 | `+ save as view…` is enabled on an empty bar too, from the dropdown and the palette: it saves an empty view, current, for the typing to go into. *Supersedes* spec 18's "disabled while the bar is empty". (Review round 3: with no views and an empty bar, C5 left the dropdown with only a disabled row.) | you ("Can't we just enable the save as view even when there's empty filters?") |
 
 ### Design
 
-- `JqView::SCRATCH` becomes `JqView::NO_VIEW` = `"no view"`, and
-  `ViewNameRefusal::Scratch` becomes `Reserved`.
+- `JqView::SCRATCH` becomes `JqView::NO_VIEW` = `"no view"`, the chip's
+  label only; `ViewNameRefusal::Scratch` goes (C9).
 - `JqChip`'s `on_view` and `scratch_has_text` become one `clearable`
   (C3); `Hit::ResponseJqCopy`, `Action::CopyJqViewToScratch`,
   `Verb::CopyToScratch`, its `c` binding, `Hit::row_copy` and
@@ -68,7 +68,7 @@ decision 6.)
 - The palette's clear on a view: no view, empty, focus and switch stay.
 - The dropdown lists only views and the save; nothing marked on no view.
 - The chip reads "no view"; no hint, toast or palette entry says
-  "scratch"; a view named "No View" is refused, "scratch" is not.
+  "scratch"; views named "no view" and "scratch" save and read.
 
 ## Amendment 2026-10-24 (#101): the chip moves right, copy to scratch, clear
 

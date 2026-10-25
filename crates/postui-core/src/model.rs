@@ -175,9 +175,8 @@ pub struct JqView {
 }
 
 impl JqView {
-    /// What the chip and the views menu call the scratch filter, the one
-    /// with no view current (amendment C1): never a view's
-    /// ([`Self::name_key`] of one is never this).
+    /// What the chip calls the scratch filter, the one with no view current
+    /// (amendment C1). Not reserved: a view may be named this too (C9).
     pub const NO_VIEW: &str = "no view";
 
     /// What two view names are compared by: trimmed, ignoring case
@@ -189,8 +188,8 @@ impl JqView {
 
     /// Why `name` may not name a view beside `others` (the other views'
     /// names), or `None`: blank, holding a control character (a tab, an
-    /// escape: the chip and the menu paint the name as it is),
-    /// [`Self::NO_VIEW`], or another's by [`Self::name_key`] (spec 18). The one
+    /// escape: the chip and the menu paint the name as it is), or another's
+    /// by [`Self::name_key`] (spec 18). The one
     /// rule the file reader and the editor's save-as and rename apply, so
     /// the app never writes a name its reader refuses.
     pub fn name_refusal<'a>(
@@ -204,11 +203,6 @@ impl JqView {
         if name.chars().any(char::is_control) {
             return Some(ViewNameRefusal::Control);
         }
-        // Any run of whitespace between the words reads as one space on
-        // the chip, so "no  view" and a no-break space are "no view" too.
-        if key.split_whitespace().eq(Self::NO_VIEW.split(' ')) {
-            return Some(ViewNameRefusal::Reserved);
-        }
         others.into_iter().any(|o| Self::name_key(o) == key).then_some(ViewNameRefusal::Taken)
     }
 }
@@ -218,7 +212,6 @@ impl JqView {
 pub enum ViewNameRefusal {
     Blank,
     Control,
-    Reserved,
     Taken,
 }
 
@@ -269,7 +262,8 @@ pub struct HttpRequest {
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub jq_enabled: bool,
     /// The saved jq views, written to the request file as `[[jq_view]]`.
-    /// A name the app would refuse (blank, `no view`, or two alike, trimmed
+    /// A name the app would refuse (blank, a control character, or two
+    /// alike, trimmed
     /// and ignoring case) refuses the read: the app names a view by its
     /// name, as the TOML names a header by its key.
     #[serde(
@@ -302,7 +296,7 @@ fn is_true(b: &bool) -> bool {
 }
 
 /// The file holds only names the app would accept (spec 18): none blank,
-/// none `no view`, no two alike.
+/// none with a control character, no two alike.
 fn valid_view_names<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<JqView>, D::Error> {
     let views = Vec::<JqView>::deserialize(d)?;
     for (i, v) in views.iter().enumerate() {
@@ -312,12 +306,6 @@ fn valid_view_names<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<JqView
             Some(ViewNameRefusal::Blank) => "a jq view has a blank name".to_string(),
             Some(ViewNameRefusal::Control) => {
                 format!("the jq view name {:?} holds a control character", v.name)
-            }
-            Some(ViewNameRefusal::Reserved) => {
-                format!(
-                    "a jq view is named {:?}, the name the jq bar shows for no view",
-                    v.name.trim()
-                )
             }
             Some(ViewNameRefusal::Taken) => {
                 format!("two jq views are named {:?}", v.name.trim())
@@ -678,7 +666,7 @@ mod tests {
     }
 
     #[test]
-    fn a_blank_or_reserved_view_name_refuses_the_read() {
+    fn a_blank_view_name_refuses_the_read() {
         let view = |name: &str| {
             format!(
                 "method = \"GET\"\nurl = \"u\"\n\n[[jq_view]]\nname = \"{name}\"\nfilter = \".\"\n"
@@ -686,24 +674,10 @@ mod tests {
         };
         let blank = HttpRequest::from_toml_str(&view("  ")).unwrap_err();
         assert!(blank.to_string().contains("a jq view has a blank name"), "{blank}");
-        let reserved = HttpRequest::from_toml_str(&view(" No View")).unwrap_err();
-        assert!(
-            reserved
-                .to_string()
-                .contains("a jq view is named \"No View\", the name the jq bar shows for no view"),
-            "{reserved}"
-        );
-        // Whitespace that paints as the one space is the same name.
-        for lookalike in ["no  view", "no\u{a0}view"] {
-            assert_eq!(
-                JqView::name_refusal(lookalike, []),
-                Some(ViewNameRefusal::Reserved),
-                "{lookalike:?}"
-            );
+        // Amendment C9: no name is reserved, the chip's own included.
+        for name in ["Scratch", "no view"] {
+            assert!(HttpRequest::from_toml_str(&view(name)).is_ok(), "{name}");
         }
-        assert_eq!(JqView::name_refusal("no views", []), None);
-        // Amendment C9: "scratch" is an ordinary name now.
-        assert!(HttpRequest::from_toml_str(&view("Scratch")).is_ok());
         let tab = HttpRequest::from_toml_str(&view("a\\tb")).unwrap_err();
         assert!(tab.to_string().contains("holds a control character"), "{tab}");
     }
