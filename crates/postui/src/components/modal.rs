@@ -3976,8 +3976,17 @@ fn button_rows(labels: &[&str], max_w: u16) -> Vec<std::ops::Range<usize>> {
 /// A panel too narrow for the row (the screen clamps it, and these
 /// dialogs are raised before the user can resize) wraps it with
 /// [`button_rows`] rather than running it past the border, and grows a
-/// `BUTTON_HEIGHT` per extra row so the body keeps its room (task #88).
-/// The labels stay whole: the keyboard question's are its spec's wording.
+/// `BUTTON_HEIGHT` per extra row, so the body keeps the rows `size` gives
+/// it (task #88). The labels stay whole: the keyboard question's are its
+/// spec's wording.
+///
+/// A screen too short for the grown panel clamps it, and the extra rows
+/// then come out of the body, which clips (on a narrow *and* short
+/// screen, down to nothing). That is chosen over the old overflow: the
+/// buttons are the answers, so every one stays whole and clickable, and a
+/// lost body line costs reading, not the way out. Only a screen too short
+/// for the rows themselves (about 7 rows tall for two) runs them over
+/// the title.
 #[allow(clippy::too_many_arguments)]
 fn draw_blocking_dialog(
     frame: &mut Frame,
@@ -4033,12 +4042,12 @@ fn draw_blocking_dialog(
             } else {
                 ControlState::Normal
             };
-            Button { label, kind: ButtonKind::Secondary, state }.paint(
+            let painted = Button { label, kind: ButtonKind::Secondary, state }.paint(
                 frame.buffer_mut(),
                 btn_area,
                 theme,
             );
-            hits.register(btn_area, hit.clone());
+            hits.register(painted, hit.clone());
             x += w + 2;
         }
     }
@@ -5854,6 +5863,16 @@ mod tests {
         let startup_modal = || Modal::ConfigStartup { error: "bad".into() };
         assert_eq!(blocking_dialog_rows(startup_modal(), &startup, 40, "bad"), 2);
         assert_eq!(blocking_dialog_rows(startup_modal(), &startup, 80, "bad"), 1);
+
+        // Two buttons, 33 columns: one row still fits a 40-column panel.
+        let invalid = Modal::ConfigEditInvalid {
+            file: crate::action::ConfigFile::Config,
+            path: std::path::PathBuf::from("config-edit.toml"),
+            error: "bad".into(),
+        };
+        let invalid_buttons =
+            [(Hit::ConfigEditKeepEditing, "Keep editing"), (Hit::ConfigEditDiscard, "Discard")];
+        assert_eq!(blocking_dialog_rows(invalid, &invalid_buttons, 40, "bad"), 1);
     }
 
     /// [`button_rows`] fills from the end: the bottom row is the last
