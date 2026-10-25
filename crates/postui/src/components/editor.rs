@@ -1236,6 +1236,45 @@ impl Editor {
         self.body_hl_overlays.clear();
     }
 
+    /// The body as the `$EDITOR` temp file holds it: [`Self::body_text`]
+    /// with one `\n` ending its last row, which
+    /// [`Self::set_body_from_editor_file`] takes off again.
+    ///
+    /// The file is a text file whose lines are the body's rows. Editors
+    /// read a final `\n` as the end of the last line, not as a line of its
+    /// own (Vim's `eol`/`fixeol`, nano), and write it back the same way.
+    /// Written as-is, a body ending in `\n` (an empty last row) shows no
+    /// empty row in Vim, so the way back can't tell the editor's `\n` from
+    /// the body's own (#29: stripping one always took the body's own;
+    /// stripping only when the body had none left a Vim user no way to
+    /// remove one they can't see). Ending the body here makes the way back
+    /// exact: the ending taken off is the one put on.
+    ///
+    /// What it gives up: an editor that shows a final `\n` as an empty row
+    /// of its own (VS Code without `files.insertFinalNewline`, Emacs) shows
+    /// one empty row more than postui does. Leaving it, or deleting it,
+    /// round-trips to the same body. An editor set to trim final newlines
+    /// on save trims the body's own empty last rows too, as it would in
+    /// any file.
+    pub fn body_editor_file(&self) -> String {
+        format!("{}\n", self.body_text())
+    }
+
+    /// Replaces the body with the text `$EDITOR` wrote back to the file
+    /// [`Self::body_editor_file`] made, less the line ending put on there
+    /// when the editor kept it.
+    ///
+    /// The ending taken off is `\r\n` or `\n`, the two [`Self::set_body_text`]
+    /// reads as a row's end (edtui splits with `str::lines`), so a CRLF
+    /// editor's last row loses its `\r` as every other row does. What that
+    /// gives up: a body whose last row ends in a lone `\r` comes back
+    /// without it, because in the file that `\r` and the `\n` put on read
+    /// as one CRLF ending, to the editor as much as to postui.
+    pub fn set_body_from_editor_file(&mut self, text: &str) {
+        let body = text.strip_suffix("\r\n").or_else(|| text.strip_suffix('\n')).unwrap_or(text);
+        self.set_body_text(body);
+    }
+
     /// The indent the body's keys and Format use: what its text as last
     /// opened or saved uses, else the configured default (spec 2026-10-15
     /// R3, round-4 amendment). Undo never changes the saved text, so it
@@ -7624,6 +7663,118 @@ url = "https://api.example.com/users""#,
         e.computed.rows = vec![auto_header("A", &"v".repeat(52))];
         let (hits, _) = draw_auto_headers(&e);
         assert_eq!(hits.rect_of(&Hit::AutoHeaderCopy(0)), Some(Rect::new(58, 1, 2, 1)));
+    }
+}
+
+/// The `$EDITOR` round-trip's file (#29): `body_editor_file` and
+/// `set_body_from_editor_file`, through edtui's own `Lines::from`.
+#[cfg(test)]
+mod editor_file_tests {
+    use super::*;
+
+    /// The lines a Vim-style editor (`fixeol`, nano) shows for `file`: a
+    /// final `\n` ends the last line rather than starting one.
+    fn eol_editor_lines(file: &str) -> Vec<&str> {
+        file.strip_suffix('\n').unwrap_or(file).split('\n').collect()
+    }
+
+    /// What a Vim-style editor writes for `lines`, each ended by `eol`.
+    fn eol_editor_write(lines: &[&str], eol: &str) -> String {
+        lines.iter().map(|l| format!("{l}{eol}")).collect()
+    }
+
+    /// The lines an editor that adds no final newline (VS Code's default)
+    /// shows for `file`; it writes them back joined by `\n`.
+    fn raw_editor_lines(file: &str) -> Vec<&str> {
+        file.split('\n').collect()
+    }
+
+    /// `body` through the `$EDITOR` round-trip, with `edit` as the editor:
+    /// the file it was handed in, the file it wrote back out.
+    fn editor_round_trip(body: &str, edit: impl Fn(&str) -> String) -> String {
+        let mut e = Editor::default();
+        e.set_body_text(body);
+        let written = edit(&e.body_editor_file());
+        e.set_body_from_editor_file(&written);
+        e.body_text()
+    }
+
+    const ROUND_TRIP_BODIES: [&str; 5] = ["", "{}", "{}\n", "a\n\n", "{\n  \"a\": 1\n}"];
+
+    /// #29: a body ending in `\n` came back without it from an editor that
+    /// changed nothing.
+    #[test]
+    fn an_editor_that_changes_nothing_gives_back_the_body() {
+        for body in ROUND_TRIP_BODIES {
+            assert_eq!(editor_round_trip(body, str::to_string), body, "untouched, {body:?}");
+            assert_eq!(
+                editor_round_trip(body, |f| eol_editor_write(&eol_editor_lines(f), "\n")),
+                body,
+                "a Vim-style editor's write, {body:?}"
+            );
+            assert_eq!(
+                editor_round_trip(body, |f| eol_editor_write(&eol_editor_lines(f), "\r\n")),
+                body,
+                "a CRLF editor's write, {body:?}"
+            );
+            assert_eq!(
+                editor_round_trip(body, |f| raw_editor_lines(f).join("\n")),
+                body,
+                "a no-final-newline editor's write, {body:?}"
+            );
+        }
+    }
+
+    /// The file's lines, as a Vim-style editor shows them, are the body's
+    /// rows: an empty last row shows as one, so it can be seen and edited.
+    #[test]
+    fn a_vim_style_editor_shows_the_body_s_rows() {
+        for body in ROUND_TRIP_BODIES {
+            let mut e = Editor::default();
+            e.set_body_text(body);
+            assert_eq!(
+                eol_editor_lines(&e.body_editor_file()),
+                body.split('\n').collect::<Vec<_>>(),
+                "{body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_edit_in_the_editor_is_what_comes_back() {
+        let vim = |lines: &[&str]| eol_editor_write(lines, "\n");
+        assert_eq!(editor_round_trip("{\n", |_| vim(&["{}"])), "{}", "Vim: replace a body");
+        assert_eq!(
+            editor_round_trip("{}\n", |f| vim(&eol_editor_lines(f)[..1])),
+            "{}",
+            "Vim: delete the empty last row"
+        );
+        assert_eq!(editor_round_trip("{}", |_| vim(&["{}", ""])), "{}\n", "Vim: add one");
+        assert_eq!(
+            editor_round_trip("{}", |f| {
+                let mut lines = raw_editor_lines(f);
+                lines.push("");
+                lines.join("\n")
+            }),
+            "{}\n",
+            "VS Code: an empty row added after the one the file shows"
+        );
+        assert_eq!(
+            editor_round_trip("{}", |_| "{}".to_string()),
+            "{}",
+            "VS Code: the empty row the file shows, deleted"
+        );
+    }
+
+    /// A CRLF editor's last row loses its `\r` as every other row does. The
+    /// cost: a last row's own lone `\r` reads as half of a CRLF ending.
+    #[test]
+    fn a_crlf_ending_comes_off_whole() {
+        assert_eq!(
+            editor_round_trip("x\ny", |f| eol_editor_write(&eol_editor_lines(f), "\r\n")),
+            "x\ny"
+        );
+        assert_eq!(editor_round_trip("a\r", str::to_string), "a");
     }
 }
 
