@@ -340,8 +340,8 @@ pub fn all_commands() -> Vec<Command> {
         },
         Command {
             id: "response-jq-revert-view",
-            name: "Response: revert jq filter",
-            description: "Put the current jq filter back to its saved text",
+            name: "Response: revert jq view",
+            description: "Put the current jq view back to its saved filter",
             action: Action::RevertJqView,
         },
         Command {

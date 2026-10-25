@@ -973,12 +973,12 @@ impl Editor {
     }
 
     /// Whether [`Self::jq_clear_filter`] has anything to do: a view is
-    /// current, or the scratch holds text. By `current_view`, as the chip
-    /// is: a `jq_current` naming no view cannot outlive a load (the reader
-    /// drops it, spec 27) or a delete (which clears it), and the bar reads
-    /// one as none picked anyway.
+    /// current, or the scratch holds text. By the raw `jq_current`, as
+    /// `App::land_jq_in_scratch` decides "coming off a view": a name no view
+    /// has (which a load and a delete never leave) is then cleared too,
+    /// rather than kept because the bar reads it as none picked.
     pub fn jq_clearable(&self) -> bool {
-        self.current_view().is_some() || !self.jq.is_empty()
+        self.jq_current.is_some() || !self.jq.is_empty()
     }
 
     /// Amendment C4: no view current, with an empty filter. The view that

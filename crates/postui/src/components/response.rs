@@ -2804,11 +2804,16 @@ impl Response {
         self.jq.chip = chip;
     }
 
-    /// Whether the current filter, view or scratch, has unsaved edits: what
-    /// the bar's ↺ shows, for the footer's revert chip to read the same
-    /// answer.
+    /// Whether the current view has unsaved edits: what the bar's ↺ shows,
+    /// for the footer's revert chip to read the same answer.
     pub fn jq_chip_modified(&self) -> bool {
         self.jq.chip.modified
+    }
+
+    /// Whether there is something to clear: what the bar's ✕ shows, for
+    /// the footer's clear chip to read the same answer (amendment C13).
+    pub fn jq_chip_clearable(&self) -> bool {
+        self.jq.chip.clearable
     }
 
     /// Where the next frame draws the bar's chip in a pane drawn at

@@ -200,7 +200,7 @@ fn short_description(action: &Action) -> Option<&'static str> {
         Action::CopyToClipboard(CopyTarget::Url) => "Copy the resolved URL",
         Action::OpenJqBar => "Filter the JSON with jq",
         Action::OpenJqViews => "Pick or save a jq view",
-        Action::RevertJqView => "Revert this filter to its saved text",
+        Action::RevertJqView => "Revert this view to its saved filter",
         Action::ClearJqFilter => "Clear the filter",
         Action::PromptNewRequest => "Create a request in this folder",
         // "Open" over "Switch to", matching the ^O the hint carries; the
@@ -891,6 +891,7 @@ mod tests {
                                     false,
                                     row,
                                     jq,
+                                    true,
                                     true,
                                     field_open,
                                 );

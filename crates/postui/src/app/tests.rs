@@ -2108,6 +2108,7 @@ fn the_footer_field_flag_is_pane_local() {
         None,
         crate::components::footer::JqBarState::Open,
         false,
+        false,
         app.pane_field_open(PaneId::Response),
     ));
     assert!(
@@ -17423,6 +17424,7 @@ fn every_named_action_is_mouse_reachable() {
                 crate::components::footer::JqBarState::Closed,
                 false,
                 false,
+                false,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -17439,6 +17441,7 @@ fn every_named_action_is_mouse_reachable() {
                 false,
                 None,
                 crate::components::footer::JqBarState::Closed,
+                false,
                 false,
                 false,
             )
@@ -17459,6 +17462,7 @@ fn every_named_action_is_mouse_reachable() {
                 None,
                 crate::components::footer::JqBarState::Focused,
                 true,
+                false,
                 false,
             )
             .into_iter()
@@ -22477,6 +22481,7 @@ fn the_focused_bar_advertises_enter_apply_and_esc_done() {
         crate::components::footer::JqBarState::Focused,
         false,
         false,
+        false,
     ));
     let keys: Vec<(&str, &str)> = chips.iter().map(|(k, l, _)| (k.as_str(), *l)).collect();
     assert_eq!(
@@ -22805,6 +22810,7 @@ fn the_footer_and_palette_reach_the_jq_bar() {
         crate::components::footer::JqBarState::Closed,
         false,
         false,
+        false,
     ));
     assert!(
         chips
@@ -23034,6 +23040,7 @@ fn the_response_footer_always_offers_alt_q_filter_and_close_only_while_open() {
             false,
             None,
             state,
+            false,
             false,
             false,
         ))
@@ -23560,14 +23567,14 @@ fn clicking_the_chip_or_revert_keeps_a_focused_bar_focused() {
     assert_eq!(view_filter(&app, "names"), ".data.items[].statusx", "the typing was its own step");
 }
 
-/// Revert's keyboard route: the palette's "revert jq filter", which refuses
+/// Revert's keyboard route: the palette's "revert jq view", which refuses
 /// with an Info toast where there is nothing to revert.
 #[test]
 fn the_palette_reverts_an_edited_view_and_refuses_otherwise() {
     let run_revert = |app: &mut App| {
         app.last_action_failed = false;
         app.update(Action::OpenPalette);
-        type_str(app, "revert jq filter");
+        type_str(app, "revert jq view");
         select_palette_command(app, "response-jq-revert-view");
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.sync_jq();
@@ -23608,6 +23615,30 @@ fn the_palette_reverts_an_edited_view_and_refuses_otherwise() {
 
 /// The focused bar advertises revert in its footer while the current view
 /// has unsaved edits, and the chip reverts it.
+#[test]
+fn the_focused_bar_offers_a_clear_chip_while_there_is_something_to_clear() {
+    // Amendment C13: with no views row in the menu, the footer is where the
+    // keyboard finds the way to no view.
+    let clear_chip = |app: &App| {
+        crate::ui::footer_chips_of(app)
+            .into_iter()
+            .any(|(_, l, a)| l == "clear" && a == Some(Action::ClearJqFilter))
+    };
+    let mut app = views_app("jq_current = \"names\"");
+    app.handle_key(alt('q'));
+    assert!(app.session.response.jq_focused());
+    assert!(clear_chip(&app), "a view to leave");
+    // The chip is last, so a 120-cell footer drops it; its action is the
+    // bar's ✕'s.
+    app.update(Action::ClearJqFilter);
+    assert_eq!(app.editor.jq_current_name(), None);
+    app.handle_key(alt('q'));
+    assert!(app.session.response.jq_focused());
+    assert!(!clear_chip(&app), "an empty bar with no view picked has nothing to clear");
+    type_str(&mut app, ".x");
+    assert!(clear_chip(&app), "typed text to clear");
+}
+
 #[test]
 fn the_focused_bar_offers_a_revert_chip_on_an_edited_view() {
     let revert_chip = |app: &App| {
