@@ -83,7 +83,8 @@ The GitHub Release itself needs no secret: `release.yml` asks for
    refuses a tag that doesn't match.
 4. Watch the `Release` workflow on GitHub. If a gate or a build fails,
    nothing is published. Fix it on main, then either move the tag
-   (`git tag -d v1.2.3`, `git push origin :refs/tags/v1.2.3`, tag again) or
+   (`git tag -d v1.2.3`, `git push origin :refs/tags/v1.2.3`, tag the fixed
+   commit again and `git push origin v1.2.3`, which starts a new run) or
    release the next patch version.
 
    If a GitHub Release for the tag exists, even a partial one, don't move
@@ -112,7 +113,9 @@ between releases: there is no per-push build.
 `build` workflow and the release builds alike. rustup installs it on the
 first cargo call in the repo; where it can't download (offline, or a
 read-only rustup home such as a sandbox), run `rustup toolchain install`
-once from the repository root first. `rust-version` in `Cargo.toml` is its
+once from the repository root first. That bare form reads the file and
+needs rustup 1.28 or newer; with an older rustup, name it:
+`rustup toolchain install 1.97.1 --component rustfmt,clippy`. `rust-version` in `Cargo.toml` is its
 second copy, kept at the same minor version.
 
 1. Set `channel` in `rust-toolchain.toml` to the new release (for example

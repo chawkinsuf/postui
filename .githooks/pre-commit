@@ -23,6 +23,8 @@ if ! fmt_version=$("$cargo" fmt --version 2>&1); then
     echo "$fmt_version" | sed 's/^/    /' >&2
     echo "Install the toolchain rust-toolchain.toml pins, then commit again:" >&2
     echo "    rustup toolchain install" >&2
+    echo "(rustup 1.28 or newer; with an older one, add the channel and" >&2
+    echo "components rust-toolchain.toml names, e.g. --component rustfmt,clippy)" >&2
     exit 1
 fi
 
