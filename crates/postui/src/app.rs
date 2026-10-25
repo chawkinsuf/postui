@@ -5366,9 +5366,8 @@ impl App {
                     p.set_open_request(slug.as_deref());
                 }
                 // The editor's request is the outgoing project's: it goes
-                // now, while that project is still the one installed, so
-                // the landing below cannot keep it under the new root
-                // (task #99).
+                // before the swap, so the landing below cannot keep it
+                // under the new root (task #99).
                 self.release_for_project_switch();
                 // Slugs are project-relative: a cached response carried
                 // across the switch could resurface under an unrelated

@@ -4398,8 +4398,8 @@ fn switching_to_a_project_with_nothing_open_puts_the_cursor_on_the_first_request
     assert_eq!(app.sidebar.selected, Some(0), "the first row, not row 2 of the old project");
 }
 
-/// Task #99: a switch whose restore fails lands as a launch whose restore
-/// fails does, on a fresh scratch. The editor never keeps the old
+/// Task #99: a switch whose restore fails lands on a scratch, as a launch
+/// whose restore fails does. The editor never keeps the old
 /// project's request under the new project's root, where a Save (once
 /// the file reads again) would write it over the incoming project's file
 /// of the same slug.

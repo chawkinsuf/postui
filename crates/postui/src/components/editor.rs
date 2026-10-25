@@ -820,8 +820,8 @@ impl Editor {
     /// they chose (and the one showing) and the keyboard's stop, which
     /// [`Self::load`] also leaves alone. For dropping a request whose
     /// project is going away (a project switch, task #99), so the next
-    /// open lands where the last one was. The table's row cursor is not
-    /// kept: it indexes the request being dropped.
+    /// open shows the same tab. Unlike `load`, the table's row cursor is
+    /// not kept: it indexes the request being dropped.
     pub fn fresh_keeping_place(&self) -> Self {
         Self {
             active_tab: self.active_tab,
