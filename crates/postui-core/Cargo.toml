@@ -2,6 +2,15 @@
 name = "postui-core"
 edition.workspace = true
 version.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+
+# Only the app is released (dist-workspace.toml); this library is part of
+# it, never a release of its own, even if it gains a binary.
+[package.metadata.dist]
+dist = false
 
 [features]
 # Exposes `postui_core::fixtures`, the former free functions that write and

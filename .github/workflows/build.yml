@@ -12,48 +12,18 @@ permissions:
   contents: read
 
 jobs:
-  # One job per OS runs every gate, so each OS lints its own cfg code and
-  # reuses one rust-cache for the dependencies. The toolchain follows
-  # stable on purpose: a lint a new release adds turns CI red until it is
-  # fixed, the same as one a change adds.
+  # fmt, clippy and the tests, defined once in checks.yml so a release tag
+  # runs exactly the same gates (release.yml calls it too).
   check:
-    strategy:
-      # One OS failing should not hide whether the other passes.
-      fail-fast: false
-      matrix:
-        os: [macos-14, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
-    # A hung test fails here instead of holding the runner for 6 hours.
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
+    uses: ./.github/workflows/checks.yml
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      # rustfmt's output is the same on every OS. It runs before the cache
-      # restore so an unformatted push fails in seconds.
-      - name: Check formatting
-        if: runner.os == 'Linux'
-        run: cargo fmt --all --check
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Clippy
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
-
-      # --all-targets turns test-util on through the crates' self
-      # dev-dependencies, so the shipping build is linted on its own too.
-      - name: Clippy (shipping features)
-        run: cargo clippy --locked --workspace --lib --bins -- -D warnings
-
-      # Linux only until the suite passes on macOS: tests there spell keys
-      # the Linux way (`alt+`) where macOS shows `opt+` (#106).
-      - name: Test
-        if: runner.os == 'Linux'
-        run: cargo test --locked --workspace --no-fail-fast
-
+  # Releases come from release.yml (dist), on a version tag. This job still
+  # links the app on every push, the way dist will: the `dist` profile
+  # (release + thin LTO), on the arm64 macOS runner and the Ubuntu 22.04
+  # image the release uses. Clippy never links, so without it a macOS link
+  # failure or an LTO-only break would first show on the release tag. The
+  # binaries are uploaded for trying out main; they are not release builds
+  # (no x86_64 macOS or arm64 Linux, no installers).
   build:
     needs: check
     strategy:
@@ -62,23 +32,28 @@ jobs:
           # macos-14 runners are Apple Silicon (arm64) — native aarch64 build.
           - os: macos-14
             artifact: postui-macos-arm64
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             artifact: postui-linux-x86_64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      # With no argument, rustup installs the toolchain rust-toolchain.toml
+      # names.
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --locked --release -p postui
+        run: cargo build --locked --profile dist -p postui
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: target/release/postui
+          path: target/dist/postui
           if-no-files-found: error

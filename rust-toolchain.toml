@@ -1,0 +1,16 @@
+# The Rust release the repo builds with. rustup reads this file for every
+# cargo call in the repo: local builds, the build workflow and the dist
+# release builds all compile with this exact release. rustup installs it on
+# the first cargo call; without network or with a read-only rustup home, run
+# `rustup toolchain install` once. Bumping it is a deliberate commit
+# (docs/releasing.md says how), and `rust-version` in Cargo.toml moves with
+# it to the same minor version.
+[toolchain]
+channel = "1.97.1"
+# Here, not only in checks.yml, so the pinned toolchain has the rustfmt the
+# pre-commit hook runs and the clippy the docs ask for. The cost: every
+# release job that runs cargo (dist's plan, build, global and host jobs)
+# installs this toolchain with both, unused outside checks.yml, which is
+# a short download per job against a local toolchain that would lack them.
+components = ["rustfmt", "clippy"]
+profile = "minimal"

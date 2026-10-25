@@ -1,0 +1,81 @@
+name: checks
+
+# The gates every commit must pass: fmt, clippy and the tests. This is a
+# reusable workflow with two callers: build.yml runs it on every push to
+# main, and dist's release.yml runs it on a release tag (dist-workspace.toml's
+# `local-artifacts-jobs`), where the release is only published if it passes.
+#
+# Never reference `secrets.*` here. dist's template calls this workflow
+# with `secrets: inherit`, so HOMEBREW_TAP_TOKEN is within reach, and these
+# jobs run dependency build scripts and tests. A secret only reaches a job
+# that names it, and none of these needs one.
+#
+# The release run repeats the gates the push to main already ran on the
+# same commit. That costs runner minutes, but it needs no lookup of another
+# workflow's result, and a tag pushed on a commit main never checked is
+# still gated.
+on:
+  workflow_call:
+    # release.yml hands every custom job dist's plan; these jobs don't need
+    # it, but the input has to exist for that call to be valid.
+    inputs:
+      plan:
+        required: false
+        type: string
+
+jobs:
+  # One job per OS runs every gate, so each OS lints its own cfg code and
+  # reuses one rust-cache for the dependencies. The toolchain is the one
+  # rust-toolchain.toml pins, the same release local and release builds
+  # use; a lint a newer Rust adds shows up when that file is bumped, not on
+  # an unrelated push.
+  check:
+    # The jobs only read the code.
+    permissions:
+      contents: read
+    strategy:
+      # One OS failing should not hide whether the other passes.
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    # A hung test fails here instead of holding the runner for 6 hours.
+    timeout-minutes: 30
+    steps:
+      # The same major version dist's release.yml uses.
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # With no argument, rustup installs the toolchain rust-toolchain.toml
+      # names, with the components it lists (rustfmt, clippy).
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      # rustfmt's output is the same on every OS. It runs before the cache
+      # restore so an unformatted push fails in seconds.
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+
+      # Only main saves the cache. A cache saved by a release run (or a
+      # manual run on another branch) is scoped to that ref, which main
+      # never reads, and it would use up the repository's cache quota and
+      # evict main's. Those runs still restore main's cache.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      # --all-targets turns test-util on through the crates' self
+      # dev-dependencies, so the shipping build is linted on its own too.
+      - name: Clippy (shipping features)
+        run: cargo clippy --locked --workspace --lib --bins -- -D warnings
+
+      # Linux only until the suite passes on macOS: tests there spell keys
+      # the Linux way (`alt+`) where macOS shows `opt+` (#106).
+      - name: Test
+        if: runner.os == 'Linux'
+        run: cargo test --locked --workspace --no-fail-fast

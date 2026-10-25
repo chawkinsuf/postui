@@ -2,8 +2,11 @@
 # Refuses a commit whose Rust code is not rustfmt-clean, the same check CI
 # runs. Installed by scripts/install-hooks.sh.
 
-# Nothing Rust staged: nothing to check.
-if ! git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.rs$|(^|/)rustfmt\.toml$'; then
+# Nothing Rust staged: nothing to check. The files that change rustfmt's
+# rules count too: rustfmt.toml, rust-toolchain.toml (which rustfmt
+# release) and Cargo.toml (`edition` sets the style edition), deleted (D)
+# as well as changed.
+if ! git diff --cached --name-only --diff-filter=ACMRD | grep -qE '\.rs$|(^|/)rustfmt\.toml$|(^|/)rust-toolchain\.toml$|(^|/)Cargo\.toml$'; then
     exit 0
 fi
 
@@ -11,6 +14,19 @@ cargo=$(command -v cargo || echo "$HOME/.cargo/bin/cargo")
 if [ ! -x "$cargo" ]; then
     echo "pre-commit: cargo not found; skipping the format check" >&2
     exit 0
+fi
+
+# rustfmt itself has to run first: rust-toolchain.toml pins a release that
+# rustup may not have installed (and can't fetch offline or with a read-only
+# rustup home), and that failure is not a formatting one.
+if ! fmt_version=$("$cargo" fmt --version 2>&1); then
+    echo "pre-commit: cargo fmt could not run:" >&2
+    echo "$fmt_version" | sed 's/^/    /' >&2
+    echo "Install the toolchain rust-toolchain.toml pins, then commit again:" >&2
+    echo "    rustup toolchain install" >&2
+    echo "(rustup 1.28 or newer; with an older one, add the channel and" >&2
+    echo "components rust-toolchain.toml names, e.g. --component rustfmt,clippy)" >&2
+    exit 1
 fi
 
 if ! unformatted=$("$cargo" fmt --all --check -- --files-with-diff 2>&1); then

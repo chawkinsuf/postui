@@ -2,6 +2,11 @@
 name = "postui"
 edition.workspace = true
 version.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+description = "A fast, local-first terminal HTTP client"
 
 [dependencies]
 postui-core = { path = "../postui-core" }
