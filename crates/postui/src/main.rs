@@ -339,7 +339,10 @@ async fn run(
 }
 
 /// Hands the request body to `$EDITOR` (falling back to `vi`), then reads it
-/// back. The TUI is fully torn down for the duration so the child editor owns
+/// back. What the file holds, and what comes off it on the way back (the
+/// final newline, #29), is a pair: `Editor::body_editor_file` and
+/// `Editor::set_body_from_editor_file`. Nothing is added or stripped here.
+/// The TUI is fully torn down for the duration so the child editor owns
 /// the terminal, and rebuilt afterwards. If the editor cannot be run or exits
 /// non-zero the body is left untouched and the failure is toasted, because
 /// silently discarding a half-written body would be the worst outcome here.
@@ -347,16 +350,12 @@ fn edit_body_externally(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
 ) -> anyhow::Result<()> {
-    let path = postui::hostfs::editor_tempfile("postui-body-", ".json", &app.editor.body_text())?;
+    let file = app.editor.body_editor_file();
+    let path = postui::hostfs::editor_tempfile("postui-body-", ".json", &file)?;
     let edited = run_editor(terminal, app, &path)?;
     postui::hostfs::remove_tempfile(&path);
     if let Some(text) = edited {
-        // Editors conventionally leave a trailing newline; keeping it
-        // would add a phantom blank line and a spurious dirty flag on
-        // every round-trip.
-        let text = text.strip_suffix('\n').unwrap_or(&text);
-        let text = text.strip_suffix('\r').unwrap_or(text);
-        app.editor.set_body_text(text);
+        app.editor.set_body_from_editor_file(&text);
     }
     Ok(())
 }
