@@ -12066,6 +12066,10 @@ impl App {
     /// and the click dispatch in `app/mouse.rs` funnel through — right
     /// after `self.editor.active_tab` has already moved to the new tab, so
     /// `prev` is the caller's only way to know where the strip glides from.
+    /// Only for a tab the user picks: a tab an event moves on its way
+    /// somewhere ([`Self::sync_active_tab`]) leaves the underline to
+    /// [`Self::sync_editor_tab_underline`], which sees only where the event
+    /// ends (#117).
     fn retarget_editor_tab_underline(&mut self, prev: EditorTab) {
         let spans = self.editor.tab_strip_spans();
         let now = Instant::now();
@@ -12102,8 +12106,7 @@ impl App {
     /// request's geometry after a request switch. Runs on every `update`
     /// alongside the other sync_* passes, so it sees only the tab an event
     /// ends on; a glide already headed to the right place is left alone,
-    /// and an untracked pair simply snaps (`retarget_with` starts at the
-    /// target when there's no current value).
+    /// and an untracked pair snaps, in a branch of its own (see below).
     fn sync_editor_tab_underline(&mut self) {
         let spans = self.editor.tab_strip_spans();
         let Some(&(x, w)) = spans.get(self.editor.active_tab.draw_position()) else {

@@ -4496,7 +4496,14 @@ fn a_post_to_post_switch_starts_no_underline_glide() {
     assert_eq!(app.editor.url.text(), "https://b/send");
     assert_eq!(app.editor.active_tab, EditorTab::Body);
     // Both requests have the same tabs, so Body sits where it did and
-    // nothing has a reason to move.
+    // nothing has a reason to move: the underline is aimed at Body, with
+    // no glide (not even a jump elsewhere, which would also read as done).
+    let (x, w) = app.editor.tab_strip_spans()[EditorTab::Body.draw_position()];
+    assert_eq!(app.anims.target(AnimKey::TabUnderline(StripId::EditorTabs)), Some(x as f32));
+    assert_eq!(
+        app.anims.target(AnimKey::TabUnderlineWidth(StripId::EditorTabs)),
+        Some((x + w) as f32)
+    );
     let now = Instant::now();
     for key in [
         AnimKey::TabUnderline(StripId::EditorTabs),
