@@ -1948,7 +1948,7 @@ impl ModalStack {
             // `j/k` in vim (a dropdown has no ^N/^P).
             //
             // A chip says every word its key's buttons go by, in row order
-            // (`clear/delete`: the scratch's `d` clears, a view's deletes).
+            // (`clear/delete` for a menu whose rows' `d` buttons differ).
             Modal::Dropdown(state) if state.has_row_actions() => {
                 use crate::action::Verb;
                 let mut chips = vec![

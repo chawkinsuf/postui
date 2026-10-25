@@ -5838,6 +5838,11 @@ impl App {
                 if !self.close_inputs_or_stop(true) {
                     return true;
                 }
+                // No `jq_blocked_reason` gate, unlike save-as and the menu:
+                // those open something that needs the bar on screen, while a
+                // clear is a request edit like a delete, which the toast says
+                // and undo takes back wherever the bar is (amendment B8's
+                // "where the bar cannot show, the palette's clear clears").
                 if !self.editor.jq_clearable() {
                     self.toasts.push("Nothing to clear: the filter is empty", ToastKind::Info);
                     self.last_action_failed = true;
