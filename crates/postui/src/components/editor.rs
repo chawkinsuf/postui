@@ -5879,7 +5879,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_the_current_view_falls_back_to_the_scratch() {
+    fn deleting_the_current_view_leaves_no_view_picked() {
         let mut ed = editor_with_views();
         ed.jq = ".s".into();
         ed.jq_pick("ids");
