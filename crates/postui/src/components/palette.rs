@@ -421,9 +421,10 @@ pub fn all_commands() -> Vec<Command> {
 /// key, stable across a command's display `name`; the keymap's names are
 /// the rebind-by-name TOML keys) and happen to describe several of the
 /// same actions under different spellings — this table is the one place
-/// that reconciles them. Commands with no option here (most of them: focus
-/// moves, prompts, the palette itself has no self-referential binding,
-/// …) simply show no keybinding column, which is correct — they have none.
+/// that reconciles them. Commands with no arm here show no keybinding
+/// column. For most (focus moves, prompts, …) that is right, as they have
+/// no key; a bound action whose arm is missing loses its key too (task #91
+/// added the hide/show panel rows; #105 lists the rest).
 pub(crate) fn keymap_action_name(command_id: &str) -> Option<&'static str> {
     match command_id {
         "quit" => Some("quit"),
@@ -1187,19 +1188,20 @@ mod tests {
     }
 
     /// Task #91: the hide/show panel rows show the key that does the same
-    /// thing, `alt+p` and `shift+alt+p`, in both profiles (vim keeps both).
+    /// thing, `alt+p` and `alt+shift+p`, in both profiles (vim keeps both).
     #[test]
     fn the_hide_show_panel_rows_show_their_keys() {
         let alt = crate::keys::alt_label();
         let p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        let commands = all_commands();
         for profile in [crate::config::KeyProfile::Arrows, crate::config::KeyProfile::Vim] {
             let keymap = crate::keys::Keymap::default_bindings_for(profile);
             for (id, key) in [
                 ("editor-toggle", format!("{alt}+p")),
                 ("response-toggle", format!("{alt}+shift+p")),
             ] {
-                let cmd = all_commands().into_iter().find(|c| c.id == id).expect(id);
-                assert_eq!(p.key_column(&cmd, &keymap), Some(key), "{id} in {profile:?}");
+                let cmd = commands.iter().find(|c| c.id == id).expect(id);
+                assert_eq!(p.key_column(cmd, &keymap), Some(key), "{id} in {profile:?}");
             }
         }
     }
