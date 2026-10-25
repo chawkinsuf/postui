@@ -160,12 +160,20 @@ pub struct TableEditorState {
     /// Enter reopens the same cell. It persists across row moves.
     pub col: Col,
     pub editing: Option<CellEdit>,
-    /// Value text typed into the ghost row before it has a key. A ghost
-    /// VALUE commit can't create a row (only a key can), so the text is
-    /// stashed here and attached when the ghost's key commits — instead of
-    /// being silently dropped. Cleared whenever the edit leaves the ghost
-    /// row without creating it.
-    pending_ghost_value: Option<String>,
+}
+
+/// The cell that opens for `col` on `row`: `col` itself, except on the
+/// ghost row (`row == map_len`), where it is always the name (task #68).
+/// A value needs a row's name to belong to, and the ghost has none yet, so
+/// its value cell never opens; a value typed there first would have
+/// nowhere in the request to live (no dirty gate, save or load could see
+/// it). The cost is value-first entry: the name comes first. The Variable
+/// Manager grid's ghost row redirects the same way (`start_cell_edit`),
+/// but moves its cursor to the name as well; this table keeps the cursor
+/// column asked for, since its column persists across row moves (see
+/// `start_edit`), and only draws the ghost's lift on the name.
+fn open_col(row: usize, col: Col, map_len: usize) -> Col {
+    if row >= map_len { Col::Key } else { col }
 }
 
 impl TableEditorState {
@@ -175,7 +183,6 @@ impl TableEditorState {
         self.selected = None;
         self.col = Col::Key;
         self.editing = None;
-        self.pending_ghost_value = None;
     }
 
     /// The text `row`/`col` currently shows. Empty for the ghost row.
@@ -190,22 +197,21 @@ impl TableEditorState {
     }
 
     /// Puts `row`/`col` under edit, seeded with its current text and the
-    /// caret at the end. Any previous edit must already have been
-    /// committed.
+    /// caret at the end; on the ghost row that is always its name
+    /// ([`open_col`]). Every way a cell opens (click, Enter, Tab, the add
+    /// verb, and vim's keys, which reach the table as these) comes through
+    /// here. Any previous edit must already have been committed.
     fn start_edit(&mut self, row: usize, col: Col, map: &IndexMap<String, Entry>) {
         let row = row.min(map.len());
-        let text = if row == map.len() && col == Col::Value {
-            // Re-entering the ghost's value cell resumes the stashed text.
-            self.pending_ghost_value.clone().unwrap_or_default()
-        } else {
-            if row < map.len() {
-                // The edit moved onto a real row: the ghost was abandoned.
-                self.pending_ghost_value = None;
-            }
-            Self::cell_text(map, row, col)
-        };
-        self.selected = Some(row);
+        // The cursor column is the one asked for, even when the ghost row
+        // opens its name instead: the column persists across row moves, so
+        // passing through the ghost leaves the column the user chose on
+        // the real rows. The ghost draws its lift on the name whatever the
+        // column (`draw_row`), so Esc then Enter still reopens what was open.
         self.col = col;
+        let col = open_col(row, col, map.len());
+        let text = Self::cell_text(map, row, col);
+        self.selected = Some(row);
         self.editing = Some(CellEdit { row, col, input: LineInput::new(&text) });
     }
 
@@ -219,6 +225,15 @@ impl TableEditorState {
     /// warning), then begins editing `row`/`col` with the caret at the end.
     /// `row == map.len()` targets the ghost row. Clicking the cell already
     /// under edit is inert, so a double click is exactly one edit session.
+    ///
+    /// A click on the ghost row's value cell opens its name ([`open_col`]),
+    /// so the inert check compares the clicked cell, not the redirected
+    /// one, on purpose: with a name typed, a click on that value cell
+    /// commits the name (the new row lands at the ghost's index) and opens
+    /// the new row's value, which is name-then-value by mouse. With the
+    /// name still empty, the click reopens the empty name: no change, so a
+    /// double click there is two sessions of the same empty name rather
+    /// than one. That is the cost of keeping name-then-value by mouse.
     pub fn click_cell(
         &mut self,
         row: usize,
@@ -267,26 +282,22 @@ impl TableEditorState {
                 Col::Key => Self::commit_key(map, edit.row, typed),
             };
         }
-        // The ghost row: only a non-empty key can make it a real row. A
-        // value typed with no key is stashed until one arrives.
-        match edit.col {
-            Col::Key if !typed.trim().is_empty() => {
-                let pending = self.pending_ghost_value.take();
-                if let Some(other) = map.get_index_of(&typed) {
-                    return (
-                        Some(other),
-                        Some(format!("'{typed}' already exists — editing that row")),
-                    );
-                }
-                map.insert(typed, Entry { value: pending.unwrap_or_default(), enabled: true });
-                (Some(map.len() - 1), None)
-            }
-            Col::Value => {
-                self.pending_ghost_value = (!typed.is_empty()).then_some(typed);
-                (None, None)
-            }
-            _ => (None, None),
+        // The ghost row: only a non-empty key can make it a real row (its
+        // value cell never opens, see `open_col`). A name that is taken
+        // makes none; the warning says only that, since what is open after
+        // the commit depends on what closed the cell (Tab opens the
+        // existing row's value, a click away opens nothing there). A value
+        // edit can only land here if the map shrank under an open value
+        // cell, leaving its row index one past the end; it names no row,
+        // so it writes nothing, as it never made a row before either.
+        if edit.col != Col::Key || typed.trim().is_empty() {
+            return (None, None);
         }
+        if let Some(other) = map.get_index_of(&typed) {
+            return (Some(other), Some(format!("'{typed}' already exists \u{2014} no row added")));
+        }
+        map.insert(typed, Entry { value: String::new(), enabled: true });
+        (Some(map.len() - 1), None)
     }
 
     /// Renames row `idx` to `new_key`, keeping its position, value and
@@ -561,9 +572,10 @@ impl TableEditorState {
         if forward {
             match (row, edit.col) {
                 (Some(r), Col::Key) => self.start_edit(r, Col::Value, map),
-                (Some(r), Col::Value) if r < map.len() => self.start_edit(r + 1, Col::Key, map),
-                // Past the ghost row (and the discarded-ghost case): done.
-                (Some(r), Col::Value) => self.exit_editing(r, map),
+                // A value cell is always a real row's (`open_col`), so the
+                // next row is at most the ghost, whose name opens.
+                (Some(r), Col::Value) => self.start_edit(r + 1, Col::Key, map),
+                // Past the ghost row, its name left empty: done.
                 (None, _) => self.exit_editing(map.len(), map),
             }
         } else {
@@ -639,12 +651,8 @@ impl TableEditorState {
         // it is typed into, and it carries no toggle or actions, having
         // nothing yet to toggle or delete.
         if y < bottom {
-            let entry = Entry {
-                // A value typed before the key shows while the key is
-                // being typed, not just once the row commits.
-                value: self.pending_ghost_value.clone().unwrap_or_default(),
-                enabled: true,
-            };
+            // Its value cell never opens (`open_col`), so it stays blank.
+            let entry = Entry { value: String::new(), enabled: true };
             let label = (!ghost_editing).then_some(add_label);
             self.draw_row(buf, hits, area, y, map_len, "", &entry, ctx, None, vars, false, label);
             y += 1;
@@ -823,9 +831,11 @@ impl TableEditorState {
         // (the Variable Manager grid's rule), so the exact cell Enter
         // would open reads at a glance, not just its row. Keyboard only:
         // an unfocused pane has no cursor to show, and an open cell
-        // paints its own lift.
-        let cursor_cell =
-            (self.selected == Some(i) && ctx.focused && editing_col.is_none()).then_some(self.col);
+        // paints its own lift. On the ghost row Enter opens the name
+        // whatever the cursor column (`open_col`), so the name lifts and
+        // the value cell, which never opens, keeps the row's fill.
+        let cursor_cell = (self.selected == Some(i) && ctx.focused && editing_col.is_none())
+            .then_some(if real { self.col } else { Col::Key });
         let cell_bg = |col: Col| {
             if cursor_cell == Some(col) { crate::theme::lift_color(bg, 0.06) } else { bg }
         };
@@ -1140,20 +1150,25 @@ mod tests {
         assert_eq!(edit.input.text(), "1");
     }
 
-    /// The ghost row's value cell opens from the cursor too; its text is
-    /// stashed until a key arrives, as a clicked ghost value already is.
+    /// Task #68: the ghost row's value cell never opens, since a value
+    /// needs a row's name to belong to. Enter with the cursor on that
+    /// column opens the ghost's name instead, and the name's Tab then
+    /// walks into the new row's own value.
     #[test]
-    fn enter_on_the_ghost_value_cell_opens_it() {
+    fn enter_on_the_ghost_value_column_opens_its_name() {
         let mut map = map_of(&[("a", "1")]);
         let mut t = TableEditorState::default();
         t.handle_key(key(KeyCode::End), &mut map); // the ghost
         t.handle_key(key(KeyCode::Right), &mut map);
         t.handle_key(key(KeyCode::Enter), &mut map);
-        let edit = t.editing.as_ref().expect("the ghost value cell is open");
+        let edit = t.editing.as_ref().expect("the ghost's name cell is open");
+        assert_eq!((edit.row, edit.col), (1, Col::Key));
+        assert_eq!(edit.input.text(), "");
+        type_str(&mut t, &mut map, "k");
+        t.handle_key(key(KeyCode::Tab), &mut map);
+        let edit = t.editing.as_ref().expect("the new row's value is open");
         assert_eq!((edit.row, edit.col), (1, Col::Value));
         type_str(&mut t, &mut map, "v");
-        t.handle_key(shift_tab(), &mut map); // over to the ghost key
-        type_str(&mut t, &mut map, "k");
         t.handle_key(key(KeyCode::Enter), &mut map);
         assert_eq!(map.get("k").map(|e| e.value.as_str()), Some("v"));
     }
@@ -1321,6 +1336,32 @@ mod tests {
         assert!(content.contains("+ Add"), "the add label survives: {content}");
     }
 
+    /// The cursor-cell lift marks the cell Enter opens. On the ghost row
+    /// that is always the name (task #68), so with the cursor column on
+    /// the value the name lifts and the value cell keeps the row's fill:
+    /// blank, unlit, inactive, and the same width as ever.
+    #[test]
+    fn the_ghost_rows_value_cell_never_takes_the_cursor_lift() {
+        let theme = Theme::dark();
+        let map = map_of(&[("page", "2")]);
+        let lifted = crate::theme::lift_color(theme.control_hover, 0.06);
+        let t =
+            TableEditorState { selected: Some(1), col: Col::Value, ..TableEditorState::default() };
+        let mut hits = HitMap::default();
+        let terminal = draw_to(&t, &map, &ctx(&theme, None), &mut hits);
+        let buf = terminal.backend().buffer();
+        let name = hits.rect_of(&Hit::TableCell { row: 1, col: 0 }).unwrap();
+        let value = hits.rect_of(&Hit::TableCell { row: 1, col: 1 }).unwrap();
+        assert_eq!(buf.cell((name.x, name.y)).unwrap().bg, lifted, "the name lifts");
+        assert_eq!(
+            buf.cell((value.x, value.y)).unwrap().bg,
+            theme.control_hover,
+            "the value keeps the row fill"
+        );
+        let real = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
+        assert_eq!((value.x, value.width), (real.x, real.width), "no layout shift");
+    }
+
     // --- click entry point ------------------------------------------------
 
     #[test]
@@ -1415,87 +1456,119 @@ mod tests {
         assert!(out.warning.is_none(), "leaving it empty is silent");
         assert!(t.editing.is_none());
 
-        // Same for the ghost's value cell: with no key there is no row.
+        // The ghost's value cell opens its name (task #68): left empty,
+        // that is discarded the same way.
         t.click_cell(1, Col::Value, &mut map);
-        type_str(&mut t, &mut map, "orphan");
         let out = t.commit(&mut map);
         assert_eq!(map.len(), 1);
         assert!(out.warning.is_none());
     }
 
+    /// Task #68: a click on the ghost row's value cell puts the caret in
+    /// the ghost's name, empty, since a value with no name has no row to
+    /// belong to. What is typed there is the new row's name.
     #[test]
-    fn ghost_value_typed_first_survives_the_hop_to_the_key_cell() {
-        // Type into the ghost row's VALUE cell first, then click over to the
-        // NAME cell: the typed value must ride along and land on the row the
-        // key commit creates, not silently vanish.
+    fn a_click_on_the_ghost_value_cell_opens_its_name_cell() {
         let mut map = IndexMap::new();
         let mut t = TableEditorState::default();
         t.click_cell(0, Col::Value, &mut map);
-        type_str(&mut t, &mut map, "42");
-        t.click_cell(0, Col::Key, &mut map);
+        let edit = t.editing.as_ref().expect("a cell is open");
+        assert_eq!((edit.row, edit.col), (0, Col::Key), "the name, not the value");
+        assert_eq!(edit.input.text(), "");
+        assert_eq!(t.col, Col::Value, "the cursor column is the clicked one");
         type_str(&mut t, &mut map, "id");
         t.commit(&mut map);
-        assert_eq!(map["id"].value, "42", "the value typed first is kept");
+        assert_eq!(map["id"].value, "", "the typing named the row");
     }
 
+    /// Tab walks onto the ghost row's name, never its value, and from a
+    /// typed name on into the new row's value: name first, then value.
     #[test]
-    fn ghost_value_survives_walking_back_to_the_key_cell_by_keyboard() {
-        let mut map = IndexMap::new();
+    fn tab_through_the_ghost_row_goes_name_then_the_new_rows_value() {
+        let mut map = map_of(&[("a", "1")]);
         let mut t = TableEditorState::default();
         t.click_cell(0, Col::Value, &mut map);
-        type_str(&mut t, &mut map, "42");
-        t.handle_key(shift_tab(), &mut map); // back to the key cell
+        t.handle_key(key(KeyCode::Tab), &mut map);
+        let edit = t.editing.as_ref().unwrap();
+        assert_eq!((edit.row, edit.col), (1, Col::Key), "onto the ghost's name");
         type_str(&mut t, &mut map, "id");
+        t.handle_key(key(KeyCode::Tab), &mut map);
+        let edit = t.editing.as_ref().unwrap();
+        assert_eq!((edit.row, edit.col), (1, Col::Value), "the new row's own value");
+        assert!(map.contains_key("id"), "the name made the row");
+        type_str(&mut t, &mut map, "42");
         t.handle_key(key(KeyCode::Enter), &mut map);
         assert_eq!(map["id"].value, "42");
     }
 
+    /// With a name typed on the ghost row, a click on its value cell
+    /// commits the name (the new row lands at the ghost's index) and opens
+    /// that new row's value, so name-then-value works by mouse too.
     #[test]
-    fn reclicking_the_ghost_value_cell_shows_the_stashed_text() {
+    fn clicking_the_ghost_value_after_typing_its_name_opens_the_new_rows_value() {
         let mut map = IndexMap::new();
         let mut t = TableEditorState::default();
-        t.click_cell(0, Col::Value, &mut map);
-        type_str(&mut t, &mut map, "42");
-        t.click_cell(0, Col::Key, &mut map);
-        t.click_cell(0, Col::Value, &mut map);
-        assert_eq!(
-            t.editing.as_ref().unwrap().input.text(),
-            "42",
-            "hopping away and back does not lose the typed value"
-        );
-    }
-
-    #[test]
-    fn a_stashed_ghost_value_is_dropped_when_the_edit_leaves_the_ghost_row() {
-        // Typing a value with no key, then wandering off to a real row,
-        // abandons the ghost: a later new row must not inherit stale text.
-        let mut map = map_of(&[("a", "1")]);
-        let mut t = TableEditorState::default();
-        t.click_cell(1, Col::Value, &mut map); // the ghost row
-        type_str(&mut t, &mut map, "stale");
-        t.click_cell(0, Col::Value, &mut map); // a real row
-        t.commit(&mut map);
-        t.click_cell(1, Col::Key, &mut map);
-        type_str(&mut t, &mut map, "fresh");
-        t.commit(&mut map);
-        assert_eq!(map["fresh"].value, "", "no stale value resurfaces");
-    }
-
-    #[test]
-    fn esc_on_the_empty_ghost_key_keeps_the_stashed_value_for_next_time() {
-        let mut map = IndexMap::new();
-        let mut t = TableEditorState::default();
-        t.click_cell(0, Col::Value, &mut map);
-        type_str(&mut t, &mut map, "42");
-        t.click_cell(0, Col::Key, &mut map);
-        // Esc on an empty key commits nothing (no key to create a row
-        // with), but it's still just a commit — the earlier stash is not
-        // typed text in this field, and Esc never discards typed text.
-        t.handle_key(key(KeyCode::Esc), &mut map);
         t.click_cell(0, Col::Key, &mut map);
         type_str(&mut t, &mut map, "id");
+        t.click_cell(0, Col::Value, &mut map);
+        assert!(map.contains_key("id"), "the name committed");
+        let edit = t.editing.as_ref().unwrap();
+        assert_eq!((edit.row, edit.col), (0, Col::Value), "the new row's value is open");
+        type_str(&mut t, &mut map, "42");
         t.commit(&mut map);
-        assert_eq!(map["id"].value, "42", "Esc did not discard the stashed value");
+        assert_eq!(map["id"].value, "42");
+    }
+
+    /// A ghost name that already exists makes no row (task #68): the
+    /// toast says so in words that hold whatever is left open after the
+    /// commit, here a click on the ghost's value cell, which reopens the
+    /// ghost's empty name, not the existing row.
+    #[test]
+    fn a_duplicate_ghost_name_says_no_row_was_added() {
+        let mut map = map_of(&[("a", "1")]);
+        let mut t = TableEditorState::default();
+        t.click_cell(1, Col::Key, &mut map);
+        type_str(&mut t, &mut map, "a");
+        let out = t.click_cell(1, Col::Value, &mut map);
+        assert_eq!(out.warning.as_deref(), Some("'a' already exists \u{2014} no row added"));
+        assert_eq!(map.len(), 1);
+        assert_eq!(map["a"].value, "1", "the existing row is untouched");
+        let edit = t.editing.as_ref().unwrap();
+        assert_eq!((edit.row, edit.col, edit.input.text()), (1, Col::Key, ""));
+    }
+
+    /// Esc on the ghost's name, opened from its value cell, leaves
+    /// nothing behind: no row, and nothing waiting for the next add.
+    #[test]
+    fn esc_on_the_ghost_opened_from_its_value_cell_leaves_nothing() {
+        let mut map = IndexMap::new();
+        let mut t = TableEditorState::default();
+        t.click_cell(0, Col::Value, &mut map);
+        let out = t.handle_key(key(KeyCode::Esc), &mut map);
+        assert!(out.warning.is_none());
+        assert!(map.is_empty());
+        assert_eq!(t.selected, Some(0));
+        t.handle_key(key(KeyCode::Enter), &mut map);
+        let edit = t.editing.as_ref().unwrap();
+        assert_eq!((edit.row, edit.col, edit.input.text()), (0, Col::Key, ""));
+    }
+
+    /// The cursor column persists across row moves, through the ghost row
+    /// too: opening the ghost's name from the value column leaves the
+    /// column on the value, so the rows above still open their values.
+    #[test]
+    fn the_cursor_column_survives_opening_the_ghost_row() {
+        let mut map = map_of(&[("a", "1")]);
+        let mut t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
+        t.handle_key(key(KeyCode::Right), &mut map);
+        t.handle_key(key(KeyCode::Down), &mut map); // the ghost
+        t.handle_key(key(KeyCode::Enter), &mut map);
+        assert_eq!(t.editing.as_ref().unwrap().col, Col::Key, "the ghost opens its name");
+        t.handle_key(key(KeyCode::Esc), &mut map);
+        t.handle_key(key(KeyCode::Up), &mut map);
+        t.handle_key(key(KeyCode::Enter), &mut map);
+        let edit = t.editing.as_ref().unwrap();
+        assert_eq!((edit.row, edit.col), (0, Col::Value), "row 0 opens its value again");
     }
 
     // --- keyboard: navigation --------------------------------------------

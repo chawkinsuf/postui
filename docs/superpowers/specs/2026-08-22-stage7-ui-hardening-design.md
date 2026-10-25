@@ -107,7 +107,7 @@ Applies to params/headers/request-vars tables and the new entries tables. The se
 
 - Click a cell → caret in that cell, type immediately. Click another cell → commit, edit there. Click outside the table → commit and leave.
 - `Enter` commits the row; `Esc` reverts the active cell to its pre-edit value (and exits editing); `Tab`/`Shift-Tab` move between cells, wrapping to the next/previous row.
-- The "+ Add" ghost row is an always-present empty row: clicking into it starts editing; committing with any non-empty key creates the row; leaving it empty discards it silently.
+- The "+ Add" ghost row is an always-present empty row: clicking into it starts editing; committing with any non-empty key creates the row; leaving it empty discards it silently. *Amended 2026-10-25 (task #68, `mine (approved)`):* its value cell never opens: a click on it, or any key that would open it (Enter with the cursor on that column, Tab, vim's keys), puts the caret in its name, so the name comes first. A value typed before the name had nowhere in the request to live, and was lost at quit, at open, and on a name that already exists. The value cell draws blank and never takes the cursor-cell lift (`mine`); a name that already exists makes no row and says `'<name>' already exists — no row added` (`mine`).
 - Checkbox and per-row `✕` keep single-click behavior; double-click is no longer meaningful (no distinct action to reach).
 - Keyboard navigation (arrows between rows, `Enter` to start editing the focused cell) is preserved for parity.
 

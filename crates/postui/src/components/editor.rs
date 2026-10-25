@@ -4919,11 +4919,14 @@ mod tests {
     #[test]
     fn left_right_in_the_table_move_the_cell_cursor_not_the_tab_strip() {
         let mut e = Editor::default();
-        e.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
+        // The default tab's table (Headers): row 0 is then a real row, not
+        // the + Add row, whose value never opens (task #68).
+        e.headers.insert("a".into(), Entry { value: "1".into(), enabled: true });
         e.sub_focus = SubFocus::Url;
         e.handle_key(key(KeyCode::Down));
         assert_eq!((e.sub_focus, e.table.selected), (SubFocus::Content, Some(0)));
         let tab = e.active_tab;
+        assert_eq!(tab, EditorTab::Headers);
         e.table.col = super::super::table_editor::Col::Key;
         assert_eq!(e.handle_key(key(KeyCode::Right)), Some(Action::Render));
         assert_eq!(e.table.col, super::super::table_editor::Col::Value);

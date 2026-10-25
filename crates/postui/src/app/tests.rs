@@ -24870,6 +24870,31 @@ fn save_and_quit_over_an_open_cell_writes_it() {
     assert_eq!(on_disk.params["a"].value, "19");
 }
 
+/// Task #68: a click on the + Add row's value cell opens its name, so what
+/// is typed there names a row the request holds, and quit (or opening
+/// another request) asks about it instead of dropping it unseen.
+#[test]
+fn typing_after_a_click_on_the_add_rows_value_is_asked_about_at_quit() {
+    use crate::components::table_editor::Col;
+    for (how, action) in [("quit", Action::Quit), ("open", Action::OpenRequest("main/beta".into()))]
+    {
+        let (mut app, _dir) = alpha_with_a_typed_cell();
+        app.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.capture_undo();
+        assert!(!app.editor.is_dirty(), "{how}: alpha starts clean");
+        click_hit(&mut app, Hit::TableCell { row: 1, col: 1 }); // the + Add row's value
+        let edit = app.editor.table.editing.as_ref().expect("a cell is open");
+        assert_eq!((edit.row, edit.col), (1, Col::Key), "{how}: the click opened the name");
+        type_chars(&mut app, "v");
+        app.update(action);
+        assert!(unsaved_prompt_up(&app), "{how}: asks instead of losing the typing");
+        assert!(!app.should_quit, "{how}");
+        assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"), "{how}");
+        assert!(app.editor.params.contains_key("v"), "{how}: the typing named a row");
+    }
+}
+
 /// An open cell with nothing typed holds nothing unsaved: quit goes.
 #[test]
 fn quit_over_an_untouched_cell_does_not_ask() {
