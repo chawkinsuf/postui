@@ -164,18 +164,33 @@ impl ChooserState {
         (0..self.filtered.len()).find(|&i| self.enabled(i)).unwrap_or(0)
     }
 
+    /// The last filtered row that can take the selection, if any.
+    fn last_enabled(&self) -> Option<usize> {
+        (0..self.filtered.len()).rev().find(|&i| self.enabled(i))
+    }
+
     /// Moves the selection to the nearest enabled row above (or below,
-    /// when `down`), stepping over disabled ones; stays put when there is
-    /// none.
+    /// when `down`), stepping over disabled ones. With none there it
+    /// stays put, and the list scrolls to that end instead, so disabled
+    /// rows past the last enabled one come into view (review round 1).
     fn step(&mut self, down: bool) {
         let next = if down {
             (self.selected + 1..self.filtered.len()).find(|&i| self.enabled(i))
         } else {
             (0..self.selected).rev().find(|&i| self.enabled(i))
         };
-        if let Some(i) = next {
-            self.selected = i;
+        match next {
+            Some(i) => self.selected = i,
+            None => self.scroll_to_end(down),
         }
+        self.ensure_visible = true;
+    }
+
+    /// Scrolls the list to its top, or its bottom when `bottom`. The
+    /// bottom is past every row: the next draw brings it back to the
+    /// last page that still shows the selection.
+    fn scroll_to_end(&mut self, bottom: bool) {
+        self.scroll = if bottom { self.filtered.len() } else { 0 };
         self.ensure_visible = true;
     }
 
@@ -423,12 +438,17 @@ impl ChooserState {
             {
                 return self.step_action(c != '-').map(keep_open);
             }
-            // Home and End stop at the first and last enabled rows.
-            KeyCode::Home if !self.has_filter() => self.select(self.first_enabled()),
+            // Home and End stop at the first and last enabled rows, and
+            // scroll to the list's end, showing any disabled row past them.
+            KeyCode::Home if !self.has_filter() => {
+                self.select(self.first_enabled());
+                self.scroll_to_end(false);
+            }
             KeyCode::End if !self.has_filter() => {
-                if let Some(last) = (0..self.filtered.len()).rev().find(|&i| self.enabled(i)) {
+                if let Some(last) = self.last_enabled() {
                     self.select(last);
                 }
+                self.scroll_to_end(true);
             }
             KeyCode::Up => self.step(false),
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => self.step(false),
@@ -587,7 +607,9 @@ impl ChooserState {
             let item = &self.items[idx];
             let text_row = list_area.y + (i - self.scroll) as u16;
             // A disabled row is never highlighted: the cursor sits on it
-            // only when no row can take it, and it has no hit to hover.
+            // only when no row can take it, and it registers no hit. A
+            // hover can still name it for one frame after the set swapped
+            // under the pointer, so the hover fill checks it too.
             let selected = i == self.selected && !item.disabled;
             let row_hovered = hovered == Some(&crate::hit::Hit::ChooserRow(i));
             let highlight = if item.disabled {
@@ -1412,6 +1434,43 @@ mod tests {
         let mut filtered = ChooserState::new("Pick", some_disabled(&["ab", "ac"], &["ab"]));
         filtered.handle_key(key(KeyCode::Char('a')));
         assert_eq!(filtered.selected_label(), Some("ac"), "a refilter skips it too");
+    }
+
+    /// Review round 1: in a list that scrolls, Home (or an Up with no
+    /// enabled row above) scrolls back to the top, so a disabled first
+    /// row comes back into view; End and Down do the same at the bottom.
+    #[test]
+    fn home_and_end_scroll_disabled_end_rows_into_view() {
+        let labels: Vec<String> = (0..14).map(|i| format!("r{i}")).collect();
+        let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let mut c = ChooserState::new("T", some_disabled(&refs, &["r0", "r13"])).without_filter();
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut draw = |c: &mut ChooserState| {
+            let mut hits = crate::hit::HitMap::default();
+            terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+            let shown = |s: &str| format!("{:?}", terminal.backend().buffer()).contains(s);
+            (shown("r0 "), shown("r13"))
+        };
+        c.handle_key(key(KeyCode::End));
+        assert_eq!(draw(&mut c), (false, true), "End shows the disabled last row");
+        for code in [KeyCode::Home, KeyCode::Up] {
+            c.handle_key(key(KeyCode::End));
+            draw(&mut c);
+            if code == KeyCode::Up {
+                for _ in 0..12 {
+                    c.handle_key(key(KeyCode::Up));
+                }
+            }
+            c.handle_key(key(code));
+            assert_eq!(draw(&mut c), (true, false), "{code:?} shows the disabled first row");
+            assert_eq!(c.selected_label(), Some("r1"));
+        }
+        for _ in 0..12 {
+            c.handle_key(key(KeyCode::Down));
+        }
+        assert_eq!(c.selected_label(), Some("r12"));
+        assert!(draw(&mut c).1, "Down at the last enabled row shows the one after");
     }
 
     /// Task #18: a disabled row paints its label and detail in the

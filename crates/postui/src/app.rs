@@ -1181,7 +1181,10 @@ impl App {
     /// terminal's it is disabled and says why, so the rows under it keep
     /// their places when the set flips. Disabled rather than selectable,
     /// because the highlight is the live preview and a set never shows
-    /// the other polarity's palette.
+    /// the other polarity's palette. Only Terminal: it is the one row
+    /// whose polarity is the terminal's rather than its own, and it comes
+    /// first. A custom theme of the other polarity still drops out, which
+    /// moves no row, since customs are listed after every built-in.
     fn theme_picker_items(&self) -> Vec<crate::components::chooser::ChooserItem> {
         self.themes
             .entries()
