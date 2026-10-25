@@ -4180,6 +4180,12 @@ fn req(url: &str) -> postui_core::model::HttpRequest {
     postui_core::model::HttpRequest::from_toml_str(&format!(r#"url = "{url}""#)).unwrap()
 }
 
+/// [`req`] as a POST, a method that can show the Body tab.
+fn post_req(url: &str) -> postui_core::model::HttpRequest {
+    postui_core::model::HttpRequest::from_toml_str(&format!("method = \"POST\"\nurl = \"{url}\""))
+        .unwrap()
+}
+
 #[test]
 fn sidebar_lists_requests_grouped_and_enter_opens() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4466,14 +4472,13 @@ fn a_switch_whose_restore_opens_keeps_the_editor_tab() {
 fn a_post_to_post_switch_starts_no_underline_glide() {
     let (mut app, a, b) = two_projects();
     app.anims.set_enabled(true);
-    let post = |url: &str| {
-        postui_core::model::HttpRequest::from_toml_str(&format!(
-            "method = \"POST\"\nurl = \"{url}\""
-        ))
-        .unwrap()
-    };
-    postui_core::fixtures::save_request(a.path(), "main/send", &post("https://a/send")).unwrap();
-    postui_core::fixtures::save_request(b.path(), "main/send", &post("https://b/send")).unwrap();
+    // A glide this long is still in flight however slow the switch is, so
+    // a stray one cannot finish before the check below.
+    app.ui_settings.anim_ms.tab_slide = Duration::from_secs(3600);
+    postui_core::fixtures::save_request(a.path(), "main/send", &post_req("https://a/send"))
+        .unwrap();
+    postui_core::fixtures::save_request(b.path(), "main/send", &post_req("https://b/send"))
+        .unwrap();
     postui_core::fixtures::save_local_state(
         b.path(),
         &postui_core::project::LocalState {
@@ -4506,15 +4511,8 @@ fn a_post_to_post_switch_starts_no_underline_glide() {
 #[test]
 fn a_failed_restore_from_body_lands_the_scratch_on_a_tab_it_shows() {
     let (mut app, a, b) = two_projects();
-    postui_core::fixtures::save_request(
-        a.path(),
-        "main/send",
-        &postui_core::model::HttpRequest::from_toml_str(
-            "method = \"POST\"\nurl = \"https://a/send\"",
-        )
-        .unwrap(),
-    )
-    .unwrap();
+    postui_core::fixtures::save_request(a.path(), "main/send", &post_req("https://a/send"))
+        .unwrap();
     std::fs::write(b.path().join("requests/main/send.toml"), "not = [valid").unwrap();
     postui_core::fixtures::save_local_state(
         b.path(),
@@ -4701,10 +4699,8 @@ fn entering_a_space_never_clears_the_cursor() {
 fn a_reopened_buffer_that_sends_no_body_leaves_the_body_tab() {
     use crate::undo::Open;
     let (mut app, dir) = spaced_app();
-    let post =
-        postui_core::model::HttpRequest::from_toml_str("method = \"POST\"\nurl = \"https://x/1\"")
-            .unwrap();
-    postui_core::fixtures::save_request(dir.path(), "main/alpha", &post).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/alpha", &post_req("https://x/1"))
+        .unwrap();
     app.editor.preferred_tab = EditorTab::Body;
     let buffer = Box::new(req("https://x/2"));
     assert!(!buffer.method.sends_body());
