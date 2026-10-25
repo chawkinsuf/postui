@@ -2953,8 +2953,9 @@ fn switching_editor_tabs_retargets_the_underline_slide() {
     let before = Instant::now();
     assert!(app.anims.value(left_key, before).is_none(), "untouched before any update");
     // As main.rs does before reading any input (the welcome toast): every
-    // update ends by placing the underline on the active tab, so a pick is
-    // never the first thing to place it (#117: that pass is its one mover).
+    // dispatch ends by placing the underline on the active tab, so a pick
+    // is never the first thing to place it (#117: that pass is its one
+    // mover).
     app.update(Action::Tick);
     let (hx, _) = app.editor.tab_strip_spans()[EditorTab::Headers.draw_position()];
     assert_eq!(app.anims.value(left_key, Instant::now()), Some(hx as f32), "placed on Headers");
@@ -4520,8 +4521,9 @@ fn a_post_to_post_switch_starts_no_underline_glide() {
 }
 
 /// Task #117: `sync_active_tab` moves only the tab; a method change that
-/// moves it off Body still glides the underline, through the per-update
-/// `sync_editor_tab_underline`, to the tab it lands on.
+/// moves it off Body still glides the underline, through
+/// `sync_editor_tab_underline` in the dispatch's tail, to the tab it lands
+/// on.
 #[test]
 fn a_method_change_off_body_glides_the_underline_to_the_first_tab() {
     let mut app = App::new_for_test_with_anims(true);

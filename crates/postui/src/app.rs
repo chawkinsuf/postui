@@ -12031,11 +12031,11 @@ impl App {
     /// request never permanently loses the user's place
     /// (`Editor::preferred_tab`).
     ///
-    /// It moves only the tab, not the underline: the per-update
-    /// [`Self::sync_editor_tab_underline`] glides it to wherever the tab
-    /// is when the update ends, so a tab an update passes through on its
-    /// way (a project switch's empty GET between two POSTs, #117) starts
-    /// no glide.
+    /// It moves only the tab, not the underline:
+    /// [`Self::sync_editor_tab_underline`], in the tail of every dispatch,
+    /// glides it to wherever the tab is when the dispatch ends, so a tab a
+    /// dispatch passes through on its way (a project switch's empty GET
+    /// between two POSTs, #117) starts no glide.
     fn sync_active_tab(&mut self) {
         let preferred = self.editor.preferred_tab;
         let target = if !self.editor.tab_enabled(preferred) {
