@@ -2107,25 +2107,24 @@ impl App {
         let mut items = Vec::new();
         for view in &self.editor.jq_views {
             let name = view.name.clone();
-            items.push(MenuItem::new(name.clone(), Action::PickJqView(name.clone())).with_buttons(
-                vec![
-                        RowButton::new(
-                            Verb::Rename,
-                            "rename",
-                            crate::glyph::PENCIL,
-                            "Rename this view",
-                            Action::PromptRenameJqView(name.clone()),
-                        ),
-                        RowButton::new(
-                            delete,
-                            "delete",
-                            crate::glyph::DELETE,
-                            "Delete this view",
-                            Action::DeleteJqView(name),
-                        )
-                        .destructive(),
-                    ],
-            ));
+            let buttons = vec![
+                RowButton::new(
+                    Verb::Rename,
+                    "rename",
+                    crate::glyph::PENCIL,
+                    "Rename this view",
+                    Action::PromptRenameJqView(name.clone()),
+                ),
+                RowButton::new(
+                    delete,
+                    "delete",
+                    crate::glyph::DELETE,
+                    "Delete this view",
+                    Action::DeleteJqView(name.clone()),
+                )
+                .destructive(),
+            ];
+            items.push(MenuItem::new(name.clone(), Action::PickJqView(name)).with_buttons(buttons));
         }
         // A divider only parts views from the save; with none it parts
         // nothing.

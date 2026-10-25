@@ -816,14 +816,16 @@ impl Editor {
         Self { next_view_id: self.next_view_id, ..Self::default() }
     }
 
-    /// The current view's index in `jq_views`; `None` is the scratch.
+    /// The current view's index in `jq_views`; `None` with no view picked,
+    /// when the bar holds the scratch.
     pub fn current_view(&self) -> Option<usize> {
         let name = self.jq_current.as_deref()?;
         self.jq_views.iter().position(|v| v.name == name)
     }
 
-    /// The current view's name, `None` for the scratch: what the bar shows,
-    /// so a `jq_current` naming no view reads as the scratch here too.
+    /// The current view's name, `None` with no view picked: what the bar
+    /// shows, so a `jq_current` naming no view reads as none picked here
+    /// too.
     pub fn jq_current_name(&self) -> Option<&str> {
         self.current_view().map(|i| self.jq_views[i].name.as_str())
     }
@@ -845,14 +847,12 @@ impl Editor {
     }
 
     /// Makes view `name` current and switches the filter on (spec 16). A
-    /// name no view has leaves no view current. Nothing picks no view: the
-    /// clear is the way there ([`Self::jq_clear_filter`], amendment C5).
+    /// name no view has any more (a reload under the menu) changes nothing,
+    /// as a stale delete does. Nothing picks no view: the clear is the way
+    /// there ([`Self::jq_clear_filter`], amendment C5).
     pub fn jq_pick(&mut self, name: &str) {
         if self.jq_views.iter().any(|v| v.name == name) {
             self.make_view_current(name.to_string());
-        } else {
-            self.jq_current = None;
-            self.jq_enabled = true;
         }
     }
 
@@ -960,7 +960,7 @@ impl Editor {
         Ok(())
     }
 
-    /// Removes the view; the scratch becomes current if it was. `false`
+    /// Removes the view; if it was current, none is picked after. `false`
     /// when no view has `name`.
     pub fn jq_delete(&mut self, name: &str) -> bool {
         let before = self.jq_views.len();
@@ -972,7 +972,10 @@ impl Editor {
     }
 
     /// Whether [`Self::jq_clear_filter`] has anything to do: a view is
-    /// current, or the scratch holds text.
+    /// current, or the scratch holds text. By `current_view`, as the chip
+    /// is: a `jq_current` naming no view cannot outlive a load (the reader
+    /// drops it, spec 27) or a delete (which clears it), and the bar reads
+    /// one as none picked anyway.
     pub fn jq_clearable(&self) -> bool {
         self.current_view().is_some() || !self.jq.is_empty()
     }
@@ -985,8 +988,8 @@ impl Editor {
         self.jq.clear();
     }
 
-    /// The current filter, view or scratch, back to its saved text; no-op
-    /// when it has none.
+    /// The current view back to its saved text; no-op with no view picked
+    /// or a view never saved (amendment C11).
     pub fn jq_revert(&mut self) {
         if let Some(saved) = self.jq_current_saved().map(str::to_string) {
             self.set_jq_filter(&saved);
@@ -5860,6 +5863,18 @@ mod tests {
         assert_eq!(ed.jq_views[1].name, "IDs", "a case change of its own name is fine");
         assert_eq!(ed.jq_current, None, "renaming a view that is not current picks nothing");
         assert!(ed.is_dirty(), "a rename is a request edit");
+    }
+
+    /// A pick of a name no view has any more changes nothing, as a stale
+    /// delete does.
+    #[test]
+    fn a_stale_pick_changes_nothing() {
+        let mut ed = editor_with_views();
+        ed.jq_pick("ids");
+        ed.jq_enabled = false;
+        ed.jq_pick("gone");
+        assert_eq!(ed.jq_current.as_deref(), Some("ids"));
+        assert!(!ed.jq_enabled);
     }
 
     #[test]
