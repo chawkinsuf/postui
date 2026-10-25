@@ -851,10 +851,12 @@ impl Editor {
     /// as a stale delete does. Nothing picks no view: the clear goes there
     /// ([`Self::jq_clear_filter`], amendment C5), and so does a menu
     /// action's or the AI's filter (`App::land_jq_in_scratch`).
-    pub fn jq_pick(&mut self, name: &str) {
-        if self.jq_views.iter().any(|v| v.name == name) {
+    pub fn jq_pick(&mut self, name: &str) -> bool {
+        let known = self.jq_views.iter().any(|v| v.name == name);
+        if known {
             self.make_view_current(name.to_string());
         }
+        known
     }
 
     /// View `name` current and switched on, the scratch emptied (amendment
@@ -961,7 +963,9 @@ impl Editor {
         Ok(())
     }
 
-    /// Removes the view; if it was current, none is picked after. `false`
+    /// Removes the view; if it was current, none is picked after and the
+    /// scratch shows as it is (spec 22). Since amendment C12 that is empty;
+    /// only a file written before it can still hold text there. `false`
     /// when no view has `name`.
     pub fn jq_delete(&mut self, name: &str) -> bool {
         let before = self.jq_views.len();

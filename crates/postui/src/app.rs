@@ -5726,9 +5726,11 @@ impl App {
                 }
                 // Its own step, like every view edit made from the menu: a
                 // pick can empty the typed filter (amendment C12), and one
-                // undo must bring exactly that back.
-                self.no_coalesce = true;
-                self.editor.jq_pick(&name);
+                // undo must bring exactly that back. A name no view has any
+                // more picks nothing, so there is no step to mark.
+                if self.editor.jq_pick(&name) {
+                    self.no_coalesce = true;
+                }
                 true
             }
             Action::PromptSaveJqView => {
