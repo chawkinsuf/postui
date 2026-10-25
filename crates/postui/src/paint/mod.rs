@@ -204,7 +204,9 @@ pub fn keycap_button(
 /// or a reverse, and [`text`] patches its style over the cell's rather than
 /// replacing it, so a modifier left here would run on through every panel
 /// filled over the page and the text painted on it (task #97: a struck
-/// header row's strike through the method dropdown).
+/// header row's strike through the method dropdown). The scrub lives here
+/// rather than in `text` because a panel's margin and padding rows get no
+/// text at all: the dropdown's strike showed on its blank bottom margin.
 pub fn fill(buf: &mut Buffer, area: Rect, bg: Color) {
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
