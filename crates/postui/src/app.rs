@@ -12071,12 +12071,14 @@ impl App {
     /// badge comes and goes — which used to leave the underline parked at
     /// the previous request's geometry after a request switch.
     ///
-    /// Runs at the end of every `update`, so it sees only the tab the
-    /// update ends on: a tab an update passes through (a project switch's
-    /// empty GET between two POSTs, #117) starts no glide. A key the router
-    /// runs as several updates (a vim count, `2u`) gets one glide per
-    /// update. A glide already headed to the right place is left alone,
-    /// and an untracked pair snaps, in a branch of its own (see below).
+    /// Runs in the tail of every `dispatch`, so it sees only the tab a
+    /// dispatch ends on: a tab one passes through (a project switch's
+    /// empty GET between two POSTs, #117) starts no glide. Each dispatch
+    /// gets its own pass, so a key the router runs as several actions (a
+    /// vim count, `2u`) glides once per action, and so would an arm that
+    /// moved the tab and then dispatched again before setting it. A glide
+    /// already headed to the right place is left alone, and an untracked
+    /// pair snaps, in a branch of its own (see below).
     fn sync_editor_tab_underline(&mut self) {
         let spans = self.editor.tab_strip_spans();
         let Some(&(x, w)) = spans.get(self.editor.active_tab.draw_position()) else {
@@ -12122,11 +12124,14 @@ impl App {
             .collect()
     }
 
-    /// Like [`Self::retarget_editor_tab_underline`], for the Manage
-    /// screen's tab strip: called from `Action::SelectManageTab` (clicks
-    /// and alt+arrows both funnel through it) and from `OpenManage` when
-    /// it switches tabs on an already-open screen, after `manage.tab` has
-    /// moved; `prev` is where the glide starts.
+    /// Glides the Manage screen's tab strip underline
+    /// (`AnimKey::TabUnderline`/`TabUnderlineWidth(ManageTabs)`) from
+    /// `prev`'s span to the active tab's, seeding an untracked pair at
+    /// `prev` first: called from `Action::SelectManageTab` (clicks and
+    /// alt+arrows both funnel through it) and from `OpenManage` when it
+    /// switches tabs on an already-open screen, after `manage.tab` has
+    /// moved. (The editor strip has no such call: its per-dispatch pass,
+    /// [`Self::sync_editor_tab_underline`], moves it.)
     fn retarget_manage_tab_underline(&mut self, prev: crate::components::manage::ManageTab) {
         let spans = crate::components::manage::ManageTab::strip_spans(self.manage_strip_width);
         let now = Instant::now();
@@ -12146,15 +12151,6 @@ impl App {
         self.anims.retarget_with(right_key, (*x + *w) as f32, dur, now, Easing::InOutCubic);
     }
 
-    /// Like [`Self::retarget_editor_tab_underline`], but for
-    /// `AnimKey::TabUnderline`/`TabUnderlineWidth(ResponseTabs)`, called
-    /// from `Action::ResponseViewMode` (the single action both keyboard
-    /// switching and `app/mouse.rs`'s click dispatch on `Hit::ResponseTab`
-    /// funnel through). `prev_mode` is `None` either pre-response (nothing
-    /// to glide from) or on the very first response of a session; either
-    /// way the untracked-pair seed below falls back to the newly active
-    /// tab's own span, so the strip simply snaps rather than sliding from
-    /// nowhere.
     /// Forgets the response tab strip's underline animation, so the next
     /// draw snaps the underline to the active tab's own static span — for
     /// the places the active tab changes *programmatically* (a response
@@ -12167,6 +12163,16 @@ impl App {
         self.anims.clear(AnimKey::TabUnderlineWidth(StripId::ResponseTabs));
     }
 
+    /// Glides `AnimKey::TabUnderline`/`TabUnderlineWidth(ResponseTabs)`
+    /// from `prev_mode`'s span to the active tab's, as
+    /// [`Self::retarget_manage_tab_underline`] does for Manage; called from
+    /// `Action::ResponseViewMode` (the single action both keyboard
+    /// switching and `app/mouse.rs`'s click dispatch on `Hit::ResponseTab`
+    /// funnel through). `prev_mode` is `None` either pre-response (nothing
+    /// to glide from) or on the very first response of a session; either
+    /// way the untracked-pair seed below falls back to the newly active
+    /// tab's own span, so the strip simply snaps rather than sliding from
+    /// nowhere.
     fn retarget_response_tab_underline(&mut self, prev_mode: Option<ViewMode>) {
         let Some(view) = self.session.response.view() else {
             return;

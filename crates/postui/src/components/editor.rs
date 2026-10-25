@@ -3220,10 +3220,11 @@ impl Editor {
         let (static_left, static_width) =
             spans.get(active).map(|(x, w)| (*x as f32, *w as f32)).unwrap_or((0.0, 0.0));
         // Independently animated left/right edges (Task 10): each key falls
-        // back to this tab's own static edge when untracked, so the very
-        // first draw of the strip snaps straight there with no slide-in
-        // from zero — `app.rs`'s tab-switch handling is what actually sets
-        // these keys in motion on a later switch.
+        // back to this tab's own static edge when untracked, so a draw
+        // before any update places it snaps straight there with no
+        // slide-in from zero. `App::sync_editor_tab_underline`, in the tail
+        // of every dispatch, is what places these keys and sets them in
+        // motion (#117).
         let left = ctx.anims.value_or(
             crate::anim::AnimKey::TabUnderline(crate::anim::StripId::EditorTabs),
             ctx.now,
