@@ -2134,12 +2134,13 @@ impl App {
             items.push(MenuItem::disabled("\u{2500}".repeat(widest.max().unwrap_or(0))));
         }
         items.push(MenuItem::new(SAVE_AS, Action::PromptSaveJqView));
-        // On no view nothing is marked, and the save is highlighted
-        // (amendment C14): saving what was typed is the next step there,
-        // while Enter on a view would replace the typing (C12) and `d` would
-        // delete a view nobody moved to.
+        // On no view nothing is marked. With text typed the save is
+        // highlighted (amendment C14): saving it is the next step, while
+        // Enter on a view would replace it (C12). With nothing typed there
+        // is nothing to protect, and the first row is, as in any dropdown.
         let current = self.editor.current_view();
-        let selected = current.unwrap_or(items.len() - 1);
+        let typed = !self.editor.jq.is_empty();
+        let selected = current.unwrap_or(if typed { items.len() - 1 } else { 0 });
         // A collapsed response pane still draws and registers its header,
         // so the pane's rect is there whenever a frame has drawn the app;
         // the zero rect is for an app no frame has drawn (a bare test app),
@@ -5728,8 +5729,19 @@ impl App {
                 // pick can empty the typed filter (amendment C12), and one
                 // undo must bring exactly that back. A name no view has any
                 // more picks nothing, so there is no step to mark.
+                let replaced = self.editor.jq_current.is_none() && !self.editor.jq.is_empty();
                 if self.editor.jq_pick(&name) {
                     self.no_coalesce = true;
+                    // Said, as a clear is, when the pick took typed text away.
+                    if replaced {
+                        self.toasts.push(
+                            format!(
+                                "View \"{name}\" replaced the typed filter{}",
+                                self.undo_hint()
+                            ),
+                            ToastKind::Info,
+                        );
+                    }
                 }
                 true
             }

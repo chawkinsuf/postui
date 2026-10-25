@@ -23748,8 +23748,13 @@ fn the_views_dropdown_lists_views_divider_and_save_as() {
 
     // On no view nothing is marked, and the first view is highlighted.
     app.update(Action::Close);
-    // On no view nothing is marked and the save is highlighted (C14).
+    // On no view nothing is marked. Empty, the first view is highlighted;
+    // with text typed, the save is (C14).
     app.update(Action::ClearJqFilter);
+    app.update(Action::OpenJqViews);
+    assert_eq!((views_menu(&app).current, views_menu(&app).selected), (None, 0));
+    app.update(Action::Close);
+    app.update(Action::JqApply(".data".into()));
     app.update(Action::OpenJqViews);
     assert_eq!((views_menu(&app).current, views_menu(&app).selected), (None, 3));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -23902,6 +23907,8 @@ fn picking_a_view_replaces_the_typed_filter() {
     app.update(Action::PickJqView("names".into()));
     assert_eq!(app.editor.jq, "");
     assert_eq!(app.editor.current_request().jq, None, "the file holds no hidden text");
+    let said = app.toasts.last_message().unwrap_or_default();
+    assert!(said.starts_with("View \"names\" replaced the typed filter"), "{said:?}");
     app.capture_undo();
     app.update(Action::Undo);
     assert_eq!(app.editor.jq_current_name(), None);
