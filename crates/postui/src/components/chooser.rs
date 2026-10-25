@@ -148,7 +148,7 @@ impl ChooserState {
             stepper: None,
             previewing: false,
         };
-        state.selected = state.first_enabled();
+        state.selected = state.opening_row();
         state
     }
 
@@ -157,11 +157,16 @@ impl ChooserState {
         self.filtered.get(i).is_some_and(|&idx| !self.items[idx].disabled)
     }
 
-    /// The first filtered row that can take the selection; 0 when none
-    /// can (the highlighted item then reads as nothing: see
-    /// [`Self::selected_item`]).
-    fn first_enabled(&self) -> usize {
-        (0..self.filtered.len()).find(|&i| self.enabled(i)).unwrap_or(0)
+    /// The first filtered row that can take the selection, if any.
+    fn first_enabled(&self) -> Option<usize> {
+        (0..self.filtered.len()).find(|&i| self.enabled(i))
+    }
+
+    /// Where a fresh list's cursor starts: its first enabled row, or 0
+    /// when none can take it (the highlighted item then reads as nothing:
+    /// see [`Self::selected_item`]).
+    fn opening_row(&self) -> usize {
+        self.first_enabled().unwrap_or(0)
     }
 
     /// The last filtered row that can take the selection, if any.
@@ -187,9 +192,11 @@ impl ChooserState {
         self.ensure_visible = true;
     }
 
-    /// Scrolls the list to its top, or its bottom when `bottom`. The
-    /// bottom is past every row: the next draw brings it back to the
-    /// last page that still shows the selection.
+    /// Scrolls the list to its top, or toward its bottom when `bottom`.
+    /// The bottom is past every row: the next draw brings it back as far
+    /// down as it can go with the selection still in view, which is the
+    /// list's last page unless more disabled rows follow the selection
+    /// than fit under it.
     fn scroll_to_end(&mut self, bottom: bool) {
         self.scroll = if bottom { self.filtered.len() } else { 0 };
         self.ensure_visible = true;
@@ -408,7 +415,7 @@ impl ChooserState {
                 .map(|(i, _)| i)
                 .collect(),
         };
-        self.selected = self.first_enabled();
+        self.selected = self.opening_row();
         self.scroll = 0;
         self.ensure_visible = true;
     }
@@ -445,7 +452,9 @@ impl ChooserState {
             // Home and End stop at the first and last enabled rows, and
             // scroll to the list's end, showing any disabled row past them.
             KeyCode::Home if !self.has_filter() => {
-                self.select(self.first_enabled());
+                if let Some(first) = self.first_enabled() {
+                    self.select(first);
+                }
                 self.scroll_to_end(false);
             }
             KeyCode::End if !self.has_filter() => {
@@ -613,12 +622,11 @@ impl ChooserState {
             // A disabled row is never highlighted: the cursor sits on it
             // only when no row can take it, and it registers no hit. A
             // hover can still name it for one frame after the set swapped
-            // under the pointer, so the hover fill checks it too.
+            // under the pointer (until `App::resync_hover` reads the new
+            // hit map), so the hover checks it too.
             let selected = i == self.selected && !item.disabled;
-            let row_hovered = hovered == Some(&crate::hit::Hit::ChooserRow(i));
-            let highlight = if item.disabled {
-                RowHighlight::None
-            } else if selected {
+            let row_hovered = !item.disabled && hovered == Some(&crate::hit::Hit::ChooserRow(i));
+            let highlight = if selected {
                 RowHighlight::Selected
             } else if row_hovered {
                 RowHighlight::Hover

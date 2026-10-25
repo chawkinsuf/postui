@@ -5201,10 +5201,11 @@ impl App {
                 // Tab/BackTab or the title-row toggle flips to the other set.
                 // No filter box: a handful of rows needs no search, and it
                 // leaves the arrows to the toggle (task #6, you). The
-                // applied theme's polarity is its entry's (`entry_is_dark`
-                // reads the same seed background, and a contrast step
-                // never flips it, spec 2026-10-16 C14), so the applied
-                // theme is never the set's disabled Terminal row.
+                // applied Terminal theme's polarity is its entry's
+                // (`entry_is_dark` reads the same seed background, the
+                // queried colors are not reloaded here, and a contrast
+                // step never flips it, spec 2026-10-16 C14), so the
+                // applied theme is never the set's disabled Terminal row.
                 self.theme_picker_dark = self.theme.is_dark();
                 // Previewing: the screen behind stays undimmed, since it
                 // is what the highlighted theme looks like (task #16, you).
