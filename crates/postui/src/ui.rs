@@ -33,8 +33,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // `App::sync_pane_collapse_anim` (run on every `update`) keeps
     // `AnimKey::PaneCollapse` chasing this same condition, so its eased
     // value at `now` is what actually drives the row split — falling back
-    // to the settled bool (as a plain 0.0/1.0) only for the very first
-    // frame, before `update` has ever run and started the anim.
+    // to the settled bool (as a plain 0.0/1.0) while the anim is unset: at
+    // a launch, `App::new`'s fresh anim set leaves all three split anims
+    // unset until the split first changes.
     let collapse_t = app.anims.value_or(
         crate::anim::AnimKey::PaneCollapse,
         now,

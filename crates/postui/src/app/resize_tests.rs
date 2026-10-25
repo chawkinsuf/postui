@@ -380,8 +380,10 @@ fn a_project_with_no_saved_split_opens_at_the_default() {
     assert!(!b.path().join(".local").join("layout.toml").exists(), "B's layout.toml unwritten");
 }
 
-/// Asserts the split's three anims draw `app`'s split settled: each one is
-/// set, done, and sits at the split field's own value.
+/// Asserts the split's three anims draw `app`'s split settled: none is
+/// easing, and what `ui::draw` reads for each (the anim, or the split
+/// field when a launch's fresh anim set never set it) is the field's own.
+/// The `is_done` half is what fails when the seed leaves an ease behind.
 fn assert_split_drawn_settled(app: &App) {
     use crate::anim::AnimKey;
     let now = std::time::Instant::now();
@@ -393,28 +395,59 @@ fn assert_split_drawn_settled(app: &App) {
         (AnimKey::SplitRatio, s.ratio),
     ] {
         assert!(app.anims.is_done(key, now), "{key:?} eases instead of drawing at once");
-        assert_eq!(app.anims.value(key, now), Some(settled), "{key:?}");
+        assert_eq!(app.anims.value_or(key, now, settled), settled, "{key:?}");
     }
 }
 
+/// A launch on `root` as `App::new` builds it once a project opened:
+/// `with_root`, then `apply_ui_settings` with animations on. (`App::new`
+/// itself reads the real user config, so it isn't unit-testable;
+/// `apply_ui_settings` is the step both of its branches delegate to.)
+fn launch(root: &std::path::Path) -> App {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, root.to_path_buf());
+    let settings =
+        crate::config::UiSettings { animations: true, ..crate::config::UiSettings::default() };
+    app.apply_ui_settings(settings, "dark".into(), crate::theme::Theme::dark());
+    app
+}
+
 /// Task #93 (P5): with animations on, a launch draws the project's saved
-/// split at once, not easing out of the 50/50 default. `App::new` only
-/// flips the enabled flag after `with_root` (`apply_ui_settings`), so
-/// `with_root`'s animation set is the launch's.
+/// split at once, not easing out of the 50/50 default.
 #[test]
 fn a_launch_draws_the_saved_split_at_once() {
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
     postui_core::fixtures::init_project(dir.path(), Some("alpha")).unwrap();
     let saved = SplitState { editor_minimized: true, response_minimized: false, ratio: 0.25 };
     let mut layout = postui_core::fixtures::load_layout(dir.path()).unwrap();
     layout.main_split = Some(saved.to_token());
     postui_core::fixtures::save_layout(dir.path(), &layout).unwrap();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    assert!(app.anims.enabled, "animations on, the default");
+    let mut app = launch(dir.path());
     app.update(Action::Tick);
     assert_eq!(app.split_state(), saved);
     assert_split_drawn_settled(&app);
+}
+
+/// Task #93 review round 2: a launch that restores a request draws its
+/// first frame with nothing easing. Whatever `with_root`'s restore started
+/// (the open's tab underline, a fade) is settled before the first frame,
+/// as on main.
+#[test]
+fn a_launch_restoring_a_request_starts_with_nothing_in_flight() {
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("alpha")).unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    let req = postui_core::model::HttpRequest {
+        url: "https://x/pong".into(),
+        ..postui_core::model::HttpRequest::default()
+    };
+    postui_core::fixtures::save_request(dir.path(), "main/pong", &req).unwrap();
+    let mut state = postui_core::fixtures::load_local_state(dir.path()).unwrap();
+    state.open_request = Some("main/pong".into());
+    postui_core::fixtures::save_local_state(dir.path(), &state).unwrap();
+    let app = launch(dir.path());
+    assert_eq!(app.editor.slug.as_deref(), Some("main/pong"), "the request was restored");
+    assert!(!app.anims.active(std::time::Instant::now()), "nothing eases into the first frame");
 }
 
 /// Task #93 (P5): with animations on, a project switch draws the next
