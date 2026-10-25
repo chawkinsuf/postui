@@ -201,7 +201,7 @@ fn short_description(action: &Action) -> Option<&'static str> {
         Action::OpenJqBar => "Filter the JSON with jq",
         Action::OpenJqViews => "Pick or save a jq view",
         Action::RevertJqView => "Revert this view to its saved filter",
-        Action::ClearJqFilter => "Clear the filter",
+        Action::ClearJqFilter => "Start over: no view, empty filter",
         Action::PromptNewRequest => "Create a request in this folder",
         // "Open" over "Switch to", matching the ^O the hint carries; the
         // space and env choosers keep "Switch to", since neither is a

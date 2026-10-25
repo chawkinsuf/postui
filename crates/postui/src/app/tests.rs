@@ -24089,7 +24089,9 @@ fn clearing_from_the_bar_on_a_view_leaves_it_for_an_empty_no_view() {
         &app.keymap,
         &app.hint_ctx(&Hit::ResponseJqClear),
     );
-    assert!(tip.as_deref().unwrap_or_default().starts_with("Clear the filter"), "{tip:?}");
+    // On a view the ✕ leaves it rather than emptying it: the tip says so.
+    let tip = tip.unwrap_or_default();
+    assert!(tip.starts_with("Start over: no view, empty filter"), "{tip:?}");
     click_hit(&mut app, Hit::ResponseJqClear);
     assert!(app.modals.is_empty(), "never asks");
     assert_eq!(app.editor.jq_current_name(), None, "no view is current");
