@@ -1,25 +1,61 @@
 name: build
 
+# Branches merge into main locally (--no-ff) and main is what gets pushed,
+# so main is the branch these gates watch; there are no pull requests.
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
+# The jobs only read the code; artifact uploads use their own token.
+permissions:
+  contents: read
+
 jobs:
-  fmt:
-    runs-on: ubuntu-latest
+  # One job per OS runs every gate, so each OS lints its own cfg code and
+  # reuses one rust-cache for the dependencies. The toolchain follows
+  # stable on purpose: a lint a new release adds turns CI red until it is
+  # fixed, the same as one a change adds.
+  check:
+    strategy:
+      # One OS failing should not hide whether the other passes.
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    # A hung test fails here instead of holding the runner for 6 hours.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
 
+      # rustfmt's output is the same on every OS. It runs before the cache
+      # restore so an unformatted push fails in seconds.
       - name: Check formatting
+        if: runner.os == 'Linux'
         run: cargo fmt --all --check
 
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      # --all-targets turns test-util on through the crates' self
+      # dev-dependencies, so the shipping build is linted on its own too.
+      - name: Clippy (shipping features)
+        run: cargo clippy --locked --workspace --lib --bins -- -D warnings
+
+      # Linux only until the suite passes on macOS: tests there spell keys
+      # the Linux way (`alt+`) where macOS shows `opt+` (#106).
+      - name: Test
+        if: runner.os == 'Linux'
+        run: cargo test --locked --workspace --no-fail-fast
+
   build:
-    needs: fmt
+    needs: check
     strategy:
       matrix:
         include:
@@ -29,6 +65,7 @@ jobs:
           - os: ubuntu-latest
             artifact: postui-linux-x86_64
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -37,7 +74,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --release -p postui
+        run: cargo build --locked --release -p postui
 
       - name: Upload binary
         uses: actions/upload-artifact@v4

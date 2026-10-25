@@ -23539,7 +23539,9 @@ fn clicking_the_chip_or_revert_keeps_a_focused_bar_focused() {
     assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.session.response.jq_focused(), "the footer's views chip kept the caret");
-    // As is everything else on the bar's row.
+    // As is everything else on the bar's row. The ✦ opens its prompt only
+    // when ai_cmd's program is on PATH, so the test names one every host has.
+    app.ui_settings.ai_cmd = "true".into();
     render_once(&mut app);
     click_hit(&mut app, Hit::ResponseJqAiButton);
     assert!(!app.modals.is_empty(), "the ✦ opened its prompt");
