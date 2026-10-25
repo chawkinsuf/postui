@@ -808,7 +808,7 @@ fn replace_with_curl_keeps_views_scratch_and_current() {
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/kept".into()));
     app.editor.jq = ".s".into();
-    app.editor.jq_pick(Some("names"));
+    app.editor.jq_pick("names");
     app.capture_undo();
     let before = app.editor.current_request();
     replace(&mut app, None);

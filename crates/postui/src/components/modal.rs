@@ -5202,10 +5202,11 @@ mod tests {
         assert!(hits.rect_of(&Hit::row_rename(2)).is_none(), "no actions, hovered or not");
     }
 
-    /// Rows with different buttons (the views menu had them until #102): a
-    /// row that clears on `d`, then a row that renames and deletes. Each
-    /// action is a toast naming its button.
-    fn scratch_and_view_items(toast: impl Fn(&str) -> Action) -> Vec<MenuItem> {
+    /// Rows with different buttons, which `Modal::Dropdown` lays out and
+    /// names keys for whatever builds them: a row that clears on `d`, then a
+    /// row that renames and deletes. Each action is a toast naming its
+    /// button.
+    fn mixed_button_items(toast: impl Fn(&str) -> Action) -> Vec<MenuItem> {
         use crate::action::Verb;
         let delete = Verb::Delete { count: 1 };
         vec![
@@ -5230,7 +5231,7 @@ mod tests {
         let screen = Rect::new(0, 0, 80, 24);
         let toast =
             |s: &str| Action::ShowToast(s.to_string(), crate::components::toast::ToastKind::Info);
-        let items = scratch_and_view_items(toast);
+        let items = mixed_button_items(toast);
         let state =
             DropdownState { anchor: Rect::new(10, 5, 8, 1), items, selected: 0, current: None };
         let draw = |hovered: Option<&Hit>| {
@@ -5330,7 +5331,7 @@ mod tests {
             .map(|(k, l, _)| format!("{k} {l}"))
             .collect()
         };
-        let items = scratch_and_view_items(|_| Action::Render);
+        let items = mixed_button_items(|_| Action::Render);
         assert_eq!(
             spelled(items.clone()),
             ["↑↓ navigate", "enter select", "r rename", "d clear/delete", "esc close"]

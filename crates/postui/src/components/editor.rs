@@ -844,11 +844,11 @@ impl Editor {
         }
     }
 
-    /// Makes `name` current (`None` = the scratch) and switches the filter
-    /// on (spec 16). A name no view has picks the scratch.
-    pub fn jq_pick(&mut self, name: Option<&str>) {
-        self.jq_current =
-            name.filter(|n| self.jq_views.iter().any(|v| v.name == *n)).map(str::to_string);
+    /// Makes view `name` current and switches the filter on (spec 16). A
+    /// name no view has leaves no view current. Nothing picks no view: the
+    /// clear is the way there ([`Self::jq_clear_filter`], amendment C5).
+    pub fn jq_pick(&mut self, name: &str) {
+        self.jq_current = self.jq_views.iter().any(|v| v.name == name).then(|| name.to_string());
         self.jq_enabled = true;
     }
 
@@ -5551,7 +5551,7 @@ mod tests {
         let mut ed = editor_with_views();
         let ids: Vec<u64> = ed.jq_views.iter().map(|v| v.id).collect();
         assert_eq!(ids, [1, 2], "load numbers the views");
-        ed.jq_pick(Some("names"));
+        ed.jq_pick("names");
         assert!(ed.jq_enabled, "picking switches the filter on");
         assert!(ed.is_dirty(), "amendment A4: picking is an edit");
         ed.mark_saved();
@@ -5564,7 +5564,7 @@ mod tests {
         assert!(ed.jq_modified("names"));
         assert!(!ed.jq_modified("ids"));
         assert_eq!(ed.jq, ".x", "the scratch is untouched");
-        ed.jq_pick(None);
+        ed.jq_current = None;
         assert_eq!(ed.jq_filter(), ".x", "the scratch is current again");
         ed.set_jq_filter(".y");
         assert_eq!(ed.jq, ".y", "the bar writes the scratch");
@@ -5587,7 +5587,7 @@ mod tests {
         ed.jq_delete("names");
         ed.mark_saved();
         // Edit ids, then discard: the reload takes `saved` from memory.
-        ed.jq_pick(Some("ids"));
+        ed.jq_pick("ids");
         ed.set_jq_filter(".edited");
         assert!(ed.jq_modified("ids"));
         let before_discard = ed.current_request();
@@ -5633,7 +5633,7 @@ mod tests {
         // can pass to another view): no mark, no revert until the next
         // save. Coarser, never wrong.
         let mut ed = editor_with_views();
-        ed.jq_pick(Some("names"));
+        ed.jq_pick("names");
         ed.set_jq_filter(".edited");
         let buffer = ed.current_request();
         let old_ids: Vec<u64> = buffer.jq_views.iter().map(|v| v.id).collect();
@@ -5713,7 +5713,7 @@ mod tests {
     #[test]
     fn current_request_carries_the_views_the_scratch_and_the_switch_as_held() {
         let mut ed = editor_with_views();
-        ed.jq_pick(Some("ids"));
+        ed.jq_pick("ids");
         ed.jq_enabled = false;
         let req = ed.current_request();
         assert_eq!(req.jq_views, ed.jq_views);
@@ -5741,7 +5741,7 @@ mod tests {
     #[test]
     fn revert_restores_only_the_current_views_filter_even_after_a_rename() {
         let mut ed = editor_with_views();
-        ed.jq_pick(Some("names"));
+        ed.jq_pick("names");
         ed.set_jq_filter(".changed");
         ed.jq_rename("names", "Names2").unwrap();
         assert_eq!(ed.jq_saved_filter("Names2"), Some(".items[].name"), "matched by id");
@@ -5776,7 +5776,7 @@ mod tests {
     #[test]
     fn save_as_from_a_modified_view_moves_the_edits() {
         let mut ed = editor_with_views();
-        ed.jq_pick(Some("names"));
+        ed.jq_pick("names");
         ed.set_jq_filter(".items[].name | length");
         ed.jq_save_as("name count").unwrap();
         assert_eq!(ed.jq_current.as_deref(), Some("name count"));
@@ -5790,7 +5790,7 @@ mod tests {
     #[test]
     fn save_as_from_an_unedited_view_is_a_copy() {
         let mut ed = editor_with_views();
-        ed.jq_pick(Some("ids"));
+        ed.jq_pick("ids");
         ed.jq_save_as("ids again").unwrap();
         assert_eq!(ed.jq_views.len(), 3);
         assert_eq!(ed.jq_views[1].filter, ".items[].id");
@@ -5862,7 +5862,7 @@ mod tests {
     fn deleting_the_current_view_falls_back_to_the_scratch() {
         let mut ed = editor_with_views();
         ed.jq = ".s".into();
-        ed.jq_pick(Some("ids"));
+        ed.jq_pick("ids");
         ed.jq_delete("ids");
         assert_eq!(ed.jq_current, None);
         assert_eq!(ed.jq_views.len(), 1);

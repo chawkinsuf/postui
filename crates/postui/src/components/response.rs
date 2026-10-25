@@ -264,9 +264,9 @@ impl JqCompletion {
     }
 }
 
-/// What the jq bar's chip names: the current filter (`no view` or a view),
-/// whether that filter, view or scratch, has unsaved edits (amendment A8),
-/// and whether the request has any
+/// What the jq bar's chip names: the current filter (`no view`, the
+/// scratch, or a view), whether that filter has unsaved edits (amendment
+/// A8), and whether the request has any
 /// views at all. The app pushes it after every sync (`App::sync_jq`); the
 /// bar only draws it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

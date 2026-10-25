@@ -23296,11 +23296,11 @@ fn editing_a_view_dirties_saves_and_reopens() {
 fn picking_a_view_is_an_undo_step_and_dirties() {
     let mut app = views_app("jq_enabled = false");
     let steps = app.history.undo_len();
-    app.editor.jq_pick(Some("names"));
+    app.editor.jq_pick("names");
     assert!(app.capture_undo(), "a pick is an edit");
     assert_eq!(app.history.undo_len(), steps + 1);
     assert!(app.editor.is_dirty());
-    app.editor.jq_pick(Some("total"));
+    app.editor.jq_pick("total");
     assert!(app.capture_undo());
     app.update(Action::Undo);
     assert_eq!(app.editor.jq_current.as_deref(), Some("names"), "back to the view before");
@@ -23593,7 +23593,7 @@ fn the_palette_reverts_an_edited_view_and_refuses_otherwise() {
     refused(&app, "Nothing to revert: view \"names\" is unchanged");
     assert_eq!(app.history.undo_len(), steps + 1);
 
-    app.editor.jq_pick(None); // the saved no-view text, as a reload under a view leaves it
+    app.editor.jq_current = None; // the saved no-view text current, as a load can leave it
     run_revert(&mut app);
     refused(&app, "Nothing to revert: the filter is unchanged");
     assert_eq!(app.editor.jq, ".s");
@@ -23632,7 +23632,7 @@ fn the_focused_bar_offers_a_revert_chip_on_an_edited_view() {
     assert_eq!(view_filter(&app, "names"), ".data.items[].status");
     assert!(!revert_chip(&app), "gone once reverted");
 
-    app.editor.jq_pick(None);
+    app.editor.jq_current = None;
     app.handle_key(alt('q'));
     assert!(!revert_chip(&app), "an unedited scratch has nothing to revert");
     type_str(&mut app, "x");
@@ -23788,32 +23788,39 @@ fn the_views_dropdown_lists_views_divider_and_save_as() {
 }
 
 #[test]
-fn save_as_is_disabled_while_the_bar_is_empty() {
-    let mut app = views_app("");
+fn save_as_takes_an_empty_bar_and_the_new_view_takes_the_typing() {
+    // Amendment C10: with no views and an empty bar the menu still offers
+    // the save, and the empty view it saves is what the typing goes into.
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
     app.update(Action::OpenJqViews);
     let save = views_menu(&app).items.last().unwrap().clone();
     assert_eq!(save.label, "+ save as view\u{2026}");
-    assert!(!save.is_enabled(), "nothing to save");
-    app.update(Action::Close);
-    app.update(Action::JqApply(".data.total".into()));
-    app.update(Action::OpenJqViews);
-    assert_eq!(views_menu(&app).items.last().unwrap().action, Some(Action::PromptSaveJqView));
+    assert_eq!(save.action, Some(Action::PromptSaveJqView), "enabled on an empty bar");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    set_view_prompt(&mut app, "count");
+    app.update(Action::ConfirmTopModal);
+    assert_eq!(app.editor.jq_current_name(), Some("count"));
+    assert_eq!(view_filter(&app, "count"), "");
+    assert!(app.session.response.jq_open(), "a view keeps the bar up");
+    app.handle_key(alt('q'));
+    assert!(app.session.response.jq_focused());
+    type_str(&mut app, ".data.total");
+    assert_eq!(view_filter(&app, "count"), ".data.total");
+    assert_eq!(app.editor.jq, "", "the no-view filter is untouched");
 }
 
 /// Spec 18 holds off the dropdown too: the palette's "save filter as
-/// view…" refuses on an empty bar, and where the bar cannot show.
+/// view…" refuses where the bar cannot show, and takes an empty bar.
 #[test]
-fn the_palettes_save_as_view_refuses_an_empty_bar() {
+fn the_palettes_save_as_view_refuses_where_the_bar_cannot_show() {
     let mut app = views_app("");
     app.update(Action::OpenPalette);
     type_str(&mut app, "save filter as view");
     select_palette_command(&mut app, "response-jq-save-view");
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(app.modals.is_empty(), "no prompt");
-    assert_eq!(app.toasts.last_message(), Some("Nothing to save: the jq bar is empty"));
-    assert_eq!(*app.toasts.entries().last().unwrap().1, ToastKind::Info);
-    assert!(app.last_action_failed);
-    assert_eq!(app.editor.jq_views.len(), 2);
+    assert_eq!(view_prompt(&app).0, "Save as view", "an empty bar may be saved");
+    app.update(Action::CancelTopModal);
 
     let mut app = App::new_for_test();
     ready_response(&mut app, "plain");

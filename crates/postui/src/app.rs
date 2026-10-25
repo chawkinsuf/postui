@@ -2093,9 +2093,9 @@ impl App {
     }
 
     /// Pushes the views dropdown (spec 16): the views in saved order, a
-    /// divider and `+ save as view…`, disabled while the bar is empty (spec
-    /// 18). No view has no row: the bar's ✕ is the way there (amendment
-    /// C5). Each view row has its own rename and delete (spec 17). It hangs
+    /// divider and `+ save as view…`, which an empty bar may take too
+    /// (amendment C10). No view has no row: the bar's ✕ is the way there
+    /// (C5). Each view row has its own rename and delete (spec 17). It hangs
     /// off the chip the last frame drew, else, on a bar opened in this same
     /// action, off where the next frame draws it.
     fn open_jq_views(&mut self) {
@@ -2134,15 +2134,10 @@ impl App {
                 items.iter().map(|i| crate::ui::cells(&i.label)).chain([crate::ui::cells(SAVE_AS)]);
             items.push(MenuItem::disabled("\u{2500}".repeat(widest.max().unwrap_or(0))));
         }
-        items.push(if self.editor.jq_filter().is_empty() {
-            MenuItem::disabled(SAVE_AS)
-        } else {
-            MenuItem::new(SAVE_AS, Action::PromptSaveJqView)
-        });
-        // On no view nothing is marked, and the first row a key can reach is
-        // highlighted.
+        items.push(MenuItem::new(SAVE_AS, Action::PromptSaveJqView));
+        // On no view nothing is marked, and the first row is highlighted.
         let current = self.editor.current_view();
-        let selected = current.unwrap_or_else(|| DropdownState::first_enabled(&items));
+        let selected = current.unwrap_or(0);
         // A collapsed response pane still draws and registers its header,
         // so the pane's rect is there whenever a frame has drawn the app;
         // the zero rect is for an app no frame has drawn (a bare test app),
@@ -5728,7 +5723,7 @@ impl App {
                 if !self.close_inputs_or_stop(true) {
                     return true;
                 }
-                self.editor.jq_pick(Some(&name));
+                self.editor.jq_pick(&name);
                 true
             }
             Action::PromptSaveJqView => {
@@ -5736,15 +5731,10 @@ impl App {
                     return true;
                 }
                 // The palette reaches this without the dropdown, so its
-                // rules hold here too: only where the bar can show, and
-                // never with an empty bar (spec 18).
+                // rule holds here too: only where the bar can show. An empty
+                // bar saves an empty view to type into (amendment C10).
                 if let Some(why) = self.session.response.jq_blocked_reason() {
                     self.toasts.push(why, ToastKind::Info);
-                    self.last_action_failed = true;
-                    return true;
-                }
-                if self.editor.jq_filter().is_empty() {
-                    self.toasts.push("Nothing to save: the jq bar is empty", ToastKind::Info);
                     self.last_action_failed = true;
                     return true;
                 }

@@ -44,6 +44,8 @@ decision 6.)
 | C8 | The no-view chip keeps the accent colour: muted already means a stale result. | mine (approved) |
 | C9 | The reserved view name is "no view" (trimmed, any case), refused by save as, rename and the file reader, as "scratch" was; "scratch" is an ordinary name now. Pre-release, so no migration. *Round 1, mine:* any whitespace between the two words counts as the one space ("no  view", a no-break space), since it paints the same. | mine (approved) |
 
+| C10 | `+ save as view…` is enabled on an empty bar too, from the dropdown and the palette: it saves an empty view, current, for the typing to go into. *Supersedes* spec 18's "disabled while the bar is empty". (Review round 3: with no views and an empty bar, C5 left the dropdown with only a disabled row.) | you ("Can't we just enable the save as view even when there's empty filters?") |
+
 ### Design
 
 - `JqView::SCRATCH` becomes `JqView::NO_VIEW` = `"no view"`, and
