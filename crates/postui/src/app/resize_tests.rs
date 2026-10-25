@@ -380,6 +380,61 @@ fn a_project_with_no_saved_split_opens_at_the_default() {
     assert!(!b.path().join(".local").join("layout.toml").exists(), "B's layout.toml unwritten");
 }
 
+/// Asserts the split's three anims draw `app`'s split settled: none is
+/// easing, and each one's value (with `ui::draw`'s fallback for an anim
+/// never set) is the split field's own.
+fn assert_split_drawn_settled(app: &App) {
+    use crate::anim::AnimKey;
+    let now = std::time::Instant::now();
+    let s = app.split_state();
+    let flag = |on: bool| if on { 1.0 } else { 0.0 };
+    for (key, settled) in [
+        (AnimKey::PaneCollapse, flag(s.editor_minimized)),
+        (AnimKey::ResponseCollapse, flag(s.response_minimized)),
+        (AnimKey::SplitRatio, s.ratio),
+    ] {
+        assert!(app.anims.is_done(key, now), "{key:?} eases instead of drawing at once");
+        assert_eq!(app.anims.value_or(key, now, settled), settled, "{key:?}");
+    }
+}
+
+/// Task #93 (P5): with animations on, a launch draws the project's saved
+/// split at once, not easing out of the 50/50 default.
+#[test]
+fn a_launch_draws_the_saved_split_at_once() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("alpha")).unwrap();
+    let saved = SplitState { editor_minimized: true, response_minimized: false, ratio: 0.25 };
+    let mut layout = postui_core::fixtures::load_layout(dir.path()).unwrap();
+    layout.main_split = Some(saved.to_token());
+    postui_core::fixtures::save_layout(dir.path(), &layout).unwrap();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    // `App::new` builds the animation set after `with_root` returns
+    // (`apply_ui_settings`), with the user's `animations` setting.
+    app.anims = crate::anim::Anims::new(true);
+    app.update(Action::Tick);
+    assert_eq!(app.split_state(), saved);
+    assert_split_drawn_settled(&app);
+}
+
+/// Task #93 (P5): with animations on, a project switch draws the next
+/// project's saved split at once, not easing out of the previous one's.
+#[test]
+fn a_project_switch_draws_the_saved_split_at_once() {
+    let (mut app, _a, b) = super::tests::two_projects();
+    app.anims = crate::anim::Anims::new(true);
+    let saved = SplitState { editor_minimized: false, response_minimized: true, ratio: 0.25 };
+    let mut layout = postui_core::fixtures::load_layout(b.path()).unwrap();
+    layout.main_split = Some(saved.to_token());
+    postui_core::fixtures::save_layout(b.path(), &layout).unwrap();
+    render(&mut app);
+    press(&mut app, "<A-z>");
+    assert_eq!(app.proj().root(), b.path(), "switched");
+    assert_eq!(app.split_state(), saved);
+    assert_split_drawn_settled(&app);
+}
+
 /// S3, E4: the handles show resize shapes, and a live drag keeps its
 /// shape wherever the pointer wanders until the release.
 #[test]
