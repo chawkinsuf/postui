@@ -3944,12 +3944,52 @@ pub fn slugify(s: &str) -> String {
         .collect()
 }
 
+/// Splits a right-aligned row of buttons showing `labels` into the rows
+/// that each fit `max_w` columns (by [`button_row_width`]), as index
+/// ranges, top row first (task #88). The rows fill like wrapped text: each
+/// takes as many of the next buttons as fit, so the order reads the same
+/// left to right, top to bottom, and the last button still ends the
+/// bottom row, in the corner it has on one row. Filling from the start
+/// rather than the end is what keeps the leading answers together: at 40
+/// columns the keyboard question's two profiles share the top row and its
+/// Quit drops below alone, as the startup dialog's Quit does under Edit…,
+/// Reset and Ignore. A button wider than `max_w` gets a row of its own,
+/// and still overflows it.
+fn button_rows(labels: &[&str], max_w: u16) -> Vec<std::ops::Range<usize>> {
+    let mut rows = Vec::new();
+    let mut start = 0;
+    while start < labels.len() {
+        let mut end = start + 1;
+        while end < labels.len() && button_row_width(&labels[start..=end]) <= max_w {
+            end += 1;
+        }
+        rows.push(start..end);
+        start = end;
+    }
+    rows
+}
+
 /// The layout the three blocking dialogs share (`ConfigStartup`,
 /// `ConfigEditInvalid`, `KeymapChoice`): a centered panel at `size`, a bold
 /// title, a wrapped body, and a right-aligned row of Secondary buttons, each
 /// `(label, hit, aimed)`. A button paints Focused when `aimed`, else Hover
 /// under the pointer, else Normal. Paints only the empty panel while the
 /// modal-open animation `t` is below 1.
+///
+/// A panel too narrow for the row (the screen clamps it, and the startup
+/// and keyboard dialogs are raised before the user can resize) wraps it with
+/// [`button_rows`] rather than running it past the border, and grows a
+/// `BUTTON_HEIGHT` per extra row, so the body keeps the rows `size` gives
+/// it (task #88). The labels stay whole: the keyboard question's are its
+/// spec's wording.
+///
+/// A screen too short for the grown panel clamps it, and the extra rows
+/// then come out of the body, which clips (on a narrow *and* short
+/// screen, down to nothing). That is chosen over the old overflow: the
+/// buttons are the answers, so every one stays whole and clickable, and a
+/// lost body line costs reading, not the way out. Only a screen too short
+/// for the rows themselves (about 7 rows tall for two) runs them over
+/// the title.
 #[allow(clippy::too_many_arguments)]
 fn draw_blocking_dialog(
     frame: &mut Frame,
@@ -3963,7 +4003,12 @@ fn draw_blocking_dialog(
     body: &str,
     buttons: &[(&str, crate::hit::Hit, bool)],
 ) {
-    let area = centered_rect(screen, size.0.min(screen.width), size.1.min(screen.height));
+    let width = size.0.min(screen.width);
+    let labels: Vec<&str> = buttons.iter().map(|(l, _, _)| *l).collect();
+    let rows = button_rows(&labels, width.saturating_sub(4));
+    let rows_h = rows.len() as u16 * BUTTON_HEIGHT;
+    let height = size.1.saturating_add(rows_h.saturating_sub(BUTTON_HEIGHT));
+    let area = centered_rect(screen, width, height);
     hits.register(area, crate::hit::Hit::ModalBody);
     paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
     if t < 1.0 {
@@ -3973,9 +4018,7 @@ fn draw_blocking_dialog(
     let title_y = area.y + 1;
     paint::text(frame.buffer_mut(), area.x + 2, title_y, title, theme.text, theme.panel, true);
 
-    let labels: Vec<&str> = buttons.iter().map(|(l, _, _)| *l).collect();
-    let btn_row_w = button_row_width(&labels);
-    let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
+    let buttons_y = area.y + area.height.saturating_sub(1 + rows_h);
     let body_area = Rect {
         x: area.x + 2,
         y: title_y + 2,
@@ -3989,24 +4032,27 @@ fn draw_blocking_dialog(
         body_area,
     );
 
-    let mut x = area.x + area.width.saturating_sub(2 + btn_row_w);
-    for (label, hit, aimed) in buttons {
-        let w = paint::button_min_width(label);
-        let btn_area = Rect { x, y: buttons_y, width: w, height: BUTTON_HEIGHT };
-        let state = if *aimed {
-            ControlState::Focused
-        } else if hovered == Some(hit) {
-            ControlState::Hover
-        } else {
-            ControlState::Normal
-        };
-        Button { label, kind: ButtonKind::Secondary, state }.paint(
-            frame.buffer_mut(),
-            btn_area,
-            theme,
-        );
-        hits.register(btn_area, hit.clone());
-        x += w + 2;
+    for (i, row) in rows.into_iter().enumerate() {
+        let y = buttons_y + i as u16 * BUTTON_HEIGHT;
+        let mut x = area.x + area.width.saturating_sub(2 + button_row_width(&labels[row.clone()]));
+        for (label, hit, aimed) in &buttons[row] {
+            let w = paint::button_min_width(label);
+            let btn_area = Rect { x, y, width: w, height: BUTTON_HEIGHT };
+            let state = if *aimed {
+                ControlState::Focused
+            } else if hovered == Some(hit) {
+                ControlState::Hover
+            } else {
+                ControlState::Normal
+            };
+            let painted = Button { label, kind: ButtonKind::Secondary, state }.paint(
+                frame.buffer_mut(),
+                btn_area,
+                theme,
+            );
+            hits.register(painted, hit.clone());
+            x += w + 2;
+        }
     }
 }
 
@@ -4625,9 +4671,18 @@ mod tests {
     fn draw_modal_buf_with_hits(
         m: &mut ModalStack,
     ) -> (ratatui::buffer::Buffer, crate::hit::HitMap) {
+        draw_modal_buf_with_hits_at(m, 80, 24)
+    }
+
+    /// [`draw_modal_buf_with_hits`] on a `width` × `height` screen.
+    fn draw_modal_buf_with_hits_at(
+        m: &mut ModalStack,
+        width: u16,
+        height: u16,
+    ) -> (ratatui::buffer::Buffer, crate::hit::HitMap) {
         let theme = Theme::dark();
         let keymap = crate::keys::Keymap::default_bindings();
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
             .draw(|f| {
@@ -5738,6 +5793,108 @@ mod tests {
         assert_eq!(m.answer_letters(), vec!['a', 'v', 'q']);
         m.push(prompt_stack().stack.pop().unwrap());
         assert!(m.answer_letters().is_empty(), "a prompt types its letters");
+    }
+
+    /// Draws `modal` on a `width` × 30 screen and checks its buttons, given
+    /// in row order as `(hit, label)`: each sits inside the panel's
+    /// margins, paints its whole label inside its own hit rect (where a
+    /// click lands on it), overlaps no other, and sits below the body's
+    /// last line, `body_end`. The last button keeps the bottom-right
+    /// corner. Returns the row each button sits on, counting from 0 at the
+    /// top row.
+    fn blocking_dialog_rows(
+        modal: Modal,
+        buttons: &[(crate::hit::Hit, &str)],
+        width: u16,
+        body_end: &str,
+    ) -> Vec<usize> {
+        let mut m = ModalStack::default();
+        m.push(modal);
+        let (buf, hits) = draw_modal_buf_with_hits_at(&mut m, width, 30);
+        let panel = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        let row_text = |y: u16, xs: std::ops::Range<u16>| -> String {
+            xs.map(|x| buf.cell((x, y)).unwrap().symbol().to_string()).collect()
+        };
+        let rects: Vec<Rect> = buttons
+            .iter()
+            .map(|(hit, label)| {
+                let r = hits.rect_of(hit).unwrap();
+                assert!(
+                    r.x >= panel.x + 2 && r.right() + 2 <= panel.right(),
+                    "{label} at {r:?} leaves the panel {panel:?} at width {width}"
+                );
+                assert!(r.bottom() < panel.bottom(), "{label} at {r:?} is below the panel");
+                assert_eq!(row_text(r.y + 1, r.x..r.right()).trim(), *label, "{r:?}");
+                assert_eq!(hits.hit_at(r.x + r.width / 2, r.y + 1), Some(hit), "{label}");
+                r
+            })
+            .collect();
+        for (i, a) in rects.iter().enumerate() {
+            for b in &rects[i + 1..] {
+                assert!(!a.intersects(*b), "{a:?} overlaps {b:?} at width {width}");
+            }
+        }
+        let last = rects.last().unwrap();
+        assert_eq!((last.right() + 2, last.bottom() + 1), (panel.right(), panel.bottom()));
+        let top = rects.iter().map(|r| r.y).min().unwrap();
+        let body_row = (panel.y..top)
+            .find(|y| row_text(*y, panel.x..panel.right()).contains(body_end))
+            .unwrap_or_else(|| panic!("the body's {body_end:?} is not above the buttons"));
+        assert!(body_row < top);
+        rects.iter().map(|r| usize::from((r.y - top) / BUTTON_HEIGHT)).collect()
+    }
+
+    /// Task #88: a blocking dialog's button row wraps onto a second row,
+    /// rather than running off the panel, when the panel is too narrow
+    /// for it — the startup and keyboard dialogs are raised before the
+    /// user can resize. The leading answers keep the top row together and
+    /// the last button drops below into the corner; the panel grows so
+    /// the body keeps its room. A panel wide enough keeps the one row.
+    #[test]
+    fn a_blocking_dialogs_buttons_wrap_on_a_narrow_panel() {
+        use crate::hit::Hit;
+        let keymap: Vec<(Hit, &str)> =
+            keymap_choices().iter().map(|(_, l, _, a)| (Hit::KeymapChoice(*a), *l)).collect();
+        let keymap_modal = || Modal::KeymapChoice { aimed: None };
+        let wrapped = blocking_dialog_rows(keymap_modal(), &keymap, 40, "Settings tab.");
+        assert_eq!(wrapped, [0, 0, 1], "the two profiles side by side, Quit below");
+        let one_row = blocking_dialog_rows(keymap_modal(), &keymap, 80, "Settings tab.");
+        assert_eq!(one_row, [0, 0, 0]);
+
+        let startup: Vec<(Hit, &str)> = config_startup_choices()
+            .iter()
+            .map(|(_, l, c)| (Hit::ConfigStartupChoice(*c), *l))
+            .collect();
+        let startup_modal = || Modal::ConfigStartup { error: "bad".into() };
+        assert_eq!(blocking_dialog_rows(startup_modal(), &startup, 40, "bad"), [0, 0, 0, 1]);
+        assert_eq!(blocking_dialog_rows(startup_modal(), &startup, 80, "bad"), [0, 0, 0, 0]);
+
+        // Two buttons, 33 columns: one row still fits a 40-column panel.
+        let invalid = Modal::ConfigEditInvalid {
+            file: crate::action::ConfigFile::Config,
+            path: std::path::PathBuf::from("config-edit.toml"),
+            error: "bad".into(),
+        };
+        let invalid_buttons =
+            [(Hit::ConfigEditKeepEditing, "Keep editing"), (Hit::ConfigEditDiscard, "Discard")];
+        assert_eq!(blocking_dialog_rows(invalid, &invalid_buttons, 40, "bad"), [0, 0]);
+    }
+
+    /// [`button_rows`] fills like wrapped text: each row takes the next
+    /// buttons that fit, a row exactly as wide as the room still fits, and
+    /// a button too wide for any row gets one of its own.
+    #[test]
+    fn button_rows_fill_like_wrapped_text() {
+        // 20, 12 and 8 wide: 44 with the two gaps.
+        let labels = ["Arrows and Enter", "Vim keys", "Quit"];
+        assert_eq!(button_rows(&labels, 44), vec![0..3]);
+        assert_eq!(button_rows(&labels, 43), vec![0..2, 2..3]);
+        assert_eq!(button_rows(&labels, 34), vec![0..2, 2..3]);
+        assert_eq!(button_rows(&labels, 33), vec![0..1, 1..3]);
+        assert_eq!(button_rows(&labels, 22), vec![0..1, 1..3]);
+        assert_eq!(button_rows(&labels, 21), vec![0..1, 1..2, 2..3]);
+        assert_eq!(button_rows(&labels, 4), vec![0..1, 1..2, 2..3]);
+        assert!(button_rows(&[], 40).is_empty());
     }
 
     #[test]
