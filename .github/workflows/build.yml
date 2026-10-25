@@ -7,13 +7,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   # One job per OS runs every gate, so each OS lints its own cfg code and
-  # clippy and the tests share one build cache. The toolchain follows
+  # reuses one rust-cache for the dependencies. The toolchain follows
   # stable on purpose: a lint a new release adds turns CI red until it is
   # fixed, the same as one a change adds.
   check:
