@@ -372,6 +372,16 @@ These become thin callers of `land`:
 - `create_or_save_as` (l.9078) tail: `land(open: Request(new))`.
 - `ForceSwitchProject` (l.4108) and the startup restore (l.910):
   `land(open: restored | Scratch, cursor: OnOpen)`.
+
+  Amended 2026-10-25 (task #99, `mine`). A failed open leaves the
+  editor where it was (step 3), which within one project keeps a
+  request the project still has. Across a switch that request is the
+  outgoing project's, and the editor kept it under the incoming
+  project's root, where a Save writes it over the file of the same
+  slug. So the switch empties the editor to a fresh scratch when it
+  swaps the project in, before it lands: a restore that fails then
+  leaves the scratch, as the startup restore does (its editor starts
+  as one), with the cursor on the first row.
 - `jump_to_request_for_undo`: `land(open: Request(slug))`.
 
 ### 4.3 Recording a step

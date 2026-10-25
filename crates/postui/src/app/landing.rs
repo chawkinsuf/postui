@@ -291,7 +291,7 @@ impl App {
     /// An empty scratch in the editor. Its body is a new buffer, so the
     /// body's engine state goes with the old one: a scratch has no slug
     /// for `Glue::own_body` to tell it from the scratch before.
-    fn fresh_scratch(&mut self) {
+    pub(super) fn fresh_scratch(&mut self) {
         self.editor = self.editor.fresh();
         self.shadow = None;
         self.vim_drop_body();
