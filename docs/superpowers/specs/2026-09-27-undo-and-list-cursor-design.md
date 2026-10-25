@@ -378,10 +378,11 @@ These become thin callers of `land`:
   request the project still has. Across a switch that request is the
   outgoing project's, and the editor kept it under the incoming
   project's root, where a Save writes it over the file of the same
-  slug. So the switch empties the editor to a fresh scratch when it
-  swaps the project in, before it lands: a restore that fails then
-  leaves the scratch, as the startup restore does (its editor starts
-  as one), with the cursor on the first row.
+  slug. So the switch's landing says the editor is foreign
+  (`Landing::editor_foreign`): a restore that fails then seats a
+  scratch, as the startup restore does (its editor starts as one),
+  with the cursor on the first row. A restore that opens is unchanged
+  and keeps the editor's tab and focus, as any open does.
 - `jump_to_request_for_undo`: `land(open: Request(slug))`.
 
 ### 4.3 Recording a step

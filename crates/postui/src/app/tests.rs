@@ -4425,11 +4425,33 @@ fn a_switch_whose_restore_fails_lands_on_a_fresh_scratch() {
     assert_eq!(app.editor.slug, None, "not alpha's slug inside beta");
     assert_eq!(app.editor.url.text(), "", "not alpha's request");
     assert_eq!(app.sidebar.selected, Some(0), "the cursor on the first row, as at launch");
-    // The user fixes beta's file outside the app, then saves.
+    // The user fixes beta's file outside the app, then saves: before the
+    // fix, this Save wrote alpha's request over it.
     postui_core::fixtures::save_request(b.path(), "main/users", &req("https://b/users")).unwrap();
     app.update(Action::SaveRequest);
     let on_disk = std::fs::read_to_string(&broken).unwrap();
     assert!(on_disk.contains("https://b/users"), "beta's request is not overwritten: {on_disk}");
+}
+
+/// Task #99's fix changes only a failed restore: a switch whose restore
+/// opens keeps the editor's tab, as any open does.
+#[test]
+fn a_switch_whose_restore_opens_keeps_the_editor_tab() {
+    let (mut app, _a, b) = two_projects();
+    postui_core::fixtures::save_local_state(
+        b.path(),
+        &postui_core::project::LocalState {
+            open_request: Some("main/pong".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    app.editor.preferred_tab = EditorTab::Vars;
+    app.editor.active_tab = EditorTab::Vars;
+    app.update(Action::ForceSwitchProject(b.path().to_path_buf()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/pong"));
+    assert_eq!(app.editor.preferred_tab, EditorTab::Vars);
+    assert_eq!(app.editor.active_tab, EditorTab::Vars);
 }
 
 #[test]
