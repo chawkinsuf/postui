@@ -4457,12 +4457,13 @@ fn a_switch_whose_restore_opens_keeps_the_editor_tab() {
 }
 
 /// Task #117: a switch between two projects with a POST open on Body
-/// keeps the underline on Body. The empty request the switch holds
-/// between the two (a GET, which cannot show Body) is never drawn, so the
-/// tab syncs once, after the landing, and the underline never heads for
-/// another tab and back.
+/// starts no underline glide. The empty request the switch holds between
+/// the two (a GET, which cannot show Body) is never drawn, so the tab
+/// syncs once, after the landing; a sync on the scratch sent the
+/// underline toward the first tab and back, a glide that grew with the
+/// time the switch spends reading files.
 #[test]
-fn a_post_to_post_switch_keeps_the_underline_on_body() {
+fn a_post_to_post_switch_starts_no_underline_glide() {
     let (mut app, a, b) = two_projects();
     app.anims.set_enabled(true);
     let post = |url: &str| {
@@ -4485,18 +4486,52 @@ fn a_post_to_post_switch_keeps_the_underline_on_body() {
     app.update(Action::ForceOpenRequest("main/send".into()));
     app.update(Action::EditorTabSelect(EditorTab::Body.index()));
     app.anims.finish_all();
-    let left_key = AnimKey::TabUnderline(StripId::EditorTabs);
     app.update(Action::ForceSwitchProject(b.path().to_path_buf()));
     assert_eq!(app.editor.url.text(), "https://b/send");
     assert_eq!(app.editor.active_tab, EditorTab::Body);
-    let (x, _) = app.editor.tab_strip_spans()[EditorTab::Body.draw_position()];
-    let mid = Instant::now() + app.ui_settings.anim_ms.tab_slide / 2;
-    assert_eq!(
-        app.anims.value(left_key, mid),
-        Some(x as f32),
-        "mid-slide, the underline is on Body, not on its way to another tab"
-    );
-    assert_eq!(app.anims.target(left_key), Some(x as f32));
+    // Both requests have the same tabs, so Body sits where it did and
+    // nothing has a reason to move.
+    let now = Instant::now();
+    for key in [
+        AnimKey::TabUnderline(StripId::EditorTabs),
+        AnimKey::TabUnderlineWidth(StripId::EditorTabs),
+    ] {
+        assert!(app.anims.is_done(key, now), "{key:?}: no glide started by the switch");
+    }
+}
+
+/// Task #117: the switch's one tab sync comes after the landing, so a
+/// restore that fails from a POST on Body leaves the scratch (a GET) on a
+/// tab it can show.
+#[test]
+fn a_failed_restore_from_body_lands_the_scratch_on_a_tab_it_shows() {
+    let (mut app, a, b) = two_projects();
+    postui_core::fixtures::save_request(
+        a.path(),
+        "main/send",
+        &postui_core::model::HttpRequest::from_toml_str(
+            "method = \"POST\"\nurl = \"https://a/send\"",
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(b.path().join("requests/main/send.toml"), "not = [valid").unwrap();
+    postui_core::fixtures::save_local_state(
+        b.path(),
+        &postui_core::project::LocalState {
+            open_request: Some("main/send".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/send".into()));
+    app.update(Action::EditorTabSelect(EditorTab::Body.index()));
+    assert_eq!(app.editor.active_tab, EditorTab::Body);
+    app.update(Action::ForceSwitchProject(b.path().to_path_buf()));
+    assert_eq!(app.editor.slug, None, "the restore failed");
+    assert_ne!(app.editor.active_tab, EditorTab::Body, "a GET scratch cannot show Body");
+    assert!(app.editor.tab_enabled(app.editor.active_tab));
 }
 
 #[test]

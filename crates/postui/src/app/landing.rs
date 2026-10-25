@@ -320,11 +320,13 @@ impl App {
     /// table's row cursor starts over, since it indexed the old request.
     /// The old project's held request needs no release: that project is
     /// dropped by the swap.
+    ///
+    /// The kept tab may be one the scratch cannot show (Body on a GET).
+    /// It is not synced here: the scratch is never drawn, and a sync would
+    /// send the tab underline toward another tab and back within the
+    /// switch (#117). The switch syncs once, after its landing.
     pub(super) fn release_for_project_switch(&mut self) {
         self.install_scratch(self.editor.fresh_keeping_place());
-        // The kept tab may be one a scratch cannot show (Body on a GET);
-        // the restore's open puts it back when its method allows.
-        self.sync_active_tab();
     }
 
     /// The view an undo step records (§4.1).

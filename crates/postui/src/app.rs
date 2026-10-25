@@ -5407,6 +5407,11 @@ impl App {
                     cursor: Some(CursorAim::OnOpen),
                     ..Landing::default()
                 });
+                // The one tab sync of the switch: an open that landed has
+                // synced already, and a restore that failed leaves the
+                // release's scratch on the kept tab, which may be one a GET
+                // cannot show.
+                self.sync_active_tab();
                 self.registry.register(target);
                 self.save_registry();
                 self.toasts.push(format!("Switched to {name}"), ToastKind::Success);
