@@ -339,7 +339,10 @@ async fn run(
 }
 
 /// Hands the request body to `$EDITOR` (falling back to `vi`), then reads it
-/// back. The TUI is fully torn down for the duration so the child editor owns
+/// back. What the file holds, and what comes off it on the way back (the
+/// final newline, #29), is a pair: `Editor::body_editor_file` and
+/// `Editor::set_body_from_editor_file`. Nothing is added or stripped here.
+/// The TUI is fully torn down for the duration so the child editor owns
 /// the terminal, and rebuilt afterwards. If the editor cannot be run or exits
 /// non-zero the body is left untouched and the failure is toasted, because
 /// silently discarding a half-written body would be the worst outcome here.

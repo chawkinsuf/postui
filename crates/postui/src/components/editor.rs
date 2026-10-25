@@ -1251,13 +1251,19 @@ impl Editor {
     /// exact: the ending taken off is the one put on.
     ///
     /// What it gives up: an editor that shows a final `\n` as an empty row
-    /// of its own (VS Code without `files.insertFinalNewline`, Emacs) shows
-    /// one empty row more than postui does. Leaving it, or deleting it,
-    /// round-trips to the same body. An editor set to trim final newlines
-    /// on save trims the body's own empty last rows too, as it would in
-    /// any file.
+    /// of its own (VS Code without `files.insertFinalNewline`) shows one
+    /// empty row more than postui has, and the body is what it shows less
+    /// that one. Leaving the extra row gives back the body unchanged; a
+    /// body with no empty last row also survives deleting it, but one
+    /// with an empty last row loses that row when the user deletes the
+    /// row they see as extra. Writing the body as-is would move that cost
+    /// onto Vim-style editors (the fallback `vi` included), where an empty
+    /// last row would not show at all. An editor set to trim final
+    /// newlines on save trims the body's own empty last rows either way.
     pub fn body_editor_file(&self) -> String {
-        format!("{}\n", self.body_text())
+        let mut file = self.body_text();
+        file.push('\n');
+        file
     }
 
     /// Replaces the body with the text `$EDITOR` wrote back to the file
@@ -7717,11 +7723,6 @@ mod editor_file_tests {
                 body,
                 "a CRLF editor's write, {body:?}"
             );
-            assert_eq!(
-                editor_round_trip(body, |f| raw_editor_lines(f).join("\n")),
-                body,
-                "a no-final-newline editor's write, {body:?}"
-            );
         }
     }
 
@@ -7762,7 +7763,17 @@ mod editor_file_tests {
         assert_eq!(
             editor_round_trip("{}", |_| "{}".to_string()),
             "{}",
-            "VS Code: the empty row the file shows, deleted"
+            "VS Code: the extra empty row the file shows, deleted"
+        );
+        // The cost `body_editor_file` names: VS Code shows `{}`, ``, `` for
+        // this body, and deleting the row seen as extra takes the body's own.
+        assert_eq!(
+            editor_round_trip("{}\n", |f| {
+                let lines = raw_editor_lines(f);
+                lines[..lines.len() - 1].join("\n")
+            }),
+            "{}",
+            "VS Code: the row seen as extra, deleted from a body with an empty last row"
         );
     }
 
