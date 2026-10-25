@@ -7,6 +7,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# The jobs only read the code; artifact uploads use their own token.
+permissions:
+  contents: read
+
 jobs:
   # One job per OS runs every gate, so each OS lints its own cfg code and
   # reuses one rust-cache for the dependencies. The toolchain follows
@@ -26,12 +30,13 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
-
-      # rustfmt's output is the same on every OS.
+      # rustfmt's output is the same on every OS. It runs before the cache
+      # restore so an unformatted push fails in seconds.
       - name: Check formatting
         if: runner.os == 'Linux'
         run: cargo fmt --all --check
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
