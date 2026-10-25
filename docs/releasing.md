@@ -123,6 +123,17 @@ second copy, kept at the same minor version.
    ```
 3. Commit; the next push to main checks it on GitHub.
 
+## Moving off Ubuntu 22.04
+
+The Linux builds and dist's own jobs run on `ubuntu-22.04` and
+`ubuntu-22.04-arm`, named in `[dist.github-custom-runners]` in
+`dist-workspace.toml`. 22.04's standard support ends in April 2027, and
+GitHub retires the runner images around then; after that a tag push gets no
+runner and nothing is released. Before it happens, change those runner
+names to the next LTS (for example `ubuntu-24.04` and `ubuntu-24.04-arm`),
+run `dist generate`, and commit. The release binaries then need that
+release's glibc (2.39 for 24.04), so say so in the release notes.
+
 ## Upgrading dist
 
 dist's GitHub releases are ahead of crates.io (0.33.x is on GitHub only),

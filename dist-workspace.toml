@@ -12,6 +12,9 @@ cargo-dist-version = "0.33.1"
 packages = ["postui"]
 # CI backends to support
 ci = "github"
+# No pull requests here (branches merge into main locally), so release.yml
+# gets no pull_request trigger.
+pr-run-mode = "skip"
 # The installers to generate for each app
 installers = ["shell", "homebrew"]
 # The tap the formula is pushed to, by the homebrew publish job with the
@@ -37,7 +40,9 @@ install-updater = false
 # Named outright so a dist upgrade that changes its defaults can't move a
 # build. Both macOS targets build on the arm64 runner (x86_64 by cross
 # compiling). Linux builds on Ubuntu 22.04, so the binaries need glibc 2.35
-# or newer; arm64 Linux builds natively on GitHub's arm runner.
+# or newer; arm64 Linux builds natively on GitHub's arm runner. When GitHub
+# retires the 22.04 images (22.04's standard support ends April 2027), move
+# to the next LTS here, which raises the glibc floor (docs/releasing.md).
 [dist.github-custom-runners]
 global = "ubuntu-22.04"
 aarch64-apple-darwin = "macos-14"
