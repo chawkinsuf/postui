@@ -3,9 +3,69 @@
 Date: 2026-10-23
 Status: approved 2026-10-23; amended 2026-10-24 (the scratch is file
 content, below), amendment approved 2026-10-24; amended again 2026-10-24
-(#101, the bar's layout, copy to scratch and clear), approved in chat
-Task: #96, #101
+(#101, the bar's layout, copy to scratch and clear), approved in chat;
+amended again 2026-10-24 (#102, no view, one clear, no copy), approved
+in chat
+Task: #96, #101, #102
 Builds on: `2026-09-03-jq-response-filter-design.md`
+
+## Amendment 2026-10-24 (#102): "no view", one ✕ to clear, no copy
+
+**Supersedes** B4's `⧉`, B7, B9's copy button, `c` key and chip, B10's
+copy entry, and every place the UI says "scratch". The model is
+unchanged: the scratch is still the request's unnamed filter, and the
+code still calls it that.
+
+### Why
+
+From the user after #101: "i dont like the copy view to scratch. the copy
+icon doesnt make sense. that makes me think something is going to the
+clipboard." "'clear the scratch' sounds strange too." "calling it scratch
+is a little strange in general i think. the app thinks of it as scratch.
+but the user doesnt really. its just, no view more than its scratch." On
+what they reach for: "i really just want to clear the filter and start
+from the beginning." And: "maybe an 'x' to clear the current view? copy
+to scratch doesnt seem necessary now that i think about it, i can just
+save as a new view for that use case." (Save as view from an edited view
+already moves the edits to the new view and reverts the source,
+decision 6.)
+
+### Rules
+
+| # | Rule | Source |
+|---|---|---|
+| C1 | The UI never says "scratch". The chip and the dropdown row read **no view**; tooltips, palette entries and toasts say "filter". | you (the idea, "no view"); the wording mine (approved) |
+| C2 | Copy to scratch is gone: the bar's `⧉`, a view row's `⧉` and its `c` key (and the footer's `c` chip), and the palette entry. | you |
+| C3 | The bar's slot shows `✕` **Clear the filter** on any view and on no view with text, and stays blank on an empty no view. Its width never changes (B4's reservation stands). | you (the ✕); when it shows mine (approved) |
+| C4 | **Clear the filter** (the bar's `✕`, the palette) leaves the current view for no view with an empty filter. The view is untouched, unsaved edits included. On no view it empties the filter. Never asks; one undo step, which brings back the old no-view text and the view current. The switch stays as it is; from the palette focus stays put, and the bar's `✕` gives the bar the caret (B8's click rule). An empty no view refuses: "Nothing to clear: the filter is empty". | you ("an x to clear the current view", "start from the beginning"); the rest mine (approved) |
+| C5 | The dropdown's no-view row keeps its `✕` on `d`/`dd` (B9): it empties that row's filter only, and what is current does not change, as every row's button acts on its own row. Its tip is "Clear this filter". | mine |
+| C6 | Both clears say "Filter cleared" with the undo hint. | mine (approved) |
+| C7 | The palette's clear is "Response: clear jq filter" (C4). | mine |
+| C8 | The no-view chip keeps the accent colour: muted already means a stale result. | mine (approved) |
+| C9 | The reserved view name is "no view" (trimmed, any case), refused by save as, rename and the file reader, as "scratch" was; "scratch" is an ordinary name now. Pre-release, so no migration. | mine (approved) |
+
+### Design
+
+- `JqView::SCRATCH` becomes `JqView::NO_VIEW` = `"no view"`, and
+  `ViewNameRefusal::Scratch` becomes `Reserved`.
+- `JqChip`'s `on_view` and `scratch_has_text` become one `clearable`
+  (C3); `Hit::ResponseJqCopy`, `Action::CopyJqViewToScratch`,
+  `Verb::CopyToScratch`, its `c` binding, `Hit::row_copy` and
+  `Editor::jq_copy_to_scratch` go.
+- New `Action::ClearJqFilter` (C4) beside `ClearJqScratch` (C5, the
+  dropdown row's); the bar's `✕` sends `ClearJqFilter`.
+
+### Tests
+
+- The slot shows `✕` on a view and on no view with text, nothing on an
+  empty no view; the chip's column does not move.
+- The bar's `✕` on an edited view: no view, empty, the view keeps its
+  edits, the caret in the bar; one undo brings back the old text and the
+  view current.
+- The palette's clear on a view: no view, empty, focus and switch stay.
+- The no-view row's `✕`/`d` leaves the current view current.
+- The chip and dropdown read "no view"; no hint, toast or palette entry
+  says "scratch"; a view named "No View" is refused, "scratch" is not.
 
 ## Amendment 2026-10-24 (#101): the chip moves right, copy to scratch, clear
 
