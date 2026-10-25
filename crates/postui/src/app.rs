@@ -5723,6 +5723,10 @@ impl App {
                 if !self.close_inputs_or_stop(true) {
                     return true;
                 }
+                // Its own step, like every view edit made from the menu: a
+                // pick can empty the typed filter (amendment C12), and one
+                // undo must bring exactly that back.
+                self.no_coalesce = true;
                 self.editor.jq_pick(&name);
                 true
             }
