@@ -4456,6 +4456,49 @@ fn a_switch_whose_restore_opens_keeps_the_editor_tab() {
     assert_eq!(app.editor.sub_focus, crate::components::editor::SubFocus::Content);
 }
 
+/// Task #117: a switch between two projects with a POST open on Body
+/// keeps the underline on Body. The empty request the switch holds
+/// between the two (a GET, which cannot show Body) is never drawn, so the
+/// tab syncs once, after the landing, and the underline never heads for
+/// another tab and back.
+#[test]
+fn a_post_to_post_switch_keeps_the_underline_on_body() {
+    let (mut app, a, b) = two_projects();
+    app.anims.set_enabled(true);
+    let post = |url: &str| {
+        postui_core::model::HttpRequest::from_toml_str(&format!(
+            "method = \"POST\"\nurl = \"{url}\""
+        ))
+        .unwrap()
+    };
+    postui_core::fixtures::save_request(a.path(), "main/send", &post("https://a/send")).unwrap();
+    postui_core::fixtures::save_request(b.path(), "main/send", &post("https://b/send")).unwrap();
+    postui_core::fixtures::save_local_state(
+        b.path(),
+        &postui_core::project::LocalState {
+            open_request: Some("main/send".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/send".into()));
+    app.update(Action::EditorTabSelect(EditorTab::Body.index()));
+    app.anims.finish_all();
+    let left_key = AnimKey::TabUnderline(StripId::EditorTabs);
+    app.update(Action::ForceSwitchProject(b.path().to_path_buf()));
+    assert_eq!(app.editor.url.text(), "https://b/send");
+    assert_eq!(app.editor.active_tab, EditorTab::Body);
+    let (x, _) = app.editor.tab_strip_spans()[EditorTab::Body.draw_position()];
+    let mid = Instant::now() + app.ui_settings.anim_ms.tab_slide / 2;
+    assert_eq!(
+        app.anims.value(left_key, mid),
+        Some(x as f32),
+        "mid-slide, the underline is on Body, not on its way to another tab"
+    );
+    assert_eq!(app.anims.target(left_key), Some(x as f32));
+}
+
 #[test]
 fn a_space_switch_does_not_fade_the_band_in_from_the_old_space_row() {
     let (mut app, _dir) = spaced_app();
