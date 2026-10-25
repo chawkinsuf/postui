@@ -171,8 +171,9 @@ impl ChooserState {
 
     /// Moves the selection to the nearest enabled row above (or below,
     /// when `down`), stepping over disabled ones. With none there it
-    /// stays put, and the list scrolls to that end instead, so disabled
-    /// rows past the last enabled one come into view (review round 1).
+    /// stays put, and the list scrolls toward that end instead, so the
+    /// disabled rows past it come into view, as many as fit with the
+    /// selection still showing (review round 1).
     fn step(&mut self, down: bool) {
         let next = if down {
             (self.selected + 1..self.filtered.len()).find(|&i| self.enabled(i))
@@ -387,7 +388,10 @@ impl ChooserState {
     }
 
     fn refilter(&mut self) {
-        // Without a filter box every row stays listed.
+        // Without a filter box every row stays listed. With one, a
+        // disabled row filters like any other: it is a listed row, only
+        // not a selectable one. (No filtered chooser lists one today; the
+        // theme picker, the one that does, has no box.)
         self.filtered = match &self.input {
             None => (0..self.items.len()).collect(),
             Some(input) => self

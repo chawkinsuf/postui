@@ -19973,7 +19973,7 @@ mod undo_tests {
         let light = theme_picker_rows(&app);
         assert_eq!(
             light[0],
-            (None, Some("disabled: a dark theme".into()), true),
+            (Some("terminal".into()), Some("disabled: a dark theme".into()), true),
             "row 0 in both sets"
         );
         assert!(light[1..].iter().all(|(_, _, off)| !off), "only Terminal is disabled");
@@ -19995,7 +19995,10 @@ mod undo_tests {
         app.update(Action::ApplyTheme("gruvbox-dark".into()));
         app.update(Action::OpenThemeChooser);
         let dark = theme_picker_rows(&app);
-        assert_eq!(dark[0], (None, Some("disabled: a light theme".into()), true));
+        assert_eq!(
+            dark[0],
+            (Some("terminal".into()), Some("disabled: a light theme".into()), true)
+        );
         let Some(crate::components::modal::Modal::Chooser(c)) = app.modals.top() else {
             unreachable!()
         };

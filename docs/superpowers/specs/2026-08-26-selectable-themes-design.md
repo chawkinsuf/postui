@@ -161,7 +161,10 @@ way existing config writes do.
   Home/End stop at the first and last enabled rows, so the highlight,
   which is the live preview, never lands on the other polarity. The
   detail names the theme's polarity rather than the terminal's because a
-  silent terminal gets the Dark fallback. The rule is
+  silent terminal gets the Dark fallback. Only Terminal stays listed: a
+  custom theme of the other polarity still drops out, which moves no row
+  when it has a new name, since customs are listed after the built-ins.
+  The rule is
   the chooser's (`ChooserItem::disabled`), so any chooser can list a row
   it can't offer.
 - The existing 256-color downgrade path applies to every applied theme,

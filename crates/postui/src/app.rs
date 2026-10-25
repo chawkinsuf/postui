@@ -1183,43 +1183,37 @@ impl App {
     /// because the highlight is the live preview and a set never shows
     /// the other polarity's palette. Only Terminal: it is the one row
     /// whose polarity is the terminal's rather than its own, and it comes
-    /// first. A custom theme of the other polarity still drops out, which
-    /// moves no row, since customs are listed after every built-in.
+    /// first. A custom theme of the other polarity still drops out; one
+    /// with a new name is listed after every built-in, so that moves no
+    /// row.
     fn theme_picker_items(&self) -> Vec<crate::components::chooser::ChooserItem> {
+        use crate::theme::ThemeSource;
         self.themes
             .entries()
             .iter()
             .filter_map(|e| {
                 let in_set =
                     self.themes.entry_is_dark(e, &self.terminal_colors) == self.theme_picker_dark;
-                let terminal = matches!(e.source, crate::theme::ThemeSource::Terminal);
-                (in_set || terminal).then_some((e, in_set))
-            })
-            .map(|(e, in_set)| {
-                if !in_set {
+                let detail = match (&e.source, in_set) {
+                    (ThemeSource::Terminal, true) => "terminal colors".to_string(),
                     // It names the theme's polarity, not the terminal's: a
                     // terminal that reported no colors gets the dark
                     // fallback, which is still what this theme would show.
-                    let theirs = if self.theme_picker_dark { "light" } else { "dark" };
-                    return crate::components::chooser::ChooserItem {
-                        label: e.label.clone(),
-                        detail: Some(format!("disabled: a {theirs} theme")),
-                        disabled: true,
-                        ..Default::default()
-                    };
-                }
-                let detail = match &e.source {
-                    crate::theme::ThemeSource::Terminal => "terminal colors",
-                    crate::theme::ThemeSource::Builtin(_) => "built-in",
-                    crate::theme::ThemeSource::Custom(_) => "custom",
+                    (ThemeSource::Terminal, false) => {
+                        let theirs = if self.theme_picker_dark { "light" } else { "dark" };
+                        format!("disabled: a {theirs} theme")
+                    }
+                    (_, false) => return None,
+                    (ThemeSource::Builtin(_), true) => "built-in".to_string(),
+                    (ThemeSource::Custom(_), true) => "custom".to_string(),
                 };
-                crate::components::chooser::ChooserItem {
+                Some(crate::components::chooser::ChooserItem {
                     label: e.label.clone(),
-                    detail: Some(detail.into()),
+                    detail: Some(detail),
                     actions: vec![Action::ApplyTheme(e.name.clone())],
                     id: Some(e.name.clone()),
-                    ..Default::default()
-                }
+                    disabled: !in_set,
+                })
             })
             .collect()
     }
@@ -5206,7 +5200,11 @@ impl App {
                 // polarity's (much brighter/darker) palettes. Left/Right,
                 // Tab/BackTab or the title-row toggle flips to the other set.
                 // No filter box: a handful of rows needs no search, and it
-                // leaves the arrows to the toggle (task #6, you).
+                // leaves the arrows to the toggle (task #6, you). The
+                // applied theme's polarity is its entry's (`entry_is_dark`
+                // reads the same seed background, and a contrast step
+                // never flips it, spec 2026-10-16 C14), so the applied
+                // theme is never the set's disabled Terminal row.
                 self.theme_picker_dark = self.theme.is_dark();
                 // Previewing: the screen behind stays undimmed, since it
                 // is what the highlighted theme looks like (task #16, you).
