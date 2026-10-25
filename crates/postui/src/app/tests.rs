@@ -24073,10 +24073,13 @@ fn the_views_dropdown_has_no_copy_key() {
     let mut app = views_app("jq = \".s\"");
     app.update(Action::OpenJqViews);
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let toasts = app.toasts.messages().len();
     press(&mut app, 'c');
+    assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "still open");
+    assert_eq!(views_menu(&app).selected, 1, "the highlight stays");
+    assert_eq!(app.toasts.messages().len(), toasts, "nothing said");
     assert_eq!(app.editor.jq, ".s");
     assert_eq!(app.editor.jq_current_name(), None);
-    assert!(app.editor.jq_views.iter().all(|v| v.name != "c"));
 }
 
 /// Amendment C7: the palette's clear on a view leaves it for an empty no
@@ -24139,7 +24142,7 @@ fn clearing_the_scratch_from_the_dropdown_keeps_the_current_view() {
     assert!(views_menu(&app).items[0].buttons.is_empty(), "nothing left to clear");
     app.update(Action::Close);
     app.update(Action::ClearJqScratch);
-    assert_eq!(app.toasts.last_message(), Some("Nothing to clear: the filter is empty"));
+    assert_eq!(app.toasts.last_message(), Some("Nothing to clear: the no-view filter is empty"));
     assert!(app.last_action_failed);
     // The current view's clear still has the view to leave (amendment C4).
     app.last_action_failed = false;

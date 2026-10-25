@@ -42,7 +42,7 @@ decision 6.)
 | C6 | Both clears say "Filter cleared" with the undo hint. | mine (approved) |
 | C7 | The palette's clear is "Response: clear jq filter" (C4). | mine |
 | C8 | The no-view chip keeps the accent colour: muted already means a stale result. | mine (approved) |
-| C9 | The reserved view name is "no view" (trimmed, any case), refused by save as, rename and the file reader, as "scratch" was; "scratch" is an ordinary name now. Pre-release, so no migration. | mine (approved) |
+| C9 | The reserved view name is "no view" (trimmed, any case), refused by save as, rename and the file reader, as "scratch" was; "scratch" is an ordinary name now. Pre-release, so no migration. *Round 1, mine:* any whitespace between the two words counts as the one space ("no  view", a no-break space), since it paints the same. | mine (approved) |
 
 ### Design
 

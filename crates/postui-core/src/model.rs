@@ -204,7 +204,9 @@ impl JqView {
         if name.chars().any(char::is_control) {
             return Some(ViewNameRefusal::Control);
         }
-        if key == Self::NO_VIEW {
+        // Any run of whitespace between the words reads as one space on
+        // the chip, so "no  view" and a no-break space are "no view" too.
+        if key.split_whitespace().eq(Self::NO_VIEW.split(' ')) {
             return Some(ViewNameRefusal::Reserved);
         }
         others.into_iter().any(|o| Self::name_key(o) == key).then_some(ViewNameRefusal::Taken)
@@ -312,7 +314,10 @@ fn valid_view_names<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<JqView
                 format!("the jq view name {:?} holds a control character", v.name)
             }
             Some(ViewNameRefusal::Reserved) => {
-                format!("a jq view is named {:?}, which is reserved", v.name.trim())
+                format!(
+                    "a jq view is named {:?}, the name the jq bar shows for no view",
+                    v.name.trim()
+                )
             }
             Some(ViewNameRefusal::Taken) => {
                 format!("two jq views are named {:?}", v.name.trim())
@@ -683,9 +688,20 @@ mod tests {
         assert!(blank.to_string().contains("a jq view has a blank name"), "{blank}");
         let reserved = HttpRequest::from_toml_str(&view(" No View")).unwrap_err();
         assert!(
-            reserved.to_string().contains("a jq view is named \"No View\", which is reserved"),
+            reserved
+                .to_string()
+                .contains("a jq view is named \"No View\", the name the jq bar shows for no view"),
             "{reserved}"
         );
+        // Whitespace that paints as the one space is the same name.
+        for lookalike in ["no  view", "no\u{a0}view"] {
+            assert_eq!(
+                JqView::name_refusal(lookalike, []),
+                Some(ViewNameRefusal::Reserved),
+                "{lookalike:?}"
+            );
+        }
+        assert_eq!(JqView::name_refusal("no views", []), None);
         // Amendment C9: "scratch" is an ordinary name now.
         assert!(HttpRequest::from_toml_str(&view("Scratch")).is_ok());
         let tab = HttpRequest::from_toml_str(&view("a\\tb")).unwrap_err();

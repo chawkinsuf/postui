@@ -518,6 +518,18 @@ pub struct App {
     testbed_list_dir_alt: i32,
 }
 
+/// Which jq clear [`App::clear_jq`] runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JqClear {
+    /// `ClearJqFilter`, the bar's ✕ and the palette's: leaves a view for an
+    /// empty no view, or empties no view's filter (amendment C4).
+    Current,
+    /// `ClearJqScratch`, the views dropdown's no-view row: empties that
+    /// row's filter only, the current view staying current, as every row's
+    /// button acts on its own row (C5).
+    NoViewRow,
+}
+
 /// What to do with the chosen startup root once its source is known.
 ///
 /// The confirm-to-create prompt is reserved for a CLI-supplied root: per the
@@ -2172,18 +2184,22 @@ impl App {
         }));
     }
 
-    /// `ClearJqFilter` (`current`) and `ClearJqScratch`. The current
-    /// filter's clear leaves a view for an empty no view (amendment C4);
-    /// the no-view row's empties that row only and leaves the current view
-    /// current, as every row's button acts on its own row (C5).
-    fn clear_jq(&mut self, current: bool) {
+    /// `ClearJqFilter` and `ClearJqScratch`; see [`JqClear`].
+    fn clear_jq(&mut self, which: JqClear) {
         if !self.close_inputs_or_stop(true) {
             return;
         }
-        let clearable =
-            if current { self.editor.jq_clearable() } else { !self.editor.jq.is_empty() };
-        if !clearable {
-            self.toasts.push("Nothing to clear: the filter is empty", ToastKind::Info);
+        let refusal = match which {
+            JqClear::Current => {
+                (!self.editor.jq_clearable()).then_some("Nothing to clear: the filter is empty")
+            }
+            // Named for its row: a view may be current, its filter showing.
+            JqClear::NoViewRow => {
+                self.editor.jq.is_empty().then_some("Nothing to clear: the no-view filter is empty")
+            }
+        };
+        if let Some(why) = refusal {
+            self.toasts.push(why, ToastKind::Info);
             self.last_action_failed = true;
             return;
         }
@@ -2193,10 +2209,9 @@ impl App {
         // bar's own ✕ is a click on the bar, and its handler focuses the
         // bar as a click on the text does (`Hit::ResponseJqClear`).
         self.no_coalesce = true;
-        if current {
-            self.editor.jq_clear_filter();
-        } else {
-            self.editor.jq.clear();
+        match which {
+            JqClear::Current => self.editor.jq_clear_filter(),
+            JqClear::NoViewRow => self.editor.jq.clear(),
         }
         // Said, as a deleted view is: from the palette or the menu the
         // filter may not be on screen to see it go.
@@ -5893,11 +5908,11 @@ impl App {
                 true
             }
             Action::ClearJqFilter => {
-                self.clear_jq(true);
+                self.clear_jq(JqClear::Current);
                 true
             }
             Action::ClearJqScratch => {
-                self.clear_jq(false);
+                self.clear_jq(JqClear::NoViewRow);
                 true
             }
             Action::JqApply(text) => {
