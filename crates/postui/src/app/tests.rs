@@ -2107,8 +2107,6 @@ fn the_footer_field_flag_is_pane_local() {
         false,
         None,
         crate::components::footer::JqBarState::Open,
-        false,
-        false,
         app.pane_field_open(PaneId::Response),
     ));
     assert!(
@@ -17423,8 +17421,6 @@ fn every_named_action_is_mouse_reachable() {
                 None,
                 crate::components::footer::JqBarState::Closed,
                 false,
-                false,
-                false,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -17441,8 +17437,6 @@ fn every_named_action_is_mouse_reachable() {
                 false,
                 None,
                 crate::components::footer::JqBarState::Closed,
-                false,
-                false,
                 false,
             )
             .into_iter()
@@ -17461,8 +17455,6 @@ fn every_named_action_is_mouse_reachable() {
                 false,
                 None,
                 crate::components::footer::JqBarState::Focused,
-                true,
-                false,
                 false,
             )
             .into_iter()
@@ -22480,8 +22472,6 @@ fn the_focused_bar_advertises_enter_apply_and_esc_done() {
         None,
         crate::components::footer::JqBarState::Focused,
         false,
-        false,
-        false,
     ));
     let keys: Vec<(&str, &str)> = chips.iter().map(|(k, l, _)| (k.as_str(), *l)).collect();
     assert_eq!(
@@ -22491,9 +22481,8 @@ fn the_focused_bar_advertises_enter_apply_and_esc_done() {
             ("esc", "done"),
             ("alt+shift+j", "views"),
             ("alt+shift+q", "unfilter"),
-            ("\u{F0674}", "describe…")
         ],
-        "{chips:?}"
+        "{chips:?}: keys only, the bar's keyless ✦ has no chip (#102)"
     );
     // The esc chip is clickable: it closes the bar's field, keeping
     // the filter, exactly as the key does.
@@ -22809,8 +22798,6 @@ fn the_footer_and_palette_reach_the_jq_bar() {
         None,
         crate::components::footer::JqBarState::Closed,
         false,
-        false,
-        false,
     ));
     assert!(
         chips
@@ -23040,8 +23027,6 @@ fn the_response_footer_always_offers_alt_q_filter_and_close_only_while_open() {
             false,
             None,
             state,
-            false,
-            false,
             false,
         ))
     };
@@ -23554,17 +23539,12 @@ fn clicking_the_chip_or_revert_keeps_a_focused_bar_focused() {
     assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.session.response.jq_focused(), "the footer's views chip kept the caret");
-    // As is everything else on the bar's row, and every footer chip. The
-    // footer's describe sits past the clear chip, which 120 cells drop it
-    // for (amendment C13), so it is clicked on a wider frame.
-    for hit in [Hit::ResponseJqAiButton, Hit::FooterChip(Action::OpenJqDescribe)] {
-        rendered_row(&mut app, 160, 0);
-        let r = app.hits.rect_of(&hit).unwrap_or_else(|| panic!("no rect for {hit:?}"));
-        app.handle_mouse(left_down(r.x + 1, r.y));
-        assert!(!app.modals.is_empty(), "{hit:?} opened its prompt");
-        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(app.session.response.jq_focused(), "{hit:?} kept the caret");
-    }
+    // As is everything else on the bar's row.
+    render_once(&mut app);
+    click_hit(&mut app, Hit::ResponseJqAiButton);
+    assert!(!app.modals.is_empty(), "the ✦ opened its prompt");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.session.response.jq_focused(), "the ✦ kept the caret");
     app.handle_key(ctrl('z'));
     app.sync_jq();
     assert_eq!(view_filter(&app, "names"), ".data.items[].statusx", "the typing was its own step");
@@ -23616,60 +23596,32 @@ fn the_palette_reverts_an_edited_view_and_refuses_otherwise() {
     refused(&app, "Nothing to revert: view \"fresh\" is not saved yet");
 }
 
-/// The focused bar advertises revert in its footer while the current view
-/// has unsaved edits, and the chip reverts it.
+/// The focused bar's footer lists keys only (the user, #102): its keyless
+/// buttons, ↺ revert, ✕ clear and ✦ describe, stay on the bar and get no
+/// chip, edited or not. The ↺ shows on an edited view only (C11).
 #[test]
-fn the_focused_bar_offers_a_clear_chip_while_there_is_something_to_clear() {
-    // Amendment C13: with no views row in the menu, the footer is where the
-    // keyboard finds the way to no view.
-    let clear_chip = |app: &App| {
-        crate::ui::footer_chips_of(app)
-            .into_iter()
-            .any(|(_, l, a)| l == "clear" && a == Some(Action::ClearJqFilter))
-    };
-    let mut app = views_app("jq_current = \"names\"");
-    app.handle_key(alt('q'));
-    assert!(app.session.response.jq_focused());
-    assert!(clear_chip(&app), "a view to leave");
-    // Ahead of describe, so a 120-cell footer keeps it.
-    click_hit(&mut app, Hit::FooterChip(Action::ClearJqFilter));
-    assert_eq!(app.editor.jq_current_name(), None);
-    app.handle_key(alt('q'));
-    assert!(app.session.response.jq_focused());
-    assert!(!clear_chip(&app), "an empty bar with no view picked has nothing to clear");
-    type_str(&mut app, ".x");
-    assert!(clear_chip(&app), "typed text to clear");
-}
-
-#[test]
-fn the_focused_bar_offers_a_revert_chip_on_an_edited_view() {
-    let revert_chip = |app: &App| {
-        crate::ui::footer_chips_of(app)
-            .into_iter()
-            .any(|(_, l, a)| l == "revert" && a == Some(Action::RevertJqView))
+fn the_focused_bar_footer_repeats_no_keyless_button() {
+    let keyless = |app: &App| {
+        crate::ui::footer_chips_of(app).into_iter().any(|(_, _, a)| {
+            matches!(a, Some(Action::RevertJqView | Action::ClearJqFilter | Action::OpenJqDescribe))
+        })
     };
     let mut app = views_app("jq = \".s\"\njq_current = \"names\"");
     app.handle_key(alt('q'));
     assert!(app.session.response.jq_focused());
-    assert!(!revert_chip(&app), "an unedited view has nothing to revert");
     type_str(&mut app, "x");
     assert!(app.editor.jq_modified("names"));
-    assert!(revert_chip(&app), "an edited view offers it");
-    let row = rendered_row(&mut app, 120, FOOTER_ROW);
-    assert!(row.contains("revert"), "{row:?}");
-    render_once(&mut app);
-    click_hit(&mut app, Hit::FooterChip(Action::RevertJqView));
+    assert!(!keyless(&app), "an edited view: the ↺ and ✕ are on the bar");
+    click_hit(&mut app, Hit::ResponseJqRevert);
     app.sync_jq();
-    assert_eq!(view_filter(&app, "names"), ".data.items[].status");
-    assert!(!revert_chip(&app), "gone once reverted");
+    assert_eq!(view_filter(&app, "names"), ".data.items[].status", "the ↺ reverts");
 
     app.editor.jq_current = None;
     app.handle_key(alt('q'));
     type_str(&mut app, "x");
-    assert_ne!(app.editor.jq, ".s", "the typed filter differs from the file's");
-    assert!(!revert_chip(&app), "amendment C11: with no view picked there is no revert");
+    assert!(!keyless(&app));
     render_once(&mut app);
-    assert!(app.hits.rect_of(&Hit::ResponseJqRevert).is_none(), "nor a ↺");
+    assert!(app.hits.rect_of(&Hit::ResponseJqRevert).is_none(), "C11: no ↺ with no view picked");
 }
 
 #[test]

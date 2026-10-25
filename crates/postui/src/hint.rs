@@ -891,8 +891,6 @@ mod tests {
                                     false,
                                     row,
                                     jq,
-                                    true,
-                                    true,
                                     field_open,
                                 );
                                 for (_, _, action) in chips {
