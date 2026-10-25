@@ -4464,10 +4464,11 @@ fn a_switch_whose_restore_opens_keeps_the_editor_tab() {
 
 /// Task #117: a switch between two projects with a POST open on Body
 /// starts no underline glide. The empty request the switch holds between
-/// the two (a GET, which cannot show Body) is never drawn, so the tab
-/// syncs once, after the landing; a sync on the scratch sent the
-/// underline toward the first tab and back, a glide that grew with the
-/// time the switch spends reading files.
+/// the two (a GET, which cannot show Body) moves the tab off Body and the
+/// landing moves it back, but the underline follows only the tab the
+/// event ends on; when the tab sync moved it too, the underline headed
+/// for the first tab and back, a glide that grew with the time the
+/// switch spends reading files.
 #[test]
 fn a_post_to_post_switch_starts_no_underline_glide() {
     let (mut app, a, b) = two_projects();
@@ -4524,9 +4525,8 @@ fn a_method_change_off_body_glides_the_underline_to_the_first_tab() {
     assert!(!app.anims.is_done(left_key, Instant::now()), "a glide, not a jump");
 }
 
-/// Task #117: the switch's one tab sync comes after the landing, so a
-/// restore that fails from a POST on Body leaves the scratch (a GET) on a
-/// tab it can show.
+/// Task #117: a restore that fails from a POST on Body leaves the
+/// switch's scratch (a GET) on a tab it can show.
 #[test]
 fn a_failed_restore_from_body_lands_the_scratch_on_a_tab_it_shows() {
     let (mut app, a, b) = two_projects();

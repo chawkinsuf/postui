@@ -5407,11 +5407,6 @@ impl App {
                     cursor: Some(CursorAim::OnOpen),
                     ..Landing::default()
                 });
-                // The one tab sync of the switch: an open that landed has
-                // synced already, and a restore that failed leaves the
-                // release's scratch on the kept tab, which may be one a GET
-                // cannot show.
-                self.sync_active_tab();
                 self.registry.register(target);
                 self.save_registry();
                 self.toasts.push(format!("Switched to {name}"), ToastKind::Success);
@@ -12096,16 +12091,19 @@ impl App {
     }
 
     /// Keeps the editor tab underline pinned to the ACTIVE tab's current
-    /// span. A tab switch retargets it explicitly
-    /// ([`Self::retarget_editor_tab_underline`]), but the spans also shift
+    /// span. A tab the user picks retargets it explicitly
+    /// ([`Self::retarget_editor_tab_underline`]); every other move comes
+    /// through here: a tab [`Self::sync_active_tab`] moved (a method change
+    /// off Body, which leaves the underline to this pass so a tab an event
+    /// only passes through starts no glide, #117), and spans that shift
     /// with no switch at all — the Headers/Params/Vars counts differ per
     /// request and change as rows are added, and the Body badge comes and
     /// goes — which used to leave the underline parked at the previous
     /// request's geometry after a request switch. Runs on every `update`
-    /// alongside the other sync_* passes; a glide already headed to the
-    /// right place is left alone, and an untracked pair simply snaps
-    /// (`retarget_with` starts at the target when there's no current
-    /// value).
+    /// alongside the other sync_* passes, so it sees only the tab an event
+    /// ends on; a glide already headed to the right place is left alone,
+    /// and an untracked pair simply snaps (`retarget_with` starts at the
+    /// target when there's no current value).
     fn sync_editor_tab_underline(&mut self) {
         let spans = self.editor.tab_strip_spans();
         let Some(&(x, w)) = spans.get(self.editor.active_tab.draw_position()) else {
