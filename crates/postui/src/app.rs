@@ -1103,7 +1103,13 @@ impl App {
         theme: Theme,
     ) {
         self.clipboard = crate::clipboard::Clipboard::new(&ui_settings);
+        // A fresh set, so the first frame starts with nothing in flight:
+        // whatever `with_root`'s restore started (an underline, a fade) is
+        // dropped, settled. The split's three anims are snapped back in at
+        // the seeded split, so a launch draws it at once just as a project
+        // switch does (task #93).
         self.anims = Anims::new(ui_settings.animations);
+        self.sync_split_anims(true);
         self.theme = theme;
         self.theme_name = theme_name;
         self.theme_contrast = ui_settings.theme_contrast;
@@ -2423,6 +2429,14 @@ impl App {
     /// project's sizes over. A project created in place takes the other
     /// half of the rule: `InitProjectHere` saves the sizes on screen as its
     /// own ([`Self::persist_sizes`]). Saves nothing.
+    ///
+    /// The split is drawn at once, un-eased (task #93): the seed is the
+    /// project's layout arriving, not a change made on screen, so the
+    /// column never eases out of the default (a launch) or the previous
+    /// project's split (a switch). Only here does the app know the change
+    /// is a seed; the `sync_*` passes `update` runs can't tell it from a
+    /// chip click. At a launch, `App::new` then replaces the whole anim
+    /// set and snaps the split's anims back in (`apply_ui_settings`).
     fn seed_sizes_from_project(&mut self) {
         let layout = self.project().map(|p| &p.local().layout);
         let split = layout
@@ -2430,7 +2444,7 @@ impl App {
             .and_then(crate::split::SplitState::from_token)
             .unwrap_or_default();
         self.sidebar_width = layout.and_then(|l| l.sidebar_width);
-        self.set_split_fields(split);
+        self.set_split_now(split);
     }
 
     /// The whole split state the split control reads and drives — the
@@ -2491,10 +2505,11 @@ impl App {
     }
 
     /// Sets the split to `s` with no easing: a live drag's line follows
-    /// the pointer row by row (spec E5, E14). The three anims snap to the
-    /// new values and their targets follow, so the `sync_*` passes
-    /// `update` runs find nothing to ease. Saves nothing; the drag saves
-    /// once at its end (P2).
+    /// the pointer row by row (spec E5, E14), and a project's seeded split
+    /// draws at once ([`Self::seed_sizes_from_project`]). The three anims
+    /// snap to the new values and their targets follow, so the `sync_*`
+    /// passes `update` runs find nothing to ease. Saves nothing; the drag
+    /// saves once at its end (P2).
     fn set_split_now(&mut self, s: crate::split::SplitState) {
         self.set_split_fields(s);
         self.sync_split_anims(true);
@@ -2502,7 +2517,9 @@ impl App {
 
     /// Brings the split's three anims to the split fields — the one place
     /// each anim's target is derived. `update` eases them (`snap` false);
-    /// a live drag snaps them, settled or mid-ease ([`Self::set_split_now`]).
+    /// a live drag and a project's seed snap them, settled or mid-ease
+    /// ([`Self::set_split_now`]), as does a launch's fresh anim set
+    /// ([`Self::apply_ui_settings`]).
     fn sync_split_anims(&mut self, snap: bool) {
         self.sync_pane_collapse_anim(snap);
         self.sync_response_collapse_anim(snap);

@@ -380,6 +380,91 @@ fn a_project_with_no_saved_split_opens_at_the_default() {
     assert!(!b.path().join(".local").join("layout.toml").exists(), "B's layout.toml unwritten");
 }
 
+/// Asserts the split's three anims draw `app`'s split settled: each one is
+/// set, done, and sits at the split field's own value.
+fn assert_split_drawn_settled(app: &App) {
+    use crate::anim::AnimKey;
+    let now = std::time::Instant::now();
+    let s = app.split_state();
+    let flag = |on: bool| if on { 1.0 } else { 0.0 };
+    for (key, settled) in [
+        (AnimKey::PaneCollapse, flag(s.editor_minimized)),
+        (AnimKey::ResponseCollapse, flag(s.response_minimized)),
+        (AnimKey::SplitRatio, s.ratio),
+    ] {
+        assert!(app.anims.is_done(key, now), "{key:?} eases instead of drawing at once");
+        assert_eq!(app.anims.value(key, now), Some(settled), "{key:?}");
+    }
+}
+
+/// A launch on `root` as `App::new` builds it once a project opened:
+/// `with_root`, then `apply_ui_settings` with animations on. (`App::new`
+/// itself reads the real user config, so it isn't unit-testable;
+/// `apply_ui_settings` is the step both of its branches delegate to.)
+fn launch(root: &std::path::Path) -> App {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, root.to_path_buf());
+    let settings =
+        crate::config::UiSettings { animations: true, ..crate::config::UiSettings::default() };
+    app.apply_ui_settings(settings, "dark".into(), crate::theme::Theme::dark());
+    app
+}
+
+/// Task #93 (P5): with animations on, a launch draws the project's saved
+/// split at once, not easing out of the 50/50 default.
+#[test]
+fn a_launch_draws_the_saved_split_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("alpha")).unwrap();
+    let saved = SplitState { editor_minimized: true, response_minimized: false, ratio: 0.25 };
+    let mut layout = postui_core::fixtures::load_layout(dir.path()).unwrap();
+    layout.main_split = Some(saved.to_token());
+    postui_core::fixtures::save_layout(dir.path(), &layout).unwrap();
+    let mut app = launch(dir.path());
+    app.update(Action::Tick);
+    assert_eq!(app.split_state(), saved);
+    assert_split_drawn_settled(&app);
+}
+
+/// Task #93 review round 2: a launch that restores a request draws its
+/// first frame with nothing easing. Whatever `with_root`'s restore started
+/// (the open's tab underline, a fade) is settled before the first frame,
+/// as on main.
+#[test]
+fn a_launch_restoring_a_request_starts_with_nothing_in_flight() {
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("alpha")).unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    let req = postui_core::model::HttpRequest {
+        url: "https://x/pong".into(),
+        ..postui_core::model::HttpRequest::default()
+    };
+    postui_core::fixtures::save_request(dir.path(), "main/pong", &req).unwrap();
+    let mut state = postui_core::fixtures::load_local_state(dir.path()).unwrap();
+    state.open_request = Some("main/pong".into());
+    postui_core::fixtures::save_local_state(dir.path(), &state).unwrap();
+    let app = launch(dir.path());
+    assert_eq!(app.editor.slug.as_deref(), Some("main/pong"), "the request was restored");
+    assert!(!app.anims.active(std::time::Instant::now()), "nothing eases into the first frame");
+}
+
+/// Task #93 (P5): with animations on, a project switch draws the next
+/// project's saved split at once, not easing out of the previous one's.
+#[test]
+fn a_project_switch_draws_the_saved_split_at_once() {
+    let (mut app, _a, b) = super::tests::two_projects();
+    assert!(app.anims.enabled, "animations on, the default");
+    let saved = SplitState { editor_minimized: false, response_minimized: true, ratio: 0.25 };
+    let mut layout = postui_core::fixtures::load_layout(b.path()).unwrap();
+    layout.main_split = Some(saved.to_token());
+    postui_core::fixtures::save_layout(b.path(), &layout).unwrap();
+    render(&mut app);
+    press(&mut app, "<A-z>");
+    assert_eq!(app.proj().root(), b.path(), "switched");
+    assert_eq!(app.split_state(), saved);
+    assert_split_drawn_settled(&app);
+}
+
 /// S3, E4: the handles show resize shapes, and a live drag keeps its
 /// shape wherever the pointer wanders until the release.
 #[test]

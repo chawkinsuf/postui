@@ -9709,12 +9709,21 @@ fn three_params(app: &mut App) {
     }
 }
 
+/// Hides the editor through its real action and settles the ease, so the
+/// next draw shows it hidden. Setting `table_collapsed` alone doesn't: the
+/// draw reads the eased `AnimKey::PaneCollapse`, which the project's seed
+/// already set (task #93).
+fn hide_editor_settled(app: &mut App) {
+    app.update(Action::ToggleTableCollapse);
+    assert!(app.table_collapsed);
+    app.anims.finish_all();
+}
+
 #[test]
 fn collapse_hides_body_and_fades_the_tab_labels_out() {
     let mut app = App::new_for_test();
     three_params(&mut app);
-    app.table_collapsed = true;
-    app.editor.table_collapsed = true;
+    hide_editor_settled(&mut app);
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -9754,7 +9763,7 @@ fn collapse_on_a_table_tab_shrinks_editor_to_a_row_and_grows_response() {
     render_once(&mut app);
     let expanded_response = app.hits.rect_of(&Hit::Pane(PaneId::Response)).unwrap();
 
-    app.table_collapsed = true;
+    hide_editor_settled(&mut app);
     render_once(&mut app);
     let editor = app.hits.rect_of(&Hit::Pane(PaneId::Editor)).unwrap();
     let response = app.hits.rect_of(&Hit::Pane(PaneId::Response)).unwrap();
@@ -9774,8 +9783,7 @@ fn collapse_on_the_body_tab_shrinks_editor_to_chrome_too() {
     render_once(&mut app);
     let expanded_response = app.hits.rect_of(&Hit::Pane(PaneId::Response)).unwrap();
 
-    app.table_collapsed = true;
-    app.editor.table_collapsed = true;
+    hide_editor_settled(&mut app);
     render_once(&mut app);
     let editor = app.hits.rect_of(&Hit::Pane(PaneId::Editor)).unwrap();
     let response = app.hits.rect_of(&Hit::Pane(PaneId::Response)).unwrap();
