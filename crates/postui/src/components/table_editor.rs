@@ -203,6 +203,9 @@ impl TableEditorState {
         let col = open_col(row, col, map.len());
         let text = Self::cell_text(map, row, col);
         self.selected = Some(row);
+        // The cursor column follows the cell that opened, as a click on any
+        // name cell moves it: on the ghost row that is the name, so Esc
+        // then Enter reopens what was open.
         self.col = col;
         self.editing = Some(CellEdit { row, col, input: LineInput::new(&text) });
     }
@@ -217,6 +220,13 @@ impl TableEditorState {
     /// warning), then begins editing `row`/`col` with the caret at the end.
     /// `row == map.len()` targets the ghost row. Clicking the cell already
     /// under edit is inert, so a double click is exactly one edit session.
+    ///
+    /// A click on the ghost row's value cell opens its name ([`open_col`]),
+    /// so the inert check compares the clicked cell, not the redirected
+    /// one, on purpose: with a name typed, a click on that value cell
+    /// commits the name (the new row lands at the ghost's index) and opens
+    /// the new row's value, which is name-then-value by mouse. With the
+    /// name still empty, the click reopens the empty name: no change.
     pub fn click_cell(
         &mut self,
         row: usize,
@@ -270,6 +280,7 @@ impl TableEditorState {
         // makes none; the warning says only that, since what is open after
         // the commit depends on what closed the cell (Tab opens the
         // existing row's value, a click away opens nothing there).
+        debug_assert_eq!(edit.col, Col::Key, "the ghost row's value cell never opens");
         if edit.col != Col::Key || typed.trim().is_empty() {
             return (None, None);
         }
@@ -552,9 +563,10 @@ impl TableEditorState {
         if forward {
             match (row, edit.col) {
                 (Some(r), Col::Key) => self.start_edit(r, Col::Value, map),
-                (Some(r), Col::Value) if r < map.len() => self.start_edit(r + 1, Col::Key, map),
-                // Past the ghost row (and the discarded-ghost case): done.
-                (Some(r), Col::Value) => self.exit_editing(r, map),
+                // A value cell is always a real row's (`open_col`), so the
+                // next row is at most the ghost, whose name opens.
+                (Some(r), Col::Value) => self.start_edit(r + 1, Col::Key, map),
+                // Past the ghost row, its name left empty: done.
                 (None, _) => self.exit_editing(map.len(), map),
             }
         } else {
