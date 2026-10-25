@@ -2,10 +2,11 @@
 # Refuses a commit whose Rust code is not rustfmt-clean, the same check CI
 # runs. Installed by scripts/install-hooks.sh.
 
-# Nothing Rust staged: nothing to check. rust-toolchain.toml counts, since
-# it picks the rustfmt release that does the formatting, and so does
-# deleting it or rustfmt.toml (D), which changes the rules too.
-if ! git diff --cached --name-only --diff-filter=ACMRD | grep -qE '\.rs$|(^|/)rustfmt\.toml$|(^|/)rust-toolchain\.toml$'; then
+# Nothing Rust staged: nothing to check. The files that change rustfmt's
+# rules count too: rustfmt.toml, rust-toolchain.toml (which rustfmt
+# release) and Cargo.toml (`edition` sets the style edition), deleted (D)
+# as well as changed.
+if ! git diff --cached --name-only --diff-filter=ACMRD | grep -qE '\.rs$|(^|/)rustfmt\.toml$|(^|/)rust-toolchain\.toml$|(^|/)Cargo\.toml$'; then
     exit 0
 fi
 

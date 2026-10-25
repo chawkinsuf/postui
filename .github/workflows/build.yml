@@ -7,19 +7,53 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# The jobs only read the code.
+# The jobs only read the code; artifact uploads use their own token.
 permissions:
   contents: read
 
 jobs:
   # fmt, clippy and the tests, defined once in checks.yml so a release tag
   # runs exactly the same gates (release.yml calls it too).
-  #
-  # Binaries come only from release.yml (dist), on a version tag: there is
-  # no per-push build here. A push builds nothing to download; to try a
-  # build before a release, cut a prerelease: set the workspace version to
-  # e.g. 0.2.0-rc.1 (the tag must match it), merge, and tag v0.2.0-rc.1.
-  # dist publishes it as a GitHub prerelease and keeps it out of the
-  # Homebrew tap (docs/releasing.md, "Prereleases").
   check:
     uses: ./.github/workflows/checks.yml
+
+  # Releases come from release.yml (dist), on a version tag. This job still
+  # links the app on every push, the way dist will: the `dist` profile
+  # (release + thin LTO), on the arm64 macOS runner and the Ubuntu 22.04
+  # image the release uses. Clippy never links, so without it a macOS link
+  # failure or an LTO-only break would first show on the release tag. The
+  # binaries are uploaded for trying out main; they are not release builds
+  # (no x86_64 macOS or arm64 Linux, no installers).
+  build:
+    needs: check
+    strategy:
+      matrix:
+        include:
+          # macos-14 runners are Apple Silicon (arm64) — native aarch64 build.
+          - os: macos-14
+            artifact: postui-macos-arm64
+          - os: ubuntu-22.04
+            artifact: postui-linux-x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # With no argument, rustup installs the toolchain rust-toolchain.toml
+      # names.
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --locked --profile dist -p postui
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: target/dist/postui
+          if-no-files-found: error

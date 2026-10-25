@@ -104,19 +104,23 @@ A version with a prerelease suffix goes through the same steps: set the
 workspace version to `1.2.3-rc.1`, commit with the lock file, merge, and
 tag `v1.2.3-rc.1`. It is published as a GitHub *prerelease*,
 and the Homebrew formula is **not** updated, so `brew` users stay on the
-last full release. This is how to get downloadable binaries of main
-between releases: there is no per-push build.
+last full release. Use one to try every release target and the installers
+before a real release. For a quick binary of main, each push's `build`
+workflow uploads `postui-macos-arm64` and `postui-linux-x86_64` artifacts
+(built with the same `dist` profile, but not release builds).
 
 ## Bumping the pinned Rust toolchain
 
 `rust-toolchain.toml` pins the exact Rust release for local builds, the
 `build` workflow and the release builds alike. rustup installs it on the
-first cargo call in the repo; where it can't download (offline, or a
-read-only rustup home such as a sandbox), run `rustup toolchain install`
-once from the repository root first. That bare form reads the file and
-needs rustup 1.28 or newer; with an older rustup, name it:
-`rustup toolchain install 1.97.1 --component rustfmt,clippy`. `rust-version` in `Cargo.toml` is its
-second copy, kept at the same minor version.
+first cargo call in the repo (except rustup 1.28.0, which had that turned
+off); where it can't download (offline, or a read-only rustup home such as
+a sandbox), run `rustup toolchain install` once from the repository root
+first. That bare form reads the file and needs rustup 1.28 or newer; with
+an older rustup, name it:
+`rustup toolchain install 1.97.1 --component rustfmt,clippy`.
+`rust-version` in `Cargo.toml` is its second copy, kept at the same minor
+version.
 
 1. Set `channel` in `rust-toolchain.toml` to the new release (for example
    `"1.98.0"`), and `rust-version` under `[workspace.package]` in
