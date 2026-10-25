@@ -2034,11 +2034,10 @@ impl App {
         // copy of what the chip is made of.
         let current = self.editor.jq_current_name();
         response.set_jq_chip(crate::components::response::JqChip {
-            label: current.unwrap_or(postui_core::model::JqView::SCRATCH).to_string(),
+            label: current.unwrap_or(crate::components::response::JqChip::NO_VIEW).to_string(),
             modified: self.editor.jq_current_modified(),
             has_views: !self.editor.jq_views.is_empty(),
-            on_view: current.is_some(),
-            scratch_has_text: !self.editor.jq.is_empty(),
+            clearable: self.editor.jq_clearable(),
         });
         // A switched-off filter is applied as no filter: the text stays in
         // the bar (closed), the tree shows the full body.
@@ -2063,13 +2062,13 @@ impl App {
     }
 
     /// Lands a menu action's or the AI's filter (`JqApply`, `JqTeeUp`,
-    /// `JqAiFinished`) in the bar as the scratch, and makes the scratch
-    /// current: such an action never rewrites a saved view (spec 8). The
-    /// text was built from the bar, so from the current view's filter.
+    /// `JqAiFinished`) in the bar as the scratch, with no view picked: such
+    /// an action never rewrites a saved view (spec 8). The text was built
+    /// from the bar, so from the current view's filter.
     ///
-    /// On the scratch the text joins the bar's edit session, as it always
-    /// has. Coming off a view, the switch must be one app-history step,
-    /// so that one undo brings back the old scratch with the view current.
+    /// With no view picked the text joins the bar's edit session, as it
+    /// always has. Coming off a view, the switch must be one app-history
+    /// step, so that one undo brings back the view current.
     /// Typing already made on the view in a focused bar is recorded first
     /// as its own step, and the landed text ends the session again. The
     /// caret and focus stay. Left in the session, a ctrl+z in the bar would
@@ -2093,74 +2092,55 @@ impl App {
         }
     }
 
-    /// Pushes the views dropdown (spec 16): `scratch`, the views in saved
-    /// order, a divider and `+ save as view…`, disabled while the bar is
-    /// empty (spec 18). Each view row has its own copy to scratch, rename
-    /// and delete, and the scratch row its clear (spec 17, amendment B9):
-    /// the scratch cannot be deleted, so its delete key clears it. It
-    /// hangs off the chip the last frame drew, else, on a bar opened in
-    /// this same action, off where the next frame draws it.
+    /// Pushes the views dropdown (spec 16): the views in saved order, a
+    /// divider and `+ save as view…`, which an empty bar may take too
+    /// (amendment C10). No view has no row: the bar's ✕ is the way there
+    /// (C5). Each view row has its own rename and delete (spec 17). It hangs
+    /// off the chip the last frame drew, else, on a bar opened in this same
+    /// action, off where the next frame draws it.
     fn open_jq_views(&mut self) {
         use crate::action::Verb;
         use crate::components::modal::{DropdownState, MenuItem, RowButton};
         use ratatui::layout::Rect;
         const SAVE_AS: &str = "+ save as view\u{2026}";
         let delete = Verb::Delete { count: 1 };
-        // Only a scratch with text has a clear, as the bar's slot does.
-        let clear = (!self.editor.jq.is_empty()).then(|| {
-            RowButton::new(
-                delete,
-                "clear",
-                crate::glyph::CLOSE,
-                "Clear the scratch",
-                Action::ClearJqScratch,
-            )
-            .destructive()
-        });
-        let mut items = vec![
-            MenuItem::new(postui_core::model::JqView::SCRATCH, Action::PickJqView(None))
-                .with_buttons(clear.into_iter().collect()),
-        ];
+        let mut items = Vec::new();
         for view in &self.editor.jq_views {
             let name = view.name.clone();
-            items.push(
-                MenuItem::new(name.clone(), Action::PickJqView(Some(name.clone()))).with_buttons(
-                    vec![
-                        RowButton::new(
-                            Verb::CopyToScratch,
-                            "copy",
-                            crate::glyph::COPY,
-                            "Copy this view to the scratch",
-                            Action::CopyJqViewToScratch(Some(name.clone())),
-                        ),
-                        RowButton::new(
-                            Verb::Rename,
-                            "rename",
-                            crate::glyph::PENCIL,
-                            "Rename this view",
-                            Action::PromptRenameJqView(name.clone()),
-                        ),
-                        RowButton::new(
-                            delete,
-                            "delete",
-                            crate::glyph::DELETE,
-                            "Delete this view",
-                            Action::DeleteJqView(name),
-                        )
-                        .destructive(),
-                    ],
+            let buttons = vec![
+                RowButton::new(
+                    Verb::Rename,
+                    "rename",
+                    crate::glyph::PENCIL,
+                    "Rename this view",
+                    Action::PromptRenameJqView(name.clone()),
                 ),
-            );
+                RowButton::new(
+                    delete,
+                    "delete",
+                    crate::glyph::DELETE,
+                    "Delete this view",
+                    Action::DeleteJqView(name.clone()),
+                )
+                .destructive(),
+            ];
+            items.push(MenuItem::new(name.clone(), Action::PickJqView(name)).with_buttons(buttons));
         }
-        let widest =
-            items.iter().map(|i| crate::ui::cells(&i.label)).chain([crate::ui::cells(SAVE_AS)]);
-        items.push(MenuItem::disabled("\u{2500}".repeat(widest.max().unwrap_or(0))));
-        items.push(if self.editor.jq_filter().is_empty() {
-            MenuItem::disabled(SAVE_AS)
-        } else {
-            MenuItem::new(SAVE_AS, Action::PromptSaveJqView)
-        });
-        let current = self.editor.current_view().map_or(0, |i| i + 1);
+        // A divider only parts views from the save; with none it parts
+        // nothing.
+        if !items.is_empty() {
+            let widest =
+                items.iter().map(|i| crate::ui::cells(&i.label)).chain([crate::ui::cells(SAVE_AS)]);
+            items.push(MenuItem::disabled("\u{2500}".repeat(widest.max().unwrap_or(0))));
+        }
+        items.push(MenuItem::new(SAVE_AS, Action::PromptSaveJqView));
+        // On no view nothing is marked. With text typed the save is
+        // highlighted (amendment C14): saving it is the next step, while
+        // Enter on a view would replace it (C12). With nothing typed there
+        // is nothing to protect, and the first row is, as in any dropdown.
+        let current = self.editor.current_view();
+        let typed = !self.editor.jq.is_empty();
+        let selected = current.unwrap_or(if typed { items.len() - 1 } else { 0 });
         // A collapsed response pane still draws and registers its header,
         // so the pane's rect is there whenever a frame has drawn the app;
         // the zero rect is for an app no frame has drawn (a bare test app),
@@ -2171,12 +2151,7 @@ impl App {
                 .rect_of(&Hit::Pane(PaneId::Response))
                 .map_or_else(Rect::default, |pane| self.session.response.jq_chip_rect(pane))
         });
-        self.push_modal(Modal::Dropdown(DropdownState {
-            anchor,
-            items,
-            selected: current,
-            current: Some(current),
-        }));
+        self.push_modal(Modal::Dropdown(DropdownState { anchor, items, selected, current }));
     }
 
     /// Spec 18: a name the editor refused for a view keeps the prompt, with
@@ -2191,7 +2166,6 @@ impl App {
             R::Control => {
                 ("A view name cannot hold a control character".to_string(), ToastKind::Error)
             }
-            R::Scratch => (format!("\"{name}\" is the scratch filter's name"), ToastKind::Error),
             R::Taken => (format!("a view named \"{name}\" already exists"), ToastKind::Error),
         };
         self.toasts.push(text, kind);
@@ -5751,7 +5725,24 @@ impl App {
                 if !self.close_inputs_or_stop(true) {
                     return true;
                 }
-                self.editor.jq_pick(name.as_deref());
+                // Its own step, like every view edit made from the menu: a
+                // pick can empty the typed filter (amendment C12), and one
+                // undo must bring exactly that back. A name no view has any
+                // more picks nothing, so there is no step to mark.
+                let replaced = self.editor.jq_current.is_none() && !self.editor.jq.is_empty();
+                if self.editor.jq_pick(&name) {
+                    self.no_coalesce = true;
+                    // Said, as a clear is, when the pick took typed text away.
+                    if replaced {
+                        self.toasts.push(
+                            format!(
+                                "View \"{name}\" replaced the typed filter{}",
+                                self.undo_hint()
+                            ),
+                            ToastKind::Info,
+                        );
+                    }
+                }
                 true
             }
             Action::PromptSaveJqView => {
@@ -5759,15 +5750,10 @@ impl App {
                     return true;
                 }
                 // The palette reaches this without the dropdown, so its
-                // rules hold here too: only where the bar can show, and
-                // never with an empty bar (spec 18).
+                // rule holds here too: only where the bar can show. An empty
+                // bar saves an empty view to type into (amendment C10).
                 if let Some(why) = self.session.response.jq_blocked_reason() {
                     self.toasts.push(why, ToastKind::Info);
-                    self.last_action_failed = true;
-                    return true;
-                }
-                if self.editor.jq_filter().is_empty() {
-                    self.toasts.push("Nothing to save: the jq bar is empty", ToastKind::Info);
                     self.last_action_failed = true;
                     return true;
                 }
@@ -5783,11 +5769,9 @@ impl App {
                 if !self.close_inputs_or_stop(true) {
                     return true;
                 }
-                // The bar is not re-checked for text: the menu and the
-                // palette offer Save as only with some (spec 18), and a view
-                // whose filter emptied meanwhile, or came from another sender,
-                // is an empty view, which spec 26 allows.
-                // Its own step, like every view edit made from the menu.
+                // An empty bar saves an empty view to type into (amendment
+                // C10; spec 26 allows empty views). Its own step, like every
+                // view edit made from the menu.
                 match self.editor.jq_save_as(&name) {
                     Ok(()) => self.no_coalesce = true,
                     Err(why) => self.refuse_view_name(&name, why),
@@ -5845,18 +5829,18 @@ impl App {
                     return true;
                 }
                 // The palette reaches this whatever is current; the ↺ and
-                // the footer chip only show on an edited filter.
-                let which = match self.editor.jq_current_name() {
-                    Some(name) => format!("view \"{name}\""),
-                    None => "the scratch".to_string(),
-                };
-                let refusal = match self.editor.jq_current_saved() {
-                    None => Some(format!("Nothing to revert: {which} is not saved yet")),
-                    Some(_) if !self.editor.jq_current_modified() => {
-                        Some(format!("Nothing to revert: {which} is unchanged"))
+                // the footer chip only show on an edited view. Only a view
+                // has saved text to go back to (amendment C11).
+                let refusal = match (self.editor.jq_current_name(), self.editor.jq_current_saved())
+                {
+                    (None, _) => Some("no view is picked".to_string()),
+                    (Some(name), None) => Some(format!("view \"{name}\" is not saved yet")),
+                    (Some(name), Some(_)) if !self.editor.jq_current_modified() => {
+                        Some(format!("view \"{name}\" is unchanged"))
                     }
-                    Some(_) => None,
-                };
+                    (Some(_), Some(_)) => None,
+                }
+                .map(|why| format!("Nothing to revert: {why}"));
                 if let Some(why) = refusal {
                     self.toasts.push(why, ToastKind::Info);
                     self.last_action_failed = true;
@@ -5868,53 +5852,31 @@ impl App {
                 self.editor.jq_revert();
                 true
             }
-            Action::CopyJqViewToScratch(name) => {
+            Action::ClearJqFilter => {
                 if !self.close_inputs_or_stop(true) {
                     return true;
                 }
-                // The palette reaches this whatever is current; the ⧉ only
-                // shows on a view.
-                let Some(name) = name.or_else(|| self.editor.jq_current_name().map(str::to_string))
-                else {
-                    self.toasts.push("Nothing to copy: the scratch is current", ToastKind::Info);
-                    self.last_action_failed = true;
-                    return true;
-                };
-                // Its own step, so one undo brings back the old scratch with
-                // the view current (amendment B7). A name no view has any
-                // more (a reload under the menu) copies nothing and says
-                // nothing, as `DeleteJqView` does: the row the user chose
-                // is gone, there is nothing wrong to report, and the menu
-                // closing on the reload's new state shows it.
-                if self.editor.jq_copy_to_scratch(&name) {
-                    self.no_coalesce = true;
-                    // Said, as a clear is: from the palette the bar may not
-                    // be on screen to show the scratch it replaced.
-                    self.toasts.push(
-                        format!("Copied \"{name}\" to the scratch{}", self.undo_hint()),
-                        ToastKind::Info,
-                    );
-                }
-                true
-            }
-            Action::ClearJqScratch => {
-                if !self.close_inputs_or_stop(true) {
-                    return true;
-                }
-                if self.editor.jq.is_empty() {
-                    self.toasts.push("Nothing to clear: the scratch is empty", ToastKind::Info);
+                // No `jq_blocked_reason` gate, unlike save-as and the menu:
+                // those open something that needs the bar on screen, while a
+                // clear is a request edit like a delete, which the toast says
+                // and undo takes back wherever the bar is (amendment B8's
+                // "where the bar cannot show, the palette's clear clears").
+                if !self.editor.jq_clearable() {
+                    self.toasts.push("Nothing to clear: the filter is empty", ToastKind::Info);
                     self.last_action_failed = true;
                     return true;
                 }
-                // Its own step, never asking (amendment B8). The clear is all
-                // it does, wherever it comes from: focus stays put. The bar's
-                // own ✕ is a click on the bar, and its handler focuses the
-                // bar as a click on the text does (`Hit::ResponseJqClear`).
+                // Its own step, never asking (amendment B8), so one undo
+                // brings back the old text with the view current (C4). The
+                // clear is all it does, wherever it comes from: focus and the
+                // switch stay put. The bar's own ✕ is a click on the bar, and
+                // its handler focuses the bar as a click on the text does
+                // (`Hit::ResponseJqClear`).
                 self.no_coalesce = true;
-                self.editor.jq.clear();
-                // Said, as a deleted view is: from the palette or the menu
-                // the scratch may not be on screen to see it go.
-                self.toasts.push(format!("Scratch cleared{}", self.undo_hint()), ToastKind::Info);
+                self.editor.jq_clear_filter();
+                // Said, as a deleted view is: from the palette the filter may
+                // not be on screen to see it go.
+                self.toasts.push(format!("Filter cleared{}", self.undo_hint()), ToastKind::Info);
                 true
             }
             Action::JqApply(text) => {

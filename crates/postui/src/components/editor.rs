@@ -816,14 +816,16 @@ impl Editor {
         Self { next_view_id: self.next_view_id, ..Self::default() }
     }
 
-    /// The current view's index in `jq_views`; `None` is the scratch.
+    /// The current view's index in `jq_views`; `None` with no view picked,
+    /// when the bar holds the scratch.
     pub fn current_view(&self) -> Option<usize> {
         let name = self.jq_current.as_deref()?;
         self.jq_views.iter().position(|v| v.name == name)
     }
 
-    /// The current view's name, `None` for the scratch: what the bar shows,
-    /// so a `jq_current` naming no view reads as the scratch here too.
+    /// The current view's name, `None` with no view picked: what the bar
+    /// shows, so a `jq_current` naming no view reads as none picked here
+    /// too.
     pub fn jq_current_name(&self) -> Option<&str> {
         self.current_view().map(|i| self.jq_views[i].name.as_str())
     }
@@ -844,11 +846,25 @@ impl Editor {
         }
     }
 
-    /// Makes `name` current (`None` = the scratch) and switches the filter
-    /// on (spec 16). A name no view has picks the scratch.
-    pub fn jq_pick(&mut self, name: Option<&str>) {
-        self.jq_current =
-            name.filter(|n| self.jq_views.iter().any(|v| v.name == *n)).map(str::to_string);
+    /// Makes view `name` current and switches the filter on (spec 16). A
+    /// name no view has any more (a reload under the menu) changes nothing,
+    /// as a stale delete does. Nothing picks no view: the clear goes there
+    /// ([`Self::jq_clear_filter`], amendment C5), and so does a menu
+    /// action's or the AI's filter (`App::land_jq_in_scratch`).
+    pub fn jq_pick(&mut self, name: &str) -> bool {
+        let known = self.jq_views.iter().any(|v| v.name == name);
+        if known {
+            self.make_view_current(name.to_string());
+        }
+        known
+    }
+
+    /// View `name` current and switched on, the scratch emptied (amendment
+    /// C12): picking a view replaces what was typed with none picked, so no
+    /// text waits in the file unseen behind the view. Undo brings it back.
+    fn make_view_current(&mut self, name: String) {
+        self.jq_current = Some(name);
+        self.jq.clear();
         self.jq_enabled = true;
     }
 
@@ -882,19 +898,16 @@ impl Editor {
         self.jq_views.iter().any(|v| v.name == name && v.filter != saved)
     }
 
-    /// The current filter's saved text: the current view's
-    /// ([`Self::jq_saved_filter`]), or the scratch's, which a saved request
-    /// always has (empty when it had none; amendment A8). `None` for a view
-    /// saved since, or a request never saved.
+    /// The current view's saved text ([`Self::jq_saved_filter`]). `None`
+    /// with no view current: what is typed with none picked has no ↺, only
+    /// views do (amendment C11, superseding A8). `None` too for a view saved
+    /// since, or a request never saved.
     pub fn jq_current_saved(&self) -> Option<&str> {
-        match self.current_view() {
-            Some(i) => self.jq_saved_filter_of(self.jq_views[i].id),
-            None => Some(self.saved.as_ref()?.jq.as_deref().unwrap_or("")),
-        }
+        self.jq_saved_filter_of(self.jq_views[self.current_view()?].id)
     }
 
-    /// Whether the current filter, view or scratch, differs from its saved
-    /// text: the bar's ↺ (spec 5, amendments A8 and B3).
+    /// Whether the current view differs from its saved text: the bar's ↺
+    /// (spec 5, amendments B3, C11).
     pub fn jq_current_modified(&self) -> bool {
         self.jq_current_saved().is_some_and(|saved| saved != self.jq_filter())
     }
@@ -910,12 +923,14 @@ impl Editor {
         JqView::name_refusal(name.trim(), others)
     }
 
-    /// Spec decision 6 and amendment A9. Err with the refusal when the
-    /// name may not be a view's. From a modified view or scratch, the edits
-    /// move to the new view and the source goes back to its saved text; one
-    /// with no saved text keeps it (a copy). The new view is current and
-    /// switched on, as a pick makes a view (spec 16): saving it from the
-    /// palette with the bar closed shows what was saved.
+    /// Spec decision 6 and amendments A9, C12. Err with the refusal when
+    /// the name may not be a view's. From a modified view, the edits move
+    /// to the new view and the view goes back to its saved text; one with
+    /// no saved text keeps it (a copy). From no view, the text moves to the
+    /// new view and nothing is left behind it, as a pick leaves nothing.
+    /// The new view is current and switched on, as a pick makes a view
+    /// (spec 16): saving it from the palette with the bar closed shows what
+    /// was saved.
     pub fn jq_save_as(&mut self, name: &str) -> Result<(), ViewNameRefusal> {
         if let Some(why) = self.jq_name_refusal(name, None) {
             return Err(why);
@@ -927,8 +942,7 @@ impl Editor {
         let name = name.trim().to_string();
         self.jq_views.push(JqView { name: name.clone(), filter, id: self.next_view_id });
         self.next_view_id += 1;
-        self.jq_current = Some(name);
-        self.jq_enabled = true;
+        self.make_view_current(name);
         Ok(())
     }
 
@@ -949,7 +963,9 @@ impl Editor {
         Ok(())
     }
 
-    /// Removes the view; the scratch becomes current if it was. `false`
+    /// Removes the view; if it was current, none is picked after and the
+    /// scratch shows as it is (spec 22). Since amendment C12 that is empty;
+    /// only a file written before it can still hold text there. `false`
     /// when no view has `name`.
     pub fn jq_delete(&mut self, name: &str) -> bool {
         let before = self.jq_views.len();
@@ -960,19 +976,25 @@ impl Editor {
         self.jq_views.len() != before
     }
 
-    /// Amendment B7: view `name`'s filter as it stands into the scratch,
-    /// the scratch current and switched on; the view is untouched. `false`
-    /// when no view has `name`.
-    pub fn jq_copy_to_scratch(&mut self, name: &str) -> bool {
-        let Some(view) = self.jq_views.iter().find(|v| v.name == name) else { return false };
-        self.jq = view.filter.clone();
-        self.jq_current = None;
-        self.jq_enabled = true;
-        true
+    /// Whether [`Self::jq_clear_filter`] has anything to do: a view is
+    /// current, or the scratch holds text. By the raw `jq_current`, as
+    /// `App::land_jq_in_scratch` decides "coming off a view": a name no view
+    /// has (which a load and a delete never leave) is then cleared too,
+    /// rather than kept because the bar reads it as none picked.
+    pub fn jq_clearable(&self) -> bool {
+        self.jq_current.is_some() || !self.jq.is_empty()
     }
 
-    /// The current filter, view or scratch, back to its saved text; no-op
-    /// when it has none.
+    /// Amendment C4: no view current, with an empty filter. The view that
+    /// was current keeps its filter, edits included; the switch is left
+    /// as it is.
+    pub fn jq_clear_filter(&mut self) {
+        self.jq_current = None;
+        self.jq.clear();
+    }
+
+    /// The current view back to its saved text; no-op with no view picked
+    /// or a view never saved (amendment C11).
     pub fn jq_revert(&mut self) {
         if let Some(saved) = self.jq_current_saved().map(str::to_string) {
             self.set_jq_filter(&saved);
@@ -5548,7 +5570,7 @@ mod tests {
         let mut ed = editor_with_views();
         let ids: Vec<u64> = ed.jq_views.iter().map(|v| v.id).collect();
         assert_eq!(ids, [1, 2], "load numbers the views");
-        ed.jq_pick(Some("names"));
+        ed.jq_pick("names");
         assert!(ed.jq_enabled, "picking switches the filter on");
         assert!(ed.is_dirty(), "amendment A4: picking is an edit");
         ed.mark_saved();
@@ -5561,7 +5583,7 @@ mod tests {
         assert!(ed.jq_modified("names"));
         assert!(!ed.jq_modified("ids"));
         assert_eq!(ed.jq, ".x", "the scratch is untouched");
-        ed.jq_pick(None);
+        ed.jq_current = None;
         assert_eq!(ed.jq_filter(), ".x", "the scratch is current again");
         ed.set_jq_filter(".y");
         assert_eq!(ed.jq, ".y", "the bar writes the scratch");
@@ -5584,7 +5606,7 @@ mod tests {
         ed.jq_delete("names");
         ed.mark_saved();
         // Edit ids, then discard: the reload takes `saved` from memory.
-        ed.jq_pick(Some("ids"));
+        ed.jq_pick("ids");
         ed.set_jq_filter(".edited");
         assert!(ed.jq_modified("ids"));
         let before_discard = ed.current_request();
@@ -5630,7 +5652,7 @@ mod tests {
         // can pass to another view): no mark, no revert until the next
         // save. Coarser, never wrong.
         let mut ed = editor_with_views();
-        ed.jq_pick(Some("names"));
+        ed.jq_pick("names");
         ed.set_jq_filter(".edited");
         let buffer = ed.current_request();
         let old_ids: Vec<u64> = buffer.jq_views.iter().map(|v| v.id).collect();
@@ -5710,7 +5732,7 @@ mod tests {
     #[test]
     fn current_request_carries_the_views_the_scratch_and_the_switch_as_held() {
         let mut ed = editor_with_views();
-        ed.jq_pick(Some("ids"));
+        ed.jq_pick("ids");
         ed.jq_enabled = false;
         let req = ed.current_request();
         assert_eq!(req.jq_views, ed.jq_views);
@@ -5738,7 +5760,7 @@ mod tests {
     #[test]
     fn revert_restores_only_the_current_views_filter_even_after_a_rename() {
         let mut ed = editor_with_views();
-        ed.jq_pick(Some("names"));
+        ed.jq_pick("names");
         ed.set_jq_filter(".changed");
         ed.jq_rename("names", "Names2").unwrap();
         assert_eq!(ed.jq_saved_filter("Names2"), Some(".items[].name"), "matched by id");
@@ -5749,31 +5771,26 @@ mod tests {
         assert!(!ed.jq_modified("Names2"));
     }
 
-    /// Amendment A8: the scratch has a saved text like a view; a
-    /// never-saved request has none.
+    /// Amendment C11 (superseding A8): with no view current there is no
+    /// saved text to go back to, however the typed filter differs from the
+    /// file's; the request is still dirty.
     #[test]
-    fn an_edited_scratch_is_marked_and_reverts_to_its_saved_text() {
+    fn the_typed_filter_has_no_saved_text_or_revert() {
         let mut ed = editor_with_views();
         ed.jq = ".s".into();
         ed.mark_saved();
-        assert!(!ed.jq_current_modified());
         ed.set_jq_filter(".t");
-        assert!(ed.jq_current_modified(), "the mark");
+        assert_eq!(ed.jq_current_saved(), None);
+        assert!(!ed.jq_current_modified(), "no ↺");
+        assert!(ed.is_dirty(), "still an edit to the request");
         ed.jq_revert();
-        assert_eq!(ed.jq, ".s");
-        assert!(!ed.jq_current_modified() && !ed.is_dirty());
-
-        let mut never = Editor { jq: ".a".into(), ..Editor::default() };
-        assert_eq!(never.jq_current_saved(), None, "no saved text");
-        assert!(!never.jq_current_modified());
-        never.jq_revert();
-        assert_eq!(never.jq, ".a", "revert does nothing");
+        assert_eq!(ed.jq, ".t", "revert does nothing");
     }
 
     #[test]
     fn save_as_from_a_modified_view_moves_the_edits() {
         let mut ed = editor_with_views();
-        ed.jq_pick(Some("names"));
+        ed.jq_pick("names");
         ed.set_jq_filter(".items[].name | length");
         ed.jq_save_as("name count").unwrap();
         assert_eq!(ed.jq_current.as_deref(), Some("name count"));
@@ -5787,7 +5804,7 @@ mod tests {
     #[test]
     fn save_as_from_an_unedited_view_is_a_copy() {
         let mut ed = editor_with_views();
-        ed.jq_pick(Some("ids"));
+        ed.jq_pick("ids");
         ed.jq_save_as("ids again").unwrap();
         assert_eq!(ed.jq_views.len(), 3);
         assert_eq!(ed.jq_views[1].filter, ".items[].id");
@@ -5795,10 +5812,10 @@ mod tests {
         assert_eq!(ed.jq_current.as_deref(), Some("ids again"));
     }
 
-    /// Amendment A9: an edited scratch's edits move to the new view, as a
-    /// view's do; a never-saved scratch is copied and keeps its text.
+    /// Amendment C12: the typed filter moves to the new view, and nothing is
+    /// left behind it, whether or not the file had text there.
     #[test]
-    fn save_as_from_an_edited_scratch_moves_the_edits_and_refuses_a_taken_name() {
+    fn save_as_from_no_view_moves_the_text_and_refuses_a_taken_name() {
         let mut ed = editor_with_views();
         ed.jq = ".s".into();
         assert_eq!(
@@ -5808,7 +5825,7 @@ mod tests {
         );
         assert_eq!(ed.jq_views.len(), 2, "a refused save adds nothing");
         ed.jq_save_as(" s ").unwrap();
-        assert_eq!(ed.jq, "", "the scratch is back to its saved text (none)");
+        assert_eq!(ed.jq, "", "nothing left behind the view");
         assert_eq!(ed.jq_views.last().unwrap().filter, ".s");
         assert_eq!(ed.jq_views.last().unwrap().name, "s", "the name is trimmed");
         assert_eq!(ed.jq_current.as_deref(), Some("s"));
@@ -5816,7 +5833,7 @@ mod tests {
 
         let mut never = Editor { jq: ".a".into(), ..Editor::default() };
         never.jq_save_as("v").unwrap();
-        assert_eq!(never.jq, ".a", "no saved text to go back to: a copy");
+        assert_eq!(never.jq, "", "a never-saved request leaves nothing behind either");
         assert_eq!(never.jq_views[0].filter, ".a");
 
         let mut off = editor_with_views();
@@ -5828,7 +5845,7 @@ mod tests {
 
     #[test]
     fn rename_refuses_another_views_name_but_not_its_own() {
-        use ViewNameRefusal::{Blank, Scratch, Taken};
+        use ViewNameRefusal::{Blank, Taken};
         let mut ed = editor_with_views();
         assert_eq!(ed.jq_name_refusal("IDS", None), Some(Taken));
         assert_eq!(
@@ -5837,8 +5854,7 @@ mod tests {
             "a view never collides with itself"
         );
         assert_eq!(ed.jq_name_refusal("other", None), None);
-        assert_eq!(ed.jq_name_refusal(" Scratch ", None), Some(Scratch), "never a view's");
-        assert_eq!(ed.jq_save_as("scratch"), Err(Scratch));
+        assert_eq!(ed.jq_name_refusal("no view", None), None, "amendment C9: none reserved");
         assert_eq!(ed.jq_save_as("  "), Err(Blank), "the editor refuses a blank name itself");
         assert_eq!(ed.jq_rename("names", ""), Err(Blank));
         assert_eq!(ed.jq_name_refusal("x\ty", None), Some(ViewNameRefusal::Control));
@@ -5854,15 +5870,28 @@ mod tests {
         assert!(ed.is_dirty(), "a rename is a request edit");
     }
 
+    /// A pick of a name no view has any more changes nothing, as a stale
+    /// delete does.
     #[test]
-    fn deleting_the_current_view_falls_back_to_the_scratch() {
+    fn a_stale_pick_changes_nothing() {
+        let mut ed = editor_with_views();
+        ed.jq_pick("ids");
+        ed.jq_enabled = false;
+        ed.jq_pick("gone");
+        assert_eq!(ed.jq_current.as_deref(), Some("ids"));
+        assert!(!ed.jq_enabled);
+    }
+
+    #[test]
+    fn deleting_the_current_view_leaves_no_view_picked() {
         let mut ed = editor_with_views();
         ed.jq = ".s".into();
-        ed.jq_pick(Some("ids"));
+        ed.jq_pick("ids");
+        assert_eq!(ed.jq, "", "amendment C12: the pick replaced the typed filter");
         ed.jq_delete("ids");
         assert_eq!(ed.jq_current, None);
         assert_eq!(ed.jq_views.len(), 1);
-        assert_eq!(ed.jq_filter(), ".s", "the scratch is unchanged");
+        assert_eq!(ed.jq_filter(), "", "no view, empty");
         assert!(ed.is_dirty(), "a delete is a request edit");
     }
 

@@ -1194,18 +1194,13 @@ pub enum Action {
     /// The jq bar's revert button: puts the current view back to its
     /// saved filter (one undo step).
     RevertJqView,
-    /// The bar's ⧉, a view row's ⧉ / `c`, or the palette: puts view `name`'s
-    /// filter (`None` = the current view's) into the scratch and makes the
-    /// scratch current, leaving the view as it is (amendment B7). One undo
-    /// step.
-    CopyJqViewToScratch(Option<String>),
-    /// The bar's ✕, the scratch row's ✕ / `d`, or the palette: empties the
-    /// scratch, never asking (amendment B8). One undo step.
-    ClearJqScratch,
-    /// A views dropdown row: makes that view current (`None` = the
-    /// scratch) and switches the filter on. A request edit like any other
-    /// (jq views amendment A4).
-    PickJqView(Option<String>),
+    /// The bar's ✕ or the palette: no view current, with an empty filter;
+    /// the view that was current is untouched (amendment C4). Never asks.
+    /// One undo step.
+    ClearJqFilter,
+    /// A views dropdown row: makes that view current and switches the
+    /// filter on. A request edit like any other (jq views amendment A4).
+    PickJqView(String),
     /// The dropdown's `+ save as view…` row: opens the name prompt.
     PromptSaveJqView,
     /// The save-as prompt's Enter: saves the bar's filter as a new view
@@ -1479,15 +1474,12 @@ pub enum Verb {
     Reveal,
     /// Step an environment's TLS force.
     Tls,
-    /// `c` on the jq views dropdown: copy the row's view to the scratch
-    /// (jq views amendment B9).
-    CopyToScratch,
 }
 
 impl Verb {
     /// Every verb, once (a count does not change what a verb reaches): the
     /// reachability test and the `:` line's scope walk it.
-    pub const ALL: [Verb; 15] = [
+    pub const ALL: [Verb; 14] = [
         Verb::Add,
         Verb::AddAlt,
         Verb::Rename,
@@ -1502,7 +1494,6 @@ impl Verb {
         Verb::ClearValue,
         Verb::Reveal,
         Verb::Tls,
-        Verb::CopyToScratch,
     ];
 
     /// The same verb whatever its count: `dd` and `3dd` spell alike.
@@ -1546,7 +1537,6 @@ mod tests {
                 Verb::ClearValue => 11,
                 Verb::Reveal => 12,
                 Verb::Tls => 13,
-                Verb::CopyToScratch => 14,
             }
         }
         for (i, v) in Verb::ALL.into_iter().enumerate() {

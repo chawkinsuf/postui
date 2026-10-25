@@ -807,8 +807,10 @@ fn replace_with_curl_keeps_views_scratch_and_current() {
     postui_core::fixtures::save_request(app.proj().root(), "main/kept", &kept).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/kept".into()));
+    app.editor.jq_pick("names");
+    // A file may still hold text with no view under a current view, as
+    // before amendment C12; a replace keeps it all the same.
     app.editor.jq = ".s".into();
-    app.editor.jq_pick(Some("names"));
     app.capture_undo();
     let before = app.editor.current_request();
     replace(&mut app, None);

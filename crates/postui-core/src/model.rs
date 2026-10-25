@@ -175,10 +175,6 @@ pub struct JqView {
 }
 
 impl JqView {
-    /// The scratch filter's name, as the chip and the views menu say it:
-    /// never a view's ([`Self::name_key`] of one is never this).
-    pub const SCRATCH: &str = "scratch";
-
     /// What two view names are compared by: trimmed, ignoring case
     /// (Unicode, as request names are). One request never holds two views
     /// with the same key (spec 18).
@@ -188,10 +184,10 @@ impl JqView {
 
     /// Why `name` may not name a view beside `others` (the other views'
     /// names), or `None`: blank, holding a control character (a tab, an
-    /// escape: the chip and the menu paint the name as it is), the
-    /// scratch's own, or another's by [`Self::name_key`] (spec 18). The one
-    /// rule the file reader and the editor's save-as and rename apply, so
-    /// the app never writes a name its reader refuses.
+    /// escape: the chip and the menu paint the name as it is), or another's
+    /// by [`Self::name_key`] (spec 18). The one rule the file reader and the
+    /// editor's save-as and rename apply, so the app never writes a name its
+    /// reader refuses.
     pub fn name_refusal<'a>(
         name: &str,
         others: impl IntoIterator<Item = &'a str>,
@@ -203,9 +199,6 @@ impl JqView {
         if name.chars().any(char::is_control) {
             return Some(ViewNameRefusal::Control);
         }
-        if key == Self::SCRATCH {
-            return Some(ViewNameRefusal::Scratch);
-        }
         others.into_iter().any(|o| Self::name_key(o) == key).then_some(ViewNameRefusal::Taken)
     }
 }
@@ -215,7 +208,6 @@ impl JqView {
 pub enum ViewNameRefusal {
     Blank,
     Control,
-    Scratch,
     Taken,
 }
 
@@ -266,9 +258,9 @@ pub struct HttpRequest {
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub jq_enabled: bool,
     /// The saved jq views, written to the request file as `[[jq_view]]`.
-    /// A name the app would refuse (blank, `scratch`, or two alike, trimmed
-    /// and ignoring case) refuses the read: the app names a view by its
-    /// name, as the TOML names a header by its key.
+    /// A name the app would refuse (blank, a control character, or two
+    /// alike, trimmed and ignoring case) refuses the read: the app names a
+    /// view by its name, as the TOML names a header by its key.
     #[serde(
         default,
         rename = "jq_view",
@@ -299,7 +291,7 @@ fn is_true(b: &bool) -> bool {
 }
 
 /// The file holds only names the app would accept (spec 18): none blank,
-/// none `scratch`, no two alike.
+/// none with a control character, no two alike.
 fn valid_view_names<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<JqView>, D::Error> {
     let views = Vec::<JqView>::deserialize(d)?;
     for (i, v) in views.iter().enumerate() {
@@ -309,9 +301,6 @@ fn valid_view_names<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<JqView
             Some(ViewNameRefusal::Blank) => "a jq view has a blank name".to_string(),
             Some(ViewNameRefusal::Control) => {
                 format!("the jq view name {:?} holds a control character", v.name)
-            }
-            Some(ViewNameRefusal::Scratch) => {
-                format!("a jq view is named {:?}, the scratch filter's name", v.name.trim())
             }
             Some(ViewNameRefusal::Taken) => {
                 format!("two jq views are named {:?}", v.name.trim())
@@ -672,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn a_blank_or_scratch_view_name_refuses_the_read() {
+    fn a_blank_view_name_refuses_the_read() {
         let view = |name: &str| {
             format!(
                 "method = \"GET\"\nurl = \"u\"\n\n[[jq_view]]\nname = \"{name}\"\nfilter = \".\"\n"
@@ -680,8 +669,10 @@ mod tests {
         };
         let blank = HttpRequest::from_toml_str(&view("  ")).unwrap_err();
         assert!(blank.to_string().contains("a jq view has a blank name"), "{blank}");
-        let scratch = HttpRequest::from_toml_str(&view("Scratch")).unwrap_err();
-        assert!(scratch.to_string().contains("the scratch filter's name"), "{scratch}");
+        // Amendment C9: no name is reserved, the chip's own included.
+        for name in ["Scratch", "no view"] {
+            assert!(HttpRequest::from_toml_str(&view(name)).is_ok(), "{name}");
+        }
         let tab = HttpRequest::from_toml_str(&view("a\\tb")).unwrap_err();
         assert!(tab.to_string().contains("holds a control character"), "{tab}");
     }

@@ -2242,17 +2242,16 @@ impl App {
             Hit::ResponseJqAiButton => self.update(Action::OpenJqDescribe),
             Hit::ResponseJqChip => self.update(Action::OpenJqViews),
             Hit::ResponseJqRevert => self.update(Action::RevertJqView),
-            Hit::ResponseJqCopy => self.update(Action::CopyJqViewToScratch(None)),
             // The bar's ✕ is a press on the bar, like a search box's: the
-            // scratch clears and the bar takes the caret, as a click on its
+            // filter clears and the bar takes the caret, as a click on its
             // text gives it, so the emptied bar stays up to type into. A bar
             // the pointer can reach is drawn, so it can take the caret
-            // (amendment B8).
+            // (amendments B8, C4).
             Hit::ResponseJqClear => {
                 // A refused clear (an open input that would not close, #75,
                 // or nothing left to clear) moves the caret nowhere.
                 self.last_action_failed = false;
-                let cleared = self.update(Action::ClearJqScratch);
+                let cleared = self.update(Action::ClearJqFilter);
                 if self.last_action_failed {
                     return cleared;
                 }

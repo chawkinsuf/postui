@@ -372,9 +372,7 @@ pub enum Hit {
     /// The jq bar's `󰕌` button, shown while the current view is edited:
     /// puts the view back to its saved filter.
     ResponseJqRevert,
-    /// The jq bar's slot on a view: copies the view to the scratch.
-    ResponseJqCopy,
-    /// The jq bar's slot on a scratch with text: clears the scratch.
+    /// The jq bar's ✕, on a view or with text typed: clears the filter.
     ResponseJqClear,
 }
 
@@ -385,14 +383,9 @@ impl Hit {
         Hit::DropdownRowButton { row, verb: crate::action::Verb::Rename }
     }
 
-    /// Dropdown row `row`'s delete button (the scratch row's clear).
+    /// Dropdown row `row`'s delete button.
     pub fn row_delete(row: usize) -> Self {
         Hit::DropdownRowButton { row, verb: crate::action::Verb::Delete { count: 1 } }
-    }
-
-    /// Dropdown row `row`'s copy to scratch button.
-    pub fn row_copy(row: usize) -> Self {
-        Hit::DropdownRowButton { row, verb: crate::action::Verb::CopyToScratch }
     }
 }
 
