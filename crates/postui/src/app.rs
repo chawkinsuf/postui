@@ -1176,15 +1176,35 @@ impl App {
 
     /// Builds the theme picker's rows for the current polarity filter
     /// (`theme_picker_dark`): one row per registry option whose seed
-    /// background matches, in registry order.
+    /// background matches, in registry order. The Terminal row is listed
+    /// in both sets (task #18, you): in the one that is not the
+    /// terminal's it is disabled and says why, so the rows under it keep
+    /// their places when the set flips. Disabled rather than selectable,
+    /// because the highlight is the live preview and a set never shows
+    /// the other polarity's palette.
     fn theme_picker_items(&self) -> Vec<crate::components::chooser::ChooserItem> {
         self.themes
             .entries()
             .iter()
-            .filter(|e| {
-                self.themes.entry_is_dark(e, &self.terminal_colors) == self.theme_picker_dark
+            .filter_map(|e| {
+                let in_set =
+                    self.themes.entry_is_dark(e, &self.terminal_colors) == self.theme_picker_dark;
+                let terminal = matches!(e.source, crate::theme::ThemeSource::Terminal);
+                (in_set || terminal).then_some((e, in_set))
             })
-            .map(|e| {
+            .map(|(e, in_set)| {
+                if !in_set {
+                    // It names the theme's polarity, not the terminal's: a
+                    // terminal that reported no colors gets the dark
+                    // fallback, which is still what this theme would show.
+                    let theirs = if self.theme_picker_dark { "light" } else { "dark" };
+                    return crate::components::chooser::ChooserItem {
+                        label: e.label.clone(),
+                        detail: Some(format!("disabled: a {theirs} theme")),
+                        disabled: true,
+                        ..Default::default()
+                    };
+                }
                 let detail = match &e.source {
                     crate::theme::ThemeSource::Terminal => "terminal colors",
                     crate::theme::ThemeSource::Builtin(_) => "built-in",
@@ -1195,6 +1215,7 @@ impl App {
                     detail: Some(detail.into()),
                     actions: vec![Action::ApplyTheme(e.name.clone())],
                     id: Some(e.name.clone()),
+                    ..Default::default()
                 }
             })
             .collect()
@@ -5139,6 +5160,7 @@ impl App {
                         detail: Some(path.display().to_string()),
                         actions: vec![Action::SwitchProject(path.clone())],
                         id: Some(path.display().to_string()),
+                        ..Default::default()
                     });
                 }
                 items.push(ChooserItem {
@@ -6122,7 +6144,7 @@ impl App {
                             label: k,
                             detail: None,
                             actions: vec![Action::JqApply(compose(&bar, &path, Some(&expr)))],
-                            id: None,
+                            ..Default::default()
                         }
                     })
                     .collect();
@@ -6144,7 +6166,7 @@ impl App {
                             label: k,
                             detail: None,
                             actions: vec![Action::JqTeeUp { text, cursor }],
-                            id: None,
+                            ..Default::default()
                         }
                     })
                     .collect();

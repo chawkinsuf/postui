@@ -149,6 +149,21 @@ way existing config writes do.
   because the settle is the dim fading in (Claude's call).
   `ChooserState::previewing` marks the chooser, and `Modal::dims_backdrop`
   is the one rule both the draw and `App::push_modal` read.
+- *Added 2026-10-25 (task #18):* the Terminal row is listed in both the
+  dark and the light set. In the set that is not the terminal's it stays
+  as a disabled row instead of dropping out, so the rows under it don't
+  move up when the set flips (`you`). How it reads and acts is Claude's
+  call (`mine`), following the app's other disabled controls (the
+  dropdown's disabled rows, the Body tab on a GET, the Contrast row's end
+  buttons): label and detail in the disabled tone, the detail reading
+  `disabled: a dark theme` (or `light`) after the `Terminal colors`
+  label, no hover fill and no click target; the keys step over it and
+  Home/End stop at the first and last enabled rows, so the highlight,
+  which is the live preview, never lands on the other polarity. The
+  detail names the theme's polarity rather than the terminal's because a
+  silent terminal gets the Dark fallback. The rule is
+  the chooser's (`ChooserItem::disabled`), so any chooser can list a row
+  it can't offer.
 - The existing 256-color downgrade path applies to every applied theme,
   as today.
 

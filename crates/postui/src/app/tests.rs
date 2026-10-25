@@ -19947,6 +19947,85 @@ mod undo_tests {
         assert_eq!(c.input(), "");
     }
 
+    /// The open theme picker's rows as (id, detail, disabled).
+    fn theme_picker_rows(app: &App) -> Vec<(Option<String>, Option<String>, bool)> {
+        let Some(crate::components::modal::Modal::Chooser(c)) = app.modals.top() else {
+            panic!("theme chooser modal expected");
+        };
+        c.items.iter().map(|i| (i.id.clone(), i.detail.clone(), i.disabled)).collect()
+    }
+
+    /// Task #18 (you): in the set that is not the terminal's, the
+    /// Terminal row stays listed, disabled, so the rows under it don't
+    /// move up. Its detail says why; the keys and the flip never land on
+    /// it, so the preview never shows the other polarity.
+    #[test]
+    fn the_terminal_row_stays_disabled_in_the_other_set() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new_for_test();
+        // The test terminal is silent, so Terminal is a dark theme.
+        app.update(Action::OpenThemeChooser);
+        let dark = theme_picker_rows(&app);
+        assert_eq!(dark[0], (Some("terminal".into()), Some("terminal colors".into()), false));
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // "dark"
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.theme_name, "light", "the flip lands on the counterpart");
+        let light = theme_picker_rows(&app);
+        assert_eq!(
+            light[0],
+            (None, Some("disabled: a dark theme".into()), true),
+            "row 0 in both sets"
+        );
+        assert!(light[1..].iter().all(|(_, _, off)| !off), "only Terminal is disabled");
+        for code in [KeyCode::Up, KeyCode::Home] {
+            app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+            assert_eq!(app.theme_name, "light", "{code:?} stops at the first light theme");
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.ui_settings.theme, "light");
+    }
+
+    /// Task #18: on a light terminal the Terminal row is enabled in the
+    /// light set and disabled in the dark one, where the picker opens on
+    /// a dark theme.
+    #[test]
+    fn a_light_terminal_s_row_is_disabled_in_the_dark_set() {
+        let mut app = App::new_for_test();
+        app.terminal_colors.bg = Some((0xfa, 0xfa, 0xfa));
+        app.update(Action::ApplyTheme("gruvbox-dark".into()));
+        app.update(Action::OpenThemeChooser);
+        let dark = theme_picker_rows(&app);
+        assert_eq!(dark[0], (None, Some("disabled: a light theme".into()), true));
+        let Some(crate::components::modal::Modal::Chooser(c)) = app.modals.top() else {
+            unreachable!()
+        };
+        assert_eq!(c.selected_id(), Some("gruvbox-dark"));
+        app.update(Action::Close);
+        app.update(Action::ApplyTheme("light".into()));
+        app.update(Action::OpenThemeChooser);
+        let light = theme_picker_rows(&app);
+        assert_eq!(light[0], (Some("terminal".into()), Some("terminal colors".into()), false));
+    }
+
+    /// Task #18: a click on the disabled Terminal row lands on no row, so
+    /// it neither moves the preview nor commits.
+    #[test]
+    fn a_click_on_the_disabled_terminal_row_does_nothing() {
+        let mut app = App::new_for_test();
+        app.update(Action::ApplyTheme("light".into()));
+        app.update(Action::OpenThemeChooser);
+        render_once(&mut app);
+        assert!(app.hits.rect_of(&Hit::ChooserRow(0)).is_none(), "no click target");
+        let row1 = app.hits.rect_of(&Hit::ChooserRow(1)).expect("the light row");
+        for _ in 0..2 {
+            app.handle_mouse(left_down(row1.x + 2, row1.y - 1));
+            render_once(&mut app);
+        }
+        assert_eq!(app.theme_name, "light");
+        assert_eq!(app.ui_settings.theme, "light", "not committed again either");
+        assert!(matches!(app.modals.top(), Some(crate::components::modal::Modal::Chooser(_))));
+    }
+
     /// The theme `name` at contrast `n`, straight from the registry.
     fn theme_at(app: &App, name: &str, n: i8) -> crate::theme::Theme {
         let level = crate::theme::Contrast::new(n).unwrap();
