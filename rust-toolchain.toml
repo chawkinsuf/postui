@@ -7,5 +7,9 @@
 # it to the same minor version.
 [toolchain]
 channel = "1.97.1"
+# Here, not only in checks.yml, so the pinned toolchain has the rustfmt the
+# pre-commit hook runs and the clippy the docs ask for. The release build
+# runners download them too, unused: a few seconds per runner, against a
+# local toolchain that would lack them.
 components = ["rustfmt", "clippy"]
 profile = "minimal"
