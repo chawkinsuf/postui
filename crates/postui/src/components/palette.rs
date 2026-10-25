@@ -423,8 +423,10 @@ pub fn all_commands() -> Vec<Command> {
 /// same actions under different spellings — this table is the one place
 /// that reconciles them. Commands with no arm here show no keybinding
 /// column. For most (focus moves, prompts, …) that is right, as they have
-/// no key; a bound action whose arm is missing loses its key too (task #91
-/// added the hide/show panel rows; #105 lists the rest).
+/// no key, but a bound action whose arm is missing loses its key too.
+/// Looking the key up by [`Command::action`] alone would not replace the
+/// table outright: some rows run a different action from their key's (the
+/// palette's `quit` runs `GatedQuit`, `ctrl+c` sends `Quit`).
 pub(crate) fn keymap_action_name(command_id: &str) -> Option<&'static str> {
     match command_id {
         "quit" => Some("quit"),
