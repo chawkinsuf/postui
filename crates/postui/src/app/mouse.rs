@@ -2138,6 +2138,10 @@ impl App {
                 self.update(Action::Render)
             }
             Hit::NewProjectBrowse => self.update(Action::BrowseNewProjectDir),
+            // A disabled row registers no hit, so `i` is always a row
+            // `select` takes: the hit map is the last frame's, and every
+            // event that swaps a chooser's rows redraws before the next
+            // event is read (task #18).
             Hit::ChooserRow(i) => {
                 let Some(Modal::Chooser(state)) = self.modals.top_mut() else {
                     return false;

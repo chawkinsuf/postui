@@ -20,6 +20,12 @@ pub struct ChooserItem {
     /// (`ChooserState::selected_id`) without parsing the display label —
     /// the theme picker's live-preview hook.
     pub id: Option<String>,
+    /// Listed but not selectable (task #18: the theme picker's Terminal
+    /// row in the set that is not the terminal's, kept so the rows under
+    /// it don't move up). It paints in the disabled tone with no hover
+    /// fill and no click target, the keys step over it, and the
+    /// selection never lands on it, as a disabled tab or button behaves.
+    pub disabled: bool,
 }
 
 /// An optional two-state switch on a chooser (the theme picker's
@@ -130,7 +136,7 @@ pub struct ChooserState {
 impl ChooserState {
     pub fn new(title: &str, items: Vec<ChooserItem>) -> Self {
         let filtered = (0..items.len()).collect();
-        Self {
+        let mut state = Self {
             title: title.to_string(),
             input: Some(LineInput::new("")),
             selected: 0,
@@ -141,7 +147,65 @@ impl ChooserState {
             toggle: None,
             stepper: None,
             previewing: false,
+        };
+        state.selected = state.opening_row();
+        state
+    }
+
+    /// Whether filtered row `i` exists and can take the selection.
+    fn enabled(&self, i: usize) -> bool {
+        self.filtered.get(i).is_some_and(|&idx| !self.items[idx].disabled)
+    }
+
+    /// The first filtered row that can take the selection, if any.
+    fn first_enabled(&self) -> Option<usize> {
+        (0..self.filtered.len()).find(|&i| self.enabled(i))
+    }
+
+    /// Where a fresh list's cursor starts: its first enabled row, or 0
+    /// when none can take it (the highlighted item then reads as nothing:
+    /// see [`Self::selected_item`]).
+    fn opening_row(&self) -> usize {
+        self.first_enabled().unwrap_or(0)
+    }
+
+    /// The last filtered row that can take the selection, if any.
+    fn last_enabled(&self) -> Option<usize> {
+        (0..self.filtered.len()).rev().find(|&i| self.enabled(i))
+    }
+
+    /// Moves the selection to the nearest enabled row above (or below,
+    /// when `down`), stepping over disabled ones. With none there it
+    /// stays put, and the list scrolls toward that end instead, so the
+    /// disabled rows past it come into view, as many as fit with the
+    /// selection still showing (review round 1).
+    fn step(&mut self, down: bool) {
+        let next = if down {
+            (self.selected + 1..self.filtered.len()).find(|&i| self.enabled(i))
+        } else {
+            (0..self.selected).rev().find(|&i| self.enabled(i))
+        };
+        match next {
+            Some(i) => self.selected = i,
+            None => self.scroll_to_end(down),
         }
+        self.ensure_visible = true;
+    }
+
+    /// Scrolls the list to its top, or toward its bottom when `bottom`.
+    /// The bottom is past every row: the next draw brings it back as far
+    /// down as it can go with the selection still in view, which is the
+    /// list's last page unless more disabled rows follow the selection
+    /// than fit under it.
+    fn scroll_to_end(&mut self, bottom: bool) {
+        self.scroll = if bottom { self.filtered.len() } else { 0 };
+        self.ensure_visible = true;
+    }
+
+    /// The highlighted item, mapped through the filter; `None` when
+    /// nothing is selected or every row is disabled.
+    fn selected_item(&self) -> Option<&ChooserItem> {
+        self.filtered.get(self.selected).map(|&i| &self.items[i]).filter(|item| !item.disabled)
     }
 
     /// Attaches a [`ChooserStepper`] (builder-style, for construction).
@@ -288,30 +352,32 @@ impl ChooserState {
     }
 
     pub fn selected_label(&self) -> Option<&str> {
-        self.filtered.get(self.selected).map(|&i| self.items[i].label.as_str())
+        self.selected_item().map(|item| item.label.as_str())
     }
 
     /// The `id` of the highlighted item, mapped through the filter — `None`
     /// when nothing is selected or the item carries no id.
     pub fn selected_id(&self) -> Option<&str> {
-        self.filtered.get(self.selected).and_then(|&i| self.items[i].id.as_deref())
+        self.selected_item().and_then(|item| item.id.as_deref())
     }
 
-    /// Moves the keyboard/mouse cursor to filtered row `i` (clamped in
-    /// range) and asks the next draw to scroll it into view.
+    /// Moves the keyboard/mouse cursor to filtered row `i` and asks the
+    /// next draw to scroll it into view. A row out of range or disabled
+    /// leaves the cursor where it is.
     pub fn select(&mut self, i: usize) {
-        if i < self.filtered.len() {
+        if self.enabled(i) {
             self.selected = i;
             self.ensure_visible = true;
         }
     }
 
     /// The `ModalResult` an `Enter` (or a confirming click) on the current
-    /// selection produces — `None` when nothing is selected (empty filter).
+    /// selection produces — `None` when nothing is selected (empty filter,
+    /// or every row disabled).
     pub fn confirm(&self) -> Option<super::modal::ModalResult> {
-        let &idx = self.filtered.get(self.selected)?;
+        let item = self.selected_item()?;
         Some(super::modal::ModalResult {
-            actions: self.items[idx].actions.clone(),
+            actions: item.actions.clone(),
             close: true,
             ..Default::default()
         })
@@ -329,7 +395,10 @@ impl ChooserState {
     }
 
     fn refilter(&mut self) {
-        // Without a filter box every row stays listed.
+        // Without a filter box every row stays listed. With one, a
+        // disabled row filters like any other: it is a listed row, only
+        // not a selectable one. (No filtered chooser lists one today; the
+        // theme picker, the one that does, has no box.)
         self.filtered = match &self.input {
             None => (0..self.items.len()).collect(),
             Some(input) => self
@@ -346,7 +415,7 @@ impl ChooserState {
                 .map(|(i, _)| i)
                 .collect(),
         };
-        self.selected = 0;
+        self.selected = self.opening_row();
         self.scroll = 0;
         self.ensure_visible = true;
     }
@@ -380,30 +449,24 @@ impl ChooserState {
             {
                 return self.step_action(c != '-').map(keep_open);
             }
-            KeyCode::Home if !self.has_filter() => self.select(0),
+            // Home and End stop at the first and last enabled rows, and
+            // scroll to the list's end, showing any disabled row past them.
+            KeyCode::Home if !self.has_filter() => {
+                if let Some(first) = self.first_enabled() {
+                    self.select(first);
+                }
+                self.scroll_to_end(false);
+            }
             KeyCode::End if !self.has_filter() => {
-                self.select(self.filtered.len().saturating_sub(1))
-            }
-            KeyCode::Up => {
-                self.selected = self.selected.saturating_sub(1);
-                self.ensure_visible = true;
-            }
-            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.selected = self.selected.saturating_sub(1);
-                self.ensure_visible = true;
-            }
-            KeyCode::Down => {
-                if self.selected + 1 < self.filtered.len() {
-                    self.selected += 1;
+                if let Some(last) = self.last_enabled() {
+                    self.select(last);
                 }
-                self.ensure_visible = true;
+                self.scroll_to_end(true);
             }
-            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.selected + 1 < self.filtered.len() {
-                    self.selected += 1;
-                }
-                self.ensure_visible = true;
-            }
+            KeyCode::Up => self.step(false),
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => self.step(false),
+            KeyCode::Down => self.step(true),
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => self.step(true),
             _ => {
                 if let Some(input) = &mut self.input {
                     let before = input.text().to_string();
@@ -556,8 +619,13 @@ impl ChooserState {
         for (i, &idx) in self.filtered.iter().enumerate().skip(self.scroll).take(list_h.max(1)) {
             let item = &self.items[idx];
             let text_row = list_area.y + (i - self.scroll) as u16;
-            let selected = i == self.selected;
-            let row_hovered = hovered == Some(&crate::hit::Hit::ChooserRow(i));
+            // A disabled row is never highlighted: the cursor sits on it
+            // only when no row can take it, and it registers no hit. A
+            // hover can still name it for one frame after the set swapped
+            // under the pointer (until `App::resync_hover` reads the new
+            // hit map), so the hover checks it too.
+            let selected = i == self.selected && !item.disabled;
+            let row_hovered = !item.disabled && hovered == Some(&crate::hit::Hit::ChooserRow(i));
             let highlight = if selected {
                 RowHighlight::Selected
             } else if row_hovered {
@@ -575,6 +643,11 @@ impl ChooserState {
                 theme,
             );
             let row_fill = ListRow::resolve_fill(theme, highlight, theme.panel, hover_t);
+            let (label_fg, detail_fg) = if item.disabled {
+                (theme.text_disabled, theme.text_disabled)
+            } else {
+                (theme.text, theme.text_muted)
+            };
 
             let text_x = list_area.x + 1;
             let right = list_area.x + list_area.width;
@@ -584,7 +657,7 @@ impl ChooserState {
                 text_x,
                 text_row,
                 label,
-                theme.text,
+                label_fg,
                 row_fill,
                 selected,
             );
@@ -596,14 +669,19 @@ impl ChooserState {
                     x,
                     text_row,
                     clip(&detail, w),
-                    theme.text_muted,
+                    detail_fg,
                     row_fill,
                     false,
                 );
             }
 
-            let row_rect = Rect { x: list_area.x, y: text_row, width: list_area.width, height: 1 };
-            hits.register(row_rect, crate::hit::Hit::ChooserRow(i));
+            // A disabled row takes no click (and so no hover), as a
+            // disabled button registers none.
+            if !item.disabled {
+                let row_rect =
+                    Rect { x: list_area.x, y: text_row, width: list_area.width, height: 1 };
+                hits.register(row_rect, crate::hit::Hit::ChooserRow(i));
+            }
         }
 
         // The stepper row sits above the bottom pad, a gap under the list,
@@ -1014,12 +1092,14 @@ mod tests {
                     detail: None,
                     actions: vec![Action::Render],
                     id: Some("alpha-id".into()),
+                    ..Default::default()
                 },
                 ChooserItem {
                     label: "beta".into(),
                     detail: None,
                     actions: vec![Action::Render],
                     id: Some("beta-id".into()),
+                    ..Default::default()
                 },
             ],
         );
@@ -1298,12 +1378,14 @@ mod tests {
                     detail: None,
                     actions: vec![Action::Render],
                     id: Some("alpha-id".into()),
+                    ..Default::default()
                 },
                 ChooserItem {
                     label: "beta".into(),
                     detail: None,
                     actions: vec![Action::Render],
                     id: Some("beta-id".into()),
+                    ..Default::default()
                 },
             ],
         );
@@ -1312,6 +1394,119 @@ mod tests {
             c.handle_key(key(KeyCode::Char(ch)));
         }
         assert_eq!(c.selected_id(), Some("beta-id"), "id follows the filtered selection");
+    }
+
+    /// `labels` as items, those named in `off` disabled, each with an id.
+    fn some_disabled(labels: &[&str], off: &[&str]) -> Vec<ChooserItem> {
+        labels
+            .iter()
+            .map(|l| ChooserItem {
+                label: l.to_string(),
+                actions: vec![Action::Render],
+                id: Some(l.to_string()),
+                disabled: off.contains(l),
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    /// Task #18: a disabled row stays listed but never takes the
+    /// selection. The keys step over it, Home and End stop at the first
+    /// and last enabled rows, and `select`, `select_id` and a new set
+    /// never land on it.
+    #[test]
+    fn a_disabled_row_is_stepped_over_and_never_selected() {
+        let rows = ["a", "b", "c", "d"];
+        let mut c = ChooserState::new("Theme", some_disabled(&rows, &["a", "c"])).without_filter();
+        assert_eq!(c.selected_label(), Some("b"), "opens on the first enabled row");
+        c.handle_key(key(KeyCode::Up));
+        assert_eq!(c.selected_label(), Some("b"), "nothing enabled above");
+        c.handle_key(key(KeyCode::Down));
+        assert_eq!(c.selected_label(), Some("d"), "Down steps over c");
+        c.handle_key(key(KeyCode::Down));
+        assert_eq!(c.selected_label(), Some("d"));
+        c.handle_key(ctrl('p'));
+        assert_eq!(c.selected_label(), Some("b"), "ctrl+p steps over c");
+        c.handle_key(ctrl('n'));
+        assert_eq!(c.selected_label(), Some("d"), "ctrl+n steps over c");
+        c.handle_key(key(KeyCode::Home));
+        assert_eq!(c.selected_label(), Some("b"), "Home stops at the first enabled row");
+        c.handle_key(key(KeyCode::End));
+        assert_eq!(c.selected_label(), Some("d"));
+        c.select(2);
+        c.select_id("a");
+        assert_eq!(c.selected_id(), Some("d"), "neither lands on a disabled row");
+        c.set_items(some_disabled(&rows, &["a", "b"]));
+        assert_eq!(c.selected_label(), Some("c"), "a new set opens on its first enabled row");
+        c.handle_key(key(KeyCode::End));
+        c.set_items(some_disabled(&rows, &["a", "b", "c", "d"]));
+        assert_eq!(c.selected_label(), None, "nothing to select");
+        assert_eq!(c.selected_id(), None);
+        assert!(c.confirm().is_none(), "Enter confirms no disabled row");
+        let mut filtered = ChooserState::new("Pick", some_disabled(&["ab", "ac"], &["ab"]));
+        filtered.handle_key(key(KeyCode::Char('a')));
+        assert_eq!(filtered.selected_label(), Some("ac"), "a refilter skips it too");
+    }
+
+    /// Review round 1: in a list that scrolls, Home (or an Up with no
+    /// enabled row above) scrolls back to the top, so a disabled first
+    /// row comes back into view; End and Down do the same at the bottom.
+    #[test]
+    fn home_and_end_scroll_disabled_end_rows_into_view() {
+        let labels: Vec<String> = (0..14).map(|i| format!("r{i}")).collect();
+        let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let mut c = ChooserState::new("T", some_disabled(&refs, &["r0", "r13"])).without_filter();
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut draw = |c: &mut ChooserState| {
+            let mut hits = crate::hit::HitMap::default();
+            terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0)).unwrap();
+            let shown = |s: &str| format!("{:?}", terminal.backend().buffer()).contains(s);
+            (shown("r0 "), shown("r13"))
+        };
+        c.handle_key(key(KeyCode::End));
+        assert_eq!(draw(&mut c), (false, true), "End shows the disabled last row");
+        for code in [KeyCode::Home, KeyCode::Up] {
+            c.handle_key(key(KeyCode::End));
+            draw(&mut c);
+            if code == KeyCode::Up {
+                for _ in 0..12 {
+                    c.handle_key(key(KeyCode::Up));
+                }
+            }
+            c.handle_key(key(code));
+            assert_eq!(draw(&mut c), (true, false), "{code:?} shows the disabled first row");
+            assert_eq!(c.selected_label(), Some("r1"));
+        }
+        for _ in 0..12 {
+            c.handle_key(key(KeyCode::Down));
+        }
+        assert_eq!(c.selected_label(), Some("r12"));
+        assert!(draw(&mut c).1, "Down at the last enabled row shows the one after");
+    }
+
+    /// Task #18: a disabled row paints its label and detail in the
+    /// disabled tone, takes no hover fill and registers no click.
+    #[test]
+    fn a_disabled_row_paints_disabled_and_takes_no_hover_or_click() {
+        let mut items = some_disabled(&["Terminal", "Light"], &["Terminal"]);
+        items[0].detail = Some("off".into());
+        let mut c = ChooserState::new("Theme", items).without_filter();
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        let hovered = crate::hit::Hit::ChooserRow(0);
+        terminal.draw(|f| c.draw(f, f.area(), &theme, &mut hits, Some(&hovered), 1.0)).unwrap();
+        assert!(hits.rect_of(&crate::hit::Hit::ChooserRow(0)).is_none(), "no click target");
+        let row1 = hits.rect_of(&crate::hit::Hit::ChooserRow(1)).expect("the enabled row");
+        let y = row1.y - 1;
+        let buf = terminal.backend().buffer();
+        let at = |s: &str| (row1.x..row1.right()).find(|&x| buf[(x, y)].symbol() == s).expect(s);
+        let (label_x, detail_x) = (at("T"), at("o"));
+        assert_eq!(buf[(label_x, y)].fg, theme.text_disabled, "label in the disabled tone");
+        assert_eq!(buf[(detail_x, y)].fg, theme.text_disabled, "detail in the disabled tone");
+        assert_eq!(buf[(row1.right() - 1, y)].bg, theme.panel, "no hover fill");
+        assert_eq!(buf[(row1.x, y)].symbol(), " ", "no selection bar");
     }
 
     #[test]

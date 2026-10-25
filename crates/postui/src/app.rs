@@ -1176,26 +1176,44 @@ impl App {
 
     /// Builds the theme picker's rows for the current polarity filter
     /// (`theme_picker_dark`): one row per registry option whose seed
-    /// background matches, in registry order.
+    /// background matches, in registry order. The Terminal row is listed
+    /// in both sets (task #18, you): in the one that is not the
+    /// terminal's it is disabled and says why, so the rows under it keep
+    /// their places when the set flips. Disabled rather than selectable,
+    /// because the highlight is the live preview and a set never shows
+    /// the other polarity's palette. Only Terminal: it is the one row
+    /// whose polarity is the terminal's rather than its own, and it comes
+    /// first. A custom theme of the other polarity still drops out; one
+    /// with a new name is listed after every built-in, so that moves no
+    /// row.
     fn theme_picker_items(&self) -> Vec<crate::components::chooser::ChooserItem> {
+        use crate::theme::ThemeSource;
         self.themes
             .entries()
             .iter()
-            .filter(|e| {
-                self.themes.entry_is_dark(e, &self.terminal_colors) == self.theme_picker_dark
-            })
-            .map(|e| {
-                let detail = match &e.source {
-                    crate::theme::ThemeSource::Terminal => "terminal colors",
-                    crate::theme::ThemeSource::Builtin(_) => "built-in",
-                    crate::theme::ThemeSource::Custom(_) => "custom",
+            .filter_map(|e| {
+                let in_set =
+                    self.themes.entry_is_dark(e, &self.terminal_colors) == self.theme_picker_dark;
+                let detail = match (&e.source, in_set) {
+                    (ThemeSource::Terminal, true) => "terminal colors".to_string(),
+                    // It names the theme's polarity, not the terminal's: a
+                    // terminal that reported no colors gets the dark
+                    // fallback, which is still what this theme would show.
+                    (ThemeSource::Terminal, false) => {
+                        let theirs = if self.theme_picker_dark { "light" } else { "dark" };
+                        format!("disabled: a {theirs} theme")
+                    }
+                    (_, false) => return None,
+                    (ThemeSource::Builtin(_), true) => "built-in".to_string(),
+                    (ThemeSource::Custom(_), true) => "custom".to_string(),
                 };
-                crate::components::chooser::ChooserItem {
+                Some(crate::components::chooser::ChooserItem {
                     label: e.label.clone(),
-                    detail: Some(detail.into()),
+                    detail: Some(detail),
                     actions: vec![Action::ApplyTheme(e.name.clone())],
                     id: Some(e.name.clone()),
-                }
+                    disabled: !in_set,
+                })
             })
             .collect()
     }
@@ -5139,6 +5157,7 @@ impl App {
                         detail: Some(path.display().to_string()),
                         actions: vec![Action::SwitchProject(path.clone())],
                         id: Some(path.display().to_string()),
+                        ..Default::default()
                     });
                 }
                 items.push(ChooserItem {
@@ -5181,7 +5200,12 @@ impl App {
                 // polarity's (much brighter/darker) palettes. Left/Right,
                 // Tab/BackTab or the title-row toggle flips to the other set.
                 // No filter box: a handful of rows needs no search, and it
-                // leaves the arrows to the toggle (task #6, you).
+                // leaves the arrows to the toggle (task #6, you). The
+                // applied Terminal theme's polarity is its entry's
+                // (`entry_is_dark` reads the same seed background, the
+                // queried colors are not reloaded here, and a contrast
+                // step never flips it, spec 2026-10-16 C14), so the
+                // applied theme is never the set's disabled Terminal row.
                 self.theme_picker_dark = self.theme.is_dark();
                 // Previewing: the screen behind stays undimmed, since it
                 // is what the highlighted theme looks like (task #16, you).
@@ -6122,7 +6146,7 @@ impl App {
                             label: k,
                             detail: None,
                             actions: vec![Action::JqApply(compose(&bar, &path, Some(&expr)))],
-                            id: None,
+                            ..Default::default()
                         }
                     })
                     .collect();
@@ -6144,7 +6168,7 @@ impl App {
                             label: k,
                             detail: None,
                             actions: vec![Action::JqTeeUp { text, cursor }],
-                            id: None,
+                            ..Default::default()
                         }
                     })
                     .collect();
