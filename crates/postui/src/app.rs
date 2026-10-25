@@ -518,18 +518,6 @@ pub struct App {
     testbed_list_dir_alt: i32,
 }
 
-/// Which jq clear [`App::clear_jq`] runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum JqClear {
-    /// `ClearJqFilter`, the bar's ✕ and the palette's: leaves a view for an
-    /// empty no view, or empties no view's filter (amendment C4).
-    Current,
-    /// `ClearJqScratch`, the views dropdown's no-view row: empties that
-    /// row's filter only, the current view staying current, as every row's
-    /// button acts on its own row (C5).
-    NoViewRow,
-}
-
 /// What to do with the chosen startup root once its source is known.
 ///
 /// The confirm-to-create prompt is reserved for a CLI-supplied root: per the
@@ -2104,40 +2092,23 @@ impl App {
         }
     }
 
-    /// Pushes the views dropdown (spec 16): `no view`, the views in saved
-    /// order, a divider and `+ save as view…`, disabled while the bar is
-    /// empty (spec 18). Each view row has its own rename and delete, and
-    /// the no-view row its clear (spec 17, amendments B9, C5): the scratch
-    /// cannot be deleted, so its delete key clears it. It hangs off the
-    /// chip the last frame drew, else, on a bar opened in this same action,
-    /// off where the next frame draws it.
+    /// Pushes the views dropdown (spec 16): the views in saved order, a
+    /// divider and `+ save as view…`, disabled while the bar is empty (spec
+    /// 18). No view has no row: the bar's ✕ is the way there (amendment
+    /// C5). Each view row has its own rename and delete (spec 17). It hangs
+    /// off the chip the last frame drew, else, on a bar opened in this same
+    /// action, off where the next frame draws it.
     fn open_jq_views(&mut self) {
         use crate::action::Verb;
         use crate::components::modal::{DropdownState, MenuItem, RowButton};
         use ratatui::layout::Rect;
         const SAVE_AS: &str = "+ save as view\u{2026}";
         let delete = Verb::Delete { count: 1 };
-        // Only a scratch with text has a clear: like every row's buttons,
-        // it acts on its own row, so it never leaves the current view.
-        let clear = (!self.editor.jq.is_empty()).then(|| {
-            RowButton::new(
-                delete,
-                "clear",
-                crate::glyph::CLOSE,
-                "Clear this filter",
-                Action::ClearJqScratch,
-            )
-            .destructive()
-        });
-        let mut items = vec![
-            MenuItem::new(postui_core::model::JqView::NO_VIEW, Action::PickJqView(None))
-                .with_buttons(clear.into_iter().collect()),
-        ];
+        let mut items = Vec::new();
         for view in &self.editor.jq_views {
             let name = view.name.clone();
-            items.push(
-                MenuItem::new(name.clone(), Action::PickJqView(Some(name.clone()))).with_buttons(
-                    vec![
+            items.push(MenuItem::new(name.clone(), Action::PickJqView(name.clone())).with_buttons(
+                vec![
                         RowButton::new(
                             Verb::Rename,
                             "rename",
@@ -2154,18 +2125,24 @@ impl App {
                         )
                         .destructive(),
                     ],
-                ),
-            );
+            ));
         }
-        let widest =
-            items.iter().map(|i| crate::ui::cells(&i.label)).chain([crate::ui::cells(SAVE_AS)]);
-        items.push(MenuItem::disabled("\u{2500}".repeat(widest.max().unwrap_or(0))));
+        // A divider only parts views from the save; with none it parts
+        // nothing.
+        if !items.is_empty() {
+            let widest =
+                items.iter().map(|i| crate::ui::cells(&i.label)).chain([crate::ui::cells(SAVE_AS)]);
+            items.push(MenuItem::disabled("\u{2500}".repeat(widest.max().unwrap_or(0))));
+        }
         items.push(if self.editor.jq_filter().is_empty() {
             MenuItem::disabled(SAVE_AS)
         } else {
             MenuItem::new(SAVE_AS, Action::PromptSaveJqView)
         });
-        let current = self.editor.current_view().map_or(0, |i| i + 1);
+        // On no view nothing is marked, and the first row a key can reach is
+        // highlighted.
+        let current = self.editor.current_view();
+        let selected = current.unwrap_or_else(|| DropdownState::first_enabled(&items));
         // A collapsed response pane still draws and registers its header,
         // so the pane's rect is there whenever a frame has drawn the app;
         // the zero rect is for an app no frame has drawn (a bare test app),
@@ -2176,46 +2153,7 @@ impl App {
                 .rect_of(&Hit::Pane(PaneId::Response))
                 .map_or_else(Rect::default, |pane| self.session.response.jq_chip_rect(pane))
         });
-        self.push_modal(Modal::Dropdown(DropdownState {
-            anchor,
-            items,
-            selected: current,
-            current: Some(current),
-        }));
-    }
-
-    /// `ClearJqFilter` and `ClearJqScratch`; see [`JqClear`].
-    fn clear_jq(&mut self, which: JqClear) {
-        if !self.close_inputs_or_stop(true) {
-            return;
-        }
-        let refusal = match which {
-            JqClear::Current => {
-                (!self.editor.jq_clearable()).then_some("Nothing to clear: the filter is empty")
-            }
-            // Named for its row: a view may be current, its filter showing.
-            JqClear::NoViewRow => {
-                self.editor.jq.is_empty().then_some("Nothing to clear: the no-view filter is empty")
-            }
-        };
-        if let Some(why) = refusal {
-            self.toasts.push(why, ToastKind::Info);
-            self.last_action_failed = true;
-            return;
-        }
-        // Its own step, never asking (amendment B8), so one undo brings
-        // back the old text with the view current. The clear is all it
-        // does, wherever it comes from: focus and the switch stay put. The
-        // bar's own ✕ is a click on the bar, and its handler focuses the
-        // bar as a click on the text does (`Hit::ResponseJqClear`).
-        self.no_coalesce = true;
-        match which {
-            JqClear::Current => self.editor.jq_clear_filter(),
-            JqClear::NoViewRow => self.editor.jq.clear(),
-        }
-        // Said, as a deleted view is: from the palette or the menu the
-        // filter may not be on screen to see it go.
-        self.toasts.push(format!("Filter cleared{}", self.undo_hint()), ToastKind::Info);
+        self.push_modal(Modal::Dropdown(DropdownState { anchor, items, selected, current }));
     }
 
     /// Spec 18: a name the editor refused for a view keeps the prompt, with
@@ -5790,7 +5728,7 @@ impl App {
                 if !self.close_inputs_or_stop(true) {
                     return true;
                 }
-                self.editor.jq_pick(name.as_deref());
+                self.editor.jq_pick(Some(&name));
                 true
             }
             Action::PromptSaveJqView => {
@@ -5908,11 +5846,25 @@ impl App {
                 true
             }
             Action::ClearJqFilter => {
-                self.clear_jq(JqClear::Current);
-                true
-            }
-            Action::ClearJqScratch => {
-                self.clear_jq(JqClear::NoViewRow);
+                if !self.close_inputs_or_stop(true) {
+                    return true;
+                }
+                if !self.editor.jq_clearable() {
+                    self.toasts.push("Nothing to clear: the filter is empty", ToastKind::Info);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                // Its own step, never asking (amendment B8), so one undo
+                // brings back the old text with the view current (C4). The
+                // clear is all it does, wherever it comes from: focus and the
+                // switch stay put. The bar's own ✕ is a click on the bar, and
+                // its handler focuses the bar as a click on the text does
+                // (`Hit::ResponseJqClear`).
+                self.no_coalesce = true;
+                self.editor.jq_clear_filter();
+                // Said, as a deleted view is: from the palette the filter may
+                // not be on screen to see it go.
+                self.toasts.push(format!("Filter cleared{}", self.undo_hint()), ToastKind::Info);
                 true
             }
             Action::JqApply(text) => {

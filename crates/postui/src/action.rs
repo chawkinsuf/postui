@@ -1198,14 +1198,9 @@ pub enum Action {
     /// the view that was current is untouched (amendment C4). Never asks.
     /// One undo step.
     ClearJqFilter,
-    /// The views dropdown's no-view row ✕ / `d`: empties the scratch and
-    /// leaves the current view current (amendments B8, C5). Never asks.
-    /// One undo step.
-    ClearJqScratch,
-    /// A views dropdown row: makes that view current (`None` = the
-    /// scratch) and switches the filter on. A request edit like any other
-    /// (jq views amendment A4).
-    PickJqView(Option<String>),
+    /// A views dropdown row: makes that view current and switches the
+    /// filter on. A request edit like any other (jq views amendment A4).
+    PickJqView(String),
     /// The dropdown's `+ save as view…` row: opens the name prompt.
     PromptSaveJqView,
     /// The save-as prompt's Enter: saves the bar's filter as a new view

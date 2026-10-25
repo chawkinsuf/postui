@@ -5202,14 +5202,14 @@ mod tests {
         assert!(hits.rect_of(&Hit::row_rename(2)).is_none(), "no actions, hovered or not");
     }
 
-    /// The views menu's shape: a no-view row that clears on `d`, then a
-    /// view row that renames and deletes. Each action is a toast naming its
-    /// button.
+    /// Rows with different buttons (the views menu had them until #102): a
+    /// row that clears on `d`, then a row that renames and deletes. Each
+    /// action is a toast naming its button.
     fn scratch_and_view_items(toast: impl Fn(&str) -> Action) -> Vec<MenuItem> {
         use crate::action::Verb;
         let delete = Verb::Delete { count: 1 };
         vec![
-            MenuItem::new("no view", Action::Render).with_buttons(vec![
+            MenuItem::new("draft", Action::Render).with_buttons(vec![
                 RowButton::new(delete, "clear", crate::glyph::CLOSE, "Clear", toast("clear"))
                     .destructive(),
             ]),
@@ -5243,7 +5243,7 @@ mod tests {
         };
         let (buf, hits) = draw(Some(&Hit::DropdownRow(1)));
         let row0 = hits.rect_of(&Hit::DropdownRow(0)).unwrap();
-        let clear = hits.rect_of(&Hit::row_delete(0)).expect("the no-view row's one button");
+        let clear = hits.rect_of(&Hit::row_delete(0)).expect("the first row's one button");
         assert_eq!(clear.x, row0.right() - 1, "in the last cell");
         assert_eq!(buf[(clear.x, clear.y)].symbol(), crate::glyph::CLOSE);
         let rename = hits.rect_of(&Hit::row_rename(1)).unwrap();
@@ -5320,7 +5320,7 @@ mod tests {
         );
         assert!(chips(dropdown_items()).is_none(), "a plain dropdown has none");
         // Amendment B9: the `d` chip says both words its buttons go by, and
-        // only the no-view row's when it is alone.
+        // only the clearing row's when it is alone.
         let spelled = |items: Vec<MenuItem>| -> Vec<String> {
             crate::keyroute::spell::spelled_on(
                 crate::keyroute::Surface::Menu,
@@ -5338,7 +5338,7 @@ mod tests {
         assert_eq!(
             spelled(items[..1].to_vec()),
             ["↑↓ navigate", "enter select", "d clear", "esc close"],
-            "a no-view row alone with text: its `d` is a clear"
+            "the clearing row alone: its `d` is a clear"
         );
     }
 

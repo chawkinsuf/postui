@@ -383,7 +383,7 @@ impl Hit {
         Hit::DropdownRowButton { row, verb: crate::action::Verb::Rename }
     }
 
-    /// Dropdown row `row`'s delete button (the no-view row's clear).
+    /// Dropdown row `row`'s delete button.
     pub fn row_delete(row: usize) -> Self {
         Hit::DropdownRowButton { row, verb: crate::action::Verb::Delete { count: 1 } }
     }

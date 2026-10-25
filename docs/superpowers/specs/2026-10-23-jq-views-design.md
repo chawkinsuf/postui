@@ -34,12 +34,12 @@ decision 6.)
 
 | # | Rule | Source |
 |---|---|---|
-| C1 | The UI never says "scratch". The chip and the dropdown row read **no view**; tooltips, palette entries and toasts say "filter". | you (the idea, "no view"); the wording mine (approved) |
+| C1 | The UI never says "scratch". The chip reads **no view**; tooltips, palette entries and toasts say "filter". | you (the idea, "no view"); the wording mine (approved) |
 | C2 | Copy to scratch is gone: the bar's `⧉`, a view row's `⧉` and its `c` key (and the footer's `c` chip), and the palette entry. | you |
 | C3 | The bar's slot shows `✕` **Clear the filter** on any view and on no view with text, and stays blank on an empty no view. Its width never changes (B4's reservation stands). | you (the ✕); when it shows mine (approved) |
 | C4 | **Clear the filter** (the bar's `✕`, the palette) leaves the current view for no view with an empty filter. The view is untouched, unsaved edits included. On no view it empties the filter. Never asks; one undo step, which brings back the old no-view text and the view current. The switch stays as it is; from the palette focus stays put, and the bar's `✕` gives the bar the caret (B8's click rule). An empty no view refuses: "Nothing to clear: the filter is empty". | you ("an x to clear the current view", "start from the beginning"); the rest mine (approved) |
-| C5 | The dropdown's no-view row keeps its `✕` on `d`/`dd` (B9): it empties that row's filter only, and what is current does not change, as every row's button acts on its own row. Its tip is "Clear this filter". | mine |
-| C6 | Both clears say "Filter cleared" with the undo hint. | mine (approved) |
+| C5 | The views dropdown has no row for no view: it lists the views, then the divider and `+ save as view…` (no divider when there are no views). The bar's `✕` (or the palette's clear) is the only way to no view. On no view no row is marked and the first view is highlighted. *Supersedes* spec 16's scratch row and B9's scratch-row clear. | you ("im not sure if i want no view in the dropdown. just leave it to the x for that"); the divider and highlight mine |
+| C6 | The clear says "Filter cleared" with the undo hint. | mine (approved) |
 | C7 | The palette's clear is "Response: clear jq filter" (C4). | mine |
 | C8 | The no-view chip keeps the accent colour: muted already means a stale result. | mine (approved) |
 | C9 | The reserved view name is "no view" (trimmed, any case), refused by save as, rename and the file reader, as "scratch" was; "scratch" is an ordinary name now. Pre-release, so no migration. *Round 1, mine:* any whitespace between the two words counts as the one space ("no  view", a no-break space), since it paints the same. | mine (approved) |
@@ -52,8 +52,9 @@ decision 6.)
   (C3); `Hit::ResponseJqCopy`, `Action::CopyJqViewToScratch`,
   `Verb::CopyToScratch`, its `c` binding, `Hit::row_copy` and
   `Editor::jq_copy_to_scratch` go.
-- New `Action::ClearJqFilter` (C4) beside `ClearJqScratch` (C5, the
-  dropdown row's); the bar's `✕` sends `ClearJqFilter`.
+- `Action::ClearJqScratch` becomes `ClearJqFilter` (C4), sent by the
+  bar's `✕` and the palette. `PickJqView` takes a view's name, no longer
+  an `Option` (C5: nothing picks no view).
 
 ### Tests
 
@@ -63,9 +64,9 @@ decision 6.)
   edits, the caret in the bar; one undo brings back the old text and the
   view current.
 - The palette's clear on a view: no view, empty, focus and switch stay.
-- The no-view row's `✕`/`d` leaves the current view current.
-- The chip and dropdown read "no view"; no hint, toast or palette entry
-  says "scratch"; a view named "No View" is refused, "scratch" is not.
+- The dropdown lists only views and the save; nothing marked on no view.
+- The chip reads "no view"; no hint, toast or palette entry says
+  "scratch"; a view named "No View" is refused, "scratch" is not.
 
 ## Amendment 2026-10-24 (#101): the chip moves right, copy to scratch, clear
 

@@ -347,7 +347,7 @@ pub fn all_commands() -> Vec<Command> {
         Command {
             id: "response-jq-clear-filter",
             name: "Response: clear jq filter",
-            description: "Empty the jq bar, leaving the current view as it is",
+            description: "Start over with an empty jq bar and no view; the view keeps its filter",
             action: Action::ClearJqFilter,
         },
         Command {
