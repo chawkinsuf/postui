@@ -380,10 +380,8 @@ fn a_project_with_no_saved_split_opens_at_the_default() {
     assert!(!b.path().join(".local").join("layout.toml").exists(), "B's layout.toml unwritten");
 }
 
-/// Asserts the split's three anims draw `app`'s split settled: none is
-/// easing, and what `ui::draw` reads for each (the anim, or the split
-/// field when a launch's fresh anim set never set it) is the field's own.
-/// The `is_done` half is what fails when the seed leaves an ease behind.
+/// Asserts the split's three anims draw `app`'s split settled: each one is
+/// set, done, and sits at the split field's own value.
 fn assert_split_drawn_settled(app: &App) {
     use crate::anim::AnimKey;
     let now = std::time::Instant::now();
@@ -395,7 +393,7 @@ fn assert_split_drawn_settled(app: &App) {
         (AnimKey::SplitRatio, s.ratio),
     ] {
         assert!(app.anims.is_done(key, now), "{key:?} eases instead of drawing at once");
-        assert_eq!(app.anims.value_or(key, now, settled), settled, "{key:?}");
+        assert_eq!(app.anims.value(key, now), Some(settled), "{key:?}");
     }
 }
 

@@ -1105,11 +1105,11 @@ impl App {
         self.clipboard = crate::clipboard::Clipboard::new(&ui_settings);
         // A fresh set, so the first frame starts with nothing in flight:
         // whatever `with_root`'s restore started (an underline, a fade) is
-        // dropped, settled. The seeded split's snaps go with it, and the
-        // first frame draws the split fields (`ui::draw`'s fallback for an
-        // unset anim). The seed also put the anim targets in step with the
-        // fields, so the first `update` eases nothing either (task #93).
+        // dropped, settled. The split's three anims are snapped back in at
+        // the seeded split, so a launch draws it at once just as a project
+        // switch does (task #93).
         self.anims = Anims::new(ui_settings.animations);
+        self.sync_split_anims(true);
         self.theme = theme;
         self.theme_name = theme_name;
         self.theme_contrast = ui_settings.theme_contrast;
@@ -2418,8 +2418,7 @@ impl App {
     /// project's split (a switch). Only here does the app know the change
     /// is a seed; the `sync_*` passes `update` runs can't tell it from a
     /// chip click. At a launch, `App::new` then replaces the whole anim
-    /// set (`apply_ui_settings`), snaps included; the targets set here are
-    /// what keep its first `update` from easing.
+    /// set and snaps the split's anims back in (`apply_ui_settings`).
     fn seed_sizes_from_project(&mut self) {
         let layout = self.project().map(|p| &p.local().layout);
         let split = layout
@@ -2501,7 +2500,8 @@ impl App {
     /// Brings the split's three anims to the split fields — the one place
     /// each anim's target is derived. `update` eases them (`snap` false);
     /// a live drag and a project's seed snap them, settled or mid-ease
-    /// ([`Self::set_split_now`]).
+    /// ([`Self::set_split_now`]), as does a launch's fresh anim set
+    /// ([`Self::apply_ui_settings`]).
     fn sync_split_anims(&mut self, snap: bool) {
         self.sync_pane_collapse_anim(snap);
         self.sync_response_collapse_anim(snap);
