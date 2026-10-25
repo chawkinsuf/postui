@@ -4398,6 +4398,64 @@ fn switching_to_a_project_with_nothing_open_puts_the_cursor_on_the_first_request
     assert_eq!(app.sidebar.selected, Some(0), "the first row, not row 2 of the old project");
 }
 
+/// Task #99: a switch whose restore fails lands on a scratch, as a launch
+/// whose restore fails does. The editor never keeps the old
+/// project's request under the new project's root, where a Save (once
+/// the file reads again) would write it over the incoming project's file
+/// of the same slug.
+#[test]
+fn a_switch_whose_restore_fails_lands_on_a_fresh_scratch() {
+    let (mut app, a, b) = two_projects();
+    postui_core::fixtures::save_request(a.path(), "main/users", &req("https://a/users")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/users".into()));
+    assert_eq!(app.editor.url.text(), "https://a/users");
+    let broken = b.path().join("requests/main/users.toml");
+    std::fs::write(&broken, "not = [valid").unwrap();
+    postui_core::fixtures::save_local_state(
+        b.path(),
+        &postui_core::project::LocalState {
+            open_request: Some("main/users".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    app.update(Action::ForceSwitchProject(b.path().to_path_buf()));
+    assert_eq!(app.root(), b.path());
+    assert_eq!(app.editor.slug, None, "not alpha's slug inside beta");
+    assert_eq!(app.editor.url.text(), "", "not alpha's request");
+    assert_eq!(app.sidebar.selected, Some(0), "the cursor on the first row, as at launch");
+    // The user fixes beta's file outside the app, then saves: before the
+    // fix, this Save wrote alpha's request over it.
+    postui_core::fixtures::save_request(b.path(), "main/users", &req("https://b/users")).unwrap();
+    app.update(Action::SaveRequest);
+    let on_disk = std::fs::read_to_string(&broken).unwrap();
+    assert!(on_disk.contains("https://b/users"), "beta's request is not overwritten: {on_disk}");
+}
+
+/// Task #99's fix changes only what the editor holds: a switch whose
+/// restore opens keeps the editor's tab, as any open does.
+#[test]
+fn a_switch_whose_restore_opens_keeps_the_editor_tab() {
+    let (mut app, _a, b) = two_projects();
+    postui_core::fixtures::save_local_state(
+        b.path(),
+        &postui_core::project::LocalState {
+            open_request: Some("main/pong".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    app.editor.preferred_tab = EditorTab::Vars;
+    app.editor.active_tab = EditorTab::Vars;
+    app.editor.sub_focus = crate::components::editor::SubFocus::Content;
+    app.update(Action::ForceSwitchProject(b.path().to_path_buf()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/pong"));
+    assert_eq!(app.editor.preferred_tab, EditorTab::Vars);
+    assert_eq!(app.editor.active_tab, EditorTab::Vars);
+    assert_eq!(app.editor.sub_focus, crate::components::editor::SubFocus::Content);
+}
+
 #[test]
 fn a_space_switch_does_not_fade_the_band_in_from_the_old_space_row() {
     let (mut app, _dir) = spaced_app();

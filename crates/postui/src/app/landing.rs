@@ -292,9 +292,39 @@ impl App {
     /// body's engine state goes with the old one: a scratch has no slug
     /// for `Glue::own_body` to tell it from the scratch before.
     fn fresh_scratch(&mut self) {
-        self.editor = self.editor.fresh();
+        self.install_scratch(self.editor.fresh());
+    }
+
+    /// `scratch` in the editor, with the old buffer's shadow and engine
+    /// state dropped ([`Self::fresh_scratch`]).
+    fn install_scratch(&mut self, scratch: crate::components::editor::Editor) {
+        self.editor = scratch;
         self.shadow = None;
         self.vim_drop_body();
+    }
+
+    /// Empties the editor for a project switch, before the switch swaps the
+    /// incoming project in and lands (task #99). The editor's request is
+    /// the outgoing project's, and nothing after the swap could tell: a
+    /// failed open in `land` leaves the editor where it was, which within
+    /// one project keeps a request the project still has, but here would
+    /// keep the old project's request under the new root, where a Save
+    /// writes it over the file of the same slug. Emptied here, a restore
+    /// that fails leaves a scratch, as a failed startup restore does, and
+    /// no step of `land` reads the old slug against the new project's rows
+    /// or spaces. Done at the switch, not in `land`, because only the
+    /// switch knows the editor's request is foreign.
+    ///
+    /// The editor keeps the tab and keyboard stop an open keeps
+    /// ([`crate::components::editor::Editor::fresh_keeping_place`]); the
+    /// table's row cursor starts over, since it indexed the old request.
+    /// The old project's held request needs no release: that project is
+    /// dropped by the swap.
+    pub(super) fn release_for_project_switch(&mut self) {
+        self.install_scratch(self.editor.fresh_keeping_place());
+        // The kept tab may be one a scratch cannot show (Body on a GET);
+        // the restore's open puts it back when its method allows.
+        self.sync_active_tab();
     }
 
     /// The view an undo step records (§4.1).
