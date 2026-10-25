@@ -18,8 +18,41 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
-  build:
+  clippy:
     needs: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    needs: fmt
+    strategy:
+      # One OS failing should not hide whether the other passes.
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --workspace --no-fail-fast
+
+  build:
+    needs: [clippy, test]
     strategy:
       matrix:
         include:
