@@ -380,9 +380,8 @@ fn a_project_with_no_saved_split_opens_at_the_default() {
     assert!(!b.path().join(".local").join("layout.toml").exists(), "B's layout.toml unwritten");
 }
 
-/// Asserts the split's three anims draw `app`'s split settled: none is
-/// easing, and each one's value (with `ui::draw`'s fallback for an anim
-/// never set) is the split field's own.
+/// Asserts the split's three anims draw `app`'s split settled: each one is
+/// set, done, and sits at the split field's own value.
 fn assert_split_drawn_settled(app: &App) {
     use crate::anim::AnimKey;
     let now = std::time::Instant::now();
@@ -394,12 +393,14 @@ fn assert_split_drawn_settled(app: &App) {
         (AnimKey::SplitRatio, s.ratio),
     ] {
         assert!(app.anims.is_done(key, now), "{key:?} eases instead of drawing at once");
-        assert_eq!(app.anims.value_or(key, now, settled), settled, "{key:?}");
+        assert_eq!(app.anims.value(key, now), Some(settled), "{key:?}");
     }
 }
 
 /// Task #93 (P5): with animations on, a launch draws the project's saved
-/// split at once, not easing out of the 50/50 default.
+/// split at once, not easing out of the 50/50 default. `App::new` only
+/// flips the enabled flag after `with_root` (`apply_ui_settings`), so
+/// `with_root`'s animation set is the launch's.
 #[test]
 fn a_launch_draws_the_saved_split_at_once() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -410,9 +411,7 @@ fn a_launch_draws_the_saved_split_at_once() {
     layout.main_split = Some(saved.to_token());
     postui_core::fixtures::save_layout(dir.path(), &layout).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    // `App::new` builds the animation set after `with_root` returns
-    // (`apply_ui_settings`), with the user's `animations` setting.
-    app.anims = crate::anim::Anims::new(true);
+    assert!(app.anims.enabled, "animations on, the default");
     app.update(Action::Tick);
     assert_eq!(app.split_state(), saved);
     assert_split_drawn_settled(&app);
@@ -423,7 +422,7 @@ fn a_launch_draws_the_saved_split_at_once() {
 #[test]
 fn a_project_switch_draws_the_saved_split_at_once() {
     let (mut app, _a, b) = super::tests::two_projects();
-    app.anims = crate::anim::Anims::new(true);
+    assert!(app.anims.enabled, "animations on, the default");
     let saved = SplitState { editor_minimized: false, response_minimized: true, ratio: 0.25 };
     let mut layout = postui_core::fixtures::load_layout(b.path()).unwrap();
     layout.main_split = Some(saved.to_token());

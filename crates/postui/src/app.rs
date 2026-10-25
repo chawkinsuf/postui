@@ -1103,7 +1103,11 @@ impl App {
         theme: Theme,
     ) {
         self.clipboard = crate::clipboard::Clipboard::new(&ui_settings);
-        self.anims = Anims::new(ui_settings.animations);
+        // Flipped in place, not rebuilt: `with_root` has already snapped the
+        // project's seeded split into it, and a fresh set would drop that
+        // and leave the launch drawing from whatever the targets say (task
+        // #93). Turning motion off settles every entry (`set_enabled`).
+        self.anims.set_enabled(ui_settings.animations);
         self.theme = theme;
         self.theme_name = theme_name;
         self.theme_contrast = ui_settings.theme_contrast;
