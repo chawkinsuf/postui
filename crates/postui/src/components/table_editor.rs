@@ -168,7 +168,10 @@ pub struct TableEditorState {
 /// its value cell never opens; a value typed there first would have
 /// nowhere in the request to live (no dirty gate, save or load could see
 /// it). The cost is value-first entry: the name comes first. The Variable
-/// Manager grid's ghost row has the same rule (`start_cell_edit`).
+/// Manager grid's ghost row redirects the same way (`start_cell_edit`),
+/// but moves its cursor to the name as well; this table keeps the cursor
+/// column asked for, since its column persists across row moves (see
+/// `start_edit`), and only draws the ghost's lift on the name.
 fn open_col(row: usize, col: Col, map_len: usize) -> Col {
     if row >= map_len { Col::Key } else { col }
 }
@@ -228,7 +231,9 @@ impl TableEditorState {
     /// one, on purpose: with a name typed, a click on that value cell
     /// commits the name (the new row lands at the ghost's index) and opens
     /// the new row's value, which is name-then-value by mouse. With the
-    /// name still empty, the click reopens the empty name: no change.
+    /// name still empty, the click reopens the empty name: no change, so a
+    /// double click there is two sessions of the same empty name rather
+    /// than one. That is the cost of keeping name-then-value by mouse.
     pub fn click_cell(
         &mut self,
         row: usize,
