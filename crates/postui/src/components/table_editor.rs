@@ -200,13 +200,15 @@ impl TableEditorState {
     /// here. Any previous edit must already have been committed.
     fn start_edit(&mut self, row: usize, col: Col, map: &IndexMap<String, Entry>) {
         let row = row.min(map.len());
+        // The cursor column is the one asked for, even when the ghost row
+        // opens its name instead: the column persists across row moves, so
+        // passing through the ghost leaves the column the user chose on
+        // the real rows. The ghost draws its lift on the name whatever the
+        // column (`draw_row`), so Esc then Enter still reopens what was open.
+        self.col = col;
         let col = open_col(row, col, map.len());
         let text = Self::cell_text(map, row, col);
         self.selected = Some(row);
-        // The cursor column follows the cell that opened, as a click on any
-        // name cell moves it: on the ghost row that is the name, so Esc
-        // then Enter reopens what was open.
-        self.col = col;
         self.editing = Some(CellEdit { row, col, input: LineInput::new(&text) });
     }
 
@@ -279,8 +281,10 @@ impl TableEditorState {
         // value cell never opens, see `open_col`). A name that is taken
         // makes none; the warning says only that, since what is open after
         // the commit depends on what closed the cell (Tab opens the
-        // existing row's value, a click away opens nothing there).
-        debug_assert_eq!(edit.col, Col::Key, "the ghost row's value cell never opens");
+        // existing row's value, a click away opens nothing there). A value
+        // edit can only land here if the map shrank under an open value
+        // cell, leaving its row index one past the end; it names no row,
+        // so it writes nothing, as it never made a row before either.
         if edit.col != Col::Key || typed.trim().is_empty() {
             return (None, None);
         }
@@ -1466,7 +1470,7 @@ mod tests {
         let edit = t.editing.as_ref().expect("a cell is open");
         assert_eq!((edit.row, edit.col), (0, Col::Key), "the name, not the value");
         assert_eq!(edit.input.text(), "");
-        assert_eq!(t.col, Col::Key, "the cursor column follows the open cell");
+        assert_eq!(t.col, Col::Value, "the cursor column is the clicked one");
         type_str(&mut t, &mut map, "id");
         t.commit(&mut map);
         assert_eq!(map["id"].value, "", "the typing named the row");
@@ -1538,10 +1542,28 @@ mod tests {
         let out = t.handle_key(key(KeyCode::Esc), &mut map);
         assert!(out.warning.is_none());
         assert!(map.is_empty());
-        assert_eq!((t.selected, t.col), (Some(0), Col::Key));
+        assert_eq!(t.selected, Some(0));
         t.handle_key(key(KeyCode::Enter), &mut map);
         let edit = t.editing.as_ref().unwrap();
         assert_eq!((edit.row, edit.col, edit.input.text()), (0, Col::Key, ""));
+    }
+
+    /// The cursor column persists across row moves, through the ghost row
+    /// too: opening the ghost's name from the value column leaves the
+    /// column on the value, so the rows above still open their values.
+    #[test]
+    fn the_cursor_column_survives_opening_the_ghost_row() {
+        let mut map = map_of(&[("a", "1")]);
+        let mut t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
+        t.handle_key(key(KeyCode::Right), &mut map);
+        t.handle_key(key(KeyCode::Down), &mut map); // the ghost
+        t.handle_key(key(KeyCode::Enter), &mut map);
+        assert_eq!(t.editing.as_ref().unwrap().col, Col::Key, "the ghost opens its name");
+        t.handle_key(key(KeyCode::Esc), &mut map);
+        t.handle_key(key(KeyCode::Up), &mut map);
+        t.handle_key(key(KeyCode::Enter), &mut map);
+        let edit = t.editing.as_ref().unwrap();
+        assert_eq!((edit.row, edit.col), (0, Col::Value), "row 0 opens its value again");
     }
 
     // --- keyboard: navigation --------------------------------------------
