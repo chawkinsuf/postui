@@ -17,8 +17,9 @@ jobs:
   #
   # Binaries come only from release.yml (dist), on a version tag: there is
   # no per-push build here. A push builds nothing to download; to try a
-  # build before a release, tag a prerelease such as v0.2.0-rc.1, which
-  # dist publishes as a GitHub prerelease and keeps out of the Homebrew
-  # tap (docs/releasing.md).
+  # build before a release, cut a prerelease: set the workspace version to
+  # e.g. 0.2.0-rc.1 (the tag must match it), merge, and tag v0.2.0-rc.1.
+  # dist publishes it as a GitHub prerelease and keeps it out of the
+  # Homebrew tap (docs/releasing.md, "Prereleases").
   check:
     uses: ./.github/workflows/checks.yml

@@ -92,8 +92,9 @@ release will contain.
 
 ### Prereleases
 
-A version with a prerelease suffix (`1.2.3-rc.1`, tagged `v1.2.3-rc.1`)
-goes through the same workflow. It is published as a GitHub *prerelease*,
+A version with a prerelease suffix goes through the same steps: set the
+workspace version to `1.2.3-rc.1`, commit with the lock file, merge, and
+tag `v1.2.3-rc.1`. It is published as a GitHub *prerelease*,
 and the Homebrew formula is **not** updated, so `brew` users stay on the
 last full release. This is how to get downloadable binaries of main
 between releases: there is no per-push build.
@@ -110,10 +111,16 @@ second copy, kept at the same minor version.
 1. Set `channel` in `rust-toolchain.toml` to the new release (for example
    `"1.98.0"`), and `rust-version` under `[workspace.package]` in
    `Cargo.toml` to its minor version (`"1.98"`).
-2. Run `rustup toolchain install` (it reads the file), then
-   `cargo clippy --workspace --all-targets -- -D warnings`,
-   `cargo test --workspace` and `cargo fmt --all --check`. Fix whatever the
-   new release's lints or rustfmt flag in the same branch.
+2. Run `rustup toolchain install` (it reads the file), then the same gates
+   as `.github/workflows/checks.yml`, and fix whatever the new release's
+   lints or rustfmt flag in the same branch:
+
+   ```sh
+   cargo fmt --all --check
+   cargo clippy --locked --workspace --all-targets -- -D warnings
+   cargo clippy --locked --workspace --lib --bins -- -D warnings
+   cargo test --locked --workspace --no-fail-fast
+   ```
 3. Commit; the next push to main checks it on GitHub.
 
 ## Upgrading dist

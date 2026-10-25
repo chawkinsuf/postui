@@ -58,7 +58,12 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo fmt --all --check
 
+      # Only main saves the cache. A cache saved by a release run is scoped
+      # to its tag, which no later run reads, and it would use up the
+      # repository's cache quota and evict main's.
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
