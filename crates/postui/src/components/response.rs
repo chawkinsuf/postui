@@ -264,16 +264,15 @@ impl JqCompletion {
     }
 }
 
-/// What the jq bar's chip names: the current filter (`no view`, the
-/// scratch, or a view), whether that filter has unsaved edits (amendment
-/// A8), and whether the request has any
-/// views at all. The app pushes it after every sync (`App::sync_jq`); the
-/// bar only draws it.
+/// What the jq bar's chip says: the current view's name, or with none
+/// picked the menu it opens ([`Self::NO_VIEW`]); whether that view has
+/// unsaved edits; and whether the request has any views at all. The app
+/// pushes it after every sync (`App::sync_jq`); the bar only draws it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JqChip {
     pub label: String,
-    /// The current filter differs from its saved text: the bar shows the
-    /// ↺ (amendment B3; there is no mark on the chip).
+    /// The current view differs from its saved text: the bar shows the ↺
+    /// (amendments B3, C11; there is no mark on the chip).
     pub modified: bool,
     pub has_views: bool,
     /// The bar's slot holds the ✕ (amendment C3): a view is current, which
@@ -283,6 +282,11 @@ pub struct JqChip {
 }
 
 impl JqChip {
+    /// The chip's label with no view picked: the name of the menu it opens,
+    /// not a filter's (amendment C1), since what is typed with none picked
+    /// is no view of its own.
+    pub const NO_VIEW: &str = "views";
+
     /// Longest label shown, in cells; a longer one is cut and gets `…`.
     const LABEL_CELLS: usize = 16;
     /// The narrowest chip: a label cut to its `…`, then ` ▾ `.
@@ -606,7 +610,7 @@ impl Default for JqBar {
             tab: JqTab::Menu,
             menu: None,
             menu_scroll: std::cell::Cell::new(0),
-            chip: JqChip { label: postui_core::model::JqView::NO_VIEW.into(), ..JqChip::default() },
+            chip: JqChip { label: JqChip::NO_VIEW.into(), ..JqChip::default() },
         }
     }
 }
@@ -10545,7 +10549,7 @@ mod tests {
         r.set_jq_text(".data");
         let mut starts = Vec::new();
         for c in [
-            chip("no view", false, true),
+            chip(JqChip::NO_VIEW, false, true),
             chip("names", false, true),
             chip("names", true, true),
             chip("a rather long view name", true, true),
@@ -10577,15 +10581,15 @@ mod tests {
         let (_, buf) = render_buf(&mut r);
         assert_eq!(buf[(clear.x + 1, clear.y)].symbol(), crate::glyph::CLOSE, "its pill's glyph");
 
-        // "no view" and "names" differ in width, so compare right edges.
-        r.set_jq_chip(chip("no view", false, true));
+        // Labels may differ in width, so compare right edges.
+        r.set_jq_chip(chip(JqChip::NO_VIEW, false, true));
         let hits = render_hits(&mut r);
         let with_text = hits.rect_of(&Hit::ResponseJqChip).unwrap();
         assert_eq!(hits.rect_of(&Hit::ResponseJqClear), Some(clear), "one slot");
         assert_eq!(with_text.right(), on_view.right());
 
         r.set_jq_text("");
-        r.set_jq_chip(JqChip { clearable: false, ..chip("no view", false, true) });
+        r.set_jq_chip(JqChip { clearable: false, ..chip(JqChip::NO_VIEW, false, true) });
         let hits = render_hits(&mut r);
         assert!(hits.rect_of(&Hit::ResponseJqClear).is_none(), "nothing to clear");
         let empty = hits.rect_of(&Hit::ResponseJqChip).unwrap();
@@ -10635,9 +10639,9 @@ mod tests {
         let mut r = ready(ITEMS);
         r.open_jq();
         r.set_jq_text(".data");
-        // A view's chip and the wider no view's are both checked.
+        // A view's chip and the no-view chip are both checked.
         let slot = Hit::ResponseJqClear;
-        for label in ["names", "no view"] {
+        for label in ["names", JqChip::NO_VIEW] {
             r.set_jq_chip(chip(label, true, true));
             for width in 3..40 {
                 let hits = render_hits_at(&mut r, width);
@@ -10727,19 +10731,19 @@ mod tests {
     fn the_bar_shows_while_on_with_views_even_when_the_filter_is_empty() {
         let mut r = ready(ITEMS);
         assert!(r.jq_enabled() && r.jq_text().is_empty() && !r.jq_open());
-        r.set_jq_chip(chip("no view", false, true));
+        r.set_jq_chip(chip(JqChip::NO_VIEW, false, true));
         assert!(r.jq_open(), "on with views shows the bar");
         r.set_jq_enabled(false);
         assert!(!r.jq_open(), "switched off closes it");
         r.set_jq_enabled(true);
-        r.set_jq_chip(chip("no view", false, false));
+        r.set_jq_chip(chip(JqChip::NO_VIEW, false, false));
         assert!(!r.jq_open(), "no views, no text: closed");
     }
 
     #[test]
     fn closing_an_empty_bar_with_views_switches_it_off() {
         let mut r = ready(ITEMS);
-        r.set_jq_chip(chip("no view", false, true));
+        r.set_jq_chip(chip(JqChip::NO_VIEW, false, true));
         r.open_jq();
         let _ = r.take_jq_edited();
         r.close_jq();

@@ -23593,15 +23593,13 @@ fn the_palette_reverts_an_edited_view_and_refuses_otherwise() {
     refused(&app, "Nothing to revert: view \"names\" is unchanged");
     assert_eq!(app.history.undo_len(), steps + 1);
 
-    app.editor.jq_current = None; // the saved no-view text current, as a load can leave it
-    run_revert(&mut app);
-    refused(&app, "Nothing to revert: the filter is unchanged");
-    assert_eq!(app.editor.jq, ".s");
-    // Amendment A8: an edited scratch reverts like a view.
+    // Amendment C11: only a view has saved text to go back to; what is
+    // typed with none picked has no ↺, edited or not.
+    app.editor.jq_current = None;
     app.editor.set_jq_filter(".t");
     run_revert(&mut app);
-    assert!(!app.last_action_failed);
-    assert_eq!(app.editor.jq, ".s");
+    refused(&app, "Nothing to revert: no view is picked");
+    assert_eq!(app.editor.jq, ".t");
 
     app.editor.jq_save_as("fresh").unwrap();
     run_revert(&mut app);
@@ -23634,9 +23632,11 @@ fn the_focused_bar_offers_a_revert_chip_on_an_edited_view() {
 
     app.editor.jq_current = None;
     app.handle_key(alt('q'));
-    assert!(!revert_chip(&app), "an unedited scratch has nothing to revert");
     type_str(&mut app, "x");
-    assert!(revert_chip(&app), "amendment A8: an edited scratch offers it too");
+    assert_ne!(app.editor.jq, ".s", "the typed filter differs from the file's");
+    assert!(!revert_chip(&app), "amendment C11: with no view picked there is no revert");
+    render_once(&mut app);
+    assert!(app.hits.rect_of(&Hit::ResponseJqRevert).is_none(), "nor a ↺");
 }
 
 #[test]
@@ -23893,12 +23893,36 @@ fn save_as_view_names_a_new_view_and_makes_it_current() {
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.jq_current.as_deref(), Some("count"));
     assert_eq!(view_filter(&app, "count"), ".data.total");
-    assert_eq!(app.editor.jq, ".data.total", "spec 6: the scratch keeps its text");
+    assert_eq!(app.editor.jq, "", "amendment C12: the text moved, none left behind the view");
     assert!(app.editor.is_dirty(), "a view is the request's");
     app.capture_undo();
     app.update(Action::Undo);
     assert!(app.editor.jq_views.iter().all(|v| v.name != "count"), "one undo takes it back");
     assert_eq!(app.editor.jq_current, None);
+    assert_eq!(app.editor.jq, ".data.total", "…and the text with no view");
+}
+
+/// Amendment C12: picking a view replaces what was typed with none picked,
+/// so nothing waits unseen behind the view; undo brings it back.
+#[test]
+fn picking_a_view_replaces_the_typed_filter() {
+    let mut app = views_app("jq = \".s\"");
+    app.capture_undo();
+    app.update(Action::PickJqView("names".into()));
+    assert_eq!(app.editor.jq, "");
+    assert_eq!(app.editor.current_request().jq, None, "the file holds no hidden text");
+    app.capture_undo();
+    app.update(Action::Undo);
+    assert_eq!(app.editor.jq_current_name(), None);
+    assert_eq!(app.editor.jq, ".s");
+    // Then the ✕ on a view clears nothing unseen: there is nothing there.
+    app.update(Action::PickJqView("names".into()));
+    app.capture_undo();
+    app.update(Action::ClearJqFilter);
+    app.capture_undo();
+    app.update(Action::Undo);
+    assert_eq!(app.editor.jq_current_name(), Some("names"));
+    assert_eq!(app.editor.jq, "");
 }
 
 #[test]

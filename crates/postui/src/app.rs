@@ -2034,7 +2034,7 @@ impl App {
         // copy of what the chip is made of.
         let current = self.editor.jq_current_name();
         response.set_jq_chip(crate::components::response::JqChip {
-            label: current.unwrap_or(postui_core::model::JqView::NO_VIEW).to_string(),
+            label: current.unwrap_or(crate::components::response::JqChip::NO_VIEW).to_string(),
             modified: self.editor.jq_current_modified(),
             has_views: !self.editor.jq_views.is_empty(),
             clearable: self.editor.jq_clearable(),
@@ -5811,17 +5811,19 @@ impl App {
                     return true;
                 }
                 // The palette reaches this whatever is current; the ↺ and
-                // the footer chip only show on an edited filter.
-                let which = match self.editor.jq_current_name() {
-                    Some(name) => format!("view \"{name}\""),
-                    None => "the filter".to_string(),
-                };
-                let refusal = match self.editor.jq_current_saved() {
-                    None => Some(format!("Nothing to revert: {which} is not saved yet")),
-                    Some(_) if !self.editor.jq_current_modified() => {
-                        Some(format!("Nothing to revert: {which} is unchanged"))
-                    }
-                    Some(_) => None,
+                // the footer chip only show on an edited view. Only a view
+                // has saved text to go back to (amendment C11).
+                let refusal = match self.editor.jq_current_name() {
+                    None => Some("Nothing to revert: no view is picked".to_string()),
+                    Some(name) => match self.editor.jq_current_saved() {
+                        None => {
+                            Some(format!("Nothing to revert: view \"{name}\" is not saved yet"))
+                        }
+                        Some(_) if !self.editor.jq_current_modified() => {
+                            Some(format!("Nothing to revert: view \"{name}\" is unchanged"))
+                        }
+                        Some(_) => None,
+                    },
                 };
                 if let Some(why) = refusal {
                     self.toasts.push(why, ToastKind::Info);

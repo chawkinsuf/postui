@@ -175,10 +175,6 @@ pub struct JqView {
 }
 
 impl JqView {
-    /// What the chip calls the scratch filter, the one with no view current
-    /// (amendment C1). Not reserved: a view may be named this too (C9).
-    pub const NO_VIEW: &str = "no view";
-
     /// What two view names are compared by: trimmed, ignoring case
     /// (Unicode, as request names are). One request never holds two views
     /// with the same key (spec 18).
