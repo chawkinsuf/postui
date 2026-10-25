@@ -848,8 +848,9 @@ impl Editor {
 
     /// Makes view `name` current and switches the filter on (spec 16). A
     /// name no view has any more (a reload under the menu) changes nothing,
-    /// as a stale delete does. Nothing picks no view: the clear is the way
-    /// there ([`Self::jq_clear_filter`], amendment C5).
+    /// as a stale delete does. Nothing picks no view: the clear goes there
+    /// ([`Self::jq_clear_filter`], amendment C5), and so does a menu
+    /// action's or the AI's filter (`App::land_jq_in_scratch`).
     pub fn jq_pick(&mut self, name: &str) {
         if self.jq_views.iter().any(|v| v.name == name) {
             self.make_view_current(name.to_string());

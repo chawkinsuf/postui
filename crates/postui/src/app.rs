@@ -2062,13 +2062,13 @@ impl App {
     }
 
     /// Lands a menu action's or the AI's filter (`JqApply`, `JqTeeUp`,
-    /// `JqAiFinished`) in the bar as the scratch, and makes the scratch
-    /// current: such an action never rewrites a saved view (spec 8). The
-    /// text was built from the bar, so from the current view's filter.
+    /// `JqAiFinished`) in the bar as the scratch, with no view picked: such
+    /// an action never rewrites a saved view (spec 8). The text was built
+    /// from the bar, so from the current view's filter.
     ///
-    /// On the scratch the text joins the bar's edit session, as it always
-    /// has. Coming off a view, the switch must be one app-history step,
-    /// so that one undo brings back the old scratch with the view current.
+    /// With no view picked the text joins the bar's edit session, as it
+    /// always has. Coming off a view, the switch must be one app-history
+    /// step, so that one undo brings back the view current.
     /// Typing already made on the view in a focused bar is recorded first
     /// as its own step, and the landed text ends the session again. The
     /// caret and focus stay. Left in the session, a ctrl+z in the bar would
@@ -5812,18 +5812,16 @@ impl App {
                 // The palette reaches this whatever is current; the ↺ and
                 // the footer chip only show on an edited view. Only a view
                 // has saved text to go back to (amendment C11).
-                let refusal = match self.editor.jq_current_name() {
-                    None => Some("Nothing to revert: no view is picked".to_string()),
-                    Some(name) => match self.editor.jq_current_saved() {
-                        None => {
-                            Some(format!("Nothing to revert: view \"{name}\" is not saved yet"))
-                        }
-                        Some(_) if !self.editor.jq_current_modified() => {
-                            Some(format!("Nothing to revert: view \"{name}\" is unchanged"))
-                        }
-                        Some(_) => None,
-                    },
-                };
+                let refusal = match (self.editor.jq_current_name(), self.editor.jq_current_saved())
+                {
+                    (None, _) => Some("no view is picked".to_string()),
+                    (Some(name), None) => Some(format!("view \"{name}\" is not saved yet")),
+                    (Some(name), Some(_)) if !self.editor.jq_current_modified() => {
+                        Some(format!("view \"{name}\" is unchanged"))
+                    }
+                    (Some(_), Some(_)) => None,
+                }
+                .map(|why| format!("Nothing to revert: {why}"));
                 if let Some(why) = refusal {
                     self.toasts.push(why, ToastKind::Info);
                     self.last_action_failed = true;

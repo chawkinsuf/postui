@@ -372,7 +372,7 @@ pub enum Hit {
     /// The jq bar's `󰕌` button, shown while the current view is edited:
     /// puts the view back to its saved filter.
     ResponseJqRevert,
-    /// The jq bar's ✕, on a view or a scratch with text: clears the filter.
+    /// The jq bar's ✕, on a view or with text typed: clears the filter.
     ResponseJqClear,
 }
 

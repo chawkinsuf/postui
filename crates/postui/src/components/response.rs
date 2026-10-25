@@ -5444,7 +5444,7 @@ struct JqBarLayout {
     chip: Rect,
     /// The filter text's window, past the label.
     text: Rect,
-    /// The ↺, while the current filter is edited and there is room.
+    /// The ↺, while the current view is edited and there is room.
     revert: Option<Rect>,
     /// The clear button's cell, while there is room. Reserved even when it
     /// shows nothing.
