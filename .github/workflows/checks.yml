@@ -4,6 +4,16 @@ name: checks
 # reusable workflow with two callers: build.yml runs it on every push to
 # main, and dist's release.yml runs it on a release tag (dist-workspace.toml's
 # `local-artifacts-jobs`), where the release is only published if it passes.
+#
+# Never reference `secrets.*` here. dist's template calls this workflow
+# with `secrets: inherit`, so HOMEBREW_TAP_TOKEN is within reach, and these
+# jobs run dependency build scripts and tests. A secret only reaches a job
+# that names it, and none of these needs one.
+#
+# The release run repeats the gates the push to main already ran on the
+# same commit. That costs runner minutes, but it needs no lookup of another
+# workflow's result, and a tag pushed on a commit main never checked is
+# still gated.
 on:
   workflow_call:
     # release.yml hands every custom job dist's plan; these jobs don't need
@@ -32,7 +42,8 @@ jobs:
     # A hung test fails here instead of holding the runner for 6 hours.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      # The same major version dist's release.yml uses.
+      - uses: actions/checkout@v6
         with:
           persist-credentials: false
 

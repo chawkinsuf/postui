@@ -81,6 +81,12 @@ The GitHub Release itself needs no secret: `release.yml` asks for
    (`git tag -d v1.2.3`, `git push origin :refs/tags/v1.2.3`, tag again) or
    release the next patch version.
 
+   If the GitHub Release was created but a later job failed (most likely
+   `publish-homebrew-formula`, with an expired or missing
+   `HOMEBREW_TAP_TOKEN`), don't move the tag: the release already exists,
+   so a new run fails creating it. Fix the cause (store a new token) and
+   use "Re-run failed jobs" on that workflow run.
+
 Before tagging, `dist plan` (run from the repository root) shows what the
 release will contain.
 
@@ -95,7 +101,11 @@ between releases: there is no per-push build.
 ## Bumping the pinned Rust toolchain
 
 `rust-toolchain.toml` pins the exact Rust release for local builds, the
-`build` workflow and the release builds alike.
+`build` workflow and the release builds alike. rustup installs it on the
+first cargo call in the repo; where it can't download (offline, or a
+read-only rustup home such as a sandbox), run `rustup toolchain install`
+once from the repository root first. `rust-version` in `Cargo.toml` is its
+second copy, kept at the same minor version.
 
 1. Set `channel` in `rust-toolchain.toml` to the new release (for example
    `"1.98.0"`), and `rust-version` under `[workspace.package]` in
