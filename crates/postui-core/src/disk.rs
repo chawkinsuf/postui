@@ -196,18 +196,20 @@ impl Disk {
     /// Makes the ignored directory `d` with its `.gitignore`, atomically:
     /// the `.gitignore` goes into a staging directory beside it, which is
     /// then renamed to `d`. So `d` never exists without its `.gitignore`,
-    /// whether a crash or another writer comes in between. A rename that
-    /// fails because `d` is there by then (another writer's) leaves theirs;
-    /// the staging directory is removed either way. A crash before the
-    /// rename can leave a staging directory behind, which its own
-    /// `.gitignore` keeps out of git. Like `NamedTempFile`, it is made
-    /// owner-only, and `d` keeps that mode.
+    /// whether a crash or another writer comes in between. If another
+    /// writer's `d` is there by then and holds anything, the rename fails
+    /// and theirs is kept; an empty one, the rename replaces (POSIX). The
+    /// staging directory is removed either way. A crash before the rename
+    /// can leave a staging directory behind, which its own `.gitignore`
+    /// keeps out of git. It is made with the umask's mode, as
+    /// `create_dir_all` would make `d`; only the secrets file is
+    /// owner-only.
     ///
     /// A seal that fails fails the write that wanted the directory, rather
     /// than letting it land unsealed: a save the user sees fail beats
-    /// secrets sitting where `git add` would take them. The failure is
-    /// reported as the caller's (`op` on `rel`, the file the user's write
-    /// was for).
+    /// secrets sitting where `git add` would take them. A failure making a
+    /// directory is reported as the caller's (`op` on `rel`, the file the
+    /// user's write was for); one writing the `.gitignore` names it.
     fn make_sealed(
         &mut self,
         d: &RelPath,
@@ -217,10 +219,15 @@ impl Disk {
         let abs = self.abs(d);
         let parent = abs.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent).map_err(DiskError::io(op, rel))?;
-        let staging = tempfile::Builder::new()
-            .prefix(&format!("{}-", d.file_name()))
-            .tempdir_in(parent)
-            .map_err(DiskError::io(op, rel))?;
+        let prefix = format!("{}-", d.file_name());
+        let mut builder = tempfile::Builder::new();
+        builder.prefix(&prefix);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(std::fs::Permissions::from_mode(0o777));
+        }
+        let staging = builder.tempdir_in(parent).map_err(DiskError::io(op, rel))?;
         let gitignore = d.join(".gitignore")?;
         self.place_new(&staging.path().join(".gitignore"), &gitignore, IGNORE_ALL.as_bytes())?;
         match std::fs::rename(staging.path(), &abs) {
@@ -690,6 +697,22 @@ mod tests {
             let mode = std::fs::metadata(disk.abs(rel)).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, control, "{rel} should have the umask mode, not the temp file's");
         }
+    }
+
+    /// The sealed folder takes the mode `create_dir_all` would give it,
+    /// not the staging directory's owner-only default.
+    #[cfg(unix)]
+    #[test]
+    fn the_sealed_folder_takes_the_umask_like_a_plain_mkdir_would() {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, mut disk) = disk();
+        std::fs::create_dir(d.path().join("control")).unwrap();
+        let control =
+            std::fs::metadata(d.path().join("control")).unwrap().permissions().mode() & 0o777;
+        disk.ignore_when_created(RelPath::new(LOCAL_DIR).unwrap());
+        disk.write(&RelPath::new(STATE_TOML).unwrap(), "").unwrap();
+        let mode = std::fs::metadata(d.path().join(LOCAL_DIR)).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, control);
     }
 
     #[cfg(unix)]
