@@ -11,6 +11,8 @@ Set Padding 12
 Set Theme "Catppuccin Mocha"
 
 Hide
-Type `source docs/tapes/setup.sh && postui "$POSTUI_DEMO"`
+# A failed setup exits the shell, so the take visibly fails instead of
+# typing its keys into bash.
+Type `source docs/tapes/setup.sh && postui "$POSTUI_DEMO" || exit 1`
 Enter
 Sleep 2s

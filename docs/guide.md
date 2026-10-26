@@ -66,8 +66,10 @@ for that request. Values come from:
 - **`environments/<name>.toml`**, which sets values for one environment. The
   header's environment chip switches environments;
 - **secrets**: a variable declared with `secret = true` keeps its value in
-  `.local/secrets.toml`, which the project's `.gitignore` leaves out of git.
-  postui asks for a secret's value the first time a request needs it.
+  `.local/secrets.toml`. When postui creates `.local/` it puts a `.gitignore`
+  in it that keeps the whole folder out of git, whatever your repo's own
+  `.gitignore` says; delete it if you do want `.local/` committed. postui asks
+  for a secret's value the first time a request needs it.
 
 A **selector** bundles several variables into named options, so you can switch
 them together, such as a region that sets both a host and a key. Its options
@@ -97,7 +99,8 @@ the keys the filter has reached at that point in the response; otherwise jq's
 builtins (`leng` → `length`). By default the candidates are listed under the
 bar: `Tab` steps through them, `shift+Tab` steps back, and `Enter` takes the
 selected one. `jq_tab = "ghost"` shows the best one after the caret instead,
-where `Tab` cycles and `Right` takes it ([configuration](configuration.md)).
+where `Tab` cycles and `Right` or `End` takes it
+([configuration](configuration.md)).
 Inside a path, `ctrl+backspace` deletes back to the previous `.`, so
 `.data.items[0]` becomes `.data.` and then `.`.
 

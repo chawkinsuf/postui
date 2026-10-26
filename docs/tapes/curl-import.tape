@@ -7,12 +7,7 @@ Output docs/tapes/.out/curl-import.gif
 Source docs/tapes/include/common.tape
 
 # Open the users/ folder so the import lands in it.
-Down
-Sleep 300ms
-Down
-Sleep 300ms
-Enter
-Sleep 500ms
+Source docs/tapes/include/open-users.tape
 # ctrl+v in the sidebar imports the curl on the clipboard. Not VHS's Paste,
 # which types the text as keys.
 Copy "curl 'https://jsonplaceholder.typicode.com/todos?userId=1' -H 'Accept: application/json'"

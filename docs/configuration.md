@@ -28,9 +28,10 @@ When the editor closes, postui checks what you wrote before applying it; if it
 doesn't parse, you can keep editing or throw the edit away. Reset puts a file
 back to the defaults, and undo brings your version back.
 
-A setting that's missing keeps its default. One with a value of the wrong type
-falls back to its default and postui says so (a bad `keymap` counts as unset,
-so the first-launch question comes back). A `config.toml` that doesn't parse
+A setting that's missing keeps its default. One with a value postui can't use,
+of the wrong type or not one it accepts, falls back to its default and postui
+says so (a bad `keymap` counts as unset, so the first-launch question comes
+back). A `config.toml` that doesn't parse
 at all is reported and left alone, never overwritten.
 
 ## config.toml

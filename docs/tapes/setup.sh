@@ -10,10 +10,11 @@ if [ ! -f "$repo/docs/tapes/demo/project.toml" ]; then
 fi
 # ffmpeg writes screenshots into existing folders only.
 mkdir -p "$repo/docs/images" || return 1
-# One fixed folder, emptied on every take, so re-recording leaves nothing
-# behind but the last take's copy. A fixed path, not $TMPDIR, because it goes
-# into a shell command and a TOML string below without quoting worries.
-demo=/tmp/postui-tapes
+# One folder per user, emptied on every take, so re-recording leaves nothing
+# behind but the last take's copy. Built from /tmp and the numeric user id,
+# not $TMPDIR, so it needs no quoting in the shell command and TOML string
+# below, and two users' recordings never meet.
+demo="/tmp/postui-tapes-$(id -u)"
 rm -rf "$demo" && mkdir -p "$demo/config/postui" || return 1
 cp -R "$repo/docs/tapes/demo/." "$demo/project" || return 1
 # Open tabs and layout left by running postui on the demo folder itself

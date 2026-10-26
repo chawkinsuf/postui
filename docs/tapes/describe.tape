@@ -6,12 +6,7 @@ Output docs/tapes/.out/describe.gif
 Source docs/tapes/include/common.tape
 
 # Open users/list-users and send it.
-Down
-Sleep 300ms
-Down
-Sleep 300ms
-Enter
-Sleep 500ms
+Source docs/tapes/include/open-users.tape
 Down
 Sleep 300ms
 Down

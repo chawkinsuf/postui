@@ -8,12 +8,7 @@ Show
 Sleep 1s
 
 # Open the users/ folder, then list-users.
-Down
-Sleep 400ms
-Down
-Sleep 400ms
-Enter
-Sleep 700ms
+Source docs/tapes/include/open-users.tape
 Down
 Sleep 400ms
 Down

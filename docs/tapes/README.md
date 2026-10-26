@@ -51,7 +51,7 @@ network connection.
 ## How the tapes work
 
 Each tape first sources `setup.sh` out of sight. It copies the `demo/` project
-and a recording config into `/tmp/postui-tapes`, emptied first, so a take never touches
+and a recording config into `/tmp/postui-tapes-<uid>`, emptied first, so a take never touches
 your own config or leaves files in the repo, and every take starts from the
 same state. The tapes run the release build in `target/release`.
 
@@ -61,10 +61,14 @@ answers "Describe a filter…" with a fixed filter, so no AI account is needed
 and the result is the same every time.
 
 `curl-import.tape` puts its curl command on your system clipboard with VHS's
-`Copy`, so recording it replaces whatever you had copied. postui then reads
+`Copy`, so recording it replaces whatever you had copied. On Linux that needs
+a desktop session and a clipboard tool (`wl-clipboard` on Wayland, `xclip` or
+`xsel` on X11). postui then reads
 it with `ctrl+v`. VHS's `Paste` won't do here: it types the text as keys, and
 the sidebar takes those as commands.
 
 Each tape starts with `include/common.tape`: the recording settings, and the
-hidden launch through `setup.sh`. It sits in its own folder so the
+hidden launch through `setup.sh`. `include/open-users.tape` holds the sidebar
+steps into the demo's `users/` folder, the one place the tapes depend on the
+demo project's layout. It sits in its own folder so the
 `docs/tapes/*.tape` loop doesn't record it on its own.

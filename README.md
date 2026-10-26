@@ -26,8 +26,8 @@
   spaces. Review them in a diff and commit them next to the code they test.
 - **Environments, variables and secrets.** `{{tokens}}` in the URL, params and
   headers (and the body, once you switch that on) take their values from the
-  active environment. Secrets stay in the project's git-ignored `.local/`
-  folder, never in a committed file.
+  active environment. Secrets stay in the project's `.local/` folder, which
+  postui keeps out of git with a `.gitignore` of its own.
 - **jq on every response.** Filter JSON live as you type, with completion for
   the keys the response really has. Save filters as named views, right-click
   the tree for filters written for you, or describe the one you want and let an
@@ -59,8 +59,8 @@ my-api/
 │   └── main/             # a space
 │       └── users/
 │           └── list-users.toml
-├── .gitignore            # /.local/ (postui writes it when it creates a project)
-└── .local/               # yours alone, git-ignored: secrets, open tabs, layout
+└── .local/               # yours alone: secrets, open tabs, layout. Its own
+                          # .gitignore keeps it out of git.
 ```
 
 `requests/main/users/list-users.toml`:
