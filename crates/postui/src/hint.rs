@@ -450,7 +450,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::MethodSelector => of(Action::OpenMethodDropdown),
         Hit::CopyUrl => of(Action::CopyToClipboard(CopyTarget::Url)),
         Hit::TableCheckbox(_) => text(if ctx.on { "Disable this row" } else { "Enable this row" }),
-        Hit::TableCopy(_) => text("Copy this row's value"),
+        Hit::TableCopy(i) => of(Action::CopyToClipboard(CopyTarget::TableRow(*i))),
         Hit::TableDelete(_) => text("Delete this row"),
         // A dropdown row's own buttons, with the menu's key for each.
         // No tip when the button is gone (a menu rebuilt under the pointer).

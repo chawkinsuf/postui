@@ -999,22 +999,19 @@ impl PaneChipArgs {
                     && app.editor.sub_focus == SubFocus::Content
                     && app.editor.table.editing.is_none())
                 .then(|| {
+                    use crate::components::editor::{CursorRow, EditorTab};
                     use crate::components::footer::TableCursor;
-                    use crate::components::table_editor::Stop;
                     let editor = &app.editor;
-                    match editor.table.selected()? {
-                        Stop::Row(i) if i < editor.table_len() => Some(TableCursor::Row {
+                    Some(match editor.cursor_row()? {
+                        CursorRow::Main(i) => TableCursor::Row {
                             index: i,
                             enabled: editor.table_row_enabled(i),
-                            headers: editor.active_tab
-                                == crate::components::editor::EditorTab::Headers,
-                        }),
-                        Stop::Section(_) => editor.auto_row_cursor().map(|j| TableCursor::Auto {
-                            index: j,
-                            pencil: editor.auto_row_overridable(j),
-                        }),
-                        Stop::Row(_) | Stop::Add => None,
-                    }
+                            headers: editor.active_tab == EditorTab::Headers,
+                        },
+                        CursorRow::Auto(j) => {
+                            TableCursor::Auto { index: j, pencil: editor.auto_row_overridable(j) }
+                        }
+                    })
                 })
                 .flatten()
             },

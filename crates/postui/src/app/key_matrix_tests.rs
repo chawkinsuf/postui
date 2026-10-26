@@ -1390,7 +1390,8 @@ fn every_verb_chip_resolves_to_its_chip() {
                 // in both profiles, whatever its keycap's yank does (spec
                 // 2026-10-26 H5; the user's Q1): its keys are tested on
                 // their own.
-                if matches!(action, Action::CopyToClipboard(_)) {
+                if matches!(action, Action::CopyToClipboard(crate::action::CopyTarget::TableRow(_)))
+                {
                     continue;
                 }
                 assert_eq!(

@@ -21,6 +21,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use std::time::Instant;
 
+/// The row under the table's cursor ([`Editor::cursor_row`]): row `i` of
+/// the active tab, or auto row `j` of the Headers tab's section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorRow {
+    Main(usize),
+    Auto(usize),
+}
+
 /// Which editor tab is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorTab {
@@ -3282,9 +3290,11 @@ impl Editor {
             Verb::Add => Some(Action::TableAddRow),
             Verb::Delete { count: 0 | 1 } => row.map(Action::DeleteTableRow),
             Verb::Delete { count } => row.map(|start| Action::DeleteTableRows { start, count }),
-            Verb::Yank => row.map(Action::YankTableRow).or_else(|| {
-                let j = self.auto_row_cursor()?;
-                Some(Action::CopyToClipboard(crate::action::CopyTarget::ComputedHeader(j)))
+            Verb::Yank => Some(match self.cursor_row()? {
+                CursorRow::Main(i) => Action::YankTableRow(i),
+                CursorRow::Auto(j) => {
+                    Action::CopyToClipboard(crate::action::CopyTarget::ComputedHeader(j))
+                }
             }),
             Verb::Put { above, count } => {
                 // Above or below a row; anywhere past the rows, at their end.
@@ -3305,28 +3315,27 @@ impl Editor {
     /// whole copy off the Headers tab.
     pub fn row_copy_target(&self, whole: bool) -> Option<crate::action::CopyTarget> {
         use crate::action::CopyTarget;
-        let headers = self.active_tab == EditorTab::Headers;
-        if whole && !headers {
+        if whole && self.active_tab != EditorTab::Headers {
             return None;
         }
-        Some(match self.table.selected()? {
-            Stop::Row(i) if i < self.table_len() => {
-                if whole {
-                    CopyTarget::TableHeaderLine(i)
-                } else {
-                    CopyTarget::TableRow(i)
-                }
-            }
-            Stop::Section(_) => {
-                let j = self.auto_row_cursor()?;
-                if whole {
-                    CopyTarget::ComputedHeaderLine(j)
-                } else {
-                    CopyTarget::ComputedHeader(j)
-                }
-            }
-            Stop::Row(_) | Stop::Add => return None,
+        Some(match (self.cursor_row()?, whole) {
+            (CursorRow::Main(i), false) => CopyTarget::TableRow(i),
+            (CursorRow::Main(i), true) => CopyTarget::TableHeaderLine(i),
+            (CursorRow::Auto(j), false) => CopyTarget::ComputedHeader(j),
+            (CursorRow::Auto(j), true) => CopyTarget::ComputedHeaderLine(j),
         })
+    }
+
+    /// The row under the active table's cursor: a main row, or an auto
+    /// row of the Headers tab's section. `None` on `+ Add`, past the rows,
+    /// and on the Body tab. What the yank verb, the copy keys and the
+    /// footer's row chips all read.
+    pub fn cursor_row(&self) -> Option<CursorRow> {
+        match self.table.selected()? {
+            Stop::Row(i) if i < self.table_len() => Some(CursorRow::Main(i)),
+            Stop::Section(_) => self.auto_row_cursor().map(CursorRow::Auto),
+            Stop::Row(_) | Stop::Add => None,
+        }
     }
 
     /// Where `key` sits in the active tab's table now. `None` once the row

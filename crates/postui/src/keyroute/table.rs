@@ -786,8 +786,8 @@ pub static TABLE: &[Binding] = &[
     // Spec 2026-10-26 H4, H8: a header's value is arrows' `y`, the whole
     // header arrows' `Y` and vim's `"+yy` / `"+Y` (vim's `yy` is the
     // engine's yank, above).
-    arrows("y", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(copy_header_value)),
-    arrows("Y", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(copy_header_whole)),
+    arrows("y", Surfaces::RESPONSE, Intent::Act(copy_header_value)),
+    arrows("Y", Surfaces::RESPONSE, Intent::Act(copy_header_whole)),
     row("\"+yy", Surfaces::RESPONSE, Intent::Act(copy_header_whole), CountRule::Ignore),
     row("\"+Y", Surfaces::RESPONSE, Intent::Act(copy_header_whole), CountRule::Ignore),
     // Key list §6, Out (parked by the user): a list has no search yet.
