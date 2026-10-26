@@ -1884,37 +1884,33 @@ impl Editor {
 
     /// Deletes the selected body text (cursor collapses to the selection
     /// start), staying in Insert mode. Selections cover characters, never
-    /// the line break after them, so this removes exactly the cells
-    /// `body_selected_text` reads: the start row from `start.col`, the end
-    /// row through `end.col`, and the rows between, joining what is left
-    /// of the two. Deleting a whole last row so leaves an empty row, as a
-    /// GUI editor does. Not edtui's `DeleteSelection`: its jagged
-    /// `extract` takes the break after a selection for some shapes (a
-    /// whole row) and not others (a word at a row's end), which doubled
-    /// or lost breaks (#124).
+    /// the line break after them — but edtui's `DeleteSelection` (jagged
+    /// `extract`) sometimes consumes that break too, depending on where
+    /// the selection starts and ends (a whole row goes with its break, a
+    /// word at a row's end doesn't). Rather than predict which, the
+    /// delete counts breaks: the selection holds `end.row - start.row`
+    /// of its own, and one more gone is the break after it, which is put
+    /// back (#124). Deleting a whole last row so leaves an empty row, as
+    /// a GUI editor does. The delete stays edtui's, like every other body
+    /// edit, so edtui's own undo and clipboard see it.
+    /// `deleting_any_selection_removes_exactly_its_text` pins what edtui
+    /// does for every selection shape.
     fn delete_body_selection(&mut self) {
-        let Some(sel) = self.body.selection.take() else {
+        use edtui::actions::{DeleteSelection, Execute, LineBreak};
+        let Some(sel) = self.body.selection.as_ref() else {
             self.body_sel_anchor = None;
             return;
         };
         let (start, end) = (sel.start(), sel.end());
-        let lines = &mut self.body.lines;
-        // An empty body has no rows at all.
-        if let Some(last) = lines.len().checked_sub(1)
-            && start.row <= last
-        {
-            let end_row = end.row.min(last);
-            let tail: Vec<char> = lines
-                .get(edtui::RowIndex::new(end_row))
-                .map(|r| r[(end.col + 1).min(r.len())..].to_vec())
-                .unwrap_or_default();
-            let _ = lines.extract_rows(start.row + 1..=end_row);
-            if let Some(row) = lines.get_mut(edtui::RowIndex::new(start.row)) {
-                row.truncate(start.col);
-                row.extend(tail);
-            }
+        // Selecting everything can leave no rows at all: no break either.
+        let breaks = |e: &EditorState| e.lines.len().saturating_sub(1);
+        let breaks_before = breaks(&self.body);
+        DeleteSelection.execute(&mut self.body);
+        if breaks(&self.body) + (end.row - start.row) < breaks_before {
+            // The cursor sits exactly at the join point after the delete.
+            LineBreak(1).execute(&mut self.body);
+            self.body.cursor = start;
         }
-        self.body.cursor = start;
         self.body_sel_anchor = None;
         self.body.mode = EditorMode::Insert;
     }
