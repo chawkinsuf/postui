@@ -3956,7 +3956,9 @@ fn button_rows(labels: &[&str], max_w: u16) -> Vec<std::ops::Range<usize>> {
 /// modal-open animation `t` is below 1.
 ///
 /// A panel too narrow for the row (the screen clamps it, and the startup
-/// and keyboard dialogs are raised before the user can resize) wraps it with
+/// and keyboard dialogs are raised before the user can resize; a
+/// `Confirm`'s choices, built at run time, can outgrow even the full
+/// panel, as the drift question's three do) wraps it with
 /// [`button_rows`] rather than running it past the border, and grows a
 /// `BUTTON_HEIGHT` per extra row, so the body keeps the rows `size` gives
 /// it (task #88). The labels stay whole: the keyboard question's are its
@@ -5872,23 +5874,35 @@ mod tests {
     /// Task #107: a confirm dialog's choices wrap as the blocking dialogs'
     /// do, rather than running off a panel too narrow for them: the
     /// first-launch project question (44 columns of buttons) on a
-    /// 40-column screen, and the unsaved-changes question's.
+    /// 40-column screen, and the unsaved-changes question's. The drift
+    /// question's three choices are wider than the 60-column panel, so they
+    /// wrap at any screen width (they used to run over the left border).
     #[test]
     fn a_confirm_dialogs_choices_wrap_on_a_narrow_panel() {
         use crate::hit::Hit;
-        let confirm = |labels: [&str; 2]| Modal::Confirm {
-            title: "Not a postui project".into(),
-            body: "Create one here?".into(),
-            choices: vec![('y', labels[0].into(), vec![]), ('n', labels[1].into(), vec![])],
+        let rows = |labels: &[&str], width: u16| {
+            let letters = ['a', 'b', 'c'];
+            let modal = Modal::Confirm {
+                title: "Question".into(),
+                body: "Create one here?".into(),
+                choices: labels
+                    .iter()
+                    .zip(letters)
+                    .map(|(l, c)| (c, l.to_string(), vec![]))
+                    .collect(),
+            };
+            let hits: Vec<(Hit, &str)> =
+                labels.iter().zip(letters).map(|(l, c)| (Hit::ConfirmChoice(c), *l)).collect();
+            blocking_dialog_rows(modal, &hits, width, "here?")
         };
         let project = ["Create project", "Open default project"];
-        let hits = [(Hit::ConfirmChoice('y'), project[0]), (Hit::ConfirmChoice('n'), project[1])];
-        assert_eq!(blocking_dialog_rows(confirm(project), &hits, 40, "here?"), [0, 1]);
-        assert_eq!(blocking_dialog_rows(confirm(project), &hits, 80, "here?"), [0, 0]);
-
+        assert_eq!(rows(&project, 40), [0, 1]);
+        assert_eq!(rows(&project, 80), [0, 0]);
         let unsaved = ["Save as\u{2026} & quit", "Discard request"];
-        let hits = [(Hit::ConfirmChoice('y'), unsaved[0]), (Hit::ConfirmChoice('n'), unsaved[1])];
-        assert_eq!(blocking_dialog_rows(confirm(unsaved), &hits, 40, "here?"), [0, 1]);
+        assert_eq!(rows(&unsaved, 40), [0, 1]);
+        assert_eq!(rows(&unsaved, 80), [0, 0]);
+        let drift = ["Overwrite with my edits", "Reload from disk", "Cancel"];
+        assert_eq!(rows(&drift, 120), [0, 0, 1]);
     }
 
     /// [`button_rows`] fills like wrapped text: each row takes the next
