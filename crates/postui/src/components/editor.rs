@@ -1892,9 +1892,12 @@ impl Editor {
     /// of its own, and one more gone is the break after it, which is put
     /// back (#124). Deleting a whole last row so leaves an empty row, as
     /// a GUI editor does. The delete stays edtui's, like every other body
-    /// edit, so edtui's own undo and clipboard see it.
+    /// edit (the user, #124), so edtui records it as it records the rest.
     /// `deleting_any_selection_removes_exactly_its_text` pins what edtui
-    /// does for every selection shape.
+    /// does for every selection shape. A body selection is never
+    /// line-mode (edtui's emacs keymap has no line select, and nothing
+    /// here builds one), so its own breaks are always `end.row -
+    /// start.row`.
     fn delete_body_selection(&mut self) {
         use edtui::actions::{DeleteSelection, Execute, LineBreak};
         let Some(sel) = self.body.selection.as_ref() else {
