@@ -36,13 +36,12 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] The GitHub repo is public; the tap repo `chawkinsuf/homebrew-postui` exists
 - [x] `HOMEBREW_TAP_TOKEN` secret on chawkinsuf/postui (set by the user 2026-10-25; first used by the first full release)
 - [x] #120 Prerelease `v0.1.1-rc.1`: CI and the whole release ran green on GitHub (Homebrew skipped as a prerelease); the installer installs and runs
-- [ ] macOS: binary is unsigned. The shell installer and Homebrew avoid the quarantine flag; a browser-downloaded tarball needs `xattr -d com.apple.quarantine` (document it)
-- [ ] Decide and document Windows support (likely: unsupported for 0.2)
-- [ ] `postui --version` flag
-- [ ] Bump the workspace version to `0.2.0` (Cargo.lock follows)
-- [ ] CHANGELOG.md, or release notes for 0.2
-- [ ] The repo's GitHub description and topics
-- [ ] Tag: `git tag -a v0.2.0 -m "postui 0.2.0"`, then `git push origin v0.2.0`
+- [ ] macOS: the binary is unsigned. Homebrew (and the shell installer) avoid the quarantine flag, so the README makes Homebrew the recommended install (the user, 2026-10-26: "just make brew the recommended way to install"); part of #138
+- [x] Windows: not supported natively for 0.2; WSL 2 is recommended (the user, 2026-10-26). The README says so (#138)
+- [ ] #139 `postui --version` flag
+- [ ] #140 CHANGELOG.md, or release notes for 0.2
+- [ ] #141 The repo's GitHub description and topics
+- [ ] #142 Last (the user, 2026-10-26): bump the workspace version to `0.2.0` (Cargo.lock follows), then tag: `git tag -a v0.2.0 -m "postui 0.2.0"`, then `git push origin v0.2.0`
 
 ## Name
 
@@ -50,20 +49,20 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 
 ## Product checks before tagging
 
-- [ ] Hand-check on macOS (keyboard verification is still pending)
-- [ ] State the Nerd Font requirement (icons are Material glyphs)
+- [x] Hand-check on macOS (the user, 2026-10-26: "i have already tested on a mac")
+- [ ] State the Nerd Font requirement (icons are Material glyphs); part of #138
 
 ## Before 1.0 (not 0.2)
 
 - [ ] Review the project file format once: from 1.0 on, a format change needs a migration; 0.x releases still don't
 
-## README rewrite
+## README rewrite (#138)
 
-The current README is mostly a jq section, and its config list is missing most settings. Model it on Posting / Slumber (short, links out) rather than ATAC / lazygit (everything inline):
+The last big item (the user, 2026-10-26). The current README is mostly a jq section, and its config list is missing most settings. Model it on Posting / Slumber (short, links out) rather than ATAC / lazygit (everything inline):
 
 - [ ] Centered title, one-line tagline, hero GIF, link row (Install · Docs · Changelog)
 - [ ] Feature bullets, then 4–5 shots: mouse-first main screen, jq filter + "Describe a filter…", Manage (environments and variables), curl import, theme picker
-- [ ] Install: the shell installer, Homebrew (`brew install chawkinsuf/postui/postui`), release binaries, `cargo install --git`; Nerd Font note
+- [ ] Install: Homebrew first, as the recommended way (`brew install chawkinsuf/postui/postui`), then the shell installer, release binaries, `cargo install --git`; Nerd Font note; Windows users: WSL 2
 - [ ] A short project-folder TOML example (plain files in git is the pitch)
 - [ ] Move the key and config reference into `docs/`
 - [ ] Screenshots and GIFs recorded with VHS (charmbracelet) from `.tape` scripts in the repo, so they regenerate when the UI changes; set a Nerd Font in the tape
