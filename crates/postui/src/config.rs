@@ -1138,6 +1138,8 @@ pub enum CliParse {
     Usage,
     /// `--setup`: print terminal keyboard-config guidance and exit.
     Setup,
+    /// `--version` or `-V`: print `postui <version>` and exit.
+    Version,
     /// `--keydump[=FLAGS]`: run the raw key-event echo loop and exit.
     /// `flags` is an explicit kitty-keyboard-protocol enhancement bitmask
     /// to push (`0` pushes nothing); `None` means "push what the app
@@ -1146,8 +1148,8 @@ pub enum CliParse {
     Keydump { flags: Option<u8> },
 }
 
-/// Parses `postui`'s arguments (without the program name). `--setup` and
-/// `--keydump` run alone; otherwise at most one project directory and at
+/// Parses `postui`'s arguments (without the program name). `--setup`,
+/// `--version` and `--keydump` run alone; otherwise at most one project directory and at
 /// most one `--debug-ai`, in either order. Any other value starting with `-` (e.g.
 /// `--help`, `-x`) is treated as a request for usage rather than a project
 /// directory, since no real path starts with a dash without `./`.
@@ -1155,6 +1157,9 @@ pub fn parse_cli(args: Vec<String>) -> CliParse {
     if let [only] = args.as_slice() {
         if only == "--setup" {
             return CliParse::Setup;
+        }
+        if only == "--version" || only == "-V" {
+            return CliParse::Version;
         }
         if only == "--keydump" {
             return CliParse::Keydump { flags: None };
@@ -1967,6 +1972,17 @@ osc52_limit = 1024
         // It runs alone.
         assert_eq!(cli(&["--setup", "/abs/x"]), CliParse::Usage);
         assert_eq!(cli(&["--debug-ai", "--setup"]), CliParse::Usage);
+    }
+
+    #[test]
+    fn parse_cli_version_flag() {
+        assert_eq!(cli(&["--version"]), CliParse::Version);
+        assert_eq!(cli(&["-V"]), CliParse::Version);
+        // Exact spellings only, and it runs alone.
+        assert_eq!(cli(&["-v"]), CliParse::Usage);
+        assert_eq!(cli(&["--version-x"]), CliParse::Usage);
+        assert_eq!(cli(&["--version", "/abs/x"]), CliParse::Usage);
+        assert_eq!(cli(&["--debug-ai", "-V"]), CliParse::Usage);
     }
 
     #[test]

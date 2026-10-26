@@ -22,9 +22,14 @@ async fn main() -> anyhow::Result<()> {
             println!("usage: postui [--debug-ai] [directory]");
             println!("       --debug-ai        log every AI filter prompt and reply to a file");
             println!("       postui --setup    terminal keyboard setup (macOS opt/cmd keys)");
+            println!("       postui --version  print the version (also -V)");
             println!(
                 "       postui --keydump[=BITS]  echo raw key and mouse events (kitty flag bits; 0=none)"
             );
+            return Ok(());
+        }
+        postui::config::CliParse::Version => {
+            println!("postui {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
         postui::config::CliParse::Keydump { flags } => {
