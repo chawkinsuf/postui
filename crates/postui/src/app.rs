@@ -152,13 +152,13 @@ pub enum Screen {
     Testbed,
 }
 
-/// [`App::shadow`]: the open request's slug, the request as history last
-/// saw it, and the table cursor taken with it (task #121).
-type Shadow = (
-    Option<String>,
-    postui_core::model::HttpRequest,
-    Option<crate::components::editor::TableCursor>,
-);
+/// [`App::shadow`]: the open request as history last saw it.
+struct Shadow {
+    slug: Option<String>,
+    req: postui_core::model::HttpRequest,
+    /// The table cursor, taken with `req` (task #121).
+    cursor: Option<crate::components::editor::TableCursor>,
+}
 
 pub struct App {
     pub should_quit: bool,
@@ -3063,30 +3063,28 @@ impl App {
             return false;
         }
         let closing = std::mem::take(&mut self.field_gate_was_on);
+        let current = self.editor.current_request();
         match &self.shadow {
             // Which request is open changed (open/create/delete/rename/
             // save-as): re-seed, never record — the transition itself is
             // not an edit (its disk half is captured as its own step).
-            Some((slug, _, _)) if *slug != current_slug => {}
-            Some((_, prev, prev_cursor)) => {
-                let current = self.editor.current_request();
-                if *prev != current {
-                    let (prev, prev_cursor) = (prev.clone(), *prev_cursor);
-                    let coalesce = !std::mem::take(&mut self.no_coalesce) && !closing;
-                    self.record_editor_delta(current_slug, prev, prev_cursor, current, coalesce);
-                    return true;
-                }
+            Some(shadow) if shadow.slug != current_slug => {}
+            Some(shadow) if shadow.req != current => {
+                let (prev, prev_cursor) = (shadow.req.clone(), shadow.cursor);
+                let coalesce = !std::mem::take(&mut self.no_coalesce) && !closing;
+                self.record_editor_delta(current_slug, prev, prev_cursor, current, coalesce);
+                return true;
             }
-            None => {}
+            Some(_) | None => {}
         }
         self.no_coalesce = false;
-        self.seed_shadow(current_slug, self.editor.current_request());
+        self.seed_shadow(current_slug, current);
         false
     }
 
     /// Sets the shadow to `req`, with the table cursor as it is now.
     fn seed_shadow(&mut self, slug: Option<String>, req: postui_core::model::HttpRequest) {
-        self.shadow = Some((slug, req, self.editor.table_cursor()));
+        self.shadow = Some(Shadow { slug, req, cursor: self.editor.table_cursor() });
     }
 
     /// Records one `EditorDelta` step on the open request and moves the
@@ -7710,8 +7708,8 @@ impl App {
                             let old = self.editor.slug.replace(new_slug);
                             // The body's engine state follows (amendment C2).
                             self.vim_body_moved(old.as_deref());
-                            if let Some((slug, _, _)) = self.shadow.as_mut() {
-                                *slug = self.editor.slug.clone();
+                            if let Some(shadow) = self.shadow.as_mut() {
+                                shadow.slug = self.editor.slug.clone();
                             }
                         }
                         // Renaming the active space keeps the cursor on the
@@ -12395,9 +12393,10 @@ impl App {
         // newest recorded delta). `capture_undo` ran at the top of the
         // Undo/Redo arm, so a mismatch here means a capture bug — degrade
         // to the normal prompt instead of silently dropping edits.
-        let shadow_matches = self.shadow.as_ref().is_some_and(|(s, req, _)| {
-            *s == self.editor.slug && *req == self.editor.current_request()
-        });
+        let shadow_matches = self
+            .shadow
+            .as_ref()
+            .is_some_and(|s| s.slug == self.editor.slug && s.req == self.editor.current_request());
         if self.editor_holds_unsaved() && !shadow_matches {
             // Put the step back on the stack matching its own direction —
             // a tripped guard on a redo must retry as a redo, or Ctrl+Y

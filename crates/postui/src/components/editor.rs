@@ -691,11 +691,6 @@ impl Editor {
     /// the op. With none on this tab, the cursor keeps its old place,
     /// clamped (R8).
     pub fn restore_caret(&mut self, pos: &Caret, fallback: Option<TableCursor>) {
-        let len = self.table_len();
-        let recorded = fallback.filter(|f| f.tab == self.active_tab).map(|f| match f.stop {
-            Stop::Row(i) => Stop::of_row(i, len),
-            stop => stop,
-        });
         match pos {
             Caret::Url(i) => {
                 self.url.set_cursor(*i);
@@ -719,14 +714,17 @@ impl Editor {
             Caret::Add => self.table.set_selected(Some(Stop::Add)),
             Caret::Cell { row, key } => {
                 // The same row by key (indices shift under undo). A row the
-                // swap removed goes to the recorded spot, else stays at its
-                // old index, clamped to the last real row (R8): never the
-                // ghost "+ Add" row at index `len` on that path. An empty
-                // table has only the ghost row to offer. The cell column
-                // persists on its own.
+                // swap removed, or a stale index past the rows (no key),
+                // goes to the recorded spot, else stays at its old index,
+                // clamped to the last real row (R8): never the ghost
+                // "+ Add" row at index `len` on that path. An empty table
+                // has only the ghost row to offer. The cell column persists
+                // on its own.
+                let len = self.table_len();
                 let stop = match key.as_deref().and_then(|k| self.table_index_of(k)) {
                     Some(i) => Stop::Row(i),
-                    None => recorded
+                    None => self
+                        .recorded_stop(fallback)
                         .unwrap_or_else(|| Stop::of_row((*row).min(len.saturating_sub(1)), len)),
                 };
                 self.table.set_selected(Some(stop));
@@ -741,13 +739,24 @@ impl Editor {
                     None => Stop::Section(*index),
                     Some(n) => match self.referenced_var_names().iter().position(|r| r == n) {
                         Some(at) => Stop::Section(at),
-                        None => recorded.unwrap_or(Stop::Section(*index)),
+                        None => self.recorded_stop(fallback).unwrap_or(Stop::Section(*index)),
                     },
                 };
                 self.table.set_selected(Some(stop));
             }
             Caret::None => {}
         }
+    }
+
+    /// `restore_caret`'s recorded spot, when it was recorded on this tab,
+    /// with a row index clamped to the rows (a section row is clamped on
+    /// the next frame, as `Caret::Section` is).
+    fn recorded_stop(&self, fallback: Option<TableCursor>) -> Option<Stop> {
+        let f = fallback.filter(|f| f.tab == self.active_tab)?;
+        Some(match f.stop {
+            Stop::Row(i) => Stop::of_row(i, self.table_len()),
+            stop => stop,
+        })
     }
 
     /// Builds an `HttpRequest` from the editor's current field values.
@@ -4723,10 +4732,11 @@ mod tests {
         );
     }
 
-    /// A row cursor left past the rows (no key) clamps the same way: only
-    /// a cursor on `+ Add` itself comes back on `+ Add` (task #121).
+    /// A row cursor left past the rows (no key) has no row, as a removed
+    /// row has none: it takes a recorded spot, else clamps the same way.
+    /// Only a cursor on `+ Add` itself comes back on `+ Add` (task #121).
     #[test]
-    fn a_restored_row_cursor_past_the_rows_clamps_to_the_last_real_row() {
+    fn a_restored_row_cursor_past_the_rows_is_a_row_that_is_gone() {
         let mut e = Editor {
             active_tab: EditorTab::Headers,
             sub_focus: SubFocus::Content,
@@ -4736,7 +4746,10 @@ mod tests {
             e.headers.insert(key.into(), Entry { value: "1".into(), enabled: true });
         }
         e.restore_caret(&Caret::Cell { row: 3, key: None }, None);
-        assert_eq!(e.table.selected(), Some(Stop::Row(1)));
+        assert_eq!(e.table.selected(), Some(Stop::Row(1)), "R8: the last real row");
+        let spot = TableCursor { tab: EditorTab::Headers, stop: Stop::Row(0) };
+        e.restore_caret(&Caret::Cell { row: 3, key: None }, Some(spot));
+        assert_eq!(e.table.selected(), Some(Stop::Row(0)), "the recorded spot");
         e.restore_caret(&Caret::Add, None);
         assert_eq!(e.table.selected(), Some(Stop::Add));
     }
