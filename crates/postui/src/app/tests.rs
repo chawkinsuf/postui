@@ -5154,13 +5154,19 @@ fn a_loose_top_level_file_warns_once_and_never_enters_the_tree() {
 fn a_request_under_an_invalid_space_dir_warns_once_and_never_enters_the_tree() {
     let (mut app, dir) = spaced_app();
     let rows_before = app.sidebar.rows.clone();
-    std::fs::create_dir_all(dir.path().join("requests/Auth")).unwrap();
-    std::fs::write(dir.path().join("requests/Auth/login.toml"), "url = \"x\"\n").unwrap();
+    // Not a case variant of a space the fixture has (`auth`): macOS's
+    // case-insensitive file system would make `Auth` that very directory.
+    std::fs::create_dir_all(dir.path().join("requests/Billing")).unwrap();
+    std::fs::write(dir.path().join("requests/Billing/login.toml"), "url = \"x\"\n").unwrap();
 
     app.toasts = Default::default();
     app.update(Action::RefreshSidebar);
-    let warned: Vec<_> =
-        app.toasts.entries().into_iter().filter(|(m, _)| m.contains("Auth/login.toml")).collect();
+    let warned: Vec<_> = app
+        .toasts
+        .entries()
+        .into_iter()
+        .filter(|(m, _)| m.contains("Billing/login.toml"))
+        .collect();
     assert_eq!(warned.len(), 1, "{:?}", app.toasts.messages());
     assert!(
         warned[0].0.contains("is not in a valid space (space names are a-z 0-9 - _)"),
@@ -5177,12 +5183,12 @@ fn a_request_under_an_invalid_space_dir_warns_once_and_never_enters_the_tree() {
     app.toasts = Default::default();
     app.update(Action::RefreshSidebar);
     assert!(
-        !app.toasts.messages().iter().any(|m| m.contains("Auth/login.toml")),
+        !app.toasts.messages().iter().any(|m| m.contains("Billing/login.toml")),
         "{:?}",
         app.toasts.messages()
     );
 
-    assert!(!app.proj().spaces().iter().any(|s| s == "Auth"), "{:?}", app.proj().spaces());
+    assert!(!app.proj().spaces().iter().any(|s| s == "Billing"), "{:?}", app.proj().spaces());
     assert_eq!(
         app.sidebar.rows, rows_before,
         "the request under a non-space directory is skipped, never listed"
@@ -13999,8 +14005,9 @@ fn confirming_the_popup_secret_prompt_saves_without_sending() {
         Some(Modal::Prompt { kind: PromptKind::SecretValue { then_send: false, .. }, .. })
     ));
 
-    // The seeded text is replaced wholesale.
-    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    // The seeded text is replaced wholesale (ctrl+shift+a, select-all on
+    // every platform; plain ctrl+a is Home on macOS).
+    app.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::CONTROL));
     type_and_confirm(&mut app, "new");
 
     assert!(app.modals.is_empty());
@@ -23207,8 +23214,8 @@ fn the_focused_bar_advertises_enter_apply_and_esc_done() {
         vec![
             ("enter", "apply"),
             ("esc", "done"),
-            ("alt+shift+j", "views"),
-            ("alt+shift+q", "unfilter"),
+            (&*crate::keys::display_keycap("alt+shift+j"), "views"),
+            (&*crate::keys::display_keycap("alt+shift+q"), "unfilter"),
         ],
         "{chips:?}: keys only, the bar's keyless ✦ has no chip (#102)"
     );
@@ -23527,10 +23534,11 @@ fn the_footer_and_palette_reach_the_jq_bar() {
         crate::components::footer::JqBarState::Closed,
         false,
     ));
+    let alt_q = crate::keys::display_keycap("alt+q");
     assert!(
         chips
             .iter()
-            .any(|(k, l, a)| *k == "alt+q" && *l == "filter" && *a == Some(Action::OpenJqBar)),
+            .any(|(k, l, a)| *k == alt_q && *l == "filter" && *a == Some(Action::OpenJqBar)),
         "{chips:?}"
     );
     app.update(Action::OpenPalette);
@@ -23758,7 +23766,9 @@ fn the_response_footer_always_offers_alt_q_filter_and_close_only_while_open() {
             false,
         ))
     };
+    // `key` in its Linux spelling; macOS shows `opt+`.
     let find = |state: JqBarState, key: &str| {
+        let key = crate::keys::display_keycap(key);
         chips(state).into_iter().find(|(k, _, _)| *k == key).map(|(_, l, a)| (l, a))
     };
     assert_eq!(find(JqBarState::Closed, "alt+q"), Some(("filter", Some(Action::OpenJqBar))));

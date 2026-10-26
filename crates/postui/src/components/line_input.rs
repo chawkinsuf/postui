@@ -1658,18 +1658,17 @@ mod tests {
         assert_eq!(input.selection(), Some((0, 5)));
     }
 
+    // Linux builds only: `handle_key` folds with the build's own platform,
+    // and on macOS ^A is Home (`ctrl_e_jumps_to_line_end_and_mac_ctrl_a_
+    // to_line_start` covers that side).
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn plain_ctrl_a_selects_all_on_linux_builds() {
         // On Linux there is no cmd key sending ^A bytes, so ctrl+a keeps
-        // its GUI select-all meaning (this test exercises the identity
-        // fold explicitly, so it documents both platforms from either).
+        // its GUI select-all meaning.
         let mut input = LineInput::new("hello");
         input.set_cursor(2);
-        let ev = crate::keys::fold_text_nav_bytes(
-            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
-            false,
-        );
-        assert!(input.handle_key(ev));
+        assert!(input.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)));
         assert_eq!(input.selection(), Some((0, 5)));
     }
 

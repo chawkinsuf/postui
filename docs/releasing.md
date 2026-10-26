@@ -5,9 +5,8 @@ Releases are built and published by [dist](https://axodotdev.github.io/cargo-dis
 `.github/workflows/release.yml`, which:
 
 1. runs the same fmt, clippy and test gates as every push to main
-   (`.github/workflows/checks.yml`), alongside the builds. Clippy runs on
-   macOS and Linux, but the tests run on Linux only until they pass on
-   macOS (#106), so the macOS binaries ship without a test run on macOS;
+   (`.github/workflows/checks.yml`), alongside the builds, on macOS and
+   Linux;
 2. builds `postui` for four targets: `aarch64-apple-darwin` and
    `x86_64-apple-darwin` (both on the arm64 macOS runner),
    `x86_64-unknown-linux-gnu` (Ubuntu 22.04, so glibc 2.35 or newer) and
