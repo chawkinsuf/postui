@@ -198,8 +198,10 @@ impl Disk {
     /// racing to make it exactly one seals it. That is all the race gets:
     /// the other writer can put its file in before the `.gitignore` lands,
     /// and if that seal then fails, the directory is no longer empty and
-    /// stays unsealed. Reaching that takes two postui processes making the
-    /// folder in the same instant and a failed write, so it is left there.
+    /// stays unsealed. A crash between making the directory and placing
+    /// the `.gitignore` leaves it unsealed the same way. Both are left
+    /// there (the user, 2026-10-26: "That sounds like a super rare edge
+    /// case").
     ///
     /// A seal that fails fails the write that wanted the directory, rather
     /// than letting it land unsealed: a save the user sees fail beats

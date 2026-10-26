@@ -205,14 +205,9 @@ macro_rules! local_path {
 /// trash), never shared. Named for postui rather than something generic
 /// like `.local`, so a project in a repository root can't meet a folder
 /// another tool made: one without its `.gitignore` is postui's own,
-/// opted in to git on purpose (task #143).
-///
-/// Nothing reads or moves an older build's `.local/`. postui is
-/// unreleased (the user, 2026-10-23: "There are no old projects this is
-/// unreleased"), and this was kept for the tagged rc too (mine, approved,
-/// 2026-10-26). Moving it would mean guessing whether a `.local/` is
-/// postui's, the clash the new name avoids. Instead the changelog gives rc
-/// users the move, along with the `.gitignore` a moved folder lacks.
+/// opted in to git on purpose (task #143). Nothing reads an older build's
+/// `.local/`: this is the first release (the user, 2026-10-26: "There is
+/// no migration needed. We are working on the first release.").
 pub const LOCAL_DIR: &str = local_path!();
 pub const STATE_TOML: &str = local_path!("state.toml");
 pub const LAYOUT_TOML: &str = local_path!("layout.toml");
