@@ -110,6 +110,7 @@ Windows, run postui in [WSL 2](https://learn.microsoft.com/windows/wsl/install).
 ```sh
 postui            # opens the last project, or a default one the first time
 postui my-api     # opens the project in my-api, or offers to create one there
+postui --version  # prints the installed version
 ```
 
 The first launch asks which keys you want: arrows and Enter, or Vim. Change it

@@ -1149,10 +1149,11 @@ pub enum CliParse {
 }
 
 /// Parses `postui`'s arguments (without the program name). `--setup`,
-/// `--version` and `--keydump` run alone; otherwise at most one project directory and at
-/// most one `--debug-ai`, in either order. Any other value starting with `-` (e.g.
-/// `--help`, `-x`) is treated as a request for usage rather than a project
-/// directory, since no real path starts with a dash without `./`.
+/// `--version` and `--keydump` run alone; otherwise at most one project
+/// directory and at most one `--debug-ai`, in either order. Any other value
+/// starting with `-` (e.g. `--help`, `-x`) is treated as a request for usage
+/// rather than a project directory, since no real path starts with a dash
+/// without `./`.
 pub fn parse_cli(args: Vec<String>) -> CliParse {
     if let [only] = args.as_slice() {
         if only == "--setup" {
