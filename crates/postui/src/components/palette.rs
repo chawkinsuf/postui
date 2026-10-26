@@ -1178,8 +1178,9 @@ mod tests {
 
     /// Task #105: a row shows the key bound to its own action, so the
     /// eight rows a hand-kept name table missed show theirs, in both
-    /// profiles, and "Manage: variables" shows none: `alt+r` opens the
-    /// tab Manage last had, not Variables.
+    /// profiles; Quit keeps `^C` through its one exception; and "Manage:
+    /// variables" shows none: `alt+r` opens the tab Manage last had, not
+    /// Variables.
     #[test]
     fn rows_show_the_key_bound_to_their_action() {
         let alt = crate::keys::alt_label();
@@ -1551,18 +1552,19 @@ mod tests {
         );
     }
 
-    /// Task #105: every row whose action a key is bound to shows a key, in
-    /// both profiles, unless that key means something else where the
-    /// palette opened. A row can't lose its key to a missing entry again.
+    /// Task #105: opened over the default screen, every row but Quit (its
+    /// own test above) shows exactly the keymap's key for the row's action,
+    /// in both profiles: a bound row shows its key, an unbound row none.
+    /// Keys the keymap does not hold (vim's keyroute rows, such as `/`)
+    /// are not the column's to show.
     #[test]
-    fn every_row_with_a_bound_action_shows_a_key() {
+    fn every_row_shows_its_actions_keymap_key() {
         let p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
         for profile in [crate::config::KeyProfile::Arrows, crate::config::KeyProfile::Vim] {
             let keymap = crate::keys::Keymap::default_bindings_for(profile);
-            for c in all_commands() {
-                let bound = keymap.combo_for_action(key_action(&c.action)).is_some();
-                let here = p.key_context.action(c.action.clone()) == c.action;
-                assert_eq!(p.key_column(&c, &keymap).is_some(), bound && here, "{}", c.id);
+            for c in all_commands().into_iter().filter(|c| c.id != "quit") {
+                let want = keymap.combo_for_action(&c.action);
+                assert_eq!(p.key_column(&c, &keymap), want, "{} in {profile:?}", c.id);
             }
         }
     }

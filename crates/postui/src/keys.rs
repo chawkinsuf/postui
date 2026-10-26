@@ -619,15 +619,15 @@ impl Keymap {
         .collect()
     }
 
-    /// Reverse lookup for the palette's keybinding column: the first combo
-    /// (in `format_combo`-sorted order, for a deterministic pick when more
-    /// than one is bound — e.g. `quit`'s default `q`/`ctrl+c`) bound to
-    /// the action named `action_id` in [`named_actions`], formatted the
-    /// way the footer renders combos (caret ctrl, `+`-joined, e.g.
-    /// `"^P"`, `"alt+shift+m"`). `None` when `action_id` isn't a known
-    /// action name or nothing in this keymap is bound to it — most palette
-    /// commands have no keybinding at all, which is an expected, silent
-    /// outcome here, not an error.
+    /// [`Self::combo_for_action`] by the action's `keys.toml` name: the
+    /// first combo (in `format_combo`-sorted order, for a deterministic
+    /// pick when more than one is bound — e.g. `quit`'s default
+    /// `q`/`ctrl+c`) bound to the action named `action_id` in
+    /// [`named_actions`], formatted the way the footer renders combos
+    /// (caret ctrl, `+`-joined, e.g. `"^P"`, `"alt+shift+m"`). `None` when
+    /// `action_id` isn't a known action name or nothing in this keymap is
+    /// bound to it. The palette's key column asks by the action itself
+    /// (task #105).
     pub fn combo_for(&self, action_id: &str) -> Option<String> {
         let target = named_actions()
             .into_iter()
