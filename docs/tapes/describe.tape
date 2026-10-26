@@ -32,3 +32,5 @@ Sleep 500ms
 Show
 Sleep 500ms
 Screenshot docs/images/describe.png
+# A frame after the screenshot, so the tape doesn't end on it.
+Sleep 500ms
