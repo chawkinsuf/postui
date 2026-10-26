@@ -193,53 +193,47 @@ impl Disk {
         (inside && !self.abs(d).is_dir()).then(|| d.clone())
     }
 
-    /// Makes the ignored directory `d` with its `.gitignore`. `create_dir`
-    /// answers atomically whether this call made it, so of two writers
-    /// racing to make it exactly one seals it. That is all the race gets:
-    /// the other writer can put its file in before the `.gitignore` lands,
-    /// and if that seal then fails, the directory is no longer empty and
-    /// stays unsealed. A crash between making the directory and placing
-    /// the `.gitignore` leaves it unsealed the same way. Both are left
-    /// there (the user, 2026-10-26: "That sounds like a super rare edge
-    /// case").
+    /// Makes the ignored directory `d` with its `.gitignore`, atomically:
+    /// the `.gitignore` goes into a staging directory beside it, which is
+    /// then renamed to `d`. So `d` never exists without its `.gitignore`,
+    /// whether a crash or another writer comes in between. A rename that
+    /// fails because `d` is there by then (another writer's) leaves theirs;
+    /// the staging directory is removed either way. A crash before the
+    /// rename can leave a staging directory behind, which its own
+    /// `.gitignore` keeps out of git. Like `NamedTempFile`, it is made
+    /// owner-only, and `d` keeps that mode.
     ///
     /// A seal that fails fails the write that wanted the directory, rather
     /// than letting it land unsealed: a save the user sees fail beats
-    /// secrets sitting where `git add` would take them. The new directory
-    /// comes back out while it is still empty (never a file another writer
-    /// put there meanwhile), so the next write tries again instead of
-    /// finding an unsealed directory it will never seal. A `.gitignore`
-    /// that is already there by then (another writer's) seals it just the
-    /// same.
-    ///
-    /// A failure to make the directory itself is reported as the caller's
-    /// (`op` on `rel`, the file the user's write was for); one placing the
-    /// `.gitignore` names the `.gitignore`.
+    /// secrets sitting where `git add` would take them. The failure is
+    /// reported as the caller's (`op` on `rel`, the file the user's write
+    /// was for).
     fn make_sealed(
         &mut self,
         d: &RelPath,
         rel: &RelPath,
         op: &'static str,
     ) -> Result<(), DiskError> {
-        // Named before anything is made, so nothing between making the
-        // directory and placing the file can return without the cleanup.
-        let gitignore = d.join(".gitignore")?;
         let abs = self.abs(d);
-        if let Some(parent) = abs.parent() {
-            std::fs::create_dir_all(parent).map_err(DiskError::io(op, rel))?;
-        }
-        match std::fs::create_dir(&abs) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
+        let parent = abs.parent().unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent).map_err(DiskError::io(op, rel))?;
+        let staging = tempfile::Builder::new()
+            .prefix(&format!("{}-", d.file_name()))
+            .tempdir_in(parent)
+            .map_err(DiskError::io(op, rel))?;
+        let gitignore = d.join(".gitignore")?;
+        self.place_new(&staging.path().join(".gitignore"), &gitignore, IGNORE_ALL.as_bytes())?;
+        match std::fs::rename(staging.path(), &abs) {
+            Ok(()) => {
+                // It is `d` now: nothing left to clean up, and the stamp
+                // is the `.gitignore` at its real path.
+                let _ = staging.keep();
+                self.record(&gitignore);
+            }
+            Err(_) if abs.is_dir() => {}
             Err(e) => return Err(DiskError::io(op, rel)(e)),
         }
-        match self.place_new(&abs.join(".gitignore"), &gitignore, IGNORE_ALL.as_bytes()) {
-            Ok(()) | Err(DiskError::AlreadyExists(_)) => Ok(()),
-            Err(e) => {
-                let _ = std::fs::remove_dir(&abs);
-                Err(e)
-            }
-        }
+        Ok(())
     }
 
     /// Marks `rel` private: every write of it lands 0600, tightening a
@@ -807,6 +801,38 @@ mod tests {
         let Err(err) = written else { return };
         let want = format!("could not create the directory of {STATE_TOML}:");
         assert!(err.to_string().starts_with(&want), "{err}");
+    }
+
+    /// The seal is staged beside the ignored directory and renamed into
+    /// place: the directory arrives with its `.gitignore` and the staging
+    /// directory is gone.
+    #[test]
+    fn the_seal_is_renamed_into_place_leaving_nothing_behind() {
+        let (d, mut disk) = disk();
+        disk.ignore_when_created(RelPath::new(LOCAL_DIR).unwrap());
+        disk.write(&RelPath::new(STATE_TOML).unwrap(), "").unwrap();
+        let names: Vec<String> = std::fs::read_dir(d.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, [LOCAL_DIR], "no staging directory left");
+        assert!(disk.is_file(&local(".gitignore")));
+        assert!(!disk.changed(&local(".gitignore")), "stamped at its real path");
+    }
+
+    /// The race's loser: the ignored directory turns up after the check,
+    /// so the rename fails and the other writer's directory is left as it
+    /// is, with the staging directory removed.
+    #[test]
+    fn a_seal_that_loses_the_race_keeps_the_winners_directory() {
+        let (d, mut disk) = disk();
+        disk.ignore_when_created(RelPath::new(LOCAL_DIR).unwrap());
+        std::fs::create_dir_all(d.path().join(LOCAL_DIR).join("theirs")).unwrap();
+        let rel = RelPath::new(STATE_TOML).unwrap();
+        disk.make_sealed(&RelPath::new(LOCAL_DIR).unwrap(), &rel, "write").unwrap();
+        assert!(d.path().join(LOCAL_DIR).join("theirs").is_dir(), "theirs is kept");
+        assert!(!disk.exists(&local(".gitignore")), "and not sealed behind their back");
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1, "staging removed");
     }
 
     /// Other directories a write makes get none, ignored directory or not.
