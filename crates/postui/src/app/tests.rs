@@ -13897,8 +13897,9 @@ fn confirming_the_popup_secret_prompt_saves_without_sending() {
         Some(Modal::Prompt { kind: PromptKind::SecretValue { then_send: false, .. }, .. })
     ));
 
-    // The seeded text is replaced wholesale.
-    app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    // The seeded text is replaced wholesale (ctrl+shift+a, select-all on
+    // every platform; plain ctrl+a is Home on macOS).
+    app.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::CONTROL));
     type_and_confirm(&mut app, "new");
 
     assert!(app.modals.is_empty());
@@ -23103,8 +23104,8 @@ fn the_focused_bar_advertises_enter_apply_and_esc_done() {
         vec![
             ("enter", "apply"),
             ("esc", "done"),
-            ("alt+shift+j", "views"),
-            ("alt+shift+q", "unfilter"),
+            (&*crate::keys::display_keycap("alt+shift+j"), "views"),
+            (&*crate::keys::display_keycap("alt+shift+q"), "unfilter"),
         ],
         "{chips:?}: keys only, the bar's keyless ✦ has no chip (#102)"
     );
@@ -23423,10 +23424,11 @@ fn the_footer_and_palette_reach_the_jq_bar() {
         crate::components::footer::JqBarState::Closed,
         false,
     ));
+    let alt_q = crate::keys::display_keycap("alt+q");
     assert!(
         chips
             .iter()
-            .any(|(k, l, a)| *k == "alt+q" && *l == "filter" && *a == Some(Action::OpenJqBar)),
+            .any(|(k, l, a)| *k == alt_q && *l == "filter" && *a == Some(Action::OpenJqBar)),
         "{chips:?}"
     );
     app.update(Action::OpenPalette);
@@ -23654,7 +23656,9 @@ fn the_response_footer_always_offers_alt_q_filter_and_close_only_while_open() {
             false,
         ))
     };
+    // `key` in its Linux spelling; macOS shows `opt+`.
     let find = |state: JqBarState, key: &str| {
+        let key = crate::keys::display_keycap(key);
         chips(state).into_iter().find(|(k, _, _)| *k == key).map(|(_, l, a)| (l, a))
     };
     assert_eq!(find(JqBarState::Closed, "alt+q"), Some(("filter", Some(Action::OpenJqBar))));

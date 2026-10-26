@@ -9922,7 +9922,9 @@ mod tests {
         assert_eq!(r.jq_bar().input.cursor(), 12, "then before `|`");
         bar_key(&mut r, KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
         assert_eq!(r.jq_bar().input.cursor(), 13);
-        bar_key(&mut r, KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        // ctrl+shift+a, select-all on every platform (plain ctrl+a is Home
+        // on macOS).
+        bar_key(&mut r, KeyEvent::new(KeyCode::Char('A'), KeyModifiers::CONTROL));
         assert_eq!(r.jq_bar().input.selection(), Some((0, 20)), "select-all");
         // Unfocused, the pane keeps handing combos to the keymap.
         r.set_jq_focus(false);

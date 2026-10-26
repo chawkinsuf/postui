@@ -697,6 +697,7 @@ pub fn paint_chip_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keys::display_keycap;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -1078,7 +1079,7 @@ mod tests {
         );
         let labels: Vec<&str> = chips.iter().map(|(_, l, _)| *l).collect();
         assert_eq!(&labels[..3], &["apply", "done", "views"], "{chips:?}");
-        assert_eq!(chips[2].0, "alt+shift+j");
+        assert_eq!(chips[2].0, display_keycap("alt+shift+j"));
         assert_eq!(chips[2].2, Some(Action::OpenJqViews));
     }
 
@@ -1326,7 +1327,7 @@ mod tests {
             JqBarState::Closed,
             false,
         );
-        assert!(chips.iter().any(|(k, l, a)| *k == "alt+v"
+        assert!(chips.iter().any(|(k, l, a)| *k == display_keycap("alt+v")
             && *l == "vars"
             && *a == Some(Action::OpenVarPicker { completing: false })));
         assert!(
@@ -1355,14 +1356,12 @@ mod tests {
             !chips.iter().any(|(_, _, a)| *a == Some(Action::TableAddRow)),
             "add-row is inert while the address bar is focused"
         );
-        assert!(chips.iter().any(|(k, l, a)| *k == "alt+y"
+        assert!(chips.iter().any(|(k, l, a)| *k == display_keycap("alt+y")
             && *l == "copy url"
             && *a == Some(Action::CopyToClipboard(crate::action::CopyTarget::Url))));
-        assert!(
-            chips.iter().any(|(k, l, a)| *k == "alt+i"
-                && *l == "tls"
-                && *a == Some(Action::ToggleInsecure))
-        );
+        assert!(chips.iter().any(|(k, l, a)| *k == display_keycap("alt+i")
+            && *l == "tls"
+            && *a == Some(Action::ToggleInsecure)));
 
         let chips = footer_chips(
             PaneId::Editor,
@@ -1572,7 +1571,7 @@ mod tests {
         assert!(content.contains("^R  send"));
         // The same tab chord chip as the response pane and every Manage
         // tab: one wording wherever a strip is on screen.
-        assert!(content.contains("alt+←→  tabs"), "{content}");
+        assert!(content.contains(&format!("{}  tabs", display_keycap("alt+←→"))), "{content}");
     }
 
     /// The spelling context while the response is focused.
@@ -1588,7 +1587,7 @@ mod tests {
     #[test]
     fn response_focus_shows_response_hints() {
         let (content, _) = render_hits_on(PaneId::Response, response_spell());
-        assert!(content.contains("alt+←→  tabs"), "{content}");
+        assert!(content.contains(&format!("{}  tabs", display_keycap("alt+←→"))), "{content}");
         assert!(!content.contains("t  view"), "{content}");
         assert!(content.contains("/  search"));
     }

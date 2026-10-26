@@ -1042,7 +1042,7 @@ mod tests {
         );
         assert_eq!(
             Keymap::default_bindings().combo_for("open_jq_views"),
-            Some("alt+shift+j".to_string())
+            Some(display_keycap("alt+shift+j").into_owned())
         );
     }
 
@@ -1056,10 +1056,11 @@ mod tests {
         );
         assert_eq!(m.combo_for("editor_tab_1"), None);
         assert_eq!(m.combo_for("space_1"), Some("^1".to_string()));
-        assert_eq!(m.combo_for("space_next"), Some("alt+c".to_string()));
-        assert_eq!(m.combo_for("space_prev"), Some("alt+shift+c".to_string()));
-        assert_eq!(m.combo_for("env_next"), Some("alt+x".to_string()));
-        assert_eq!(m.combo_for("project_prev"), Some("alt+shift+z".to_string()));
+        let keycap = |s| Some(display_keycap(s).into_owned());
+        assert_eq!(m.combo_for("space_next"), keycap("alt+c"));
+        assert_eq!(m.combo_for("space_prev"), keycap("alt+shift+c"));
+        assert_eq!(m.combo_for("env_next"), keycap("alt+x"));
+        assert_eq!(m.combo_for("project_prev"), keycap("alt+shift+z"));
     }
 
     #[test]
@@ -1252,7 +1253,7 @@ mod tests {
         m.bind(KeyCombo::parse("f9").unwrap(), Action::OpenManage { tab: None });
         // f9 is a second combo alongside the default alt+r; both resolve.
         let combo = m.combo_for("manage_open").unwrap();
-        assert!(combo == "f9" || combo == "alt+r", "got {combo:?}");
+        assert!(combo == "f9" || combo == display_keycap("alt+r"), "got {combo:?}");
     }
 
     #[test]
@@ -1315,7 +1316,10 @@ mod tests {
         assert_eq!(format_combo(&KeyCombo::parse("ctrl+p").unwrap()), "^P");
         assert_eq!(format_combo(&KeyCombo::parse("ctrl+shift+z").unwrap()), "shift+^Z");
         assert_eq!(format_combo(&KeyCombo::parse("ctrl+enter").unwrap()), "^Enter");
-        assert_eq!(format_combo(&KeyCombo::parse("alt+shift+m").unwrap()), "alt+shift+m");
+        assert_eq!(
+            format_combo(&KeyCombo::parse("alt+shift+m").unwrap()),
+            display_keycap("alt+shift+m")
+        );
         assert_eq!(format_combo(&KeyCombo::parse("shift+tab").unwrap()), "shift+tab");
         assert_eq!(format_combo(&KeyCombo::parse("f4").unwrap()), "f4");
         assert_eq!(format_combo(&KeyCombo::parse("esc").unwrap()), "esc");

@@ -987,7 +987,7 @@ mod tests {
         let pill: String = (space_cycle.x..space_cycle.x + space_cycle.width)
             .map(|x| cell(&term, x, mid_of(&space_cycle)).symbol().to_string())
             .collect();
-        assert!(pill.contains("alt+c"), "{pill:?}");
+        assert!(pill.contains(&*crate::keys::display_keycap("alt+c")), "{pill:?}");
     }
 
     /// The narrow-bar rule: chips keep their full labels and the three

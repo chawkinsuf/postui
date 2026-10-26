@@ -8969,16 +8969,18 @@ mod body_click_tests {
             KeyModifiers::CONTROL,
         ));
         assert_eq!(e.body_selected_text().as_deref(), Some("hello\nworld"));
-        // Plain ctrl+a: select-all on Linux builds (the fold is the
-        // identity there — exercised explicitly so this asserts the
-        // Linux meaning regardless of the build host).
-        let mut e = editor_with_body("hello\nworld");
-        e.body.cursor = Index2::new(1, 2);
-        e.handle_key(crate::keys::fold_text_nav_bytes(
-            ratatui::crossterm::event::KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
-            false,
-        ));
-        assert_eq!(e.body_selected_text().as_deref(), Some("hello\nworld"));
+        // Plain ctrl+a: select-all on Linux builds. Only there: the
+        // body's `handle_key` folds with the build's own platform, so on
+        // macOS the same byte is the Home jump below.
+        if !cfg!(target_os = "macos") {
+            let mut e = editor_with_body("hello\nworld");
+            e.body.cursor = Index2::new(1, 2);
+            e.handle_key(ratatui::crossterm::event::KeyEvent::new(
+                KeyCode::Char('a'),
+                KeyModifiers::CONTROL,
+            ));
+            assert_eq!(e.body_selected_text().as_deref(), Some("hello\nworld"));
+        }
         // On macOS the fold turns the same byte into the smart-Home jump.
         let mut e = editor_with_body("  hello");
         e.body.cursor = Index2::new(0, 6);
