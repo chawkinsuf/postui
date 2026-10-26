@@ -18,8 +18,8 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] #126 The views dropdown's rename and delete buttons are small targets (merged 2026-10-26: a cell of padding each side, part of the button)
 - [x] #106 Test suite fails on macOS: tests expect `alt+` where macOS shows `opt+` (merged 2026-10-26: CI runs the tests on macOS too)
 - [ ] #135 No way to reach a URL/body variable's popup from the keyboard (pulled in by the user, 2026-10-26)
-- [ ] #136 The main header rows have no `y` copy key, which the auto rows have (pulled in by the user, 2026-10-26)
-- [ ] #137 Copy a whole header (`Name: value`), with shift switching the copy button and key (pulled in by the user, 2026-10-26)
+- [x] #136 The main header rows have no `y` copy key, which the auto rows have (merged 2026-10-26 with #137)
+- [x] #137 Copy a whole header (`Name: value`) (merged 2026-10-26: `Y`, vim's `"+yy`, shift+click on a copy pill where the terminal passes it on)
 
 ## Cheap fixes bundled in (all merged 2026-10-25)
 
