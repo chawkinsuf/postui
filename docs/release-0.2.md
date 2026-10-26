@@ -1,8 +1,8 @@
 # 0.2 release checklist
 
-Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 instead, with 1.0 after real-world use (the user, 2026-10-25). Board tasks needed for 0.2 still carry the `veans:1.0` label.
+Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 instead, with 1.0 after real-world use (the user, 2026-10-25). Board tasks needed for 0.2 carry the `veans:0.2` label (renamed from `veans:1.0`).
 
-## Blockers on the board (`veans:1.0`)
+## Blockers on the board (`veans:0.2`)
 
 - [x] #99 A failed landing after a project switch keeps the old project's request (merged 2026-10-25: lands on an empty scratch)
 - [x] #29 `$EDITOR` round-trip drops a body's trailing newline (merged 2026-10-25, design B)
