@@ -3,6 +3,7 @@
 //! [`History::record`]; merging bursts of typing into one undo step happens
 //! here.
 
+use crate::components::editor::TableCursor;
 use crate::components::sidebar::RowKey;
 use postui_core::model::HttpRequest;
 use std::time::{Duration, Instant};
@@ -33,6 +34,12 @@ pub enum StepKind {
         slug: Option<String>,
         before: Box<HttpRequest>,
         after: Box<HttpRequest>,
+        /// The table cursor just before the op and just after it: where
+        /// undo (`before`) or redo (`after`) puts a cursor whose row the
+        /// swap removed (task #121). Nothing else about the caret is
+        /// stored (see [`Context`]).
+        before_cursor: Option<TableCursor>,
+        after_cursor: Option<TableCursor>,
     },
     /// One `Project` journal entry: undoing this step calls
     /// `Project::undo`, whose own journal holds the inverse ops. `id` is
@@ -55,20 +62,12 @@ pub enum StepKind {
     /// `Config::save_ui_*` and reapplies it; redoing writes `after`. Never
     /// coalesced — each commit (a field close, a toggle, a segment flip)
     /// is its own step.
-    Config {
-        key: &'static str,
-        before: UiValue,
-        after: UiValue,
-    },
+    Config { key: &'static str, before: UiValue, after: UiValue },
     /// A `config.toml` / `keys.toml` Reset (`Action::ForceResetConfigFile`).
     /// `before` is the file's bytes before the reset (`None` when the file
     /// did not exist); undo writes `before` back (or removes the file) and
     /// reloads, redo writes `after`.
-    ConfigFile {
-        file: crate::action::ConfigFile,
-        before: Option<String>,
-        after: String,
-    },
+    ConfigFile { file: crate::action::ConfigFile, before: Option<String>, after: String },
 }
 
 /// The request the editor held when the step was recorded. Nothing reads
@@ -76,7 +75,9 @@ pub enum StepKind {
 /// step carries its own slug. No caret is stored: undo/redo leave focus
 /// and the caret exactly where they are (ruling 2026-09-18, matching the
 /// Manage screen) — `Editor::apply_snapshot` re-places the caret it
-/// already has against the swapped-in fields.
+/// already has against the swapped-in fields. The one exception is a
+/// table cursor whose row the swap removes, which goes back to the spot
+/// the step recorded (`EditorDelta`'s cursors, task #121).
 #[derive(Debug, Clone)]
 pub struct Context {
     pub slug: Option<String>,
@@ -336,13 +337,23 @@ impl History {
     /// Attempts to merge `new` into `top` in place. Returns whether it did.
     fn try_merge(top: Option<&mut Step>, new: &Step) -> bool {
         let Some(top) = top else { return false };
-        let StepKind::EditorDelta { slug: top_slug, before: top_before, after: top_after } =
-            &mut top.kind
+        let StepKind::EditorDelta {
+            slug: top_slug,
+            before: top_before,
+            after: top_after,
+            after_cursor: top_after_cursor,
+            ..
+        } = &mut top.kind
         else {
             return false;
         };
-        let StepKind::EditorDelta { slug: new_slug, before: new_before, after: new_after } =
-            &new.kind
+        let StepKind::EditorDelta {
+            slug: new_slug,
+            before: new_before,
+            after: new_after,
+            after_cursor: new_after_cursor,
+            ..
+        } = &new.kind
         else {
             return false;
         };
@@ -356,6 +367,7 @@ impl History {
         }
 
         *top_after = new_after.clone();
+        *top_after_cursor = *new_after_cursor;
         true
     }
 
@@ -484,6 +496,8 @@ mod tests {
                 slug: Some("a".into()),
                 before: Box::new(req(before)),
                 after: Box::new(req(after)),
+                before_cursor: None,
+                after_cursor: None,
             },
             context: Context { slug: Some("a".into()) },
         }
@@ -527,6 +541,8 @@ mod tests {
                     slug: Some("a".into()),
                     before: Box::new(req("h")),
                     after: Box::new(named),
+                    before_cursor: None,
+                    after_cursor: None,
                 },
                 context: Context { slug: Some("a".into()) },
             },

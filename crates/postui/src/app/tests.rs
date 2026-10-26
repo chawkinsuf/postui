@@ -1333,6 +1333,108 @@ fn undoing_a_table_row_delete_selects_the_restored_row() {
     assert_eq!(app.editor.sub_focus, SubFocus::Content);
 }
 
+/// A Headers tab with request rows `keys`, the table cursor on `stop`, and
+/// the shadow seeded there: the start of an op whose undo is checked.
+fn headers_with_cursor(keys: &[&str], stop: Stop) -> App {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("cursor".into()));
+    for k in keys {
+        app.editor
+            .headers
+            .insert((*k).into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    }
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.preferred_tab = EditorTab::Headers;
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    render_once(&mut app);
+    app.editor.table.set_selected(Some(stop));
+    app.capture_undo();
+    app
+}
+
+/// Task #121: undoing a duplicate takes the copy out from under the
+/// cursor, which goes back to the row it was on before the op, not to the
+/// copy's old index ("undo restores exactly").
+#[test]
+fn undoing_a_row_duplicate_puts_the_cursor_back_where_it_was() {
+    let mut app = headers_with_cursor(&["Accept", "X-Debug"], Stop::Row(0));
+    app.update(Action::DuplicateTableRow(0));
+    app.capture_undo();
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(1)), "the cursor follows the copy");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.headers.len(), 2, "undo takes the copy out");
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)));
+    app.update(Action::Redo);
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(1)), "redo: back on the copy");
+}
+
+/// Task #121: the keyboard take-over of an auto header adds its row and
+/// moves the cursor there; undo puts the cursor back on the auto row it
+/// was taken from.
+#[test]
+fn undoing_an_auto_header_take_over_puts_the_cursor_back_on_its_auto_row() {
+    let mut app = headers_with_cursor(&["X-A", "X-B"], Stop::Section(0));
+    let accept =
+        app.editor.computed.rows.iter().position(|r| r.header.name == "Accept").expect("Accept");
+    app.editor.table.set_selected(Some(Stop::Section(accept)));
+    app.capture_undo();
+    app.update(Action::OverrideAutoHeader(accept));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(2)), "on the taken-over row");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.headers.len(), 2, "undo takes the row back out");
+    assert_eq!(app.editor.table.selected(), Some(Stop::Section(accept)));
+}
+
+/// Task #121 (mine, approved: exact wins over R8's "never the + Add
+/// row"): a row added from `+ Add` undoes back onto `+ Add`.
+#[test]
+fn undoing_a_row_added_from_the_add_row_puts_the_cursor_back_on_it() {
+    let mut app = headers_with_cursor(&["X-A"], Stop::Add);
+    app.update(Action::TableAddRow);
+    type_chars(&mut app, "X-New");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    assert!(app.editor.headers.contains_key("X-New"), "{:?}", app.editor.headers);
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(1)), "on the new row");
+    app.update(Action::Undo);
+    assert!(!app.editor.headers.contains_key("X-New"), "one undo takes the row back out");
+    assert_eq!(app.editor.table.selected(), Some(Stop::Add));
+}
+
+/// Task #121 (user, 2026-10-26: "Just leave the cursor on + new"): the
+/// add verb moves the cursor onto `+ Add` to open its cell, a cursor move
+/// before the add's first edit, so the add's undo lands on `+ Add` even
+/// when the verb was pressed on another row.
+#[test]
+fn undoing_an_add_verbs_row_lands_on_the_add_row_it_was_typed_in() {
+    let mut app = headers_with_cursor(&["X-A", "X-B"], Stop::Row(0));
+    app.update(Action::TableAddRow);
+    app.capture_undo();
+    assert_eq!(app.editor.table.selected(), Some(Stop::Add), "the cell opens on + Add");
+    type_chars(&mut app, "X-New");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    app.update(Action::Undo);
+    assert!(!app.editor.headers.contains_key("X-New"), "{:?}", app.editor.headers);
+    assert_eq!(app.editor.table.selected(), Some(Stop::Add));
+}
+
+/// Task #121: a cursor on `+ Add` stays there across an undo that leaves
+/// it standing (R8's last-row fallback is only for a cursor whose row is
+/// gone).
+#[test]
+fn an_undo_leaves_a_cursor_on_the_add_row_where_it_is() {
+    let mut app = headers_with_cursor(&["X-A", "X-B"], Stop::Add);
+    app.editor.headers["X-A"].value = "2".into();
+    app.capture_undo();
+    app.update(Action::Undo);
+    assert_eq!(app.editor.headers["X-A"].value, "1", "undo takes the edit back");
+    assert_eq!(app.editor.table.selected(), Some(Stop::Add));
+}
+
 /// Every other delete toasts with the undo hint; a header/param/var row
 /// used to vanish with no feedback at all.
 #[test]
@@ -18910,7 +19012,7 @@ mod undo_tests {
         let saved_before = app.editor.saved.clone();
         let mut req = app.editor.current_request();
         req.url = "https://example.com".into();
-        app.editor.apply_snapshot(&req);
+        app.editor.apply_snapshot(&req, None);
         assert_eq!(app.editor.url.text(), "https://example.com");
         assert_eq!(app.editor.saved, saved_before, "saved snapshot untouched");
         assert!(app.editor.is_dirty());
@@ -18924,7 +19026,7 @@ mod undo_tests {
         app.editor.url.set_cursor(3);
         let pos = app.editor.caret();
         app.editor.url = LineInput::new("hello world");
-        app.editor.restore_caret(&pos);
+        app.editor.restore_caret(&pos, None);
         assert_eq!(app.editor.caret(), pos);
     }
 
@@ -18940,7 +19042,7 @@ mod undo_tests {
         let pos = app.editor.caret();
         assert_eq!(pos, Caret::Cell { row: 1, key: Some("b".into()) });
         app.editor.params.shift_remove("a"); // "b" is now index 0
-        app.editor.restore_caret(&pos);
+        app.editor.restore_caret(&pos, None);
         assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)));
     }
 
@@ -18956,7 +19058,7 @@ mod undo_tests {
         app.editor.table.set_selected(Some(Stop::Row(0)));
         let pos = app.editor.caret();
         app.editor.params.clear();
-        app.editor.restore_caret(&pos);
+        app.editor.restore_caret(&pos, None);
         assert_eq!(app.editor.table.selected(), Some(Stop::Add), "the ghost row");
     }
 
@@ -19654,6 +19756,8 @@ mod undo_tests {
                     slug: Some("one".into()),
                     before: Box::new(req("https://before")),
                     after: Box::new(req("https://after")),
+                    before_cursor: None,
+                    after_cursor: None,
                 },
                 context: crate::undo::Context { slug: Some("one".into()) },
             };

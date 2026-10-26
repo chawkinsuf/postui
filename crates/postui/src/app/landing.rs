@@ -217,11 +217,11 @@ impl App {
                 }
                 // The shadow follows too, name included, so the next
                 // capture sees no edit in the re-key.
-                if let Some((s, req)) = self.shadow.as_mut()
-                    && s.as_deref() == Some(open.as_str())
+                if let Some(shadow) = self.shadow.as_mut()
+                    && shadow.slug.as_deref() == Some(open.as_str())
                 {
-                    *s = Some(new_slug.clone());
-                    req.name = self.editor.name.clone();
+                    shadow.slug = Some(new_slug.clone());
+                    shadow.req.name = self.editor.name.clone();
                 }
             }
         }
@@ -452,8 +452,8 @@ impl App {
                 }
                 self.fresh_scratch();
                 if let Some(buf) = buffer {
-                    self.editor.apply_snapshot(&buf);
-                    self.shadow = Some((None, *buf));
+                    self.editor.apply_snapshot(&buf, None);
+                    self.seed_shadow(None, *buf);
                 }
                 self.sync_active_tab();
             }
@@ -561,8 +561,8 @@ impl App {
                 }
                 self.editor.load(Some(slug.clone()), req);
                 if let Some(buf) = buffer {
-                    self.editor.apply_snapshot(&buf);
-                    self.shadow = Some((Some(slug), *buf));
+                    self.editor.apply_snapshot(&buf, None);
+                    self.seed_shadow(Some(slug), *buf);
                 }
                 // After the buffer: its method, not the saved one's, says
                 // whether Body can show.

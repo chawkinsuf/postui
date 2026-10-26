@@ -92,6 +92,21 @@ the viewport seeded near it, table row re-found by key (row indices shift
 under undo) with the old index, clamped to the ghost row, as the fallback
 when the key is gone. The cell cursor column persists on its own.
 
+*Amended 2026-10-26 (task #121, mine (approved)):* an `EditorDelta` step
+also records the table cursor (tab and stop) from just before its op and
+just after it. "Before" is the cursor at the end of the event before the
+step's first edit, taken with the shadow. A swap that removes the row
+under the table cursor (undoing a row add, a duplicate, an auto-header
+take-over) puts the cursor on the step's recorded spot for that direction,
+when it was recorded on the same tab, in place of the clamped index; the
+swap restores exactly the request the spot was taken in, so its index
+names the same row. Focus never moves, a cursor whose row survives stays
+put, and a cursor on `+ Add` stays on `+ Add` unless the swap brings a row
+back (R8's reselect of the restored row). An add through `+ Add` (the add
+verb, a click on it) moves the cursor there to open the cell before the
+row exists, so its undo lands on `+ Add`, wherever the verb was pressed
+(user, 2026-10-26: "Just leave the cursor on + new").
+
 ## Capture
 
 ### Editor deltas — shadow diff

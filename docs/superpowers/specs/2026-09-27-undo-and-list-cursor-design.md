@@ -254,6 +254,15 @@ The vim-mode code is used as reference only (§5).
   row under the cursor is gone, the cursor falls back to the last real
   row, never the ghost "+ Add" row at index `len`. Focus and cell text
   carets never move.
+- **Amended 2026-10-26 (task #121, mine (approved): "undo restores
+  exactly" wins over "never the ghost row"):** when the row under the
+  cursor is gone, the cursor goes where the undo step recorded it before
+  the op (after it, for redo), `+ Add` included; the last real row is the
+  fallback only when the step recorded no spot on this tab. A cursor on
+  `+ Add` stays on `+ Add` unless the swap brings a row back (the
+  reselect above). An add through `+ Add` undoes onto `+ Add`, where the
+  add verb or the click moved the cursor to open the cell (user,
+  2026-10-26: "Just leave the cursor on + new").
 - **Change:** `components/editor.rs`:
   - `apply_snapshot` (l.416) takes the `keys_before` and reselect
     lines from 766527d;
@@ -495,7 +504,7 @@ reopens R; redo opens the neighbour again.
 | Reorder env / space; its undo | the moved row |
 | Table row delete | the row that slid up, or the last real row |
 | Undo table row delete | the restored row (R8) |
-| Undo that removes the row under the table cursor | the last real row, never the ghost row |
+| Undo that removes the row under the table cursor | where the cursor was before the op, `+ Add` included (#121); with no spot recorded on this tab, the last real row |
 
 ### 4.7 Telling "open" from "cursor here"
 

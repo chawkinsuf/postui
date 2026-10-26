@@ -152,6 +152,14 @@ pub enum Screen {
     Testbed,
 }
 
+/// [`App::shadow`]: the open request as history last saw it.
+struct Shadow {
+    slug: Option<String>,
+    req: postui_core::model::HttpRequest,
+    /// The table cursor, taken with `req` (task #121).
+    cursor: Option<crate::components::editor::TableCursor>,
+}
+
 pub struct App {
     pub should_quit: bool,
     /// The "press ^C again to quit" toast the modified quit combo's first
@@ -497,7 +505,10 @@ pub struct App {
     /// The open request as of the last `capture_undo` call (with its slug),
     /// diffed against the live editor each call to detect edits that never
     /// went through an `Action`. `None` before the first request is open.
-    shadow: Option<(Option<String>, postui_core::model::HttpRequest)>,
+    /// It holds the table cursor too, taken with the request: the spot a
+    /// recorded step's undo falls back to when its row is gone (task
+    /// #121), where the cursor was before the op.
+    shadow: Option<Shadow>,
     /// Whether the last `capture_undo` call was held back by an open
     /// live-synced field (see [`Self::field_gate`]); the call that finds
     /// the gate off again is the field's close and records without
@@ -3052,33 +3063,39 @@ impl App {
             return false;
         }
         let closing = std::mem::take(&mut self.field_gate_was_on);
+        let current = self.editor.current_request();
         match &self.shadow {
             // Which request is open changed (open/create/delete/rename/
             // save-as): re-seed, never record — the transition itself is
             // not an edit (its disk half is captured as its own step).
-            Some((slug, _)) if *slug != current_slug => {}
-            Some((_, prev)) => {
-                let current = self.editor.current_request();
-                if *prev != current {
-                    let prev = prev.clone();
-                    let coalesce = !std::mem::take(&mut self.no_coalesce) && !closing;
-                    self.record_editor_delta(current_slug, prev, current, coalesce);
-                    return true;
-                }
+            Some(shadow) if shadow.slug != current_slug => {}
+            Some(shadow) if shadow.req != current => {
+                let (prev, prev_cursor) = (shadow.req.clone(), shadow.cursor);
+                let coalesce = !std::mem::take(&mut self.no_coalesce) && !closing;
+                self.record_editor_delta(current_slug, prev, prev_cursor, current, coalesce);
+                return true;
             }
-            None => {}
+            Some(_) | None => {}
         }
         self.no_coalesce = false;
-        self.shadow = Some((current_slug, self.editor.current_request()));
+        self.seed_shadow(current_slug, current);
         false
     }
 
+    /// Sets the shadow to `req`, with the table cursor as it is now.
+    fn seed_shadow(&mut self, slug: Option<String>, req: postui_core::model::HttpRequest) {
+        self.shadow = Some(Shadow { slug, req, cursor: self.editor.table_cursor() });
+    }
+
     /// Records one `EditorDelta` step on the open request and moves the
-    /// shadow to its `after`: the one place a capture becomes a step.
+    /// shadow to its `after`: the one place a capture becomes a step. The
+    /// step takes the table cursor from before the op (the shadow's, with
+    /// `before`) and now.
     fn record_editor_delta(
         &mut self,
         slug: Option<String>,
         before: postui_core::model::HttpRequest,
+        before_cursor: Option<crate::components::editor::TableCursor>,
         after: postui_core::model::HttpRequest,
         coalesce: bool,
     ) {
@@ -3087,11 +3104,13 @@ impl App {
                 slug: slug.clone(),
                 before: Box::new(before),
                 after: Box::new(after.clone()),
+                before_cursor,
+                after_cursor: self.editor.table_cursor(),
             },
             context: crate::undo::Context { slug: slug.clone() },
         };
         self.history.record_maybe_coalesce(step, coalesce);
-        self.shadow = Some((slug, after));
+        self.seed_shadow(slug, after);
     }
 
     /// Closes the open field's edit session (URL line, jq bar) in place
@@ -7689,8 +7708,8 @@ impl App {
                             let old = self.editor.slug.replace(new_slug);
                             // The body's engine state follows (amendment C2).
                             self.vim_body_moved(old.as_deref());
-                            if let Some((slug, _)) = self.shadow.as_mut() {
-                                *slug = self.editor.slug.clone();
+                            if let Some(shadow) = self.shadow.as_mut() {
+                                shadow.slug = self.editor.slug.clone();
                             }
                         }
                         // Renaming the active space keeps the cursor on the
@@ -12374,9 +12393,10 @@ impl App {
         // newest recorded delta). `capture_undo` ran at the top of the
         // Undo/Redo arm, so a mismatch here means a capture bug — degrade
         // to the normal prompt instead of silently dropping edits.
-        let shadow_matches = self.shadow.as_ref().is_some_and(|(s, req)| {
-            *s == self.editor.slug && *req == self.editor.current_request()
-        });
+        let shadow_matches = self
+            .shadow
+            .as_ref()
+            .is_some_and(|s| s.slug == self.editor.slug && s.req == self.editor.current_request());
         if self.editor_holds_unsaved() && !shadow_matches {
             // Put the step back on the stack matching its own direction —
             // a tripped guard on a redo must retry as a redo, or Ctrl+Y
@@ -12420,7 +12440,7 @@ impl App {
     fn apply_undo_step(&mut self, step: crate::undo::Step, redo: bool) -> bool {
         use crate::undo::StepKind;
         match &step.kind {
-            StepKind::EditorDelta { slug, before, after } => {
+            StepKind::EditorDelta { slug, before, after, before_cursor, after_cursor } => {
                 if *slug != self.editor.slug {
                     let Some(target_slug) = slug.clone() else {
                         // A scratch request has no slug to reopen; once it's
@@ -12434,15 +12454,21 @@ impl App {
                     }
                     // fall through to the normal same-request apply below
                 }
-                let target = if redo { (**after).clone() } else { (**before).clone() };
+                let (target, cursor) = if redo {
+                    ((**after).clone(), *after_cursor)
+                } else {
+                    ((**before).clone(), *before_cursor)
+                };
                 // Focus and the caret stay where they are (the snapshot
                 // swap re-places the editor's own caret against the new
                 // fields) — undo never moves focus, as on the Manage screen.
-                self.editor.apply_snapshot(&target);
+                // A table cursor whose row the swap removes goes back to the
+                // step's spot (task #121).
+                self.editor.apply_snapshot(&target, cursor);
                 self.sync_active_tab();
                 // The applied state IS the new shadow; without this the
                 // capture hook would record the undo as a fresh edit.
-                self.shadow = Some((self.editor.slug.clone(), target));
+                self.seed_shadow(self.editor.slug.clone(), target);
                 if redo {
                     self.history.push_undo_no_coalesce(step.clone());
                 } else {

@@ -331,7 +331,7 @@ impl App {
         // as the shadow, so the replace is a step of its own. Here, not in
         // the shared open, where a reopen of the open request would stop
         // recording its Discard (fourth review round).
-        self.shadow = Some((self.editor.slug.clone(), self.editor.current_request()));
+        self.seed_shadow(self.editor.slug.clone(), self.editor.current_request());
         self.apply_curl_replace(replace);
     }
 
@@ -371,7 +371,7 @@ impl App {
             ..import.request
         };
         self.no_coalesce = true;
-        self.editor.apply_snapshot(&replaced);
+        self.editor.apply_snapshot(&replaced, None);
         self.sync_active_tab();
         let changed = self.editor.current_request() != current;
         let name = match self.editor.slug.clone() {
