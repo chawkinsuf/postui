@@ -5881,13 +5881,13 @@ mod tests {
     fn a_confirm_dialogs_choices_wrap_on_a_narrow_panel() {
         use crate::hit::Hit;
         let rows = |labels: &[&str], width: u16| {
-            let letters = ['a', 'b', 'c'];
+            let letters = ('a'..='z').take(labels.len());
             let modal = Modal::Confirm {
                 title: "Question".into(),
                 body: "Create one here?".into(),
                 choices: labels
                     .iter()
-                    .zip(letters)
+                    .zip(letters.clone())
                     .map(|(l, c)| (c, l.to_string(), vec![]))
                     .collect(),
             };
