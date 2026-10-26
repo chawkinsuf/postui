@@ -3686,6 +3686,10 @@ impl Editor {
                     let row = Rect::new(area.x, y, area.width, 1);
                     let style = Style::default().bg(theme.panel).fg(theme.text);
                     let buf = frame.buffer_mut();
+                    // Blank the row first: the body's text and modifiers
+                    // under it (a caret's or match's REVERSED) would
+                    // otherwise show past and on the query (#115).
+                    crate::paint::fill(buf, row, theme.panel);
                     buf.set_style(row, style);
                     let text = format!("{}{}", line.dir.delim(), line.text);
                     buf.set_stringn(row.x, y, &text, usize::from(row.width), style);
@@ -4913,6 +4917,33 @@ mod tests {
             cursor: 0,
         });
         assert_eq!(lit_body_cells(&mut e), 0, "the prompt covers the `}}`");
+    }
+
+    /// #115: the search prompt row shows only the prompt and its own
+    /// caret, none of the body row it covers.
+    #[test]
+    fn the_search_prompt_row_shows_nothing_of_the_body_under_it() {
+        let mut e = body_editor("{}");
+        draw_body(&mut e, true);
+        let height = usize::from(e.last_body_area.unwrap().height);
+        e.set_body_text(&vec!["abcdef"; height + 5].join("\n"));
+        e.body.mode = EditorMode::Normal;
+        e.body.cursor = edtui::Index2::new(height - 1, 0); // the last screen row
+        e.body_search.prompt = Some(crate::vim::engine::SearchLine {
+            dir: crate::vim::engine::Dir::Forward,
+            text: "xyz".into(),
+            cursor: 3,
+        });
+        let buf = draw_body(&mut e, true);
+        let area = e.last_body_area.unwrap();
+        let y = area.bottom() - 1;
+        let row: String = (area.x..area.right()).map(|x| buf[(x, y)].symbol()).collect();
+        assert_eq!(row.trim_end(), "/xyz", "nothing of the body row shows");
+        let reversed: Vec<u16> = (area.x..area.right())
+            .filter(|&x| buf[(x, y)].modifier.contains(Modifier::REVERSED))
+            .map(|x| x - area.x)
+            .collect();
+        assert_eq!(reversed, [4], "only the prompt's caret, after `xyz`");
     }
 
     /// R8: Visual paints over the pair.
