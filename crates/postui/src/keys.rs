@@ -619,15 +619,16 @@ impl Keymap {
         .collect()
     }
 
-    /// Reverse lookup for the palette's keybinding column: the first combo
-    /// (in `format_combo`-sorted order, for a deterministic pick when more
-    /// than one is bound — e.g. `quit`'s default `q`/`ctrl+c`) bound to
-    /// the action named `action_id` in [`named_actions`], formatted the
-    /// way the footer renders combos (caret ctrl, `+`-joined, e.g.
-    /// `"^P"`, `"alt+shift+m"`). `None` when `action_id` isn't a known
-    /// action name or nothing in this keymap is bound to it — most palette
-    /// commands have no keybinding at all, which is an expected, silent
-    /// outcome here, not an error.
+    /// [`Self::combo_for_action`] by the action's `keys.toml` name: the
+    /// first combo (in `format_combo`-sorted order, for a deterministic
+    /// pick when more than one is bound — e.g. `quit`'s default
+    /// `q`/`ctrl+c`) bound to the action named `action_id` in
+    /// [`named_actions`], formatted the way the footer renders combos
+    /// (caret ctrl, `+`-joined, e.g. `"^P"`, `"alt+shift+m"`). `None` when
+    /// `action_id` isn't a known action name or nothing in this keymap is
+    /// bound to it. Tests only: the palette's key column asks by the action
+    /// itself (task #105).
+    #[cfg(test)]
     pub fn combo_for(&self, action_id: &str) -> Option<String> {
         let target = named_actions()
             .into_iter()
@@ -636,8 +637,11 @@ impl Keymap {
         self.combo_for_action(&target)
     }
 
-    /// [`Self::combo_for`] by the action itself: what a keycap spells
-    /// from, every frame, without the name round trip.
+    /// The combo bound to `target`, formatted the way the footer renders
+    /// combos (caret ctrl, `+`-joined, e.g. `"^P"`, `"alt+shift+m"`), the
+    /// first in sorted order when more than one is bound; `None` when
+    /// nothing in this keymap is. What a keycap and the palette's key
+    /// column spell from, every frame.
     pub fn combo_for_action(&self, target: &Action) -> Option<String> {
         let combos: Vec<&KeyCombo> = self
             .bindings

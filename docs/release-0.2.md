@@ -10,7 +10,7 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] #56 Editor Headers tab can't scroll, so header rows and project defaults can be unreachable (squash-merged 2026-10-26; full history tag `headers-tab-scroll-history`)
 - [ ] #121 Undo of a row add doesn't put the table cursor back where it was (found during #56; pre-existing)
 - [x] #97 Header strike-through carries into the method dropdown (merged 2026-10-25: a filled panel clears the page's modifiers)
-- [ ] #105 Eight more palette rows with a default key show no key
+- [x] #105 Eight more palette rows with a default key show no key (merged 2026-10-26: a row's key is looked up by its action)
 - [x] #107 Confirm dialogs' button rows overflow narrow terminals (merged 2026-10-26: Confirm uses the blocking dialogs' wrapping layout)
 - [x] #115 The vim body search prompt shows the row's leftover text behind the query (merged 2026-10-25: the row is blanked first)
 - [x] #116 Release workflow: cargo-dist, shell installer, Homebrew tap, Rust pinned at 1.97.1 (merged 2026-10-25)
