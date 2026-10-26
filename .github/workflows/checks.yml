@@ -74,8 +74,5 @@ jobs:
       - name: Clippy (shipping features)
         run: cargo clippy --locked --workspace --lib --bins -- -D warnings
 
-      # Linux only until the suite passes on macOS: tests there spell keys
-      # the Linux way (`alt+`) where macOS shows `opt+` (#106).
       - name: Test
-        if: runner.os == 'Linux'
         run: cargo test --locked --workspace --no-fail-fast
