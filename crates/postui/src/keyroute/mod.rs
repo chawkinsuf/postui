@@ -1442,6 +1442,7 @@ mod tests {
         assert_eq!(feed(&mut r, &vim, "\"+"), Resolved::Consumed, "\"+ waits");
         assert_eq!(feed(&mut r, &vim, "y"), Resolved::Consumed, "\"+y waits");
         assert_eq!(feed(&mut Router::default(), &vim, "\"+j"), note(table::NO_REGISTERS));
+        assert_eq!(feed(&mut Router::default(), &vim, "\"+yj"), note(table::NO_REGISTERS));
         assert_eq!(feed(&mut Router::default(), &vim, "\"a"), note(table::NO_REGISTERS));
         assert_eq!(feed(&mut Router::default(), &vim, "yy"), run(vec![sel(Verb::Yank)]));
     }

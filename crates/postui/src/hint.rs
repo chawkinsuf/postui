@@ -237,12 +237,10 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::FocusUrl => "Edit the URL".to_string(),
         Action::DeleteTableRow(_) => "Delete this row".to_string(),
         // An auto row's keys (task #56) say what its pills say. A header's
-        // copy chip carries two keys (`y/Y`): the value's and the whole
-        // header's (spec 2026-10-26 H5).
+        // copy chip's second key (`Y`, the whole header) is on its keycap
+        // (spec 2026-10-26 H5); the pill shares this wording.
         Action::CopyToClipboard(CopyTarget::ComputedHeader(_))
-        | Action::CopyResponseHeader { whole: false } => {
-            "Copy this header's value, or the whole header".to_string()
-        }
+        | Action::CopyResponseHeader { whole: false } => "Copy this header's value".to_string(),
         Action::YankTableRow(_) => "Copy this row".to_string(),
         Action::OverrideAutoHeader(_) => "Edit this header in the request".to_string(),
         Action::ToggleVarReveal => "Reveal or hide the secret value".to_string(),

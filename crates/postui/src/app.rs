@@ -3835,7 +3835,11 @@ impl App {
                     } else {
                         CopyTarget::ResponseHeader(row)
                     })),
-                    None => false,
+                    // The key is never dead (spec 2026-10-26 H4, H8).
+                    None => {
+                        self.toasts.push(crate::action::NO_HEADER_TO_COPY, ToastKind::Info);
+                        true
+                    }
                 }
             }
             Action::JsonRowClicked { row, toggle } => {
@@ -9947,7 +9951,11 @@ impl App {
             // as the split handle (and its control band) over the pane's
             // hit, and its facts and blank cells opened this menu before it
             // was a handle.
-            Hit::Pane(PaneId::Response) | Hit::SplitHandle | Hit::StripControls
+            // A header row's copy pill is that row's too (spec 2026-10-26 H6).
+            Hit::Pane(PaneId::Response)
+            | Hit::SplitHandle
+            | Hit::StripControls
+            | Hit::HeaderCopy(_)
                 if self.session.response.view().is_some() =>
             {
                 (TextSurface::Response, false)

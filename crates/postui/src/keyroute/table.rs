@@ -430,11 +430,11 @@ fn prev_match() -> Action {
     Action::StepResponseSearch(-1)
 }
 
-fn copy_header() -> Action {
+fn copy_header_value() -> Action {
     Action::CopyResponseHeader { whole: false }
 }
 
-fn copy_header_line() -> Action {
+fn copy_header_whole() -> Action {
     Action::CopyResponseHeader { whole: true }
 }
 
@@ -786,10 +786,10 @@ pub static TABLE: &[Binding] = &[
     // Spec 2026-10-26 H4, H8: a header's value is arrows' `y`, the whole
     // header arrows' `Y` and vim's `"+yy` / `"+Y` (vim's `yy` is the
     // engine's yank, above).
-    arrows("y", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(copy_header)),
-    arrows("Y", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(copy_header_line)),
-    row("\"+yy", Surfaces::RESPONSE, Intent::Act(copy_header_line), CountRule::Ignore),
-    row("\"+Y", Surfaces::RESPONSE, Intent::Act(copy_header_line), CountRule::Ignore),
+    arrows("y", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(copy_header_value)),
+    arrows("Y", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(copy_header_whole)),
+    row("\"+yy", Surfaces::RESPONSE, Intent::Act(copy_header_whole), CountRule::Ignore),
+    row("\"+Y", Surfaces::RESPONSE, Intent::Act(copy_header_whole), CountRule::Ignore),
     // Key list §6, Out (parked by the user): a list has no search yet.
     row("/", Surfaces::SEARCHLESS, Intent::Note("No search in this list yet"), CountRule::Ignore),
     // Key list §6 and §9: the app's undo, redo and command palette.
@@ -889,6 +889,7 @@ pub static TABLE: &[Binding] = &[
     // exact row beats a complete `<any>` one); any other key after it is
     // the note.
     row("\"+<any>", Surfaces::TABLE.or(Surfaces::RESPONSE), Intent::Note(NO_REGISTERS), CountRule::Ignore),
+    row("\"+y<any>", Surfaces::TABLE.or(Surfaces::RESPONSE), Intent::Note(NO_REGISTERS), CountRule::Ignore),
     // Spec §5.10, key list D.prompt (plan M3b Deviations 7 and 8): a
     // one-field prompt confirms on Enter from anywhere, field or not; its
     // field's Esc in idle Normal cancels (Insert's Esc is the engine's).
@@ -966,6 +967,12 @@ fn fits(row: &[Tok], typed: &[Tok]) -> bool {
 /// complete row with `<any>` (plan M3a Deviation 10), then whether some row
 /// extends `buf`. A catch-all `<any>` row so waits for a longer exact one:
 /// `"+` is the prefix of `"+yy`, not the `"<any>` note (spec 2026-10-26 H8).
+/// This is Vim's own rule (a typed prefix of a longer mapping waits for
+/// it), and a general one on purpose: a per-row exception for `"+` would
+/// need its own case list. Its cost is that a future multi-key row under an
+/// `<any>` catch-all (`q`, `@`, `'`, `` ` ``, `"`, `<C-w>`) makes that
+/// catch-all wait too; `unknown_after_prefix_never_leaks` checks every
+/// such prefix still ends in a row.
 fn best<'a>(
     rows: impl IntoIterator<Item = (&'static Binding, &'a [Tok])>,
     buf: &[Tok],

@@ -1060,10 +1060,14 @@ impl ReadyView {
     /// header, received or sent: what a right click's `Copy header` copies
     /// (spec 2026-10-26 H6).
     pub fn header_line_at(&self, x: u16, y: u16) -> Option<usize> {
-        if self.mode != ViewMode::Headers {
+        use ratatui::layout::Position;
+        let area = self.last_area?;
+        if self.mode != ViewMode::Headers || !area.contains(Position { x, y }) {
             return None;
         }
-        let (line, _) = self.cell_at(x, y, false)?;
+        // Not `cell_at`, which clamps a point below the text onto the last
+        // line: blank space under the headers names none of them.
+        let line = self.scroll + usize::from(y - area.y);
         matches!(self.header_row(line)?, HeaderRow::Received(_) | HeaderRow::Sent(_))
             .then_some(line)
     }
@@ -3737,7 +3741,8 @@ impl Response {
 
     /// The cursor's row on the Headers view when it is a header with a
     /// value to copy (a received or sent header, not the divider or a
-    /// note): what arrows' `c` copies (`Action::CopyResponseHeader`).
+    /// note): what arrows' `y`/`Y` and vim's `"+yy` copy
+    /// (`Action::CopyResponseHeader`).
     pub fn copyable_header_row(&self) -> Option<usize> {
         let view = self.view.as_ref()?;
         (view.mode == ViewMode::Headers

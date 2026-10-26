@@ -600,6 +600,19 @@ impl App {
                             None => return self.update(Action::Render) || changed,
                         }
                     }
+                    // An auto row, its pills included, is a table stop too
+                    // (task #56): the click commits an open cell and lands
+                    // the cursor on it before its menu opens, as a row's
+                    // does (spec 2026-10-26 H6).
+                    Hit::AutoHeaderRow(j) | Hit::AutoHeaderCopy(j) | Hit::AutoHeaderOverride(j) => {
+                        let j = *j;
+                        self.commit_table_edit();
+                        changed |= self.update(Action::FocusPane(PaneId::Editor));
+                        self.move_editor_caret(SubFocus::Content);
+                        changed |= self.editor.table.selected() != Some(Stop::Section(j));
+                        self.editor.table.set_selected(Some(Stop::Section(j)));
+                        menu_hit = Hit::AutoHeaderRow(j);
+                    }
                     _ => {}
                 }
                 match self.context_menu_for(&menu_hit) {

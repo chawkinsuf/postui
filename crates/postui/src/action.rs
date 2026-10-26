@@ -73,6 +73,10 @@ pub enum CopyTarget {
     TableHeaderLine(usize),
 }
 
+/// The note a header copy key gives where the cursor is on no header, so
+/// the key is never dead (spec 2026-10-26 H2, H4, H8).
+pub const NO_HEADER_TO_COPY: &str = "No header to copy here";
+
 /// Which user-editable config file an Edit…/Reset button targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigFile {

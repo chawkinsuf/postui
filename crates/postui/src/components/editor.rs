@@ -3287,15 +3287,26 @@ impl Editor {
                 let j = self.auto_row_cursor()?;
                 Some(Action::CopyToClipboard(crate::action::CopyTarget::ComputedHeader(j)))
             }),
-            // A header's `Name: value`: the Headers tab only (spec
-            // 2026-10-26 H2), a main row or an auto row.
-            Verb::CopyHeader if self.active_tab == EditorTab::Headers => {
+            // A header's `Name: value`: a Headers-tab row, main or auto
+            // (spec 2026-10-26 H2). Anywhere else the key says so.
+            Verb::CopyHeader => {
                 use crate::action::CopyTarget;
-                let target = match row {
-                    Some(i) => CopyTarget::TableHeaderLine(i),
-                    None => CopyTarget::ComputedHeaderLine(self.auto_row_cursor()?),
+                let target = match (self.active_tab, row) {
+                    (EditorTab::Headers, Some(i)) => Some(CopyTarget::TableHeaderLine(i)),
+                    (EditorTab::Headers, None) => {
+                        self.auto_row_cursor().map(CopyTarget::ComputedHeaderLine)
+                    }
+                    _ => None,
                 };
-                Some(Action::CopyToClipboard(target))
+                Some(target.map_or_else(
+                    || {
+                        Action::ShowToast(
+                            crate::action::NO_HEADER_TO_COPY.into(),
+                            crate::components::toast::ToastKind::Info,
+                        )
+                    },
+                    Action::CopyToClipboard,
+                ))
             }
             Verb::Put { above, count } => {
                 // Above or below a row; anywhere past the rows, at their end.

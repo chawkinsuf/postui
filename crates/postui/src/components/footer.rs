@@ -213,8 +213,12 @@ pub(crate) fn footer_chips(
                 Some(TableCursor::Row { index: i, enabled, headers }) => {
                     // Keyboard twins of the expanded row's copy pill, ●
                     // toggle and 󰆴 delete buttons; the ␣ keycap keeps the
-                    // row narrow. The copy chip runs the yank key, which in
-                    // arrows copies as the pill does (H1).
+                    // row narrow. The copy chip runs the yank key it shows
+                    // first: in arrows that copies as the pill does (H1); in
+                    // vim it is `yy`, the row register for `p`, silent as
+                    // every yank is (piece 4 spec §5.1). A chip whose click
+                    // did something its keycap doesn't would be the wrong
+                    // way round; the pill is the mouse's clipboard copy.
                     let copy_key = if headers {
                         header_copy_key()
                     } else {
