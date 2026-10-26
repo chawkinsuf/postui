@@ -21,8 +21,9 @@ use crate::split::SplitStop;
 /// A header's copy pill: its click copies the value, its shift+click the
 /// whole header (spec 2026-10-26 H6). The tip says so in every terminal,
 /// though one that keeps shift+click for its own selection never passes
-/// it on (mine (approved)).
-const HEADER_PILL_TIP: &str = "Copy this header's value · shift+click: the whole header";
+/// it on (mine (approved)). Short, so it shows whole in more footers (the
+/// user: "Shorten it"); `⇧` as the footer's own `⇧enter` keycap writes it.
+const HEADER_PILL_TIP: &str = "Copy value · ⇧click: whole header";
 
 /// The app state a hint needs to say what its button would do *now*.
 /// Most controls under the pointer are two-state — send/cancel, open/close,

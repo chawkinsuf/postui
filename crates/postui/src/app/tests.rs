@@ -15900,7 +15900,7 @@ fn a_header_copy_pills_hint_names_its_shift_click() {
     let mut app = main_header_app(crate::config::KeyProfile::Arrows);
     for hit in [Hit::TableCopy(0), Hit::AutoHeaderCopy(0)] {
         let tip = crate::hint::hint_for(&hit, &app.keymap, &app.hint_ctx(&hit)).unwrap();
-        assert!(tip.contains("shift+click: the whole header"), "{hit:?}: {tip}");
+        assert_eq!(tip, "Copy value · ⇧click: whole header", "{hit:?}");
     }
     app.editor
         .params
