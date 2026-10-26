@@ -15,7 +15,7 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] #115 The vim body search prompt shows the row's leftover text behind the query (merged 2026-10-25: the row is blanked first)
 - [x] #116 Release workflow: cargo-dist, shell installer, Homebrew tap, Rust pinned at 1.97.1 (merged 2026-10-25)
 - [x] #124 Replacing or deleting a body selection that ends a line adds a blank line after it (merged 2026-10-25: edtui's delete, with the break after the selection kept)
-- [x] #126 The views dropdown's rename and delete buttons are small targets (merged 2026-10-25: a cell of padding each side, part of the button)
+- [x] #126 The views dropdown's rename and delete buttons are small targets (merged 2026-10-26: a cell of padding each side, part of the button)
 - [ ] #106 Test suite fails on macOS: tests expect `alt+` where macOS shows `opt+` (CI runs tests on Linux only until then)
 
 ## Cheap fixes bundled in (all merged 2026-10-25)

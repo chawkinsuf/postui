@@ -610,6 +610,8 @@ impl RowButton {
         tip: &'static str,
         action: Action,
     ) -> Self {
+        // The painter strides and registers hits by `ROW_BUTTON_W`.
+        debug_assert_eq!(crate::ui::cells(pill), usize::from(ROW_BUTTON_W), "a glyph::*_PILL");
         Self { verb, word, pill, tip, action, destructive: false }
     }
 
@@ -3816,10 +3818,15 @@ fn draw_dropdown(
             frame.buffer_mut(),
             row_area.x,
             row_area.y,
-            // Only a row with its own buttons gives their cells up.
+            // Only a row with its own buttons gives their cells up, and a
+            // cell more so a clipped label never touches a button's fill.
             crate::ui::clip(
                 &format!("{marker}{label}"),
-                row_area.width.saturating_sub(if item.buttons.is_empty() { 0 } else { actions_w }),
+                row_area.width.saturating_sub(if item.buttons.is_empty() {
+                    0
+                } else {
+                    actions_w + 1
+                }),
             ),
             fg,
             row_fill,
