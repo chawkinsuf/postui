@@ -39,7 +39,7 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [ ] macOS: the binary is unsigned. Homebrew (and the shell installer) avoid the quarantine flag, so the README makes Homebrew the recommended install (the user, 2026-10-26: "just make brew the recommended way to install"); part of #138
 - [x] Windows: not supported natively for 0.2; WSL 2 is recommended (the user, 2026-10-26). The README says so (#138)
 - [ ] #139 `postui --version` flag
-- [ ] #140 CHANGELOG.md, or release notes for 0.2
+- [x] #140 CHANGELOG.md: one short first-release entry (the user, 2026-10-26: "go with the tiny changelog"). dist puts the matching section on the GitHub Release as its notes and takes the title from the heading, so #142 dates it
 - [ ] #141 The repo's GitHub description and topics
 - [ ] #142 Last (the user, 2026-10-26): bump the workspace version to `0.2.0` (Cargo.lock follows), then tag: `git tag -a v0.2.0 -m "postui 0.2.0"`, then `git push origin v0.2.0`
 
