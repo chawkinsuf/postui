@@ -67,7 +67,6 @@ my-api/
 ```toml
 method = "GET"
 url = "{{base_url}}/users"
-jq = "map({name, email})"
 
 [params]
 _limit = "5"
@@ -115,7 +114,11 @@ The first launch asks which keys you want: arrows and Enter, or Vim. Change it
 any time on the Settings tab of the Manage screen (`alt+r`). The
 [guide](docs/guide.md) covers spaces, environments, variables, the jq bar and
 curl. [Configuration](docs/configuration.md) covers settings, key bindings and
-themes. On macOS, keys shown here as `alt+` are `opt+`.
+themes.
+
+On macOS, keys shown here as `alt+` are `opt+`, and your terminal's
+option-as-alt setting needs to be on for `opt+` letter keys to reach postui.
+`postui --setup` prints how to turn it on in your terminal.
 
 ## License
 

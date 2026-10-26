@@ -4,7 +4,8 @@ Everything below works with the mouse and from the keyboard. Keys are the
 default arrows profile's; the Vim profile adds its own on top. The footer
 always lists the keys for what has focus, and `ctrl+p` opens the command
 palette, where every command is searchable with its key beside it. On macOS,
-`alt+` keys are `opt+`.
+`alt+` keys are `opt+`; for `opt+` letter keys, turn on your terminal's
+option-as-alt setting (`postui --setup` says how).
 
 ## Projects and spaces
 

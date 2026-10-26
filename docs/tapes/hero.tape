@@ -2,20 +2,8 @@
 # Run from the repo root: vhs docs/tapes/hero.tape (see README.md here).
 
 Output docs/images/hero.gif
+Source docs/tapes/include/common.tape
 
-Set Shell "bash"
-Set FontFamily "JetBrainsMono Nerd Font"
-Set FontSize 16
-Set Width 1400
-Set Height 860
-Set Padding 12
-Set Theme "Catppuccin Mocha"
-Set TypingSpeed 90ms
-
-Hide
-Type `source docs/tapes/setup.sh && postui "$POSTUI_DEMO"`
-Enter
-Sleep 2s
 Show
 Sleep 1s
 
@@ -40,7 +28,7 @@ Sleep 3s
 # Filter the response.
 Alt+q
 Sleep 700ms
-Type "map({name, email})"
+Type@90ms "map({name, email})"
 Sleep 1s
 Enter
 Sleep 3s

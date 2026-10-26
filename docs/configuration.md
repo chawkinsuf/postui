@@ -58,11 +58,12 @@ open_jq_bar = ["alt+q"]
 ```
 
 The list replaces all of the action's keys, so include the ones you want to
-keep. The commented file Edit… writes lists every action with its current
-keys, which is the easiest place to start. Keys are spelled like
-`ctrl+shift+e`, `alt+q`, `shift+tab`, `f9` or `esc`. `ctrl+c` always quits
-and can't be rebound. The command palette (`ctrl+p`) shows each command's key,
-so a rebinding shows up there too.
+keep. The commented file Edit… writes lists every action that has a key, with
+its current keys, which is the easiest place to start. Keys are spelled like
+`ctrl+shift+e`, `alt+q`, `shift+tab`, `f9` or `esc`. `ctrl+c` can't be
+rebound: it copies a selection, and quits when pressed twice. The command
+palette (`ctrl+p`) shows each command's key, so a rebinding shows up there
+too.
 
 ## Themes
 

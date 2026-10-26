@@ -24,6 +24,7 @@ On Linux (x86_64), with `ffmpeg` from your package manager:
 curl -L -o /tmp/vhs.deb https://github.com/charmbracelet/vhs/releases/download/v0.12.1/vhs_0.12.1_amd64.deb
 sudo apt install /tmp/vhs.deb
 # Distro ttyd packages can be older than VHS needs; this is the static build.
+mkdir -p ~/.local/bin
 curl -L -o ~/.local/bin/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64
 chmod +x ~/.local/bin/ttyd
 mkdir -p ~/.local/share/fonts
@@ -59,6 +60,11 @@ The recording config uses the `catppuccin-mocha` theme, turns off hover hints
 answers "Describe a filter…" with a fixed filter, so no AI account is needed
 and the result is the same every time.
 
-`curl-import.tape` pastes with VHS's `Copy` and `Paste`. If a VHS version
-delivers that as typed keys rather than a terminal paste, the sidebar sees
-keystrokes instead of a curl command; that's the tape to check first.
+`curl-import.tape` puts its curl command on your system clipboard with VHS's
+`Copy`, so recording it replaces whatever you had copied. postui then reads
+it with `ctrl+v`. VHS's `Paste` won't do here: it types the text as keys, and
+the sidebar takes those as commands.
+
+Each tape starts with `include/common.tape`: the recording settings, and the
+hidden launch through `setup.sh`. It sits in its own folder so the
+`docs/tapes/*.tape` loop doesn't record it on its own.
