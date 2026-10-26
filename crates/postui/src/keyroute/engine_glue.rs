@@ -94,6 +94,10 @@ pub enum Edit<'a> {
     /// Vim and GUI editors replace a selection (the user's ruling, final
     /// review).
     Replace(Pos, Pos, &'a str),
+    /// `[from, to)` replaced as Insert would type over it, the caret after
+    /// it: a picked `{{token}}` over the token the caret was in, from
+    /// Insert (#149).
+    ReplaceTyping(Pos, Pos, &'a str),
 }
 
 impl Edit<'_> {
@@ -125,6 +129,10 @@ impl Edit<'_> {
                 s.splice(from, to, text);
                 let end = end_of(from, text);
                 s.set_cursor(Pos::new(end.row, end.col.saturating_sub(1)));
+            }
+            Edit::ReplaceTyping(from, to, text) => {
+                s.splice(from, to, text);
+                s.set_cursor(end_of(from, text));
             }
         }
     }

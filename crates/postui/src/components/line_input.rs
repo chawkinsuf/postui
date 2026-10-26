@@ -177,6 +177,14 @@ impl LineInput {
         self.run = None;
     }
 
+    /// Replaces chars `range` with `text` as one step of this input's
+    /// history, the caret after it: a picked `{{token}}` over the token the
+    /// caret was in (#149).
+    pub fn replace_chars(&mut self, range: std::ops::Range<usize>, text: &str) {
+        self.record(EditKind::Whole);
+        self.splice_raw(range.start, range.end, text);
+    }
+
     /// Records the state before an edit of `kind`. A same-kind edit
     /// extends the current run (no new snapshot); anything else opens a
     /// new step. Any edit drops the redo branch.

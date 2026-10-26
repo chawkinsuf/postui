@@ -6670,13 +6670,25 @@ impl App {
             }
             Action::InsertVarText(text) => {
                 self.no_coalesce = true;
+                // A whole `{{token}}` put while the caret is in a token
+                // takes that token's place: a token never lands inside
+                // another (#149). A completion (`name}}`
+                // after a typed `{{`) isn't whole, so it goes in at the
+                // caret as before.
+                let whole = postui_core::vars::find_tokens(&text)
+                    .first()
+                    .is_some_and(|t| t.start == 0 && t.end == text.len());
+                let over = whole.then(|| self.editor.caret_token_span()).flatten();
                 // A vim field the engine runs takes the token as one engine
                 // step (spec §3.7).
-                if self.vim_insert(&text) {
+                if self.vim_insert(&text, over.as_ref().map(|s| (s.row, s.chars.clone()))) {
                     return true;
                 }
                 if self.focus == PaneId::Editor && self.editor.url_open() {
-                    self.editor.url.insert_str(&text);
+                    match over {
+                        Some(span) => self.editor.url.replace_chars(span.chars, &text),
+                        None => self.editor.url.insert_str(&text),
+                    }
                 } else if self.focus == PaneId::Editor
                     && matches!(
                         self.editor.active_tab,
@@ -6686,12 +6698,18 @@ impl App {
                     && self.editor.table.editing.is_some()
                 {
                     let edit = self.editor.table.editing.as_mut().unwrap();
-                    edit.input.insert_str(&text);
+                    match over {
+                        Some(span) => edit.input.replace_chars(span.chars, &text),
+                        None => edit.input.insert_str(&text),
+                    }
                 } else if self.focus == PaneId::Editor
                     && self.editor.active_tab == EditorTab::Body
                     && self.editor.sub_focus == SubFocus::Content
                 {
-                    self.editor.body_insert_str(&text);
+                    match over {
+                        Some(span) => self.editor.body_replace_in_row(span.row, span.chars, &text),
+                        None => self.editor.body_insert_str(&text),
+                    }
                     self.turn_on_body_vars();
                 } else {
                     self.toasts

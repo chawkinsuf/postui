@@ -1494,6 +1494,27 @@ fn a_picked_token_in_visual_replaces_the_selection() {
     assert_eq!(url(&app).0, "abcdef", "one engine step");
 }
 
+/// #149: a picked `{{token}}` with the caret in a token
+/// takes that token's place, as one engine step: from Normal the caret
+/// lands on its last char (Vim's paste over a selection), from Insert
+/// after it.
+#[test]
+fn a_picked_token_replaces_the_token_the_caret_is_in() {
+    let mut app = url_line("a{{old}}b");
+    feed(&mut app, "<CR>0lll");
+    app.update(Action::InsertVarText("{{v}}".into()));
+    assert_eq!(url(&app), ("a{{v}}b", 5));
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+    feed(&mut app, "u");
+    assert_eq!(url(&app).0, "a{{old}}b", "one engine step");
+
+    let mut app = url_line("a{{old}}b");
+    feed(&mut app, "<CR>0llli");
+    app.update(Action::InsertVarText("{{v}}".into()));
+    assert_eq!(url(&app), ("a{{v}}b", 6));
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+}
+
 /// An app whose clipboard writes to a file, and that file.
 fn with_clipboard_file(mut app: App) -> (App, tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();

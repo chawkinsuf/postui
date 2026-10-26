@@ -752,7 +752,14 @@ impl App {
     /// `Glue::rebase` does. Only the fields main inserts into: the URL
     /// line, a cell, the body. `false` leaves it to today's path. A token
     /// into the body turns on the body's variables, as today's path does.
-    pub(crate) fn vim_insert(&mut self, text: &str) -> bool {
+    /// `over`, the caret's token (its row and chars), takes `text` in its
+    /// place instead (#149): typed over from Insert, the
+    /// caret after it; as Vim's paste over a selection from Normal.
+    pub(crate) fn vim_insert(
+        &mut self,
+        text: &str,
+        over: Option<(usize, std::ops::Range<usize>)>,
+    ) -> bool {
         let Some(id) = self.vim.glue.owned() else { return false };
         if !matches!(id, FieldId::Url | FieldId::TableCell { .. } | FieldId::Body) {
             return false;
@@ -763,7 +770,16 @@ impl App {
         );
         let (glue, buf) = self.session_parts(id);
         let Some(mut buf) = buf else { return false };
-        let edit = if typing {
+        let span = over.map(|(row, chars)| {
+            (engine_glue::Pos::new(row, chars.start), engine_glue::Pos::new(row, chars.end))
+        });
+        let edit = if let Some((from, to)) = span {
+            if typing {
+                engine_glue::Edit::ReplaceTyping(from, to, text)
+            } else {
+                engine_glue::Edit::Replace(from, to, text)
+            }
+        } else if typing {
             engine_glue::Edit::AtCaret(text)
         } else if let Some((from, to)) = glue.visual_span(&mut buf) {
             engine_glue::Edit::Replace(from, to, text)
