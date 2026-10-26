@@ -1,108 +1,127 @@
-# postui
+<h1 align="center">postui</h1>
 
-A fast, local-first terminal HTTP client. Requests live as plain TOML files
-in a project folder, so they read cleanly in a diff and travel with the repo
-they belong to. The whole interface works with the mouse — buttons, tabs,
-and menus all click — with the keyboard as a full alternative, not a
-requirement.
+<p align="center">
+  A terminal HTTP client where everything works by mouse or by keyboard.<br>
+  Requests are plain TOML files in your project, so they diff cleanly and live in git.
+</p>
 
-Requests are grouped into **spaces** — top-level folders under `requests/`
-that you switch between with `ctrl+1`…`ctrl+9` (or `alt+c` / `alt+shift+c`). One
-space is visible at a time and each remembers the request you had open.
-Spaces, environments and variables are all edited on the Manage screen
-(`alt+r`). Every project has at least one environment — a new one starts with
-`default`, which you can rename; the last environment can't be deleted.
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="docs/guide.md">Guide</a> ·
+  <a href="docs/configuration.md">Configuration</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
 
-## Build and run
+<p align="center">
+  <img src="docs/images/hero.gif" alt="Opening a request, sending it, and filtering the JSON response with jq" width="900">
+</p>
 
-```sh
-cargo build --release
-./target/release/postui [directory]
+## Features
+
+- **Mouse or keyboard, all the way.** Every button, tab, menu and pane divider
+  responds to the mouse, and every action also has a key: an arrows-and-Enter
+  profile or a Vim profile, your pick on first launch. The footer always shows
+  the keys for what has focus, and `ctrl+p` searches every command.
+- **Requests are files.** One TOML file per request, in folders, grouped into
+  spaces. Review them in a diff and commit them next to the code they test.
+- **Environments, variables and secrets.** `{{tokens}}` in the URL, params and
+  headers (and the body, once you switch that on) take their values from the
+  active environment. Secrets stay in the project's `.local/` folder, which
+  postui keeps out of git with a `.gitignore` of its own.
+- **jq on every response.** Filter JSON live as you type, with completion for
+  the keys the response really has. Save filters as named views, right-click
+  the tree for filters written for you, or describe the one you want and let an
+  AI command write it from the response's shape, never its values.
+- **curl in and out.** Paste a curl command into the sidebar to import it as a
+  request, or copy any request as curl.
+- **Undo for everything.** Edits, deletes, renames and moves all undo, even
+  after you've moved on to another request.
+- **Themes.** Built-in dark and light themes, your terminal's own colors, a
+  contrast control, and custom themes from six colors.
+
+| | |
+|:---:|:---:|
+| <img src="docs/images/manage.png" alt="The Manage screen: a variable's description and its value in the active environment" width="440"> | <img src="docs/images/curl-import.png" alt="Importing a pasted curl command as a request" width="440"> |
+| <img src="docs/images/themes.png" alt="The theme picker with its contrast control" width="440"> | <img src="docs/images/describe.png" alt="Describing a jq filter for the AI command to write" width="440"> |
+
+## Requests are plain files
+
+A project is a folder. Put it in its own repo, or next to the code it tests:
+
+```
+my-api/
+├── project.toml
+├── variables.toml        # the variables requests use
+├── environments/
+│   ├── default.toml      # base_url = "https://api.example.com"
+│   └── local.toml        # base_url = "http://localhost:3000"
+├── requests/
+│   └── main/             # a space
+│       └── users/
+│           └── list-users.toml
+└── .local/               # yours alone: secrets, open tabs, layout. Its own
+                          # .gitignore keeps it out of git.
 ```
 
-Run with no argument to open the last project, or pass a directory to open
-(or create) a project there.
+`requests/main/users/list-users.toml`:
 
-## Development
+```toml
+method = "GET"
+url = "{{base_url}}/users"
 
-The code is formatted with `cargo fmt --all` (settings in `rustfmt.toml`;
-tables meant to be read across keep their layout with `#[rustfmt::skip]`).
-CI fails the build on unformatted code. Once per clone, run
+[params]
+_limit = "5"
 
-```sh
-scripts/install-hooks.sh
+[headers]
+Accept = "application/json"
 ```
 
-to install a pre-commit hook that runs the same check, and to make
-`git blame` skip the formatting-only commits.
+## Install
 
-## Mouse
+**Homebrew** (macOS and Linux) is the recommended way:
 
-Every control clicks: the header's project chip opens the project chooser and the
-environment and space chips open their dropdowns, with the keycap pill beside each
-(`alt+z` / `alt+x` / `alt+c`, shift for the other way round) cycling it, sidebar
-rows open requests, the method cell opens its dropdown, `[ Send ]` sends (and
-becomes `[ Cancel ]` mid-flight), response tabs and the JSON tree arrows
-toggle, and footer chips run their action. Scrollbars drag. Clicking outside
-an open modal or chooser closes it, same as Esc.
+```sh
+brew install chawkinsuf/postui/postui
+```
 
-Mouse capture means the terminal's own drag-to-select is off. To select text
-(to copy it out with your terminal, not postui's clipboard command), hold
-Shift while dragging — most terminals bypass capture for that.
+Or use the **shell installer**, which puts `postui` in `~/.local/bin`:
 
-### jq filter
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/chawkinsuf/postui/releases/latest/download/postui-installer.sh | sh
+```
 
-Press `alt+q` (or click 󰈲 in the response header) to open the jq bar and filter a JSON
-response live; the filter is saved with the request. `alt+q` always puts the caret in the bar,
-switching the filter on if it was off. `Enter` (or `Down`) hands focus back to the
-filtered tree with your edit kept — what you typed, never a ghost; `Esc` does the same (the
-filter is live already, so there is nothing to revert — `ctrl+z` inside the bar walks your
-typing back, and after it closes `ctrl+z` reverts the whole edit through the app history).
-`alt+shift+q` (footer chip `unfilter`, or 󰈲) is the switch: on an open
-bar it closes it, which switches the filter off without deleting it — the full body
-shows until you open it again, and the off state is saved too. A filter that yields only `null` (or nothing) keeps the full body on screen and shows
-"invalid filter" under the bar, so a half-typed path doesn't blank the response you're reading. Multiple
-outputs run together, one after another, as `jq` prints them. Right-click any line of the tree for
-verbs that write the jq for you (Filter to this, Count, Pluck field…, Where field…, Only
-items where…). "Describe a filter…" sends the response's *structure* (key names and types,
-never values) to the command in `ai_cmd` (default `claude -p`) and puts the reply in the bar.
-A filter the AI returns is applied immediately — safe because jaq (the embedded jq engine)
-runs in-process with no file or process access, and its output never leaves the app.
-As you type, the bar completes what you're most likely writing: type `.` for the keys the
-filter has reached at that point in the response, or the start of a builtin's name (`leng` →
-`length`). The candidates are listed under the bar as you type, narrowing with each character;
-`Tab` picks the first, further `Tab`s step through them (the row slides to keep the selected one
-in view), `shift+Tab` goes back, `Enter` confirms the selected one, `Esc` un-picks it, and
-anything else you type keeps the selection. With `jq_tab = "cycle"` the bar instead ghosts the
-best candidate after the caret: `Tab` cycles through the candidates in place, `shift+Tab` goes
-back, and `Right` or `End` accepts the one showing. The bar takes the usual editing keys
-(`ctrl+←/→`, `ctrl+a`, `ctrl+backspace` / `alt+backspace`), and inside a path `ctrl+backspace`
-deletes back to the previous `.` — `.data.items[0]` → `.data.` → `.` — so each press lands where
-the completion has keys to offer (a quoted key counts as one segment, dots and all).
+**Prebuilt binaries** for macOS (Apple Silicon and Intel) and Linux (x86_64 and
+arm64, glibc 2.35 or newer) are on the
+[releases page](https://github.com/chawkinsuf/postui/releases).
 
-## Configuration
+**From source**, with Rust 1.97 or newer. This builds `main`, which can be
+ahead of the latest release; add `--tag v<version>` for a release:
 
-Global settings live in `config.toml` (in your platform's config directory,
-e.g. `~/.config/postui/config.toml` on Linux):
+```sh
+cargo install --locked --git https://github.com/chawkinsuf/postui postui
+```
 
-- `clipboard_cmd` — an external command to pipe copied text to (e.g.
-  `"xclip -selection clipboard"`). When set, it's tried first for every
-  copy. Default: unset — postui uses the OS clipboard directly, falling
-  back to a terminal OSC 52 escape sequence (for SSH/headless sessions)
-  when that's unavailable.
-- `osc52_limit` — the largest payload, in bytes, that the OSC 52 fallback
-  will send. Above this size a copy is refused rather than silently
-  truncated or dumped to the terminal. Default: `65536`.
-- `ai_cmd` — the command that reads a describe-a-filter prompt on stdin and
-  writes the jq filter it suggests to stdout. Default: `"claude -p"`.
-- `ai_confirmed` — whether the one-time confirmation to send response
-  structure to `ai_cmd` has been accepted.
-- `jq_tab` — how the jq bar completes: `"menu"` (the default) lists the
-  candidates under the bar as you type, with `Tab`/`shift+Tab` picking
-  and stepping through them (`"accept"` is an older name for it);
-  `"cycle"` ghosts the best candidate after the caret and steps through
-  the rest in place, `Right` and `End` accepting it.
-- `indent` — how a request body with no indentation of its own indents:
-  `"spaces"` (the default) or `"tabs"`. A body that is already indented
-  keeps its own style: Tab, Enter, indent/dedent and Format follow it.
-- `indent_width` — the spaces in one indent level, from 1 to 8. Default: `2`.
+postui's icons come from [Nerd Fonts](https://www.nerdfonts.com/): use a Nerd
+Font, or a terminal with the symbols built in, such as Ghostty or WezTerm. On
+Windows, run postui in [WSL 2](https://learn.microsoft.com/windows/wsl/install).
+
+## Getting started
+
+```sh
+postui            # opens the last project, or a default one the first time
+postui my-api     # opens the project in my-api, or offers to create one there
+```
+
+The first launch asks which keys you want: arrows and Enter, or Vim. Change it
+any time on the Settings tab of the Manage screen (`alt+r`). The
+[guide](docs/guide.md) covers spaces, environments, variables, the jq bar and
+curl. [Configuration](docs/configuration.md) covers settings, key bindings and
+themes.
+
+On macOS, keys shown here as `alt+` are `opt+`, and your terminal's
+option-as-alt setting needs to be on for `opt+` letter keys to reach postui.
+`postui --setup` prints how to turn it on in your terminal.
+
+## License
+
+[MIT](LICENSE)
