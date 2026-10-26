@@ -8,7 +8,7 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] #29 `$EDITOR` round-trip drops a body's trailing newline (merged 2026-10-25, design B)
 - [x] #68 A value typed on the + Add row is lost at quit (merged 2026-10-25: the value cell opens the name)
 - [x] #56 Editor Headers tab can't scroll, so header rows and project defaults can be unreachable (squash-merged 2026-10-26; full history tag `headers-tab-scroll-history`)
-- [ ] #121 Undo of a row add doesn't put the table cursor back where it was (found during #56; pre-existing)
+- [x] #121 Undo of a row add doesn't put the table cursor back where it was (merged 2026-10-26: undo steps record the table cursor; an add through + Add undoes onto + Add)
 - [x] #97 Header strike-through carries into the method dropdown (merged 2026-10-25: a filled panel clears the page's modifiers)
 - [x] #105 Eight more palette rows with a default key show no key (merged 2026-10-26: a row's key is looked up by its action)
 - [x] #107 Confirm dialogs' button rows overflow narrow terminals (merged 2026-10-26: Confirm uses the blocking dialogs' wrapping layout)
@@ -16,7 +16,7 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] #116 Release workflow: cargo-dist, shell installer, Homebrew tap, Rust pinned at 1.97.1 (merged 2026-10-25)
 - [x] #124 Replacing or deleting a body selection that ends a line adds a blank line after it (merged 2026-10-25: edtui's delete, with the break after the selection kept)
 - [x] #126 The views dropdown's rename and delete buttons are small targets (merged 2026-10-26: a cell of padding each side, part of the button)
-- [ ] #106 Test suite fails on macOS: tests expect `alt+` where macOS shows `opt+` (CI runs tests on Linux only until then)
+- [x] #106 Test suite fails on macOS: tests expect `alt+` where macOS shows `opt+` (merged 2026-10-26: CI runs the tests on macOS too)
 
 ## Cheap fixes bundled in (all merged 2026-10-25)
 

@@ -5052,13 +5052,19 @@ fn a_loose_top_level_file_warns_once_and_never_enters_the_tree() {
 fn a_request_under_an_invalid_space_dir_warns_once_and_never_enters_the_tree() {
     let (mut app, dir) = spaced_app();
     let rows_before = app.sidebar.rows.clone();
-    std::fs::create_dir_all(dir.path().join("requests/Auth")).unwrap();
-    std::fs::write(dir.path().join("requests/Auth/login.toml"), "url = \"x\"\n").unwrap();
+    // Not a case variant of a space the fixture has (`auth`): macOS's
+    // case-insensitive file system would make `Auth` that very directory.
+    std::fs::create_dir_all(dir.path().join("requests/Billing")).unwrap();
+    std::fs::write(dir.path().join("requests/Billing/login.toml"), "url = \"x\"\n").unwrap();
 
     app.toasts = Default::default();
     app.update(Action::RefreshSidebar);
-    let warned: Vec<_> =
-        app.toasts.entries().into_iter().filter(|(m, _)| m.contains("Auth/login.toml")).collect();
+    let warned: Vec<_> = app
+        .toasts
+        .entries()
+        .into_iter()
+        .filter(|(m, _)| m.contains("Billing/login.toml"))
+        .collect();
     assert_eq!(warned.len(), 1, "{:?}", app.toasts.messages());
     assert!(
         warned[0].0.contains("is not in a valid space (space names are a-z 0-9 - _)"),
@@ -5075,12 +5081,12 @@ fn a_request_under_an_invalid_space_dir_warns_once_and_never_enters_the_tree() {
     app.toasts = Default::default();
     app.update(Action::RefreshSidebar);
     assert!(
-        !app.toasts.messages().iter().any(|m| m.contains("Auth/login.toml")),
+        !app.toasts.messages().iter().any(|m| m.contains("Billing/login.toml")),
         "{:?}",
         app.toasts.messages()
     );
 
-    assert!(!app.proj().spaces().iter().any(|s| s == "Auth"), "{:?}", app.proj().spaces());
+    assert!(!app.proj().spaces().iter().any(|s| s == "Billing"), "{:?}", app.proj().spaces());
     assert_eq!(
         app.sidebar.rows, rows_before,
         "the request under a non-space directory is skipped, never listed"
