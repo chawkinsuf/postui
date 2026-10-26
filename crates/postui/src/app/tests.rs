@@ -10258,6 +10258,33 @@ fn clicking_a_rows_delete_runs_it_and_closes_the_menu() {
     assert!(app.toasts.messages().contains(&"rename beta"));
 }
 
+/// #126: a dropdown row's own buttons are a cell of padding each side of
+/// their glyph, right-aligned and touching: the whole three cells take
+/// the click and, hovered, the button's fill.
+#[test]
+fn a_dropdown_rows_buttons_are_three_cells_wide_and_fill_when_hovered() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let mut app = App::new_for_test();
+    push_row_action_menu(&mut app);
+    render_once(&mut app);
+    let row = app.hits.rect_of(&Hit::DropdownRow(0)).unwrap();
+    let rename = app.hits.rect_of(&Hit::row_rename(0)).unwrap();
+    let delete = app.hits.rect_of(&Hit::row_delete(0)).unwrap();
+    assert_eq!((rename.width, delete.width), (3, 3));
+    assert_eq!(rename.right(), delete.x, "the two touch");
+    assert_eq!(delete.right(), row.right(), "right-aligned in the row");
+
+    app.handle_mouse(moved(delete.x, delete.y));
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer();
+    let cells: Vec<_> = (delete.x..delete.right()).map(|x| &buf[(x, delete.y)]).collect();
+    assert!(cells.iter().all(|c| c.bg == app.theme.error), "the whole button fills");
+    assert_eq!(cells[1].symbol(), crate::glyph::DELETE, "the glyph sits in the middle");
+    assert_ne!(buf[(rename.x + 1, rename.y)].bg, app.theme.accent, "only the hovered one");
+}
+
 /// A dropdown has no open transition and every close path is instant: no
 /// animation key is ever left in flight by opening or closing the method
 /// dropdown through Esc, a row click, or a click outside. (It once grew in

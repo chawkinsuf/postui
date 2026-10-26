@@ -3831,15 +3831,16 @@ fn draw_dropdown(
     }
 }
 
-/// The cells each of a dropdown row's own buttons takes: a space and its
-/// glyph.
-const ROW_BUTTON_W: u16 = 2;
+/// The cells each of a dropdown row's own buttons takes: its glyph with a
+/// cell of padding each side, all of it the button's (#126: a one-cell
+/// glyph alone was a small target and its hover fill a lone block).
+const ROW_BUTTON_W: u16 = 3;
 
 /// Row `i`'s own buttons (jq views spec 17, amendment B9), right-aligned in
-/// `row_area` one space apart in their listed order, each registered over
-/// the row's own hit so a click on it is the button's. A directly-hovered
-/// button inverts onto accent (error red for a destructive one), as the
-/// table rows' buttons do.
+/// `row_area` side by side in their listed order, each registered over
+/// the row's own hit so a click on any of its cells is the button's. A
+/// directly-hovered button inverts onto accent (error red for a
+/// destructive one), padding included.
 #[allow(clippy::too_many_arguments)]
 fn draw_row_buttons(
     frame: &mut Frame,
@@ -3851,7 +3852,7 @@ fn draw_row_buttons(
     row_area: Rect,
     row_fill: ratatui::style::Color,
 ) {
-    let first_x = row_area.right() - item.buttons_width() + 1;
+    let first_x = row_area.right() - item.buttons_width();
     for (k, button) in item.buttons.iter().enumerate() {
         let x = first_x + ROW_BUTTON_W * k as u16;
         let hit = crate::hit::Hit::DropdownRowButton { row: i, verb: button.verb };
@@ -3861,8 +3862,9 @@ fn draw_row_buttons(
         } else {
             (theme.text_muted, row_fill)
         };
-        paint::text(frame.buffer_mut(), x, row_area.y, button.glyph, fg, bg, false);
-        hits.register(Rect::new(x, row_area.y, 1, 1), hit);
+        let label = format!(" {} ", button.glyph);
+        paint::text(frame.buffer_mut(), x, row_area.y, &label, fg, bg, false);
+        hits.register(Rect::new(x, row_area.y, ROW_BUTTON_W, 1), hit);
     }
 }
 
@@ -5198,9 +5200,10 @@ mod tests {
     }
 
     /// Spec 17: the highlighted or hovered row shows ✎ and the delete icon,
-    /// each a click target over its own cell, registered over the row's
-    /// own hit so the click lands on the button. A row without actions,
-    /// or one neither highlighted nor hovered, shows neither.
+    /// each a click target over its own three cells (#126: the glyph with
+    /// a cell of padding each side), registered over the row's own hit so
+    /// the click lands on the button. A row without actions, or one
+    /// neither highlighted nor hovered, shows neither.
     #[test]
     fn a_row_with_actions_shows_rename_and_delete_on_the_highlighted_row() {
         use crate::hit::Hit;
@@ -5222,17 +5225,20 @@ mod tests {
         let (buf, hits) = draw(None);
         let rename = hits.rect_of(&Hit::row_rename(0)).expect("row 0's rename");
         let delete = hits.rect_of(&Hit::row_delete(0)).expect("row 0's delete");
-        assert_eq!(buf[(rename.x, rename.y)].symbol(), crate::glyph::PENCIL);
-        assert_eq!(buf[(delete.x, delete.y)].symbol(), crate::glyph::DELETE);
-        assert_eq!(delete.x, rename.x + 2, "one space between the two");
+        assert_eq!(buf[(rename.x + 1, rename.y)].symbol(), crate::glyph::PENCIL);
+        assert_eq!(buf[(delete.x + 1, delete.y)].symbol(), crate::glyph::DELETE);
+        assert_eq!((rename.width, delete.width), (3, 3));
+        assert_eq!(delete.x, rename.right(), "side by side");
         let row0 = hits.rect_of(&Hit::DropdownRow(0)).unwrap();
-        assert_eq!(delete.x, row0.x + row0.width - 1, "right-aligned in the row");
-        assert_eq!(
-            hits.hit_at(rename.x, rename.y),
-            Some(&Hit::row_rename(0)),
-            "the button wins over its row"
-        );
-        assert_eq!(hits.hit_at(delete.x, delete.y), Some(&Hit::row_delete(0)));
+        assert_eq!(delete.right(), row0.right(), "right-aligned in the row");
+        for x in rename.x..rename.right() {
+            assert_eq!(
+                hits.hit_at(x, rename.y),
+                Some(&Hit::row_rename(0)),
+                "the button wins over its row, padding included"
+            );
+        }
+        assert_eq!(hits.hit_at(delete.right() - 1, delete.y), Some(&Hit::row_delete(0)));
         for i in [1, 2] {
             assert!(hits.rect_of(&Hit::row_rename(i)).is_none(), "row {i}");
             assert!(hits.rect_of(&Hit::row_delete(i)).is_none(), "row {i}");
@@ -5279,7 +5285,7 @@ mod tests {
 
     /// Amendment B9: rows with different buttons right-align them, in their
     /// listed order, and every row reserves the widest row's cells. A row
-    /// with one button has it in the last cell.
+    /// with one button has it in the last three cells.
     #[test]
     fn rows_lay_their_own_buttons_out_from_the_right() {
         use crate::hit::Hit;
@@ -5300,21 +5306,21 @@ mod tests {
         let (buf, hits) = draw(Some(&Hit::DropdownRow(1)));
         let row0 = hits.rect_of(&Hit::DropdownRow(0)).unwrap();
         let clear = hits.rect_of(&Hit::row_delete(0)).expect("the first row's one button");
-        assert_eq!(clear.x, row0.right() - 1, "in the last cell");
-        assert_eq!(buf[(clear.x, clear.y)].symbol(), crate::glyph::CLOSE);
+        assert_eq!(clear.right(), row0.right(), "in the last three cells");
+        assert_eq!(buf[(clear.x + 1, clear.y)].symbol(), crate::glyph::CLOSE);
         let rename = hits.rect_of(&Hit::row_rename(1)).unwrap();
         let delete = hits.rect_of(&Hit::row_delete(1)).unwrap();
-        assert_eq!(rename.x + 2, delete.x, "listed order, a space apart");
+        assert_eq!(rename.right(), delete.x, "listed order, side by side");
         assert_eq!(delete.x, clear.x, "both rows end at the same cell");
-        assert_eq!(buf[(rename.x, rename.y)].symbol(), crate::glyph::PENCIL);
+        assert_eq!(buf[(rename.x + 1, rename.y)].symbol(), crate::glyph::PENCIL);
         // Every row reserves the two buttons' cells: the label's room ends
         // before the rename's column on both.
-        assert_eq!(state.buttons_width(), 4);
+        assert_eq!(state.buttons_width(), 6);
     }
 
-    /// The row actions widen the popup by the four cells their buttons take.
+    /// The row actions widen the popup by the six cells their buttons take.
     #[test]
-    fn row_actions_widen_the_dropdown_by_four_cells() {
+    fn row_actions_widen_the_dropdown_by_six_cells() {
         let screen = Rect::new(0, 0, 80, 24);
         let width = |items: Vec<MenuItem>| {
             let state =
@@ -5330,7 +5336,7 @@ mod tests {
             .into_iter()
             .map(|i| MenuItem::new(i.label, Action::Render))
             .collect();
-        assert_eq!(width(row_action_items()), width(plain) + 4);
+        assert_eq!(width(row_action_items()), width(plain) + 6);
     }
 
     /// Spec 17: a dropdown whose rows carry actions advertises their keys
