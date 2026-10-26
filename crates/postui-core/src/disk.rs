@@ -151,33 +151,36 @@ impl Disk {
         self.ignored = Some(dir);
     }
 
-    /// `create_dir_all(dir)` for a write of `rel`: the one place this
-    /// `Disk` makes directories, so the one place that sees the ignored
-    /// directory come into being, however it does (a state save, the
-    /// trash's rename), and seals it as it does. That is why the rule
-    /// lives here and not in `Project`, which never sees the trash's
-    /// directories made. `dir` is the ignored directory itself, or a
-    /// directory under it, only when `rel` is inside it or is it and
-    /// `dir` is the one being made (a rename *onto* the ignored path
-    /// makes only its parent).
+    /// `create_dir_all(dir)` for a write of `rel`: every write, create and
+    /// rename makes its directories here, so this is where the ignored
+    /// directory is seen coming into being, however it does (a state
+    /// save, the trash's rename), and is sealed as it does. That is why
+    /// the rule lives in `Disk` and not in `Project`, which never sees the
+    /// trash's directories made.
     fn create_dirs(&mut self, dir: &Path, rel: &RelPath) -> Result<(), DiskError> {
-        let sealed = self
-            .ignored
-            .as_ref()
-            .filter(|d| rel.starts_with(d) && (rel != *d || dir == self.abs(d)))
-            .cloned();
-        if let Some(d) = sealed {
+        if let Some(d) = self.ignored_dir_to_make(dir, rel) {
             self.make_sealed(&d)?;
         }
         std::fs::create_dir_all(dir).map_err(DiskError::io("create the directory of", rel))
     }
 
+    /// The ignored directory, when making `dir` for a write of `rel` may
+    /// have to make it: `rel` is inside it, or is it and `dir` is it (a
+    /// rename *onto* the ignored path makes only its parent). `None` for
+    /// one already there, the common case, at the cost of one stat.
+    fn ignored_dir_to_make(&self, dir: &Path, rel: &RelPath) -> Option<RelPath> {
+        let d = self.ignored.as_ref()?;
+        let inside = rel.starts_with(d) && (rel != d || dir == self.abs(d));
+        (inside && !self.abs(d).is_dir()).then(|| d.clone())
+    }
+
     /// Makes the ignored directory `d` with its `.gitignore`, as one step.
     /// `create_dir` answers atomically whether this call made it, so two
     /// writers racing to make it can't both skip the seal. A `.gitignore`
-    /// that fails to land takes the new directory back out, so the next
-    /// write tries again instead of finding an unsealed directory it will
-    /// never seal. A directory that already exists is left as it is.
+    /// that fails to land takes the new directory back out, while it is
+    /// still empty (never a file another writer put there meanwhile), so
+    /// the next write tries again instead of finding an unsealed
+    /// directory it will never seal.
     fn make_sealed(&mut self, d: &RelPath) -> Result<(), DiskError> {
         let abs = self.abs(d);
         if let Some(parent) = abs.parent() {
@@ -188,10 +191,19 @@ impl Disk {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
             Err(e) => return Err(DiskError::io("create", d)(e)),
         }
-        if let Err(e) = self.write_new(&d.join(".gitignore")?, IGNORE_ALL) {
-            let _ = std::fs::remove_dir_all(&abs);
+        // Staged and linked here rather than through `write_new`, which
+        // would come back through `create_dirs`.
+        let rel = d.join(".gitignore")?;
+        let placed = Self::staged(&abs, IGNORE_ALL.as_bytes(), &rel, false).and_then(|tmp| {
+            tmp.persist_noclobber(abs.join(".gitignore"))
+                .map(|_| ())
+                .map_err(|e| DiskError::io("create", &rel)(e.error))
+        });
+        if let Err(e) = placed {
+            let _ = std::fs::remove_dir(&abs);
             return Err(e);
         }
+        self.record(&rel);
         Ok(())
     }
 
@@ -714,10 +726,17 @@ mod tests {
     fn no_gitignore_without_an_ignored_directory() {
         let (_d, mut disk) = disk();
         disk.write(&RelPath::new(".local/state.toml").unwrap(), "").unwrap();
+        assert!(!disk.exists(&RelPath::new(".local/.gitignore").unwrap()));
+    }
+
+    /// Other directories a write makes get none, ignored directory or not.
+    #[test]
+    fn only_the_ignored_directory_gets_a_gitignore() {
+        let (_d, mut disk) = disk();
         disk.ignore_when_created(RelPath::new(".local").unwrap());
         disk.write(&RelPath::new("other/x.toml").unwrap(), "").unwrap();
-        assert!(!disk.exists(&RelPath::new(".local/.gitignore").unwrap()));
         assert!(!disk.exists(&RelPath::new("other/.gitignore").unwrap()));
+        assert!(!disk.exists(&RelPath::new(".local").unwrap()));
     }
 
     #[test]

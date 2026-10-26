@@ -1,3 +1,6 @@
 /target
 /docs/superpowers/plans
 /.veans.yml
+# The tapes' demo project, if anything opens it in place (an older postui
+# writes no .local/.gitignore).
+/docs/tapes/demo/.local/

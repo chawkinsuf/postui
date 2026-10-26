@@ -233,6 +233,22 @@ impl Project {
         root.join(PROJECT_TOML).is_file()
     }
 
+    /// The `Disk` for a project rooted at `root`: every one is built here,
+    /// so the rules for the project's own files hold whichever path writes
+    /// them.
+    fn disk_for(root: PathBuf) -> Disk {
+        let mut disk = Disk::new(root);
+        // The one file whose mode is not the umask's business: secrets
+        // land owner-only however the project directory is shared.
+        disk.mark_private(RelPath::new(SECRETS_TOML).expect("constant path"));
+        // `.local/` keeps itself out of git, wherever the project sits (a
+        // repository root whose own `.gitignore` never mentions it): the
+        // write that creates it puts a `.gitignore` of `*` in it (task
+        // #143).
+        disk.ignore_when_created(RelPath::new(LOCAL_DIR).expect("constant path"));
+        disk
+    }
+
     /// The name to show for a project that is *not* open — the Projects
     /// chooser's row labels. Reads `<root>/project.toml` through a
     /// throwaway [`Disk`] (`peek`: no stamp recorded, nothing written)
@@ -242,7 +258,7 @@ impl Project {
     /// rather than dropping out of the chooser — and, unlike `open`, this
     /// never refuses: it only ever labels a row.
     pub fn peek_display_name(root: &Path) -> String {
-        let disk = Disk::new(root.to_path_buf());
+        let disk = Self::disk_for(root.to_path_buf());
         let meta = RelPath::new(PROJECT_TOML)
             .ok()
             .and_then(|rel| disk.peek(&rel).ok())
@@ -967,15 +983,7 @@ impl Project {
                     .to_string(),
             });
         }
-        let mut disk = Disk::new(root);
-        // The one file whose mode is not the umask's business: secrets
-        // land owner-only however the project directory is shared.
-        disk.mark_private(RelPath::new(SECRETS_TOML).expect("constant path"));
-        // `.local/` keeps itself out of git, wherever the project sits (a
-        // repository root whose own `.gitignore` never mentions it): the
-        // first write that creates it puts a `.gitignore` of `*` in it
-        // (task #143).
-        disk.ignore_when_created(RelPath::new(LOCAL_DIR).expect("constant path"));
+        let mut disk = Self::disk_for(root);
         let mut warnings = Vec::new();
 
         let meta: ProjectMeta = Self::read_doc(&mut disk, PROJECT_TOML, |t| {
@@ -1129,7 +1137,7 @@ impl Project {
     /// `project.toml` with `name`, empty `variables.toml`),
     /// never overwriting anything present, then opens it.
     pub fn init(root: &Path, name: Option<&str>) -> Result<(Project, Vec<Warning>), OpenError> {
-        let mut disk = Disk::new(root.to_path_buf());
+        let mut disk = Self::disk_for(root.to_path_buf());
         // What `meta::init_project` wrote, through `Disk`: the two
         // directories, a `default` environment when the project has none
         // that `environment_files` recognises, and the three seed files —
