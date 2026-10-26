@@ -36,7 +36,7 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] The GitHub repo is public; the tap repo `chawkinsuf/homebrew-postui` exists
 - [x] `HOMEBREW_TAP_TOKEN` secret on chawkinsuf/postui (set by the user 2026-10-25; first used by the first full release)
 - [x] #120 Prerelease `v0.1.1-rc.1`: CI and the whole release ran green on GitHub (Homebrew skipped as a prerelease); the installer installs and runs
-- [ ] macOS: the binary is unsigned. Homebrew (and the shell installer) avoid the quarantine flag, so the README makes Homebrew the recommended install (the user, 2026-10-26: "just make brew the recommended way to install"); part of #138
+- [x] macOS: the binary is unsigned. Homebrew (and the shell installer) avoid the quarantine flag, so the README makes Homebrew the recommended install (the user, 2026-10-26: "just make brew the recommended way to install"); done in #138
 - [x] Windows: not supported natively for 0.2; WSL 2 is recommended (the user, 2026-10-26). The README says so (#138)
 - [ ] #139 `postui --version` flag
 - [x] #140 CHANGELOG.md: one short first-release entry (the user, 2026-10-26: "go with the tiny changelog"). dist puts the matching section on the GitHub Release as its notes and takes the title from the heading, so #142 dates it
@@ -50,7 +50,7 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 ## Product checks before tagging
 
 - [x] Hand-check on macOS (the user, 2026-10-26: "i have already tested on a mac")
-- [ ] State the Nerd Font requirement (icons are Material glyphs); part of #138
+- [x] State the Nerd Font requirement (icons are Material glyphs): the README's Install section, which also names terminals with the symbols built in (#138)
 
 ## Before 1.0 (not 0.2)
 
@@ -60,12 +60,12 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 
 The last big item (the user, 2026-10-26). The current README is mostly a jq section, and its config list is missing most settings. Model it on Posting / Slumber (short, links out) rather than ATAC / lazygit (everything inline):
 
-- [ ] Centered title, one-line tagline, hero GIF, link row (Install · Docs · Changelog)
-- [ ] Feature bullets, then 4–5 shots: mouse-first main screen, jq filter + "Describe a filter…", Manage (environments and variables), curl import, theme picker
-- [ ] Install: Homebrew first, as the recommended way (`brew install chawkinsuf/postui/postui`), then the shell installer, release binaries, `cargo install --git`; Nerd Font note; Windows users: WSL 2
-- [ ] A short project-folder TOML example (plain files in git is the pitch)
-- [ ] Move the key and config reference into `docs/`
-- [ ] Screenshots and GIFs recorded with VHS (charmbracelet) from `.tape` scripts in the repo, so they regenerate when the UI changes; set a Nerd Font in the tape
+- [x] Centered title, one-line tagline, hero GIF, link row (Install · Guide · Configuration · Changelog). Tagline: "A terminal HTTP client where everything works by mouse or by keyboard" (mine (approved); the user ruled out a mouse-first framing)
+- [x] Feature bullets, then 4 shots under the hero: Manage, curl import, theme picker, "Describe a filter…"
+- [x] Install: Homebrew first, as the recommended way (`brew install chawkinsuf/postui/postui`), then the shell installer, release binaries, `cargo install --git`; Nerd Font note; Windows users: WSL 2
+- [x] A short project-folder TOML example (plain files in git is the pitch)
+- [x] Config reference in `docs/configuration.md`, concepts in `docs/guide.md`. There is no key reference on purpose: the footer and the `ctrl+p` palette show each profile's live keys, which a page can't (mine (approved), review of #138)
+- [x] Screenshots and GIFs recorded with VHS (charmbracelet) from `docs/tapes/*.tape`, so they regenerate when the UI changes; JetBrainsMono Nerd Font
 
 ## Housekeeping
 

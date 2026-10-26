@@ -22,14 +22,16 @@ root = "~/code/apis"
 The quickest way in is the **Settings** tab of the Manage screen (`alt+r`). Its
 rows change the common settings directly, and its Edit… buttons open
 `config.toml` or `keys.toml` in `$EDITOR`. If the file doesn't exist yet, the
-editor starts from a commented one listing every option with its default.
+editor starts from a commented one listing the options with their defaults
+(all of them except the `[animation_ms]` table and `[projects] root`, below).
 When the editor closes, postui checks what you wrote before applying it; if it
 doesn't parse, you can keep editing or throw the edit away. Reset puts a file
 back to the defaults, and undo brings your version back.
 
 A setting that's missing keeps its default. One with a value of the wrong type
-falls back to its default and postui says so; a `config.toml` that doesn't
-parse at all is reported and left alone, never overwritten.
+falls back to its default and postui says so (a bad `keymap` counts as unset,
+so the first-launch question comes back). A `config.toml` that doesn't parse
+at all is reported and left alone, never overwritten.
 
 ## config.toml
 

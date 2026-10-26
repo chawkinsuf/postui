@@ -25,7 +25,7 @@ theme = "catppuccin-mocha"
 # The hover explanations would follow a pointer VHS never moves.
 hover_hints = false
 # "Describe a filter…" pipes its prompt into a stand-in (fake-ai.sh).
-ai_cmd = "sh $demo/fake-ai.sh"
+ai_cmd = "sh '$demo/fake-ai.sh'"
 ai_confirmed = true
 EOF
 export XDG_CONFIG_HOME="$demo/config"

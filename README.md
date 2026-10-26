@@ -59,6 +59,7 @@ my-api/
 │   └── main/             # a space
 │       └── users/
 │           └── list-users.toml
+├── .gitignore            # /.local/ (postui writes it when it creates a project)
 └── .local/               # yours alone, git-ignored: secrets, open tabs, layout
 ```
 

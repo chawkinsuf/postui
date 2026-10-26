@@ -11,8 +11,9 @@ way, you don't need to learn them from a page:
 - the **command palette** (`ctrl+p`) searches every command and shows its key;
 - `keys.toml` changes any of them ([configuration](configuration.md)).
 
-This guide names only a few keys, the ones you need to find everything else,
-as the arrows profile spells them. On macOS, `alt+` keys are `opt+`; for
+This guide names only a few keys: the ones you need to find everything else,
+as the arrows profile spells them, and the jq bar's editing keys, which the
+footer doesn't list. On macOS, `alt+` keys are `opt+`; for
 `opt+` letter keys, turn on your terminal's option-as-alt setting
 (`postui --setup` says how).
 
@@ -38,7 +39,8 @@ Params, Vars and Body:
 
 - **Headers and Params** are tables. A row's checkbox switches it off without
   deleting it. The Headers tab also lists the headers postui adds for you,
-  such as `Accept` and the project's default headers; the pencil on one copies
+  such as `Accept` and the project's default headers (a `[default_headers]`
+  table in `project.toml`, sent with every request); the pencil on one copies
   it into the table so you can change its value. A few, like `Host`, belong to
   the HTTP client and can't be changed.
 - **Vars** sets values for this request alone, and lists every variable the
@@ -93,8 +95,11 @@ outputs run together, one after another, as `jq` prints them.
 As you type, the bar completes what you're most likely writing: after a `.`,
 the keys the filter has reached at that point in the response; otherwise jq's
 builtins (`leng` → `length`). By default the candidates are listed under the
-bar; `jq_tab = "ghost"` shows the best one after the caret instead
-([configuration](configuration.md)).
+bar: `Tab` steps through them, `shift+Tab` steps back, and `Enter` takes the
+selected one. `jq_tab = "ghost"` shows the best one after the caret instead,
+where `Tab` cycles and `Right` takes it ([configuration](configuration.md)).
+Inside a path, `ctrl+backspace` deletes back to the previous `.`, so
+`.data.items[0]` becomes `.data.` and then `.`.
 
 **Views** save filters by name, so a request can keep several and switch
 between them.
