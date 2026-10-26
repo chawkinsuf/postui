@@ -28,7 +28,7 @@ mkdir -p ~/.local/bin
 curl -L -o ~/.local/bin/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64
 chmod +x ~/.local/bin/ttyd
 mkdir -p ~/.local/share/fonts
-curl -L -o /tmp/jbm.zip https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip
+curl -L -o /tmp/jbm.zip https://github.com/ryanoasis/nerd-fonts/releases/download/v3.5.1/JetBrainsMono.zip
 unzip -o /tmp/jbm.zip -d ~/.local/share/fonts/JetBrainsMono
 fc-cache -f
 ```

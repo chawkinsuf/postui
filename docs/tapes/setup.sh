@@ -5,13 +5,18 @@
 repo=$(pwd)
 # ffmpeg writes screenshots into existing folders only.
 mkdir -p "$repo/docs/images"
-demo=$(mktemp -d)
+# One fixed folder, emptied on every take, so re-recording leaves nothing
+# behind but the last take's copy.
+demo="${TMPDIR:-/tmp}/postui-tapes"
+rm -rf "$demo"
+mkdir -p "$demo"
 cp -R "$repo/docs/tapes/demo/." "$demo/project"
 # Open tabs and layout left by running postui on the demo folder itself
 # would carry into the take.
 rm -rf "$demo/project/.local"
-# The stand-in AI command runs from the temp directory, whose path has no
-# spaces or quotes to break the command line or the TOML string.
+# The stand-in AI command runs from the temp folder rather than the repo,
+# whose path may hold spaces or quotes that would break the command line or
+# the TOML string.
 cp "$repo/docs/tapes/fake-ai.sh" "$demo/fake-ai.sh"
 mkdir -p "$demo/config/postui"
 cat >"$demo/config/postui/config.toml" <<EOF

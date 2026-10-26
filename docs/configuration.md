@@ -10,7 +10,14 @@ write three things there, all optional:
 
 postui writes there too: a `[projects]` table in `config.toml` (the projects
 you've opened, and the last one), and `ui.toml` (which commands you use most,
-for the palette's order, and the command-line history). Leave those to postui.
+for the palette's order, and the command-line history). Leave those to postui,
+except one key: `root` in `[projects]` is the folder the new-project prompt and
+the folder browser start in (`~/postui-projects` when unset).
+
+```toml
+[projects]
+root = "~/code/apis"
+```
 
 The quickest way in is the **Settings** tab of the Manage screen (`alt+r`). Its
 rows change the common settings directly, and its Edit… buttons open
