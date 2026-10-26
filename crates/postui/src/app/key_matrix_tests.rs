@@ -80,7 +80,10 @@ enum Expect {
     SidebarSel(&'static str),
     /// The sidebar cursor is on this folder row.
     SidebarFolderSel(&'static str),
+    /// The table cursor is on request row `n`.
     TableRow(usize),
+    /// The table cursor is on the `+ Add` row.
+    TableAdd,
     /// 0 the name cell, 1 the value cell.
     TableCol(usize),
     TableLen(usize),
@@ -405,8 +408,8 @@ const CASES: &[Case] = &[
     vim("X.verbs", SidebarThree, ":man", &[PalettePinned("manage")]),
     vim("X.verbs", SidebarThree, ":man<CR>", &[NoModal, ScreenIs(Screen::Manage)]),
     vim("X.verbs", SidebarThree, ":new<CR>", &[PromptOpen]),
-    vim("X.verbs", TableThreeHeaders, ":new<CR>", &[TableRow(3), FieldLive(true), Mode("INSERT")]),
-    vim("X.verbs", TableThreeHeaders, "i<Esc>:new<CR>", &[TableRow(3), FieldLive(true), Mode("INSERT")]),
+    vim("X.verbs", TableThreeHeaders, ":new<CR>", &[TableAdd, FieldLive(true), Mode("INSERT")]),
+    vim("X.verbs", TableThreeHeaders, "i<Esc>:new<CR>", &[TableAdd, FieldLive(true), Mode("INSERT")]),
     vim("X.verbs", VarGrid, ":new<CR>", &[FieldLive(true), Mode("INSERT")]),
     vim("X.verbs", SidebarThree, ":rename<CR>", &[PromptOpen]),
     vim_u("X.verbs", TableThreeHeaders, ":delete<CR>", &[TableLen(2), NoModal]),
@@ -689,7 +692,7 @@ pub(super) fn build(f: Fixture) -> App {
             app.editor.preferred_tab = EditorTab::Headers;
             app.focus = PaneId::Editor;
             app.editor.sub_focus = SubFocus::Content;
-            app.editor.table.selected = Some(1);
+            app.editor.table.set_selected(Some(Stop::Row(1)));
             app.capture_undo();
             if matches!(f, TableAfterDelete) {
                 app.update(Action::DeleteTableRow(0));
@@ -832,7 +835,8 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
         SidebarFolderSel(path) => {
             matches!(app.sidebar.selected_key(), Some(crate::components::sidebar::RowKey::Folder(p)) if p == path)
         }
-        TableRow(n) => app.editor.table.selected == Some(n),
+        TableRow(n) => app.editor.table.selected() == Some(Stop::Row(n)),
+        TableAdd => app.editor.table.selected() == Some(Stop::Add),
         TableCol(n) => {
             usize::from(app.editor.table.col == crate::components::table_editor::Col::Value) == n
         }
@@ -929,7 +933,7 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
              vm {:?} {:?} {:?}, detail {:?} {:?}, echo {:?}, mode {:?}, toasts {:?})",
             app.surface(),
             app.sidebar.selected_slug(),
-            app.editor.table.selected,
+            app.editor.table.selected(),
             app.editor.sub_focus,
             app.varmanager.focus,
             app.varmanager.grid.cursor,

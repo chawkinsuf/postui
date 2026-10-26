@@ -701,7 +701,7 @@ fn undo_leaves_focus_alone_when_the_stored_caret_is_in_an_unchanged_field() {
     // disabled.
     app.editor.sub_focus = SubFocus::Content;
     app.editor.active_tab = EditorTab::Headers;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     app.editor.headers.get_mut("accept").unwrap().enabled = false;
     assert!(app.capture_undo(), "the toggle records a step");
     app.update(Action::Undo);
@@ -712,7 +712,7 @@ fn undo_leaves_focus_alone_when_the_stored_caret_is_in_an_unchanged_field() {
         "the URL did not change, so undo must not select it"
     );
     assert_eq!(app.editor.active_tab, EditorTab::Headers);
-    assert_eq!(app.editor.table.selected, Some(0), "the toggled row stays selected");
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "the toggled row stays selected");
     app.update(Action::Redo);
     assert!(!app.editor.headers["accept"].enabled, "redo disables it again");
     assert_eq!(app.editor.sub_focus, SubFocus::Content, "redo keeps focus too");
@@ -981,7 +981,7 @@ fn deleting_a_table_row_by_key_is_immediate() {
         .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Content;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
 
     app.handle_key(plain('d'));
     assert!(app.modals.top().is_none(), "delete is undoable, no confirm");
@@ -999,7 +999,7 @@ fn deleting_a_vars_row_by_key_is_immediate() {
         .insert("token".into(), postui_core::model::Entry { value: "abc".into(), enabled: true });
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Content;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
 
     app.handle_key(plain('d'));
     assert!(app.modals.top().is_none(), "delete is undoable, no confirm");
@@ -1017,7 +1017,7 @@ fn table_row_context_menu_duplicate_delete_extract_end_to_end() {
     app.focus = PaneId::Editor;
     app.editor.active_tab = EditorTab::Params;
     app.editor.sub_focus = SubFocus::Content;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     render_once(&mut app);
     let r = app
         .hits
@@ -1056,7 +1056,7 @@ fn table_row_context_menu_duplicate_delete_extract_end_to_end() {
 
     // "Extract value to variable…": the row is only *selected*, not under
     // edit, yet the prompt still opens against its Value cell's text.
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     app.editor.table.editing = None;
     app.update(extract);
     let Some(Modal::MultiPrompt { kind, .. }) = app.modals.top() else {
@@ -1071,7 +1071,7 @@ fn table_row_context_menu_duplicate_delete_extract_end_to_end() {
     assert_eq!(app.editor.params["page"].value, "{{page_num}}");
 
     // "Delete param": the same immediate delete the `d` key runs.
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     app.update(delete);
     assert!(app.modals.is_empty(), "delete is undoable, no confirm");
     assert!(!app.editor.params.contains_key("page"));
@@ -1286,7 +1286,7 @@ fn undo_restores_a_deleted_table_row() {
         .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Content;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     app.capture_undo(); // seed the shadow before the delete
     app.handle_key(plain('d'));
     assert!(app.editor.params.is_empty());
@@ -1310,18 +1310,25 @@ fn undoing_a_table_row_delete_selects_the_restored_row() {
     app.editor.preferred_tab = EditorTab::Headers;
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Content;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     app.capture_undo(); // seed the shadow before the delete
     app.update(Action::DeleteTableRow(0));
     app.capture_undo();
+    let Some(Stop::Row(row)) = app.editor.table.selected() else {
+        panic!("the delete leaves the cursor on a row: {:?}", app.editor.table.selected())
+    };
     assert_eq!(
-        app.editor.table_key_at(app.editor.table.selected.unwrap()),
+        app.editor.table_key_at(row),
         Some("X-Debug".into()),
         "the delete leaves the cursor on the neighbour"
     );
     app.update(Action::Undo);
     assert_eq!(app.editor.headers.len(), 2, "undo brings the row back");
-    assert_eq!(app.editor.table.selected, Some(0), "the cursor lands on the restored Accept row");
+    assert_eq!(
+        app.editor.table.selected(),
+        Some(Stop::Row(0)),
+        "the cursor lands on the restored Accept row"
+    );
     assert_eq!(app.focus, PaneId::Editor, "focus never moves");
     assert_eq!(app.editor.sub_focus, SubFocus::Content);
 }
@@ -1394,9 +1401,9 @@ fn ctrl_d_pages_the_table_editor_through_the_router() {
     }
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Content;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     app.handle_key(ctrl('d'));
-    assert_ne!(app.editor.table.selected, Some(0), "ctrl+d must move the selection");
+    assert_ne!(app.editor.table.selected(), Some(Stop::Row(0)), "ctrl+d must move the selection");
 }
 
 #[test]
@@ -1406,7 +1413,7 @@ fn clicking_the_row_delete_affordance_deletes_the_row() {
     app.editor
         .params
         .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     render_once(&mut app);
     let del =
         app.hits.rect_of(&Hit::TableDelete(0)).expect("delete affordance on the selected row");
@@ -1912,7 +1919,7 @@ fn selected_row_footer_chips_come_and_go_with_the_selection() {
         "nothing selected: no row chips"
     );
 
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     render_once(&mut app);
     assert!(app.hits.rect_of(&Hit::FooterChip(Action::ToggleTableRow(0))).is_some());
     assert!(app.hits.rect_of(&Hit::FooterChip(Action::DeleteTableRow(0))).is_some());
@@ -2249,7 +2256,7 @@ fn esc_mid_edit_commits_the_cell_and_keeps_the_row_selected() {
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.editor.table.editing.is_none());
     assert_eq!(app.editor.params["page"].value, "1999", "Esc keeps the text");
-    assert_eq!(app.editor.table.selected, Some(0), "…and stays on the row");
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "…and stays on the row");
     app.capture_undo();
     app.update(Action::Undo);
     assert_eq!(app.editor.params["page"].value, "1", "discard is undo");
@@ -3121,19 +3128,19 @@ fn clicking_elsewhere_in_the_app_clears_the_table_selection() {
     app.editor
         .params
         .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     render_once(&mut app);
     // Click into the sidebar pane background.
     let sidebar = app.hits.rect_of(&Hit::Pane(PaneId::Sidebar)).unwrap();
     app.handle_mouse(left_down(sidebar.x + 1, sidebar.y + sidebar.height - 2));
-    assert_eq!(app.editor.table.selected, None, "clicking another pane clears the selection");
+    assert_eq!(app.editor.table.selected(), None, "clicking another pane clears the selection");
 
     // Same for the URL bar.
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     render_once(&mut app);
     let url = app.editor.last_url_text_area.unwrap();
     app.handle_mouse(left_down(url.x + 1, url.y));
-    assert_eq!(app.editor.table.selected, None);
+    assert_eq!(app.editor.table.selected(), None);
 }
 
 #[test]
@@ -3805,7 +3812,7 @@ fn clicking_the_row_toggle_toggles_without_selecting() {
         .expect("hovered row registers its toggle");
     app.handle_mouse(left_down(toggle.x + 1, toggle.y));
     assert!(!app.editor.params["a"].enabled, "the click toggled");
-    assert_eq!(app.editor.table.selected, None, "a toggle click is not a row selection");
+    assert_eq!(app.editor.table.selected(), None, "a toggle click is not a row selection");
 }
 
 /// An app whose editor holds typed-but-never-saved content: no slug, no
@@ -8257,7 +8264,7 @@ fn stale_table_edit_does_not_capture_insert_var_text_after_focus_moves() {
         .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
     app.editor.active_tab = EditorTab::Params;
     app.editor.sub_focus = SubFocus::Content;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     app.editor.table.begin_edit_selected(&app.editor.params.clone());
 
     // The jump commits the cell it leaves (spec 2026-10-19 R1), so there
@@ -9872,7 +9879,8 @@ fn click_table_checkbox_toggles_enabled() {
     hover_row_then_click(&mut app, Hit::TableRow(0), Hit::TableCheckbox(0));
     assert!(!app.editor.params["page"].enabled);
     assert_eq!(
-        app.editor.table.selected, None,
+        app.editor.table.selected(),
+        None,
         "a toggle click toggles — it never selects the row"
     );
     assert_eq!(app.focus, PaneId::Editor);
@@ -14430,7 +14438,7 @@ fn focus_header_value_cell(app: &mut App) {
     app.editor.active_tab = EditorTab::Headers;
     app.editor.sub_focus = SubFocus::Content;
     app.focus = PaneId::Editor;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     let map = app.editor.headers.clone();
     app.editor.table.begin_edit_selected(&map);
     app.editor.table.handle_key(tab_key(), &mut app.editor.headers);
@@ -15300,6 +15308,279 @@ fn the_auto_header_pencil_adds_it_to_the_request_with_its_value_open() {
     assert_eq!(app.hits.rect_of(&Hit::AutoHeaderOverride(i)), None, "so it has no pencil");
 }
 
+/// A scratch Headers tab whose auto rows are the client's `Accept` (with
+/// the pencil) and `Host` (without), the editor's content focused on
+/// `+ Add` (stop 0, the table being empty), drawn once.
+fn auto_rows_app(profile: crate::config::KeyProfile) -> App {
+    let mut app = App::new_for_test();
+    app.use_profile(profile);
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536));
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.url = LineInput::new("https://example.com/foo");
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.set_selected(Some(Stop::Add));
+    render_once(&mut app);
+    let names: Vec<_> = app.editor.computed.rows.iter().map(|r| r.header.name.as_str()).collect();
+    assert_eq!(names, ["Accept", "Host"]);
+    app
+}
+
+fn footer_labels(app: &App) -> Vec<String> {
+    crate::ui::footer_chips_of(app).into_iter().map(|(_, l, _)| l).collect()
+}
+
+/// Spec 2026-10-25 S11 and S14–S17 (task #56), arrows: ↓ from `+ Add`
+/// goes onto the auto rows; the footer offers the row's copy and, where
+/// it has the pencil, its take-over; `y` copies, Enter takes it over. On
+/// `Host` there is no pencil: Enter does nothing.
+#[test]
+fn the_keyboard_reaches_the_auto_rows_and_their_pills() {
+    let mut app = auto_rows_app(crate::config::KeyProfile::Arrows);
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.editor.auto_row_cursor(), Some(0), "on Accept");
+    let labels = footer_labels(&app);
+    assert!(labels.iter().any(|l| l == "copy"), "{labels:?}");
+    assert!(labels.iter().any(|l| l == "edit"), "{labels:?}");
+    assert!(!labels.iter().any(|l| l == "delete"), "{labels:?}");
+    press(&mut app, 'y');
+    assert!(rendered_text(&mut app).contains("Copied Accept"), "the toast confirms the copy");
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.editor.auto_row_cursor(), Some(1), "on Host");
+    let labels = footer_labels(&app);
+    assert!(labels.iter().any(|l| l == "copy"), "{labels:?}");
+    assert!(!labels.iter().any(|l| l == "edit"), "no pencil, no chip: {labels:?}");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.editor.headers.is_empty(), "nothing to take over");
+    assert!(app.editor.table.editing.is_none(), "no cell opens on an auto row");
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.editor.auto_row_cursor(), Some(1), "Host is the last stop");
+
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.editor.headers.get("Accept").map(|e| e.value.as_str()), Some("*/*"));
+    let edit = app.editor.table.editing.as_ref().expect("the new row's value is open");
+    assert_eq!((edit.row, edit.col), (0, crate::components::table_editor::Col::Value));
+}
+
+/// A click on the copy pill or the reveal toggle of the auto section is a
+/// side action, not a click away: a cursor on an auto row stays there.
+#[test]
+fn an_auto_pill_click_keeps_the_cursor_on_its_auto_row() {
+    let mut app = auto_rows_app(crate::config::KeyProfile::Arrows);
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.editor.table.selected(), Some(Stop::Section(0)));
+    click_hit(&mut app, Hit::AutoHeaderCopy(0));
+    assert_eq!(app.editor.table.selected(), Some(Stop::Section(0)), "the copy pill keeps it");
+}
+
+/// Keeping the cursor is not keeping an open cell: a click on an auto pill
+/// still commits the cell being typed in, as on main, so its typing is
+/// never left open behind the click (and the copy pill never copies past
+/// it). The cursor stays on the cell's row.
+#[test]
+fn an_auto_pill_click_commits_an_open_cell_and_keeps_its_row() {
+    for hit in [Hit::AutoHeaderCopy(1), Hit::AutoHeaderReveal] {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536));
+        // A default header naming a secret puts a masked row in the
+        // section, so the reveal toggle is drawn.
+        app.update(Action::VarEdit(VarEditOp::SetSecretValue {
+            env: "qa".into(),
+            name: "api_key".into(),
+            value: "sk-live-abc123".into(),
+        }));
+        set_default_header(&mut app, "Authorization", "Bearer {{api_key}}");
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor
+            .headers
+            .insert("X-One".into(), postui_core::model::Entry { value: "a".into(), enabled: true });
+        app.focus = PaneId::Editor;
+        click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+        type_chars(&mut app, "b");
+        assert!(app.editor.table.editing.is_some(), "{hit:?}: the cell is open");
+        click_hit(&mut app, hit.clone());
+        assert!(app.editor.table.editing.is_none(), "{hit:?}: the click closes the cell");
+        assert_eq!(app.editor.headers["X-One"].value, "ab", "{hit:?}: its typing is committed");
+        assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "{hit:?}: the cursor stays");
+    }
+}
+
+/// The same in the vim profile: `j` moves, `yy` copies, Enter takes the
+/// row over (its value opening in Insert, as the pencil's does).
+#[test]
+fn the_vim_keys_reach_the_auto_rows_and_their_pills() {
+    let mut app = auto_rows_app(crate::config::KeyProfile::Vim);
+    press(&mut app, 'j');
+    assert_eq!(app.editor.auto_row_cursor(), Some(0), "on Accept");
+    press(&mut app, 'y');
+    press(&mut app, 'y');
+    assert!(rendered_text(&mut app).contains("Copied Accept"), "the toast confirms the copy");
+    press(&mut app, 'G');
+    assert_eq!(app.editor.auto_row_cursor(), Some(1), "G is the last auto row");
+    press(&mut app, 'k');
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+    assert!(app.editor.headers.contains_key("Accept"));
+}
+
+/// A count reaches the auto rows too: the table's count cap counts every
+/// stop, the section's included.
+#[test]
+fn a_vim_count_reaches_the_last_auto_row() {
+    let mut app = auto_rows_app(crate::config::KeyProfile::Vim);
+    app.editor
+        .headers
+        .insert("X-A".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    render_once(&mut app);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
+    // Stops: X-A, + Add, Accept, Host.
+    press(&mut app, '3');
+    press(&mut app, 'j');
+    assert_eq!(app.editor.auto_row_cursor(), Some(1), "3j from row 0 lands on Host");
+}
+
+/// S3 and S4 (task #56): on a pane too short for its rows, the wheel and
+/// the editor's scrollbar move the Headers tab's view.
+#[test]
+fn the_wheel_and_the_thumb_scroll_a_long_headers_tab() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.url = LineInput::new("https://example.com/foo");
+    for i in 0..30 {
+        app.editor.headers.insert(
+            format!("X-{i}"),
+            postui_core::model::Entry { value: "1".into(), enabled: true },
+        );
+    }
+    render_once(&mut app);
+    let spec = app.scrollbar_spec(PaneId::Editor).expect("the tab reports its scroll");
+    assert!(spec.overflows(), "{spec:?}");
+    assert!(app.update(Action::ScrollPane(PaneId::Editor, 3)));
+    assert_eq!(app.editor.table.scroll, 3);
+    app.update(Action::ScrollPane(PaneId::Editor, -3));
+    render_once(&mut app);
+
+    let thumb = app.hits.rect_of(&Hit::ScrollbarThumb(PaneId::Editor)).expect("the editor's thumb");
+    assert!(app.handle_mouse(left_down(thumb.x, thumb.y)));
+    assert!(app.handle_mouse(dragged(thumb.x, thumb.y + 2)));
+    assert!(app.editor.table.scroll > 0, "the drag scrolled the tab");
+    app.handle_mouse(left_up(thumb.x, thumb.y + 2));
+}
+
+/// S23 (task #56): the arrows wheel scrolls the table away from its
+/// cursor, and only a cursor move brings the view back: the pointer, keys
+/// to another pane or the URL line, `y` and a toggle click leave it; ↓ and
+/// a click on another row bring it back.
+#[test]
+fn the_arrows_wheel_scrolls_away_until_the_cursor_moves() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    for i in 0..30 {
+        app.editor.headers.insert(
+            format!("X-{i}"),
+            postui_core::model::Entry { value: "1".into(), enabled: true },
+        );
+    }
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.set_selected(Some(Stop::Row(0)));
+    render_once(&mut app);
+    app.update(Action::ScrollPane(PaneId::Editor, 9));
+    assert!(app.editor.table.scrolled_away());
+    app.handle_mouse(moved(5, 5));
+    render_once(&mut app);
+    assert_eq!(app.editor.table.scroll, 9, "the pointer moving leaves the view");
+    app.focus = PaneId::Response;
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    render_once(&mut app);
+    assert_eq!(app.editor.table.scroll, 9, "a key to another pane leaves it");
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    render_once(&mut app);
+    assert_eq!(app.editor.table.scroll, 9, "so does a key to the URL line");
+    app.editor.sub_focus = SubFocus::Content;
+    app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+    render_once(&mut app);
+    assert_eq!(app.editor.table.scroll, 9, "`y` doesn't move the cursor: the view stays");
+    let toggle = app.hits.rect_of(&Hit::TableCheckbox(12)).expect("a row's toggle in view");
+    app.handle_mouse(left_down(toggle.x + 1, toggle.y));
+    render_once(&mut app);
+    assert_eq!(app.editor.table.scroll, 9, "nor does a toggle click");
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    render_once(&mut app);
+    assert!(!app.editor.table.scrolled_away());
+    assert_eq!(app.editor.table.scroll, 2, "↓ moves the cursor (row 1, line 2): the view follows");
+
+    // A press on the scrollbar keeps the view scrolled away; a click that
+    // puts the cursor on another row brings it back.
+    app.update(Action::ScrollPane(PaneId::Editor, 9));
+    render_once(&mut app);
+    let thumb = app.hits.rect_of(&Hit::ScrollbarThumb(PaneId::Editor)).expect("the thumb");
+    app.handle_mouse(left_down(thumb.x, thumb.y));
+    app.handle_mouse(left_up(thumb.x, thumb.y));
+    assert!(app.editor.table.scrolled_away(), "the bar is the scroll's own control");
+    let cell = app.hits.rect_of(&Hit::TableCell { row: 12, col: 1 }).expect("a row in view");
+    app.handle_mouse(left_down(cell.x + 1, cell.y));
+    assert!(!app.editor.table.scrolled_away(), "a click that moves the cursor clears it");
+}
+
+/// S23: a wheel notch that moves nothing (the content fits) leaves the
+/// view attached, so a pane that shrinks later still keeps the cursor in
+/// sight.
+#[test]
+fn a_wheel_notch_that_moves_nothing_does_not_scroll_the_view_away() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor
+        .headers
+        .insert("X-1".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.set_selected(Some(Stop::Row(0)));
+    render_once(&mut app);
+    app.update(Action::ScrollPane(PaneId::Editor, 3));
+    assert!(!app.editor.table.scrolled_away());
+}
+
+/// The wheel leaves the arrows cursor where it is (S5, the sidebar's
+/// rule); in the vim profile it drags the cursor onto the first stop in
+/// view, as Vim's window does, so no key acts on a row out of sight.
+#[test]
+fn the_wheel_drags_the_table_cursor_into_view_in_vim_only() {
+    for profile in [crate::config::KeyProfile::Arrows, crate::config::KeyProfile::Vim] {
+        let mut app = App::new_for_test();
+        app.use_profile(profile);
+        app.editor.active_tab = EditorTab::Headers;
+        for i in 0..30 {
+            app.editor.headers.insert(
+                format!("X-{i}"),
+                postui_core::model::Entry { value: "1".into(), enabled: true },
+            );
+        }
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Content;
+        app.editor.table.set_selected(Some(Stop::Row(0)));
+        render_once(&mut app);
+        app.update(Action::ScrollPane(PaneId::Editor, 9));
+        let expected = match profile {
+            crate::config::KeyProfile::Vim => Some(Stop::Row(8)), // line 9, the view's top
+            _ => Some(Stop::Row(0)),
+        };
+        assert_eq!(app.editor.table.selected(), expected, "{profile:?}");
+        render_once(&mut app);
+        assert_eq!(
+            app.editor.table.scroll, 9,
+            "{profile:?}: the view stays where the wheel put it"
+        );
+    }
+}
+
 /// The URL's own rows have no pencil (its `Authorization` would write the
 /// URL's credentials into the request file; `Host` is the client's), and
 /// undo takes the pencil's row back out: its value edit first, then the
@@ -15478,9 +15759,13 @@ fn the_table_rows_copy_button_puts_its_value_on_the_clipboard() {
 fn copying_a_row_leaves_the_table_selection_where_it_was() {
     let mut app = app_with_one_param();
     app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536));
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     click_hit(&mut app, Hit::TableCopy(0));
-    assert_eq!(app.editor.table.selected, Some(0), "the row stays selected through a copy");
+    assert_eq!(
+        app.editor.table.selected(),
+        Some(Stop::Row(0)),
+        "the row stays selected through a copy"
+    );
 }
 
 /// A cell edit windows its text, so a value longer than its cell scrolls
@@ -15637,8 +15922,8 @@ fn right_clicking_the_copy_button_opens_the_rows_context_menu() {
     app.handle_mouse(right_down(copy.x + 1, copy.y));
 
     assert_eq!(
-        app.editor.table.selected,
-        Some(0),
+        app.editor.table.selected(),
+        Some(Stop::Row(0)),
         "the click lands the cursor on the row before its menu opens"
     );
     assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "the row's context menu opened");
@@ -16529,7 +16814,7 @@ fn the_quit_chip_shows_ctrl_c_wherever_plain_q_would_type() {
     assert!(content.contains("q  quit"), "{content}");
     app.editor.sub_focus = crate::components::editor::SubFocus::Content;
     app.editor.active_tab = crate::components::editor::EditorTab::Headers;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Add));
     let content = rendered_text(&mut app);
     assert!(content.contains("q  quit"), "{content}");
     // The URL line and the body editor type it.
@@ -18621,12 +18906,12 @@ mod undo_tests {
         for (k, v) in [("a", "1"), ("b", "2")] {
             app.editor.params.insert(k.into(), Entry { value: v.into(), enabled: true });
         }
-        app.editor.table.selected = Some(1); // key "b"
+        app.editor.table.set_selected(Some(Stop::Row(1))); // key "b"
         let pos = app.editor.caret();
         assert_eq!(pos, Caret::Cell { row: 1, key: Some("b".into()) });
         app.editor.params.shift_remove("a"); // "b" is now index 0
         app.editor.restore_caret(&pos);
-        assert_eq!(app.editor.table.selected, Some(0));
+        assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)));
     }
 
     /// A row the swap removed (undoing its add) leaves the cursor at the
@@ -18638,11 +18923,11 @@ mod undo_tests {
         app.editor.active_tab = EditorTab::Params;
         app.editor.sub_focus = SubFocus::Content;
         app.editor.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
-        app.editor.table.selected = Some(0);
+        app.editor.table.set_selected(Some(Stop::Row(0)));
         let pos = app.editor.caret();
         app.editor.params.clear();
         app.editor.restore_caret(&pos);
-        assert_eq!(app.editor.table.selected, Some(0), "the ghost row");
+        assert_eq!(app.editor.table.selected(), Some(Stop::Add), "the ghost row");
     }
 
     /// Ruling 2026-09-18: undo/redo never move focus — the same as the
@@ -18667,7 +18952,7 @@ mod undo_tests {
         app.editor.sub_focus = SubFocus::Content;
         app.editor.active_tab = EditorTab::Headers;
         app.editor.preferred_tab = EditorTab::Headers;
-        app.editor.table.selected = Some(0);
+        app.editor.table.set_selected(Some(Stop::Row(0)));
         app.editor.table.col = Col::Value;
         app.capture_undo();
         app.focus = PaneId::Sidebar;
@@ -18676,13 +18961,13 @@ mod undo_tests {
         assert_eq!(app.focus, PaneId::Sidebar, "the pane focus stays put");
         assert_eq!(app.editor.sub_focus, SubFocus::Content, "the table stays focused");
         assert_eq!(app.editor.active_tab, EditorTab::Headers);
-        assert_eq!(app.editor.table.selected, Some(0), "same row");
+        assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "same row");
         assert_eq!(app.editor.table.col, Col::Value, "same cell");
         assert!(app.editor.table.editing.is_none());
         app.update(Action::Redo);
         assert_eq!(app.editor.url.text(), "http");
         assert_eq!(app.editor.sub_focus, SubFocus::Content, "redo keeps focus too");
-        assert_eq!(app.editor.table.selected, Some(0));
+        assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)));
     }
 
     /// Undoing a value-cell edit after ← moved the cursor to the name cell
@@ -18696,7 +18981,7 @@ mod undo_tests {
         app.editor.active_tab = EditorTab::Params;
         app.editor.preferred_tab = EditorTab::Params;
         app.editor.sub_focus = SubFocus::Content;
-        app.editor.table.selected = Some(0);
+        app.editor.table.set_selected(Some(Stop::Row(0)));
         app.editor.table.col = Col::Value;
         app.capture_undo(); // seed shadow
         app.focus = PaneId::Editor;
@@ -18710,7 +18995,7 @@ mod undo_tests {
         app.capture_undo();
         app.update(Action::Undo);
         assert_eq!(app.editor.params["a"].value, "1");
-        assert_eq!(app.editor.table.selected, Some(0), "same row");
+        assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "same row");
         assert_eq!(app.editor.table.col, Col::Key, "the cursor stays on the name cell");
         assert!(app.editor.table.editing.is_none(), "nothing reopened");
     }
@@ -20386,14 +20671,14 @@ mod undo_tests {
         app.editor
             .params
             .insert("page".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
-        app.editor.table.selected = Some(0);
+        app.editor.table.set_selected(Some(Stop::Row(0)));
         app.update(Action::ApplyTheme("dark".into()));
         app.update(Action::OpenThemeChooser);
         click_hit(&mut app, Hit::ChooserStepUp);
         assert_eq!(app.theme_contrast.level(), 1);
-        assert_eq!(app.editor.table.selected, Some(0), "the step kept the selection");
+        assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "the step kept the selection");
         click_hit(&mut app, Hit::ChooserToggle);
-        assert_eq!(app.editor.table.selected, Some(0), "as the toggle does");
+        assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "as the toggle does");
     }
 
     /// The `-`/`+` keys belong to the theme picker alone: any other
@@ -21295,7 +21580,7 @@ mod undo_tests {
             app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(),
             ["a", "a-copy", "a-copy-2", "a-copy-3", "b"]
         );
-        assert_eq!(app.editor.table.selected, Some(1));
+        assert_eq!(app.editor.table.selected(), Some(Stop::Row(1)));
         app.update(Action::Undo);
         assert_eq!(app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(), ["a", "b"]);
     }
@@ -21397,7 +21682,7 @@ mod undo_tests {
             app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(),
             ["a", "a-copy", "b"]
         );
-        assert_eq!(app.editor.table.selected, Some(1));
+        assert_eq!(app.editor.table.selected(), Some(Stop::Row(1)));
         app.update(Action::Undo);
         assert_eq!(app.editor.headers.keys().map(String::as_str).collect::<Vec<_>>(), ["a", "b"]);
         app.editor.active_tab = EditorTab::Params;
@@ -21542,7 +21827,7 @@ fn right_click_on_the_edited_table_cell_offers_the_text_menu_and_keeps_the_edit_
     app.focus = PaneId::Editor;
     app.editor.active_tab = EditorTab::Params;
     app.editor.sub_focus = SubFocus::Content;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     let mut input = crate::components::line_input::LineInput::new("page");
     input.select_all();
     app.editor.table.editing = Some(CellEdit { row: 0, col: Col::Key, input });
@@ -21581,7 +21866,7 @@ fn right_click_elsewhere_on_the_row_keeps_the_row_menu_and_commits_the_edit() {
     app.focus = PaneId::Editor;
     app.editor.active_tab = EditorTab::Params;
     app.editor.sub_focus = SubFocus::Content;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     app.editor.table.editing = Some(CellEdit {
         row: 0,
         col: Col::Key,
@@ -21826,7 +22111,7 @@ fn extracting_a_table_cell_selection_replaces_the_part_and_commits_the_cell() {
     app.focus = PaneId::Editor;
     app.editor.active_tab = EditorTab::Headers;
     app.editor.sub_focus = SubFocus::Content;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     let mut input = crate::components::line_input::LineInput::new("Bearer abc");
     input.set_cursor(7);
     input.begin_mouse_selection();
@@ -22220,7 +22505,7 @@ fn row_menu_extract_value_to_selector_promotes_the_row_and_replaces_the_cell() {
     app.focus = PaneId::Editor;
     app.editor.active_tab = EditorTab::Params;
     app.editor.sub_focus = SubFocus::Content;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     render_once(&mut app);
     let r = app
         .hits
@@ -23736,7 +24021,7 @@ fn opening_the_views_menu_closes_an_open_cell_first() {
     app.focus = PaneId::Editor;
     app.editor.active_tab = EditorTab::Params;
     app.editor.sub_focus = SubFocus::Content;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     app.editor.table.begin_edit_selected(&app.editor.params.clone());
     app.update(Action::OpenJqViews);
     assert!(app.editor.table.editing.is_none(), "the cell closed, saved");
@@ -23755,7 +24040,7 @@ fn a_landing_on_a_view_leaves_a_cell_being_typed_in_open() {
     app.focus = PaneId::Editor;
     app.editor.active_tab = EditorTab::Params;
     app.editor.sub_focus = SubFocus::Content;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     app.editor.table.begin_edit_selected(&app.editor.params.clone());
     assert!(app.editor.table.editing.is_some());
     app.update(Action::JqApply(".data.total".into()));
@@ -25216,10 +25501,10 @@ fn save_as_keeps_the_row_selection() {
     app.editor
         .params
         .insert("a".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     app.update(Action::SaveRequestAs("copy".into()));
     assert_eq!(app.editor.slug.as_deref(), Some("main/copy"));
-    assert_eq!(app.editor.table.selected, Some(0));
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)));
 }
 
 #[test]
@@ -26809,7 +27094,8 @@ fn tooltip_pill_click_keeps_the_table_edit_and_selection() {
     click_hit(&mut app, Hit::TipCopy("base_url".into()));
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
     assert!(app.editor.table.editing.is_some(), "the edit survives the copy");
-    assert_eq!(app.editor.table.selected, Some(0), "so does the selection");
+    // The scratch request has no params: the edit is the + Add row's.
+    assert_eq!(app.editor.table.selected(), Some(Stop::Add), "so does the selection");
 }
 
 /// A right click on a row the tooltip floats over reaches the row: the
@@ -28462,7 +28748,7 @@ fn footer_chip_hints_describe_the_action() {
 
     let mut app = app_with_one_param();
     app.editor.sub_focus = SubFocus::Content;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     render_once(&mut app);
     let del = app.hits.rect_of(&Hit::FooterChip(Action::DeleteTableRow(0))).unwrap();
     app.handle_mouse(moved(del.x, del.y));
@@ -30820,7 +31106,7 @@ fn a_refused_manager_close_still_closes_the_other_inputs() {
         .params
         .insert("page".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
     app.editor.active_tab = EditorTab::Params;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     let params = app.editor.params.clone();
     app.editor.table.begin_edit_selected(&params);
     assert!(app.editor.table.editing.is_some(), "the cell is open");
@@ -31560,7 +31846,8 @@ fn a_repeat_stops_when_the_surface_changes() {
     app.handle_key(plain('j'));
     assert_eq!(app.editor.sub_focus, SubFocus::Content);
     assert_eq!(
-        app.editor.table.selected, twin.editor.table.selected,
+        app.editor.table.selected(),
+        twin.editor.table.selected(),
         "the replays stopped where the first Down entered the table"
     );
 }
@@ -31850,7 +32137,7 @@ fn the_vim_aliases_left_the_arrows_profile() {
 
     let mut table = app_with_three_params();
     table.editor.sub_focus = SubFocus::Content;
-    table.editor.table.selected = Some(0);
+    table.editor.table.set_selected(Some(Stop::Row(0)));
     table.handle_key(plain('i'));
     assert!(table.editor.table.editing.is_none(), "arrows: i no longer opens a cell");
     table.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -32467,7 +32754,7 @@ fn delete_table_rows_deletes_a_run_as_one_editor_step() {
     app.editor.active_tab = EditorTab::Headers;
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Content;
-    app.editor.table.selected = Some(1);
+    app.editor.table.set_selected(Some(Stop::Row(1)));
     app.capture_undo();
     app.update(Action::DeleteTableRows { start: 1, count: 2 });
     app.capture_undo();
@@ -32528,7 +32815,7 @@ fn three_header_app() -> App {
     app.editor.active_tab = EditorTab::Headers;
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Content;
-    app.editor.table.selected = Some(1);
+    app.editor.table.set_selected(Some(Stop::Row(1)));
     app.capture_undo();
     app
 }
@@ -32578,7 +32865,7 @@ fn delete_on_a_folder_or_the_add_row_does_nothing() {
     assert_eq!(app.selection_action(Surface::Sidebar, Verb::Delete { count: 1 }), None);
     assert_eq!(app.selection_action(Surface::Sidebar, Verb::Delete { count: 3 }), None);
     let mut table = three_header_app();
-    table.editor.table.selected = Some(3);
+    table.editor.table.set_selected(Some(Stop::Add));
     let s = Surface::Table(EditorTab::Headers);
     assert_eq!(table.selection_action(s, Verb::Delete { count: 1 }), None, "the add row");
     assert_eq!(table.selection_action(s, Verb::Yank), None);

@@ -38,6 +38,16 @@ pub enum JqBarState {
     Describing,
 }
 
+/// The stop under the focused table's cursor, for the chips naming its
+/// keys: an editable row (its toggle and delete), or an auto row of the
+/// Headers tab's section (copy, and the pencil's take-over where the row
+/// has one; spec 2026-10-25 S16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableCursor {
+    Row { index: usize, enabled: bool },
+    Auto { index: usize, pencil: bool },
+}
+
 /// The context-sensitive chips for the focused pane. Each entry is `(key,
 /// label, action)`, the key a [`Key`] kind that `draw_footer` spells for
 /// the active profile; `None` actions render as plain (unregistered, muted)
@@ -66,9 +76,10 @@ pub(crate) fn footer_chips(
     // dispatched").
     url_selected: bool,
     // A data row of the active table is selected (content focus, no cell
-    // edit live): advertise its toggle/delete keys. `(index, enabled)` —
-    // the toggle chip names the state change it would make.
-    table_row_selected: Option<(usize, bool)>,
+    // edit live): advertise its toggle/delete keys, the toggle chip naming
+    // the state change it would make. On an auto row, its copy and
+    // take-over keys instead.
+    table_row_selected: Option<TableCursor>,
     // The response pane's jq bar: focused swaps the chip set for the bar's
     // own (apply/cancel/unfilter/describe); open adds the `close` chip.
     jq_bar: JqBarState,
@@ -188,20 +199,46 @@ pub(crate) fn footer_chips(
                     ),
                 );
             }
-            if let Some((i, enabled)) = table_row_selected {
-                // Keyboard twins of the expanded row's ● toggle and 󰆴
-                // delete buttons; the ␣ keycap keeps the row narrow.
-                let toggle_label = if enabled { "disable" } else { "enable" };
-                let pos = chips.len() - 2; // before vars + tabs
-                chips.insert(pos, (Key::Named("␣"), toggle_label, Some(Action::ToggleTableRow(i))));
-                chips.insert(
-                    pos + 1,
-                    (
-                        Key::Of(Action::OnSelection(Verb::Delete { count: 1 })),
-                        "delete",
-                        Some(Action::DeleteTableRow(i)),
-                    ),
-                );
+            let pos = chips.len() - 2; // before vars + tabs
+            match table_row_selected {
+                Some(TableCursor::Row { index: i, enabled }) => {
+                    // Keyboard twins of the expanded row's ● toggle and 󰆴
+                    // delete buttons; the ␣ keycap keeps the row narrow.
+                    let toggle_label = if enabled { "disable" } else { "enable" };
+                    chips.insert(
+                        pos,
+                        (Key::Named("␣"), toggle_label, Some(Action::ToggleTableRow(i))),
+                    );
+                    chips.insert(
+                        pos + 1,
+                        (
+                            Key::Of(Action::OnSelection(Verb::Delete { count: 1 })),
+                            "delete",
+                            Some(Action::DeleteTableRow(i)),
+                        ),
+                    );
+                }
+                Some(TableCursor::Auto { index: i, pencil }) => {
+                    // Keyboard twins of the auto row's copy pill and, where
+                    // it has one, its 󰏫 pencil (spec 2026-10-25 S14–S16).
+                    chips.insert(
+                        pos,
+                        (
+                            Key::Of(Action::OnSelection(Verb::Yank)),
+                            "copy",
+                            Some(Action::CopyToClipboard(
+                                crate::action::CopyTarget::ComputedHeader(i),
+                            )),
+                        ),
+                    );
+                    if pencil {
+                        chips.insert(
+                            pos + 1,
+                            (Key::Named("enter"), "edit", Some(Action::OverrideAutoHeader(i))),
+                        );
+                    }
+                }
+                None => {}
             }
             if field_open {
                 // Inserted last so the row/address-bar chips above land
@@ -356,8 +393,8 @@ pub fn draw_footer(
     url_focused: bool,
     // See `footer_chips`: precisely the URL line, selected (not open).
     url_selected: bool,
-    // See `footer_chips`: a data row of the active table is selected.
-    table_row_selected: Option<(usize, bool)>,
+    // See `footer_chips`: the stop under the active table's cursor.
+    table_row_selected: Option<TableCursor>,
     // See `footer_chips`: where the response pane's jq bar is.
     jq_bar: JqBarState,
     // See `footer_chips`: this pane's own text field owns the caret, so
@@ -709,7 +746,7 @@ mod tests {
                 add_row_label,
                 url_focused,
                 url_selected,
-                table_row_selected,
+                table_row_selected.map(|(index, enabled)| TableCursor::Row { index, enabled }),
                 jq_bar,
                 field_open,
             ),

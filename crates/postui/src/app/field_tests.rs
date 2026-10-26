@@ -61,11 +61,13 @@ fn esc_on_a_closed_url_line_method_or_table_stays_put() {
     assert_eq!(app.editor.sub_focus, SubFocus::Method, "the method badge stays selected");
     feed(&mut app, "j");
     assert_eq!(app.editor.sub_focus, SubFocus::Content);
-    let row = app.editor.table.selected.expect("j lands on a row");
+    let Some(Stop::Row(row)) = app.editor.table.selected() else {
+        panic!("j lands on a row: {:?}", app.editor.table.selected())
+    };
     feed(&mut app, "<Esc>");
-    assert_eq!(app.editor.table.selected, Some(row), "the table row stays selected");
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(row)), "the table row stays selected");
     feed(&mut app, "k");
-    assert_eq!(app.editor.table.selected, Some(row - 1), "and k goes on from it");
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(row - 1)), "and k goes on from it");
 }
 
 /// Vim's `cc`, `S` and `C` on the closed URL line change it as on an open
@@ -183,7 +185,7 @@ fn j_in_an_open_cell_commits_it_and_moves_down() {
     let mut app = vim(Fixture::TableThreeHeaders);
     feed(&mut app, "l<CR>A9<Esc>j");
     assert_eq!(header(&app, "b").as_deref(), Some("29"));
-    assert_eq!(app.editor.table.selected, Some(2));
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(2)));
     assert!(!app.field_caret().is_live());
 }
 

@@ -7,7 +7,8 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] #99 A failed landing after a project switch keeps the old project's request (merged 2026-10-25: lands on an empty scratch)
 - [x] #29 `$EDITOR` round-trip drops a body's trailing newline (merged 2026-10-25, design B)
 - [x] #68 A value typed on the + Add row is lost at quit (merged 2026-10-25: the value cell opens the name)
-- [ ] #56 Editor Headers tab can't scroll, so header rows and project defaults can be unreachable
+- [x] #56 Editor Headers tab can't scroll, so header rows and project defaults can be unreachable (squash-merged 2026-10-26; full history tag `headers-tab-scroll-history`)
+- [ ] #121 Undo of a row add doesn't put the table cursor back where it was (found during #56; pre-existing)
 - [x] #97 Header strike-through carries into the method dropdown (merged 2026-10-25: a filled panel clears the page's modifiers)
 - [ ] #105 Eight more palette rows with a default key show no key
 - [ ] #107 Confirm dialogs' button rows overflow narrow terminals
@@ -31,8 +32,8 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] Rust pinned at 1.97.1 (`rust-toolchain.toml`), `rust-version = "1.97"`
 - [x] Cargo metadata (`description`, `license`, `repository`, `homepage`)
 - [x] The GitHub repo is public; the tap repo `chawkinsuf/homebrew-postui` exists
-- [ ] `HOMEBREW_TAP_TOKEN` secret on chawkinsuf/postui (a fine-grained token with Contents: Read and write on `homebrew-postui` only); needed for the first full release, not for an rc
-- [ ] #120 Prerelease `v0.1.1-rc.1`: the first run of CI and the release on GitHub (tagged locally, waiting for #56, then the user pushes `main` and the tag)
+- [x] `HOMEBREW_TAP_TOKEN` secret on chawkinsuf/postui (set by the user 2026-10-25; first used by the first full release)
+- [x] #120 Prerelease `v0.1.1-rc.1`: CI and the whole release ran green on GitHub (Homebrew skipped as a prerelease); the installer installs and runs
 - [ ] macOS: binary is unsigned. The shell installer and Homebrew avoid the quarantine flag; a browser-downloaded tarball needs `xattr -d com.apple.quarantine` (document it)
 - [ ] Decide and document Windows support (likely: unsupported for 0.2)
 - [ ] `postui --version` flag

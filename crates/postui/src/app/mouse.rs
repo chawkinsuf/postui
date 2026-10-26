@@ -589,8 +589,9 @@ impl App {
                         self.move_editor_caret(SubFocus::Content);
                         match self.resolve_table_row_across_commit(i) {
                             Some(resolved) => {
-                                changed |= self.editor.table.selected != Some(resolved);
-                                self.editor.table.selected = Some(resolved);
+                                let stop = Stop::of_row(resolved, self.editor.table_len());
+                                changed |= self.editor.table.selected() != Some(stop);
+                                self.editor.table.set_selected(Some(stop));
                                 menu_hit = Hit::TableRow(resolved);
                             }
                             // The clicked row was a ghost row that just
@@ -943,11 +944,12 @@ impl App {
             PaneId::Editor => {
                 // edtui owns the body's viewport and only exposes moving it
                 // by one wheel notch at a time (which also keeps its cursor
-                // inside the viewport); feed it the difference.
+                // inside the viewport); feed it the difference. A table
+                // tab's view moves by exactly that many lines.
                 let delta =
                     (offset as i64 - spec.offset as i64).clamp(i16::MIN as i64, i16::MAX as i64);
-                self.editor.handle_scroll(delta as i16);
-                self.editor.scrollbar_spec().map(|s| s.offset) != Some(spec.offset)
+                self.scroll_editor(delta as i16);
+                self.editor.view_offset() != spec.offset
             }
         }
     }
@@ -1209,9 +1211,10 @@ impl App {
             // The clicked row is the one that just committed — its key may
             // have changed under us, so take the row the commit resolved to
             // (a discarded ghost row resolves to nothing to act on).
-            Some(r) if r == i => {
-                self.editor.table.selected.filter(|s| *s < self.editor.table_len())
-            }
+            Some(r) if r == i => match self.editor.table.selected() {
+                Some(Stop::Row(row)) => Some(row),
+                _ => None,
+            },
             // Another row committed; that commit may have collapsed rows,
             // so re-resolve by the key `i` named before it ran.
             Some(_) => match key {
@@ -1388,8 +1391,8 @@ impl App {
         // A click anywhere that isn't the params/headers table itself (and
         // isn't in a dialog) is a click away: it commits whatever cell was
         // being edited (typing is never silently thrown away) and clears
-        // the table selection.
-        let keeps_table_selection = in_dialog
+        // the table selection. These are the hits that do neither.
+        let keeps_open_cell = in_dialog
             || matches!(
                 hit,
                 Hit::TableRow(_)
@@ -1417,9 +1420,20 @@ impl App {
             // A press on a window separator moves a divider and nothing
             // else.
             || self.is_separator_press(&hit);
-        if !keeps_table_selection {
+        // Keeping the cursor is a separate question from keeping a cell
+        // open. The auto rows are the table's stops too (task #56): their
+        // copy pill and the section's reveal toggle are side actions, so
+        // they keep the cursor that may be sitting on one, but they are
+        // still a click away for an open cell, which commits first, as on
+        // main. A press on the rest of the section is the bare pane's, as
+        // before.
+        let keeps_table_selection =
+            keeps_open_cell || matches!(hit, Hit::AutoHeaderCopy(_) | Hit::AutoHeaderReveal);
+        if !keeps_open_cell {
             self.commit_table_edit();
-            self.editor.table.selected = None;
+        }
+        if !keeps_table_selection {
+            self.editor.table.set_selected(None);
         }
         // Same rule for the Variable Manager's input, the form field or the
         // grid cell: any click that isn't on the input itself (or the
@@ -1753,7 +1767,8 @@ impl App {
                 let Some(i) = self.resolve_table_row_across_commit(i) else {
                     return self.update(Action::Render);
                 };
-                self.editor.table.selected = Some(i);
+                let len = self.editor.table_len();
+                self.editor.table.set_selected(Some(Stop::of_row(i, len)));
                 self.update(Action::Render)
             }
             // A cell click edits that cell in place, committing whatever

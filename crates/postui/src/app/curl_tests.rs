@@ -1036,12 +1036,12 @@ fn an_unreadable_environment_refuses_before_the_gate_or_the_open() {
 
 #[test]
 fn an_open_cell_lands_before_the_variables_are_sorted() {
-    use crate::components::table_editor::{CellEdit, Col};
+    use crate::components::table_editor::{CellEdit, Col, Stop};
     let mut app = kept_app("export v=9\ncurl -H \"A: $v\" https://x/new");
     app.focus = PaneId::Editor;
     app.editor.active_tab = crate::components::editor::EditorTab::Vars;
     app.editor.sub_focus = crate::components::editor::SubFocus::Content;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     let input = LineInput::new("9");
     app.editor.table.editing = Some(CellEdit { row: 0, col: Col::Value, input });
     replace(&mut app, None);

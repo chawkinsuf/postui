@@ -145,21 +145,109 @@ pub enum RowNote {
     Unsent(&'static str),
 }
 
+/// A stop the table's keyboard cursor sits on (task #56): a request row,
+/// the `+ Add` row under them, or a row of the read-only section the tab
+/// draws under the table (the Headers tab's auto rows, the Vars tab's
+/// referenced variables). Each reader matches the kind it acts on, so a
+/// section row can never be taken for a request row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    /// Request row `i`.
+    Row(usize),
+    /// The `+ Add` row, one past the request rows.
+    Add,
+    /// Row `j` of the section under the table.
+    Section(usize),
+}
+
+impl Stop {
+    /// The stop a row index names, where `len` (one past the rows) is the
+    /// `+ Add` row: how a click's row hit, or a cell edit's row, becomes a
+    /// stop.
+    pub fn of_row(i: usize, len: usize) -> Stop {
+        if i < len { Stop::Row(i) } else { Stop::Add }
+    }
+
+    /// The stop's place in the order the keys walk (rows, `+ Add`, then
+    /// the section), for `len` rows: the one place that order is written
+    /// down. The moves step and page through it; [`Stop::at`] reads it
+    /// back.
+    pub(crate) fn ordinal(self, len: usize) -> usize {
+        match self {
+            Stop::Row(i) => i,
+            Stop::Add => len,
+            Stop::Section(j) => len + 1 + j,
+        }
+    }
+
+    /// The stop at place `ord` of that order.
+    pub(crate) fn at(ord: usize, len: usize) -> Stop {
+        match ord.checked_sub(len) {
+            None => Stop::Row(ord),
+            Some(0) => Stop::Add,
+            Some(n) => Stop::Section(n - 1),
+        }
+    }
+
+    /// The stop this one names once the table has `len` rows and the
+    /// section `section_len`: a row or section row the rows went from
+    /// under comes back to the last one still there (`+ Add` when none is),
+    /// as the Variable Manager grid's cursor does.
+    pub(crate) fn clamp(self, len: usize, section_len: usize) -> Stop {
+        match self {
+            Stop::Row(i) if i >= len => len.checked_sub(1).map_or(Stop::Add, Stop::Row),
+            Stop::Section(j) if j >= section_len => {
+                section_len.checked_sub(1).map_or(Stop::Add, Stop::Section)
+            }
+            stop => stop,
+        }
+    }
+}
+
 /// Shared cursor/edit state for a key/value table (Params, Headers or Vars).
 /// One instance is reused across the tabs; the caller passes in whichever
 /// `IndexMap` is currently active.
 #[derive(Debug, Default)]
 pub struct TableEditorState {
-    /// The selected row (always the one drawn expanded, unless it's the
-    /// ghost row). `None` means no row is selected — every row draws
-    /// compact and the row-level keys (Enter/Space/d) are inert until
-    /// Down/j or a click lands somewhere.
-    pub selected: Option<usize>,
+    /// The stop under the keyboard cursor. `None` means nothing is
+    /// selected — every row draws compact and the row-level keys
+    /// (Enter/Space/d) are inert until Down/j or a click lands somewhere.
+    /// Private: read it with [`Self::selected`], write it with
+    /// [`Self::set_selected`], the one place a cursor move is known.
+    selected: Option<Stop>,
     /// The cursor's column: the cell Enter opens. ←/→ (h/l) move it in
     /// nav mode; it follows whatever cell was last open, so Esc then
     /// Enter reopens the same cell. It persists across row moves.
     pub col: Col,
     pub editing: Option<CellEdit>,
+    /// The tab content's first drawn line (task #56): the table's lines
+    /// (header, rows, `+ Add`, closing edge) and then the read-only
+    /// section under it scroll as one column. The wheel and the scrollbar
+    /// move it, and every frame otherwise keeps the cursor in sight
+    /// (`Editor::settle_table_scroll`, spec 2026-10-25 S22). Where the user
+    /// scrolled can't be worked out from anything else, so it is kept;
+    /// nothing derived from the cursor or the layout is.
+    pub scroll: usize,
+    /// The arrows wheel or scrollbar scrolled the view away from the
+    /// cursor (S23): while set, frames keep `scroll` as it is. Private, as
+    /// `selected` is, so its writers are the ones named here. `App` sets it
+    /// ([`Self::mark_scrolled_away`]) when a scroll moves the view, and
+    /// [`Self::set_selected`] clears it
+    /// when the cursor moves, so whatever moves the cursor brings the view
+    /// back and nothing else does. A move key that lands on the stop it is
+    /// on clears it too ([`Self::set_selected_showing`]): the key asked for
+    /// the cursor, so it finds it. Both go through one write
+    /// ([`Self::write_cursor`]). A key that acts on the
+    /// cursor's row without moving the cursor (`y`, Space, Delete) leaves
+    /// the view where the wheel put it: the cost S6 and S23 accept for a
+    /// rule that reads only whether the cursor moved, not which key came
+    /// in. Delete's toast names the row it took, and undo brings it back.
+    /// The vim profile never sets it: its wheel moves the cursor instead
+    /// (S24).
+    scrolled_away: bool,
+    /// Lines the tab content had on screen as of the last draw: the
+    /// scrollbar's viewport. 0 while no table tab is drawn.
+    pub viewport: usize,
 }
 
 /// The cell that opens for `col` on `row`: `col` itself, except on the
@@ -177,12 +265,65 @@ fn open_col(row: usize, col: Col, map_len: usize) -> Col {
 }
 
 impl TableEditorState {
+    /// The stop under the keyboard cursor.
+    pub fn selected(&self) -> Option<Stop> {
+        self.selected
+    }
+
+    /// Moves the keyboard cursor to `stop`: the one way the cursor moves
+    /// ([`Self::clamp_cursor`] only re-places a stale stop on the one drawn
+    /// lit). A write that changes the stop is a cursor move, so a view
+    /// the arrows wheel scrolled away comes back to the cursor (spec
+    /// 2026-10-25 S23), known here at the moment of the move rather than
+    /// guessed from the input that caused it.
+    pub fn set_selected(&mut self, stop: Option<Stop>) {
+        self.write_cursor(stop, false);
+    }
+
+    /// A move key's write: [`Self::set_selected`], and the view comes back
+    /// even when the key lands on the stop the cursor is on (End on the
+    /// last stop, ↓ at the end). The key asked for the cursor, so it finds
+    /// it (S23).
+    fn set_selected_showing(&mut self, stop: Option<Stop>) {
+        self.write_cursor(stop, true);
+    }
+
+    /// The cursor's write, and so the one place a cursor move clears
+    /// `scrolled_away`: on a stop that changes, or when `show` asks.
+    fn write_cursor(&mut self, stop: Option<Stop>, show: bool) {
+        if show || stop != self.selected {
+            self.scrolled_away = false;
+        }
+        self.selected = stop;
+    }
+
+    /// Whether the arrows wheel or bar has scrolled the view away from the
+    /// cursor (S23).
+    pub fn scrolled_away(&self) -> bool {
+        self.scrolled_away
+    }
+
+    /// The arrows wheel or bar moved the view: frames leave it where it is
+    /// until the cursor moves (S23).
+    pub fn mark_scrolled_away(&mut self) {
+        self.scrolled_away = true;
+    }
+
     /// Resets cursor/edit state; used when switching tabs so a selection
     /// index from one map can't be stale (and panic) against the other.
     pub fn reset(&mut self) {
-        self.selected = None;
+        self.set_selected(None);
         self.col = Col::Key;
         self.editing = None;
+        self.reset_view();
+    }
+
+    /// Puts the view back at the top, attached to the cursor: the view's
+    /// share of [`Self::reset`], which a load runs on its own (spec
+    /// 2026-10-25 S9).
+    pub fn reset_view(&mut self) {
+        self.scroll = 0;
+        self.scrolled_away = false;
     }
 
     /// The text `row`/`col` currently shows. Empty for the ghost row.
@@ -211,14 +352,15 @@ impl TableEditorState {
         self.col = col;
         let col = open_col(row, col, map.len());
         let text = Self::cell_text(map, row, col);
-        self.selected = Some(row);
+        self.set_selected(Some(Stop::of_row(row, map.len())));
         self.editing = Some(CellEdit { row, col, input: LineInput::new(&text) });
     }
 
-    /// Leaves editing with the cursor parked on `row`.
+    /// Leaves editing with the cursor parked on `row` (`+ Add` past the
+    /// rows).
     fn exit_editing(&mut self, row: usize, map: &IndexMap<String, Entry>) {
         self.editing = None;
-        self.selected = Some(row.min(map.len()));
+        self.set_selected(Some(Stop::of_row(row, map.len())));
     }
 
     /// Click entry point: commits whatever was being edited (surfacing its
@@ -258,7 +400,7 @@ impl TableEditorState {
             return TableOutcome::not_consumed();
         };
         let (row, warning) = self.commit_cell(map, &edit);
-        self.selected = Some(row.unwrap_or(map.len()).min(map.len()));
+        self.set_selected(Some(Stop::of_row(row.unwrap_or(map.len()), map.len())));
         TableOutcome::maybe_warn(warning)
     }
 
@@ -336,10 +478,15 @@ impl TableEditorState {
 
     /// Begins editing the selected row's cursor cell (the `Enter` path, and
     /// the app-side flows that seed a cell edit). A no-op with nothing
-    /// selected.
+    /// selected, or with the cursor on a row of the read-only section
+    /// under the table (past `+ Add`): no cell opens there (task #56).
     pub fn begin_edit_selected(&mut self, map: &IndexMap<String, Entry>) {
-        let Some(sel) = self.selected else { return };
-        self.start_edit(sel, self.col, map);
+        let row = match self.selected {
+            Some(Stop::Row(i)) => i,
+            Some(Stop::Add) => map.len(),
+            Some(Stop::Section(_)) | None => return,
+        };
+        self.start_edit(row, self.col, map);
     }
 
     /// Starts a brand-new row: the ghost row's key cell, exactly like
@@ -373,14 +520,9 @@ impl TableEditorState {
         let end = start.saturating_add(n).min(map.len());
         self.editing = None;
         map.drain(start..end);
-        self.selected = Some(start.min(map.len().saturating_sub(1)));
+        // An emptied table has only `+ Add` left (`of_row(0, 0)`).
+        self.set_selected(Some(Stop::of_row(start.min(map.len().saturating_sub(1)), map.len())));
         end - start
-    }
-
-    /// Whether the cursor sits on the ghost row — one past the data rows —
-    /// with no edit in progress.
-    fn ghost_selected(&self, map: &IndexMap<String, Entry>) -> bool {
-        self.selected == Some(map.len()) && self.editing.is_none()
     }
 
     /// Whether the ghost row (not any existing row) is the one under edit.
@@ -388,123 +530,163 @@ impl TableEditorState {
         self.editing.as_ref().is_some_and(|e| e.row >= map_len)
     }
 
+    /// Clamps a stop the rows went from under (the map or the section
+    /// shrank before a frame drew it) onto the last one still there, the
+    /// stop that is drawn lit ([`Stop::clamp`]). Run where the table's keys
+    /// come in, before anything reads the cursor (spec 2026-10-25 S25).
+    ///
+    /// It writes the stop past [`Self::set_selected`] on purpose: the
+    /// clamped stop is the one already drawn lit, so nothing the user sees
+    /// moves, and a view the arrows wheel scrolled away stays where the
+    /// wheel put it (S23). Only a cursor move brings the view back.
+    pub fn clamp_cursor(&mut self, len: usize, tail: usize) {
+        self.selected = self.selected.map(|s| s.clamp(len, tail));
+    }
+
+    /// [`Self::handle_key_with_tail`] for a table with no section under it:
+    /// a closed table's keys treat a section stop as stale and clamp it onto
+    /// `+ Add`. The editor's table tabs always pass their section's length;
+    /// this is for a cell's own keys (`commit_table_edit_with_enter`) and
+    /// tables that draw no section.
     pub fn handle_key(&mut self, ev: KeyEvent, map: &mut IndexMap<String, Entry>) -> TableOutcome {
+        self.handle_key_with_tail(ev, map, 0)
+    }
+
+    /// [`Self::handle_key`] with `tail` read-only stops after `+ Add`: the
+    /// rows of the section the tab draws under the table (the Headers
+    /// tab's auto rows, the Vars tab's referenced rows; task #56), each a
+    /// [`Stop::Section`]. The cursor moves onto them like any row, and the
+    /// page keys reach them, but nothing here acts on one: no cell opens,
+    /// and Enter, Space, ←/→ and Delete stay unconsumed (spec 2026-10-25
+    /// S21).
+    pub fn handle_key_with_tail(
+        &mut self,
+        ev: KeyEvent,
+        map: &mut IndexMap<String, Entry>,
+        tail: usize,
+    ) -> TableOutcome {
         match self.editing.take() {
             Some(edit) => self.handle_editing_key(ev, map, edit),
-            None => self.handle_nav_key(ev, map),
+            None => self.handle_nav_key(ev, map, tail),
         }
     }
 
-    fn handle_nav_key(&mut self, ev: KeyEvent, map: &mut IndexMap<String, Entry>) -> TableOutcome {
+    fn handle_nav_key(
+        &mut self,
+        ev: KeyEvent,
+        map: &mut IndexMap<String, Entry>,
+        tail: usize,
+    ) -> TableOutcome {
         // A named key acts bare only: any other chord is unconsumed rather
         // than acting as the bare key (piece 4 spec §5.1).
         let plain = ev.modifiers.is_empty();
+        let len = map.len();
+        // The stops, in the order the keys walk them: the data rows, the
+        // ghost row (so the keyboard can reach it the same way the mouse
+        // can, and an empty table still has that one stop to land on), then
+        // the section's rows. Moves step through their places in it.
+        let last = len + tail;
+        // Every arm below (the moves, Enter, Space, Delete, ←/→) acts on the
+        // stop that is drawn lit (spec 2026-10-25 S25).
+        self.clamp_cursor(len, tail);
+        let place = self.selected.map(|s| s.ordinal(len));
+        // A move key asks for the cursor even when it lands on the stop it
+        // is on (End on the last stop, ↓ at the end), so it brings a view
+        // the wheel scrolled away back as any move does (S23): otherwise
+        // the key meant to find the cursor would do nothing.
+        let go = |this: &mut Self, ord: usize| {
+            this.set_selected_showing(Some(Stop::at(ord.min(last), len)));
+            TableOutcome::consumed()
+        };
+        // ←/→ move between the name and value cells of a row or `+ Add`.
+        // A section row has no cells, so there they do nothing (S21) but
+        // stay consumed, as everywhere in the table, so nothing leaks to
+        // the pane. With no row selected there is no cell to move between,
+        // so both stay unconsumed like Up does.
+        let has_cells = matches!(self.selected, Some(Stop::Row(_) | Stop::Add));
         match ev.code {
-            KeyCode::Down if plain => {
-                // The cursor's range is the data rows plus one: index
-                // `map.len()` is the ghost row, so the keyboard can reach it
-                // the same way the mouse can (and an empty table still has
-                // that one stop to land on).
-                self.selected = Some(match self.selected {
-                    None => 0, // nothing selected: Down selects the first row
-                    Some(s) => (s + 1).min(map.len()),
-                });
-                TableOutcome::consumed()
-            }
+            // Nothing selected: Down selects the first row.
+            KeyCode::Down if plain => go(self, place.map_or(0, |p| p + 1)),
             KeyCode::Up if plain => {
                 // Row 0 and no selection leave Up unconsumed so the caller
                 // (Editor) can fall back to climbing out to the tab strip
                 // instead of leaving the user stuck with no way back.
-                match self.selected {
-                    Some(s) if s > 0 => {
-                        self.selected = Some(s - 1);
-                        TableOutcome::consumed()
-                    }
+                match place {
+                    Some(p) if p > 0 => go(self, p - 1),
                     _ => TableOutcome::not_consumed(),
                 }
             }
-            // ←/→ move the cursor between the name and value cells; both
-            // clamp and stay consumed so nothing leaks to the pane. With
-            // no row selected there is no cell to move between, so they
-            // stay unconsumed like Up does.
-            KeyCode::Left if plain => {
+            KeyCode::Left | KeyCode::Right if plain => {
                 if self.selected.is_none() {
                     return TableOutcome::not_consumed();
                 }
-                self.col = Col::Key;
-                TableOutcome::consumed()
-            }
-            KeyCode::Right if plain => {
-                if self.selected.is_none() {
-                    return TableOutcome::not_consumed();
+                if has_cells {
+                    self.col = if ev.code == KeyCode::Left { Col::Key } else { Col::Value };
                 }
-                self.col = Col::Value;
                 TableOutcome::consumed()
             }
             KeyCode::Esc => {
                 // Esc deselects (collapsing the expanded row); with nothing
                 // selected it stays unconsumed for the caller.
                 if self.selected.is_some() {
-                    self.selected = None;
+                    self.set_selected(None);
                     TableOutcome::consumed()
                 } else {
                     TableOutcome::not_consumed()
                 }
             }
             KeyCode::Enter if plain => {
-                if self.selected.is_none() {
+                // A section row opens no cell: Enter there is the caller's
+                // (the auto row's take-over), else nothing.
+                if !has_cells {
                     return TableOutcome::not_consumed();
                 }
                 self.begin_edit_selected(map);
                 TableOutcome::consumed()
             }
             KeyCode::Char(' ') if plain => {
-                if self.ghost_selected(map) {
+                let Some(Stop::Row(i)) = self.selected else {
                     return TableOutcome::not_consumed();
-                }
-                let Some((_, e)) = self.selected.and_then(|s| map.get_index_mut(s)) else {
+                };
+                let Some((_, e)) = map.get_index_mut(i) else {
                     return TableOutcome::not_consumed();
                 };
                 e.enabled = !e.enabled;
                 TableOutcome::consumed()
             }
-            // The table never scrolls, so its "page" is its row count: Home
-            // → row 0, End → the ghost row, ctrl+f/PageDown → the ghost
-            // row, ctrl+b/PageUp → row 0, ctrl+d/u ± half the rows.
+            // The page keys move through the stops, not the view (spec
+            // 2026-10-25 S10): the view follows the cursor. Their "page" is
+            // the stop count: Home → row 0, End → the last stop,
+            // ctrl+f/PageDown → the last stop, ctrl+b/PageUp → row 0,
+            // ctrl+d/u ± half the stops.
             KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
-                self.handle_nav_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), map)
+                self.handle_nav_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), map, tail)
             }
             KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
-                self.handle_nav_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE), map)
+                self.handle_nav_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE), map, tail)
             }
             // ctrl+Home/End are a second spelling of Home/End, and what
             // macOS's cmd+↑/↓ fold to (`keys::normalize_super_keys`).
             KeyCode::Home | KeyCode::End if ev.modifiers == KeyModifiers::CONTROL => {
-                self.handle_nav_key(KeyEvent::new(ev.code, KeyModifiers::NONE), map)
+                self.handle_nav_key(KeyEvent::new(ev.code, KeyModifiers::NONE), map, tail)
             }
-            KeyCode::Home | KeyCode::PageUp if plain => {
-                self.selected = Some(0);
-                TableOutcome::consumed()
-            }
-            KeyCode::End | KeyCode::PageDown if plain => {
-                self.selected = Some(map.len());
-                TableOutcome::consumed()
-            }
+            KeyCode::Home | KeyCode::PageUp if plain => go(self, 0),
+            KeyCode::End | KeyCode::PageDown if plain => go(self, last),
+            // Half of the places past the first (`last`), as main stepped
+            // half the rows.
             KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
-                let half = map.len().div_ceil(2).max(1);
-                self.selected = Some((self.selected.unwrap_or(0) + half).min(map.len()));
-                TableOutcome::consumed()
+                let half = last.div_ceil(2).max(1);
+                go(self, place.unwrap_or(0) + half)
             }
             KeyCode::Char('u') if ev.modifiers == KeyModifiers::CONTROL => {
-                let half = map.len().div_ceil(2).max(1);
-                self.selected = Some(self.selected.unwrap_or(0).saturating_sub(half));
-                TableOutcome::consumed()
+                let half = last.div_ceil(2).max(1);
+                go(self, place.unwrap_or(0).saturating_sub(half))
             }
             KeyCode::Delete if plain => {
-                if self.ghost_selected(map) || self.selected.is_none_or(|s| s >= map.len()) {
+                let Some(Stop::Row(i)) = self.selected else {
                     return TableOutcome::not_consumed();
-                }
-                TableOutcome { consumed: true, warning: None, request_delete: self.selected }
+                };
+                TableOutcome { consumed: true, warning: None, request_delete: Some(i) }
             }
             _ => TableOutcome::not_consumed(),
         }
@@ -539,7 +721,11 @@ impl TableEditorState {
             // `LineInput` (which ignores them): they commit it and move the
             // cursor one row. Without this the pane's own "Up climbs out to
             // the tab strip" fallback could fire with an edit still open,
-            // leaving `editing` set while the keyboard is elsewhere.
+            // leaving `editing` set while the keyboard is elsewhere. They
+            // move within the table's rows and `+ Add`: an open cell's keys
+            // don't count the section under the table (on Vars that is a
+            // scan of every field per keystroke), so ↓ from an open `+ Add`
+            // closes it onto `+ Add`, and the next ↓ goes on to the section.
             KeyCode::Up | KeyCode::Down => {
                 let (row, warning) = self.commit_cell(map, &edit);
                 let here = row.unwrap_or(edit.row).min(map.len());
@@ -603,6 +789,12 @@ impl TableEditorState {
     /// trailing it.
     /// `vars` is the variable snapshot every drawn cell's `{{tokens}}` are
     /// tinted and registered against (spec §7).
+    ///
+    /// `skip` is how many of the table's lines (header first) sit above
+    /// the view (task #56): line `L` draws on `area.y + L - skip`, and a
+    /// line above or below the view is neither painted nor registered, so
+    /// a click only ever finds rows that are on screen and the cell rects
+    /// it reads back are where the cells were drawn.
     #[allow(clippy::too_many_arguments)] // signature is the produced interface, verbatim
     pub fn draw(
         &self,
@@ -614,16 +806,20 @@ impl TableEditorState {
         hits: &mut HitMap,
         notes: &[Option<RowNote>],
         vars: &VarView,
+        skip: usize,
     ) {
         let theme = ctx.theme;
         let map_len = map.len();
         let ghost_editing = self.editing_ghost(map_len);
         let buf = frame.buffer_mut();
-        let bottom = area.bottom();
-        let mut y = area.y;
+        // The screen row of the table's line `line`, when it is on screen.
+        let row_y = |line: usize| {
+            let d = line.checked_sub(skip)?;
+            (d < usize::from(area.height)).then(|| area.y + d as u16)
+        };
 
         // --- header ------------------------------------------------------
-        if y < bottom {
+        if let Some(y) = row_y(0) {
             let cols = columns(area.x, area.width);
             fill(buf, Rect::new(area.x, y, area.width, 1), theme.panel);
             text(buf, cols.name_x, y, "NAME", theme.text_muted, theme.panel, true);
@@ -631,17 +827,15 @@ impl TableEditorState {
             if cols.divider_x < area.right() {
                 text(buf, cols.divider_x, y, "\u{258F}", theme.edge_dark, theme.panel, false);
             }
-            y += 1;
         }
 
         // --- data rows -----------------------------------------------------
-        for (i, (k, e)) in map.iter().enumerate() {
-            if y >= bottom {
-                break;
-            }
+        // Row `i` is line `i + 1`; only the rows in view are visited.
+        let first = skip.saturating_sub(1);
+        for (i, (k, e)) in map.iter().enumerate().skip(first) {
+            let Some(y) = row_y(i + 1) else { break };
             let note = notes.get(i).and_then(Option::as_ref);
             self.draw_row(buf, hits, area, y, i, k, e, ctx, note, vars, true, None);
-            y += 1;
         }
 
         // --- the ghost row -------------------------------------------------
@@ -650,16 +844,15 @@ impl TableEditorState {
         // like every other row — the add label stands in for its key until
         // it is typed into, and it carries no toggle or actions, having
         // nothing yet to toggle or delete.
-        if y < bottom {
+        if let Some(y) = row_y(map_len + 1) {
             // Its value cell never opens (`open_col`), so it stays blank.
             let entry = Entry { value: String::new(), enabled: true };
             let label = (!ghost_editing).then_some(add_label);
             self.draw_row(buf, hits, area, y, map_len, "", &entry, ctx, None, vars, false, label);
-            y += 1;
         }
 
         // --- closing edge --------------------------------------------------
-        if y < bottom {
+        if let Some(y) = row_y(map_len + 2) {
             crate::paint::rule(
                 buf,
                 Rect::new(area.x, y, area.width, 1),
@@ -806,7 +999,8 @@ impl TableEditorState {
         // The keyboard cursor lights its row only while the pane actually
         // holds the keyboard — a lift on an unfocused pane would claim keys
         // land here. A pointer resting on the row lights it either way.
-        let cursor = self.selected == Some(i) || editing_col.is_some();
+        let on_cursor = self.selected == Some(if real { Stop::Row(i) } else { Stop::Add });
+        let cursor = on_cursor || editing_col.is_some();
         let lit = hovered_row(ctx) == Some(i) || (cursor && ctx.focused);
         let bg = if lit { theme.control_hover } else { theme.control };
         fill(buf, Rect::new(area.x, y, area.width, 1), bg);
@@ -834,8 +1028,11 @@ impl TableEditorState {
         // paints its own lift. On the ghost row Enter opens the name
         // whatever the cursor column (`open_col`), so the name lifts and
         // the value cell, which never opens, keeps the row's fill.
-        let cursor_cell = (self.selected == Some(i) && ctx.focused && editing_col.is_none())
-            .then_some(if real { self.col } else { Col::Key });
+        let cursor_cell = (on_cursor && ctx.focused && editing_col.is_none()).then_some(if real {
+            self.col
+        } else {
+            Col::Key
+        });
         let cell_bg = |col: Col| {
             if cursor_cell == Some(col) { crate::theme::lift_color(bg, 0.06) } else { bg }
         };
@@ -993,6 +1190,19 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+    /// Spec 2026-10-25 S23: clamping a stop the rows went from under is no
+    /// cursor move (the clamped stop is the one already drawn lit), so a
+    /// view the wheel scrolled away stays where the wheel put it.
+    #[test]
+    fn clamping_a_stale_stop_keeps_a_scrolled_away_view() {
+        let mut t = TableEditorState::default();
+        t.set_selected(Some(Stop::Section(3)));
+        t.mark_scrolled_away();
+        t.clamp_cursor(2, 2);
+        assert_eq!(t.selected(), Some(Stop::Section(1)));
+        assert!(t.scrolled_away(), "the clamp brought the view back");
+    }
+
     /// Spec §5.3: a counted delete takes a run of rows as one change; a
     /// count past the end is clamped; the cursor lands where the run was.
     #[test]
@@ -1001,22 +1211,81 @@ mod tests {
         for k in ["a", "b", "c", "d"] {
             map.insert(k.into(), Entry { value: "1".into(), enabled: true });
         }
-        let mut t = TableEditorState { selected: Some(1), ..TableEditorState::default() };
+        let mut t =
+            TableEditorState { selected: Some(Stop::Row(1)), ..TableEditorState::default() };
         assert_eq!(t.delete_rows(&mut map, 1, 2), 2);
         assert_eq!(map.keys().map(String::as_str).collect::<Vec<_>>(), ["a", "d"]);
-        assert_eq!(t.selected, Some(1));
+        assert_eq!(t.selected, Some(Stop::Row(1)));
         assert_eq!(t.delete_rows(&mut map, 1, 9), 1, "clamped");
         assert_eq!(map.keys().map(String::as_str).collect::<Vec<_>>(), ["a"]);
-        assert_eq!(t.selected, Some(0), "a run to the end lands on the new last row");
+        assert_eq!(t.selected, Some(Stop::Row(0)), "a run to the end lands on the new last row");
         assert_eq!(t.delete_rows(&mut map, 5, 1), 0, "past the end: nothing");
         assert_eq!(t.delete_rows(&mut map, 0, 0), 0, "no count: nothing");
         assert_eq!(t.delete_rows(&mut map, 0, 1), 1);
         assert!(map.is_empty());
-        assert_eq!(t.selected, Some(0), "an emptied table lands on the add row");
+        assert_eq!(t.selected, Some(Stop::Add), "an emptied table lands on the add row");
     }
 
     fn key(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    /// Spec 2026-10-25 S10, S11, S13 and S21: the section's rows are
+    /// stops after `+ Add`. ↓ goes onto them and stops at the last, ↑
+    /// comes back, End and PageDown reach the last stop; Enter opens no
+    /// cell there, and Space and Delete do nothing, as on `+ Add`.
+    #[test]
+    fn the_section_rows_are_stops_after_the_add_row() {
+        let mut map = map_of(&[("a", "1")]);
+        let mut t = TableEditorState { selected: Some(Stop::Add), ..TableEditorState::default() };
+        let mut press =
+            |t: &mut TableEditorState, code| t.handle_key_with_tail(key(code), &mut map, 2);
+        assert!(press(&mut t, KeyCode::Down).consumed);
+        assert_eq!(t.selected, Some(Stop::Section(0)), "onto the first section row");
+        press(&mut t, KeyCode::Down);
+        press(&mut t, KeyCode::Down);
+        assert_eq!(t.selected, Some(Stop::Section(1)), "the last section row is the last stop");
+        press(&mut t, KeyCode::Up);
+        assert_eq!(t.selected, Some(Stop::Section(0)));
+        assert!(!press(&mut t, KeyCode::Enter).consumed, "no cell opens on a section row");
+        assert!(t.editing.is_none());
+        assert!(!press(&mut t, KeyCode::Char(' ')).consumed);
+        assert!(!press(&mut t, KeyCode::Delete).consumed);
+        let col = t.col;
+        assert!(press(&mut t, KeyCode::Right).consumed, "swallowed: nothing leaks to the pane");
+        assert_eq!(t.col, col, "no cells to move between");
+        assert_eq!(t.selected, Some(Stop::Section(0)));
+        press(&mut t, KeyCode::Up);
+        assert_eq!(t.selected, Some(Stop::Add), "↑ comes back to + Add");
+        press(&mut t, KeyCode::Home);
+        assert_eq!(t.selected, Some(Stop::Row(0)));
+        press(&mut t, KeyCode::End);
+        assert_eq!(t.selected, Some(Stop::Section(1)));
+        press(&mut t, KeyCode::PageUp);
+        press(&mut t, KeyCode::PageDown);
+        assert_eq!(t.selected, Some(Stop::Section(1)));
+        // With no section, the add row is still the last stop.
+        let mut t = TableEditorState { selected: Some(Stop::Add), ..TableEditorState::default() };
+        t.handle_key(key(KeyCode::Down), &mut map);
+        assert_eq!(t.selected, Some(Stop::Add));
+    }
+
+    /// A row the map shrank from under (before a frame clamped it) steps
+    /// from the last real row, never from a place that now names a
+    /// section row.
+    #[test]
+    fn a_stale_row_cursor_steps_from_the_last_real_row() {
+        let mut map = map_of(&[("a", "1"), ("b", "2")]);
+        let mut t =
+            TableEditorState { selected: Some(Stop::Row(4)), ..TableEditorState::default() };
+        t.handle_key_with_tail(key(KeyCode::Down), &mut map, 3);
+        assert_eq!(t.selected, Some(Stop::Add), "from row 1, ↓ is + Add");
+        // Every arm sees the clamped stop (S25): Delete asks for the row
+        // that is drawn lit, row 1, not the row that went.
+        t.selected = Some(Stop::Row(4));
+        let out = t.handle_key_with_tail(key(KeyCode::Delete), &mut map, 3);
+        assert_eq!(out.request_delete, Some(1));
+        assert_eq!(t.selected, Some(Stop::Row(1)));
     }
 
     fn shift_tab() -> KeyEvent {
@@ -1050,10 +1319,11 @@ mod tests {
             key(KeyCode::Char('l')),
         ] {
             let mut map = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
-            let mut t = TableEditorState { selected: Some(1), ..TableEditorState::default() };
+            let mut t =
+                TableEditorState { selected: Some(Stop::Row(1)), ..TableEditorState::default() };
             let outcome = t.handle_key(letter, &mut map);
             assert!(!outcome.consumed, "{letter:?}");
-            assert_eq!(t.selected, Some(1), "{letter:?} moved the cursor");
+            assert_eq!(t.selected, Some(Stop::Row(1)), "{letter:?} moved the cursor");
             assert!(t.editing.is_none(), "{letter:?} opened a cell");
         }
         let pairs = [(ctrl('f'), key(KeyCode::PageDown)), (ctrl('b'), key(KeyCode::PageUp))];
@@ -1061,8 +1331,8 @@ mod tests {
             let mut ma = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
             let mut mb = ma.clone();
             let (mut a, mut b) = (TableEditorState::default(), TableEditorState::default());
-            a.selected = Some(1);
-            b.selected = Some(1);
+            a.selected = Some(Stop::Row(1));
+            b.selected = Some(Stop::Row(1));
             a.handle_key(alias, &mut ma);
             b.handle_key(canonical, &mut mb);
             assert_eq!(a.selected, b.selected, "{alias:?}");
@@ -1070,11 +1340,11 @@ mod tests {
         let mut map = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
         let mut t = TableEditorState::default();
         t.handle_key(key(KeyCode::End), &mut map);
-        assert_eq!(t.selected, Some(3), "End is the ghost row");
+        assert_eq!(t.selected, Some(Stop::Add), "End is the ghost row");
         t.handle_key(ctrl('u'), &mut map);
-        assert_eq!(t.selected, Some(1), "half of four stops");
+        assert_eq!(t.selected, Some(Stop::Row(1)), "half of four stops");
         t.handle_key(ctrl('d'), &mut map);
-        assert_eq!(t.selected, Some(3));
+        assert_eq!(t.selected, Some(Stop::Add));
     }
 
     // --- cell cursor ------------------------------------------------------
@@ -1085,7 +1355,8 @@ mod tests {
     #[test]
     fn left_and_right_move_the_cursor_between_name_and_value_and_clamp() {
         let mut map = map_of(&[("a", "1"), ("b", "2")]);
-        let mut t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
+        let mut t =
+            TableEditorState { selected: Some(Stop::Row(0)), ..TableEditorState::default() };
         assert_eq!(t.col, Col::Key, "the cursor starts on the name cell");
         assert!(t.handle_key(key(KeyCode::Left), &mut map).consumed);
         assert_eq!(t.col, Col::Key, "← on the name cell stays put");
@@ -1095,7 +1366,7 @@ mod tests {
         assert_eq!(t.col, Col::Value, "→ on the value cell stays put");
         assert!(t.handle_key(key(KeyCode::Left), &mut map).consumed);
         assert_eq!(t.col, Col::Key);
-        assert_eq!(t.selected, Some(0), "the row never moves");
+        assert_eq!(t.selected, Some(Stop::Row(0)), "the row never moves");
     }
 
     /// ←/→ move the cell cursor in the table's nav mode (h/l are the
@@ -1106,8 +1377,11 @@ mod tests {
             [(KeyCode::Right, Col::Key, Col::Value), (KeyCode::Left, Col::Value, Col::Key)]
         {
             let mut map = map_of(&[("a", "1")]);
-            let mut t =
-                TableEditorState { selected: Some(0), col: from, ..TableEditorState::default() };
+            let mut t = TableEditorState {
+                selected: Some(Stop::Row(0)),
+                col: from,
+                ..TableEditorState::default()
+            };
             let out = t.handle_key(key(code), &mut map);
             assert!(out.consumed, "{code:?}");
             assert_eq!(t.col, to, "{code:?}");
@@ -1124,7 +1398,7 @@ mod tests {
         t.handle_key(key(KeyCode::Right), &mut map);
         t.handle_key(key(KeyCode::Down), &mut map);
         t.handle_key(key(KeyCode::Down), &mut map);
-        assert_eq!((t.selected, t.col), (Some(2), Col::Value));
+        assert_eq!((t.selected, t.col), (Some(Stop::Row(2)), Col::Value));
     }
 
     /// With nothing selected ←/→ have no cell to move between: they stay
@@ -1142,8 +1416,11 @@ mod tests {
     #[test]
     fn enter_opens_the_cell_under_the_cursor() {
         let mut map = map_of(&[("a", "1")]);
-        let mut t =
-            TableEditorState { selected: Some(0), col: Col::Value, ..TableEditorState::default() };
+        let mut t = TableEditorState {
+            selected: Some(Stop::Row(0)),
+            col: Col::Value,
+            ..TableEditorState::default()
+        };
         t.handle_key(key(KeyCode::Enter), &mut map);
         let edit = t.editing.as_ref().expect("a cell is open");
         assert_eq!((edit.row, edit.col), (0, Col::Value));
@@ -1184,7 +1461,7 @@ mod tests {
         t.click_cell(0, Col::Value, &mut map);
         assert_eq!(t.col, Col::Value, "a click moves the cursor column");
         t.handle_key(key(KeyCode::Esc), &mut map);
-        assert_eq!((t.selected, t.col), (Some(0), Col::Value));
+        assert_eq!((t.selected, t.col), (Some(Stop::Row(0)), Col::Value));
         t.handle_key(key(KeyCode::Enter), &mut map);
         let edit = t.editing.as_ref().expect("reopened");
         assert_eq!(edit.col, Col::Value, "Esc then Enter reopens the same cell");
@@ -1198,12 +1475,16 @@ mod tests {
         t.handle_key(key(KeyCode::Tab), &mut map);
         assert_eq!(t.col, Col::Value);
         t.handle_key(key(KeyCode::Tab), &mut map);
-        assert_eq!((t.selected, t.col), (Some(1), Col::Key));
+        assert_eq!((t.selected, t.col), (Some(Stop::Row(1)), Col::Key));
 
         // ↓ from a value cell keeps the column on the next row.
         t.handle_key(key(KeyCode::Tab), &mut map); // row 1 value
         t.handle_key(key(KeyCode::Down), &mut map);
-        assert_eq!((t.selected, t.col, t.editing.is_none()), (Some(2), Col::Value, true));
+        assert_eq!(
+            (t.selected, t.col, t.editing.is_none()),
+            (Some(Stop::Add), Col::Value, true),
+            "two rows: ↓ from row 1 is + Add"
+        );
     }
 
     /// A reset drops the column along with the row.
@@ -1224,7 +1505,11 @@ mod tests {
         let map = map_of(&[("page", "2")]);
         let lifted = crate::theme::lift_color(theme.control_hover, 0.06);
         for (col, other) in [(Col::Key, Col::Value), (Col::Value, Col::Key)] {
-            let t = TableEditorState { selected: Some(0), col, ..TableEditorState::default() };
+            let t = TableEditorState {
+                selected: Some(Stop::Row(0)),
+                col,
+                ..TableEditorState::default()
+            };
             let ctx = ctx(&theme, None);
             let mut hits = HitMap::default();
             let terminal = draw_to(&t, &map, &ctx, &mut hits);
@@ -1250,8 +1535,11 @@ mod tests {
         let theme = Theme::dark();
         let map = map_of(&[("page", "2")]);
         let lifted = crate::theme::lift_color(theme.control_hover, 0.06);
-        let t =
-            TableEditorState { selected: Some(0), col: Col::Value, ..TableEditorState::default() };
+        let t = TableEditorState {
+            selected: Some(Stop::Row(0)),
+            col: Col::Value,
+            ..TableEditorState::default()
+        };
         let unfocused = DrawCtx { focused: false, ..ctx(&theme, None) };
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &unfocused, &mut hits);
@@ -1285,7 +1573,7 @@ mod tests {
         let mut t = TableEditorState::default();
         t.handle_key(key(KeyCode::Down), &mut map); // row 0
         t.handle_key(key(KeyCode::Down), &mut map); // ghost row
-        assert_eq!(t.selected, Some(1));
+        assert_eq!(t.selected, Some(Stop::Add));
         assert!(t.editing.is_none(), "selection only, like the real rows");
         t.handle_key(key(KeyCode::Enter), &mut map);
         assert!(t.editing_ghost(map.len()), "Enter opens the add edit");
@@ -1303,7 +1591,7 @@ mod tests {
         t.handle_key(key(KeyCode::Down), &mut map); // ghost selected
         t.handle_key(key(KeyCode::Up), &mut map); // straight back out
         assert_eq!(map.len(), 1, "no empty header appeared");
-        assert_eq!(t.selected, Some(0));
+        assert_eq!(t.selected, Some(Stop::Row(0)));
         // Same through the edit: Enter in, Up straight out.
         t.handle_key(key(KeyCode::Down), &mut map);
         t.handle_key(key(KeyCode::Enter), &mut map);
@@ -1318,10 +1606,7 @@ mod tests {
     fn the_ghost_row_under_the_cursor_lights_and_keeps_its_add_label() {
         let theme = Theme::dark();
         let map = map_of(&[("page", "2")]);
-        let t = TableEditorState {
-            selected: Some(1), // the ghost
-            ..TableEditorState::default()
-        };
+        let t = TableEditorState { selected: Some(Stop::Add), ..TableEditorState::default() };
         let ctx = ctx(&theme, None);
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &ctx, &mut hits);
@@ -1345,8 +1630,11 @@ mod tests {
         let theme = Theme::dark();
         let map = map_of(&[("page", "2")]);
         let lifted = crate::theme::lift_color(theme.control_hover, 0.06);
-        let t =
-            TableEditorState { selected: Some(1), col: Col::Value, ..TableEditorState::default() };
+        let t = TableEditorState {
+            selected: Some(Stop::Add),
+            col: Col::Value,
+            ..TableEditorState::default()
+        };
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &ctx(&theme, None), &mut hits);
         let buf = terminal.backend().buffer();
@@ -1376,7 +1664,7 @@ mod tests {
         assert_eq!(edit.col, Col::Value);
         assert_eq!(edit.input.text(), "2", "seeded with the cell's own text");
         assert_eq!(edit.input.cursor(), 1, "caret at the end");
-        assert_eq!(t.selected, Some(0), "the clicked row is the selected row");
+        assert_eq!(t.selected, Some(Stop::Row(0)), "the clicked row is the selected row");
     }
 
     #[test]
@@ -1430,7 +1718,7 @@ mod tests {
         }
         t.handle_key(key(KeyCode::Esc), &mut map);
         assert!(map.contains_key("k"));
-        assert_eq!(t.selected, Some(0));
+        assert_eq!(t.selected, Some(Stop::Row(0)));
     }
 
     #[test]
@@ -1547,7 +1835,7 @@ mod tests {
         let out = t.handle_key(key(KeyCode::Esc), &mut map);
         assert!(out.warning.is_none());
         assert!(map.is_empty());
-        assert_eq!(t.selected, Some(0));
+        assert_eq!(t.selected, Some(Stop::Add));
         t.handle_key(key(KeyCode::Enter), &mut map);
         let edit = t.editing.as_ref().unwrap();
         assert_eq!((edit.row, edit.col, edit.input.text()), (0, Col::Key, ""));
@@ -1559,7 +1847,8 @@ mod tests {
     #[test]
     fn the_cursor_column_survives_opening_the_ghost_row() {
         let mut map = map_of(&[("a", "1")]);
-        let mut t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
+        let mut t =
+            TableEditorState { selected: Some(Stop::Row(0)), ..TableEditorState::default() };
         t.handle_key(key(KeyCode::Right), &mut map);
         t.handle_key(key(KeyCode::Down), &mut map); // the ghost
         t.handle_key(key(KeyCode::Enter), &mut map);
@@ -1578,20 +1867,20 @@ mod tests {
         let mut map = map_of(&[("a", "1"), ("b", "2")]);
         let mut t = TableEditorState::default();
         assert!(t.handle_key(key(KeyCode::Down), &mut map).consumed);
-        assert_eq!(t.selected, Some(0), "Down from nowhere selects row 0");
+        assert_eq!(t.selected, Some(Stop::Row(0)), "Down from nowhere selects row 0");
         t.handle_key(key(KeyCode::Down), &mut map);
         t.handle_key(key(KeyCode::Down), &mut map);
-        assert_eq!(t.selected, Some(2), "the ghost row is reachable");
+        assert_eq!(t.selected, Some(Stop::Add), "the ghost row is reachable");
         assert!(t.editing.is_none(), "selection only — Enter starts the add");
         assert!(
             t.handle_key(key(KeyCode::Down), &mut map).consumed,
             "clamped at the ghost row, still consumed"
         );
-        assert_eq!(t.selected, Some(2));
+        assert_eq!(t.selected, Some(Stop::Add));
         t.handle_key(key(KeyCode::Up), &mut map);
-        assert_eq!(t.selected, Some(1));
+        assert_eq!(t.selected, Some(Stop::Row(1)));
         t.handle_key(key(KeyCode::Up), &mut map);
-        assert_eq!(t.selected, Some(0));
+        assert_eq!(t.selected, Some(Stop::Row(0)));
         assert!(
             !t.handle_key(key(KeyCode::Up), &mut map).consumed,
             "Up at row 0 is left to the caller (climb out to the tab strip)"
@@ -1610,14 +1899,14 @@ mod tests {
             !t.handle_key(key(KeyCode::Enter), &mut map).consumed,
             "Enter with nothing selected is inert"
         );
-        t.selected = Some(0);
+        t.selected = Some(Stop::Row(0));
         assert!(t.handle_key(key(KeyCode::Enter), &mut map).consumed);
         let edit = t.editing.as_ref().unwrap();
         assert_eq!((edit.row, edit.col), (0, Col::Key));
         assert_eq!(edit.input.text(), "a");
 
         t.editing = None;
-        t.selected = Some(1); // the ghost row
+        t.selected = Some(Stop::Add);
         t.handle_key(key(KeyCode::Enter), &mut map);
         let edit = t.editing.as_ref().unwrap();
         assert_eq!((edit.row, edit.col), (1, Col::Key));
@@ -1627,32 +1916,31 @@ mod tests {
     #[test]
     fn enter_committing_an_edit_keeps_the_row_selected() {
         let mut map = map_of(&[("a", "1")]);
-        let mut t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
+        let mut t =
+            TableEditorState { selected: Some(Stop::Row(0)), ..TableEditorState::default() };
         t.handle_key(key(KeyCode::Enter), &mut map); // begin editing the key
         t.handle_key(key(KeyCode::Enter), &mut map); // commit, like Esc
         assert!(t.editing.is_none());
-        assert_eq!(t.selected, Some(0), "Enter keeps the row selected, like Esc");
+        assert_eq!(t.selected, Some(Stop::Row(0)), "Enter keeps the row selected, like Esc");
     }
 
     #[test]
     fn enter_in_an_open_cell_commits_and_keeps_the_row_selected() {
         let mut map = map_of(&[("a", "1")]);
-        let mut t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
+        let mut t =
+            TableEditorState { selected: Some(Stop::Row(0)), ..TableEditorState::default() };
         t.begin_edit_selected(&map);
         t.handle_key(key(KeyCode::Char('x')), &mut map);
         let outcome = t.handle_key(key(KeyCode::Enter), &mut map);
         assert!(outcome.warning.is_none());
-        assert_eq!(t.selected, Some(0), "Enter keeps the row selected, like Esc");
+        assert_eq!(t.selected, Some(Stop::Row(0)), "Enter keeps the row selected, like Esc");
         assert!(t.editing.is_none());
     }
 
     #[test]
     fn enter_committing_a_duplicate_key_keeps_the_resolved_row_selected() {
         let mut map = map_of(&[("a", "1"), ("b", "2")]);
-        let mut t = TableEditorState {
-            selected: Some(2), // ghost row
-            ..TableEditorState::default()
-        };
+        let mut t = TableEditorState { selected: Some(Stop::Add), ..TableEditorState::default() };
         t.handle_key(key(KeyCode::Enter), &mut map);
         for c in "a".chars() {
             t.handle_key(key(KeyCode::Char(c)), &mut map);
@@ -1661,7 +1949,7 @@ mod tests {
         assert!(out.warning.is_some(), "duplicate key warns");
         assert_eq!(
             t.selected,
-            Some(0),
+            Some(Stop::Row(0)),
             "the warning points at the existing row, so it stays selected"
         );
     }
@@ -1672,7 +1960,7 @@ mod tests {
         let mut t = TableEditorState::default();
         assert!(!t.handle_key(key(KeyCode::Char(' ')), &mut map).consumed);
 
-        t.selected = Some(0);
+        t.selected = Some(Stop::Row(0));
         assert!(t.handle_key(key(KeyCode::Char(' ')), &mut map).consumed);
         assert!(!map["a"].enabled);
         let out = t.handle_key(key(KeyCode::Delete), &mut map);
@@ -1683,7 +1971,7 @@ mod tests {
 
         // The ghost row has nothing to toggle or delete.
         let mut map = map_of(&[("a", "1")]);
-        let mut t = TableEditorState { selected: Some(1), ..TableEditorState::default() };
+        let mut t = TableEditorState { selected: Some(Stop::Add), ..TableEditorState::default() };
         assert!(!t.handle_key(key(KeyCode::Char(' ')), &mut map).consumed);
         assert_eq!(t.handle_key(key(KeyCode::Delete), &mut map).request_delete, None);
         assert!(map["a"].enabled);
@@ -1768,14 +2056,14 @@ mod tests {
         assert!(t.handle_key(key(KeyCode::Down), &mut map).consumed);
         assert!(t.editing.is_none(), "Down leaves the cell");
         assert_eq!(map["a"].value, "19", "and commits it");
-        assert_eq!(t.selected, Some(1));
+        assert_eq!(t.selected, Some(Stop::Row(1)));
 
         t.click_cell(1, Col::Value, &mut map);
         type_str(&mut t, &mut map, "9");
         assert!(t.handle_key(key(KeyCode::Up), &mut map).consumed);
         assert!(t.editing.is_none());
         assert_eq!(map["b"].value, "29");
-        assert_eq!(t.selected, Some(0));
+        assert_eq!(t.selected, Some(Stop::Row(0)));
     }
 
     #[test]
@@ -1790,7 +2078,7 @@ mod tests {
         assert!(out.consumed);
         assert!(t.editing.is_none());
         assert_eq!(map["page"], Entry { value: "2".into(), enabled: true });
-        assert_eq!(t.selected, Some(0), "Enter keeps the row selected, like Esc");
+        assert_eq!(t.selected, Some(Stop::Row(0)), "Enter keeps the row selected, like Esc");
     }
 
     #[test]
@@ -1803,7 +2091,7 @@ mod tests {
         assert!(t.editing.is_none());
         assert_eq!(map["a"].value, "19", "the typed text stands");
         assert_eq!(map.len(), 1, "the row survives");
-        assert_eq!(t.selected, Some(0), "the row stays selected");
+        assert_eq!(t.selected, Some(Stop::Row(0)), "the row stays selected");
 
         // Esc after a Tab commits only the cell it is in: the already
         // committed key cell keeps its new text too.
@@ -1826,7 +2114,7 @@ mod tests {
         assert!(t.editing.is_none());
         assert_eq!(map.len(), 2, "the ghost became a real row");
         assert!(map.contains_key("new"));
-        assert_eq!(t.selected, Some(1), "the new row stays selected");
+        assert_eq!(t.selected, Some(Stop::Row(1)), "the new row stays selected");
     }
 
     // --- renames, duplicates, warnings ------------------------------------
@@ -1860,7 +2148,7 @@ mod tests {
         assert_eq!(map.get_index(0).unwrap().0, "b", "b shifts down");
         assert_eq!(map.get_index(1).unwrap().0, "c");
         assert_eq!(map["c"].value, "1", "c takes a's value");
-        assert_eq!(t.selected, Some(1), "the cursor follows the surviving row");
+        assert_eq!(t.selected, Some(Stop::Row(1)), "the cursor follows the surviving row");
     }
 
     #[test]
@@ -1897,7 +2185,8 @@ mod tests {
     #[test]
     fn the_table_has_no_verb_letters() {
         let mut map = map_of(&[("k", "v")]);
-        let mut t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
+        let mut t =
+            TableEditorState { selected: Some(Stop::Row(0)), ..TableEditorState::default() };
         for c in ['a', 'd'] {
             let out = t.handle_key(key(KeyCode::Char(c)), &mut map);
             assert!(!out.consumed, "{c}");
@@ -1947,9 +2236,39 @@ mod tests {
     ) -> Terminal<TestBackend> {
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
         terminal
-            .draw(|f| t.draw(f, f.area(), map, ctx, "+ Add param", hits, &[], &VarView::default()))
+            .draw(|f| {
+                t.draw(f, f.area(), map, ctx, "+ Add param", hits, &[], &VarView::default(), 0)
+            })
             .unwrap();
         terminal
+    }
+
+    /// Task #56: a table drawn `skip` lines down puts row `i` on line
+    /// `1 + i - skip` and registers nothing for the lines above the view
+    /// or below it, so a click only finds a row that is on screen.
+    #[test]
+    fn a_skipped_draw_shifts_the_rows_and_registers_only_what_shows() {
+        let theme = Theme::dark();
+        let map = map_of(&[("a", "1"), ("b", "2"), ("c", "3"), ("d", "4")]);
+        let t = TableEditorState::default();
+        let mut hits = HitMap::default();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let area = Rect::new(0, 2, 40, 3);
+        terminal
+            .draw(|f| {
+                let ctx = ctx(&theme, None);
+                t.draw(f, area, &map, &ctx, "+ Add param", &mut hits, &[], &VarView::default(), 2)
+            })
+            .unwrap();
+        // Lines 2..5 show: rows 1, 2, 3 (the header and row 0 are above).
+        assert_eq!(hits.rect_of(&Hit::TableRow(0)), None, "row 0 is above the view");
+        assert_eq!(hits.rect_of(&Hit::TableRow(1)).map(|r| r.y), Some(2));
+        assert_eq!(hits.rect_of(&Hit::TableRow(3)).map(|r| r.y), Some(4));
+        assert_eq!(hits.rect_of(&Hit::TableRow(4)), None, "+ Add is below the view");
+        let buf = terminal.backend().buffer();
+        let row = |y: u16| (0..40).map(|x| buf[(x, y)].symbol()).collect::<String>();
+        assert!(!row(2).contains("NAME"), "the header scrolled away: {}", row(2));
+        assert!(row(5).trim().is_empty(), "nothing drawn under the area: {}", row(5));
     }
 
     #[test]
@@ -2105,6 +2424,7 @@ mod tests {
                     &mut hits,
                     &[],
                     &VarView::default(),
+                    0,
                 )
             })
             .unwrap();
@@ -2140,6 +2460,7 @@ mod tests {
                     hits,
                     notes,
                     &VarView::default(),
+                    0,
                 )
             })
             .unwrap();
@@ -2252,7 +2573,7 @@ mod tests {
         draw_to(&TableEditorState::default(), &map, &ctx(&theme, None), &mut resting);
         let before: Vec<_> = (0..3).map(|i| resting.rect_of(&Hit::TableRow(i)).unwrap()).collect();
 
-        let t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
+        let t = TableEditorState { selected: Some(Stop::Row(0)), ..TableEditorState::default() };
         let mut hits = HitMap::default();
         draw_to(&t, &map, &ctx(&theme, None), &mut hits);
         let after: Vec<_> = (0..3).map(|i| hits.rect_of(&Hit::TableRow(i)).unwrap()).collect();
@@ -2266,7 +2587,7 @@ mod tests {
     fn selecting_the_ghost_row_keeps_it_one_line() {
         let theme = Theme::dark();
         let map = map_of(&[("a", "1")]);
-        let t = TableEditorState { selected: Some(1), ..TableEditorState::default() };
+        let t = TableEditorState { selected: Some(Stop::Add), ..TableEditorState::default() };
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &ctx(&theme, None), &mut hits);
         let ghost = hits.rect_of(&Hit::TableRow(1)).unwrap();
@@ -2316,7 +2637,7 @@ mod tests {
     fn the_active_rows_buttons_offer_copy_before_the_trash() {
         let theme = Theme::dark();
         let map = map_of(&[("a", "1")]);
-        let t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
+        let t = TableEditorState { selected: Some(Stop::Row(0)), ..TableEditorState::default() };
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &ctx(&theme, None), &mut hits);
         let copy = hits.rect_of(&Hit::TableCopy(0)).expect("the active row offers copy");
@@ -2344,7 +2665,7 @@ mod tests {
     fn the_expanded_row_shows_toggle_and_trash_without_hover() {
         let theme = Theme::dark();
         let map = map_of(&[("a", "1")]);
-        let t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
+        let t = TableEditorState { selected: Some(Stop::Row(0)), ..TableEditorState::default() };
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &ctx(&theme, None), &mut hits);
         let content = format!("{:?}", terminal.backend().buffer());
@@ -2362,7 +2683,8 @@ mod tests {
     fn a_live_cell_edit_keeps_the_buttons_visible() {
         let theme = Theme::dark();
         let mut map = map_of(&[("a", "1")]);
-        let mut t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
+        let mut t =
+            TableEditorState { selected: Some(Stop::Row(0)), ..TableEditorState::default() };
         t.click_cell(0, Col::Value, &mut map);
         let mut hits = HitMap::default();
         draw_to(&t, &map, &ctx(&theme, None), &mut hits);
@@ -2408,7 +2730,7 @@ mod tests {
 
         // Selected data row: the cursor lift is the only thing the cursor
         // paints, so an unfocused pane shows the resting fill.
-        let t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
+        let t = TableEditorState { selected: Some(Stop::Row(0)), ..TableEditorState::default() };
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &unfocused, &mut hits);
         let buf = terminal.backend().buffer();
@@ -2425,7 +2747,7 @@ mod tests {
         );
 
         // Ghost-row cursor: same rule — resting fill, muted add label.
-        let t = TableEditorState { selected: Some(map.len()), ..TableEditorState::default() };
+        let t = TableEditorState { selected: Some(Stop::Add), ..TableEditorState::default() };
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &unfocused, &mut hits);
         let buf = terminal.backend().buffer();
@@ -2441,7 +2763,7 @@ mod tests {
     fn the_selected_row_carries_its_actions_without_growing() {
         let theme = Theme::dark();
         let map = map_of(&[("page", "2")]);
-        let t = TableEditorState { selected: Some(0), ..TableEditorState::default() };
+        let t = TableEditorState { selected: Some(Stop::Row(0)), ..TableEditorState::default() };
         let mut hits = HitMap::default();
         draw_to(&t, &map, &ctx(&theme, None), &mut hits);
         assert_eq!(hits.rect_of(&Hit::TableRow(0)).unwrap().height, 1);
@@ -2455,7 +2777,7 @@ mod tests {
         let mut map = map_of(&[("a", "1")]);
         let mut t = TableEditorState::default();
         assert!(!t.editing_ghost(map.len()));
-        t.selected = Some(1); // the ghost, selected but not typed into
+        t.selected = Some(Stop::Add); // the ghost, selected but not typed into
         assert!(!t.editing_ghost(map.len()));
         t.click_cell(1, Col::Key, &mut map);
         assert!(t.editing_ghost(map.len()), "the ghost row is under edit");

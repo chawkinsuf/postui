@@ -1,5 +1,5 @@
 use super::line_input::LineInput;
-use super::table_editor::{Col, RowNote, TableEditorState, TableOutcome, table_height};
+use super::table_editor::{Col, RowNote, Stop, TableEditorState, TableOutcome, table_height};
 use super::toast::ToastKind;
 use super::{Component, DrawCtx, pane_surface};
 use crate::action::{Action, Verb};
@@ -92,8 +92,27 @@ impl EditorTab {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Caret {
     Url(usize),
-    Body { row: usize, col: usize },
-    Cell { row: usize, key: Option<String> },
+    Body {
+        row: usize,
+        col: usize,
+    },
+    Cell {
+        row: usize,
+        key: Option<String>,
+    },
+    /// The table's cursor on row `index` of the section under the table
+    /// (task #56): undo puts it back there, as it was ("undo restores
+    /// exactly"), found by `name` on the Vars tab (the referenced
+    /// variable's), by place on the Headers tab; a section that shrank
+    /// meanwhile is clamped on the next frame (`settle_table_scroll`). The
+    /// auto rows are worked out by `App` from the project's defaults and
+    /// the environment after the swap, so at restore time the new list
+    /// isn't known yet: the cursor keeps its place there, as it does when
+    /// the section changes under it any other way (`section_cursor`).
+    Section {
+        index: usize,
+        name: Option<String>,
+    },
     None,
 }
 
@@ -456,9 +475,10 @@ impl Editor {
     fn enter_content(&mut self) {
         self.sub_focus = SubFocus::Content;
         if matches!(self.active_tab, EditorTab::Params | EditorTab::Headers | EditorTab::Vars)
-            && self.table.selected.is_none()
+            && self.table.selected().is_none()
         {
-            self.table.selected = Some(0);
+            let len = self.table_len();
+            self.table.set_selected(Some(Stop::of_row(0, len)));
         }
     }
 
@@ -529,6 +549,9 @@ impl Editor {
         // value stashed on the "+ Add" row (task #68 owns where it should
         // go).
         self.table.editing = None;
+        // Another request's content starts at the top (spec 2026-10-25
+        // S9); the next frame keeps a kept cursor in sight (S22).
+        self.table.reset_view();
     }
 
     /// Swaps in `req`'s fields the way `load` does, for undo/redo stepping
@@ -536,9 +559,11 @@ impl Editor {
     /// `slug`, `saved`, and `computed.revealed` untouched (the request
     /// identity and dirty baseline don't change, and reveal state is a
     /// per-request gesture unrelated to which snapshot is showing). Also
-    /// drops any live table cell edit and selection — mirroring
-    /// `Action::DiscardChanges` — so a snapshot swap can't leave a stale
-    /// in-progress edit pointed at fields that just got replaced.
+    /// drops any live table cell edit — mirroring `Action::DiscardChanges`
+    /// — so a snapshot swap can't leave a stale in-progress edit pointed at
+    /// fields that just got replaced. The caret is kept: it is read before
+    /// the swap and placed again after it (on its row's key where that row
+    /// survives; see `restore_caret`, and #121 for an undone row add).
     pub fn apply_snapshot(&mut self, req: &HttpRequest) {
         let caret = self.caret();
         let keys_before: Vec<String> =
@@ -564,18 +589,31 @@ impl Editor {
             None => "",
         });
         self.table.editing = None;
-        self.table.selected = None;
+        let on_table = matches!(caret, Caret::Cell { .. } | Caret::Section { .. });
+        if !on_table {
+            self.table.set_selected(None);
+        }
+        // The table's caret is put back in one write (`restore_caret`), so a
+        // cursor that comes back where it was is no cursor move (S23).
         self.restore_caret(&caret);
         // A row the swap brought back (undoing a delete, redoing an add) is
         // where the cursor goes, the way every list reselects its restored
-        // row: the first one when several return. Only a row cursor moves —
-        // focus and cell text carets stay put (ruling 6772cd9).
-        if let Caret::Cell { .. } = caret
+        // row: the first one when several return. Only a table cursor (on a
+        // row, `+ Add` or a section row) moves — focus and cell text carets
+        // stay put (ruling 6772cd9).
+        if on_table
             && let Some(i) = (0..self.table_len())
                 .find(|&i| self.table_key_at(i).is_some_and(|k| !keys_before.contains(&k)))
         {
-            self.table.selected = Some(i);
+            self.table.set_selected(Some(Stop::Row(i)));
         }
+    }
+
+    /// Whether the caret is in the body: when [`Self::caret`] reports
+    /// `Caret::Body`, answered without the rest of `caret()` (on a Vars
+    /// section row it scans every field for the row's name).
+    pub fn caret_in_body(&self) -> bool {
+        self.sub_focus == SubFocus::Content && self.active_tab == EditorTab::Body
     }
 
     /// Where the caret sits right now, so [`Self::apply_snapshot`] can put
@@ -585,11 +623,25 @@ impl Editor {
     pub fn caret(&self) -> Caret {
         match self.sub_focus {
             SubFocus::Url => Caret::Url(self.url.cursor()),
-            SubFocus::Content if self.active_tab == EditorTab::Body => {
+            SubFocus::Content if self.caret_in_body() => {
                 Caret::Body { row: self.body.cursor.row, col: self.body.cursor.col }
             }
-            SubFocus::Content => match self.table.selected {
-                Some(row) => Caret::Cell { row, key: self.table_key_at(row) },
+            SubFocus::Content => match self.table.selected() {
+                Some(Stop::Row(row)) => Caret::Cell { row, key: self.table_key_at(row) },
+                // `+ Add` has no key and comes back clamped to the last row,
+                // as on main (R8 in the 2026-09-27 undo spec: never the ghost
+                // row; S20 keeps it). Whether an undo should put it back on
+                // `+ Add` exactly is task #121's open question.
+                Some(Stop::Add) => Caret::Cell { row: self.table_len(), key: None },
+                // A referenced row is found again by its variable's name: the
+                // list is rebuilt in first-seen order, so an undo that drops
+                // an earlier `{{token}}` shifts the index.
+                Some(Stop::Section(index)) => Caret::Section {
+                    index,
+                    name: (self.active_tab == EditorTab::Vars)
+                        .then(|| self.referenced_var_names().into_iter().nth(index))
+                        .flatten(),
+                },
                 None => Caret::None,
             },
             _ => Caret::None,
@@ -634,11 +686,23 @@ impl Editor {
                     EditorTab::Vars => self.variables.len(),
                     EditorTab::Body => 0,
                 };
-                self.table.selected = Some(
-                    key.as_deref()
-                        .and_then(|k| self.table_index_of(k))
-                        .unwrap_or_else(|| (*row).min(len.saturating_sub(1))),
-                );
+                let row = key
+                    .as_deref()
+                    .and_then(|k| self.table_index_of(k))
+                    .unwrap_or_else(|| (*row).min(len.saturating_sub(1)));
+                self.table.set_selected(Some(Stop::of_row(row, len)));
+            }
+            Caret::Section { index, name } => {
+                // By name where there is one (the Vars tab), else the same
+                // place; a section that shrank is clamped on the next frame.
+                // A name the swap removed falls back to its old place, as a
+                // table row whose key is gone does (R8, `Caret::Cell`): the
+                // neighbour now there.
+                let at = name
+                    .as_deref()
+                    .and_then(|n| self.referenced_var_names().iter().position(|r| r == n))
+                    .unwrap_or(*index);
+                self.table.set_selected(Some(Stop::Section(at)));
             }
             Caret::None => {}
         }
@@ -757,9 +821,14 @@ impl Editor {
             _ => None,
         };
         let cursor = (focused && self.sub_focus == SubFocus::Content)
-            .then_some(self.table.selected)
+            .then_some(self.table.selected())
             .flatten();
-        hovered.or_else(|| table_row(cursor?))
+        // The cursor may sit on an auto row too (spec 2026-10-25 S17).
+        hovered.or_else(|| match cursor? {
+            Stop::Row(i) => table_row(i),
+            Stop::Section(j) => client_owned_header(self.computed.rows.get(j)?.unsent),
+            Stop::Add => None,
+        })
     }
 
     /// A never-loaded (fresh scratch) editor is not dirty even though it has
@@ -1370,10 +1439,14 @@ impl Editor {
         crate::paint::TabStrip::spans(&labels)
     }
 
-    /// The body buffer's scroll state, as of the last draw. `None` unless the
-    /// Body tab is showing (the other tabs have nothing scrollable wired up).
+    /// The tab content's scroll state, as of the last draw. `None` before a
+    /// draw has measured it, and on a hidden table.
     ///
-    /// `offset` is edtui's own viewport offset (its public
+    /// On a table tab it is the content's own lines (task #56): the
+    /// offset `draw_table_tab` drew from, every line of the table and its
+    /// section, and the lines the last frame had on screen.
+    ///
+    /// On the Body tab, `offset` is edtui's own viewport offset (its public
     /// `EditorState::viewport_offset`); `content` and `viewport` are counted
     /// in *logical* lines against rendered rows, which line up exactly until
     /// a line is long enough to wrap — the bar then reads slightly
@@ -1381,7 +1454,12 @@ impl Editor {
     /// rather than wrongly.
     pub fn scrollbar_spec(&self) -> Option<ScrollbarSpec> {
         if self.active_tab != EditorTab::Body {
-            return None;
+            return (!self.table_collapsed && self.table.viewport > 0).then(|| ScrollbarSpec {
+                pane: PaneId::Editor,
+                offset: self.view_offset(),
+                content: self.table_content_lines(),
+                viewport: self.table.viewport,
+            });
         }
         let area = self.last_body_area?;
         if area.height == 0 {
@@ -1389,10 +1467,21 @@ impl Editor {
         }
         Some(ScrollbarSpec {
             pane: PaneId::Editor,
-            offset: self.body.viewport_offset().1,
+            offset: self.view_offset(),
             content: self.body.lines.len(),
             viewport: area.height as usize,
         })
+    }
+
+    /// The tab content's first drawn line: [`Self::scrollbar_spec`]'s
+    /// `offset` alone, which a thumb drag compares to see whether it moved
+    /// without counting the content again (on Vars that count scans every
+    /// field, the body included).
+    pub fn view_offset(&self) -> usize {
+        match self.active_tab {
+            EditorTab::Body => self.body.viewport_offset().1,
+            _ => self.table.scroll,
+        }
     }
 
     /// Cursor-movement niceties edtui 0.11 doesn't provide, applied before
@@ -2301,13 +2390,34 @@ impl Component for Editor {
                     self.active_tab,
                     EditorTab::Params | EditorTab::Headers | EditorTab::Vars
                 ) {
+                    // An open cell's keys never move the cursor, so the
+                    // section (a scan of every field on Vars) is counted
+                    // only on the closed table.
+                    let tail = if self.table.editing.is_none() { self.section_len() } else { 0 };
+                    // Enter on an auto row with the pencil does what the
+                    // pencil does (spec 2026-10-25 S15), on the row drawn
+                    // lit (a stale stop read clamped, S25; the table's keys
+                    // clamp the cursor itself). On any other section row it
+                    // opens nothing (S21): the table leaves it unconsumed,
+                    // as it leaves Space on `+ Add`.
+                    let len = self.table_len();
+                    if plain
+                        && ev.code == KeyCode::Enter
+                        && self.table.editing.is_none()
+                        && self.active_tab == EditorTab::Headers
+                        && let Some(Stop::Section(j)) =
+                            self.table.selected().map(|s| s.clamp(len, tail))
+                        && self.auto_row_overridable(j)
+                    {
+                        return Some(Action::OverrideAutoHeader(j));
+                    }
                     let map = match self.active_tab {
                         EditorTab::Params => &mut self.params,
                         EditorTab::Headers => &mut self.headers,
                         EditorTab::Vars => &mut self.variables,
                         EditorTab::Body => unreachable!(),
                     };
-                    let outcome = self.table.handle_key(ev, map);
+                    let outcome = self.table.handle_key_with_tail(ev, map, tail);
                     if outcome.consumed {
                         if let Some(i) = outcome.request_delete {
                             return Some(Action::DeleteTableRow(i));
@@ -2335,7 +2445,7 @@ impl Component for Editor {
                     // a row that stays lit while keys land in the URL line
                     // misstates focus.
                     if plain && ev.code == KeyCode::Up {
-                        self.table.selected = None;
+                        self.table.set_selected(None);
                         self.select_url();
                         return Some(Action::Render);
                     }
@@ -2493,11 +2603,15 @@ impl Component for Editor {
         }
     }
 
-    /// Wheel-over-an-unfocused-pane path (`Action::ScrollPane`). Only the
-    /// Body tab has anything under edtui's control to scroll; synthesizes
-    /// `|delta|` scroll events and forwards them through `handle_mouse` so
-    /// both paths share edtui's own bounds check. Other tabs are a no-op
-    /// here (params/headers scrolling isn't wired up).
+    /// Wheel-over-an-unfocused-pane path (`Action::ScrollPane`), which the
+    /// scrollbar's track and thumb also feed.
+    ///
+    /// A table tab moves its view by `delta` lines and leaves the cursor
+    /// where it is (spec 2026-10-25 S5), then takes the view's limits:
+    /// never past the last line, never past an open cell (S3, S8).
+    ///
+    /// The Body tab synthesizes `|delta|` scroll events and forwards them
+    /// through `handle_mouse` so both paths share edtui's own bounds check.
     ///
     /// The synthesized column must land inside the area edtui itself
     /// recorded (`EditorState::view::screen_area`, set on every render),
@@ -2511,6 +2625,14 @@ impl Component for Editor {
     /// content area, regardless of how wide the gutter is.
     fn handle_scroll(&mut self, delta: i16) {
         if self.active_tab != EditorTab::Body {
+            // No table on screen (collapsed, not drawn yet, or a content
+            // area no rows tall): there is no view to scroll.
+            if self.table_collapsed || self.table.viewport == 0 {
+                return;
+            }
+            let moved = self.table.scroll as i64 + i64::from(delta);
+            self.table.scroll = usize::try_from(moved).unwrap_or(0);
+            self.clamp_table_scroll(self.table.viewport, self.table_content_lines());
             return;
         }
         let Some(area) = self.last_body_area else {
@@ -2554,27 +2676,14 @@ impl Component for Editor {
             _ if self.table_collapsed => Constraint::Length(0),
             EditorTab::Body => Constraint::Min(0),
             EditorTab::Params | EditorTab::Headers | EditorTab::Vars => {
-                let rows = self.table_len();
-                let computed_extra = match self.active_tab {
-                    EditorTab::Headers => {
-                        let auto_rows = self.computed_row_count();
-                        let divider = if auto_rows > 0 { 1 } else { 0 };
-                        auto_rows + divider
-                    }
-                    // The referenced-vars section: one row per token the
-                    // request references, plus its divider.
-                    EditorTab::Vars => {
-                        let refs = self.referenced_var_names().len() as u16;
-                        if refs > 0 { refs + 1 } else { 0 }
-                    }
-                    _ => 0,
-                };
                 // Capped to what's left after the fixed address bar and tab
                 // bar rows, never the other way around: those two must never
                 // be squeezed to make room for a table that wants more
-                // height than the pane has.
+                // height than the pane has. What doesn't fit scrolls
+                // (`draw_table_tab`).
                 let available = inner.height.saturating_sub(CHROME_HEIGHT);
-                Constraint::Length((table_height(rows) + computed_extra).min(available))
+                let wanted = u16::try_from(self.table_content_lines()).unwrap_or(u16::MAX);
+                Constraint::Length(wanted.min(available))
             }
         };
 
@@ -3094,25 +3203,35 @@ impl Editor {
 
     /// What a list verb means on the active table (piece 4 spec §5.3), on
     /// the row under the cursor. The add row takes add and put only; the
-    /// Body tab takes nothing.
+    /// Body tab takes nothing. A section row past `+ Add` takes add and
+    /// put the same way, and an auto row takes yank too: it copies the
+    /// row's value, as its copy pill does (spec 2026-10-25 S14). Anything
+    /// else there does nothing (S21).
     pub fn table_verb_action(&self, verb: Verb) -> Option<Action> {
         if self.active_tab == EditorTab::Body {
             return None;
         }
         let len = self.table_len();
-        let row = self.table.selected.filter(|&i| i < len);
+        let row = match self.table.selected() {
+            Some(Stop::Row(i)) if i < len => Some(i),
+            _ => None,
+        };
         match verb {
             Verb::Add => Some(Action::TableAddRow),
             Verb::Delete { count: 0 | 1 } => row.map(Action::DeleteTableRow),
             Verb::Delete { count } => row.map(|start| Action::DeleteTableRows { start, count }),
-            Verb::Yank => row.map(Action::YankTableRow),
+            Verb::Yank => row.map(Action::YankTableRow).or_else(|| {
+                let j = self.auto_row_cursor()?;
+                Some(Action::CopyToClipboard(crate::action::CopyTarget::ComputedHeader(j)))
+            }),
             Verb::Put { above, count } => {
-                let at = match self.table.selected {
+                // Above or below a row; anywhere past the rows, at their end.
+                let at = match row {
                     Some(i) if above => i,
                     Some(i) => i + 1,
                     None => len,
                 };
-                Some(Action::PutTableRow { at: at.min(len), count })
+                Some(Action::PutTableRow { at, count })
             }
             _ => None,
         }
@@ -3314,12 +3433,6 @@ impl Editor {
         }
     }
 
-    /// Rows the computed-headers section will draw. Shared by the height
-    /// math in `draw` and the draw itself so they can never disagree.
-    fn computed_row_count(&self) -> u16 {
-        self.computed.rows.len() as u16
-    }
-
     /// Every `{{variable}}` the request references, deduped in first-seen
     /// order, from exactly the fields a send substitutes: the URL, enabled
     /// param and header keys/values, enabled request-var values, and the
@@ -3414,128 +3527,11 @@ impl Editor {
         let theme = ctx.theme;
         let focused = ctx.focused && self.sub_focus == SubFocus::Content;
         self.last_body_area = None;
+        self.table.viewport = 0;
         match self.active_tab {
-            EditorTab::Params => {
-                if self.table_collapsed {
-                    return;
-                }
-                let table_ctx = DrawCtx {
-                    theme,
-                    focused,
-                    hovered: ctx.hovered,
-                    pointer: ctx.pointer,
-                    dragging: ctx.dragging,
-                    anims: ctx.anims,
-                    now: ctx.now,
-                };
-                self.table.draw(
-                    frame,
-                    area,
-                    &self.params,
-                    &table_ctx,
-                    "+ Add param",
-                    hits,
-                    &[],
-                    &self.vars,
-                );
-            }
-            EditorTab::Vars => {
-                if self.table_collapsed {
-                    return;
-                }
-                // Same split the Headers tab uses for its computed section:
-                // the editable table keeps its full height first, and the
-                // referenced list only gets what's left, clamped to what it
-                // asked for.
-                let refs = self.referenced_var_names();
-                let rows = self.table_len();
-                let table_h = table_height(rows).min(area.height);
-                let refs_h = if refs.is_empty() {
-                    0
-                } else {
-                    (refs.len() as u16 + 1).min(area.height.saturating_sub(table_h))
-                };
-                let refs_area =
-                    (refs_h > 0).then(|| Rect { y: area.y + table_h, height: refs_h, ..area });
-                let table_area = Rect { height: table_h, ..area };
-                let table_ctx = DrawCtx {
-                    theme,
-                    focused,
-                    hovered: ctx.hovered,
-                    pointer: ctx.pointer,
-                    dragging: ctx.dragging,
-                    anims: ctx.anims,
-                    now: ctx.now,
-                };
-                let notes: Vec<Option<RowNote>> = self
-                    .variables
-                    .keys()
-                    .map(|k| self.shadowed.get(k).map(|s| RowNote::Dim(format!("overrides {s}"))))
-                    .collect();
-                self.table.draw(
-                    frame,
-                    table_area,
-                    &self.variables,
-                    &table_ctx,
-                    "+ Add variable",
-                    hits,
-                    &notes,
-                    &self.vars,
-                );
-                if let Some(refs_area) = refs_area {
-                    self.draw_referenced_vars(frame, refs_area, &refs, ctx, hits);
-                }
-            }
-            EditorTab::Headers => {
-                if self.table_collapsed {
-                    return;
-                }
-                // The table keeps its own full height first — it's the
-                // editable data — and the computed section only gets
-                // whatever's left after that, clamped to what it asked
-                // for; under real space pressure the auto section shrinks
-                // (or disappears) rather than eating into the table. Since
-                // the status lines above the table went (spec 2026-10-18
-                // R6), the project defaults live only in that section, so
-                // they give way too; the pane split brings them back, and
-                // #56 is the task that makes the tab scroll to them.
-                let auto_rows = self.computed_row_count();
-                let rows = self.table_len();
-                let table_h = table_height(rows).min(area.height);
-                let computed_h = if auto_rows == 0 {
-                    0
-                } else {
-                    (auto_rows + 1).min(area.height.saturating_sub(table_h))
-                };
-                let computed_area = (computed_h > 0).then(|| Rect {
-                    y: area.y + table_h,
-                    height: computed_h,
-                    ..area
-                });
-                let table_area = Rect { height: table_h, ..area };
-                let table_ctx = DrawCtx {
-                    theme,
-                    focused,
-                    hovered: ctx.hovered,
-                    pointer: ctx.pointer,
-                    dragging: ctx.dragging,
-                    anims: ctx.anims,
-                    now: ctx.now,
-                };
-                // A row naming a header the client sets itself is kept but
-                // never sent (spec 2026-10-18 R3a), so it is struck in red.
-                self.table.draw(
-                    frame,
-                    table_area,
-                    &self.headers,
-                    &table_ctx,
-                    "+ Add header",
-                    hits,
-                    &self.computed.notes,
-                    &self.vars,
-                );
-                if let Some(computed_area) = computed_area {
-                    self.draw_computed_headers(frame, computed_area, ctx, hits);
+            EditorTab::Params | EditorTab::Headers | EditorTab::Vars => {
+                if !self.table_collapsed {
+                    self.draw_table_tab(frame, area, ctx, focused, hits);
                 }
             }
             EditorTab::Body => {
@@ -3709,6 +3705,296 @@ impl Editor {
         }
     }
 
+    /// Rows of the read-only section the active tab draws under its table
+    /// (the Headers tab's auto rows, the Vars tab's referenced variables;
+    /// Params has none). Each is a cursor stop after `+ Add` (spec
+    /// 2026-10-25 S11, S12).
+    ///
+    /// On the Vars tab this scans every field a send substitutes, the body
+    /// included (`referenced_var_names`), so the table tab's draw asks it
+    /// once and hands the count on, rather than asking per helper (the
+    /// layout pass asks once more, as it always has).
+    pub(crate) fn section_len(&self) -> usize {
+        self.section_len_with(&self.section_refs())
+    }
+
+    /// The Vars tab's referenced names (the section's rows there), empty on
+    /// every other tab: what [`Self::section_len_with`] counts from.
+    fn section_refs(&self) -> Vec<String> {
+        match self.active_tab {
+            EditorTab::Vars => self.referenced_var_names(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The section's row count, given [`Self::section_refs`]: the one
+    /// place that says what each tab's section holds.
+    fn section_len_with(&self, refs: &[String]) -> usize {
+        match self.active_tab {
+            EditorTab::Headers => self.computed.rows.len(),
+            EditorTab::Vars => refs.len(),
+            EditorTab::Params | EditorTab::Body => 0,
+        }
+    }
+
+    /// Every line a table tab's content has, for a section of
+    /// `section_len` rows: the table's, then the section's divider and
+    /// rows. The tab scrolls over these as one column (spec 2026-10-25 S1).
+    fn content_lines_for(&self, section_len: usize) -> usize {
+        let section = if section_len == 0 { 0 } else { section_len + 1 };
+        usize::from(table_height(self.table_len())) + section
+    }
+
+    /// [`Self::content_lines_for`] the active tab's section.
+    fn table_content_lines(&self) -> usize {
+        self.content_lines_for(self.section_len())
+    }
+
+    /// The content line cursor stop `stop` sits on: row `i` is line
+    /// `i + 1` (under the table's header), `+ Add` line `len + 1`, and
+    /// section row `j` the `j`th line after the table's closing edge and
+    /// the section's divider. The one place the stops' lines are worked
+    /// out.
+    fn stop_line(&self, stop: Stop) -> usize {
+        let len = self.table_len();
+        match stop {
+            Stop::Row(i) => i + 1,
+            Stop::Add => len + 1,
+            Stop::Section(j) => usize::from(table_height(len)) + 1 + j,
+        }
+    }
+
+    /// Every stop, in the order the keys walk them ([`Stop::ordinal`]), for
+    /// a section of `section_len` rows.
+    fn stops(&self, section_len: usize) -> impl DoubleEndedIterator<Item = Stop> + use<> {
+        let len = self.table_len();
+        (0..=len + section_len).map(move |ord| Stop::at(ord, len))
+    }
+
+    /// The section row under the table's cursor. A section stop is its
+    /// row's place, as a table row's is: when the section changes under it
+    /// (an environment switch adds an `Authorization`), the cursor keeps
+    /// its place and the keys act on the row now drawn lit there, the one
+    /// the user sees.
+    ///
+    /// It reads the stop as stored, with no clamp. A stale stop does not
+    /// reach a key here: the loop redraws after every event that reports a
+    /// change, and the frame clamps the stop (`settle_table_scroll`) before
+    /// the next event is read. The bound check only answers `None` rather
+    /// than name a row that isn't there. The clamp at the top of the
+    /// table's own keys (S25) is the same rule kept where the keys come in.
+    pub fn section_cursor(&self) -> Option<usize> {
+        match self.table.selected()? {
+            Stop::Section(j) if j < self.section_len() => Some(j),
+            _ => None,
+        }
+    }
+
+    /// The auto row under the cursor, on the Headers tab: the row its keys
+    /// act on (spec 2026-10-25 S14–S16).
+    pub fn auto_row_cursor(&self) -> Option<usize> {
+        (self.active_tab == EditorTab::Headers).then(|| self.section_cursor()).flatten()
+    }
+
+    /// Whether auto row `j` has the `󰏫` pill, so Enter takes it over (#20,
+    /// spec 2026-10-25 S15).
+    pub fn auto_row_overridable(&self, j: usize) -> bool {
+        self.computed.rows.get(j).is_some_and(|r| r.overriding_row().is_some())
+    }
+
+    /// Vim's rule for a window the view scrolled (the vim profile's, as the
+    /// response's `cursor_into_view` is; the user's "follow what Vim
+    /// does"): a cursor the wheel or the scrollbar left off screen moves
+    /// onto the nearest stop in view, so a key never acts on a row out of
+    /// sight. The arrows profile keeps the sidebar's rule instead (spec
+    /// 2026-10-25 S5, S23): the view moves alone, marked scrolled away, and
+    /// the next cursor move brings it back to the cursor. An open cell
+    /// already holds the view (S8).
+    ///
+    /// It runs whether or not the table holds the keyboard, as in Vim: the
+    /// wheel over a window that isn't the current one scrolls it and moves
+    /// that window's cursor into view all the same, so the cursor is never
+    /// off screen when the keyboard comes back to it.
+    ///
+    /// On a pane too short to hold a stop where the wheel left the view
+    /// (one or two lines on the closing edge or the divider), the nearest
+    /// stop is out of view, and the next frame scrolls back to show it.
+    /// That is the cost of the view keeping the cursor in sight (S22, the
+    /// block 2 rework, the user's "keep it in sight"): no line can rest on
+    /// screen without a stop.
+    pub fn table_cursor_into_view(&mut self) {
+        let viewport = self.table.viewport;
+        if self.active_tab == EditorTab::Body
+            || self.table_collapsed
+            || self.table.editing.is_some()
+            || viewport == 0
+        {
+            return;
+        }
+        let Some(s) = self.table.selected() else { return };
+        let (top, bottom) = (self.table.scroll, self.table.scroll + viewport - 1);
+        let line = self.stop_line(s);
+        let section_len = self.section_len();
+        let mut stops = self.stops(section_len);
+        // The first stop on or below the view's top, or the last on or
+        // above its bottom.
+        let stop = if line < top {
+            stops.find(|&t| self.stop_line(t) >= top).or_else(|| self.stops(section_len).last())
+        } else if line > bottom {
+            stops.rfind(|&t| self.stop_line(t) <= bottom)
+        } else {
+            return;
+        };
+        // A view showing only the closing edge and the divider holds no
+        // stop: the nearest one sits just past it, and the next frame keeps
+        // it in sight (S22), a line or two back, as Vim's window keeps its
+        // cursor (the cost S24 names).
+        if let Some(stop) = stop {
+            self.table.set_selected(Some(stop));
+        }
+    }
+
+    /// Scrolls the table tab as little as it can to show content `line`.
+    fn show_table_line(&mut self, line: usize, viewport: usize) {
+        if viewport == 0 {
+            return;
+        }
+        let scroll = &mut self.table.scroll;
+        if line < *scroll {
+            *scroll = line;
+        } else if line >= *scroll + viewport {
+            *scroll = line + 1 - viewport;
+        }
+    }
+
+    /// The rules every placement of the table tab's view ends with: an
+    /// open cell never leaves the view (spec 2026-10-25 S8; typing would
+    /// otherwise land out of sight), and the view stops with the last line
+    /// on the bottom row (S3). The wheel, the scrollbar and each frame run
+    /// it, `content` being the content's line count.
+    fn clamp_table_scroll(&mut self, viewport: usize, content: usize) {
+        if let Some(row) = self.table.editing.as_ref().map(|e| e.row) {
+            self.show_table_line(self.stop_line(Stop::of_row(row, self.table_len())), viewport);
+        }
+        let max = content.saturating_sub(viewport);
+        self.table.scroll = self.table.scroll.min(max);
+    }
+
+    /// Settles the table tab's view for a frame `viewport` lines tall. A
+    /// cursor left past the last stop (the section shrank under it) is
+    /// drawn on the last stop ([`Stop::clamp`]). Then the view keeps the
+    /// cursor in sight, scrolling the least it can (S22): worked out from
+    /// the cursor and the layout alone, so a cursor that moved, rows that
+    /// moved under it, and a pane that shrank all come out the same. The
+    /// one exception is a view the arrows wheel scrolled away (S23), which
+    /// stays where the wheel put it until the cursor moves.
+    /// `section_len` is the section's row count this frame.
+    fn settle_table_scroll(&mut self, viewport: usize, section_len: usize) {
+        let len = self.table_len();
+        self.table.clamp_cursor(len, section_len);
+        if !self.table.scrolled_away()
+            && let Some(stop) = self.table.selected()
+        {
+            self.show_table_line(self.stop_line(stop), viewport);
+        }
+        self.clamp_table_scroll(viewport, self.content_lines_for(section_len));
+    }
+
+    /// Draws a table tab's content (Params, Headers, Vars) into `area`:
+    /// the table, then the read-only section under it, scrolled as one
+    /// column of lines (spec 2026-10-25 S1), with a scrollbar in the pane's
+    /// right margin column, one past `area` (`pane_inner`'s inset), while
+    /// the content overflows (S4). The bar sits where the sidebar's does,
+    /// so no row changes width when it comes or goes. `focused`: the
+    /// table holds the keyboard, so the cursor stop is lit.
+    fn draw_table_tab(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        ctx: &DrawCtx,
+        focused: bool,
+        hits: &mut crate::hit::HitMap,
+    ) {
+        let viewport = usize::from(area.height);
+        // The section's rows, worked out once for the whole frame.
+        let refs = self.section_refs();
+        let section_len = self.section_len_with(&refs);
+        self.table.viewport = viewport;
+        self.settle_table_scroll(viewport, section_len);
+        let skip = self.table.scroll;
+        let table_ctx = DrawCtx {
+            theme: ctx.theme,
+            focused,
+            hovered: ctx.hovered,
+            pointer: ctx.pointer,
+            dragging: ctx.dragging,
+            anims: ctx.anims,
+            now: ctx.now,
+        };
+        let var_notes: Vec<Option<RowNote>>;
+        let (map, add_label, notes): (_, _, &[Option<RowNote>]) = match self.active_tab {
+            EditorTab::Headers => {
+                // A row naming a header the client sets itself is kept but
+                // never sent (spec 2026-10-18 R3a), so it is struck in red.
+                (&self.headers, "+ Add header", &self.computed.notes)
+            }
+            EditorTab::Vars => {
+                var_notes = self
+                    .variables
+                    .keys()
+                    .map(|k| self.shadowed.get(k).map(|s| RowNote::Dim(format!("overrides {s}"))))
+                    .collect();
+                (&self.variables, "+ Add variable", &var_notes)
+            }
+            _ => (&self.params, "+ Add param", &[]),
+        };
+        self.table.draw(frame, area, map, &table_ctx, add_label, hits, notes, &self.vars, skip);
+
+        // The section starts on the line after the table's closing edge;
+        // `top` is how far down the view its divider lands, and
+        // `section_skip` how many of its own lines sit above the view.
+        let table_lines = usize::from(table_height(self.table_len()));
+        let top = table_lines.saturating_sub(skip);
+        if section_len > 0 && top < viewport {
+            let section_skip = skip.saturating_sub(table_lines);
+            let rect = Rect { y: area.y + top as u16, height: (viewport - top) as u16, ..area };
+            // The section row under the cursor, lit while the table is
+            // focused (settled above, so it is in range).
+            let cursor = match self.table.selected() {
+                Some(Stop::Section(j)) if focused => Some(j),
+                _ => None,
+            };
+            match self.active_tab {
+                EditorTab::Headers => {
+                    self.draw_computed_headers(frame, rect, ctx, hits, section_skip, cursor)
+                }
+                EditorTab::Vars => {
+                    self.draw_referenced_vars(frame, rect, &refs, ctx, hits, section_skip, cursor);
+                }
+                _ => {}
+            }
+        }
+
+        let spec = ScrollbarSpec {
+            pane: PaneId::Editor,
+            offset: skip,
+            content: self.content_lines_for(section_len),
+            viewport,
+        };
+        let column = Rect { x: area.right(), width: 1, ..area };
+        if spec.overflows() && column.x < frame.area().right() {
+            crate::hit::draw_scrollbar(
+                frame,
+                hits,
+                column,
+                &spec,
+                ctx.hovered,
+                ctx.dragging,
+                ctx.theme,
+            );
+        }
+    }
+
     /// The Vars tab's read-only "referenced" section: one row per
     /// `{{variable}}` the request references (see
     /// [`Self::referenced_var_names`]), laid out on the editable table's
@@ -3717,6 +4003,12 @@ impl Editor {
     /// column, and the value's source right-aligned. Tokens are tinted
     /// and hover-tooltipped by `paint_var_tokens`, exactly like tokens
     /// drawn anywhere else.
+    ///
+    /// `skip` is how many of the section's lines (the divider first) sit
+    /// above the view (task #56), and `cursor` the row under the focused
+    /// table's cursor, lit with the table's cursor-row fill (spec
+    /// 2026-10-25 S13).
+    #[allow(clippy::too_many_arguments)]
     fn draw_referenced_vars(
         &self,
         frame: &mut Frame,
@@ -3724,6 +4016,8 @@ impl Editor {
         names: &[String],
         ctx: &DrawCtx,
         hits: &mut crate::hit::HitMap,
+        skip: usize,
+        cursor: Option<usize>,
     ) {
         use crate::ui::cells;
         if area.height == 0 || area.width == 0 {
@@ -3734,26 +4028,30 @@ impl Editor {
         let mut y = area.y;
         let max_y = area.y.saturating_add(area.height);
 
-        let prefix = "\u{2500}\u{2500} referenced ";
-        let dash_w = area.width.saturating_sub(cells(prefix) as u16);
-        frame.render_widget(
-            Paragraph::new(Line::styled(
-                format!("{prefix}{}", "\u{2500}".repeat(dash_w as usize)),
-                dim,
-            )),
-            Rect::new(area.x, y, area.width, 1),
-        );
-        y += 1;
+        if skip == 0 {
+            let prefix = "\u{2500}\u{2500} referenced ";
+            let dash_w = area.width.saturating_sub(cells(prefix) as u16);
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    format!("{prefix}{}", "\u{2500}".repeat(dash_w as usize)),
+                    dim,
+                )),
+                Rect::new(area.x, y, area.width, 1),
+            );
+            y += 1;
+        }
 
         let cols = super::table_editor::columns(area.x, area.width);
         let name_w = cols.divider_x.saturating_sub(cols.name_x);
         // From the value column to the pane's last cell.
         let room = area.right().saturating_sub(1).saturating_sub(cols.value_x);
         let buf = frame.buffer_mut();
-        for name in names {
+        for (i, name) in names.iter().enumerate().skip(skip.saturating_sub(1)) {
             if y >= max_y {
                 break;
             }
+            let bg = if cursor == Some(i) { theme.control_hover } else { theme.page };
+            crate::paint::fill(buf, Rect::new(area.x, y, area.width, 1), bg);
             let info = self.vars.describe(name);
             let token_piece = format!("{{{{{name}}}}}");
             crate::paint::text(
@@ -3762,7 +4060,7 @@ impl Editor {
                 y,
                 crate::ui::take_cells(&token_piece, name_w as usize),
                 theme.text_muted,
-                theme.page,
+                bg,
                 false,
             );
             // Retint the token itself (and register its tooltip hit).
@@ -3785,7 +4083,7 @@ impl Editor {
             if source_room > 0 {
                 let source = format!("({})", crate::ui::ellipsize(&label, source_room - 2));
                 let source_x = area.right().saturating_sub(cells(&source) as u16 + 1);
-                crate::paint::text(buf, source_x, y, &source, theme.text_muted, theme.page, false);
+                crate::paint::text(buf, source_x, y, &source, theme.text_muted, bg, false);
             }
             crate::paint::text(
                 buf,
@@ -3793,7 +4091,7 @@ impl Editor {
                 y,
                 crate::ui::take_cells(&value, value_room),
                 theme.text_muted,
-                theme.page,
+                bg,
                 false,
             );
             y += 1;
@@ -3814,12 +4112,19 @@ impl Editor {
     /// whenever a row has a secret to reveal. Under them, a client-owned
     /// row is a surface (`Hit::AutoHeaderRow`) whose hover lets the footer
     /// say why it isn't sent.
+    ///
+    /// `skip` is how many of the section's lines (the divider first) sit
+    /// above the view (task #56), and `cursor` the row under the focused
+    /// table's cursor, lit with the table's cursor-row fill (spec
+    /// 2026-10-25 S13).
     fn draw_computed_headers(
         &self,
         frame: &mut Frame,
         area: Rect,
         ctx: &DrawCtx,
         hits: &mut crate::hit::HitMap,
+        skip: usize,
+        cursor: Option<usize>,
     ) {
         if area.height == 0 || area.width == 0 {
             return;
@@ -3831,7 +4136,7 @@ impl Editor {
 
         // Divider, with the reveal/hide toggle right-aligned onto it when
         // there's a secret to reveal.
-        if y < max_y {
+        if skip == 0 && y < max_y {
             let toggle_label = if self.computed.revealed {
                 format!("{} hide", crate::glyph::EYE_OFF)
             } else {
@@ -3865,9 +4170,16 @@ impl Editor {
             y += 1;
         }
 
-        for (i, row) in self.computed.rows.iter().enumerate() {
+        for (i, row) in self.computed.rows.iter().enumerate().skip(skip.saturating_sub(1)) {
             if y >= max_y {
                 break;
+            }
+            if cursor == Some(i) {
+                crate::paint::fill(
+                    frame.buffer_mut(),
+                    Rect::new(area.x, y, area.width, 1),
+                    theme.control_hover,
+                );
             }
             let suppressed = !row.sent();
             let (name, value) = if self.computed.revealed {
@@ -4198,7 +4510,7 @@ mod tests {
         assert_eq!(e.sub_focus, SubFocus::Url, "default sub_focus starts on the URL line");
         e.handle_key(key(KeyCode::Down));
         assert_eq!(e.sub_focus, SubFocus::Content);
-        assert_eq!(e.table.selected, Some(0), "lands on a visible row");
+        assert_eq!(e.table.selected(), Some(Stop::Add), "lands on a visible row");
         e.handle_key(key(KeyCode::Up));
         assert_eq!(e.sub_focus, SubFocus::Url);
         assert!(!e.url_open, "selected, not open");
@@ -4349,8 +4661,8 @@ mod tests {
         }
         e.restore_caret(&Caret::Cell { row: 2, key: Some("Accept-copy".into()) });
         assert_eq!(
-            e.table.selected,
-            Some(1),
+            e.table.selected(),
+            Some(Stop::Row(1)),
             "a vanished key falls back to the last real row, not the ghost row at index {}",
             e.headers.len()
         );
@@ -4365,7 +4677,62 @@ mod tests {
             ..Editor::default()
         };
         e.restore_caret(&Caret::Cell { row: 3, key: Some("Accept".into()) });
-        assert_eq!(e.table.selected, Some(0));
+        assert_eq!(e.table.selected(), Some(Stop::Add));
+    }
+
+    /// S20 (task #56): a cursor on a section row comes back to that
+    /// section row, as undo found it ("undo restores exactly"); a section
+    /// that shrank meanwhile clamps it on the next frame.
+    #[test]
+    fn a_restored_section_cursor_comes_back_to_its_section_row() {
+        let mut e = Editor {
+            active_tab: EditorTab::Headers,
+            sub_focus: SubFocus::Content,
+            ..Editor::default()
+        };
+        e.headers.insert("X-A".into(), Entry { value: "1".into(), enabled: true });
+        e.table.set_selected(Some(Stop::Section(1)));
+        let caret = e.caret();
+        assert_eq!(caret, Caret::Section { index: 1, name: None }, "Headers: by place");
+        e.table.set_selected(None);
+        e.restore_caret(&caret);
+        assert_eq!(e.table.selected(), Some(Stop::Section(1)));
+    }
+
+    /// S20 (amended): on the Vars tab a referenced row comes back by its
+    /// variable's name, so an undo that drops an earlier `{{token}}` puts
+    /// the cursor on the same variable, not the same place.
+    #[test]
+    fn a_restored_referenced_cursor_comes_back_by_name() {
+        let mut e = Editor {
+            active_tab: EditorTab::Vars,
+            sub_focus: SubFocus::Content,
+            ..Editor::default()
+        };
+        e.url = LineInput::new("https://{{host}}/{{token}}");
+        e.table.set_selected(Some(Stop::Section(1)));
+        let caret = e.caret();
+        assert_eq!(caret, Caret::Section { index: 1, name: Some("token".into()) });
+        e.url = LineInput::new("https://x/{{token}}");
+        e.restore_caret(&caret);
+        assert_eq!(e.table.selected(), Some(Stop::Section(0)), "`token` is row 0 now");
+    }
+
+    /// S20 (amended): an undo or redo that brings a row back puts the
+    /// cursor on it from a section row too, as from a table row.
+    #[test]
+    fn a_swap_that_brings_a_row_back_lands_a_section_cursor_on_it() {
+        let mut e = Editor {
+            active_tab: EditorTab::Headers,
+            sub_focus: SubFocus::Content,
+            ..Editor::default()
+        };
+        e.headers.insert("X-A".into(), Entry { value: "1".into(), enabled: true });
+        e.table.set_selected(Some(Stop::Section(0)));
+        let mut req = e.current_request();
+        req.headers.insert("X-B".into(), Entry { value: "2".into(), enabled: true });
+        e.apply_snapshot(&req);
+        assert_eq!(e.table.selected(), Some(Stop::Row(1)), "on the row the swap brought back");
     }
 
     #[test]
@@ -4804,7 +5171,7 @@ mod tests {
         let mut e = Editor { sub_focus: SubFocus::Method, ..Editor::default() };
         e.handle_key(key(KeyCode::Down));
         assert_eq!(e.sub_focus, SubFocus::Content);
-        assert_eq!(e.table.selected, Some(0), "lands on a visible row");
+        assert_eq!(e.table.selected(), Some(Stop::Add), "lands on a visible row");
         e.sub_focus = SubFocus::Method;
         e.handle_key(key(KeyCode::Esc));
         assert_eq!(e.sub_focus, SubFocus::None);
@@ -4908,12 +5275,12 @@ mod tests {
         // Entering the content must never be an invisible state: on
         // Params/Headers the first row (or the ghost + Add row of an empty
         // table) is selected immediately, so every keyboard stop shows.
-        let mut e = Editor::default();
+        let mut e = Editor { active_tab: EditorTab::Params, ..Editor::default() };
         e.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
         e.sub_focus = SubFocus::Url;
         e.handle_key(key(KeyCode::Down));
         assert_eq!(e.sub_focus, SubFocus::Content);
-        assert_eq!(e.table.selected, Some(0), "first row selected on entry");
+        assert_eq!(e.table.selected(), Some(Stop::Row(0)), "first row selected on entry");
 
         let mut e = Editor {
             sub_focus: SubFocus::Url,
@@ -4923,8 +5290,8 @@ mod tests {
         e.handle_key(key(KeyCode::Down)); // from the open line too
         assert_eq!(e.sub_focus, SubFocus::Content);
         assert_eq!(
-            e.table.selected,
-            Some(0),
+            e.table.selected(),
+            Some(Stop::Add),
             "an empty table's entry point is its ghost + Add row"
         );
     }
@@ -4940,7 +5307,7 @@ mod tests {
         e.headers.insert("a".into(), Entry { value: "1".into(), enabled: true });
         e.sub_focus = SubFocus::Url;
         e.handle_key(key(KeyCode::Down));
-        assert_eq!((e.sub_focus, e.table.selected), (SubFocus::Content, Some(0)));
+        assert_eq!((e.sub_focus, e.table.selected()), (SubFocus::Content, Some(Stop::Row(0))));
         let tab = e.active_tab;
         assert_eq!(tab, EditorTab::Headers);
         e.table.col = super::super::table_editor::Col::Key;
@@ -4959,14 +5326,14 @@ mod tests {
         let mut e = Editor::default();
         e.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
         e.sub_focus = SubFocus::Content;
-        e.table.selected = Some(0);
+        e.table.set_selected(Some(Stop::Row(0)));
         assert_eq!(e.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL)), None);
         assert_eq!(e.sub_focus, SubFocus::Content, "ctrl+k is not a motion");
         assert_eq!(e.handle_key(key(KeyCode::Char('k'))), None);
         assert_eq!(e.sub_focus, SubFocus::Content, "k is not a motion");
         assert_eq!(e.handle_key(key(KeyCode::Up)), Some(Action::Render));
         assert_eq!(e.sub_focus, SubFocus::Url);
-        assert_eq!(e.table.selected, None);
+        assert_eq!(e.table.selected(), None);
     }
 
     #[test]
@@ -4977,12 +5344,13 @@ mod tests {
         e.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
         e.params.insert("b".into(), Entry { value: "2".into(), enabled: true });
         e.sub_focus = SubFocus::Content;
-        e.table.selected = Some(0);
+        e.table.set_selected(Some(Stop::Row(0)));
         let action = e.handle_key(key(KeyCode::Up));
         assert_eq!(action, Some(Action::Render));
         assert_eq!(e.sub_focus, SubFocus::Url);
         assert_eq!(
-            e.table.selected, None,
+            e.table.selected(),
+            None,
             "leaving the table clears its selection, matching the mouse \
              click-away path — keys go to the URL line, so a still-lit row \
              would be lying about where input lands"
@@ -4992,16 +5360,18 @@ mod tests {
     #[test]
     fn params_tab_up_below_row_zero_navigates_within_table() {
         // Once selected has moved off row 0, Up navigates the table instead
-        // of returning focus to the URL line.
-        let mut e = Editor::default();
+        // of returning focus to the URL line. (The rows are the Params
+        // tab's, so the Params tab shows: a stop names a row of the table
+        // on screen, task #56.)
+        let mut e = Editor { active_tab: EditorTab::Params, ..Editor::default() };
         e.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
         e.params.insert("b".into(), Entry { value: "2".into(), enabled: true });
         e.sub_focus = SubFocus::Content;
-        e.table.selected = Some(1);
+        e.table.set_selected(Some(Stop::Row(1)));
         let action = e.handle_key(key(KeyCode::Up));
         assert_eq!(action, Some(Action::Render));
         assert_eq!(e.sub_focus, SubFocus::Content, "table navigation must not move focus");
-        assert_eq!(e.table.selected, Some(0));
+        assert_eq!(e.table.selected(), Some(Stop::Row(0)));
     }
 
     #[test]
@@ -5012,7 +5382,7 @@ mod tests {
         }
         e.sub_focus = SubFocus::Content;
         // Rename "a" onto "b": the two rows collapse, with a warning.
-        e.table.selected = Some(0);
+        e.table.set_selected(Some(Stop::Row(0)));
         e.handle_key(key(KeyCode::Enter));
         e.handle_key(key(KeyCode::Backspace));
         e.handle_key(key(KeyCode::Char('b')));
@@ -6881,7 +7251,7 @@ url = "https://api.example.com/users""#,
         let chips = ["send", "add header", "disable", "delete", "vars", "tabs", "commands"];
         for width in [90, 110, 140, 180] {
             let mut footer = |row: usize| {
-                app.editor.table.selected = Some(row);
+                app.editor.table.set_selected(Some(Stop::Row(row)));
                 let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
                 terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
                 let buf = terminal.backend().buffer();
@@ -6920,7 +7290,7 @@ url = "https://api.example.com/users""#,
         app.editor.headers.insert("X-A".into(), Entry { value: "1".into(), enabled: true });
         app.focus = crate::layout::PaneId::Editor;
         app.editor.sub_focus = SubFocus::Content;
-        app.editor.table.selected = Some(0);
+        app.editor.table.set_selected(Some(Stop::Row(0)));
         app.update(Action::Render);
 
         let (terminal, content) = draw_wide(&mut app);
@@ -6929,13 +7299,13 @@ url = "https://api.example.com/users""#,
         let key = app.hits.rect_of(&Hit::TableCell { row: 0, col: 0 }).unwrap();
         assert!(buf[(key.x, key.y)].modifier.contains(Modifier::CROSSED_OUT), "struck");
 
-        app.editor.table.selected = Some(1);
+        app.editor.table.set_selected(Some(Stop::Row(1)));
         let (_, content) = draw_wide(&mut app);
         assert!(!content.contains("cannot be set manually"), "{content}");
 
         // With hover hints off, a pointer resting on a footer chip has
         // nothing to say, so the cursor row's error still shows.
-        app.editor.table.selected = Some(0);
+        app.editor.table.set_selected(Some(Stop::Row(0)));
         app.ui_settings.hover_hints = false;
         app.hovered = Some(Hit::FooterChip(Action::OpenPalette));
         let (_, content) = draw_wide(&mut app);
@@ -7269,7 +7639,7 @@ url = "https://api.example.com/users""#,
 
         // Selecting the row costs the table no height, exactly like
         // Params/Headers: rows edit in place.
-        e.table.selected = Some(0);
+        e.table.set_selected(Some(Stop::Row(0)));
         assert_eq!(e.table_len(), 1);
         assert_eq!(table_height(e.table_len()), 4);
 
@@ -7283,7 +7653,7 @@ url = "https://api.example.com/users""#,
         let mut e = Editor { active_tab: EditorTab::Vars, ..Editor::default() };
         e.variables.insert("token".into(), Entry { value: "override".into(), enabled: true });
         e.shadowed.insert("token".into(), "qa: 1001".into());
-        e.table.selected = Some(0);
+        e.table.set_selected(Some(Stop::Row(0)));
         let theme = Theme::dark();
         let ctx = DrawCtx {
             theme: &theme,
@@ -7322,7 +7692,7 @@ url = "https://api.example.com/users""#,
         let mut e = Editor { active_tab: EditorTab::Params, ..Editor::default() };
         e.params.insert("page".into(), Entry { value: "2".into(), enabled: true });
         e.shadowed.insert("page".into(), "qa: 1001".into());
-        e.table.selected = Some(0);
+        e.table.set_selected(Some(Stop::Row(0)));
         let theme = Theme::dark();
         let ctx = DrawCtx {
             theme: &theme,
@@ -7577,7 +7947,7 @@ url = "https://api.example.com/users""#,
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
 
         assert!(
-            app.editor.computed_row_count() > 0,
+            app.editor.section_len() > 0,
             "a scratch request with a resolvable URL still gets a Host row"
         );
         let content = format!("{:?}", terminal.backend().buffer());
@@ -7598,7 +7968,7 @@ url = "https://api.example.com/users""#,
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 5)).unwrap();
         let mut hits = crate::hit::HitMap::default();
-        terminal.draw(|f| e.draw_computed_headers(f, f.area(), &ctx, &mut hits)).unwrap();
+        terminal.draw(|f| e.draw_computed_headers(f, f.area(), &ctx, &mut hits, 0, None)).unwrap();
         (hits, terminal.backend().buffer().clone())
     }
 
@@ -7688,6 +8058,338 @@ url = "https://api.example.com/users""#,
         e.computed.rows = vec![auto_header("A", &"v".repeat(52))];
         let (hits, _) = draw_auto_headers(&e);
         assert_eq!(hits.rect_of(&Hit::AutoHeaderCopy(0)), Some(Rect::new(58, 1, 2, 1)));
+    }
+
+    /// A Headers tab with `rows` request rows and `auto` auto rows (`Z0`,
+    /// `Z1`, …; the even ones may be taken over), its content focused.
+    fn scroll_editor(rows: usize, auto: usize) -> Editor {
+        let mut e = Editor { active_tab: EditorTab::Headers, ..Editor::default() };
+        e.sub_focus = SubFocus::Content;
+        for i in 0..rows {
+            e.headers.insert(format!("H{i}"), Entry { value: format!("{i}"), enabled: true });
+        }
+        e.computed.rows = (0..auto)
+            .map(|i| {
+                let name = format!("Z{i}");
+                postui_core::prepare::HeaderRow {
+                    override_as: (i % 2 == 0).then(|| (name.clone(), "v".to_string())),
+                    ..auto_header(&name, "v")
+                }
+            })
+            .collect();
+        e
+    }
+
+    /// The tab content's area for [`draw_tab`]: six lines, one column in
+    /// from each side of a 40-wide terminal, as `pane_inner` leaves it.
+    const TAB_AREA: Rect = Rect { x: 1, y: 0, width: 38, height: 6 };
+
+    /// Draws `e`'s tab content into [`TAB_AREA`], focused.
+    fn draw_tab(e: &mut Editor) -> (crate::hit::HitMap, ratatui::buffer::Buffer) {
+        draw_tab_at(e, TAB_AREA)
+    }
+
+    /// Draws `e`'s tab content into `area` of a 40×8 terminal, focused.
+    fn draw_tab_at(e: &mut Editor, area: Rect) -> (crate::hit::HitMap, ratatui::buffer::Buffer) {
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            pointer: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal.draw(|f| e.draw_tab_content(f, area, &ctx, &mut hits)).unwrap();
+        (hits, terminal.backend().buffer().clone())
+    }
+
+    fn line_of(buf: &ratatui::buffer::Buffer, y: u16) -> String {
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    /// Spec 2026-10-25 S1, S3, S4: the table and the auto section scroll
+    /// as one; the wheel reaches the last auto row and stops there; the
+    /// bar shows in the margin column one past the content, and the rows
+    /// keep their width.
+    #[test]
+    fn the_wheel_scrolls_the_headers_tab_to_its_last_auto_row() {
+        // 3 rows: header + 3 + add + edge = 6 lines, then divider + 4 = 11.
+        let mut e = scroll_editor(3, 4);
+        let (hits, buf) = draw_tab(&mut e);
+        assert_eq!(e.table.scroll, 0);
+        assert!(!(0..6).any(|y| line_of(&buf, y).contains("Z0")), "the section is below the view");
+        let spec = e.scrollbar_spec().expect("a table tab reports its scroll");
+        assert_eq!((spec.offset, spec.content, spec.viewport), (0, 11, 6));
+        let thumb = hits.rect_of(&Hit::ScrollbarThumb(PaneId::Editor)).expect("the bar shows");
+        assert_eq!(thumb.x, 39, "in the margin column");
+        assert_eq!(hits.rect_of(&Hit::TableRow(0)).map(|r| (r.x, r.width)), Some((1, 38)));
+
+        e.handle_scroll(100);
+        assert_eq!(e.table.scroll, 5, "stops with the last line on the bottom row");
+        let (hits, buf) = draw_tab(&mut e);
+        assert!(line_of(&buf, 5).contains("Z3"), "the last auto row: {}", line_of(&buf, 5));
+        assert!(hits.rect_of(&Hit::AutoHeaderCopy(3)).is_some(), "its pill is live");
+        assert_eq!(hits.rect_of(&Hit::TableRow(0)), None, "row 0 scrolled off");
+        e.handle_scroll(-2);
+        assert_eq!(e.table.scroll, 3);
+    }
+
+    /// With no table on screen (before its first draw, or a content area
+    /// no rows tall) the wheel has nothing to scroll: the view stays put,
+    /// so `App` never marks it scrolled away for a move nobody saw.
+    #[test]
+    fn the_wheel_scrolls_nothing_while_no_table_is_on_screen() {
+        let mut e = scroll_editor(3, 4);
+        assert_eq!(e.table.viewport, 0, "not drawn yet");
+        e.handle_scroll(3);
+        assert_eq!(e.table.scroll, 0);
+    }
+
+    /// S5, S6, S11: the cursor moving onto a stop out of view brings the
+    /// view to it, through `+ Add` and onto the auto rows; a wheel scroll
+    /// afterwards is left where it is.
+    #[test]
+    fn the_view_follows_the_cursor_onto_the_auto_rows_and_the_wheel_stays_put() {
+        let mut e = scroll_editor(3, 4);
+        e.table.set_selected(Some(Stop::Row(0)));
+        draw_tab(&mut e);
+        for _ in 0..4 {
+            e.handle_key(key(KeyCode::Down));
+        }
+        assert_eq!(e.table.selected(), Some(Stop::Section(0)), "on the first auto row");
+        assert_eq!(e.section_cursor(), Some(0));
+        let (_, buf) = draw_tab(&mut e);
+        // The first auto row is line 7: the view ends on it.
+        assert_eq!(e.table.scroll, 2);
+        assert!(line_of(&buf, 5).contains("Z0"), "{}", line_of(&buf, 5));
+        let bg = buf[(5, 5)].bg;
+        assert_eq!(bg, Theme::dark().control_hover, "the cursor row is lit");
+        e.handle_key(key(KeyCode::End));
+        assert_eq!(e.table.selected(), Some(Stop::Section(3)), "End is the last auto row");
+        draw_tab(&mut e);
+        assert_eq!(e.table.scroll, 5);
+
+        // The arrows wheel, as `App` runs it: the view moves and is marked
+        // scrolled away.
+        e.handle_scroll(-100);
+        e.table.mark_scrolled_away();
+        draw_tab(&mut e);
+        assert_eq!(e.table.scroll, 0, "the wheel's view survives the next frame");
+        // A key that moves the cursor clears the flag (the cursor's setter).
+        e.handle_key(key(KeyCode::Up));
+        assert!(!e.table.scrolled_away());
+        draw_tab(&mut e);
+        assert_eq!(e.table.scroll, 4, "the view comes back to the cursor");
+    }
+
+    /// S5's vim half: a cursor the view left moves onto the first stop on
+    /// or below the view's top (here past the closing edge and divider,
+    /// onto the first auto row), or the last on or above its bottom.
+    #[test]
+    fn the_vim_cursor_into_view_takes_the_nearest_stop_in_view() {
+        let mut e = scroll_editor(3, 4);
+        e.table.set_selected(Some(Stop::Row(0)));
+        draw_tab(&mut e);
+        e.handle_scroll(5); // lines 5..=10: the edge, the divider, Z0..Z3
+        e.table_cursor_into_view();
+        assert_eq!(e.table.selected(), Some(Stop::Section(0)));
+        e.handle_scroll(-5); // lines 0..=5: the header to the edge
+        e.table_cursor_into_view();
+        assert_eq!(e.table.selected(), Some(Stop::Add), "the last stop above the bottom");
+    }
+
+    /// S22: the view keeps the cursor in sight every frame, so a pane that
+    /// shrinks under a cursor near the bottom brings it along.
+    #[test]
+    fn a_shrinking_pane_keeps_the_cursor_in_sight() {
+        let mut e = scroll_editor(4, 0);
+        e.table.set_selected(Some(Stop::Row(3))); // line 4
+        draw_tab(&mut e);
+        assert_eq!(e.table.scroll, 0, "6 lines show it");
+        draw_tab_at(&mut e, Rect { height: 2, ..TAB_AREA });
+        assert_eq!(e.table.scroll, 3, "2 lines end on it");
+    }
+
+    /// S23: while the arrows wheel has scrolled the view away the frame
+    /// keeps the wheel's offset; cleared, the view comes back to the
+    /// cursor.
+    #[test]
+    fn a_view_scrolled_away_stays_until_the_flag_clears() {
+        let mut e = scroll_editor(3, 4);
+        e.table.set_selected(Some(Stop::Row(1)));
+        draw_tab(&mut e);
+        e.handle_scroll(5);
+        e.table.mark_scrolled_away();
+        draw_tab(&mut e);
+        assert_eq!(e.table.scroll, 5, "the wheel's view");
+        // The flag clears on a cursor move, the setter's.
+        e.table.set_selected(Some(Stop::Row(0)));
+        assert!(!e.table.scrolled_away());
+        draw_tab(&mut e);
+        assert_eq!(e.table.scroll, 1, "back to the cursor, the least scroll that shows it");
+    }
+
+    /// S23: a move key brings a scrolled-away view back even when it lands
+    /// on the stop the cursor is on (End on the last stop).
+    #[test]
+    fn a_move_key_onto_the_same_stop_brings_the_view_back() {
+        let mut e = scroll_editor(3, 4);
+        e.table.set_selected(Some(Stop::Section(3)));
+        draw_tab(&mut e);
+        e.handle_scroll(-100);
+        e.table.mark_scrolled_away();
+        e.handle_key(key(KeyCode::End));
+        assert_eq!(e.table.selected(), Some(Stop::Section(3)), "End: the stop it was on");
+        assert!(!e.table.scrolled_away());
+        draw_tab(&mut e);
+        assert_eq!(e.table.scroll, 5, "the view is back on the last auto row");
+    }
+
+    /// S6: rows added above a cursor that keeps its stop (`+ Add`, an auto
+    /// row) move its line, and the view follows the line.
+    #[test]
+    fn the_view_follows_a_cursor_whose_line_moved_under_it() {
+        let mut e = scroll_editor(1, 2);
+        e.table.set_selected(Some(Stop::Add));
+        draw_tab(&mut e);
+        assert_eq!(e.table.scroll, 0);
+        for i in 0..6 {
+            e.headers.insert(format!("N{i}"), Entry { value: "1".into(), enabled: true });
+        }
+        draw_tab(&mut e);
+        // `+ Add` is now line 8: the view ends on it.
+        assert_eq!(e.table.scroll, 3);
+    }
+
+    /// S24's cost: a view showing no stop at all (a one-line pane on the
+    /// closing edge) can't hold in vim. The wheel drags the cursor to the
+    /// nearest stop and the view keeps it in sight, a line up.
+    #[test]
+    fn the_vim_wheel_on_a_view_with_no_stop_pulls_back_to_the_nearest() {
+        let mut e = Editor { active_tab: EditorTab::Params, ..Editor::default() };
+        e.sub_focus = SubFocus::Content;
+        for i in 0..2 {
+            e.params.insert(format!("P{i}"), Entry { value: "1".into(), enabled: true });
+        }
+        e.table.set_selected(Some(Stop::Row(0)));
+        let one_line = Rect { height: 1, ..TAB_AREA };
+        draw_tab_at(&mut e, one_line);
+        e.handle_scroll(100); // 5 lines in 1: the closing edge, line 4
+        e.table_cursor_into_view();
+        draw_tab_at(&mut e, one_line);
+        assert_eq!(e.table.selected(), Some(Stop::Add), "the nearest stop, just above");
+        assert_eq!(e.table.scroll, 3, "the view shows it");
+    }
+
+    /// S8: an open cell never leaves the view; the wheel stops at its row.
+    #[test]
+    fn the_wheel_stops_at_an_open_cell() {
+        let mut e = scroll_editor(3, 4);
+        e.click_table_cell(0, Col::Value);
+        draw_tab(&mut e);
+        e.handle_scroll(100);
+        assert_eq!(e.table.scroll, 1, "row 0 (line 1) stays on the top row");
+        let (hits, _) = draw_tab(&mut e);
+        assert!(hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).is_some());
+    }
+
+    /// S9: a tab switch and opening a request start at the top.
+    #[test]
+    fn a_tab_switch_or_a_load_starts_the_view_at_the_top() {
+        let mut e = scroll_editor(3, 4);
+        draw_tab(&mut e);
+        e.handle_scroll(3);
+        e.table.reset();
+        assert_eq!(e.table.scroll, 0);
+        e.handle_scroll(3);
+        e.load(Some("a".into()), HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap());
+        assert_eq!(e.table.scroll, 0);
+    }
+
+    /// S14, S15, S21: on an auto row the yank verb copies its value and
+    /// Enter takes a row with the pencil over; a row without one, and the
+    /// verbs that don't apply, do nothing, and no cell opens.
+    #[test]
+    fn an_auto_row_takes_copy_and_its_pencil_and_nothing_else() {
+        use crate::action::CopyTarget;
+        let mut e = scroll_editor(1, 2);
+        e.table.set_selected(Some(Stop::Section(0))); // auto row 0, which has the pencil
+        assert_eq!(e.handle_key(key(KeyCode::Enter)), Some(Action::OverrideAutoHeader(0)));
+        assert_eq!(
+            e.table_verb_action(Verb::Yank),
+            Some(Action::CopyToClipboard(CopyTarget::ComputedHeader(0)))
+        );
+        e.table.set_selected(Some(Stop::Section(1))); // auto row 1: no pencil
+        assert_eq!(e.handle_key(key(KeyCode::Enter)), None);
+        assert!(e.table.editing.is_none(), "no cell opens on an auto row");
+        assert_eq!(e.table_verb_action(Verb::Delete { count: 1 }), None);
+        assert_eq!(e.handle_key(key(KeyCode::Char(' '))), None);
+        let col = e.table.col;
+        assert_eq!(
+            e.handle_key(key(KeyCode::Right)),
+            Some(Action::Render),
+            "swallowed, with no cells to move between"
+        );
+        assert_eq!(e.table.col, col);
+        assert_eq!(e.table.selected(), Some(Stop::Section(1)));
+        assert_eq!(
+            e.table_verb_action(Verb::Put { above: false, count: 1 }),
+            Some(Action::PutTableRow { at: 1, count: 1 }),
+            "a put lands at the table's end"
+        );
+        // A referenced row on the Vars tab is a stop with no keys.
+        let mut v = Editor { active_tab: EditorTab::Vars, ..Editor::default() };
+        v.sub_focus = SubFocus::Content;
+        v.url = LineInput::new("https://{{host}}/x");
+        v.table.set_selected(Some(Stop::Add));
+        v.handle_key(key(KeyCode::Down));
+        assert_eq!(v.section_cursor(), Some(0), "the referenced row is a stop");
+        assert_eq!(v.table_verb_action(Verb::Yank), None);
+        assert_eq!(v.handle_key(key(KeyCode::Enter)), None);
+    }
+
+    /// S17: the footer's cursor-row message reaches an auto row: a default
+    /// the client-owned rule drops says why under the cursor, as on hover.
+    #[test]
+    fn a_client_owned_auto_row_explains_itself_under_the_cursor() {
+        use postui_core::prepare::{HeaderRow, Unsent};
+        let mut e = scroll_editor(1, 2);
+        e.computed.rows[1] = HeaderRow {
+            unsent: Some(Unsent::ClientOwned { header: "Host" }),
+            ..auto_header("Host", "x")
+        };
+        e.table.set_selected(Some(Stop::Section(0)));
+        assert!(e.client_owned_message(None, true).is_empty(), "Z0 is an ordinary row");
+        e.table.set_selected(Some(Stop::Section(1)));
+        assert_eq!(
+            e.client_owned_message(None, true).first().map(String::as_str),
+            Some("Host cannot be set manually")
+        );
+        assert!(e.client_owned_message(None, false).is_empty(), "only for the focused table");
+    }
+
+    /// S25: Enter on a section row the section shrank from under acts on
+    /// the row drawn lit, the last one still there.
+    #[test]
+    fn enter_on_a_stale_auto_row_takes_over_the_one_drawn_lit() {
+        let mut e = scroll_editor(1, 3);
+        e.table.set_selected(Some(Stop::Section(7)));
+        assert_eq!(e.handle_key(key(KeyCode::Enter)), Some(Action::OverrideAutoHeader(2)));
+    }
+
+    /// A cursor left past the last stop (the section shrank under it)
+    /// comes back to the last stop on the next frame.
+    #[test]
+    fn a_cursor_past_a_shrunk_section_comes_back_to_the_last_stop() {
+        let mut e = scroll_editor(1, 3);
+        e.table.set_selected(Some(Stop::Section(2)));
+        e.computed.rows.truncate(1);
+        draw_tab(&mut e);
+        assert_eq!(e.table.selected(), Some(Stop::Section(0)));
     }
 }
 

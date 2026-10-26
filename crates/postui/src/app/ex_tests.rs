@@ -294,7 +294,11 @@ fn colon_new_from_an_open_cell_opens_in_insert() {
     assert!(app.field_caret().is_live());
     assert_eq!(app.mode_indicator(), Some("NORMAL"), "the cell is open, in Normal");
     feed(&mut app, ":new<CR>");
-    assert_eq!(app.editor.table.selected, Some(3), "the new row");
+    assert_eq!(
+        app.editor.table.selected(),
+        Some(crate::components::table_editor::Stop::Add),
+        "the new row"
+    );
     assert!(app.field_caret().is_live());
     assert_eq!(app.mode_indicator(), Some("INSERT"));
     let mut app = vim(Fixture::VarGrid);

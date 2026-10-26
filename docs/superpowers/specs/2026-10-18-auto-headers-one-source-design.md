@@ -317,7 +317,7 @@ R3b's note, and R3d's and §5a's wordings with it.
 | A typed client-owned row (enabled) draws struck through in the error colour, over exactly its text, with nothing after the value. A disabled one draws as any disabled row. | `you` (strike, red); disabled unchanged `mine` |
 | A default the rule drops keeps its struck, red auto row, with no inline note. | `mine (approved)` |
 | The message is `<header> cannot be set manually`, e.g. `Content-Length cannot be set manually`, whether or not the client sends its own row. | `you` |
-| The footer's centre line shows it while the row is hovered, like any hover hint: a table row's surface or cell, or an auto row's (`Hit::AutoHeaderRow`, a surface whose click is the bare pane's). Whatever sits on top of the row (a token, a button) is its own hover. When the hover gives no message, it shows for the focused table's cursor row. A hovered button's own hint comes first. Struck defaults explain themselves on hover only: the auto section has no cursor. | `mine (approved)`; kept the ordinary hover rule after review round 2 (`you`: "we have messages in the footer on hover all the time") |
+| The footer's centre line shows it while the row is hovered, like any hover hint: a table row's surface or cell, or an auto row's (`Hit::AutoHeaderRow`, a surface whose click is the bare pane's). Whatever sits on top of the row (a token, a button) is its own hover. When the hover gives no message, it shows for the focused table's cursor row. A hovered button's own hint comes first. ~~Struck defaults explain themselves on hover only: the auto section has no cursor.~~ Since #56 (2026-10-25, §8's amendment) they explain themselves under the cursor too. | `mine (approved)`; kept the ordinary hover rule after review round 2 (`you`: "we have messages in the footer on hover all the time") |
 | It is an error message, drawn in the error colour. | `you` ("error message beats chips") |
 | It never takes room from the chips. In the gap they leave it shows its longest form that fits whole: `Host cannot be set manually`, `Host can't be set`, `can't be set`; below that, nothing. (Rounds 1–5 had the chips give way instead; round 6 found them flickering under the pointer as the hover moved between a hint and the error.) | `you` ("just make it shorter when there is less space so we dont have to hide the chips"; "set a more reasonable min"); the two short forms `mine` |
 | It shows with `hover_hints = false`, since it replaces a note that always showed; it is silent under a dialog and off the request screen. | `mine` |
@@ -351,7 +351,18 @@ opposite direction, from the request up into the project.
 | No pencil on a row that isn't sent (it is already overridden), on `Host`, `Content-Length` and `Transfer-Encoding` (R3a), or on the URL's `Authorization`, which would write the URL's credentials into the request file in the clear. | `you` for the client-owned rows (task text); `mine (approved)` for the rest |
 | No pencil on an auto or client row the request has a disabled row naming (a disabled row leaves `Accept` and `Content-Type` sent): that row is the one to edit. | `mine` |
 | Undo takes the value edit back first, then the row, as with any row added and then edited. | `mine (approved)` |
-| Mouse only, like the copy pill: the auto section has no cursor. | `mine (approved)` |
+| ~~Mouse only, like the copy pill: the auto section has no cursor.~~ Reversed 2026-10-25 by #56 (below). | `mine (approved)` |
+
+*Amended 2026-10-25 by task #56:* the auto rows are cursor stops after
+the `+ Add` row, and the keyboard reaches their pills. The user: "if the
+cursor can go to the lower rows it would be strange to not let the down
+arrow go there too", and "the add isn't the last row if we can go into the
+auto rows is it? Letting the cursor go to the auto rows also means the
+keyboard can access the context buttons there" (`you`). Enter on a row
+with the pencil takes it over, and the table's yank keys copy its value.
+The rules are in `2026-10-25-headers-tab-scroll-design.md` §2a. This also
+changes §7's last sentence: a struck default now explains itself for the
+cursor too, through the cursor-row rule.
 
 Design: `HeaderRow` gains `override_as`, how a request row taking it
 over is written (`None` for a row the request may never take over: its

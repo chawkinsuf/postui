@@ -10,6 +10,7 @@ use postui::action::Action;
 use postui::app::App;
 use postui::components::editor::{EditorTab, SubFocus};
 use postui::components::modal::Modal;
+use postui::components::table_editor::Stop;
 use postui::hit::Hit;
 use postui_core::model::Entry;
 use ratatui::Terminal;
@@ -315,7 +316,7 @@ fn tokens_in_table_cells_are_tinted_and_hoverable_without_disturbing_the_table()
     let mut app = app_with_vars();
     app.editor.params.insert("q".into(), Entry { value: "{{base_url}}".into(), enabled: true });
     app.editor.active_tab = EditorTab::Params;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     app.update(Action::Render);
 
     let buf = draw(&mut app);
@@ -329,7 +330,7 @@ fn tokens_in_table_cells_are_tinted_and_hoverable_without_disturbing_the_table()
 
     // Hovering the token neither blurs the table nor drops its selection...
     app.handle_mouse(moved(r.x + 1, r.y));
-    assert_eq!(app.editor.table.selected, Some(0));
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)));
     assert!(app.var_token_tip().is_some());
     assert_eq!(
         app.hovered,
@@ -340,7 +341,7 @@ fn tokens_in_table_cells_are_tinted_and_hoverable_without_disturbing_the_table()
     // ...and clicking it starts the ordinary cell edit beneath, with the
     // caret on the clicked column — the token overlay is not a button.
     app.handle_mouse(left_down(r.x + 1, r.y));
-    assert_eq!(app.editor.table.selected, Some(0));
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)));
     let edit =
         app.editor.table.editing.as_ref().expect("the click starts the cell edit under the token");
     assert_eq!(edit.input.text(), "{{base_url}}");

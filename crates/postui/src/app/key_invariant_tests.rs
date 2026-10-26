@@ -317,7 +317,7 @@ fn observed(app: &App) -> String {
         app.sidebar.selected_key(),
         app.sidebar.rows.iter().map(|r| format!("{r:?}")).collect::<Vec<_>>(),
         app.editor.sub_focus,
-        app.editor.table.selected,
+        app.editor.table.selected(),
         app.editor.table.col,
         app.manage.list.cursor,
         app.manage.list.detail_row,
@@ -597,7 +597,8 @@ fn paging_chords_survive_the_guard() {
     };
     let cursor = |app: &App, f: Fixture| match f {
         SidebarThree => app.sidebar.selected,
-        TableThreeHeaders => app.editor.table.selected,
+        // The stop's place in the walk: rows, `+ Add`, the section.
+        TableThreeHeaders => app.editor.table.selected().map(|s| s.ordinal(app.editor.table_len())),
         ResponseWide => app.session.response.view().map(|v| v.cursor),
         ManageEnvs | ManageSpaces => Some(app.manage.list.cursor),
         VarList => Some(app.varmanager.left_cursor),

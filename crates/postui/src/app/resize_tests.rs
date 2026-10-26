@@ -507,7 +507,7 @@ fn editing_a_cell() -> App {
     app.editor.active_tab = EditorTab::Params;
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Content;
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
     app.editor.table.editing =
         Some(CellEdit { row: 0, col: Col::Value, input: LineInput::new("19") });
     render(&mut app);
@@ -523,7 +523,7 @@ fn a_gutter_press_leaves_an_open_cell_edit_open() {
     app.handle_mouse(left_down(x, y));
     assert!(app.resize.is_some(), "a resize armed");
     assert!(app.editor.table.editing.is_some(), "the cell is still open");
-    assert_eq!(app.editor.table.selected, Some(0), "and its row selected");
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "and its row selected");
     assert_eq!(app.focus, PaneId::Editor, "no focus moved");
 }
 
@@ -577,7 +577,7 @@ fn a_strip_press_clicks_like_the_response_pane() {
     assert_eq!(app.focus, PaneId::Response, "the press focuses the response");
     assert!(app.editor.table.editing.is_none(), "the cell edit is closed");
     assert_eq!(app.editor.params.get("page").map(|e| e.value.as_str()), Some("19"), "saved");
-    assert_eq!(app.editor.table.selected, None, "its row deselected");
+    assert_eq!(app.editor.table.selected(), None, "its row deselected");
     assert_eq!(app.editor.sub_focus, SubFocus::None, "the caret left the editor");
     assert!(matches!(app.resize, Some(ResizeDrag { kind: ResizeHandle::Split { .. }, .. })));
     app.handle_mouse(left_up(x, y));

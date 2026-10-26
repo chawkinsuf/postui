@@ -56,7 +56,7 @@ fn a_new_count_replaces_the_old() {
             .headers
             .insert(k.into(), postui_core::model::Entry { value: v.into(), enabled: true });
     }
-    app.editor.table.selected = Some(0);
+    app.editor.table.set_selected(Some(crate::components::table_editor::Stop::Row(0)));
     app.capture_undo();
     feed(&mut app, "2dd");
     assert_eq!(headers(&app), ["c", "d", "e", "f", "g", "h"]);

@@ -236,6 +236,11 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::CloseField => "Close the field, keeping what you typed".to_string(),
         Action::FocusUrl => "Edit the URL".to_string(),
         Action::DeleteTableRow(_) => "Delete this row".to_string(),
+        // An auto row's keys (task #56) say what its pills say.
+        Action::CopyToClipboard(CopyTarget::ComputedHeader(_)) => {
+            "Copy this header's value".to_string()
+        }
+        Action::OverrideAutoHeader(_) => "Edit this header in the request".to_string(),
         Action::ToggleVarReveal => "Reveal or hide the secret value".to_string(),
         // Closing switches the filter off — when there is one: an empty
         // bar, or one still asking the AI, just closes.
@@ -459,8 +464,9 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             let verb = if ctx.on { "Show" } else { "Hide" };
             Some(Source::Keyed(format!("{verb} the {pane}"), toggle))
         }
-        Hit::AutoHeaderCopy(_) => text("Copy this header's value"),
-        Hit::AutoHeaderOverride(_) => text("Edit this header in the request"),
+        // Worded once, with the footer chips that dispatch the same actions.
+        Hit::AutoHeaderCopy(i) => of(Action::CopyToClipboard(CopyTarget::ComputedHeader(*i))),
+        Hit::AutoHeaderOverride(i) => of(Action::OverrideAutoHeader(*i)),
         Hit::AutoHeaderReveal => {
             text(if ctx.on { "Hide the computed secrets" } else { "Show the computed secrets" })
         }
@@ -865,13 +871,17 @@ mod tests {
     /// real words. (`alt+w` read "CycleSplit" before this test existed.)
     #[test]
     fn no_chip_falls_through_to_the_debug_name() {
-        use crate::components::footer::{JqBarState, footer_chips};
+        use crate::components::footer::{JqBarState, TableCursor, footer_chips};
         use crate::layout::PaneId;
         let keymap = Keymap::default_bindings();
         for focus in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
             for sending in [false, true] {
                 for url_focused in [false, true] {
-                    for row in [None, Some((0, true))] {
+                    for row in [
+                        None,
+                        Some(TableCursor::Row { index: 0, enabled: true }),
+                        Some(TableCursor::Auto { index: 0, pencil: true }),
+                    ] {
                         for jq in [
                             JqBarState::Closed,
                             JqBarState::Open,

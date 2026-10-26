@@ -959,7 +959,7 @@ pub(crate) struct PaneChipArgs {
     pub add_row_label: Option<&'static str>,
     pub url_focused: bool,
     pub url_selected: bool,
-    pub table_row_selected: Option<(usize, bool)>,
+    pub table_row_selected: Option<crate::components::footer::TableCursor>,
     pub jq_bar: crate::components::footer::JqBarState,
     pub field_open: bool,
 }
@@ -987,16 +987,25 @@ impl PaneChipArgs {
             // dropdown, not the URL line.
             url_selected: app.editor.sub_focus == SubFocus::Url && !app.editor.url_open(),
             // A selected data row (content focus, no cell edit — space/d
-            // would type into one) advertises its toggle/delete keys.
+            // would type into one) advertises its toggle/delete keys, and
+            // an auto row its copy and take-over keys.
             table_row_selected: (focus == PaneId::Editor
                 && app.editor.sub_focus == SubFocus::Content
                 && app.editor.table.editing.is_none())
             .then(|| {
-                app.editor
-                    .table
-                    .selected
-                    .filter(|s| *s < app.editor.table_len())
-                    .map(|i| (i, app.editor.table_row_enabled(i)))
+                use crate::components::footer::TableCursor;
+                use crate::components::table_editor::Stop;
+                let editor = &app.editor;
+                match editor.table.selected()? {
+                    Stop::Row(i) if i < editor.table_len() => {
+                        Some(TableCursor::Row { index: i, enabled: editor.table_row_enabled(i) })
+                    }
+                    Stop::Section(_) => editor.auto_row_cursor().map(|j| TableCursor::Auto {
+                        index: j,
+                        pencil: editor.auto_row_overridable(j),
+                    }),
+                    Stop::Row(_) | Stop::Add => None,
+                }
             })
             .flatten(),
             jq_bar: if response.jq_focused() {

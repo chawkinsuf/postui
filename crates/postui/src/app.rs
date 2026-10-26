@@ -5,6 +5,7 @@ use crate::components::line_input::LineInput;
 use crate::components::modal::{Modal, ModalResult, ModalStack, PromptKind};
 use crate::components::response::{ResponseState, SYNC_PRETTY_BYTES, ViewMode};
 use crate::components::sidebar::{Row, RowKey};
+use crate::components::table_editor::Stop;
 use crate::components::toast::{ToastKind, Toasts};
 use crate::components::varmanager::{
     VarEditOp, VarManager, VarStructOp, VmDetail, VmFocus, var_edit_op_for,
@@ -2984,9 +2985,10 @@ impl App {
         // arrows body. A modal over the body is not leaving (R5).
         // The drop changes only the screen, so it asks for the repaint
         // itself.
-        let in_body = in_editor
-            && matches!(self.editor.caret(), crate::components::editor::Caret::Body { .. })
-            && !self.vim_owns_body();
+        // `caret_in_body`, not `caret()`: `caret()` on a referenced row
+        // looks the variable's name up, a scan of every field, and this
+        // runs on every event.
+        let in_body = in_editor && self.editor.caret_in_body() && !self.vim_owns_body();
         let dropped = self.editor.settle_auto_indent(in_body);
         // A close has already captured around its commit.
         let recorded = closed || self.capture_step();
@@ -3713,7 +3715,7 @@ impl App {
                 }
                 match pane {
                     PaneId::Sidebar => self.sidebar.handle_scroll(delta),
-                    PaneId::Editor => self.editor.handle_scroll(delta),
+                    PaneId::Editor => self.scroll_editor(delta),
                     PaneId::Response => {
                         self.session.response.handle_scroll(delta);
                         if self.profile() == crate::config::KeyProfile::Vim {
@@ -4471,6 +4473,11 @@ impl App {
                 // own step (task #64): the row's step must not take in the
                 // field's typing.
                 self.leave_text_field();
+                // The cursor moves onto the new row. An undo of it leaves the
+                // cursor where R8 clamps it (the last real row), not on the
+                // auto row or the row it started from: editor undo steps
+                // store no caret (6772cd9), the same for every row add.
+                // Task #121 takes that up for all of them.
                 self.insert_row_copy(EditorTab::Headers, &name, entry, at);
                 // You take a header over to give it a value of your own
                 // (task #20), so its value opens, caret at the end: in
@@ -4584,7 +4591,9 @@ impl App {
                     self.insert_row_copy(tab, &key, entry.clone(), at + i);
                 }
                 if let Some(len) = self.editor.table_map(tab).map(|m| m.len()) {
-                    self.editor.table.selected = Some(at.min(len.saturating_sub(1)));
+                    self.editor
+                        .table
+                        .set_selected(Some(Stop::of_row(at.min(len.saturating_sub(1)), len)));
                 }
                 true
             }
@@ -8021,7 +8030,7 @@ impl App {
         if self.focus == PaneId::Editor
             && self.editor.sub_focus == SubFocus::Content
             && self.editor.table.editing.is_none()
-            && let Some(row) = self.editor.table.selected
+            && let Some(Stop::Row(row)) = self.editor.table.selected()
             && row < self.editor.table_len()
         {
             self.editor.click_table_cell(row, crate::components::table_editor::Col::Value);
@@ -9320,9 +9329,28 @@ impl App {
     /// the toast.
     fn reseed_editor(&mut self, slug: Option<String>, req: postui_core::model::HttpRequest) {
         // `Editor::load` keeps the selection; here it is ours to drop.
-        self.editor.table.selected = None;
+        self.editor.table.set_selected(None);
         self.editor.load(slug, req);
         self.sync_active_tab();
+    }
+
+    /// A wheel notch or a scrollbar move on the editor pane, `delta` lines.
+    /// On a table tab whose view it moved, the arrows profile marks the view
+    /// scrolled away from its cursor (spec 2026-10-25 S23), and the vim
+    /// profile drags the cursor into the view instead (S24), as its
+    /// response pane does. A scroll that moved nothing (at a limit, or on
+    /// content that fits) marks nothing.
+    pub(crate) fn scroll_editor(&mut self, delta: i16) {
+        let before = self.editor.view_offset();
+        self.editor.handle_scroll(delta);
+        if self.editor.active_tab == EditorTab::Body || self.editor.view_offset() == before {
+            return;
+        }
+        if self.profile() == crate::config::KeyProfile::Vim {
+            self.editor.table_cursor_into_view();
+        } else {
+            self.editor.table.mark_scrolled_away();
+        }
     }
 
     /// Writes the editor over the open request's file with no drift
@@ -10374,7 +10402,7 @@ impl App {
         }
         let at = at.min(map.len());
         map.shift_insert(at, new_key, entry);
-        self.editor.table.selected = Some(at);
+        self.editor.table.set_selected(Some(Stop::Row(at)));
     }
 
     /// `create_request_from`, answering only whether the new request is

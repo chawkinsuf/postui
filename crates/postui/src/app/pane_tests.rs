@@ -74,12 +74,12 @@ fn a_refused_count_gt_in_an_open_field_keeps_it_open() {
 fn a_tab_step_onto_the_current_tab_keeps_the_table_row() {
     let mut app = app_in(Fixture::TableThreeHeaders, KeyProfile::Vim);
     feed(&mut app, "j");
-    assert_eq!(app.editor.table.selected, Some(2));
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(2)));
     // Headers is tab 1 of the GET's three; 12 and 3 steps back go round.
     for keys in ["1gt", "12gT", "3gT"] {
         feed(&mut app, keys);
         assert_eq!(app.editor.active_tab, EditorTab::Headers, "{keys}");
-        assert_eq!(app.editor.table.selected, Some(2), "{keys}: the row stays");
+        assert_eq!(app.editor.table.selected(), Some(Stop::Row(2)), "{keys}: the row stays");
         assert_eq!(app.editor.sub_focus, SubFocus::Content, "{keys}");
         assert_eq!(app.key_echo(), "", "{keys}");
     }
