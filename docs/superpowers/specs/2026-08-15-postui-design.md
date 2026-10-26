@@ -48,7 +48,7 @@ my-project/
   requests/
     auth/login.toml       # subdirectories are the organization hierarchy
     users/get-user.toml
-  .local/                 # gitignored; since 2026-10-26 `.postui/`, carrying its own .gitignore (see below)
+  .postui/                # its own .gitignore keeps it out of git (was .local/ until 2026-10-26, see below)
     state.toml            # active environment, selected variable options, UI state
     secrets.toml          # values of secret-marked variables
     history/*.jsonl       # append-only send history, size-capped, rotated
@@ -56,7 +56,7 @@ my-project/
 
 - A request file holds: method, URL, query params (with enable/disable flags), headers (with enable/disable flags), body, and optional pre/post scripts (inline or path to a shared `.js` file).
 - `project.toml` defines **default headers** merged into every request (request-level headers override; a request can explicitly disable an inherited header).
-- Everything above `.local/` (now `.postui/`, see the amendment below) is shareable and diffable. Everything machine- or person-specific lives in `.local/`.
+- Everything above `.postui/` is shareable and diffable. Everything machine- or person-specific lives in `.postui/`.
 - *Amended 2026-10-26 (task #143):* the folder is `.postui/`, not `.local/`, and it keeps itself out of git with a `.gitignore` of `*` written when postui creates it. The project gets no `.gitignore` of its own. A postui-specific name means a project in a repository root never meets a folder another tool made. The rename and the in-folder `.gitignore` are mine (approved); the in-folder idea came from the user. The code writes the name once (`project::LOCAL_DIR`) and builds every path from it.
 - History entries record the request name, the *resolved* request (variables substituted, secrets redacted), response status/time/size, and a body snippet.
 

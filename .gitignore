@@ -1,7 +1,3 @@
 /target
 /docs/superpowers/plans
 /.veans.yml
-# The tapes' demo project, if an older postui opens it in place: those
-# builds used .local/ and wrote no .gitignore inside it. Today's .postui/
-# carries its own.
-/docs/tapes/demo/.local/

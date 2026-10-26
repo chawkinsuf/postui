@@ -543,17 +543,21 @@ impl Disk {
 
     /// The next free numbered slot: one more than the largest existing
     /// numeric entry, starting at 1.
-    fn next_trash_slot(&mut self) -> Result<RelPath, DiskError> {
-        let root = self.trash.clone().expect("only a Disk given trash_in trashes");
+    fn next_trash_slot(&mut self, root: &RelPath) -> Result<RelPath, DiskError> {
         let max =
-            self.list(&root)?.iter().filter_map(|e| e.name.parse::<u64>().ok()).max().unwrap_or(0);
+            self.list(root)?.iter().filter_map(|e| e.name.parse::<u64>().ok()).max().unwrap_or(0);
         root.join(&(max + 1).to_string())
     }
 
     /// Renames a file or directory into a fresh trash slot. One rename,
-    /// so the cost is independent of size.
+    /// so the cost is independent of size. An error, touching nothing, on
+    /// a `Disk` given no trash folder.
     pub fn trash(&mut self, rel: &RelPath) -> Result<Ticket, DiskError> {
-        let slot = self.next_trash_slot()?.join(rel.as_str())?;
+        let Some(root) = self.trash.clone() else {
+            let none = std::io::Error::new(std::io::ErrorKind::Unsupported, "no trash folder");
+            return Err(DiskError::io("trash", rel)(none));
+        };
+        let slot = self.next_trash_slot(&root)?.join(rel.as_str())?;
         self.rename(rel, &slot)?;
         Ok(Ticket { original: rel.clone(), slot })
     }
@@ -1031,14 +1035,18 @@ mod tests {
     }
 
     /// A `Disk` given no trash folder (the config directory's) has none
-    /// to empty.
+    /// to empty, and refuses to trash rather than guess one.
     #[test]
-    fn empty_trash_without_a_trash_folder_does_nothing() {
+    fn without_a_trash_folder_nothing_is_trashed_or_emptied() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(TRASH_DIR)).unwrap();
         let mut disk = Disk::new(dir.path().to_path_buf());
         disk.empty_trash().unwrap();
         assert!(dir.path().join(TRASH_DIR).is_dir());
+        let p = RelPath::new("config.toml").unwrap();
+        disk.write(&p, "x").unwrap();
+        assert!(disk.trash(&p).is_err());
+        assert!(disk.is_file(&p), "a refused trash leaves the file");
     }
 
     #[test]
