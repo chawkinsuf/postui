@@ -68,7 +68,11 @@
   exact row now wins, so `"+` waits for `yy`/`Y`. This is Vim's rule, kept
   general on purpose (mine (approved), Q2 after review block 1). New
   `"+<any>` and `"+y<any>` rows, on the table and the response only (where
-  `"+yy` exists), keep the note for anything else.
+  `"+yy` exists), keep the note for anything else. The response's copy
+  rows bind on `Surfaces::RESPONSE_HEADERS`, a class the Headers view
+  carries with `RESPONSE`, so the body views route `y` and `"+yy` exactly
+  as before this branch (*amended at review round 6:* `App` used to
+  re-decide by view mode and profile).
 - **Footer.** A header row's chip is `Key::Pair(yank, CopyRow{whole})`,
   spelled `y/Y` in arrows and `yy/"+yy` in vim. A Params or Vars row's chip
   is the yank key alone. Every row chip's action is its pill's

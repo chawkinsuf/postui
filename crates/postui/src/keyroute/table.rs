@@ -172,6 +172,10 @@ impl Surfaces {
     /// An anchored dropdown (jq views spec 17): moves as a field-less
     /// picker does, and its rows may rename and delete.
     pub const MENU: Self = Self(1 << 23);
+    /// The response on its Headers view, with `RESPONSE`: where the header
+    /// copy keys bind (spec 2026-10-26 H4, H8), so the body views route
+    /// those keys as they always have.
+    pub const RESPONSE_HEADERS: Self = Self(1 << 24);
 
     /// Every surface whose rows or controls the keyboard walks: vim's
     /// motions bind here, and in vim a bare char with no row is
@@ -238,6 +242,9 @@ impl Surfaces {
             Surface::Method => Self::METHOD,
             Surface::Table(_) => Self::TABLE,
             Surface::Body => Self::BODY,
+            Surface::Response(crate::components::response::ViewMode::Headers) => {
+                Self::RESPONSE.or(Self::RESPONSE_HEADERS)
+            }
             Surface::Response(_) => Self::RESPONSE,
             Surface::ResponseLines(_) => Self::RESPONSE_LINES,
             Surface::VarList => Self::VAR_LIST,
@@ -786,10 +793,10 @@ pub static TABLE: &[Binding] = &[
     // Spec 2026-10-26 H4, H8: a header's value is arrows' `y`, the whole
     // header arrows' `Y` and vim's `"+yy` / `"+Y` (vim's `yy` is the
     // engine's yank, above).
-    arrows("y", Surfaces::RESPONSE, Intent::Act(copy_header_value)),
-    arrows("Y", Surfaces::RESPONSE, Intent::Act(copy_header_whole)),
-    row("\"+yy", Surfaces::RESPONSE, Intent::Act(copy_header_whole), CountRule::Ignore),
-    row("\"+Y", Surfaces::RESPONSE, Intent::Act(copy_header_whole), CountRule::Ignore),
+    arrows("y", Surfaces::RESPONSE_HEADERS, Intent::Act(copy_header_value)),
+    arrows("Y", Surfaces::RESPONSE_HEADERS, Intent::Act(copy_header_whole)),
+    row("\"+yy", Surfaces::RESPONSE_HEADERS, Intent::Act(copy_header_whole), CountRule::Ignore),
+    row("\"+Y", Surfaces::RESPONSE_HEADERS, Intent::Act(copy_header_whole), CountRule::Ignore),
     // Key list §6, Out (parked by the user): a list has no search yet.
     row("/", Surfaces::SEARCHLESS, Intent::Note("No search in this list yet"), CountRule::Ignore),
     // Key list §6 and §9: the app's undo, redo and command palette.
@@ -889,8 +896,8 @@ pub static TABLE: &[Binding] = &[
     // Where `"+yy` copies a header, `"+` waits for it (`best`: a longer
     // exact row beats a complete `<any>` one); any other key after it is
     // the note.
-    row("\"+<any>", Surfaces::TABLE.or(Surfaces::RESPONSE), Intent::Note(NO_REGISTERS), CountRule::Ignore),
-    row("\"+y<any>", Surfaces::TABLE.or(Surfaces::RESPONSE), Intent::Note(NO_REGISTERS), CountRule::Ignore),
+    row("\"+<any>", Surfaces::TABLE.or(Surfaces::RESPONSE_HEADERS), Intent::Note(NO_REGISTERS), CountRule::Ignore),
+    row("\"+y<any>", Surfaces::TABLE.or(Surfaces::RESPONSE_HEADERS), Intent::Note(NO_REGISTERS), CountRule::Ignore),
     // Spec §5.10, key list D.prompt (plan M3b Deviations 7 and 8): a
     // one-field prompt confirms on Enter from anywhere, field or not; its
     // field's Esc in idle Normal cancels (Insert's Esc is the engine's).

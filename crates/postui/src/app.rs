@@ -3834,29 +3834,18 @@ impl App {
             }),
             // The row under the focused cursor; the one place that says
             // there is none, so the key is never dead (spec 2026-10-26 H2,
-            // H4, H8). Off the response's Headers view, arrows' `y` is a
-            // reflex that would toast on every press, so it stays silent,
-            // as it was before the keys moved to `y`; vim's `"+yy` there
-            // keeps the registers note it had before this branch.
+            // H4, H8). On the response its keys bind on the Headers view
+            // only (`Surfaces::RESPONSE_HEADERS`), so the body views route
+            // `y` and `"+yy` as they did before.
             Action::CopyRow { whole } => {
-                use crate::components::response::ViewMode;
                 let target = match self.focus {
-                    PaneId::Response => {
-                        if self.session.response.view().map(|v| v.mode) != Some(ViewMode::Headers) {
-                            if self.profile() != crate::config::KeyProfile::Vim {
-                                return false;
-                            }
-                            self.toasts.push(crate::keyroute::table::NO_REGISTERS, ToastKind::Info);
-                            return true;
+                    PaneId::Response => self.session.response.copyable_header_row().map(|row| {
+                        if whole {
+                            CopyTarget::ResponseHeaderLine(row)
+                        } else {
+                            CopyTarget::ResponseHeader(row)
                         }
-                        self.session.response.copyable_header_row().map(|row| {
-                            if whole {
-                                CopyTarget::ResponseHeaderLine(row)
-                            } else {
-                                CopyTarget::ResponseHeader(row)
-                            }
-                        })
-                    }
+                    }),
                     PaneId::Editor => self.editor.row_copy_target(whole),
                     _ => None,
                 };
