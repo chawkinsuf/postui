@@ -477,8 +477,9 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             let verb = if ctx.on { "Show" } else { "Hide" };
             Some(Source::Keyed(format!("{verb} the {pane}"), toggle))
         }
-        // Worded once, with the footer chips that dispatch the same actions;
-        // the copy pill says its shift+click too, which the chip lacks.
+        // The copy pills don't share the chips' wording: a pill's
+        // shift+click copies the whole header, a chip's click never does
+        // (spec 2026-10-26 H5, H6). The pencil is worded once, with its chip.
         Hit::AutoHeaderCopy(_) => text(HEADER_PILL_TIP),
         Hit::AutoHeaderOverride(i) => of(Action::OverrideAutoHeader(*i)),
         Hit::AutoHeaderReveal => {

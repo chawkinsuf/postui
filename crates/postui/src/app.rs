@@ -10800,6 +10800,9 @@ impl App {
                 Some(header_copy(name, value, shown))
             }
             CopyTarget::Url => Some((self.editor.url.text().to_string(), "Copied URL".to_string())),
+            // A row's key is never empty: the table refuses a blank name
+            // on the new row and on a rename (`table_editor::commit_key`),
+            // so a whole-header copy never reads `: value`.
             CopyTarget::TableRow(i) | CopyTarget::TableHeaderLine(i) => {
                 self.editor.table_row_at(*i).map(|(key, value)| header_copy(key, value, key))
             }
