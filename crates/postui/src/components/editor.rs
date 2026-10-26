@@ -1890,7 +1890,9 @@ impl Editor {
     /// word at a row's end doesn't). Rather than predict which, the
     /// delete counts breaks: the selection holds `end.row - start.row`
     /// of its own, and one more gone is the break after it, which is put
-    /// back (#124).
+    /// back (#124). Deleting a whole last row so leaves an empty row, as
+    /// a GUI editor does. `deleting_any_selection_removes_exactly_its_text`
+    /// pins what edtui does for every selection shape.
     fn delete_body_selection(&mut self) {
         use edtui::actions::{DeleteSelection, Execute, LineBreak};
         let Some(sel) = self.body.selection.as_ref() else {
@@ -8792,25 +8794,30 @@ mod body_click_tests {
     #[test]
     fn deleting_any_selection_removes_exactly_its_text() {
         // Every selection, either direction, over rows that end in a
-        // word, a single char, nothing, and the last row.
-        let body = "ab\nc\n\nde\n";
-        let rows: Vec<&str> = body.split('\n').collect();
-        let cells: Vec<Index2> = rows
-            .iter()
-            .enumerate()
-            .flat_map(|(r, row)| (0..row.len().max(1)).map(move |c| Index2::new(r, c)))
-            .collect();
-        for &a in &cells {
-            for &b in &cells {
-                let mut e = editor_with_body(body);
-                e.set_body_selection_cells(a, b);
-                let start = if (a.row, a.col) <= (b.row, b.col) { a } else { b };
-                let selected = e.body_selected_text().unwrap();
-                let off = rows[..start.row].iter().map(|r| r.len() + 1).sum::<usize>() + start.col;
-                let want = format!("{}{}", &body[..off], &body[off + selected.len()..]);
-                e.delete_body_selection();
-                assert_eq!(e.body_text(), want, "selection {a:?}..{b:?} ({selected:?})");
-                assert_eq!(e.body.cursor, start, "caret after deleting {a:?}..{b:?}");
+        // word, a single char, nothing, and a last row with and without
+        // text after the final break. This pins edtui's `DeleteSelection`
+        // as `delete_body_selection` relies on it, across edtui upgrades.
+        for body in ["ab\nc\n\nde\n", "ab\ncd", "ab"] {
+            let rows: Vec<&str> = body.split('\n').collect();
+            let cells: Vec<Index2> = rows
+                .iter()
+                .enumerate()
+                .flat_map(|(r, row)| (0..row.len().max(1)).map(move |c| Index2::new(r, c)))
+                .collect();
+            for &a in &cells {
+                for &b in &cells {
+                    let mut e = editor_with_body(body);
+                    e.set_body_selection_cells(a, b);
+                    let start = if (a.row, a.col) <= (b.row, b.col) { a } else { b };
+                    let selected = e.body_selected_text().unwrap();
+                    let off =
+                        rows[..start.row].iter().map(|r| r.len() + 1).sum::<usize>() + start.col;
+                    let want = format!("{}{}", &body[..off], &body[off + selected.len()..]);
+                    e.delete_body_selection();
+                    let at = format!("{body:?}: selection {a:?}..{b:?} ({selected:?})");
+                    assert_eq!(e.body_text(), want, "{at}");
+                    assert_eq!(e.body.cursor, start, "caret, {at}");
+                }
             }
         }
     }
