@@ -1126,7 +1126,7 @@ impl Project {
     }
 
     /// Makes `root` a project (directories, `default` environment, a
-    /// `project.toml` with `name`, empty `variables.toml`, `.gitignore`),
+    /// `project.toml` with `name`, empty `variables.toml`),
     /// never overwriting anything present, then opens it.
     pub fn init(root: &Path, name: Option<&str>) -> Result<(Project, Vec<Warning>), OpenError> {
         let mut disk = Disk::new(root.to_path_buf());
@@ -1154,10 +1154,14 @@ impl Project {
                 }
                 None => "# project.toml: optional `name`, optional [default_headers]\n".to_string(),
             };
+            // No `.gitignore` here: `.local/` carries its own (task #143),
+            // and one in the project folder would keep ignoring `.local/`
+            // after a user deleted that one to commit it (the user: "if
+            // the user wants to remove the .gitignore and commit, we
+            // should let them").
             for (file, text) in [
                 (PROJECT_TOML, project_toml.as_str()),
                 (VARIABLES_TOML, "# Declare variables: [name] with optional description/default\n"),
-                (".gitignore", "/.local/\n"),
             ] {
                 match disk.write_new(&RelPath::new(file)?, text) {
                     Ok(()) | Err(DiskError::AlreadyExists(_)) => {}
@@ -1567,7 +1571,9 @@ mod tests {
         assert_eq!(p.display_name(), "New");
         assert_eq!(p.spaces(), ["main"]);
         assert_eq!(p.environments(), ["default"]);
-        assert_eq!(read(&dir, ".gitignore").as_deref(), Some("/.local/\n"));
+        // No project `.gitignore`: one ignoring `.local/` would outlive a
+        // deleted `.local/.gitignore` (task #143).
+        assert_eq!(read(&dir, ".gitignore"), None);
         // `init`'s own seeding appends the `spaces` list to the stub.
         let project_toml = read(&dir, "project.toml").unwrap();
         assert!(project_toml.contains("name = \"New\""), "{project_toml}");

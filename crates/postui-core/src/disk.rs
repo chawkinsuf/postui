@@ -153,15 +153,44 @@ impl Disk {
 
     /// `create_dir_all(dir)` for a write of `rel`: the one place this
     /// `Disk` makes directories, so the one place that sees the ignored
-    /// directory come into being and seals it as it does.
+    /// directory come into being, however it does (a state save, the
+    /// trash's rename), and seals it as it does. That is why the rule
+    /// lives here and not in `Project`, which never sees the trash's
+    /// directories made. `dir` is the ignored directory itself, or a
+    /// directory under it, only when `rel` is inside it or is it and
+    /// `dir` is the one being made (a rename *onto* the ignored path
+    /// makes only its parent).
     fn create_dirs(&mut self, dir: &Path, rel: &RelPath) -> Result<(), DiskError> {
-        let seal = self.ignored.clone().filter(|d| rel.starts_with(d) && !self.exists(d));
-        std::fs::create_dir_all(dir).map_err(DiskError::io("create the directory of", rel))?;
-        if let Some(d) = seal {
-            match self.write_new(&d.join(".gitignore")?, IGNORE_ALL) {
-                Ok(()) | Err(DiskError::AlreadyExists(_)) => {}
-                Err(e) => return Err(e),
-            }
+        let sealed = self
+            .ignored
+            .as_ref()
+            .filter(|d| rel.starts_with(d) && (rel != *d || dir == self.abs(d)))
+            .cloned();
+        if let Some(d) = sealed {
+            self.make_sealed(&d)?;
+        }
+        std::fs::create_dir_all(dir).map_err(DiskError::io("create the directory of", rel))
+    }
+
+    /// Makes the ignored directory `d` with its `.gitignore`, as one step.
+    /// `create_dir` answers atomically whether this call made it, so two
+    /// writers racing to make it can't both skip the seal. A `.gitignore`
+    /// that fails to land takes the new directory back out, so the next
+    /// write tries again instead of finding an unsealed directory it will
+    /// never seal. A directory that already exists is left as it is.
+    fn make_sealed(&mut self, d: &RelPath) -> Result<(), DiskError> {
+        let abs = self.abs(d);
+        if let Some(parent) = abs.parent() {
+            std::fs::create_dir_all(parent).map_err(DiskError::io("create the directory of", d))?;
+        }
+        match std::fs::create_dir(&abs) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
+            Err(e) => return Err(DiskError::io("create", d)(e)),
+        }
+        if let Err(e) = self.write_new(&d.join(".gitignore")?, IGNORE_ALL) {
+            let _ = std::fs::remove_dir_all(&abs);
+            return Err(e);
         }
         Ok(())
     }
@@ -666,6 +695,17 @@ mod tests {
         disk.write(&RelPath::new(".local/state.toml").unwrap(), "").unwrap();
         disk.create_dir(&RelPath::new(".local/trash").unwrap()).unwrap();
         assert!(!disk.exists(&RelPath::new(".local/.gitignore").unwrap()));
+    }
+
+    /// A rename *onto* the ignored path makes only its parent: sealing
+    /// first would put a directory where the rename has to land.
+    #[test]
+    fn a_rename_onto_the_ignored_path_is_not_sealed_first() {
+        let (_d, mut disk) = disk();
+        disk.ignore_when_created(RelPath::new(".local").unwrap());
+        disk.write(&RelPath::new("old").unwrap(), "x").unwrap();
+        disk.rename(&RelPath::new("old").unwrap(), &RelPath::new(".local").unwrap()).unwrap();
+        assert!(disk.is_file(&RelPath::new(".local").unwrap()));
     }
 
     /// Only the directory named gets one: a `Disk` that names none (the

@@ -417,8 +417,8 @@ pub fn init_project(root: &Path, name: Option<&str>) -> std::io::Result<()> {
         "# Declare variables: [name] with optional description/default\n",
     )?;
 
-    write_if_absent(&root.join(".gitignore"), "/.local/\n")?;
-
+    // No `.gitignore`, as `Project::init` writes none: `.local/` carries
+    // its own (task #143).
     Ok(())
 }
 
@@ -665,8 +665,7 @@ mod tests {
             "a new project starts with its default environment"
         );
         assert!(dir.path().join("variables.toml").is_file());
-        let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-        assert!(gi.contains("/.local/"));
+        assert!(!dir.path().join(".gitignore").exists(), ".local/ carries its own (#143)");
 
         // user edits survive a second init
         std::fs::write(dir.path().join("project.toml"), "name = \"edited\"\n").unwrap();
