@@ -1544,6 +1544,18 @@ fn every_painted_keycap_resolves_to_its_chip() {
                             && honest(&app, b, &sb)
                             && shown == pair(&glyphs(&sa), &glyphs(&sb))
                     }
+                    Key::PairOr(a, b) => {
+                        match (spell(at, a, &app.keymap), spell(at, b, &app.keymap)) {
+                            (Some(sa), Some(sb)) => {
+                                honest(&app, a, &sa)
+                                    && honest(&app, b, &sb)
+                                    && shown == pair(&glyphs(&sa), &glyphs(&sb))
+                            }
+                            (Some(s), None) => honest(&app, a, &s) && shown == glyphs(&s),
+                            (None, Some(s)) => honest(&app, b, &s) && shown == glyphs(&s),
+                            (None, None) => false,
+                        }
+                    }
                     Key::Quit { .. } => {
                         shown == "q" && profile == KeyProfile::Arrows
                             || shown == ":q"

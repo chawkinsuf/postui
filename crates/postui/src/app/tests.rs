@@ -15865,6 +15865,52 @@ fn the_copy_chip_copies_the_value_in_both_profiles() {
     }
 }
 
+/// H5: in vim the response's header copy chip reads `"+yy`, its one key
+/// there (arrows' reads `y/Y`).
+#[test]
+fn the_vim_response_copy_chip_reads_quote_plus_yy() {
+    let app = response_headers_app(crate::config::KeyProfile::Vim);
+    let at = app.spell_ctx();
+    let copies: Vec<String> = crate::ui::footer_chips_of(&app)
+        .into_iter()
+        .filter(|(_, l, _)| l == "copy")
+        .filter_map(|(k, _, _)| crate::keyroute::spell::keycap(&k, at, &app.keymap))
+        .collect();
+    assert_eq!(copies, ["\"+yy"]);
+}
+
+/// H8: vim's `"+yy` on the response's body views keeps the registers note
+/// it had before this branch: never a dead key.
+#[test]
+fn vim_quote_plus_yy_on_the_response_body_gives_the_registers_note() {
+    let mut app = App::new_for_test();
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536));
+    ready_response(&mut app, r#"{"a": 1}"#);
+    app.focus = PaneId::Response;
+    render_once(&mut app);
+    type_chars(&mut app, "\"+yy");
+    assert_eq!(last_copied(&app), None);
+    assert!(rendered_text(&mut app).contains(crate::keyroute::table::NO_REGISTERS));
+}
+
+/// H6: a header's copy pill says its shift+click; a Params row's doesn't.
+#[test]
+fn a_header_copy_pills_hint_names_its_shift_click() {
+    let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+    for hit in [Hit::TableCopy(0), Hit::AutoHeaderCopy(0)] {
+        let tip = crate::hint::hint_for(&hit, &app.keymap, &app.hint_ctx(&hit)).unwrap();
+        assert!(tip.contains("shift+click: the whole header"), "{hit:?}: {tip}");
+    }
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
+    app.editor.active_tab = EditorTab::Params;
+    let hit = Hit::TableCopy(0);
+    let tip = crate::hint::hint_for(&hit, &app.keymap, &app.hint_ctx(&hit)).unwrap();
+    assert_eq!(tip, "Copy this row's value");
+}
+
 /// H4: on the response's body views arrows' `y` and `Y` stay silent, as
 /// `y` was before the keys moved to it: no copy, no note.
 #[test]

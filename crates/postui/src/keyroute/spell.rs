@@ -18,6 +18,10 @@ pub enum Key {
     /// Two actions on one chip (`alt+←→ tabs`): both spelled, a shared
     /// prefix merged.
     Pair(Action, Action),
+    /// `Pair` where both actions have a key here, else the one that has:
+    /// the response's header copy chip, `y/Y` in arrows and `"+yy` alone
+    /// in vim, which has no value-only key there (spec 2026-10-26 H5).
+    PairOr(Action, Action),
     /// A named key, or a chord the surface's own handler owns, the same in
     /// both profiles: `esc`, `enter`, `␣`, `alt+↑↓`, a picker's `↑↓`.
     Named(&'static str),
@@ -119,6 +123,11 @@ pub fn keycap(key: &Key, at: SpellCtx, keymap: &Keymap) -> Option<String> {
     Some(match key {
         Key::Of(a) => glyphs(&spell(at, a, keymap)?),
         Key::Pair(a, b) => pair(&glyphs(&spell(at, a, keymap)?), &glyphs(&spell(at, b, keymap)?)),
+        Key::PairOr(a, b) => match (spell(at, a, keymap), spell(at, b, keymap)) {
+            (Some(a), Some(b)) => pair(&glyphs(&a), &glyphs(&b)),
+            (Some(one), None) | (None, Some(one)) => glyphs(&one),
+            (None, None) => return None,
+        },
         Key::Named(s) => (*s).to_string(),
         Key::Nav(Nav::UpDown) => if vim { "j/k" } else { "\u{2191}\u{2193}" }.to_string(),
         Key::Nav(Nav::LeftRight) => if vim { "h/l" } else { "\u{2190}\u{2192}" }.to_string(),

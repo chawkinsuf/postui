@@ -364,12 +364,13 @@ pub(crate) fn footer_chips(
                     ));
                 }
                 // A header row under the cursor: its copy, last so the
-                // chips before it never move (spec 2026-10-26 H5). Arrows
-                // only: vim's `yy` there is the engine's line yank, so
-                // the pair has no first key and the chip drops.
+                // chips before it never move (spec 2026-10-26 H5): `y/Y`
+                // in arrows; in vim `"+yy` alone, since its `yy` there is
+                // the engine's line yank. The click copies the value in
+                // both, as every copy chip does.
                 if table_row_selected == Some(TableCursor::ResponseHeader) {
                     let copy = |whole| Action::CopyRow { whole };
-                    chips.push((Key::Pair(copy(false), copy(true)), "copy", Some(copy(false))));
+                    chips.push((Key::PairOr(copy(false), copy(true)), "copy", Some(copy(false))));
                 }
                 chips
             }

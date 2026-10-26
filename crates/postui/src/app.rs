@@ -1316,6 +1316,10 @@ impl App {
                 matches!(self.sidebar.rows.get(*i), Some(Row::Folder { expanded: true, .. }))
             }
             Hit::AutoHeaderReveal => self.editor.computed.revealed,
+            // A Headers-tab pill copies a header, shift+click the whole one.
+            Hit::TableCopy(_) => {
+                self.editor.active_tab == crate::components::editor::EditorTab::Headers
+            }
             // The lit end chip restores the split rather than jumping to
             // that end.
             Hit::SplitStop(stop) => self.split_state().stop() == Some(*stop),
@@ -3830,15 +3834,20 @@ impl App {
             }),
             // The row under the focused cursor; the one place that says
             // there is none, so the key is never dead (spec 2026-10-26 H2,
-            // H4, H8). The response's body views are the exception: there
-            // `y` is a reflex that would toast on every press, so it stays
-            // silent, as it was before the keys moved to `y`.
+            // H4, H8). Off the response's Headers view, arrows' `y` is a
+            // reflex that would toast on every press, so it stays silent,
+            // as it was before the keys moved to `y`; vim's `"+yy` there
+            // keeps the registers note it had before this branch.
             Action::CopyRow { whole } => {
                 use crate::components::response::ViewMode;
                 let target = match self.focus {
                     PaneId::Response => {
                         if self.session.response.view().map(|v| v.mode) != Some(ViewMode::Headers) {
-                            return false;
+                            if self.profile() != crate::config::KeyProfile::Vim {
+                                return false;
+                            }
+                            self.toasts.push(crate::keyroute::table::NO_REGISTERS, ToastKind::Info);
+                            return true;
                         }
                         self.session.response.copyable_header_row().map(|row| {
                             if whole {
