@@ -1,4 +1,5 @@
-# Screenshot: the Manage screen with a variable's value in each environment.
+# Screenshot: the Manage screen with a variable's description and its value in
+# the active environment.
 # Run from the repo root: vhs docs/tapes/manage.tape (see README.md here).
 
 # VHS records a GIF whatever the tape is for; this one is thrown away.

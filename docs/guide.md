@@ -36,7 +36,8 @@ and `{{variables}}`. Below it, tabs for Headers, Params, Vars and Body
 - **Vars** sets values for this request alone, and lists every variable the
   request uses with the value it has now.
 - **Body** is a JSON editor: `alt+j` formats, `alt+g` minifies, and `alt+e`
-  opens the body in `$EDITOR`.
+  opens the body in `$EDITOR`. `{{variables}}` in a body are sent as written
+  until you switch substitution on for the request with `alt+s`.
 
 `ctrl+r` (or `ctrl+enter`, or the Send button) sends; while it's in flight the
 button becomes Cancel. `ctrl+s` saves the request to its file, and `alt+d`
@@ -48,8 +49,9 @@ or on the Manage screen.
 
 ## Environments, variables and secrets
 
-A `{{name}}` in the URL, params, headers or body is filled in when the request
-is sent. Values come from:
+A `{{name}}` in the URL, params or headers is filled in when the request is
+sent, and in the body too once you switch that on (`alt+s`). Values come
+from:
 
 - **`variables.toml`**, which declares each variable, with an optional
   description and default;

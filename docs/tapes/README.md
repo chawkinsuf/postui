@@ -6,11 +6,33 @@ they can be made again whenever the UI changes.
 
 ## Once
 
-1. Install VHS: `brew install vhs` (it brings `ttyd` and `ffmpeg`).
-2. Install the font the tapes use, JetBrainsMono Nerd Font
-   (`brew install --cask font-jetbrains-mono-nerd-font` on macOS, or from
-   [nerdfonts.com](https://www.nerdfonts.com/font-downloads)). postui's icons
-   need a Nerd Font.
+VHS needs `ttyd` 1.7.2 or newer and `ffmpeg`, and draws the terminal in a
+headless Chromium it downloads on its first run. The tapes use JetBrainsMono
+Nerd Font, and it has to be installed on the system: a terminal with Nerd Font
+symbols built in (Ghostty, WezTerm) doesn't lend them to VHS.
+
+On macOS:
+
+```sh
+brew install vhs
+brew install --cask font-jetbrains-mono-nerd-font
+```
+
+On Linux (x86_64), with `ffmpeg` from your package manager:
+
+```sh
+curl -L -o /tmp/vhs.deb https://github.com/charmbracelet/vhs/releases/download/v0.12.1/vhs_0.12.1_amd64.deb
+sudo apt install /tmp/vhs.deb
+# Distro ttyd packages can be older than VHS needs; this is the static build.
+curl -L -o ~/.local/bin/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64
+chmod +x ~/.local/bin/ttyd
+mkdir -p ~/.local/share/fonts
+curl -L -o /tmp/jbm.zip https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip
+unzip -o /tmp/jbm.zip -d ~/.local/share/fonts/JetBrainsMono
+fc-cache -f
+```
+
+`fc-list : family | grep -i "JetBrainsMono Nerd"` should then list the font.
 
 ## Each time
 

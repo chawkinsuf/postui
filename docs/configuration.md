@@ -1,12 +1,16 @@
 # Configuration
 
 postui's own settings live in one folder: `~/.config/postui/` (or
-`$XDG_CONFIG_HOME/postui/` when that's set), on Linux and macOS alike. It
-holds three things, all optional:
+`$XDG_CONFIG_HOME/postui/` when that's set), on Linux and macOS alike. You can
+write three things there, all optional:
 
 - `config.toml`: settings;
 - `keys.toml`: key bindings;
 - `themes/`: custom themes.
+
+postui writes there too: a `[projects]` table in `config.toml` (the projects
+you've opened, and the last one), and `ui.toml` (which commands you use most,
+for the palette's order, and the command-line history). Leave those to postui.
 
 The quickest way in is the **Settings** tab of the Manage screen (`alt+r`). Its
 rows change the common settings directly, and its Edit… buttons open

@@ -24,9 +24,10 @@
   the keys for what has focus, and `ctrl+p` searches every command.
 - **Requests are files.** One TOML file per request, in folders, grouped into
   spaces. Review them in a diff and commit them next to the code they test.
-- **Environments, variables and secrets.** `{{tokens}}` in the URL, params,
-  headers and body take their values from the active environment. Secrets stay
-  in the project's git-ignored `.local/` folder, never in a committed file.
+- **Environments, variables and secrets.** `{{tokens}}` in the URL, params and
+  headers (and the body, once you switch that on) take their values from the
+  active environment. Secrets stay in the project's git-ignored `.local/`
+  folder, never in a committed file.
 - **jq on every response.** Filter JSON live as you type, with completion for
   the keys the response really has. Save filters as named views, right-click
   the tree for filters written for you, or describe the one you want and let an
@@ -40,7 +41,7 @@
 
 | | |
 |:---:|:---:|
-| <img src="docs/images/manage.png" alt="The Manage screen: a variable and its value in each environment" width="440"> | <img src="docs/images/curl-import.png" alt="Importing a pasted curl command as a request" width="440"> |
+| <img src="docs/images/manage.png" alt="The Manage screen: a variable's description and its value in the active environment" width="440"> | <img src="docs/images/curl-import.png" alt="Importing a pasted curl command as a request" width="440"> |
 | <img src="docs/images/themes.png" alt="The theme picker with its contrast control" width="440"> | <img src="docs/images/describe.png" alt="Describing a jq filter for the AI command to write" width="440"> |
 
 ## Requests are plain files
@@ -99,9 +100,9 @@ arm64, glibc 2.35 or newer) are on the
 cargo install --locked --git https://github.com/chawkinsuf/postui postui
 ```
 
-postui's icons come from [Nerd Fonts](https://www.nerdfonts.com/), so your
-terminal needs a Nerd Font for them to draw. On Windows, run postui in
-[WSL 2](https://learn.microsoft.com/windows/wsl/install).
+postui's icons come from [Nerd Fonts](https://www.nerdfonts.com/): use a Nerd
+Font, or a terminal with the symbols built in, such as Ghostty or WezTerm. On
+Windows, run postui in [WSL 2](https://learn.microsoft.com/windows/wsl/install).
 
 ## Getting started
 
