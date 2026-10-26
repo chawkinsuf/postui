@@ -258,9 +258,9 @@ impl Project {
         root.join(PROJECT_TOML).is_file()
     }
 
-    /// The `Disk` for a project rooted at `root`: every one is built here,
-    /// so the rules for the project's own files hold whichever path writes
-    /// them.
+    /// The `Disk` for a project rooted at `root`: every one that writes is
+    /// built here, so the rules for the project's own files hold whichever
+    /// path writes them.
     fn disk_for(root: PathBuf) -> Disk {
         let mut disk = Disk::new(root);
         // The one file whose mode is not the umask's business: secrets
@@ -286,10 +286,9 @@ impl Project {
     /// rather than dropping out of the chooser — and, unlike `open`, this
     /// never refuses: it only ever labels a row.
     pub fn peek_display_name(root: &Path) -> String {
-        // Built like every project `Disk`, though a peek writes nothing and
-        // never meets its rules: one builder means no project `Disk` exists
-        // without them, at the cost of a few allocations per row.
-        let disk = Self::disk_for(root.to_path_buf());
+        // A plain `Disk`, not `disk_for`'s: a peek writes nothing and
+        // trashes nothing, so none of the project's write rules can apply.
+        let disk = Disk::new(root.to_path_buf());
         let meta = RelPath::new(PROJECT_TOML)
             .ok()
             .and_then(|rel| disk.peek(&rel).ok())

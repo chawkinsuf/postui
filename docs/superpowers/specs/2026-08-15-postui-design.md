@@ -57,18 +57,18 @@ my-project/
 - A request file holds: method, URL, query params (with enable/disable flags), headers (with enable/disable flags), body, and optional pre/post scripts (inline or path to a shared `.js` file).
 - `project.toml` defines **default headers** merged into every request (request-level headers override; a request can explicitly disable an inherited header).
 - Everything above `.postui/` is shareable and diffable. Everything machine- or person-specific lives in `.postui/`.
-- *Amended 2026-10-26 (task #143):* the folder is `.postui/`, not `.local/`, and it keeps itself out of git with a `.gitignore` of `*` written when postui creates it. The project gets no `.gitignore` of its own. A postui-specific name means a project in a repository root never meets a folder another tool made. The rename and the in-folder `.gitignore` are mine (approved); the in-folder idea came from the user. The code writes the name once (`project::LOCAL_DIR`) and builds every path from it.
+- *Amended 2026-10-26 (task #143):* the folder is `.postui/`, not `.local/`, and it keeps itself out of git with a `.gitignore` of `*` written when postui creates it. The project gets no `.gitignore` of its own. A postui-specific name means a project in a repository root never meets a folder another tool made. Who decided: the in-folder `.gitignore`, you ("cant we just put .gitignore inside the .local folder by default?"); leaving a deleted one deleted, you ("if the user wants to remove the .gitignore and commit, we should let them"); dropping the generic name, you ("we dont have a fairly generic name reserved"); the name `.postui`, mine (approved). The code writes the name once (`project::LOCAL_DIR`) and builds every path from it.
 - History entries record the request name, the *resolved* request (variables substituted, secrets redacted), response status/time/size, and a body snippet.
 
 Global app config lives in the platform config dir (`~/.config/postui/` on Linux): known project paths, theme, keybinding overrides.
 
 ## 4. Variable System
 
-All variables are referenced as `{{name}}` in URLs, query params, headers, and bodies. Resolution order: script-set values (`.local/state.toml`) → environment value → default in `variables.toml`. Unresolved variables are flagged visibly before send.
+All variables are referenced as `{{name}}` in URLs, query params, headers, and bodies. Resolution order: script-set values (`.postui/state.toml`) → environment value → default in `variables.toml`. Unresolved variables are flagged visibly before send.
 
 Three kinds, defined in `variables.toml`:
 
-1. **Simple** — one value per environment. `variables.toml` declares the name (and optional description, secret flag); each environment file supplies the value. Secret-flagged variables read their value from `.local/secrets.toml` instead.
+1. **Simple** — one value per environment. `variables.toml` declares the name (and optional description, secret flag); each environment file supplies the value. Secret-flagged variables read their value from `.postui/secrets.toml` instead.
 2. **Enumerated** — a named list of options, each option having a value and a **description** (e.g. `user`: "alice — admin, active sub", "bob — expired trial"). Options can be defined per environment (qa-milestone's user list differs from qa-staging's) or shared with per-environment value overrides. The currently selected option is per-environment local state.
 3. **Groups** — a group binds several variables that travel together (e.g. `user_id` + `customer_id`). Options are defined at group level: one option = one description + a value for every member variable. Selecting an option sets all members atomically. The picker for *any* member variable shows the group's options, including what the linked variables will become.
 
