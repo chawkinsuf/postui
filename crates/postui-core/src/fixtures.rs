@@ -338,6 +338,10 @@ pub fn load_local_state(root: &Path) -> Result<LocalState, ProjectError> {
     }
 }
 
+/// The savers below make the local folder with no `.gitignore` in it, as
+/// a folder made outside postui would be: they stand in for the outside
+/// world, not for `Disk`, so a test that needs the sealed folder makes
+/// it through `Project`.
 pub fn save_local_state(root: &Path, state: &LocalState) -> std::io::Result<()> {
     std::fs::create_dir_all(root.join(LOCAL_DIR))?;
     let contents = toml::to_string(state).expect("LocalState always serializes");

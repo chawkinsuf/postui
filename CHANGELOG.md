@@ -18,8 +18,9 @@ keeps itself out of git with a `.gitignore` inside it. To keep them, run this
 in the project folder (it works whether or not 0.2 has made `.postui/` yet):
 
 ```sh
-mkdir -p .postui && mv .local/*.toml .postui/ && printf '*\n' > .postui/.gitignore && rm -r .local
+mkdir -p .postui && printf '*\n' > .postui/.gitignore && mv .local/*.toml .postui/ && rm -r .local
 ```
 
-Without that `.gitignore`, a folder you moved by hand counts as one you chose
-to commit.
+The `.gitignore` goes in first: a `.postui/` without one counts as a folder you
+chose to commit. The rc also added a `/.local/` line to the project's own
+`.gitignore`; 0.2 doesn't need it, so you can delete it.

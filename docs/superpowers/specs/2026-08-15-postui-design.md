@@ -48,7 +48,7 @@ my-project/
   requests/
     auth/login.toml       # subdirectories are the organization hierarchy
     users/get-user.toml
-  .local/                 # gitignored (template .gitignore written on project creation); .postui/ since 2026-10-26
+  .local/                 # gitignored; since 2026-10-26 `.postui/`, carrying its own .gitignore (see below)
     state.toml            # active environment, selected variable options, UI state
     secrets.toml          # values of secret-marked variables
     history/*.jsonl       # append-only send history, size-capped, rotated

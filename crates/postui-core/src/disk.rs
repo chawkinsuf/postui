@@ -126,6 +126,9 @@ pub struct Disk {
     /// The directory that gets a `.gitignore` of `*` when a write here
     /// creates it (task #143): a project's local folder.
     ignored: Option<RelPath>,
+    /// Where `trash` puts deleted paths: a project's trash folder. A
+    /// `Disk` given none (the config directory's) never trashes.
+    trash: Option<RelPath>,
 }
 
 /// What [`Disk::ignore_when_created`] writes: git skips every file in the
@@ -137,7 +140,13 @@ const IGNORE_ALL: &str = "# Written by postui: keeps this folder (secrets, open 
 
 impl Disk {
     pub fn new(root: PathBuf) -> Disk {
-        Disk { root, stamps: HashMap::new(), private: HashSet::new(), ignored: None }
+        Disk { root, stamps: HashMap::new(), private: HashSet::new(), ignored: None, trash: None }
+    }
+
+    /// Names the folder `trash` moves deleted paths into, numbered slots
+    /// under it.
+    pub fn trash_in(&mut self, dir: RelPath) {
+        self.trash = Some(dir);
     }
 
     /// Names the directory whose creation through this `Disk` puts a
@@ -197,7 +206,9 @@ impl Disk {
     /// secrets sitting where `git add` would take them. The new directory
     /// comes back out while it is still empty (never a file another writer
     /// put there meanwhile), so the next write tries again instead of
-    /// finding an unsealed directory it will never seal.
+    /// finding an unsealed directory it will never seal. A `.gitignore`
+    /// that is already there by then (another writer's) seals it just the
+    /// same.
     ///
     /// A failure to make the directory itself is reported as the caller's
     /// (`op` on `rel`, the file the user's write was for); one placing the
@@ -208,6 +219,9 @@ impl Disk {
         rel: &RelPath,
         op: &'static str,
     ) -> Result<(), DiskError> {
+        // Named before anything is made, so nothing between making the
+        // directory and placing the file can return without the cleanup.
+        let gitignore = d.join(".gitignore")?;
         let abs = self.abs(d);
         if let Some(parent) = abs.parent() {
             std::fs::create_dir_all(parent).map_err(DiskError::io(op, rel))?;
@@ -217,12 +231,13 @@ impl Disk {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
             Err(e) => return Err(DiskError::io(op, rel)(e)),
         }
-        let gitignore = d.join(".gitignore")?;
-        if let Err(e) = self.place_new(&abs.join(".gitignore"), &gitignore, IGNORE_ALL.as_bytes()) {
-            let _ = std::fs::remove_dir(&abs);
-            return Err(e);
+        match self.place_new(&abs.join(".gitignore"), &gitignore, IGNORE_ALL.as_bytes()) {
+            Ok(()) | Err(DiskError::AlreadyExists(_)) => Ok(()),
+            Err(e) => {
+                let _ = std::fs::remove_dir(&abs);
+                Err(e)
+            }
         }
-        Ok(())
     }
 
     /// Marks `rel` private: every write of it lands 0600, tightening a
@@ -526,17 +541,10 @@ impl Disk {
         self.stamps.clear();
     }
 
-    /// The trash has always been the project's (only `Project` trashes; the
-    /// config directory's `Disk` never does). It is named through the
-    /// project's constant so the local folder's name stays written once.
-    fn trash_root() -> RelPath {
-        RelPath::new(crate::project::TRASH_DIR).expect("constant path")
-    }
-
     /// The next free numbered slot: one more than the largest existing
     /// numeric entry, starting at 1.
     fn next_trash_slot(&mut self) -> Result<RelPath, DiskError> {
-        let root = Self::trash_root();
+        let root = self.trash.clone().expect("only a Disk given trash_in trashes");
         let max =
             self.list(&root)?.iter().filter_map(|e| e.name.parse::<u64>().ok()).max().unwrap_or(0);
         root.join(&(max + 1).to_string())
@@ -561,8 +569,13 @@ impl Disk {
         self.rename(&t.original, &t.slot)
     }
 
+    /// Removes the trash folder and everything in it; nothing to do for a
+    /// `Disk` with no trash.
     pub fn empty_trash(&mut self) -> Result<(), DiskError> {
-        self.remove_dir_all(&Self::trash_root())
+        match self.trash.clone() {
+            Some(root) => self.remove_dir_all(&root),
+            None => Ok(()),
+        }
     }
 }
 
@@ -571,9 +584,11 @@ mod tests {
     use super::*;
     use crate::project::{LAYOUT_TOML, LOCAL_DIR, SECRETS_TOML, STATE_TOML, TRASH_DIR};
 
+    /// A `Disk` with the project's trash folder, as `Project` builds it.
     fn disk() -> (tempfile::TempDir, Disk) {
         let dir = tempfile::tempdir().unwrap();
-        let disk = Disk::new(dir.path().to_path_buf());
+        let mut disk = Disk::new(dir.path().to_path_buf());
+        disk.trash_in(RelPath::new(TRASH_DIR).unwrap());
         (dir, disk)
     }
 
@@ -780,8 +795,10 @@ mod tests {
         let (d, mut disk) = disk();
         disk.ignore_when_created(RelPath::new(LOCAL_DIR).unwrap());
         std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
-        let err = disk.write(&RelPath::new(STATE_TOML).unwrap(), "").unwrap_err();
+        let written = disk.write(&RelPath::new(STATE_TOML).unwrap(), "");
         std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Root ignores the mode, so there the write lands: nothing to check.
+        let Err(err) = written else { return };
         let want = format!("could not create the directory of {STATE_TOML}:");
         assert!(err.to_string().starts_with(&want), "{err}");
     }
@@ -1011,6 +1028,17 @@ mod tests {
         assert!(disk.exists(&t.slot));
         disk.write(&p, "other").unwrap();
         assert!(matches!(disk.restore(&t), Err(DiskError::AlreadyExists(_))));
+    }
+
+    /// A `Disk` given no trash folder (the config directory's) has none
+    /// to empty.
+    #[test]
+    fn empty_trash_without_a_trash_folder_does_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(TRASH_DIR)).unwrap();
+        let mut disk = Disk::new(dir.path().to_path_buf());
+        disk.empty_trash().unwrap();
+        assert!(dir.path().join(TRASH_DIR).is_dir());
     }
 
     #[test]

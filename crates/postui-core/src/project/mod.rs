@@ -217,7 +217,7 @@ pub const LOCAL_DIR: &str = local_path!();
 pub const STATE_TOML: &str = local_path!("state.toml");
 pub const LAYOUT_TOML: &str = local_path!("layout.toml");
 pub const SECRETS_TOML: &str = local_path!("secrets.toml");
-/// Where `Disk::trash` puts deleted files until the project closes.
+/// Where `Disk::trash` puts deleted files until the project next opens.
 pub const TRASH_DIR: &str = local_path!("trash");
 
 pub(crate) fn rel(s: &str) -> Result<RelPath, Error> {
@@ -271,6 +271,9 @@ impl Project {
         // it): the write that creates it puts a `.gitignore` of `*` in it
         // (task #143).
         disk.ignore_when_created(RelPath::new(LOCAL_DIR).expect("constant path"));
+        // Deletes move into the local folder's trash, so undo is a rename
+        // back; it is emptied when the project opens.
+        disk.trash_in(RelPath::new(TRASH_DIR).expect("constant path"));
         disk
     }
 
@@ -283,6 +286,9 @@ impl Project {
     /// rather than dropping out of the chooser — and, unlike `open`, this
     /// never refuses: it only ever labels a row.
     pub fn peek_display_name(root: &Path) -> String {
+        // Built like every project `Disk`, though a peek writes nothing and
+        // never meets its rules: one builder means no project `Disk` exists
+        // without them, at the cost of a few allocations per row.
         let disk = Self::disk_for(root.to_path_buf());
         let meta = RelPath::new(PROJECT_TOML)
             .ok()
