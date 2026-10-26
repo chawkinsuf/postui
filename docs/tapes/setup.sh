@@ -19,7 +19,7 @@ rm -rf "$demo" && mkdir -p "$demo/config/postui" || return 1
 cp -R "$repo/docs/tapes/demo/." "$demo/project" || return 1
 # Open tabs and layout left by running postui on the demo folder itself
 # would carry into the take.
-rm -rf "$demo/project/.local"
+rm -rf "$demo/project/.postui"
 # The stand-in AI command runs from the temp folder rather than the repo,
 # whose path may hold spaces or quotes.
 cp "$repo/docs/tapes/fake-ai.sh" "$demo/fake-ai.sh" || return 1

@@ -116,7 +116,7 @@ impl Project {
         Ok(Some(ListChange { before: valid, after: displayed.to_vec() }))
     }
 
-    /// Writes `.local/secrets.toml` from memory as a journaled text op.
+    /// Writes `secrets.toml` from memory as a journaled text op.
     pub(crate) fn write_secrets_journaled(&mut self) -> Result<(), Error> {
         let text = toml::to_string(&self.secrets).expect("secrets always serialize");
         self.fs_write_text(&rel(SECRETS_TOML)?, Some(&text))
@@ -501,7 +501,7 @@ mod tests {
         let slug = p.create_environment("QA 2").unwrap();
         assert_eq!(slug, "qa-2");
         assert_eq!(p.active_env(), Some("qa-2"), "a new environment is switched to");
-        assert!(read(&dir, ".local/state.toml").unwrap().contains("environment = \"qa-2\""));
+        assert!(read(&dir, STATE_TOML).unwrap().contains("environment = \"qa-2\""));
         let (_id, label) = p.last_entry().unwrap();
         assert_eq!(label, "create environment");
         let u = p.undo().unwrap().unwrap();
@@ -529,7 +529,7 @@ mod tests {
         );
         assert!(p.secrets().get("dev").is_none());
         assert_eq!(p.selections_for("development").get("region").map(String::as_str), Some("east"));
-        assert!(read(&dir, ".local/secrets.toml").unwrap().contains("[development]"));
+        assert!(read(&dir, SECRETS_TOML).unwrap().contains("[development]"));
         assert!(read(&dir, "project.toml").unwrap().contains("[environment.development]"));
         assert_eq!(p.journal_len(), 2);
     }
@@ -548,7 +548,7 @@ mod tests {
         let (dir, mut p) = fixture();
         p.set_secret_for("dev", "token", "x".into()).unwrap();
         p.delete_environment("dev").unwrap();
-        assert!(dir.path().join(".local/trash/1/environments/dev.toml").is_file());
+        assert!(dir.path().join(TRASH_DIR).join("1/environments/dev.toml").is_file());
         assert_eq!(p.environments(), ["qa"]);
         assert_eq!(p.active_env(), Some("qa"));
         assert!(p.secrets().get("dev").is_none());
@@ -568,17 +568,17 @@ mod tests {
         let w = p.set_active_env(Some("dev".into()));
         assert_eq!(w.len(), 1);
         assert_eq!(p.active_env(), Some("qa"));
-        assert!(read(&dir, ".local/state.toml").unwrap().contains("environment = \"qa\""));
+        assert!(read(&dir, STATE_TOML).unwrap().contains("environment = \"qa\""));
     }
 
     #[test]
     fn a_failed_rename_leaves_memory_matching_disk() {
         let (dir, mut p) = fixture();
-        // `.local` as a regular file makes `create_dir_all(".local")` fail,
-        // so the write of `.local/state.toml` inside the rename's
+        // A regular file where the local folder goes makes creating it
+        // fail, so the write of `state.toml` inside the rename's
         // transaction fails after the disk rename and table edit already
         // happened — exercising the rollback.
-        std::fs::write(dir.path().join(".local"), "not a directory").unwrap();
+        std::fs::write(dir.path().join(LOCAL_DIR), "not a directory").unwrap();
         let r = p.rename_environment("dev", "Development");
         assert!(r.is_err());
         assert_eq!(p.environments(), ["dev", "qa"]);
@@ -592,7 +592,7 @@ mod tests {
     /// Ported from the app's `ProjectContext` tests
     /// (`set_secret_writes_secrets_file_and_resolves`,
     /// `set_secret_resolves_immediately_with_no_active_environment`): the
-    /// value reaches `.local/secrets.toml` and `resolved` at once, in the
+    /// value reaches `secrets.toml` and `resolved` at once, in the
     /// active environment and in the no-environment slot alike.
     #[test]
     fn set_secret_writes_the_file_and_resolves_with_and_without_an_environment() {
@@ -602,7 +602,7 @@ mod tests {
         p.poll();
 
         p.set_secret("token", "s3cret".into()).unwrap();
-        assert!(read(&dir, ".local/secrets.toml").unwrap().contains("s3cret"));
+        assert!(read(&dir, SECRETS_TOML).unwrap().contains("s3cret"));
         assert_eq!(p.resolved().values.get("token").map(String::as_str), Some("s3cret"));
 
         // With no environment active, the secret lives under the shared
@@ -628,9 +628,9 @@ mod tests {
     #[test]
     fn a_failed_secret_write_leaves_memory_unchanged() {
         let (dir, mut p) = fixture();
-        // A regular file at `.local` makes `create_dir_all(".local")` fail,
-        // so the secrets write inside the transaction fails.
-        std::fs::write(dir.path().join(".local"), "not a directory").unwrap();
+        // A regular file where the local folder goes makes creating it
+        // fail, so the secrets write inside the transaction fails.
+        std::fs::write(dir.path().join(LOCAL_DIR), "not a directory").unwrap();
         let r = p.set_secret_for("dev", "token", "x".into());
         assert!(r.is_err());
         assert!(p.secrets().get("dev").is_none());

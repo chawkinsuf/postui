@@ -203,7 +203,7 @@ impl SplitState {
     }
 
     /// This state as the stable token stored in the project's
-    /// `.local/layout.toml` (`LayoutState::main_split`): the editor's exact
+    /// `layout.toml` (`LayoutState::main_split`): the editor's exact
     /// share when both panes show, else which pane is minimized plus the
     /// share it restores to.
     pub fn to_token(self) -> String {

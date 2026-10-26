@@ -26,7 +26,7 @@
   spaces. Review them in a diff and commit them next to the code they test.
 - **Environments, variables and secrets.** `{{tokens}}` in the URL, params and
   headers (and the body, once you switch that on) take their values from the
-  active environment. Secrets stay in the project's `.local/` folder, which
+  active environment. Secrets stay in the project's `.postui/` folder, which
   postui keeps out of git with a `.gitignore` of its own.
 - **jq on every response.** Filter JSON live as you type, with completion for
   the keys the response really has. Save filters as named views, right-click
@@ -59,7 +59,7 @@ my-api/
 │   └── main/             # a space
 │       └── users/
 │           └── list-users.toml
-└── .local/               # yours alone: secrets, open tabs, layout. Its own
+└── .postui/              # yours alone: secrets, open tabs, layout. Its own
                           # .gitignore keeps it out of git.
 ```
 

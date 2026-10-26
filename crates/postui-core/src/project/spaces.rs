@@ -341,11 +341,13 @@ mod tests {
             p.local().space_open.get("login-flow").map(String::as_str),
             Some("login-flow/login")
         );
-        let state = read(&dir, ".local/state.toml").unwrap();
+        let state = read(&dir, STATE_TOML).unwrap();
         assert!(state.contains("login-flow"), "{state}");
         assert!(read(&dir, "project.toml").unwrap().contains("[space.login-flow]"));
         let e = p.journal.pop_undo().unwrap();
-        assert!(e.ops.iter().any(|o| matches!(o, crate::journal::Op::Text { path, .. } if path.as_str() == ".local/state.toml")));
+        assert!(e.ops.iter().any(
+            |o| matches!(o, crate::journal::Op::Text { path, .. } if path.as_str() == STATE_TOML)
+        ));
     }
 
     #[test]
@@ -388,7 +390,7 @@ mod tests {
         p.set_open_request(Some("auth/login"));
         p.delete_space("auth").unwrap();
         assert!(!dir.path().join("requests/auth").exists());
-        assert!(dir.path().join(".local/trash/1/requests/auth/login.toml").is_file());
+        assert!(dir.path().join(TRASH_DIR).join("1/requests/auth/login.toml").is_file());
         assert_eq!(p.spaces(), ["main"]);
         assert_eq!(p.local().active_space, "main");
         assert!(
@@ -399,7 +401,7 @@ mod tests {
         assert!(matches!(p.delete_space("main"), Err(Error::LastSpace)));
     }
 
-    /// A journaled `.local/state.toml` write that lands on a project where
+    /// A journaled `state.toml` write that lands on a project where
     /// the file has never existed must not record `before: None`: its undo
     /// would delete the file, and the app's unjournaled `persist_local`
     /// (fired after every action) would recreate it before redo runs.
@@ -407,7 +409,7 @@ mod tests {
     #[test]
     fn redo_survives_a_delete_space_whose_entry_first_created_state_toml() {
         let (dir, mut p) = fixture();
-        assert!(read(&dir, ".local/state.toml").is_none());
+        assert!(read(&dir, STATE_TOML).is_none());
         p.delete_space("auth").unwrap();
         p.undo().unwrap().unwrap();
         p.persist_local().unwrap();
@@ -421,7 +423,7 @@ mod tests {
     #[test]
     fn undo_of_a_first_state_write_restores_the_pre_op_active_space() {
         let (dir, mut p) = fixture();
-        assert!(read(&dir, ".local/state.toml").is_none());
+        assert!(read(&dir, STATE_TOML).is_none());
         assert_eq!(p.local().active_space, "main");
         p.delete_space("main").unwrap();
         assert_eq!(p.local().active_space, "auth");
@@ -485,12 +487,12 @@ mod tests {
         let before = p.open_request("main/ping").unwrap().clone();
         // Make the rename fail *after* the directory move and the held-request
         // re-key: the local-state write at the end of the cascade hits a
-        // directory where `.local/state.toml` should be. `state.toml` does
-        // not exist yet at this point, so create it first.
-        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
-        std::fs::write(dir.path().join(".local/state.toml"), "").unwrap();
-        std::fs::remove_file(dir.path().join(".local/state.toml")).unwrap();
-        std::fs::create_dir(dir.path().join(".local/state.toml")).unwrap();
+        // directory where `state.toml` should be. `state.toml` does not
+        // exist yet at this point, so create it first.
+        std::fs::create_dir_all(dir.path().join(LOCAL_DIR)).unwrap();
+        std::fs::write(dir.path().join(STATE_TOML), "").unwrap();
+        std::fs::remove_file(dir.path().join(STATE_TOML)).unwrap();
+        std::fs::create_dir(dir.path().join(STATE_TOML)).unwrap();
         assert!(p.rename_space("main", "Renamed").is_err());
         assert_eq!(p.held_request("main/ping"), Some(&before), "still held under its old slug");
         assert!(dir.path().join("requests/main/ping.toml").is_file());

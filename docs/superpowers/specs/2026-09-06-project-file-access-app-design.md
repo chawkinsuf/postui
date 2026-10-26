@@ -48,7 +48,8 @@ raised.
 
 The core setters that are memory-only today (`set_expanded`,
 `set_main_split`, `set_active_space`, `set_open_request`,
-`record_space_open`) write `.local/state.toml` immediately, as the legacy
+`record_space_open`) write `.local/state.toml` (`.postui/` since task
+#143) immediately, as the legacy
 code does. `Action::PersistLocalState` is removed. This closes the
 hand-off gap where `reload_all` after an unrelated undo could revert an
 unpersisted split or expanded set.

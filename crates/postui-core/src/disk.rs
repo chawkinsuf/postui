@@ -110,7 +110,7 @@ pub struct DirEntry {
 }
 
 /// One trashed path: where it was and the slot it sits in now
-/// (`.local/trash/<n>/<original>`). Undo of a delete is a rename back.
+/// (`<TRASH_DIR>/<n>/<original>`). Undo of a delete is a rename back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ticket {
     pub original: RelPath,
@@ -123,11 +123,124 @@ pub struct Disk {
     /// Files written owner-only (0600) regardless of the umask or the
     /// mode already on disk — the secrets file.
     private: HashSet<RelPath>,
+    /// The directory that gets a `.gitignore` of `*` when a write here
+    /// creates it (task #143): a project's local folder.
+    ignored: Option<RelPath>,
+    /// Where `trash` puts deleted paths: a project's trash folder. A
+    /// `Disk` given none (the config directory's) never trashes.
+    trash: Option<RelPath>,
 }
+
+/// What [`Disk::ignore_when_created`] writes: git skips every file in the
+/// directory, this one included, whatever the repository's own
+/// `.gitignore` says.
+const IGNORE_ALL: &str = "# Written by postui: keeps this folder (secrets, open tabs, layout) out of\n\
+                          # git. Delete this file if you do want the folder committed.\n\
+                          *\n";
 
 impl Disk {
     pub fn new(root: PathBuf) -> Disk {
-        Disk { root, stamps: HashMap::new(), private: HashSet::new() }
+        Disk { root, stamps: HashMap::new(), private: HashSet::new(), ignored: None, trash: None }
+    }
+
+    /// Names the folder `trash` moves deleted paths into, numbered slots
+    /// under it.
+    pub fn trash_in(&mut self, dir: RelPath) {
+        self.trash = Some(dir);
+    }
+
+    /// Names the directory whose creation through this `Disk` puts a
+    /// `.gitignore` of `*` in it (task #143). Only the creation does: a
+    /// directory that already exists without one (an older project, or a
+    /// user who deleted it to commit the folder) is left as it is, since
+    /// "never had one" and "removed on purpose" look the same from here
+    /// (the user: "if the user wants to remove the .gitignore and commit,
+    /// we should let them").
+    pub fn ignore_when_created(&mut self, dir: RelPath) {
+        self.ignored = Some(dir);
+    }
+
+    /// `create_dir_all(dir)` for a write of `rel`: every write, create and
+    /// rename makes its directories here, so this is where the ignored
+    /// directory is seen coming into being, however it does (a state
+    /// save, the trash's rename), and is sealed as it does. That is why
+    /// the rule lives in `Disk` and not in `Project`, which never sees the
+    /// trash's directories made. `op` is what a failure says was being
+    /// done to `rel`.
+    fn create_dirs(
+        &mut self,
+        dir: &Path,
+        rel: &RelPath,
+        op: &'static str,
+    ) -> Result<(), DiskError> {
+        if let Some(d) = self.ignored_dir_to_make(dir, rel) {
+            self.make_sealed(&d, rel, op)?;
+        }
+        std::fs::create_dir_all(dir).map_err(DiskError::io(op, rel))
+    }
+
+    /// The ignored directory, when making `dir` for a write of `rel` may
+    /// have to make it: `rel` is inside it, or is it and `dir` is it (a
+    /// rename *onto* the ignored path makes only its parent). `None` for
+    /// one already there, the common case, at the cost of one stat per
+    /// write. That stat is asked fresh each time rather than cached as
+    /// "seen": a cached flag would go stale when the folder is deleted
+    /// while the project is open, and the next write would then make it
+    /// unsealed.
+    fn ignored_dir_to_make(&self, dir: &Path, rel: &RelPath) -> Option<RelPath> {
+        let d = self.ignored.as_ref()?;
+        let inside = rel.starts_with(d) && (rel != d || dir == self.abs(d));
+        (inside && !self.abs(d).is_dir()).then(|| d.clone())
+    }
+
+    /// Makes the ignored directory `d` with its `.gitignore`, atomically:
+    /// the `.gitignore` goes into a staging directory beside it, which is
+    /// then renamed to `d`. So `d` never exists without its `.gitignore`,
+    /// whether a crash or another writer comes in between. If another
+    /// writer's `d` is there by then and holds anything, the rename fails
+    /// and theirs is kept; an empty one, the rename replaces (POSIX). The
+    /// staging directory is removed either way. A crash before the rename
+    /// can leave a staging directory behind, which its own `.gitignore`
+    /// keeps out of git. It is made with the umask's mode, as
+    /// `create_dir_all` would make `d`; only the secrets file is
+    /// owner-only.
+    ///
+    /// A seal that fails fails the write that wanted the directory, rather
+    /// than letting it land unsealed: a save the user sees fail beats
+    /// secrets sitting where `git add` would take them. A failure making a
+    /// directory is reported as the caller's (`op` on `rel`, the file the
+    /// user's write was for); one writing the `.gitignore` names it.
+    fn make_sealed(
+        &mut self,
+        d: &RelPath,
+        rel: &RelPath,
+        op: &'static str,
+    ) -> Result<(), DiskError> {
+        let abs = self.abs(d);
+        let parent = abs.parent().unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent).map_err(DiskError::io(op, rel))?;
+        let prefix = format!("{}-", d.file_name());
+        let mut builder = tempfile::Builder::new();
+        builder.prefix(&prefix);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(std::fs::Permissions::from_mode(0o777));
+        }
+        let staging = builder.tempdir_in(parent).map_err(DiskError::io(op, rel))?;
+        let gitignore = d.join(".gitignore")?;
+        self.place_new(&staging.path().join(".gitignore"), &gitignore, IGNORE_ALL.as_bytes())?;
+        match std::fs::rename(staging.path(), &abs) {
+            Ok(()) => {
+                // It is `d` now: nothing left to clean up, and the stamp
+                // is the `.gitignore` at its real path.
+                let _ = staging.keep();
+                self.record(&gitignore);
+            }
+            Err(_) if abs.is_dir() => {}
+            Err(e) => return Err(DiskError::io(op, rel)(e)),
+        }
+        Ok(())
     }
 
     /// Marks `rel` private: every write of it lands 0600, tightening a
@@ -213,7 +326,7 @@ impl Disk {
             Err(e) => return Err(DiskError::io("stat", rel)(e)),
         };
         let parent = target.parent().unwrap_or_else(|| Path::new("."));
-        std::fs::create_dir_all(parent).map_err(DiskError::io("create the directory of", rel))?;
+        self.create_dirs(parent, rel, "create the directory of")?;
         let private = self.private.contains(rel);
         let tmp = Self::staged(parent, contents, rel, private)?;
         if !private && let Ok(existing) = std::fs::metadata(&target) {
@@ -243,9 +356,18 @@ impl Disk {
     pub fn write_new(&mut self, rel: &RelPath, text: &str) -> Result<(), DiskError> {
         let path = self.abs(rel);
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        std::fs::create_dir_all(parent).map_err(DiskError::io("create the directory of", rel))?;
-        let tmp = Self::staged(parent, text.as_bytes(), rel, self.private.contains(rel))?;
-        match tmp.persist_noclobber(&path) {
+        self.create_dirs(parent, rel, "create the directory of")?;
+        self.place_new(&path, rel, text.as_bytes())
+    }
+
+    /// `write_new` once the directory is there: stages `contents` beside
+    /// `path` and links it in only if nothing is there. Shared with
+    /// `make_sealed`, which places the `.gitignore` in the directory it
+    /// just made and must not come back through `create_dirs`.
+    fn place_new(&mut self, path: &Path, rel: &RelPath, contents: &[u8]) -> Result<(), DiskError> {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let tmp = Self::staged(parent, contents, rel, self.private.contains(rel))?;
+        match tmp.persist_noclobber(path) {
             Ok(_) => {}
             Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
                 return Err(DiskError::AlreadyExists(rel.to_string()));
@@ -292,7 +414,7 @@ impl Disk {
     }
 
     pub fn create_dir(&mut self, rel: &RelPath) -> Result<(), DiskError> {
-        std::fs::create_dir_all(self.abs(rel)).map_err(DiskError::io("create", rel))?;
+        self.create_dirs(&self.abs(rel), rel, "create")?;
         self.record(rel);
         Ok(())
     }
@@ -336,8 +458,7 @@ impl Disk {
             return Err(DiskError::AlreadyExists(to.to_string()));
         }
         if let Some(parent) = to_abs.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(DiskError::io("create the directory of", to))?;
+            self.create_dirs(parent, to, "create the directory of")?;
         }
         std::fs::rename(&from_abs, &to_abs).map_err(DiskError::io("move", from))?;
         self.record(from);
@@ -423,25 +544,23 @@ impl Disk {
         self.stamps.clear();
     }
 
-    pub const TRASH_DIR: &'static str = ".local/trash";
-
-    fn trash_root() -> RelPath {
-        RelPath::new(Self::TRASH_DIR).expect("constant path")
-    }
-
     /// The next free numbered slot: one more than the largest existing
     /// numeric entry, starting at 1.
-    fn next_trash_slot(&mut self) -> Result<RelPath, DiskError> {
-        let root = Self::trash_root();
+    fn next_trash_slot(&mut self, root: &RelPath) -> Result<RelPath, DiskError> {
         let max =
-            self.list(&root)?.iter().filter_map(|e| e.name.parse::<u64>().ok()).max().unwrap_or(0);
+            self.list(root)?.iter().filter_map(|e| e.name.parse::<u64>().ok()).max().unwrap_or(0);
         root.join(&(max + 1).to_string())
     }
 
     /// Renames a file or directory into a fresh trash slot. One rename,
-    /// so the cost is independent of size.
+    /// so the cost is independent of size. An error, touching nothing, on
+    /// a `Disk` given no trash folder.
     pub fn trash(&mut self, rel: &RelPath) -> Result<Ticket, DiskError> {
-        let slot = self.next_trash_slot()?.join(rel.as_str())?;
+        let Some(root) = self.trash.clone() else {
+            let none = std::io::Error::new(std::io::ErrorKind::Unsupported, "no trash folder");
+            return Err(DiskError::io("trash", rel)(none));
+        };
+        let slot = self.next_trash_slot(&root)?.join(rel.as_str())?;
         self.rename(rel, &slot)?;
         Ok(Ticket { original: rel.clone(), slot })
     }
@@ -457,19 +576,32 @@ impl Disk {
         self.rename(&t.original, &t.slot)
     }
 
+    /// Removes the trash folder and everything in it; nothing to do for a
+    /// `Disk` with no trash.
     pub fn empty_trash(&mut self) -> Result<(), DiskError> {
-        self.remove_dir_all(&Self::trash_root())
+        match self.trash.clone() {
+            Some(root) => self.remove_dir_all(&root),
+            None => Ok(()),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project::{LAYOUT_TOML, LOCAL_DIR, SECRETS_TOML, STATE_TOML, TRASH_DIR};
 
+    /// A `Disk` with the project's trash folder, as `Project` builds it.
     fn disk() -> (tempfile::TempDir, Disk) {
         let dir = tempfile::tempdir().unwrap();
-        let disk = Disk::new(dir.path().to_path_buf());
+        let mut disk = Disk::new(dir.path().to_path_buf());
+        disk.trash_in(RelPath::new(TRASH_DIR).unwrap());
         (dir, disk)
+    }
+
+    /// `file` in the local folder.
+    fn local(file: &str) -> RelPath {
+        RelPath::new(LOCAL_DIR).unwrap().join(file).unwrap()
     }
 
     #[test]
@@ -567,27 +699,173 @@ mod tests {
         }
     }
 
+    /// The sealed folder takes the mode `create_dir_all` would give it,
+    /// not the staging directory's owner-only default.
+    #[cfg(unix)]
+    #[test]
+    fn the_sealed_folder_takes_the_umask_like_a_plain_mkdir_would() {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, mut disk) = disk();
+        std::fs::create_dir(d.path().join("control")).unwrap();
+        let control =
+            std::fs::metadata(d.path().join("control")).unwrap().permissions().mode() & 0o777;
+        disk.ignore_when_created(RelPath::new(LOCAL_DIR).unwrap());
+        disk.write(&RelPath::new(STATE_TOML).unwrap(), "").unwrap();
+        let mode = std::fs::metadata(d.path().join(LOCAL_DIR)).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, control);
+    }
+
     #[cfg(unix)]
     #[test]
     fn private_files_are_owner_only_even_when_the_existing_file_is_wider() {
         use std::os::unix::fs::PermissionsExt;
         let (d, mut disk) = disk();
-        let secrets = RelPath::new(".local/secrets.toml").unwrap();
+        let secrets = RelPath::new(SECRETS_TOML).unwrap();
         disk.mark_private(secrets.clone());
         disk.write(&secrets, "[dev]\n").unwrap();
-        let abs = d.path().join(".local/secrets.toml");
+        let abs = d.path().join(SECRETS_TOML);
         assert_eq!(std::fs::metadata(&abs).unwrap().permissions().mode() & 0o777, 0o600);
         // A file already leaked wider is tightened, not preserved.
         std::fs::set_permissions(&abs, std::fs::Permissions::from_mode(0o644)).unwrap();
         disk.write(&secrets, "[qa]\n").unwrap();
         assert_eq!(std::fs::metadata(&abs).unwrap().permissions().mode() & 0o777, 0o600);
-        let fresh = RelPath::new(".local/other.toml").unwrap();
+        let fresh = local("other.toml");
         disk.mark_private(fresh.clone());
         disk.write_new(&fresh, "").unwrap();
         assert_eq!(
             std::fs::metadata(disk.abs(&fresh)).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    /// Task #143: every way a write can create the ignored directory puts
+    /// a `.gitignore` of `*` in it, so git skips the whole directory
+    /// whatever the repository's own `.gitignore` says.
+    #[test]
+    fn creating_the_ignored_directory_puts_a_gitignore_in_it() {
+        let dir = RelPath::new(LOCAL_DIR).unwrap();
+        let gitignore = local(".gitignore");
+        type Make = fn(&mut Disk);
+        let makers: [(&str, Make); 4] = [
+            ("write", |d| d.write(&RelPath::new(STATE_TOML).unwrap(), "").unwrap()),
+            ("write_new", |d| d.write_new(&RelPath::new(LAYOUT_TOML).unwrap(), "").unwrap()),
+            ("create_dir", |d| d.create_dir(&RelPath::new(TRASH_DIR).unwrap()).unwrap()),
+            ("trash", |d| {
+                d.write(&RelPath::new("requests/a.toml").unwrap(), "").unwrap();
+                d.trash(&RelPath::new("requests/a.toml").unwrap()).unwrap();
+            }),
+        ];
+        for (how, make) in makers {
+            let (_d, mut disk) = disk();
+            disk.ignore_when_created(dir.clone());
+            make(&mut disk);
+            let text = disk.peek(&gitignore).unwrap().unwrap_or_default();
+            assert!(text.lines().any(|l| l == "*"), "{how}: {text:?}");
+        }
+    }
+
+    /// Task #143 (the user: "if the user wants to remove the .gitignore
+    /// and commit, we should let them"): only creating the directory
+    /// writes the file. One already there without it, deleted on purpose
+    /// or older than the rule, stays as it is.
+    #[test]
+    fn an_existing_ignored_directory_never_gets_the_gitignore_back() {
+        let (_d, mut disk) = disk();
+        disk.ignore_when_created(RelPath::new(LOCAL_DIR).unwrap());
+        disk.create_dir(&RelPath::new(LOCAL_DIR).unwrap()).unwrap();
+        disk.remove(&local(".gitignore")).unwrap();
+        disk.write(&RelPath::new(STATE_TOML).unwrap(), "").unwrap();
+        disk.create_dir(&RelPath::new(TRASH_DIR).unwrap()).unwrap();
+        assert!(!disk.exists(&local(".gitignore")));
+    }
+
+    /// A rename *onto* the ignored path makes only its parent: sealing
+    /// first would put a directory where the rename has to land.
+    #[test]
+    fn a_rename_onto_the_ignored_path_is_not_sealed_first() {
+        let (_d, mut disk) = disk();
+        disk.ignore_when_created(RelPath::new(LOCAL_DIR).unwrap());
+        disk.write(&RelPath::new("old").unwrap(), "x").unwrap();
+        disk.rename(&RelPath::new("old").unwrap(), &RelPath::new(LOCAL_DIR).unwrap()).unwrap();
+        assert!(disk.is_file(&RelPath::new(LOCAL_DIR).unwrap()));
+    }
+
+    /// Only the directory named gets one: a `Disk` that names none (the
+    /// config directory's) writes no `.gitignore` anywhere.
+    #[test]
+    fn no_gitignore_without_an_ignored_directory() {
+        let (_d, mut disk) = disk();
+        disk.write(&RelPath::new(STATE_TOML).unwrap(), "").unwrap();
+        assert!(!disk.exists(&local(".gitignore")));
+    }
+
+    /// `create_dir` names the directory it was making, not "the directory
+    /// of" it as a file write does.
+    #[test]
+    fn a_failed_create_dir_says_what_it_was_making() {
+        let (d, mut disk) = disk();
+        std::fs::write(d.path().join("blocker"), "").unwrap();
+        let err = disk.create_dir(&RelPath::new("blocker/sub").unwrap()).unwrap_err();
+        assert!(err.to_string().starts_with("could not create blocker/sub:"), "{err}");
+    }
+
+    /// A write that can't make the ignored directory names its own file,
+    /// as any write that can't make its directory does.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_seal_names_the_file_being_written() {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, mut disk) = disk();
+        disk.ignore_when_created(RelPath::new(LOCAL_DIR).unwrap());
+        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let written = disk.write(&RelPath::new(STATE_TOML).unwrap(), "");
+        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Root ignores the mode, so there the write lands: nothing to check.
+        let Err(err) = written else { return };
+        let want = format!("could not create the directory of {STATE_TOML}:");
+        assert!(err.to_string().starts_with(&want), "{err}");
+    }
+
+    /// The seal is staged beside the ignored directory and renamed into
+    /// place: the directory arrives with its `.gitignore` and the staging
+    /// directory is gone.
+    #[test]
+    fn the_seal_is_renamed_into_place_leaving_nothing_behind() {
+        let (d, mut disk) = disk();
+        disk.ignore_when_created(RelPath::new(LOCAL_DIR).unwrap());
+        disk.write(&RelPath::new(STATE_TOML).unwrap(), "").unwrap();
+        let names: Vec<String> = std::fs::read_dir(d.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, [LOCAL_DIR], "no staging directory left");
+        assert!(disk.is_file(&local(".gitignore")));
+        assert!(!disk.changed(&local(".gitignore")), "stamped at its real path");
+    }
+
+    /// The race's loser: the ignored directory turns up after the check,
+    /// so the rename fails and the other writer's directory is left as it
+    /// is, with the staging directory removed.
+    #[test]
+    fn a_seal_that_loses_the_race_keeps_the_winners_directory() {
+        let (d, mut disk) = disk();
+        disk.ignore_when_created(RelPath::new(LOCAL_DIR).unwrap());
+        std::fs::create_dir_all(d.path().join(LOCAL_DIR).join("theirs")).unwrap();
+        let rel = RelPath::new(STATE_TOML).unwrap();
+        disk.make_sealed(&RelPath::new(LOCAL_DIR).unwrap(), &rel, "write").unwrap();
+        assert!(d.path().join(LOCAL_DIR).join("theirs").is_dir(), "theirs is kept");
+        assert!(!disk.exists(&local(".gitignore")), "and not sealed behind their back");
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1, "staging removed");
+    }
+
+    /// Other directories a write makes get none, ignored directory or not.
+    #[test]
+    fn only_the_ignored_directory_gets_a_gitignore() {
+        let (_d, mut disk) = disk();
+        disk.ignore_when_created(RelPath::new(LOCAL_DIR).unwrap());
+        disk.write(&RelPath::new("other/x.toml").unwrap(), "").unwrap();
+        assert!(!disk.exists(&RelPath::new("other/.gitignore").unwrap()));
+        assert!(!disk.exists(&RelPath::new(LOCAL_DIR).unwrap()));
     }
 
     #[test]
@@ -773,7 +1051,7 @@ mod tests {
         disk.write(&p, "x").unwrap();
         let t = disk.trash(&p).unwrap();
         assert_eq!(t.original, p);
-        assert_eq!(t.slot.as_str(), ".local/trash/1/requests/main/a.toml");
+        assert_eq!(t.slot.as_str(), format!("{TRASH_DIR}/1/requests/main/a.toml"));
         assert!(!disk.exists(&p));
         assert_eq!(disk.read(&t.slot).unwrap().as_deref(), Some("x"));
     }
@@ -786,8 +1064,8 @@ mod tests {
         let t1 = disk.trash(&d).unwrap();
         disk.write(&d.join("a.toml").unwrap(), "2").unwrap();
         let t2 = disk.trash(&d).unwrap();
-        assert_eq!(t1.slot.as_str(), ".local/trash/1/requests/auth");
-        assert_eq!(t2.slot.as_str(), ".local/trash/2/requests/auth");
+        assert_eq!(t1.slot.as_str(), format!("{TRASH_DIR}/1/requests/auth"));
+        assert_eq!(t2.slot.as_str(), format!("{TRASH_DIR}/2/requests/auth"));
         assert_eq!(disk.read(&t1.slot.join("a.toml").unwrap()).unwrap().as_deref(), Some("1"));
     }
 
@@ -807,6 +1085,21 @@ mod tests {
         assert!(matches!(disk.restore(&t), Err(DiskError::AlreadyExists(_))));
     }
 
+    /// A `Disk` given no trash folder (the config directory's) has none
+    /// to empty, and refuses to trash rather than guess one.
+    #[test]
+    fn without_a_trash_folder_nothing_is_trashed_or_emptied() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(TRASH_DIR)).unwrap();
+        let mut disk = Disk::new(dir.path().to_path_buf());
+        disk.empty_trash().unwrap();
+        assert!(dir.path().join(TRASH_DIR).is_dir());
+        let p = RelPath::new("config.toml").unwrap();
+        disk.write(&p, "x").unwrap();
+        assert!(disk.trash(&p).is_err());
+        assert!(disk.is_file(&p), "a refused trash leaves the file");
+    }
+
     #[test]
     fn empty_trash_removes_everything_and_tolerates_a_missing_dir() {
         let (_d, mut disk) = disk();
@@ -815,6 +1108,6 @@ mod tests {
         disk.write(&p, "x").unwrap();
         disk.trash(&p).unwrap();
         disk.empty_trash().unwrap();
-        assert!(!disk.exists(&RelPath::new(".local/trash").unwrap()));
+        assert!(!disk.exists(&RelPath::new(TRASH_DIR).unwrap()));
     }
 }

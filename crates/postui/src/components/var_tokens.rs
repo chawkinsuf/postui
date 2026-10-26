@@ -218,7 +218,7 @@ impl VarView {
             Some(VarMeta::SelectorMember { selector, selected }) => {
                 TokenSource::Selector { selector: selector.clone(), selected: selected.clone() }
             }
-            // A secret's value only ever comes from `.local/secrets.toml`,
+            // A secret's value only ever comes from `secrets.toml`,
             // kept per environment (under no environment when none is
             // active, which the chip's label names `no env`).
             Some(VarMeta::Secret) => self.env_source(),

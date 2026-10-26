@@ -66,9 +66,9 @@ for that request. Values come from:
 - **`environments/<name>.toml`**, which sets values for one environment. The
   header's environment chip switches environments;
 - **secrets**: a variable declared with `secret = true` keeps its value in
-  `.local/secrets.toml`. When postui creates `.local/` it puts a `.gitignore`
+  `.postui/secrets.toml`. When postui creates `.postui/` it puts a `.gitignore`
   in it that keeps the whole folder out of git, whatever your repo's own
-  `.gitignore` says; delete it if you do want `.local/` committed. postui asks
+  `.gitignore` says; delete it if you do want `.postui/` committed. postui asks
   for a secret's value the first time a request needs it.
 
 A **selector** bundles several variables into named options, so you can switch

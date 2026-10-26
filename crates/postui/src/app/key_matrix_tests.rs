@@ -12,6 +12,7 @@ use crate::components::sidebar::Row;
 use crate::components::varmanager::{FormStop, VmField, VmFocus, VmRow};
 use crate::config::KeyProfile;
 use crate::keyroute::keylist::{self, Status};
+use postui_core::project::{STATE_TOML, TRASH_DIR};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Fixture {
@@ -624,7 +625,7 @@ pub(super) fn build(f: Fixture) -> App {
                 app.update(Action::ForceOpenRequest("main/beta".into()));
                 assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
             }
-            // `.local/state.toml` on disk before any snapshot, through the
+            // `state.toml` on disk before any snapshot, through the
             // project's own writer (plan M2 Deviation 15, amended): core
             // writes a missing one at the first journaled op, and undo
             // leaves it.
@@ -982,7 +983,7 @@ pub(super) fn snapshot(app: &App) -> Snapshot {
         for entry in std::fs::read_dir(&dir).unwrap() {
             let path = entry.unwrap().path();
             let rel = path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
-            if rel == ".local/trash" || rel.starts_with(".local/trash/") {
+            if rel == TRASH_DIR || rel.starts_with(&format!("{TRASH_DIR}/")) {
                 continue;
             }
             if path.is_dir() {
@@ -1024,8 +1025,8 @@ fn run(case: &Case) -> Result<(), String> {
     draw(&mut app);
     let before = case.undo.then(|| {
         assert!(
-            app.proj().root().join(".local/state.toml").is_file(),
-            "{:?} must write .local/state.toml before the snapshot (plan M2 Deviation 15)",
+            app.proj().root().join(STATE_TOML).is_file(),
+            "{:?} must write {STATE_TOML} before the snapshot (plan M2 Deviation 15)",
             case.fixture
         );
         snapshot(&app)

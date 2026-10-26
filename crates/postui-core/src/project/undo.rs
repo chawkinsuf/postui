@@ -111,10 +111,10 @@ impl Project {
     }
 
     /// Applies this entry's `active_env` transition directly (`before` on
-    /// undo, `after` on redo). `reload_all`'s `.local/state.toml`-based
+    /// undo, `after` on redo). `reload_all`'s `state.toml`-based
     /// restore already covers the steady-state case; this uses the entry's
     /// own record instead, so it always wins when the two disagree. (Before
-    /// `run_transaction` started materialising `.local/state.toml` up
+    /// `run_transaction` started materialising `state.toml` up
     /// front, this was also the only thing that saved an environment
     /// switch whose `persist_local_journaled` call was the file's first
     /// ever write — a recorded `before: None` that undo would turn into
@@ -341,7 +341,7 @@ mod tests {
         .unwrap();
         p.undo().unwrap();
         assert!(!dir.path().join("requests/main/new.toml").exists());
-        assert!(dir.path().join(".local/trash/1/requests/main/new.toml").is_file());
+        assert!(dir.path().join(TRASH_DIR).join("1/requests/main/new.toml").is_file());
         p.redo().unwrap();
         assert!(dir.path().join("requests/main/new.toml").is_file());
     }
@@ -427,7 +427,7 @@ mod tests {
         p.set_pane_sizes(sizes("70", 40));
         p.undo().unwrap();
         assert_eq!(p.local().layout, sizes("70", 40));
-        let text = read(&dir, ".local/layout.toml").unwrap();
+        let text = read(&dir, LAYOUT_TOML).unwrap();
         assert!(
             text.contains("main_split = \"70\"") && text.contains("sidebar_width = 40"),
             "{text}"
@@ -495,7 +495,7 @@ mod tests {
         assert_eq!(cycles, vec![(first, first); 5], "the rename's entry: {first:?}");
     }
 
-    /// `.local/state.toml` does not exist yet when this op runs.
+    /// `state.toml` does not exist yet when this op runs.
     /// `run_transaction` now materialises it from pre-op memory before any
     /// journaled write happens, so this op's own `state.toml` write is no
     /// longer recorded as `before: None` and undo no longer deletes the
@@ -504,21 +504,21 @@ mod tests {
     #[test]
     fn redo_survives_an_env_switch_whose_entry_first_created_state_toml() {
         let (dir, mut p) = fixture();
-        assert!(read(&dir, ".local/state.toml").is_none(), "never written yet");
+        assert!(read(&dir, STATE_TOML).is_none(), "never written yet");
         let slug = p.create_environment("QA 2").unwrap();
         assert_eq!(p.active_env(), Some(slug.as_str()));
         p.undo().unwrap().unwrap();
         assert_eq!(p.active_env(), Some("dev"));
         p.redo().unwrap().unwrap();
         assert_eq!(p.active_env(), Some("qa-2"));
-        assert!(read(&dir, ".local/state.toml").unwrap().contains("environment = \"qa-2\""));
+        assert!(read(&dir, STATE_TOML).unwrap().contains("environment = \"qa-2\""));
     }
 
     /// Same as above, `delete_environment`'s path.
     #[test]
     fn redo_of_an_environment_delete_survives_the_same_first_state_toml_write() {
         let (dir, mut p) = fixture();
-        assert!(read(&dir, ".local/state.toml").is_none(), "never written yet");
+        assert!(read(&dir, STATE_TOML).is_none(), "never written yet");
         p.delete_environment("dev").unwrap();
         assert_eq!(p.active_env(), Some("qa"));
         p.undo().unwrap().unwrap();
@@ -526,7 +526,7 @@ mod tests {
         p.redo().unwrap().unwrap();
         assert_eq!(p.active_env(), Some("qa"));
         assert_eq!(p.environments(), ["qa"]);
-        assert!(read(&dir, ".local/state.toml").unwrap().contains("environment = \"qa\""));
+        assert!(read(&dir, STATE_TOML).unwrap().contains("environment = \"qa\""));
     }
 
     #[test]
