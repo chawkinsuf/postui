@@ -1883,21 +1883,13 @@ impl Editor {
     }
 
     /// Deletes the selected body text (cursor collapses to the selection
-    /// start), staying in Insert mode. Selections cover characters, never
-    /// the line break after them — but edtui's `DeleteSelection` (jagged
-    /// `extract`) sometimes consumes that break too, depending on where
-    /// the selection starts and ends (a whole row goes with its break, a
-    /// word at a row's end doesn't). Rather than predict which, the
-    /// delete counts breaks: the selection holds `end.row - start.row`
-    /// of its own, and one more gone is the break after it, which is put
-    /// back (#124). Deleting a whole last row so leaves an empty row, as
-    /// a GUI editor does. The delete stays edtui's, like every other body
-    /// edit (the user, #124), so edtui records it as it records the rest.
-    /// `deleting_any_selection_removes_exactly_its_text` pins what edtui
-    /// does for every selection shape. A body selection is never
-    /// line-mode (edtui's emacs keymap has no line select, and nothing
-    /// here builds one), so its own breaks are always `end.row -
-    /// start.row`.
+    /// start), staying in Insert mode. A selection covers characters,
+    /// never the line break after it, but edtui's `DeleteSelection` takes
+    /// that break too for some shapes (a whole row) and not others (a word
+    /// at a row's end). So the delete counts breaks: the selection holds
+    /// `end.row - start.row` of its own (a body selection is never
+    /// line-mode), and one more gone is put back (#124). The delete stays
+    /// edtui's, like every other body edit (the user's call on #124).
     fn delete_body_selection(&mut self) {
         use edtui::actions::{DeleteSelection, Execute, LineBreak};
         let Some(sel) = self.body.selection.as_ref() else {
@@ -1910,7 +1902,11 @@ impl Editor {
         let breaks_before = breaks(&self.body);
         DeleteSelection.execute(&mut self.body);
         if breaks(&self.body) + (end.row - start.row) < breaks_before {
-            // The cursor sits exactly at the join point after the delete.
+            // edtui leaves the cursor at the selection start, where the
+            // lost break belongs: a split there, or a new empty row when
+            // the whole row went (a whole last row leaves an empty row, as
+            // in a GUI editor). `deleting_any_selection_removes_exactly_its_text`
+            // pins this for every selection shape.
             LineBreak(1).execute(&mut self.body);
             self.body.cursor = start;
         }
