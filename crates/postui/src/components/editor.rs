@@ -635,11 +635,10 @@ impl Editor {
 
     /// The table tab's cursor as an undo step records it (task #121):
     /// `None` on the Body tab or with no stop selected. Cheap enough for
-    /// every event, unlike [`Self::caret`]. It is the table's own cursor,
-    /// kept while the caret is elsewhere (the tab strip, the URL), so it
-    /// doesn't look at `sub_focus`: where the caret is was never undo
-    /// state (ruling 6772cd9), and the spot is only read for a cursor in
-    /// the table whose row an undo removed.
+    /// every event, unlike [`Self::caret`]. It doesn't look at
+    /// `sub_focus`: where the caret is was never undo state (ruling
+    /// 6772cd9), and [`Self::apply_snapshot`] only reads the spot for a
+    /// cursor in the table whose row the swap removed.
     pub fn table_cursor(&self) -> Option<TableCursor> {
         if self.active_tab == EditorTab::Body {
             return None;
@@ -734,7 +733,12 @@ impl Editor {
                 // place; a section that shrank is clamped on the next frame.
                 // A name the swap removed goes to the recorded spot, else
                 // stays at its old place, as a table row whose key is gone
-                // does (`Caret::Cell`): the neighbour now there.
+                // does (`Caret::Cell`): the neighbour now there. A Headers
+                // auto row (no name) can't be told gone here: `App` works
+                // the auto rows out after the swap, so it keeps its place,
+                // clamped on the next frame. Its row came from an edit the
+                // cursor moved onto afterwards, so no recorded spot names
+                // it anyway.
                 let stop = match name {
                     None => Stop::Section(*index),
                     Some(n) => match self.referenced_var_names().iter().position(|r| r == n) {
@@ -748,9 +752,10 @@ impl Editor {
         }
     }
 
-    /// `restore_caret`'s recorded spot, when it was recorded on this tab,
-    /// with a row index clamped to the rows (a section row is clamped on
-    /// the next frame, as `Caret::Section` is).
+    /// `restore_caret`'s recorded spot, when it was recorded on this tab.
+    /// The swap restores the request the spot was taken in, so a row index
+    /// names one of its rows; one past them is `+ Add` (`Stop::of_row`). A
+    /// section row is clamped on the next frame, as `Caret::Section` is.
     fn recorded_stop(&self, fallback: Option<TableCursor>) -> Option<Stop> {
         let f = fallback.filter(|f| f.tab == self.active_tab)?;
         Some(match f.stop {

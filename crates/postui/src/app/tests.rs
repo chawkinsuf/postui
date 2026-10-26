@@ -1404,6 +1404,24 @@ fn undoing_a_row_added_from_the_add_row_puts_the_cursor_back_on_it() {
     assert_eq!(app.editor.table.selected(), Some(Stop::Add));
 }
 
+/// Task #121 (user, 2026-10-26: "Just leave the cursor on + new"): the
+/// add verb moves the cursor onto `+ Add` to open its cell, a cursor move
+/// before the add's first edit, so the add's undo lands on `+ Add` even
+/// when the verb was pressed on another row.
+#[test]
+fn undoing_an_add_verbs_row_lands_on_the_add_row_it_was_typed_in() {
+    let mut app = headers_with_cursor(&["X-A", "X-B"], Stop::Row(0));
+    app.update(Action::TableAddRow);
+    app.capture_undo();
+    assert_eq!(app.editor.table.selected(), Some(Stop::Add), "the cell opens on + Add");
+    type_chars(&mut app, "X-New");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.capture_undo();
+    app.update(Action::Undo);
+    assert!(!app.editor.headers.contains_key("X-New"), "{:?}", app.editor.headers);
+    assert_eq!(app.editor.table.selected(), Some(Stop::Add));
+}
+
 /// Task #121: a cursor on `+ Add` stays there across an undo that leaves
 /// it standing (R8's last-row fallback is only for a cursor whose row is
 /// gone).

@@ -259,7 +259,10 @@ The vim-mode code is used as reference only (§5).
   cursor is gone, the cursor goes where the undo step recorded it before
   the op (after it, for redo), `+ Add` included; the last real row is the
   fallback only when the step recorded no spot on this tab. A cursor on
-  `+ Add` stays on `+ Add`.
+  `+ Add` stays on `+ Add` unless the swap brings a row back (the
+  reselect above). An add through `+ Add` undoes onto `+ Add`, where the
+  add verb or the click moved the cursor to open the cell (user,
+  2026-10-26: "Just leave the cursor on + new").
 - **Change:** `components/editor.rs`:
   - `apply_snapshot` (l.416) takes the `keys_before` and reselect
     lines from 766527d;
