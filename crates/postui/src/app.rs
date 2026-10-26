@@ -2136,14 +2136,14 @@ impl App {
                 RowButton::new(
                     Verb::Rename,
                     "rename",
-                    crate::glyph::PENCIL,
+                    crate::glyph::PENCIL_PILL,
                     "Rename this view",
                     Action::PromptRenameJqView(name.clone()),
                 ),
                 RowButton::new(
                     delete,
                     "delete",
-                    crate::glyph::DELETE,
+                    crate::glyph::DELETE_PILL,
                     "Delete this view",
                     Action::DeleteJqView(name.clone()),
                 )
