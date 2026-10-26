@@ -2986,61 +2986,30 @@ impl ModalStack {
                 );
                 hits.register(btn_area, crate::hit::Hit::ModalConfirm);
             }
+            // Each choice is its own clickable painted button
+            // (`Hit::ConfirmChoice(c)`); `Esc` still closes the modal
+            // (matching whichever choice text says "Cancel", if any). The
+            // blocking dialogs' layout wraps the choices on a panel too
+            // narrow for one row (task #107).
             Modal::Confirm { title, body, choices } => {
-                let area = centered_rect(screen, 60.min(screen.width), 13.min(screen.height));
-                hits.register(area, crate::hit::Hit::ModalBody);
-                paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
-                if t < 1.0 {
-                    return;
-                }
-
-                let title_y = area.y + 1;
-                paint::text(
-                    frame.buffer_mut(),
-                    area.x + 2,
-                    title_y,
+                let buttons: Vec<_> = choices
+                    .iter()
+                    .map(|(c, label, _)| {
+                        (label.as_str(), crate::hit::Hit::ConfirmChoice(*c), false)
+                    })
+                    .collect();
+                draw_blocking_dialog(
+                    frame,
+                    screen,
+                    theme,
+                    hits,
+                    hovered,
+                    t,
+                    (60, 13),
                     title,
-                    theme.text,
-                    theme.panel,
-                    true,
+                    body,
+                    &buttons,
                 );
-
-                let labels: Vec<&str> = choices.iter().map(|(_, l, _)| l.as_str()).collect();
-                let btn_row_w = button_row_width(&labels);
-                let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
-                let body_area = Rect {
-                    x: area.x + 2,
-                    y: title_y + 2,
-                    width: area.width.saturating_sub(4),
-                    height: buttons_y.saturating_sub(title_y + 2).saturating_sub(1),
-                };
-                frame.render_widget(
-                    Paragraph::new(body.as_str())
-                        .style(Style::default().fg(theme.text).bg(theme.panel))
-                        .wrap(Wrap { trim: false }),
-                    body_area,
-                );
-
-                // Each choice is its own clickable painted button
-                // (`Hit::ConfirmChoice(c)`); `Esc` still closes the modal
-                // (matching whichever choice text says "Cancel", if any).
-                let mut x = area.x + area.width.saturating_sub(2 + btn_row_w);
-                for (c, label, _) in choices.iter() {
-                    let w = paint::button_min_width(label);
-                    let btn_area = Rect { x, y: buttons_y, width: w, height: BUTTON_HEIGHT };
-                    let choice_state = if hovered == Some(&crate::hit::Hit::ConfirmChoice(*c)) {
-                        ControlState::Hover
-                    } else {
-                        ControlState::Normal
-                    };
-                    Button { label, kind: ButtonKind::Secondary, state: choice_state }.paint(
-                        frame.buffer_mut(),
-                        btn_area,
-                        theme,
-                    );
-                    hits.register(btn_area, crate::hit::Hit::ConfirmChoice(*c));
-                    x += w + 2;
-                }
             }
             Modal::Prompt { title, input, kind, revealed } => {
                 let masked = kind.is_secret() && !*revealed;
@@ -3978,15 +3947,19 @@ fn button_rows(labels: &[&str], max_w: u16) -> Vec<std::ops::Range<usize>> {
     rows
 }
 
-/// The layout the three blocking dialogs share (`ConfigStartup`,
-/// `ConfigEditInvalid`, `KeymapChoice`): a centered panel at `size`, a bold
+/// The layout the blocking dialogs share (`ConfigStartup`,
+/// `ConfigEditInvalid`, `KeymapChoice`) and `Confirm` uses too (task #107):
+/// a centered panel at `size`, a bold
 /// title, a wrapped body, and a right-aligned row of Secondary buttons, each
 /// `(label, hit, aimed)`. A button paints Focused when `aimed`, else Hover
 /// under the pointer, else Normal. Paints only the empty panel while the
 /// modal-open animation `t` is below 1.
 ///
-/// A panel too narrow for the row (the screen clamps it, and the startup
-/// and keyboard dialogs are raised before the user can resize) wraps it with
+/// A row wider than `size` gives (a `Confirm`'s choices are built at run
+/// time, and the drift question's three outgrow 60 columns) widens the
+/// panel to fit it, as far as the screen allows (task #107). A panel the
+/// screen still keeps too narrow (the startup and keyboard dialogs are
+/// raised before the user can resize) wraps the row with
 /// [`button_rows`] rather than running it past the border, and grows a
 /// `BUTTON_HEIGHT` per extra row, so the body keeps the rows `size` gives
 /// it (task #88). The labels stay whole: the keyboard question's are its
@@ -4012,8 +3985,8 @@ fn draw_blocking_dialog(
     body: &str,
     buttons: &[(&str, crate::hit::Hit, bool)],
 ) {
-    let width = size.0.min(screen.width);
     let labels: Vec<&str> = buttons.iter().map(|(l, _, _)| *l).collect();
+    let width = size.0.max(button_row_width(&labels) + 4).min(screen.width);
     let rows = button_rows(&labels, width.saturating_sub(4));
     let rows_h = rows.len() as u16 * BUTTON_HEIGHT;
     let height = size.1.saturating_add(rows_h.saturating_sub(BUTTON_HEIGHT));
@@ -5897,6 +5870,42 @@ mod tests {
         let invalid_buttons =
             [(Hit::ConfigEditKeepEditing, "Keep editing"), (Hit::ConfigEditDiscard, "Discard")];
         assert_eq!(blocking_dialog_rows(invalid, &invalid_buttons, 40, "bad"), [0, 0]);
+    }
+
+    /// Task #107: a confirm dialog's choices wrap as the blocking dialogs'
+    /// do, rather than running off a panel too narrow for them: the
+    /// first-launch project question (44 columns of buttons) on a
+    /// 40-column screen, and the unsaved-changes question's. The drift
+    /// question's three choices are wider than the 60-column panel: it
+    /// widens to keep them on one row where the screen has the room, and
+    /// wraps them where it doesn't (they used to run over the left border).
+    #[test]
+    fn a_confirm_dialogs_choices_wrap_on_a_narrow_panel() {
+        use crate::hit::Hit;
+        let rows = |labels: &[&str], width: u16| {
+            let letters = ('a'..='z').take(labels.len());
+            let modal = Modal::Confirm {
+                title: "Question".into(),
+                body: "Create one here?".into(),
+                choices: labels
+                    .iter()
+                    .zip(letters.clone())
+                    .map(|(l, c)| (c, l.to_string(), vec![]))
+                    .collect(),
+            };
+            let hits: Vec<(Hit, &str)> =
+                labels.iter().zip(letters).map(|(l, c)| (Hit::ConfirmChoice(c), *l)).collect();
+            blocking_dialog_rows(modal, &hits, width, "here?")
+        };
+        let project = ["Create project", "Open default project"];
+        assert_eq!(rows(&project, 40), [0, 1]);
+        assert_eq!(rows(&project, 80), [0, 0]);
+        let unsaved = ["Save as\u{2026} & quit", "Discard request"];
+        assert_eq!(rows(&unsaved, 40), [0, 1]);
+        assert_eq!(rows(&unsaved, 80), [0, 0]);
+        let drift = ["Overwrite with my edits", "Reload from disk", "Cancel"];
+        assert_eq!(rows(&drift, 120), [0, 0, 0]);
+        assert_eq!(rows(&drift, 60), [0, 0, 1]);
     }
 
     /// [`button_rows`] fills like wrapped text: each row takes the next
