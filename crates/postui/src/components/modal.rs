@@ -3955,10 +3955,11 @@ fn button_rows(labels: &[&str], max_w: u16) -> Vec<std::ops::Range<usize>> {
 /// under the pointer, else Normal. Paints only the empty panel while the
 /// modal-open animation `t` is below 1.
 ///
-/// A panel too narrow for the row (the screen clamps it, and the startup
-/// and keyboard dialogs are raised before the user can resize; a
-/// `Confirm`'s choices, built at run time, can outgrow even the full
-/// panel, as the drift question's three do) wraps it with
+/// A row wider than `size` gives (a `Confirm`'s choices are built at run
+/// time, and the drift question's three outgrow 60 columns) widens the
+/// panel to fit it, as far as the screen allows (task #107). A panel the
+/// screen still keeps too narrow (the startup and keyboard dialogs are
+/// raised before the user can resize) wraps the row with
 /// [`button_rows`] rather than running it past the border, and grows a
 /// `BUTTON_HEIGHT` per extra row, so the body keeps the rows `size` gives
 /// it (task #88). The labels stay whole: the keyboard question's are its
@@ -3984,8 +3985,8 @@ fn draw_blocking_dialog(
     body: &str,
     buttons: &[(&str, crate::hit::Hit, bool)],
 ) {
-    let width = size.0.min(screen.width);
     let labels: Vec<&str> = buttons.iter().map(|(l, _, _)| *l).collect();
+    let width = size.0.max(button_row_width(&labels) + 4).min(screen.width);
     let rows = button_rows(&labels, width.saturating_sub(4));
     let rows_h = rows.len() as u16 * BUTTON_HEIGHT;
     let height = size.1.saturating_add(rows_h.saturating_sub(BUTTON_HEIGHT));
@@ -5875,8 +5876,9 @@ mod tests {
     /// do, rather than running off a panel too narrow for them: the
     /// first-launch project question (44 columns of buttons) on a
     /// 40-column screen, and the unsaved-changes question's. The drift
-    /// question's three choices are wider than the 60-column panel, so they
-    /// wrap at any screen width (they used to run over the left border).
+    /// question's three choices are wider than the 60-column panel: it
+    /// widens to keep them on one row where the screen has the room, and
+    /// wraps them where it doesn't (they used to run over the left border).
     #[test]
     fn a_confirm_dialogs_choices_wrap_on_a_narrow_panel() {
         use crate::hit::Hit;
@@ -5902,7 +5904,8 @@ mod tests {
         assert_eq!(rows(&unsaved, 40), [0, 1]);
         assert_eq!(rows(&unsaved, 80), [0, 0]);
         let drift = ["Overwrite with my edits", "Reload from disk", "Cancel"];
-        assert_eq!(rows(&drift, 120), [0, 0, 1]);
+        assert_eq!(rows(&drift, 120), [0, 0, 0]);
+        assert_eq!(rows(&drift, 60), [0, 0, 1]);
     }
 
     /// [`button_rows`] fills like wrapped text: each row takes the next
