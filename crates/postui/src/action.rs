@@ -65,7 +65,35 @@ pub enum CopyTarget {
     /// Headers or Vars), by index — the row's own copy button. Copies the
     /// value as typed, not as resolved.
     TableRow(usize),
+    /// The whole-header twins of `ResponseHeader`, `ComputedHeader` and
+    /// `TableRow` (a Headers-tab row): `Name: value`, the real name and
+    /// value even where the row shows them masked (spec 2026-10-26 H3).
+    ResponseHeaderLine(usize),
+    ComputedHeaderLine(usize),
+    TableHeaderLine(usize),
 }
+
+impl CopyTarget {
+    /// Whether this copies a whole header, `Name: value`, rather than a
+    /// value or a text. No wildcard: a new target says which it is.
+    pub fn whole_header(&self) -> bool {
+        match self {
+            CopyTarget::ResponseHeaderLine(_)
+            | CopyTarget::ComputedHeaderLine(_)
+            | CopyTarget::TableHeaderLine(_) => true,
+            CopyTarget::ResponseBody
+            | CopyTarget::ResponseView
+            | CopyTarget::ResponseHeader(_)
+            | CopyTarget::Url
+            | CopyTarget::ComputedHeader(_)
+            | CopyTarget::TableRow(_) => false,
+        }
+    }
+}
+
+/// The note a header copy key gives where the cursor is on no header, so
+/// the key is never dead (spec 2026-10-26 H2, H4, H8).
+pub const NO_HEADER_TO_COPY: &str = "No header to copy here";
 
 /// Which user-editable config file an Edit…/Reset button targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -841,9 +869,15 @@ pub enum Action {
     /// cursor: arrows' `n` and `N` (piece 4 spec §4.5; plan M5a Deviation
     /// 10), as the ▼/▲ buttons do.
     StepResponseSearch(i8),
-    /// Arrows' `c` on the response's Headers view: copies the header under
-    /// the cursor. Nothing on any other row (spec §4.5).
-    CopyResponseHeader,
+    /// Copies the row under the focused cursor to the clipboard: a table
+    /// row (an auto row too) or a response header line. Its value (arrows'
+    /// `y` on the response; every row's footer `copy` chip) or, `whole`, a
+    /// header's `Name: value` (arrows' `Y`, vim's `"+yy`; spec 2026-10-26
+    /// H2, H4, H5, H8). Where the cursor is on nothing to copy, the note
+    /// [`NO_HEADER_TO_COPY`].
+    CopyRow {
+        whole: bool,
+    },
     /// Click on a JSON-tree body row: moves the cursor there, and — when
     /// `toggle` is set — collapses/expands the container it opens.
     JsonRowClicked {

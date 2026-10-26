@@ -21,6 +21,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use std::time::Instant;
 
+/// The row under the table's cursor ([`Editor::cursor_row`]): row `i` of
+/// the active tab, or auto row `j` of the Headers tab's section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorRow {
+    Main(usize),
+    Auto(usize),
+}
+
 /// Which editor tab is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorTab {
@@ -3282,9 +3290,11 @@ impl Editor {
             Verb::Add => Some(Action::TableAddRow),
             Verb::Delete { count: 0 | 1 } => row.map(Action::DeleteTableRow),
             Verb::Delete { count } => row.map(|start| Action::DeleteTableRows { start, count }),
-            Verb::Yank => row.map(Action::YankTableRow).or_else(|| {
-                let j = self.auto_row_cursor()?;
-                Some(Action::CopyToClipboard(crate::action::CopyTarget::ComputedHeader(j)))
+            Verb::Yank => Some(match self.cursor_row()? {
+                CursorRow::Main(i) => Action::YankTableRow(i),
+                CursorRow::Auto(j) => {
+                    Action::CopyToClipboard(crate::action::CopyTarget::ComputedHeader(j))
+                }
             }),
             Verb::Put { above, count } => {
                 // Above or below a row; anywhere past the rows, at their end.
@@ -3296,6 +3306,35 @@ impl Editor {
                 Some(Action::PutTableRow { at, count })
             }
             _ => None,
+        }
+    }
+
+    /// What `Action::CopyRow` copies here: the row under the cursor, its
+    /// value on any table, or (`whole`) a Headers-tab row's `Name: value`,
+    /// main or auto (spec 2026-10-26 H2, H5). `None` off a row, and for a
+    /// whole copy off the Headers tab.
+    pub fn row_copy_target(&self, whole: bool) -> Option<crate::action::CopyTarget> {
+        use crate::action::CopyTarget;
+        if whole && self.active_tab != EditorTab::Headers {
+            return None;
+        }
+        Some(match (self.cursor_row()?, whole) {
+            (CursorRow::Main(i), false) => CopyTarget::TableRow(i),
+            (CursorRow::Main(i), true) => CopyTarget::TableHeaderLine(i),
+            (CursorRow::Auto(j), false) => CopyTarget::ComputedHeader(j),
+            (CursorRow::Auto(j), true) => CopyTarget::ComputedHeaderLine(j),
+        })
+    }
+
+    /// The row under the active table's cursor: a main row, or an auto
+    /// row of the Headers tab's section. `None` on `+ Add`, past the rows,
+    /// and on the Body tab. What the yank verb, the copy keys and the
+    /// footer's row chips all read.
+    pub fn cursor_row(&self) -> Option<CursorRow> {
+        match self.table.selected()? {
+            Stop::Row(i) if i < self.table_len() => Some(CursorRow::Main(i)),
+            Stop::Section(_) => self.auto_row_cursor().map(CursorRow::Auto),
+            Stop::Row(_) | Stop::Add => None,
         }
     }
 
@@ -7411,7 +7450,9 @@ url = "https://api.example.com/users""#,
         app.editor.sub_focus = SubFocus::Content;
         app.update(Action::Render);
         let chips = ["send", "add header", "disable", "delete", "vars", "tabs", "commands"];
-        for width in [90, 110, 140, 180] {
+        // The row's copy chip (spec 2026-10-26 H5) takes ten cells the
+        // message had at 140: the shortest form now needs 150.
+        for width in [90, 110, 150, 180] {
             let mut footer = |row: usize| {
                 app.editor.table.set_selected(Some(Stop::Row(row)));
                 let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
@@ -7429,7 +7470,7 @@ url = "https://api.example.com/users""#,
                 );
             }
             assert!(!owned.contains('…'), "a form shows whole: {owned}");
-            if width >= 140 {
+            if width >= 150 {
                 assert!(owned.contains(" be set"), "some form shows, {width}: {owned}");
             }
             if width >= 180 {

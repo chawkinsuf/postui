@@ -1316,6 +1316,10 @@ impl App {
                 matches!(self.sidebar.rows.get(*i), Some(Row::Folder { expanded: true, .. }))
             }
             Hit::AutoHeaderReveal => self.editor.computed.revealed,
+            // A Headers-tab pill copies a header, shift+click the whole one.
+            Hit::TableCopy(_) => {
+                self.editor.active_tab == crate::components::editor::EditorTab::Headers
+            }
             // The lit end chip restores the split rather than jumping to
             // that end.
             Hit::SplitStop(stop) => self.split_state().stop() == Some(*stop),
@@ -3828,10 +3832,31 @@ impl App {
             Action::StepResponseSearch(delta) => self.with_response_search(|response, memory| {
                 response.step_search(delta.into(), memory)
             }),
-            Action::CopyResponseHeader => match self.session.response.copyable_header_row() {
-                Some(row) => self.update(Action::CopyToClipboard(CopyTarget::ResponseHeader(row))),
-                None => false,
-            },
+            // The row under the focused cursor; the one place that says
+            // there is none, so the key is never dead (spec 2026-10-26 H2,
+            // H4, H8). On the response its keys bind on the Headers view
+            // only (`Surfaces::RESPONSE_HEADERS`), so the body views route
+            // `y` and `"+yy` as they did before.
+            Action::CopyRow { whole } => {
+                let target = match self.focus {
+                    PaneId::Response => self.session.response.copyable_header_row().map(|row| {
+                        if whole {
+                            CopyTarget::ResponseHeaderLine(row)
+                        } else {
+                            CopyTarget::ResponseHeader(row)
+                        }
+                    }),
+                    PaneId::Editor => self.editor.row_copy_target(whole),
+                    _ => None,
+                };
+                match target {
+                    Some(target) => self.update(Action::CopyToClipboard(target)),
+                    None => {
+                        self.toasts.push(crate::action::NO_HEADER_TO_COPY, ToastKind::Info);
+                        true
+                    }
+                }
+            }
             Action::JsonRowClicked { row, toggle } => {
                 self.session.response.click_row(row, toggle);
                 true
@@ -4523,6 +4548,12 @@ impl App {
                     .map(|(k, e)| (k.clone(), e.clone()));
                 if let Some((key, entry)) = row {
                     self.yank = crate::yank::Register::Row { tab, key, entry };
+                    // Arrows' `y` is a GUI copy: the clipboard too, as the
+                    // row's copy pill does. Vim's `yy` never writes the
+                    // clipboard (spec 2026-10-26 H1, H7).
+                    if self.profile() == crate::config::KeyProfile::Arrows {
+                        return self.update(Action::CopyToClipboard(CopyTarget::TableRow(i)));
+                    }
                 }
                 true
             }
@@ -10723,6 +10754,16 @@ impl App {
     /// on a successful copy. `None` when `target` needs a ready response
     /// and there isn't one (or the header index is out of range).
     fn resolve_copy(&self, target: &CopyTarget) -> Option<(String, String)> {
+        // A row's copy: its value, or for a whole-header target `name:
+        // value` (spec 2026-10-26 H3). The toast names the row as `shown`
+        // on screen, masked or not.
+        let header_copy = |name: &str, value: &str, shown: &str| {
+            if target.whole_header() {
+                (format!("{name}: {value}"), format!("Copied {shown} header"))
+            } else {
+                (value.to_string(), format!("Copied {shown}"))
+            }
+        };
         match target {
             CopyTarget::ResponseBody => match self.session.response.state() {
                 ResponseState::Ready(d) => {
@@ -10744,37 +10785,36 @@ impl App {
             // `i` is a line of the Headers tab; the view says which header
             // it is. A sent row copies the header's real value — the row
             // shows the mask, but a copy is the user asking for the value.
-            CopyTarget::ResponseHeader(i) => {
+            CopyTarget::ResponseHeader(i) | CopyTarget::ResponseHeaderLine(i) => {
                 use crate::components::response::HeaderRow;
                 let ResponseState::Ready(d) = self.session.response.state() else {
                     return None;
                 };
-                match self.session.response.view()?.header_row(*i)? {
-                    HeaderRow::Received(j) => d
-                        .headers
-                        .get(j)
-                        .map(|(name, value)| (value.clone(), format!("Copied {name}"))),
-                    HeaderRow::Sent(j) => d
-                        .sent_headers
-                        .get(j)
-                        .map(|h| (h.value.clone(), format!("Copied {}", h.display_name))),
-                    HeaderRow::Divider | HeaderRow::Note => None,
-                }
+                let (name, value, shown) = match self.session.response.view()?.header_row(*i)? {
+                    HeaderRow::Received(j) => d.headers.get(j).map(|(n, v)| (n, v, n))?,
+                    HeaderRow::Sent(j) => {
+                        d.sent_headers.get(j).map(|h| (&h.name, &h.value, &h.display_name))?
+                    }
+                    HeaderRow::Divider | HeaderRow::Note => return None,
+                };
+                Some(header_copy(name, value, shown))
             }
             CopyTarget::Url => Some((self.editor.url.text().to_string(), "Copied URL".to_string())),
-            CopyTarget::TableRow(i) => self
-                .editor
-                .table_row_at(*i)
-                .map(|(key, value)| (value.to_string(), format!("Copied {key}"))),
+            // A row's key is never empty: the table refuses a blank name
+            // on the new row and on a rename (`table_editor::commit_key`),
+            // so a whole-header copy never reads `: value`.
+            CopyTarget::TableRow(i) | CopyTarget::TableHeaderLine(i) => {
+                self.editor.table_row_at(*i).map(|(key, value)| header_copy(key, value, key))
+            }
             // The real value even while the row shows masked, as the sent
             // section's pill and the tooltip's copy do (spec 2026-10-18 R7);
             // the toast names the row as the screen shows it.
-            CopyTarget::ComputedHeader(i) => {
+            CopyTarget::ComputedHeader(i) | CopyTarget::ComputedHeaderLine(i) => {
                 let computed = &self.editor.computed;
                 computed.rows.get(*i).map(|r| {
                     let h = &r.header;
-                    let name = if computed.revealed { &h.name } else { &h.display_name };
-                    (h.value.clone(), format!("Copied {name}"))
+                    let shown = if computed.revealed { &h.name } else { &h.display_name };
+                    header_copy(&h.name, &h.value, shown)
                 })
             }
         }

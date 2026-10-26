@@ -18,6 +18,13 @@ use crate::hit::Hit;
 use crate::keys::Keymap;
 use crate::split::SplitStop;
 
+/// A header's copy pill: its click copies the value, its shift+click the
+/// whole header (spec 2026-10-26 H6). The tip says so in every terminal,
+/// though one that keeps shift+click for its own selection never passes
+/// it on (mine (approved)). Short, so it shows whole in more footers (the
+/// user: "Shorten it"); `⇧` as the footer's own `⇧enter` keycap writes it.
+const HEADER_PILL_TIP: &str = "Copy value · ⇧click: whole header";
+
 /// The app state a hint needs to say what its button would do *now*.
 /// Most controls under the pointer are two-state — send/cancel, open/close,
 /// enable/disable, show/hide — and a hint that names both ("Enable or
@@ -236,10 +243,15 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::CloseField => "Close the field, keeping what you typed".to_string(),
         Action::FocusUrl => "Edit the URL".to_string(),
         Action::DeleteTableRow(_) => "Delete this row".to_string(),
-        // An auto row's keys (task #56) say what its pills say.
+        // An auto row's pill (task #56).
         Action::CopyToClipboard(CopyTarget::ComputedHeader(_)) => {
             "Copy this header's value".to_string()
         }
+        // The copy chips: the value, as the pills copy, in both profiles
+        // (spec 2026-10-26 H5); a header's whole-header key is on the
+        // keycap (`Y`).
+        Action::CopyToClipboard(CopyTarget::TableRow(_)) => "Copy this row's value".to_string(),
+        Action::CopyRow { whole: false } => "Copy this header's value".to_string(),
         Action::OverrideAutoHeader(_) => "Edit this header in the request".to_string(),
         Action::ToggleVarReveal => "Reveal or hide the secret value".to_string(),
         // Closing switches the filter off — when there is one: an empty
@@ -445,7 +457,9 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::MethodSelector => of(Action::OpenMethodDropdown),
         Hit::CopyUrl => of(Action::CopyToClipboard(CopyTarget::Url)),
         Hit::TableCheckbox(_) => text(if ctx.on { "Disable this row" } else { "Enable this row" }),
-        Hit::TableCopy(_) => text("Copy this row's value"),
+        // A Headers-tab row's pill (`on`) takes shift+click too.
+        Hit::TableCopy(_) if ctx.on => text(HEADER_PILL_TIP),
+        Hit::TableCopy(i) => of(Action::CopyToClipboard(CopyTarget::TableRow(*i))),
         Hit::TableDelete(_) => text("Delete this row"),
         // A dropdown row's own buttons, with the menu's key for each.
         // No tip when the button is gone (a menu rebuilt under the pointer).
@@ -464,8 +478,10 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             let verb = if ctx.on { "Show" } else { "Hide" };
             Some(Source::Keyed(format!("{verb} the {pane}"), toggle))
         }
-        // Worded once, with the footer chips that dispatch the same actions.
-        Hit::AutoHeaderCopy(i) => of(Action::CopyToClipboard(CopyTarget::ComputedHeader(*i))),
+        // The copy pills don't share the chips' wording: a pill's
+        // shift+click copies the whole header, a chip's click never does
+        // (spec 2026-10-26 H5, H6). The pencil is worded once, with its chip.
+        Hit::AutoHeaderCopy(_) => text(HEADER_PILL_TIP),
         Hit::AutoHeaderOverride(i) => of(Action::OverrideAutoHeader(*i)),
         Hit::AutoHeaderReveal => {
             text(if ctx.on { "Hide the computed secrets" } else { "Show the computed secrets" })
@@ -495,7 +511,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         }
         Hit::ResponseSearchNext => text("Go to the next match"),
         Hit::ResponseSearchPrev => text("Go to the previous match"),
-        Hit::HeaderCopy(_) => text("Copy this header's value"),
+        Hit::HeaderCopy(_) => text(HEADER_PILL_TIP),
         // A toggle: pressed (the bar showing), a click closes it.
         Hit::ResponseJqButton if ctx.on => of(Action::ToggleJqBar),
         Hit::ResponseJqButton => of(Action::OpenJqBar),
@@ -879,8 +895,10 @@ mod tests {
                 for url_focused in [false, true] {
                     for row in [
                         None,
-                        Some(TableCursor::Row { index: 0, enabled: true }),
+                        Some(TableCursor::Row { index: 0, enabled: true, headers: false }),
+                        Some(TableCursor::Row { index: 0, enabled: true, headers: true }),
                         Some(TableCursor::Auto { index: 0, pencil: true }),
+                        Some(TableCursor::ResponseHeader),
                     ] {
                         for jq in [
                             JqBarState::Closed,

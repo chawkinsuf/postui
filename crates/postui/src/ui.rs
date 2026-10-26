@@ -989,25 +989,32 @@ impl PaneChipArgs {
             // A selected data row (content focus, no cell edit — space/d
             // would type into one) advertises its toggle/delete keys, and
             // an auto row its copy and take-over keys.
-            table_row_selected: (focus == PaneId::Editor
-                && app.editor.sub_focus == SubFocus::Content
-                && app.editor.table.editing.is_none())
-            .then(|| {
-                use crate::components::footer::TableCursor;
-                use crate::components::table_editor::Stop;
-                let editor = &app.editor;
-                match editor.table.selected()? {
-                    Stop::Row(i) if i < editor.table_len() => {
-                        Some(TableCursor::Row { index: i, enabled: editor.table_row_enabled(i) })
-                    }
-                    Stop::Section(_) => editor.auto_row_cursor().map(|j| TableCursor::Auto {
-                        index: j,
-                        pencil: editor.auto_row_overridable(j),
-                    }),
-                    Stop::Row(_) | Stop::Add => None,
-                }
-            })
-            .flatten(),
+            table_row_selected: if focus == PaneId::Response {
+                // The response's Headers view, its cursor on a header.
+                response
+                    .copyable_header_row()
+                    .map(|_| crate::components::footer::TableCursor::ResponseHeader)
+            } else {
+                (focus == PaneId::Editor
+                    && app.editor.sub_focus == SubFocus::Content
+                    && app.editor.table.editing.is_none())
+                .then(|| {
+                    use crate::components::editor::{CursorRow, EditorTab};
+                    use crate::components::footer::TableCursor;
+                    let editor = &app.editor;
+                    Some(match editor.cursor_row()? {
+                        CursorRow::Main(i) => TableCursor::Row {
+                            index: i,
+                            enabled: editor.table_row_enabled(i),
+                            headers: editor.active_tab == EditorTab::Headers,
+                        },
+                        CursorRow::Auto(j) => {
+                            TableCursor::Auto { index: j, pencil: editor.auto_row_overridable(j) }
+                        }
+                    })
+                })
+                .flatten()
+            },
             jq_bar: if response.jq_focused() {
                 if response.jq_bar().ai_asking.is_some() {
                     JqBarState::Describing

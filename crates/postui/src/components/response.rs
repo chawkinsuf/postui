@@ -3725,7 +3725,8 @@ impl Response {
 
     /// The cursor's row on the Headers view when it is a header with a
     /// value to copy (a received or sent header, not the divider or a
-    /// note): what arrows' `c` copies (`Action::CopyResponseHeader`).
+    /// note): what arrows' `y`/`Y` and vim's `"+yy` copy
+    /// (`Action::CopyRow`).
     pub fn copyable_header_row(&self) -> Option<usize> {
         let view = self.view.as_ref()?;
         (view.mode == ViewMode::Headers

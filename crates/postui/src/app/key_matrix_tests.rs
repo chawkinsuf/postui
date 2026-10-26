@@ -1386,6 +1386,14 @@ fn every_verb_chip_resolves_to_its_chip() {
                     _ => continue,
                 };
                 let Some(action) = action else { continue };
+                // A copy chip's click is its row's pill, the clipboard copy,
+                // in both profiles, whatever its keycap's yank does (spec
+                // 2026-10-26 H5; the user's Q1): its keys are tested on
+                // their own.
+                if matches!(action, Action::CopyToClipboard(crate::action::CopyTarget::TableRow(_)))
+                {
+                    continue;
+                }
                 assert_eq!(
                     app.selection_action(surface, verb),
                     Some(action.clone()),
@@ -1535,6 +1543,18 @@ fn every_painted_keycap_resolves_to_its_chip() {
                         honest(&app, a, &sa)
                             && honest(&app, b, &sb)
                             && shown == pair(&glyphs(&sa), &glyphs(&sb))
+                    }
+                    Key::PairOr(a, b) => {
+                        match (spell(at, a, &app.keymap), spell(at, b, &app.keymap)) {
+                            (Some(sa), Some(sb)) => {
+                                honest(&app, a, &sa)
+                                    && honest(&app, b, &sb)
+                                    && shown == pair(&glyphs(&sa), &glyphs(&sb))
+                            }
+                            (Some(s), None) => honest(&app, a, &s) && shown == glyphs(&s),
+                            (None, Some(s)) => honest(&app, b, &s) && shown == glyphs(&s),
+                            (None, None) => false,
+                        }
                     }
                     Key::Quit { .. } => {
                         shown == "q" && profile == KeyProfile::Arrows
