@@ -1,0 +1,8 @@
+method = "GET"
+url = "{{base_url}}/users"
+
+[params]
+_limit = "5"
+
+[headers]
+Accept = "application/json"

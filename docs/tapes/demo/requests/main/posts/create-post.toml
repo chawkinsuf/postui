@@ -1,0 +1,15 @@
+method = "POST"
+url = "{{base_url}}/posts"
+
+[headers]
+Authorization = "Bearer {{api_token}}"
+
+[body]
+type = "json"
+text = """
+{
+  "title": "Hello from postui",
+  "body": "Requests are plain files.",
+  "userId": 1
+}
+"""

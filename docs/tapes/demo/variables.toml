@@ -1,0 +1,10 @@
+[base_url]
+description = "Where the API lives"
+
+[user_id]
+description = "The user the user requests ask about"
+default = "1"
+
+[api_token]
+description = "Sent as the bearer token"
+secret = true
