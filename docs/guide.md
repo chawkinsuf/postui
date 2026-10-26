@@ -26,8 +26,8 @@ The header's project chip switches between the projects you've opened.
 Requests are grouped into **spaces**: top-level folders under `requests/`.
 One space shows at a time, and each remembers the request you had open; the
 header's space chip switches between them. Inside a space, requests can sit in
-folders, which you can fold, reorder (by key or by dragging) and move to
-another space.
+folders, which fold. Requests can be reordered, by key or by dragging, and
+moved to another space.
 
 The **Manage** screen (`alt+r`) edits a project's variables, environments and
 spaces, and has a Settings tab for postui itself.
@@ -131,7 +131,8 @@ Every control clicks: the header's chips open their choosers (the keycap pill
 beside each cycles it), sidebar rows open requests, the method opens its
 dropdown, Send sends, tabs switch, the JSON tree folds, and footer chips run
 their action. Drag the dividers between panes to resize them, and drag
-scrollbars. Clicking outside an open dialog or chooser closes it. Right-click
+scrollbars. Clicking outside a chooser or most dialogs closes them; the few
+that need an answer, like the first launch's keys question, stay. Right-click
 a sidebar row, a table row or the response tree for its menu.
 
 Mouse capture turns off your terminal's own drag-to-select. To select text for

@@ -51,7 +51,7 @@ network connection.
 ## How the tapes work
 
 Each tape first sources `setup.sh` out of sight. It copies the `demo/` project
-and a recording config into a fresh temp directory, so a take never touches
+and a recording config into `/tmp/postui-tapes`, emptied first, so a take never touches
 your own config or leaves files in the repo, and every take starts from the
 same state. The tapes run the release build in `target/release`.
 

@@ -43,7 +43,7 @@ at all is reported and left alone, never overwritten.
 | `animations` | `true` | Whether transitions ease (tab underline, hover, dialogs) or jump. |
 | `hover_hints` | `true` | Whether a hovered control explains itself on the footer row. |
 | `curl_button` | `false` | Whether the sidebar offers an Import curl button while the clipboard holds a curl command. It reads the clipboard when postui regains focus, which on macOS can bring up the pasteboard privacy notice. |
-| `jq_tab` | `"menu"` | What Tab does in the jq bar: `"menu"` lists the candidates under the bar, `"ghost"` shows the best one after the caret and cycles in place. |
+| `jq_tab` | `"menu"` | What Tab does in the jq bar: `"menu"` lists the candidates under the bar, `"ghost"` shows the best one after the caret and cycles in place. The older names `"accept"` (menu) and `"cycle"` (ghost) still work. |
 | `indent` | `"spaces"` | How a request body with no indentation of its own indents: `"spaces"` or `"tabs"`. A body that's already indented keeps its own style. |
 | `indent_width` | `2` | The spaces in one indent level, from 1 to 8. |
 | `ai_cmd` | `"claude -p"` | The command "Describe a filter…" pipes its prompt into; it should print a jq filter. |
@@ -62,8 +62,8 @@ milliseconds: `tab_slide` (250), `hover` (70), `focus` (90), `list_travel`
 names an action and lists every key for it:
 
 ```toml
-send = ["ctrl+r", "f5"]
-open_jq_bar = ["alt+q"]
+# The theme picker on F2 as well as its default alt+t.
+theme_choose = ["alt+t", "f2"]
 ```
 
 The list replaces all of the action's keys, so include the ones you want to

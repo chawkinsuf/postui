@@ -94,7 +94,8 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/chawkinsuf/postui/relea
 arm64, glibc 2.35 or newer) are on the
 [releases page](https://github.com/chawkinsuf/postui/releases).
 
-**From source**, with Rust 1.97 or newer:
+**From source**, with Rust 1.97 or newer. This builds `main`, which can be
+ahead of the latest release; add `--tag v<version>` for a release:
 
 ```sh
 cargo install --locked --git https://github.com/chawkinsuf/postui postui
