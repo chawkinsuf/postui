@@ -589,14 +589,14 @@ pub struct MenuItem {
 
 /// One of a dropdown row's own buttons: the verb whose key runs it, the
 /// word the footer's chip for that key says (`delete`, or `clear` for the
-/// scratch's), its one-cell glyph, its tooltip's words and what it does. A
-/// `destructive` one inverts onto error red under the pointer, the rest
-/// onto accent.
+/// scratch's), its icon as a three-cell `glyph::*_PILL`, its tooltip's
+/// words and what it does. A `destructive` one inverts onto error red
+/// under the pointer, the rest onto accent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RowButton {
     pub verb: crate::action::Verb,
     pub word: &'static str,
-    pub glyph: &'static str,
+    pub pill: &'static str,
     pub tip: &'static str,
     pub action: Action,
     pub destructive: bool,
@@ -606,11 +606,11 @@ impl RowButton {
     pub fn new(
         verb: crate::action::Verb,
         word: &'static str,
-        glyph: &'static str,
+        pill: &'static str,
         tip: &'static str,
         action: Action,
     ) -> Self {
-        Self { verb, word, glyph, tip, action, destructive: false }
+        Self { verb, word, pill, tip, action, destructive: false }
     }
 
     /// A removal: red under the pointer.
@@ -643,11 +643,11 @@ impl MenuItem {
     pub fn with_rename_delete(self, rename: Action, delete: Action) -> Self {
         use crate::action::Verb;
         self.with_buttons(vec![
-            RowButton::new(Verb::Rename, "rename", crate::glyph::PENCIL, "Rename", rename),
+            RowButton::new(Verb::Rename, "rename", crate::glyph::PENCIL_PILL, "Rename", rename),
             RowButton::new(
                 Verb::Delete { count: 1 },
                 "delete",
-                crate::glyph::DELETE,
+                crate::glyph::DELETE_PILL,
                 "Delete",
                 delete,
             )
@@ -664,7 +664,7 @@ impl MenuItem {
         self.buttons.iter().find(|b| b.verb.kind() == verb.kind())
     }
 
-    /// The cells the row's own buttons take: a space and a glyph each.
+    /// The cells the row's own buttons take: a three-cell pill each.
     fn buttons_width(&self) -> u16 {
         ROW_BUTTON_W * self.buttons.len() as u16
     }
@@ -3831,9 +3831,10 @@ fn draw_dropdown(
     }
 }
 
-/// The cells each of a dropdown row's own buttons takes: its glyph with a
-/// cell of padding each side, all of it the button's (#126: a one-cell
-/// glyph alone was a small target and its hover fill a lone block).
+/// The cells each of a dropdown row's own buttons takes: its
+/// `glyph::*_PILL`, the glyph with a cell of padding each side, all of it
+/// the button's (#126: a one-cell glyph alone was a small target and its
+/// hover fill a lone block).
 const ROW_BUTTON_W: u16 = 3;
 
 /// Row `i`'s own buttons (jq views spec 17, amendment B9), right-aligned in
@@ -3862,8 +3863,7 @@ fn draw_row_buttons(
         } else {
             (theme.text_muted, row_fill)
         };
-        let label = format!(" {} ", button.glyph);
-        paint::text(frame.buffer_mut(), x, row_area.y, &label, fg, bg, false);
+        paint::text(frame.buffer_mut(), x, row_area.y, button.pill, fg, bg, false);
         hits.register(Rect::new(x, row_area.y, ROW_BUTTON_W, 1), hit);
     }
 }
@@ -5272,12 +5272,18 @@ mod tests {
         let delete = Verb::Delete { count: 1 };
         vec![
             MenuItem::new("draft", Action::Render).with_buttons(vec![
-                RowButton::new(delete, "clear", crate::glyph::CLOSE, "Clear", toast("clear"))
+                RowButton::new(delete, "clear", crate::glyph::CLOSE_PILL, "Clear", toast("clear"))
                     .destructive(),
             ]),
             MenuItem::new("names", Action::Render).with_buttons(vec![
-                RowButton::new(Verb::Rename, "rename", crate::glyph::PENCIL, "Rename", toast("r")),
-                RowButton::new(delete, "delete", crate::glyph::DELETE, "Del", toast("d"))
+                RowButton::new(
+                    Verb::Rename,
+                    "rename",
+                    crate::glyph::PENCIL_PILL,
+                    "Rename",
+                    toast("r"),
+                ),
+                RowButton::new(delete, "delete", crate::glyph::DELETE_PILL, "Del", toast("d"))
                     .destructive(),
             ]),
         ]

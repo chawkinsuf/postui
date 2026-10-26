@@ -10282,7 +10282,10 @@ fn a_dropdown_rows_buttons_are_three_cells_wide_and_fill_when_hovered() {
     let cells: Vec<_> = (delete.x..delete.right()).map(|x| &buf[(x, delete.y)]).collect();
     assert!(cells.iter().all(|c| c.bg == app.theme.error), "the whole button fills");
     assert_eq!(cells[1].symbol(), crate::glyph::DELETE, "the glyph sits in the middle");
-    assert_ne!(buf[(rename.x + 1, rename.y)].bg, app.theme.accent, "only the hovered one");
+    assert!(
+        (rename.x..rename.right()).all(|x| buf[(x, rename.y)].bg != app.theme.error),
+        "only the hovered one fills, none of its neighbour's cells"
+    );
 }
 
 /// A dropdown has no open transition and every close path is instant: no
