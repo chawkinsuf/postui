@@ -244,7 +244,7 @@ pub struct App {
     /// that transition (active → finished) still force one more redraw.
     animating_last_tick: bool,
     /// The active key bindings (defaults + `keys.toml` overrides), used at
-    /// draw time for the palette's keybinding column (`keys::combo_for`)
+    /// draw time for the palette's keybinding column (`combo_for_action`)
     /// and read by `handle_key` itself, so a live reload's new bindings
     /// are in force from the next key with no copy to keep in step.
     pub keymap: crate::keys::Keymap,
