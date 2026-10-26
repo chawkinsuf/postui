@@ -562,7 +562,7 @@ impl Project {
 
     /// [`VarEdit::ToggleSecret`]'s two directions. Off->on moves every
     /// environment's flat value for `name` into that environment's
-    /// `.local/secrets.toml` slot and strips it from the env file; on->off
+    /// `secrets.toml` slot and strips it from the env file; on->off
     /// only flips the flag — the local secret value is left exactly where
     /// it is (never silently promoted into a git-tracked file).
     fn toggle_secret(&mut self, name: &str) -> Result<(), Error> {

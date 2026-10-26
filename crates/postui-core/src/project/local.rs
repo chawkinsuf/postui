@@ -1,9 +1,9 @@
-//! `.local/state.toml`: the machine-owned UI state (active space and
+//! `state.toml`: the machine-owned UI state (active space and
 //! environment, per-space open request, expanded folders, selections).
 //! Written immediately on every change; journaled only by the cascades
 //! that must put it back (`persist_local_journaled`).
 //!
-//! `.local/layout.toml`: the pane sizes (split, sidebar width). Written
+//! `layout.toml`: the pane sizes (split, sidebar width). Written
 //! immediately on every change and never journaled, so undo and redo
 //! never see a size (spec P3b). Read at open only: a reload leaves the
 //! sizes in memory alone, so this window's panes never jump because
@@ -13,7 +13,7 @@
 use super::*;
 
 impl Project {
-    /// Writes `.local/layout.toml` from memory. Never journaled, so it is
+    /// Writes `layout.toml` from memory. Never journaled, so it is
     /// never part of an undo entry, whatever window it runs in.
     pub(crate) fn persist_layout(&mut self) -> Result<(), Error> {
         let text = toml::to_string(&self.local.layout).expect("LayoutState always serializes");
@@ -21,7 +21,7 @@ impl Project {
         Ok(())
     }
 
-    /// Writes `.local/state.toml` from memory. Best effort at the call
+    /// Writes `state.toml` from memory. Best effort at the call
     /// sites that were best effort before; callers that want the error
     /// get it.
     pub(crate) fn persist_local(&mut self) -> Result<(), Error> {
@@ -30,7 +30,7 @@ impl Project {
         Ok(())
     }
 
-    /// `.local/state.toml` as it should read right now. Shared by the
+    /// `state.toml` as it should read right now. Shared by the
     /// immediate and the journaled writer so the two cannot drift.
     pub(crate) fn local_state_text(&self) -> String {
         let state = LocalState {
@@ -85,7 +85,7 @@ impl Project {
         let _ = self.persist_local();
     }
 
-    /// The pane sizes, all at once, in one write of `.local/layout.toml`:
+    /// The pane sizes, all at once, in one write of `layout.toml`:
     /// the app's one save of what it shows.
     pub fn set_pane_sizes(&mut self, layout: LayoutState) {
         self.local.layout = layout;
@@ -175,7 +175,7 @@ mod tests {
         p.set_expanded(["auth/sub".to_string()].into_iter().collect());
         p.set_pane_sizes(sizes("60", 34));
         p.persist_local().unwrap();
-        let text = read(&dir, ".local/state.toml").unwrap();
+        let text = read(&dir, STATE_TOML).unwrap();
         assert!(text.contains("space = \"auth\""), "{text}");
         assert!(text.contains("environment = \"dev\""), "{text}");
         let (p2, _w) = Project::open(dir.path().to_path_buf()).unwrap();
@@ -186,20 +186,20 @@ mod tests {
         assert_eq!(p2.local().layout, sizes("60", 34));
     }
 
-    /// The pane sizes, both in one write, live in `.local/layout.toml`,
+    /// The pane sizes, both in one write, live in `layout.toml`,
     /// never in the journaled `state.toml` (spec P3b), and a reopen reads
     /// them back from there.
     #[test]
     fn pane_sizes_round_trip_through_layout_toml() {
         let (dir, mut p) = fixture();
         p.set_pane_sizes(sizes("0.6000", 34));
-        let layout = read(&dir, ".local/layout.toml").unwrap();
+        let layout = read(&dir, LAYOUT_TOML).unwrap();
         assert!(
             layout.contains("main_split = \"0.6000\"") && layout.contains("sidebar_width = 34"),
             "{layout}"
         );
         p.set_expanded(["main/deep".to_string()].into_iter().collect());
-        let state = read(&dir, ".local/state.toml").unwrap();
+        let state = read(&dir, STATE_TOML).unwrap();
         assert!(!state.contains("main_split") && !state.contains("sidebar_width"), "{state}");
         let (p2, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         assert_eq!(p2.local().layout, sizes("0.6000", 34));
@@ -207,26 +207,26 @@ mod tests {
 
     /// The app's setters are fire-and-forget: it never calls a separate
     /// save, so each one must land on disk at once: the pane sizes in
-    /// `.local/layout.toml`, the rest in `.local/state.toml`.
+    /// `layout.toml`, the rest in `state.toml`.
     #[test]
     fn every_local_setter_writes_its_file_at_once() {
         let (dir, mut p) = fixture();
-        assert!(read(&dir, ".local/state.toml").is_none(), "nothing written yet");
+        assert!(read(&dir, STATE_TOML).is_none(), "nothing written yet");
         p.set_pane_sizes(sizes("60", 34));
-        assert!(read(&dir, ".local/layout.toml").unwrap().contains("main_split = \"60\""));
-        assert!(read(&dir, ".local/state.toml").is_none(), "a size writes no state.toml");
+        assert!(read(&dir, LAYOUT_TOML).unwrap().contains("main_split = \"60\""));
+        assert!(read(&dir, STATE_TOML).is_none(), "a size writes no state.toml");
         p.set_expanded(["main/deep".to_string()].into_iter().collect());
-        assert!(read(&dir, ".local/state.toml").unwrap().contains("main/deep"));
+        assert!(read(&dir, STATE_TOML).unwrap().contains("main/deep"));
         p.set_open_request(Some("main/ping"));
-        assert!(read(&dir, ".local/state.toml").unwrap().contains("open_request = \"main/ping\""));
+        assert!(read(&dir, STATE_TOML).unwrap().contains("open_request = \"main/ping\""));
         p.record_space_open(Some("main/ping"));
-        assert!(read(&dir, ".local/state.toml").unwrap().contains("[space_open]"));
+        assert!(read(&dir, STATE_TOML).unwrap().contains("[space_open]"));
         assert!(p.set_active_space("auth"));
-        assert!(read(&dir, ".local/state.toml").unwrap().contains("space = \"auth\""));
+        assert!(read(&dir, STATE_TOML).unwrap().contains("space = \"auth\""));
         // A refused space change writes nothing new.
-        let before = read(&dir, ".local/state.toml").unwrap();
+        let before = read(&dir, STATE_TOML).unwrap();
         assert!(!p.set_active_space("ghost"));
-        assert_eq!(read(&dir, ".local/state.toml").as_deref(), Some(before.as_str()));
+        assert_eq!(read(&dir, STATE_TOML).as_deref(), Some(before.as_str()));
     }
 
     #[test]
@@ -248,7 +248,7 @@ mod tests {
         p.set_selection_for("qa", "locale", "en");
         assert_eq!(p.local().shared_selections.get("locale").map(String::as_str), Some("en"));
         assert_eq!(p.resolved().values.get("lang").map(String::as_str), Some("en"));
-        let text = read(&dir, ".local/state.toml").unwrap();
+        let text = read(&dir, STATE_TOML).unwrap();
         assert!(text.contains("east"), "{text}");
         p.clear_selection_for("dev", "region");
         assert!(p.selections_for("dev").get("region").is_none());
@@ -279,7 +279,7 @@ mod tests {
         p.clear_selection_for("qa", "locale");
         assert!(!p.local().shared_selections.contains_key("locale"));
         assert!(!p.resolved().values.contains_key("lang"));
-        let text = read(&dir, ".local/state.toml").unwrap();
+        let text = read(&dir, STATE_TOML).unwrap();
         assert!(!text.contains("fr"), "the cleared pick is off disk too: {text}");
     }
 

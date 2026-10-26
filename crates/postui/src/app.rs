@@ -2421,7 +2421,7 @@ impl App {
     }
 
     /// Records both pane sizes the app holds, the split and the sidebar
-    /// width, as the project's (`.local/layout.toml`), in one write: the
+    /// width, as the project's (`layout.toml`), in one write: the
     /// one save behind every size change. Best-effort, like every
     /// local-state save.
     fn persist_sizes(&mut self) {
@@ -5150,7 +5150,7 @@ impl App {
                         self.refresh_sidebar();
                         // Created in place: the sizes on screen become the
                         // new project's (spec P5), whatever its folder's
-                        // `.local/layout.toml` held.
+                        // `layout.toml` held.
                         self.persist_sizes();
                         // The project was opened on a bare directory, before
                         // init wrote the stock `default` env: land in it now,
@@ -8791,7 +8791,7 @@ impl App {
     /// current value(s) for the user to copy — deliberately, per spec, the
     /// one place a secret value is displayed outside substituted request
     /// content — and moves nothing; marking secret lists which environment
-    /// values will move into `.local/secrets.toml` and be stripped from
+    /// values will move into `secrets.toml` and be stripped from
     /// their env files.
     fn open_toggle_secret_confirm(&mut self, name: String) {
         let Some(decl) = self.variables().vars.get(&name) else {
@@ -8843,7 +8843,8 @@ impl App {
                 format!("Mark \"{name}\" as secret? No environment values to move.")
             } else {
                 format!(
-                    "Mark \"{name}\" as secret? These environments' values move into .local/secrets.toml and are stripped from their env files: {}.",
+                    "Mark \"{name}\" as secret? These environments' values move into {} and are stripped from their env files: {}.",
+                    postui_core::project::SECRETS_TOML,
                     envs_with_values.join(", ")
                 )
             };
@@ -9624,7 +9625,7 @@ impl App {
         if !self.sidebar.pending_expand.is_empty() {
             // Only when the set actually grows: `set_expanded` persists,
             // and a refresh that changes nothing must not rewrite
-            // `.local/state.toml` on every tick.
+            // `state.toml` on every tick.
             expanded.append(&mut self.sidebar.pending_expand);
             p.set_expanded(expanded.clone());
         }
@@ -12477,7 +12478,7 @@ impl App {
                 true
             }
             StepKind::Project { id, label, before, after } => {
-                // The replay restores `.local/state.toml`, so the active
+                // The replay restores `state.toml`, so the active
                 // space can move under the app (undoing a space delete
                 // goes back into the deleted space). `after_replay` needs
                 // to know where it started to announce the change. Same

@@ -48,7 +48,7 @@ pub enum VarEditOp {
     /// A variable's or selector's shared `description` in `variables.toml`.
     SetDescription { owner: String, value: String },
     /// A secret variable's value in `env` — `ctx.set_secret`, which writes
-    /// `.local/secrets.toml` (never `variables.toml`/the env file).
+    /// `secrets.toml` (never `variables.toml`/the env file).
     SetSecretValue { env: String, name: String, value: String },
     /// One field of one option: the edit lands in `env`'s
     /// `[options.<selector>.<option>]` table (`varedit::upsert_option`), the
@@ -319,7 +319,7 @@ fn field_seed_text(ctx: &Project, name: &str, field: VmField) -> String {
 /// The [`VarEditOp`] a committed `field` edit writes (spec §5's "every
 /// commit writes atomically and immediately"). `EnvValue` targets the
 /// active environment (masked through `SetSecretValue` for a secret var,
-/// `.local/secrets.toml` rather than the env file); with no active
+/// `secrets.toml` rather than the env file); with no active
 /// environment there is nowhere to write an override, so it targets the
 /// declaration default instead — the same field a secret can't have, so
 /// that edit fails and toasts rather than silently landing somewhere

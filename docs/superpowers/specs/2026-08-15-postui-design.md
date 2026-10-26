@@ -57,6 +57,7 @@ my-project/
 - A request file holds: method, URL, query params (with enable/disable flags), headers (with enable/disable flags), body, and optional pre/post scripts (inline or path to a shared `.js` file).
 - `project.toml` defines **default headers** merged into every request (request-level headers override; a request can explicitly disable an inherited header).
 - Everything above `.local/` is shareable and diffable. Everything machine- or person-specific lives in `.local/`.
+- *Amended 2026-10-26 (task #143):* the folder is `.postui/`, not `.local/`, and it keeps itself out of git with a `.gitignore` of `*` written when postui creates it. The project gets no `.gitignore` of its own. A postui-specific name means a project in a repository root never meets a folder another tool made. The rename and the in-folder `.gitignore` are mine (approved); the in-folder idea came from the user. The code writes the name once (`project::LOCAL_DIR`) and builds every path from it.
 - History entries record the request name, the *resolved* request (variables substituted, secrets redacted), response status/time/size, and a body snippet.
 
 Global app config lives in the platform config dir (`~/.config/postui/` on Linux): known project paths, theme, keybinding overrides.

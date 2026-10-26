@@ -151,7 +151,7 @@ impl App {
     /// special cases `after_undone` used to layer. `space_before` and
     /// `env_before` are the active space and environment as the app saw
     /// them just before the replay: core moves both by itself (the
-    /// restore of `.local/state.toml`, and the entry's own `active_env`
+    /// restore of `state.toml`, and the entry's own `active_env`
     /// transition), so the view follows and says so in a switch's words.
     pub(super) fn after_replay(
         &mut self,

@@ -1014,7 +1014,7 @@ mod tests {
         let (dir, mut p) = fixture();
         p.delete_request("main/ping").unwrap();
         assert!(!dir.path().join("requests/main/ping.toml").exists());
-        assert!(dir.path().join(".local/trash/1/requests/main/ping.toml").is_file());
+        assert!(dir.path().join(TRASH_DIR).join("1/requests/main/ping.toml").is_file());
         assert!(!slugs(&p).contains(&"main/ping".to_string()));
         let copy = p.duplicate_request("auth/login").unwrap();
         assert_eq!(copy, "auth/login-copy");

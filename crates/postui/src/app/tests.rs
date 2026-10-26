@@ -1,5 +1,6 @@
 use super::*;
 use crate::action::KeymapAnswer;
+use postui_core::project::{LOCAL_DIR, SECRETS_TOML};
 use ratatui::crossterm::event::KeyCode;
 
 /// Writes a project default header into `project.toml` and re-reads the
@@ -6577,9 +6578,9 @@ fn a_blocked_secrets_write_refuses_the_whole_environment_rename() {
     app.reload_project_documents();
     app.update(Action::SwitchEnv(Some("dev".into())));
     app.proj_mut().set_secret("token", "s3cret".into()).unwrap();
-    // Block `.local/secrets.toml` with a non-empty directory.
-    std::fs::remove_file(dir.path().join(".local/secrets.toml")).unwrap();
-    std::fs::create_dir_all(dir.path().join(".local/secrets.toml/in-the-way")).unwrap();
+    // Block `secrets.toml` with a non-empty directory.
+    std::fs::remove_file(dir.path().join(SECRETS_TOML)).unwrap();
+    std::fs::create_dir_all(dir.path().join(SECRETS_TOML).join("in-the-way")).unwrap();
 
     app.toasts = Default::default();
     app.update(Action::RenameEnv { from: "dev".into(), to: "staging".into() });
@@ -12894,7 +12895,7 @@ fn toggle_secret_var_secret_to_nonsecret_leaves_secrets_toml_untouched_and_shows
         name: "api_key".into(),
         value: "sk-live-abc123".into(),
     }));
-    let secrets_before = std::fs::read_to_string(dir.path().join(".local/secrets.toml")).unwrap();
+    let secrets_before = std::fs::read_to_string(dir.path().join(SECRETS_TOML)).unwrap();
 
     app.update(Action::ToggleSecretVar { name: "api_key".into() });
 
@@ -12902,7 +12903,7 @@ fn toggle_secret_var_secret_to_nonsecret_leaves_secrets_toml_untouched_and_shows
         panic!("expected a Confirm modal");
     };
     assert!(body.contains("sk-live-abc123"), "the copy-offer modal must show the value: {body}");
-    let secrets_after = std::fs::read_to_string(dir.path().join(".local/secrets.toml")).unwrap();
+    let secrets_after = std::fs::read_to_string(dir.path().join(SECRETS_TOML)).unwrap();
     assert_eq!(
         secrets_before, secrets_after,
         "opening the confirm must not touch secrets.toml yet"
@@ -12911,7 +12912,7 @@ fn toggle_secret_var_secret_to_nonsecret_leaves_secrets_toml_untouched_and_shows
     // Confirming flips the flag but still moves nothing (spec §3).
     app.update(Action::VarStruct(VarStructOp::ToggleSecret { name: "api_key".into() }));
     assert!(!app.proj().variables().vars["api_key"].secret);
-    let secrets_final = std::fs::read_to_string(dir.path().join(".local/secrets.toml")).unwrap();
+    let secrets_final = std::fs::read_to_string(dir.path().join(SECRETS_TOML)).unwrap();
     assert_eq!(secrets_before, secrets_final, "the value stays where it was");
 }
 
@@ -15304,7 +15305,7 @@ fn a_legacy_projects_saved_selections_survive_the_prompt_and_resolve_after_apply
 }
 
 /// The decline half of the same finding: refusing the migration must leave
-/// `.local/state.toml` exactly as it was, not just the shareable files.
+/// `state.toml` exactly as it was, not just the shareable files.
 #[test]
 fn declining_the_migration_leaves_saved_selections_on_disk() {
     let dir = tempfile::tempdir().unwrap();
@@ -18527,7 +18528,7 @@ fn a_press_on_a_drag_handle_moves_nothing() {
 }
 
 /// The split is a persisted layout preference: chip presses and the
-/// keyboard toggles record it in the project's `.local/layout.toml`, and
+/// keyboard toggles record it in the project's `layout.toml`, and
 /// opening the project seeds the split back from it.
 #[test]
 fn split_persists_to_local_state_and_reseeds_on_open() {
@@ -18550,7 +18551,7 @@ fn split_persists_to_local_state_and_reseeds_on_open() {
 }
 
 /// The sidebar's saved width is a per-project layout preference: opening a
-/// project with `sidebar_width` in its `.local/layout.toml` draws the
+/// project with `sidebar_width` in its `layout.toml` draws the
 /// sidebar that many columns wide.
 #[test]
 fn a_saved_sidebar_width_draws_from_the_project() {
@@ -20118,7 +20119,7 @@ mod undo_tests {
     }
 
     /// The secret twin: the remove control clears the stored secret from
-    /// the secrets store (memory and `.local/secrets.toml` both).
+    /// the secrets store (memory and `secrets.toml` both).
     #[test]
     fn the_remove_control_clears_a_stored_secret_value() {
         let dir = tempfile::tempdir().unwrap();
@@ -20144,7 +20145,7 @@ mod undo_tests {
             None,
             "the stored secret is gone"
         );
-        let on_disk = std::fs::read_to_string(dir.path().join(".local/secrets.toml")).unwrap();
+        let on_disk = std::fs::read_to_string(dir.path().join(SECRETS_TOML)).unwrap();
         assert!(!on_disk.contains("api_key"), "{on_disk}");
     }
 
@@ -23919,7 +23920,7 @@ fn the_scratch_dirties_saves_and_reopens() {
     app.update(Action::SaveRequest);
     let file = std::fs::read_to_string(root.join("requests/main/r.toml")).unwrap();
     assert!(file.contains("jq = \".data.total\""), "{file}");
-    assert!(!root.join(".local/jq.toml").exists(), "no local file any more");
+    assert!(!root.join(LOCAL_DIR).join("jq.toml").exists(), "no local file any more");
 
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut reopened = App::with_root(tx, root.clone());
@@ -23970,7 +23971,7 @@ fn opening_and_closing_an_empty_bar_on_a_request_without_views_records_no_step()
 }
 
 /// Amendment A3: an existing `jq` line is the scratch, as it is; the file
-/// opens clean and a save keeps the line. An old `.local/jq.toml` is
+/// opens clean and a save keeps the line. An old local `jq.toml` is
 /// ignored (A12).
 #[test]
 fn a_jq_line_is_the_scratch_and_an_old_local_file_is_ignored() {
@@ -23978,8 +23979,9 @@ fn a_jq_line_is_the_scratch_and_an_old_local_file_is_ignored() {
     let root = app.proj().root().to_path_buf();
     let file = root.join("requests/main/r.toml");
     std::fs::write(&file, "url = \"https://x/r\"\njq = \".a\"\n").unwrap();
-    std::fs::create_dir_all(root.join(".local")).unwrap();
-    std::fs::write(root.join(".local/jq.toml"), "[\"main/r\"]\nscratch = \".mine\"\n").unwrap();
+    std::fs::create_dir_all(root.join(LOCAL_DIR)).unwrap();
+    std::fs::write(root.join(LOCAL_DIR).join("jq.toml"), "[\"main/r\"]\nscratch = \".mine\"\n")
+        .unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     assert_eq!(app.editor.jq, ".a", "the line is the scratch");
@@ -27323,7 +27325,7 @@ fn any_secret_keeps_its_panel_footprint_on_reveal() {
             secrets
         })
         .unwrap();
-        // `.local/secrets.toml` is not one of the watched files, so the
+        // `secrets.toml` is not one of the watched files, so the
         // mtime-gated reload would not see this write on its own.
         app.proj_mut().invalidate_stamps();
         app.update(Action::ReloadProjectFiles);
@@ -27481,7 +27483,7 @@ fn a_refused_open_gates_every_way_of_writing_a_new_file() {
         cwd.join("requests"),
         cwd.join("project.toml"),
         cwd.join("environments"),
-        cwd.join(".local"),
+        cwd.join(LOCAL_DIR),
     ];
     for p in &stray {
         assert!(!p.exists(), "precondition: {} does not exist", p.display());
@@ -27673,7 +27675,7 @@ fn undo_of_a_space_delete_restores_the_space_its_request_and_its_memory() {
     app.update(Action::Undo);
     assert_eq!(app.proj().spaces(), ["main", "auth"]);
     assert_eq!(app.proj().local().active_space, "main", "undo returns to the deleted space");
-    // Exactly one space switch: restoring `.local/state.toml` must not
+    // Exactly one space switch: restoring `state.toml` must not
     // move the active space itself, or the undo announces the space it is
     // passing through on the way back (`space: auth`) before announcing
     // the one it lands in.

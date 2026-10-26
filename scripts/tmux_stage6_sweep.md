@@ -147,7 +147,7 @@ In the Manager, set `base_url`'s `qa` (and `prod`) cell to
 
 Select `creds → alice` for `qa` via the grid: expand `creds` (Enter on the
 header), move to the `alice` option row, `Space` on the target env's
-column. **Expect:** `.local/state.toml` gains
+column. **Expect:** `.postui/state.toml` gains
 `[selections.qa]\ncreds = "alice"` — **done**.
 
 Create the request and build the URL **through the real per-token `{{`
@@ -190,7 +190,7 @@ tmux send-keys -t s6:0 C-v
 tmux send-keys -t s6:0 Enter         # "east" is first (declared order)
 ```
 **Expect:** `Select — region` picker opens listing `east`/`west`;
-confirming writes `.local/state.toml`'s `[selections.qa]` → `region = "east"`
+confirming writes `.postui/state.toml`'s `[selections.qa]` → `region = "east"`
 and leaves the URL text untouched — **done**.
 
 Add headers `x-api-key: {{api_key}}` and `x-trace: {{trace_id}}` (Headers
@@ -220,7 +220,7 @@ does **not** go out yet — **done**.
 ```
 tmux send-keys -t s6:0 "sk-qa-999" Enter
 ```
-**Expect:** confirming writes `.local/secrets.toml` and immediately
+**Expect:** confirming writes `.postui/secrets.toml` and immediately
 re-sends; response pane shows a **real** status from the local backend
 (create `server/orders/east-1` first so it's 200, not 404 — a static file
 server needs the exact path to exist) — **done**. Verified with the

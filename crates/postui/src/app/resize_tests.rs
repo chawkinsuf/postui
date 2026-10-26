@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::split::SplitState;
+use postui_core::project::LAYOUT_TOML;
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 fn mouse(kind: MouseEventKind, x: u16, y: u16) -> MouseEvent {
@@ -377,7 +378,7 @@ fn a_project_with_no_saved_split_opens_at_the_default() {
     press(&mut app, "<A-z>");
     assert_eq!(app.proj().root(), b.path(), "switched");
     assert_eq!(app.split_state(), SplitState::default(), "B opens at 50/50, both panes showing");
-    assert!(!b.path().join(".local").join("layout.toml").exists(), "B's layout.toml unwritten");
+    assert!(!b.path().join(LAYOUT_TOML).exists(), "B's layout.toml unwritten");
 }
 
 /// Asserts the split's three anims draw `app`'s split settled: each one is
@@ -680,7 +681,7 @@ fn a_cancelled_strip_press_ends_the_resize() {
     for via_focus_loss in [false, true] {
         let mut app = App::new_for_test();
         render(&mut app);
-        let layout = app.proj().root().join(".local").join("layout.toml");
+        let layout = app.proj().root().join(LAYOUT_TOML);
         let _ = std::fs::remove_file(&layout);
         let (x, y) = handle_cell(&app);
         app.handle_mouse(left_down(x, y));
@@ -708,7 +709,7 @@ fn a_strip_drag_that_returns_to_its_start_is_still_saved() {
     app.split_ratio = crate::layout::editor_share_for(column.height, editor.height);
     app.update(Action::Render);
     render(&mut app);
-    let layout = app.proj().root().join(".local").join("layout.toml");
+    let layout = app.proj().root().join(LAYOUT_TOML);
     let _ = std::fs::remove_file(&layout);
     let before = app.split_state();
     let (x, y) = handle_cell(&app);
@@ -725,12 +726,12 @@ fn a_strip_drag_that_returns_to_its_start_is_still_saved() {
 }
 
 /// Review F7: a press and release on either handle that moved nothing
-/// (a strip click, a gutter click) writes no `.local/layout.toml`.
+/// (a strip click, a gutter click) writes no `layout.toml`.
 #[test]
 fn a_handle_click_writes_no_state() {
     let mut app = App::new_for_test();
     render(&mut app);
-    let layout = app.proj().root().join(".local").join("layout.toml");
+    let layout = app.proj().root().join(LAYOUT_TOML);
     let _ = std::fs::remove_file(&layout);
     let (x, y) = handle_cell(&app);
     app.handle_mouse(left_down(x, y));
@@ -1600,7 +1601,7 @@ fn a_vim_gutter_drag_keeps_the_bodys_visual_and_operator() {
 
 /// Review round 9 O2 (P5): a project created in place keeps the sizes on
 /// screen and saves them as its own, over whatever its folder's
-/// `.local/layout.toml` held (here another postui's sizes, written from
+/// `layout.toml` held (here another postui's sizes, written from
 /// outside before the init). Main kept them; rounds 6 and 8 had the init
 /// seed from the file, and a size with nothing in it fell to the default.
 #[test]

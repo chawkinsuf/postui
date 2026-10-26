@@ -395,7 +395,7 @@ region = \"west-9\"\n",
         )
     );
 
-    // The secret and selections live only under `.local/`, never in the
+    // The secret and selections live only in the local folder, never in the
     // shareable files above.
     assert!(
         !qa_toml.contains("sk-qa-999") && !variables_toml.contains("sk-qa-999"),

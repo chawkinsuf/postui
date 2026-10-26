@@ -1,5 +1,5 @@
 //! Pure helpers over a project's metadata: the `project.toml` model
-//! (`ProjectMeta`, `ItemSettings`, `TlsPolicy`), the `.local/state.toml`
+//! (`ProjectMeta`, `ItemSettings`, `TlsPolicy`), the local `state.toml`
 //! model (`LocalState`), slug and display-name arithmetic, and the
 //! `toml_edit` table editors the write paths hand their documents to.
 //! Nothing here touches a file — `Project` owns every read and write.
@@ -230,7 +230,7 @@ pub struct LocalState {
     pub space_open: IndexMap<String, String>,
 }
 
-/// The per-project pane sizes from `.local/layout.toml` (spec P3b). Kept
+/// The per-project pane sizes from `layout.toml` (spec P3b). Kept
 /// apart from `LocalState` because the journal records `state.toml` whole
 /// and undo never restores a size: this file is never journaled.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

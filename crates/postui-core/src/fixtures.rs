@@ -8,9 +8,10 @@
 use crate::model::HttpRequest;
 use crate::order::{OrderEdit, level_of, merge_level, space_order, write_order};
 use crate::project::{
-    DEFAULT_ENVIRONMENT, DEFAULT_SPACE, Kind, LayoutState, ListChange, LocalState, Project,
-    ProjectError, ProjectMeta, display_name_of, display_taken, env_display, environment_path,
-    set_item_name, slug_array, space_dir, space_display, unique_slug_among, valid_space_name,
+    DEFAULT_ENVIRONMENT, DEFAULT_SPACE, Kind, LAYOUT_TOML, LOCAL_DIR, LayoutState, ListChange,
+    LocalState, Project, ProjectError, ProjectMeta, SECRETS_TOML, STATE_TOML, TRASH_DIR,
+    display_name_of, display_taken, env_display, environment_path, set_item_name, slug_array,
+    space_dir, space_display, unique_slug_among, valid_space_name,
 };
 use crate::storage::{
     RequestListing, StorageError, request_path, requests_dir, space_of, validate_slug,
@@ -20,7 +21,7 @@ use indexmap::IndexMap;
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------
-// `.local/trash/`: deletes were renames into a per-project trash so undo
+// The trash: deletes were renames into a per-project trash so undo
 // was a rename back. `Disk` owns the trash now; this is what the tests of
 // the former free functions still need to see.
 // ---------------------------------------------------------------------
@@ -32,9 +33,9 @@ pub struct Trashed {
     pub trashed: PathBuf,
 }
 
-/// `root/.local/trash`.
+/// `root`'s trash directory.
 pub fn trash_dir(root: &Path) -> PathBuf {
-    root.join(".local").join("trash")
+    root.join(TRASH_DIR)
 }
 
 /// The next free numbered slot under the trash dir: one more than the
@@ -79,8 +80,8 @@ pub fn trash(root: &Path, path: &Path) -> std::io::Result<Trashed> {
 
 // ---------------------------------------------------------------------
 // Project-level files: `project.toml`, `variables.toml`,
-// `environments/*.toml`, `.local/state.toml`, `.local/layout.toml`,
-// `.local/secrets.toml`.
+// `environments/*.toml`, and the local folder's `state.toml`,
+// `layout.toml` and `secrets.toml`.
 // ---------------------------------------------------------------------
 
 /// Reads `path`; missing file yields `Ok(None)`, any other IO error is
@@ -331,56 +332,53 @@ pub fn load_environment(root: &Path, name: &str) -> Result<varmodel::EnvData, Pr
 }
 
 pub fn load_local_state(root: &Path) -> Result<LocalState, ProjectError> {
-    match read_optional(&root.join(".local").join("state.toml"))? {
+    match read_optional(&root.join(STATE_TOML))? {
         None => Ok(LocalState::default()),
         Some(contents) => toml::from_str(&contents).map_err(|e| ProjectError::Parse(e.to_string())),
     }
 }
 
 pub fn save_local_state(root: &Path, state: &LocalState) -> std::io::Result<()> {
-    let dir = root.join(".local");
-    std::fs::create_dir_all(&dir)?;
+    std::fs::create_dir_all(root.join(LOCAL_DIR))?;
     let contents = toml::to_string(state).expect("LocalState always serializes");
-    write_atomic(&dir.join("state.toml"), contents.as_bytes())
+    write_atomic(&root.join(STATE_TOML), contents.as_bytes())
 }
 
-/// Loads `.local/layout.toml`, the pane sizes (spec P3b). Missing file
-/// yields the default (no saved sizes).
+/// Loads `layout.toml`, the pane sizes (spec P3b). Missing file yields
+/// the default (no saved sizes).
 pub fn load_layout(root: &Path) -> Result<LayoutState, ProjectError> {
-    match read_optional(&root.join(".local").join("layout.toml"))? {
+    match read_optional(&root.join(LAYOUT_TOML))? {
         None => Ok(LayoutState::default()),
         Some(contents) => toml::from_str(&contents).map_err(|e| ProjectError::Parse(e.to_string())),
     }
 }
 
 pub fn save_layout(root: &Path, layout: &LayoutState) -> std::io::Result<()> {
-    let dir = root.join(".local");
-    std::fs::create_dir_all(&dir)?;
+    std::fs::create_dir_all(root.join(LOCAL_DIR))?;
     let contents = toml::to_string(layout).expect("LayoutState always serializes");
-    write_atomic(&dir.join("layout.toml"), contents.as_bytes())
+    write_atomic(&root.join(LAYOUT_TOML), contents.as_bytes())
 }
 
-/// Loads `.local/secrets.toml`: env → name → value. Missing file yields an
-/// empty map (secrets are never required to exist).
+/// Loads `secrets.toml`: env → name → value. Missing file yields an empty
+/// map (secrets are never required to exist).
 pub fn load_secrets(
     root: &Path,
 ) -> Result<IndexMap<String, IndexMap<String, String>>, ProjectError> {
-    match read_optional(&root.join(".local").join("secrets.toml"))? {
+    match read_optional(&root.join(SECRETS_TOML))? {
         None => Ok(IndexMap::new()),
         Some(contents) => toml::from_str(&contents).map_err(|e| ProjectError::Parse(e.to_string())),
     }
 }
 
-/// Writes `.local/secrets.toml` atomically (temp file + rename), creating
-/// `.local/` if needed.
+/// Writes `secrets.toml` atomically (temp file + rename), creating the
+/// local folder if needed.
 pub fn save_secrets(
     root: &Path,
     secrets: &IndexMap<String, IndexMap<String, String>>,
 ) -> std::io::Result<()> {
-    let dir = root.join(".local");
-    std::fs::create_dir_all(&dir)?;
+    std::fs::create_dir_all(root.join(LOCAL_DIR))?;
     let contents = toml::to_string(secrets).expect("secrets always serialize");
-    write_atomic(&dir.join("secrets.toml"), contents.as_bytes())
+    write_atomic(&root.join(SECRETS_TOML), contents.as_bytes())
 }
 
 /// Writes `root/environments/default.toml` when the project has no
@@ -417,8 +415,8 @@ pub fn init_project(root: &Path, name: Option<&str>) -> std::io::Result<()> {
         "# Declare variables: [name] with optional description/default\n",
     )?;
 
-    // No `.gitignore`, as `Project::init` writes none: `.local/` carries
-    // its own (task #143).
+    // No `.gitignore`, as `Project::init` writes none: the local folder
+    // carries its own (task #143).
     Ok(())
 }
 
@@ -665,7 +663,7 @@ mod tests {
             "a new project starts with its default environment"
         );
         assert!(dir.path().join("variables.toml").is_file());
-        assert!(!dir.path().join(".gitignore").exists(), ".local/ carries its own (#143)");
+        assert!(!dir.path().join(".gitignore").exists(), "the local folder carries its own (#143)");
 
         // user edits survive a second init
         std::fs::write(dir.path().join("project.toml"), "name = \"edited\"\n").unwrap();
@@ -935,8 +933,8 @@ mod tests {
         };
         save_local_state(dir.path(), &state).unwrap();
         assert_eq!(load_local_state(dir.path()).unwrap(), state);
-        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
-        std::fs::write(dir.path().join(".local/state.toml"), "environment = 3\n").unwrap();
+        std::fs::create_dir_all(dir.path().join(LOCAL_DIR)).unwrap();
+        std::fs::write(dir.path().join(STATE_TOML), "environment = 3\n").unwrap();
         assert!(
             load_local_state(dir.path()).is_err(),
             "corrupt state is an Err the app degrades from"
@@ -953,7 +951,7 @@ mod tests {
         save_local_state(dir.path(), &state).unwrap();
         assert_eq!(load_local_state(dir.path()).unwrap(), state);
         // An old state.toml without the table loads with an empty map.
-        std::fs::write(dir.path().join(".local/state.toml"), "environment = \"qa\"\n").unwrap();
+        std::fs::write(dir.path().join(STATE_TOML), "environment = \"qa\"\n").unwrap();
         assert!(load_local_state(dir.path()).unwrap().shared_selections.is_empty());
     }
 
@@ -962,9 +960,9 @@ mod tests {
         // Old state.toml files written before selections existed have no
         // [selections] table at all; they must still load with an empty map.
         let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
+        std::fs::create_dir_all(dir.path().join(LOCAL_DIR)).unwrap();
         std::fs::write(
-            dir.path().join(".local/state.toml"),
+            dir.path().join(STATE_TOML),
             "environment = \"qa\"\nopen_request = \"ping\"\nexpanded = [\"users\"]\n",
         )
         .unwrap();
@@ -978,9 +976,9 @@ mod tests {
         // LocalState does not `deny_unknown_fields`; unknown top-level keys
         // are ignored rather than erroring (today's behavior, preserved).
         let dir = tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
+        std::fs::create_dir_all(dir.path().join(LOCAL_DIR)).unwrap();
         std::fs::write(
-            dir.path().join(".local/state.toml"),
+            dir.path().join(STATE_TOML),
             "environment = \"qa\"\nfuture_field = \"whatever\"\n",
         )
         .unwrap();
@@ -1002,7 +1000,7 @@ mod tests {
         secrets.insert("prod".to_string(), prod);
 
         save_secrets(dir.path(), &secrets).unwrap();
-        assert!(dir.path().join(".local/secrets.toml").is_file());
+        assert!(dir.path().join(SECRETS_TOML).is_file());
         let loaded = load_secrets(dir.path()).unwrap();
         assert_eq!(loaded, secrets);
     }
@@ -1016,8 +1014,8 @@ mod tests {
         secrets.insert("qa".to_string(), qa);
         save_secrets(dir.path(), &secrets).unwrap();
 
-        // no stray temp files left behind in .local/
-        let leftovers: Vec<_> = std::fs::read_dir(dir.path().join(".local"))
+        // no stray temp files left behind in the local folder
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path().join(LOCAL_DIR))
             .unwrap()
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().to_string())

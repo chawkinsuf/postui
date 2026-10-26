@@ -91,8 +91,8 @@ impl std::fmt::Display for OpenError {
     }
 }
 
-/// The per-project, machine-owned state from `.local/state.toml`, plus
-/// the pane sizes from `.local/layout.toml`. Data only; `Project`
+/// The per-project, machine-owned state from `state.toml`, plus
+/// the pane sizes from `layout.toml`. Data only; `Project`
 /// persists it (Task 6).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Local {
@@ -189,11 +189,29 @@ pub(crate) const PROJECT_TOML: &str = "project.toml";
 pub(crate) const VARIABLES_TOML: &str = "variables.toml";
 pub(crate) const ENVIRONMENTS_DIR: &str = "environments";
 pub(crate) const REQUESTS_DIR: &str = "requests";
-/// The user's own files: state, layout, secrets and the trash. Never shared.
-pub(crate) const LOCAL_DIR: &str = ".local";
-pub(crate) const STATE_TOML: &str = ".local/state.toml";
-pub(crate) const LAYOUT_TOML: &str = ".local/layout.toml";
-pub(crate) const SECRETS_TOML: &str = ".local/secrets.toml";
+/// A path in the local folder, `local_path!("x")` = `".postui/x"`: the
+/// folder's name is written once, here, and every path below is built
+/// from it, so the code, the messages and the tests follow a rename.
+macro_rules! local_path {
+    () => {
+        ".postui"
+    };
+    ($file:literal) => {
+        concat!(local_path!(), "/", $file)
+    };
+}
+
+/// The local folder: the user's own files (state, layout, secrets and the
+/// trash), never shared. Named for postui rather than something generic
+/// like `.local`, so a project in a repository root can't meet a folder
+/// another tool made: one without its `.gitignore` is postui's own,
+/// opted in to git on purpose (task #143).
+pub const LOCAL_DIR: &str = local_path!();
+pub const STATE_TOML: &str = local_path!("state.toml");
+pub const LAYOUT_TOML: &str = local_path!("layout.toml");
+pub const SECRETS_TOML: &str = local_path!("secrets.toml");
+/// Where `Disk::trash` puts deleted files until the project closes.
+pub const TRASH_DIR: &str = local_path!("trash");
 
 pub(crate) fn rel(s: &str) -> Result<RelPath, Error> {
     Ok(RelPath::new(s)?)
@@ -241,10 +259,10 @@ impl Project {
         // The one file whose mode is not the umask's business: secrets
         // land owner-only however the project directory is shared.
         disk.mark_private(RelPath::new(SECRETS_TOML).expect("constant path"));
-        // `.local/` keeps itself out of git, wherever the project sits (a
-        // repository root whose own `.gitignore` never mentions it): the
-        // write that creates it puts a `.gitignore` of `*` in it (task
-        // #143).
+        // The local folder keeps itself out of git, wherever the project
+        // sits (a repository root whose own `.gitignore` never mentions
+        // it): the write that creates it puts a `.gitignore` of `*` in it
+        // (task #143).
         disk.ignore_when_created(RelPath::new(LOCAL_DIR).expect("constant path"));
         disk
     }
@@ -474,7 +492,7 @@ impl Project {
         if self.recording.is_some() {
             return f(self);
         }
-        // `.local/state.toml` is rewritten outside the journal on every UI
+        // `state.toml` is rewritten outside the journal on every UI
         // change (`persist_local`), so a journaled op below must never
         // record the file as *absent*: its undo would delete the file (and
         // with it the pre-op local memory), and the app's next unjournaled
@@ -801,7 +819,7 @@ impl Project {
     }
 
     /// After an undo or redo: everything, including the listing, the
-    /// local state and every held request. `.local/state.toml` is read
+    /// local state and every held request. `state.toml` is read
     /// into `self.local` first — before `reload_documents` — so that its
     /// `refresh_spaces` (which repairs a now-stale `active_space`) and
     /// `prune_stale_selections` (which may persist) run against the
@@ -811,7 +829,7 @@ impl Project {
     pub(crate) fn reload_all(&mut self) -> Vec<Warning> {
         let mut warnings = Vec::new();
         // `None` = the read/parse failed, leave `active_env` untouched;
-        // `Some(env)` = what `.local/state.toml` said it should be.
+        // `Some(env)` = what `state.toml` said it should be.
         let mut restored_environment: Option<Option<String>> = None;
         match self.disk.read(&RelPath::new(STATE_TOML).expect("constant")) {
             Ok(text) => match toml::from_str::<LocalState>(&text.unwrap_or_default()) {
@@ -826,9 +844,9 @@ impl Project {
                     }
                     restored_environment = Some(state.environment);
                 }
-                Err(e) => warnings.push(format!("could not read .local/state.toml: {e}")),
+                Err(e) => warnings.push(format!("could not read {STATE_TOML}: {e}")),
             },
-            Err(e) => warnings.push(format!("could not read .local/state.toml: {e}")),
+            Err(e) => warnings.push(format!("could not read {STATE_TOML}: {e}")),
         }
         warnings.extend(self.reload_documents());
         if let Some(env) = restored_environment {
@@ -843,7 +861,7 @@ impl Project {
                 Some(name) => {
                     warnings.push(format!("restored environment {name:?} no longer exists"))
                 }
-                // `.local/state.toml` never distinguishes "explicitly no
+                // `state.toml` never distinguishes "explicitly no
                 // environment" from "this field was never written" (its
                 // default): a project that has never persisted local
                 // state at all reads back `None` here even though an
@@ -990,7 +1008,7 @@ impl Project {
             toml::from_str(t).map_err(|e| e.to_string())
         })?;
         if let Err(e) = disk.empty_trash() {
-            warnings.push(format!("could not empty .local/trash: {e}"));
+            warnings.push(format!("could not empty {TRASH_DIR}: {e}"));
         }
         let (spaces, space_warnings) = Self::list_spaces(&mut disk, &meta);
         let spaces_warning = join_warnings(&space_warnings);
@@ -1140,7 +1158,7 @@ impl Project {
         let mut disk = Self::disk_for(root.to_path_buf());
         // What `meta::init_project` wrote, through `Disk`: the two
         // directories, a `default` environment when the project has none
-        // that `environment_files` recognises, and the three seed files —
+        // that `environment_files` recognises, and the two seed files —
         // each created only if absent, never rewritten.
         let seed = |disk: &mut Disk| -> Result<(), DiskError> {
             disk.create_dir(&RelPath::new(REQUESTS_DIR)?)?;
@@ -1162,8 +1180,8 @@ impl Project {
                 }
                 None => "# project.toml: optional `name`, optional [default_headers]\n".to_string(),
             };
-            // No `.gitignore` here: `.local/` carries its own (task #143),
-            // and one in the project folder would keep ignoring `.local/`
+            // No `.gitignore` here: the local folder carries its own (task
+            // #143), and one in the project folder would keep ignoring it
             // after a user deleted that one to commit it (the user: "if
             // the user wants to remove the .gitignore and commit, we
             // should let them").
@@ -1365,48 +1383,47 @@ mod tests {
         assert_eq!(err.file, "variables.toml");
         assert_eq!(err.root, dir.path());
         std::fs::write(dir.path().join("variables.toml"), "").unwrap();
-        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
-        std::fs::write(dir.path().join(".local/state.toml"), "space = 3\n").unwrap();
+        std::fs::create_dir_all(dir.path().join(LOCAL_DIR)).unwrap();
+        std::fs::write(dir.path().join(STATE_TOML), "space = 3\n").unwrap();
         let err = Project::open(dir.path().to_path_buf()).unwrap_err();
-        assert_eq!(err.file, ".local/state.toml");
+        assert_eq!(err.file, STATE_TOML);
     }
 
-    /// An unparseable `.local/layout.toml` refuses the open like
+    /// An unparseable `layout.toml` refuses the open like
     /// `state.toml` does (spec P4), so it is never defaulted and then
     /// overwritten.
     #[test]
     fn an_unparseable_layout_toml_refuses_the_open_and_is_left_alone() {
         let (dir, _p) = fixture();
-        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
-        std::fs::write(dir.path().join(".local/layout.toml"), "sidebar_width = \"wide\"\n")
-            .unwrap();
+        std::fs::create_dir_all(dir.path().join(LOCAL_DIR)).unwrap();
+        std::fs::write(dir.path().join(LAYOUT_TOML), "sidebar_width = \"wide\"\n").unwrap();
         let err = Project::open(dir.path().to_path_buf()).unwrap_err();
-        assert_eq!(err.file, ".local/layout.toml");
-        assert_eq!(read(&dir, ".local/layout.toml").as_deref(), Some("sidebar_width = \"wide\"\n"));
+        assert_eq!(err.file, LAYOUT_TOML);
+        assert_eq!(read(&dir, LAYOUT_TOML).as_deref(), Some("sidebar_width = \"wide\"\n"));
     }
 
-    /// The sizes come from `.local/layout.toml` alone (spec P3b; postui is
+    /// The sizes come from `layout.toml` alone (spec P3b; postui is
     /// unreleased, so no project keeps them anywhere older): a `main_split`
     /// in `state.toml` is an unknown key, and opening writes no layout file.
     #[test]
     fn the_sizes_come_from_layout_toml_only_and_open_writes_none() {
         let (dir, _p) = fixture();
-        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
-        std::fs::write(dir.path().join(".local/state.toml"), "main_split = \"0.6000\"\n").unwrap();
+        std::fs::create_dir_all(dir.path().join(LOCAL_DIR)).unwrap();
+        std::fs::write(dir.path().join(STATE_TOML), "main_split = \"0.6000\"\n").unwrap();
         let (p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         assert_eq!(p.local().layout.main_split, None);
-        assert!(read(&dir, ".local/layout.toml").is_none(), "the open wrote nothing");
+        assert!(read(&dir, LAYOUT_TOML).is_none(), "the open wrote nothing");
     }
 
     #[test]
     fn missing_files_are_their_defaults_and_the_trash_is_emptied() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".local/trash/1/requests/x")).unwrap();
+        std::fs::create_dir_all(dir.path().join(TRASH_DIR).join("1/requests/x")).unwrap();
         std::fs::write(dir.path().join("project.toml"), "").unwrap();
         let (p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
         assert!(p.meta().name.is_none());
         assert!(p.variables().vars.is_empty());
-        assert!(!dir.path().join(".local/trash").exists());
+        assert!(!dir.path().join(TRASH_DIR).exists());
     }
 
     /// An `environments/` that cannot be listed must not read as "no
@@ -1446,8 +1463,7 @@ mod tests {
         let (dir, mut p) = fixture();
         p.set_secret_for("dev", "token", "s3cret".to_string()).unwrap();
         let mode =
-            std::fs::metadata(dir.path().join(".local/secrets.toml")).unwrap().permissions().mode()
-                & 0o777;
+            std::fs::metadata(dir.path().join(SECRETS_TOML)).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         let public =
             std::fs::metadata(dir.path().join("project.toml")).unwrap().permissions().mode()
@@ -1469,7 +1485,7 @@ mod tests {
     /// Ported from the app's `ProjectContext` tests
     /// (`open_loads_secrets_and_resolved_reflects_a_selection_from_state`,
     /// `shared_selection_restores_on_open`): a selection and a shared pick
-    /// recorded in `.local/state.toml` are in `resolved` the moment the
+    /// recorded in `state.toml` are in `resolved` the moment the
     /// project opens, and so are the secrets.
     #[test]
     fn open_restores_selections_shared_picks_and_secrets_into_resolved() {
@@ -1484,11 +1500,10 @@ mod tests {
             "[options.region.east]\nhost = \"east.local\"\n",
         )
         .unwrap();
-        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
-        std::fs::write(dir.path().join(".local/secrets.toml"), "[dev]\ntoken = \"s3cret\"\n")
-            .unwrap();
+        std::fs::create_dir_all(dir.path().join(LOCAL_DIR)).unwrap();
+        std::fs::write(dir.path().join(SECRETS_TOML), "[dev]\ntoken = \"s3cret\"\n").unwrap();
         std::fs::write(
-            dir.path().join(".local/state.toml"),
+            dir.path().join(STATE_TOML),
             "environment = \"dev\"\n\n[selections.dev]\nregion = \"east\"\n\n[shared_selections]\nlocale = \"en\"\n",
         )
         .unwrap();
@@ -1518,9 +1533,9 @@ mod tests {
             "[options.region.east]\nhost = \"east.local\"\n",
         )
         .unwrap();
-        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
+        std::fs::create_dir_all(dir.path().join(LOCAL_DIR)).unwrap();
         std::fs::write(
-            dir.path().join(".local/state.toml"),
+            dir.path().join(STATE_TOML),
             "environment = \"dev\"\n\n[selections.dev]\nregion = \"gone\"\n\n[shared_selections]\nlocale = \"nope\"\n",
         )
         .unwrap();
@@ -1537,8 +1552,8 @@ mod tests {
         assert!(p.selections_for("dev").get("region").is_none());
         assert!(p.local().shared_selections.get("locale").is_none());
         // The pruned table is written back, so the stale pick does not
-        // linger in `.local/state.toml`.
-        let state = read(&dir, ".local/state.toml").unwrap();
+        // linger in `state.toml`.
+        let state = read(&dir, STATE_TOML).unwrap();
         assert!(!state.contains("gone"), "{state}");
 
         // The same happens on a reload when the option disappears from a
@@ -1558,9 +1573,9 @@ mod tests {
     #[test]
     fn a_stale_saved_space_and_environment_degrade_with_warnings() {
         let (dir, _p) = fixture();
-        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
+        std::fs::create_dir_all(dir.path().join(LOCAL_DIR)).unwrap();
         std::fs::write(
-            dir.path().join(".local/state.toml"),
+            dir.path().join(STATE_TOML),
             "environment = \"gone\"\nspace = \"nope\"\nopen_request = \"auth/login\"\n",
         )
         .unwrap();
@@ -1579,8 +1594,8 @@ mod tests {
         assert_eq!(p.display_name(), "New");
         assert_eq!(p.spaces(), ["main"]);
         assert_eq!(p.environments(), ["default"]);
-        // No project `.gitignore`: one ignoring `.local/` would outlive a
-        // deleted `.local/.gitignore` (task #143).
+        // No project `.gitignore`: one ignoring the local folder would
+        // outlive a deleted `.gitignore` inside it (task #143).
         assert_eq!(read(&dir, ".gitignore"), None);
         // `init`'s own seeding appends the `spaces` list to the stub.
         let project_toml = read(&dir, "project.toml").unwrap();
@@ -1624,7 +1639,7 @@ mod tests {
     }
 
     /// Task #143: a project made in a folder whose own `.gitignore` says
-    /// nothing about `.local/` (a repository root) still keeps `.local/`
+    /// nothing about the local folder (a repository root) still keeps it
     /// out of git: postui puts a `.gitignore` of `*` in it when it first
     /// creates it, and leaves the repository's file alone.
     #[test]
@@ -1632,12 +1647,29 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
         let (mut p, _w) = Project::init(dir.path(), None).unwrap();
-        assert!(!dir.path().join(".local").exists(), "nothing local written yet");
+        assert!(!dir.path().join(LOCAL_DIR).exists(), "nothing local written yet");
         p.set_active_env(Some(DEFAULT_ENVIRONMENT.into()));
-        assert!(dir.path().join(".local/state.toml").is_file(), "a local write happened");
-        let ignore = read(&dir, ".local/.gitignore").unwrap_or_default();
+        assert!(dir.path().join(STATE_TOML).is_file(), "a local write happened");
+        let ignore = read(&dir, &format!("{LOCAL_DIR}/.gitignore")).unwrap_or_default();
         assert!(ignore.lines().any(|l| l == "*"), "{ignore:?}");
         assert_eq!(read(&dir, ".gitignore").as_deref(), Some("target/\n"));
+    }
+
+    /// The on-disk names that users, the docs and their `.gitignore`s rely
+    /// on, spelled out. Every other test goes through the constants, so
+    /// this is the one that fails if the folder is renamed by accident.
+    #[test]
+    fn the_local_folder_paths_are_the_documented_ones() {
+        assert_eq!(
+            [LOCAL_DIR, STATE_TOML, LAYOUT_TOML, SECRETS_TOML, TRASH_DIR],
+            [
+                ".postui",
+                ".postui/state.toml",
+                ".postui/layout.toml",
+                ".postui/secrets.toml",
+                ".postui/trash"
+            ]
+        );
     }
 
     /// `environment_files` skips files that are not valid slugs, so a
