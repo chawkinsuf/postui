@@ -520,7 +520,7 @@ impl App {
                 // click-away commits below (which would end the edit whose
                 // selection Copy reads). Any other part of a row falls
                 // through to the row menu exactly as before.
-                if let Some(items) = self.text_surface_menu(&hit) {
+                if let Some(items) = self.text_surface_menu(&hit, m.column, m.row) {
                     return self.open_context_menu(m.column, m.row, items) || changed;
                 }
                 // A right click is a click away from whatever detail-pane

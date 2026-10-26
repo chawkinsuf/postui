@@ -236,10 +236,14 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::CloseField => "Close the field, keeping what you typed".to_string(),
         Action::FocusUrl => "Edit the URL".to_string(),
         Action::DeleteTableRow(_) => "Delete this row".to_string(),
-        // An auto row's keys (task #56) say what its pills say.
-        Action::CopyToClipboard(CopyTarget::ComputedHeader(_)) => {
-            "Copy this header's value".to_string()
+        // An auto row's keys (task #56) say what its pills say. A header's
+        // copy chip carries two keys (`y/Y`): the value's and the whole
+        // header's (spec 2026-10-26 H5).
+        Action::CopyToClipboard(CopyTarget::ComputedHeader(_))
+        | Action::CopyResponseHeader { whole: false } => {
+            "Copy this header's value, or the whole header".to_string()
         }
+        Action::YankTableRow(_) => "Copy this row".to_string(),
         Action::OverrideAutoHeader(_) => "Edit this header in the request".to_string(),
         Action::ToggleVarReveal => "Reveal or hide the secret value".to_string(),
         // Closing switches the filter off — when there is one: an empty
@@ -879,8 +883,10 @@ mod tests {
                 for url_focused in [false, true] {
                     for row in [
                         None,
-                        Some(TableCursor::Row { index: 0, enabled: true }),
+                        Some(TableCursor::Row { index: 0, enabled: true, headers: false }),
+                        Some(TableCursor::Row { index: 0, enabled: true, headers: true }),
                         Some(TableCursor::Auto { index: 0, pencil: true }),
+                        Some(TableCursor::ResponseHeader),
                     ] {
                         for jq in [
                             JqBarState::Closed,

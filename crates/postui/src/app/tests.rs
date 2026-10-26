@@ -11043,19 +11043,19 @@ fn header_copy_click_and_key_parity_both_copy_the_header() {
     );
     assert!(rendered_text(&mut app).contains("Copied content-type"));
 
-    // `c` key parity in Headers view (arrows' row, through the router)
-    // copies the same header again (the file is cleared so only the key
-    // can have written it).
+    // `y` key parity in Headers view (arrows' row, through the router;
+    // spec 2026-10-26 H4 moved it from `c`) copies the same header again
+    // (the file is cleared so only the key can have written it).
     std::fs::remove_file(&out).unwrap();
     app.update(Action::FocusPane(PaneId::Response));
     app.handle_key(ratatui::crossterm::event::KeyEvent::new(
-        KeyCode::Char('c'),
+        KeyCode::Char('y'),
         KeyModifiers::NONE,
     ));
     assert_eq!(
         std::fs::read_to_string(&out).unwrap(),
         "application/json",
-        "the `c` key copies the header under the cursor"
+        "the `y` key copies the header under the cursor"
     );
     assert!(rendered_text(&mut app).contains("Copied content-type"));
 }
@@ -15582,6 +15582,241 @@ fn a_vim_count_reaches_the_last_auto_row() {
     press(&mut app, '3');
     press(&mut app, 'j');
     assert_eq!(app.editor.auto_row_cursor(), Some(1), "3j from row 0 lands on Host");
+}
+
+/// The text of the last clipboard write a test clipboard collected.
+fn last_copied(app: &App) -> Option<String> {
+    use base64::Engine;
+    let sent = String::from_utf8(app.clipboard.osc52_sent().to_vec()).unwrap();
+    let b64 = sent.rsplit("\x1b]52;c;").next().filter(|s| !s.is_empty())?.trim_end_matches('\x07');
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+    Some(String::from_utf8(bytes).unwrap())
+}
+
+/// `auto_rows_app` with one main header row, `X-One: a`, under the cursor.
+fn main_header_app(profile: crate::config::KeyProfile) -> App {
+    let mut app = auto_rows_app(profile);
+    app.editor
+        .headers
+        .insert("X-One".into(), postui_core::model::Entry { value: "a".into(), enabled: true });
+    app.editor.table.set_selected(Some(Stop::Row(0)));
+    render_once(&mut app);
+    app
+}
+
+/// Spec 2026-10-26 H1 (#136): arrows' `y` on a main row fills the row
+/// register and copies the value, as the row's copy pill does; `p` still
+/// pastes the row. The footer offers it as one `copy` chip.
+#[test]
+fn arrows_y_on_a_main_row_copies_its_value_and_fills_the_register() {
+    let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+    let labels = footer_labels(&app);
+    assert_eq!(labels.iter().filter(|l| *l == "copy").count(), 1, "{labels:?}");
+    press(&mut app, 'y');
+    assert_eq!(last_copied(&app).as_deref(), Some("a"));
+    assert!(rendered_text(&mut app).contains("Copied X-One"), "the toast confirms the copy");
+    press(&mut app, 'p');
+    assert_eq!(app.editor.headers.len(), 2, "p pastes the yanked row");
+}
+
+/// H1 on Params, where there is no whole-header copy: `y` copies the value.
+#[test]
+fn arrows_y_on_a_params_row_copies_its_value() {
+    let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
+    app.editor.active_tab = EditorTab::Params;
+    app.editor.table.set_selected(Some(Stop::Row(0)));
+    render_once(&mut app);
+    press(&mut app, 'y');
+    assert_eq!(last_copied(&app).as_deref(), Some("2"));
+}
+
+/// H7: vim's `yy` on a main row fills the register only, as Vim's `yy`
+/// never writes the clipboard.
+#[test]
+fn vim_yy_on_a_main_row_leaves_the_clipboard_alone() {
+    let mut app = main_header_app(crate::config::KeyProfile::Vim);
+    press(&mut app, 'y');
+    press(&mut app, 'y');
+    assert_eq!(last_copied(&app), None);
+    press(&mut app, 'p');
+    assert_eq!(app.editor.headers.len(), 2, "p pastes the yanked row");
+}
+
+/// H2 and H3 (#137): arrows' `Y` copies the whole header, on a main row
+/// and on an auto row, and leaves the register alone.
+#[test]
+fn arrows_capital_y_copies_the_whole_header() {
+    let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+    press(&mut app, 'Y');
+    assert_eq!(last_copied(&app).as_deref(), Some("X-One: a"));
+    assert!(rendered_text(&mut app).contains("Copied X-One header"), "the toast");
+    press(&mut app, 'p');
+    assert_eq!(app.editor.headers.len(), 1, "Y filled no register");
+    // Down past `+ Add` onto the first auto row, Accept.
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.editor.auto_row_cursor(), Some(0));
+    press(&mut app, 'Y');
+    assert_eq!(last_copied(&app).as_deref(), Some("Accept: */*"));
+}
+
+/// H2: there is no whole-header copy off the Headers tab.
+#[test]
+fn arrows_capital_y_on_a_params_row_does_nothing() {
+    let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
+    app.editor.active_tab = EditorTab::Params;
+    app.editor.table.set_selected(Some(Stop::Row(0)));
+    render_once(&mut app);
+    press(&mut app, 'Y');
+    assert_eq!(last_copied(&app), None);
+}
+
+/// H3: a whole-header copy of a masked row copies the real value, and its
+/// toast names the row as the screen shows it.
+#[test]
+fn the_whole_header_copy_of_a_masked_auto_row_copies_the_real_value() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536));
+    app.update(Action::VarEdit(VarEditOp::SetSecretValue {
+        env: "qa".into(),
+        name: "api_key".into(),
+        value: "sk-live-abc123".into(),
+    }));
+    set_default_header(&mut app, "Authorization", "Bearer {{api_key}}");
+    app.editor.active_tab = EditorTab::Headers;
+    app.update(Action::Render);
+    render_once(&mut app);
+    app.update(Action::CopyToClipboard(CopyTarget::ComputedHeaderLine(0)));
+    assert_eq!(last_copied(&app).as_deref(), Some("Authorization: Bearer sk-live-abc123"));
+}
+
+/// H8: vim's `"+yy` and `"+Y` copy a header row as its line; the register
+/// is untouched.
+#[test]
+fn vim_quote_plus_yy_copies_the_header_line() {
+    let mut app = main_header_app(crate::config::KeyProfile::Vim);
+    type_chars(&mut app, "\"+yy");
+    assert_eq!(last_copied(&app).as_deref(), Some("X-One: a"));
+    press(&mut app, 'p');
+    assert_eq!(app.editor.headers.len(), 1, "\"+yy filled no row register");
+    press(&mut app, 'j');
+    press(&mut app, 'j');
+    assert_eq!(app.editor.auto_row_cursor(), Some(0));
+    type_chars(&mut app, "\"+Y");
+    assert_eq!(last_copied(&app).as_deref(), Some("Accept: */*"));
+}
+
+/// H5: one copy chip on a header row in each profile, spelled with both
+/// keys; on an auto row too.
+#[test]
+fn a_header_row_has_one_copy_chip_with_both_keys() {
+    use crate::config::KeyProfile::{Arrows, Vim};
+    for (profile, keycap) in [(Arrows, "y/Y"), (Vim, "yy/\"+yy")] {
+        let mut app = main_header_app(profile);
+        for stop in [Stop::Row(0), Stop::Section(0)] {
+            app.editor.table.set_selected(Some(stop));
+            render_once(&mut app);
+            let at = app.spell_ctx();
+            let copies: Vec<String> = crate::ui::footer_chips_of(&app)
+                .into_iter()
+                .filter(|(_, l, _)| l == "copy")
+                .filter_map(|(k, _, _)| crate::keyroute::spell::keycap(&k, at, &app.keymap))
+                .collect();
+            assert_eq!(copies, [keycap], "{profile:?} {stop:?}");
+        }
+    }
+}
+
+/// The response's Headers tab of `ready_response`: `content-type` on line
+/// 0, the divider on line 1, the masked sent `authorization` on line 2.
+fn response_headers_app(profile: crate::config::KeyProfile) -> App {
+    use crate::components::response::ViewMode;
+    let mut app = App::new_for_test();
+    app.use_profile(profile);
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536));
+    ready_response(&mut app, r#"{"a": 1}"#);
+    render_once(&mut app);
+    let r = app.hits.rect_of(&Hit::ResponseTab(ViewMode::Headers)).unwrap();
+    app.handle_mouse(left_down(r.x, r.y));
+    render_once(&mut app);
+    app
+}
+
+/// H4 and H5: on the response's Headers tab, arrows' `y` copies a header's
+/// value and `Y` the whole header, a sent one with its real value; the
+/// footer offers one `y/Y copy` chip.
+#[test]
+fn arrows_y_and_capital_y_copy_a_response_header() {
+    let mut app = response_headers_app(crate::config::KeyProfile::Arrows);
+    let at = app.spell_ctx();
+    let copies: Vec<String> = crate::ui::footer_chips_of(&app)
+        .into_iter()
+        .filter(|(_, l, _)| l == "copy")
+        .filter_map(|(k, _, _)| crate::keyroute::spell::keycap(&k, at, &app.keymap))
+        .collect();
+    assert_eq!(copies, ["y/Y"]);
+    press(&mut app, 'y');
+    assert_eq!(last_copied(&app).as_deref(), Some("application/json"));
+    press(&mut app, 'Y');
+    assert_eq!(last_copied(&app).as_deref(), Some("content-type: application/json"));
+    app.update(Action::JsonRowClicked { row: 2, toggle: false });
+    press(&mut app, 'Y');
+    assert_eq!(last_copied(&app).as_deref(), Some("authorization: Bearer s3cret"));
+    assert!(rendered_text(&mut app).contains("Copied authorization header"), "the toast");
+}
+
+/// H8: vim's `"+yy` copies a response header line, the real value of a
+/// masked one; `yy` still fills only the engine's register.
+#[test]
+fn vim_quote_plus_yy_copies_a_response_header_line() {
+    let mut app = response_headers_app(crate::config::KeyProfile::Vim);
+    type_chars(&mut app, "yy");
+    assert_eq!(last_copied(&app), None);
+    app.update(Action::JsonRowClicked { row: 2, toggle: false });
+    type_chars(&mut app, "\"+yy");
+    assert_eq!(last_copied(&app).as_deref(), Some("authorization: Bearer s3cret"));
+}
+
+/// H6: the right-click menus offer `Copy header`: a main header row's, an
+/// auto row's (a menu of its own now), and the response's on a header line.
+#[test]
+fn the_right_click_menus_offer_copy_header() {
+    let menu_labels = |app: &App| -> Vec<String> {
+        match app.modals.top() {
+            Some(Modal::Dropdown(d)) => d.items.iter().map(|i| i.label.to_string()).collect(),
+            _ => Vec::new(),
+        }
+    };
+    let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+    let row = app.hits.rect_of(&Hit::TableRow(0)).expect("the main row");
+    app.handle_mouse(right_down(row.x + 1, row.y));
+    assert!(menu_labels(&app).iter().any(|l| l == "Copy header"), "{:?}", menu_labels(&app));
+    app.update(Action::Close);
+    render_once(&mut app);
+    let auto = app.hits.rect_of(&Hit::AutoHeaderRow(0)).expect("the Accept row");
+    app.handle_mouse(right_down(auto.x + 1, auto.y));
+    assert!(menu_labels(&app).iter().any(|l| l == "Copy header"), "{:?}", menu_labels(&app));
+
+    let mut app = response_headers_app(crate::config::KeyProfile::Arrows);
+    let pane = app.session.response.view().unwrap().last_area.unwrap();
+    app.handle_mouse(right_down(pane.x + 1, pane.y));
+    assert!(menu_labels(&app).iter().any(|l| l == "Copy header"), "{:?}", menu_labels(&app));
+    let items = match app.modals.top() {
+        Some(Modal::Dropdown(d)) => d.items.clone(),
+        _ => unreachable!(),
+    };
+    let copy = items.into_iter().find(|i| i.label == "Copy header").unwrap();
+    app.update(copy.action.unwrap());
+    assert_eq!(last_copied(&app).as_deref(), Some("content-type: application/json"));
 }
 
 /// S3 and S4 (task #56): on a pane too short for its rows, the wheel and

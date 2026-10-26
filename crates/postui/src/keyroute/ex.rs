@@ -591,7 +591,7 @@ mod tests {
         assert_eq!(spelling(&Action::Send).as_deref(), Some(":send"));
         assert_eq!(spelling(&Action::Undo), None);
         for v in Verb::ALL {
-            let listed = !matches!(v, Verb::Yank | Verb::Put { .. });
+            let listed = !matches!(v, Verb::Yank | Verb::CopyHeader | Verb::Put { .. });
             assert_eq!(reaches(v), listed, "{v:?}");
         }
         let mut names: Vec<&str> = VERBS.iter().flat_map(|v| v.names.iter().copied()).collect();

@@ -1406,10 +1406,44 @@ mod tests {
             run(vec![Step::Action(Action::OpenResponseSearch { backward: true })])
         );
         assert_eq!(feed(&mut Router::default(), &resp, "c"), Resolved::Consumed, "vim has no c");
-        assert_eq!(
-            feed(&mut Router::default(), &cx(Arrows, Surface::Response(ViewMode::Headers)), "c"),
-            run(vec![Step::Action(Action::CopyResponseHeader)])
-        );
+    }
+
+    /// Spec 2026-10-26 H4 and H8: the response's header copy is arrows'
+    /// `y` (the value) and `Y` (the whole header), and vim's `"+yy` and
+    /// `"+Y` (the line). Arrows' old `c` is gone.
+    #[test]
+    fn the_response_header_copy_keys() {
+        use crate::components::response::ViewMode;
+        let copy = |whole| run(vec![Step::Action(Action::CopyResponseHeader { whole })]);
+        let arrows = cx(Arrows, Surface::Response(ViewMode::Headers));
+        assert_eq!(feed(&mut Router::default(), &arrows, "y"), copy(false));
+        assert_eq!(feed(&mut Router::default(), &arrows, "Y"), copy(true));
+        assert_eq!(feed(&mut Router::default(), &arrows, "c"), Resolved::Declined);
+        let vim = cx(Vim, Surface::Response(ViewMode::Headers));
+        assert_eq!(feed(&mut Router::default(), &vim, "\"+yy"), copy(true));
+        assert_eq!(feed(&mut Router::default(), &vim, "\"+Y"), copy(true));
+    }
+
+    /// Spec 2026-10-26 H2 and H8: a header row's whole-header copy is
+    /// arrows' `Y` and vim's `"+yy` / `"+Y`; `"+` waits for them, and any
+    /// other key after it is still the registers note.
+    #[test]
+    fn the_table_header_copy_keys() {
+        use crate::action::Verb;
+        use crate::components::editor::EditorTab;
+        let note = |t: &str| run(vec![Step::Action(Action::ShowToast(t.into(), ToastKind::Info))]);
+        let arrows = cx(Arrows, Surface::Table(EditorTab::Headers));
+        assert_eq!(feed(&mut Router::default(), &arrows, "Y"), run(vec![sel(Verb::CopyHeader)]));
+        assert_eq!(feed(&mut Router::default(), &arrows, "y"), run(vec![sel(Verb::Yank)]));
+        let vim = cx(Vim, Surface::Table(EditorTab::Headers));
+        assert_eq!(feed(&mut Router::default(), &vim, "\"+yy"), run(vec![sel(Verb::CopyHeader)]));
+        assert_eq!(feed(&mut Router::default(), &vim, "\"+Y"), run(vec![sel(Verb::CopyHeader)]));
+        let mut r = Router::default();
+        assert_eq!(feed(&mut r, &vim, "\"+"), Resolved::Consumed, "\"+ waits");
+        assert_eq!(feed(&mut r, &vim, "y"), Resolved::Consumed, "\"+y waits");
+        assert_eq!(feed(&mut Router::default(), &vim, "\"+j"), note(table::NO_REGISTERS));
+        assert_eq!(feed(&mut Router::default(), &vim, "\"a"), note(table::NO_REGISTERS));
+        assert_eq!(feed(&mut Router::default(), &vim, "yy"), run(vec![sel(Verb::Yank)]));
     }
 
     /// Plan M5a Deviation 11: the response's V surface.

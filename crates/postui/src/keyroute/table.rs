@@ -431,7 +431,11 @@ fn prev_match() -> Action {
 }
 
 fn copy_header() -> Action {
-    Action::CopyResponseHeader
+    Action::CopyResponseHeader { whole: false }
+}
+
+fn copy_header_line() -> Action {
+    Action::CopyResponseHeader { whole: true }
 }
 
 /// A `ctrl+w` sizing key's step: no count is one, and a count too big for
@@ -768,7 +772,7 @@ pub static TABLE: &[Binding] = &[
     // Key list §7 and spec §4.5 (plan M4a Deviation 11): `/` is the same in
     // both profiles. Vim's `n` `N` are counted and follow `?`/`#`'s
     // direction; arrows' step down and up, as the ▼/▲ buttons do (plan M5a
-    // Deviation 10). `?`, `*` and `#` are vim's. Arrows' `c` copies a header.
+    // Deviation 10). `?`, `*` and `#` are vim's.
     both("/", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(response_search)),
     arrows("n", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(next_match)),
     arrows("N", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(prev_match)),
@@ -779,7 +783,13 @@ pub static TABLE: &[Binding] = &[
     row("*", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Counted(find_star), CountRule::Pass),
     row("#", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Counted(find_hash), CountRule::Pass),
     row("?", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(response_search_back), CountRule::Ignore),
-    arrows("c", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(copy_header)),
+    // Spec 2026-10-26 H4, H8: a header's value is arrows' `y`, the whole
+    // header arrows' `Y` and vim's `"+yy` / `"+Y` (vim's `yy` is the
+    // engine's yank, above).
+    arrows("y", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(copy_header)),
+    arrows("Y", Surfaces::RESPONSE.or(Surfaces::RESPONSE_LINES), Intent::Act(copy_header_line)),
+    row("\"+yy", Surfaces::RESPONSE, Intent::Act(copy_header_line), CountRule::Ignore),
+    row("\"+Y", Surfaces::RESPONSE, Intent::Act(copy_header_line), CountRule::Ignore),
     // Key list §6, Out (parked by the user): a list has no search yet.
     row("/", Surfaces::SEARCHLESS, Intent::Note("No search in this list yet"), CountRule::Ignore),
     // Key list §6 and §9: the app's undo, redo and command palette.
@@ -823,6 +833,9 @@ pub static TABLE: &[Binding] = &[
     ),
     arrows("y", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Yank)),
     arrows("c", Surfaces::VAR_GRID, Intent::Verb(Verb::Yank)),
+    arrows("Y", Surfaces::TABLE, Intent::Verb(Verb::CopyHeader)),
+    row("\"+yy", Surfaces::TABLE, Intent::Verb(Verb::CopyHeader), CountRule::Ignore),
+    row("\"+Y", Surfaces::TABLE, Intent::Verb(Verb::CopyHeader), CountRule::Ignore),
     row("p", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Put { above: false, count: 1 }), CountRule::Pass),
     row("P", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Put { above: true, count: 1 }), CountRule::Pass),
     arrows("p", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Put { above: false, count: 1 })),
@@ -872,6 +885,10 @@ pub static TABLE: &[Binding] = &[
     row("'<any>", Surfaces::NAV, Intent::Note(NO_MARKS), CountRule::Ignore),
     row("`<any>", Surfaces::NAV, Intent::Note(NO_MARKS), CountRule::Ignore),
     row("\"<any>", Surfaces::NAV, Intent::Note(NO_REGISTERS), CountRule::Ignore),
+    // Where `"+yy` copies a header, `"+` waits for it (`best`: a longer
+    // exact row beats a complete `<any>` one); any other key after it is
+    // the note.
+    row("\"+<any>", Surfaces::TABLE.or(Surfaces::RESPONSE), Intent::Note(NO_REGISTERS), CountRule::Ignore),
     // Spec §5.10, key list D.prompt (plan M3b Deviations 7 and 8): a
     // one-field prompt confirms on Enter from anywhere, field or not; its
     // field's Esc in idle Normal cancels (Insert's Esc is the engine's).
@@ -945,14 +962,17 @@ fn fits(row: &[Tok], typed: &[Tok]) -> bool {
 }
 
 /// The best row for `buf` among `rows` on `class`: a complete row with no
-/// `<any>` first, then one with `<any>` (plan M3a Deviation 10), then
-/// whether some row extends `buf`.
+/// `<any>` first, then whether a row with no `<any>` extends `buf`, then a
+/// complete row with `<any>` (plan M3a Deviation 10), then whether some row
+/// extends `buf`. A catch-all `<any>` row so waits for a longer exact one:
+/// `"+` is the prefix of `"+yy`, not the `"<any>` note (spec 2026-10-26 H8).
 fn best<'a>(
     rows: impl IntoIterator<Item = (&'static Binding, &'a [Tok])>,
     buf: &[Tok],
     class: Surfaces,
 ) -> Match {
     let mut prefix = false;
+    let mut exact_prefix = false;
     let mut wild = None;
     for (b, keys) in rows {
         if !b.on.overlaps(class) {
@@ -965,9 +985,11 @@ fn best<'a>(
             wild.get_or_insert(b);
         } else if keys.len() > buf.len() && fits(&keys[..buf.len()], buf) {
             prefix = true;
+            exact_prefix |= !keys.contains(&Tok::Any);
         }
     }
     match wild {
+        Some(_) if exact_prefix => Match::Prefix,
         Some(b) => Match::Complete(b),
         None if prefix => Match::Prefix,
         None => Match::NoMatch,

@@ -28,40 +28,48 @@
 
 | # | Rule | Who |
 |---|---|---|
-| H1 | Arrows `y` on a main row of Params, Headers or Vars fills the row register (`p` still pastes it) **and** copies the row's value to the clipboard, as the row's copy pill does (same toast). The sidebar's request `y` stays invisible. | mine (not vetoed when raised in chat) |
+| H1 | Arrows `y` on a main row of Params, Headers or Vars fills the row register (`p` still pastes it) **and** copies the row's value to the clipboard, as the row's copy pill does (same toast). The sidebar's request `y` stays invisible. | mine (approved) |
 | H2 | Arrows `Y` on a Headers-tab row, main or auto, copies the whole header, `Name: value`. The register is untouched. On Params and Vars rows `Y` does nothing. | mine (approved): `Y` is the shift of the copy letter |
-| H3 | A whole-header copy uses the real name and value, even when the row shows them masked (as the value copy does, spec 2026-10-18 R7). The toast names the header as the screen shows it: `Copied Content-Type header`. | mine |
+| H3 | A whole-header copy uses the real name and value, even when the row shows them masked (as the value copy does, spec 2026-10-18 R7). The toast names the header as the screen shows it: `Copied Content-Type header`. | mine (approved) |
 | H4 | The response Headers tab copies with `y` (the value) and `Y` (the whole header) in arrows, instead of `c`. `c` is unbound there. Sent and received rows both copy. | mine (approved) |
-| H5 | One footer chip, never two: on a Headers-tab row (request main or auto) and on a response header row, the chip is `copy`, with keycap `y/Y` in arrows. On a Params or Vars row it's `copy` with `y`. The response Headers tab gains this chip (it has none today). | you ("I don't want two chips in the header at the same time"); the `y/Y` keycap is mine (approved) |
-| H6 | Mouse: a Headers-tab main row's right-click menu gains `Copy header`. An auto row, which has no menu today, gets one with `Copy header`. The response pane's right-click menu gains `Copy header` when the pointer is on a header row. The pills keep copying the value. | mine (approved) |
+| H5 | One footer chip, never two: on a Headers-tab row (request main or auto) and on a response header row, the chip is `copy`, with keycap `y/Y` in arrows. On a Params or Vars row it's `copy` with `y`. The response Headers tab gains this chip (it has none today), in arrows only: vim's `yy` there is the engine's line yank, so a vim chip would have no first key. In vim the request rows' chip reads `yy/"+yy` (`yy` copies the row for `p`). The new chip costs the footer ten cells: a client-owned row's error message (#59) now needs 150 columns, not 140, since chips win over it. | you ("I don't want two chips in the header at the same time"); the `y/Y` keycap is mine (approved) |
+| H6 | Mouse: a Headers-tab main row's right-click menu gains `Copy header`. An auto row, which has no menu today, gets one with `Copy header`. The response pane's right-click menu gains `Copy header` when the pointer is on a header row. The pills keep copying the value. Every auto row now registers its row hit (#59 registered only client-owned ones); its hover and click are unchanged. | mine (approved); the hit for every row is mine |
 | H7 | Vim: `yy` on a main row is unchanged (the register only, as Vim's `yy` never writes the clipboard). | Vim |
-| H8 | Vim: `"+yy` and `"+Y` on a Headers-tab row (main or auto) or on a response header row copy the row as its line, `Name: value`, as Vim's `"+yy` copies a line. Elsewhere, `"+` + key keeps the "Registers are not supported here" note. | Vim (the line); the scope is mine |
-| H9 | Vim: `yy` on an auto row keeps copying its value (S14), though Vim's `yy` would not touch the clipboard. Without it, an auto row's value has no vim key at all. | mine, a deviation from Vim |
+| H8 | Vim: `"+yy` and `"+Y` on a Headers-tab row (main or auto) or on a response header row copy the row as its line, `Name: value`, as Vim's `"+yy` copies a line. Elsewhere, `"+` + key keeps the "Registers are not supported here" note. | Vim (the line); the scope is mine (approved) |
+| H9 | Vim: `yy` on an auto row keeps copying its value (S14), though Vim's `yy` would not touch the clipboard. Without it, an auto row's value has no vim key at all. | mine (approved), a deviation from Vim |
 | H10 | The shift-switching footer chip in kitty-protocol terminals is #146, not this task. | mine (approved) |
 
 ## Design
 
-- **Actions.** `CopyTarget` gains `TableHeader(usize)` (a Headers-tab main
-  row), `ComputedHeaderLine(usize)` and `ResponseHeaderLine(usize)`, the
-  whole-header twins of `TableRow`, `ComputedHeader` and `ResponseHeader`.
-  `resolve_copy` builds `Name: value` for them. `Action::CopyResponseHeader`
+- **Actions.** `CopyTarget` gains `ResponseHeaderLine`, `ComputedHeaderLine`
+  and `TableHeaderLine` (a Headers-tab main row), the whole-header twins of
+  `ResponseHeader`, `ComputedHeader` and `TableRow`. `resolve_copy` builds
+  `Name: value` for them, one helper for all six. `Action::CopyResponseHeader`
   takes a `whole: bool`.
-- **Verbs.** `Verb::Yank` stays the register yank. A main-row yank in
-  arrows runs `YankTableRow` and then the copy. The router row decides which
-  profile does what, so arrows `y` expands to both actions and vim `yy` to
-  the yank alone. A new `Verb::YankHeader` (arrows `Y`, vim `"+yy`/`"+Y`)
-  asks the focused surface for its whole-header target, as `Verb::Yank`
-  asks for its row.
-- **Router.** `best` today returns a complete `<any>` row before a longer
-  exact row that extends the keys, so `"+` hits the `"<any>` note. That
-  changes: a longer exact row wins, so `"+` waits for `yy`/`Y`. A new
-  `"+<any>` row keeps the note for anything else.
-- **Footer.** `Key` gains a two-action form whose keycap joins both keys
-  with `/` (`y/Y`). In vim, the keycap shows `yy`, the same as today's
-  auto-row chip.
-- **Menus.** `table_row_context_menu` adds `Copy header` on the Headers
-  tab. `context_menu_for` gains the auto row. `text_surface_menu` adds
-  `Copy header` on a response header row.
+- **Verbs.** `Verb::Yank` stays the register yank in both profiles, and one
+  verb is new: `Verb::CopyHeader` (arrows `Y`, vim `"+yy`/`"+Y`), which
+  `Editor::table_verb_action` resolves on a Headers-tab row, main or auto.
+  Arrows' clipboard half of `y` (H1) is one profile check in `App`'s
+  `YankTableRow` arm: in arrows it copies the value after filling the
+  register. A separate arrows-only copy verb was rejected: the
+  reachability test wants every verb that resolves on a surface to have a
+  vim key, and vim has none for it.
+- **Router.** `best` used to return a complete `<any>` row before a longer
+  exact row that extends the keys, so `"+` hit the `"<any>` note. A longer
+  exact row now wins, so `"+` waits for `yy`/`Y`. A new `"+<any>` row, on
+  the table and the response only (where `"+yy` exists), keeps the note
+  for anything else.
+- **Footer.** A header row's chip is `Key::Pair(yank, copy-header)`, spelled
+  `y/Y` in arrows and `yy/"+yy` in vim; its click runs the yank key
+  (`YankTableRow`), or the value copy on an auto row. A Params or Vars row's
+  chip is the yank key alone. The response chip is `Key::Pair` of the two
+  `CopyResponseHeader` actions. `TableCursor` gains `headers` on `Row` and a
+  `ResponseHeader` variant for the response's cursor.
+- **Menus.** `table_row_context_menu` puts `Copy header` first on the
+  Headers tab. `context_menu_for` gives `Hit::AutoHeaderRow` a menu, and
+  every auto row registers that hit. `text_surface_menu` takes the pointer
+  and adds `Copy header` on a response header line
+  (`ResponseView::header_line_at`).
 
 ## Tests
 
@@ -77,7 +85,7 @@
   The key matrix `CASES` rows change accordingly.
 - H9: the existing S14 tests stay green.
 
-## Choices for you to veto (`mine`)
+## Choices (`mine (approved)`, user 2026-10-26: "Good")
 
 - H1 also applies to Params and Vars, so `y` means the same on every table.
 - H2: `Y` on Params and Vars does nothing, rather than copying `name=value`.

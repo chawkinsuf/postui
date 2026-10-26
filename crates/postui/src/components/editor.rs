@@ -3268,7 +3268,8 @@ impl Editor {
     /// Body tab takes nothing. A section row past `+ Add` takes add and
     /// put the same way, and an auto row takes yank too: it copies the
     /// row's value, as its copy pill does (spec 2026-10-25 S14). Anything
-    /// else there does nothing (S21).
+    /// else there does nothing (S21). A Headers-tab row, main or auto, takes
+    /// the whole-header copy (spec 2026-10-26 H2).
     pub fn table_verb_action(&self, verb: Verb) -> Option<Action> {
         if self.active_tab == EditorTab::Body {
             return None;
@@ -3286,6 +3287,16 @@ impl Editor {
                 let j = self.auto_row_cursor()?;
                 Some(Action::CopyToClipboard(crate::action::CopyTarget::ComputedHeader(j)))
             }),
+            // A header's `Name: value`: the Headers tab only (spec
+            // 2026-10-26 H2), a main row or an auto row.
+            Verb::CopyHeader if self.active_tab == EditorTab::Headers => {
+                use crate::action::CopyTarget;
+                let target = match row {
+                    Some(i) => CopyTarget::TableHeaderLine(i),
+                    None => CopyTarget::ComputedHeaderLine(self.auto_row_cursor()?),
+                };
+                Some(Action::CopyToClipboard(target))
+            }
             Verb::Put { above, count } => {
                 // Above or below a row; anywhere past the rows, at their end.
                 let at = match row {
@@ -4177,9 +4188,10 @@ impl Editor {
     /// request row may take over a `󰏫` after it (`Hit::AutoHeaderOverride`,
     /// task #20); the divider
     /// carries a `👁 reveal`/`hide` toggle (`Hit::AutoHeaderReveal`)
-    /// whenever a row has a secret to reveal. Under them, a client-owned
-    /// row is a surface (`Hit::AutoHeaderRow`) whose hover lets the footer
-    /// say why it isn't sent.
+    /// whenever a row has a secret to reveal. Under them, every row is a
+    /// surface (`Hit::AutoHeaderRow`): a client-owned row's hover lets the
+    /// footer say why it isn't sent, and any row's right click opens its
+    /// `Copy header` menu (spec 2026-10-26 H6).
     ///
     /// `skip` is how many of the section's lines (the divider first) sit
     /// above the view (task #56), and `cursor` the row under the focused
@@ -4319,11 +4331,11 @@ impl Editor {
             let line = Line::from(spans);
             let row_rect = Rect::new(area.x, y, area.width, 1);
             frame.render_widget(Paragraph::new(line), row_rect);
-            // Only a client-owned row has something for the footer to say;
-            // every other row stays the bare pane, hover and all.
-            if client_owned {
-                hits.register(row_rect, crate::hit::Hit::AutoHeaderRow(i));
-            }
+            // Every row is a surface for its right-click menu. Only a
+            // client-owned row has something for the footer to say on
+            // hover (`client_owned_message`); a click on any row does what one on
+            // the bare pane under it did.
+            hits.register(row_rect, crate::hit::Hit::AutoHeaderRow(i));
             // The tokens all lie in the value, so clipping them to the
             // whole row keeps them off the name. A struck (unsent) row's
             // tokens are tinted too, as a disabled table row's are: the
@@ -7347,7 +7359,10 @@ url = "https://api.example.com/users""#,
         assert_eq!(row.y, vy, "on the default's own row");
         let accept = app.editor.computed.rows.iter().position(|r| r.header.name == "Accept");
         let accept = Hit::AutoHeaderRow(accept.expect("the client's Accept row"));
-        assert_eq!(app.hits.rect_of(&accept), None, "an ordinary row stays the bare pane");
+        // Every row is a surface now, for its right-click menu (spec
+        // 2026-10-26 H6), but an ordinary row's hover says nothing.
+        assert!(app.hits.rect_of(&accept).is_some(), "an ordinary row is a surface too");
+        assert!(app.editor.client_owned_message(Some(&accept), false).is_empty());
         app.hovered = Some(hit);
         let (terminal, content) = draw_wide(&mut app);
         let (mx, my) = find_text(terminal.backend().buffer(), "Host cannot be set manually")
@@ -7411,7 +7426,9 @@ url = "https://api.example.com/users""#,
         app.editor.sub_focus = SubFocus::Content;
         app.update(Action::Render);
         let chips = ["send", "add header", "disable", "delete", "vars", "tabs", "commands"];
-        for width in [90, 110, 140, 180] {
+        // The row's copy chip (spec 2026-10-26 H5) takes ten cells the
+        // message had at 140: the shortest form now needs 150.
+        for width in [90, 110, 150, 180] {
             let mut footer = |row: usize| {
                 app.editor.table.set_selected(Some(Stop::Row(row)));
                 let mut terminal = Terminal::new(TestBackend::new(width, 40)).unwrap();
@@ -7429,7 +7446,7 @@ url = "https://api.example.com/users""#,
                 );
             }
             assert!(!owned.contains('…'), "a form shows whole: {owned}");
-            if width >= 140 {
+            if width >= 150 {
                 assert!(owned.contains(" be set"), "some form shows, {width}: {owned}");
             }
             if width >= 180 {

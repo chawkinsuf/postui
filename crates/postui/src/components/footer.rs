@@ -38,14 +38,17 @@ pub enum JqBarState {
     Describing,
 }
 
-/// The stop under the focused table's cursor, for the chips naming its
-/// keys: an editable row (its toggle and delete), or an auto row of the
+/// The row under the focused pane's cursor, for the chips naming its
+/// keys: an editable row (its copy, toggle and delete; `headers` on the
+/// Headers tab, where copy has a whole-header key too), an auto row of the
 /// Headers tab's section (copy, and the pencil's take-over where the row
-/// has one; spec 2026-10-25 S16).
+/// has one; spec 2026-10-25 S16), or a header row of the response's
+/// Headers view (copy). One copy chip each (spec 2026-10-26 H5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableCursor {
-    Row { index: usize, enabled: bool },
+    Row { index: usize, enabled: bool, headers: bool },
     Auto { index: usize, pencil: bool },
+    ResponseHeader,
 }
 
 /// The context-sensitive chips for the focused pane. Each entry is `(key,
@@ -200,17 +203,31 @@ pub(crate) fn footer_chips(
                 );
             }
             let pos = chips.len() - 2; // before vars + tabs
+            // One copy chip on a header row, its keycap both keys: the
+            // value's and the whole header's (`y/Y`, vim's `yy/"+yy`; spec
+            // 2026-10-26 H5).
+            let header_copy_key = || {
+                Key::Pair(Action::OnSelection(Verb::Yank), Action::OnSelection(Verb::CopyHeader))
+            };
             match table_row_selected {
-                Some(TableCursor::Row { index: i, enabled }) => {
-                    // Keyboard twins of the expanded row's ● toggle and 󰆴
-                    // delete buttons; the ␣ keycap keeps the row narrow.
+                Some(TableCursor::Row { index: i, enabled, headers }) => {
+                    // Keyboard twins of the expanded row's copy pill, ●
+                    // toggle and 󰆴 delete buttons; the ␣ keycap keeps the
+                    // row narrow. The copy chip runs the yank key, which in
+                    // arrows copies as the pill does (H1).
+                    let copy_key = if headers {
+                        header_copy_key()
+                    } else {
+                        Key::Of(Action::OnSelection(Verb::Yank))
+                    };
+                    chips.insert(pos, (copy_key, "copy", Some(Action::YankTableRow(i))));
                     let toggle_label = if enabled { "disable" } else { "enable" };
                     chips.insert(
-                        pos,
+                        pos + 1,
                         (Key::Named("␣"), toggle_label, Some(Action::ToggleTableRow(i))),
                     );
                     chips.insert(
-                        pos + 1,
+                        pos + 2,
                         (
                             Key::Of(Action::OnSelection(Verb::Delete { count: 1 })),
                             "delete",
@@ -224,7 +241,7 @@ pub(crate) fn footer_chips(
                     chips.insert(
                         pos,
                         (
-                            Key::Of(Action::OnSelection(Verb::Yank)),
+                            header_copy_key(),
                             "copy",
                             Some(Action::CopyToClipboard(
                                 crate::action::CopyTarget::ComputedHeader(i),
@@ -238,7 +255,7 @@ pub(crate) fn footer_chips(
                         );
                     }
                 }
-                None => {}
+                Some(TableCursor::ResponseHeader) | None => {}
             }
             if field_open {
                 // Inserted last so the row/address-bar chips above land
@@ -338,6 +355,14 @@ pub(crate) fn footer_chips(
                         "unfilter",
                         Some(Action::ToggleJqBar),
                     ));
+                }
+                // A header row under the cursor: its copy, last so the
+                // chips before it never move (spec 2026-10-26 H5). Arrows
+                // only: vim's `yy` there is the engine's line yank, so
+                // the pair has no first key and the chip drops.
+                if table_row_selected == Some(TableCursor::ResponseHeader) {
+                    let copy = |whole| Action::CopyResponseHeader { whole };
+                    chips.push((Key::Pair(copy(false), copy(true)), "copy", Some(copy(false))));
                 }
                 chips
             }
@@ -747,7 +772,11 @@ mod tests {
                 add_row_label,
                 url_focused,
                 url_selected,
-                table_row_selected.map(|(index, enabled)| TableCursor::Row { index, enabled }),
+                table_row_selected.map(|(index, enabled)| TableCursor::Row {
+                    index,
+                    enabled,
+                    headers: true,
+                }),
                 jq_bar,
                 field_open,
             ),

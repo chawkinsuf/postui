@@ -3828,10 +3828,16 @@ impl App {
             Action::StepResponseSearch(delta) => self.with_response_search(|response, memory| {
                 response.step_search(delta.into(), memory)
             }),
-            Action::CopyResponseHeader => match self.session.response.copyable_header_row() {
-                Some(row) => self.update(Action::CopyToClipboard(CopyTarget::ResponseHeader(row))),
-                None => false,
-            },
+            Action::CopyResponseHeader { whole } => {
+                match self.session.response.copyable_header_row() {
+                    Some(row) => self.update(Action::CopyToClipboard(if whole {
+                        CopyTarget::ResponseHeaderLine(row)
+                    } else {
+                        CopyTarget::ResponseHeader(row)
+                    })),
+                    None => false,
+                }
+            }
             Action::JsonRowClicked { row, toggle } => {
                 self.session.response.click_row(row, toggle);
                 true
@@ -4523,6 +4529,12 @@ impl App {
                     .map(|(k, e)| (k.clone(), e.clone()));
                 if let Some((key, entry)) = row {
                     self.yank = crate::yank::Register::Row { tab, key, entry };
+                    // Arrows' `y` is a GUI copy: the clipboard too, as the
+                    // row's copy pill does. Vim's `yy` never writes the
+                    // clipboard (spec 2026-10-26 H1, H7).
+                    if self.profile() == crate::config::KeyProfile::Arrows {
+                        return self.update(Action::CopyToClipboard(CopyTarget::TableRow(i)));
+                    }
                 }
                 true
             }
@@ -9907,10 +9919,18 @@ impl App {
     /// where the pointer was. The response pane is read-only: Copy only.
     /// Must run *before* the click-away commits, since a commit ends the
     /// edit whose selection Copy would read.
-    fn text_surface_menu(&mut self, hit: &Hit) -> Option<Vec<crate::components::modal::MenuItem>> {
+    fn text_surface_menu(
+        &mut self,
+        hit: &Hit,
+        x: u16,
+        y: u16,
+    ) -> Option<Vec<crate::components::modal::MenuItem>> {
         use crate::action::TextSurface;
         use crate::components::modal::MenuItem;
         let mut jq_row = None;
+        // A header line of the response's Headers view under the pointer:
+        // the menu copies that whole header (spec 2026-10-26 H6).
+        let header_line = self.session.response.view().and_then(|v| v.header_line_at(x, y));
         let (surface, editable) = match hit {
             Hit::UrlBar => {
                 self.update(Action::FocusUrl);
@@ -10000,6 +10020,14 @@ impl App {
             MenuItem::disabled("Copy")
         };
         let mut items = vec![copy];
+        if surface == TextSurface::Response
+            && let Some(line) = header_line
+        {
+            items.push(MenuItem::new(
+                "Copy header",
+                Action::CopyToClipboard(CopyTarget::ResponseHeaderLine(line)),
+            ));
+        }
         if editable {
             items.push(MenuItem::new("Paste", Action::Paste));
         }
@@ -10175,6 +10203,14 @@ impl App {
             // the row was clicked (see `handle_mouse`), so `i` is a live
             // index into the active tab's map here.
             Hit::TableRow(i) => return self.table_row_context_menu(*i),
+            // An auto row's own menu: its whole header (spec 2026-10-26
+            // H6); its pill copies the value.
+            Hit::AutoHeaderRow(j) => {
+                return Some(vec![MenuItem::new(
+                    "Copy header",
+                    Action::CopyToClipboard(CopyTarget::ComputedHeaderLine(*j)),
+                )]);
+            }
             _ => return None,
         };
         // One "Move to space…" row opening the chooser of the other
@@ -10269,12 +10305,24 @@ impl App {
         if i >= map.len() {
             return None;
         }
-        Some(vec![
+        let mut items = vec![
             MenuItem::new("Duplicate row", Action::DuplicateTableRow(i)),
             MenuItem::new(format!("Delete {noun}"), Action::DeleteTableRow(i)),
             MenuItem::new("Extract value to variable…", Action::ExtractToVariable),
             MenuItem::new("Extract value to selector…", Action::ExtractToSelector),
-        ])
+        ];
+        // A header's `Name: value`; its pill copies the value (spec
+        // 2026-10-26 H6).
+        if self.editor.active_tab == EditorTab::Headers {
+            items.insert(
+                0,
+                MenuItem::new(
+                    "Copy header",
+                    Action::CopyToClipboard(CopyTarget::TableHeaderLine(i)),
+                ),
+            );
+        }
+        Some(items)
     }
 
     /// Whether leaving the editor's current content behind would lose
@@ -10723,6 +10771,24 @@ impl App {
     /// on a successful copy. `None` when `target` needs a ready response
     /// and there isn't one (or the header index is out of range).
     fn resolve_copy(&self, target: &CopyTarget) -> Option<(String, String)> {
+        /// A row's copy: its value, or for a `*Line` target the whole
+        /// header, `name: value` (spec 2026-10-26 H3). The toast names the
+        /// row as `shown` on screen, masked or not.
+        fn header_copy(
+            target: &CopyTarget,
+            name: &str,
+            value: &str,
+            shown: &str,
+        ) -> (String, String) {
+            match target {
+                CopyTarget::ResponseHeaderLine(_)
+                | CopyTarget::ComputedHeaderLine(_)
+                | CopyTarget::TableHeaderLine(_) => {
+                    (format!("{name}: {value}"), format!("Copied {shown} header"))
+                }
+                _ => (value.to_string(), format!("Copied {shown}")),
+            }
+        }
         match target {
             CopyTarget::ResponseBody => match self.session.response.state() {
                 ResponseState::Ready(d) => {
@@ -10744,37 +10810,34 @@ impl App {
             // `i` is a line of the Headers tab; the view says which header
             // it is. A sent row copies the header's real value — the row
             // shows the mask, but a copy is the user asking for the value.
-            CopyTarget::ResponseHeader(i) => {
+            CopyTarget::ResponseHeader(i) | CopyTarget::ResponseHeaderLine(i) => {
                 use crate::components::response::HeaderRow;
                 let ResponseState::Ready(d) = self.session.response.state() else {
                     return None;
                 };
-                match self.session.response.view()?.header_row(*i)? {
-                    HeaderRow::Received(j) => d
-                        .headers
-                        .get(j)
-                        .map(|(name, value)| (value.clone(), format!("Copied {name}"))),
-                    HeaderRow::Sent(j) => d
-                        .sent_headers
-                        .get(j)
-                        .map(|h| (h.value.clone(), format!("Copied {}", h.display_name))),
-                    HeaderRow::Divider | HeaderRow::Note => None,
-                }
+                let (name, value, shown) = match self.session.response.view()?.header_row(*i)? {
+                    HeaderRow::Received(j) => d.headers.get(j).map(|(n, v)| (n, v, n))?,
+                    HeaderRow::Sent(j) => {
+                        d.sent_headers.get(j).map(|h| (&h.name, &h.value, &h.display_name))?
+                    }
+                    HeaderRow::Divider | HeaderRow::Note => return None,
+                };
+                Some(header_copy(target, name, value, shown))
             }
             CopyTarget::Url => Some((self.editor.url.text().to_string(), "Copied URL".to_string())),
-            CopyTarget::TableRow(i) => self
+            CopyTarget::TableRow(i) | CopyTarget::TableHeaderLine(i) => self
                 .editor
                 .table_row_at(*i)
-                .map(|(key, value)| (value.to_string(), format!("Copied {key}"))),
+                .map(|(key, value)| header_copy(target, key, value, key)),
             // The real value even while the row shows masked, as the sent
             // section's pill and the tooltip's copy do (spec 2026-10-18 R7);
             // the toast names the row as the screen shows it.
-            CopyTarget::ComputedHeader(i) => {
+            CopyTarget::ComputedHeader(i) | CopyTarget::ComputedHeaderLine(i) => {
                 let computed = &self.editor.computed;
                 computed.rows.get(*i).map(|r| {
                     let h = &r.header;
-                    let name = if computed.revealed { &h.name } else { &h.display_name };
-                    (h.value.clone(), format!("Copied {name}"))
+                    let shown = if computed.revealed { &h.name } else { &h.display_name };
+                    header_copy(target, &h.name, &h.value, shown)
                 })
             }
         }

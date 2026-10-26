@@ -1056,6 +1056,18 @@ impl ReadyView {
         self.header_rows.get(i).copied()
     }
 
+    /// The Headers tab's line at screen cell (`x`, `y`) when it is a
+    /// header, received or sent: what a right click's `Copy header` copies
+    /// (spec 2026-10-26 H6).
+    pub fn header_line_at(&self, x: u16, y: u16) -> Option<usize> {
+        if self.mode != ViewMode::Headers {
+            return None;
+        }
+        let (line, _) = self.cell_at(x, y, false)?;
+        matches!(self.header_row(line)?, HeaderRow::Received(_) | HeaderRow::Sent(_))
+            .then_some(line)
+    }
+
     /// Builds the column index of every raw line in `rows` that is long
     /// enough to need one, ahead of a sideways-scrolled frame — the one
     /// `&mut` step `body_lines` (which borrows the view shared) relies on.
