@@ -626,8 +626,9 @@ impl Keymap {
     /// [`named_actions`], formatted the way the footer renders combos
     /// (caret ctrl, `+`-joined, e.g. `"^P"`, `"alt+shift+m"`). `None` when
     /// `action_id` isn't a known action name or nothing in this keymap is
-    /// bound to it. The palette's key column asks by the action itself
-    /// (task #105).
+    /// bound to it. Tests only: the palette's key column asks by the action
+    /// itself (task #105).
+    #[cfg(test)]
     pub fn combo_for(&self, action_id: &str) -> Option<String> {
         let target = named_actions()
             .into_iter()

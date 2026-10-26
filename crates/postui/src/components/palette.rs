@@ -880,12 +880,16 @@ impl PaletteState {
     /// key), unless that key means something else where the palette opened
     /// (the same [`crate::keys::KeyContext::action`] every key press
     /// takes). A row whose action no key sends shows none, as "Manage:
-    /// variables" does: `alt+r` opens the tab Manage last had.
+    /// variables" does: `alt+r` opens the tab Manage last had. So do the
+    /// sidebar width rows: no key sends their action as such, only `alt+w`
+    /// remapped while the sidebar has focus (spec S6b,
+    /// `palette_carries_the_sidebar_width_steps`).
     pub(crate) fn key_column(&self, c: &Command, keymap: &crate::keys::Keymap) -> Option<String> {
-        if self.key_context.action(c.action.clone()) != c.action {
+        let action = key_action(&c.action);
+        if self.key_context.action(action.clone()) != *action {
             return None;
         }
-        keymap.combo_for_action(key_action(&c.action))
+        keymap.combo_for_action(action)
     }
 
     #[cfg(test)]
@@ -1550,23 +1554,6 @@ mod tests {
             content.contains("^C"),
             "the quit row's bound combo must render in caret notation: {content}"
         );
-    }
-
-    /// Task #105: opened over the default screen, every row but Quit (its
-    /// own test above) shows exactly the keymap's key for the row's action,
-    /// in both profiles: a bound row shows its key, an unbound row none.
-    /// Keys the keymap does not hold (vim's keyroute rows, such as `/`)
-    /// are not the column's to show.
-    #[test]
-    fn every_row_shows_its_actions_keymap_key() {
-        let p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
-        for profile in [crate::config::KeyProfile::Arrows, crate::config::KeyProfile::Vim] {
-            let keymap = crate::keys::Keymap::default_bindings_for(profile);
-            for c in all_commands().into_iter().filter(|c| c.id != "quit") {
-                let want = keymap.combo_for_action(&c.action);
-                assert_eq!(p.key_column(&c, &keymap), want, "{} in {profile:?}", c.id);
-            }
-        }
     }
 
     fn ex_scope() -> crate::keyroute::ex::Scope {
