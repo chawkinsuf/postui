@@ -1398,9 +1398,9 @@ fn undoing_a_row_added_from_the_add_row_puts_the_cursor_back_on_it() {
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.capture_undo();
     assert!(app.editor.headers.contains_key("X-New"), "{:?}", app.editor.headers);
-    while app.editor.headers.contains_key("X-New") {
-        assert!(app.update(Action::Undo), "undo takes the row back out");
-    }
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(1)), "on the new row");
+    app.update(Action::Undo);
+    assert!(!app.editor.headers.contains_key("X-New"), "one undo takes the row back out");
     assert_eq!(app.editor.table.selected(), Some(Stop::Add));
 }
 
@@ -19008,7 +19008,7 @@ mod undo_tests {
         app.editor.url.set_cursor(3);
         let pos = app.editor.caret();
         app.editor.url = LineInput::new("hello world");
-        app.editor.restore_caret(&pos);
+        app.editor.restore_caret(&pos, None);
         assert_eq!(app.editor.caret(), pos);
     }
 
@@ -19024,7 +19024,7 @@ mod undo_tests {
         let pos = app.editor.caret();
         assert_eq!(pos, Caret::Cell { row: 1, key: Some("b".into()) });
         app.editor.params.shift_remove("a"); // "b" is now index 0
-        app.editor.restore_caret(&pos);
+        app.editor.restore_caret(&pos, None);
         assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)));
     }
 
@@ -19040,7 +19040,7 @@ mod undo_tests {
         app.editor.table.set_selected(Some(Stop::Row(0)));
         let pos = app.editor.caret();
         app.editor.params.clear();
-        app.editor.restore_caret(&pos);
+        app.editor.restore_caret(&pos, None);
         assert_eq!(app.editor.table.selected(), Some(Stop::Add), "the ghost row");
     }
 

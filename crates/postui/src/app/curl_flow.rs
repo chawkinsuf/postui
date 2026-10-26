@@ -331,7 +331,7 @@ impl App {
         // as the shadow, so the replace is a step of its own. Here, not in
         // the shared open, where a reopen of the open request would stop
         // recording its Discard (fourth review round).
-        self.shadow = Some((self.editor.slug.clone(), self.editor.current_request()));
+        self.seed_shadow(self.editor.slug.clone(), self.editor.current_request());
         self.apply_curl_replace(replace);
     }
 

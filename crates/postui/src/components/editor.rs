@@ -100,6 +100,8 @@ pub enum Caret {
         row: usize,
         key: Option<String>,
     },
+    /// The table's cursor on `+ Add`, which every table has.
+    Add,
     /// The table's cursor on row `index` of the section under the table
     /// (task #56): undo puts it back there, as it was ("undo restores
     /// exactly"), found by `name` on the Vars tab (the referenced
@@ -604,25 +606,13 @@ impl Editor {
             None => "",
         });
         self.table.editing = None;
-        let on_table = matches!(caret, Caret::Cell { .. } | Caret::Section { .. });
+        let on_table = matches!(caret, Caret::Cell { .. } | Caret::Add | Caret::Section { .. });
         if !on_table {
             self.table.set_selected(None);
         }
-        // The table's caret is put back in one write (`restore_caret`, or
-        // the fallback), so a cursor that comes back where it was is no
-        // cursor move (S23).
-        let gone = match &caret {
-            Caret::Cell { key: Some(k), .. } => self.table_index_of(k).is_none(),
-            Caret::Section { name: Some(n), .. } => !self.referenced_var_names().contains(n),
-            _ => false,
-        };
-        match fallback.filter(|f| gone && f.tab == self.active_tab) {
-            Some(f) => self.table.set_selected(Some(match f.stop {
-                Stop::Row(i) => Stop::of_row(i, self.table_len()),
-                stop => stop,
-            })),
-            None => self.restore_caret(&caret),
-        }
+        // The table's caret is put back in one write (`restore_caret`), so a
+        // cursor that comes back where it was is no cursor move (S23).
+        self.restore_caret(&caret, fallback);
         // A row the swap brought back (undoing a delete, redoing an add) is
         // where the cursor goes, the way every list reselects its restored
         // row: the first one when several return. Only a table cursor (on a
@@ -645,7 +635,11 @@ impl Editor {
 
     /// The table tab's cursor as an undo step records it (task #121):
     /// `None` on the Body tab or with no stop selected. Cheap enough for
-    /// every event, unlike [`Self::caret`].
+    /// every event, unlike [`Self::caret`]. It is the table's own cursor,
+    /// kept while the caret is elsewhere (the tab strip, the URL), so it
+    /// doesn't look at `sub_focus`: where the caret is was never undo
+    /// state (ruling 6772cd9), and the spot is only read for a cursor in
+    /// the table whose row an undo removed.
     pub fn table_cursor(&self) -> Option<TableCursor> {
         if self.active_tab == EditorTab::Body {
             return None;
@@ -665,10 +659,10 @@ impl Editor {
             }
             SubFocus::Content => match self.table.selected() {
                 Some(Stop::Row(row)) => Caret::Cell { row, key: self.table_key_at(row) },
-                // `+ Add` has no key: it comes back on `+ Add`, which every
-                // table has ("undo restores exactly"; task #121 put this
-                // before R8's "never the ghost row", mine (approved)).
-                Some(Stop::Add) => Caret::Cell { row: self.table_len(), key: None },
+                // `+ Add` comes back on `+ Add`, which every table has
+                // ("undo restores exactly"; task #121 put this before R8's
+                // "never the ghost row", mine (approved)).
+                Some(Stop::Add) => Caret::Add,
                 // A referenced row is found again by its variable's name: the
                 // list is rebuilt in first-seen order, so an undo that drops
                 // an earlier `{{token}}` shifts the index.
@@ -689,7 +683,19 @@ impl Editor {
     /// a body line, or removed a table row). Focus never moves: the caret
     /// is the one the editor already had, only clamped. `Caret::None`
     /// leaves everything as it is.
-    pub fn restore_caret(&mut self, pos: &Caret) {
+    ///
+    /// A table cursor whose row the swap removed (undoing a row add) goes
+    /// to `fallback`, the spot an undo step recorded, when it was recorded
+    /// on this tab (task #121): the swap restores exactly the request the
+    /// spot was taken in, so the undo lands where the cursor was before
+    /// the op. With none on this tab, the cursor keeps its old place,
+    /// clamped (R8).
+    pub fn restore_caret(&mut self, pos: &Caret, fallback: Option<TableCursor>) {
+        let len = self.table_len();
+        let recorded = fallback.filter(|f| f.tab == self.active_tab).map(|f| match f.stop {
+            Stop::Row(i) => Stop::of_row(i, len),
+            stop => stop,
+        });
         match pos {
             Caret::Url(i) => {
                 self.url.set_cursor(*i);
@@ -710,32 +716,35 @@ impl Editor {
                 let half = self.last_body_area.map(|a| usize::from(a.height) / 2).unwrap_or(0);
                 self.body.set_viewport_offset(0, row.saturating_sub(half));
             }
-            // `+ Add` (no key) stays on `+ Add`.
-            Caret::Cell { key: None, .. } => self.table.set_selected(Some(Stop::Add)),
-            Caret::Cell { row, key: Some(key) } => {
-                // The same row by key (indices shift under undo); a row the
-                // swap removed leaves the cursor at its old index, clamped
-                // to the last real row (R8), unless the undo step recorded
-                // where to go (`apply_snapshot`'s fallback). Never the ghost
-                // "+ Add" row at index `len` here. An empty table has only
-                // the ghost row to offer. The cell column persists on its
-                // own.
-                let len = self.table_len();
-                let row =
-                    self.table_index_of(key).unwrap_or_else(|| (*row).min(len.saturating_sub(1)));
-                self.table.set_selected(Some(Stop::of_row(row, len)));
+            Caret::Add => self.table.set_selected(Some(Stop::Add)),
+            Caret::Cell { row, key } => {
+                // The same row by key (indices shift under undo). A row the
+                // swap removed goes to the recorded spot, else stays at its
+                // old index, clamped to the last real row (R8): never the
+                // ghost "+ Add" row at index `len` on that path. An empty
+                // table has only the ghost row to offer. The cell column
+                // persists on its own.
+                let stop = match key.as_deref().and_then(|k| self.table_index_of(k)) {
+                    Some(i) => Stop::Row(i),
+                    None => recorded
+                        .unwrap_or_else(|| Stop::of_row((*row).min(len.saturating_sub(1)), len)),
+                };
+                self.table.set_selected(Some(stop));
             }
             Caret::Section { index, name } => {
                 // By name where there is one (the Vars tab), else the same
                 // place; a section that shrank is clamped on the next frame.
-                // A name the swap removed falls back to its old place, as a
-                // table row whose key is gone does (R8, `Caret::Cell`): the
-                // neighbour now there.
-                let at = name
-                    .as_deref()
-                    .and_then(|n| self.referenced_var_names().iter().position(|r| r == n))
-                    .unwrap_or(*index);
-                self.table.set_selected(Some(Stop::Section(at)));
+                // A name the swap removed goes to the recorded spot, else
+                // stays at its old place, as a table row whose key is gone
+                // does (`Caret::Cell`): the neighbour now there.
+                let stop = match name {
+                    None => Stop::Section(*index),
+                    Some(n) => match self.referenced_var_names().iter().position(|r| r == n) {
+                        Some(at) => Stop::Section(at),
+                        None => recorded.unwrap_or(Stop::Section(*index)),
+                    },
+                };
+                self.table.set_selected(Some(stop));
             }
             Caret::None => {}
         }
@@ -4683,7 +4692,7 @@ mod tests {
         let text: String = (0..100).map(|i| format!("\"l{i}\": {i},\n")).collect();
         let mut e = body_editor(&text);
         e.last_body_area = Some(Rect::new(0, 0, 60, 10));
-        e.restore_caret(&Caret::Body { row: 50, col: 0 });
+        e.restore_caret(&Caret::Body { row: 50, col: 0 }, None);
         let offset = e.body.viewport_offset().1;
         assert!(
             (41..=50).contains(&offset),
@@ -4705,13 +4714,31 @@ mod tests {
         for key in ["Accept", "X-Debug"] {
             e.headers.insert(key.into(), Entry { value: "1".into(), enabled: true });
         }
-        e.restore_caret(&Caret::Cell { row: 2, key: Some("Accept-copy".into()) });
+        e.restore_caret(&Caret::Cell { row: 2, key: Some("Accept-copy".into()) }, None);
         assert_eq!(
             e.table.selected(),
             Some(Stop::Row(1)),
             "a vanished key falls back to the last real row, not the ghost row at index {}",
             e.headers.len()
         );
+    }
+
+    /// A row cursor left past the rows (no key) clamps the same way: only
+    /// a cursor on `+ Add` itself comes back on `+ Add` (task #121).
+    #[test]
+    fn a_restored_row_cursor_past_the_rows_clamps_to_the_last_real_row() {
+        let mut e = Editor {
+            active_tab: EditorTab::Headers,
+            sub_focus: SubFocus::Content,
+            ..Editor::default()
+        };
+        for key in ["Accept", "X-Debug"] {
+            e.headers.insert(key.into(), Entry { value: "1".into(), enabled: true });
+        }
+        e.restore_caret(&Caret::Cell { row: 3, key: None }, None);
+        assert_eq!(e.table.selected(), Some(Stop::Row(1)));
+        e.restore_caret(&Caret::Add, None);
+        assert_eq!(e.table.selected(), Some(Stop::Add));
     }
 
     /// The same fallback on an empty table has only the ghost row to sit on.
@@ -4722,7 +4749,7 @@ mod tests {
             sub_focus: SubFocus::Content,
             ..Editor::default()
         };
-        e.restore_caret(&Caret::Cell { row: 3, key: Some("Accept".into()) });
+        e.restore_caret(&Caret::Cell { row: 3, key: Some("Accept".into()) }, None);
         assert_eq!(e.table.selected(), Some(Stop::Add));
     }
 
@@ -4741,7 +4768,7 @@ mod tests {
         let caret = e.caret();
         assert_eq!(caret, Caret::Section { index: 1, name: None }, "Headers: by place");
         e.table.set_selected(None);
-        e.restore_caret(&caret);
+        e.restore_caret(&caret, None);
         assert_eq!(e.table.selected(), Some(Stop::Section(1)));
     }
 
@@ -4760,7 +4787,7 @@ mod tests {
         let caret = e.caret();
         assert_eq!(caret, Caret::Section { index: 1, name: Some("token".into()) });
         e.url = LineInput::new("https://x/{{token}}");
-        e.restore_caret(&caret);
+        e.restore_caret(&caret, None);
         assert_eq!(e.table.selected(), Some(Stop::Section(0)), "`token` is row 0 now");
     }
 
@@ -4830,7 +4857,7 @@ mod tests {
         let text: String = (0..100).map(|i| format!("\"l{i}\": {i},\n")).collect();
         let mut e = body_editor(&text);
         e.last_body_area = None;
-        e.restore_caret(&Caret::Body { row: 50, col: 0 });
+        e.restore_caret(&Caret::Body { row: 50, col: 0 }, None);
         assert_eq!(e.body.viewport_offset().1, 50, "unknown height: top-align the restored row");
     }
 
