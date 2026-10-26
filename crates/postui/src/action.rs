@@ -869,12 +869,13 @@ pub enum Action {
     /// cursor: arrows' `n` and `N` (piece 4 spec §4.5; plan M5a Deviation
     /// 10), as the ▼/▲ buttons do.
     StepResponseSearch(i8),
-    /// Copies the header under the focused cursor, a Headers-tab row (main
-    /// or auto) or a response header line: its value (arrows' `y` on the
-    /// response) or, `whole`, `Name: value` (arrows' `Y`, vim's `"+yy`;
-    /// spec 2026-10-26 H2, H4, H8). Where the cursor is on no header, the
-    /// note [`NO_HEADER_TO_COPY`].
-    CopyHeader {
+    /// Copies the row under the focused cursor to the clipboard: a table
+    /// row (an auto row too) or a response header line. Its value (arrows'
+    /// `y` on the response; every row's footer `copy` chip) or, `whole`, a
+    /// header's `Name: value` (arrows' `Y`, vim's `"+yy`; spec 2026-10-26
+    /// H2, H4, H5, H8). Where the cursor is on nothing to copy, the note
+    /// [`NO_HEADER_TO_COPY`].
+    CopyRow {
         whole: bool,
     },
     /// Click on a JSON-tree body row: moves the cursor there, and — when

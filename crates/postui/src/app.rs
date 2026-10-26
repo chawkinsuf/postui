@@ -3828,19 +3828,27 @@ impl App {
             Action::StepResponseSearch(delta) => self.with_response_search(|response, memory| {
                 response.step_search(delta.into(), memory)
             }),
-            // The header under the focused cursor; the one place that says
+            // The row under the focused cursor; the one place that says
             // there is none, so the key is never dead (spec 2026-10-26 H2,
-            // H4, H8).
-            Action::CopyHeader { whole } => {
+            // H4, H8). The response's body views are the exception: there
+            // `y` is a reflex that would toast on every press, so it stays
+            // silent, as it was before the keys moved to `y`.
+            Action::CopyRow { whole } => {
+                use crate::components::response::ViewMode;
                 let target = match self.focus {
-                    PaneId::Response => self.session.response.copyable_header_row().map(|row| {
-                        if whole {
-                            CopyTarget::ResponseHeaderLine(row)
-                        } else {
-                            CopyTarget::ResponseHeader(row)
+                    PaneId::Response => {
+                        if self.session.response.view().map(|v| v.mode) != Some(ViewMode::Headers) {
+                            return false;
                         }
-                    }),
-                    PaneId::Editor => self.editor.header_copy_target(whole),
+                        self.session.response.copyable_header_row().map(|row| {
+                            if whole {
+                                CopyTarget::ResponseHeaderLine(row)
+                            } else {
+                                CopyTarget::ResponseHeader(row)
+                            }
+                        })
+                    }
+                    PaneId::Editor => self.editor.row_copy_target(whole),
                     _ => None,
                 };
                 match target {
@@ -9932,18 +9940,10 @@ impl App {
     /// where the pointer was. The response pane is read-only: Copy only.
     /// Must run *before* the click-away commits, since a commit ends the
     /// edit whose selection Copy would read.
-    fn text_surface_menu(
-        &mut self,
-        hit: &Hit,
-        x: u16,
-        y: u16,
-    ) -> Option<Vec<crate::components::modal::MenuItem>> {
+    fn text_surface_menu(&mut self, hit: &Hit) -> Option<Vec<crate::components::modal::MenuItem>> {
         use crate::action::TextSurface;
         use crate::components::modal::MenuItem;
         let mut jq_row = None;
-        // A header line of the response's Headers view under the pointer:
-        // the menu copies that whole header (spec 2026-10-26 H6).
-        let header_line = self.session.response.view().and_then(|v| v.header_line_at(x, y));
         let (surface, editable) = match hit {
             Hit::UrlBar => {
                 self.update(Action::FocusUrl);
@@ -9960,11 +9960,7 @@ impl App {
             // as the split handle (and its control band) over the pane's
             // hit, and its facts and blank cells opened this menu before it
             // was a handle.
-            // A header row's copy pill is that row's too (spec 2026-10-26 H6).
-            Hit::Pane(PaneId::Response)
-            | Hit::SplitHandle
-            | Hit::StripControls
-            | Hit::HeaderCopy(_)
+            Hit::Pane(PaneId::Response) | Hit::SplitHandle | Hit::StripControls
                 if self.session.response.view().is_some() =>
             {
                 (TextSurface::Response, false)
@@ -10037,14 +10033,6 @@ impl App {
             MenuItem::disabled("Copy")
         };
         let mut items = vec![copy];
-        if surface == TextSurface::Response
-            && let Some(line) = header_line
-        {
-            items.push(MenuItem::new(
-                "Copy header",
-                Action::CopyToClipboard(CopyTarget::ResponseHeaderLine(line)),
-            ));
-        }
         if editable {
             items.push(MenuItem::new("Paste", Action::Paste));
         }
@@ -10220,14 +10208,6 @@ impl App {
             // the row was clicked (see `handle_mouse`), so `i` is a live
             // index into the active tab's map here.
             Hit::TableRow(i) => return self.table_row_context_menu(*i),
-            // An auto row's own menu: its whole header (spec 2026-10-26
-            // H6); its pill copies the value.
-            Hit::AutoHeaderRow(j) => {
-                return Some(vec![MenuItem::new(
-                    "Copy header",
-                    Action::CopyToClipboard(CopyTarget::ComputedHeaderLine(*j)),
-                )]);
-            }
             _ => return None,
         };
         // One "Move to space…" row opening the chooser of the other
@@ -10322,24 +10302,12 @@ impl App {
         if i >= map.len() {
             return None;
         }
-        let mut items = vec![
+        Some(vec![
             MenuItem::new("Duplicate row", Action::DuplicateTableRow(i)),
             MenuItem::new(format!("Delete {noun}"), Action::DeleteTableRow(i)),
             MenuItem::new("Extract value to variable…", Action::ExtractToVariable),
             MenuItem::new("Extract value to selector…", Action::ExtractToSelector),
-        ];
-        // A header's `Name: value`; its pill copies the value (spec
-        // 2026-10-26 H6).
-        if self.editor.active_tab == EditorTab::Headers {
-            items.insert(
-                0,
-                MenuItem::new(
-                    "Copy header",
-                    Action::CopyToClipboard(CopyTarget::TableHeaderLine(i)),
-                ),
-            );
-        }
-        Some(items)
+        ])
     }
 
     /// Whether leaving the editor's current content behind would lose

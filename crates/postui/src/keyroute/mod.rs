@@ -1414,7 +1414,7 @@ mod tests {
     #[test]
     fn the_response_header_copy_keys() {
         use crate::components::response::ViewMode;
-        let copy = |whole| run(vec![Step::Action(Action::CopyHeader { whole })]);
+        let copy = |whole| run(vec![Step::Action(Action::CopyRow { whole })]);
         let arrows = cx(Arrows, Surface::Response(ViewMode::Headers));
         assert_eq!(feed(&mut Router::default(), &arrows, "y"), copy(false));
         assert_eq!(feed(&mut Router::default(), &arrows, "Y"), copy(true));
@@ -1432,7 +1432,7 @@ mod tests {
         use crate::action::Verb;
         use crate::components::editor::EditorTab;
         let note = |t: &str| run(vec![Step::Action(Action::ShowToast(t.into(), ToastKind::Info))]);
-        let whole = || run(vec![Step::Action(Action::CopyHeader { whole: true })]);
+        let whole = || run(vec![Step::Action(Action::CopyRow { whole: true })]);
         let arrows = cx(Arrows, Surface::Table(EditorTab::Headers));
         assert_eq!(feed(&mut Router::default(), &arrows, "Y"), whole());
         assert_eq!(feed(&mut Router::default(), &arrows, "y"), run(vec![sel(Verb::Yank)]));

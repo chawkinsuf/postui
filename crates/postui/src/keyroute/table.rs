@@ -431,11 +431,11 @@ fn prev_match() -> Action {
 }
 
 fn copy_header_value() -> Action {
-    Action::CopyHeader { whole: false }
+    Action::CopyRow { whole: false }
 }
 
 fn copy_header_whole() -> Action {
-    Action::CopyHeader { whole: true }
+    Action::CopyRow { whole: true }
 }
 
 /// A `ctrl+w` sizing key's step: no count is one, and a count too big for

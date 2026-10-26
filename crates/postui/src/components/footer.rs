@@ -207,23 +207,29 @@ pub(crate) fn footer_chips(
             // value's and the whole header's (`y/Y`, vim's `yy/"+yy`; spec
             // 2026-10-26 H5).
             let header_copy_key =
-                || Key::Pair(Action::OnSelection(Verb::Yank), Action::CopyHeader { whole: true });
+                || Key::Pair(Action::OnSelection(Verb::Yank), Action::CopyRow { whole: true });
+            // Every copy chip's click is its row's pill: the value to the
+            // clipboard, in both profiles (the user, 2026-10-26, Q1), so a
+            // "copy" button always copies. Its keycap still names the keys,
+            // so in vim the click is the pill's copy while `yy` fills the
+            // register for `p`. The action names its row, as the delete
+            // chip's does: a chip click is a click away, which drops the
+            // table's cursor before the action runs.
+            let copy_value = |target| Some(Action::CopyToClipboard(target));
             match table_row_selected {
                 Some(TableCursor::Row { index: i, enabled, headers }) => {
                     // Keyboard twins of the expanded row's copy pill, ●
                     // toggle and 󰆴 delete buttons; the ␣ keycap keeps the
-                    // row narrow. The copy chip runs the yank key it shows
-                    // first: in arrows that copies as the pill does (H1); in
-                    // vim it is `yy`, the row register for `p`, silent as
-                    // every yank is (piece 4 spec §5.1). A chip whose click
-                    // did something its keycap doesn't would be the wrong
-                    // way round; the pill is the mouse's clipboard copy.
+                    // row narrow.
                     let copy_key = if headers {
                         header_copy_key()
                     } else {
                         Key::Of(Action::OnSelection(Verb::Yank))
                     };
-                    chips.insert(pos, (copy_key, "copy", Some(Action::YankTableRow(i))));
+                    chips.insert(
+                        pos,
+                        (copy_key, "copy", copy_value(crate::action::CopyTarget::TableRow(i))),
+                    );
                     let toggle_label = if enabled { "disable" } else { "enable" };
                     chips.insert(
                         pos + 1,
@@ -246,9 +252,7 @@ pub(crate) fn footer_chips(
                         (
                             header_copy_key(),
                             "copy",
-                            Some(Action::CopyToClipboard(
-                                crate::action::CopyTarget::ComputedHeader(i),
-                            )),
+                            copy_value(crate::action::CopyTarget::ComputedHeader(i)),
                         ),
                     );
                     if pencil {
@@ -364,7 +368,7 @@ pub(crate) fn footer_chips(
                 // only: vim's `yy` there is the engine's line yank, so
                 // the pair has no first key and the chip drops.
                 if table_row_selected == Some(TableCursor::ResponseHeader) {
-                    let copy = |whole| Action::CopyHeader { whole };
+                    let copy = |whole| Action::CopyRow { whole };
                     chips.push((Key::Pair(copy(false), copy(true)), "copy", Some(copy(false))));
                 }
                 chips

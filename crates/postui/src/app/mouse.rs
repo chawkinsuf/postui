@@ -74,6 +74,15 @@ fn is_quit_chip(hit: &Hit) -> bool {
     )
 }
 
+/// A copy pill's shift+click copies the whole header, `Name: value`, not
+/// its value (spec 2026-10-26 H6). Only where the terminal passes it on:
+/// most keep shift+click for their own text selection, and postui never
+/// asks for it (that would take shift+drag selection away), so there a
+/// shift+click selects text as it always has.
+fn shift_click(m: &ratatui::crossterm::event::MouseEvent) -> bool {
+    m.modifiers.contains(ratatui::crossterm::event::KeyModifiers::SHIFT)
+}
+
 /// The hit a text field is drawn under: the one map between the two.
 fn field_hit(field: FieldId) -> Option<Hit> {
     Some(match field {
@@ -520,7 +529,7 @@ impl App {
                 // click-away commits below (which would end the edit whose
                 // selection Copy reads). Any other part of a row falls
                 // through to the row menu exactly as before.
-                if let Some(items) = self.text_surface_menu(&hit, m.column, m.row) {
+                if let Some(items) = self.text_surface_menu(&hit) {
                     return self.open_context_menu(m.column, m.row, items) || changed;
                 }
                 // A right click is a click away from whatever detail-pane
@@ -599,19 +608,6 @@ impl App {
                             // menu.
                             None => return self.update(Action::Render) || changed,
                         }
-                    }
-                    // An auto row, its pills included, is a table stop too
-                    // (task #56): the click commits an open cell and lands
-                    // the cursor on it before its menu opens, as a row's
-                    // does (spec 2026-10-26 H6).
-                    Hit::AutoHeaderRow(j) | Hit::AutoHeaderCopy(j) | Hit::AutoHeaderOverride(j) => {
-                        let j = *j;
-                        self.commit_table_edit();
-                        changed |= self.update(Action::FocusPane(PaneId::Editor));
-                        self.move_editor_caret(SubFocus::Content);
-                        changed |= self.editor.table.selected() != Some(Stop::Section(j));
-                        self.editor.table.set_selected(Some(Stop::Section(j)));
-                        menu_hit = Hit::AutoHeaderRow(j);
                     }
                     _ => {}
                 }
@@ -1824,7 +1820,12 @@ impl App {
                 let Some(i) = self.resolve_table_row_across_commit(i) else {
                     return self.update(Action::Render);
                 };
-                self.update(Action::CopyToClipboard(CopyTarget::TableRow(i)))
+                let target = if shift_click(&m) && self.editor.active_tab == EditorTab::Headers {
+                    CopyTarget::TableHeaderLine(i)
+                } else {
+                    CopyTarget::TableRow(i)
+                };
+                self.update(Action::CopyToClipboard(target))
             }
             Hit::TableDelete(i) => {
                 self.update(Action::FocusPane(PaneId::Editor));
@@ -2291,12 +2292,16 @@ impl App {
                 self.session.response.set_jq_focus(true);
                 self.update(Action::Render)
             }
-            Hit::HeaderCopy(i) => {
-                self.update(Action::CopyToClipboard(CopyTarget::ResponseHeader(i)))
-            }
-            Hit::AutoHeaderCopy(i) => {
-                self.update(Action::CopyToClipboard(CopyTarget::ComputedHeader(i)))
-            }
+            Hit::HeaderCopy(i) => self.update(Action::CopyToClipboard(if shift_click(&m) {
+                CopyTarget::ResponseHeaderLine(i)
+            } else {
+                CopyTarget::ResponseHeader(i)
+            })),
+            Hit::AutoHeaderCopy(i) => self.update(Action::CopyToClipboard(if shift_click(&m) {
+                CopyTarget::ComputedHeaderLine(i)
+            } else {
+                CopyTarget::ComputedHeader(i)
+            })),
             Hit::AutoHeaderOverride(i) => self.update(Action::OverrideAutoHeader(i)),
             Hit::AutoHeaderReveal => self.update(Action::ToggleHeaderReveal),
             Hit::ScrollbarThumb(pane) => {

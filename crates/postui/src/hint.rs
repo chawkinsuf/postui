@@ -236,15 +236,15 @@ fn fallback_description(action: &Action) -> Option<String> {
         Action::CloseField => "Close the field, keeping what you typed".to_string(),
         Action::FocusUrl => "Edit the URL".to_string(),
         Action::DeleteTableRow(_) => "Delete this row".to_string(),
-        // An auto row's keys (task #56) say what its pills say. A header's
-        // copy chip's second key (`Y`, the whole header) is on its keycap
-        // (spec 2026-10-26 H5); the pill shares this wording.
-        Action::CopyToClipboard(CopyTarget::ComputedHeader(_))
-        | Action::CopyHeader { whole: false } => "Copy this header's value".to_string(),
-        // The yank key's chip (spec 2026-10-26 H1, H7): `p` pastes the row
-        // in both profiles; arrows' `y` also puts its value on the
-        // clipboard, vim's `yy` doesn't.
-        Action::YankTableRow(_) => "Copy this row for p to paste".to_string(),
+        // An auto row's pill (task #56).
+        Action::CopyToClipboard(CopyTarget::ComputedHeader(_)) => {
+            "Copy this header's value".to_string()
+        }
+        // The copy chips: the value, as the pills copy, in both profiles
+        // (spec 2026-10-26 H5); a header's whole-header key is on the
+        // keycap (`Y`).
+        Action::CopyToClipboard(CopyTarget::TableRow(_)) => "Copy this row's value".to_string(),
+        Action::CopyRow { whole: false } => "Copy this header's value".to_string(),
         Action::OverrideAutoHeader(_) => "Edit this header in the request".to_string(),
         Action::ToggleVarReveal => "Reveal or hide the secret value".to_string(),
         // Closing switches the filter off — when there is one: an empty

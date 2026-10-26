@@ -15796,81 +15796,88 @@ fn vim_quote_plus_yy_copies_a_response_header_line() {
     assert_eq!(last_copied(&app).as_deref(), Some("authorization: Bearer s3cret"));
 }
 
-/// H6: the right-click menus offer `Copy header`: a main header row's, an
-/// auto row's (a menu of its own now), and the response's on a header line.
-#[test]
-fn the_right_click_menus_offer_copy_header() {
-    let menu_labels = |app: &App| -> Vec<String> {
-        match app.modals.top() {
-            Some(Modal::Dropdown(d)) => d.items.iter().map(|i| i.label.to_string()).collect(),
-            _ => Vec::new(),
-        }
-    };
-    let mut app = main_header_app(crate::config::KeyProfile::Arrows);
-    let row = app.hits.rect_of(&Hit::TableRow(0)).expect("the main row");
-    app.handle_mouse(right_down(row.x + 1, row.y));
-    assert!(menu_labels(&app).iter().any(|l| l == "Copy header"), "{:?}", menu_labels(&app));
-    app.update(Action::Close);
-    render_once(&mut app);
-    let auto = app.hits.rect_of(&Hit::AutoHeaderRow(0)).expect("the Accept row");
-    app.handle_mouse(right_down(auto.x + 1, auto.y));
-    assert!(menu_labels(&app).iter().any(|l| l == "Copy header"), "{:?}", menu_labels(&app));
+/// A left press at a hit's cell, `shift` held or not.
+fn click_pill(app: &mut App, hit: Hit, shift: bool) {
+    let r = app.hits.rect_of(&hit).unwrap_or_else(|| panic!("{hit:?} is drawn"));
+    let mut m = left_down(r.x, r.y);
+    if shift {
+        m.modifiers = KeyModifiers::SHIFT;
+    }
+    app.handle_mouse(m);
+}
 
+/// H6: a copy pill's click copies the value; its shift+click, where the
+/// terminal passes one on, the whole header: a main row, an auto row and
+/// a response header.
+#[test]
+fn a_copy_pills_shift_click_copies_the_whole_header() {
+    let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+    for (hit, value, whole) in
+        [(Hit::TableCopy(0), "a", "X-One: a"), (Hit::AutoHeaderCopy(0), "*/*", "Accept: */*")]
+    {
+        render_once(&mut app);
+        click_pill(&mut app, hit.clone(), false);
+        assert_eq!(last_copied(&app).as_deref(), Some(value), "{hit:?}");
+        render_once(&mut app);
+        click_pill(&mut app, hit.clone(), true);
+        assert_eq!(last_copied(&app).as_deref(), Some(whole), "{hit:?} shift");
+    }
     let mut app = response_headers_app(crate::config::KeyProfile::Arrows);
-    let pane = app.session.response.view().unwrap().last_area.unwrap();
-    app.handle_mouse(right_down(pane.x + 1, pane.y));
-    assert!(menu_labels(&app).iter().any(|l| l == "Copy header"), "{:?}", menu_labels(&app));
-    let items = match app.modals.top() {
-        Some(Modal::Dropdown(d)) => d.items.clone(),
-        _ => unreachable!(),
-    };
-    let copy = items.into_iter().find(|i| i.label == "Copy header").unwrap();
-    app.update(copy.action.unwrap());
+    click_pill(&mut app, Hit::HeaderCopy(0), true);
     assert_eq!(last_copied(&app).as_deref(), Some("content-type: application/json"));
 }
 
-/// H6: a right click on an auto row, its pills included, is a click on a
-/// table stop: an open cell commits and the cursor lands on the row before
-/// its menu opens.
+/// H6: a Params row's pill has no whole header to copy: shift or not, the
+/// value.
 #[test]
-fn a_right_click_on_an_auto_row_commits_and_lands_the_cursor() {
-    for pill in [false, true] {
-        let mut app = main_header_app(crate::config::KeyProfile::Arrows);
-        click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
-        type_chars(&mut app, "b");
-        assert!(app.editor.table.editing.is_some(), "the cell is open");
+fn a_params_pills_shift_click_copies_its_value() {
+    let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+    app.editor
+        .params
+        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
+    app.editor.active_tab = EditorTab::Params;
+    app.editor.table.set_selected(Some(Stop::Row(0)));
+    render_once(&mut app);
+    click_pill(&mut app, Hit::TableCopy(0), true);
+    assert_eq!(last_copied(&app).as_deref(), Some("2"));
+}
+
+/// H5 (the user's Q1): the footer's copy chip copies the row's value to the
+/// clipboard in both profiles, as the pill does, a Params row's too.
+#[test]
+fn the_copy_chip_copies_the_value_in_both_profiles() {
+    use crate::config::KeyProfile::{Arrows, Vim};
+    for profile in [Arrows, Vim] {
+        let chip = Hit::FooterChip(Action::CopyToClipboard(CopyTarget::TableRow(0)));
+        let mut app = main_header_app(profile);
+        click_hit(&mut app, chip.clone());
+        assert_eq!(last_copied(&app).as_deref(), Some("a"), "{profile:?}");
+        app.editor
+            .params
+            .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
+        app.editor.active_tab = EditorTab::Params;
+        app.editor.table.set_selected(Some(Stop::Row(0)));
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Content;
         render_once(&mut app);
-        let hit = if pill { Hit::AutoHeaderCopy(0) } else { Hit::AutoHeaderRow(0) };
-        let r = app.hits.rect_of(&hit).expect("the Accept row");
-        app.handle_mouse(right_down(r.x + 1, r.y));
-        assert!(app.editor.table.editing.is_none(), "pill {pill}: the cell commits");
-        assert_eq!(app.editor.headers["X-One"].value, "ab", "pill {pill}");
-        assert_eq!(app.editor.auto_row_cursor(), Some(0), "pill {pill}: on Accept");
-        assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))), "pill {pill}: the menu");
+        click_hit(&mut app, chip);
+        assert_eq!(last_copied(&app).as_deref(), Some("2"), "{profile:?} params");
     }
 }
 
-/// H6: blank space under the response's headers names no header, so its
-/// right-click menu has no `Copy header`; a header row's copy pill does.
+/// H4: on the response's body views arrows' `y` and `Y` stay silent, as
+/// `y` was before the keys moved to it: no copy, no note.
 #[test]
-fn the_response_menu_copies_only_the_header_under_the_pointer() {
-    let mut app = response_headers_app(crate::config::KeyProfile::Arrows);
-    let pane = app.session.response.view().unwrap().last_area.unwrap();
-    app.handle_mouse(right_down(pane.x + 1, pane.y + pane.height - 1));
-    let labels: Vec<String> = match app.modals.top() {
-        Some(Modal::Dropdown(d)) => d.items.iter().map(|i| i.label.clone()).collect(),
-        _ => Vec::new(),
-    };
-    assert!(!labels.iter().any(|l| l == "Copy header"), "{labels:?}");
-    app.update(Action::Close);
+fn arrows_y_on_the_response_body_is_silent() {
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 65536));
+    ready_response(&mut app, r#"{"a": 1}"#);
+    app.focus = PaneId::Response;
     render_once(&mut app);
-    let pill = app.hits.rect_of(&Hit::HeaderCopy(0)).expect("content-type's pill");
-    app.handle_mouse(right_down(pill.x, pill.y));
-    let labels: Vec<String> = match app.modals.top() {
-        Some(Modal::Dropdown(d)) => d.items.iter().map(|i| i.label.clone()).collect(),
-        _ => Vec::new(),
-    };
-    assert!(labels.iter().any(|l| l == "Copy header"), "{labels:?}");
+    press(&mut app, 'y');
+    press(&mut app, 'Y');
+    assert_eq!(last_copied(&app), None);
+    assert!(!rendered_text(&mut app).contains(crate::action::NO_HEADER_TO_COPY));
 }
 
 /// S3 and S4 (task #56): on a pane too short for its rows, the wheel and

@@ -3299,12 +3299,14 @@ impl Editor {
         }
     }
 
-    /// What `Action::CopyHeader` copies here: the Headers-tab row under the
-    /// cursor, main or auto, its value or (`whole`) `Name: value` (spec
-    /// 2026-10-26 H2). `None` off a header.
-    pub fn header_copy_target(&self, whole: bool) -> Option<crate::action::CopyTarget> {
+    /// What `Action::CopyRow` copies here: the row under the cursor, its
+    /// value on any table, or (`whole`) a Headers-tab row's `Name: value`,
+    /// main or auto (spec 2026-10-26 H2, H5). `None` off a row, and for a
+    /// whole copy off the Headers tab.
+    pub fn row_copy_target(&self, whole: bool) -> Option<crate::action::CopyTarget> {
         use crate::action::CopyTarget;
-        if self.active_tab != EditorTab::Headers {
+        let headers = self.active_tab == EditorTab::Headers;
+        if whole && !headers {
             return None;
         }
         Some(match self.table.selected()? {
@@ -4205,10 +4207,9 @@ impl Editor {
     /// request row may take over a `󰏫` after it (`Hit::AutoHeaderOverride`,
     /// task #20); the divider
     /// carries a `👁 reveal`/`hide` toggle (`Hit::AutoHeaderReveal`)
-    /// whenever a row has a secret to reveal. Under them, every row is a
-    /// surface (`Hit::AutoHeaderRow`): a client-owned row's hover lets the
-    /// footer say why it isn't sent, and any row's right click opens its
-    /// `Copy header` menu (spec 2026-10-26 H6).
+    /// whenever a row has a secret to reveal. Under them, a client-owned
+    /// row is a surface (`Hit::AutoHeaderRow`) whose hover lets the footer
+    /// say why it isn't sent.
     ///
     /// `skip` is how many of the section's lines (the divider first) sit
     /// above the view (task #56), and `cursor` the row under the focused
@@ -4348,11 +4349,11 @@ impl Editor {
             let line = Line::from(spans);
             let row_rect = Rect::new(area.x, y, area.width, 1);
             frame.render_widget(Paragraph::new(line), row_rect);
-            // Every row is a surface for its right-click menu. Only a
-            // client-owned row has something for the footer to say on
-            // hover (`client_owned_message`); a click on any row does what one on
-            // the bare pane under it did.
-            hits.register(row_rect, crate::hit::Hit::AutoHeaderRow(i));
+            // Only a client-owned row has something for the footer to say;
+            // every other row stays the bare pane, hover and all.
+            if client_owned {
+                hits.register(row_rect, crate::hit::Hit::AutoHeaderRow(i));
+            }
             // The tokens all lie in the value, so clipping them to the
             // whole row keeps them off the name. A struck (unsent) row's
             // tokens are tinted too, as a disabled table row's are: the
@@ -7376,10 +7377,7 @@ url = "https://api.example.com/users""#,
         assert_eq!(row.y, vy, "on the default's own row");
         let accept = app.editor.computed.rows.iter().position(|r| r.header.name == "Accept");
         let accept = Hit::AutoHeaderRow(accept.expect("the client's Accept row"));
-        // Every row is a surface now, for its right-click menu (spec
-        // 2026-10-26 H6), but an ordinary row's hover says nothing.
-        assert!(app.hits.rect_of(&accept).is_some(), "an ordinary row is a surface too");
-        assert!(app.editor.client_owned_message(Some(&accept), false).is_empty());
+        assert_eq!(app.hits.rect_of(&accept), None, "an ordinary row stays the bare pane");
         app.hovered = Some(hit);
         let (terminal, content) = draw_wide(&mut app);
         let (mx, my) = find_text(terminal.backend().buffer(), "Host cannot be set manually")
