@@ -431,11 +431,11 @@ fn prev_match() -> Action {
 }
 
 fn copy_header_value() -> Action {
-    Action::CopyResponseHeader { whole: false }
+    Action::CopyHeader { whole: false }
 }
 
 fn copy_header_whole() -> Action {
-    Action::CopyResponseHeader { whole: true }
+    Action::CopyHeader { whole: true }
 }
 
 /// A `ctrl+w` sizing key's step: no count is one, and a count too big for
@@ -833,9 +833,10 @@ pub static TABLE: &[Binding] = &[
     ),
     arrows("y", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Yank)),
     arrows("c", Surfaces::VAR_GRID, Intent::Verb(Verb::Yank)),
-    arrows("Y", Surfaces::TABLE, Intent::Verb(Verb::CopyHeader)),
-    row("\"+yy", Surfaces::TABLE, Intent::Verb(Verb::CopyHeader), CountRule::Ignore),
-    row("\"+Y", Surfaces::TABLE, Intent::Verb(Verb::CopyHeader), CountRule::Ignore),
+    // Spec 2026-10-26 H2, H8: a header row's `Name: value`.
+    arrows("Y", Surfaces::TABLE, Intent::Act(copy_header_whole)),
+    row("\"+yy", Surfaces::TABLE, Intent::Act(copy_header_whole), CountRule::Ignore),
+    row("\"+Y", Surfaces::TABLE, Intent::Act(copy_header_whole), CountRule::Ignore),
     row("p", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Put { above: false, count: 1 }), CountRule::Pass),
     row("P", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Put { above: true, count: 1 }), CountRule::Pass),
     arrows("p", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Put { above: false, count: 1 })),

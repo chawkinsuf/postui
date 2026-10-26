@@ -73,6 +73,24 @@ pub enum CopyTarget {
     TableHeaderLine(usize),
 }
 
+impl CopyTarget {
+    /// Whether this copies a whole header, `Name: value`, rather than a
+    /// value or a text. No wildcard: a new target says which it is.
+    pub fn whole_header(&self) -> bool {
+        match self {
+            CopyTarget::ResponseHeaderLine(_)
+            | CopyTarget::ComputedHeaderLine(_)
+            | CopyTarget::TableHeaderLine(_) => true,
+            CopyTarget::ResponseBody
+            | CopyTarget::ResponseView
+            | CopyTarget::ResponseHeader(_)
+            | CopyTarget::Url
+            | CopyTarget::ComputedHeader(_)
+            | CopyTarget::TableRow(_) => false,
+        }
+    }
+}
+
 /// The note a header copy key gives where the cursor is on no header, so
 /// the key is never dead (spec 2026-10-26 H2, H4, H8).
 pub const NO_HEADER_TO_COPY: &str = "No header to copy here";
@@ -851,10 +869,12 @@ pub enum Action {
     /// cursor: arrows' `n` and `N` (piece 4 spec §4.5; plan M5a Deviation
     /// 10), as the ▼/▲ buttons do.
     StepResponseSearch(i8),
-    /// The response's Headers view: copies the header under the cursor,
-    /// its value (arrows' `y`) or, `whole`, `Name: value` (arrows' `Y`,
-    /// vim's `"+yy`; spec 2026-10-26 H4, H8). Nothing on any other row.
-    CopyResponseHeader {
+    /// Copies the header under the focused cursor, a Headers-tab row (main
+    /// or auto) or a response header line: its value (arrows' `y` on the
+    /// response) or, `whole`, `Name: value` (arrows' `Y`, vim's `"+yy`;
+    /// spec 2026-10-26 H2, H4, H8). Where the cursor is on no header, the
+    /// note [`NO_HEADER_TO_COPY`].
+    CopyHeader {
         whole: bool,
     },
     /// Click on a JSON-tree body row: moves the cursor there, and — when
@@ -1469,9 +1489,6 @@ pub enum Verb {
     },
     /// `yy` / `y`: into the row register (the grid: its option stash).
     Yank,
-    /// Arrows' `Y`, vim's `"+yy` / `"+Y`: a header row's `Name: value` to
-    /// the clipboard (spec 2026-10-26 H2, H8).
-    CopyHeader,
     /// `p` / `P`: a copy of the register below, or `above`, the cursor;
     /// `{N}p` puts N copies as one undo step, as vim's `3p` does.
     Put {
@@ -1495,14 +1512,13 @@ pub enum Verb {
 impl Verb {
     /// Every verb, once (a count does not change what a verb reaches): the
     /// reachability test and the `:` line's scope walk it.
-    pub const ALL: [Verb; 15] = [
+    pub const ALL: [Verb; 14] = [
         Verb::Add,
         Verb::AddAlt,
         Verb::Rename,
         Verb::Move,
         Verb::Delete { count: 1 },
         Verb::Yank,
-        Verb::CopyHeader,
         Verb::Put { above: false, count: 1 },
         Verb::EditValue,
         Verb::Promote,
@@ -1546,15 +1562,14 @@ mod tests {
                 Verb::Move => 3,
                 Verb::Delete { .. } => 4,
                 Verb::Yank => 5,
-                Verb::CopyHeader => 6,
-                Verb::Put { .. } => 7,
-                Verb::EditValue => 8,
-                Verb::Promote => 9,
-                Verb::Fields => 10,
-                Verb::Secret => 11,
-                Verb::ClearValue => 12,
-                Verb::Reveal => 13,
-                Verb::Tls => 14,
+                Verb::Put { .. } => 6,
+                Verb::EditValue => 7,
+                Verb::Promote => 8,
+                Verb::Fields => 9,
+                Verb::Secret => 10,
+                Verb::ClearValue => 11,
+                Verb::Reveal => 12,
+                Verb::Tls => 13,
             }
         }
         for (i, v) in Verb::ALL.into_iter().enumerate() {

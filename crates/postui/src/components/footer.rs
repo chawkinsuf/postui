@@ -206,9 +206,8 @@ pub(crate) fn footer_chips(
             // One copy chip on a header row, its keycap both keys: the
             // value's and the whole header's (`y/Y`, vim's `yy/"+yy`; spec
             // 2026-10-26 H5).
-            let header_copy_key = || {
-                Key::Pair(Action::OnSelection(Verb::Yank), Action::OnSelection(Verb::CopyHeader))
-            };
+            let header_copy_key =
+                || Key::Pair(Action::OnSelection(Verb::Yank), Action::CopyHeader { whole: true });
             match table_row_selected {
                 Some(TableCursor::Row { index: i, enabled, headers }) => {
                     // Keyboard twins of the expanded row's copy pill, ●
@@ -365,7 +364,7 @@ pub(crate) fn footer_chips(
                 // only: vim's `yy` there is the engine's line yank, so
                 // the pair has no first key and the chip drops.
                 if table_row_selected == Some(TableCursor::ResponseHeader) {
-                    let copy = |whole| Action::CopyResponseHeader { whole };
+                    let copy = |whole| Action::CopyHeader { whole };
                     chips.push((Key::Pair(copy(false), copy(true)), "copy", Some(copy(false))));
                 }
                 chips

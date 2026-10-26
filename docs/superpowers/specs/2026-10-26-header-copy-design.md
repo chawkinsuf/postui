@@ -44,26 +44,34 @@
 - **Actions.** `CopyTarget` gains `ResponseHeaderLine`, `ComputedHeaderLine`
   and `TableHeaderLine` (a Headers-tab main row), the whole-header twins of
   `ResponseHeader`, `ComputedHeader` and `TableRow`. `resolve_copy` builds
-  `Name: value` for them, one helper for all six. `Action::CopyResponseHeader`
-  takes a `whole: bool`.
-- **Verbs.** `Verb::Yank` stays the register yank in both profiles, and one
-  verb is new: `Verb::CopyHeader` (arrows `Y`, vim `"+yy`/`"+Y`), which
-  `Editor::table_verb_action` resolves on a Headers-tab row, main or auto.
-  Arrows' clipboard half of `y` (H1) is one profile check in `App`'s
+  `Name: value` for them, one helper for all six, which asks
+  `CopyTarget::whole_header` (an exhaustive match).
+- **One copy action.** `Action::CopyResponseHeader` becomes
+  `Action::CopyHeader { whole }`, for the table and the response alike
+  (arrows `y` on the response, arrows `Y` and vim `"+yy`/`"+Y` on both).
+  `App` resolves it against the focused pane, through
+  `Editor::header_copy_target` or the response's `copyable_header_row`,
+  and is the one place that gives the "No header to copy here" note.
+  *Amended at review round 2:* a `Verb::CopyHeader` list verb first did
+  the table's half; it resolved to a note off a header, which broke
+  `selection_action`'s "None means no meaning here", and put the note in
+  two places.
+- **Yank.** `Verb::Yank` stays the register yank in both profiles. Arrows'
+  clipboard half of `y` (H1) is one profile check in `App`'s
   `YankTableRow` arm: in arrows it copies the value after filling the
   register. A separate arrows-only copy verb was rejected: the
   reachability test wants every verb that resolves on a surface to have a
   vim key, and vim has none for it.
 - **Router.** `best` used to return a complete `<any>` row before a longer
   exact row that extends the keys, so `"+` hit the `"<any>` note. A longer
-  exact row now wins, so `"+` waits for `yy`/`Y`. A new `"+<any>` row, on
-  the table and the response only (where `"+yy` exists), keeps the note
-  for anything else.
-- **Footer.** A header row's chip is `Key::Pair(yank, copy-header)`, spelled
+  exact row now wins, so `"+` waits for `yy`/`Y`. New `"+<any>` and
+  `"+y<any>` rows, on the table and the response only (where `"+yy`
+  exists), keep the note for anything else.
+- **Footer.** A header row's chip is `Key::Pair(yank, CopyHeader{whole})`, spelled
   `y/Y` in arrows and `yy/"+yy` in vim; its click runs the yank key
   (`YankTableRow`), or the value copy on an auto row. A Params or Vars row's
   chip is the yank key alone. The response chip is `Key::Pair` of the two
-  `CopyResponseHeader` actions. `TableCursor` gains `headers` on `Row` and a
+  `CopyHeader` actions. `TableCursor` gains `headers` on `Row` and a
   `ResponseHeader` variant for the response's cursor.
 - **Menus.** `table_row_context_menu` puts `Copy header` first on the
   Headers tab. `context_menu_for` gives `Hit::AutoHeaderRow` a menu, and
@@ -76,7 +84,7 @@
 - H1: arrows `y` on a main header row fills the register and copies the
   value (test clipboard sink); vim `yy` fills the register and doesn't copy.
 - H2/H3: `Y` on main and auto rows copies `Name: value` with the real
-  value of a masked secret; `Y` on a Params row does nothing.
+  value of a masked secret; `Y` on a Params row gives the note.
 - H4: arrows `y`/`Y` on a response header row (received and sent); `c`
   does nothing.
 - H5: footer chips per surface and profile; never two copy chips.
@@ -88,8 +96,10 @@
 ## Choices (`mine (approved)`, user 2026-10-26: "Good")
 
 - H1 also applies to Params and Vars, so `y` means the same on every table.
-- H2: `Y` on Params and Vars does nothing, rather than copying `name=value`.
+- H2: `Y` on Params and Vars doesn't copy `name=value`; it gives the note
+  (amended at review round 1, mine).
 - H3: the toast wording `Copied <Name> header`.
-- H8: `"+yy` only on header rows for now. On body lines it keeps the
-  note, rather than becoming Vim's line copy, which would be a separate task.
+- H8: `"+yy` copies only header rows for now. On body lines it gives "No
+  header to copy here" (H4; amended at review round 1, mine), rather than
+  becoming Vim's line copy, which would be a separate task.
 - H9: the auto row's vim `yy` stays a deviation from Vim.

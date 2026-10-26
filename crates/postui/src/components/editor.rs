@@ -3268,8 +3268,7 @@ impl Editor {
     /// Body tab takes nothing. A section row past `+ Add` takes add and
     /// put the same way, and an auto row takes yank too: it copies the
     /// row's value, as its copy pill does (spec 2026-10-25 S14). Anything
-    /// else there does nothing (S21). A Headers-tab row, main or auto, takes
-    /// the whole-header copy (spec 2026-10-26 H2).
+    /// else there does nothing (S21).
     pub fn table_verb_action(&self, verb: Verb) -> Option<Action> {
         if self.active_tab == EditorTab::Body {
             return None;
@@ -3287,27 +3286,6 @@ impl Editor {
                 let j = self.auto_row_cursor()?;
                 Some(Action::CopyToClipboard(crate::action::CopyTarget::ComputedHeader(j)))
             }),
-            // A header's `Name: value`: a Headers-tab row, main or auto
-            // (spec 2026-10-26 H2). Anywhere else the key says so.
-            Verb::CopyHeader => {
-                use crate::action::CopyTarget;
-                let target = match (self.active_tab, row) {
-                    (EditorTab::Headers, Some(i)) => Some(CopyTarget::TableHeaderLine(i)),
-                    (EditorTab::Headers, None) => {
-                        self.auto_row_cursor().map(CopyTarget::ComputedHeaderLine)
-                    }
-                    _ => None,
-                };
-                Some(target.map_or_else(
-                    || {
-                        Action::ShowToast(
-                            crate::action::NO_HEADER_TO_COPY.into(),
-                            crate::components::toast::ToastKind::Info,
-                        )
-                    },
-                    Action::CopyToClipboard,
-                ))
-            }
             Verb::Put { above, count } => {
                 // Above or below a row; anywhere past the rows, at their end.
                 let at = match row {
@@ -3319,6 +3297,34 @@ impl Editor {
             }
             _ => None,
         }
+    }
+
+    /// What `Action::CopyHeader` copies here: the Headers-tab row under the
+    /// cursor, main or auto, its value or (`whole`) `Name: value` (spec
+    /// 2026-10-26 H2). `None` off a header.
+    pub fn header_copy_target(&self, whole: bool) -> Option<crate::action::CopyTarget> {
+        use crate::action::CopyTarget;
+        if self.active_tab != EditorTab::Headers {
+            return None;
+        }
+        Some(match self.table.selected()? {
+            Stop::Row(i) if i < self.table_len() => {
+                if whole {
+                    CopyTarget::TableHeaderLine(i)
+                } else {
+                    CopyTarget::TableRow(i)
+                }
+            }
+            Stop::Section(_) => {
+                let j = self.auto_row_cursor()?;
+                if whole {
+                    CopyTarget::ComputedHeaderLine(j)
+                } else {
+                    CopyTarget::ComputedHeader(j)
+                }
+            }
+            Stop::Row(_) | Stop::Add => return None,
+        })
     }
 
     /// Where `key` sits in the active tab's table now. `None` once the row

@@ -240,8 +240,11 @@ fn fallback_description(action: &Action) -> Option<String> {
         // copy chip's second key (`Y`, the whole header) is on its keycap
         // (spec 2026-10-26 H5); the pill shares this wording.
         Action::CopyToClipboard(CopyTarget::ComputedHeader(_))
-        | Action::CopyResponseHeader { whole: false } => "Copy this header's value".to_string(),
-        Action::YankTableRow(_) => "Copy this row".to_string(),
+        | Action::CopyHeader { whole: false } => "Copy this header's value".to_string(),
+        // The yank key's chip (spec 2026-10-26 H1, H7): `p` pastes the row
+        // in both profiles; arrows' `y` also puts its value on the
+        // clipboard, vim's `yy` doesn't.
+        Action::YankTableRow(_) => "Copy this row for p to paste".to_string(),
         Action::OverrideAutoHeader(_) => "Edit this header in the request".to_string(),
         Action::ToggleVarReveal => "Reveal or hide the secret value".to_string(),
         // Closing switches the filter off — when there is one: an empty

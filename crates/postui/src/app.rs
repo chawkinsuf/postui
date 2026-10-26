@@ -3828,14 +3828,23 @@ impl App {
             Action::StepResponseSearch(delta) => self.with_response_search(|response, memory| {
                 response.step_search(delta.into(), memory)
             }),
-            Action::CopyResponseHeader { whole } => {
-                match self.session.response.copyable_header_row() {
-                    Some(row) => self.update(Action::CopyToClipboard(if whole {
-                        CopyTarget::ResponseHeaderLine(row)
-                    } else {
-                        CopyTarget::ResponseHeader(row)
-                    })),
-                    // The key is never dead (spec 2026-10-26 H4, H8).
+            // The header under the focused cursor; the one place that says
+            // there is none, so the key is never dead (spec 2026-10-26 H2,
+            // H4, H8).
+            Action::CopyHeader { whole } => {
+                let target = match self.focus {
+                    PaneId::Response => self.session.response.copyable_header_row().map(|row| {
+                        if whole {
+                            CopyTarget::ResponseHeaderLine(row)
+                        } else {
+                            CopyTarget::ResponseHeader(row)
+                        }
+                    }),
+                    PaneId::Editor => self.editor.header_copy_target(whole),
+                    _ => None,
+                };
+                match target {
+                    Some(target) => self.update(Action::CopyToClipboard(target)),
                     None => {
                         self.toasts.push(crate::action::NO_HEADER_TO_COPY, ToastKind::Info);
                         true
@@ -10779,24 +10788,16 @@ impl App {
     /// on a successful copy. `None` when `target` needs a ready response
     /// and there isn't one (or the header index is out of range).
     fn resolve_copy(&self, target: &CopyTarget) -> Option<(String, String)> {
-        /// A row's copy: its value, or for a `*Line` target the whole
-        /// header, `name: value` (spec 2026-10-26 H3). The toast names the
-        /// row as `shown` on screen, masked or not.
-        fn header_copy(
-            target: &CopyTarget,
-            name: &str,
-            value: &str,
-            shown: &str,
-        ) -> (String, String) {
-            match target {
-                CopyTarget::ResponseHeaderLine(_)
-                | CopyTarget::ComputedHeaderLine(_)
-                | CopyTarget::TableHeaderLine(_) => {
-                    (format!("{name}: {value}"), format!("Copied {shown} header"))
-                }
-                _ => (value.to_string(), format!("Copied {shown}")),
+        // A row's copy: its value, or for a whole-header target `name:
+        // value` (spec 2026-10-26 H3). The toast names the row as `shown`
+        // on screen, masked or not.
+        let header_copy = |name: &str, value: &str, shown: &str| {
+            if target.whole_header() {
+                (format!("{name}: {value}"), format!("Copied {shown} header"))
+            } else {
+                (value.to_string(), format!("Copied {shown}"))
             }
-        }
+        };
         match target {
             CopyTarget::ResponseBody => match self.session.response.state() {
                 ResponseState::Ready(d) => {
@@ -10830,13 +10831,12 @@ impl App {
                     }
                     HeaderRow::Divider | HeaderRow::Note => return None,
                 };
-                Some(header_copy(target, name, value, shown))
+                Some(header_copy(name, value, shown))
             }
             CopyTarget::Url => Some((self.editor.url.text().to_string(), "Copied URL".to_string())),
-            CopyTarget::TableRow(i) | CopyTarget::TableHeaderLine(i) => self
-                .editor
-                .table_row_at(*i)
-                .map(|(key, value)| header_copy(target, key, value, key)),
+            CopyTarget::TableRow(i) | CopyTarget::TableHeaderLine(i) => {
+                self.editor.table_row_at(*i).map(|(key, value)| header_copy(key, value, key))
+            }
             // The real value even while the row shows masked, as the sent
             // section's pill and the tooltip's copy do (spec 2026-10-18 R7);
             // the toast names the row as the screen shows it.
@@ -10845,7 +10845,7 @@ impl App {
                 computed.rows.get(*i).map(|r| {
                     let h = &r.header;
                     let shown = if computed.revealed { &h.name } else { &h.display_name };
-                    header_copy(target, &h.name, &h.value, shown)
+                    header_copy(&h.name, &h.value, shown)
                 })
             }
         }

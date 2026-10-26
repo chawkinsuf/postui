@@ -1068,8 +1068,15 @@ impl ReadyView {
         // Not `cell_at`, which clamps a point below the text onto the last
         // line: blank space under the headers names none of them.
         let line = self.scroll + usize::from(y - area.y);
-        matches!(self.header_row(line)?, HeaderRow::Received(_) | HeaderRow::Sent(_))
-            .then_some(line)
+        self.is_header_line(line).then_some(line)
+    }
+
+    /// Whether line `line` of the Headers view is a header with a value to
+    /// copy (received or sent, not the divider or a note): the one test
+    /// the copy keys and the right-click menu share.
+    pub fn is_header_line(&self, line: usize) -> bool {
+        self.mode == ViewMode::Headers
+            && matches!(self.header_row(line), Some(HeaderRow::Received(_) | HeaderRow::Sent(_)))
     }
 
     /// Builds the column index of every raw line in `rows` that is long
@@ -3739,18 +3746,12 @@ impl Response {
         self.view.as_mut()?.note.take()
     }
 
-    /// The cursor's row on the Headers view when it is a header with a
-    /// value to copy (a received or sent header, not the divider or a
-    /// note): what arrows' `y`/`Y` and vim's `"+yy` copy
-    /// (`Action::CopyResponseHeader`).
+    /// The cursor's line on the Headers view when it is a header
+    /// (`is_header_line`): what arrows' `y`/`Y` and vim's `"+yy` copy
+    /// (`Action::CopyHeader`).
     pub fn copyable_header_row(&self) -> Option<usize> {
         let view = self.view.as_ref()?;
-        (view.mode == ViewMode::Headers
-            && matches!(
-                view.header_row(view.cursor),
-                Some(HeaderRow::Received(_) | HeaderRow::Sent(_))
-            ))
-        .then_some(view.cursor)
+        view.is_header_line(view.cursor).then_some(view.cursor)
     }
 
     /// Clicking a body row: moves the cursor there, and — when `toggle` is
