@@ -3688,9 +3688,11 @@ impl Editor {
                     let buf = frame.buffer_mut();
                     // Blank the row first: the body's text and modifiers
                     // under it (a caret's or match's REVERSED) would
-                    // otherwise show past and on the query (#115).
+                    // otherwise show past and on the query (#115). The
+                    // prompt still covers a row edtui and the engine count
+                    // as visible; drawing the body one row shorter while
+                    // the prompt is open is #129.
                     crate::paint::fill(buf, row, theme.panel);
-                    buf.set_style(row, style);
                     let text = format!("{}{}", line.dir.delim(), line.text);
                     buf.set_stringn(row.x, y, &text, usize::from(row.width), style);
                     // The cells painted before the caret's grapheme, the
