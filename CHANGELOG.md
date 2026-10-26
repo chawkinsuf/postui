@@ -15,10 +15,11 @@ how to install it.
 If you ran the 0.1.1 release candidate: a project's own files (secrets, open
 tabs, layout) now live in `.postui/` rather than `.local/`, and that folder
 keeps itself out of git with a `.gitignore` inside it. To keep them, run this
-in the project folder:
+in the project folder (it works whether or not 0.2 has made `.postui/` yet):
 
 ```sh
-mv .local .postui && printf '*\n' > .postui/.gitignore
+mkdir -p .postui && mv .local/*.toml .postui/ && printf '*\n' > .postui/.gitignore && rm -r .local
 ```
 
-A moved folder without that `.gitignore` counts as one you chose to commit.
+Without that `.gitignore`, a folder you moved by hand counts as one you chose
+to commit.

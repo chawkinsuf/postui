@@ -165,7 +165,7 @@ impl Disk {
         op: &'static str,
     ) -> Result<(), DiskError> {
         if let Some(d) = self.ignored_dir_to_make(dir, rel) {
-            self.make_sealed(&d)?;
+            self.make_sealed(&d, rel, op)?;
         }
         std::fs::create_dir_all(dir).map_err(DiskError::io(op, rel))
     }
@@ -173,7 +173,11 @@ impl Disk {
     /// The ignored directory, when making `dir` for a write of `rel` may
     /// have to make it: `rel` is inside it, or is it and `dir` is it (a
     /// rename *onto* the ignored path makes only its parent). `None` for
-    /// one already there, the common case, at the cost of one stat.
+    /// one already there, the common case, at the cost of one stat per
+    /// write. That stat is asked fresh each time rather than cached as
+    /// "seen": a cached flag would go stale when the folder is deleted
+    /// while the project is open, and the next write would then make it
+    /// unsealed.
     fn ignored_dir_to_make(&self, dir: &Path, rel: &RelPath) -> Option<RelPath> {
         let d = self.ignored.as_ref()?;
         let inside = rel.starts_with(d) && (rel != d || dir == self.abs(d));
@@ -194,29 +198,30 @@ impl Disk {
     /// comes back out while it is still empty (never a file another writer
     /// put there meanwhile), so the next write tries again instead of
     /// finding an unsealed directory it will never seal.
-    fn make_sealed(&mut self, d: &RelPath) -> Result<(), DiskError> {
+    ///
+    /// A failure to make the directory itself is reported as the caller's
+    /// (`op` on `rel`, the file the user's write was for); one placing the
+    /// `.gitignore` names the `.gitignore`.
+    fn make_sealed(
+        &mut self,
+        d: &RelPath,
+        rel: &RelPath,
+        op: &'static str,
+    ) -> Result<(), DiskError> {
         let abs = self.abs(d);
         if let Some(parent) = abs.parent() {
-            std::fs::create_dir_all(parent).map_err(DiskError::io("create the directory of", d))?;
+            std::fs::create_dir_all(parent).map_err(DiskError::io(op, rel))?;
         }
         match std::fs::create_dir(&abs) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
-            Err(e) => return Err(DiskError::io("create", d)(e)),
+            Err(e) => return Err(DiskError::io(op, rel)(e)),
         }
-        // Staged and linked here rather than through `write_new`, which
-        // would come back through `create_dirs`.
-        let rel = d.join(".gitignore")?;
-        let placed = Self::staged(&abs, IGNORE_ALL.as_bytes(), &rel, false).and_then(|tmp| {
-            tmp.persist_noclobber(abs.join(".gitignore"))
-                .map(|_| ())
-                .map_err(|e| DiskError::io("create", &rel)(e.error))
-        });
-        if let Err(e) = placed {
+        let gitignore = d.join(".gitignore")?;
+        if let Err(e) = self.place_new(&abs.join(".gitignore"), &gitignore, IGNORE_ALL.as_bytes()) {
             let _ = std::fs::remove_dir(&abs);
             return Err(e);
         }
-        self.record(&rel);
         Ok(())
     }
 
@@ -334,8 +339,17 @@ impl Disk {
         let path = self.abs(rel);
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         self.create_dirs(parent, rel, "create the directory of")?;
-        let tmp = Self::staged(parent, text.as_bytes(), rel, self.private.contains(rel))?;
-        match tmp.persist_noclobber(&path) {
+        self.place_new(&path, rel, text.as_bytes())
+    }
+
+    /// `write_new` once the directory is there: stages `contents` beside
+    /// `path` and links it in only if nothing is there. Shared with
+    /// `make_sealed`, which places the `.gitignore` in the directory it
+    /// just made and must not come back through `create_dirs`.
+    fn place_new(&mut self, path: &Path, rel: &RelPath, contents: &[u8]) -> Result<(), DiskError> {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let tmp = Self::staged(parent, contents, rel, self.private.contains(rel))?;
+        match tmp.persist_noclobber(path) {
             Ok(_) => {}
             Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
                 return Err(DiskError::AlreadyExists(rel.to_string()));
@@ -512,6 +526,9 @@ impl Disk {
         self.stamps.clear();
     }
 
+    /// The trash has always been the project's (only `Project` trashes; the
+    /// config directory's `Disk` never does). It is named through the
+    /// project's constant so the local folder's name stays written once.
     fn trash_root() -> RelPath {
         RelPath::new(crate::project::TRASH_DIR).expect("constant path")
     }
@@ -752,6 +769,21 @@ mod tests {
         std::fs::write(d.path().join("blocker"), "").unwrap();
         let err = disk.create_dir(&RelPath::new("blocker/sub").unwrap()).unwrap_err();
         assert!(err.to_string().starts_with("could not create blocker/sub:"), "{err}");
+    }
+
+    /// A write that can't make the ignored directory names its own file,
+    /// as any write that can't make its directory does.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_seal_names_the_file_being_written() {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, mut disk) = disk();
+        disk.ignore_when_created(RelPath::new(LOCAL_DIR).unwrap());
+        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let err = disk.write(&RelPath::new(STATE_TOML).unwrap(), "").unwrap_err();
+        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let want = format!("could not create the directory of {STATE_TOML}:");
+        assert!(err.to_string().starts_with(&want), "{err}");
     }
 
     /// Other directories a write makes get none, ignored directory or not.
