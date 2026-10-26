@@ -189,6 +189,8 @@ pub(crate) const PROJECT_TOML: &str = "project.toml";
 pub(crate) const VARIABLES_TOML: &str = "variables.toml";
 pub(crate) const ENVIRONMENTS_DIR: &str = "environments";
 pub(crate) const REQUESTS_DIR: &str = "requests";
+/// The user's own files: state, layout, secrets and the trash. Never shared.
+pub(crate) const LOCAL_DIR: &str = ".local";
 pub(crate) const STATE_TOML: &str = ".local/state.toml";
 pub(crate) const LAYOUT_TOML: &str = ".local/layout.toml";
 pub(crate) const SECRETS_TOML: &str = ".local/secrets.toml";
@@ -969,6 +971,11 @@ impl Project {
         // The one file whose mode is not the umask's business: secrets
         // land owner-only however the project directory is shared.
         disk.mark_private(RelPath::new(SECRETS_TOML).expect("constant path"));
+        // `.local/` keeps itself out of git, wherever the project sits (a
+        // repository root whose own `.gitignore` never mentions it): the
+        // first write that creates it puts a `.gitignore` of `*` in it
+        // (task #143).
+        disk.ignore_when_created(RelPath::new(LOCAL_DIR).expect("constant path"));
         let mut warnings = Vec::new();
 
         let meta: ProjectMeta = Self::read_doc(&mut disk, PROJECT_TOML, |t| {
@@ -1600,6 +1607,23 @@ mod tests {
         assert!(!dir.path().join("environments/default.toml").exists());
         assert_eq!(read(&dir, ".gitignore").as_deref(), Some("mine\n"));
         assert!(dir.path().join("requests").is_dir());
+    }
+
+    /// Task #143: a project made in a folder whose own `.gitignore` says
+    /// nothing about `.local/` (a repository root) still keeps `.local/`
+    /// out of git: postui puts a `.gitignore` of `*` in it when it first
+    /// creates it, and leaves the repository's file alone.
+    #[test]
+    fn local_is_git_ignored_even_where_the_folder_has_its_own_gitignore() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
+        let (mut p, _w) = Project::init(dir.path(), None).unwrap();
+        assert!(!dir.path().join(".local").exists(), "nothing local written yet");
+        p.set_active_env(Some(DEFAULT_ENVIRONMENT.into()));
+        assert!(dir.path().join(".local/state.toml").is_file(), "a local write happened");
+        let ignore = read(&dir, ".local/.gitignore").unwrap_or_default();
+        assert!(ignore.lines().any(|l| l == "*"), "{ignore:?}");
+        assert_eq!(read(&dir, ".gitignore").as_deref(), Some("target/\n"));
     }
 
     /// `environment_files` skips files that are not valid slugs, so a

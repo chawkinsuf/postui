@@ -123,11 +123,47 @@ pub struct Disk {
     /// Files written owner-only (0600) regardless of the umask or the
     /// mode already on disk — the secrets file.
     private: HashSet<RelPath>,
+    /// The directory that gets a `.gitignore` of `*` when a write here
+    /// creates it (task #143): a project's `.local/`.
+    ignored: Option<RelPath>,
 }
+
+/// What [`Disk::ignore_when_created`] writes: git skips every file in the
+/// directory, this one included, whatever the repository's own
+/// `.gitignore` says.
+const IGNORE_ALL: &str = "# Written by postui: keeps this folder (secrets, open tabs, layout) out of\n\
+                          # git. Delete this file if you do want the folder committed.\n\
+                          *\n";
 
 impl Disk {
     pub fn new(root: PathBuf) -> Disk {
-        Disk { root, stamps: HashMap::new(), private: HashSet::new() }
+        Disk { root, stamps: HashMap::new(), private: HashSet::new(), ignored: None }
+    }
+
+    /// Names the directory whose creation through this `Disk` puts a
+    /// `.gitignore` of `*` in it (task #143). Only the creation does: a
+    /// directory that already exists without one (an older project, or a
+    /// user who deleted it to commit the folder) is left as it is, since
+    /// "never had one" and "removed on purpose" look the same from here
+    /// (the user: "if the user wants to remove the .gitignore and commit,
+    /// we should let them").
+    pub fn ignore_when_created(&mut self, dir: RelPath) {
+        self.ignored = Some(dir);
+    }
+
+    /// `create_dir_all(dir)` for a write of `rel`: the one place this
+    /// `Disk` makes directories, so the one place that sees the ignored
+    /// directory come into being and seals it as it does.
+    fn create_dirs(&mut self, dir: &Path, rel: &RelPath) -> Result<(), DiskError> {
+        let seal = self.ignored.clone().filter(|d| rel.starts_with(d) && !self.exists(d));
+        std::fs::create_dir_all(dir).map_err(DiskError::io("create the directory of", rel))?;
+        if let Some(d) = seal {
+            match self.write_new(&d.join(".gitignore")?, IGNORE_ALL) {
+                Ok(()) | Err(DiskError::AlreadyExists(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 
     /// Marks `rel` private: every write of it lands 0600, tightening a
@@ -213,7 +249,7 @@ impl Disk {
             Err(e) => return Err(DiskError::io("stat", rel)(e)),
         };
         let parent = target.parent().unwrap_or_else(|| Path::new("."));
-        std::fs::create_dir_all(parent).map_err(DiskError::io("create the directory of", rel))?;
+        self.create_dirs(parent, rel)?;
         let private = self.private.contains(rel);
         let tmp = Self::staged(parent, contents, rel, private)?;
         if !private && let Ok(existing) = std::fs::metadata(&target) {
@@ -243,7 +279,7 @@ impl Disk {
     pub fn write_new(&mut self, rel: &RelPath, text: &str) -> Result<(), DiskError> {
         let path = self.abs(rel);
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        std::fs::create_dir_all(parent).map_err(DiskError::io("create the directory of", rel))?;
+        self.create_dirs(parent, rel)?;
         let tmp = Self::staged(parent, text.as_bytes(), rel, self.private.contains(rel))?;
         match tmp.persist_noclobber(&path) {
             Ok(_) => {}
@@ -292,7 +328,7 @@ impl Disk {
     }
 
     pub fn create_dir(&mut self, rel: &RelPath) -> Result<(), DiskError> {
-        std::fs::create_dir_all(self.abs(rel)).map_err(DiskError::io("create", rel))?;
+        self.create_dirs(&self.abs(rel), rel)?;
         self.record(rel);
         Ok(())
     }
@@ -336,8 +372,7 @@ impl Disk {
             return Err(DiskError::AlreadyExists(to.to_string()));
         }
         if let Some(parent) = to_abs.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(DiskError::io("create the directory of", to))?;
+            self.create_dirs(parent, to)?;
         }
         std::fs::rename(&from_abs, &to_abs).map_err(DiskError::io("move", from))?;
         self.record(from);
@@ -588,6 +623,61 @@ mod tests {
             std::fs::metadata(disk.abs(&fresh)).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    /// Task #143: every way a write can create the ignored directory puts
+    /// a `.gitignore` of `*` in it, so git skips the whole directory
+    /// whatever the repository's own `.gitignore` says.
+    #[test]
+    fn creating_the_ignored_directory_puts_a_gitignore_in_it() {
+        let local = RelPath::new(".local").unwrap();
+        let gitignore = RelPath::new(".local/.gitignore").unwrap();
+        type Make = fn(&mut Disk);
+        let makers: [(&str, Make); 4] = [
+            ("write", |d| d.write(&RelPath::new(".local/state.toml").unwrap(), "").unwrap()),
+            ("write_new", |d| {
+                d.write_new(&RelPath::new(".local/layout.toml").unwrap(), "").unwrap()
+            }),
+            ("create_dir", |d| d.create_dir(&RelPath::new(".local/trash").unwrap()).unwrap()),
+            ("trash", |d| {
+                d.write(&RelPath::new("requests/a.toml").unwrap(), "").unwrap();
+                d.trash(&RelPath::new("requests/a.toml").unwrap()).unwrap();
+            }),
+        ];
+        for (how, make) in makers {
+            let (_d, mut disk) = disk();
+            disk.ignore_when_created(local.clone());
+            make(&mut disk);
+            let text = disk.peek(&gitignore).unwrap().unwrap_or_default();
+            assert!(text.lines().any(|l| l == "*"), "{how}: {text:?}");
+        }
+    }
+
+    /// Task #143 (the user: "if the user wants to remove the .gitignore
+    /// and commit, we should let them"): only creating the directory
+    /// writes the file. One already there without it, deleted on purpose
+    /// or older than the rule, stays as it is.
+    #[test]
+    fn an_existing_ignored_directory_never_gets_the_gitignore_back() {
+        let (_d, mut disk) = disk();
+        disk.ignore_when_created(RelPath::new(".local").unwrap());
+        disk.create_dir(&RelPath::new(".local").unwrap()).unwrap();
+        disk.remove(&RelPath::new(".local/.gitignore").unwrap()).unwrap();
+        disk.write(&RelPath::new(".local/state.toml").unwrap(), "").unwrap();
+        disk.create_dir(&RelPath::new(".local/trash").unwrap()).unwrap();
+        assert!(!disk.exists(&RelPath::new(".local/.gitignore").unwrap()));
+    }
+
+    /// Only the directory named gets one: a `Disk` that names none (the
+    /// config directory's) writes no `.gitignore` anywhere.
+    #[test]
+    fn no_gitignore_without_an_ignored_directory() {
+        let (_d, mut disk) = disk();
+        disk.write(&RelPath::new(".local/state.toml").unwrap(), "").unwrap();
+        disk.ignore_when_created(RelPath::new(".local").unwrap());
+        disk.write(&RelPath::new("other/x.toml").unwrap(), "").unwrap();
+        assert!(!disk.exists(&RelPath::new(".local/.gitignore").unwrap()));
+        assert!(!disk.exists(&RelPath::new("other/.gitignore").unwrap()));
     }
 
     #[test]
