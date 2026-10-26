@@ -17,6 +17,9 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] #124 Replacing or deleting a body selection that ends a line adds a blank line after it (merged 2026-10-25: edtui's delete, with the break after the selection kept)
 - [x] #126 The views dropdown's rename and delete buttons are small targets (merged 2026-10-26: a cell of padding each side, part of the button)
 - [x] #106 Test suite fails on macOS: tests expect `alt+` where macOS shows `opt+` (merged 2026-10-26: CI runs the tests on macOS too)
+- [ ] #135 No way to reach a URL/body variable's popup from the keyboard (pulled in by the user, 2026-10-26)
+- [ ] #136 The main header rows have no `y` copy key, which the auto rows have (pulled in by the user, 2026-10-26)
+- [ ] #137 Copy a whole header (`Name: value`), with shift switching the copy button and key (pulled in by the user, 2026-10-26)
 
 ## Cheap fixes bundled in (all merged 2026-10-25)
 
@@ -38,7 +41,7 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] #120 Prerelease `v0.1.1-rc.1`: CI and the whole release ran green on GitHub (Homebrew skipped as a prerelease); the installer installs and runs
 - [x] macOS: the binary is unsigned. Homebrew (and the shell installer) avoid the quarantine flag, so the README makes Homebrew the recommended install (the user, 2026-10-26: "just make brew the recommended way to install"); done in #138
 - [x] Windows: not supported natively for 0.2; WSL 2 is recommended (the user, 2026-10-26). The README says so (#138)
-- [ ] #139 `postui --version` flag
+- [x] #139 `postui --version` flag (also `-V`; prints `postui <version>`, in `--help`)
 - [x] #140 CHANGELOG.md: one short first-release entry (the user, 2026-10-26: "go with the tiny changelog"). dist puts the matching section on the GitHub Release as its notes and takes the title from the heading, so #142 dates it
 - [ ] #141 The repo's GitHub description and topics
 - [ ] #142 Last (the user, 2026-10-26): bump the workspace version to `0.2.0` (Cargo.lock follows), then tag: `git tag -a v0.2.0 -m "postui 0.2.0"`, then `git push origin v0.2.0`
