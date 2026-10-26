@@ -498,6 +498,11 @@ pub struct App {
     /// diffed against the live editor each call to detect edits that never
     /// went through an `Action`. `None` before the first request is open.
     shadow: Option<(Option<String>, postui_core::model::HttpRequest)>,
+    /// The table cursor as of the last `capture_step`, beside the shadow:
+    /// the spot a recorded step's undo falls back to when its row is gone
+    /// (task #121). A capture that finds no edit re-seeds both at the end
+    /// of every event, so it is where the cursor was before the op.
+    shadow_cursor: Option<crate::components::editor::TableCursor>,
     /// Whether the last `capture_undo` call was held back by an open
     /// live-synced field (see [`Self::field_gate`]); the call that finds
     /// the gate off again is the field's close and records without
@@ -1858,6 +1863,7 @@ impl App {
             marked_entry: None,
             op_in_flight: false,
             shadow: None,
+            shadow_cursor: None,
             field_gate_was_on: false,
             no_coalesce: false,
             testbed_list_dir_plan: 1,
@@ -3070,11 +3076,14 @@ impl App {
         }
         self.no_coalesce = false;
         self.shadow = Some((current_slug, self.editor.current_request()));
+        self.shadow_cursor = self.editor.table_cursor();
         false
     }
 
     /// Records one `EditorDelta` step on the open request and moves the
-    /// shadow to its `after`: the one place a capture becomes a step.
+    /// shadow to its `after`: the one place a capture becomes a step. The
+    /// step takes the table cursor from before the op (the shadow's) and
+    /// now.
     fn record_editor_delta(
         &mut self,
         slug: Option<String>,
@@ -3082,16 +3091,20 @@ impl App {
         after: postui_core::model::HttpRequest,
         coalesce: bool,
     ) {
+        let after_cursor = self.editor.table_cursor();
         let step = crate::undo::Step {
             kind: crate::undo::StepKind::EditorDelta {
                 slug: slug.clone(),
                 before: Box::new(before),
                 after: Box::new(after.clone()),
+                before_cursor: self.shadow_cursor,
+                after_cursor,
             },
             context: crate::undo::Context { slug: slug.clone() },
         };
         self.history.record_maybe_coalesce(step, coalesce);
         self.shadow = Some((slug, after));
+        self.shadow_cursor = after_cursor;
     }
 
     /// Closes the open field's edit session (URL line, jq bar) in place
@@ -12420,7 +12433,7 @@ impl App {
     fn apply_undo_step(&mut self, step: crate::undo::Step, redo: bool) -> bool {
         use crate::undo::StepKind;
         match &step.kind {
-            StepKind::EditorDelta { slug, before, after } => {
+            StepKind::EditorDelta { slug, before, after, before_cursor, after_cursor } => {
                 if *slug != self.editor.slug {
                     let Some(target_slug) = slug.clone() else {
                         // A scratch request has no slug to reopen; once it's
@@ -12434,15 +12447,22 @@ impl App {
                     }
                     // fall through to the normal same-request apply below
                 }
-                let target = if redo { (**after).clone() } else { (**before).clone() };
+                let (target, cursor) = if redo {
+                    ((**after).clone(), *after_cursor)
+                } else {
+                    ((**before).clone(), *before_cursor)
+                };
                 // Focus and the caret stay where they are (the snapshot
                 // swap re-places the editor's own caret against the new
                 // fields) — undo never moves focus, as on the Manage screen.
-                self.editor.apply_snapshot(&target);
+                // A table cursor whose row the swap removes goes back to the
+                // step's spot (task #121).
+                self.editor.apply_snapshot(&target, cursor);
                 self.sync_active_tab();
                 // The applied state IS the new shadow; without this the
                 // capture hook would record the undo as a fresh edit.
                 self.shadow = Some((self.editor.slug.clone(), target));
+                self.shadow_cursor = self.editor.table_cursor();
                 if redo {
                     self.history.push_undo_no_coalesce(step.clone());
                 } else {

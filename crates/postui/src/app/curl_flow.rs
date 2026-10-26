@@ -371,7 +371,7 @@ impl App {
             ..import.request
         };
         self.no_coalesce = true;
-        self.editor.apply_snapshot(&replaced);
+        self.editor.apply_snapshot(&replaced, None);
         self.sync_active_tab();
         let changed = self.editor.current_request() != current;
         let name = match self.editor.slug.clone() {

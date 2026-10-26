@@ -452,7 +452,7 @@ impl App {
                 }
                 self.fresh_scratch();
                 if let Some(buf) = buffer {
-                    self.editor.apply_snapshot(&buf);
+                    self.editor.apply_snapshot(&buf, None);
                     self.shadow = Some((None, *buf));
                 }
                 self.sync_active_tab();
@@ -561,7 +561,7 @@ impl App {
                 }
                 self.editor.load(Some(slug.clone()), req);
                 if let Some(buf) = buffer {
-                    self.editor.apply_snapshot(&buf);
+                    self.editor.apply_snapshot(&buf, None);
                     self.shadow = Some((Some(slug), *buf));
                 }
                 // After the buffer: its method, not the saved one's, says
