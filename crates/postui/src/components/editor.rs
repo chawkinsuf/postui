@@ -1883,12 +1883,13 @@ impl Editor {
     }
 
     /// Deletes the selected body text (cursor collapses to the selection
-    /// start), staying in Insert mode. Selections cover characters, never
-    /// the line break after them — but edtui's `DeleteSelection` (jagged
-    /// `extract`) consumes that break whenever the selection ends on a
-    /// row's last character, joining the next row up; the break is
-    /// restored so deleting a selected word at a line end can't silently
-    /// merge lines.
+    /// start), staying in Insert mode. A selection covers characters,
+    /// never the line break after it, but edtui's `DeleteSelection` takes
+    /// that break too for some shapes (a whole row) and not others (a word
+    /// at a row's end). So the delete counts breaks: the selection holds
+    /// `end.row - start.row` of its own (a body selection is never
+    /// line-mode), and one more gone is put back (#124). The delete stays
+    /// edtui's, like every other body edit (the user's call on #124).
     fn delete_body_selection(&mut self) {
         use edtui::actions::{DeleteSelection, Execute, LineBreak};
         let Some(sel) = self.body.selection.as_ref() else {
@@ -1896,11 +1897,16 @@ impl Editor {
             return;
         };
         let (start, end) = (sel.start(), sel.end());
-        let end_len = self.body.lines.len_col(end.row).unwrap_or(0);
-        let eats_break = end.col + 1 >= end_len && end.row + 1 < self.body.lines.len();
+        // Selecting everything can leave no rows at all: no break either.
+        let breaks = |e: &EditorState| e.lines.len().saturating_sub(1);
+        let breaks_before = breaks(&self.body);
         DeleteSelection.execute(&mut self.body);
-        if eats_break {
-            // The cursor sits exactly at the join point after the delete.
+        if breaks(&self.body) + (end.row - start.row) < breaks_before {
+            // edtui leaves the cursor at the selection start, where the
+            // lost break belongs: a split there, or a new empty row when
+            // the whole row went (a whole last row leaves an empty row, as
+            // in a GUI editor). `deleting_any_selection_removes_exactly_its_text`
+            // pins this for every selection shape.
             LineBreak(1).execute(&mut self.body);
             self.body.cursor = start;
         }
@@ -8773,6 +8779,65 @@ mod body_click_tests {
         assert!(e.paste_body("a\r\nb"));
         assert_eq!(e.body_text(), "a\nblo\nworld\n");
         assert!(e.body.selection.is_none());
+    }
+
+    #[test]
+    fn paste_over_a_word_at_a_line_end_keeps_one_break() {
+        // #124: the break after the word was doubled.
+        let mut e = editor_with_body("hello world\nnext\n");
+        e.handle_mouse(left_down(8, 0)); // anchor on "w"
+        e.body_drag_to(12, 0); // through "d"
+        assert_eq!(e.body_selected_text().as_deref(), Some("world"));
+        assert!(e.paste_body("there"));
+        assert_eq!(e.body_text(), "hello there\nnext\n");
+    }
+
+    #[test]
+    fn deleting_any_selection_removes_exactly_its_text() {
+        // Every selection, either direction, over rows that end in a
+        // word, a single char, a multi-byte char, nothing, and a last row
+        // with and without text after the final break. A selection takes
+        // the chars from its start cell through its end cell and the
+        // breaks between its rows, never the break after its end row.
+        let bodies = ["ab\nc\n\nde\n", "ab\ncd", "ab", "ab\n", "\n", "", "é\nb"];
+        for body in bodies {
+            let rows: Vec<Vec<char>> = body.split('\n').map(|r| r.chars().collect()).collect();
+            let cells: Vec<Index2> = rows
+                .iter()
+                .enumerate()
+                .flat_map(|(r, row)| (0..row.len().max(1)).map(move |c| Index2::new(r, c)))
+                .collect();
+            for &a in &cells {
+                for &b in &cells {
+                    let (start, end) =
+                        if (a.row, a.col) <= (b.row, b.col) { (a, b) } else { (b, a) };
+                    let inside = |r: usize, c: usize| {
+                        (start.row, start.col) <= (r, c) && (r, c) <= (end.row, end.col)
+                    };
+                    let (mut want, mut removed) = (String::new(), String::new());
+                    for (r, row) in rows.iter().enumerate() {
+                        for (c, &ch) in row.iter().enumerate() {
+                            if inside(r, c) { removed.push(ch) } else { want.push(ch) }
+                        }
+                        if r + 1 < rows.len() {
+                            let joined = start.row <= r && r < end.row;
+                            if joined { removed.push('\n') } else { want.push('\n') }
+                        }
+                    }
+                    let mut e = editor_with_body(body);
+                    e.set_body_selection_cells(a, b);
+                    let at = format!("{body:?}: selection {a:?}..{b:?}");
+                    assert_eq!(
+                        e.body_selected_text().as_deref(),
+                        Some(removed.as_str()),
+                        "copy, {at}"
+                    );
+                    e.delete_body_selection();
+                    assert_eq!(e.body_text(), want, "{at}");
+                    assert_eq!(e.body.cursor, start, "caret, {at}");
+                }
+            }
+        }
     }
 
     fn skey(code: ratatui::crossterm::event::KeyCode) -> ratatui::crossterm::event::KeyEvent {
