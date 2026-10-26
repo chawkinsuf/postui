@@ -1884,31 +1884,37 @@ impl Editor {
 
     /// Deletes the selected body text (cursor collapses to the selection
     /// start), staying in Insert mode. Selections cover characters, never
-    /// the line break after them — but edtui's `DeleteSelection` (jagged
-    /// `extract`) sometimes consumes that break too, depending on where
-    /// the selection starts and ends (a whole row goes with its break, a
-    /// word at a row's end doesn't). Rather than predict which, the
-    /// delete counts breaks: the selection holds `end.row - start.row`
-    /// of its own, and one more gone is the break after it, which is put
-    /// back (#124). Deleting a whole last row so leaves an empty row, as
-    /// a GUI editor does. `deleting_any_selection_removes_exactly_its_text`
-    /// pins what edtui does for every selection shape.
+    /// the line break after them, so this removes exactly the cells
+    /// `body_selected_text` reads: the start row from `start.col`, the end
+    /// row through `end.col`, and the rows between, joining what is left
+    /// of the two. Deleting a whole last row so leaves an empty row, as a
+    /// GUI editor does. Not edtui's `DeleteSelection`: its jagged
+    /// `extract` takes the break after a selection for some shapes (a
+    /// whole row) and not others (a word at a row's end), which doubled
+    /// or lost breaks (#124).
     fn delete_body_selection(&mut self) {
-        use edtui::actions::{DeleteSelection, Execute, LineBreak};
-        let Some(sel) = self.body.selection.as_ref() else {
+        let Some(sel) = self.body.selection.take() else {
             self.body_sel_anchor = None;
             return;
         };
         let (start, end) = (sel.start(), sel.end());
-        // Selecting everything can leave no rows at all: no break either.
-        let breaks = |e: &EditorState| e.lines.len().saturating_sub(1);
-        let breaks_before = breaks(&self.body);
-        DeleteSelection.execute(&mut self.body);
-        if breaks(&self.body) + (end.row - start.row) < breaks_before {
-            // The cursor sits exactly at the join point after the delete.
-            LineBreak(1).execute(&mut self.body);
-            self.body.cursor = start;
+        let lines = &mut self.body.lines;
+        // An empty body has no rows at all.
+        if let Some(last) = lines.len().checked_sub(1)
+            && start.row <= last
+        {
+            let end_row = end.row.min(last);
+            let tail: Vec<char> = lines
+                .get(edtui::RowIndex::new(end_row))
+                .map(|r| r[(end.col + 1).min(r.len())..].to_vec())
+                .unwrap_or_default();
+            let _ = lines.extract_rows(start.row + 1..=end_row);
+            if let Some(row) = lines.get_mut(edtui::RowIndex::new(start.row)) {
+                row.truncate(start.col);
+                row.extend(tail);
+            }
         }
+        self.body.cursor = start;
         self.body_sel_anchor = None;
         self.body.mode = EditorMode::Insert;
     }
@@ -8794,11 +8800,13 @@ mod body_click_tests {
     #[test]
     fn deleting_any_selection_removes_exactly_its_text() {
         // Every selection, either direction, over rows that end in a
-        // word, a single char, nothing, and a last row with and without
-        // text after the final break. This pins edtui's `DeleteSelection`
-        // as `delete_body_selection` relies on it, across edtui upgrades.
-        for body in ["ab\nc\n\nde\n", "ab\ncd", "ab"] {
-            let rows: Vec<&str> = body.split('\n').collect();
+        // word, a single char, a multi-byte char, nothing, and a last row
+        // with and without text after the final break. A selection takes
+        // the chars from its start cell through its end cell and the
+        // breaks between its rows, never the break after its end row.
+        let bodies = ["ab\nc\n\nde\n", "ab\ncd", "ab", "ab\n", "\n", "", "é\nb"];
+        for body in bodies {
+            let rows: Vec<Vec<char>> = body.split('\n').map(|r| r.chars().collect()).collect();
             let cells: Vec<Index2> = rows
                 .iter()
                 .enumerate()
@@ -8806,15 +8814,30 @@ mod body_click_tests {
                 .collect();
             for &a in &cells {
                 for &b in &cells {
+                    let (start, end) =
+                        if (a.row, a.col) <= (b.row, b.col) { (a, b) } else { (b, a) };
+                    let inside = |r: usize, c: usize| {
+                        (start.row, start.col) <= (r, c) && (r, c) <= (end.row, end.col)
+                    };
+                    let (mut want, mut removed) = (String::new(), String::new());
+                    for (r, row) in rows.iter().enumerate() {
+                        for (c, &ch) in row.iter().enumerate() {
+                            if inside(r, c) { removed.push(ch) } else { want.push(ch) }
+                        }
+                        if r + 1 < rows.len() {
+                            let joined = start.row <= r && r < end.row;
+                            if joined { removed.push('\n') } else { want.push('\n') }
+                        }
+                    }
                     let mut e = editor_with_body(body);
                     e.set_body_selection_cells(a, b);
-                    let start = if (a.row, a.col) <= (b.row, b.col) { a } else { b };
-                    let selected = e.body_selected_text().unwrap();
-                    let off =
-                        rows[..start.row].iter().map(|r| r.len() + 1).sum::<usize>() + start.col;
-                    let want = format!("{}{}", &body[..off], &body[off + selected.len()..]);
+                    let at = format!("{body:?}: selection {a:?}..{b:?}");
+                    assert_eq!(
+                        e.body_selected_text().as_deref(),
+                        Some(removed.as_str()),
+                        "copy, {at}"
+                    );
                     e.delete_body_selection();
-                    let at = format!("{body:?}: selection {a:?}..{b:?} ({selected:?})");
                     assert_eq!(e.body_text(), want, "{at}");
                     assert_eq!(e.body.cursor, start, "caret, {at}");
                 }
