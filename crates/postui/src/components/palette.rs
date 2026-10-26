@@ -414,50 +414,14 @@ pub fn all_commands() -> Vec<Command> {
     ]
 }
 
-/// Maps a palette [`Command::id`] to the corresponding [`crate::keys::
-/// named_actions`] name, where one exists, so `draw` can ask
-/// [`crate::keys::Keymap::combo_for`] for its bound combo. The two
-/// namespaces are independent by design (`Command::id` is the frecency
-/// key, stable across a command's display `name`; the keymap's names are
-/// the rebind-by-name TOML keys) and happen to describe several of the
-/// same actions under different spellings — this table is the one place
-/// that reconciles them. Commands with no arm here show no keybinding
-/// column. For most (focus moves, prompts, …) that is right, as they have
-/// no key, but a bound action whose arm is missing loses its key too.
-/// Looking the key up by [`Command::action`] alone would not replace the
-/// table outright: some rows run a different action from their key's (the
-/// palette's `quit` runs `GatedQuit`, `ctrl+c` sends `Quit`).
-pub(crate) fn keymap_action_name(command_id: &str) -> Option<&'static str> {
-    match command_id {
-        "quit" => Some("quit"),
-        "send" => Some("send"),
-        "request-save" => Some("save"),
-        "request-discard" => Some("discard"),
-        "request-duplicate" => Some("request_duplicate"),
-        "method-cycle" => Some("cycle_method"),
-        "method-choose" => Some("method_choose"),
-        "body-format" => Some("format_body"),
-        "body-minify" => Some("minify_body"),
-        "body-external-editor" => Some("open_body_editor"),
-        "body-toggle-vars" => Some("toggle_body_vars"),
-        "project-choose" => Some("project_choose"),
-        "project-next" => Some("project_next"),
-        "project-new" => Some("project_new"),
-        "reload-from-disk" => Some("reload"),
-        "env-choose" => Some("env_choose"),
-        "env-next" => Some("env_next"),
-        "table-add-row" => Some("table_add_row"),
-        "response-toggle" => Some("toggle_response_collapse"),
-        "editor-toggle" => Some("toggle_table_collapse"),
-        "split-step" => Some("cycle_split"),
-        "split-step-back" => Some("cycle_split_back"),
-        "vars-insert" => Some("pick_variable"),
-        "manage-variables" => Some("manage_open"),
-        "theme-choose" => Some("theme_choose"),
-        "vars-extract" => Some("extract_to_variable"),
-        "undo" => Some("undo"),
-        "redo" => Some("redo"),
-        _ => None,
+/// The action whose key a row with `action` shows: its own, except the
+/// palette's Quit. That row runs `GatedQuit`, the quit that is refused
+/// while a dialog is up (task #85), and the keymap binds `^C` to `Quit`,
+/// the same quit as a key press; the row shows `^C`.
+fn key_action(action: &Action) -> &Action {
+    match action {
+        Action::GatedQuit => &Action::Quit,
+        other => other,
     }
 }
 
@@ -911,14 +875,17 @@ impl PaletteState {
         stepped
     }
 
-    /// The key `c`'s row shows: the combo the keymap binds to its action,
-    /// unless that key means something else where the palette opened (the
-    /// same [`crate::keys::KeyContext::action`] every key press takes).
+    /// The key `c`'s row shows: the combo the keymap binds to its action
+    /// (task #105: looked up by the action itself, so no row can miss its
+    /// key), unless that key means something else where the palette opened
+    /// (the same [`crate::keys::KeyContext::action`] every key press
+    /// takes). A row whose action no key sends shows none, as "Manage:
+    /// variables" does: `alt+r` opens the tab Manage last had.
     pub(crate) fn key_column(&self, c: &Command, keymap: &crate::keys::Keymap) -> Option<String> {
         if self.key_context.action(c.action.clone()) != c.action {
             return None;
         }
-        keymap_action_name(c.id).and_then(|n| keymap.combo_for(n))
+        keymap.combo_for_action(key_action(&c.action))
     }
 
     #[cfg(test)]
@@ -1123,8 +1090,7 @@ mod tests {
     }
 
     /// The user-triggered reload is reachable from the palette, and its
-    /// row shows the same `alt+shift+r` the key path uses — which only works if
-    /// the keys name table knows the "reload" action name.
+    /// row shows the same `alt+shift+r` the key path uses.
     #[test]
     fn palette_carries_reload_from_disk_with_its_binding() {
         let cmd = all_commands()
@@ -1134,10 +1100,9 @@ mod tests {
         assert_eq!(cmd.action, Action::ReloadFromDisk);
         assert_eq!(cmd.name, "Reload from disk");
         let keymap = crate::keys::Keymap::default_bindings();
-        assert_eq!(
-            keymap_action_name("reload-from-disk").and_then(|n| keymap.combo_for(n)),
-            Some("alt+shift+r".to_string())
-        );
+        let p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        let alt = crate::keys::alt_label();
+        assert_eq!(p.key_column(&cmd, &keymap), Some(format!("{alt}+shift+r")));
     }
 
     /// The response's open-in-$EDITOR action is reachable from the palette,
@@ -1157,13 +1122,15 @@ mod tests {
     #[test]
     fn palette_carries_the_sidebar_width_steps() {
         let step = crate::layout::SIDEBAR_STEP_COLS;
+        let keymap = crate::keys::Keymap::default_bindings();
+        let p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
         for (id, name, action) in [
             ("sidebar-widen", "Widen sidebar", Action::StepSidebar(step)),
             ("sidebar-narrow", "Narrow sidebar", Action::StepSidebar(-step)),
         ] {
             let cmd = all_commands().into_iter().find(|c| c.id == id).expect(id);
+            assert_eq!(p.key_column(&cmd, &keymap), None, "{id}: no key column");
             assert_eq!((cmd.name, cmd.action), (name, action), "{id}");
-            assert_eq!(keymap_action_name(id), None, "{id}: no key column");
         }
     }
 
@@ -1174,6 +1141,7 @@ mod tests {
     fn palette_carries_the_split_steps_with_their_keys() {
         let alt = crate::keys::alt_label();
         let keymap = crate::keys::Keymap::default_bindings();
+        let p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
         for (id, name, action, key) in [
             ("split-step", "Step the split", Action::CycleSplit, format!("{alt}+w")),
             (
@@ -1184,8 +1152,8 @@ mod tests {
             ),
         ] {
             let cmd = all_commands().into_iter().find(|c| c.id == id).expect(id);
+            assert_eq!(p.key_column(&cmd, &keymap), Some(key), "{id}");
             assert_eq!((cmd.name, cmd.action), (name, action), "{id}");
-            assert_eq!(keymap_action_name(id).and_then(|n| keymap.combo_for(n)), Some(key), "{id}");
         }
     }
 
@@ -1205,6 +1173,38 @@ mod tests {
                 let cmd = commands.iter().find(|c| c.id == id).expect(id);
                 assert_eq!(p.key_column(cmd, &keymap), Some(key), "{id} in {profile:?}");
             }
+        }
+    }
+
+    /// Task #105: a row shows the key bound to its own action, so the
+    /// eight rows a hand-kept name table missed show theirs, in both
+    /// profiles, and "Manage: variables" shows none: `alt+r` opens the
+    /// tab Manage last had, not Variables.
+    #[test]
+    fn rows_show_the_key_bound_to_their_action() {
+        let alt = crate::keys::alt_label();
+        let p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        let commands = all_commands();
+        for profile in [crate::config::KeyProfile::Arrows, crate::config::KeyProfile::Vim] {
+            let keymap = crate::keys::Keymap::default_bindings_for(profile);
+            let key = |id: &str| {
+                let cmd = commands.iter().find(|c| c.id == id).expect(id);
+                p.key_column(cmd, &keymap)
+            };
+            for (id, want) in [
+                ("body-clear", format!("{alt}+k")),
+                ("tls-toggle-verify", format!("{alt}+i")),
+                ("project-prev", format!("{alt}+shift+z")),
+                ("env-prev", format!("{alt}+shift+x")),
+                ("edit-paste", "^V".to_string()),
+                ("request-copy-url", format!("{alt}+y")),
+                ("response-jq", format!("{alt}+q")),
+                ("response-jq-views", format!("{alt}+shift+j")),
+                ("quit", "^C".to_string()),
+            ] {
+                assert_eq!(key(id), Some(want), "{id} in {profile:?}");
+            }
+            assert_eq!(key("manage-variables"), None, "{profile:?}");
         }
     }
 
@@ -1551,14 +1551,18 @@ mod tests {
         );
     }
 
-    /// Every keybinding name the palette looks up is one `keys.toml` (and
-    /// so `combo_for`) knows: a stale name paints its row with no key.
+    /// Task #105: every row whose action a key is bound to shows a key, in
+    /// both profiles, unless that key means something else where the
+    /// palette opened. A row can't lose its key to a missing entry again.
     #[test]
-    fn every_keybinding_name_is_a_named_action() {
-        let names: Vec<&str> = crate::keys::named_actions().into_iter().map(|(n, _)| n).collect();
-        for c in all_commands() {
-            if let Some(name) = keymap_action_name(c.id) {
-                assert!(names.contains(&name), "{}: no action named {name:?}", c.id);
+    fn every_row_with_a_bound_action_shows_a_key() {
+        let p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        for profile in [crate::config::KeyProfile::Arrows, crate::config::KeyProfile::Vim] {
+            let keymap = crate::keys::Keymap::default_bindings_for(profile);
+            for c in all_commands() {
+                let bound = keymap.combo_for_action(key_action(&c.action)).is_some();
+                let here = p.key_context.action(c.action.clone()) == c.action;
+                assert_eq!(p.key_column(&c, &keymap).is_some(), bound && here, "{}", c.id);
             }
         }
     }
