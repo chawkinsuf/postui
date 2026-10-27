@@ -233,13 +233,6 @@ pub struct KeyContext {
 }
 
 impl KeyContext {
-    /// The context on a screen's `surface` (`App::screen_surface`, which
-    /// ignores modals): the sidebar on the main screen is
-    /// `Surface::Sidebar`.
-    pub fn on(surface: crate::keyroute::Surface) -> Self {
-        Self { sidebar_on_main: surface == crate::keyroute::Surface::Sidebar }
-    }
-
     /// What a key bound to `action` does here. With the sidebar focused on
     /// the main screen, the split keys (`alt+w`, `shift+alt+w`, or whatever
     /// keys.toml binds to `cycle_split` / `cycle_split_back`) step the

@@ -552,16 +552,20 @@ pub struct PaletteState {
     picked: bool,
     /// Where the palette opened, for the key column's spelling (task #132):
     /// taken as it opens, since once it is up `App::surface` is the
-    /// palette's own `Picker`, where no row is looked up. Its profile
-    /// cannot change while the palette is up: keys go to the palette, and
-    /// its own Reload row closes it before the reload runs.
+    /// palette's own `Picker`, where no row is looked up. What it holds
+    /// cannot change while the palette is up: keys go to the palette (so
+    /// no field or focus moves), its own Reload row closes it before the
+    /// reload runs, and the one part of a surface that can change under it
+    /// (the response's view mode, as a response lands) decides no palette
+    /// row's key.
     spell: crate::keyroute::SpellCtx,
-    /// What a key press's binding takes at that place (`App::key_context`,
-    /// spec S6a), for the combo check. It is not derived from `spell`: the
-    /// two differ while a modal is under the palette. Opened by `:` over
-    /// the sidebar's rename prompt, the spelling is the prompt's, but a key
-    /// press still takes the sidebar's context from the screen, where
-    /// `alt+w` does not move the split
+    /// What a key press's binding takes where the palette opened
+    /// (`App::key_context`, spec S6a), for the combo check. It is not
+    /// derived from `spell`: `App::key_context` reads the focus and screen
+    /// under any modal, `spell` the top modal's surface, and `:` opens over
+    /// a prompt. Over the sidebar's rename prompt the spelling is the
+    /// prompt's, while the context stays the sidebar's, and there `alt+w`
+    /// does not move the split, so the split row must not name it
     /// (`the_ex_palette_over_a_sidebar_prompt_keeps_the_sidebar_key_context`).
     key_context: crate::keys::KeyContext,
     /// The `:` line's history as it stood when the line opened, oldest
@@ -1243,11 +1247,12 @@ mod tests {
         }
     }
 
-    /// A palette opened at `at` as the app opens one with no modal up,
-    /// where a key press's context is the surface's.
+    /// A palette opened at `at` as the app opens one with no modal up: a
+    /// key press's context is the sidebar's on `Surface::Sidebar`.
     fn open_at(at: crate::keyroute::SpellCtx) -> PaletteState {
+        let sidebar_on_main = at.surface == crate::keyroute::Surface::Sidebar;
         PaletteState::new(&crate::usage::UsageStore::default(), 0)
-            .opened_at(at, crate::keys::KeyContext::on(at.surface))
+            .opened_at(at, crate::keys::KeyContext { sidebar_on_main })
     }
 
     /// A palette opened in `profile` with no surface of its own.

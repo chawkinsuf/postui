@@ -2633,12 +2633,13 @@ impl App {
     }
 
     /// Where the keyboard is, for [`crate::keys::KeyContext::action`]: the
-    /// one input a key's action takes context from, read off the screen's
-    /// surface, under any modal (the sidebar focused on the main screen is
-    /// `Surface::Sidebar`). Both palettes are opened with it too, so their
-    /// key column names a key only where it runs the row.
+    /// one input a key's action takes context from. Both palettes are
+    /// opened with it too, so their key column names a key only where it
+    /// runs the row.
     pub(crate) fn key_context(&self) -> crate::keys::KeyContext {
-        crate::keys::KeyContext::on(self.screen_surface())
+        crate::keys::KeyContext {
+            sidebar_on_main: self.focus == PaneId::Sidebar && self.screen == Screen::Main,
+        }
     }
 
     /// Moves the sidebar's edge `delta` columns from the width on screen,
