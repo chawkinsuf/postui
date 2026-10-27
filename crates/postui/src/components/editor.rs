@@ -2586,7 +2586,9 @@ fn body_selection_style(theme: &Theme) -> Style {
 /// live selection. (ctrl+r and ctrl+s are Send and Save in the arrows
 /// profile, so they never got here by default; a keys.toml that frees
 /// them would have.) The kill keys (ctrl+k, alt+u) still fill edtui's
-/// clipboard, which nothing reads now: they are plain deletes.
+/// clipboard, which nothing reads now: they are plain deletes. edtui's
+/// ctrl+j (a bare line break) stays in the map but never arrives:
+/// `handle_key` folds ctrl+j into Enter first (#157).
 ///
 /// The four are every such insert-mode binding in edtui 0.11.6's
 /// `emacs_keybindings`; edtui keeps the map private, so the dependency is
@@ -2767,15 +2769,8 @@ impl Component for Editor {
                 // ^A splits (mac: smart Home; Linux: falls through to
                 // select-all).
                 let ev = crate::keys::fold_text_nav_bytes(ev, cfg!(target_os = "macos"));
-                // ctrl+j is the newline byte (#157): it takes Enter's path
-                // below, auto-indent and selection replace included, rather
-                // than edtui's bare break. Body only: on the one-line fields
-                // Enter means something else.
-                let ev = if ev.code == KeyCode::Char('j') && ev.modifiers == KeyModifiers::CONTROL {
-                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
-                } else {
-                    ev
-                };
+                // ctrl+j takes Enter's path below (#157).
+                let ev = crate::keys::fold_body_newline(ev);
                 // GUI-style selection (plan 2026-08-23-text-selection):
                 // select-all (ctrl+a on Linux; ctrl+shift+a — either
                 // reported spelling — everywhere, cmd+a via the SUPER
@@ -2900,7 +2895,7 @@ impl Component for Editor {
                 // reaches edtui's own emacs-style bindings (ctrl+e/k etc.)
                 // deliberately, so those keep working for body editing
                 // (all but its private paste, undo, redo and search:
-                // `body_key_handler`).
+                // `body_key_handler`; ctrl+j was folded into Enter above).
                 if ev.code == KeyCode::Esc {
                     self.sub_focus = SubFocus::None;
                     return Some(Action::Render);

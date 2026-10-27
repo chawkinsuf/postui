@@ -208,6 +208,19 @@ pub fn fold_text_nav_bytes(ev: KeyEvent, macos: bool) -> KeyEvent {
     }
 }
 
+/// Folds ctrl+j, the newline byte, into a plain Enter (#157), so the body
+/// editor breaks the line its own way (auto-indent, selection replace)
+/// rather than edtui's bare break. Body only, applied after
+/// [`fold_text_nav_bytes`]: on the one-line fields Enter means something
+/// else.
+pub fn fold_body_newline(ev: KeyEvent) -> KeyEvent {
+    if ev.code == KeyCode::Char('j') && ev.modifiers == KeyModifiers::CONTROL {
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+    } else {
+        ev
+    }
+}
+
 /// Where the keyboard is, as far as a key's binding is concerned
 /// (`App::key_context`). [`Self::action`] is the one place a key's action
 /// takes context: every key press reads its binding through it
@@ -915,6 +928,23 @@ mod tests {
         assert_eq!((ev.code, ev.modifiers), (KeyCode::Home, KeyModifiers::NONE));
         let ev = f(KeyCode::Char('a'), KeyModifiers::CONTROL, false);
         assert_eq!((ev.code, ev.modifiers), (KeyCode::Char('a'), KeyModifiers::CONTROL));
+    }
+
+    #[test]
+    fn fold_body_newline_turns_only_ctrl_j_into_enter() {
+        let f = |code, mods| {
+            let ev = fold_body_newline(KeyEvent::new(code, mods));
+            (ev.code, ev.modifiers)
+        };
+        assert_eq!(
+            f(KeyCode::Char('j'), KeyModifiers::CONTROL),
+            (KeyCode::Enter, KeyModifiers::NONE)
+        );
+        for mods in
+            [KeyModifiers::NONE, KeyModifiers::ALT, KeyModifiers::CONTROL | KeyModifiers::SHIFT]
+        {
+            assert_eq!(f(KeyCode::Char('j'), mods), (KeyCode::Char('j'), mods), "{mods:?}");
+        }
     }
 
     #[test]
