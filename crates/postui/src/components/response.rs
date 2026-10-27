@@ -767,6 +767,15 @@ pub struct ReadyView {
     /// Width of the body viewport as of the last draw — the horizontal
     /// counterpart of `height`, used to clamp `h_scroll`.
     width: usize,
+    /// A `%` or search landing asked for the cursor's column to be scrolled
+    /// into view (tasks #164, #180). The next `draw` does it
+    /// ([`ReadyView::show_cursor_col`]), once that frame's layout has given
+    /// the body its width (a landing that opens a fold can make the tree
+    /// overflow, so the scrollbar takes a column) and measured the widest
+    /// line. The ask makes the landing count as a change (`motion_mark`),
+    /// so its frame follows it, and a cursor move forgets it with the
+    /// column (`cursor_moved`).
+    show_col: bool,
     /// Cached widest visible line in display columns, keyed by the (mode,
     /// visible line count, tree epoch) it was measured for — a
     /// collapse/expand or a view switch changes the visible set, so either
@@ -957,6 +966,7 @@ impl ReadyView {
             anchor_col: 0,
             note: None,
             width: 40,
+            show_col: false,
             content_width: None,
             last_area: None,
             sel_anchor: None,
@@ -1248,10 +1258,12 @@ impl ReadyView {
     /// The cursor moved (a key, a click, a pull to the view's edge, a new
     /// tree or view): it is no longer on the hidden line a closed fold
     /// remembered (plan M5a Deviation 8), and its column comes from `want`
-    /// on the line it is on now.
+    /// on the line it is on now. A landing's ask to show its column goes
+    /// with the column (`show_col`; a landing asks after its own move).
     fn cursor_moved(&mut self) {
         self.fold_line = None;
         self.at_col = None;
+        self.show_col = false;
     }
 
     /// Vim's cursor column on the cursor's real line: the one set there, or
@@ -1576,7 +1588,9 @@ impl ReadyView {
     }
 
     /// What a motion can change: when none of it did, the motion beeped and
-    /// the frame needs no redraw.
+    /// the frame needs no redraw. A landing's ask to show its column
+    /// (`show_col`) counts: the sideways scroll it stands for is the next
+    /// frame's to make.
     #[allow(clippy::type_complexity)]
     fn motion_mark(
         &self,
@@ -1589,6 +1603,7 @@ impl ReadyView {
         Option<((usize, usize), (usize, usize))>,
         Option<usize>,
         usize,
+        bool,
     ) {
         (
             self.cursor,
@@ -1599,6 +1614,7 @@ impl ReadyView {
             self.sel,
             self.line_anchor,
             self.visible_len(),
+            self.show_col,
         )
     }
 
@@ -1752,8 +1768,8 @@ impl ReadyView {
     /// edge beep don't (`j`/`k`'s edge drop is main's arrows rule). A
     /// landing on another line opens the folds at it (`'foldopen'`
     /// `percent`), before the column is set, as `$` does. Like a search
-    /// landing, it does not scroll the view sideways: the response draws no
-    /// caret for a sideways scroll to follow.
+    /// landing, it has the next frame scroll the view sideways to show the
+    /// column ([`Self::show_cursor_col`]).
     fn percent(&mut self, count: Option<usize>) {
         use crate::text::brackets::{MatchFrom, find_match, percent_row};
         let Some(from) = self.real_line() else { return };
@@ -1779,6 +1795,77 @@ impl ReadyView {
             None => self.col_first_non_blank(),
         }
         self.follow_cursor();
+        self.show_col = true;
+    }
+
+    /// Vim's `curs_columns()` sideways, in a `nowrap` window with
+    /// `'sidescroll'` and `'sidescrolloff'` at Vim's 0: when the char under
+    /// Vim's cursor is not wholly in view, the view scrolls to put it
+    /// mid-window (task #164; probed in Vim 9.1, 80 columns: `%` to column
+    /// 231 leaves `leftcol` 191, a landing in view leaves it). Never past
+    /// the widest line's end (`content_w`), as no sideways scroll here goes
+    /// (`scroll_h`): the one difference from Vim, whose window can show
+    /// blank columns there. The cursor's char stays in view all the same.
+    /// While a closed fold holds the cursor's line nothing scrolls, as
+    /// Vim's skips a folded cursor line: the row shows the fold's summary,
+    /// not the line the column is on.
+    ///
+    /// `draw` calls it when a landing asked (`show_col`), after the frame's
+    /// layout set `width`: the width this frame paints, which a landing
+    /// cannot know (a fold it opens can give a column to the scrollbar).
+    ///
+    /// Arrows' search landings ask too, and get the same rule (task #180):
+    /// a GUI editor's find also brings a match from out of view to the
+    /// middle. The rule reads the match's first char, the column that
+    /// lands, where a GUI find would show the whole match: a match that
+    /// starts in view and runs past the edge keeps the scroll, so one
+    /// starting in the last column shows a single highlighted cell. That is
+    /// the cost of one rule for both kinds (a vim landing must read the
+    /// cursor's char, as Vim's does), and taking the whole match would have
+    /// the landing hand over its end too; a match that scrolls has half the
+    /// width to its right, so a short one shows whole. One known gap, left
+    /// to its own task:
+    /// arrows' search opens only the match's ancestors, so a match in a
+    /// collapsed container's key leaves the cursor on that closed fold, and
+    /// nothing scrolls, as for any closed fold. The row does paint the key,
+    /// but no collapsed row paints a match highlight, so scrolling alone
+    /// would show the text without marking it; the fix is that row's
+    /// (open the container, or light its key), not this scroll's.
+    ///
+    /// Only `%` and the search's landings ask, the jumps along a line
+    /// that would otherwise move an unseen column. Vim keeps its cursor in
+    /// view after every command, but doing it on every move
+    /// (`follow_cursor`) would undo `h` `l`'s step scroll, which moves the
+    /// view a step while the column moves one char (the user's ruling, spec
+    /// §5.7), and would make `j` `k` `G` and the page keys scroll sideways
+    /// too, a change of their own. Those stay the known differences.
+    fn show_cursor_col(&mut self, content_w: usize) {
+        // The column the landing set on the cursor's line (`set_col`), the
+        // landing's own: its frame comes next, and a cursor move in between
+        // would have dropped the ask. Landings set it on the line's chars,
+        // never past its end.
+        let Some(line) = self.real_line() else { return };
+        let Some((_, col)) = self.at_col.filter(|&(l, _)| l == line) else { return };
+        if self.in_closed_fold(line) {
+            return;
+        }
+        // Out of a closed fold, the row paints the line's whole text. It is
+        // copied, once per landing: the landing itself already copied the
+        // line (`set_col`) and walked it to the column (`want_at`), so a
+        // borrow here would not change what a megabyte line costs. The
+        // walk to the column resumes from the line's column index when a
+        // sideways-scrolled frame built one; a scrolling landing's own
+        // frame builds it (`index_raw_rows`).
+        let Some(text) = self.buffer_line(line) else { return };
+        let from = match self.mode {
+            ViewMode::Raw => mark_at_char(self.raw_marks.get(&line).map(Vec::as_slice), col),
+            _ => (0, 0, 0),
+        };
+        let (start, end) = cell_span(&text, col, from);
+        let width = self.width.max(1);
+        if start < self.h_scroll || end > self.h_scroll + width {
+            self.h_scroll = start.saturating_sub(width / 2).min(content_w.saturating_sub(width));
+        }
     }
 
     /// The rest of `halfpage()`'s move down, once the window hit the end:
@@ -1978,10 +2065,12 @@ impl ReadyView {
     /// puts the column on it (on the line's last char for a match at its
     /// end, as Vim's Normal cursor cannot be past it). A vim search opens
     /// every closed fold at the line, the one it opens included, as Vim's
-    /// `'foldopen'` `search` does; arrows' only shows the line, as on main.
-    /// A jump like any other: a line selection drops, except vim's V, which
-    /// a search extends as Vim 9.1's Visual does (probed). Its anchor is a
-    /// buffer line, so a fold the landing opens above it does not move it.
+    /// `'foldopen'` `search` does; arrows' expands only the match's
+    /// ancestors. Either has the next frame scroll the view sideways to
+    /// show the column ([`Self::show_cursor_col`]). A jump like any other:
+    /// a line selection drops, except vim's V, which a search extends as
+    /// Vim 9.1's Visual does (probed). Its anchor is a buffer line, so a
+    /// fold the landing opens above it does not move it.
     fn jump_to_match(&mut self) {
         let Some(search) = &self.search else { return };
         let Some(&(line, start, _)) = search.matches.get(search.current) else {
@@ -2006,6 +2095,7 @@ impl ReadyView {
         }
         let len = self.buffer_line(line).map_or(0, |t| t.chars().count());
         self.set_col(start.min(len.saturating_sub(1)));
+        self.show_col = true;
     }
 
     /// The buffer line shown on visible row `row`: on the tree, the line
@@ -2076,12 +2166,14 @@ impl ReadyView {
     /// stay (probed: `/bar` Enter, then `/foo` Esc leaves `@/` `bar`, the
     /// cursor and the highlight). Arrows' Esc on an empty box only closes
     /// it, as main ran nothing; on a typed one it runs the search, main's
-    /// field rule. Otherwise an empty Vim box takes the last query, as
-    /// Vim's `/` Enter does, and says Vim's E35 when there is none (probe
-    /// E1); an empty arrows box finds nothing, as on main. A Vim pattern
-    /// becomes the last one before it compiles, as Vim's `do_search()`
-    /// stores it, so one outside the engine's subset is kept too and `n`
-    /// says why again (probed: `/\(` then `n` repeats E54).
+    /// field rule, and lands as Enter does, the sideways scroll to the
+    /// match included (task #180): the Esc keeps what was typed, and its
+    /// landing is that search's. Otherwise an empty Vim box takes the last
+    /// query, as Vim's `/` Enter does, and says Vim's E35 when there is
+    /// none (probe E1); an empty arrows box finds nothing, as on main. A
+    /// Vim pattern becomes the last one before it compiles, as Vim's
+    /// `do_search()` stores it, so one outside the engine's subset is kept
+    /// too and `n` says why again (probed: `/\(` then `n` repeats E54).
     fn commit_search(&mut self, esc: bool, memory: &mut SearchMemory) {
         use crate::vim::engine::{Dir, as_stored};
         let Some(search) = self.search.as_mut() else { return };
@@ -2569,6 +2661,22 @@ fn grapheme_at_col(text: &str, col: usize, from: ColMark) -> Option<usize> {
         }
     }
     None
+}
+
+/// The display columns `[start, end)` that the grapheme holding char `col`
+/// of `text` paints on, as ratatui paints it. A zero-width grapheme, or a
+/// column past the end (an empty line's), takes the one column there, as
+/// Vim's cursor does. The walk resumes from `from`, a `col_marks` entry at
+/// or before char `col` ([`mark_at_char`]), or the line start.
+fn cell_span(text: &str, col: usize, from: ColMark) -> (usize, usize) {
+    let (from_byte, from_char, mut w) = from;
+    for g in crate::ui::char_graphemes(&text[from_byte..]) {
+        if col < from_char + g.char + g.chars {
+            return (w, w + g.width.max(1));
+        }
+        w += g.width;
+    }
+    (w, w + 1)
 }
 
 /// The first char of `text`'s last grapheme (0 when empty). The grapheme
@@ -4489,25 +4597,37 @@ impl Component for Response {
 
         // A line wider than the pane reserves the bottom row for a
         // horizontal position indicator, mirroring how vertical overflow
-        // takes the right column.
+        // takes the right column. Each bar can bring on the other: the
+        // bottom row can push the body into vertical overflow, and the
+        // right column can clip a line that fit the full width. So both
+        // are decided before either is drawn, the bottom bar against the
+        // width left once the right column is known.
         let content_w = view.content_width();
+        let v_spec = |rows: u16| ScrollbarSpec {
+            pane: PaneId::Response,
+            offset: view.scroll,
+            content: view.visible_len(),
+            viewport: rows as usize,
+        };
+        let clips = |width: u16| content_w > width as usize && body_area.height > 1;
+        let mut wants_h = clips(body_area.width);
+        let wants_v =
+            v_spec(body_area.height - u16::from(wants_h)).overflows() && body_area.width > 1;
+        // A bottom bar added here leaves the body still overflowing: it
+        // only takes a row away.
+        wants_h |= wants_v && clips(body_area.width - 1);
         let mut h_bar = None;
-        if content_w > body_area.width as usize && body_area.height > 1 {
+        if wants_h {
             h_bar = Some(Rect { y: body_area.y + body_area.height - 1, height: 1, ..body_area });
             body_area.height -= 1;
         }
+        let spec = v_spec(body_area.height);
 
         if view.height != body_area.height as usize {
             view.scroll_opt = None;
         }
         view.height = body_area.height as usize;
-        let spec = ScrollbarSpec {
-            pane: PaneId::Response,
-            offset: view.scroll,
-            content: view.visible_len(),
-            viewport: view.height,
-        };
-        if spec.overflows() && body_area.width > 1 {
+        if wants_v {
             let column = Rect { x: body_area.x + body_area.width - 1, width: 1, ..body_area };
             body_area.width -= 1;
             if let Some(bar) = h_bar.as_mut() {
@@ -4520,6 +4640,9 @@ impl Component for Response {
         // The visible set may have shrunk (a collapse, a view switch) since
         // the offset was set; never leave the viewport past the content.
         view.h_scroll = view.h_scroll.min(content_w.saturating_sub(view.width.max(1)));
+        if std::mem::take(&mut view.show_col) {
+            view.show_cursor_col(content_w);
+        }
 
         if let Some(bar) = h_bar {
             draw_h_indicator(frame, hits, bar, view.h_scroll, content_w, ctx);
@@ -4997,9 +5120,19 @@ fn body_lines(
     // they start at, and the display columns `crop_cols` still has to drop
     // from their front — `(0, h_scroll)` for a row built from its whole
     // text, or whatever `viewport_window` cut for a raw row.
+    //
+    // `tail` is painted after the row's text but is not part of it (a
+    // header row's gap and copy pill, #54; the divider's rule, #177): the
+    // copy and the search read the text alone, so the highlights and the
+    // selection are laid on `pieces` before `tail` joins them, and a
+    // selection to the row's end (`v$` included) stops where the text
+    // does, as on a Raw or Pretty row, which has no cell past its text to
+    // paint. Only the cursor row's tint, a whole-line style, still spans
+    // the tail.
     let mut push = |i: usize,
                     full: usize,
                     pieces: Vec<(String, Style)>,
+                    tail: Vec<Span<'static>>,
                     highlightable: bool,
                     window: (usize, usize)| {
         let (char_start, crop) = window;
@@ -5043,6 +5176,7 @@ fn body_lines(
         if let Some((from, to)) = sel {
             line = apply_col_bg(line, from, to, t.selection);
         }
+        line.spans.extend(tail);
         let mut line = crop_cols(line, crop);
         if focused && i == view.cursor {
             line = line.style(cursor_bg);
@@ -5081,7 +5215,7 @@ fn body_lines(
                 // A collapsed line renders its summary, not its real text, so
                 // the match columns computed over the expanded text no longer
                 // apply to it.
-                push(i, full, pieces, !line.collapsed, (0, view.h_scroll));
+                push(i, full, pieces, Vec::new(), !line.collapsed, (0, view.h_scroll));
 
                 let y = area.y.saturating_add((i - start) as u16);
                 if y < area.y.saturating_add(area.height) {
@@ -5108,7 +5242,7 @@ fn body_lines(
                 let from = mark_for(view.raw_marks.get(&i).map(Vec::as_slice), view.h_scroll);
                 let (char_start, crop, slice) =
                     viewport_window(&view.raw_lines[i], view.h_scroll, width, from);
-                push(i, i, vec![(slice.to_string(), text)], true, (char_start, crop));
+                push(i, i, vec![(slice.to_string(), text)], Vec::new(), true, (char_start, crop));
             }
         }
         ViewMode::Headers => {
@@ -5117,13 +5251,17 @@ fn body_lines(
                 let row = view.header_row(i).unwrap_or(HeaderRow::Note);
                 match row {
                     HeaderRow::Divider => {
+                        // The `─` rule out to the pane's width is the row's
+                        // tail: the copy holds `── sent ` alone, so a
+                        // selection across the divider stops there (#177).
                         let rule = "\u{2500}"
                             .repeat((area.width as usize).saturating_sub(crate::ui::cells(line)));
-                        push(i, i, vec![(format!("{line}{rule}"), dim)], true, (0, view.h_scroll));
+                        let tail = vec![Span::styled(rule, dim)];
+                        push(i, i, vec![(line.clone(), dim)], tail, true, (0, view.h_scroll));
                         continue;
                     }
                     HeaderRow::Note => {
-                        push(i, i, vec![(line.clone(), dim)], true, (0, view.h_scroll));
+                        push(i, i, vec![(line.clone(), dim)], Vec::new(), true, (0, view.h_scroll));
                         continue;
                     }
                     HeaderRow::Received(_) | HeaderRow::Sent(_) => {}
@@ -5142,13 +5280,17 @@ fn body_lines(
                 };
                 // The glyph sits centered in an odd-width pill so its hover
                 // highlight surrounds it symmetrically instead of leaving a
-                // blank highlighted cell on one side.
+                // blank highlighted cell on one side. The gap and the pill
+                // are the row's tail, outside its text.
                 let pieces = vec![
                     (name.to_string(), Style::default().fg(t.accent)),
-                    (format!("{value}{HEADER_PILL_GAP}"), text),
-                    (crate::glyph::COPY_PILL.to_string(), glyph_style),
+                    (value.to_string(), text),
                 ];
-                push(i, i, pieces, true, (0, view.h_scroll));
+                let tail = vec![
+                    Span::styled(HEADER_PILL_GAP, text),
+                    Span::styled(crate::glyph::COPY_PILL, glyph_style),
+                ];
+                push(i, i, pieces, tail, true, (0, view.h_scroll));
 
                 let y = area.y.saturating_add((i - start) as u16);
                 if y < area.y.saturating_add(area.height) {
@@ -5332,6 +5474,17 @@ fn col_marks(text: &str) -> Vec<ColMark> {
 /// for a line with no index (short, or never scrolled).
 fn mark_for(marks: Option<&[ColMark]>, skip: usize) -> ColMark {
     marks.and_then(|m| m.get(skip / COL_MARK_STEP).or(m.last())).copied().unwrap_or((0, 0, 0))
+}
+
+/// The last mark at or before char `ch`, for a walk that starts from a
+/// char rather than a column ([`cell_span`]): marks run in char order as
+/// in column order. The line start when there is none.
+fn mark_at_char(marks: Option<&[ColMark]>, ch: usize) -> ColMark {
+    let marks = marks.unwrap_or_default();
+    match marks.partition_point(|m| m.1 <= ch) {
+        0 => (0, 0, 0),
+        n => marks[n - 1],
+    }
 }
 
 /// The part of `text` that can reach a viewport `width` columns wide once
@@ -7020,6 +7173,84 @@ mod tests {
         );
     }
 
+    /// Task #54: a selection running past a header row's end paints its
+    /// text only. The gap and the copy pill are not part of the row's text
+    /// (the copy leaves them out), so they keep their own look. The divider
+    /// row's rule has its own test below (#177).
+    #[test]
+    fn a_selection_past_a_header_rows_end_leaves_its_pill_unpainted() {
+        let theme = Theme::dark();
+        let mut r = ready("{}");
+        r.set_view_mode(ViewMode::Headers);
+        let (area, before) = render_buf(&mut r);
+        // From row 0's start down into row 2 (the first sent header), so
+        // row 0 is selected to its end.
+        assert!(r.begin_selection_at(area.x, area.y));
+        assert!(r.drag_selection_to(area.x + 3, area.y + 2));
+        let (area, buf) = render_buf(&mut r);
+        let view = r.view().unwrap();
+        assert!(matches!(view.header_row(0), Some(HeaderRow::Received(_))));
+        let lines = &view.header_lines;
+        let line = &lines[0];
+        let at = |c: usize| (area.x + u16::try_from(c).unwrap(), area.y);
+        let text_end = crate::ui::cells(line);
+        assert_eq!(
+            buf[at(text_end - 1)].bg,
+            theme.selection,
+            "the row's last text cell is selected"
+        );
+        // Row 0 is the cursor row either way, so its tint is in both.
+        for c in text_end..header_pill_cols(line).end {
+            assert_eq!(
+                buf[at(c)],
+                before[at(c)],
+                "column {c}: the gap and pill paint as unselected"
+            );
+        }
+        let head: String = lines[2].chars().take(4).collect();
+        assert_eq!(
+            r.selected_text(),
+            Some(format!("{line}\n{}\n{head}", lines[1])),
+            "the copy holds row 0's text, its gap and pill left out"
+        );
+    }
+
+    /// A selection across the `── sent` divider paints its text only: the
+    /// `─` rule drawn out to the pane's width is not in the copy, so it
+    /// keeps its unselected look (#177).
+    #[test]
+    fn a_selection_across_the_sent_divider_leaves_its_rule_unpainted() {
+        let theme = Theme::dark();
+        let mut r = ready("{}");
+        r.set_view_mode(ViewMode::Headers);
+        let (area, before) = render_buf(&mut r);
+        // From row 0's start down into row 2 (the first sent header), so
+        // the divider on row 1 is selected whole.
+        assert!(r.begin_selection_at(area.x, area.y));
+        assert!(r.drag_selection_to(area.x + 3, area.y + 2));
+        let (area, buf) = render_buf(&mut r);
+        let view = r.view().unwrap();
+        assert_eq!(view.header_row(1), Some(HeaderRow::Divider));
+        let at = |c: usize| (area.x + u16::try_from(c).unwrap(), area.y + 1);
+        let text_end = crate::ui::cells(SENT_DIVIDER);
+        assert_eq!(
+            buf[at(text_end - 1)].bg,
+            theme.selection,
+            "the divider's last text cell is selected"
+        );
+        assert_eq!(buf[at(text_end)].symbol(), "\u{2500}", "the rule starts after the text");
+        for c in text_end..usize::from(area.width) {
+            assert_eq!(buf[at(c)], before[at(c)], "column {c}: the rule paints as unselected");
+        }
+        let lines = &view.header_lines;
+        let head: String = lines[2].chars().take(4).collect();
+        assert_eq!(
+            r.selected_text(),
+            Some(format!("{}\n{SENT_DIVIDER}\n{head}", lines[0])),
+            "the copy holds the divider's text, its rule left out"
+        );
+    }
+
     /// A received value with wide text (`日本語`, 3 chars, 6 cells) still
     /// gets its copy pill's click rect on the painted pill.
     #[test]
@@ -7995,6 +8226,250 @@ mod tests {
         );
     }
 
+    /// Types `query` into a fresh search box of `syntax` and commits it.
+    fn search_for(r: &mut Pane, syntax: SearchSyntax, query: &str) {
+        assert!(r.open_search(syntax, false));
+        for c in query.chars() {
+            r.handle_key(ch(c));
+        }
+        r.handle_key(key(KeyCode::Enter));
+    }
+
+    /// Draws a frame whose body is 80 columns wide, as the probes' Vim
+    /// window, then reads the cursor's row, Vim's column and the sideways
+    /// scroll. The scroll a landing asks for is the frame's to do, so each
+    /// landing is read through a draw, as the app draws after every event.
+    fn drawn(r: &mut Pane) -> (usize, usize, usize) {
+        render_sized(r, 82, 30);
+        let v = r.view().unwrap();
+        assert_eq!(v.width, 80, "no vertical scrollbar");
+        (v.cursor, v.cur_col(), v.h_scroll)
+    }
+
+    /// Task #164, probed in Vim 9.1 (`vim -Nu NONE`, `nowrap`, 80 columns,
+    /// so `'sidescroll'` and `'sidescrolloff'` are 0): a `%` or search
+    /// landing whose column is out of view scrolls the view to put it
+    /// mid-window, `leftcol` the column less 40; one in view leaves the
+    /// scroll. `{N}%`'s first non-blank counts too. The first landing comes
+    /// before any frame, while the view still has its width guess.
+    #[test]
+    fn percent_and_search_landings_scroll_the_column_into_view() {
+        use crate::action::ResponseMotion as M;
+        let body = [
+            format!("{}[{}]{}", "a".repeat(30), "b".repeat(200), "c".repeat(50)),
+            "short [x]".to_string(),
+            format!("{}target{}", "d".repeat(150), "e".repeat(20)),
+            format!("    {}", "f".repeat(300)),
+        ]
+        .join("\n");
+        let mut r = ready(&body);
+        r.motion(M::MatchPair { count: None });
+        assert_eq!(drawn(&mut r), (0, 231, 191), "% to the far ]");
+        search_for(&mut r, SearchSyntax::Vim, "c");
+        assert_eq!(drawn(&mut r), (0, 232, 191), "/c lands in view: no scroll");
+        r.motion(M::Col(crate::action::ColMove::Start));
+        r.motion(M::MatchPair { count: None });
+        drawn(&mut r);
+        r.motion(M::MatchPair { count: None });
+        assert_eq!(drawn(&mut r), (0, 30, 0), "% back to the [");
+        search_for(&mut r, SearchSyntax::Vim, "c");
+        assert_eq!(drawn(&mut r), (0, 232, 192), "/c from the [ scrolls");
+        search_for(&mut r, SearchSyntax::Vim, "target");
+        assert_eq!(drawn(&mut r), (2, 150, 110), "a landing on another line");
+        r.motion(M::MatchPair { count: Some(100) });
+        assert_eq!(drawn(&mut r), (3, 4, 0), "{{N}}% to a first non-blank in view");
+    }
+
+    /// Task #164: a landing that moves nothing but asks the frame to show
+    /// its column still needs that frame. `{N}%` back onto the cursor's own
+    /// first non-blank, after the view was scrolled away from it, is one.
+    #[test]
+    fn a_landing_that_only_asks_for_its_column_needs_a_frame() {
+        use crate::action::ResponseMotion as M;
+        let mut r = ready(&format!("{}\n    abc", "x".repeat(300)));
+        r.motion(M::MatchPair { count: Some(100) });
+        assert_eq!(drawn(&mut r), (1, 4, 0));
+        r.view.as_mut().unwrap().h_scroll = 100;
+        assert!(r.motion(M::MatchPair { count: Some(100) }), "a frame is due");
+        assert_eq!(drawn(&mut r), (1, 4, 0), "and it shows the column");
+    }
+
+    /// Task #164: the ask is the landing's. A cursor move before the frame
+    /// drops it with the column, so the move's own landing (`G` on another
+    /// line's first non-blank here) does not scroll sideways.
+    #[test]
+    fn a_cursor_move_before_the_frame_drops_the_landings_ask() {
+        use crate::action::ResponseMotion as M;
+        let mut r = ready(&format!("[{}]\n{}x", "a".repeat(200), " ".repeat(150)));
+        r.motion(M::MatchPair { count: None });
+        r.motion(M::Goto { line: None, last: true });
+        assert_eq!(drawn(&mut r), (1, 150, 0));
+    }
+
+    /// Task #164: `n` `N` `*` `#` land as `/` does.
+    #[test]
+    fn the_search_steps_scroll_the_column_into_view() {
+        let mut r = ready(&format!("x\n{}x {}", " ".repeat(150), "y".repeat(100)));
+        search_for(&mut r, SearchSyntax::Vim, "x");
+        assert_eq!(drawn(&mut r), (1, 150, 110), "/x");
+        assert!(r.find_next(true, 1));
+        assert_eq!(drawn(&mut r), (0, 0, 0), "N");
+        assert!(r.find_next(false, 1));
+        assert_eq!(drawn(&mut r), (1, 150, 110), "n");
+        assert!(r.find_word(true, 1));
+        assert_eq!(drawn(&mut r), (0, 0, 0), "#");
+        assert!(r.find_word(false, 1));
+        assert_eq!(drawn(&mut r), (1, 150, 110), "*");
+    }
+
+    /// Task #164: the scroll stops at the widest line's end, where Vim's
+    /// window would show blank columns (Vim's `leftcol` here is 110).
+    #[test]
+    fn a_landing_scrolls_no_further_than_the_widest_line() {
+        let mut r = ready(&format!("x\n{}x", " ".repeat(150)));
+        search_for(&mut r, SearchSyntax::Vim, "x");
+        assert_eq!(drawn(&mut r), (1, 150, 151 - 80));
+    }
+
+    /// Task #180: arrows' search lands as the vim search does, so a match
+    /// past the view's edge is put mid-window and one in view keeps the
+    /// scroll, its steps included: arrows' `n` `N` and the ▼/▲ step are
+    /// all `Action::StepResponseSearch`, which `step_search` runs.
+    #[test]
+    fn an_arrows_search_landing_scrolls_the_match_into_view() {
+        let mut r = ready(&format!("target\n{}target target{}", "d".repeat(150), "y".repeat(100)));
+        search_for(&mut r, SearchSyntax::Literal, "target");
+        assert_eq!(drawn(&mut r), (1, 150, 110), "a match past the edge");
+        assert!(r.step_search(1));
+        assert_eq!(drawn(&mut r), (1, 157, 110), "the next match in view: no scroll");
+        assert!(r.step_search(1));
+        assert_eq!(drawn(&mut r), (0, 0, 0), "the wrap back to the start");
+        assert!(r.step_search(-1));
+        assert_eq!(drawn(&mut r), (1, 157, 117), "back past the edge");
+    }
+
+    /// Task #180: the other two commits of a typed arrows box land the
+    /// same way: Esc, which runs a typed search (main's field rule), and
+    /// the ▼ step while the box is still being typed in.
+    #[test]
+    fn an_arrows_box_commit_by_esc_or_step_scrolls_to_the_match() {
+        for esc in [true, false] {
+            let mut r = ready(&format!("start\n{}target{}", "d".repeat(150), "y".repeat(100)));
+            assert!(r.open_search(SearchSyntax::Literal, false));
+            for c in "target".chars() {
+                r.handle_key(ch(c));
+            }
+            if esc {
+                r.handle_key(key(KeyCode::Esc));
+            } else {
+                assert!(r.step_search(1));
+            }
+            assert_eq!(drawn(&mut r), (1, 150, 110), "esc {esc}");
+        }
+    }
+
+    /// Tasks #164 and #180 on the tree, for either profile's search: the
+    /// column is the painted row's, indent included, so the match shows
+    /// after the scroll.
+    #[test]
+    fn a_search_landing_on_the_tree_shows_the_match() {
+        for syntax in [SearchSyntax::Vim, SearchSyntax::Literal] {
+            let mut r = ready(&format!(r#"{{"k": "{}target"}}"#, "x".repeat(150)));
+            assert!(!render(&mut r).contains("target"), "off screen to start with");
+            search_for(&mut r, syntax, "target");
+            assert!(render(&mut r).contains("target"), "{syntax:?}: the match shows");
+            assert!(r.view().unwrap().h_scroll > 0);
+        }
+    }
+
+    /// Tasks #164 and #180 on the Headers tab: a long header value's match
+    /// shows, for either profile's search.
+    #[test]
+    fn a_search_landing_on_the_headers_tab_shows_the_match() {
+        for syntax in [SearchSyntax::Vim, SearchSyntax::Literal] {
+            let mut d = data("{}");
+            d.headers.push(("x-long".into(), format!("{}target", "v".repeat(150))));
+            let mut r = Pane::default();
+            r.set_state(ResponseState::Ready(Box::new(d)), 0);
+            r.set_view_mode(ViewMode::Headers);
+            assert!(!render(&mut r).contains("target"), "off screen to start with");
+            search_for(&mut r, syntax, "target");
+            assert!(render(&mut r).contains("target"), "{syntax:?}: the match shows");
+            assert!(r.view().unwrap().h_scroll > 0);
+        }
+    }
+
+    /// Task #164: the width the landing is checked against is the one the
+    /// next frame paints. Here the tree fits until the search opens the
+    /// fold the match is in; then it overflows, the scrollbar takes the
+    /// body's last column, and the match, in that column, would be hidden
+    /// had the landing gone by the last frame's 80.
+    #[test]
+    fn a_landing_that_opens_a_fold_shows_its_char_past_the_new_scrollbar() {
+        use crate::action::{FoldOp, ResponseMotion as M};
+        let keys: String = (0..30).map(|i| format!(r#""a{i}": 1, "#)).collect();
+        let mut r = ready(&format!(r#"{{"o": {{{keys}"k": "{}Z"}}}}"#, "x".repeat(69)));
+        r.motion(M::Goto { line: Some(2), last: false });
+        assert!(r.view.as_mut().unwrap().fold(FoldOp::Close, 1));
+        r.motion(M::Goto { line: Some(1), last: false });
+        render_sized(&mut r, 82, 20);
+        assert_eq!(r.view().unwrap().width, 80, "the folded tree fits");
+        search_for(&mut r, SearchSyntax::Vim, "Z");
+        assert_eq!(r.view().unwrap().cur_col(), 79, "Z in the 80-column view's last column");
+        render_sized(&mut r, 82, 20);
+        let v = r.view().unwrap();
+        assert_eq!(v.width, 79, "the opened tree overflows");
+        assert!(v.h_scroll <= 79 && 79 < v.h_scroll + v.width, "Z shows");
+    }
+
+    /// Task #164: a column in a closed fold is not on its row, which shows
+    /// the fold's summary, so a landing that leaves the cursor in one does
+    /// not scroll, as Vim's `curs_columns()` skips a folded cursor line.
+    #[test]
+    fn a_percent_inside_a_closed_fold_does_not_scroll_sideways() {
+        use crate::action::{FoldOp, ResponseMotion as M};
+        let (wide, deep) = ("w".repeat(200), "x".repeat(150));
+        let mut r = ready(&format!(r#"{{"w": "{wide}", "o": {{"s": "{deep}[ab]"}}}}"#));
+        render(&mut r);
+        r.motion(M::Goto { line: Some(3), last: false });
+        assert!(r.view.as_mut().unwrap().fold(FoldOp::Close, 1));
+        r.motion(M::Goto { line: Some(4), last: false });
+        r.view.as_mut().unwrap().h_scroll = 50;
+        r.motion(M::MatchPair { count: None });
+        render(&mut r);
+        let v = r.view().unwrap();
+        assert!(v.in_closed_fold(3) && v.cur_col() > 100, "% found the pair in the fold");
+        assert_eq!(v.h_scroll, 50, "the summary's columns are not the line's");
+    }
+
+    /// Task #164: the columns a char paints on, as ratatui paints it: a wide
+    /// grapheme's two, a zero-width or past-the-end one's single column,
+    /// and every char of a multi-char grapheme the grapheme's. A resume
+    /// mark from the line's index gives what a walk from the start does.
+    #[test]
+    fn cell_span_reads_the_columns_a_char_paints_on() {
+        let start = (0, 0, 0);
+        assert_eq!(cell_span("abc", 1, start), (1, 2));
+        assert_eq!(cell_span("a日b", 1, start), (1, 3), "wide");
+        assert_eq!(cell_span("a日b", 2, start), (3, 4));
+        assert_eq!(cell_span("a\u{200b}b", 1, start), (1, 2), "zero-width");
+        assert_eq!(cell_span("a\u{200b}b", 2, start), (1, 2));
+        assert_eq!(cell_span("e\u{301}x", 1, start), (0, 1), "a combining mark's grapheme");
+        assert_eq!(cell_span("e\u{301}x", 2, start), (1, 2));
+        assert_eq!(cell_span("ab", 5, start), (2, 3), "past the end");
+        assert_eq!(cell_span("", 0, start), (0, 1), "an empty line");
+        let text = "日e\u{301}x".repeat(800);
+        let marks = col_marks(&text);
+        assert!(marks.len() > 2);
+        for col in [0, 1, 2, 1500, 1501, 2000, 3199, 3200] {
+            let from = mark_at_char(Some(&marks), col);
+            assert!(from.1 <= col);
+            assert_eq!(cell_span(&text, col, from), cell_span(&text, col, start), "col {col}");
+        }
+        assert_ne!(mark_at_char(Some(&marks), 3000), start, "a far char resumes");
+        assert_eq!(mark_at_char(None, 3000), start);
+    }
+
     #[test]
     fn a_wide_body_draws_a_horizontal_scrollbar_and_a_narrow_one_does_not() {
         let mut r = wide_raw();
@@ -8011,6 +8486,44 @@ mod tests {
         assert!(
             !bottom.contains('█') && !bottom.contains('─'),
             "no indicator when nothing is clipped: {out}"
+        );
+    }
+
+    #[test]
+    fn a_line_as_wide_as_the_body_gets_the_horizontal_bar_once_the_vertical_bar_narrows_it() {
+        // Fits the body exactly until the vertical scrollbar takes its
+        // column, after which one column is clipped: the view can scroll
+        // sideways, so the bottom bar must be there to show and undo it.
+        let mut probe = ready(&(0..40).map(|i| format!("l{i}")).collect::<Vec<_>>().join("\n"));
+        render_sized(&mut probe, 82, 20);
+        let body_w = probe.view().unwrap().width() + 1; // the vertical bar's column
+        let mut lines = vec!["y".repeat(body_w)];
+        lines.extend((0..40).map(|i| format!("l{i}")));
+        let mut r = ready(&lines.join("\n"));
+        render_sized(&mut r, 82, 20);
+        assert_eq!(r.view().unwrap().width(), body_w - 1, "the vertical bar takes a column");
+        r.handle_scroll_h(5);
+        let hits = render_hits_at(&mut r, 82);
+        assert_eq!(r.view().unwrap().h_scroll, 1, "one column is clipped, so one is reachable");
+        let thumb = hits.rect_of(&crate::hit::Hit::HScrollThumb(PaneId::Response));
+        assert_eq!(thumb.map(|t| t.y), Some(19), "the horizontal thumb on the bottom row");
+    }
+
+    #[test]
+    fn a_body_that_fits_until_the_horizontal_bar_takes_a_row_gets_the_vertical_bar() {
+        // The other direction: a wide line reserves the bottom row, which
+        // leaves one row too few for the lines.
+        let mut probe = wide_raw();
+        render_sized(&mut probe, 82, 20);
+        let rows = probe.view().unwrap().height + 1; // the bottom bar's row
+        let mut lines = vec!["x".repeat(200)];
+        lines.extend((1..rows).map(|i| format!("l{i}")));
+        let mut r = ready(&lines.join("\n"));
+        let hits = render_hits_at(&mut r, 82);
+        assert_eq!(r.view().unwrap().height, rows - 1, "the bottom bar takes a row");
+        assert!(
+            hits.rect_of(&crate::hit::Hit::ScrollbarThumb(PaneId::Response)).is_some(),
+            "the vertical bar shows for the line pushed out of view"
         );
     }
 

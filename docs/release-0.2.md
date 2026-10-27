@@ -61,7 +61,8 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] #141 The repo's GitHub description and topics (set by the user 2026-10-27: the README tagline as the description, 15 topics, no homepage)
 - [x] #173 CI's macOS check failed from 99dff5f on: a #135 test spelled the footer's `opt+o` as `alt+o` (merged 2026-10-27; the build is green again)
 - [x] #142 Last (the user, 2026-10-26): bump the workspace version to `0.2.0` (Cargo.lock follows) and date the CHANGELOG heading 2026-10-27
-- [ ] The user tags and pushes: `git tag -a v0.2.0 -m "postui 0.2.0"`, then `git push origin v0.2.0`
+- [x] #175 A wall-clock test flaked on the macOS runner after the bump (2136 ms against 2000); each limit now sits far above normal (merged 2026-10-27)
+- [x] The user tagged `v0.2.0` on 98ed532 and pushed it (2026-10-27). Release run 40548413674 passed every job: the GitHub Release is out and the tap has `postui 0.2.0` (2cd52a8), the first push with `HOMEBREW_TAP_TOKEN`
 
 ## Name
 
