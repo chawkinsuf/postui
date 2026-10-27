@@ -1767,7 +1767,7 @@ impl ReadyView {
     /// nothing, a drag selection included, as Vim's beep and a page key's
     /// edge beep don't (`j`/`k`'s edge drop is main's arrows rule). A
     /// landing on another line opens the folds at it (`'foldopen'`
-    /// `percent`), before the column is set, as `$` does. Like a vim search
+    /// `percent`), before the column is set, as `$` does. Like a search
     /// landing, it has the next frame scroll the view sideways to show the
     /// column ([`Self::show_cursor_col`]).
     fn percent(&mut self, count: Option<usize>) {
@@ -1817,9 +1817,14 @@ impl ReadyView {
     /// Arrows' search landings ask too, and get the same rule (task #180):
     /// a GUI editor's find also brings a match from out of view to the
     /// middle. The rule reads the match's first char, the column that
-    /// lands, so a match that starts in view and runs past the edge keeps
-    /// the scroll, its start and highlight showing; one that scrolls has
-    /// half the width to its right. One known gap, left to its own task:
+    /// lands, where a GUI find would show the whole match: a match that
+    /// starts in view and runs past the edge keeps the scroll, so one
+    /// starting in the last column shows a single highlighted cell. That is
+    /// the cost of one rule for both kinds (a vim landing must read the
+    /// cursor's char, as Vim's does), and taking the whole match would have
+    /// the landing hand over its end too; a match that scrolls has half the
+    /// width to its right, so a short one shows whole. One known gap, left
+    /// to its own task:
     /// arrows' search opens only the match's ancestors, so a match in a
     /// collapsed container's key leaves the cursor on that closed fold, and
     /// nothing scrolls, as for any closed fold. The row does paint the key,
@@ -2161,7 +2166,9 @@ impl ReadyView {
     /// stay (probed: `/bar` Enter, then `/foo` Esc leaves `@/` `bar`, the
     /// cursor and the highlight). Arrows' Esc on an empty box only closes
     /// it, as main ran nothing; on a typed one it runs the search, main's
-    /// field rule. Otherwise an empty Vim box takes the last query, as
+    /// field rule, and lands as Enter does, the sideways scroll to the
+    /// match included (task #180): the Esc keeps what was typed, and its
+    /// landing is that search's. Otherwise an empty Vim box takes the last query, as
     /// Vim's `/` Enter does, and says Vim's E35 when there is none (probe
     /// E1); an empty arrows box finds nothing, as on main. A Vim pattern
     /// becomes the last one before it compiles, as Vim's `do_search()`
