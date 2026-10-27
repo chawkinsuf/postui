@@ -838,7 +838,8 @@ pub static TABLE: &[Binding] = &[
         Intent::Verb(Verb::Yank),
         CountRule::Refuse(NO_COUNTED_YANK),
     ),
-    // One copy letter on every list, the Variables grid included (#145).
+    // One copy letter and one paste pair on every list, the Variables grid
+    // included (#145).
     arrows("y", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Yank)),
     // Spec 2026-10-26 H2, H8: a header row's `Name: value`.
     arrows("Y", Surfaces::TABLE, Intent::Act(copy_header_whole)),
@@ -846,9 +847,8 @@ pub static TABLE: &[Binding] = &[
     row("\"+Y", Surfaces::TABLE, Intent::Act(copy_header_whole), CountRule::Ignore),
     row("p", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Put { above: false, count: 1 }), CountRule::Pass),
     row("P", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Put { above: true, count: 1 }), CountRule::Pass),
-    arrows("p", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Put { above: false, count: 1 })),
-    arrows("P", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Put { above: true, count: 1 })),
-    arrows("v", Surfaces::VAR_GRID, Intent::Verb(Verb::Put { above: false, count: 1 })),
+    arrows("p", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Put { above: false, count: 1 })),
+    arrows("P", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Put { above: true, count: 1 })),
     arrows("p", Surfaces::VAR_FORM, Intent::Verb(Verb::Promote)),
     arrows("s", Surfaces::VAR_LIST.or(Surfaces::VAR_FORM), Intent::Verb(Verb::Secret)),
     arrows("x", Surfaces::VAR_FORM, Intent::Verb(Verb::ClearValue)),

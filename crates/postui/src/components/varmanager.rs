@@ -3881,7 +3881,7 @@ fields = ["user_id", "customer_id"]
             .into_iter()
             .map(|(k, _, _)| k)
             .collect();
-        assert_eq!(keys, vec!["d", "r", "e", "y", "space", "a", "v"]);
+        assert_eq!(keys, vec!["d", "r", "e", "y", "space", "a", "p"]);
     }
 
     #[test]
@@ -4150,7 +4150,7 @@ fields = ["user_id", "customer_id"]
         // With nothing copied there is nothing to paste, so the chip
         // drops like every other chip without a target — the pane's
         // [Paste option] button is what stands there greyed instead.
-        assert!(!chips.iter().any(|(k, _, _)| *k == "v"), "{chips:?}");
+        assert!(!chips.iter().any(|(k, _, _)| *k == "p"), "{chips:?}");
         vm.stash = Some(StashedOption {
             selector: "creds".into(),
             name: "alice".into(),
@@ -4162,7 +4162,7 @@ fields = ["user_id", "customer_id"]
             vm.footer_chips(&ctx, None),
         );
         let paste =
-            chips.iter().find(|(k, _, _)| *k == "v").expect("v chip present once a row is copied");
+            chips.iter().find(|(k, _, _)| *k == "p").expect("p chip present once a row is copied");
         assert_eq!(paste.1, "paste");
         assert!(matches!(
             &paste.2,
@@ -4180,7 +4180,7 @@ fields = ["user_id", "customer_id"]
         );
         assert!(!chips.iter().any(|(k, _, _)| *k == "e"), "{chips:?}");
         assert!(!chips.iter().any(|(k, _, _)| *k == "y"), "{chips:?}");
-        assert!(chips.iter().any(|(k, _, _)| *k == "v"), "{chips:?}");
+        assert!(chips.iter().any(|(k, _, _)| *k == "p"), "{chips:?}");
     }
 
     #[test]
