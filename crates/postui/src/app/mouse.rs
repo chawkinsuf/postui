@@ -76,9 +76,11 @@ fn is_quit_chip(hit: &Hit) -> bool {
 
 /// A copy pill's alt+click copies the whole header, `Name: value`, not
 /// its value (spec 2026-10-26 H6). Alt, because terminals keep shift+click
-/// for their own selection under mouse capture. Some terminals and window
-/// managers keep alt+click too; there the whole header is the keyboard's
-/// `Y` (H6 weighs taking shift as well).
+/// for their own selection under mouse capture; a shift+click one passes
+/// on is a plain click. Some terminals and window managers keep alt+click
+/// too; there the whole header is the keyboard's `Y` (H6 settles alt
+/// alone over alt or shift). Any click with alt held counts: no other
+/// chord means anything on a pill.
 fn alt_click(m: &ratatui::crossterm::event::MouseEvent) -> bool {
     m.modifiers.contains(ratatui::crossterm::event::KeyModifiers::ALT)
 }

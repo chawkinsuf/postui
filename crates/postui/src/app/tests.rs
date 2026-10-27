@@ -15826,24 +15826,37 @@ fn click_pill(app: &mut App, hit: Hit, modifiers: KeyModifiers) {
 
 /// H6: a copy pill's click copies the value; its alt+click the whole
 /// header: a main row, an auto row and a response header. A shift+click
-/// some terminal passes on is a plain click (#159).
+/// some terminal passes on is a plain click (#159). Both profiles.
 #[test]
 fn a_copy_pills_alt_click_copies_the_whole_header() {
-    let main = || main_header_app(crate::config::KeyProfile::Arrows);
-    let response = || response_headers_app(crate::config::KeyProfile::Arrows);
-    let cases: [(&dyn Fn() -> App, Hit, &str, &str); 3] = [
-        (&main, Hit::TableCopy(0), "a", "X-One: a"),
-        (&main, Hit::AutoHeaderCopy(0), "*/*", "Accept: */*"),
-        (&response, Hit::HeaderCopy(0), "application/json", "content-type: application/json"),
+    use crate::config::KeyProfile::{self, Arrows, Vim};
+    type AppOf = fn(KeyProfile) -> App;
+    let cases: [(AppOf, Hit, &str, &str); 3] = [
+        (main_header_app, Hit::TableCopy(0), "a", "X-One: a"),
+        (main_header_app, Hit::AutoHeaderCopy(0), "*/*", "Accept: */*"),
+        (
+            response_headers_app,
+            Hit::HeaderCopy(0),
+            "application/json",
+            "content-type: application/json",
+        ),
     ];
-    for (app_of, hit, value, whole) in cases {
-        for (mods, copied) in
-            [(KeyModifiers::NONE, value), (KeyModifiers::ALT, whole), (KeyModifiers::SHIFT, value)]
-        {
-            let mut app = app_of();
-            render_once(&mut app);
-            click_pill(&mut app, hit.clone(), mods);
-            assert_eq!(last_copied(&app).as_deref(), Some(copied), "{hit:?} {mods:?}");
+    for profile in [Arrows, Vim] {
+        for (app_of, hit, value, whole) in cases.clone() {
+            for (mods, copied) in [
+                (KeyModifiers::NONE, value),
+                (KeyModifiers::ALT, whole),
+                (KeyModifiers::SHIFT, value),
+            ] {
+                let mut app = app_of(profile);
+                render_once(&mut app);
+                click_pill(&mut app, hit.clone(), mods);
+                assert_eq!(
+                    last_copied(&app).as_deref(),
+                    Some(copied),
+                    "{profile:?} {hit:?} {mods:?}"
+                );
+            }
         }
     }
 }
