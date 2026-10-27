@@ -5006,7 +5006,7 @@ fn body_lines(
     let mut push = |i: usize,
                     full: usize,
                     pieces: Vec<(String, Style)>,
-                    tail: Vec<(String, Style)>,
+                    tail: Vec<Span<'static>>,
                     highlightable: bool,
                     window: (usize, usize)| {
         let (char_start, crop) = window;
@@ -5050,7 +5050,7 @@ fn body_lines(
         if let Some((from, to)) = sel {
             line = apply_col_bg(line, from, to, t.selection);
         }
-        line.spans.extend(tail.into_iter().map(|(s, style)| Span::styled(s, style)));
+        line.spans.extend(tail);
         let mut line = crop_cols(line, crop);
         if focused && i == view.cursor {
             line = line.style(cursor_bg);
@@ -5158,8 +5158,8 @@ fn body_lines(
                     (value.to_string(), text),
                 ];
                 let tail = vec![
-                    (HEADER_PILL_GAP.to_string(), text),
-                    (crate::glyph::COPY_PILL.to_string(), glyph_style),
+                    Span::styled(HEADER_PILL_GAP, text),
+                    Span::styled(crate::glyph::COPY_PILL, glyph_style),
                 ];
                 push(i, i, pieces, tail, true, (0, view.h_scroll));
 
@@ -7035,7 +7035,8 @@ mod tests {
 
     /// Task #54: a selection running past a header row's end paints its
     /// text only. The gap and the copy pill are not part of the row's text
-    /// (the copy leaves them out), so they keep their own look.
+    /// (the copy leaves them out), so they keep their own look. Only the
+    /// header row is checked: the divider row's rule is #177.
     #[test]
     fn a_selection_past_a_header_rows_end_leaves_its_pill_unpainted() {
         let theme = Theme::dark();
@@ -7057,7 +7058,7 @@ mod tests {
         assert_eq!(
             r.selected_text().as_deref(),
             Some(format!("{line}\n{SENT_DIVIDER}\nauth").as_str()),
-            "the copy is the text the paint covers"
+            "the copy holds row 0's text, its gap and pill left out"
         );
     }
 
