@@ -18949,6 +18949,7 @@ fn switching_to_the_body_tab_keeps_a_hidden_editor_hidden() {
 #[test]
 fn caret_resting_in_a_token_shows_its_tooltip_only_after_the_wall_clock_dwell() {
     let mut app = App::new_for_test();
+    app.focus = PaneId::Editor; // only the focused editor's caret (#135)
     app.editor.open_url_from_app();
     app.editor.url = crate::components::line_input::LineInput::new("{{base}}");
     app.editor.url.set_cursor(3); // inside the token
@@ -27879,6 +27880,356 @@ fn a_selection_wins_over_the_carets_token() {
     assert_eq!(input.selection(), Some((0, 4)));
     app.update(Action::InsertVarText { name: "v".into(), completing: false });
     assert_eq!(app.editor.table.editing.as_ref().unwrap().input.text(), "{{v}}old}}");
+}
+
+// --- #135: the variable tooltip by keyboard --------------------------------
+
+/// Draws, lets the caret's dwell run out without sleeping, and draws the
+/// tip: the caret tip as a user resting on a token sees it.
+fn rest_caret(app: &mut App) {
+    render_once(app);
+    app.update(Action::Tick);
+    app.caret_token_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+    app.update(Action::Tick);
+    render_once(app);
+}
+
+/// A caret resting in a token in an open table cell raises its tip, on
+/// every tab with a table, after the dwell and not before; a caret just
+/// after the closing braces raises none.
+#[test]
+fn a_resting_caret_in_an_open_cell_raises_its_tip() {
+    for tab in [EditorTab::Params, EditorTab::Headers, EditorTab::Vars] {
+        let (mut app, _dir, _out) = tooltip_app("x");
+        open_value_cell(&mut app, tab, "a {{base_url}} b", 5);
+        render_once(&mut app);
+        app.update(Action::Tick);
+        assert!(app.var_token_tip().is_none(), "{tab:?}: not before the dwell");
+        rest_caret(&mut app);
+        assert_eq!(app.var_token_tip().map(|t| t.name), Some("base_url".into()), "{tab:?}");
+    }
+    let (mut app, _dir, _out) = tooltip_app("x");
+    open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 12);
+    rest_caret(&mut app);
+    assert!(app.var_token_tip().is_none(), "after the braces is outside");
+}
+
+/// A cell left open while another pane has the keys raises no tip: only
+/// the focused editor's caret does.
+#[test]
+fn a_cell_left_open_under_another_pane_raises_no_tip() {
+    let (mut app, _dir, _out) = tooltip_app("x");
+    open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
+    app.focus = PaneId::Response;
+    rest_caret(&mut app);
+    assert!(app.editor.table.editing.is_some(), "the cell is still open");
+    assert!(app.var_token_tip().is_none());
+}
+
+/// With the same name drawn in the URL and in a header, the caret's tip
+/// sits against the instance the caret is in.
+#[test]
+fn a_caret_tip_sits_against_the_token_the_caret_is_in() {
+    // The caret in the header's instance.
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
+    rest_caret(&mut app);
+    let url_y = app.editor.last_url_text_area.unwrap().y;
+    assert_eq!(app.hits.rects_of(&Hit::VarToken("base_url".into())).len(), 2);
+    let tip = app.var_token_tip().expect("the header's tip");
+    assert_ne!(tip.anchor.y, url_y, "against the header's token");
+
+    // The caret in the URL's instance, the header's drawn at rest after it.
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.headers.insert(
+        "k".into(),
+        postui_core::model::Entry { value: "{{base_url}}".into(), enabled: true },
+    );
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    app.editor.url.set_cursor(3);
+    rest_caret(&mut app);
+    assert_eq!(app.hits.rects_of(&Hit::VarToken("base_url".into())).len(), 2);
+    let tip = app.var_token_tip().expect("the URL's tip");
+    assert_eq!(tip.anchor.y, url_y, "against the URL's token");
+}
+
+/// alt+o is the tip's 󰏫: once the tip is up it opens the token's editor,
+/// and the cell is still open once the dialog closes, as for a click.
+#[test]
+fn alt_o_edits_the_tips_variable_and_keeps_the_cell_open() {
+    let (mut app, _dir, _out) = tooltip_app("x");
+    open_value_cell(&mut app, EditorTab::Headers, "Bearer {{base_url}}", 10);
+    rest_caret(&mut app);
+    app.handle_key(alt('o'));
+    assert!(
+        matches!(
+            app.modals.top(),
+            Some(Modal::MultiPrompt { kind: PromptKind::EditVarValue { name, .. }, .. })
+                if name == "base_url"
+        ),
+        "the value popup"
+    );
+    assert!(app.editor.table.editing.is_some(), "open under the dialog");
+    app.update(Action::Close);
+    assert!(app.modals.is_empty());
+    assert!(app.editor.table.editing.is_some(), "the cell stays open");
+}
+
+/// alt+n is the tip's 󰆏 (the real value, a secret's included), and alt+h
+/// its 󰈈 (a secret's mask off and on again).
+#[test]
+fn alt_n_copies_and_alt_h_reveals_the_tips_variable() {
+    let (mut app, _dir, out) = tooltip_app("x");
+    open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
+    rest_caret(&mut app);
+    app.handle_key(alt('n'));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
+
+    let (mut app, _dir, out) = tooltip_app("x");
+    open_value_cell(&mut app, EditorTab::Headers, "{{api_key}}", 3);
+    rest_caret(&mut app);
+    assert!(!tooltip_text(&mut app).contains("sk-super-secret"), "masked");
+    app.handle_key(alt('n'));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "sk-super-secret");
+    app.handle_key(alt('h'));
+    assert!(tooltip_text(&mut app).contains("sk-super-secret"), "revealed");
+    assert!(tooltip_text(&mut app).contains("sk-super-secret"), "and stays so");
+    app.handle_key(alt('h'));
+    assert!(!tooltip_text(&mut app).contains("sk-super-secret"), "hidden again");
+}
+
+/// The keys act only on an open tip, and only where its pill is offered.
+#[test]
+fn the_tip_keys_do_nothing_without_their_pill() {
+    // No tip yet: the caret hasn't rested.
+    let (mut app, _dir, out) = tooltip_app("x");
+    open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
+    render_once(&mut app);
+    for c in ['o', 'n', 'h'] {
+        app.handle_key(alt(c));
+    }
+    assert!(app.modals.is_empty());
+    assert!(std::fs::read_to_string(&out).is_err(), "nothing copied");
+    assert!(app.toasts.messages().is_empty(), "and nothing said");
+    // A plain value has no reveal; an undefined one nothing to copy.
+    rest_caret(&mut app);
+    app.handle_key(alt('h'));
+    assert!(app.tip_revealed.is_none());
+    let (mut app, _dir, out) = tooltip_app("x");
+    open_value_cell(&mut app, EditorTab::Headers, "{{nowhere}}", 3);
+    rest_caret(&mut app);
+    app.handle_key(alt('n'));
+    assert!(std::fs::read_to_string(&out).is_err(), "nothing copied");
+}
+
+/// The keys are the caret's tooltip's: a pointer's tooltip has its pills
+/// to click, and a hover over another token hides the caret's, so its
+/// keys go too.
+#[test]
+fn the_tip_keys_leave_a_hover_tip_to_its_pills() {
+    let (mut app, _dir, out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    assert!(app.var_token_tip().is_some());
+    app.handle_key(alt('n'));
+    assert!(std::fs::read_to_string(&out).is_err(), "a hover tip's copy is its pill");
+
+    let (mut app, _dir, out) = tooltip_app("api_key");
+    open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
+    rest_caret(&mut app);
+    hover_token(&mut app, "api_key");
+    assert_eq!(app.var_token_tip().map(|t| t.name), Some("api_key".into()));
+    app.handle_key(alt('n'));
+    assert!(std::fs::read_to_string(&out).is_err(), "the caret's tip is hidden");
+}
+
+/// While a tooltip is open the footer offers its edit key, after the
+/// pane's own chips, and drops it when the tooltip goes. It fits beside an
+/// open header cell's chips at 120 columns. Its click is the pill's: the
+/// cell stays open.
+#[test]
+fn an_open_tooltip_puts_its_edit_key_in_the_footer() {
+    let edit = Hit::FooterChip(Action::TipPill(crate::action::TipPill::Edit));
+    let (mut app, _dir, _out) = tooltip_app("x");
+    open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
+    render_once(&mut app);
+    assert!(app.hits.rect_of(&edit).is_none(), "no tooltip, no chip");
+    rest_caret(&mut app);
+    let chip = app.hits.rect_of(&edit).expect("the edit chip");
+    let tabs = app.hits.rect_of(&Hit::FooterChip(Action::CycleTabs(1))).unwrap();
+    assert!(chip.x > tabs.x, "after the pane's chips");
+    assert!(tooltip_text(&mut app).contains("alt+o  edit"));
+    click_hit(&mut app, edit);
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::MultiPrompt { kind: PromptKind::EditVarValue { .. }, .. })
+    ));
+    assert!(app.editor.table.editing.is_some(), "the cell stays open");
+}
+
+/// A pointer's tooltip gets no footer chip: it goes as the pointer heads
+/// for the footer, so the chip could never be clicked.
+#[test]
+fn a_hover_tooltip_puts_no_chip_in_the_footer() {
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    assert!(app.var_token_tip().is_some());
+    let edit = Hit::FooterChip(Action::TipPill(crate::action::TipPill::Edit));
+    assert!(app.hits.rect_of(&edit).is_none());
+}
+
+/// A pill's key is bound only while the open tooltip shows the pill;
+/// otherwise the combo is unbound and goes where an unbound one goes.
+#[test]
+fn a_tip_key_is_bound_only_while_its_pill_shows() {
+    use crate::action::TipPill;
+    let combo = |s: &str| crate::keys::KeyCombo::parse(s).unwrap();
+    let (mut app, _dir, _out) = tooltip_app("x");
+    open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
+    render_once(&mut app);
+    assert_eq!(app.lookup_key(&combo("alt+o")), None, "no tooltip yet");
+    rest_caret(&mut app);
+    assert_eq!(app.lookup_key(&combo("alt+o")), Some(Action::TipPill(TipPill::Edit)));
+    assert_eq!(app.lookup_key(&combo("alt+n")), Some(Action::TipPill(TipPill::Copy)));
+    assert_eq!(app.lookup_key(&combo("alt+h")), None, "a plain value has no reveal");
+}
+
+/// The vim profile keeps the keys: in an open URL line's Normal they act
+/// on the caret's tip as in arrows.
+#[test]
+fn the_tip_keys_work_in_the_vim_profile() {
+    let (mut app, _dir, out) = tooltip_app("base_url");
+    app.use_profile(crate::config::KeyProfile::Vim);
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    app.editor.url.set_cursor(3);
+    rest_caret(&mut app);
+    assert_eq!(app.var_token_tip().map(|t| t.name), Some("base_url".into()));
+    app.handle_key(alt('n'));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
+    app.handle_key(alt('o'));
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::MultiPrompt { kind: PromptKind::EditVarValue { .. }, .. })
+    ));
+}
+
+/// In the body too, the caret's tip sits against the token the caret is
+/// in, not the URL's of the same name.
+#[test]
+fn a_body_caret_tip_sits_against_the_bodys_token() {
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.set_body_text("{\n  \"u\": \"{{base_url}}\"\n}");
+    app.update(Action::ToggleBodyVars);
+    app.editor.body.cursor = edtui::Index2::new(1, 11);
+    rest_caret(&mut app);
+    let url_y = app.editor.last_url_text_area.unwrap().y;
+    assert_eq!(app.hits.rects_of(&Hit::VarToken("base_url".into())).len(), 2);
+    let tip = app.var_token_tip().expect("the body's tip");
+    let body = app.hits.rect_of(&Hit::BodyEditor).unwrap();
+    assert_ne!(tip.anchor.y, url_y);
+    assert!(body.contains(tip.anchor.as_position()), "{tip:?} in {body:?}");
+}
+
+/// From the palette: the pick runs once the palette has closed, on the tip
+/// that shows again.
+#[test]
+fn the_palette_runs_a_tip_key_on_the_tip_it_covered() {
+    let (mut app, _dir, out) = tooltip_app("x");
+    open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
+    rest_caret(&mut app);
+    app.update(Action::OpenPalette);
+    render_once(&mut app);
+    for c in "copy the tooltip".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
+}
+
+/// The palette lists the tooltip's pills only while a tooltip shows them:
+/// none with no tooltip, edit and copy for a plain value, all three for a
+/// secret, only edit for a name defined nowhere.
+#[test]
+fn the_palette_lists_only_the_open_tooltips_pills() {
+    use crate::action::TipPill;
+    let rows = |app: &App| -> Vec<Action> {
+        let Some(Modal::Palette(p)) = app.modals.top() else { panic!("no palette") };
+        p.filtered()
+            .iter()
+            .filter(|c| matches!(c.action, Action::TipPillOn { .. }))
+            .map(|c| c.action.clone())
+            .collect()
+    };
+    let on = |pill, name: &str| Action::TipPillOn { pill, name: name.into() };
+    let (mut app, _dir, _out) = tooltip_app("x");
+    app.update(Action::OpenPalette);
+    assert!(rows(&app).is_empty(), "no tooltip, no rows");
+    for (value, name, want) in [
+        ("{{base_url}}", "base_url", vec![TipPill::Edit, TipPill::Copy]),
+        ("{{api_key}}", "api_key", vec![TipPill::Edit, TipPill::Copy, TipPill::Reveal]),
+        ("{{nowhere}}", "nowhere", vec![TipPill::Edit]),
+    ] {
+        let (mut app, _dir, _out) = tooltip_app("x");
+        open_value_cell(&mut app, EditorTab::Headers, value, 3);
+        rest_caret(&mut app);
+        app.update(Action::OpenPalette);
+        let want: Vec<Action> = want.into_iter().map(|p| on(p, name)).collect();
+        assert_eq!(rows(&app), want, "{name}");
+    }
+}
+
+/// The palette's rows are the caret's tooltip's: a pointer's tooltip is
+/// gone once the palette closes, and its own pills are a click away.
+#[test]
+fn the_palette_lists_no_pills_for_a_hover_tooltip() {
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    assert!(app.var_token_tip().is_some());
+    app.update(Action::OpenPalette);
+    let Some(Modal::Palette(p)) = app.modals.top() else { panic!("no palette") };
+    assert!(!p.filtered().iter().any(|c| matches!(c.action, Action::TipPillOn { .. })));
+}
+
+/// A jump to another pane takes the caret's tooltip and its keys down at
+/// once, not at the next tick.
+#[test]
+fn leaving_the_editor_takes_the_caret_tip_down_at_once() {
+    let (mut app, _dir, out) = tooltip_app("x");
+    open_value_cell(&mut app, EditorTab::Headers, "{{api_key}}", 3);
+    rest_caret(&mut app);
+    assert!(app.var_token_tip().is_some());
+    app.focus = PaneId::Response; // the cell stays open, as after a click
+    render_once(&mut app);
+    assert!(app.editor.table.editing.is_some());
+    assert!(app.var_token_tip().is_none(), "no tick in between");
+    app.handle_key(alt('n'));
+    assert!(std::fs::read_to_string(&out).is_err(), "nothing copied");
+}
+
+/// The palette's row names the variable it was listed for, so a token the
+/// closed palette uncovers under the pointer doesn't take its place.
+#[test]
+fn a_palette_pick_ignores_a_token_under_the_pointer() {
+    let (mut app, _dir, out) = tooltip_app("api_key");
+    open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
+    rest_caret(&mut app);
+    app.update(Action::OpenPalette);
+    render_once(&mut app);
+    // The pointer rests over the URL's {{api_key}}, under the palette.
+    let url = app.hits.rects_of(&Hit::VarToken("api_key".into()))[0];
+    app.pointer = Some((url.x + 1, url.y));
+    render_once(&mut app);
+    for c in "copy the tooltip".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
 }
 
 // --- a project that refuses to open ---------------------------------------

@@ -1422,6 +1422,10 @@ impl App {
                     // blurring the URL line (or committing the cell) first
                     // would leave the picker it opens with nowhere to insert.
                     | Hit::FooterChip(Action::OpenVarPicker { .. })
+                    // The open tooltip's edit chip is its 󰏫, whose click
+                    // keeps the cell open too (#135); committing it first
+                    // would take the caret's tooltip down before it acts.
+                    | Hit::FooterChip(Action::TipPill(_))
             )
             // The tooltip floats over the rows: clicking one of its pills
             // must neither commit the cell under edit nor drop the selection.
@@ -2344,29 +2348,10 @@ impl App {
             // the footer reads, task #59). Its click focuses the editor,
             // as a click anywhere in the auto section always has.
             Hit::AutoHeaderRow(_) => self.update(Action::FocusPane(PaneId::Editor)),
-            // The tooltip's controls. Its edit pill is the path from "what
-            // is this?" to the variable itself (spec §7): the popup action
-            // picks the editor the token calls for, and the modal it
-            // opens takes the tip down.
-            Hit::TipEdit(name) => self.update(Action::OpenVarTokenPopup(name)),
-            // A secret's *real* value is what gets copied, mask or no mask
-            // — the point of the button.
-            Hit::TipCopy(name) => {
-                let Some(value) = self.editor.vars.describe(&name).value else {
-                    return false;
-                };
-                self.copy_text_with_toast(&value, format!("Copied {{{{{name}}}}}"));
-                true
-            }
-            Hit::TipReveal(name) => {
-                let Some(value) = self.editor.vars.describe(&name).value else {
-                    return false;
-                };
-                let already =
-                    self.tip_revealed.as_ref().is_some_and(|(n, v)| *n == name && *v == value);
-                self.tip_revealed = (!already).then_some((name, value));
-                true
-            }
+            // The tooltip's controls, which their keys share (#135).
+            Hit::TipEdit(name) => self.press_tip_pill(crate::action::TipPill::Edit, name),
+            Hit::TipCopy(name) => self.press_tip_pill(crate::action::TipPill::Copy, name),
+            Hit::TipReveal(name) => self.press_tip_pill(crate::action::TipPill::Reveal, name),
             // A click on the panel between its controls: consumed, so it
             // never reaches whatever the tip floats over.
             Hit::TipPanel(_) => true,

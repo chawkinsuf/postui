@@ -85,6 +85,18 @@ impl TokenInfo {
         self.value.is_some()
     }
 
+    /// Whether this token's tooltip shows `pill`: edit always, copy with a
+    /// value, reveal for a secret with one. The tooltip's draw, its keys
+    /// and the palette's rows all read this (#135).
+    pub fn offers(&self, pill: crate::action::TipPill) -> bool {
+        use crate::action::TipPill;
+        match pill {
+            TipPill::Edit => true,
+            TipPill::Copy => self.value.is_some(),
+            TipPill::Reveal => self.secret && self.value.is_some(),
+        }
+    }
+
     /// The value as it may appear on screen: always [`SECRET_MASK`] for a
     /// secret, a dash when there is nothing to show.
     pub fn display_value(&self) -> String {
@@ -289,7 +301,7 @@ pub fn paint_var_tokens(
         let start = text_origin_col + crate::ui::cells(&text[..bytes.start]);
         Some(start..start + crate::ui::cells(&text[bytes]))
     };
-    paint_tokens(buf, row, text, columns, vars, theme, hits);
+    paint_tokens(buf, row, text, columns, None, vars, theme, hits);
 }
 
 /// [`paint_var_tokens`] for a field drawn at `row.x`, `row.width` wide —
@@ -299,6 +311,8 @@ pub fn paint_var_tokens(
 /// substitutes — placed where the field drew them, so a char the field
 /// shows as a code (`^I`) neither hides a token nor shifts one. A token
 /// the window cuts is left alone, as one cut off the drawn text was.
+/// A `focused` field's token holding its caret (as `Editor::caret_token`
+/// tests it) is recorded as the caret's token (#135).
 pub fn paint_field_tokens(
     buf: &mut Buffer,
     row: Rect,
@@ -317,16 +331,20 @@ pub fn paint_field_tokens(
         let x = row.x as usize;
         Some(x + cols.start as usize..x + cols.end as usize)
     };
-    paint_tokens(buf, row, input.text(), columns, vars, theme, hits);
+    let caret = focused.then(|| input.cursor_byte());
+    paint_tokens(buf, row, input.text(), columns, caret, vars, theme, hits);
 }
 
 /// Tints and registers each token in `text` at the buffer columns
-/// `columns` gives its bytes (`None`: not drawn), clipped to `row`.
+/// `columns` gives its bytes (`None`: not drawn), clipped to `row`. The
+/// drawn token holding byte `caret` is recorded as the caret's token.
+#[allow(clippy::too_many_arguments)]
 fn paint_tokens(
     buf: &mut Buffer,
     row: Rect,
     text: &str,
     columns: impl Fn(Range<usize>) -> Option<Range<usize>>,
+    caret: Option<usize>,
     vars: &VarView,
     theme: &Theme,
     hits: &mut HitMap,
@@ -350,10 +368,11 @@ fn paint_tokens(
                 cell.set_fg(color);
             }
         }
-        hits.register(
-            Rect::new(start as u16, row.y, (end - start) as u16, 1),
-            Hit::VarToken(token.name),
-        );
+        let rect = Rect::new(start as u16, row.y, (end - start) as u16, 1);
+        if caret.is_some_and(|c| token.start <= c && c < token.end) {
+            hits.set_caret_token(token.name.clone(), rect);
+        }
+        hits.register(rect, Hit::VarToken(token.name));
     }
 }
 

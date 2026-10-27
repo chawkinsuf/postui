@@ -292,6 +292,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 });
     let vm_chips = override_chips(app);
     let pane = PaneChipArgs::of(app);
+    // Settled from this frame's hits, the panes drawn: the tooltip painted
+    // last below is this one, so the footer's chip for it is current.
+    let tip_open = app.keyboard_tip_in(&hits).is_some();
     let vim_status = app.vim_status();
     crate::components::footer::draw_footer(
         frame,
@@ -306,6 +309,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         pane.table_row_selected,
         pane.jq_bar,
         pane.field_open,
+        tip_open,
         vm_chips,
         globals_live,
         quit_live,
@@ -344,7 +348,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // The variable tooltip is painted last of all, over every pane — after
     // the hit map is back on `app`, because a caret-raised tip is anchored
     // at the `VarToken` rect this very frame registered. It never covers a
-    // dialog: `var_token_tip` yields nothing while a modal is up.
+    // dialog: `var_token_tip` yields nothing while a modal is up. The tip's
+    // keys and footer chip go by `var_token_tip` too, so they agree with
+    // each other even where a terminal too small for the panel draws none
+    // (the chip is then the cue, #135).
     match app.var_token_tip() {
         Some(tip) => {
             let info = app.editor.vars.describe(&tip.name);
@@ -433,12 +440,13 @@ fn draw_var_tooltip(
     use ratatui::layout::Rect;
     // The icon pills: three cells each (` 󰆏 `) so the hover fill
     // surrounds the glyph.
+    use crate::action::TipPill;
     let mut pills: Vec<(&str, Hit)> = Vec::new();
-    if info.secret && info.value.is_some() {
+    if info.offers(TipPill::Reveal) {
         let eye = if revealed { crate::glyph::EYE_OFF_PILL } else { crate::glyph::EYE_PILL };
         pills.push((eye, Hit::TipReveal(tip.name.clone())));
     }
-    if info.value.is_some() {
+    if info.offers(TipPill::Copy) {
         pills.push((crate::glyph::COPY_PILL, Hit::TipCopy(tip.name.clone())));
     }
     pills.push((crate::glyph::PENCIL_PILL, Hit::TipEdit(tip.name.clone())));

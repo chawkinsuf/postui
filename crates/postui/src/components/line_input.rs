@@ -419,6 +419,13 @@ impl LineInput {
         self.text.char_indices().nth(idx).map(|(b, _)| b).unwrap_or(self.text.len())
     }
 
+    /// The caret as a byte offset into [`Self::text`]: where the field's
+    /// caret sits for a caller matching it against byte spans, such as
+    /// `{{token}}`s.
+    pub fn cursor_byte(&self) -> usize {
+        self.byte_offset(self.cursor)
+    }
+
     /// Removes the chars from index `idx` up to the cursor (nothing when
     /// `idx` is at or past it) and lands the cursor at `idx`, dropping any
     /// selection. For a caller with its own idea of a "word" — the jq
