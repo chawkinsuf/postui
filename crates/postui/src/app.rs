@@ -6234,7 +6234,7 @@ impl App {
                                 Some(postui_core::jq::shape::shape_of(doc, Default::default()))
                             }
                             None => {
-                                postui_core::jq::shape::shape(&lines.join("\n"), Default::default())
+                                postui_core::jq::shape::shape(&lines.join(), Default::default())
                             }
                         };
                         let Some(shape) = shape else {
