@@ -6692,6 +6692,7 @@ impl App {
                 use postui_core::varedit;
                 match destination {
                     ExtractDestination::Request => {
+                        self.debug_assert_no_open_vars_cell();
                         self.no_coalesce = true;
                         self.editor.variables.shift_remove(&name);
                         self.toasts.push(
@@ -8659,6 +8660,17 @@ impl App {
         stage_value_removal(fields, kind) && self.update(Action::Render)
     }
 
+    /// The value dialog's request-scope writes add and remove Vars rows,
+    /// and an open cell names its row by index: the dialog commits an
+    /// open Vars cell as it opens (`open_edit_value_popup`, #151), so
+    /// none is open when they run.
+    fn debug_assert_no_open_vars_cell(&self) {
+        debug_assert!(
+            self.editor.active_tab != EditorTab::Vars || self.editor.table.editing.is_none(),
+            "a request-scope var write under an open Vars cell"
+        );
+    }
+
     /// Builds and opens the value-edit popup for a simple (or
     /// request-scoped / stray-env) variable's `{{token}}`: a `value` field
     /// seeded with the current effective value and a `destination` choice
@@ -8676,6 +8688,10 @@ impl App {
         // from the value before it and its write would undo the typing.
         // Any other cell stays open under the dialog, as under the
         // tooltip's pill (#135): the dialog writes no row of its table.
+        // That is why this is not `close_open_inputs`, which would close
+        // every input. The commit is here, not at the writes, because the
+        // seed below must already see the typing; with the dialog up no
+        // cell can open again, which the writes assert.
         if self.editor.active_tab == EditorTab::Vars {
             self.commit_table_edit();
         }
@@ -8924,6 +8940,7 @@ impl App {
                 // Editor-only: the open request's `[variables]` option
                 // rides the editor's own dirty/save path, so nothing is
                 // written (and nothing journaled) here.
+                self.debug_assert_no_open_vars_cell();
                 match self.editor.variables.get_mut(name) {
                     Some(option) => option.value = value.clone(),
                     None => {

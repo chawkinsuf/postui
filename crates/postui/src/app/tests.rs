@@ -27788,12 +27788,12 @@ fn the_value_dialog_commits_an_open_vars_cell_before_a_removal() {
     app.update(Action::OpenVarTokenPopup("a".into()));
     assert!(app.editor.table.editing.is_none(), "the cell closed");
     assert!(matches!(app.modals.top(), Some(Modal::MultiPrompt { .. })));
-    app.modals.pop();
-    app.update(Action::RemoveVarValue {
-        name: "a".into(),
-        destination: crate::action::ExtractDestination::Request,
-    });
-    assert_eq!(request_vars(&app), [("b".to_string(), "typed".to_string())]);
+    // The dialog's own remove (alt+d) stages it; Confirm writes it.
+    assert!(app.remove_from_value_popup());
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    assert!(app.modals.is_empty(), "confirmed");
+    assert!(!app.editor.variables.contains_key("a"));
+    assert_eq!(app.editor.variables["b"].value, "typed");
 }
 
 /// #151: the dialog seeds from the cell's typing, so confirming it as it
@@ -27806,6 +27806,9 @@ fn the_value_dialog_seeds_from_an_open_cells_typing() {
         panic!("expected the value dialog");
     };
     assert_eq!(fields[0].input.text(), "typed");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    assert!(app.modals.is_empty(), "confirmed");
+    assert_eq!(app.editor.variables["b"].value, "typed");
 }
 
 /// #151: an open + Add cell commits as the dialog opens, so a new request
