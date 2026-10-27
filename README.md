@@ -22,6 +22,11 @@
   responds to the mouse, and every action also has a key: an arrows-and-Enter
   profile or a Vim profile, your pick on first launch. The footer always shows
   the keys for what has focus, and `ctrl+p` searches every command.
+- **A Vim profile that acts like Vim.** Every text field, from the URL to the
+  request body, runs on one Vim engine: counts, operators, text objects,
+  Visual mode, registers, undo and `.`. The response has `/` search, folds and
+  Visual yanks, `ctrl+w` moves between panes, and `:w`, `:q` and `:send` do
+  what they say. The engine is tested case by case against Vim 9.1.
 - **Requests are files.** One TOML file per request, in folders, grouped into
   spaces. Review them in a diff and commit them next to the code they test.
 - **Environments, variables and secrets.** `{{tokens}}` in the URL, params and
