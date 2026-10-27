@@ -67,10 +67,12 @@ impl ProjectsRegistry {
     /// around it (and the refusal to write over a file that doesn't
     /// parse) is [`Config::edit`]'s business.
     ///
-    /// A path that isn't UTF-8 is left out (#167): TOML can only hold it
-    /// lossily, under a name no directory has, which the next launch
+    /// A path that isn't UTF-8 is never written (#167): TOML can only hold
+    /// it lossily, under a name no directory has, which the next launch
     /// would open and every later save would add again. Such a project
-    /// opens and works; it just isn't remembered.
+    /// (only the command line opens one) isn't remembered: it is left out
+    /// of `known`, and `root`/`last` keep what the file had, so the next
+    /// launch reopens the project used before it.
     pub fn write_into(&self, doc: &mut toml_edit::DocumentMut) {
         let mut table = toml_edit::Table::new();
 
@@ -80,16 +82,16 @@ impl ProjectsRegistry {
         }
         table["known"] = toml_edit::value(known);
 
-        match self.root.as_deref().and_then(Path::to_str) {
-            Some(root) => table["root"] = toml_edit::value(root),
-            None => {
-                table.remove("root");
-            }
-        }
-        match self.last.as_deref().and_then(Path::to_str) {
-            Some(last) => table["last"] = toml_edit::value(last),
-            None => {
-                table.remove("last");
+        let old = doc.get("projects").and_then(|p| p.as_table_like());
+        for (key, path) in [("root", &self.root), ("last", &self.last)] {
+            match path.as_deref().map(Path::to_str) {
+                Some(Some(p)) => table[key] = toml_edit::value(p),
+                Some(None) => {
+                    if let Some(kept) = old.and_then(|t| t.get(key)) {
+                        table[key] = kept.clone();
+                    }
+                }
+                None => {}
             }
         }
 
@@ -1182,8 +1184,9 @@ usage: postui [--debug-ai] [directory]
 ///
 /// The arguments come as the OS gave them (#161). Each is matched and
 /// named by its lossy text: a value that isn't UTF-8 holds a U+FFFD there,
-/// which no flag has, so it is never a flag. The directory keeps the
-/// original bytes.
+/// which no flag spelling has, so it is never taken for a valid flag (a
+/// `--keydump=` with such a value is a malformed one). The directory keeps
+/// the original bytes.
 pub fn parse_cli(args: Vec<OsString>) -> CliParse {
     let is_help = |a: &OsString| a == "--help" || a == "-h";
     let help = args.iter().any(is_help);
@@ -1498,9 +1501,9 @@ mod tests {
         assert_eq!(r2.root, Some(PathBuf::from("/tmp/root")));
     }
 
-    /// #167: a path TOML can't hold as written (not UTF-8) is left out of
-    /// the save rather than written lossily under a name no directory
-    /// has. The project still opens; it just isn't remembered.
+    /// #167: a path TOML can't hold as written (not UTF-8) is never saved,
+    /// lossily or otherwise: it is left out of `known`, and `last` keeps
+    /// the project used before it.
     #[cfg(unix)]
     #[test]
     fn save_leaves_out_a_path_that_is_not_utf8() {
@@ -1511,18 +1514,20 @@ mod tests {
         let raw = PathBuf::from(OsString::from_vec(b"/tmp/api-\xff".to_vec()));
         let (mut r, _) = ProjectsRegistry::parse("");
         r.register(PathBuf::from("/tmp/a"));
+        cfg.save_registry(&r).unwrap();
         r.register(raw.clone());
         cfg.save_registry(&r).unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(!text.contains('\u{FFFD}'), "{text}");
         let (mut r2, _) = ProjectsRegistry::parse(&text);
         assert_eq!(r2.known, vec![PathBuf::from("/tmp/a")]);
-        assert_eq!(r2.last, None, "the last project isn't remembered either");
-        // Opened again, it stays one entry in memory and none on disk.
+        assert_eq!(r2.last, Some(PathBuf::from("/tmp/a")), "the project used before it");
+        // Opened again, it stays out of the file.
         r2.register(raw);
         cfg.save_registry(&r2).unwrap();
         let (r3, _) = ProjectsRegistry::parse(&std::fs::read_to_string(&p).unwrap());
         assert_eq!(r3.known, vec![PathBuf::from("/tmp/a")]);
+        assert_eq!(r3.last, Some(PathBuf::from("/tmp/a")));
     }
 
     #[test]
