@@ -1269,8 +1269,8 @@ impl ReadyView {
 
     /// Records the bracket an arrows click at Vim's column names (R10, R20).
     /// A click on the line's trailing blanks (a CRLF's `\r` among them; a
-    /// click past the end lands on the last of them) counts as one on its
-    /// last other char. That char, or the clicked one, names itself when
+    /// click past the end lands on the last char that paints, which can be
+    /// one of them) counts as one on its last other char. That char, or the clicked one, names itself when
     /// it's a bracket. A `,` that ends the line names the bracket right
     /// before it. Anything else records nothing. A tree view click holds
     /// the tree it was made on (`Clicked`).
@@ -2219,7 +2219,7 @@ impl ReadyView {
         let line = (self.scroll + usize::from(yy - area.y)).min(self.visible_len() - 1);
         let disp_col = self.h_scroll + usize::from(xx - area.x);
         let text = self.display_line_text(line).unwrap_or_default();
-        // Past the row's end, its last grapheme.
+        // Past the row's end, its last grapheme that paints (not a CRLF's `\r`).
         let col = self.grapheme_at(line, &text, disp_col).unwrap_or_else(|| last_grapheme(&text));
         Some((line, col))
     }
@@ -2571,12 +2571,18 @@ fn grapheme_at_col(text: &str, col: usize, from: ColMark) -> Option<usize> {
     None
 }
 
-/// The first char of `text`'s last grapheme (0 when empty). The grapheme
-/// is segmented from the end; only its char offset needs the line, as a
-/// plain char count (no segmenting, as cheap as the char count it took
-/// before #45).
+/// The first char of `text`'s last grapheme that paints a cell (0 when
+/// none does): what a click past a row's end lands on. A CRLF body's lines
+/// end in a `\r`, and a tab paints nothing either, so those are passed
+/// over (task #55); [`grapheme_at_col`] never lands on them for the same
+/// reason. The grapheme is segmented from the end; only its char offset
+/// needs the line, as a plain char count (no segmenting, as cheap as the
+/// char count it took before #45).
 fn last_grapheme(text: &str) -> usize {
-    crate::ui::graphemes(text).next_back().map_or(0, |(byte, _, _)| text[..byte].chars().count())
+    crate::ui::graphemes(text)
+        .rev()
+        .find(|&(_, _, width)| width > 0)
+        .map_or(0, |(byte, _, _)| text[..byte].chars().count())
 }
 
 /// The search hits that fall on one rendered line, as char ranges.
@@ -3928,7 +3934,7 @@ impl Response {
         };
         view.clear_sel();
         view.clicked = None;
-        // `cell_at` clamps a click past the line end onto its last grapheme, so
+        // `cell_at` clamps a click past the line end onto its last painted grapheme, so
         // a double click there takes the last word, as in a field (spec
         // 2026-10-14, align the text mouse, A3).
         let Some((line, col)) = view.cell_at(x, y, false) else {
@@ -4003,7 +4009,7 @@ impl Response {
             let text = view.display_line_text(head.0).unwrap_or_default();
             if disp_col == 0 || view.grapheme_at(head.0, &text, disp_col).is_none() {
                 let row = head.0 - 1;
-                // The row's last grapheme, as `cell_at` clamps a click past it.
+                // The row's last painted grapheme, as `cell_at` clamps a click past it.
                 let last = view.display_line_text(row).map_or(0, |t| last_grapheme(&t));
                 view.sel = Some((anchor, (row, last)));
                 return true;
@@ -6112,6 +6118,31 @@ mod tests {
         let (area, _) = render_buf(&mut r);
         assert!(r.select_word_at(area.x + 30, area.y + 1));
         assert_eq!(r.selected_text().as_deref(), Some("line"));
+    }
+
+    /// Task #55: a CRLF body's lines end in a `\r` that paints no cell, so
+    /// past the end is the last grapheme that paints, not the `\r`: a
+    /// double click there takes the last word (A3), a drag past the end
+    /// stops on the last char, and a downward drag onto a row's start ends
+    /// on the line above's last char. A line that paints nothing is still
+    /// an empty line.
+    #[test]
+    fn past_the_end_of_a_crlf_line_is_its_last_painted_grapheme() {
+        let mut r = ready("ab\r\nlonger line\r\nz");
+        let (area, _) = render_buf(&mut r);
+        assert!(r.select_word_at(area.x + 30, area.y + 1));
+        assert_eq!(r.selected_text().as_deref(), Some("line"));
+        r.begin_selection_at(area.x, area.y);
+        r.drag_selection_to(area.x + 50, area.y);
+        assert_eq!(r.selected_text().as_deref(), Some("ab"));
+        let mut r = ready("hello\r\nworld\r\nthird");
+        let (area, _) = render_buf(&mut r);
+        assert!(r.begin_selection_at(area.x, area.y));
+        assert!(r.drag_selection_to(area.x, area.y + 2));
+        assert_eq!(r.selected_text().as_deref(), Some("hello\r\nworld"));
+        let mut r = ready("ab\r\n\r\nz");
+        let (area, _) = render_buf(&mut r);
+        assert!(!r.select_word_at(area.x + 5, area.y + 1), "a row of just `\\r` is empty");
     }
 
     /// Task #23 review round 7 (A3): a row scrolled right past all its text
@@ -11656,6 +11687,10 @@ mod tests {
         // The last grapheme, found from the end: the decomposed `c` + accent.
         assert_eq!(last_grapheme(&text), text.chars().count() - 2);
         assert_eq!(last_grapheme(""), 0);
+        // Task #55: one that paints, past a CRLF's `\r` and a tab.
+        assert_eq!(last_grapheme(&format!("{text}\t\r")), text.chars().count() - 2);
+        assert_eq!(last_grapheme("ab\r"), 1);
+        assert_eq!(last_grapheme("\r"), 0);
     }
 
     /// Task #45 review: a raw row's text is its window, so a hit past the
