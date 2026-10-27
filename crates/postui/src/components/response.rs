@@ -6648,7 +6648,9 @@ mod tests {
         assert_eq!(r.handle_key(ch('n')), None);
         r.set_view_mode(ViewMode::Headers);
         render(&mut r);
-        assert_eq!(r.handle_key(ch('c')), None);
+        for c in ['y', 'Y', 'c'] {
+            assert_eq!(r.handle_key(ch(c)), None, "{c}");
+        }
         let row = (0..20)
             .find(|&i| matches!(r.view().unwrap().header_row(i), Some(HeaderRow::Received(_))));
         let row = row.expect("the fixture has a received header");

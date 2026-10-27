@@ -217,7 +217,7 @@ of that work in default mode, as they did before that round.
 
 Plain letters belong to vim. The per-surface app verbs bound to them
 today — `n` new, `r` rename, `d` delete, `m` move, `e` edit, `p`
-promote, `c` copy, `v` paste, `o`, `s`, `x`, `t`, `a` add, and the
+promote, `c` copy, `v` paste (`y` and `p` since #145, below), `o`, `s`, `x`, `t`, `a` add, and the
 per-surface `q` arms (`varmanager.rs:1146`, `:1299`,
 `manage_list.rs:526`) alongside the global one — are all removed in vim
 mode. Every one of them has a vim meaning that a vim user's fingers

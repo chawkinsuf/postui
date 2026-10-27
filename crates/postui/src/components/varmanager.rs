@@ -3152,7 +3152,7 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
         vm.focus = VmFocus::Grid;
-        for c in ['e', 'c', 'v', 'r', 'd', 'n', 'a', 'o', 'm'] {
+        for c in ['e', 'y', 'p', 'P', 'c', 'v', 'r', 'd', 'n', 'a', 'o', 'm'] {
             assert_eq!(vm.handle_key(key(KeyCode::Char(c)), &ctx), None, "grid {c}");
             assert!(vm.grid.editing.is_none(), "grid {c}");
         }
