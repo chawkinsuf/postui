@@ -47,7 +47,7 @@
 **The Vim profile.** Folding the response, searching it and yanking a Visual
 selection.
 
-<a href="docs/guide.md#keys"><img src="docs/images/vim.gif" alt="Sending with :send, maximizing the response with ctrl+w _, folding it, searching it and yanking a Visual selection" width="900"></a>
+<a href="docs/guide.md#keys"><img src="docs/images/vim.gif" alt="Maximizing the response with ctrl+w _, folding it, searching it and yanking a Visual selection" width="900"></a>
 
 **Variables and environments.** The Manage screen (`alt+r`) shows a variable's
 description and its value in the active environment.
@@ -57,11 +57,11 @@ description and its value in the active environment.
 **Describe a filter.** An AI command writes the jq filter from the response's
 shape, never its values.
 
-<a href="docs/guide.md#the-jq-filter"><img src="docs/images/describe.png" alt="Describing a jq filter for the AI command to write" width="900"></a>
+<a href="docs/guide.md#the-jq-filter"><img src="docs/images/describe.png" alt="A jq filter the AI command wrote from a description, applied to the response" width="900"></a>
 
 **curl in.** Paste a curl command into the sidebar to import it as a request.
 
-<a href="docs/guide.md#curl"><img src="docs/images/curl-import.png" alt="Importing a pasted curl command as a request" width="900"></a>
+<a href="docs/guide.md#curl"><img src="docs/images/curl-import.png" alt="A pasted curl command imported as a request, open and sent" width="900"></a>
 
 **Themes.** Built-in dark and light themes, your terminal's own colors, and a
 contrast control.
