@@ -71,8 +71,9 @@ impl ProjectsRegistry {
     /// it lossily, under a name no directory has, which the next launch
     /// would open and every later save would add again. Such a project
     /// (only the command line opens one) isn't remembered: it is left out
-    /// of `known`, and `root`/`last` keep what the file had, so the next
-    /// launch reopens the project used before it.
+    /// of `known`, and `last` keeps the file's, so the next launch reopens
+    /// the project used before it. (`root` is only ever read from the
+    /// file's text, so it is always UTF-8.)
     pub fn write_into(&self, doc: &mut toml_edit::DocumentMut) {
         let mut table = toml_edit::Table::new();
 
@@ -82,17 +83,20 @@ impl ProjectsRegistry {
         }
         table["known"] = toml_edit::value(known);
 
-        let old = doc.get("projects").and_then(|p| p.as_table_like());
-        for (key, path) in [("root", &self.root), ("last", &self.last)] {
-            match path.as_deref().map(Path::to_str) {
-                Some(Some(p)) => table[key] = toml_edit::value(p),
-                Some(None) => {
-                    if let Some(kept) = old.and_then(|t| t.get(key)) {
-                        table[key] = kept.clone();
-                    }
-                }
-                None => {}
-            }
+        if let Some(root) = self.root.as_deref().and_then(Path::to_str) {
+            table["root"] = toml_edit::value(root);
+        }
+        let last = match self.last.as_deref().map(Path::to_str) {
+            Some(Some(last)) => Some(last.to_owned()),
+            Some(None) => doc
+                .get("projects")
+                .and_then(|p| p.get("last"))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+            None => None,
+        };
+        if let Some(last) = last {
+            table["last"] = toml_edit::value(last);
         }
 
         doc["projects"] = toml_edit::Item::Table(table);

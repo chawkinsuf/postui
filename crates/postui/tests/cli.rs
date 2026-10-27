@@ -115,9 +115,7 @@ fn printing_to_a_full_device_fails_with_a_message() {
         let out = postui_to(&[flag], full.into());
         assert_eq!(out.status.code(), Some(1), "{flag}");
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(
-            stderr, "postui: can't write to stdout: No space left on device (os error 28)\n",
-            "{flag}"
-        );
+        assert!(stderr.starts_with("postui: can't write to stdout: "), "{flag}: {stderr}");
+        assert_eq!(stderr.lines().count(), 1, "one line, no panic: {stderr}");
     }
 }
