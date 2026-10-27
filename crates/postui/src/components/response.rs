@@ -1751,9 +1751,9 @@ impl ReadyView {
     /// nothing, a drag selection included, as Vim's beep and a page key's
     /// edge beep don't (`j`/`k`'s edge drop is main's arrows rule). A
     /// landing on another line opens the folds at it (`'foldopen'`
-    /// `percent`), before the column is set, as `$` does. Like a search
-    /// landing, it does not scroll the view sideways: the response draws no
-    /// caret for a sideways scroll to follow.
+    /// `percent`), before the column is set, as `$` does. Like a vim search
+    /// landing, it scrolls the view sideways to show the column
+    /// ([`Self::show_cursor_col`]).
     fn percent(&mut self, count: Option<usize>) {
         use crate::text::brackets::{MatchFrom, find_match, percent_row};
         let Some(from) = self.real_line() else { return };
@@ -1779,6 +1779,47 @@ impl ReadyView {
             None => self.col_first_non_blank(),
         }
         self.follow_cursor();
+        self.show_cursor_col();
+    }
+
+    /// Vim's `curs_columns()` sideways, in a `nowrap` window with
+    /// `'sidescroll'` and `'sidescrolloff'` at Vim's 0: when the char under
+    /// Vim's cursor is not wholly in view, the view scrolls to put it
+    /// mid-window (task #164; probed in Vim 9.1, 80 columns: `%` to column
+    /// 231 leaves `leftcol` 191, a landing in view leaves it). Never past
+    /// the widest line's end, as no sideways scroll here goes
+    /// (`scroll_h`): the one difference from Vim, whose window can show
+    /// blank columns there. The cursor's char stays in view all the same.
+    /// While a closed fold holds the cursor's line nothing scrolls, as
+    /// Vim's skips a folded cursor line: the row shows the fold's summary,
+    /// not the line the column is on.
+    ///
+    /// Only `%` and the vim search's landings call it, the jumps along a
+    /// line that would otherwise move an unseen column. Vim keeps its cursor
+    /// in view after every command; here `h` `l` `0` `$` keep their steps,
+    /// and a move to another line keeps the scroll (spec §5.7's known
+    /// differences).
+    fn show_cursor_col(&mut self) {
+        let Some(line) = self.real_line() else { return };
+        if self.in_closed_fold(line) {
+            return;
+        }
+        let col = self.cur_col();
+        // Borrowed where it can be: a raw line can be megabytes long.
+        let owned;
+        let text = match self.mode {
+            ViewMode::Raw => self.raw_lines.get(self.cursor).map(String::as_str),
+            _ => {
+                owned = self.display_line_text(self.cursor);
+                owned.as_deref()
+            }
+        };
+        let Some((start, end)) = text.map(|t| cell_span(t, col)) else { return };
+        let width = self.width.max(1);
+        if start < self.h_scroll || end > self.h_scroll + width {
+            let max = self.content_width().saturating_sub(width);
+            self.h_scroll = start.saturating_sub(width / 2).min(max);
+        }
     }
 
     /// The rest of `halfpage()`'s move down, once the window hit the end:
@@ -1978,10 +2019,12 @@ impl ReadyView {
     /// puts the column on it (on the line's last char for a match at its
     /// end, as Vim's Normal cursor cannot be past it). A vim search opens
     /// every closed fold at the line, the one it opens included, as Vim's
-    /// `'foldopen'` `search` does; arrows' only shows the line, as on main.
-    /// A jump like any other: a line selection drops, except vim's V, which
-    /// a search extends as Vim 9.1's Visual does (probed). Its anchor is a
-    /// buffer line, so a fold the landing opens above it does not move it.
+    /// `'foldopen'` `search` does, and scrolls the view sideways to show
+    /// the column ([`Self::show_cursor_col`]); arrows' only shows the line,
+    /// as on main. A jump like any other: a line selection drops, except
+    /// vim's V, which a search extends as Vim 9.1's Visual does (probed).
+    /// Its anchor is a buffer line, so a fold the landing opens above it
+    /// does not move it.
     fn jump_to_match(&mut self) {
         let Some(search) = &self.search else { return };
         let Some(&(line, start, _)) = search.matches.get(search.current) else {
@@ -2006,6 +2049,9 @@ impl ReadyView {
         }
         let len = self.buffer_line(line).map_or(0, |t| t.chars().count());
         self.set_col(start.min(len.saturating_sub(1)));
+        if vim {
+            self.show_cursor_col();
+        }
     }
 
     /// The buffer line shown on visible row `row`: on the tree, the line
@@ -2569,6 +2615,21 @@ fn grapheme_at_col(text: &str, col: usize, from: ColMark) -> Option<usize> {
         }
     }
     None
+}
+
+/// The display columns `[start, end)` that the grapheme holding char `col`
+/// of `text` paints on, as ratatui paints it. A zero-width grapheme, or a
+/// column past the end (an empty line's), takes the one column there, as
+/// Vim's cursor does.
+fn cell_span(text: &str, col: usize) -> (usize, usize) {
+    let mut w = 0;
+    for g in crate::ui::char_graphemes(text) {
+        if col < g.char + g.chars {
+            return (w, w + g.width.max(1));
+        }
+        w += g.width;
+    }
+    (w, w + 1)
 }
 
 /// The first char of `text`'s last grapheme (0 when empty). The grapheme
@@ -7993,6 +8054,94 @@ mod tests {
             0,
             "column offset is per-view state, reset on a view switch"
         );
+    }
+
+    /// Types `query` into a fresh search box of `syntax` and commits it.
+    fn search_for(r: &mut Pane, syntax: SearchSyntax, query: &str) {
+        assert!(r.open_search(syntax, false));
+        for c in query.chars() {
+            r.handle_key(ch(c));
+        }
+        r.handle_key(key(KeyCode::Enter));
+    }
+
+    /// The cursor's row, Vim's column and the sideways scroll.
+    fn row_col_scroll(r: &Pane) -> (usize, usize, usize) {
+        let v = r.view().unwrap();
+        (v.cursor, v.cur_col(), v.h_scroll)
+    }
+
+    /// Task #164, probed in Vim 9.1 (`vim -Nu NONE`, `nowrap`, 80 columns,
+    /// so `'sidescroll'` and `'sidescrolloff'` are 0): a `%` or search
+    /// landing whose column is out of view scrolls the view to put it
+    /// mid-window, `leftcol` the column less 40; one in view leaves the
+    /// scroll. `{N}%`'s first non-blank counts too.
+    #[test]
+    fn percent_and_search_landings_scroll_the_column_into_view() {
+        use crate::action::ResponseMotion as M;
+        let body = [
+            format!("{}[{}]{}", "a".repeat(30), "b".repeat(200), "c".repeat(50)),
+            "short [x]".to_string(),
+            format!("{}target{}", "d".repeat(150), "e".repeat(20)),
+            format!("    {}", "f".repeat(300)),
+        ]
+        .join("\n");
+        let mut r = ready(&body);
+        let v = r.view.as_mut().unwrap();
+        (v.width, v.height) = (80, 23);
+        r.motion(M::MatchPair { count: None });
+        assert_eq!(row_col_scroll(&r), (0, 231, 191), "% to the far ]");
+        search_for(&mut r, SearchSyntax::Vim, "c");
+        assert_eq!(row_col_scroll(&r), (0, 232, 191), "/c lands in view: no scroll");
+        r.motion(M::Col(crate::action::ColMove::Start));
+        r.motion(M::MatchPair { count: None });
+        r.motion(M::MatchPair { count: None });
+        assert_eq!(row_col_scroll(&r), (0, 30, 0), "% back to the [");
+        search_for(&mut r, SearchSyntax::Vim, "c");
+        assert_eq!(row_col_scroll(&r), (0, 232, 192), "/c from the [ scrolls");
+        search_for(&mut r, SearchSyntax::Vim, "target");
+        assert_eq!(row_col_scroll(&r), (2, 150, 110), "a landing on another line");
+        r.motion(M::MatchPair { count: Some(100) });
+        assert_eq!(row_col_scroll(&r), (3, 4, 0), "{{N}}% to a first non-blank in view");
+    }
+
+    /// Task #164: the sideways scroll is the vim search's. Arrows' search
+    /// keeps main's landing, which leaves the view where it was.
+    #[test]
+    fn an_arrows_search_landing_does_not_scroll_sideways() {
+        let mut r = ready(&format!("start\n{}target", "d".repeat(150)));
+        r.view.as_mut().unwrap().width = 80;
+        search_for(&mut r, SearchSyntax::Literal, "target");
+        assert_eq!(row_col_scroll(&r), (1, 150, 0));
+    }
+
+    /// Task #164 on the tree: the column is the painted row's, indent
+    /// included, so the match shows after the scroll.
+    #[test]
+    fn a_search_landing_on_the_tree_shows_the_match() {
+        let mut r = ready(&format!(r#"{{"k": "{}target"}}"#, "x".repeat(150)));
+        assert!(!render(&mut r).contains("target"), "off screen to start with");
+        search_for(&mut r, SearchSyntax::Vim, "target");
+        assert!(r.view().unwrap().h_scroll > 0);
+        assert!(render(&mut r).contains("target"), "the match shows");
+    }
+
+    /// Task #164: a column in a closed fold is not on its row, which shows
+    /// the fold's summary, so a landing that leaves the cursor in one does
+    /// not scroll, as Vim's `curs_columns()` skips a folded cursor line.
+    #[test]
+    fn a_percent_inside_a_closed_fold_does_not_scroll_sideways() {
+        use crate::action::{FoldOp, ResponseMotion as M};
+        let mut r = ready(&format!(r#"{{"o": {{"s": "{}[ab]"}}}}"#, "x".repeat(150)));
+        render(&mut r);
+        r.motion(M::Goto { line: Some(2), last: false });
+        assert!(r.view.as_mut().unwrap().fold(FoldOp::Close, 1));
+        r.motion(M::Goto { line: Some(3), last: false });
+        r.view.as_mut().unwrap().h_scroll = 50;
+        r.motion(M::MatchPair { count: None });
+        let v = r.view().unwrap();
+        assert!(v.in_closed_fold(2) && v.cur_col() > 100, "% found the pair in the fold");
+        assert_eq!(v.h_scroll, 50, "the summary's columns are not the line's");
     }
 
     #[test]
