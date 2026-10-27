@@ -7168,6 +7168,20 @@ impl App {
                 // closing a renamed option's cell renames it, and a delete
                 // of the old name must then read as already gone.
                 self.close_manager_input();
+                // A promote reads its value from the request's vars and
+                // then removes that row, so an open Vars cell commits
+                // first, as its own step (#153; why the removal needs it:
+                // `debug_assert_no_open_vars_cell`). Here, not in
+                // `apply_var_struct`, because the value read must already
+                // see the typing, and before `begin_op` so the commit is
+                // not inside the op's step. Any other cell stays open, as
+                // under every journaled op: a promote writes no row of its
+                // table.
+                if matches!(op, VarStructOp::Promote { .. })
+                    && self.editor.active_tab == EditorTab::Vars
+                {
+                    self.commit_table_edit();
+                }
                 // Sampled before the mutation so the delete toasts below
                 // stay quiet when the target was already gone (deleting a
                 // missing entry is a no-op, not news).
@@ -8660,11 +8674,12 @@ impl App {
         stage_value_removal(fields, kind) && self.update(Action::Render)
     }
 
-    /// The value dialog's request-scope writes add and remove Vars rows,
-    /// and an open cell names its row by index, so its typing would land
-    /// on another row. The dialog commits an open Vars cell as it opens
-    /// (`open_edit_value_popup`, #151), and while it is up no cell can
-    /// open again, so none is open when they run.
+    /// The value dialog's request-scope writes and a promote's removal add
+    /// and remove Vars rows, and an open cell names its row by index, so
+    /// its typing would land on another row. The dialog commits an open
+    /// Vars cell as it opens (`open_edit_value_popup`, #151), and while it
+    /// is up no cell can open again, so none is open when they run; a
+    /// promote commits one just before it runs (`Action::VarStruct`, #153).
     fn debug_assert_no_open_vars_cell(&self) {
         debug_assert!(
             self.editor.active_tab != EditorTab::Vars || self.editor.table.editing.is_none(),
@@ -9142,6 +9157,7 @@ impl App {
             // both places. A save failure is reported as a toast rather
             // than an `Err` (which would incorrectly roll back an op that,
             // on the project side, already committed).
+            self.debug_assert_no_open_vars_cell();
             self.editor.variables.shift_remove(name);
             if let Err(e) = self.save_open_request() {
                 self.toasts.push(
