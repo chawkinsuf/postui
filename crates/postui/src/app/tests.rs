@@ -30974,6 +30974,14 @@ fn redo_of_a_cleared_ai_command_applies_the_default() {
     assert_eq!(app.ui_settings.ai_cmd, default, "the redo applies the default too");
     let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
     assert!(!text.contains("ai_cmd"), "the redo removed the key again: {text:?}");
+
+    // The other key an empty value removes: its redo is no command.
+    app.update(Action::SetUiString { key: "clipboard_cmd", value: "my-copy".to_string() });
+    app.update(Action::SetUiString { key: "clipboard_cmd", value: String::new() });
+    app.update(Action::Undo);
+    assert_eq!(app.ui_settings.clipboard_cmd.as_deref(), Some("my-copy"));
+    app.update(Action::Redo);
+    assert_eq!(app.ui_settings.clipboard_cmd, None, "the redo applies no command");
 }
 
 /// A write that never lands records nothing to undo -- `osc52_limit` past

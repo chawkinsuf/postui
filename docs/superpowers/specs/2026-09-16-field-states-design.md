@@ -303,11 +303,13 @@ ConfigFile { file: ConfigFile, before: Option<String>, after: String }
 2026-10-27, task #182: the replay had its own copy of the
 key-to-`UiSettings` mapping, so a redone clear of the AI command ran an
 empty command where the commit ran the default. The write is now one
-non-recording `App::write_ui_value` (save, the one `apply_ui_value`
-mapping, `reapply_ui_settings`): the Settings actions record their step
-after it (`set_ui_value`, the successor of `apply_ui_write`), and the
-replay runs it and moves its own step between the stacks, as every
-replay arm calls the layer under the recording action (`mine`).
+non-recording `App::write_ui_value` (save, then `App::apply_ui`: the
+one `apply_ui_value` mapping, `reapply_ui_settings`, and for the keymap
+the live bindings): the Settings actions record their step after it
+(`set_ui_value`, the successor of `apply_ui_write`), and the replay
+runs it and moves its own step between the stacks, as every replay arm
+calls the layer under the recording action. `SetKeyProfile`, which
+applies even a refused write, applies through `apply_ui` too (`mine`).
 
 `u` and ctrl+z on the Settings tab already reach `Action::Undo`
 through the whitelist; the arm's "commit the open table edit" prelude

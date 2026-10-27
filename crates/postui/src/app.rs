@@ -3507,8 +3507,10 @@ impl App {
                     }
                     return true;
                 }
-                let before = self.ui_string("keymap");
-                let saved = self.config.save_ui_string("keymap", profile.spelling());
+                let key = SettingsField::Keymap.key();
+                let before = UiValue::Text(self.ui_string(key));
+                let after = UiValue::Text(profile.spelling().to_string());
+                let saved = self.config.save_ui_string(key, profile.spelling());
                 let landed = saved.is_ok();
                 // Applied whether or not it landed (spec §4.2): left unset,
                 // the question would come straight back, and a question
@@ -3524,22 +3526,13 @@ impl App {
                         ToastKind::Error,
                     );
                 }
-                let mut ui = self.ui_settings.clone();
-                ui.keymap = Some(profile);
-                self.reapply_ui_settings(ui);
-                self.keymap = self.keymap_for_profile();
-                self.warn_of_vim_shadows();
+                self.apply_ui(key, &after);
                 if landed {
-                    self.record_config_step(
-                        SettingsField::Keymap.key(),
-                        UiValue::Text(before),
-                        UiValue::Text(profile.spelling().to_string()),
-                    );
+                    self.record_config_step(key, before, after);
                 }
                 if matches!(self.modals.top(), Some(Modal::KeymapChoice { .. })) {
                     self.modals.pop();
                 }
-                self.router.clear();
                 true
             }
             Action::KeymapAnswer(answer) => {
@@ -12046,9 +12039,8 @@ impl App {
     }
 
     /// The one write behind a Settings value: saves `value` under `key`
-    /// in `config.toml` and, once that landed, applies it through
-    /// [`apply_ui_value`] and the same `reapply_ui_settings` path
-    /// `ReloadFromDisk` uses, so the tab and a hand-edit converge.
+    /// in `config.toml` and, once that landed, applies it
+    /// ([`Self::apply_ui`]).
     ///
     /// It records nothing. The Settings actions record their step after
     /// it ([`Self::set_ui_value`]); an undo or redo of a `Config` step
@@ -12067,10 +12059,27 @@ impl App {
             UiValue::Text(v) => self.config.save_ui_string(key, v),
             UiValue::Int(v) => self.config.save_ui_int(key, *v),
         }?;
+        self.apply_ui(key, value);
+        Ok(())
+    }
+
+    /// Applies a Settings value in memory: through [`apply_ui_value`],
+    /// the one mapping, and the same `reapply_ui_settings` path
+    /// `ReloadFromDisk` uses, so the tab and a hand-edit converge. A
+    /// keymap value also swaps the live bindings, warns of the
+    /// `keys.toml` letters that shadow vim's (spec §4.4), and drops a
+    /// half-typed chord. [`Self::write_ui_value`]'s tail, and
+    /// `SetKeyProfile`'s on its own, which applies even a refused write
+    /// (spec §4.2).
+    fn apply_ui(&mut self, key: &'static str, value: &crate::undo::UiValue) {
         let mut ui = self.ui_settings.clone();
         apply_ui_value(&mut ui, key, value);
         self.reapply_ui_settings(ui);
-        Ok(())
+        if key == "keymap" {
+            self.keymap = self.keymap_for_profile();
+            self.warn_of_vim_shadows();
+            self.router.clear();
+        }
     }
 
     /// The Settings tab's current value for `key`, read straight from
@@ -12765,11 +12774,6 @@ impl App {
                 let value = if redo { after } else { before };
                 match self.write_ui_value(key, value) {
                     Ok(()) => {
-                        if *key == "keymap" {
-                            self.keymap = self.keymap_for_profile();
-                            self.warn_of_vim_shadows();
-                            self.router.clear();
-                        }
                         let verb = if redo { "Redid" } else { "Undid" };
                         let label = crate::components::settings::SettingsField::from_key(key)
                             .map(crate::components::settings::SettingsField::label)
@@ -12782,6 +12786,10 @@ impl App {
                         }
                         true
                     }
+                    // A refused write (config.toml hand-broken meanwhile)
+                    // drops the step rather than keeping it for a retry:
+                    // spec 2026-09-16 field states, "popped anyway,
+                    // matching how a skipped `Project` marker behaves".
                     Err(e) => {
                         self.toasts.push(format!("could not undo: {e}"), ToastKind::Error);
                         false
