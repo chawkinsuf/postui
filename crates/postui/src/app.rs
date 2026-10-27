@@ -3849,9 +3849,10 @@ impl App {
                 use crate::components::modal::Modal;
                 use crate::components::palette::PaletteState;
                 // Where the keys mean what is known only here, where the
-                // palette is opened from a focus.
+                // palette is opened from a focus: once it is pushed, the
+                // keys go to the palette (task #132).
                 let mut palette = PaletteState::new(&self.usage, crate::usage::now())
-                    .with_key_context(self.key_context());
+                    .opened_at(self.spell_ctx(), self.key_context());
                 if let Some((name, offers)) = self.tip_offers() {
                     palette = palette.with_tip(&name, &offers);
                 }

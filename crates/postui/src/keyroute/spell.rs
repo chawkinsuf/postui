@@ -80,13 +80,23 @@ fn row_for(at: SpellCtx, action: &Action) -> Option<&'static str> {
 /// ex verb where `:` applies (spec §4.6; plan M4b Deviations 20 and 21).
 /// `None` when nothing binds it.
 pub fn spell(at: SpellCtx, action: &Action, keymap: &Keymap) -> Option<String> {
+    spell_with(at, action, || keymap.combo_for_action(action))
+}
+
+/// [`spell`] with the caller's `combo` in the keymap's place, asked only
+/// when no table row spells: the palette's key column (task #132) answers
+/// none where the combo means something else at the place it opened
+/// (`KeyContext::action`, spec S6a), and a table row or an ex verb still
+/// spells there.
+pub fn spell_with(
+    at: SpellCtx,
+    action: &Action,
+    combo: impl FnOnce() -> Option<String>,
+) -> Option<String> {
     if let Some(keys) = row_for(at, action) {
         return Some(notation::display(keys));
     }
-    if let Some(combo) = keymap.combo_for_action(action) {
-        return Some(combo);
-    }
-    colon_applies(at).then(|| super::ex::spelling(action)).flatten()
+    combo().or_else(|| colon_applies(at).then(|| super::ex::spelling(action)).flatten())
 }
 
 /// What the quit chip runs at `at`: in vim where the line opens, the verb

@@ -1297,12 +1297,16 @@ fn the_palette_widens_and_narrows_the_sidebar_from_the_editor() {
 
 /// S6a: the vim `:` palette's key column takes the same key context as
 /// ctrl+p's. With a keys.toml that binds the split keys in vim (the arrows
-/// defaults stand in for it), the split rows show no key while the sidebar
-/// has focus, where that key widens the sidebar, and show it from the
-/// editor.
+/// defaults stand in for it), the split row drops that key while the
+/// sidebar has focus, where it widens the sidebar, and shows it from the
+/// editor. From the sidebar it names `:split` instead, which moves the
+/// split there too (task #132, spec E12a amended).
 #[test]
 fn the_ex_palette_names_the_split_keys_only_where_they_move_the_split() {
-    for (focus, shown) in [(PaneId::Sidebar, false), (PaneId::Editor, true)] {
+    let alt = crate::keys::alt_label();
+    for (focus, key) in
+        [(PaneId::Sidebar, ":split".to_string()), (PaneId::Editor, format!("{alt}+w"))]
+    {
         let mut app = App::new_for_test();
         app.use_profile(crate::config::KeyProfile::Vim);
         app.keymap = crate::keys::Keymap::default_bindings();
@@ -1314,7 +1318,38 @@ fn the_ex_palette_names_the_split_keys_only_where_they_move_the_split() {
         };
         assert!(palette.is_ex());
         let row = palette.filtered().iter().find(|c| c.id == "split-step").expect("split-step");
-        assert_eq!(palette.key_column(row, &app.keymap).is_some(), shown, "{focus:?}");
+        assert_eq!(palette.key_column(row, &app.keymap), Some(key), "{focus:?}");
+    }
+}
+
+/// Task #132: both palettes spell their rows where they opened, as the
+/// footer does: in vim, undo is `u` and save `:w` from the sidebar, and
+/// from the response the search row is `/`. The context is taken as the
+/// palette opens: once it is up, the keys go to the palette.
+#[test]
+fn both_vim_palettes_name_the_keys_of_where_they_opened() {
+    for ex in [false, true] {
+        for (focus, id, key) in [
+            (PaneId::Sidebar, "undo", "u"),
+            (PaneId::Sidebar, "request-save", ":w"),
+            (PaneId::Response, "response-search", "/"),
+        ] {
+            let mut app = App::new_for_test();
+            app.use_profile(crate::config::KeyProfile::Vim);
+            app.update(Action::FocusPane(focus));
+            render(&mut app);
+            app.update(if ex { Action::OpenExPalette } else { Action::OpenPalette });
+            let Some(Modal::Palette(palette)) = app.modals.top() else {
+                panic!("{focus:?}: the palette is open");
+            };
+            assert_eq!(palette.is_ex(), ex);
+            let row = palette.filtered().iter().find(|c| c.id == id).expect(id);
+            assert_eq!(
+                palette.key_column(row, &app.keymap).as_deref(),
+                Some(key),
+                "{id} from {focus:?}, ex {ex}"
+            );
+        }
     }
 }
 

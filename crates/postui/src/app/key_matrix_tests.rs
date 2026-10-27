@@ -1598,3 +1598,59 @@ fn every_painted_keycap_resolves_to_its_chip() {
         }
     }
 }
+
+/// Task #132 with S6a: the `:` line opens over a prompt too. Over the
+/// sidebar's rename prompt, with a keys.toml that binds `alt+w` in vim
+/// (the arrows defaults stand in for it), the split row names `:split`,
+/// which runs from that line, not `alt+w`, which the prompt takes and
+/// which moves nothing there.
+#[test]
+fn the_ex_palette_over_a_sidebar_prompt_names_split_not_alt_w() {
+    let mut app = build(SidebarThree);
+    app.use_profile(KeyProfile::Vim);
+    app.keymap = crate::keys::Keymap::default_bindings();
+    draw(&mut app);
+    feed(&mut app, "r");
+    assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "the rename prompt");
+    feed(&mut app, "<Esc>:");
+    let Some(Modal::Palette(palette)) = app.modals.top() else {
+        panic!("the : line is open over the prompt");
+    };
+    let row = palette.filtered().iter().find(|c| c.id == "split-step").expect("split-step");
+    assert_eq!(palette.key_column(row, &app.keymap).as_deref(), Some(":split"));
+    // Why not `alt+w`: pressed over the prompt, it does not move the split.
+    feed(&mut app, "<Esc>");
+    assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })), "back on the prompt");
+    let split = app.split_state();
+    feed(&mut app, "<A-w>");
+    assert_eq!(app.split_state(), split, "alt+w over the prompt");
+}
+
+/// Task #132: a palette opened from a vim field's idle Normal spells its
+/// rows from that field's context, as the footer did a key before: the
+/// key that opens it (`:` or ctrl+p) leaves the context as it was, so
+/// undo reads `u` and save `:w` there, not the keymap's or nothing.
+#[test]
+fn a_palette_from_a_vim_field_in_normal_spells_from_the_field() {
+    use crate::keyroute::FieldSpell;
+    for opener in [":", "<C-p>"] {
+        let mut app = build(UrlLine);
+        app.use_profile(KeyProfile::Vim);
+        draw(&mut app);
+        feed(&mut app, "i<Esc>");
+        let at = app.spell_ctx();
+        assert!(matches!(at.field, FieldSpell::Normal(_)), "{opener}: {at:?}");
+        feed(&mut app, opener);
+        let Some(Modal::Palette(palette)) = app.modals.top() else {
+            panic!("{opener}: the palette is open");
+        };
+        for (id, key) in [("undo", "u"), ("request-save", ":w")] {
+            let row = palette.filtered().iter().find(|c| c.id == id).expect(id);
+            let shown = palette.key_column(row, &app.keymap);
+            assert_eq!(shown.as_deref(), Some(key), "{id} from {opener}");
+            let action = &row.action;
+            let footer = crate::keyroute::spell::spell(at, action, &app.keymap);
+            assert_eq!(shown, footer, "{id} from {opener}: as the footer spells it");
+        }
+    }
+}
