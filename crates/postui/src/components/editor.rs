@@ -403,7 +403,7 @@ impl Default for Editor {
             body_visual: None,
             body_hl_overlays: Vec::new(),
             body_search: Default::default(),
-            body_handler: EditorEventHandler::emacs_mode(),
+            body_handler: body_key_handler(),
             body_sel_anchor: None,
             body_word_anchor: None,
             body_line_anchor: None,
@@ -2407,6 +2407,17 @@ fn new_body_state(text: &str) -> EditorState {
     state
 }
 
+/// edtui's emacs keymap for the body, less ctrl+y (#127). The keymap's
+/// ctrl+y pastes from edtui's own clipboard, which every selection delete
+/// fills, so it put the last deleted text back; the arrows profile leaves
+/// ctrl+y unbound, and an unbound key does nothing.
+fn body_key_handler() -> EditorEventHandler {
+    use edtui::events::{KeyEventRegister, KeyInput};
+    let mut handler = EditorEventHandler::emacs_mode();
+    handler.key_handler.remove(&KeyEventRegister::i(vec![KeyInput::ctrl('y')]));
+    handler
+}
+
 impl Component for Editor {
     fn handle_key(&mut self, ev: KeyEvent) -> Option<Action> {
         // On the resting stops (the method badge, the selected URL line,
@@ -2685,7 +2696,8 @@ impl Component for Editor {
                 // (the router hands those to the global keymap first); any
                 // unbound modified combo falls through to this component and
                 // reaches edtui's own emacs-style bindings (ctrl+e/k etc.)
-                // deliberately, so those keep working for body editing.
+                // deliberately, so those keep working for body editing
+                // (all but ctrl+y's paste: `body_key_handler`).
                 if ev.code == KeyCode::Esc {
                     self.sub_focus = SubFocus::None;
                     return Some(Action::Render);
@@ -4700,6 +4712,22 @@ mod tests {
         };
         e.set_body_text(text);
         e
+    }
+
+    /// #127: ctrl+y is unbound in the arrows profile, so in the body it
+    /// does nothing. edtui's emacs keymap would paste the last deleted
+    /// selection back from its own clipboard.
+    #[test]
+    fn body_ctrl_y_pastes_nothing_back() {
+        let mut e = body_editor("hello world\nnext");
+        e.body.cursor = edtui::Index2::new(0, 6);
+        for _ in 0..5 {
+            e.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+        }
+        e.handle_key(key(KeyCode::Delete));
+        assert_eq!(e.body_text(), "hello \nnext");
+        e.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        assert_eq!(e.body_text(), "hello \nnext");
     }
 
     #[test]
