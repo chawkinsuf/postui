@@ -29,7 +29,11 @@ impl Pos {
 /// The chars of the `{{token}}` that text put at char `at` of `line` would
 /// land inside: one that starts before `at` and ends after it. A put just
 /// before a token's first brace or just after its last lands outside it
-/// (#149).
+/// (#149). The question is where the put lands, not which token the caret
+/// is at: the caret tooltip (`Editor::caret_token`) also names the token a
+/// caret just before it sits at, but a put there goes in front and nests
+/// nothing. So vim Normal on a first brace replaces the token (its put
+/// lands after the brace) except at column 0, where the put goes before.
 pub fn token_around(line: &[char], at: usize) -> Option<std::ops::Range<usize>> {
     let text: String = line.iter().collect();
     postui_core::vars::find_tokens(&text).into_iter().find_map(|t| {

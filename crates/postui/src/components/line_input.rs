@@ -487,6 +487,12 @@ impl LineInput {
     /// into a one-line field.
     pub fn paste(&mut self, text: &str) {
         self.record(EditKind::Whole);
+        self.paste_unrecorded(text);
+    }
+
+    /// [`Self::paste`] without its history step, for a caller that has
+    /// recorded one already.
+    fn paste_unrecorded(&mut self, text: &str) {
         self.snap_to_graphemes();
         self.delete_selection();
         let flat = flatten_paste(text);
@@ -501,6 +507,9 @@ impl LineInput {
     /// selection, else at the caret. A `whole` `{{token}}` that would land
     /// inside a token takes that token's place instead (#149).
     pub fn put_var(&mut self, text: &str, whole: bool) {
+        // Recorded before the token is selected, so an undo puts the caret
+        // back where the user had it.
+        self.record(EditKind::Whole);
         if whole && self.selection().is_none() {
             let chars: Vec<char> = self.text.chars().collect();
             if let Some(token) = crate::text::token_around(&chars, self.cursor) {
@@ -508,7 +517,7 @@ impl LineInput {
                 self.cursor = token.end;
             }
         }
-        self.paste(text);
+        self.paste_unrecorded(text);
     }
 
     /// Whether the text *before* the cursor ends with `suffix`. Used to spot

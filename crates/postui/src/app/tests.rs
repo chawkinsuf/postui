@@ -27834,6 +27834,37 @@ fn a_completion_still_goes_in_at_the_caret() {
     assert_eq!(app.editor.table.editing.as_ref().unwrap().input.text(), "{{base_url}}{{old}}");
 }
 
+/// Undo after a pick over a token puts the text back, and in a one-line
+/// field (whose own history stores the caret) the caret too.
+#[test]
+fn undoing_a_pick_over_a_token_restores_the_caret() {
+    let ctrl_z = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    let (mut app, _dir, _out) = tooltip_app("x");
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    app.editor.url.set_cursor(3);
+    render_once(&mut app);
+    app.update(Action::InsertVarText { text: "{{v}}".into(), completing: false });
+    assert_eq!(app.editor.url.text(), "{{v}}/x");
+    app.handle_key(ctrl_z);
+    assert_eq!((app.editor.url.text(), app.editor.url.cursor()), ("{{x}}/x", 3));
+
+    let (mut app, _dir, _out) = tooltip_app("x");
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.set_body_text("{\n  \"u\": \"{{old}}\"\n}");
+    app.editor.body.cursor = edtui::Index2::new(1, 11);
+    render_once(&mut app);
+    app.capture_undo();
+    app.update(Action::InsertVarText { text: "{{v}}".into(), completing: false });
+    app.capture_undo();
+    assert_eq!(app.editor.body_text(), "{\n  \"u\": \"{{v}}\"\n}");
+    // The app's undo stores no caret (undo.rs); the text comes back whole.
+    app.update(Action::Undo);
+    assert_eq!(app.editor.body_text(), "{\n  \"u\": \"{{old}}\"\n}");
+}
+
 /// A live selection is what a pick replaces, as a paste does, even with
 /// the caret inside a token.
 #[test]
