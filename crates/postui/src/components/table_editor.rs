@@ -69,9 +69,8 @@ struct Committed {
     /// Shift-Tab; tasks #111, #176). For `+ Add` that is its index before
     /// the commit, whatever the commit did: a new row lands there, an empty
     /// name is discarded there, a taken name leaves it there. For a real
-    /// row it is `row`, even for a rename onto a taken name: unlike `+ Add`,
-    /// which is still there after its taken name, the renamed row is gone,
-    /// merged into the row it matched, so that row is where it now is.
+    /// row it is `row`, where that row is after the commit (for a rename
+    /// onto a taken name, the row it merged into).
     here: usize,
     warning: Option<String>,
 }
@@ -2170,6 +2169,31 @@ mod tests {
             let want: &[&str] = if name == "a" { &["a", "b"] } else { &["a", "b", name] };
             assert_eq!(keys, want, "{name} {code:?}");
             assert_eq!(t.selected, Some(lands), "{name} {code:?}");
+        }
+    }
+
+    /// Esc and Enter close the cell where it is, and for a ghost name that
+    /// is taken that is the row it matched (the warning's row), unlike the
+    /// moves above. With nothing written they stay on `+ Add`, even when
+    /// the map shrank under the open cell.
+    #[test]
+    fn esc_and_enter_off_a_ghost_key_park_on_the_row_it_names() {
+        for code in [KeyCode::Esc, KeyCode::Enter] {
+            for (name, removed, lands) in
+                [("b", 0, Stop::Row(1)), ("", 0, Stop::Add), ("", 2, Stop::Add)]
+            {
+                let mut map = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
+                let mut t = TableEditorState::default();
+                t.click_cell(3, Col::Key, &mut map); // the ghost
+                type_str(&mut t, &mut map, name);
+                for _ in 0..removed {
+                    map.pop();
+                }
+                let out = t.handle_key(key(code), &mut map);
+                assert_eq!(out.warning.is_some(), !name.is_empty(), "{code:?} {name:?}");
+                assert!(t.editing.is_none(), "{code:?} {name:?}: the cell closed");
+                assert_eq!(t.selected, Some(lands), "{code:?} {name:?} less {removed}");
+            }
         }
     }
 
