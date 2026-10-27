@@ -1268,12 +1268,11 @@ impl ReadyView {
     }
 
     /// Records the bracket an arrows click at Vim's column names (R10, R20).
-    /// A click on the line's trailing blanks (a CRLF's `\r` among them; a
-    /// click past the end lands on the last char that paints, which can be
-    /// one of them) counts as one on its last other char. That char, or the clicked one, names itself when
-    /// it's a bracket. A `,` that ends the line names the bracket right
-    /// before it. Anything else records nothing. A tree view click holds
-    /// the tree it was made on (`Clicked`).
+    /// A click on the line's trailing blanks (a CRLF's `\r` among them) or
+    /// past its end counts as one on its last other char. That char, or
+    /// the clicked one, names itself when it's a bracket. A `,` that ends
+    /// the line names the bracket right before it. Anything else records
+    /// nothing. A tree view click holds the tree it was made on (`Clicked`).
     fn record_click(&mut self) {
         use crate::text::brackets::is_bracket;
         let Some((line, col)) = self.at_col else { return };
@@ -2575,9 +2574,12 @@ fn grapheme_at_col(text: &str, col: usize, from: ColMark) -> Option<usize> {
 /// none does): what a click past a row's end lands on. A CRLF body's lines
 /// end in a `\r`, and a tab paints nothing either, so those are passed
 /// over (task #55); [`grapheme_at_col`] never lands on them for the same
-/// reason. The grapheme is segmented from the end; only its char offset
-/// needs the line, as a plain char count (no segmenting, as cheap as the
-/// char count it took before #45).
+/// reason. So is any grapheme ratatui gives no cell, a trailing U+200B
+/// among them: a click can't land on what has no cell, so a drag past the
+/// end stops before it, the cost of that rule. The walk segments from the
+/// end, past the trailing graphemes that paint nothing (usually just a
+/// `\r`), and the char offset is a plain char count; neither reads more
+/// than the line, so it costs about what the char count before #45 did.
 fn last_grapheme(text: &str) -> usize {
     crate::ui::graphemes(text)
         .rev()
@@ -4002,12 +4004,14 @@ impl Response {
             // pointer on that grapheme's first cell (line column 0), not
             // on any of its cells: on the right half of a wide first glyph
             // (`❤️`, `日`) the pointer is on that glyph, so the sweep takes
-            // it. Past a row's end (an empty row, or one glyph short of
-            // the pointer) is still the boundary. Scrolled sideways, the
-            // left edge is mid-line for every row and the sweep takes the
-            // cell under the pointer, a cut wide first glyph included.
+            // it. Past the end of a row whose one painted glyph is its
+            // first, the sweep takes that glyph, as it takes a longer row's
+            // last (#55); a row that paints nothing (empty, or a CRLF's
+            // bare `\r`) is the boundary. Scrolled sideways, the left edge
+            // is mid-line for every row and the sweep takes the cell under
+            // the pointer, a cut wide first glyph included.
             let text = view.display_line_text(head.0).unwrap_or_default();
-            if disp_col == 0 || view.grapheme_at(head.0, &text, disp_col).is_none() {
+            if disp_col == 0 || grapheme_at_col(&text, 0, (0, 0, 0)).is_none() {
                 let row = head.0 - 1;
                 // The row's last painted grapheme, as `cell_at` clamps a click past it.
                 let last = view.display_line_text(row).map_or(0, |t| last_grapheme(&t));
@@ -6143,6 +6147,26 @@ mod tests {
         let mut r = ready("ab\r\n\r\nz");
         let (area, _) = render_buf(&mut r);
         assert!(!r.select_word_at(area.x + 5, area.y + 1), "a row of just `\\r` is empty");
+        r.begin_selection_at(area.x, area.y);
+        r.drag_selection_to(area.x + 5, area.y + 1);
+        assert_eq!(r.selected_text().as_deref(), Some("ab"), "past an empty row: the boundary");
+    }
+
+    /// Task #55 review: a downward sweep past the end of a one-glyph row
+    /// takes the glyph, as it takes a longer row's last one; only the
+    /// pointer on the row's first cell, or a row that paints nothing, is
+    /// the boundary above it.
+    #[test]
+    fn a_downward_drag_past_a_one_glyph_row_takes_it() {
+        for (body, want) in [("hello\nx\nz", "hello\nx"), ("hello\r\nx\r\nz", "hello\r\nx")] {
+            let mut r = ready(body);
+            let (area, _) = render_buf(&mut r);
+            r.begin_selection_at(area.x, area.y);
+            r.drag_selection_to(area.x + 5, area.y + 1);
+            assert_eq!(r.selected_text().as_deref(), Some(want), "{body:?}");
+            r.drag_selection_to(area.x, area.y + 1);
+            assert_eq!(r.selected_text().as_deref(), Some(&want[..5]), "first cell, {body:?}");
+        }
     }
 
     /// Task #23 review round 7 (A3): a row scrolled right past all its text
