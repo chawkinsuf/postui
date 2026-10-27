@@ -27755,12 +27755,10 @@ fn open_value_cell(app: &mut App, tab: EditorTab, value: &str, caret: usize) {
     edit.input.set_cursor(caret);
 }
 
-/// #151: the variable dialog's request-scope writes close an open Vars
-/// cell first, so its typing lands on the row it was typed into. The
-/// cell names its row by index, and a removal shifts the rows under it.
-#[test]
-fn a_request_var_removal_commits_an_open_vars_cell_first() {
-    let (mut app, _dir, _out) = tooltip_app("x");
+/// Request vars `a = 1`, `b = 2` on the Vars tab, with b's value cell
+/// open and holding `typed`, not yet committed.
+fn vars_app_with_b_typed() -> (App, tempfile::TempDir, std::path::PathBuf) {
+    let (mut app, dir, out) = tooltip_app("x");
     let entry = |v: &str| postui_core::model::Entry { value: v.into(), enabled: true };
     app.editor.variables.insert("a".into(), entry("1"));
     app.editor.variables.insert("b".into(), entry("2"));
@@ -27774,20 +27772,46 @@ fn a_request_var_removal_commits_an_open_vars_cell_first() {
     let edit = app.editor.table.editing.as_mut().expect("b's value cell is open");
     assert_eq!((edit.row, edit.col), (1, crate::components::table_editor::Col::Value));
     edit.input.set_text("typed");
+    (app, dir, out)
+}
+
+fn request_vars(app: &App) -> Vec<(String, String)> {
+    app.editor.variables.iter().map(|(k, e)| (k.clone(), e.value.clone())).collect()
+}
+
+/// #151: the value dialog closes an open cell as it opens, so a removal
+/// that shifts the Vars rows can't move the cell's typing onto another
+/// row (a cell names its row by index).
+#[test]
+fn the_value_dialog_commits_an_open_vars_cell_before_a_removal() {
+    let (mut app, _dir, _out) = vars_app_with_b_typed();
+    app.update(Action::OpenVarTokenPopup("a".into()));
+    assert!(app.editor.table.editing.is_none(), "the cell closed");
+    assert!(matches!(app.modals.top(), Some(Modal::MultiPrompt { .. })));
+    app.modals.pop();
     app.update(Action::RemoveVarValue {
         name: "a".into(),
         destination: crate::action::ExtractDestination::Request,
     });
-    assert!(app.editor.table.editing.is_none(), "the cell closed");
-    let vars: Vec<_> =
-        app.editor.variables.iter().map(|(k, e)| (k.as_str(), e.value.as_str())).collect();
-    assert_eq!(vars, [("b", "typed")]);
+    assert_eq!(request_vars(&app), [("b".to_string(), "typed".to_string())]);
 }
 
-/// #151: a request-scope write that adds a row closes an open + Add cell
-/// first, so the ghost row's typing does not land on the new row.
+/// #151: the dialog seeds from the cell's typing, so confirming it as it
+/// opened keeps what was typed.
 #[test]
-fn a_new_request_var_commits_an_open_ghost_cell_first() {
+fn the_value_dialog_seeds_from_an_open_cells_typing() {
+    let (mut app, _dir, _out) = vars_app_with_b_typed();
+    app.update(Action::OpenVarTokenPopup("b".into()));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("expected the value dialog");
+    };
+    assert_eq!(fields[0].input.text(), "typed");
+}
+
+/// #151: an open + Add cell commits as the dialog opens, so a new request
+/// var does not take the ghost row's index from under it.
+#[test]
+fn the_value_dialog_commits_an_open_ghost_cell_before_a_new_var() {
     let (mut app, _dir, _out) = tooltip_app("x");
     app.editor.active_tab = EditorTab::Vars;
     app.editor.sub_focus = SubFocus::Content;
@@ -27797,14 +27821,18 @@ fn a_new_request_var_commits_an_open_ghost_cell_first() {
     app.editor.table.begin_edit_selected(&map);
     let edit = app.editor.table.editing.as_mut().expect("the + Add name cell is open");
     edit.input.set_text("ghost");
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    assert!(app.editor.table.editing.is_none(), "the cell closed");
+    app.modals.pop();
     app.update(Action::ConfirmEditVarValue {
         name: "base_url".into(),
         value: "v".into(),
         destination: crate::action::ExtractDestination::Request,
     });
-    assert!(app.editor.table.editing.is_none(), "the cell closed");
-    assert_eq!(app.editor.variables["base_url"].value, "v");
-    assert_eq!(app.editor.variables.get("ghost").map(|e| e.value.as_str()), Some(""));
+    assert_eq!(
+        request_vars(&app),
+        [("ghost".to_string(), String::new()), ("base_url".to_string(), "v".to_string())]
+    );
 }
 
 /// A pick from the insert picker (alt+v) with the caret in a token swaps

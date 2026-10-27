@@ -6673,12 +6673,6 @@ impl App {
             }
             Action::ConfirmEditVarValue { name, value, destination } => {
                 use crate::action::ExtractDestination;
-                // A request-scope write changes the Vars table's rows, and
-                // an open cell (the dialog floats over it) names its row by
-                // index: it closes first (#151), as the removal below does.
-                if destination == ExtractDestination::Request && !self.close_inputs_or_stop(true) {
-                    return true;
-                }
                 let op = match destination {
                     ExtractDestination::Request => VarEditOp::SetRequestVar { name, value },
                     ExtractDestination::ActiveEnv => {
@@ -6698,11 +6692,6 @@ impl App {
                 use postui_core::varedit;
                 match destination {
                     ExtractDestination::Request => {
-                        // The removal shifts the Vars rows under an open
-                        // cell, which names its row by index (#151).
-                        if !self.close_inputs_or_stop(true) {
-                            return true;
-                        }
                         self.no_coalesce = true;
                         self.editor.variables.shift_remove(&name);
                         self.toasts.push(
@@ -8680,6 +8669,16 @@ impl App {
     fn open_edit_value_popup(&mut self, name: &str) -> bool {
         use crate::components::modal::{Modal, PromptField, PromptKind};
 
+        // An open Vars cell commits first, as its own step (#151): the
+        // dialog's request-scope writes add and remove Vars rows, and a
+        // cell names its row by index; and the cell's typing is not in
+        // `editor.variables` until it commits, so the dialog would seed
+        // from the value before it and its write would undo the typing.
+        // Any other cell stays open under the dialog, as under the
+        // tooltip's pill (#135): the dialog writes no row of its table.
+        if self.editor.active_tab == EditorTab::Vars {
+            self.commit_table_edit();
+        }
         let request_value =
             self.editor.variables.get(name).filter(|e| e.enabled).map(|e| e.value.clone());
         let env_value = self.env_data().values.get(name).cloned();
