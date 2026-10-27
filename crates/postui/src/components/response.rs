@@ -1802,10 +1802,12 @@ impl ReadyView {
     /// §5.7), and would make `j` `k` `G` and the page keys scroll sideways
     /// too, a change of their own. Those stay the known differences.
     fn show_cursor_col(&mut self) {
-        // The column as the landing just set it (`set_col`), read without
-        // `cur_col`, which copies the line to clamp it, and the line
-        // borrowed where it can be: a raw line can be megabytes long.
-        let Some((line, col)) = self.at_col else { return };
+        // The column as the landing just set it on the cursor's line
+        // (`set_col`), read without `cur_col`, which copies the line to
+        // clamp it, and the line borrowed where it can be: a raw line can
+        // be megabytes long.
+        let Some(line) = self.real_line() else { return };
+        let Some((_, col)) = self.at_col.filter(|&(l, _)| l == line) else { return };
         if self.in_closed_fold(line) {
             return;
         }
