@@ -5,6 +5,12 @@ first attempt (cursors followed by index around the reload) is kept at
 the tag `manage-cursors-by-name-history`; its two review rounds are on the
 task. Review rounds start again at round 1.
 
+**Approved 2026-10-27.** The user: "I meant the full fix. Spec is good."
+They confirmed that option 1 meant this by-name design (the full fix),
+not the board's earlier follow-at-reload recommendation, so N1 is `you`.
+The `mine` choices below are now `mine (approved)`, choice 5 (N10)
+included.
+
 ## 1. Findings
 
 - **F1 The cursors are bare indices.** The Variable Manager's option grid
@@ -69,19 +75,21 @@ task. Review rounds start again at round 1.
 
 | # | Behaviour | Who |
 |---|---|---|
-| N1 | Each cursor holds the name of the item it is on: the list cursor holds the environment or space slug, and the grid cursor's row holds the option's name, or the ghost row. An outside edit that renumbers, adds or reorders items leaves the cursor on its item, with no code that follows it. | `you`: "Maybe restart the branch with option 1" (option 1 as it was put to you: cursors remember their item by name, not row number) |
+| N1 | Each cursor holds the name of the item it is on: the list cursor holds the environment or space slug, and the grid cursor's row holds the option's name, or the ghost row. An outside edit that renumbers, adds or reorders items leaves the cursor on its item, with no code that follows it. | `you`: "Maybe restart the branch with option 1" (option 1 as it was put to you: cursors remember their item by name, not row number), confirmed: "I meant the full fix. Spec is good." |
 | N2 | The cursor is state its owner keeps (`ManageList`, `VarManager`). Every read and write goes through the owner's methods and the existing paths (the op arms, `land`, the undo `View`). No copy is taken around the reload, and nothing writes to it on the side. | `you`: "reads and writes must follow the proper pattern" |
 | N3 | Undo puts the cursor back exactly: undoing a grid `dd` lands on the restored option, and undoing a create, rename or delete in either list lands where the cursor was before the op. | `you` (the undo-restores-exactly rule) |
-| N4 | The ghost row is its own place, not "past the last option". An option added on disk leaves a cursor on the ghost row on the ghost row. | `mine` |
-| N5 | A cursor whose item is gone (deleted or renamed by another program) is on nothing. Nothing is highlighted, the detail pane shows its "Select an environment" / "Select a space" hint, and Enter, space, `dd` and the chips act on nothing. The next move key starts above the first row, so ↓ (or ↑) lands on the first row and End on the last. | `mine` |
-| N6 | A list cursor that is on nothing, because it was never set or its item went while the list was off screen, settles on the first item when the list comes on screen: when the Manage screen opens and when the tab switches to it. The grid does the same when the keyboard enters it (`enter_detail`). This replaces "a parked cursor clamps" (2026-09-27 R7). | `mine` |
-| N7 | An app write that removes the cursor's item moves the cursor to the item now at that index: the last item when it was the last one, nothing when the list is empty, and in the grid the ghost row when it was the last option. This is today's neighbour rule, done by the delete itself. A delete of another item leaves the cursor on its own item (today it can shift onto a neighbour). | `mine` (keeps main's behaviour) |
-| N8 | An app write that renames the cursor's item moves the cursor to the new name, in its own list (live or parked) whether or not the Manage screen is open. The jump that `RenameEnv` and `RenameSpace` already make onto the renamed item while the screen is open is kept. | `mine` (keeps main's behaviour) |
-| N9 | An app write that adds options while the grid cursor is on the ghost row (a ghost-row create, a paste) moves the cursor onto the first option it added. With the cursor on an option, an add leaves it there. | `mine` (keeps main's behaviour) |
-| N10 | An environment switch keeps the grid cursor's option name. If the new environment has an option of that name, the cursor is on it. If not, the cursor is on nothing (N5). | `mine` |
-| N11 | The grid's column stays an index (name, field 1..n, description). | `mine` |
-| N12 | During a Manage row drag the cursor holds the dragged item's name, so it rides with the row. A drag cancelled by the reload leaves the cursor on that item in the order on disk. | `mine` |
-| N13 | A cursor whose item moved off screen (an outside reorder) is not scrolled into view until a key moves it, as with the wheel today. | `mine` |
+| N4 | The ghost row is its own place, not "past the last option". An option added on disk leaves a cursor on the ghost row on the ghost row. | `mine (approved)` |
+| N5 | A cursor whose item is gone (deleted or renamed by another program) is on nothing. Nothing is highlighted, the detail pane shows its "Select an environment" / "Select a space" hint, and Enter, space, `dd` and the chips act on nothing. The next move key starts above the first row, so ↓ (or ↑) lands on the first row and End on the last. | `mine (approved)` |
+| N6 | A list cursor that is on nothing, because it was never set or its item went while the list was off screen, settles on the first item when the list comes on screen: when the Manage screen opens and when the tab switches to it. The grid does the same when the keyboard enters it (`enter_detail`). This replaces "a parked cursor clamps" (2026-09-27 R7). | `mine (approved)` |
+| N6a | The grid also settles when its selector opens in the detail pane (a list move or click onto a selector, and `sync` reopening the pane on a neighbour), which is where its state is reset today. Amendment 2026-10-27, found in implementation: space from the left list selects the grid cursor's option (`handle_key`), and with the grid settling only in `enter_detail`, a freshly opened selector's space would select nothing, where main selects the first option. Settling on open keeps main's behaviour, so this is no change the user sees. | `mine` |
+| N7 | An app write that removes the cursor's item moves the cursor to the item now at that index: the last item when it was the last one, nothing when the list is empty, and in the grid the ghost row when it was the last option. This is today's neighbour rule, done by the delete itself. A delete of another item leaves the cursor on its own item (today it can shift onto a neighbour). | `mine (approved)` (keeps main's behaviour) |
+| N8 | An app write that renames the cursor's item moves the cursor to the new name, in its own list (live or parked) whether or not the Manage screen is open. The jump that `RenameEnv` and `RenameSpace` already make onto the renamed item while the screen is open is kept. | `mine (approved)` (keeps main's behaviour) |
+| N9 | An app write that adds options while the grid cursor is on the ghost row (a ghost-row create, a paste) moves the cursor onto the first option it added. With the cursor on an option, an add leaves it there. | `mine (approved)` (keeps main's behaviour) |
+| N10 | An environment switch keeps the grid cursor's option name. If the new environment has an option of that name, the cursor is on it. If not, the cursor is on nothing (N5). | `mine (approved)` |
+| N11 | The grid's column stays an index (name, field 1..n, description). | `mine (approved)` |
+| N12 | During a Manage row drag the cursor holds the dragged item's name, so it rides with the row. A drag cancelled by the reload leaves the cursor on that item in the order on disk. | `mine (approved)` |
+| N13 | A cursor whose item moved off screen (an outside reorder) is not scrolled into view until a key moves it, as with the wheel today. | `mine (approved)` |
+| N13a | The grid keeps its own scroll rule: its draw keeps the cursor's row (or the open cell's) in view on every frame, as on main, now from the row the name is at. Clarification 2026-10-27: N13 is the Manage lists' rule; the grid never had a "not until a key" scroll. | `mine` |
 
 ## 3. Design
 
@@ -105,11 +113,11 @@ not hold also means nothing. Neither case needs another state.
 | | Before | After |
 |---|---|---|
 | Grid read | `vm.grid.cursor` | `VarManager::grid_at(ctx) -> Option<(usize, usize)>`: the row the name is at now (the ghost is `options.len()`) and the column, or `None` when the cursor is on nothing. The draw, keys, verbs, mouse comparisons and tests all read this. |
-| Grid write | `vm.grid.cursor = (r, c)` | `VarManager::point_grid(ctx, r, c)`: stores the option at row `r` of the list now (or `Ghost`) and column `c`. Keys, `start_cell_edit` and the mouse arms write through this. `settle_grid(ctx)` in `enter_detail` (N6). |
+| Grid write | `vm.grid.cursor = (r, c)` | `VarManager::point_grid(ctx, r, c)`: stores the option at row `r` of the list now (or `Ghost`) and column `c`. Keys, `start_cell_edit` and the mouse arms write through this. `settle_grid(ctx)` in `enter_detail` (N6), and where the pane opens a selector (N6a): `select_row` and `select_name` take `ctx` for it, and so does `sync`'s reopen. |
 | Grid, app writes | none: the index stayed put | In `App::apply_var_struct`, the one path every option op takes (the `VarStruct` arm and `commit_grid_edit` both call it), after `Ok`. `NewOption` / `PasteOption` with the cursor on the ghost: the cursor goes to the option now at the ghost's old index (N9). `RenameOption` with the cursor on `from`: it goes to `to` (N8). `DeleteOption`: the option's index is read before the write, and if the cursor was on it, the cursor goes to that index (N7). Each one is a `VarManager` method. |
 | List read | `list.cursor`, `items.get(cursor)` | `selected(tab, ctx)` (same signature). `cursor_in(items) -> Option<usize>` for the draw (in the drag's working order or the project's list) and for `step`. |
 | List write | `list.cursor = i` | `select_name` (unchanged) and `select_index(tab, ctx, i)` for clicks. `step` resolves, moves and stores the name. `settle(tab, ctx)` replaces `clamp`, and `App::settle_list` replaces `App::clamp_list` in `switch_manage_tab_state` and in `OpenManage` (N6). |
-| List, app writes | `clamp_list` after a delete | `DeleteEnv` / `DeleteSpace` read the item's index before the delete and call `removed(tab, ctx, name, at)` on that tab's own list (N7). `RenameEnv` / `RenameSpace` call `renamed(from, to)` on the tab's own list (N8) and open with `begin_list_op(tab)`, as create and delete already do, so both undo views record the list's row (N3). |
+| List, app writes | `clamp_list` after a delete | `DeleteEnv` / `DeleteSpace` read the item's index before the delete and call `removed(tab, ctx, name, at)` on that tab's own list (N7). `RenameEnv` / `RenameSpace` call `renamed(from, to)` on the tab's own list (N8) and open with `begin_list_op(tab)`, as create and delete already do, so both undo views record the list's row (N3). Their jump onto the renamed item happens while that list's own tab is on screen, on that list (`select_list_row`). Main jumped in whichever tab was open (`manage_select_name`), which with the Variables tab up could put an environment's index into the Spaces cursor; with the item's own tab up, the jump is main's. |
 | Drag | `begin_drag`, `drag_to_row` and `drag_reset` write the index | `begin_drag` stores the dragged item's name. `drag_to_row` and `drag_reset` stop touching the cursor (N12). |
 | Undo | `View { space, open, cursor, row }` | `View` gains `grid: Option<GridSpot { selector, row: GridRow }>`, recorded by `view_on` while the Manager's detail shows a selector and its cursor is on something. `Landing` gains `grid`. `land` step 6 puts it back through the `VarManager` when its detail shows that selector. `after_replay` lands it when `before.grid != after.grid`, as it does for `row` (N3). |
 | Reload | (the first attempt captured and followed the cursors in `ReloadProjectFiles`) | `ReloadProjectFiles` does not change. Nothing reads the cursors around the `poll`. |
@@ -141,17 +149,17 @@ get a dated paragraph naming #83 and N6 / N7.
 
 ### Plan (one sequence)
 
-- [ ] Failing tests first (§4).
-- [ ] Grid: the `GridRow` / `GridCursor` state, `grid_at` / `point_grid` /
+- [x] Failing tests first (§4).
+- [x] Grid: the `GridRow` / `GridCursor` state, `grid_at` / `point_grid` /
   `settle_grid`, readers and writers moved onto them, and the draw and key
   clamps removed.
-- [ ] Grid app writes in `apply_var_struct`.
-- [ ] List: `Option<String>` state, `cursor_in` / `select_index` / `settle` /
+- [x] Grid app writes in `apply_var_struct` (`VarManager::follow_option_op`).
+- [x] List: `Option<String>` state, `cursor_in` / `select_index` / `settle` /
   `removed` / `renamed`, the drag, and `App::settle_list`.
-- [ ] Undo: `View::grid`, `Landing::grid`, `land` step 6, `after_replay`,
+- [x] Undo: `View::grid`, `Landing::grid`, `land` step 6, `after_replay`,
   and `begin_list_op` for the renames.
-- [ ] Tests that set the fields directly move to the owner's methods.
-- [ ] The R7 amendments.
+- [x] Tests that set the fields directly move to the owner's methods.
+- [x] The R7 amendments.
 - [ ] Full suite, clippy, fmt, and a tmux check: an outside reorder with the
   grid and with each list open, `dd` then undo, a ghost create.
 - [ ] Review rounds.
@@ -166,6 +174,7 @@ get a dated paragraph naming #83 and N6 / N7.
 | N4 | An option added on disk with the cursor on the ghost row leaves it on the ghost row (ported). |
 | N5 | An outside delete of the selected environment while its tab is live: no row is highlighted, the pane shows the hint, and `dd` returns no action. Then ↓ lands on the first row. The same for a grid option, with the grid focused. |
 | N6 | First open of Manage → Environments: the first item is selected. An item deleted outside while its tab was parked: the tab switch lands on the first item. Entering the grid on a fresh selector lands on the first row (the ghost row when there are no options). |
+| N6a | A freshly opened selector's grid is on its first row, and space from the left list selects its first option; with no options, the ghost row (`varmanager.rs` unit test). |
 | N7 | Deleting the selected env or space selects the item now at its index, and the last item when it was the last one. Deleting the last option puts the cursor on the ghost row. Deleting another env (from the header) leaves the cursor on its own env, including one below the deleted one. |
 | N8 | Renaming the selected env or space from the header with the screen closed, then opening it: the cursor is on the renamed item. A grid rename: the cursor is on the new name. |
 | N9 | Ghost-row create: the cursor is on the new option (the existing walk-on tests still pass). A paste with the cursor on the ghost row: the cursor is on the first pasted option. |
@@ -174,7 +183,9 @@ get a dated paragraph naming #83 and N6 / N7.
 | N12 | The existing drag tests pass. A reload under a drag leaves the cursor on the dragged space in the order on disk (ported). |
 | N13 | None: the existing scroll tests cover it. |
 
-## 5. `mine` choices, for you to veto
+## 5. `mine (approved)` choices
+
+Put to the user for veto; approved 2026-10-27 ("Spec is good").
 
 1. **A gone item leaves the cursor on nothing (N5)**, with no row
    highlighted, rather than on a neighbour or the first row. Moving it to

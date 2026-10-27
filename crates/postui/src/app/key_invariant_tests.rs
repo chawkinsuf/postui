@@ -312,18 +312,18 @@ fn field_open_and_the_open_text_field_agree_with_screen_field() {
 /// aim, the response's view, the table's column and the Settings values.
 fn observed(app: &App) -> String {
     format!(
-        "{} | {:?} {:?} {:?} {:?} {:?} {} {:?} {:?} {} {:?} {:?} {} {} {:?} {:?} {:?} {}",
+        "{} | {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {} {:?} {:?} {} {} {:?} {:?} {:?} {}",
         place(app),
         app.sidebar.selected_key(),
         app.sidebar.rows.iter().map(|r| format!("{r:?}")).collect::<Vec<_>>(),
         app.editor.sub_focus,
         app.editor.table.selected(),
         app.editor.table.col,
-        app.manage.list.cursor,
+        app.manage.list.cursor_in(app.manage_items(app.manage.tab)),
         app.manage.list.detail_row,
         app.manage.list.detail_col,
         app.varmanager.left_cursor,
-        app.varmanager.grid.cursor,
+        app.project.as_ref().and_then(|p| app.varmanager.grid_at(p)),
         app.varmanager.form_cursor,
         app.settings.cursor,
         app.settings.file_button,
@@ -600,7 +600,7 @@ fn paging_chords_survive_the_guard() {
         // The stop's place in the walk: rows, `+ Add`, the section.
         TableThreeHeaders => app.editor.table.selected().map(|s| s.ordinal(app.editor.table_len())),
         ResponseWide => app.session.response.view().map(|v| v.cursor),
-        ManageEnvs | ManageSpaces => Some(app.manage.list.cursor),
+        ManageEnvs | ManageSpaces => app.manage.list.cursor_in(app.manage_items(app.manage.tab)),
         VarList => Some(app.varmanager.left_cursor),
         _ => unreachable!("{f:?} does not page"),
     };

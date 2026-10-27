@@ -30,6 +30,8 @@ pub(crate) struct Landing {
     pub open: Option<Open>,
     pub cursor: Option<CursorAim>,
     pub row: Option<ListRow>,
+    /// The Variable Manager grid's cursor row (spec 2026-10-27 N3).
+    pub grid: Option<crate::undo::GridSpot>,
     /// Once the cursor is placed, open the request under it over what
     /// `open` seated (a removal's scratch, §4.5).
     pub open_cursor: bool,
@@ -261,6 +263,12 @@ impl App {
         if before.row != after.row || reorder {
             l.row = target.row.clone();
         }
+        // The grid row the op moved (a `dd` onto the neighbour, a create
+        // off the ghost row): back where the target side had it, so an
+        // undone `dd` lands on the restored option (spec 2026-10-27 N3).
+        if before.grid != after.grid {
+            l.grid = target.grid.clone();
+        }
         if l.space.is_none()
             && l.open.is_none()
             && let Some(space) =
@@ -348,6 +356,10 @@ impl App {
                 Some(tab) => self.list_row_of(tab),
                 None => self.list_row(),
             },
+            grid: self
+                .project()
+                .and_then(|p| self.varmanager.grid_spot(p))
+                .map(|(selector, row)| crate::undo::GridSpot { selector, row }),
         }
     }
 
@@ -500,6 +512,10 @@ impl App {
         if let Some(row) = l.row {
             self.place_list_row(row);
         }
+        // ...then the grid's row, once the pane shows its selector again.
+        if let Some(spot) = l.grid {
+            self.varmanager.land_grid(&spot.selector, &spot.row);
+        }
 
         // 7. The travel band, and local state whenever it disagrees with
         //    the editor (a rename re-keys the open request without opening
@@ -623,7 +639,7 @@ impl App {
                 let Self { project, varmanager, .. } = self;
                 if let Some(p) = project.as_ref() {
                     varmanager.sync(p);
-                    varmanager.select_name(&n);
+                    varmanager.select_name(p, &n);
                 }
             }
         }

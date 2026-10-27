@@ -91,8 +91,8 @@ impl Manage {
     /// Parks the live list under its own tab and brings `tab`'s list
     /// forward, so each list tab keeps its cursor, scroll and pane focus
     /// across a switch. A no-op for the tabs that draw no list and for
-    /// the tab already live. The caller clamps (`ManageList::clamp`):
-    /// only it knows the project.
+    /// the tab already live. The caller settles the list's cursor
+    /// (`ManageList::settle`): only it knows the project.
     pub fn switch_list(&mut self, tab: ManageTab) {
         if !matches!(tab, ManageTab::Environments | ManageTab::Spaces) || tab == self.live {
             return;
