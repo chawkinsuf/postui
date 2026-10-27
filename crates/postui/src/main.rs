@@ -15,25 +15,25 @@ use ratatui::crossterm::terminal::{EndSynchronizedUpdate, SetTitle};
 use std::time::Duration;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> anyhow::Result<std::process::ExitCode> {
+    use std::process::ExitCode;
     let cli = postui::config::parse_cli(std::env::args().skip(1).collect());
     let (cli_root, debug_ai) = match cli {
-        postui::config::CliParse::Usage => {
-            println!("usage: postui [--debug-ai] [directory]");
-            println!("       --debug-ai        log every AI filter prompt and reply to a file");
-            println!("       postui --setup    terminal keyboard setup (macOS opt/cmd keys)");
-            println!("       postui --version  print the version (also -V)");
-            println!(
-                "       postui --keydump[=BITS]  echo raw key and mouse events (kitty flag bits; 0=none)"
-            );
-            return Ok(());
+        postui::config::CliParse::Help => {
+            print!("{}", postui::config::USAGE);
+            return Ok(ExitCode::SUCCESS);
+        }
+        // A mistake, not a request: scripts see a failure (#144).
+        postui::config::CliParse::Usage { reason } => {
+            eprint!("postui: {reason}\n\n{}", postui::config::USAGE);
+            return Ok(ExitCode::from(2));
         }
         postui::config::CliParse::Version => {
             println!("postui {}", env!("CARGO_PKG_VERSION"));
-            return Ok(());
+            return Ok(ExitCode::SUCCESS);
         }
         postui::config::CliParse::Keydump { flags } => {
-            return postui::keydump::run(flags);
+            return postui::keydump::run(flags).map(|()| ExitCode::SUCCESS);
         }
         postui::config::CliParse::Setup => {
             print!(
@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
                     postui::setup::detect_from_env()
                 )
             );
-            return Ok(());
+            return Ok(ExitCode::SUCCESS);
         }
         postui::config::CliParse::Root { root, debug_ai } => (root, debug_ai),
     };
@@ -65,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
     );
     drain_pending_input();
     ratatui::restore();
-    result
+    result.map(|()| ExitCode::SUCCESS)
 }
 
 /// Swallows the mouse reports the terminal emits between the app's last
