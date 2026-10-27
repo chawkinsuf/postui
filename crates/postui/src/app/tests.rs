@@ -15829,7 +15829,8 @@ fn an_editor_footer_chip_click_leaves_an_open_cell_or_the_caret_as_its_action_do
 /// chip fits, the URL blank so the send chip toasts rather than spawning a
 /// send: `cell`, a header's value open with typing in it; `body`, the Body's
 /// caret mid-text; `url`, the URL line selected (not open); `url_open`, the
-/// URL line open with typing in it; `method`, the method badge selected.
+/// URL line open with typing in it; `url_visual` (vim only), the open
+/// line's blanks selected in Visual; `method`, the method badge selected.
 fn editor_caret_app(state: &str, profile: crate::config::KeyProfile, sending: bool) -> App {
     let mut app = main_header_app(profile);
     app.editor.url = LineInput::new("");
@@ -15863,6 +15864,15 @@ fn editor_caret_app(state: &str, profile: crate::config::KeyProfile, sending: bo
             // chip toasts here too.
             type_chars(&mut app, " ");
             assert_eq!(app.editor.url.text(), " ", "{profile:?} typed into the URL line");
+        }
+        "url_visual" => {
+            assert_eq!(profile, crate::config::KeyProfile::Vim, "Visual is vim's");
+            app.editor.table.set_selected(None);
+            click_hit(&mut app, Hit::UrlBar);
+            for ev in crate::keyroute::notation::events("A  <Esc>vh") {
+                app.handle_key(ev);
+            }
+            assert_eq!(app.vim_status().as_deref(), Some("VISUAL"));
         }
         "method" => {
             app.editor.table.set_selected(None);
@@ -15984,8 +15994,9 @@ fn an_editor_footer_chip_click_matches_its_key_with_a_cell_or_caret_up() {
 }
 
 /// Task #194, against vim's keys: with the URL line open in Insert and
-/// typed into, and with the method badge selected (Normal), each footer
-/// chip's click leaves the editor as its keycap's key does. Every chip
+/// typed into, with a Visual selection up on the open line, and with the
+/// method badge selected (Normal), each footer chip's click leaves the
+/// editor as its keycap's key does, Visual included. Every chip
 /// drawn is checked: one with no key here fails the test.
 ///
 /// In Insert the `esc done` keycap's Esc leaves Insert first, and only a
@@ -16009,7 +16020,7 @@ fn an_editor_footer_chip_click_matches_its_vim_key_on_the_url_line_or_method() {
         Action::CloseWindow { write: false, force: false } => events(":q<CR>"),
         other => panic!("no key for the {other:?} chip"),
     };
-    for state in ["url_open", "method"] {
+    for state in ["url_open", "url_visual", "method"] {
         let (y, chips) = footer_strip_chips(&editor_caret_app(state, Vim, false));
         assert!(chips.len() >= 4, "{state}: {chips:?}");
         for (chip, x) in &chips {
@@ -16019,6 +16030,12 @@ fn an_editor_footer_chip_click_matches_its_vim_key_on_the_url_line_or_method() {
             // click away this test is about: the chip's own test is its
             // action's, above.
             if *chip == Action::CycleTabs(1) {
+                continue;
+            }
+            // With a selection up, ctrl+c copies it (the GUI meaning) and
+            // quits only once nothing is selected: the keycap's key does
+            // something else first, and the chip is its action, above.
+            if state == "url_visual" && *chip == Action::Quit {
                 continue;
             }
             let mut by_key = editor_caret_app(state, Vim, false);

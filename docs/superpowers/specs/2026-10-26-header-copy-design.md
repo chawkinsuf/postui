@@ -96,8 +96,9 @@
   input", typed in answer to whether a chip click should keep the open URL
   line and the method badge's selection):* so it does with the URL line
   open, its typing and caret kept (`done` closes it), and with the method
-  badge selected. With no sub-focus a chip click is still a click away, as
-  before.)
+  badge selected. *Mine:* in vim the press is no click for the engine
+  either, so Visual and a pending operator stay as the chip's key leaves
+  them. With no sub-focus a chip click is still a click away, as before.)
   The response chip is `Key::Pair` of the two `CopyRow` actions.
   `TableCursor` gains `headers` on `Row` and a `ResponseHeader` variant
   for the response's cursor.

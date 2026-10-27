@@ -1439,6 +1439,11 @@ impl App {
             && self.settled_layout().is_some_and(|l| {
                 l.footer.contains(ratatui::layout::Position { x: m.column, y: m.row })
             });
+        // Nor is it a click for vim's engine: its key settles nothing there,
+        // so the press keeps Visual and a pending operator as the key does.
+        if editor_footer_chip {
+            self.vim_chip_press();
+        }
         // A click anywhere that isn't the params/headers table itself (and
         // isn't in a dialog) is a click away: it commits whatever cell was
         // being edited (typing is never silently thrown away) and clears

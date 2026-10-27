@@ -60,9 +60,9 @@ pub(crate) struct VimState {
     /// engine settles at its end (`vim_mouse_end`).
     text_mouse: Option<(FieldId, Pos, Mouse)>,
     /// This event's left press landed on a window separator (the sidebar
-    /// gutter, or the response's header strip), which `vim_mouse_end` does
-    /// not settle as a click.
-    separator_press: bool,
+    /// gutter, or the response's header strip) or on an editor footer chip,
+    /// which `vim_mouse_end` does not settle as a click.
+    unsettled_press: bool,
 }
 
 /// The change `.` repeats (spec §5.12) and the history's change count
@@ -1011,7 +1011,7 @@ impl App {
         if button {
             self.sync_session(None, Cause::Before);
             self.vim.text_mouse = None;
-            self.vim.separator_press = false;
+            self.vim.unsettled_press = false;
         }
         MouseEdge { button, left_press: m.kind == MouseEventKind::Down(MouseButton::Left) }
     }
@@ -1019,18 +1019,18 @@ impl App {
     /// After a mouse event: a button's settles the session. What the
     /// mouse did on the text of the field that has the caret now settles
     /// at its char (spec 2026-10-14); any other left press is a plain
-    /// click, except one on a window separator, and a release does
-    /// nothing, as in Vim.
+    /// click, except one on a window separator or an editor footer chip,
+    /// and a release does nothing, as in Vim.
     pub(super) fn vim_mouse_end(&mut self, edge: MouseEdge) {
         if !edge.button {
             return;
         }
-        let separator = std::mem::take(&mut self.vim.separator_press);
+        let unsettled = std::mem::take(&mut self.vim.unsettled_press);
         let how = match self.vim.text_mouse.take() {
             Some((field, at, mouse)) if self.field_caret() == FieldCaret::Live(field) => {
                 Some(Settled::Mouse(at, mouse))
             }
-            _ => (edge.left_press && !separator).then_some(Settled::Click),
+            _ => (edge.left_press && !unsettled).then_some(Settled::Click),
         };
         self.sync_session(None, Cause::Mouse(how));
     }
@@ -1040,7 +1040,16 @@ impl App {
     /// Vim keeps Visual mode and a pending operator through a press there,
     /// so the end of the event settles nothing.
     pub(super) fn vim_separator_press(&mut self) {
-        self.vim.separator_press = true;
+        self.vim.unsettled_press = true;
+    }
+
+    /// A left press on an editor footer chip that is no click away (task
+    /// #194): the chip is the key it advertises, and an app key settles
+    /// nothing in the engine, so the end of the event settles nothing
+    /// either. Visual on the URL line stays up through `send`, as through
+    /// its key.
+    pub(super) fn vim_chip_press(&mut self) {
+        self.vim.unsettled_press = true;
     }
 
     /// A left press on `field`'s text at char `(row, col)`, with Vim's click
