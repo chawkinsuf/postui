@@ -764,12 +764,15 @@ impl Engine {
     /// becomes the wanted column.
     pub fn settle<B: TextBuf>(&mut self, t: Target<'_, B>, how: Settled) {
         let Target { buf, state } = t;
-        // While a search is being typed, Vim's mouse off the text leaves it
-        // open, and Visual under it, and moves nothing (probed in 9.1: `/li`,
-        // a click on the text, `X` types `/liX`; `/li`, a click on the
-        // command line, `X` types `/lXi`). So a press on the search's row
-        // settles nothing, nor one that picks a menu row: the body menu's
-        // Paste types into the search and the search goes on (#129).
+        // While a search is being typed, Vim's mouse leaves it open, and
+        // Visual under it, and moves nothing (probed in 9.1: `/li`, a click
+        // on the command line, `X` types `/lXi`; a click on the text, `X`
+        // types `/liX`). So a press off the text settles nothing then: on
+        // the search's row, on a menu row (the body menu's Paste types into
+        // the search and the search goes on, #129), or on any other spot
+        // that keeps the caret (a chip, the bar), whose own action runs
+        // and leaves the search to Esc or Enter, as in Vim. A press on the
+        // text itself still ends the search here, as before #129.
         if self.search.is_some() && matches!(how, Settled::Click | Settled::CommandLine) {
             return;
         }
@@ -777,10 +780,12 @@ impl Engine {
         self.request = None;
         // A press on the command line's row drops a half-typed command and
         // nothing else (probed in 9.1: `d` or `3`, a click there, and the
-        // next key runs alone; Visual stays). Not a `rest`: nothing moved.
+        // next key runs alone; Visual stays, and so does Insert ctrl+o's
+        // one command: `i` ctrl+o, a click there, `x` deletes). Not a
+        // `rest`: nothing moved, and `pressed` stays with the Visual a
+        // double click made, as that Visual stays.
         if how == Settled::CommandLine {
-            self.pending.clear();
-            self.reg_pending = None;
+            self.clear_pending();
             return;
         }
         if matches!(how, Settled::Click | Settled::Mouse(_, Mouse::Press(_) | Mouse::Extend)) {

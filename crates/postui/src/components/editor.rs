@@ -3939,25 +3939,19 @@ impl Editor {
                 // current window always has a line (`'winminheight'`: "the
                 // cursor has to have somewhere to go"), and in a one-row
                 // terminal its `/` line draws over that line (probed).
-                // Taken before the bar's column, so it is the pane's full
-                // width, as Vim's command line is the screen's: under the
-                // bar when the row is kept, over it in a one-row pane while
-                // a search is open (the prompt covers that row whole).
-                // A pane with no body row at all draws no prompt.
-                let prompt_rect = match (self.prompt_row, area.height) {
-                    (false, _) | (true, 0) => None,
-                    (true, 1) => Some(area),
-                    (true, _) => {
-                        area.height -= 1;
-                        Some(Rect { y: area.bottom(), height: 1, ..area })
-                    }
-                };
-                // The row kept below the text, or else the one-row body's
-                // row while an open prompt covers it.
-                let kept = prompt_rect.filter(|r| r.y == area.bottom());
-                let covered = prompt_rect
-                    .filter(|r| r.y == area.y && self.body_search.prompt.is_some())
-                    .map(|r| r.y);
+                // A kept row is taken before the bar's column, so it is the
+                // pane's full width, as Vim's command line is the screen's,
+                // under the bar. Over a one-row body the prompt covers the
+                // text's cells only, so the bar beside it stays what it
+                // shows and what a click there hits. A pane with no body row
+                // at all draws no prompt.
+                let shared = self.prompt_row && area.height == 1;
+                let kept = (self.prompt_row && area.height > 1).then(|| {
+                    area.height -= 1;
+                    Rect { y: area.bottom(), height: 1, ..area }
+                });
+                // The one-row body's row while an open prompt covers it.
+                let covered = (shared && self.body_search.prompt.is_some()).then_some(area.y);
                 let spec = ScrollbarSpec {
                     pane: PaneId::Editor,
                     offset: self.body.viewport_offset().1,
@@ -3981,6 +3975,7 @@ impl Editor {
                     );
                 }
                 self.last_body_area = Some(area);
+                let prompt_rect = kept.or(covered.map(|_| area));
                 hits.register(area, crate::hit::Hit::BodyEditor);
                 // The kept row is the body's for every mouse input; a press
                 // there places no caret (`App::press_text`). One hit, not a
@@ -3989,6 +3984,8 @@ impl Editor {
                 // `last_body_area`, which stops above the row, so only the
                 // press needs telling. A hit of its own had to be taught to
                 // every mouse path in turn (focus, wheel, menu, pointer).
+                // The pointer is the body's text one there too: the row is
+                // the body's, as the rows past a short body's last line are.
                 if let Some(row) = kept {
                     hits.register(row, crate::hit::Hit::BodyEditor);
                 }
@@ -5590,6 +5587,33 @@ mod tests {
         assert_eq!(body_hits(&hits), [area]);
         let top = hits.hit_at(area.x + 4, area.y);
         assert_eq!(top, Some(&crate::hit::Hit::BodyEditor));
+    }
+
+    /// #129: over a one-row body with a scrollbar the open prompt covers
+    /// the text's cells only: the bar beside it still shows, and its cell
+    /// still hits the bar.
+    #[test]
+    fn a_prompt_over_a_one_row_body_leaves_its_scrollbar() {
+        let mut e = body_editor("{}");
+        draw_body(&mut e, true);
+        let tall = e.last_body_area.unwrap().height;
+        e.set_body_text(&vec!["abc"; 40].join("\n"));
+        e.body.mode = EditorMode::Normal;
+        e.prompt_row = true;
+        e.body_search.prompt = Some(crate::vim::engine::SearchLine {
+            dir: crate::vim::engine::Dir::Forward,
+            text: "x".into(),
+            cursor: 1,
+        });
+        let (buf, hits) = draw_body_sized(&mut e, true, 24 - (tall - 1));
+        let area = e.last_body_area.unwrap();
+        assert_eq!(area.height, 1);
+        let bar = area.right(); // the bar's column, right of the body
+        assert!(matches!(
+            hits.hit_at(bar, area.y),
+            Some(crate::hit::Hit::ScrollbarThumb(_) | crate::hit::Hit::ScrollbarTrack(..))
+        ));
+        assert_ne!(buf[(bar, area.y)].symbol(), " ", "the bar still shows");
     }
 
     /// #129: a pane with no body row (only its focus ring) draws no prompt,
