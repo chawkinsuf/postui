@@ -15,7 +15,9 @@ Sleep 300ms
 Enter
 Sleep 800ms
 Ctrl+R
-Sleep 3s
+# The status line: "200", then the time ("158 ms", or "1.3 s" past a second).
+Wait+Screen@15s /200 +\d/
+Sleep 500ms
 # Find the command in the palette and describe the filter.
 Ctrl+P
 Sleep 500ms

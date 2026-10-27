@@ -18,7 +18,8 @@ Sleep 1s
 Enter
 Sleep 800ms
 Ctrl+R
-Wait+Screen@15s /200 +\d+ ms/
+# The status line: "200", then the time ("158 ms", or "1.3 s" past a second).
+Wait+Screen@15s /200 +\d/
 Sleep 800ms
 Show
 Sleep 500ms

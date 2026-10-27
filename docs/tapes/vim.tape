@@ -23,7 +23,8 @@ Enter
 Sleep 500ms
 Type ":send"
 Enter
-Wait+Screen@15s /200 +\d+ ms/
+# The status line: "200", then the time ("158 ms", or "1.3 s" past a second).
+Wait+Screen@15s /200 +\d/
 Sleep 500ms
 
 Show
