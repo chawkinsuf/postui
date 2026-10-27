@@ -2168,12 +2168,12 @@ impl ReadyView {
     /// it, as main ran nothing; on a typed one it runs the search, main's
     /// field rule, and lands as Enter does, the sideways scroll to the
     /// match included (task #180): the Esc keeps what was typed, and its
-    /// landing is that search's. Otherwise an empty Vim box takes the last query, as
-    /// Vim's `/` Enter does, and says Vim's E35 when there is none (probe
-    /// E1); an empty arrows box finds nothing, as on main. A Vim pattern
-    /// becomes the last one before it compiles, as Vim's `do_search()`
-    /// stores it, so one outside the engine's subset is kept too and `n`
-    /// says why again (probed: `/\(` then `n` repeats E54).
+    /// landing is that search's. Otherwise an empty Vim box takes the last
+    /// query, as Vim's `/` Enter does, and says Vim's E35 when there is
+    /// none (probe E1); an empty arrows box finds nothing, as on main. A
+    /// Vim pattern becomes the last one before it compiles, as Vim's
+    /// `do_search()` stores it, so one outside the engine's subset is kept
+    /// too and `n` says why again (probed: `/\(` then `n` repeats E54).
     fn commit_search(&mut self, esc: bool, memory: &mut SearchMemory) {
         use crate::vim::engine::{Dir, as_stored};
         let Some(search) = self.search.as_mut() else { return };
@@ -8298,6 +8298,26 @@ mod tests {
         assert_eq!(drawn(&mut r), (0, 0, 0), "the wrap back to the start");
         assert!(r.step_search(-1));
         assert_eq!(drawn(&mut r), (1, 157, 117), "back past the edge");
+    }
+
+    /// Task #180: the other two commits of a typed arrows box land the
+    /// same way: Esc, which runs a typed search (main's field rule), and
+    /// the ▼ step while the box is still being typed in.
+    #[test]
+    fn an_arrows_box_commit_by_esc_or_step_scrolls_to_the_match() {
+        for esc in [true, false] {
+            let mut r = ready(&format!("start\n{}target{}", "d".repeat(150), "y".repeat(100)));
+            assert!(r.open_search(SearchSyntax::Literal, false));
+            for c in "target".chars() {
+                r.handle_key(ch(c));
+            }
+            if esc {
+                r.handle_key(key(KeyCode::Esc));
+            } else {
+                assert!(r.step_search(1));
+            }
+            assert_eq!(drawn(&mut r), (1, 150, 110), "esc {esc}");
+        }
     }
 
     /// Tasks #164 and #180 on the tree, for either profile's search: the
