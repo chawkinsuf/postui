@@ -4122,6 +4122,9 @@ fn ctrl_y_in_the_body_pastes_nothing_back() {
     assert_eq!(app.editor.body_text(), "hello");
     app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
     assert_eq!(app.editor.body_text(), "hello");
+    // #156: nor does ctrl+u undo the kill through edtui's own history.
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert_eq!(app.editor.body_text(), "hello");
 }
 
 #[test]
