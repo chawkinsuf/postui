@@ -28173,18 +28173,16 @@ fn the_palette_lists_only_the_open_tooltips_pills() {
     }
 }
 
-/// A hovered tooltip's pills are in the palette too, for its variable.
+/// The palette's rows are the caret's tooltip's: a pointer's tooltip is
+/// gone once the palette closes, and its own pills are a click away.
 #[test]
-fn the_palette_reaches_a_hover_tooltip() {
-    let (mut app, _dir, out) = tooltip_app("base_url");
+fn the_palette_lists_no_pills_for_a_hover_tooltip() {
+    let (mut app, _dir, _out) = tooltip_app("base_url");
     hover_token(&mut app, "base_url");
+    assert!(app.var_token_tip().is_some());
     app.update(Action::OpenPalette);
-    render_once(&mut app);
-    for c in "copy the tooltip".chars() {
-        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
-    }
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
+    let Some(Modal::Palette(p)) = app.modals.top() else { panic!("no palette") };
+    assert!(!p.filtered().iter().any(|c| matches!(c.action, Action::TipPillOn { .. })));
 }
 
 /// A jump to another pane takes the caret's tooltip and its keys down at

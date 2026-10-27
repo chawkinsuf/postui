@@ -278,9 +278,9 @@ pub fn all_commands() -> Vec<Command> {
             description: "Insert a {{variable}} token at the cursor",
             action: Action::OpenVarPicker { completing: false },
         },
-        // The variable tooltip's pills (#135). Listed only while a tooltip
-        // offering the pill is open, and then for its variable
-        // (`PaletteState::with_tip`).
+        // The variable tooltip's pills (#135). Listed only while the
+        // caret's tooltip offers the pill, and then for its variable
+        // (`PaletteState::with_tip`, `App::tip_offers`).
         Command {
             id: "vars-tip-edit",
             name: "Variables: edit the tooltip's variable",

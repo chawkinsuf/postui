@@ -2613,9 +2613,14 @@ impl App {
         Some(action)
     }
 
-    /// Whether a variable tooltip is open and shows `pill` (#135).
+    /// Whether a variable tooltip is open on the Main screen, the one place
+    /// its keys run (another screen swallows them), and shows `pill`
+    /// (#135).
     fn tip_shows(&self, pill: crate::action::TipPill) -> bool {
-        self.var_token_tip().is_some_and(|tip| self.editor.vars.describe(&tip.name).offers(pill))
+        self.screen == Screen::Main
+            && self
+                .var_token_tip()
+                .is_some_and(|tip| self.editor.vars.describe(&tip.name).offers(pill))
     }
 
     /// Where the keyboard is, for [`crate::keys::KeyContext::action`]: the
@@ -2936,15 +2941,14 @@ impl App {
         (drawn == name).then_some(TokenTip { name, anchor })
     }
 
-    /// The open tooltip's variable and the pills it shows, for the
-    /// palette's rows (#135). Main screen only, where the pills' keys run
-    /// (another screen swallows them), so a row never shows a dead key.
+    /// The caret's open tooltip's variable and the pills it shows, for the
+    /// palette's rows (#135). The caret's alone, as for the footer chip: a
+    /// pointer's tooltip is gone once the palette closes, which would
+    /// leave its reveal nothing to show; its own pills stay a click away.
+    /// The caret's is Main-screen only, where the pills' keys run.
     fn tip_offers(&self) -> Option<(String, Vec<crate::action::TipPill>)> {
         use crate::action::TipPill;
-        if self.screen != Screen::Main {
-            return None;
-        }
-        let tip = self.var_token_tip()?;
+        let tip = self.caret_tip_in(&self.hits)?;
         let info = self.editor.vars.describe(&tip.name);
         let offers = [TipPill::Edit, TipPill::Copy, TipPill::Reveal]
             .into_iter()

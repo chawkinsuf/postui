@@ -528,7 +528,10 @@ impl HitMap {
     }
 
     /// Records `{{name}}`, drawn at `rect`, as the token the editor's caret
-    /// is in.
+    /// is in. One slot is enough: the editor has one live caret a frame,
+    /// the URL line's (drawn live only while open and focused), the
+    /// body's (only with the body focused), or an open cell's (opening the
+    /// URL line or focusing the body commits the cell first).
     pub fn set_caret_token(&mut self, name: String, rect: Rect) {
         self.caret_token = Some((name, rect));
     }
