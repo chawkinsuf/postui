@@ -1071,15 +1071,42 @@ impl VarManager {
         self.left_rows.get(self.left_cursor).filter(|r| r.is_stop())
     }
 
+    /// Rebuilds `left_rows` from `ctx`, keeping the cursor on the row it
+    /// was on rather than on its old index: a declaration added or removed
+    /// above it (an outside edit, a reload) shifts the indices, and an
+    /// index kept as-is would highlight a different row than the pane
+    /// shows (#178). The old list is the last place that knows which row
+    /// the cursor meant, so the cursor moves here, before it is replaced.
+    ///
+    /// A row still listed keeps the cursor; a spacer is found by the header
+    /// it precedes, since spacers are alike. A row that is gone leaves the
+    /// cursor in its place: just below the nearest row above it that is
+    /// still listed (`VARIABLES` always is), clamped into range.
+    fn rebuild_rows(&mut self, ctx: &Project) {
+        let old = std::mem::replace(&mut self.left_rows, build_left_rows(ctx));
+        let find = |row: &VmRow| self.left_rows.iter().position(|r| r == row);
+        let k = self.left_cursor;
+        let kept = match old.get(k) {
+            Some(VmRow::Spacer) => old.get(k + 1).and_then(find).map(|i| i.saturating_sub(1)),
+            row => row.and_then(find),
+        };
+        let at = kept.unwrap_or_else(|| {
+            old[..k.min(old.len())]
+                .iter()
+                .rev()
+                .filter(|r| **r != VmRow::Spacer)
+                .find_map(find)
+                .map_or(0, |i| i + 1)
+        });
+        self.left_cursor = at.min(self.left_rows.len().saturating_sub(1));
+    }
+
     /// Rebuilds `left_rows` from `ctx` and repairs the selection after a
-    /// structural write: the cursor clamps into range, and a detail pane
-    /// pointing at a name that no longer exists re-opens on the neighbour
-    /// row the cursor lands on instead.
+    /// structural write: the cursor follows its row ([`Self::rebuild_rows`]),
+    /// and a detail pane pointing at a name that no longer exists re-opens
+    /// on the neighbour row the cursor lands on instead.
     pub fn sync(&mut self, ctx: &Project) {
-        self.left_rows = build_left_rows(ctx);
-        if self.left_cursor >= self.left_rows.len() {
-            self.left_cursor = self.left_rows.len().saturating_sub(1);
-        }
+        self.rebuild_rows(ctx);
         let gone = match &self.detail {
             VmDetail::None => false,
             VmDetail::Var(name) => !ctx.variables().vars.contains_key(name),
@@ -1089,10 +1116,10 @@ impl VarManager {
             self.form = VarFormState::default();
             self.grid = OptionGridState::default();
             self.focus = VmFocus::List;
-            // The neighbour of the row that went: whatever slid up into
-            // the cursor's own index, else the nearest selectable row
-            // above it. The cursor follows, so the highlight and the pane
-            // never disagree.
+            // The neighbour of the row that went: whatever took its place
+            // (where `rebuild_rows` left the cursor), else the nearest
+            // selectable row above it. The cursor follows, so the
+            // highlight and the pane never disagree.
             self.detail = match self.nearest_stop(self.left_cursor) {
                 Some(i) => {
                     self.left_cursor = i;
@@ -1668,10 +1695,7 @@ impl VarManager {
         hits: &mut HitMap,
         hovered: Option<&Hit>,
     ) {
-        self.left_rows = build_left_rows(ctx);
-        if self.left_cursor >= self.left_rows.len() {
-            self.left_cursor = self.left_rows.len().saturating_sub(1);
-        }
+        self.rebuild_rows(ctx);
         if area.width == 0 || area.height == 0 {
             self.visible_rows = 0;
             return;
@@ -3280,6 +3304,89 @@ fields = ["user_id", "customer_id"]
             Some("base_url"),
             "the highlight agrees with the pane"
         );
+    }
+
+    /// The name under the cursor, for the tests below.
+    fn cursor_name(vm: &VarManager) -> Option<&str> {
+        vm.left_rows.get(vm.left_cursor).and_then(VmRow::name)
+    }
+
+    /// An outside edit that adds a declaration above the open one (#178):
+    /// the cursor stays on the open row, both on the next frame and through
+    /// `sync`, so the highlight and the pane agree and the next key moves
+    /// from there.
+    #[test]
+    fn a_row_inserted_above_keeps_the_cursor_on_its_row() {
+        let (dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "base_url");
+        let rewrite = |text: &str| {
+            std::fs::write(dir.path().join("variables.toml"), text).unwrap();
+            Project::open(dir.path().to_path_buf()).unwrap().0
+        };
+        let ctx = rewrite(
+            "[aaa]\ndefault = \"0\"\n\n[base_url]\ndefault = \"x\"\n\n[api_key]\nsecret = true\n\n[selectors.creds]\nfields = [\"user_id\"]\n",
+        );
+        render(&mut vm, &ctx);
+        assert_eq!(vm.detail, VmDetail::Var("base_url".into()));
+        assert_eq!(cursor_name(&vm), Some("base_url"), "the draw's rebuild follows the row");
+        vm.handle_key(key(KeyCode::Down), &ctx);
+        assert_eq!(vm.detail, VmDetail::Var("api_key".into()), "Down moves from the open row");
+
+        let ctx = rewrite(
+            "[aaa]\ndefault = \"0\"\n\n[bbb]\ndefault = \"0\"\n\n[base_url]\ndefault = \"x\"\n\n[api_key]\nsecret = true\n",
+        );
+        vm.sync(&ctx);
+        assert_eq!(vm.detail, VmDetail::Var("api_key".into()));
+        assert_eq!(cursor_name(&vm), Some("api_key"), "so does sync's");
+    }
+
+    /// A cursor on a label row (a click put it there) stays on that label.
+    #[test]
+    fn a_row_inserted_above_keeps_the_cursor_on_a_label_row() {
+        let (dir, ctx) = fixture_with_shared_selector();
+        let mut vm = VarManager::default();
+        render(&mut vm, &ctx);
+        let path = dir.path().join("variables.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let rows = vm.left_rows.clone();
+        for label in [VmRow::SectionGroups, VmRow::SectionShared] {
+            let i = rows.iter().position(|r| *r == label).unwrap();
+            for (row, want) in [(i, label.clone()), (i - 1, VmRow::Spacer)] {
+                std::fs::write(&path, &text).unwrap();
+                let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+                render(&mut vm, &ctx);
+                vm.select_row(row);
+                std::fs::write(&path, format!("[aaa]\ndefault = \"0\"\n\n{text}")).unwrap();
+                let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+                render(&mut vm, &ctx);
+                // Everything moved down one, the header included, so the
+                // spacer under the cursor is still the one before it.
+                assert_eq!(vm.left_rows.iter().position(|r| *r == label), Some(i + 1));
+                assert_eq!(vm.left_cursor, row + 1, "{want:?}");
+                assert_eq!(vm.left_rows[vm.left_cursor], want);
+            }
+        }
+    }
+
+    /// The open row going together with rows above it: the pane opens the
+    /// row that took its place, not whatever now sits at its old index.
+    #[test]
+    fn removing_the_open_row_and_rows_above_it_opens_its_neighbour() {
+        let (dir, _ctx) = fixture();
+        let decls = |names: &[&str]| {
+            names.iter().map(|n| format!("[{n}]\ndefault = \"1\"\n\n")).collect::<String>()
+        };
+        std::fs::write(dir.path().join("variables.toml"), decls(&["a", "b", "c", "d", "e", "f"]))
+            .unwrap();
+        let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "c");
+        std::fs::write(dir.path().join("variables.toml"), decls(&["d", "e", "f"])).unwrap();
+        let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+        vm.sync(&ctx);
+        assert_eq!(vm.detail, VmDetail::Var("d".into()));
+        assert_eq!(cursor_name(&vm), Some("d"));
     }
 
     #[test]
