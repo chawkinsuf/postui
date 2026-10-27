@@ -4495,11 +4495,16 @@ impl Component for Response {
         // are decided before either is drawn, the bottom bar against the
         // width left once the right column is known.
         let content_w = view.content_width();
-        let content_h = view.visible_len();
+        let v_spec = |rows: u16| ScrollbarSpec {
+            pane: PaneId::Response,
+            offset: view.scroll,
+            content: view.visible_len(),
+            viewport: rows as usize,
+        };
         let clips = |width: u16| content_w > width as usize && body_area.height > 1;
-        let overflows = |rows: u16| content_h > rows as usize && rows > 0;
         let mut wants_h = clips(body_area.width);
-        let wants_v = overflows(body_area.height - u16::from(wants_h)) && body_area.width > 1;
+        let wants_v =
+            v_spec(body_area.height - u16::from(wants_h)).overflows() && body_area.width > 1;
         // A bottom bar added here leaves the body still overflowing: it
         // only takes a row away.
         wants_h |= wants_v && clips(body_area.width - 1);
@@ -4508,18 +4513,13 @@ impl Component for Response {
             h_bar = Some(Rect { y: body_area.y + body_area.height - 1, height: 1, ..body_area });
             body_area.height -= 1;
         }
+        let spec = v_spec(body_area.height);
 
         if view.height != body_area.height as usize {
             view.scroll_opt = None;
         }
         view.height = body_area.height as usize;
         if wants_v {
-            let spec = ScrollbarSpec {
-                pane: PaneId::Response,
-                offset: view.scroll,
-                content: content_h,
-                viewport: view.height,
-            };
             let column = Rect { x: body_area.x + body_area.width - 1, width: 1, ..body_area };
             body_area.width -= 1;
             if let Some(bar) = h_bar.as_mut() {
@@ -8040,12 +8040,28 @@ mod tests {
         render_sized(&mut r, 82, 20);
         assert_eq!(r.view().unwrap().width(), body_w - 1, "the vertical bar takes a column");
         r.handle_scroll_h(5);
-        let out = render_sized(&mut r, 82, 20);
+        let hits = render_hits_at(&mut r, 82);
         assert_eq!(r.view().unwrap().h_scroll, 1, "one column is clipped, so one is reachable");
-        // Scrolled to the end: one track cell, then the thumb. The vertical
-        // bar's `█` alone (its column ends on this row) must not pass.
-        let bottom = buffer_rows(&out).last().cloned().expect("rendered rows");
-        assert!(bottom.contains("─█"), "track then thumb on the bottom row: {out}");
+        let thumb = hits.rect_of(&crate::hit::Hit::HScrollThumb(PaneId::Response));
+        assert_eq!(thumb.map(|t| t.y), Some(19), "the horizontal thumb on the bottom row");
+    }
+
+    #[test]
+    fn a_body_that_fits_until_the_horizontal_bar_takes_a_row_gets_the_vertical_bar() {
+        // The other direction: a wide line reserves the bottom row, which
+        // leaves one row too few for the lines.
+        let mut probe = wide_raw();
+        render_sized(&mut probe, 82, 20);
+        let rows = probe.view().unwrap().height + 1; // the bottom bar's row
+        let mut lines = vec!["x".repeat(200)];
+        lines.extend((1..rows).map(|i| format!("l{i}")));
+        let mut r = ready(&lines.join("\n"));
+        let hits = render_hits_at(&mut r, 82);
+        assert_eq!(r.view().unwrap().height, rows - 1, "the bottom bar takes a row");
+        assert!(
+            hits.rect_of(&crate::hit::Hit::ScrollbarThumb(PaneId::Response)).is_some(),
+            "the vertical bar shows for the line pushed out of view"
+        );
     }
 
     #[test]
