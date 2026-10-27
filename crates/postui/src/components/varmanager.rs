@@ -186,6 +186,15 @@ impl VmDetail {
             VmDetail::None => None,
         }
     }
+
+    /// The left-list row that opens this detail.
+    fn row(&self) -> Option<VmRow> {
+        match self {
+            VmDetail::Var(n) => Some(VmRow::Var(n.clone())),
+            VmDetail::Group(n) => Some(VmRow::Group(n.clone())),
+            VmDetail::None => None,
+        }
+    }
 }
 
 /// One row of the left list, rebuilt from `&Project` at the top of
@@ -1118,6 +1127,9 @@ impl VarManager {
     /// on the neighbour of its row instead.
     pub fn sync(&mut self, ctx: &Project) {
         let old = self.rebuild_rows(ctx);
+        // Declared is listed: `build_left_rows` leaves out selector fields,
+        // but a project whose field is also declared as a variable doesn't
+        // open, so no declared variable is ever without its row.
         let gone = match &self.detail {
             VmDetail::None => false,
             VmDetail::Var(name) => !ctx.variables().vars.contains_key(name),
@@ -1132,12 +1144,9 @@ impl VarManager {
             // detail's own row, not the cursor's, which a click may have
             // left on a header. The cursor follows, so the highlight and
             // the pane never disagree.
-            let row = match &self.detail {
-                VmDetail::Var(name) => Some(VmRow::Var(name.clone())),
-                VmDetail::Group(name) => Some(VmRow::Group(name.clone())),
-                VmDetail::None => None,
-            };
-            let from = row
+            let from = self
+                .detail
+                .row()
                 .and_then(|row| old.iter().position(|r| *r == row))
                 .map_or(self.left_cursor, |k| self.place_of(&old, k));
             self.detail = match self.nearest_stop(from) {
