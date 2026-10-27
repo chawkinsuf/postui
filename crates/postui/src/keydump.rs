@@ -17,6 +17,9 @@ use ratatui::crossterm::event::{
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use std::process::ExitCode;
+
+use crate::cli_out::print_out;
 
 /// One event's echo line. Key events also show the [`crate::keys::KeyCombo`]
 /// the keymap would look up and, when the super-arrow fold rewrites the
@@ -63,32 +66,37 @@ pub fn resolve_flags(flags: Option<u8>) -> KeyboardEnhancementFlags {
 
 /// Runs the echo loop on the real terminal until ctrl+d. Raw mode plus
 /// bracketed paste and mouse capture, and the enhancement push when the
-/// resolved tier is non-empty.
-pub fn run(flags: Option<u8>) -> anyhow::Result<()> {
+/// resolved tier is non-empty. The banner before it goes through the
+/// command line's printer (#168): a stdout that can't take it ends the run
+/// with that printer's status, before raw mode.
+pub fn run(flags: Option<u8>) -> anyhow::Result<ExitCode> {
     use std::io::Write;
     let resolved = resolve_flags(flags);
-    // A write error ends the run like the echo loop's do, not a panic
-    // (#168). The first lines go out before the terminal probe, so a
-    // stdout that can't take them fails before the tty is touched.
-    let mut out = std::io::stdout();
-    writeln!(
-        out,
-        "postui --keydump: raw key-event echo (ctrl+d exits); mouse events are reported too"
-    )?;
-    writeln!(
-        out,
-        "TERM={:?} TERM_PROGRAM={:?}",
+    // The first lines go out before the terminal probe, so a stdout that
+    // can't take them ends the run before the probe runs.
+    let head = format!(
+        "postui --keydump: raw key-event echo (ctrl+d exits); mouse events are reported too\n\
+         TERM={:?} TERM_PROGRAM={:?}\n",
         std::env::var("TERM").ok(),
         std::env::var("TERM_PROGRAM").ok()
-    )?;
-    out.flush()?;
+    );
+    if let Some(status) = print_out(&head) {
+        return Ok(status);
+    }
     let supported =
         matches!(ratatui::crossterm::terminal::supports_keyboard_enhancement(), Ok(true));
-    writeln!(out, "terminal reports kitty keyboard protocol support: {supported}")?;
-    writeln!(out, "pushing enhancement flags: {:?} (bits {})", resolved, resolved.bits())?;
-    out.flush()?;
+    let tail = format!(
+        "terminal reports kitty keyboard protocol support: {supported}\n\
+         pushing enhancement flags: {:?} (bits {})\n",
+        resolved,
+        resolved.bits()
+    );
+    if let Some(status) = print_out(&tail) {
+        return Ok(status);
+    }
 
     enable_raw_mode()?;
+    let mut out = std::io::stdout();
     let _ = execute!(out, EnableBracketedPaste);
     let _ = execute!(out, EnableMouseCapture);
     let pushed = !resolved.is_empty();
@@ -117,7 +125,7 @@ pub fn run(flags: Option<u8>) -> anyhow::Result<()> {
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     let _ = disable_raw_mode();
-    result
+    result.map(|()| ExitCode::SUCCESS)
 }
 
 #[cfg(test)]

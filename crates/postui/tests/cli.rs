@@ -36,8 +36,9 @@ fn dev_full() -> Stdio {
     std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap().into()
 }
 
-/// The flags that only print, each run on its own.
-const PRINTERS: [&str; 3] = ["--help", "--version", "--setup"];
+/// The flags whose output goes through `cli_out::print_out`, each run on
+/// its own (`--keydump`'s banner comes before its terminal probe).
+const PRINTERS: [&str; 4] = ["--help", "--version", "--setup", "--keydump"];
 
 #[test]
 fn help_prints_usage_to_stdout_and_succeeds() {
@@ -142,18 +143,4 @@ fn a_bad_argument_fails_with_status_2_even_when_stderr_is_full() {
     });
     assert_eq!(out.status.code(), Some(2));
     assert!(out.stdout.is_empty(), "the usage never moves to stdout");
-}
-
-/// #168: `--keydump`'s banner write error ends the run as its later writes
-/// do (an error, exit 1), not a panic.
-#[cfg(target_os = "linux")]
-#[test]
-fn keydump_into_a_full_stdout_fails_without_a_panic() {
-    let out = postui_with(&["--keydump"], |c| {
-        c.stdout(dev_full());
-    });
-    assert_eq!(out.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!stderr.contains("panicked"), "{stderr}");
-    assert!(stderr.starts_with("Error: ") && stderr.contains("os error 28"), "{stderr}");
 }
