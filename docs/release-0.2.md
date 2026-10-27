@@ -87,5 +87,5 @@ The last big item (the user, 2026-10-26). The current README is mostly a jq sect
 
 ## Housekeeping
 
-- [ ] Ignore editor swap files (`.swp`, `.swo`, `.swn`) in `.gitignore`
-- [ ] #28, #62, #98 sit in the Scrapped bucket with the done flag unset
+- [x] Ignore editor swap files (`.swp`, `.swo`, `.swn`) and `__pycache__/` in `.gitignore`
+- [x] #28, #62, #98, #163 sit in the Scrapped bucket with the done flag unset: left as they are (the user, 2026-10-27). Vikunja keeps the flag only in the Done column, and moving a task back to Scrapped clears it

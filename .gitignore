@@ -1,3 +1,7 @@
 /target
 /docs/superpowers/plans
 /.veans.yml
+*.swp
+*.swo
+*.swn
+__pycache__/
