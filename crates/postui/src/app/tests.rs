@@ -32521,6 +32521,7 @@ fn a_project_switch_on_manage_moves_the_manager_to_the_new_project() {
     // before the next paint, which a key can arrive ahead of.
     use crate::components::varmanager::{VmDetail, VmRow};
     assert!(!app.varmanager.left_rows.contains(&VmRow::Group("user".into())), "list synced");
+    assert!(app.varmanager.left_rows.contains(&VmRow::SectionGroups), "the new rows are there");
     assert_eq!(app.varmanager.detail, VmDetail::None, "detail moved off it");
     assert_highlight_names_the_detail(&app);
 }
@@ -32537,13 +32538,19 @@ fn a_project_switch_starts_the_manager_over_on_a_same_named_selector() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_group(&mut app, "user");
-    use crate::components::varmanager::{VmDetail, VmFocus};
+    use crate::components::varmanager::{FormStop, VmDetail, VmField, VmFocus};
     app.varmanager.grid.cursor = (1, 1);
+    app.varmanager.grid.scroll = 1;
     app.varmanager.focus = VmFocus::Grid;
+    app.varmanager.left_scroll = 2;
+    app.varmanager.form_cursor = FormStop::Secret;
     app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
-    assert_eq!(app.varmanager.detail, VmDetail::None);
-    assert_eq!(app.varmanager.grid.cursor, (0, 0));
-    assert_eq!(app.varmanager.focus, VmFocus::List);
+    let vm = &app.varmanager;
+    assert_eq!(vm.detail, VmDetail::None);
+    assert_eq!((vm.grid.cursor, vm.grid.scroll), ((0, 0), 0));
+    assert_eq!(vm.focus, VmFocus::List);
+    assert_eq!((vm.left_cursor, vm.left_scroll), (0, 0));
+    assert_eq!(vm.form_cursor, FormStop::Field(VmField::Description));
     assert_highlight_names_the_detail(&app);
 }
 

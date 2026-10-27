@@ -5530,23 +5530,14 @@ impl App {
                 self.session.reset();
                 let name = project.display_name();
                 self.project = Some(project);
-                // Everything the Variable Manager holds indexes the project
-                // being left: the declaration it shows, its list cursor and
-                // scroll, the grid's and form's cursors, the keyboard stop,
-                // and a copied option row. Only here does the code know all
-                // of it is foreign (a same-named declaration in the new
-                // project looks the same to a sync), so it starts over in
-                // the state a launch opens it in (task #179). The cost: every
-                // switch opens the Manager with nothing selected, as a
-                // launch does, even into a project that declares the name
-                // that was open. The draw caches it drops (the grid's area,
-                // the list's height) describe the old project's frame and
-                // are measured again on the next one.
-                //
-                // With Manage up, the sync reads the new project's rows at
-                // once, since a key can arrive ahead of the next frame. With
-                // it closed, `OpenManage` syncs as the screen comes up (task
-                // #84), as for every other refresh site.
+                // All of the Variable Manager's state indexes the project
+                // being left, and only here is that known (a sync can't tell
+                // a same-named declaration of the new project from the old
+                // one), so it starts over as at launch (task #179). The cost:
+                // the Manager opens with nothing selected, even into a
+                // project that declares the name that was open. With Manage
+                // up it reads the new rows now, for whatever runs before the
+                // next frame; with it closed, `OpenManage` syncs (task #84).
                 self.varmanager = VarManager::default();
                 if self.screen == Screen::Manage {
                     self.sync_varmanager();
