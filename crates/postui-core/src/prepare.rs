@@ -588,7 +588,12 @@ fn rows(
         rows.push(row(k, &e.value, HeaderOrigin::Request { row: i }));
     }
 
-    // An auto or client row stands aside for a sent row naming it.
+    // An auto or client row stands aside for a sent row naming it. A
+    // disabled request row is not one: it leaves the auto `Content-Type` or
+    // `Accept` sent, as an untyped request would, and it is the row to edit
+    // (so the auto row offers no pencil; auto-headers spec, task #20). To
+    // ask for something other than JSON, the row is enabled with that
+    // value, `*/*` included (task #174: "the user can override it").
     let replaced = |rows: &[HeaderRow], name: &str| {
         rows.iter()
             .any(|r| r.sent() && r.header.name.eq_ignore_ascii_case(name))
