@@ -8506,6 +8506,9 @@ url = "https://api.example.com/users""#,
         (hits, terminal.backend().buffer().clone())
     }
 
+    /// An auto-section row the client adds (`Host` and the like); a test
+    /// of postui's own `Accept` or `Content-Type` sets `HeaderOrigin::Auto`
+    /// over it.
     fn auto_header(name: &str, value: &str) -> postui_core::prepare::HeaderRow {
         postui_core::prepare::HeaderRow {
             header: postui_core::prepare::SentHeader {

@@ -144,8 +144,10 @@ mod tests {
         assert_eq!(to_curl(&p), "curl 'https://x.test/a' \\\n  -H 'accept: text/html'");
     }
 
+    /// A prepared request with no headers writes no `-H` (a real GET has
+    /// postui's `Accept`: `the_auto_accept_is_exported`).
     #[test]
-    fn a_get_is_bare() {
+    fn no_headers_write_no_header_flags() {
         assert_eq!(
             to_curl(&prepared(Method::Get, "https://x/a?b=1", &[], None)),
             "curl 'https://x/a?b=1'"
