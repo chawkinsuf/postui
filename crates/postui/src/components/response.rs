@@ -5002,7 +5002,9 @@ fn body_lines(
     // header row's gap and copy pill, #54): the copy and the search read
     // the text alone, so the highlights and the selection are laid on
     // `pieces` before `tail` joins them, and a selection to the row's end
-    // stops where the text does.
+    // (`v$` included) stops where the text does, as on a Raw or Pretty
+    // row, which has no cell past its text to paint. Only the cursor
+    // row's tint, a whole-line style, still spans the tail.
     let mut push = |i: usize,
                     full: usize,
                     pieces: Vec<(String, Style)>,
@@ -5125,6 +5127,10 @@ fn body_lines(
                 let row = view.header_row(i).unwrap_or(HeaderRow::Note);
                 match row {
                     HeaderRow::Divider => {
+                        // The rule is still in `pieces`, so a selection
+                        // across the divider paints it though the copy
+                        // leaves it out. Moving it to the tail is #177,
+                        // kept out of #54 (the copy pill) on purpose.
                         let rule = "\u{2500}"
                             .repeat((area.width as usize).saturating_sub(crate::ui::cells(line)));
                         let pieces = vec![(format!("{line}{rule}"), dim)];
@@ -7048,16 +7054,20 @@ mod tests {
         assert!(r.begin_selection_at(area.x, area.y));
         assert!(r.drag_selection_to(area.x + 3, area.y + 2));
         let (area, buf) = render_buf(&mut r);
-        let line = r.view().unwrap().header_lines[0].clone();
+        let view = r.view().unwrap();
+        assert!(matches!(view.header_row(0), Some(HeaderRow::Received(_))));
+        let lines = &view.header_lines;
+        let line = &lines[0];
         let bg = |c: usize| buf[(area.x + u16::try_from(c).unwrap(), area.y)].bg;
-        let text_end = crate::ui::cells(&line);
+        let text_end = crate::ui::cells(line);
         assert_eq!(bg(text_end - 1), theme.selection, "the row's last text cell is selected");
-        for c in text_end..header_pill_cols(&line).end {
+        for c in text_end..header_pill_cols(line).end {
             assert_ne!(bg(c), theme.selection, "column {c}: the gap and the pill are not");
         }
+        let head: String = lines[2].chars().take(4).collect();
         assert_eq!(
-            r.selected_text().as_deref(),
-            Some(format!("{line}\n{SENT_DIVIDER}\nauth").as_str()),
+            r.selected_text(),
+            Some(format!("{line}\n{}\n{head}", lines[1])),
             "the copy holds row 0's text, its gap and pill left out"
         );
     }
