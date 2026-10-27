@@ -1414,11 +1414,9 @@ impl App {
         // names.
         //
         // With no sub-focus there is no caret to keep, and the click away
-        // is left as it was: the tasks name the states above, and the only
-        // thing it could take there is a table cursor left over from
-        // another state, which it has always dropped. The vars and
-        // tooltip-edit chips' own exemptions below hold there, and on the
-        // screens and panes this gate leaves out.
+        // is left as it was: the tasks name the states above, not that one.
+        // The vars and tooltip-edit chips' own exemptions below hold there,
+        // and on the screens and panes this gate leaves out.
         //
         // The rule asks where the press landed, not which action: the app
         // bar's save/discard, the address bar's lock and the Body toolbar
@@ -1440,7 +1438,9 @@ impl App {
                 l.footer.contains(ratatui::layout::Position { x: m.column, y: m.row })
             });
         // Nor is it a click for vim's engine: its key settles nothing there,
-        // so the press keeps Visual and a pending operator as the key does.
+        // so the press keeps Visual up as the key does. (A half-typed key
+        // goes, as it goes before any chord: every press clears the
+        // router.)
         if editor_footer_chip {
             self.vim_chip_press();
         }

@@ -2538,29 +2538,50 @@ fn a_click_that_edits_leaves_the_url_typing_its_own_undo_step() {
 /// Task #194: the footer's `tls` chip is its key, not a click away, so the
 /// URL line stays open through it and the undo steps are alt+i's: the
 /// toggle made while the line holds its typing goes with that typing when
-/// the line closes.
+/// the line closes. In vim too, mid-Insert.
 #[test]
 fn the_footer_tls_chip_over_url_typing_undoes_as_alt_i_does() {
-    let undo_trail = |app: &mut App| {
-        assert!(app.editor.url_open(), "the line stayed open");
-        assert!(app.editor.current_request().insecure, "the toggle ran");
-        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    let vim_typed_url = || {
+        let mut app = App::new_for_test();
+        app.use_profile(crate::config::KeyProfile::Vim);
+        app.editor.url = LineInput::new("https://e.com");
         app.capture_undo();
-        let mut trail = Vec::new();
-        for _ in 0..2 {
-            app.update(Action::Undo);
-            app.capture_undo();
-            trail.push((app.editor.url.text().to_string(), app.editor.current_request().insecure));
+        app.focus = PaneId::Editor;
+        app.editor.open_url_from_app();
+        for ev in crate::keyroute::notation::events("Ax") {
+            app.handle_key(ev);
         }
-        trail
+        app.capture_undo();
+        app
     };
-    let mut by_key = app_with_typed_url();
-    by_key.handle_key(alt('i'));
-    by_key.capture_undo();
-    let mut app = app_with_typed_url();
-    click_tls(&mut app, true);
-    app.capture_undo();
-    assert_eq!(undo_trail(&mut app), undo_trail(&mut by_key));
+    let fixtures: [(&dyn Fn() -> App, &str); 2] =
+        [(&app_with_typed_url, "<Esc>"), (&vim_typed_url, "<Esc><Esc>")];
+    for (fixture, close) in fixtures {
+        let undo_trail = |app: &mut App| {
+            assert!(app.editor.url_open(), "the line stayed open");
+            assert!(app.editor.current_request().insecure, "the toggle ran");
+            for ev in crate::keyroute::notation::events(close) {
+                app.handle_key(ev);
+            }
+            app.capture_undo();
+            assert!(!app.editor.url_open(), "{close} closed the line");
+            let mut trail = Vec::new();
+            for _ in 0..2 {
+                app.update(Action::Undo);
+                app.capture_undo();
+                let insecure = app.editor.current_request().insecure;
+                trail.push((app.editor.url.text().to_string(), insecure));
+            }
+            trail
+        };
+        let mut by_key = fixture();
+        by_key.handle_key(alt('i'));
+        by_key.capture_undo();
+        let mut app = fixture();
+        click_tls(&mut app, true);
+        app.capture_undo();
+        assert_eq!(undo_trail(&mut app), undo_trail(&mut by_key), "{close}");
+    }
 }
 
 /// The same for a click that puts the caret in the table and acts there
