@@ -87,7 +87,11 @@
   (a row, an auto row, a section row, `+ Add`), with no cell open (send or
   cancel, add, tabs, commands, quit). The app bar's save/discard, the
   address bar's lock and the Body toolbar are not the footer and stay a
-  click away, as do the Manage screen's footer chips.)
+  click away, as do the Manage screen's footer chips. *Amended 2026-10-27,
+  task #192, mine:* the same holds with a table cell open, with the Body's
+  caret up and with the URL line selected: a footer chip's click leaves the
+  cell, its typing, the cursor and the caret as its key does, and its
+  action does the rest (send and quit commit the cell, `done` closes it).)
   The response chip is `Key::Pair` of the two `CopyRow` actions.
   `TableCursor` gains `headers` on `Row` and a `ResponseHeader` variant
   for the response's cursor.

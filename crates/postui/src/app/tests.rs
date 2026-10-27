@@ -15732,6 +15732,178 @@ fn footer_chips_leave_the_table_cursor_as_their_actions_do(
     }
 }
 
+/// Task #192: the same with a table cell open (the cell, its typing, the
+/// cursor and the caret), with the Body's caret up, and with the URL line
+/// selected. Every chip drawn in the footer's strip, `done` and the
+/// address bar's `copy url` and `tls` included, leaves the editor exactly
+/// as running its action does, which is what its key does: the click is
+/// the action with no click-away before it.
+#[test]
+fn an_editor_footer_chip_click_leaves_an_open_cell_or_the_caret_as_its_action_does() {
+    use crate::config::KeyProfile::{Arrows, Vim};
+    for state in ["cell", "body", "url"] {
+        for profile in [Arrows, Vim] {
+            for sending in [false, true] {
+                let probe = editor_caret_app(state, profile, sending);
+                let (y, chips) = footer_strip_chips(&probe);
+                let drawn = |a: &Action| chips.iter().any(|(b, _)| b == a);
+                assert!(drawn(&Action::CycleTabs(1)) || profile == Vim, "{state} {chips:?}");
+                assert!(drawn(&Action::OpenPalette) || drawn(&Action::OpenExPalette), "{chips:?}");
+                for (chip, x) in &chips {
+                    let mut by_action = editor_caret_app(state, profile, sending);
+                    by_action.update(chip.clone());
+                    let mut app = editor_caret_app(state, profile, sending);
+                    app.handle_mouse(left_down(*x, y));
+                    assert_eq!(
+                        editor_seen(&app),
+                        editor_seen(&by_action),
+                        "{state} {profile:?} sending={sending} {chip:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Task #192's three states, drawn wide so every footer chip fits, the URL
+/// empty so the send chip toasts rather than spawning a send: `cell`, a
+/// header's value open with typing in it; `body`, the Body's caret mid-text;
+/// `url`, the URL line selected (not open).
+fn editor_caret_app(state: &str, profile: crate::config::KeyProfile, sending: bool) -> App {
+    let mut app = main_header_app(profile);
+    app.editor.url = LineInput::new("");
+    app.editor.sending = sending;
+    match state {
+        "cell" => {
+            click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+            assert!(app.editor.table.editing.is_some(), "the cell opened");
+            // Vim's click opens the cell in Normal: `A` appends.
+            if profile == crate::config::KeyProfile::Vim {
+                type_chars(&mut app, "A");
+            }
+            type_chars(&mut app, "Z");
+            let typed = app.editor.table.editing.as_ref().map(|e| e.input.text().to_string());
+            assert_eq!(typed.as_deref(), Some("aZ"), "{profile:?} typed into the cell");
+        }
+        "body" => {
+            app.editor.active_tab = EditorTab::Body;
+            app.editor.table.set_selected(None);
+            app.editor.set_body_text("ab\ncd");
+            app.editor.body.cursor = edtui::Index2::new(1, 1);
+        }
+        _ => {
+            app.editor.table.set_selected(None);
+            app.editor.sub_focus = SubFocus::Url;
+        }
+    }
+    rendered_row(&mut app, 200, 0);
+    app
+}
+
+/// Every chip in the footer's strip, read off the last frame's hit map (the
+/// strip's middle row, each chip's first cell), so a chip the footer gains
+/// is held to the rule too.
+fn footer_strip_chips(app: &App) -> (u16, Vec<(Action, u16)>) {
+    let footer = app.settled_layout().expect("drawn").footer;
+    let y = footer.y + footer.height / 2;
+    let mut chips: Vec<(Action, u16)> = Vec::new();
+    for x in footer.x..footer.x + footer.width {
+        if let Some(Hit::FooterChip(a)) = app.hits.hit_at(x, y)
+            && !chips.iter().any(|(b, _)| b == a)
+        {
+            chips.push((a.clone(), x));
+        }
+    }
+    (y, chips)
+}
+
+/// What a footer chip may leave changed in the editor (`editor_seen`).
+#[derive(Debug, PartialEq)]
+struct EditorSeen {
+    cell_open: bool,
+    header_value: Option<String>,
+    cursor: Option<Stop>,
+    sub_focus: SubFocus,
+    caret: crate::components::editor::Caret,
+    url_open: bool,
+    url: String,
+    body: String,
+    tab: EditorTab,
+    insecure: bool,
+    undo_steps: u64,
+    no_dialog: bool,
+    vim: Option<String>,
+    quit: bool,
+}
+
+/// The open cell and its typing, the table's cursor, the sub-focus and the
+/// caret within it (the Body's row and column, the URL's column), the
+/// texts, the tab, the lock, the undo steps recorded, an opened dialog,
+/// vim's mode and a quit.
+fn editor_seen(app: &App) -> EditorSeen {
+    EditorSeen {
+        cell_open: app.editor.table.editing.is_some(),
+        header_value: app.editor.headers.get_index(0).map(|(_, e)| e.value.clone()),
+        cursor: app.editor.table.selected(),
+        sub_focus: app.editor.sub_focus,
+        caret: app.editor.caret(),
+        url_open: app.editor.url_open(),
+        url: app.editor.url.text().to_string(),
+        body: app.editor.body_text(),
+        tab: app.editor.active_tab,
+        insecure: app.editor.insecure,
+        undo_steps: app.history.changes(),
+        no_dialog: app.modals.is_empty(),
+        vim: app.vim_status(),
+        quit: app.should_quit,
+    }
+}
+
+/// Task #192's report, against the keys themselves: in arrows, with a cell
+/// open and typed into, the Body's caret up or the URL line selected, each
+/// footer chip's click leaves the editor as its keycap's key does. Every
+/// chip drawn is checked: one with no key here fails the test.
+///
+/// Not sending: the in-flight `esc cancel` chip's Esc is the field's first
+/// where a field holds the caret (a selected URL line deselects), so its
+/// key does not cancel there; the chip is its action, checked above.
+#[test]
+fn an_editor_footer_chip_click_matches_its_key_with_a_cell_or_caret_up() {
+    use crate::config::KeyProfile::Arrows;
+    let keys = |a: &Action| match a {
+        Action::CloseField => vec![KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+        Action::FocusUrl => vec![KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+        Action::Send => vec![ctrl('r')],
+        Action::TableAddRow => vec![alt('a')],
+        Action::OpenVarPicker { completing: false } => vec![alt('v')],
+        Action::CycleTabs(1) => vec![KeyEvent::new(KeyCode::Right, KeyModifiers::ALT)],
+        Action::OpenPalette => vec![ctrl('p')],
+        Action::Quit => vec![ctrl('c'), ctrl('c')],
+        Action::CopyToClipboard(crate::action::CopyTarget::Url) => vec![alt('y')],
+        Action::ToggleInsecure => vec![alt('i')],
+        other => panic!("no key for the {other:?} chip"),
+    };
+    for state in ["cell", "body", "url"] {
+        let (y, chips) = footer_strip_chips(&editor_caret_app(state, Arrows, false));
+        assert!(chips.len() >= 4, "{state}: {chips:?}");
+        for (chip, x) in &chips {
+            // In the Body alt+arrows are word motion, and the tabs are a
+            // click away (spec 2026-09-01 spaces, "The editor tabs give up
+            // alt+1..alt+4"): the chip's own test is its action's, above.
+            if state == "body" && *chip == Action::CycleTabs(1) {
+                continue;
+            }
+            let mut by_key = editor_caret_app(state, Arrows, false);
+            for ev in keys(chip) {
+                by_key.handle_key(ev);
+            }
+            let mut app = editor_caret_app(state, Arrows, false);
+            app.handle_mouse(left_down(*x, y));
+            assert_eq!(editor_seen(&app), editor_seen(&by_key), "{state} {chip:?}");
+        }
+    }
+}
+
 /// Task #183: the rule is the footer's strip, not the action. The address
 /// bar's lock registers a `FooterChip` too, and it stays a click away.
 #[test]
@@ -15743,6 +15915,25 @@ fn the_address_bar_lock_is_still_a_click_away_from_the_table_cursor() {
     click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
     assert_ne!(app.editor.insecure, insecure, "the lock toggled");
     assert_eq!(app.editor.table.selected(), None);
+    assert_eq!(app.editor.sub_focus, SubFocus::None);
+}
+
+/// Task #192: with the URL line selected the footer has a `tls` chip of the
+/// same action, which keeps the line selected; the lock is still a click
+/// away for it.
+#[test]
+fn the_address_bar_lock_is_still_a_click_away_from_the_url_line() {
+    let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+    app.editor.table.set_selected(None);
+    app.editor.sub_focus = SubFocus::Url;
+    render_once(&mut app);
+    let footer = app.settled_layout().expect("drawn").footer;
+    let rects = app.hits.rects_of(&Hit::FooterChip(Action::ToggleInsecure));
+    assert!(rects.iter().any(|r| footer.contains(r.as_position())), "the footer's tls chip");
+    let lock = *rects.iter().find(|r| !footer.contains(r.as_position())).expect("the lock");
+    let insecure = app.editor.insecure;
+    app.handle_mouse(left_down(lock.x, lock.y));
+    assert_ne!(app.editor.insecure, insecure, "the lock toggled");
     assert_eq!(app.editor.sub_focus, SubFocus::None);
 }
 
