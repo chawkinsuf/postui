@@ -333,6 +333,13 @@ raise an error toast naming the file, never fail silently, and the
 control must revert to the on-disk value rather than showing a state
 that was not persisted.
 
+*2026-10-27, task #80 (mine):* a text or number field's commit is
+refused the same way, and its edit stays open with what was typed, as a
+rejected `osc52_limit` does: the toast names the file, the stored value
+stands, and the typing is there to save once the file is fixed. The
+close counts as refused, so a click away or a change that closes inputs
+first stops there. The field ends only once its write landed.
+
 After a successful write the in-memory settings are applied through the
 same path `ReloadFromDisk` uses (`reapply_ui_settings`), so a change
 made in the tab and a hand-edit picked up by `alt+r` converge on one

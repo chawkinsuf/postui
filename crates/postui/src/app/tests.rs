@@ -30387,6 +30387,75 @@ fn a_click_during_a_refused_settings_edit_is_swallowed() {
     assert_eq!(app.settings.cursor, row_of(SettingsField::AiCmd));
 }
 
+/// A Settings field whose write `config.toml` refuses (the file went bad
+/// after the tab opened, or cannot be written) keeps its edit open with
+/// what was typed, as a rejected `osc52_limit` does and as the Variable
+/// Manager's failed writes do: the toast says why, and the typing is
+/// still there to save once the file is fixed (task #80).
+#[test]
+fn a_refused_settings_field_write_keeps_the_edit_and_the_typing() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    let stored = app.ui_settings.ai_cmd.clone();
+    app.settings.begin_edit(SettingsField::AiCmd, "");
+    type_chars(&mut app, "my-ai --go");
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.settings.editing, Some(SettingsField::AiCmd), "the edit stays open");
+    assert_eq!(app.settings.field_text(), "my-ai --go", "with what was typed");
+    assert_eq!(app.ui_settings.ai_cmd, stored, "the stored value stands");
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains("could not save config.toml")),
+        "{:?}",
+        app.toasts.messages()
+    );
+
+    // An integer field's refused write is the same.
+    let limit = app.ui_settings.osc52_limit;
+    app.settings.begin_edit(SettingsField::Osc52Limit, "1024");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.settings.editing, Some(SettingsField::Osc52Limit));
+    assert_eq!(app.settings.field_text(), "1024");
+    assert_eq!(app.ui_settings.osc52_limit, limit);
+
+    // Fixed on disk, the same commit lands and closes the field.
+    std::fs::write(dir.path().join("config.toml"), "").unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.settings.editing.is_none());
+    assert_eq!(app.ui_settings.osc52_limit, 1024);
+}
+
+/// A click away from a field whose write was refused stops, as one away
+/// from a rejected `osc52_limit` does: the edit is still open, so the
+/// close counted as refused (task #80).
+#[test]
+fn a_click_away_from_a_refused_settings_write_is_swallowed() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::{SettingsField, SettingsRow, SettingsTab};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    let row_of =
+        |field| SettingsTab::rows().iter().position(|r| *r == SettingsRow::Setting(field)).unwrap();
+    let ai_row = row_of(SettingsField::AiCmd);
+    app.settings.cursor = ai_row;
+    app.settings.begin_edit(SettingsField::AiCmd, "my-ai --go");
+
+    click_hit(&mut app, Hit::SettingsRow(row_of(SettingsField::ClipboardCmd)));
+
+    assert_eq!(app.settings.editing, Some(SettingsField::AiCmd), "the edit stays open");
+    assert_eq!(app.settings.field_text(), "my-ai --go");
+    assert_eq!(app.settings.cursor, ai_row, "and the click did not move the cursor");
+}
+
 /// A live Settings field does not survive a click that lands anywhere
 /// else on the page -- bare background included. The typed text commits
 /// (typing is never silently thrown away) and the keyboard cursor goes

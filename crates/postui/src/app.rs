@@ -11992,27 +11992,26 @@ impl App {
             SettingsField::IndentWidth => Some(parse_indent_width(&text)),
             _ => None,
         };
+        // The edit stays open across the write: `apply_ui_write` ends it
+        // once the write lands. A write `config.toml` refuses keeps the
+        // field open with what was typed, like a rejected value (task #80).
         if let Some(parsed) = int {
             return match parsed {
-                Ok(value) => {
-                    self.settings.end_edit();
-                    self.update(Action::SetUiInt { key: field.key(), value })
-                }
+                Ok(value) => self.update(Action::SetUiInt { key: field.key(), value }),
                 Err(why) => {
                     self.toasts.push(format!("{}: {why}", field.label()), ToastKind::Error);
                     true
                 }
             };
         }
-        self.settings.end_edit();
         self.update(Action::SetUiString { key: field.key(), value: text })
     }
 
     /// [`Self::commit_settings_edit`] for a click that is about to land
     /// somewhere else, reporting whether that click may proceed.
     ///
-    /// A rejected `osc52_limit` keeps its edit open, so the click has to
-    /// stop: moving `settings.cursor` out from under a still-live edit
+    /// A rejected `osc52_limit`, or a write `config.toml` refused, keeps
+    /// its edit open, so the click has to stop: moving `settings.cursor` out from under a still-live edit
     /// would leave the painted well on a row the cursor has left, with
     /// `editing` and `cursor` naming different rows. The toast the
     /// refusal raised is the answer to the click, and the typed text is
@@ -12028,6 +12027,13 @@ impl App {
     /// disk rather than one that never landed. A write that did land is
     /// applied through the same `reapply_ui_settings` path
     /// `ReloadFromDisk` uses, so the tab and a hand-edit converge.
+    ///
+    /// A live Settings field edit ends here, and only on the landed path:
+    /// `commit_settings_edit` writes with the edit still open, so a refused
+    /// write leaves the typing in the field to save once the file is fixed,
+    /// and the close counts as refused (task #80). Every other caller runs
+    /// with no field open (a click or key on another control commits the
+    /// field first and stops if it refuses), so for them this is a no-op.
     fn apply_ui_write(
         &mut self,
         saved: Result<(), String>,
@@ -12040,6 +12046,7 @@ impl App {
             );
             return true;
         }
+        self.settings.end_edit();
         let mut ui = self.ui_settings.clone();
         apply(&mut ui);
         self.reapply_ui_settings(ui);
