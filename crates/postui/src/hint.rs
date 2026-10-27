@@ -18,12 +18,15 @@ use crate::hit::Hit;
 use crate::keys::Keymap;
 use crate::split::SplitStop;
 
-/// A header's copy pill: its click copies the value, its shift+click the
-/// whole header (spec 2026-10-26 H6). The tip says so in every terminal,
-/// though one that keeps shift+click for its own selection never passes
-/// it on (mine (approved)). Short, so it shows whole in more footers (the
-/// user: "Shorten it"); `⇧` as the footer's own `⇧enter` keycap writes it.
-const HEADER_PILL_TIP: &str = "Copy value · ⇧click: whole header";
+/// A header's copy pill: its click copies the value, its alt+click the
+/// whole header (spec 2026-10-26 H6, #159). Short, so it shows whole in
+/// more footers (the user: "Shorten it"); alt spelled as the footer's
+/// keycaps spell it (`keys::alt_label`, the one source), `opt` on macOS.
+/// Built per call: one allocation, as `text` makes for a fixed line.
+fn header_pill_tip() -> Option<Source> {
+    let alt = crate::keys::alt_label();
+    Some(Source::Text(format!("Copy value · {alt}+click: whole header")))
+}
 
 /// The app state a hint needs to say what its button would do *now*.
 /// Most controls under the pointer are two-state — send/cancel, open/close,
@@ -457,8 +460,8 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         Hit::MethodSelector => of(Action::OpenMethodDropdown),
         Hit::CopyUrl => of(Action::CopyToClipboard(CopyTarget::Url)),
         Hit::TableCheckbox(_) => text(if ctx.on { "Disable this row" } else { "Enable this row" }),
-        // A Headers-tab row's pill (`on`) takes shift+click too.
-        Hit::TableCopy(_) if ctx.on => text(HEADER_PILL_TIP),
+        // A Headers-tab row's pill (`on`) takes alt+click too.
+        Hit::TableCopy(_) if ctx.on => header_pill_tip(),
         Hit::TableCopy(i) => of(Action::CopyToClipboard(CopyTarget::TableRow(*i))),
         Hit::TableDelete(_) => text("Delete this row"),
         // A dropdown row's own buttons, with the menu's key for each.
@@ -479,9 +482,9 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
             Some(Source::Keyed(format!("{verb} the {pane}"), toggle))
         }
         // The copy pills don't share the chips' wording: a pill's
-        // shift+click copies the whole header, a chip's click never does
+        // alt+click copies the whole header, a chip's click never does
         // (spec 2026-10-26 H5, H6). The pencil is worded once, with its chip.
-        Hit::AutoHeaderCopy(_) => text(HEADER_PILL_TIP),
+        Hit::AutoHeaderCopy(_) => header_pill_tip(),
         Hit::AutoHeaderOverride(i) => of(Action::OverrideAutoHeader(*i)),
         Hit::AutoHeaderReveal => {
             text(if ctx.on { "Hide the computed secrets" } else { "Show the computed secrets" })
@@ -511,7 +514,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         }
         Hit::ResponseSearchNext => text("Go to the next match"),
         Hit::ResponseSearchPrev => text("Go to the previous match"),
-        Hit::HeaderCopy(_) => text(HEADER_PILL_TIP),
+        Hit::HeaderCopy(_) => header_pill_tip(),
         // A toggle: pressed (the bar showing), a click closes it.
         Hit::ResponseJqButton if ctx.on => of(Action::ToggleJqBar),
         Hit::ResponseJqButton => of(Action::OpenJqBar),

@@ -74,13 +74,15 @@ fn is_quit_chip(hit: &Hit) -> bool {
     )
 }
 
-/// A copy pill's shift+click copies the whole header, `Name: value`, not
-/// its value (spec 2026-10-26 H6). Only where the terminal passes it on:
-/// most keep shift+click for their own text selection, and postui never
-/// asks for it (that would take shift+drag selection away), so there a
-/// shift+click selects text as it always has.
-fn shift_click(m: &ratatui::crossterm::event::MouseEvent) -> bool {
-    m.modifiers.contains(ratatui::crossterm::event::KeyModifiers::SHIFT)
+/// A copy pill's alt+click copies the whole header, `Name: value`, not
+/// its value (spec 2026-10-26 H6). Alt, because terminals keep shift+click
+/// for their own selection under mouse capture; a shift+click one passes
+/// on is a plain click. Some terminals and window managers keep alt+click
+/// too; there the whole header is the keyboard's `Y` (H6 settles alt
+/// alone over alt or shift). Any click with alt held counts: no other
+/// chord means anything on a pill.
+fn alt_click(m: &ratatui::crossterm::event::MouseEvent) -> bool {
+    m.modifiers.contains(ratatui::crossterm::event::KeyModifiers::ALT)
 }
 
 /// The hit a text field is drawn under: the one map between the two.
@@ -1824,7 +1826,7 @@ impl App {
                 let Some(i) = self.resolve_table_row_across_commit(i) else {
                     return self.update(Action::Render);
                 };
-                let target = if shift_click(&m) && self.editor.active_tab == EditorTab::Headers {
+                let target = if alt_click(&m) && self.editor.active_tab == EditorTab::Headers {
                     CopyTarget::TableHeaderLine(i)
                 } else {
                     CopyTarget::TableRow(i)
@@ -2296,12 +2298,12 @@ impl App {
                 self.session.response.set_jq_focus(true);
                 self.update(Action::Render)
             }
-            Hit::HeaderCopy(i) => self.update(Action::CopyToClipboard(if shift_click(&m) {
+            Hit::HeaderCopy(i) => self.update(Action::CopyToClipboard(if alt_click(&m) {
                 CopyTarget::ResponseHeaderLine(i)
             } else {
                 CopyTarget::ResponseHeader(i)
             })),
-            Hit::AutoHeaderCopy(i) => self.update(Action::CopyToClipboard(if shift_click(&m) {
+            Hit::AutoHeaderCopy(i) => self.update(Action::CopyToClipboard(if alt_click(&m) {
                 CopyTarget::ComputedHeaderLine(i)
             } else {
                 CopyTarget::ComputedHeader(i)

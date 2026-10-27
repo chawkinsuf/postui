@@ -1316,7 +1316,7 @@ impl App {
                 matches!(self.sidebar.rows.get(*i), Some(Row::Folder { expanded: true, .. }))
             }
             Hit::AutoHeaderReveal => self.editor.computed.revealed,
-            // A Headers-tab pill copies a header, shift+click the whole one.
+            // A Headers-tab pill copies a header, alt+click the whole one.
             Hit::TableCopy(_) => {
                 self.editor.active_tab == crate::components::editor::EditorTab::Headers
             }
