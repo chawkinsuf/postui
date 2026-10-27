@@ -4179,7 +4179,7 @@ fields = ["user_id", "customer_id"]
             vm.footer_chips(&ctx, None),
         );
         assert!(!chips.iter().any(|(k, _, _)| *k == "e"), "{chips:?}");
-        assert!(!chips.iter().any(|(k, _, _)| *k == "c"), "{chips:?}");
+        assert!(!chips.iter().any(|(k, _, _)| *k == "y"), "{chips:?}");
         assert!(chips.iter().any(|(k, _, _)| *k == "v"), "{chips:?}");
     }
 

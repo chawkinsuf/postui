@@ -701,7 +701,7 @@ expects (`earlier`, 2026-09-18 spec "Vim mode on navigation surfaces").
 |---|---|---|---|
 | Environments / Spaces list | `a` new, `r` rename, `dd` delete, `m` move all (Spaces). `{N}dd` refused: "Counted delete works on requests and table rows". `:tls` for TLS | `a` (was `n`), `r`, `d`, `m`, `t` | you; earlier; refuse mine |
 | Variables list | `a` new variable, `A` new selector, `r` rename, `dd` delete; `:secret`, `:fields`, `:promote` | `a` (was `n`), `A` (was `a`), `r` (was `e`/F2; F2 kept), `d`, `s`, `m` | you; earlier (38353d4) |
-| Options grid | `yy` / `p` copy / paste an option through the grid's own stash, which is scoped to its selector (`earlier`); `dd` delete; `a` new option; `:rename`, `:value` | `c` `v` `d`, `o` new option and `a` new option, `r`, `e` | earlier; `a` = new option mine, accepted 2026-09-27 (not new variable as in vim-mode: a row here is an option). *Amended 2026-10-26 (#145, pulled in by you):* the arrows copy is `y`, as on every other list; `v` still pastes |
+| Options grid | `yy` / `p` copy / paste an option through the grid's own stash, which is scoped to its selector (`earlier`); `dd` delete; `a` new option; `:rename`, `:value` | `y` `v` `d`, `o` new option and `a` new option, `r`, `e` | earlier; `a` = new option mine, accepted 2026-09-27 (not new variable as in vim-mode: a row here is an option). *Amended 2026-10-26 (#145, pulled in by you):* the arrows copy was `c`; it is `y`, as on every other list |
 | Variable form | fields only: `j` `k` between fields, Enter/`i` open; `:promote` `:reveal` `:secret` `:clear` `:delete` | `p` `r` `s` `x` | earlier |
 | Manage detail panes | fields and buttons: `j` `k`, Enter/`i`; `:delete` `:rename` reach the row | as today | earlier |
 
