@@ -656,8 +656,7 @@ impl Editor {
 
     /// Whether the table's cursor is live: the caret in a table tab's
     /// content, on a stop, with no cell open. The footer shows the stop's
-    /// chips only then (`PaneChipArgs`), and a footer chip's click keeps the
-    /// cursor then, as the chip's key does (`App::on_hit`, task #183).
+    /// chips only then (`PaneChipArgs`).
     pub fn table_cursor_live(&self) -> bool {
         self.sub_focus == SubFocus::Content
             && self.table.editing.is_none()

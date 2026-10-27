@@ -15732,6 +15732,173 @@ fn footer_chips_leave_the_table_cursor_as_their_actions_do(
     }
 }
 
+/// Task #192: the same with a table cell open (the cell, its typing, the
+/// cursor and the caret), with the Body's caret up, and with the URL line
+/// selected. Every chip drawn in the footer's strip, `done` and the
+/// address bar's `copy url` and `tls` included, leaves the editor exactly
+/// as running its action does, which is what its key does: the click is
+/// the action with no click-away before it.
+#[test]
+fn an_editor_footer_chip_click_leaves_an_open_cell_or_the_caret_as_its_action_does() {
+    use crate::config::KeyProfile::{Arrows, Vim};
+    for state in ["cell", "body", "url"] {
+        for profile in [Arrows, Vim] {
+            for sending in [false, true] {
+                footer_chips_leave_the_editor_as_their_actions_do(state, profile, sending);
+            }
+        }
+    }
+}
+
+fn footer_chips_leave_the_editor_as_their_actions_do(
+    state: &str,
+    profile: crate::config::KeyProfile,
+    sending: bool,
+) {
+    use crate::config::KeyProfile::{Arrows, Vim};
+    // An empty URL, so the send chip toasts rather than spawning a send.
+    // Drawn wide, so every chip fits.
+    let start = || {
+        let mut app = main_header_app(profile);
+        app.editor.url = LineInput::new("");
+        app.editor.sending = sending;
+        match state {
+            "cell" => {
+                click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+                assert!(app.editor.table.editing.is_some(), "the cell opened");
+                if profile == Arrows {
+                    type_chars(&mut app, "Z");
+                }
+            }
+            "body" => {
+                app.editor.active_tab = EditorTab::Body;
+                app.editor.table.set_selected(None);
+            }
+            _ => {
+                app.editor.table.set_selected(None);
+                app.editor.sub_focus = SubFocus::Url;
+            }
+        }
+        rendered_row(&mut app, 200, 0);
+        app
+    };
+    let seen = |app: &App| {
+        (
+            app.editor.table.editing.is_some(),
+            app.editor.headers.get_index(0).map(|(_, e)| e.value.clone()),
+            app.editor.table.selected(),
+            app.editor.sub_focus,
+            app.editor.url_open(),
+            app.editor.active_tab,
+            app.editor.insecure,
+            app.modals.is_empty(),
+            app.should_quit,
+        )
+    };
+    // Every chip in the footer's strip, read off the hit map, so a chip
+    // the footer gains is held to the rule too.
+    let probe = start();
+    let footer = probe.settled_layout().expect("drawn").footer;
+    let y = footer.y + footer.height / 2;
+    let mut chips: Vec<(Action, u16)> = Vec::new();
+    for x in footer.x..footer.x + footer.width {
+        if let Some(Hit::FooterChip(a)) = probe.hits.hit_at(x, y)
+            && !chips.iter().any(|(b, _)| b == a)
+        {
+            chips.push((a.clone(), x));
+        }
+    }
+    let ran = |a: &Action| chips.iter().any(|(b, _)| b == a);
+    assert!(ran(&Action::CycleTabs(1)) || profile == Vim, "{state} {chips:?}");
+    assert!(ran(&Action::OpenPalette) || ran(&Action::OpenExPalette), "{state} {chips:?}");
+    for (chip, x) in &chips {
+        let mut by_action = start();
+        by_action.update(chip.clone());
+        let mut app = start();
+        app.handle_mouse(left_down(*x, y));
+        assert_eq!(seen(&app), seen(&by_action), "{state} {profile:?} sending={sending} {chip:?}");
+    }
+}
+
+/// Task #192's report, against the keys themselves: in arrows, with a cell
+/// open and typed into, the Body's caret up or the URL line selected, each
+/// footer chip's click leaves the editor as its keycap's key does.
+#[test]
+fn an_editor_footer_chip_click_matches_its_key_with_a_cell_or_caret_up() {
+    let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+    let keys = |a: &Action| match a {
+        Action::CloseField => vec![esc],
+        Action::Send => vec![ctrl('r')],
+        Action::TableAddRow => vec![alt('a')],
+        Action::CycleTabs(1) => vec![KeyEvent::new(KeyCode::Right, KeyModifiers::ALT)],
+        Action::OpenPalette => vec![ctrl('p')],
+        Action::Quit => vec![ctrl('c'), ctrl('c')],
+        Action::CopyToClipboard(crate::action::CopyTarget::Url) => vec![alt('y')],
+        Action::ToggleInsecure => vec![alt('i')],
+        _ => Vec::new(),
+    };
+    for state in ["cell", "body", "url"] {
+        let start = || {
+            let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+            app.editor.url = LineInput::new("");
+            match state {
+                "cell" => {
+                    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+                    type_chars(&mut app, "Z");
+                }
+                "body" => {
+                    app.editor.active_tab = EditorTab::Body;
+                    app.editor.table.set_selected(None);
+                }
+                _ => {
+                    app.editor.table.set_selected(None);
+                    app.editor.sub_focus = SubFocus::Url;
+                }
+            }
+            rendered_row(&mut app, 200, 0);
+            app
+        };
+        let seen = |app: &App| {
+            (
+                app.editor.table.editing.is_some(),
+                app.editor.headers.get_index(0).map(|(_, e)| e.value.clone()),
+                app.editor.table.selected(),
+                app.editor.sub_focus,
+                app.editor.active_tab,
+                app.editor.insecure,
+                app.modals.is_empty(),
+            )
+        };
+        let probe = start();
+        let footer = probe.settled_layout().expect("drawn").footer;
+        let y = footer.y + footer.height / 2;
+        let mut checked = 0;
+        for x in footer.x..footer.x + footer.width {
+            let Some(Hit::FooterChip(chip)) = probe.hits.hit_at(x, y) else { continue };
+            if x > footer.x && probe.hits.hit_at(x - 1, y) == Some(&Hit::FooterChip(chip.clone())) {
+                continue; // the chip's first cell only
+            }
+            let evs = keys(chip);
+            // In the Body alt+arrows are word motion, and the tabs are a
+            // click away (spec 2026-09-01 spaces, "The editor tabs give up
+            // alt+1..alt+4"): the chip's own test is its action's, above.
+            if evs.is_empty() || state == "body" && *chip == Action::CycleTabs(1) {
+                continue;
+            }
+            let mut by_key = start();
+            for ev in evs {
+                by_key.handle_key(ev);
+            }
+            let mut app = start();
+            app.handle_mouse(left_down(x, y));
+            assert_eq!(seen(&app), seen(&by_key), "{state} {chip:?}");
+            checked += 1;
+        }
+        // send, commands and quit at least, in every state.
+        assert!(checked >= 3, "{state}: only {checked} chips checked");
+    }
+}
+
 /// Task #183: the rule is the footer's strip, not the action. The address
 /// bar's lock registers a `FooterChip` too, and it stays a click away.
 #[test]
@@ -15743,6 +15910,25 @@ fn the_address_bar_lock_is_still_a_click_away_from_the_table_cursor() {
     click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
     assert_ne!(app.editor.insecure, insecure, "the lock toggled");
     assert_eq!(app.editor.table.selected(), None);
+    assert_eq!(app.editor.sub_focus, SubFocus::None);
+}
+
+/// Task #192: with the URL line selected the footer has a `tls` chip of the
+/// same action, which keeps the line selected; the lock is still a click
+/// away for it.
+#[test]
+fn the_address_bar_lock_is_still_a_click_away_from_the_url_line() {
+    let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+    app.editor.table.set_selected(None);
+    app.editor.sub_focus = SubFocus::Url;
+    render_once(&mut app);
+    let footer = app.settled_layout().expect("drawn").footer;
+    let rects = app.hits.rects_of(&Hit::FooterChip(Action::ToggleInsecure));
+    assert!(rects.iter().any(|r| footer.contains(r.as_position())), "the footer's tls chip");
+    let lock = *rects.iter().find(|r| !footer.contains(r.as_position())).expect("the lock");
+    let insecure = app.editor.insecure;
+    app.handle_mouse(left_down(lock.x, lock.y));
+    assert_ne!(app.editor.insecure, insecure, "the lock toggled");
     assert_eq!(app.editor.sub_focus, SubFocus::None);
 }
 

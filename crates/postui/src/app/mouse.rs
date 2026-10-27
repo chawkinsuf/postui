@@ -1399,11 +1399,42 @@ impl App {
         // (The footer's quit chip, once its exception, is not drawn under a
         // dialog since task #85: no quit runs under one.)
         let in_dialog = !self.modals.is_empty();
+        // A footer chip is the key it advertises. While the editor's caret
+        // is up, on the table's cursor (any stop, `+ Add` included), in an
+        // open cell, in the Body or on the selected URL line, every chip on
+        // the main screen's footer is no click away at all: the cell, its
+        // typing, the cursor and the caret stay as its key leaves them
+        // (tasks #125, #183 and #192; spec 2026-10-26 header-copy, Footer).
+        // The chip's action runs after and does what the key does: send
+        // and quit commit the cell themselves, `done` closes it, the add
+        // chip moves the caret.
+        //
+        // The rule asks where the press landed, not which action: the app
+        // bar's save/discard, the address bar's lock and the Body toolbar
+        // register `FooterChip` too, and stay a click away. (Their own hit
+        // variant would say so without geometry, but every reader of
+        // `FooterChip` would have to learn it: the hints, the hover, the jq
+        // bar's rule, the mouse-parity sweep.) A dialog over the footer is
+        // the dialog rule's. The Manage screen draws its tab's chips in the
+        // same rows with the editor's caret behind it, so the rule is the
+        // main screen's only, and the Settings rule below, which inherits
+        // it, still runs there. The settled layout's footer is the hit's
+        // frame's: `term_area` is set only by a draw, and the footer's rows
+        // don't move with the panes' eases.
+        let editor_footer_chip = matches!(hit, Hit::FooterChip(_))
+            && self.screen == Screen::Main
+            && self.focus == PaneId::Editor
+            && (self.editor.sub_focus == SubFocus::Content
+                || self.editor.sub_focus == SubFocus::Url && !self.editor.url_open())
+            && self.settled_layout().is_some_and(|l| {
+                l.footer.contains(ratatui::layout::Position { x: m.column, y: m.row })
+            });
         // A click anywhere that isn't the params/headers table itself (and
         // isn't in a dialog) is a click away: it commits whatever cell was
         // being edited (typing is never silently thrown away) and clears
         // the table selection. These are the hits that do neither.
         let keeps_open_cell = in_dialog
+            || editor_footer_chip
             || matches!(
                 hit,
                 Hit::TableRow(_)
@@ -1442,38 +1473,8 @@ impl App {
         // still a click away for an open cell, which commits first, as on
         // main. A press on the rest of the section is the bare pane's, as
         // before.
-        //
-        // A footer chip is the key it advertises, so while the table's
-        // cursor is live (any stop, `+ Add` included, no cell open), every
-        // chip on the main screen's footer keeps the cursor and the table's
-        // caret, as its key does: the cursor's own (task #125) and the rest
-        // (task #183; spec 2026-10-26 header-copy, Footer). The chip's action
-        // runs after, and one that moves the caret moves it itself, as the
-        // add chip does. With no cell open the commit above has nothing to
-        // close.
-        //
-        // The rule asks where the press landed, not which action: the app
-        // bar's save/discard, the address bar's lock and the Body toolbar
-        // register `FooterChip` too, and stay a click away. (Their own hit
-        // variant would say so without geometry, but every reader of
-        // `FooterChip` would have to learn it: the hints, the hover, the jq
-        // bar's rule, the mouse-parity sweep.) A dialog over the footer is
-        // the dialog rule's. The Manage screen draws its tab's chips in the
-        // same rows with the editor's cursor behind it, so the rule is the
-        // main screen's only, and the Settings rule below, which inherits
-        // it, still runs there. The settled layout's footer is the hit's
-        // frame's: `term_area` is set only by a draw, and the footer's rows
-        // don't move with the panes' eases.
-        let table_cursor_chip = matches!(hit, Hit::FooterChip(_))
-            && self.screen == Screen::Main
-            && self.focus == PaneId::Editor
-            && self.editor.table_cursor_live()
-            && self.settled_layout().is_some_and(|l| {
-                l.footer.contains(ratatui::layout::Position { x: m.column, y: m.row })
-            });
-        let keeps_table_selection = keeps_open_cell
-            || table_cursor_chip
-            || matches!(hit, Hit::AutoHeaderCopy(_) | Hit::AutoHeaderReveal);
+        let keeps_table_selection =
+            keeps_open_cell || matches!(hit, Hit::AutoHeaderCopy(_) | Hit::AutoHeaderReveal);
         if !keeps_open_cell {
             self.commit_table_edit();
         }
