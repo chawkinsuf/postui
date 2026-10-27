@@ -4,6 +4,8 @@
 //! can't be written ends the run with a status rather than the panic
 //! `print!`/`eprint!` give. Once keydump's echo loop runs in raw mode, its
 //! write and terminal errors end the run as errors, as they always have.
+//! The app's panic hook prints a worker thread's panic with [`print_err`]
+//! too (#169).
 
 use std::io::Write;
 use std::process::ExitCode;

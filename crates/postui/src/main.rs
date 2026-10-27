@@ -145,9 +145,10 @@ fn enable_mouse_and_wrap_panic_hook() {
         // `JoinError` and reported through the UI; restoring the terminal
         // for it would leave the still-running main loop drawing into a
         // cooked-mode primary screen. Print the report and leave the
-        // terminal alone.
+        // terminal alone. Through `print_err`, which drops a failed write:
+        // `eprintln!` would panic inside this hook, and that aborts (#169).
         if std::thread::current().id() != main_thread {
-            eprintln!("{info}");
+            postui::cli_out::print_err(&format!("{info}\n"));
             return;
         }
         // `stdout().sync_update(...)` around `terminal.draw` (main.rs's
