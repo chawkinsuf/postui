@@ -36,13 +36,7 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
         // so stomping it every frame the band's edge merely grazes that
         // row reads as a flicker distinct from the band's own motion.
         if glyph_index > 0 {
-            for x in x0..x1.min(buf.area().right()) {
-                if let Some(cell) = buf.cell_mut((x, y0_int)) {
-                    cell.set_symbol(GLYPHS[glyph_index]);
-                    cell.set_fg(fill);
-                    cell.set_bg(on);
-                }
-            }
+            edge_row(buf, x0, x1, y0_int, GLYPHS[glyph_index], fill, on);
         }
     }
 
@@ -62,13 +56,7 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
         let glyph_index = glyph_index.min(8);
         // Same imperceptible-coverage skip as the top edge above.
         if glyph_index > 0 {
-            for x in x0..x1.min(buf.area().right()) {
-                if let Some(cell) = buf.cell_mut((x, y1_int)) {
-                    cell.set_symbol(GLYPHS[glyph_index]);
-                    cell.set_fg(on);
-                    cell.set_bg(fill);
-                }
-            }
+            edge_row(buf, x0, x1, y1_int, GLYPHS[glyph_index], on, fill);
         }
     } else if y1_frac > 0.0 && y1_int == y0_int {
         // Top and bottom fractions land in the same row: pick the glyph based
@@ -77,13 +65,24 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
         let glyph_index = (top_coverage * 8.0).round() as usize;
         let glyph_index = glyph_index.min(8);
         if glyph_index > 0 {
-            for x in x0..x1.min(buf.area().right()) {
-                if let Some(cell) = buf.cell_mut((x, y0_int)) {
-                    cell.set_symbol(GLYPHS[glyph_index]);
-                    cell.set_fg(fill);
-                    cell.set_bg(on);
-                }
-            }
+            edge_row(buf, x0, x1, y0_int, GLYPHS[glyph_index], fill, on);
+        }
+    }
+}
+
+/// Paints one fractional edge row: `glyph` in `fg` on `bg` across columns
+/// `x0..x1` of row `y`, clipped to the buffer. It replaces the whole cell,
+/// so it also clears the modifiers the cell had, as [`super::fill`] does
+/// for the band's full rows: a strike or underline left from the page
+/// would otherwise run through the band's edge (task #114: a settling
+/// modal's edge row over a struck header row).
+fn edge_row(buf: &mut Buffer, x0: u16, x1: u16, y: u16, glyph: &str, fg: Color, bg: Color) {
+    for x in x0..x1.min(buf.area().right()) {
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            cell.set_symbol(glyph);
+            cell.set_fg(fg);
+            cell.set_bg(bg);
+            cell.modifier = ratatui::style::Modifier::empty();
         }
     }
 }
@@ -160,6 +159,42 @@ mod tests {
         assert_eq!(c(1, 1).symbol(), "▂"); // top-fraction wins: 30% coverage
         assert_eq!(c(1, 1).fg, theme.accent);
         assert_eq!(c(1, 1).bg, theme.panel);
+    }
+
+    #[test]
+    fn edge_rows_clear_the_modifiers_of_the_cells_under_them() {
+        // Task #114: a settling modal's edge row painted over a struck
+        // header row kept the strike, because the edge writes replaced
+        // only the symbol and colours. Every edge case (top, bottom, and
+        // both edges in one row) must leave a plain cell, as the full
+        // rows' `paint::fill` does.
+        use ratatui::style::Modifier;
+        let theme = Theme::dark();
+        let marks = Modifier::CROSSED_OUT | Modifier::BOLD | Modifier::UNDERLINED;
+        let draw = |y0: f32, y1: f32| {
+            let mut term = Terminal::new(TestBackend::new(4, 6)).unwrap();
+            term.draw(|f| {
+                let buf = f.buffer_mut();
+                paint::fill(buf, Rect::new(0, 0, 4, 6), theme.page);
+                for y in 0..6 {
+                    for x in 0..4 {
+                        buf[(x, y)].modifier = marks;
+                    }
+                }
+                frac_vspan(buf, 0, 4, y0, y1, theme.panel, theme.page);
+            })
+            .unwrap();
+            term.backend().buffer().clone()
+        };
+        // Top edge in row 1, full rows 2..3, bottom edge in row 4.
+        let buf = draw(1.5, 4.5);
+        for y in 1..=4 {
+            assert_eq!(buf[(1, y)].modifier, Modifier::empty(), "row {y} keeps a modifier");
+        }
+        // Both edges in row 2.
+        let buf = draw(2.2, 2.9);
+        assert_eq!(buf[(1, 2)].symbol(), "▆");
+        assert_eq!(buf[(1, 2)].modifier, Modifier::empty());
     }
 
     #[test]
