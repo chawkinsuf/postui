@@ -18,6 +18,18 @@ use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 /// included, so a struck or underlined page row never shows through. An
 /// edge whose coverage rounds to nothing is left as it was.
 pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Color, on: Color) {
+    // Snap both ends to the nearest eighth of a row, the glyphs' step, once,
+    // before splitting the band into rows. Every edge's coverage is then a
+    // whole number of eighths and the painted height is the band's own:
+    // rounding each edge's coverage on its own rounds a half-eighth up at
+    // both ends, so a sliding band would grow by an eighth for that frame.
+    // Exact eighths also make the one-row nearer-edge test below exact.
+    let y0 = (y0 * 8.0).round() / 8.0;
+    let y1 = (y1 * 8.0).round() / 8.0;
+    if y1 <= y0 {
+        return;
+    }
+
     let y0_int = y0.floor() as u16;
     let y1_int = y1.floor() as u16;
 
@@ -53,6 +65,9 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
         edge_row(buf, x0, x1, y1_int, y1_frac, Part::Upper, fill, on);
     }
 }
+
+/// The lower-block glyphs by eighths covered, from the bottom of the cell.
+const GLYPHS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 
 /// Which part of a cell an edge row's fill covers.
 #[derive(Clone, Copy)]
@@ -101,7 +116,6 @@ fn edge_row(
     fill: Color,
     on: Color,
 ) {
-    const GLYPHS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
     let eighths = ((coverage * 8.0).round() as usize).min(8);
     if eighths == 0 {
         return;
@@ -153,7 +167,6 @@ mod tests {
         // decreases the number of accent-showing sub-rows in column 0.
         let theme = Theme::dark();
         let mut prev_glyph_order = 0usize;
-        const ORDER: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
         for step in 0..=8 {
             let y0 = 2.0 - step as f32 / 8.0;
             let mut term = Terminal::new(TestBackend::new(4, 4)).unwrap();
@@ -168,7 +181,7 @@ mod tests {
             let order = if sym == " " && cell.bg == theme.accent {
                 8 // Full row with filled background represents 100% coverage
             } else {
-                ORDER.iter().position(|g| **g == *sym).unwrap_or(8)
+                GLYPHS.iter().position(|g| **g == *sym).unwrap_or(8)
             };
             assert!(order >= prev_glyph_order, "coverage never shrinks: {sym} at step {step}");
             prev_glyph_order = order;
@@ -190,10 +203,9 @@ mod tests {
     /// How many eighths of row `y` (column 1) show the fill, and whether
     /// they sit at the cell's top (`true`) or bottom.
     fn fill_eighths(buf: &ratatui::buffer::Buffer, y: u16) -> (usize, bool) {
-        const ORDER: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
         let fill = Theme::dark().accent;
         let cell = &buf[(1, y)];
-        let k = ORDER.iter().position(|g| *g == cell.symbol()).unwrap();
+        let k = GLYPHS.iter().position(|g| *g == cell.symbol()).unwrap();
         if cell.fg == fill && cell.bg == fill {
             (8, true)
         } else if cell.fg == fill {
@@ -233,10 +245,13 @@ mod tests {
 
     #[test]
     fn a_sliding_one_row_band_keeps_its_height() {
-        // A one-row band moving in eighths shows the same total fill at
-        // every step: what leaves the top edge arrives at the bottom edge.
-        for step in 0..=8 {
-            let y0 = 2.0 + step as f32 / 8.0;
+        // A one-row band moving down shows the same total fill at every
+        // step: what leaves the top edge arrives at the bottom edge. The
+        // steps are sixteenths, so every other one puts both edges on a
+        // half-eighth, where rounding each edge on its own would round both
+        // up and paint nine eighths.
+        for step in 0..=16 {
+            let y0 = 2.0 + step as f32 / 16.0;
             let buf = band(y0, y0 + 1.0);
             let total: usize = (0..8).map(|y| fill_eighths(&buf, y).0).sum();
             assert_eq!(total, 8, "band at {y0} shows {total} eighths");
@@ -251,14 +266,14 @@ mod tests {
         assert_eq!(buf[(1, 2)].symbol(), "▆");
         assert_eq!((buf[(1, 2)].fg, buf[(1, 2)].bg), (theme.panel, theme.accent));
         assert_eq!(fill_eighths(&buf, 2), (2, true));
-        // Nearer the top: its height (0.2 → two eighths) from the top.
-        assert_eq!(fill_eighths(&band(2.1, 2.3), 2), (2, true));
+        // Nearer the top: its height (two eighths) from the top.
+        assert_eq!(fill_eighths(&band(2.125, 2.375), 2), (2, true));
         // Nearer the bottom: its height from the bottom.
-        let buf = band(1.7, 1.9);
+        let buf = band(1.625, 1.875);
         assert_eq!(buf[(1, 1)].symbol(), "▂");
         assert_eq!((buf[(1, 1)].fg, buf[(1, 1)].bg), (theme.accent, theme.panel));
-        // Too thin to show: the row is left as it was, not painted from the
-        // band's top to the row's bottom.
+        // Too thin to show (both ends snap to the same eighth): the row is
+        // left as it was, not painted from the band's top to the row's bottom.
         let buf = band(1.5, 1.55);
         assert_eq!(buf[(1, 1)].symbol(), " ");
         assert_eq!(buf[(1, 1)].bg, theme.panel);
@@ -305,9 +320,9 @@ mod tests {
         // Rows the band doesn't reach keep theirs.
         assert_eq!(buf[(1, 0)].modifier, marks);
         assert_eq!(buf[(1, 5)].modifier, marks);
-        // Both edges in row 2.
-        let buf = draw(2.2, 2.9);
-        assert_eq!(buf[(1, 2)].symbol(), "▆");
+        // Both edges in row 2: five eighths, against its nearer (bottom) edge.
+        let buf = draw(2.25, 2.875);
+        assert_eq!(buf[(1, 2)].symbol(), "▅");
         assert_eq!((buf[(1, 2)].fg, buf[(1, 2)].bg), (theme.panel, theme.page));
         for x in 0..4 {
             assert_eq!(buf[(x, 2)].modifier, Modifier::empty());
@@ -334,9 +349,10 @@ mod tests {
             paint::fill(f.buffer_mut(), Rect::new(0, 0, 4, 4), theme.page);
             // Pre-paint row 1 as a "zebra" stripe, distinct from `on`.
             paint::fill(f.buffer_mut(), Rect::new(0, 1, 4, 1), stripe);
-            // Top edge at y0=1.97: coverage = 0.03 → round(0.24) = 0, the
-            // empty glyph. y1=3.0 keeps the bottom edge integral (no
-            // second edge write to confuse the assertion).
+            // Top edge at y0=1.97: coverage 0.03 of row 1, which snaps to
+            // the row's bottom (y0 = 2.0), so row 1 gets nothing. y1=3.0
+            // keeps the bottom edge integral (no second edge write to
+            // confuse the assertion).
             frac_vspan(f.buffer_mut(), 0, 4, 1.97, 3.0, theme.accent, theme.page);
         })
         .unwrap();
