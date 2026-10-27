@@ -8,27 +8,37 @@ use std::process::{Command, Stdio};
 /// regressed into starting the app can't touch the real config. (It could
 /// still open `/dev/tty` from an interactive shell; in CI there is none.)
 fn postui<S: AsRef<OsStr>>(args: &[S]) -> std::process::Output {
-    postui_to(args, Stdio::piped())
+    postui_with(args, |_| {})
 }
 
-/// [`postui`] with its stdout sent to `stdout`.
-fn postui_to<S: AsRef<OsStr>>(args: &[S], stdout: Stdio) -> std::process::Output {
+/// [`postui`] with the command adjusted first (a stream sent elsewhere).
+fn postui_with<S: AsRef<OsStr>>(
+    args: &[S],
+    adjust: impl FnOnce(&mut Command),
+) -> std::process::Output {
     let home = tempfile::tempdir().unwrap();
-    Command::new(env!("CARGO_BIN_EXE_postui"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_postui"));
+    command
         .args(args)
         .current_dir(home.path())
         .env("HOME", home.path())
         .env("XDG_CONFIG_HOME", home.path().join("config"))
         .env("XDG_DATA_HOME", home.path().join("data"))
         .env("XDG_STATE_HOME", home.path().join("state"))
-        .stdin(Stdio::null())
-        .stdout(stdout)
-        .output()
-        .expect("the binary runs")
+        .stdin(Stdio::null());
+    adjust(&mut command);
+    command.output().expect("the binary runs")
 }
 
-/// The flags that only print, each run on its own.
-const PRINTERS: [&str; 3] = ["--help", "--version", "--setup"];
+/// `/dev/full`, opened for writing: every write to it fails.
+#[cfg(target_os = "linux")]
+fn dev_full() -> Stdio {
+    std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap().into()
+}
+
+/// The flags whose output goes through `cli_out::print_out`, each run on
+/// its own (`--keydump`'s banner comes before its terminal probe).
+const PRINTERS: [&str; 4] = ["--help", "--version", "--setup", "--keydump"];
 
 #[test]
 fn help_prints_usage_to_stdout_and_succeeds() {
@@ -100,7 +110,9 @@ fn printing_into_a_closed_pipe_succeeds_quietly() {
     for flag in PRINTERS {
         let (reader, writer) = std::io::pipe().unwrap();
         drop(reader);
-        let out = postui_to(&[flag], writer.into());
+        let out = postui_with(&[flag], |c| {
+            c.stdout(writer);
+        });
         assert_eq!(out.status.code(), Some(0), "{flag}");
         assert!(out.stderr.is_empty(), "{flag}: {}", String::from_utf8_lossy(&out.stderr));
     }
@@ -111,11 +123,24 @@ fn printing_into_a_closed_pipe_succeeds_quietly() {
 #[test]
 fn printing_to_a_full_device_fails_with_a_message() {
     for flag in PRINTERS {
-        let full = std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap();
-        let out = postui_to(&[flag], full.into());
+        let out = postui_with(&[flag], |c| {
+            c.stdout(dev_full());
+        });
         assert_eq!(out.status.code(), Some(1), "{flag}");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(stderr.starts_with("postui: can't write to stdout: "), "{flag}: {stderr}");
         assert_eq!(stderr.lines().count(), 1, "one line, no panic: {stderr}");
     }
+}
+
+/// #168: a mistake still exits 2 when stderr can't take the usage; there
+/// is nowhere left to say so.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_bad_argument_fails_with_status_2_even_when_stderr_is_full() {
+    let out = postui_with(&["-x"], |c| {
+        c.stderr(dev_full());
+    });
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty(), "the usage never moves to stdout");
 }

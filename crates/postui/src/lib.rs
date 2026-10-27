@@ -2,6 +2,7 @@ pub mod action;
 pub mod ai;
 pub mod anim;
 pub mod app;
+pub mod cli_out;
 pub mod clipboard;
 pub mod cmdline;
 pub mod components;

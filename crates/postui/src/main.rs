@@ -17,25 +17,28 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<ExitCode> {
+    use postui::cli_out::{print_err, print_out};
     let cli = postui::config::parse_cli(std::env::args_os().skip(1).collect());
     let (cli_root, debug_ai) = match cli {
-        postui::config::CliParse::Help => return Ok(print_out(postui::config::USAGE)),
+        postui::config::CliParse::Help => {
+            return Ok(print_out(postui::config::USAGE).unwrap_or(ExitCode::SUCCESS));
+        }
         // A mistake, not a request: scripts see a failure (#144).
         postui::config::CliParse::Usage { reason } => {
-            eprint!("postui: {reason}\n\n{}", postui::config::USAGE);
+            print_err(&format!("postui: {reason}\n\n{}", postui::config::USAGE));
             return Ok(ExitCode::from(2));
         }
         postui::config::CliParse::Version => {
-            return Ok(print_out(&format!("postui {}\n", env!("CARGO_PKG_VERSION"))));
+            let version = format!("postui {}\n", env!("CARGO_PKG_VERSION"));
+            return Ok(print_out(&version).unwrap_or(ExitCode::SUCCESS));
         }
-        postui::config::CliParse::Keydump { flags } => {
-            return postui::keydump::run(flags).map(|()| ExitCode::SUCCESS);
-        }
+        postui::config::CliParse::Keydump { flags } => return postui::keydump::run(flags),
         postui::config::CliParse::Setup => {
-            return Ok(print_out(&postui::setup::setup_text(
+            let setup = postui::setup::setup_text(
                 cfg!(target_os = "macos"),
                 postui::setup::detect_from_env(),
-            )));
+            );
+            return Ok(print_out(&setup).unwrap_or(ExitCode::SUCCESS));
         }
         postui::config::CliParse::Root { root, debug_ai } => (root, debug_ai),
     };
@@ -58,24 +61,6 @@ async fn main() -> anyhow::Result<ExitCode> {
     drain_pending_input();
     ratatui::restore();
     result.map(|()| ExitCode::SUCCESS)
-}
-
-/// Prints the text of a flag that only prints (`--help`, `--version`,
-/// `--setup`) and gives the exit status, where `print!` would panic on a
-/// write error (#162). A closed pipe (`postui --help | head`) means the
-/// reader stopped, so it ends quietly and succeeds; any other error is
-/// said on stderr and fails.
-fn print_out(text: &str) -> ExitCode {
-    use std::io::Write;
-    let mut out = std::io::stdout().lock();
-    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
-        Err(e) => {
-            let _ = writeln!(std::io::stderr(), "postui: can't write to stdout: {e}");
-            ExitCode::FAILURE
-        }
-    }
 }
 
 /// Swallows the mouse reports the terminal emits between the app's last
