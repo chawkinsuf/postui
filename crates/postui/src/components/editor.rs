@@ -4728,7 +4728,12 @@ mod tests {
         }
         e.handle_key(key(KeyCode::Delete));
         assert_eq!(e.body_text(), "hello \nnext");
-        e.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        let ctrl_y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL);
+        // The control: edtui's own keymap would paste the delete back.
+        let mut stock = e.body.clone();
+        EditorEventHandler::emacs_mode().on_key_event(ctrl_y, &mut stock);
+        assert_eq!(stock.lines.to_string(), "helloworld \nnext");
+        e.handle_key(ctrl_y);
         assert_eq!(e.body_text(), "hello \nnext");
     }
 

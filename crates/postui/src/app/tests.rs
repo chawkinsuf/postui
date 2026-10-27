@@ -4107,8 +4107,9 @@ fn clicking_the_horizontal_track_pages_sideways() {
     );
 }
 
-/// #127: through the app's key routing, ctrl+y in the arrows body puts
-/// back none of a deleted selection.
+/// #127: through the app's key routing, an unbound ctrl chord reaches the
+/// body's emacs keys (ctrl+k deletes to the line's end), and ctrl+y puts
+/// back none of what a delete took (the editor's own test pins why).
 #[test]
 fn ctrl_y_in_the_body_pastes_nothing_back() {
     let mut app = App::new_for_test();
@@ -4116,14 +4117,11 @@ fn ctrl_y_in_the_body_pastes_nothing_back() {
     app.editor.sub_focus = SubFocus::Content;
     app.focus = PaneId::Editor;
     app.editor.set_body_text("hello world");
-    app.editor.body.cursor = edtui::Index2::new(0, 6);
-    for _ in 0..5 {
-        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
-    }
-    app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
-    assert_eq!(app.editor.body_text(), "hello ");
+    app.editor.body.cursor = edtui::Index2::new(0, 5);
+    app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
+    assert_eq!(app.editor.body_text(), "hello");
     app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
-    assert_eq!(app.editor.body_text(), "hello ");
+    assert_eq!(app.editor.body_text(), "hello");
 }
 
 #[test]
