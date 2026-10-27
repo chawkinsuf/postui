@@ -15409,7 +15409,7 @@ fn auto_header_copy_pill_keeps_a_cell_of_padding_from_the_value() {
     let backend = ratatui::backend::TestBackend::new(100, 70);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
-    // Row 0 is the client's Accept row; the Host row is row 1.
+    // Row 0 is the auto Accept row; the Host row is row 1.
     let rect =
         app.hits.rect_of(&Hit::AutoHeaderCopy(1)).expect("the Host row's copy icon is registered");
     let buf = terminal.backend().buffer();
@@ -15436,7 +15436,7 @@ fn auto_header_copy_icon_puts_the_resolved_value_on_the_clipboard() {
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     // The scratch request has no default headers and no body, so the
-    // computed rows are the client's Accept (index 0) and the Host row
+    // computed rows are the auto Accept (index 0) and the Host row
     // from the URL (index 1).
     let rect =
         app.hits.rect_of(&Hit::AutoHeaderCopy(1)).expect("the Host row's copy icon is registered");
@@ -15484,8 +15484,8 @@ fn the_auto_header_pencil_adds_it_to_the_request_with_its_value_open() {
     assert_eq!(app.hits.rect_of(&Hit::AutoHeaderOverride(i)), None, "so it has no pencil");
 }
 
-/// A scratch Headers tab whose auto rows are the client's `Accept` (with
-/// the pencil) and `Host` (without), the editor's content focused on
+/// A scratch Headers tab whose auto rows are postui's `Accept` (with the
+/// pencil) and `Host` (without), the editor's content focused on
 /// `+ Add` (stop 0, the table being empty), drawn once.
 fn auto_rows_app(profile: crate::config::KeyProfile) -> App {
     let mut app = App::new_for_test();
@@ -15535,7 +15535,10 @@ fn the_keyboard_reaches_the_auto_rows_and_their_pills() {
 
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(app.editor.headers.get("Accept").map(|e| e.value.as_str()), Some("*/*"));
+    assert_eq!(
+        app.editor.headers.get("Accept").map(|e| e.value.as_str()),
+        Some("application/json")
+    );
     let edit = app.editor.table.editing.as_ref().expect("the new row's value is open");
     assert_eq!((edit.row, edit.col), (0, crate::components::table_editor::Col::Value));
 }
@@ -15628,13 +15631,16 @@ fn a_footer_row_chip_click_keeps_the_table_cursor() {
         app.editor.table.set_selected(Some(Stop::Section(0)));
         let chip = Action::CopyToClipboard(CopyTarget::ComputedHeader(0));
         click_hit(&mut app, Hit::FooterChip(chip));
-        assert_eq!(last_copied(&app).as_deref(), Some("*/*"), "{profile:?}");
+        assert_eq!(last_copied(&app).as_deref(), Some("application/json"), "{profile:?}");
         assert_eq!(app.editor.table.selected(), Some(Stop::Section(0)), "{profile:?}");
         assert_eq!(app.editor.sub_focus, SubFocus::Content, "{profile:?}");
         // Its edit chip takes the row over, as Enter does: the new row's
         // value opens under the cursor.
         click_hit(&mut app, Hit::FooterChip(Action::OverrideAutoHeader(0)));
-        assert_eq!(app.editor.headers.get("Accept").map(|e| e.value.as_str()), Some("*/*"));
+        assert_eq!(
+            app.editor.headers.get("Accept").map(|e| e.value.as_str()),
+            Some("application/json")
+        );
         assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "{profile:?}");
         assert!(app.editor.table.editing.is_some(), "{profile:?}: the value is open");
     }
@@ -16076,7 +16082,7 @@ fn arrows_capital_y_copies_the_whole_header() {
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(app.editor.auto_row_cursor(), Some(0));
     press(&mut app, 'Y');
-    assert_eq!(last_copied(&app).as_deref(), Some("Accept: */*"));
+    assert_eq!(last_copied(&app).as_deref(), Some("Accept: application/json"));
 }
 
 /// H2 and H8: there is no whole-header copy off the Headers tab or off a
@@ -16138,7 +16144,7 @@ fn vim_quote_plus_yy_copies_the_header_line() {
     press(&mut app, 'j');
     assert_eq!(app.editor.auto_row_cursor(), Some(0));
     type_chars(&mut app, "\"+Y");
-    assert_eq!(last_copied(&app).as_deref(), Some("Accept: */*"));
+    assert_eq!(last_copied(&app).as_deref(), Some("Accept: application/json"));
 }
 
 /// H5: one copy chip on a header row in each profile, spelled with both
@@ -16229,7 +16235,7 @@ fn a_copy_pills_alt_click_copies_the_whole_header() {
     type AppOf = fn(KeyProfile) -> App;
     let cases: [(AppOf, Hit, &str, &str); 3] = [
         (main_header_app, Hit::TableCopy(0), "a", "X-One: a"),
-        (main_header_app, Hit::AutoHeaderCopy(0), "*/*", "Accept: */*"),
+        (main_header_app, Hit::AutoHeaderCopy(0), "application/json", "Accept: application/json"),
         (
             response_headers_app,
             Hit::HeaderCopy(0),
@@ -16531,10 +16537,10 @@ fn undo_takes_the_auto_header_pencils_row_back_out() {
     app.capture_undo();
     type_chars(&mut app, ", text/plain");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert_eq!(app.editor.headers["Accept"].value, "*/*, text/plain");
+    assert_eq!(app.editor.headers["Accept"].value, "application/json, text/plain");
     app.capture_undo();
     app.update(Action::Undo);
-    assert_eq!(app.editor.headers["Accept"].value, "*/*", "the value edit goes first");
+    assert_eq!(app.editor.headers["Accept"].value, "application/json", "the value edit goes first");
     app.update(Action::Undo);
     assert!(app.editor.headers.is_empty(), "then the row: {:?}", app.editor.headers);
     assert!(app.editor.table.editing.is_none());
@@ -16556,7 +16562,7 @@ fn the_auto_header_pencil_opens_the_value_in_insert_in_vim() {
     type_chars(&mut app, ", x");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert_eq!(app.editor.headers["Accept"].value, "*/*, x");
+    assert_eq!(app.editor.headers["Accept"].value, "application/json, x");
 }
 
 /// The pencil's row lands on the ghost row's index, so from an open ghost
@@ -16579,7 +16585,7 @@ fn the_auto_header_pencil_from_an_open_ghost_cell_opens_in_insert_in_vim() {
     type_chars(&mut app, ", x");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert_eq!(app.editor.headers["Accept"].value, "*/*, x");
+    assert_eq!(app.editor.headers["Accept"].value, "application/json, x");
 }
 
 /// The pencil takes over the row it was drawn on, found by where the row

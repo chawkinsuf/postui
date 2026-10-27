@@ -242,7 +242,9 @@ async fn send_substitutes_vars_and_applies_default_headers() {
     Mock::given(method("POST"))
         .and(path("/users/7"))
         .and(header("authorization", "Bearer tok-qa"))
-        .and(header("accept", "application/json"))
+        // Not postui's own `application/json` (task #174), so a dropped
+        // default can't pass for an applied one.
+        .and(header("accept", "application/vnd.svc+json"))
         .and(wiremock::matchers::body_string(r#"{"id": "7"}"#))
         .respond_with(ResponseTemplate::new(200))
         .mount(&server)
@@ -252,7 +254,7 @@ async fn send_substitutes_vars_and_applies_default_headers() {
     postui_core::fixtures::init_project(dir.path(), Some("svc")).unwrap();
     std::fs::write(
         dir.path().join("project.toml"),
-        "name = \"svc\"\n[default_headers]\naccept = \"application/json\"\nauthorization = \"Bearer {{tok}}\"\n",
+        "name = \"svc\"\n[default_headers]\naccept = \"application/vnd.svc+json\"\nauthorization = \"Bearer {{tok}}\"\n",
     )
     .unwrap();
     std::fs::write(dir.path().join("variables.toml"), "[base]\n[tok]\n[uid]\ndefault = \"7\"\n")
@@ -286,13 +288,13 @@ async fn send_substitutes_vars_and_applies_default_headers() {
 async fn disabled_request_header_row_suppresses_a_default_header() {
     let server = MockServer::start().await;
     // The request disables its own `accept` row, and the project default
-    // for `accept` must not leak through. Strictly matching on reqwest's
-    // own implicit `accept: */*` (rather than the project default
-    // `application/json`) proves the default header was suppressed, not
+    // for `accept` must not leak through. Strictly matching on postui's
+    // own `accept: application/json` (task #174; rather than the project
+    // default `text/html`) proves the default header was suppressed, not
     // merely overridden — a leaked default would match no mock and 404.
     Mock::given(method("GET"))
         .and(path("/x"))
-        .and(header("accept", "*/*"))
+        .and(header("accept", "application/json"))
         .respond_with(ResponseTemplate::new(200))
         .mount(&server)
         .await;
@@ -301,7 +303,7 @@ async fn disabled_request_header_row_suppresses_a_default_header() {
     postui_core::fixtures::init_project(dir.path(), Some("svc")).unwrap();
     std::fs::write(
         dir.path().join("project.toml"),
-        "name = \"svc\"\n[default_headers]\naccept = \"application/json\"\n",
+        "name = \"svc\"\n[default_headers]\naccept = \"text/html\"\n",
     )
     .unwrap();
 
