@@ -148,6 +148,7 @@ The ID column names each row for the matrix tests (piece 4 spec §8.1, crates/po
 | `R.star` | `*` `#` search for the word under the cursor, counted | 2 | V | Vim's word rule |
 | `R.yy` | `yy`, `{N}yy` yank lines into the unnamed register (a closed fold: all its lines) | 2 | V | you (2026-10-10); the closed-fold rule follows Vim |
 | `R.visual` | `V` line selection: motions and searches (`/ ? n N * #`) extend, `o`, `y`, `zo` `zc` `za` `zR` `zM`, `:` opens the ex palette over it; `v` is a note | 2 | V | mine; searches extend, folds and `:`: Vim |
+| `R.percent` | `%` to the partner of the bracket under or after the cursor's column, `{N}%` to the line N percent down; a landing on another line opens the folds there; `V` extends | 2 | V | Vim (`nv_percent()`). Added 2026-10-26 (task #160): this list had left it out, so the response had no `%` |
 
 ## 8. Panes, tabs, command line
 

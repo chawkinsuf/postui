@@ -880,6 +880,20 @@ impl crate::text::Lines for ReadyView {
     }
 }
 
+/// The buffer lines search reads (a closed fold's hidden lines included),
+/// for `%`'s bracket match.
+struct CorpusLines<'a>(&'a [String]);
+
+impl crate::text::Lines for CorpusLines<'_> {
+    fn line_count(&self) -> usize {
+        self.0.len().max(1)
+    }
+
+    fn line(&self, row: usize) -> std::borrow::Cow<'_, [char]> {
+        std::borrow::Cow::Owned(self.0.get(row).map_or_else(Vec::new, |l| l.chars().collect()))
+    }
+}
+
 impl ReadyView {
     fn new(data: &crate::http::ResponseData, generation: u64) -> Self {
         // A big body is parsed off-thread; until that lands there is no
@@ -1725,7 +1739,45 @@ impl ReadyView {
                     Place::Bottom => w.scroll_cursor_bot(self, 0, true),
                 }
             }
+            ResponseMotion::MatchPair { count } => self.percent(count),
         }
+    }
+
+    /// Vim's `nv_percent()`: `{N}%` lands on the line N percent down, on its
+    /// first non-blank, and beeps for N over 100; `%` lands on the partner
+    /// of the bracket under or after Vim's cursor on its line, found in the
+    /// buffer lines search reads, so a closed fold's hidden lines count. A
+    /// beep changes nothing. A landing on another line opens the folds at
+    /// it (`'foldopen'` `percent`), before the column is set, as `$` does.
+    /// Like a search landing, it does not scroll the view sideways: the
+    /// response draws no caret for a sideways scroll to follow.
+    fn percent(&mut self, count: Option<usize>) {
+        use crate::text::brackets::{MatchFrom, find_match};
+        let Some(from) = self.real_line() else { return };
+        let to = match count {
+            Some(n) if n > 100 => return,
+            Some(n) => {
+                let lines = self.buffer_line_count();
+                ((n * lines).div_ceil(100).clamp(1, lines) - 1, None)
+            }
+            None => {
+                let at = crate::text::Pos::new(from, self.cur_col());
+                let corpus = self.search_corpus();
+                match find_match(&CorpusLines(&corpus), at, MatchFrom::Percent, true) {
+                    Some(to) => (to.row, Some(to.col)),
+                    None => return,
+                }
+            }
+        };
+        self.land_line(to.0);
+        if to.0 != from {
+            self.open_folds_at_cursor();
+        }
+        match to.1 {
+            Some(col) => self.set_col(col),
+            None => self.col_first_non_blank(),
+        }
+        self.follow_cursor();
     }
 
     /// The rest of `halfpage()`'s move down, once the window hit the end:
