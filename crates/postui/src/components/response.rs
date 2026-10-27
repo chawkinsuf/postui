@@ -892,18 +892,29 @@ fn aligned_header_lines<'a>(rows: impl Iterator<Item = (&'a str, &'a str)> + Clo
 /// reads one as `unix` and shows the `^M`. A CR-only body is one line, as
 /// Vim's default has no `mac`. A `\r` with no `\n` after it is text, in a
 /// CRLF body too (`ab\r\ncd\r` is `dos`, its lines `ab` and `cd\r`).
-#[derive(Debug, Default)]
+///
+/// A selection's copy and a vim yank take the lines alone, joined with
+/// `\n` as Vim's yank of a `dos` buffer is (probed: `ab\ncd\n`); only a
+/// rebuild of the whole body ([`RawBody::join`]) puts the `\r\n` back.
+#[derive(Debug)]
 pub struct RawBody {
     lines: Vec<String>,
     crlf: bool,
 }
 
 impl RawBody {
+    /// One pass: split on `\n`, then take the `\r` off every line a `\n`
+    /// ended when all of them have one.
     fn split(body: &str) -> Self {
-        let newlines = body.matches('\n').count();
-        let crlf = newlines > 0 && body.matches("\r\n").count() == newlines;
-        let ending = if crlf { "\r\n" } else { "\n" };
-        Self { lines: body.split(ending).map(str::to_string).collect(), crlf }
+        let mut lines: Vec<String> = body.split('\n').map(str::to_string).collect();
+        let ended = lines.len() - 1;
+        let crlf = ended > 0 && lines[..ended].iter().all(|l| l.ends_with('\r'));
+        if crlf {
+            for line in &mut lines[..ended] {
+                line.pop();
+            }
+        }
+        Self { lines, crlf }
     }
 
     /// The line break the body's lines were split on.
@@ -1217,15 +1228,9 @@ impl ReadyView {
     /// (same corpus, joined into one string). Raw's is the body byte for
     /// byte, its own line ending put back.
     pub fn view_text(&self) -> String {
-        self.search_corpus().join(self.line_break())
-    }
-
-    /// The break between the current view's lines when its text is copied
-    /// or saved: the body's own ending on Raw ([`RawBody`]), else `\n`.
-    fn line_break(&self) -> &'static str {
         match self.mode {
-            ViewMode::Raw => self.raw.ending(),
-            ViewMode::Pretty | ViewMode::Headers => "\n",
+            ViewMode::Raw => self.raw.join(),
+            ViewMode::Pretty | ViewMode::Headers => self.search_corpus().join("\n"),
         }
     }
 
@@ -1235,9 +1240,9 @@ impl ReadyView {
         self.raw.join()
     }
 
-    /// The body's lines, shared: for a background job that must not copy
-    /// the body on the UI thread ([`RawBody::join`] rebuilds it there).
-    pub fn body_lines(&self) -> Arc<RawBody> {
+    /// The body, shared: for a background job that must not copy it on
+    /// the UI thread ([`RawBody::join`] rebuilds it there).
+    pub fn raw_body(&self) -> Arc<RawBody> {
         Arc::clone(&self.raw)
     }
 
@@ -2412,16 +2417,16 @@ impl ReadyView {
         Some(whole_graphemes(grapheme_edges(text, reach).as_deref(), (from, to)))
     }
 
-    /// The selected text, each line's part as it paints, the lines joined
-    /// as the view's text joins them (`line_break`: a CRLF body's copy is
-    /// a slice of the body, its `\r\n`s kept). `None` without a selection.
+    /// The selected text, lines joined with `\n`, each line's part as it
+    /// paints. `None` without a selection. A CRLF body's lines hold no
+    /// `\r`, so its copy is `\n`-joined too, as a vim yank is ([`RawBody`]).
     fn selected_text(&self) -> Option<String> {
         let rows = self.sel_rows()?;
         let first = *rows.start();
         let mut out = String::new();
         for line in rows {
             if line > first {
-                out.push_str(self.line_break());
+                out.push('\n');
             }
             let text = self.display_line_text(line).unwrap_or_default();
             if let Some((from, to)) = self.sel_span(line, &text, 0) {
@@ -2733,6 +2738,12 @@ fn cell_span(text: &str, col: usize, from: ColMark) -> (usize, usize) {
         w += g.width;
     }
     (w, w + 1)
+}
+
+/// Whether `text` paints any cell: not when it is empty or holds only
+/// graphemes that paint nothing (a stray `\r`, a tab).
+fn paints(text: &str) -> bool {
+    grapheme_at_col(text, 0, (0, 0, 0)).is_some()
 }
 
 /// The first char of `text`'s last grapheme (0 when empty). The grapheme
@@ -4163,11 +4174,16 @@ impl Response {
             // it. Past the end of a row whose one painted glyph is its
             // first, the sweep takes that glyph, as it takes a longer row's
             // last (#55); a row that paints nothing (empty, or a stray
-            // `\r`) is the boundary. Scrolled sideways, the left edge
-            // is mid-line for every row and the sweep takes the cell under
-            // the pointer, a cut wide first glyph included.
+            // `\r`) is the boundary. Past the end is the opposite of the
+            // upward sweep's below on purpose: down, the head is the
+            // selection's end, so the row is taken through its end; up, it
+            // is the start, so the row's end is where it starts. Scrolled
+            // sideways, the left edge is mid-line for every row and the
+            // sweep takes the cell under the pointer, a cut wide first
+            // glyph included, and a row scrolled out past its end is taken
+            // to its last grapheme, as a longer row is.
             let text = view.display_line_text(head.0).unwrap_or_default();
-            if disp_col == 0 || grapheme_at_col(&text, 0, (0, 0, 0)).is_none() {
+            if disp_col == 0 || !paints(&text) {
                 let row = head.0 - 1;
                 // The row's last grapheme, as `cell_at` clamps a click past it.
                 let last = view.display_line_text(row).map_or(0, |t| last_grapheme(&t));
@@ -4181,8 +4197,7 @@ impl Response {
             // row to tell the two apart (a row that paints no cells has no
             // last char to spuriously grab — it stays in the sweep).
             let text = view.display_line_text(head.0).unwrap_or_default();
-            let paints = grapheme_at_col(&text, 0, (0, 0, 0)).is_some();
-            if paints && view.grapheme_at(head.0, &text, disp_col).is_none() {
+            if paints(&text) && view.grapheme_at(head.0, &text, disp_col).is_none() {
                 view.sel = Some((anchor, (head.0 + 1, 0)));
                 return true;
             }
@@ -6330,7 +6345,7 @@ mod tests {
     /// grapheme: a double click there takes the last word (A3), a drag
     /// past the end stops on the last char, and a downward drag onto a
     /// row's start ends on the line above's last char. A copy across lines
-    /// keeps the body's `\r\n`.
+    /// joins them with `\n`, as a vim yank does.
     #[test]
     fn past_the_end_of_a_crlf_line_is_the_grapheme_before_its_cr() {
         let mut r = ready("ab\r\nlonger line\r\nz");
@@ -6344,7 +6359,7 @@ mod tests {
         let (area, _) = render_buf(&mut r);
         assert!(r.begin_selection_at(area.x, area.y));
         assert!(r.drag_selection_to(area.x, area.y + 2));
-        assert_eq!(r.selected_text().as_deref(), Some("hello\r\nworld"));
+        assert_eq!(r.selected_text().as_deref(), Some("hello\nworld"), "`\\n`-joined");
         let mut r = ready("ab\r\n\r\nz");
         let (area, _) = render_buf(&mut r);
         assert!(!r.select_word_at(area.x + 5, area.y + 1), "an empty CRLF line");
@@ -6400,7 +6415,7 @@ mod tests {
         r.view.as_mut().unwrap().mode = ViewMode::Raw;
         assert_eq!(r.view().unwrap().view_text(), body);
         assert_eq!(r.view().unwrap().body_text(), body);
-        assert_eq!(r.view().unwrap().body_lines().join(), body);
+        assert_eq!(r.view().unwrap().raw_body().join(), body);
         let mut r = ready("abc\r\ndef\r\n");
         r.vim_cursor = true;
         r.motion(M::Col(ColMove::End(1)));
@@ -6419,7 +6434,7 @@ mod tests {
     /// the boundary above it.
     #[test]
     fn a_downward_drag_past_a_one_glyph_row_takes_it() {
-        for (body, want) in [("hello\nx\nz", "hello\nx"), ("hello\r\nx\r\nz", "hello\r\nx")] {
+        for (body, want) in [("hello\nx\nz", "hello\nx"), ("hello\r\nx\r\nz", "hello\nx")] {
             let mut r = ready(body);
             let (area, _) = render_buf(&mut r);
             r.begin_selection_at(area.x, area.y);

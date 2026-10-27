@@ -6203,7 +6203,7 @@ impl App {
                 let generation = view.generation;
                 // Shared, not copied: the join (when no parsed document is
                 // cached) happens on the blocking pool.
-                let lines = view.body_lines();
+                let body = view.raw_body();
                 let doc = view.jq_document();
                 let current = self.session.response.jq_text().to_string();
                 // A request still outstanding is superseded.
@@ -6233,9 +6233,7 @@ impl App {
                             Some(doc) => {
                                 Some(postui_core::jq::shape::shape_of(doc, Default::default()))
                             }
-                            None => {
-                                postui_core::jq::shape::shape(&lines.join(), Default::default())
-                            }
+                            None => postui_core::jq::shape::shape(&body.join(), Default::default()),
                         };
                         let Some(shape) = shape else {
                             if let Some(path) = log {
