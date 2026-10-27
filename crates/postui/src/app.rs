@@ -5159,7 +5159,8 @@ impl App {
                 // leaves the session (amendment A4-2).
                 //
                 // A close the field refuses (a Settings number that does not
-                // parse) leaves it open and sets `last_action_failed`, so
+                // parse, or a Settings write `config.toml` refuses) leaves it
+                // open and sets `last_action_failed`, so
                 // nothing after it in a row or on the `:` line runs on the
                 // stale text (the final review's ruling I-2).
                 // A dialog's field always closes.

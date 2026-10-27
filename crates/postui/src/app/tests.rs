@@ -30607,12 +30607,18 @@ fn a_refused_settings_field_write_keeps_the_edit_and_the_typing() {
         app.toasts.messages()
     );
 
-    // An integer field's refused write is the same. (Putting the stored
-    // text back, as undoing the typing does, is the way out of the first
-    // field: it closes unwritten.)
-    app.settings.set_field_text(&stored);
+    // An integer field's refused write is the same. (Undoing the typing is
+    // the way out of the first field: the stored text closes it unwritten.
+    // However many presses the field's undo groups the typing into.)
+    for _ in 0..20 {
+        if app.settings.field_text() == stored {
+            break;
+        }
+        app.handle_key(ctrl('z'));
+    }
+    assert_eq!(app.settings.field_text(), stored, "the typing came off");
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(app.settings.editing.is_none(), "the restored field closes");
+    assert!(app.settings.editing.is_none(), "the undone field closes");
     let limit = app.ui_settings.osc52_limit;
     app.settings.begin_edit(SettingsField::Osc52Limit, "1024");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
