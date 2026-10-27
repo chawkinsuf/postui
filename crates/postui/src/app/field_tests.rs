@@ -1708,7 +1708,26 @@ fn the_search_prompt_keeps_the_carets_line_in_view() {
     let last = row_text(&buf, area, area.bottom() - 1);
     assert!(last.trim_end().ends_with(&format!("row{caret}")), "{last:?}");
     assert!(row_text(&buf, full, full.bottom() - 1).starts_with('/'));
-    assert_eq!(app.view_ctx(FieldId::Body).viewport_rows, Some(usize::from(area.height)));
+}
+
+/// #129: the engine's window keeps the prompt's row, as Vim's command
+/// line is never taken from its window: Enter runs the search after the
+/// prompt closes, so a match on the pane's last row needs no scroll.
+#[test]
+fn the_engine_window_keeps_the_search_prompts_row() {
+    let mut app = vim(Fixture::Body);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    let full = app.editor.last_body_area.unwrap();
+    let h = usize::from(full.height);
+    feed(&mut app, "L/");
+    assert_eq!(app.view_ctx(FieldId::Body).viewport_rows, Some(h));
+    assert_eq!(app.editor.body.viewport_offset().1, 1, "the caret's line moved up");
+    // The line just past the shorter body, on the pane's last row.
+    feed(&mut app, &format!("row{h}<CR>"));
+    assert_eq!(app.editor.body.cursor.row, h);
+    assert_eq!(app.editor.body.viewport_offset().1, 1, "it shows without a scroll");
 }
 
 /// #129: the prompt row is not the body's, so a click on it doesn't move
@@ -1782,24 +1801,46 @@ fn the_search_prompt_scrolls_for_a_selection_on_its_row() {
     assert_eq!(app.editor.body.viewport_offset().1, 0, "the caret's top line stays");
 }
 
-/// #129: the prompt's row is the body's, so a body of exactly the pane's
-/// rows no longer fits while it is open: the drawn bar and the thumb
-/// drag's spec both measure the shorter body.
+/// #129: the body scrolls once, as the prompt opens: a span that runs on
+/// past the prompt's row doesn't scroll it again on every frame.
 #[test]
-fn the_search_prompt_bar_measures_the_shorter_body() {
+fn the_search_prompt_scrolls_once_for_a_span_past_its_row() {
+    let mut app = vim(Fixture::Body);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    feed(&mut app, "30Gv3G");
+    assert_eq!(app.editor.body.viewport_offset().1, 0);
+    assert_eq!(app.editor.body.cursor.row, 2);
+    feed(&mut app, "/");
+    assert_eq!(app.editor.body.viewport_offset().1, 1);
+    feed(&mut app, "xyz");
+    draw(&mut app);
+    assert_eq!(app.editor.body.viewport_offset().1, 1, "no scroll after the first");
+}
+
+/// #129: the bar's column is the pane's, so a body of exactly the pane's
+/// rows takes none as the prompt opens (no rewrap), and a bar that is
+/// drawn measures the shorter body, as the thumb drag's spec does.
+#[test]
+fn the_search_prompt_takes_no_scrollbar_column() {
     let mut app = vim(Fixture::Body);
     let h = usize::from(app.editor.last_body_area.expect("the body is drawn").height);
     app.editor.set_body_text(&vec!["x"; h].join("\n"));
     draw(&mut app);
-    let bar = |app: &App| !app.hits.rects_of(&Hit::ScrollbarThumb(PaneId::Editor)).is_empty();
-    assert!(!bar(&app), "it fits");
+    let full = app.editor.last_body_area.unwrap();
+    let thumb = |app: &App| app.hits.rect_of(&Hit::ScrollbarThumb(PaneId::Editor));
+    assert_eq!(thumb(&app), None, "it fits");
     feed(&mut app, "/");
-    assert!(bar(&app), "one line more than the shorter body shows");
+    assert_eq!(thumb(&app), None, "no bar for the prompt's row");
+    assert_eq!(app.editor.last_body_area.unwrap().width, full.width, "no column taken");
+    feed(&mut app, "<Esc>");
+    app.editor.set_body_text(&vec!["x"; h * 3].join("\n"));
+    feed(&mut app, "/");
     let area = app.editor.last_body_area.unwrap();
     let spec = app.editor.scrollbar_spec().unwrap();
-    assert_eq!(spec.viewport, usize::from(area.height));
-    feed(&mut app, "<Esc>");
-    assert!(!bar(&app), "it fits again");
+    let (_, height) = crate::hit::thumb_geometry(&spec, area.height);
+    assert_eq!(thumb(&app).map(|r| r.height), Some(height));
 }
 
 /// #129: in a one-row body the prompt takes the only row; the frame after

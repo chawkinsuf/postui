@@ -1358,43 +1358,42 @@ impl Editor {
         }
     }
 
-    /// The user's rule for the search prompt (#129): the prompt takes the
-    /// body's bottom row, and when the caret or the selection is on that
-    /// row, and the caret isn't on the body's top line, the body scrolls up
-    /// one line so it shows above the prompt. edtui scrolls by whole lines,
-    /// so scrolling the caret's line away would only bring it back: a
-    /// caret on the top line stays, whatever is under the prompt (a
-    /// one-row body, a top line that wraps past the bottom, a Visual span
-    /// from the top down). `area` is the body without the prompt's row,
-    /// which is the row just below it. Runs before edtui renders: edtui
-    /// would keep a caret on that row where it is, since it measures the
-    /// caret against the rows the frame before showed.
-    fn scroll_off_prompt_row(&mut self, area: Rect) {
-        let y = area.bottom();
-        let Some(view) = self.body_view(Rect { height: area.height + 1, ..area }, usize::MAX)
-        else {
-            return;
-        };
+    /// The body's rows as the vim engine's window counts them, from the
+    /// last frame: the search prompt's row counts, as Vim's command line
+    /// is never taken from its window. Enter, the one prompt key that moves
+    /// the caret, runs its motion after the prompt has closed, on the rows
+    /// the next frame draws (#129).
+    pub(crate) fn body_window_rows(&self) -> Option<usize> {
+        let prompt = usize::from(self.body_search.prompt.is_some());
+        self.last_body_area.map(|a| usize::from(a.height) + prompt)
+    }
+
+    /// The user's rule for the search prompt (#129), run once as it opens
+    /// (`App::vim_mirror_body_search`): the prompt takes the body's bottom
+    /// row, and when the caret or the selection is on that row, and the
+    /// caret isn't on the body's top line, the body scrolls up one line so
+    /// it shows above the prompt. edtui scrolls by whole lines, so
+    /// scrolling the caret's line away would only bring it back: a caret
+    /// on the top line stays, whatever is under the prompt (a one-row body,
+    /// a top line that wraps past the bottom, a Visual span from the top
+    /// down). Measured on the frame before, which had no prompt: its last
+    /// row is the one the prompt takes, and the prompt never changes the
+    /// width (the bar's column is the pane's, see the body draw). Once, as
+    /// the prompt opens: a span running past the row would otherwise
+    /// scroll the body on every frame.
+    pub(crate) fn scroll_off_prompt_row(&mut self) {
+        let Some(area) = self.last_body_area else { return };
+        let Some(view) = self.body_view(area, usize::MAX) else { return };
         if self.body.cursor.row == view.top {
             return;
         }
-        // The text line on row `y`, and which of its wrapped rows it is.
-        let Some(i) = view.rows.iter().rposition(|&(y0, _)| y0 <= y) else { return };
-        let (y0, segments) = &view.rows[i];
-        let k = usize::from(y - y0);
-        if k >= segments.len().max(1) {
-            return; // a row past the text
-        }
-        let line = view.top + i;
-        let first = (line, segments.get(k).map_or(0, |s| s.start));
-        // The last wrapped row also holds the caret past the line's end.
-        let last = match segments.get(k + 1) {
-            Some(next) => (line, next.start - 1),
-            None => (line, usize::MAX),
+        let Some((first, last)) = area.bottom().checked_sub(1).and_then(|y| view.text_on_row(y))
+        else {
+            return;
         };
         // The prompt is the vim profile's, whose selection is the Visual
         // span (a mouse selection becomes one).
-        let at = |p: edtui::Index2| (p.row, p.col);
+        let at = |p: edtui::Index2| crate::text::Pos::new(p.row, p.col);
         let on_row = (first..=last).contains(&at(self.body.cursor))
             || self.body_visual.is_some_and(|(s, e)| at(s) <= last && at(e) >= first);
         if on_row {
@@ -2496,6 +2495,26 @@ impl BodyView {
         let x: usize = line[segment.start..at.col].iter().map(|&c| body_char_width(c)).sum();
         let x = self.x + u16::try_from(x).ok()?;
         (y < self.bottom).then_some((x, y))
+    }
+
+    /// The first and last positions screen row `y` shows: one wrapped row
+    /// of one line. A line's last row also holds the caret past its end
+    /// (its last column is `usize::MAX`). `None` past the text.
+    fn text_on_row(&self, y: u16) -> Option<(crate::text::Pos, crate::text::Pos)> {
+        use crate::text::Pos;
+        if y >= self.bottom {
+            return None;
+        }
+        let i = self.rows.iter().rposition(|&(y0, _)| y0 <= y)?;
+        let (y0, segments) = &self.rows[i];
+        let k = usize::from(y - y0);
+        if k >= segments.len().max(1) {
+            return None;
+        }
+        let row = self.top + i;
+        let first = Pos::new(row, segments.get(k).map_or(0, |s| s.start));
+        let last = Pos::new(row, segments.get(k + 1).map_or(usize::MAX, |next| next.start - 1));
+        Some((first, last))
     }
 
     /// The screen cell just past `row`'s text, on its last wrapped row
@@ -3941,12 +3960,13 @@ impl Editor {
                     width: area.width.saturating_sub(2),
                     height: area.height.saturating_sub(2),
                 };
+                let pane_rows = area.height;
                 // The engine's search prompt takes the bottom row from the
                 // body, as Vim's command line is a row of its own (#129):
-                // the bar, edtui, the engine's view (`App::view_ctx`),
-                // clicks and the painters below all see a body one row
-                // shorter while it is open, so nothing the body shows sits
-                // under it.
+                // edtui, clicks, the bar's measure and the painters below
+                // all see a body one row shorter while it is open, so
+                // nothing the body shows sits under it. As it opens, a
+                // caret on that row scrolls up (`scroll_off_prompt_row`).
                 let prompt_row =
                     (self.body_search.prompt.is_some() && area.height > 0).then(|| {
                         area.height -= 1;
@@ -3954,22 +3974,23 @@ impl Editor {
                     });
                 // The bar takes the last column before edtui is told about
                 // the area, so its own screen_area (which mouse routing is
-                // resolved against) never overlaps the bar.
-                let mut spec = ScrollbarSpec {
+                // resolved against) never overlaps the bar. The column is
+                // the pane's: taken when the text overflows the pane's
+                // rows, the prompt's included, so opening the prompt never
+                // takes a column and rewraps the text. The bar measures the
+                // shorter body, as the thumb drag's `scrollbar_spec` does;
+                // what that gives up: a body of exactly the pane's rows has
+                // no bar while the prompt hides its last line.
+                let spec = ScrollbarSpec {
                     pane: PaneId::Editor,
                     offset: self.body.viewport_offset().1,
                     content: self.body.lines.len(),
                     viewport: usize::from(area.height),
                 };
-                let column = (spec.overflows() && area.width > 1).then(|| {
+                let column = (spec.content > usize::from(pane_rows) && area.width > 1).then(|| {
                     area.width -= 1;
                     Rect { x: area.x + area.width, width: 1, ..area }
                 });
-                // On the text as edtui will wrap it, beside the bar.
-                if prompt_row.is_some() {
-                    self.scroll_off_prompt_row(area);
-                    spec.offset = self.body.viewport_offset().1;
-                }
                 if let Some(column) = column {
                     crate::hit::draw_scrollbar(
                         frame,
@@ -5290,16 +5311,12 @@ mod tests {
         body_cell(e, needle).fg
     }
 
-    /// Draws `e` focused at 120×`rows` and returns the frame.
-    fn draw_body_at(e: &mut Editor, rows: u16) -> ratatui::buffer::Buffer {
-        draw_body_sized(e, true, rows)
-    }
-
     /// Draws `e` at 120×24, the pane focused or not, and returns the frame.
     fn draw_body(e: &mut Editor, focused: bool) -> ratatui::buffer::Buffer {
         draw_body_sized(e, focused, 24)
     }
 
+    /// Draws `e` at 120×`rows`, the pane focused or not.
     fn draw_body_sized(e: &mut Editor, focused: bool, rows: u16) -> ratatui::buffer::Buffer {
         let theme = Theme::dark();
         let ctx = DrawCtx {
@@ -5522,6 +5539,7 @@ mod tests {
             text: String::new(),
             cursor: 0,
         });
+        e.scroll_off_prompt_row(); // as the mirror does when it opens
         let buf = draw_body(&mut e, true);
         let area = e.last_body_area.unwrap();
         assert_eq!(area.height + 1, full.height, "the body is one row shorter");
@@ -5553,7 +5571,7 @@ mod tests {
             text: String::new(),
             cursor: 0,
         });
-        draw_body(&mut e, true);
+        e.scroll_off_prompt_row();
         assert_eq!(e.body.viewport_offset().1, 0, "the top line stays");
     }
 
@@ -5569,14 +5587,14 @@ mod tests {
         let lines: Vec<String> = (0..80).map(|i| format!("line{i}")).collect();
         e.set_body_text(&lines.join("\n"));
         e.body.mode = EditorMode::Normal;
-        draw_body_at(&mut e, rows);
+        draw_body_sized(&mut e, true, rows);
         assert_eq!(e.last_body_area.unwrap().height, 1);
         e.body_search.prompt = Some(crate::vim::engine::SearchLine {
             dir: crate::vim::engine::Dir::Forward,
             text: "line50".into(),
             cursor: 6,
         });
-        let buf = draw_body_at(&mut e, rows);
+        let buf = draw_body_sized(&mut e, true, rows);
         let area = e.last_body_area.unwrap();
         assert_eq!(area.height, 0, "the prompt has the row");
         let prompt: String = (area.x..area.right()).map(|x| buf[(x, area.y)].symbol()).collect();
@@ -5584,7 +5602,7 @@ mod tests {
         // `<CR>`: the prompt closes on the match.
         e.body_search.prompt = None;
         e.body.cursor = edtui::Index2::new(50, 0);
-        draw_body_at(&mut e, rows);
+        draw_body_sized(&mut e, true, rows);
         assert_eq!(e.body.viewport_offset().1, 50, "the caret's line shows");
     }
 

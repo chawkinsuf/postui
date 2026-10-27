@@ -559,9 +559,9 @@ impl App {
     }
 
     /// What the engine needs to know about the view (piece 3 §4.1): the
-    /// body's rows as last drawn.
+    /// body's rows as last drawn, the search prompt's included (#129).
     pub(crate) fn view_ctx(&self, id: FieldId) -> ViewCtx {
-        let rows = self.editor.last_body_area.map(|a| usize::from(a.height));
+        let rows = self.editor.body_window_rows();
         ViewCtx { viewport_rows: if id == FieldId::Body { rows } else { None } }
     }
 
@@ -817,13 +817,10 @@ impl App {
             return;
         }
         let top = self.editor.body.viewport_offset().1;
-        let rows = match self.editor.last_body_area {
-            // At least a row: a one-row body under the prompt drew none,
-            // and the frame after it closes shows one (#129).
-            Some(a) => {
-                let h = usize::from(a.height).max(1);
-                top.saturating_sub(h)..top.saturating_add(h.saturating_mul(2))
-            }
+        // The prompt's row counts: a one-row body under it drew none, and
+        // the frame after it closes shows one (#129).
+        let rows = match self.editor.body_window_rows() {
+            Some(h) => top.saturating_sub(h)..top.saturating_add(h.saturating_mul(2)),
             None => 0..usize::MAX,
         };
         let found = self.vim.glue.body_search(
@@ -832,7 +829,13 @@ impl App {
             rows,
             &mut self.vim.search_memory,
         );
+        // The frame the prompt opens in is the one that takes the body's
+        // row from it.
+        let opens = self.editor.body_search.prompt.is_none() && found.prompt.is_some();
         self.editor.body_search = found;
+        if opens {
+            self.editor.scroll_off_prompt_row();
+        }
     }
 
     /// `{{` typed into the URL line or a cell opens the variable picker, as
