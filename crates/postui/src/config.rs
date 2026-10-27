@@ -1177,42 +1177,26 @@ pub fn parse_cli(args: Vec<String>) -> CliParse {
     let is_help = |a: &String| a == "--help" || a == "-h";
     let help = args.iter().any(is_help);
     let parsed = parse_cli_line(args.into_iter().filter(|a| !is_help(a)).collect());
-    match parsed {
-        CliParse::Usage { .. } => parsed,
-        _ if help => CliParse::Help,
-        _ => parsed,
-    }
+    if help && !matches!(parsed, CliParse::Usage { .. }) { CliParse::Help } else { parsed }
 }
 
 /// [`parse_cli`] for a line with its help flags taken out.
 fn parse_cli_line(args: Vec<String>) -> CliParse {
     let usage = |reason: String| CliParse::Usage { reason };
-    if let [only] = args.as_slice() {
-        if only == "--setup" {
-            return CliParse::Setup;
-        }
-        if only == "--version" || only == "-V" {
-            return CliParse::Version;
-        }
-        if only == "--keydump" {
-            return CliParse::Keydump { flags: None };
-        }
-        if let Some(bits) = only.strip_prefix("--keydump=") {
-            return match bits.parse::<u8>() {
-                Ok(bits) => CliParse::Keydump { flags: Some(bits) },
-                Err(_) => {
-                    usage(format!("--keydump=BITS takes a number from 0 to 255, not '{bits}'"))
-                }
-            };
-        }
+    if let [only] = args.as_slice()
+        && let Some(parsed) = run_alone_flag(only)
+    {
+        return parsed;
     }
     let mut root = None;
     let mut debug_ai = false;
     for arg in args {
-        let run_alone = ["--setup", "--version", "-V", "--keydump"].contains(&arg.as_str())
-            || arg.starts_with("--keydump=");
-        if run_alone {
-            return usage(format!("{arg} takes no other arguments"));
+        if let Some(parsed) = run_alone_flag(&arg) {
+            // A malformed one says so first: that is the mistake to fix.
+            return match parsed {
+                CliParse::Usage { .. } => parsed,
+                _ => usage(format!("{arg} takes no other arguments")),
+            };
         } else if arg == "--debug-ai" {
             if debug_ai {
                 return usage("--debug-ai is given twice".into());
@@ -1227,6 +1211,26 @@ fn parse_cli_line(args: Vec<String>) -> CliParse {
         }
     }
     CliParse::Root { root, debug_ai }
+}
+
+/// What a flag that runs alone (`--setup`, `--version`, `--keydump`)
+/// parses as, a malformed `--keydump=BITS` included; `None` for any
+/// other argument.
+fn run_alone_flag(arg: &str) -> Option<CliParse> {
+    Some(match arg {
+        "--setup" => CliParse::Setup,
+        "--version" | "-V" => CliParse::Version,
+        "--keydump" => CliParse::Keydump { flags: None },
+        _ => {
+            let bits = arg.strip_prefix("--keydump=")?;
+            match bits.parse::<u8>() {
+                Ok(bits) => CliParse::Keydump { flags: Some(bits) },
+                Err(_) => CliParse::Usage {
+                    reason: format!("--keydump=BITS takes a number from 0 to 255, not '{bits}'"),
+                },
+            }
+        }
+    })
 }
 
 #[cfg(test)]
@@ -2075,6 +2079,8 @@ osc52_limit = 1024
         assert_eq!(mistake(&["--keydump=300"]), bits("300"));
         assert_eq!(mistake(&["--keydump-x"]), "unknown option '--keydump-x'");
         assert_eq!(mistake(&["--keydump", "/abs/x"]), "--keydump takes no other arguments");
+        // A malformed one beside another argument names the value first.
+        assert_eq!(mistake(&["--keydump=abc", "/abs/x"]), bits("abc"));
     }
 
     #[test]

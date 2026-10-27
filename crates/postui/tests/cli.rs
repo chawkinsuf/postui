@@ -10,6 +10,7 @@ fn postui(args: &[&str]) -> std::process::Output {
     let home = tempfile::tempdir().unwrap();
     Command::new(env!("CARGO_BIN_EXE_postui"))
         .args(args)
+        .current_dir(home.path())
         .env("HOME", home.path())
         .env("XDG_CONFIG_HOME", home.path().join("config"))
         .env("XDG_DATA_HOME", home.path().join("data"))
