@@ -793,7 +793,10 @@ pub static TABLE: &[Binding] = &[
     // nothing (#191). Swallowing it would keep it from the global esc →
     // `Close` → cancel fall-through. Like the footer chip and the
     // response pane's in-flight Esc it is the literal Esc, not the
-    // keymap's `close`.
+    // keymap's `close`. The cancel lives on this row rather than in a
+    // check ahead of the router because only here is the Esc known to be
+    // idle: one that ends a pending count or operator is the router's
+    // (`Router::step`, step 1) and never reaches a row.
     row("<Esc>", Surfaces::METHOD.or(Surfaces::URL_LINE).or(Surfaces::TABLE), Intent::Act(cancel_send), CountRule::Ignore),
     // Key list §7 and spec §4.5 (plan M4a Deviation 11): `/` is the same in
     // both profiles. Vim's `n` `N` are counted and follow `?`/`#`'s
