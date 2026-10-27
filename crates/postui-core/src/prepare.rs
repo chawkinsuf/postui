@@ -18,7 +18,7 @@ pub struct PreparedRequest {
     pub headers: Vec<SentHeader>,
     /// Every header the send puts on the wire, in wire order and wire case
     /// (lowercase): `headers` plus what the HTTP client adds on its own (the
-    /// URL's `Authorization`, `Accept`, `Host`, `Content-Length`), ordered
+    /// URL's `Authorization`, `Host`, `Content-Length`), ordered
     /// by [`wire_order`]. For the screens that show the whole send (the
     /// response pane's `sent` section); never what a request is built from.
     /// `Host` and `Content-Length` are what an HTTP/1.1 send carries; an h2
@@ -352,10 +352,12 @@ pub enum HeaderOrigin {
     Request { row: usize },
     /// A project `[default_headers]` row.
     Default,
-    /// The `Content-Type: application/json` added for a body.
-    ContentType,
-    /// Added by the HTTP client itself (the URL's `Authorization`,
-    /// `Accept`, `Host`, `Content-Length`): listed so the screens show the whole send, but
+    /// A row postui adds on its own and puts on the request: the
+    /// `Content-Type: application/json` for a body, and the
+    /// `Accept: application/json` every send carries (task #174).
+    Auto,
+    /// Added by the HTTP client itself (the URL's `Authorization`, `Host`,
+    /// `Content-Length`): listed so the screens show the whole send, but
     /// never put on the request by us.
     Client,
 }
@@ -439,7 +441,7 @@ fn client_owned(name: &str) -> Option<&'static str> {
 
 /// Every header of `req`'s send, in wire order — the client's
 /// `Authorization` from the URL's userinfo, enabled defaults, enabled
-/// request rows, the auto `Content-Type`, then the client's `Accept`,
+/// request rows, the auto `Content-Type` and `Accept`, then the client's
 /// `Host` and `Content-Length` — whether sent or not. The order is the
 /// order rows go into the client's header map, which [`wire_order`] reads
 /// to place the client's rows (one put in before ours keeps its place
@@ -572,13 +574,18 @@ fn rows(
             .any(|r| r.sent() && r.header.name.eq_ignore_ascii_case(name))
             .then_some(Unsent::Replaced)
     };
+    // postui's own rows, put on the request like a typed one: a body's
+    // `Content-Type`, then an `Accept` for JSON on every send (task #174).
+    // Left to the client, `Accept` would be reqwest's `*/*`, and Copy as
+    // curl would leave it to curl's, so it is ours to send.
+    let auto = |name: &str, value: &str, rows: &[HeaderRow]| HeaderRow {
+        origin: HeaderOrigin::Auto,
+        ..fixed(name, value.into(), replaced(rows, name))
+    };
     if body_len.is_some() {
-        let unsent = replaced(&rows, "content-type");
-        rows.push(HeaderRow {
-            origin: HeaderOrigin::ContentType,
-            ..fixed("Content-Type", "application/json".into(), unsent)
-        });
+        rows.push(auto("Content-Type", "application/json", &rows));
     }
+    rows.push(auto("Accept", "application/json", &rows));
 
     // The client's own rows. `Host` and the URL's `Authorization` are read
     // off the substituted template rather than `prepare`'s assembled URL so
@@ -619,9 +626,6 @@ fn rows(
             client_row("Authorization", auth, display, replaced(&rows, "authorization")),
         );
     }
-    // `Accept: */*` is its default unless a sent row names `accept`.
-    let unsent = replaced(&rows, "accept");
-    rows.push(fixed("Accept", "*/*".into(), unsent));
     // `Host` is the URL's authority as the client derives it, real and
     // masked. A URL whose host is still a `{{token}}` has none yet.
     if let Some(host) = real.host.clone() {
@@ -767,6 +771,12 @@ mod tests {
         p.headers.iter().map(|h| (h.name.clone(), h.value.clone())).collect()
     }
 
+    /// The auto `Accept` every send carries after the rows written for it,
+    /// unless one of them names `accept` (task #174).
+    fn json_accept() -> (String, String) {
+        ("Accept".into(), "application/json".into())
+    }
+
     fn ctx(vars: &[(&str, &str)], defaults: &[(&str, &str, bool)]) -> PrepareContext {
         PrepareContext {
             vars: vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
@@ -887,7 +897,7 @@ mod tests {
         let (p, _) = prepare(&r, &c).unwrap();
         assert_eq!(
             wire(&p),
-            vec![("x-api".to_string(), "literal".to_string())],
+            vec![("x-api".to_string(), "literal".to_string()), json_accept()],
             "substituted default name X-Api matches request header x-api case-insensitively"
         );
     }
@@ -904,7 +914,7 @@ mod tests {
         let (p, _) = prepare(&r, &c).unwrap();
         assert_eq!(
             wire(&p),
-            vec![("Authorization".to_string(), "Bearer req".to_string())],
+            vec![("Authorization".to_string(), "Bearer req".to_string()), json_accept()],
             "the substituted request name suppresses the default"
         );
     }
@@ -915,7 +925,7 @@ mod tests {
         r.headers.insert("{{nope}}".into(), off("ignored"));
         let c = ctx(&[], &[("X-Default", "d", true)]);
         let (p, _) = prepare(&r, &c).expect("a disabled row's template is never unresolved");
-        assert_eq!(wire(&p), vec![("X-Default".to_string(), "d".to_string())]);
+        assert_eq!(wire(&p), vec![("X-Default".to_string(), "d".to_string()), json_accept()]);
     }
 
     #[test]
@@ -935,8 +945,9 @@ mod tests {
         r.headers.insert("x-api".into(), off("ignored"));
         let c = ctx(&[("t", "Api")], &[("X-{{t}}", "default-value", true)]);
         let (p, _) = prepare(&r, &c).unwrap();
-        assert!(
-            wire(&p).is_empty(),
+        assert_eq!(
+            wire(&p),
+            vec![json_accept()],
             "disabled request row still suppresses the substituted default entirely"
         );
     }
@@ -955,7 +966,7 @@ mod tests {
         let (p, warns) = prepare(&base("http://x.test"), &c).unwrap();
         assert_eq!(
             wire(&p),
-            vec![("X-One".to_string(), "first".to_string())],
+            vec![("X-One".to_string(), "first".to_string()), json_accept()],
             "first duplicate wins"
         );
         assert_eq!(
@@ -1139,7 +1150,11 @@ mod tests {
         let (p, _) = prepare(&r, &PrepareContext::default()).unwrap();
         assert_eq!(
             wire(&p),
-            vec![("A".into(), "1".into()), ("Content-Type".into(), "application/json".into())]
+            vec![
+                ("A".into(), "1".into()),
+                ("Content-Type".into(), "application/json".into()),
+                json_accept()
+            ]
         );
         assert_eq!(p.body.as_deref(), Some("{}"));
     }
@@ -1150,7 +1165,10 @@ mod tests {
         r.headers.insert("content-TYPE".into(), on("application/vnd.x+json"));
         r.body = Some(Body::Json { text: "{}".into() });
         let (p, _) = prepare(&r, &PrepareContext::default()).unwrap();
-        assert_eq!(wire(&p), vec![("content-TYPE".into(), "application/vnd.x+json".into())]);
+        assert_eq!(
+            wire(&p),
+            vec![("content-TYPE".into(), "application/vnd.x+json".into()), json_accept()]
+        );
     }
 
     /// `display_url` masks secret values everywhere they land in the final
@@ -1188,6 +1206,7 @@ mod tests {
                 ("Authorization".to_string(), "Bearer s3cret".to_string()),
                 ("X-Tenant".to_string(), "acme".to_string()),
                 ("Content-Type".to_string(), "application/json".to_string()),
+                json_accept(),
             ]
         );
         assert_eq!(
@@ -1197,6 +1216,7 @@ mod tests {
                 ("Authorization".to_string(), format!("Bearer {SECRET_MASK}")),
                 ("X-Tenant".to_string(), "acme".to_string()),
                 ("Content-Type".to_string(), "application/json".to_string()),
+                json_accept(),
             ]
         );
     }
@@ -1265,23 +1285,27 @@ mod tests {
     fn header_rows_add_auto_content_type_only_with_a_body_and_unsend_it_when_named() {
         let mut req = base("https://x.test");
         req.method = Method::Post;
-        assert!(
-            !header_rows(&req, &PrepareContext::default())
-                .iter()
-                .any(|r| r.origin == HeaderOrigin::ContentType),
+        let auto_content_type = |rows: &[HeaderRow]| {
+            rows.iter()
+                .find(|r| r.origin == HeaderOrigin::Auto && r.header.name == "Content-Type")
+                .cloned()
+        };
+        assert_eq!(
+            auto_content_type(&header_rows(&req, &PrepareContext::default())),
+            None,
             "no body: no auto content-type"
         );
 
         req.body = Some(Body::Json { text: "{}".into() });
         let rows = header_rows(&req, &PrepareContext::default());
         let auto = row(&rows, "content-type");
-        assert_eq!(auto.origin, HeaderOrigin::ContentType);
+        assert_eq!(auto.origin, HeaderOrigin::Auto);
         assert_eq!(auto.header.value, "application/json");
         assert!(auto.sent());
 
         req.headers.insert("content-TYPE".into(), on("application/vnd.x+json"));
         let rows = header_rows(&req, &PrepareContext::default());
-        let auto = rows.iter().find(|r| r.origin == HeaderOrigin::ContentType).unwrap();
+        let auto = auto_content_type(&rows).unwrap();
         assert!(!auto.sent(), "an explicit content-type wins case-insensitively");
     }
 
@@ -1352,7 +1376,10 @@ mod tests {
         assert_eq!(client(&rows, "Content-Length").header.value, "2");
 
         let (p, _) = prepare(&req, &c).unwrap();
-        assert_eq!(wire(&p), vec![("Content-Type".into(), "application/json".into())]);
+        assert_eq!(
+            wire(&p),
+            vec![("Content-Type".into(), "application/json".into()), json_accept()]
+        );
     }
 
     /// With no body there is no client `Content-Length`, and a typed one is
@@ -1413,36 +1440,54 @@ mod tests {
         assert_eq!(causes.into_keys().collect::<Vec<_>>(), ["gone"]);
     }
 
-    /// The client sends `Accept: */*` on its own unless a header names
-    /// `accept` — so the auto section says so, in wire order: after the
+    /// The auto `Accept: application/json` row, for any method.
+    fn auto_accept(rows: &[HeaderRow]) -> &HeaderRow {
+        rows.iter()
+            .find(|r| r.origin == HeaderOrigin::Auto && r.header.name == "Accept")
+            .unwrap_or_else(|| panic!("no auto Accept row in {rows:#?}"))
+    }
+
+    /// postui asks for JSON on every send, a GET included (task #174),
+    /// unless a header names `accept` — and puts the row on the request
+    /// itself, so the send and Copy as curl carry it. Wire order: after the
     /// prepared rows, before `Host`.
     #[test]
-    fn header_rows_client_rows_carry_accept_unless_a_sent_header_names_it() {
+    fn header_rows_carry_an_auto_json_accept_unless_a_sent_header_names_it() {
         let req = base("https://api.example.com/v1");
         let rows = header_rows(&req, &PrepareContext::default());
-        let accept = client(&rows, "Accept");
-        assert_eq!(accept.header.value, "*/*");
+        let accept = auto_accept(&rows);
+        assert_eq!(accept.header.value, "application/json");
         assert!(accept.sent());
         let names: Vec<&str> = rows.iter().map(|r| r.header.name.as_str()).collect();
         assert_eq!(names, ["Accept", "Host"], "wire order");
+        let (p, _) = prepare(&req, &PrepareContext::default()).unwrap();
+        assert_eq!(wire(&p), vec![json_accept()], "a GET sends it");
+
+        let mut post = base("https://api.example.com/v1");
+        post.method = Method::Post;
+        post.body = Some(Body::Json { text: "{}".into() });
+        let names: Vec<String> = header_rows(&post, &PrepareContext::default())
+            .iter()
+            .map(|r| r.header.name.clone())
+            .collect();
+        assert_eq!(names, ["Content-Type", "Accept", "Host", "Content-Length"], "wire order");
 
         let mut req = base("https://api.example.com/v1");
         req.headers.insert("accept".into(), on("text/plain"));
         let rows = header_rows(&req, &PrepareContext::default());
-        assert!(
-            !client(&rows, "Accept").sent(),
-            "a request row named accept replaces the client's"
-        );
+        assert!(!auto_accept(&rows).sent(), "a request row named accept replaces the auto one");
+        let (p, _) = prepare(&req, &PrepareContext::default()).unwrap();
+        assert_eq!(wire(&p), vec![("accept".into(), "text/plain".into())], "and alone goes out");
 
         // A sent default names it too — and so does the request row that
         // keeps that default from being sent.
         let req = base("https://api.example.com/v1");
         let with_default = ctx(&[], &[("Accept", "text/plain", true)]);
-        assert!(!client(&header_rows(&req, &with_default), "Accept").sent());
+        assert!(!auto_accept(&header_rows(&req, &with_default)).sent());
         let mut req = base("https://api.example.com/v1");
         req.headers.insert("Accept".into(), on("x"));
         assert!(
-            !client(&header_rows(&req, &with_default), "Accept").sent(),
+            !auto_accept(&header_rows(&req, &with_default)).sent(),
             "the request row still names it even though the default is not sent"
         );
     }
@@ -1670,7 +1715,10 @@ mod tests {
         req.headers.insert("X-B".into(), on("2"));
         req.headers.insert("x-a".into(), on("3"));
         let (p, _) = prepare(&req, &PrepareContext::default()).unwrap();
-        assert_eq!(names(&p), ["x-a=1", "x-a=3", "x-b=2", "accept=*/*", "host=x.test"]);
+        assert_eq!(
+            names(&p),
+            ["x-a=1", "x-a=3", "x-b=2", "accept=application/json", "host=x.test"]
+        );
 
         let mut req = base("http://u:pw@x.test/p");
         req.headers.insert("X-One".into(), on("1"));
@@ -1679,10 +1727,17 @@ mod tests {
         let (p, _) = prepare(&req, &PrepareContext::default()).unwrap();
         assert_eq!(
             names(&p),
-            ["authorization=t1", "authorization=t2", "x-one=1", "accept=*/*", "host=x.test"]
+            [
+                "authorization=t1",
+                "authorization=t2",
+                "x-one=1",
+                "accept=application/json",
+                "host=x.test"
+            ]
         );
 
-        // A typed Accept takes no client place: the client's goes in last.
+        // A typed Accept goes out where it is written, the auto one not at
+        // all.
         let mut req = base("http://x.test/p");
         req.headers.insert("X-One".into(), on("1"));
         req.headers.insert("Accept".into(), on("a"));
@@ -1700,7 +1755,7 @@ mod tests {
         let r = row(&rows, "X-s3cret");
         assert_eq!(r.header.display_name, format!("X-{SECRET_MASK}"));
         let (p, _) = prepare(&base("https://x.test"), &c).unwrap();
-        assert_eq!(wire(&p), vec![("X-s3cret".to_string(), "1".to_string())]);
+        assert_eq!(wire(&p), vec![("X-s3cret".to_string(), "1".to_string()), json_accept()]);
     }
 
     /// A host with no secret written in it is sent and shown as it is,
@@ -1787,7 +1842,7 @@ mod tests {
         let (p, _) = prepare(&req, &c).unwrap();
         assert_eq!(auths(&p), vec!["Bearer d".to_string()]);
         let (p, _) = prepare(&req, &PrepareContext::default()).unwrap();
-        assert!(p.headers.is_empty(), "the client's, not the request's");
+        assert_eq!(wire(&p), vec![json_accept()], "the client's, not the request's");
         assert_eq!(auths(&p), vec!["Basic dTpwdw==".to_string()]);
     }
 
@@ -1862,7 +1917,7 @@ mod tests {
 
     /// A row the request may take over says how the request row that does
     /// so is written (task #20): a default with its `{{tokens}}` as
-    /// written, the auto `Content-Type` and the client's `Accept` as sent.
+    /// written, the auto `Content-Type` and `Accept` as sent.
     /// The request's own rows, a row that isn't sent, the client-owned
     /// rows and the URL's `Authorization` have none.
     #[test]
@@ -1888,10 +1943,10 @@ mod tests {
             "a default as written, its token unresolved"
         );
         assert_eq!(
-            overriding(HeaderOrigin::ContentType, "Content-Type"),
+            overriding(HeaderOrigin::Auto, "Content-Type"),
             Some(("Content-Type", "application/json"))
         );
-        assert_eq!(overriding(HeaderOrigin::Client, "Accept"), Some(("Accept", "*/*")));
+        assert_eq!(overriding(HeaderOrigin::Auto, "Accept"), Some(("Accept", "application/json")));
         let mine = HeaderOrigin::Request { row: 0 };
         assert_eq!(overriding(mine, "X-Mine"), None, "already the request's");
         assert_eq!(overriding(HeaderOrigin::Default, "X-Mine"), None, "replaced, so not sent");
@@ -1906,11 +1961,11 @@ mod tests {
             assert!(rows.iter().filter(|r| r.header.name == name).all(|r| never(&r)), "{name}");
         }
 
-        // A disabled request row leaves the client's row sent, but it is
-        // the row to edit: the client's row offers none.
+        // A disabled request row leaves the auto row sent, but it is the
+        // row to edit: the auto row offers none.
         req.headers.insert("accept".into(), off("text/plain"));
         let rows = header_rows(&req, &c);
-        assert!(client(&rows, "Accept").sent());
-        assert_eq!(client(&rows, "Accept").overriding_row(), None);
+        assert!(auto_accept(&rows).sent());
+        assert_eq!(auto_accept(&rows).overriding_row(), None);
     }
 }

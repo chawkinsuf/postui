@@ -339,7 +339,12 @@ headers, TLS override) and `prepare()`. So the command carries the
 substituted URL with merged params, inherited default headers, the auto
 `Content-Type`, the body (none for GET/HEAD; substituted when
 `substitute_body`), and `-k` when the prepared request is insecure.
-Headers the HTTP client adds itself are not included. `prepare()`
+Headers the HTTP client adds itself are not included. *Amended
+2026-10-27, task #174:* postui's own `Accept: application/json` is
+included, a GET's too: it goes on the wire where curl would send
+`*/*`, so D2 needs it (the user asked for the JSON default; exporting
+it follows from D2, mine). Import is unchanged: a command with no
+`Accept` imports with no row and sends postui's. `prepare()`
 returning `Unresolved` → the same error toast Send shows; nothing is
 copied.
 
@@ -349,6 +354,7 @@ copied.
 curl -X POST 'https://api.example.com/users?page=2' \
   -H 'Authorization: Bearer abc123' \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/json' \
   --data-raw '{"name": "x"}'
 ```
 

@@ -527,7 +527,7 @@ fn vims_copycurl_verb_copies_the_open_request() {
     app.update(Action::ForceOpenRequest("main/top".into()));
     draw(&mut app);
     feed(&mut app, ":copycurl<CR>");
-    assert_eq!(copied(&out).as_deref(), Some("curl 'https://x/top'"));
+    assert_eq!(copied(&out).as_deref(), Some(&*json_get("https://x/top")));
 }
 
 fn footer_labels(app: &App) -> Vec<String> {
@@ -622,13 +622,19 @@ fn copied(out: &std::path::Path) -> Option<String> {
     std::fs::read_to_string(out).ok()
 }
 
+/// A plain GET of `url` as Copy as curl writes it: postui's own `Accept`
+/// is on the wire, so it is in the command (task #174).
+fn json_get(url: &str) -> String {
+    format!("curl '{url}' \\\n  -H 'Accept: application/json'")
+}
+
 #[test]
 fn copy_as_curl_copies_the_open_request_with_unsaved_edits() {
     let (mut app, _dir, out) = copy_app();
     app.update(Action::ForceOpenRequest("main/top".into()));
     app.editor.url = LineInput::new("https://x/edited");
     app.update(Action::CopyAsCurl(None));
-    assert_eq!(copied(&out).as_deref(), Some("curl 'https://x/edited'"));
+    assert_eq!(copied(&out).as_deref(), Some(&*json_get("https://x/edited")));
     assert_eq!(app.toasts.last_message(), Some("Copied as curl"));
 }
 
@@ -637,7 +643,12 @@ fn copy_on_a_closed_request_reads_its_file_without_opening_it() {
     let (mut app, _dir, out) = copy_app();
     app.update(Action::ForceOpenRequest("main/top".into()));
     app.update(Action::CopyAsCurl(Some("main/other".into())));
-    assert_eq!(copied(&out).as_deref(), Some("curl -X POST 'https://x/other' \\\n  -H 'X-A: 1'"));
+    assert_eq!(
+        copied(&out).as_deref(),
+        Some(
+            "curl -X POST 'https://x/other' \\\n  -H 'X-A: 1' \\\n  -H 'Accept: application/json'"
+        )
+    );
     assert!(app.proj().held_request("main/other").is_none(), "not held");
     assert_eq!(app.editor.slug.as_deref(), Some("main/top"), "editor untouched");
 }
@@ -648,7 +659,7 @@ fn the_open_rows_copy_uses_the_live_editor() {
     app.update(Action::ForceOpenRequest("main/top".into()));
     app.editor.url = LineInput::new("https://x/edited");
     app.update(Action::CopyAsCurl(Some("main/top".into())));
-    assert_eq!(copied(&out).as_deref(), Some("curl 'https://x/edited'"));
+    assert_eq!(copied(&out).as_deref(), Some(&*json_get("https://x/edited")));
 }
 
 #[test]

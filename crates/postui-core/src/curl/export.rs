@@ -30,9 +30,9 @@ pub fn to_curl(req: &PreparedRequest) -> String {
         head.push_str(" -k");
     }
     let mut lines = vec![head];
-    // Only the rows the request sets: the ones the client adds itself
-    // (in `wire` only: `Host`, `Accept`, the userinfo's `Authorization`, …)
-    // are curl's to add too.
+    // Only the rows the request sets, postui's `Content-Type` and `Accept`
+    // among them: the ones the client adds itself (in `wire` only: `Host`,
+    // the userinfo's `Authorization`, …) are curl's to add too.
     for h in &req.headers {
         let (name, value) = (&h.name, &h.value);
         // `Name:` with only blanks after it tells curl to drop the header;
@@ -121,8 +121,25 @@ mod tests {
         let (p, _) = prepare(&req, &PrepareContext::default()).unwrap();
         assert_eq!(
             to_curl(&p),
-            "curl -X POST 'https://x.test/a' \\\n  -H 'X-A: 1' \\\n  -H 'Content-Type: application/json' \\\n  --data-raw '{}'"
+            "curl -X POST 'https://x.test/a' \\\n  -H 'X-A: 1' \\\n  -H 'Content-Type: application/json' \\\n  -H 'Accept: application/json' \\\n  --data-raw '{}'"
         );
+    }
+
+    /// postui's own `Accept` goes on the wire (task #174), where curl would
+    /// send `*/*`, so the command carries it, a GET's too (D2: the command
+    /// is what Send puts on the wire); a row of the request's replaces it.
+    #[test]
+    fn the_auto_accept_is_exported() {
+        let get = HttpRequest::from_toml_str("url = \"https://x.test/a\"\n").unwrap();
+        let (p, _) = prepare(&get, &PrepareContext::default()).unwrap();
+        assert_eq!(to_curl(&p), "curl 'https://x.test/a' \\\n  -H 'Accept: application/json'");
+
+        let typed = HttpRequest::from_toml_str(
+            "url = \"https://x.test/a\"\n[headers]\naccept = \"text/html\"\n",
+        )
+        .unwrap();
+        let (p, _) = prepare(&typed, &PrepareContext::default()).unwrap();
+        assert_eq!(to_curl(&p), "curl 'https://x.test/a' \\\n  -H 'accept: text/html'");
     }
 
     #[test]
