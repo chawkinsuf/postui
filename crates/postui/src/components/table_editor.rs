@@ -418,8 +418,8 @@ impl TableEditorState {
         let Some(edit) = self.editing.take() else {
             return TableOutcome::not_consumed();
         };
-        let Committed { row, warning, .. } = self.commit_cell(map, &edit);
-        self.set_selected(Some(Stop::of_row(row.unwrap_or(map.len()), map.len())));
+        let Committed { row, here, warning } = self.commit_cell(map, &edit);
+        self.set_selected(Some(Stop::of_row(row.unwrap_or(here), map.len())));
         TableOutcome::maybe_warn(warning)
     }
 
@@ -434,13 +434,11 @@ impl TableEditorState {
                     if let Some((_, e)) = map.get_index_mut(edit.row) {
                         e.value = typed;
                     }
-                    (Some(edit.row), None)
+                    (edit.row, None)
                 }
                 Col::Key => Self::commit_key(map, edit.row, typed),
             };
-            // `commit_key` names no row only for an index past the end,
-            // which this branch rules out.
-            return Committed { row, here: row.unwrap_or(edit.row), warning };
+            return Committed { row: Some(row), here: row, warning };
         }
         // Past the rows is `+ Add`, at `map.len()`: `edit.row` itself can be
         // further on when the map shrank under the open cell.
@@ -467,20 +465,22 @@ impl TableEditorState {
     /// Renames row `idx` to `new_key`, keeping its position, value and
     /// enabled flag. Renaming onto a key that already exists collapses the
     /// two rows (the target keeps its slot and takes this row's value) and
-    /// warns; blanking a key is refused with a warning.
+    /// warns; blanking a key is refused with a warning. Returns where the
+    /// row is now. Its one caller passes a row of the map; an index past
+    /// the end renames nothing and stays where it is.
     fn commit_key(
         map: &mut IndexMap<String, Entry>,
         idx: usize,
         new_key: String,
-    ) -> (Option<usize>, Option<String>) {
+    ) -> (usize, Option<String>) {
         let Some((orig, entry)) = map.get_index(idx).map(|(k, e)| (k.clone(), e.clone())) else {
-            return (None, None);
+            return (idx, None);
         };
         if new_key == orig {
-            return (Some(idx), None);
+            return (idx, None);
         }
         if new_key.trim().is_empty() {
-            return (Some(idx), Some(format!("a row needs a name — kept '{orig}'")));
+            return (idx, Some(format!("a row needs a name — kept '{orig}'")));
         }
         if let Some(other_idx) = map.get_index_of(&new_key) {
             map.shift_remove_index(idx);
@@ -489,13 +489,13 @@ impl TableEditorState {
                 e.value = entry.value;
             }
             return (
-                Some(adjusted),
+                adjusted,
                 Some(format!("duplicate key '{new_key}' replaced the existing value")),
             );
         }
         map.shift_remove_index(idx);
         map.shift_insert(idx, new_key, entry);
-        (Some(idx), None)
+        (idx, None)
     }
 
     /// Begins editing the selected row's cursor cell (the `Enter` path, and
@@ -726,8 +726,8 @@ impl TableEditorState {
             // cursor stays on the row — Enter does the same (spec
             // 2026-09-16), it just also commits. Discard is undo.
             KeyCode::Esc => {
-                let Committed { row, warning, .. } = self.commit_cell(map, &edit);
-                self.exit_editing(row.unwrap_or(edit.row), map);
+                let Committed { row, here, warning } = self.commit_cell(map, &edit);
+                self.exit_editing(row.unwrap_or(here), map);
                 TableOutcome::maybe_warn(warning)
             }
             KeyCode::Enter => {
@@ -2155,7 +2155,9 @@ mod tests {
             t.click_cell(3, Col::Key, &mut map); // the ghost
             type_str(&mut t, &mut map, name);
             map.pop();
-            t.handle_key(key(code), &mut map);
+            let out = t.handle_key(key(code), &mut map);
+            assert_eq!(out.warning.is_some(), name == "a", "{name} {code:?}: warns");
+            assert!(t.editing.is_none(), "{name} {code:?}: the cell closed");
             let keys: Vec<&str> = map.keys().map(String::as_str).collect();
             let want: &[&str] = if name == "a" { &["a", "b"] } else { &["a", "b", name] };
             assert_eq!(keys, want, "{name} {code:?}");
