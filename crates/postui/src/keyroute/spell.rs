@@ -60,8 +60,10 @@ pub enum Nav {
 /// The table row that runs `action` at `at`, if the router would look it
 /// up there: the surface's rows with no field, the field class's rows in a
 /// field's idle Normal (where `u` and `ctrl+r` are the surface's, handed
-/// on by the engine), none while typing.
-fn row_for(at: SpellCtx, action: &Action) -> Option<&'static str> {
+/// on by the engine), none while typing. Its keys are in the table's
+/// notation (`<Esc>`): the router's first look, before any component or
+/// the keymap, as `App::editor_esc_cancels` reads it.
+pub(crate) fn row_for(at: SpellCtx, action: &Action) -> Option<&'static str> {
     match at.field {
         FieldSpell::None => table::keys_for(at.profile, at.surface, action),
         FieldSpell::Normal(class) => {
@@ -73,13 +75,6 @@ fn row_for(at: SpellCtx, action: &Action) -> Option<&'static str> {
         }
         FieldSpell::Typing => None,
     }
-}
-
-/// The keys of the table row that runs `action` at `at`, in the table's
-/// notation (`<Esc>`): the router's first look, before any component or
-/// the keymap. `None` where no row runs it there.
-pub fn row_keys(at: SpellCtx, action: &Action) -> Option<&'static str> {
-    row_for(at, action)
 }
 
 /// The key that runs `action` at `at`: the table's row first (the router

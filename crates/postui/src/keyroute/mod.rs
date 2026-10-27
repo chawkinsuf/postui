@@ -145,6 +145,13 @@ impl Router {
         self.surface
     }
 
+    /// Whether a key on `surface` meets nothing pending: none is, or what
+    /// is was typed on another surface, which the key drops first
+    /// (`resolve`). Otherwise an Esc only clears it (step 1).
+    pub fn idle_on(&self, surface: Surface) -> bool {
+        self.surface != Some(surface) || self.pending.is_idle()
+    }
+
     /// Resolves one key against the pending state and the context: the
     /// router's whole job (spec §3.4). Declined keys run today's routing.
     pub fn resolve(&mut self, ev: KeyEvent, ctx: &KeyCtx) -> Resolved {

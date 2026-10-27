@@ -639,6 +639,8 @@ enum EditorStop {
     UrlSelected,
     UrlOpen,
     TableRow,
+    /// Vim's table row with a count half-typed; arrows' as `TableRow`.
+    TablePending,
     TableAdd,
     CellOpen,
     Body,
@@ -673,6 +675,10 @@ fn sending_at(profile: KeyProfile, stop: EditorStop) -> App {
     }
     app.update(Action::ForceSend);
     draw(&mut app);
+    if matches!(stop, S::TablePending) && vim {
+        feed(&mut app, "2");
+        assert_eq!(app.key_echo(), "2", "the count is pending");
+    }
     assert!(!app.session.in_flight.is_empty(), "{stop:?}: the send is in flight");
     app
 }
@@ -682,7 +688,9 @@ fn sending_at(profile: KeyProfile, stop: EditorStop) -> App {
 /// footer when in another input", and for the tab chip "same as esc"): on
 /// every editor stop, in both profiles, with a send in flight, the chip
 /// shows only where the key, pressed, cancels the send or switches the
-/// tab, and `esc cancel` shows wherever Esc cancels.
+/// tab, and `esc cancel` shows wherever Esc cancels. In arrows the tab chip
+/// shows wherever alt+→ switches the tab too; vim's is spelled from its
+/// field's rows, which this does not pin.
 #[tokio::test]
 async fn the_editors_cancel_and_tab_chips_show_where_their_keys_work() {
     use EditorStop as S;
@@ -692,6 +700,7 @@ async fn the_editors_cancel_and_tab_chips_show_where_their_keys_work() {
         S::UrlSelected,
         S::UrlOpen,
         S::TableRow,
+        S::TablePending,
         S::TableAdd,
         S::CellOpen,
         S::Body,
@@ -708,6 +717,16 @@ async fn the_editors_cancel_and_tab_chips_show_where_their_keys_work() {
                 &app.keymap,
             );
             let shows = |label: &str| chips.iter().any(|(_, l, _)| l == label);
+            // The keys pressed below are the ones the chips name.
+            let tab_key = if profile == KeyProfile::Vim { "gT/gt" } else { "alt+←→" };
+            for (k, l, _) in &chips {
+                let named = match l.as_str() {
+                    "cancel" => "esc",
+                    "tabs" => tab_key,
+                    _ => continue,
+                };
+                assert_eq!(*k, crate::keys::display_keycap(named), "{profile:?} {stop:?} {l}");
+            }
             let mut esc = sending_at(profile, stop);
             feed(&mut esc, "<Esc>");
             let cancels = esc.session.in_flight.is_empty();
@@ -727,9 +746,11 @@ async fn the_editors_cancel_and_tab_chips_show_where_their_keys_work() {
                 KeyProfile::Vim => feed(&mut tab, "gt"),
             }
             let cycles = tab.editor.active_tab != before;
-            if shows("tabs") && !cycles {
+            let both_ways = profile == KeyProfile::Arrows;
+            if shows("tabs") && !cycles || both_ways && cycles && !shows("tabs") {
                 wrong.push(format!(
-                    "{profile:?} {stop:?}: tabs chip shown, its key switches no tab"
+                    "{profile:?} {stop:?}: tabs chip shown {}, its key switches the tab {cycles}",
+                    shows("tabs")
                 ));
             }
         }

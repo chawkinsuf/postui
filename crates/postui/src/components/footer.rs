@@ -1301,6 +1301,34 @@ mod tests {
         );
     }
 
+    /// Where the tab chip's keys switch no tab (the arrows body's word
+    /// jump), the chip goes, on either pane, and the chips before it keep
+    /// their order (#193).
+    #[test]
+    fn the_tab_chip_goes_where_its_keys_switch_no_tab() {
+        for focus in [PaneId::Editor, PaneId::Response] {
+            let labels = |tabs_chord| {
+                let chips = super::footer_chips(
+                    focus,
+                    false,
+                    Sending::No,
+                    tabs_chord,
+                    Some("add header"),
+                    false,
+                    false,
+                    None,
+                    JqBarState::Closed,
+                    false,
+                );
+                chips.into_iter().map(|(_, l, _)| l).collect::<Vec<_>>()
+            };
+            let mut with = labels(true);
+            assert!(with.contains(&"tabs"), "{focus:?}: {with:?}");
+            with.retain(|l| *l != "tabs");
+            assert_eq!(labels(false), with, "{focus:?}");
+        }
+    }
+
     /// An open text field owns Esc (the field rule, spec 2026-09-15): the
     /// footer says `esc done` and never `esc cancel` on that surface —
     /// sending or not (in flight, `App::editor_esc_cancels` says Esc is the

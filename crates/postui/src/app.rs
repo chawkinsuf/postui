@@ -3314,14 +3314,18 @@ impl App {
     /// Whether Esc on the focused editor reaches the cancel shortcut, so
     /// the footer may say `esc cancel` there (#193, the user: "probably
     /// don't put esc in the footer when in another input"). It asks the
-    /// key's own path in its order: vim's Normal Esc row on the method
-    /// badge, the closed URL line and the table runs the cancel first
-    /// (#191); past the router, the editor's stops keep Esc for their own
-    /// (`Editor::takes_esc`), and with none selected it falls through to
-    /// the app's esc → `Close`, which cancels.
+    /// key's own path in its order: a half-typed vim count or operator
+    /// takes the Esc first, to drop it (the router's step 1); then vim's
+    /// Normal Esc row on the method badge, the closed URL line and the
+    /// table runs the cancel (#191); past the router, the editor's stops
+    /// keep Esc for their own (`Editor::takes_esc`), and with none
+    /// selected it falls through to the app's esc → `Close`, which
+    /// cancels.
     pub(crate) fn editor_esc_cancels(&self) -> bool {
-        crate::keyroute::spell::row_keys(self.spell_ctx(), &Action::CancelSend) == Some("<Esc>")
-            || !self.editor.takes_esc()
+        let at = self.spell_ctx();
+        self.router.idle_on(at.surface)
+            && (crate::keyroute::spell::row_for(at, &Action::CancelSend) == Some("<Esc>")
+                || !self.editor.takes_esc())
     }
 
     /// Whether `combo` goes to the arrows body rather than to the keymap:
