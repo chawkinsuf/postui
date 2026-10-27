@@ -15686,12 +15686,13 @@ fn footer_chips_leave_the_table_cursor_as_their_actions_do(
     profile: crate::config::KeyProfile,
 ) {
     // An empty URL, so the send chip toasts rather than spawning a send.
+    // Drawn wide, so `tabs` fits beside the row's chips.
     let start = |profile, sending| {
         let mut app = main_header_app(profile);
         app.editor.table.set_selected(Some(stop));
         app.editor.url = LineInput::new("");
         app.editor.sending = sending;
-        render_once(&mut app);
+        rendered_row(&mut app, 200, 0);
         app
     };
     let seen = |app: &App| {
@@ -15721,8 +15722,6 @@ fn footer_chips_leave_the_table_cursor_as_their_actions_do(
         let mut by_action = start(profile, sending);
         by_action.update(chip.clone());
         let mut app = start(profile, sending);
-        // Drawn wide, so `tabs` fits beside the row's chips.
-        rendered_row(&mut app, 200, 0);
         let r = app.hits.rect_of(&Hit::FooterChip(chip.clone())).expect("the chip is drawn");
         let footer = app.settled_layout().expect("drawn").footer;
         assert!(footer.contains(r.as_position()), "{profile:?} {chip:?} is the footer's");

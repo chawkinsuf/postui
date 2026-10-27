@@ -654,6 +654,15 @@ impl Editor {
         self.table.selected().map(|stop| TableCursor { tab: self.active_tab, stop })
     }
 
+    /// The table's cursor while the keyboard is on it: the caret in a
+    /// table tab's content, on a stop, with no cell open. The footer shows
+    /// the stop's chips from it (`PaneChipArgs`), and a footer chip's click
+    /// keeps it, as the chip's key does (`App::on_hit`, task #183).
+    pub fn live_table_cursor(&self) -> Option<Stop> {
+        let live = self.sub_focus == SubFocus::Content && self.table.editing.is_none();
+        live.then(|| self.table_cursor()).flatten().map(|c| c.stop)
+    }
+
     /// Where the caret sits right now, so [`Self::apply_snapshot`] can put
     /// it back after swapping the fields underneath it. `None` covers every
     /// focus state a swap can't disturb (Method/Tabs/None sub-focus, or a
