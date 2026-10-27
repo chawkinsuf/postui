@@ -1157,11 +1157,7 @@ impl Editor {
     /// is outside every token.
     pub fn caret_token(&self) -> Option<String> {
         let (text, byte_off) = match self.sub_focus {
-            SubFocus::Url if self.url_open => {
-                let text = self.url.text().to_string();
-                let off = char_byte_offset(&text, self.url.cursor());
-                (text, off)
-            }
+            SubFocus::Url if self.url_open => (self.url.text().to_string(), self.url.cursor_byte()),
             SubFocus::Content if self.active_tab == EditorTab::Body => {
                 let cursor = self.body.cursor;
                 let line: String = self.body.lines.iter_row().nth(cursor.row)?.iter().collect();
@@ -1169,9 +1165,7 @@ impl Editor {
                 (line, off)
             }
             SubFocus::Content if let Some(edit) = &self.table.editing => {
-                let text = edit.input.text().to_string();
-                let off = char_byte_offset(&text, edit.input.cursor());
-                (text, off)
+                (edit.input.text().to_string(), edit.input.cursor_byte())
             }
             _ => return None,
         };
@@ -3830,9 +3824,10 @@ impl Editor {
                     if let Some((x, y)) = self
                         .body_view(area, bottom, caret.row)
                         .and_then(|view| view.cell(&self.body.lines, at))
-                        && let Some((_, rect)) = hits.var_token_at(x, y)
+                        && let Some((name, rect)) = hits.var_token_at(x, y)
                     {
-                        hits.set_caret_token(rect);
+                        let name = name.to_string();
+                        hits.set_caret_token(&name, rect);
                     }
                 }
                 // The engine's search prompt on the pane's bottom row (spec

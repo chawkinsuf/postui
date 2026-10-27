@@ -295,7 +295,10 @@ pub fn all_commands() -> Vec<Command> {
         Command {
             id: "vars-tip-reveal",
             name: "Variables: reveal the tooltip's secret",
-            description: "Show or hide the secret in the open tooltip",
+            // The palette covering the tooltip masks its secret again (a
+            // tip out of sight never stays revealed), so from here it
+            // always reveals; alt+h on the tooltip toggles.
+            description: "Show the secret in the open tooltip",
             action: Action::TipPill(crate::action::TipPill::Reveal),
         },
         Command {

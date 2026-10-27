@@ -27955,9 +27955,8 @@ fn a_caret_tip_sits_against_the_token_the_caret_is_in() {
     assert_eq!(tip.anchor.y, url_y, "against the URL's token");
 }
 
-/// alt+o is the tip's 󰏫: it opens the token's editor, before or after the
-/// tip's own dwell no differently, and the cell is still open once the
-/// dialog closes.
+/// alt+o is the tip's 󰏫: once the tip is up it opens the token's editor,
+/// and the cell is still open once the dialog closes, as for a click.
 #[test]
 fn alt_o_edits_the_tips_variable_and_keeps_the_cell_open() {
     let (mut app, _dir, _out) = tooltip_app("x");

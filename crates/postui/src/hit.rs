@@ -516,7 +516,7 @@ pub struct HitMap {
     regions: Vec<(Rect, Hit)>,
     tracks: Vec<(PaneId, Rect)>,
     h_tracks: Vec<(PaneId, Rect)>,
-    caret_token: Option<Rect>,
+    caret_token: Option<(String, Rect)>,
 }
 
 impl HitMap {
@@ -527,17 +527,17 @@ impl HitMap {
         self.caret_token = None;
     }
 
-    /// Records `rect` as the drawn `{{token}}` the editor's caret is in.
-    pub fn set_caret_token(&mut self, rect: Rect) {
-        self.caret_token = Some(rect);
+    /// Records `{{name}}`, drawn at `rect`, as the token the editor's caret
+    /// is in.
+    pub fn set_caret_token(&mut self, name: &str, rect: Rect) {
+        self.caret_token = Some((name.to_string(), rect));
     }
 
     /// The drawn `{{token}}` holding the editor's caret this frame, with
     /// its name: the instance the caret is in, even where the same name is
     /// drawn elsewhere too.
     pub fn caret_token(&self) -> Option<(&str, Rect)> {
-        let rect = self.caret_token?;
-        self.var_token_at(rect.x, rect.y).filter(|(_, r)| *r == rect)
+        self.caret_token.as_ref().map(|(name, rect)| (name.as_str(), *rect))
     }
 
     /// Records the full scrollbar column drawn for `pane` this frame.

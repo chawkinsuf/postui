@@ -319,10 +319,8 @@ pub fn paint_field_tokens(
         let x = row.x as usize;
         Some(x + cols.start as usize..x + cols.end as usize)
     };
-    let text = input.text();
-    let caret = focused
-        .then(|| text.char_indices().nth(input.cursor()).map_or(text.len(), |(byte, _)| byte));
-    paint_tokens(buf, row, text, columns, caret, vars, theme, hits);
+    let caret = focused.then(|| input.cursor_byte());
+    paint_tokens(buf, row, input.text(), columns, caret, vars, theme, hits);
 }
 
 /// Tints and registers each token in `text` at the buffer columns
@@ -360,7 +358,7 @@ fn paint_tokens(
         }
         let rect = Rect::new(start as u16, row.y, (end - start) as u16, 1);
         if caret.is_some_and(|c| token.start <= c && c < token.end) {
-            hits.set_caret_token(rect);
+            hits.set_caret_token(&token.name, rect);
         }
         hits.register(rect, Hit::VarToken(token.name));
     }
