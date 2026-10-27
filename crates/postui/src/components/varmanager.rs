@@ -1481,6 +1481,9 @@ impl VarManager {
                 })
             }
             Verb::Yank => target.map(|_| Action::CopyOption { row }),
+            // A pasted option has no place in the grid to go above or
+            // below: `above` is ignored, so vim's `P` pastes as `p` does
+            // (arrows binds only `p`, #145).
             Verb::Put { count, .. } => {
                 op_env(ctx, selector).filter(|_| self.can_paste(selector)).map(|env| {
                     Action::VarStruct(VarStructOp::PasteOption {

@@ -235,7 +235,9 @@ Four take vim spellings directly:
 `yy` and `p` act on an in-app register, not the system clipboard —
 which is what the Variable Manager's `c`/`v` option stash already is
 (App state, never leaving its own selector). `ctrl+v` remains the
-system-clipboard paste, in both profiles.
+system-clipboard paste, in both profiles. *Amended 2026-10-26 (#145):*
+the default profile's grid copies with `y` and pastes with `p` now, as
+its other lists do; `c` and `v` are gone there.
 
 The rest — new, rename, move, promote, group fields, reveal, set
 default environment — have no vim analogue and are reached **only** by
