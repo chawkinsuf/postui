@@ -313,14 +313,18 @@ applies even a refused write, applies through `apply_ui` too (`mine`).
 
 2026-10-27, task #195: `before` read from `ui_settings` is the value in
 effect, not what the file held, so the undo of the first change to an
-unset key wrote the default into `config.toml`. A `Config` step now
-holds what the file held on each side, read through `Config`
-(`Config::holds_ui_key`): `UiValue::Unset` for a key the file did not
-carry, which `App::write_ui_value` writes as no key
-(`Config::remove_ui_key`) and applies as the default. The undo puts the
-file back as it was (the user: "yes" to fixing it), and a write that
-leaves the file as it was, such as clearing an unset AI command,
-records no step (`mine`).
+unset key wrote the default into `config.toml`. Each side of a `Config`
+step is now the value in effect plus whether the file carried the key,
+read through `Config` (`Config::holds_ui_key`): `UiValue::Unset(value)`
+for a key the file did not carry, which `App::write_ui_value` writes as
+no key (`Config::remove_ui_key`) and applies as the boxed value. The
+undo puts the file back as it was (the user: "yes" to fixing it) and
+the app with it, and a write that changes neither, such as clearing an
+unset AI command, records no step (`mine`). A value already in effect
+writes nothing, as an untouched field commit already does, so a click
+on the lit segment pins no default and records no step (`mine`). Not
+covered: a carried value that does not read back as itself (`jq_tab =
+"bogus"`, a wrong type) is undone to the value in effect (`mine`).
 
 `u` and ctrl+z on the Settings tab already reach `Action::Undo`
 through the whitelist; the arm's "commit the open table edit" prelude

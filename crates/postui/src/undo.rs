@@ -21,17 +21,21 @@ pub struct Step {
     pub context: Context,
 }
 
-/// What `config.toml` holds for one Settings key, as a `Config` step
-/// records it on each side of the change.
+/// One Settings key's value, as a `Config` step records it on each side
+/// of the change: the value in effect, and whether `config.toml` carried
+/// the key.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiValue {
     Flag(bool),
     Text(String),
     Int(usize),
-    /// The file carries no such key, so the default applies: writing it
-    /// removes the key (task #195). Only a recorded step holds it; the
-    /// Settings actions always write a value.
-    Unset,
+    /// `config.toml` carries no such key, and the boxed value was in
+    /// effect (the default, unless the session applied one the file never
+    /// took): writing it removes the key and applies the boxed value, so
+    /// an undo puts back both the file and the app (task #195). Only a
+    /// recorded step holds it, never nested; the Settings actions always
+    /// write a plain value.
+    Unset(Box<UiValue>),
 }
 
 #[derive(Debug, Clone)]

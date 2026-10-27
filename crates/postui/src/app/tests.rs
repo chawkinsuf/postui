@@ -31294,6 +31294,47 @@ fn undo_of_a_change_to_a_set_setting_writes_its_value_back() {
     assert_eq!(text, "ai_cmd = \"claude -p\"\n");
 }
 
+/// Task #195: undo puts back the app as well as the file. A value the
+/// session applied but the file never took (a hand edit not yet
+/// reloaded, a keymap whose write was refused) is in effect again after
+/// the undo, with the key still absent from the file.
+#[test]
+fn undo_restores_a_session_value_the_file_never_carried() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.ui_settings.ai_cmd = "session-cmd".to_string();
+
+    app.update(Action::SetUiString { key: "ai_cmd", value: "my-cmd".to_string() });
+    app.update(Action::Undo);
+
+    assert_eq!(app.ui_settings.ai_cmd, "session-cmd");
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(!text.contains("ai_cmd"), "{text:?}");
+}
+
+/// Task #195: picking the value already in effect (a click on the lit
+/// segment) writes nothing, so it pins no default into the file and
+/// leaves no undo step that changes nothing on screen.
+#[test]
+fn picking_the_value_in_effect_writes_and_records_nothing() {
+    use crate::components::settings::jq_tab_spelling;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    let lit = jq_tab_spelling(app.ui_settings.jq_tab).to_string();
+
+    app.update(Action::SetUiString { key: "jq_tab", value: lit });
+    app.update(Action::Undo);
+
+    assert!(!dir.path().join("config.toml").exists(), "nothing was written");
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains("Nothing to undo")),
+        "{:?}",
+        app.toasts.messages()
+    );
+}
+
 /// Task #195: clearing an AI command the file never set leaves the file
 /// as it was, so there is nothing to undo.
 #[test]
@@ -34503,10 +34544,6 @@ fn undo_or_redo_back_into_vim_warns_of_shadowing_letters() {
     use crate::config::KeyProfile;
     let mut app = App::new_for_test();
     let dir = config_at_tempdir(&mut app);
-    // The file says what the test app's settings say: arrows answered.
-    // Undo restores the file (task #195), so without the key the undo
-    // would unset the keymap rather than go back to arrows.
-    std::fs::write(dir.path().join("config.toml"), "keymap = \"arrows\"\n").unwrap();
     std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"j\"]\n").unwrap();
     let shadow = "keys.toml binds `j`, which shadows vim's `j`".to_string();
     let warned = |app: &App| warning_toasts(app).iter().filter(|m| **m == shadow).count();

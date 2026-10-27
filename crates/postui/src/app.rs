@@ -12034,36 +12034,40 @@ impl App {
     }
 
     /// A Settings action's write ([`Self::write_ui_value`]) and, once it
-    /// landed, its undo step. The step holds what `config.toml` held for
-    /// `key` on each side ([`Self::held_ui_value`]), so the undo of the
-    /// first change to an unset key removes the key again rather than
-    /// writing the default that was in effect, and a write that left the
-    /// file as it was (clearing an unset AI command) records nothing
-    /// (task #195).
+    /// landed, its undo step. Each side of the step is the state around
+    /// the write ([`Self::held_ui_value`]): the value in effect and
+    /// whether `config.toml` carried the key. So the undo of the first
+    /// change to an unset key removes the key again rather than writing
+    /// the default that was in effect, and a write that changed neither
+    /// (clearing an unset AI command) records nothing (task #195).
+    ///
+    /// A value already in effect writes nothing, as an untouched field
+    /// commit and a re-picked keymap already do: the write would only pin
+    /// a default into the file, which a click on the lit segment never
+    /// asked for, and its undo step would change nothing on screen.
     fn write_and_record_ui_value(
         &mut self,
         key: &'static str,
         value: crate::undo::UiValue,
     ) -> Result<(), String> {
-        let before = self.held_ui_value(key, ui_value(&self.ui_settings, key));
+        if ui_value(&self.ui_settings, key) == value {
+            return Ok(());
+        }
+        let before = self.held_ui_value(key);
         self.write_ui_value(key, &value)?;
-        let after = self.held_ui_value(key, value);
+        let after = self.held_ui_value(key);
         self.record_config_step(key, before, after);
         Ok(())
     }
 
-    /// What `config.toml` holds for `key`, read through `Config`, which
-    /// owns the file: `Unset` when the file does not carry the key, else
-    /// `value` (the value in effect before a write, or the one just
-    /// written). With no files behind the app, or a file that will not
-    /// read, there is nothing to tell, and `value` stands.
-    fn held_ui_value(
-        &mut self,
-        key: &'static str,
-        value: crate::undo::UiValue,
-    ) -> crate::undo::UiValue {
+    /// `key`'s value in effect, as `Unset` around it when `config.toml`
+    /// does not carry the key: read through `Config`, which owns the file.
+    /// With no files behind the app, or a file that will not read, there
+    /// is nothing to tell, and the value in effect stands alone.
+    fn held_ui_value(&mut self, key: &'static str) -> crate::undo::UiValue {
+        let value = ui_value(&self.ui_settings, key);
         match self.config.holds_ui_key(key) {
-            Some(false) => crate::undo::UiValue::Unset,
+            Some(false) => crate::undo::UiValue::Unset(Box::new(value)),
             Some(true) | None => value,
         }
     }
@@ -12088,7 +12092,7 @@ impl App {
             UiValue::Flag(v) => self.config.save_ui_flag(key, *v),
             UiValue::Text(v) => self.config.save_ui_string(key, v),
             UiValue::Int(v) => self.config.save_ui_int(key, *v),
-            UiValue::Unset => self.config.remove_ui_key(key),
+            UiValue::Unset(_) => self.config.remove_ui_key(key),
         }?;
         self.apply_ui(key, value);
         Ok(())
@@ -12821,18 +12825,14 @@ impl App {
 /// memory, shared by the Settings actions and the undo replay through
 /// [`App::write_ui_value`]. It mirrors what `Config::save_ui_*` left on
 /// disk: an empty text value removed its key, so what applies is the
-/// key's default (the default AI command, no clipboard command), as does
-/// `Unset`, which removed the key whatever its kind.
+/// key's default (the default AI command, no clipboard command). `Unset`
+/// removed the key whatever its kind, and applies the value it holds.
 fn apply_ui_value(ui: &mut crate::config::UiSettings, key: &str, value: &crate::undo::UiValue) {
     use crate::config::{IndentKind, JqTab, KeyProfile, UiSettings};
     use crate::undo::UiValue;
     match (key, value) {
-        // The default's own value: `Unset` back only for an unknown key,
-        // which `ui_value` has already asserted on.
-        (key, UiValue::Unset) => match ui_value(&UiSettings::default(), key) {
-            UiValue::Unset => {}
-            default => apply_ui_value(ui, key, &default),
-        },
+        // The key left the file; what was in effect applies again.
+        (key, UiValue::Unset(in_effect)) => apply_ui_value(ui, key, in_effect),
         ("animations", UiValue::Flag(v)) => ui.animations = *v,
         ("hover_hints", UiValue::Flag(v)) => ui.hover_hints = *v,
         ("curl_button", UiValue::Flag(v)) => ui.curl_button = *v,
@@ -12886,7 +12886,7 @@ fn ui_value(ui: &crate::config::UiSettings, key: &str) -> crate::undo::UiValue {
         "indent_width" => UiValue::Int(ui.indent_width),
         other => {
             debug_assert!(false, "no setting named {other:?}");
-            UiValue::Unset
+            UiValue::Text(String::new())
         }
     }
 }
