@@ -15848,20 +15848,24 @@ fn a_copy_pills_alt_click_copies_the_whole_header() {
     }
 }
 
-/// H6: a Params row's pill has no whole header to copy: whatever is held,
-/// the value.
+/// H6: a Params or Vars row's pill has no whole header to copy: whatever
+/// is held, the value.
 #[test]
-fn a_params_pills_alt_click_copies_its_value() {
-    for mods in [KeyModifiers::NONE, KeyModifiers::ALT, KeyModifiers::SHIFT] {
-        let mut app = main_header_app(crate::config::KeyProfile::Arrows);
-        app.editor
-            .params
-            .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
-        app.editor.active_tab = EditorTab::Params;
-        app.editor.table.set_selected(Some(Stop::Row(0)));
-        render_once(&mut app);
-        click_pill(&mut app, Hit::TableCopy(0), mods);
-        assert_eq!(last_copied(&app).as_deref(), Some("2"), "{mods:?}");
+fn a_params_or_vars_pills_alt_click_copies_its_value() {
+    for tab in [EditorTab::Params, EditorTab::Vars] {
+        for mods in [KeyModifiers::NONE, KeyModifiers::ALT, KeyModifiers::SHIFT] {
+            let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+            let entry = postui_core::model::Entry { value: "2".into(), enabled: true };
+            match tab {
+                EditorTab::Params => app.editor.params.insert("page".into(), entry),
+                _ => app.editor.variables.insert("page".into(), entry),
+            };
+            app.editor.active_tab = tab;
+            app.editor.table.set_selected(Some(Stop::Row(0)));
+            render_once(&mut app);
+            click_pill(&mut app, Hit::TableCopy(0), mods);
+            assert_eq!(last_copied(&app).as_deref(), Some("2"), "{tab:?} {mods:?}");
+        }
     }
 }
 
