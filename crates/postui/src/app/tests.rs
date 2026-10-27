@@ -15817,81 +15817,90 @@ fn footer_strip_chips(app: &App) -> (u16, Vec<(Action, u16)>) {
     (y, chips)
 }
 
-/// What a footer chip may leave changed in the editor: the open cell and
-/// its typing, the table's cursor, the sub-focus and the caret within it
-/// (the Body's row and column, the URL's column), the tab, the lock, an
-/// opened dialog, vim's mode and a quit.
-#[allow(clippy::type_complexity)]
-fn editor_seen(
-    app: &App,
-) -> (
-    bool,
-    Option<String>,
-    Option<Stop>,
-    SubFocus,
-    crate::components::editor::Caret,
-    bool,
-    EditorTab,
-    bool,
-    bool,
-    Option<String>,
-    bool,
-) {
-    (
-        app.editor.table.editing.is_some(),
-        app.editor.headers.get_index(0).map(|(_, e)| e.value.clone()),
-        app.editor.table.selected(),
-        app.editor.sub_focus,
-        app.editor.caret(),
-        app.editor.url_open(),
-        app.editor.active_tab,
-        app.editor.insecure,
-        app.modals.is_empty(),
-        app.vim_status(),
-        app.should_quit,
-    )
+/// What a footer chip may leave changed in the editor (`editor_seen`).
+#[derive(Debug, PartialEq)]
+struct EditorSeen {
+    cell_open: bool,
+    header_value: Option<String>,
+    cursor: Option<Stop>,
+    sub_focus: SubFocus,
+    caret: crate::components::editor::Caret,
+    url_open: bool,
+    url: String,
+    body: String,
+    tab: EditorTab,
+    insecure: bool,
+    undo_steps: u64,
+    no_dialog: bool,
+    vim: Option<String>,
+    quit: bool,
+}
+
+/// The open cell and its typing, the table's cursor, the sub-focus and the
+/// caret within it (the Body's row and column, the URL's column), the
+/// texts, the tab, the lock, the undo steps recorded, an opened dialog,
+/// vim's mode and a quit.
+fn editor_seen(app: &App) -> EditorSeen {
+    EditorSeen {
+        cell_open: app.editor.table.editing.is_some(),
+        header_value: app.editor.headers.get_index(0).map(|(_, e)| e.value.clone()),
+        cursor: app.editor.table.selected(),
+        sub_focus: app.editor.sub_focus,
+        caret: app.editor.caret(),
+        url_open: app.editor.url_open(),
+        url: app.editor.url.text().to_string(),
+        body: app.editor.body_text(),
+        tab: app.editor.active_tab,
+        insecure: app.editor.insecure,
+        undo_steps: app.history.changes(),
+        no_dialog: app.modals.is_empty(),
+        vim: app.vim_status(),
+        quit: app.should_quit,
+    }
 }
 
 /// Task #192's report, against the keys themselves: in arrows, with a cell
 /// open and typed into, the Body's caret up or the URL line selected, each
-/// footer chip's click leaves the editor as its keycap's key does.
+/// footer chip's click leaves the editor as its keycap's key does. Every
+/// chip drawn is checked: one with no key here fails the test.
+///
+/// Not sending: the in-flight `esc cancel` chip's Esc is the field's first
+/// where a field holds the caret (a selected URL line deselects), so its
+/// key does not cancel there; the chip is its action, checked above.
 #[test]
 fn an_editor_footer_chip_click_matches_its_key_with_a_cell_or_caret_up() {
-    let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+    use crate::config::KeyProfile::Arrows;
     let keys = |a: &Action| match a {
-        Action::CloseField => vec![esc],
+        Action::CloseField => vec![KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+        Action::FocusUrl => vec![KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
         Action::Send => vec![ctrl('r')],
         Action::TableAddRow => vec![alt('a')],
+        Action::OpenVarPicker { completing: false } => vec![alt('v')],
         Action::CycleTabs(1) => vec![KeyEvent::new(KeyCode::Right, KeyModifiers::ALT)],
         Action::OpenPalette => vec![ctrl('p')],
         Action::Quit => vec![ctrl('c'), ctrl('c')],
         Action::CopyToClipboard(crate::action::CopyTarget::Url) => vec![alt('y')],
         Action::ToggleInsecure => vec![alt('i')],
-        _ => Vec::new(),
+        other => panic!("no key for the {other:?} chip"),
     };
-    use crate::config::KeyProfile::Arrows;
     for state in ["cell", "body", "url"] {
         let (y, chips) = footer_strip_chips(&editor_caret_app(state, Arrows, false));
-        let mut checked = 0;
+        assert!(chips.len() >= 4, "{state}: {chips:?}");
         for (chip, x) in &chips {
-            let evs = keys(chip);
             // In the Body alt+arrows are word motion, and the tabs are a
             // click away (spec 2026-09-01 spaces, "The editor tabs give up
             // alt+1..alt+4"): the chip's own test is its action's, above.
-            if evs.is_empty() || state == "body" && *chip == Action::CycleTabs(1) {
+            if state == "body" && *chip == Action::CycleTabs(1) {
                 continue;
             }
             let mut by_key = editor_caret_app(state, Arrows, false);
-            for ev in evs {
+            for ev in keys(chip) {
                 by_key.handle_key(ev);
             }
             let mut app = editor_caret_app(state, Arrows, false);
             app.handle_mouse(left_down(*x, y));
             assert_eq!(editor_seen(&app), editor_seen(&by_key), "{state} {chip:?}");
-            checked += 1;
         }
-        // send, commands and quit at least, in every state.
-        assert!(checked >= 3, "{state}: only {checked} chips checked");
     }
 }
 

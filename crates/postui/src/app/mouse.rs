@@ -1400,19 +1400,23 @@ impl App {
         // dialog since task #85: no quit runs under one.)
         let in_dialog = !self.modals.is_empty();
         // A footer chip is the key it advertises. While the editor's caret
-        // is up, on the table's cursor (any stop, `+ Add` included), in an
-        // open cell, in the Body or on the selected URL line, every chip on
+        // is in its content (on any tab: the table's cursor on any stop, an
+        // open cell, the Body) or on the selected URL line, every chip on
         // the main screen's footer is no click away at all: the cell, its
         // typing, the cursor and the caret stay as its key leaves them
         // (tasks #125, #183 and #192; spec 2026-10-26 header-copy, Footer).
-        // The chip's action runs after and does what the key does: send
-        // and quit commit the cell themselves, `done` closes it, the add
-        // chip moves the caret.
+        // The click is the chip's action and nothing else, which is what
+        // its key runs: send and quit commit the cell themselves, `done`
+        // closes it, the add chip moves the caret. Where a keycap's key
+        // does something else first (the in-flight `esc cancel` chip's Esc
+        // on a selected URL line deselects it), the click is still the
+        // action the chip names.
         //
         // The open URL line and the method badge are left as they were:
         // a footer chip there is still a click away, though their keys
-        // keep them too. This branch keeps to the states task #192 names;
-        // widening the gate to the whole editor would cover them.
+        // keep them too. Task #192 names the states above; widening the
+        // gate to the whole editor would cover these two as well. The vars
+        // and tooltip-edit chips' own exemptions below still hold there.
         //
         // The rule asks where the press landed, not which action: the app
         // bar's save/discard, the address bar's lock and the Body toolbar
@@ -1429,8 +1433,11 @@ impl App {
         let editor_footer_chip = matches!(hit, Hit::FooterChip(_))
             && self.screen == Screen::Main
             && self.focus == PaneId::Editor
-            && (self.editor.sub_focus == SubFocus::Content
-                || self.editor.sub_focus == SubFocus::Url && !self.editor.url_open())
+            && match self.editor.sub_focus {
+                SubFocus::Content => true,
+                SubFocus::Url => !self.editor.url_open(),
+                SubFocus::Method | SubFocus::None => false,
+            }
             && self.settled_layout().is_some_and(|l| {
                 l.footer.contains(ratatui::layout::Position { x: m.column, y: m.row })
             });
