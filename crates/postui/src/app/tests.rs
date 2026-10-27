@@ -5311,7 +5311,7 @@ fn sidebar_footer_advertises_move_to_space_not_the_space_cycle() {
     assert!(text.contains("m  move"), "{text}");
     // Switching spaces is the header's (space pill + cycle pill); the
     // footer no longer repeats it.
-    assert!(!text.contains("alt+]"), "{text}");
+    assert!(!text.contains(&*crate::keys::display_keycap("alt+]")), "{text}");
 }
 
 /// `m` on a selected sidebar request opens the "Move to space" chooser —
@@ -28209,7 +28209,8 @@ fn an_open_tooltip_puts_its_edit_key_in_the_footer() {
     let chip = app.hits.rect_of(&edit).expect("the edit chip");
     let tabs = app.hits.rect_of(&Hit::FooterChip(Action::CycleTabs(1))).unwrap();
     assert!(chip.x > tabs.x, "after the pane's chips");
-    assert!(tooltip_text(&mut app).contains("alt+o  edit"));
+    let alt_o = crate::keys::display_keycap("alt+o");
+    assert!(tooltip_text(&mut app).contains(&format!("{alt_o}  edit")));
     click_hit(&mut app, edit);
     assert!(matches!(
         app.modals.top(),
