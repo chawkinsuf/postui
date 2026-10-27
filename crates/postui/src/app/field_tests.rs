@@ -70,6 +70,28 @@ fn esc_on_a_closed_url_line_method_or_table_stays_put() {
     assert_eq!(app.editor.table.selected(), Some(Stop::Row(row - 1)), "and k goes on from it");
 }
 
+/// The same Esc is the footer's `esc cancel` while the open request is in
+/// flight: on a table row, the closed URL line and the method badge it
+/// cancels the send, and still moves nothing (#191).
+#[tokio::test]
+async fn esc_on_a_closed_url_line_method_or_table_cancels_a_send() {
+    for f in [Fixture::TableThreeHeaders, Fixture::UrlLine, Fixture::Method] {
+        let mut app = vim(f);
+        app.editor.url = LineInput::new("http://127.0.0.1:9");
+        app.update(Action::ForceSend);
+        assert!(!app.session.in_flight.is_empty(), "{f:?}: the send is in flight");
+        let (sub, row) = (app.editor.sub_focus, app.editor.table.selected());
+        feed(&mut app, "<Esc>");
+        assert!(app.session.in_flight.is_empty(), "{f:?}: Esc cancelled the send");
+        assert!(matches!(app.session.response.state(), ResponseState::Cancelled), "{f:?}");
+        assert_eq!(
+            (app.editor.sub_focus, app.editor.table.selected()),
+            (sub, row),
+            "{f:?}: stays put"
+        );
+    }
+}
+
 /// Vim's `cc`, `S` and `C` on the closed URL line change it as on an open
 /// one: the text goes (from the caret for `C`) into the unnamed register,
 /// and the line opens in Insert.

@@ -339,7 +339,27 @@ headers, TLS override) and `prepare()`. So the command carries the
 substituted URL with merged params, inherited default headers, the auto
 `Content-Type`, the body (none for GET/HEAD; substituted when
 `substitute_body`), and `-k` when the prepared request is insecure.
-Headers the HTTP client adds itself are not included. `prepare()`
+Headers the HTTP client adds itself are not included. *Amended
+2026-10-27, task #174:* postui's own `Accept: application/json` is
+included, a GET's too: it goes on the wire where curl would send
+`*/*`, so D2 needs it (the user asked for the JSON default; exporting
+it follows from D2, mine). Import is unchanged: a command with no
+`Accept` imports with no row and sends postui's. *Amended again
+2026-10-27, task #174, after review round 4:* ~~the value is
+`Accept: application/json, */*;q=0.1` (`you`: "sure lets use
+`application/json, */*;q=0.1`"). With the `*/*` fallback it differs
+from curl's `*/*` only in preferring JSON, so~~ an import that adds no
+row (no `Accept`, or `-H 'Accept:'`, curl's way of sending none, which
+is listed as ignored) sends postui's `Accept`. The import brings in
+what the command has, and the user edits the request if they want
+something else (`you`: "import whatever is there and let the user fix
+it i guess"). *Amended a third time 2026-10-27, task #174, after
+review round 6:* the value is `application/json` alone, as curl's
+`--json` sends it, because Rails ignores an Accept with `*/*` next to
+a comma (auto-headers spec R1). So such an import asks for JSON where
+curl asked for any type; a server that only serves another type may
+answer 406, and the user overrides the row (`you`: "lets just stick
+with application/json, the user can override it"). `prepare()`
 returning `Unresolved` → the same error toast Send shows; nothing is
 copied.
 
@@ -349,6 +369,7 @@ copied.
 curl -X POST 'https://api.example.com/users?page=2' \
   -H 'Authorization: Bearer abc123' \
   -H 'Content-Type: application/json' \
+  -H 'Accept: application/json' \
   --data-raw '{"name": "x"}'
 ```
 

@@ -344,8 +344,8 @@ pub struct Editor {
     pub split: crate::split::SplitState,
     /// The Headers tab's read-only computed-headers section (spec §6):
     /// everything that will actually be sent beyond the editable request
-    /// rows above — default headers, the auto Content-Type, and the
-    /// client-generated rows (the URL's Authorization, Accept, Host,
+    /// rows above — default headers, the auto Content-Type and Accept, and
+    /// the client-generated rows (the URL's Authorization, Host,
     /// Content-Length). A row something overrides is struck through;
     /// Host and Content-Length never are (spec R3a). Recomputed
     /// every draw by `recompute_computed_headers` (cheap, small N) so an
@@ -669,8 +669,7 @@ impl Editor {
 
     /// Whether the table's cursor is live: the caret in a table tab's
     /// content, on a stop, with no cell open. The footer shows the stop's
-    /// chips only then (`PaneChipArgs`), and a footer chip's click keeps the
-    /// cursor then, as the chip's key does (`App::on_hit`, task #183).
+    /// chips only then (`PaneChipArgs`).
     pub fn table_cursor_live(&self) -> bool {
         self.sub_focus == SubFocus::Content
             && self.table.editing.is_none()
@@ -839,14 +838,12 @@ impl Editor {
                 }
                 // Every other row is drawn, an unsent one struck through,
                 // so the user sees what is overridden (task #57): a
-                // default, the auto `Content-Type`, the client's `Accept`
-                // or the URL's `Authorization`, whether a typed row or a
-                // default replaced it. A struck `Authorization` shows its
-                // credential no more than the URL bar shows the userinfo,
-                // and masks the same way when a secret is in it.
-                HeaderOrigin::Default | HeaderOrigin::ContentType | HeaderOrigin::Client => {
-                    auto.push(r)
-                }
+                // default, the auto `Content-Type` or `Accept`, or the URL's
+                // `Authorization`, whether a typed row or a default replaced
+                // it. A struck `Authorization` shows its credential no more
+                // than the URL bar shows the userinfo, and masks the same
+                // way when a secret is in it.
+                HeaderOrigin::Default | HeaderOrigin::Auto | HeaderOrigin::Client => auto.push(r),
             }
         }
         self.computed.rows = auto;
@@ -7794,7 +7791,7 @@ url = "https://api.example.com/users""#,
         let root = app.proj().root().to_path_buf();
         std::fs::write(
             root.join("project.toml"),
-            "[default_headers]\naccept = \"application/json\"\nx-a = \"dflt-a\"\nx-b = \"dflt-b\"\n",
+            "[default_headers]\naccept = \"text/csv\"\nx-a = \"dflt-a\"\nx-b = \"dflt-b\"\n",
         )
         .unwrap();
         app.resync_project();
@@ -7810,8 +7807,8 @@ url = "https://api.example.com/users""#,
         for gone in ["(project)", "(overridden)", "(disabled)", "\u{2713} "] {
             assert!(!content.contains(gone), "no status lines ({gone}): {content}");
         }
-        assert_eq!(content.matches("application/json").count(), 1, "{content}");
-        assert!(!buffer_has_crossed_out(buf, "application/json"), "a sent default");
+        assert_eq!(content.matches("text/csv").count(), 1, "{content}");
+        assert!(!buffer_has_crossed_out(buf, "text/csv"), "a sent default");
         assert!(buffer_has_crossed_out(buf, "dflt-a"), "replaced by an enabled row");
         assert!(buffer_has_crossed_out(buf, "dflt-b"), "replaced by a disabled row");
     }
@@ -7852,7 +7849,7 @@ url = "https://api.example.com/users""#,
         let row = app.hits.rect_of(&hit).expect("the auto row is a hover surface");
         assert_eq!(row.y, vy, "on the default's own row");
         let accept = app.editor.computed.rows.iter().position(|r| r.header.name == "Accept");
-        let accept = Hit::AutoHeaderRow(accept.expect("the client's Accept row"));
+        let accept = Hit::AutoHeaderRow(accept.expect("the auto Accept row"));
         assert_eq!(app.hits.rect_of(&accept), None, "an ordinary row stays the bare pane");
         app.hovered = Some(hit);
         let (terminal, content) = draw_wide(&mut app);
@@ -8439,11 +8436,8 @@ url = "https://api.example.com/users""#,
     fn headers_tab_shows_overridden_default_as_struck_through_auto_row() {
         let mut app = App::new_for_test();
         let root = app.proj().root().to_path_buf();
-        std::fs::write(
-            root.join("project.toml"),
-            "[default_headers]\nAccept = \"application/json\"\n",
-        )
-        .unwrap();
+        std::fs::write(root.join("project.toml"), "[default_headers]\nAccept = \"text/html\"\n")
+            .unwrap();
         app.resync_project();
         app.editor.active_tab = EditorTab::Headers;
         app.editor
@@ -8465,15 +8459,15 @@ url = "https://api.example.com/users""#,
             "the dim divider introduces the computed section: {content}"
         );
         assert!(
-            buffer_has_crossed_out(terminal.backend().buffer(), "application/json"),
+            buffer_has_crossed_out(terminal.backend().buffer(), "text/html"),
             "the suppressed default's own value renders struck through"
         );
     }
 
     /// A row that overrides an auto or client row leaves that row in the
     /// auto section, struck through, so the user sees what is overridden
-    /// (task #57): the client's `Accept`, the auto `Content-Type`, the
-    /// URL's `Authorization` — by a typed row, or by a project default.
+    /// (task #57): the auto `Accept` and `Content-Type`, the URL's
+    /// `Authorization` — by a typed row, or by a project default.
     #[test]
     fn headers_tab_strikes_the_auto_rows_something_overrides() {
         let mut app = App::new_for_test();
@@ -8491,8 +8485,11 @@ url = "https://api.example.com/users""#,
         let mut terminal = Terminal::new(TestBackend::new(140, 70)).unwrap();
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
         let buf = terminal.backend().buffer();
-        assert!(buffer_has_crossed_out(buf, "*/*"), "the client's Accept");
-        assert!(buffer_has_crossed_out(buf, "application/json"), "the auto Content-Type");
+        assert!(buffer_has_crossed_out(buf, "Accept: application/json"), "the auto Accept");
+        assert!(
+            buffer_has_crossed_out(buf, "Content-Type: application/json"),
+            "the auto Content-Type"
+        );
         assert!(buffer_has_crossed_out(buf, "Basic dTpwdw=="), "the URL's Authorization");
         let content = format!("{buf:?}");
         assert!(content.contains("Host: example.com"), "the client's Host is drawn");
@@ -8502,7 +8499,7 @@ url = "https://api.example.com/users""#,
             assert!(!buffer_has_crossed_out(buf, typed), "{typed} is sent");
         }
 
-        // A project default replaces the client's Accept just the same.
+        // A project default replaces the auto Accept just the same.
         let root = app.proj().root().to_path_buf();
         std::fs::write(root.join("project.toml"), "[default_headers]\nAccept = \"text/html\"\n")
             .unwrap();
@@ -8513,7 +8510,10 @@ url = "https://api.example.com/users""#,
         let buf = terminal.backend().buffer();
         assert!(format!("{buf:?}").contains("Accept: text/html"), "the default is drawn");
         assert!(!buffer_has_crossed_out(buf, "text/html"), "and sent");
-        assert!(buffer_has_crossed_out(buf, "*/*"), "the client's Accept it replaces");
+        assert!(
+            buffer_has_crossed_out(buf, "Accept: application/json"),
+            "the auto Accept it replaces"
+        );
     }
 
     /// A struck auto row's strike starts on the name's first char: the
@@ -8537,9 +8537,9 @@ url = "https://api.example.com/users""#,
         let (x, y) = (0..buf.area.height)
             .find_map(|y| {
                 let line: String = (0..width).map(|x| buf.cell((x, y)).unwrap().symbol()).collect();
-                line.find("Accept: */*").map(|i| (line[..i].chars().count() as u16, y))
+                line.find("Accept: application/json").map(|i| (line[..i].chars().count() as u16, y))
             })
-            .expect("the client's Accept row is drawn");
+            .expect("the auto Accept row is drawn");
         assert!(struck(x, y), "the name's first char is struck");
         assert!(!struck(x - 1, y) && !struck(x - 2, y), "the indent is not");
     }
@@ -8642,6 +8642,9 @@ url = "https://api.example.com/users""#,
         (hits, terminal.backend().buffer().clone())
     }
 
+    /// An auto-section row the client adds (`Host` and the like); a test
+    /// of postui's own `Accept` or `Content-Type` sets `HeaderOrigin::Auto`
+    /// over it.
     fn auto_header(name: &str, value: &str) -> postui_core::prepare::HeaderRow {
         postui_core::prepare::HeaderRow {
             header: postui_core::prepare::SentHeader {
@@ -8664,11 +8667,12 @@ url = "https://api.example.com/users""#,
     fn an_overridable_auto_row_has_a_pencil_pill_after_its_copy_pill() {
         let mut e = Editor::default();
         let overridable = |name: &str, value: &str| postui_core::prepare::HeaderRow {
+            origin: postui_core::prepare::HeaderOrigin::Auto,
             override_as: Some((name.into(), value.into())),
             ..auto_header(name, value)
         };
         e.computed.rows = vec![
-            overridable("Accept", "*/*"),
+            overridable("Accept", "application/json"),
             auto_header("Host", "x.test"),
             postui_core::prepare::HeaderRow {
                 unsent: Some(postui_core::prepare::Unsent::Replaced),

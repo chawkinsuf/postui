@@ -340,12 +340,13 @@ mod tests {
     /// `sent_headers` is the wire truth, not the configured rows: what a
     /// raw server actually receives from a prepared send, name for name,
     /// value for value, in order — including what reqwest and hyper add on
-    /// their own (`authorization` from the URL's userinfo, `accept`, `host`,
+    /// their own (`authorization` from the URL's userinfo, `host`,
     /// `content-length`, which core's `header_rows` predicts), with names
-    /// in their wire case. A typed `Host`, `Content-Length` or
-    /// `Transfer-Encoding` is never sent (spec 2026-10-18 R3a): the
-    /// client's own row goes out instead, if it sends one. The userinfo
-    /// cases pin core's copy of reqwest's decoding.
+    /// in their wire case. postui's own `accept: application/json`
+    /// goes in place of reqwest's `*/*` whatever the method (task #174). A typed
+    /// `Host`, `Content-Length` or `Transfer-Encoding` is never sent (spec
+    /// 2026-10-18 R3a): the client's own row goes out instead, if it sends
+    /// one. The userinfo cases pin core's copy of reqwest's decoding.
     #[tokio::test]
     async fn sent_headers_match_the_wire() {
         use postui_core::model::{Body, Entry, HttpRequest, Method};
@@ -356,6 +357,7 @@ mod tests {
             &[("Host", "other.test"), ("content-LENGTH", "99"), ("Transfer-Encoding", "chunked")];
         let auth: &[(&str, &str)] = &[("Authorization", "Bearer typed")];
         let twice: &[(&str, &str)] = &[("X-B", "2"), ("x-one", "3")];
+        let accept: &[(&str, &str)] = &[("accept", "text/plain")];
         let json = Some("{\"a\":1}");
         let empty = Some("");
         let (get, post) = (Method::Get, Method::Post);
@@ -380,6 +382,8 @@ mod tests {
             ("u:pw@", get, None, auth),
             ("", get, None, twice),
             ("u:pw@", get, None, twice),
+            ("", get, None, accept),
+            ("", post, json, accept),
         ] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -423,6 +427,12 @@ mod tests {
             );
             assert!(!raw.contains("other.test") && !raw.contains(": 99"), "{raw}");
             assert!(!raw.to_ascii_lowercase().contains("transfer-encoding"), "{raw}");
+            let accepts: Vec<&str> =
+                wire.iter().filter(|(k, _)| k == "accept").map(|(_, v)| v.as_str()).collect();
+            // postui's own on every method; a typed one goes out instead of
+            // it, never next to it.
+            let want = if extra == accept { "text/plain" } else { "application/json" };
+            assert_eq!(accepts, [want], "one Accept on the wire:\n{raw}");
             if !userinfo.is_empty() && userinfo != "u%FF:p@" {
                 assert!(wire.iter().any(|(k, _)| k == "authorization"), "{userinfo}: {raw}");
             }

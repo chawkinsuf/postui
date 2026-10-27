@@ -15409,7 +15409,7 @@ fn auto_header_copy_pill_keeps_a_cell_of_padding_from_the_value() {
     let backend = ratatui::backend::TestBackend::new(100, 70);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
-    // Row 0 is the client's Accept row; the Host row is row 1.
+    // Row 0 is the auto Accept row; the Host row is row 1.
     let rect =
         app.hits.rect_of(&Hit::AutoHeaderCopy(1)).expect("the Host row's copy icon is registered");
     let buf = terminal.backend().buffer();
@@ -15436,7 +15436,7 @@ fn auto_header_copy_icon_puts_the_resolved_value_on_the_clipboard() {
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     // The scratch request has no default headers and no body, so the
-    // computed rows are the client's Accept (index 0) and the Host row
+    // computed rows are the auto Accept (index 0) and the Host row
     // from the URL (index 1).
     let rect =
         app.hits.rect_of(&Hit::AutoHeaderCopy(1)).expect("the Host row's copy icon is registered");
@@ -15484,8 +15484,8 @@ fn the_auto_header_pencil_adds_it_to_the_request_with_its_value_open() {
     assert_eq!(app.hits.rect_of(&Hit::AutoHeaderOverride(i)), None, "so it has no pencil");
 }
 
-/// A scratch Headers tab whose auto rows are the client's `Accept` (with
-/// the pencil) and `Host` (without), the editor's content focused on
+/// A scratch Headers tab whose auto rows are postui's `Accept` (with the
+/// pencil) and `Host` (without), the editor's content focused on
 /// `+ Add` (stop 0, the table being empty), drawn once.
 fn auto_rows_app(profile: crate::config::KeyProfile) -> App {
     let mut app = App::new_for_test();
@@ -15535,7 +15535,10 @@ fn the_keyboard_reaches_the_auto_rows_and_their_pills() {
 
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(app.editor.headers.get("Accept").map(|e| e.value.as_str()), Some("*/*"));
+    assert_eq!(
+        app.editor.headers.get("Accept").map(|e| e.value.as_str()),
+        Some("application/json")
+    );
     let edit = app.editor.table.editing.as_ref().expect("the new row's value is open");
     assert_eq!((edit.row, edit.col), (0, crate::components::table_editor::Col::Value));
 }
@@ -15628,13 +15631,16 @@ fn a_footer_row_chip_click_keeps_the_table_cursor() {
         app.editor.table.set_selected(Some(Stop::Section(0)));
         let chip = Action::CopyToClipboard(CopyTarget::ComputedHeader(0));
         click_hit(&mut app, Hit::FooterChip(chip));
-        assert_eq!(last_copied(&app).as_deref(), Some("*/*"), "{profile:?}");
+        assert_eq!(last_copied(&app).as_deref(), Some("application/json"), "{profile:?}");
         assert_eq!(app.editor.table.selected(), Some(Stop::Section(0)), "{profile:?}");
         assert_eq!(app.editor.sub_focus, SubFocus::Content, "{profile:?}");
         // Its edit chip takes the row over, as Enter does: the new row's
         // value opens under the cursor.
         click_hit(&mut app, Hit::FooterChip(Action::OverrideAutoHeader(0)));
-        assert_eq!(app.editor.headers.get("Accept").map(|e| e.value.as_str()), Some("*/*"));
+        assert_eq!(
+            app.editor.headers.get("Accept").map(|e| e.value.as_str()),
+            Some("application/json")
+        );
         assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "{profile:?}");
         assert!(app.editor.table.editing.is_some(), "{profile:?}: the value is open");
     }
@@ -15732,6 +15738,178 @@ fn footer_chips_leave_the_table_cursor_as_their_actions_do(
     }
 }
 
+/// Task #192: the same with a table cell open (the cell, its typing, the
+/// cursor and the caret), with the Body's caret up, and with the URL line
+/// selected. Every chip drawn in the footer's strip, `done` and the
+/// address bar's `copy url` and `tls` included, leaves the editor exactly
+/// as running its action does, which is what its key does: the click is
+/// the action with no click-away before it.
+#[test]
+fn an_editor_footer_chip_click_leaves_an_open_cell_or_the_caret_as_its_action_does() {
+    use crate::config::KeyProfile::{Arrows, Vim};
+    for state in ["cell", "body", "url"] {
+        for profile in [Arrows, Vim] {
+            for sending in [false, true] {
+                let probe = editor_caret_app(state, profile, sending);
+                let (y, chips) = footer_strip_chips(&probe);
+                let drawn = |a: &Action| chips.iter().any(|(b, _)| b == a);
+                assert!(drawn(&Action::CycleTabs(1)) || profile == Vim, "{state} {chips:?}");
+                assert!(drawn(&Action::OpenPalette) || drawn(&Action::OpenExPalette), "{chips:?}");
+                for (chip, x) in &chips {
+                    let mut by_action = editor_caret_app(state, profile, sending);
+                    by_action.update(chip.clone());
+                    let mut app = editor_caret_app(state, profile, sending);
+                    app.handle_mouse(left_down(*x, y));
+                    assert_eq!(
+                        editor_seen(&app),
+                        editor_seen(&by_action),
+                        "{state} {profile:?} sending={sending} {chip:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Task #192's three states, drawn wide so every footer chip fits, the URL
+/// empty so the send chip toasts rather than spawning a send: `cell`, a
+/// header's value open with typing in it; `body`, the Body's caret mid-text;
+/// `url`, the URL line selected (not open).
+fn editor_caret_app(state: &str, profile: crate::config::KeyProfile, sending: bool) -> App {
+    let mut app = main_header_app(profile);
+    app.editor.url = LineInput::new("");
+    app.editor.sending = sending;
+    match state {
+        "cell" => {
+            click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+            assert!(app.editor.table.editing.is_some(), "the cell opened");
+            // Vim's click opens the cell in Normal: `A` appends.
+            if profile == crate::config::KeyProfile::Vim {
+                type_chars(&mut app, "A");
+            }
+            type_chars(&mut app, "Z");
+            let typed = app.editor.table.editing.as_ref().map(|e| e.input.text().to_string());
+            assert_eq!(typed.as_deref(), Some("aZ"), "{profile:?} typed into the cell");
+        }
+        "body" => {
+            app.editor.active_tab = EditorTab::Body;
+            app.editor.table.set_selected(None);
+            app.editor.set_body_text("ab\ncd");
+            app.editor.body.cursor = edtui::Index2::new(1, 1);
+        }
+        _ => {
+            app.editor.table.set_selected(None);
+            app.editor.sub_focus = SubFocus::Url;
+        }
+    }
+    rendered_row(&mut app, 200, 0);
+    app
+}
+
+/// Every chip in the footer's strip, read off the last frame's hit map (the
+/// strip's middle row, each chip's first cell), so a chip the footer gains
+/// is held to the rule too.
+fn footer_strip_chips(app: &App) -> (u16, Vec<(Action, u16)>) {
+    let footer = app.settled_layout().expect("drawn").footer;
+    let y = footer.y + footer.height / 2;
+    let mut chips: Vec<(Action, u16)> = Vec::new();
+    for x in footer.x..footer.x + footer.width {
+        if let Some(Hit::FooterChip(a)) = app.hits.hit_at(x, y)
+            && !chips.iter().any(|(b, _)| b == a)
+        {
+            chips.push((a.clone(), x));
+        }
+    }
+    (y, chips)
+}
+
+/// What a footer chip may leave changed in the editor (`editor_seen`).
+#[derive(Debug, PartialEq)]
+struct EditorSeen {
+    cell_open: bool,
+    header_value: Option<String>,
+    cursor: Option<Stop>,
+    sub_focus: SubFocus,
+    caret: crate::components::editor::Caret,
+    url_open: bool,
+    url: String,
+    body: String,
+    tab: EditorTab,
+    insecure: bool,
+    undo_steps: u64,
+    no_dialog: bool,
+    vim: Option<String>,
+    quit: bool,
+}
+
+/// The open cell and its typing, the table's cursor, the sub-focus and the
+/// caret within it (the Body's row and column, the URL's column), the
+/// texts, the tab, the lock, the undo steps recorded, an opened dialog,
+/// vim's mode and a quit.
+fn editor_seen(app: &App) -> EditorSeen {
+    EditorSeen {
+        cell_open: app.editor.table.editing.is_some(),
+        header_value: app.editor.headers.get_index(0).map(|(_, e)| e.value.clone()),
+        cursor: app.editor.table.selected(),
+        sub_focus: app.editor.sub_focus,
+        caret: app.editor.caret(),
+        url_open: app.editor.url_open(),
+        url: app.editor.url.text().to_string(),
+        body: app.editor.body_text(),
+        tab: app.editor.active_tab,
+        insecure: app.editor.insecure,
+        undo_steps: app.history.changes(),
+        no_dialog: app.modals.is_empty(),
+        vim: app.vim_status(),
+        quit: app.should_quit,
+    }
+}
+
+/// Task #192's report, against the keys themselves: in arrows, with a cell
+/// open and typed into, the Body's caret up or the URL line selected, each
+/// footer chip's click leaves the editor as its keycap's key does. Every
+/// chip drawn is checked: one with no key here fails the test.
+///
+/// Not sending: the in-flight `esc cancel` chip's Esc is the field's first
+/// where a field holds the caret (a selected URL line deselects), so its
+/// key does not cancel there; the chip is its action, checked above.
+#[test]
+fn an_editor_footer_chip_click_matches_its_key_with_a_cell_or_caret_up() {
+    use crate::config::KeyProfile::Arrows;
+    let keys = |a: &Action| match a {
+        Action::CloseField => vec![KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)],
+        Action::FocusUrl => vec![KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)],
+        Action::Send => vec![ctrl('r')],
+        Action::TableAddRow => vec![alt('a')],
+        Action::OpenVarPicker { completing: false } => vec![alt('v')],
+        Action::CycleTabs(1) => vec![KeyEvent::new(KeyCode::Right, KeyModifiers::ALT)],
+        Action::OpenPalette => vec![ctrl('p')],
+        Action::Quit => vec![ctrl('c'), ctrl('c')],
+        Action::CopyToClipboard(crate::action::CopyTarget::Url) => vec![alt('y')],
+        Action::ToggleInsecure => vec![alt('i')],
+        other => panic!("no key for the {other:?} chip"),
+    };
+    for state in ["cell", "body", "url"] {
+        let (y, chips) = footer_strip_chips(&editor_caret_app(state, Arrows, false));
+        assert!(chips.len() >= 4, "{state}: {chips:?}");
+        for (chip, x) in &chips {
+            // In the Body alt+arrows are word motion, and the tabs are a
+            // click away (spec 2026-09-01 spaces, "The editor tabs give up
+            // alt+1..alt+4"): the chip's own test is its action's, above.
+            if state == "body" && *chip == Action::CycleTabs(1) {
+                continue;
+            }
+            let mut by_key = editor_caret_app(state, Arrows, false);
+            for ev in keys(chip) {
+                by_key.handle_key(ev);
+            }
+            let mut app = editor_caret_app(state, Arrows, false);
+            app.handle_mouse(left_down(*x, y));
+            assert_eq!(editor_seen(&app), editor_seen(&by_key), "{state} {chip:?}");
+        }
+    }
+}
+
 /// Task #183: the rule is the footer's strip, not the action. The address
 /// bar's lock registers a `FooterChip` too, and it stays a click away.
 #[test]
@@ -15743,6 +15921,25 @@ fn the_address_bar_lock_is_still_a_click_away_from_the_table_cursor() {
     click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
     assert_ne!(app.editor.insecure, insecure, "the lock toggled");
     assert_eq!(app.editor.table.selected(), None);
+    assert_eq!(app.editor.sub_focus, SubFocus::None);
+}
+
+/// Task #192: with the URL line selected the footer has a `tls` chip of the
+/// same action, which keeps the line selected; the lock is still a click
+/// away for it.
+#[test]
+fn the_address_bar_lock_is_still_a_click_away_from_the_url_line() {
+    let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+    app.editor.table.set_selected(None);
+    app.editor.sub_focus = SubFocus::Url;
+    render_once(&mut app);
+    let footer = app.settled_layout().expect("drawn").footer;
+    let rects = app.hits.rects_of(&Hit::FooterChip(Action::ToggleInsecure));
+    assert!(rects.iter().any(|r| footer.contains(r.as_position())), "the footer's tls chip");
+    let lock = *rects.iter().find(|r| !footer.contains(r.as_position())).expect("the lock");
+    let insecure = app.editor.insecure;
+    app.handle_mouse(left_down(lock.x, lock.y));
+    assert_ne!(app.editor.insecure, insecure, "the lock toggled");
     assert_eq!(app.editor.sub_focus, SubFocus::None);
 }
 
@@ -15885,7 +16082,7 @@ fn arrows_capital_y_copies_the_whole_header() {
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(app.editor.auto_row_cursor(), Some(0));
     press(&mut app, 'Y');
-    assert_eq!(last_copied(&app).as_deref(), Some("Accept: */*"));
+    assert_eq!(last_copied(&app).as_deref(), Some("Accept: application/json"));
 }
 
 /// H2 and H8: there is no whole-header copy off the Headers tab or off a
@@ -15947,7 +16144,7 @@ fn vim_quote_plus_yy_copies_the_header_line() {
     press(&mut app, 'j');
     assert_eq!(app.editor.auto_row_cursor(), Some(0));
     type_chars(&mut app, "\"+Y");
-    assert_eq!(last_copied(&app).as_deref(), Some("Accept: */*"));
+    assert_eq!(last_copied(&app).as_deref(), Some("Accept: application/json"));
 }
 
 /// H5: one copy chip on a header row in each profile, spelled with both
@@ -16038,7 +16235,7 @@ fn a_copy_pills_alt_click_copies_the_whole_header() {
     type AppOf = fn(KeyProfile) -> App;
     let cases: [(AppOf, Hit, &str, &str); 3] = [
         (main_header_app, Hit::TableCopy(0), "a", "X-One: a"),
-        (main_header_app, Hit::AutoHeaderCopy(0), "*/*", "Accept: */*"),
+        (main_header_app, Hit::AutoHeaderCopy(0), "application/json", "Accept: application/json"),
         (
             response_headers_app,
             Hit::HeaderCopy(0),
@@ -16340,10 +16537,10 @@ fn undo_takes_the_auto_header_pencils_row_back_out() {
     app.capture_undo();
     type_chars(&mut app, ", text/plain");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert_eq!(app.editor.headers["Accept"].value, "*/*, text/plain");
+    assert_eq!(app.editor.headers["Accept"].value, "application/json, text/plain");
     app.capture_undo();
     app.update(Action::Undo);
-    assert_eq!(app.editor.headers["Accept"].value, "*/*", "the value edit goes first");
+    assert_eq!(app.editor.headers["Accept"].value, "application/json", "the value edit goes first");
     app.update(Action::Undo);
     assert!(app.editor.headers.is_empty(), "then the row: {:?}", app.editor.headers);
     assert!(app.editor.table.editing.is_none());
@@ -16365,7 +16562,7 @@ fn the_auto_header_pencil_opens_the_value_in_insert_in_vim() {
     type_chars(&mut app, ", x");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert_eq!(app.editor.headers["Accept"].value, "*/*, x");
+    assert_eq!(app.editor.headers["Accept"].value, "application/json, x");
 }
 
 /// The pencil's row lands on the ghost row's index, so from an open ghost
@@ -16388,7 +16585,7 @@ fn the_auto_header_pencil_from_an_open_ghost_cell_opens_in_insert_in_vim() {
     type_chars(&mut app, ", x");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert_eq!(app.editor.headers["Accept"].value, "*/*, x");
+    assert_eq!(app.editor.headers["Accept"].value, "application/json, x");
 }
 
 /// The pencil takes over the row it was drawn on, found by where the row
@@ -28017,6 +28214,13 @@ fn vars_app_with_b_typed() -> (App, tempfile::TempDir, std::path::PathBuf) {
     let entry = |v: &str| postui_core::model::Entry { value: v.into(), enabled: true };
     app.editor.variables.insert("a".into(), entry("1"));
     app.editor.variables.insert("b".into(), entry("2"));
+    open_b_value_cell_typed(&mut app);
+    (app, dir, out)
+}
+
+/// Opens the Vars tab's row-1 var (b) value cell and types `typed` in it,
+/// not yet committed.
+fn open_b_value_cell_typed(app: &mut App) {
     app.editor.active_tab = EditorTab::Vars;
     app.editor.sub_focus = SubFocus::Content;
     app.focus = PaneId::Editor;
@@ -28027,7 +28231,6 @@ fn vars_app_with_b_typed() -> (App, tempfile::TempDir, std::path::PathBuf) {
     let edit = app.editor.table.editing.as_mut().expect("b's value cell is open");
     assert_eq!((edit.row, edit.col), (1, crate::components::table_editor::Col::Value));
     edit.input.set_text("typed");
-    (app, dir, out)
 }
 
 fn request_vars(app: &App) -> Vec<(String, String)> {
@@ -28092,6 +28295,58 @@ fn the_value_dialog_commits_an_open_ghost_cell_before_a_new_var() {
         request_vars(&app),
         [("ghost".to_string(), String::new()), ("base_url".to_string(), "v".to_string())]
     );
+}
+
+/// Request `main/ping` on disk with vars `trace_id = "abc-123"`, `b = "2"`,
+/// open on the Vars tab with b's value cell open and holding `typed`, not
+/// yet committed.
+fn promote_app_with_b_typed() -> (App, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let r = postui_core::model::HttpRequest::from_toml_str(
+        "url = \"https://x/ping\"\n[variables]\ntrace_id = \"abc-123\"\nb = \"2\"\n",
+    )
+    .unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &r).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("main/ping".into()));
+    open_b_value_cell_typed(&mut app);
+    (app, dir)
+}
+
+/// #153, the way the app reaches a promote: alt+r leaves the cell, and the
+/// main loop's end-of-event capture commits it (spec 2026-10-19 R1), so
+/// the Manager's Promote never runs over an open cell.
+#[test]
+fn opening_manage_commits_an_open_vars_cell_before_a_promote() {
+    let (mut app, dir) = promote_app_with_b_typed();
+    app.handle_key(alt('r'));
+    assert_eq!(app.screen, Screen::Manage);
+    app.capture_undo(); // what `main`'s loop runs after every event
+    assert!(app.editor.table.editing.is_none(), "leaving for Manage closed the cell");
+    app.update(Action::PromptPromoteVar { name: "trace_id".into() });
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    app.handle_key(plain('d')); // Default value
+    assert_eq!(app.proj().variables().vars["trace_id"].default.as_deref(), Some("abc-123"));
+    assert_eq!(request_vars(&app), [("b".to_string(), "typed".to_string())]);
+    // The request file the promote saves has the typing too.
+    let on_disk = postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap();
+    assert_eq!(on_disk.variables.keys().collect::<Vec<_>>(), ["b"]);
+    assert_eq!(on_disk.variables["b"].value, "typed");
+}
+
+/// #153: a promote over an open Vars cell is a broken invariant, caught in
+/// debug builds before the promote reads its value.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "under an open Vars cell")]
+fn a_promote_over_an_open_vars_cell_trips_the_debug_assert() {
+    let (mut app, _dir) = promote_app_with_b_typed();
+    app.update(Action::VarStruct(VarStructOp::Promote {
+        name: "trace_id".into(),
+        target: postui_core::varedit::PromoteTarget::Default,
+    }));
 }
 
 /// A pick from the insert picker (alt+v) with the caret in a token swaps
@@ -30951,6 +31206,37 @@ fn ctrl_z_reverts_a_settings_text_commit() {
 
     app.update(Action::Undo);
     assert_eq!(app.ui_settings.ai_cmd, before);
+}
+
+/// Task #182: a redo applies what the commit applied. Clearing the AI
+/// command removes the key and runs the default command; redoing that
+/// clear must run the default again, not an empty command.
+#[test]
+fn redo_of_a_cleared_ai_command_applies_the_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    let default = crate::config::UiSettings::default().ai_cmd;
+
+    app.update(Action::SetUiString { key: "ai_cmd", value: "my-cmd".to_string() });
+    app.update(Action::SetUiString { key: "ai_cmd", value: String::new() });
+    assert_eq!(app.ui_settings.ai_cmd, default, "the commit applies the default");
+
+    app.update(Action::Undo);
+    assert_eq!(app.ui_settings.ai_cmd, "my-cmd");
+
+    app.update(Action::Redo);
+    assert_eq!(app.ui_settings.ai_cmd, default, "the redo applies the default too");
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(!text.contains("ai_cmd"), "the redo removed the key again: {text:?}");
+
+    // The other key an empty value removes: its redo is no command.
+    app.update(Action::SetUiString { key: "clipboard_cmd", value: "my-copy".to_string() });
+    app.update(Action::SetUiString { key: "clipboard_cmd", value: String::new() });
+    app.update(Action::Undo);
+    assert_eq!(app.ui_settings.clipboard_cmd.as_deref(), Some("my-copy"));
+    app.update(Action::Redo);
+    assert_eq!(app.ui_settings.clipboard_cmd, None, "the redo applies no command");
 }
 
 /// A write that never lands records nothing to undo -- `osc52_limit` past
