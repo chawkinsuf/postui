@@ -1748,14 +1748,16 @@ impl ReadyView {
     /// first non-blank, and beeps for N over 100; `%` lands on the partner
     /// of the bracket under or after Vim's cursor on its line, found in the
     /// buffer lines, so a closed fold's hidden lines count. A beep changes
-    /// nothing. A landing on another line opens the folds at it
-    /// (`'foldopen'` `percent`), before the column is set, as `$` does.
-    /// Like a search landing, it does not scroll the view sideways: the
-    /// response draws no caret for a sideways scroll to follow.
+    /// nothing, a drag selection included, as Vim's beep and a page key's
+    /// edge beep don't (`j`/`k`'s edge drop is main's arrows rule). A
+    /// landing on another line opens the folds at it (`'foldopen'`
+    /// `percent`), before the column is set, as `$` does. Like a search
+    /// landing, it does not scroll the view sideways: the response draws no
+    /// caret for a sideways scroll to follow.
     fn percent(&mut self, count: Option<usize>) {
         use crate::text::brackets::{MatchFrom, find_match, percent_row};
         let Some(from) = self.real_line() else { return };
-        let to = match count {
+        let (line, col) = match count {
             Some(n) => match percent_row(n, self.buffer_line_count()) {
                 Some(row) => (row, None),
                 None => return,
@@ -1768,11 +1770,11 @@ impl ReadyView {
                 }
             }
         };
-        self.land_line(to.0);
-        if to.0 != from {
+        self.land_line(line);
+        if line != from {
             self.open_folds_at_cursor();
         }
-        match to.1 {
+        match col {
             Some(col) => self.set_col(col),
             None => self.col_first_non_blank(),
         }
