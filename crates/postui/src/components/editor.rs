@@ -1402,7 +1402,7 @@ impl Editor {
             return; // within one line: no break taken, nothing to lay out
         }
         let Some(view) = self.body_view(area, bottom, end.row) else { return };
-        let style = Style::default().bg(theme.selection).fg(theme.text);
+        let style = body_selection_style(theme);
         // Only the rows in view can paint (`rows` stops at `end.row`).
         for row in start.row.max(view.top)..view.top + view.rows.len() {
             if self.body_selects_break(start, end, row)
@@ -1945,11 +1945,8 @@ impl Editor {
     }
 
     /// Sets `body.selection` to the inclusive cell range `a..=b` (either
-    /// order), allowing a single-cell selection. edtui doesn't export its
-    /// `Selection` type, so the range is built by letting
-    /// `SwitchMode(Visual)` construct one and then rewriting its public
-    /// endpoints; the mode goes straight back to Insert (modeless
-    /// invariant).
+    /// order), each end clamped onto a char, allowing a single-cell
+    /// selection: the mouse's selections.
     fn set_body_selection_cells(&mut self, a: edtui::Index2, b: edtui::Index2) {
         let (a, b) = (self.clamp_to_cell(a), self.clamp_to_cell(b));
         self.set_body_selection_span(a, b);
@@ -1957,7 +1954,11 @@ impl Editor {
 
     /// Sets `body.selection` to `a..=b` (either order) as given: a char
     /// cell, an empty row's cell, or a row's break cell
-    /// ([`Self::body_break_cell`]) at either end.
+    /// ([`Self::body_break_cell`]) at either end. edtui doesn't export its
+    /// `Selection` type, so the range is built by letting
+    /// `SwitchMode(Visual)` construct one and then rewriting its public
+    /// endpoints; the mode goes straight back to Insert (modeless
+    /// invariant).
     fn set_body_selection_span(&mut self, a: edtui::Index2, b: edtui::Index2) {
         use edtui::actions::{Execute, SwitchMode};
         let cursor = self.body.cursor;
@@ -2034,6 +2035,9 @@ impl Editor {
         else {
             return;
         };
+        if !(start_break || end_break || clamp) {
+            return; // nothing to put back
+        }
         let place = |i: edtui::Index2, on_break: bool| {
             if on_break {
                 self.body_break_cell(i.row)
@@ -2080,10 +2084,11 @@ impl Editor {
             return;
         };
         let (start, end) = (sel.start(), sel.end());
-        let taken = (start.row..=end.row).filter(|&r| self.body_selects_break(start, end, r));
+        // The breaks between its rows, and its last row's when it ends on it.
+        let taken = end.row - start.row + usize::from(self.body_selects_break(start, end, end.row));
         // Selecting everything can leave no rows at all: no break either.
         let breaks = |e: &EditorState| e.lines.len().saturating_sub(1);
-        let want = breaks(&self.body) - taken.count();
+        let want = breaks(&self.body) - taken;
         let len = self.body.lines.len_col(start.row).unwrap_or(0);
         let caret = edtui::Index2::new(start.row, start.col.min(len));
         if self.is_body_break_cell(start) {
@@ -2147,8 +2152,9 @@ impl Editor {
         true
     }
 
-    /// The selected body text, rows joined with `\n` (the head cell
-    /// included). `None` when nothing is selected.
+    /// The selected body text: its chars, with a `\n` for each line break
+    /// it takes ([`Self::body_selects_break`]). `None` when nothing is
+    /// selected.
     pub fn body_selected_text(&self) -> Option<String> {
         let sel = self.body.selection.as_ref()?;
         let (start, end) = (sel.start(), sel.end());
@@ -2235,8 +2241,9 @@ impl Editor {
         self.body_sel_anchor = self.body_sel_anchor.map(shift_of);
         if let Some(sel) = self.body.selection.as_mut() {
             // Shift raw endpoints in place (they may sit in either order),
-            // then re-clamp onto character cells: a dedent that emptied an
-            // endpoint's line can leave its col past the line's last char.
+            // then put them back below: an end on a break onto its row's
+            // break cell, any other onto a char (a dedent that emptied an
+            // endpoint's line can leave its col past the line's last char).
             sel.start = shift_of(sel.start);
             sel.end = shift_of(sel.end);
         }
@@ -2543,7 +2550,7 @@ impl OverlayKind {
         // (`highlighted`).
         let found = Style::default().fg(theme.text).bg(theme.page).add_modifier(Modifier::REVERSED);
         match self {
-            OverlayKind::Visual => Style::default().bg(theme.selection).fg(theme.text),
+            OverlayKind::Visual => body_selection_style(theme),
             OverlayKind::Landing => found.add_modifier(Modifier::BOLD),
             OverlayKind::Match => found,
         }
@@ -2558,6 +2565,12 @@ fn new_body_state(text: &str) -> EditorState {
     let mut state = EditorState::new(Lines::from(text));
     state.mode = EditorMode::Insert;
     state
+}
+
+/// How the body paints selected text: edtui's selection, the engine's
+/// Visual, and a selected line break.
+fn body_selection_style(theme: &Theme) -> Style {
+    Style::default().bg(theme.selection).fg(theme.text)
 }
 
 /// edtui's emacs keymap for the body, less the keys that reach edtui's own
@@ -3933,7 +3946,7 @@ impl Editor {
                     .base(Style::default().bg(theme.page).fg(theme.text))
                     .cursor_style(Style::default().add_modifier(Modifier::REVERSED))
                     .line_numbers_style(Style::default().bg(theme.page).fg(theme.text_muted))
-                    .selection_style(Style::default().bg(theme.selection).fg(theme.text))
+                    .selection_style(body_selection_style(theme))
                     .hide_status_line();
                 // A cursor block on an unfocused pane reads as "you are typing
                 // here", so only the focused editor shows one — and while a
@@ -3948,8 +3961,7 @@ impl Editor {
                 // an upward whole-lines sweep).
                 if let Some(sel) = self.body.selection.as_ref() {
                     edtui_theme = if sel.contains(&self.body.cursor) {
-                        edtui_theme
-                            .cursor_style(Style::default().bg(theme.selection).fg(theme.text))
+                        edtui_theme.cursor_style(body_selection_style(theme))
                     } else {
                         edtui_theme.hide_cursor()
                     };
