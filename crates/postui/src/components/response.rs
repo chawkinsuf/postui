@@ -5122,12 +5122,13 @@ fn body_lines(
     // text, or whatever `viewport_window` cut for a raw row.
     //
     // `tail` is painted after the row's text but is not part of it (a
-    // header row's gap and copy pill, #54): the copy and the search read
-    // the text alone, so the highlights and the selection are laid on
-    // `pieces` before `tail` joins them, and a selection to the row's end
-    // (`v$` included) stops where the text does, as on a Raw or Pretty
-    // row, which has no cell past its text to paint. Only the cursor
-    // row's tint, a whole-line style, still spans the tail.
+    // header row's gap and copy pill, #54; the divider's rule, #177): the
+    // copy and the search read the text alone, so the highlights and the
+    // selection are laid on `pieces` before `tail` joins them, and a
+    // selection to the row's end (`v$` included) stops where the text
+    // does, as on a Raw or Pretty row, which has no cell past its text to
+    // paint. Only the cursor row's tint, a whole-line style, still spans
+    // the tail.
     let mut push = |i: usize,
                     full: usize,
                     pieces: Vec<(String, Style)>,
@@ -5250,14 +5251,13 @@ fn body_lines(
                 let row = view.header_row(i).unwrap_or(HeaderRow::Note);
                 match row {
                     HeaderRow::Divider => {
-                        // The rule is still in `pieces`, so a selection
-                        // across the divider paints it though the copy
-                        // leaves it out. Moving it to the tail is #177,
-                        // kept out of #54 (the copy pill) on purpose.
+                        // The `─` rule out to the pane's width is the row's
+                        // tail: the copy holds `── sent ` alone, so a
+                        // selection across the divider stops there (#177).
                         let rule = "\u{2500}"
                             .repeat((area.width as usize).saturating_sub(crate::ui::cells(line)));
-                        let pieces = vec![(format!("{line}{rule}"), dim)];
-                        push(i, i, pieces, Vec::new(), true, (0, view.h_scroll));
+                        let tail = vec![Span::styled(rule, dim)];
+                        push(i, i, vec![(line.clone(), dim)], tail, true, (0, view.h_scroll));
                         continue;
                     }
                     HeaderRow::Note => {
@@ -7175,8 +7175,8 @@ mod tests {
 
     /// Task #54: a selection running past a header row's end paints its
     /// text only. The gap and the copy pill are not part of the row's text
-    /// (the copy leaves them out), so they keep their own look. Only the
-    /// header row is checked: the divider row's rule is #177.
+    /// (the copy leaves them out), so they keep their own look. The divider
+    /// row's rule has its own test below (#177).
     #[test]
     fn a_selection_past_a_header_rows_end_leaves_its_pill_unpainted() {
         let theme = Theme::dark();
@@ -7212,6 +7212,42 @@ mod tests {
             r.selected_text(),
             Some(format!("{line}\n{}\n{head}", lines[1])),
             "the copy holds row 0's text, its gap and pill left out"
+        );
+    }
+
+    /// A selection across the `── sent` divider paints its text only: the
+    /// `─` rule drawn out to the pane's width is not in the copy, so it
+    /// keeps its unselected look (#177).
+    #[test]
+    fn a_selection_across_the_sent_divider_leaves_its_rule_unpainted() {
+        let theme = Theme::dark();
+        let mut r = ready("{}");
+        r.set_view_mode(ViewMode::Headers);
+        let (area, before) = render_buf(&mut r);
+        // From row 0's start down into row 2 (the first sent header), so
+        // the divider on row 1 is selected whole.
+        assert!(r.begin_selection_at(area.x, area.y));
+        assert!(r.drag_selection_to(area.x + 3, area.y + 2));
+        let (area, buf) = render_buf(&mut r);
+        let view = r.view().unwrap();
+        assert_eq!(view.header_row(1), Some(HeaderRow::Divider));
+        let at = |c: usize| (area.x + u16::try_from(c).unwrap(), area.y + 1);
+        let text_end = crate::ui::cells(SENT_DIVIDER);
+        assert_eq!(
+            buf[at(text_end - 1)].bg,
+            theme.selection,
+            "the divider's last text cell is selected"
+        );
+        assert_eq!(buf[at(text_end)].symbol(), "\u{2500}", "the rule starts after the text");
+        for c in text_end..usize::from(area.width) {
+            assert_eq!(buf[at(c)], before[at(c)], "column {c}: the rule paints as unselected");
+        }
+        let lines = &view.header_lines;
+        let head: String = lines[2].chars().take(4).collect();
+        assert_eq!(
+            r.selected_text(),
+            Some(format!("{}\n{SENT_DIVIDER}\n{head}", lines[0])),
+            "the copy holds the divider's text, its rule left out"
         );
     }
 
