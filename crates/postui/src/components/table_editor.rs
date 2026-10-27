@@ -51,6 +51,12 @@ pub struct CellEdit {
 /// What committing one cell did ([`TableEditorState::commit_cell`]). It
 /// names two rows because a `+ Add` name that is already taken makes none:
 /// the row it names is the existing one, while the caret was on `+ Add`.
+///
+/// `here` equals `row` except on `+ Add`, so a caller could work it out
+/// itself, but only from the map as it was before the commit: each mover
+/// would have to remember to read it first. Shift-Tab (task #111) and
+/// Up/Down (task #176) were both wrong for want of that, so the commit,
+/// which sees both rows, says both.
 struct Committed {
     /// The row the edit resolved to: the row written, or for a `+ Add` name
     /// that is already taken, the existing row it matched (Tab opens that
@@ -428,15 +434,16 @@ impl TableEditorState {
     /// surface.
     fn commit_cell(&mut self, map: &mut IndexMap<String, Entry>, edit: &CellEdit) -> Committed {
         let typed = edit.input.text().to_string();
-        if edit.row < map.len() {
+        if let Some((key, e)) = map.get_index_mut(edit.row) {
             let (row, warning) = match edit.col {
                 Col::Value => {
-                    if let Some((_, e)) = map.get_index_mut(edit.row) {
-                        e.value = typed;
-                    }
+                    e.value = typed;
                     (edit.row, None)
                 }
-                Col::Key => Self::commit_key(map, edit.row, typed),
+                Col::Key => {
+                    let (orig, entry) = (key.clone(), e.clone());
+                    Self::commit_key(map, edit.row, orig, entry, typed)
+                }
             };
             return Committed { row: Some(row), here: row, warning };
         }
@@ -462,20 +469,18 @@ impl TableEditorState {
         Committed { row: Some(here), here, warning: None }
     }
 
-    /// Renames row `idx` to `new_key`, keeping its position, value and
-    /// enabled flag. Renaming onto a key that already exists collapses the
-    /// two rows (the target keeps its slot and takes this row's value) and
-    /// warns; blanking a key is refused with a warning. Returns where the
-    /// row is now. Its one caller passes a row of the map; an index past
-    /// the end renames nothing and stays where it is.
+    /// Renames row `idx` (named `orig`, holding `entry`) to `new_key`,
+    /// keeping its position, value and enabled flag. Renaming onto a key
+    /// that already exists collapses the two rows (the target keeps its
+    /// slot and takes this row's value) and warns; blanking a key is
+    /// refused with a warning. Returns where the row is now.
     fn commit_key(
         map: &mut IndexMap<String, Entry>,
         idx: usize,
+        orig: String,
+        entry: Entry,
         new_key: String,
     ) -> (usize, Option<String>) {
-        let Some((orig, entry)) = map.get_index(idx).map(|(k, e)| (k.clone(), e.clone())) else {
-            return (idx, None);
-        };
         if new_key == orig {
             return (idx, None);
         }
