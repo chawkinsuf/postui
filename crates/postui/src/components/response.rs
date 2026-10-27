@@ -7048,7 +7048,7 @@ mod tests {
         let theme = Theme::dark();
         let mut r = ready("{}");
         r.set_view_mode(ViewMode::Headers);
-        let (area, _) = render_buf(&mut r);
+        let (area, before) = render_buf(&mut r);
         // From row 0's start down into row 2 (the first sent header), so
         // row 0 is selected to its end.
         assert!(r.begin_selection_at(area.x, area.y));
@@ -7058,11 +7058,20 @@ mod tests {
         assert!(matches!(view.header_row(0), Some(HeaderRow::Received(_))));
         let lines = &view.header_lines;
         let line = &lines[0];
-        let bg = |c: usize| buf[(area.x + u16::try_from(c).unwrap(), area.y)].bg;
+        let at = |c: usize| (area.x + u16::try_from(c).unwrap(), area.y);
         let text_end = crate::ui::cells(line);
-        assert_eq!(bg(text_end - 1), theme.selection, "the row's last text cell is selected");
+        assert_eq!(
+            buf[at(text_end - 1)].bg,
+            theme.selection,
+            "the row's last text cell is selected"
+        );
+        // Row 0 is the cursor row either way, so its tint is in both.
         for c in text_end..header_pill_cols(line).end {
-            assert_ne!(bg(c), theme.selection, "column {c}: the gap and the pill are not");
+            assert_eq!(
+                buf[at(c)],
+                before[at(c)],
+                "column {c}: the gap and pill paint as unselected"
+            );
         }
         let head: String = lines[2].chars().take(4).collect();
         assert_eq!(
