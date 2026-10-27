@@ -20,7 +20,7 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] #135 No way to reach a URL/body variable's popup from the keyboard (pulled in by the user, 2026-10-26; merged 2026-10-26: alt+o/n/h act on the caret's tooltip)
 - [x] #136 The main header rows have no `y` copy key, which the auto rows have (merged 2026-10-26 with #137)
 - [x] #137 Copy a whole header (`Name: value`) (merged 2026-10-26: `Y`, vim's `"+yy`, shift+click on a copy pill where the terminal passes it on)
-- [ ] #151 The variable edit dialog changes request vars under an open cell (pulled in by the user, 2026-10-26, with the four below)
+- [x] #151 The variable edit dialog changes request vars under an open cell (pulled in by the user, 2026-10-26, with the four below; merged 2026-10-26: the dialog commits an open Vars cell as it opens)
 - [ ] #144 A bad command-line argument prints usage and exits 0
 - [ ] #145 Variable Manager grid: arrows copy key is `c` while every other list copies with `y`
 - [ ] #128 Arrows body keyboard selections can't include a line break
