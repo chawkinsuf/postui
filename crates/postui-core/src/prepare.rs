@@ -582,7 +582,8 @@ fn rows(
     // user asked for that default; a server that only serves another type
     // may answer 406, and a request row or project default naming
     // `accept` (the pencil writes one) replaces it. A curl import with no
-    // `Accept` adds no row, so it sends this one too (curl spec §5.2).
+    // `Accept` adds no row, so it sends this one too (curl spec, the
+    // 2026-10-27 amendment under §5.2).
     let auto = |name: &str, value: &str, rows: &[HeaderRow]| HeaderRow {
         origin: HeaderOrigin::Auto,
         ..fixed(name, value.into(), replaced(rows, name))
