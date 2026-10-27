@@ -5257,6 +5257,10 @@ fn body_lines(
                         // The crop drops `h_scroll` cells from the row's
                         // front, rule included, so the rule runs that much
                         // further to still reach the right edge (#190).
+                        // Built whole and cropped like every Headers row:
+                        // `h_scroll` stops at the widest row's text, which
+                        // is itself built whole each frame, so the hidden
+                        // part costs no more than that row already does.
                         let reach = usize::from(area.width) + view.h_scroll;
                         let rule = "\u{2500}".repeat(reach.saturating_sub(crate::ui::cells(line)));
                         let tail = vec![Span::styled(rule, dim)];
@@ -7264,9 +7268,9 @@ mod tests {
         let mut r = Pane::default();
         r.set_state(ResponseState::Ready(Box::new(d)), 0);
         r.set_view_mode(ViewMode::Headers);
-        // Inside the text, either side of its end, and past it.
+        // Unscrolled, inside the text, either side of its end, and past it.
         let text_cells = crate::ui::cells(SENT_DIVIDER);
-        for scroll in [3, text_cells - 1, text_cells, text_cells + 1, 20] {
+        for scroll in [0, 3, text_cells - 1, text_cells, text_cells + 1, 20] {
             r.view.as_mut().unwrap().h_scroll = scroll;
             let (area, buf) = render_buf(&mut r);
             let view = r.view().unwrap();
