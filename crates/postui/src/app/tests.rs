@@ -15935,6 +15935,10 @@ fn a_header_copy_pills_hint_names_its_alt_click() {
         let tip = crate::hint::hint_for(&hit, &app.keymap, &app.hint_ctx(&hit)).unwrap();
         assert_eq!(tip, want, "{hit:?}");
     }
+    let response = response_headers_app(crate::config::KeyProfile::Arrows);
+    let hit = Hit::HeaderCopy(0);
+    let tip = crate::hint::hint_for(&hit, &response.keymap, &response.hint_ctx(&hit)).unwrap();
+    assert_eq!(tip, want, "{hit:?}");
     app.editor
         .params
         .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
