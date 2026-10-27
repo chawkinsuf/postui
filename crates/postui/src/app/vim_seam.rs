@@ -818,8 +818,10 @@ impl App {
         }
         let top = self.editor.body.viewport_offset().1;
         let rows = match self.editor.last_body_area {
+            // At least a row: a one-row body under the prompt drew none,
+            // and the frame after it closes shows one (#129).
             Some(a) => {
-                let h = usize::from(a.height);
+                let h = usize::from(a.height).max(1);
                 top.saturating_sub(h)..top.saturating_add(h.saturating_mul(2))
             }
             None => 0..usize::MAX,

@@ -240,6 +240,14 @@ pub struct Editor {
     /// The engine's search prompt and matches for the next draw, mirrored
     /// in by `App::vim_mirror_body_search` (spec §5.6). Empty in arrows.
     pub(crate) body_search: crate::keyroute::engine_glue::BodySearch,
+    /// The body's top row when the search prompt opened, put back on the
+    /// first draw after it closes (#129). The prompt takes the body's
+    /// bottom row, which can scroll the caret's line up one; Vim's command
+    /// line has a row of its own, so `/` then Esc leaves its window where
+    /// it was, and after Enter the view moves from there to the match.
+    /// What it gives up: a wheel scroll made while the prompt is open is
+    /// undone with it, as Vim's cancelled search restores its view.
+    prompt_top: Option<usize>,
     /// The fixed end of an in-progress body selection: planted by a left
     /// click (mouse) or the first shifted motion (keyboard), consumed by
     /// `body_drag_to`/shifted motions to rebuild `body.selection` as the
@@ -403,6 +411,7 @@ impl Default for Editor {
             body_visual: None,
             body_hl_overlays: Vec::new(),
             body_search: Default::default(),
+            prompt_top: None,
             body_handler: body_key_handler(),
             body_sel_anchor: None,
             body_word_anchor: None,
@@ -1422,6 +1431,8 @@ impl Editor {
         // The engine's Visual span named the old text (final review M-3);
         // the next key's rebase would clear it, a frame late.
         self.body_visual = None;
+        // The old text's view is no place to come back to.
+        self.prompt_top = None;
         // The fresh state has no highlights; force the next draw to relex.
         self.body_hl_text.clear();
         self.body_hl_marker = None;
@@ -3898,28 +3909,37 @@ impl Editor {
                     width: area.width.saturating_sub(2),
                     height: area.height.saturating_sub(2),
                 };
+                // The view the prompt's row scrolled is given back when it
+                // closes (`prompt_top`).
+                let open = self.body_search.prompt.is_some();
+                match self.prompt_top {
+                    None if open => self.prompt_top = Some(self.body.viewport_offset().1),
+                    Some(top) if !open => {
+                        self.prompt_top = None;
+                        self.body.set_viewport_offset(0, top);
+                    }
+                    _ => {}
+                }
+                let pane_rows = area.height;
                 // The engine's search prompt takes the bottom row from the
                 // body, as Vim's command line is a row of its own (#129):
                 // edtui, the engine's view (`App::view_ctx`), clicks and
                 // the painters below all see a body one row shorter while
-                // it is open, so nothing the body shows sits under it. The
-                // scrollbar below measures that shorter body too: a body
-                // that fits the pane exactly gains a bar (and loses a text
-                // column) while the prompt is open, because one line of it
-                // is then out of view and the bar is what says so.
-                let prompt_row =
-                    (self.body_search.prompt.is_some() && area.height > 0).then(|| {
-                        area.height = area.height.saturating_sub(1);
-                        Rect { y: area.bottom(), height: 1, ..area }
-                    });
+                // it is open, so nothing the body shows sits under it.
+                let prompt_row = (open && area.height > 0).then(|| {
+                    area.height = area.height.saturating_sub(1);
+                    Rect { y: area.bottom(), height: 1, ..area }
+                });
                 // The bar takes the last column before edtui is told about
                 // the area, so its own screen_area (which mouse routing is
-                // resolved against) never overlaps the bar.
+                // resolved against) never overlaps the bar. It measures the
+                // pane's rows, the prompt's included, so opening the prompt
+                // never adds a bar that takes a column and rewraps the text.
                 let spec = ScrollbarSpec {
                     pane: PaneId::Editor,
                     offset: self.body.viewport_offset().1,
                     content: self.body.lines.len(),
-                    viewport: area.height as usize,
+                    viewport: usize::from(pane_rows),
                 };
                 if spec.overflows() && area.width > 1 {
                     let column = Rect { x: area.x + area.width - 1, width: 1, ..area };

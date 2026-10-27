@@ -1727,6 +1727,75 @@ fn a_click_on_the_search_prompt_leaves_the_body_caret() {
     assert_eq!(app.editor.body.cursor, caret);
 }
 
+/// #129: the prompt's row is the body's again once it closes, and the
+/// view it scrolled goes back: `L`, `/`, Esc leaves the body as it was,
+/// as Vim's window never moves for its command line.
+#[test]
+fn closing_the_search_prompt_gives_the_view_back() {
+    let mut app = vim(Fixture::Body);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    feed(&mut app, "L");
+    let before = draw_buffer(&mut app);
+    feed(&mut app, "/");
+    assert_eq!(app.editor.body.viewport_offset().1, 1, "the caret's line moved up");
+    feed(&mut app, "<Esc>");
+    assert_eq!(app.editor.body.viewport_offset().1, 0);
+    assert_eq!(draw_buffer(&mut app), before, "the body as it was");
+}
+
+/// #129: a body of exactly the pane's rows gains no scrollbar while the
+/// prompt is open (it would take a column and rewrap the text).
+#[test]
+fn the_search_prompt_adds_no_scrollbar() {
+    let mut app = vim(Fixture::Body);
+    let h = usize::from(app.editor.last_body_area.expect("the body is drawn").height);
+    app.editor.set_body_text(&vec!["x"; h].join("\n"));
+    draw(&mut app);
+    let full = app.editor.last_body_area.unwrap();
+    let bar = |app: &App| !app.hits.rects_of(&Hit::ScrollbarThumb(PaneId::Editor)).is_empty();
+    assert!(!bar(&app), "it fits");
+    feed(&mut app, "/");
+    assert!(!bar(&app), "no bar for the prompt's row");
+    assert_eq!(app.editor.last_body_area.unwrap().width, full.width, "no column taken");
+}
+
+/// #129: in a one-row body the prompt takes the only row; the frame after
+/// Enter still paints the match the search jumped to.
+#[test]
+fn a_one_row_body_paints_the_match_after_the_prompt() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    fn draw_at(app: &mut App, rows: u16) -> ratatui::buffer::Buffer {
+        app.anims.finish_all();
+        let mut terminal = Terminal::new(TestBackend::new(160, rows)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+    let mut app = vim(Fixture::Body);
+    let mut lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    lines[100] = "needle".into();
+    app.editor.set_body_text(&lines.join("\n"));
+    let rows = (8..48)
+        .find(|&h| {
+            draw_at(&mut app, h);
+            app.editor.last_body_area.map(|a| a.height) == Some(1)
+        })
+        .expect("a height with a one-row body");
+    let mut buf = draw_at(&mut app, rows);
+    for ev in crate::keyroute::notation::events("/needle<CR>") {
+        app.handle_key(ev);
+        buf = draw_at(&mut app, rows);
+    }
+    let area = app.editor.last_body_area.unwrap();
+    assert_eq!(area.height, 1);
+    assert!(row_text(&buf, area, area.y).contains("needle"));
+    // The second letter: the caret's own cell is REVERSED regardless.
+    let x = (area.x..area.right()).find(|&x| buf[(x, area.y)].symbol() == "e").unwrap();
+    assert!(buf[(x, area.y)].modifier.contains(Modifier::REVERSED), "the match is painted");
+}
+
 /// The prompt's caret stands past the cells its text paints: `❤️` (a
 /// heart and its presentation selector) takes two.
 #[test]
