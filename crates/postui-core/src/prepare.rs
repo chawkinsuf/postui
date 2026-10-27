@@ -324,7 +324,9 @@ pub fn prepare(
 /// client puts in before ours (the URL's `Authorization`), ours, then what
 /// it adds after. A row of ours replaces a client row in place, so one the
 /// client put in before ours keeps its place when replaced; one it adds
-/// after ours is only added when the name is free, so it holds no place.
+/// after ours would only be added when the name is free, so it holds no
+/// place. (Since task #174 made `Accept` ours, the rows it adds after ours
+/// are `Host` and `Content-Length`, which nothing replaces: R3a.)
 fn wire_order(rows: &[HeaderRow]) -> Vec<SentHeader> {
     let mut groups: IndexMap<String, Vec<SentHeader>> = IndexMap::new();
     let mut ours_started = false;
@@ -386,8 +388,8 @@ pub struct HeaderRow {
     /// Names of `{{tokens}}` in the name or value that didn't resolve.
     pub unresolved: Vec<String>,
     /// How a request row taking this row over is written (task #20): a
-    /// default's name and value with their `{{tokens}}`, an auto or client
-    /// row's fixed text. `None` for a row the request may never take over:
+    /// default's name and value with their `{{tokens}}`, an auto row's text
+    /// as sent. `None` for a row the request may never take over:
     /// its own rows, which the table already holds; a header the client
     /// owns (R3a); the rows the client reads off the URL (`Host`, the
     /// userinfo's `Authorization`, which copied into the request would
@@ -531,7 +533,7 @@ fn rows(
     };
     // A row the client adds, shown as `display`: masked when a secret can
     // change it (the URL's rows), else as it is sent. The request may not
-    // take it over unless `fixed` says so.
+    // take it over.
     let client_row =
         |name: &str, value: String, display: String, unsent: Option<Unsent>| HeaderRow {
             header: SentHeader {
@@ -545,12 +547,6 @@ fn rows(
             unresolved: Vec::new(),
             override_as: None,
         };
-    // An auto or client row of fixed text, shown as it is sent, that the
-    // request may take over unless it has a row naming it already.
-    let fixed = |name: &str, value: String, unsent: Option<Unsent>| HeaderRow {
-        override_as: (!named_by_request(name)).then(|| (name.to_string(), value.clone())),
-        ..client_row(name, value.clone(), value, unsent)
-    };
 
     let mut rows = Vec::new();
 
@@ -589,10 +585,12 @@ fn rows(
     // Left to the client, `Accept` would be reqwest's `*/*`, and Copy as
     // curl would leave it to curl's, so it is ours to send. A request row
     // or project default naming `accept` (the pencil writes one) replaces
-    // it.
+    // it. Each is shown as it is sent, and the request may take it over
+    // unless it has a row naming it already.
     let auto = |name: &str, value: &str, rows: &[HeaderRow]| HeaderRow {
         origin: HeaderOrigin::Auto,
-        ..fixed(name, value.into(), replaced(rows, name))
+        override_as: (!named_by_request(name)).then(|| (name.to_string(), value.to_string())),
+        ..client_row(name, value.to_string(), value.to_string(), replaced(rows, name))
     };
     if body_len.is_some() {
         rows.push(auto("Content-Type", "application/json", &rows));
