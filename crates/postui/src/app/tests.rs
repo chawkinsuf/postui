@@ -32357,6 +32357,72 @@ fn a_focus_gained_reload_syncs_the_variable_manager() {
     assert!(!matches!(app.varmanager.detail, VmDetail::Group(_)), "detail moved off it");
 }
 
+/// Task #84: a selector deleted on disk while Manage is closed is gone from
+/// the detail pane when Manage opens again. The reload runs off screen, so
+/// opening the screen is what hands the Manager the files as they are now.
+#[test]
+fn opening_manage_syncs_a_selector_removed_while_it_was_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    app.update(Action::CloseScreen);
+    std::fs::write(
+        dir.path().join("variables.toml"),
+        "# edited elsewhere, selector gone\n[base_url]\ndefault = \"http://localhost:8080\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "base_url = \"https://qa.example.com\"\n",
+    )
+    .unwrap();
+    app.on_focus_gained();
+    // No frame between the open and the asserts: the state is right before
+    // the next paint, which a key can arrive ahead of.
+    app.update(Action::OpenManage { tab: None });
+    use crate::components::varmanager::{VmDetail, VmRow};
+    assert!(!app.varmanager.left_rows.contains(&VmRow::Group("user".into())), "list synced");
+    assert_ne!(app.varmanager.detail, VmDetail::Group("user".into()), "detail moved off it");
+    assert_highlight_names_the_detail(&app);
+}
+
+/// The Variable Manager's highlighted row is the one its detail pane shows.
+fn assert_highlight_names_the_detail(app: &App) {
+    use crate::components::varmanager::{VmDetail, VmRow};
+    let vm = &app.varmanager;
+    let on = match vm.left_rows.get(vm.left_cursor) {
+        Some(VmRow::Var(n)) => VmDetail::Var(n.clone()),
+        Some(VmRow::Group(n)) => VmDetail::Group(n.clone()),
+        _ => VmDetail::None,
+    };
+    assert_eq!(on, vm.detail, "the highlight and the pane agree");
+}
+
+/// Task #84: a variable an undo on the main screen removes is gone from the
+/// detail pane when Manage opens again.
+#[test]
+fn opening_manage_syncs_a_variable_an_undo_removed_while_it_was_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::VarStruct(VarStructOp::NewVar {
+        name: "widget_id".into(),
+        description: None,
+    }));
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("widget_id".into()));
+    app.update(Action::CloseScreen);
+    app.update(Action::Undo);
+    assert!(!app.project().unwrap().variables().vars.contains_key("widget_id"), "undone");
+    app.update(Action::OpenManage { tab: None });
+    use crate::components::varmanager::{VmDetail, VmRow};
+    assert!(!app.varmanager.left_rows.contains(&VmRow::Var("widget_id".into())), "list synced");
+    assert_ne!(app.varmanager.detail, VmDetail::Var("widget_id".into()), "detail moved off it");
+    assert_highlight_names_the_detail(&app);
+}
+
 /// Task #76: Copy clicked in a live grid cell's own menu copies the cell's
 /// selection. The menu is a dialog, so the click no longer closes the cell
 /// under it.
