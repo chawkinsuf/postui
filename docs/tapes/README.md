@@ -1,6 +1,6 @@
 # Recording the README's images
 
-The README's GIF and screenshots are recorded with
+The README's GIFs and screenshots are recorded with
 [VHS](https://github.com/charmbracelet/vhs) from the `.tape` scripts here, so
 they can be made again whenever the UI changes.
 
@@ -72,9 +72,10 @@ the sidebar takes those as commands.
 Each tape starts with `include/common.tape`: the recording settings from
 `include/settings.tape`, and the hidden launch through `setup.sh`. `vim.tape`
 sources the settings alone and launches with the Vim profile itself. The
-font size and height set the terminal to about 105 columns by 34 rows, so
+font size and height set the terminal to about 110 columns by 35 rows, so
 the text stays readable when GitHub scales the images down to its README
 column. `include/open-users.tape` holds the sidebar
-steps into the demo's `users/` folder, the one place the tapes depend on the
-demo project's layout. It sits in its own folder so the
-`docs/tapes/*.tape` loop doesn't record it on its own.
+steps into the demo's `users/` folder, where the tapes depend on the demo
+project's layout; `vim.tape` takes the same steps with Vim keys, so a change
+to the demo's folders means changing both. The shared pieces sit in
+`include/` so the `docs/tapes/*.tape` loop doesn't record them on their own.
