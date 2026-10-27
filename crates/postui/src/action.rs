@@ -829,15 +829,14 @@ pub enum Action {
         name: String,
         destination: ExtractDestination,
     },
-    /// Insert `text` at the currently focused text field: the URL line, an
-    /// in-progress table cell edit, or the body buffer (Body tab +
+    /// Insert variable `name` at the currently focused text field: the URL
+    /// line, an in-progress table cell edit, or the body buffer (Body tab +
     /// content focus). Toasts "nowhere to insert" when focus isn't on a
-    /// text field. `completing` marks a completion (`name}}` after a typed
-    /// `{{`), which goes in at the caret; otherwise `text` is a whole
-    /// `{{name}}`, which takes the place of the token the caret is in
-    /// (#149).
+    /// text field. `completing` finishes a typed `{{` with `name}}` at the
+    /// caret; otherwise a whole `{{name}}` goes in, taking the place of a
+    /// token it would land inside (#149).
     InsertVarText {
-        text: String,
+        name: String,
         completing: bool,
     },
     /// Copy `surface`'s live selection to the clipboard — the context

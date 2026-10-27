@@ -510,12 +510,12 @@ impl LineInput {
         // Recorded before the token is selected, so an undo puts the caret
         // back where the user had it.
         self.record(EditKind::Whole);
-        if whole && self.selection().is_none() {
-            let chars: Vec<char> = self.text.chars().collect();
-            if let Some(token) = crate::text::token_around(&chars, self.cursor) {
-                self.anchor = Some(token.start);
-                self.cursor = token.end;
-            }
+        if whole
+            && self.selection().is_none()
+            && let Some(token) = crate::text::token_around(&self.text, self.cursor)
+        {
+            self.anchor = Some(token.start);
+            self.cursor = token.end;
         }
         self.paste_unrecorded(text);
     }

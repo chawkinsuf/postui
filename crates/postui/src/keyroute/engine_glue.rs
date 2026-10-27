@@ -119,7 +119,8 @@ impl Edit<'_> {
                 s.set_cursor(Pos::new(end.row, end.col.saturating_sub(1)));
             }
             Edit::AtCaretOverToken(text) => {
-                let token = crate::text::token_around(&s.buf().line(caret.row), caret.col);
+                let line: String = s.buf().line(caret.row).iter().collect();
+                let token = crate::text::token_around(&line, caret.col);
                 match token {
                     Some(token) => {
                         let from = Pos::new(caret.row, token.start);
@@ -131,7 +132,8 @@ impl Edit<'_> {
             }
             Edit::AppendOverToken(text) => {
                 let at = append_at(s.buf(), caret);
-                let token = crate::text::token_around(&s.buf().line(at.row), at.col);
+                let line: String = s.buf().line(at.row).iter().collect();
+                let token = crate::text::token_around(&line, at.col);
                 match token {
                     Some(token) => Edit::Replace(
                         Pos::new(at.row, token.start),

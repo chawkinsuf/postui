@@ -8379,7 +8379,7 @@ fn stale_table_edit_does_not_capture_insert_var_text_after_focus_moves() {
     // The jump commits the cell it leaves (spec 2026-10-19 R1), so there
     // is no stale edit left for the insert to land in.
     app.update(Action::FocusPane(PaneId::Response));
-    app.update(Action::InsertVarText { text: "x".into(), completing: false });
+    app.update(Action::InsertVarText { name: "x".into(), completing: false });
 
     let text = rendered_text(&mut app);
     assert!(
@@ -27830,7 +27830,7 @@ fn a_created_variable_replaces_the_token_the_caret_is_in() {
 fn a_completion_still_goes_in_at_the_caret() {
     let (mut app, _dir, _out) = tooltip_app("x");
     open_value_cell(&mut app, EditorTab::Headers, "{{{{old}}", 2);
-    app.update(Action::InsertVarText { text: "base_url}}".into(), completing: true });
+    app.update(Action::InsertVarText { name: "base_url".into(), completing: true });
     assert_eq!(app.editor.table.editing.as_ref().unwrap().input.text(), "{{base_url}}{{old}}");
 }
 
@@ -27844,7 +27844,7 @@ fn undoing_a_pick_over_a_token_restores_the_caret() {
     app.editor.open_url_from_app();
     app.editor.url.set_cursor(3);
     render_once(&mut app);
-    app.update(Action::InsertVarText { text: "{{v}}".into(), completing: false });
+    app.update(Action::InsertVarText { name: "v".into(), completing: false });
     assert_eq!(app.editor.url.text(), "{{v}}/x");
     app.handle_key(ctrl_z);
     assert_eq!((app.editor.url.text(), app.editor.url.cursor()), ("{{x}}/x", 3));
@@ -27857,7 +27857,7 @@ fn undoing_a_pick_over_a_token_restores_the_caret() {
     app.editor.body.cursor = edtui::Index2::new(1, 11);
     render_once(&mut app);
     app.capture_undo();
-    app.update(Action::InsertVarText { text: "{{v}}".into(), completing: false });
+    app.update(Action::InsertVarText { name: "v".into(), completing: false });
     app.capture_undo();
     assert_eq!(app.editor.body_text(), "{\n  \"u\": \"{{v}}\"\n}");
     // The app's undo stores no caret (undo.rs); the text comes back whole.
@@ -27877,7 +27877,7 @@ fn a_selection_wins_over_the_carets_token() {
         input.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
     }
     assert_eq!(input.selection(), Some((0, 4)));
-    app.update(Action::InsertVarText { text: "{{v}}".into(), completing: false });
+    app.update(Action::InsertVarText { name: "v".into(), completing: false });
     assert_eq!(app.editor.table.editing.as_ref().unwrap().input.text(), "{{v}}old}}");
 }
 

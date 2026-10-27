@@ -34,13 +34,12 @@ impl Pos {
 /// caret just before it sits at, but a put there goes in front and nests
 /// nothing. So vim Normal on a first brace replaces the token (its put
 /// lands after the brace) except at column 0, where the put goes before.
-pub fn token_around(line: &[char], at: usize) -> Option<std::ops::Range<usize>> {
-    let text: String = line.iter().collect();
-    postui_core::vars::find_tokens(&text).into_iter().find_map(|t| {
-        let start = text[..t.start].chars().count();
-        let end = start + text[t.start..t.end].chars().count();
-        (start < at && at < end).then_some(start..end)
-    })
+pub fn token_around(line: &str, at: usize) -> Option<std::ops::Range<usize>> {
+    let at = line.char_indices().nth(at).map_or(line.len(), |(byte, _)| byte);
+    let token =
+        postui_core::vars::find_tokens(line).into_iter().find(|t| t.start < at && at < t.end)?;
+    let start = line[..token.start].chars().count();
+    Some(start..start + line[token.start..token.end].chars().count())
 }
 
 /// Text by lines: all the shapes here read.

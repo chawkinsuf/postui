@@ -6668,13 +6668,15 @@ impl App {
                 });
                 true
             }
-            Action::InsertVarText { text, completing } => {
+            Action::InsertVarText { name, completing } => {
                 self.no_coalesce = true;
                 // A whole `{{token}}` never lands inside another: where it
                 // would, it takes that token's place (#149). Each field
                 // looks at its own caret as it puts it. A completion goes
                 // in at the caret.
                 let whole = !completing;
+                let text =
+                    if completing { format!("{name}}}}}") } else { format!("{{{{{name}}}}}") };
                 // A vim field the engine runs takes the token as one engine
                 // step (spec §3.7).
                 if self.vim_insert(&text, whole) {

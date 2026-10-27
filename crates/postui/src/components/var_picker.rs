@@ -292,12 +292,9 @@ impl VarPickerState {
         let &idx = self.filtered.get(self.selected)?;
         match &self.mode {
             PickerMode::Insert => {
-                let name = &self.entries[idx].name;
-                let completing = self.completing;
-                let text =
-                    if completing { format!("{name}}}}}") } else { format!("{{{{{name}}}}}") };
+                let name = self.entries[idx].name.clone();
                 Some(super::modal::ModalResult {
-                    actions: vec![Action::InsertVarText { text, completing }],
+                    actions: vec![Action::InsertVarText { name, completing: self.completing }],
                     close: true,
                     ..Default::default()
                 })
@@ -895,13 +892,13 @@ mod tests {
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(
             res.actions,
-            vec![Action::InsertVarText { text: "base_url}}".into(), completing: true }]
+            vec![Action::InsertVarText { name: "base_url".into(), completing: true }]
         );
         let mut p = VarPickerState::new(entries, false);
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(
             res.actions,
-            vec![Action::InsertVarText { text: "{{base_url}}".into(), completing: false }]
+            vec![Action::InsertVarText { name: "base_url".into(), completing: false }]
         );
     }
 
@@ -939,7 +936,7 @@ mod tests {
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(
             res.actions,
-            vec![Action::InsertVarText { text: "{{base}}".into(), completing: false }]
+            vec![Action::InsertVarText { name: "base".into(), completing: false }]
         );
     }
 
@@ -1521,7 +1518,7 @@ mod tests {
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(
             res.actions,
-            vec![Action::InsertVarText { text: "{{env}}".into(), completing: false }]
+            vec![Action::InsertVarText { name: "env".into(), completing: false }]
         );
     }
 }

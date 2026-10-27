@@ -1261,10 +1261,9 @@ impl Editor {
     pub fn body_put_var(&mut self, text: &str, whole: bool) {
         let caret = self.body.cursor;
         if whole && self.body.selection.is_none() {
-            let token = crate::text::token_around(
-                &crate::text::Lines::line(&self.body.lines, caret.row),
-                caret.col,
-            );
+            let line: String =
+                crate::text::Lines::line(&self.body.lines, caret.row).iter().collect();
+            let token = crate::text::token_around(&line, caret.col);
             if let Some(token) = token {
                 self.body_word_anchor = None;
                 self.set_body_selection_boundaries(
