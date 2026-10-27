@@ -46,6 +46,17 @@ pub enum TextSurface {
     Settings,
 }
 
+/// One of the variable tooltip's pills, as [`Action::TipPill`] presses it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TipPill {
+    /// `󰏫`: the editor the token calls for (`OpenVarTokenPopup`).
+    Edit,
+    /// `󰆏`: the real value to the clipboard, a secret's included.
+    Copy,
+    /// `󰈈`: a secret's mask off, or back on.
+    Reveal,
+}
+
 /// What [`Action::CopyToClipboard`] copies: the ready response body, one of
 /// its headers by index, or the editor's URL as written.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -813,6 +824,10 @@ pub enum Action {
     /// insert picker seeded with the name (its "new variable…" row is the
     /// create flow).
     OpenVarTokenPopup(String),
+    /// A key for one of the variable tooltip's pills: does what a click on
+    /// it does, for the tooltip open now (the pointer's or the caret's),
+    /// and nothing with no tooltip open or that pill not offered (#135).
+    TipPill(TipPill),
     /// The value-edit popup's confirm: write `value` for `name` into the
     /// chosen destination — the request's `[variables]`, the active
     /// environment's flat value, or the declaration default.

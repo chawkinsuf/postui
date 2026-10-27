@@ -1151,9 +1151,10 @@ impl Editor {
 
     /// The name of the `{{token}}` the keyboard caret is currently sitting
     /// in, for the caret-resting tooltip (spec §7 — a keyboard user gets the
-    /// same value readout a hover gives). Covers the two fields a caret can
-    /// rest in: the URL line, and the body editor's current line. `None`
-    /// anywhere else, and whenever the caret is outside every token.
+    /// same value readout a hover gives). Covers the fields a caret can
+    /// rest in: the URL line, the body editor's current line, and a table
+    /// cell under edit (#135). `None` anywhere else, and whenever the caret
+    /// is outside every token.
     pub fn caret_token(&self) -> Option<String> {
         let (text, byte_off) = match self.sub_focus {
             SubFocus::Url if self.url_open => {
@@ -1166,6 +1167,11 @@ impl Editor {
                 let line: String = self.body.lines.iter_row().nth(cursor.row)?.iter().collect();
                 let off = char_byte_offset(&line, cursor.col);
                 (line, off)
+            }
+            SubFocus::Content if let Some(edit) = &self.table.editing => {
+                let text = edit.input.text().to_string();
+                let off = char_byte_offset(&text, edit.input.cursor());
+                (text, off)
             }
             _ => return None,
         };
@@ -1324,42 +1330,16 @@ impl Editor {
         use crate::text::brackets::{bracket_at, partner_of};
         use crate::text::{Lines as _, Pos};
         let lines = &self.body.lines;
-        let gutter = line_number_gutter_width(lines.len());
-        let width = usize::from(area.width.saturating_sub(gutter));
         // Most frames have no bracket by the caret: look before measuring
         // the view.
         let caret = self.body.cursor;
         let before = self.body.mode == EditorMode::Insert;
         let Some(col) = bracket_at(&lines.line(caret.row), caret.col, before) else { return };
-        if width == 0 {
-            return;
-        }
         let a = Pos::new(caret.row, col);
-        // Each row in view: the screen row it starts on and its wrapped
-        // segments.
-        let top = self.body.viewport_offset().1;
-        let mut rows = Vec::new();
-        let mut y = area.y;
-        for row in top..lines.len() {
-            if y >= bottom {
-                break;
-            }
-            let segments = wrap_segments(&lines.line(row), width);
-            let tall = u16::try_from(segments.len().max(1)).unwrap_or(u16::MAX);
-            rows.push((y, segments));
-            y = y.saturating_add(tall);
-        }
-        let Some(last) = (top + rows.len()).checked_sub(1) else { return };
-        let Some(b) = partner_of(lines, a, top..=last) else { return };
-        let cell = |at: Pos| {
-            let (y0, segments) = &rows[at.row - top];
-            let (k, segment) = segments.iter().enumerate().find(|(_, s)| s.contains(&at.col))?;
-            let y = y0.saturating_add(u16::try_from(k).ok()?);
-            let line = lines.line(at.row);
-            let x: usize = line[segment.start..at.col].iter().map(|&c| body_char_width(c)).sum();
-            let x = area.x + gutter + u16::try_from(x).ok()?;
-            (y < bottom).then_some((x, y))
-        };
+        let Some(view) = self.body_view(area, bottom, usize::MAX) else { return };
+        let Some(last) = (view.top + view.rows.len()).checked_sub(1) else { return };
+        let Some(b) = partner_of(lines, a, view.top..=last) else { return };
+        let cell = |at: Pos| view.cell(lines, at);
         let (Some(cell_a), Some(cell_b)) = (cell(a), cell(b)) else { return };
         // The overlays lead `body.highlights` (the draw splices them in
         // first), so edtui's own test says what they cover.
@@ -1375,6 +1355,34 @@ impl Editor {
                 buf[(x, y)].set_style(lit);
             }
         }
+    }
+
+    /// Where the body's text rows in view sit on the drawn frame, for
+    /// painters that run after edtui renders: `area` is the rect edtui drew
+    /// into, `bottom` the first screen row the body doesn't show. It stops
+    /// after text row `last` (the rows below it can't move a cell above).
+    /// `None` when no text column fits beside the line numbers.
+    fn body_view(&self, area: Rect, bottom: u16, last: usize) -> Option<BodyView> {
+        use crate::text::Lines as _;
+        let lines = &self.body.lines;
+        let gutter = line_number_gutter_width(lines.len());
+        let width = usize::from(area.width.saturating_sub(gutter));
+        if width == 0 {
+            return None;
+        }
+        let top = self.body.viewport_offset().1;
+        let mut rows = Vec::new();
+        let mut y = area.y;
+        for row in top..lines.len().min(last.saturating_add(1)) {
+            if y >= bottom {
+                break;
+            }
+            let segments = wrap_segments(&lines.line(row), width);
+            let tall = u16::try_from(segments.len().max(1)).unwrap_or(u16::MAX);
+            rows.push((y, segments));
+            y = y.saturating_add(tall);
+        }
+        Some(BodyView { x: area.x + gutter, bottom, top, rows })
     }
 
     /// Replaces the whole body buffer. Only explicit user actions (loading a
@@ -2286,6 +2294,34 @@ fn body_char_width(ch: char) -> usize {
 fn line_number_gutter_width(line_count: usize) -> u16 {
     let digits = line_count.max(1).to_string().len();
     u16::try_from(digits + 1).unwrap_or(u16::MAX)
+}
+
+/// The body's rows in view as the last render laid them out
+/// ([`Editor::body_view`]): each text row from edtui's viewport top, with
+/// the screen row it starts on and its wrapped segments.
+struct BodyView {
+    /// The first text column, right of the line numbers.
+    x: u16,
+    bottom: u16,
+    top: usize,
+    rows: Vec<(u16, Vec<std::ops::Range<usize>>)>,
+}
+
+impl BodyView {
+    /// The screen cell of the char at `at`, when it is in view.
+    fn cell<L: crate::text::Lines + ?Sized>(
+        &self,
+        lines: &L,
+        at: crate::text::Pos,
+    ) -> Option<(u16, u16)> {
+        let (y0, segments) = self.rows.get(at.row.checked_sub(self.top)?)?;
+        let (k, segment) = segments.iter().enumerate().find(|(_, s)| s.contains(&at.col))?;
+        let y = y0.saturating_add(u16::try_from(k).ok()?);
+        let line = lines.line(at.row);
+        let x: usize = line[segment.start..at.col].iter().map(|&c| body_char_width(c)).sum();
+        let x = self.x + u16::try_from(x).ok()?;
+        (y < self.bottom).then_some((x, y))
+    }
 }
 
 /// Splits `line` into the character ranges edtui's `LineWrapper::wrap_line`
@@ -3783,6 +3819,21 @@ impl Editor {
                         theme,
                         hits,
                     );
+                }
+                // The drawn token the caret is in, for its tip to sit
+                // against (#135). Most frames have no caret in a token:
+                // look before measuring the view.
+                if focused && self.caret_token().is_some() {
+                    let bottom = prompt_row.unwrap_or(area.bottom());
+                    let caret = self.body.cursor;
+                    let at = crate::text::Pos::new(caret.row, caret.col);
+                    if let Some((x, y)) = self
+                        .body_view(area, bottom, caret.row)
+                        .and_then(|view| view.cell(&self.body.lines, at))
+                        && let Some((_, rect)) = hits.var_token_at(x, y)
+                    {
+                        hits.set_caret_token(rect);
+                    }
                 }
                 // The engine's search prompt on the pane's bottom row (spec
                 // §5.6; plan M3a Deviation 16).

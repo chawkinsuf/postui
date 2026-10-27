@@ -507,11 +507,16 @@ impl Hit {
 /// Parking it here rather than in a second per-frame structure keeps every
 /// component's `draw` signature (and `ui::draw`'s threading) unchanged, and
 /// means a single `clear()` resets all of a frame's artifacts at once.
+///
+/// The drawn `{{token}}` holding the editor's text caret rides along for the
+/// same reason (#135): only the draw knows which of a name's drawn
+/// instances the caret is in, and the caret's tip sits against that one.
 #[derive(Default)]
 pub struct HitMap {
     regions: Vec<(Rect, Hit)>,
     tracks: Vec<(PaneId, Rect)>,
     h_tracks: Vec<(PaneId, Rect)>,
+    caret_token: Option<Rect>,
 }
 
 impl HitMap {
@@ -519,6 +524,20 @@ impl HitMap {
         self.regions.clear();
         self.tracks.clear();
         self.h_tracks.clear();
+        self.caret_token = None;
+    }
+
+    /// Records `rect` as the drawn `{{token}}` the editor's caret is in.
+    pub fn set_caret_token(&mut self, rect: Rect) {
+        self.caret_token = Some(rect);
+    }
+
+    /// The drawn `{{token}}` holding the editor's caret this frame, with
+    /// its name: the instance the caret is in, even where the same name is
+    /// drawn elsewhere too.
+    pub fn caret_token(&self) -> Option<(&str, Rect)> {
+        let rect = self.caret_token?;
+        self.var_token_at(rect.x, rect.y).filter(|(_, r)| *r == rect)
     }
 
     /// Records the full scrollbar column drawn for `pane` this frame.

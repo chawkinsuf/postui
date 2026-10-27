@@ -289,7 +289,7 @@ pub fn paint_var_tokens(
         let start = text_origin_col + crate::ui::cells(&text[..bytes.start]);
         Some(start..start + crate::ui::cells(&text[bytes]))
     };
-    paint_tokens(buf, row, text, columns, vars, theme, hits);
+    paint_tokens(buf, row, text, columns, None, vars, theme, hits);
 }
 
 /// [`paint_var_tokens`] for a field drawn at `row.x`, `row.width` wide —
@@ -299,6 +299,8 @@ pub fn paint_var_tokens(
 /// substitutes — placed where the field drew them, so a char the field
 /// shows as a code (`^I`) neither hides a token nor shifts one. A token
 /// the window cuts is left alone, as one cut off the drawn text was.
+/// A `focused` field's token holding its caret (as `Editor::caret_token`
+/// tests it) is recorded as the caret's token (#135).
 pub fn paint_field_tokens(
     buf: &mut Buffer,
     row: Rect,
@@ -317,16 +319,22 @@ pub fn paint_field_tokens(
         let x = row.x as usize;
         Some(x + cols.start as usize..x + cols.end as usize)
     };
-    paint_tokens(buf, row, input.text(), columns, vars, theme, hits);
+    let text = input.text();
+    let caret = focused
+        .then(|| text.char_indices().nth(input.cursor()).map_or(text.len(), |(byte, _)| byte));
+    paint_tokens(buf, row, text, columns, caret, vars, theme, hits);
 }
 
 /// Tints and registers each token in `text` at the buffer columns
-/// `columns` gives its bytes (`None`: not drawn), clipped to `row`.
+/// `columns` gives its bytes (`None`: not drawn), clipped to `row`. The
+/// drawn token holding byte `caret` is recorded as the caret's token.
+#[allow(clippy::too_many_arguments)]
 fn paint_tokens(
     buf: &mut Buffer,
     row: Rect,
     text: &str,
     columns: impl Fn(Range<usize>) -> Option<Range<usize>>,
+    caret: Option<usize>,
     vars: &VarView,
     theme: &Theme,
     hits: &mut HitMap,
@@ -350,10 +358,11 @@ fn paint_tokens(
                 cell.set_fg(color);
             }
         }
-        hits.register(
-            Rect::new(start as u16, row.y, (end - start) as u16, 1),
-            Hit::VarToken(token.name),
-        );
+        let rect = Rect::new(start as u16, row.y, (end - start) as u16, 1);
+        if caret.is_some_and(|c| token.start <= c && c < token.end) {
+            hits.set_caret_token(rect);
+        }
+        hits.register(rect, Hit::VarToken(token.name));
     }
 }
 

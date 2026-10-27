@@ -317,6 +317,9 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ("space_8", Action::JumpSpace(8)),
         ("space_9", Action::JumpSpace(9)),
         ("pick_variable", Action::OpenVarPicker { completing: false }),
+        ("var_edit", Action::TipPill(crate::action::TipPill::Edit)),
+        ("var_copy", Action::TipPill(crate::action::TipPill::Copy)),
+        ("var_reveal", Action::TipPill(crate::action::TipPill::Reveal)),
         ("paste", Action::Paste),
         ("table_add_row", Action::TableAddRow),
         ("toggle_table_collapse", Action::ToggleTableCollapse),
@@ -441,6 +444,12 @@ impl Keymap {
             ("alt+e", Action::OpenBodyInEditor),
             ("ctrl+v", Action::Paste),
             ("alt+v", Action::OpenVarPicker { completing: false }),
+            // The variable tooltip's pills, live while a tooltip is open
+            // (#135): o for open, h for hide/show; copy takes n, since c
+            // and y are taken.
+            ("alt+o", Action::TipPill(crate::action::TipPill::Edit)),
+            ("alt+n", Action::TipPill(crate::action::TipPill::Copy)),
+            ("alt+h", Action::TipPill(crate::action::TipPill::Reveal)),
             ("alt+a", Action::TableAddRow),
             ("alt+p", Action::ToggleTableCollapse),
             // Hiding the response pairs with hiding the editor the way
@@ -962,7 +971,8 @@ mod tests {
         assert_eq!(get("alt+c"), Some(Action::CycleSpace(1)));
         assert_eq!(get("alt+shift+c"), Some(Action::CycleSpace(-1)));
         assert_eq!(get("alt+l"), None);
-        assert_eq!(get("alt+o"), None);
+        assert_eq!(get("alt+o"), Some(Action::TipPill(crate::action::TipPill::Edit)));
+        assert_eq!(get("alt+h"), Some(Action::TipPill(crate::action::TipPill::Reveal)));
         assert_eq!(get("alt+]"), None);
         assert_eq!(get("alt+["), None);
         assert_eq!(get("alt+shift+s"), None);
@@ -1003,8 +1013,8 @@ mod tests {
         assert_eq!(get("ctrl+o"), Some(Action::OpenProjectChooser));
         assert_eq!(
             get("alt+n"),
-            None,
-            "new project is reached from the Projects chooser, not a chord"
+            Some(Action::TipPill(crate::action::TipPill::Copy)),
+            "the tooltip's copy; new project is reached from the Projects chooser"
         );
         assert_eq!(get("ctrl+v"), Some(Action::Paste), "ctrl+v pastes now");
         assert_eq!(

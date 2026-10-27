@@ -2854,7 +2854,10 @@ impl App {
     /// Returns whether the tooltip's visibility could have changed, so the
     /// tick redraws.
     fn track_caret_token(&mut self, now: Instant) -> bool {
-        let token = self.editor.caret_token();
+        // Only the focused editor's caret counts: a cell left open by a
+        // jump to another pane keeps its caret, but not its tip (#135).
+        let focused = self.screen == Screen::Main && self.focus == PaneId::Editor;
+        let token = focused.then(|| self.editor.caret_token()).flatten();
         if token != self.caret_token {
             let was_showing = self.caret_tip_shown;
             self.caret_token_since = token.is_some().then_some(now);
@@ -2901,9 +2904,39 @@ impl App {
         if !self.caret_tip_shown {
             return None;
         }
+        // Against the instance the caret is in, not another drawn token of
+        // the same name; none when the field's window cuts it (#135).
         let name = self.caret_token.clone()?;
-        let anchor = self.hits.rect_of(&Hit::VarToken(name.clone()))?;
-        Some(TokenTip { name, anchor })
+        let (drawn, anchor) = self.hits.caret_token()?;
+        (drawn == name).then_some(TokenTip { name, anchor })
+    }
+
+    /// What the tooltip pill `pill` does for token `name`, clicked or keyed
+    /// (#135). `false` where the tooltip doesn't offer that pill: copy
+    /// needs a value, reveal a secret with one.
+    pub(crate) fn press_tip_pill(&mut self, pill: crate::action::TipPill, name: String) -> bool {
+        use crate::action::TipPill;
+        let info = self.editor.vars.describe(&name);
+        match pill {
+            // The path from "what is this?" to the variable itself (spec
+            // §7): the popup action picks the editor the token calls for,
+            // and the modal it opens takes the tip down.
+            TipPill::Edit => self.update(Action::OpenVarTokenPopup(name)),
+            // A secret's *real* value is what gets copied, mask or no mask
+            // — the point of the button.
+            TipPill::Copy => {
+                let Some(value) = info.value else { return false };
+                self.copy_text_with_toast(&value, format!("Copied {{{{{name}}}}}"));
+                true
+            }
+            TipPill::Reveal => {
+                let Some(value) = info.value.filter(|_| info.secret) else { return false };
+                let already =
+                    self.tip_revealed.as_ref().is_some_and(|(n, v)| *n == name && *v == value);
+                self.tip_revealed = (!already).then_some((name, value));
+                true
+            }
+        }
     }
 
     /// Diffs the open request against the shadow copy and records an undo
@@ -6503,6 +6536,12 @@ impl App {
                     return self.open_select_picker(name, selector);
                 }
                 self.open_insert_var_picker(completing, None)
+            }
+            Action::TipPill(pill) => {
+                // The tooltip open now: by the time a palette pick runs the
+                // palette has closed, so the tip it covered counts again.
+                let Some(tip) = self.var_token_tip() else { return false };
+                self.press_tip_pill(pill, tip.name)
             }
             Action::OpenVarTokenPopup(name) => {
                 self.apply(Action::ReloadProjectFiles);

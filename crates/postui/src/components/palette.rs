@@ -278,6 +278,26 @@ pub fn all_commands() -> Vec<Command> {
             description: "Insert a {{variable}} token at the cursor",
             action: Action::OpenVarPicker { completing: false },
         },
+        // The variable tooltip's pills (#135): they act on the tooltip open
+        // when the palette closes, the caret's or the pointer's.
+        Command {
+            id: "vars-tip-edit",
+            name: "Variables: edit the tooltip's variable",
+            description: "Edit the variable whose tooltip is open, as its 󰏫 does",
+            action: Action::TipPill(crate::action::TipPill::Edit),
+        },
+        Command {
+            id: "vars-tip-copy",
+            name: "Variables: copy the tooltip's value",
+            description: "Copy the value of the variable whose tooltip is open",
+            action: Action::TipPill(crate::action::TipPill::Copy),
+        },
+        Command {
+            id: "vars-tip-reveal",
+            name: "Variables: reveal the tooltip's secret",
+            description: "Show or hide the secret in the open tooltip",
+            action: Action::TipPill(crate::action::TipPill::Reveal),
+        },
         Command {
             id: "edit-paste",
             name: "Edit: paste",
