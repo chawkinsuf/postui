@@ -1980,12 +1980,7 @@ impl Editor {
     /// one break; spec 2026-10-26 R1). Clears the selection when the
     /// boundaries coincide.
     fn set_body_selection_boundaries(&mut self, a: edtui::Index2, b: edtui::Index2) {
-        // A boundary is a caret position, never past its line's end: an
-        // anchor left behind by typing that shortened the line comes back
-        // onto it, so it can't reach the line's break.
         let len = |row: usize| self.body.lines.len_col(row).unwrap_or(0);
-        let onto_line = |p: edtui::Index2| edtui::Index2::new(p.row, p.col.min(len(p.row)));
-        let (a, b) = (onto_line(a), onto_line(b));
         let (lo, hi) = if (a.row, a.col) <= (b.row, b.col) { (a, b) } else { (b, a) };
         if lo == hi {
             self.body.selection = None;
@@ -2798,7 +2793,15 @@ impl Component for Editor {
                         | KeyCode::End
                 );
                 if is_motion && ev.modifiers.contains(KeyModifiers::SHIFT) {
-                    let anchor = *self.body_sel_anchor.get_or_insert(self.body.cursor);
+                    // The anchor extends a live selection. With none, the
+                    // caret is the anchor (#166): a click's drag anchor, or
+                    // one typing or a reload left behind, is stale, and a
+                    // collapsed selection's anchor is the caret already.
+                    let anchor = match self.body_sel_anchor {
+                        Some(a) if self.body.selection.is_some() => a,
+                        _ => self.body.cursor,
+                    };
+                    self.body_sel_anchor = Some(anchor);
                     let stripped =
                         KeyEvent::new(ev.code, ev.modifiers.difference(KeyModifiers::SHIFT));
                     if !self.body_nav_key(&stripped) {
@@ -9437,17 +9440,43 @@ mod body_click_tests {
         assert_eq!(e.body_text(), "ab\nxef");
     }
 
-    /// #128 review r2: an anchor left past a line's end (typing shortened
-    /// the line under it) counts from the line's end, so it never reaches
-    /// the line's break.
+    /// #166: with no live selection, a shift motion anchors at the caret,
+    /// whatever anchor a click, typing or a reload left behind.
     #[test]
-    fn a_stale_anchor_past_the_line_end_takes_no_break() {
+    fn a_shift_motion_with_no_selection_anchors_at_the_caret() {
         use ratatui::crossterm::event::KeyCode;
-        let mut e = editor_with_body("hello\nwo\nx");
-        e.body_sel_anchor = Some(Index2::new(1, 5)); // where `world` ended
-        e.body.cursor = Index2::new(1, 2);
+        // A click plants a drag anchor at the line's end; the caret moves on.
+        let mut e = editor_with_body("hello world");
+        e.handle_mouse(left_down(35, 0));
+        assert_eq!(e.body.cursor, Index2::new(0, 11));
+        for _ in 0..5 {
+            e.handle_key(pkey(KeyCode::Left));
+        }
+        e.handle_key(skey(KeyCode::Left));
+        assert_eq!(e.body_selected_text().as_deref(), Some(" "));
+        // Typing after the click: the line grows past the click point.
+        let mut e = editor_with_body("ab");
+        e.handle_mouse(left_down(35, 0));
+        e.handle_key(pkey(KeyCode::Char('c')));
+        e.handle_key(pkey(KeyCode::Char('d')));
+        e.handle_key(skey(KeyCode::Left));
+        assert_eq!(e.body_selected_text().as_deref(), Some("d"));
+        // Backspace after the click: the click point is past the line's
+        // end, where it would reach the break.
+        let mut e = editor_with_body("hello\nworld\nx");
+        e.handle_mouse(left_down(35, 1));
+        for _ in 0..3 {
+            e.handle_key(pkey(KeyCode::Backspace));
+        }
         e.handle_key(skey(KeyCode::Left));
         assert_eq!(e.body_selected_text().as_deref(), Some("o"));
+        // A reload after a selection.
+        let mut e = editor_with_body("hello");
+        e.handle_key(skey(KeyCode::Left));
+        e.set_body_text("a\nb\nc");
+        e.body.cursor = Index2::new(2, 1);
+        e.handle_key(skey(KeyCode::Left));
+        assert_eq!(e.body_selected_text().as_deref(), Some("c"));
     }
 
     /// A Tab indent keeps a selection that ends on a break ending on it.
