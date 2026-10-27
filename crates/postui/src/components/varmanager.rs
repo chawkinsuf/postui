@@ -1481,6 +1481,9 @@ impl VarManager {
                 })
             }
             Verb::Yank => target.map(|_| Action::CopyOption { row }),
+            // A pasted option has no place in the grid to go above or
+            // below: `above` is ignored, so vim's `P` pastes as `p` does
+            // (arrows binds only `p`, #145).
             Verb::Put { count, .. } => {
                 op_env(ctx, selector).filter(|_| self.can_paste(selector)).map(|env| {
                     Action::VarStruct(VarStructOp::PasteOption {
@@ -3149,7 +3152,7 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
         vm.focus = VmFocus::Grid;
-        for c in ['e', 'c', 'v', 'r', 'd', 'n', 'a', 'o', 'm'] {
+        for c in ['e', 'y', 'p', 'P', 'c', 'v', 'r', 'd', 'n', 'a', 'o', 'm'] {
             assert_eq!(vm.handle_key(key(KeyCode::Char(c)), &ctx), None, "grid {c}");
             assert!(vm.grid.editing.is_none(), "grid {c}");
         }
@@ -3744,7 +3747,7 @@ fields = ["user_id", "customer_id"]
             crate::keyroute::Surface::VarGrid,
             vm.footer_chips(&ctx, None),
         );
-        let copy = chips.iter().find(|(k, _, _)| *k == "c").expect("copy chip is advertised");
+        let copy = chips.iter().find(|(k, _, _)| *k == "y").expect("copy chip is advertised");
         assert!(copy.2.is_some(), "copy chip armed without an environment");
     }
 
@@ -3874,14 +3877,14 @@ fields = ["user_id", "customer_id"]
             .into_iter()
             .map(|(k, _, _)| k)
             .collect();
-        assert_eq!(keys, vec!["d", "r", "e", "c", "space", "a"]);
+        assert_eq!(keys, vec!["d", "r", "e", "y", "space", "a"]);
 
         vm.stash = Some(vm.option_row(&ctx, 0).expect("row 0 is an option"));
         let keys: Vec<String> = spelled_on(Surface::VarGrid, vm.footer_chips(&ctx, None))
             .into_iter()
             .map(|(k, _, _)| k)
             .collect();
-        assert_eq!(keys, vec!["d", "r", "e", "c", "space", "a", "v"]);
+        assert_eq!(keys, vec!["d", "r", "e", "y", "space", "a", "p"]);
     }
 
     #[test]
@@ -4144,13 +4147,13 @@ fields = ["user_id", "customer_id"]
             Some(Action::OpenEditOptionPrompt { owner, key, description, .. })
                 if owner == "creds" && key == "alice" && description.as_deref() == Some("the admin")
         ));
-        let copy = chips.iter().find(|(k, _, _)| *k == "c").expect("c chip present");
+        let copy = chips.iter().find(|(k, _, _)| *k == "y").expect("y chip present");
         assert_eq!(copy.1, "copy");
         assert_eq!(copy.2, Some(Action::CopyOption { row: 0 }));
         // With nothing copied there is nothing to paste, so the chip
         // drops like every other chip without a target — the pane's
         // [Paste option] button is what stands there greyed instead.
-        assert!(!chips.iter().any(|(k, _, _)| *k == "v"), "{chips:?}");
+        assert!(!chips.iter().any(|(k, _, _)| *k == "p"), "{chips:?}");
         vm.stash = Some(StashedOption {
             selector: "creds".into(),
             name: "alice".into(),
@@ -4162,7 +4165,7 @@ fields = ["user_id", "customer_id"]
             vm.footer_chips(&ctx, None),
         );
         let paste =
-            chips.iter().find(|(k, _, _)| *k == "v").expect("v chip present once a row is copied");
+            chips.iter().find(|(k, _, _)| *k == "p").expect("p chip present once a row is copied");
         assert_eq!(paste.1, "paste");
         assert!(matches!(
             &paste.2,
@@ -4179,8 +4182,8 @@ fields = ["user_id", "customer_id"]
             vm.footer_chips(&ctx, None),
         );
         assert!(!chips.iter().any(|(k, _, _)| *k == "e"), "{chips:?}");
-        assert!(!chips.iter().any(|(k, _, _)| *k == "c"), "{chips:?}");
-        assert!(chips.iter().any(|(k, _, _)| *k == "v"), "{chips:?}");
+        assert!(!chips.iter().any(|(k, _, _)| *k == "y"), "{chips:?}");
+        assert!(chips.iter().any(|(k, _, _)| *k == "p"), "{chips:?}");
     }
 
     #[test]

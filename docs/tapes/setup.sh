@@ -2,7 +2,9 @@
 # the demo project and a recording config into a temp folder, so a recording
 # never touches your own config or leaves files in the repo, and every take
 # starts from the same state. A failed step returns non-zero, which stops the
-# tape's `&& postui` from launching on a half-made copy.
+# tape's `&& postui` from launching on a half-made copy. Its one argument is
+# the key profile, arrows unless a tape asks for vim.
+keymap="${1:-arrows}"
 repo=$(pwd)
 if [ ! -f "$repo/docs/tapes/demo/project.toml" ]; then
   echo "setup.sh: run the tapes from the repo root" >&2
@@ -20,11 +22,15 @@ cp -R "$repo/docs/tapes/demo/." "$demo/project" || return 1
 # Open tabs and layout left by running postui on the demo folder itself
 # would carry into the take.
 rm -rf "$demo/project/.postui"
+# A narrower sidebar than the default 28%, which leaves the demo's short
+# request names a lot of empty space and the editor and response too little.
+mkdir -p "$demo/project/.postui" || return 1
+printf 'sidebar_width = 24\n' >"$demo/project/.postui/layout.toml" || return 1
 # The stand-in AI command runs from the temp folder rather than the repo,
 # whose path may hold spaces or quotes.
 cp "$repo/docs/tapes/fake-ai.sh" "$demo/fake-ai.sh" || return 1
 cat >"$demo/config/postui/config.toml" <<EOF || return 1
-keymap = "arrows"
+keymap = "$keymap"
 theme = "catppuccin-mocha"
 # The hover explanations would follow a pointer VHS never moves.
 hover_hints = false

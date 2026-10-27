@@ -22,6 +22,9 @@
   responds to the mouse, and every action also has a key: an arrows-and-Enter
   profile or a Vim profile, your pick on first launch. The footer always shows
   the keys for what has focus, and `ctrl+p` searches every command.
+- **A real Vim mode.** If you use Vim, your muscle memory works: text objects,
+  registers, `.`, Visual mode, search and folds in the response. The editing
+  engine is tested against Vim 9.1.
 - **Requests are files.** One TOML file per request, in folders, grouped into
   spaces. Review them in a diff and commit them next to the code they test.
 - **Environments, variables and secrets.** `{{tokens}}` in the URL, params and
@@ -39,10 +42,31 @@
 - **Themes.** Built-in dark and light themes, your terminal's own colors, a
   contrast control, and custom themes from six colors.
 
-| | |
-|:---:|:---:|
-| <img src="docs/images/manage.png" alt="The Manage screen: a variable's description and its value in the active environment" width="440"> | <img src="docs/images/curl-import.png" alt="Importing a pasted curl command as a request" width="440"> |
-| <img src="docs/images/themes.png" alt="The theme picker with its contrast control" width="440"> | <img src="docs/images/describe.png" alt="Describing a jq filter for the AI command to write" width="440"> |
+## A closer look
+
+**The Vim profile.** Folding the response, searching it and yanking a Visual
+selection.
+
+<a href="docs/guide.md#keys"><img src="docs/images/vim.gif" alt="Sending with :send, maximizing the response with ctrl+w _, folding it, searching it and yanking a Visual selection" width="900"></a>
+
+**Variables and environments.** The Manage screen (`alt+r`) shows a variable's
+description and its value in the active environment.
+
+<a href="docs/guide.md#environments-variables-and-secrets"><img src="docs/images/manage.png" alt="The Manage screen: a variable's description and its value in the active environment" width="900"></a>
+
+**Describe a filter.** An AI command writes the jq filter from the response's
+shape, never its values.
+
+<a href="docs/guide.md#the-jq-filter"><img src="docs/images/describe.png" alt="Describing a jq filter for the AI command to write" width="900"></a>
+
+**curl in.** Paste a curl command into the sidebar to import it as a request.
+
+<a href="docs/guide.md#curl"><img src="docs/images/curl-import.png" alt="Importing a pasted curl command as a request" width="900"></a>
+
+**Themes.** Built-in dark and light themes, your terminal's own colors, and a
+contrast control.
+
+<a href="docs/configuration.md#themes"><img src="docs/images/themes.png" alt="The theme picker with its contrast control" width="900"></a>
 
 ## Requests are plain files
 
@@ -81,7 +105,7 @@ Accept = "application/json"
 **Homebrew** (macOS and Linux) is the recommended way:
 
 ```sh
-brew install chawkinsuf/postui/postui
+brew install chawkinsuf/tap/postui
 ```
 
 Or use the **shell installer**, which puts `postui` in `~/.local/bin`:

@@ -236,6 +236,10 @@ From the parked stage-3 final-review minors:
 4. `CycleEnv` performs the spec-§7 reload (symmetry with `OpenEnvChooser`).
 5. Bare-root quit no longer writes `./.local/state.toml` when `project.root` is empty.
 6. `postui --help`: leading-dash check + usage line in `main.rs`.
+   *Amended 2026-10-26 (#144, mine):* `--help`/`-h` is its own `CliParse::Help`
+   (stdout, exit 0) on an otherwise valid line; any other leading dash is a
+   mistake, `CliParse::Usage { reason }`, printed with the reason to stderr,
+   exit 2. The text is `config::USAGE`.
 7. `ForceOpenRequest` persists `open_request` like the other force paths.
 8. Variable-manager radar: case-insensitive suppression of templated default-header
    names; reject case-differing duplicate keys in `PrepareContext.default_headers`;

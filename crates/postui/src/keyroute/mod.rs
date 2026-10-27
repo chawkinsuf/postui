@@ -1250,11 +1250,16 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &form, "r"), run(vec![sel(Verb::Reveal)]));
         assert_eq!(feed(&mut Router::default(), &form, "p"), run(vec![sel(Verb::Promote)]));
         let grid = cx(Arrows, Surface::VarGrid);
-        assert_eq!(feed(&mut Router::default(), &grid, "c"), run(vec![sel(Verb::Yank)]));
+        assert_eq!(feed(&mut Router::default(), &grid, "y"), run(vec![sel(Verb::Yank)]));
         assert_eq!(
-            feed(&mut Router::default(), &grid, "v"),
+            feed(&mut Router::default(), &grid, "p"),
             run(vec![sel(Verb::Put { above: false, count: 1 })])
         );
+        // #145: the old c/v pair is gone, and the grid's paste has no
+        // position to put above.
+        for gone in ["c", "v", "P"] {
+            assert_eq!(feed(&mut Router::default(), &grid, gone), Resolved::Declined, "{gone}");
+        }
         assert_eq!(
             feed(&mut Router::default(), &grid, "o"),
             run(vec![Step::Action(Action::StartNewOptionEdit)])
@@ -1265,11 +1270,14 @@ mod tests {
     /// Variables form; its other verbs wait for M4's ex rows.
     #[test]
     fn vim_swallows_the_arrows_only_verb_letters() {
+        // The grid's `c` and `v` were arrows letters until #145; vim still
+        // swallows them.
         for (surface, keys) in [
             (Surface::VarForm, "r"),
             (Surface::VarForm, "s"),
             (Surface::VarGrid, "e"),
             (Surface::VarGrid, "c"),
+            (Surface::VarGrid, "v"),
         ] {
             assert_eq!(
                 feed(&mut Router::default(), &cx(Vim, surface), keys),
