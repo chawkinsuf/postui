@@ -15744,80 +15744,112 @@ fn an_editor_footer_chip_click_leaves_an_open_cell_or_the_caret_as_its_action_do
     for state in ["cell", "body", "url"] {
         for profile in [Arrows, Vim] {
             for sending in [false, true] {
-                footer_chips_leave_the_editor_as_their_actions_do(state, profile, sending);
+                let probe = editor_caret_app(state, profile, sending);
+                let (y, chips) = footer_strip_chips(&probe);
+                let drawn = |a: &Action| chips.iter().any(|(b, _)| b == a);
+                assert!(drawn(&Action::CycleTabs(1)) || profile == Vim, "{state} {chips:?}");
+                assert!(drawn(&Action::OpenPalette) || drawn(&Action::OpenExPalette), "{chips:?}");
+                for (chip, x) in &chips {
+                    let mut by_action = editor_caret_app(state, profile, sending);
+                    by_action.update(chip.clone());
+                    let mut app = editor_caret_app(state, profile, sending);
+                    app.handle_mouse(left_down(*x, y));
+                    assert_eq!(
+                        editor_seen(&app),
+                        editor_seen(&by_action),
+                        "{state} {profile:?} sending={sending} {chip:?}"
+                    );
+                }
             }
         }
     }
 }
 
-fn footer_chips_leave_the_editor_as_their_actions_do(
-    state: &str,
-    profile: crate::config::KeyProfile,
-    sending: bool,
-) {
-    use crate::config::KeyProfile::{Arrows, Vim};
-    // An empty URL, so the send chip toasts rather than spawning a send.
-    // Drawn wide, so every chip fits.
-    let start = || {
-        let mut app = main_header_app(profile);
-        app.editor.url = LineInput::new("");
-        app.editor.sending = sending;
-        match state {
-            "cell" => {
-                click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
-                assert!(app.editor.table.editing.is_some(), "the cell opened");
-                if profile == Arrows {
-                    type_chars(&mut app, "Z");
-                }
+/// Task #192's three states, drawn wide so every footer chip fits, the URL
+/// empty so the send chip toasts rather than spawning a send: `cell`, a
+/// header's value open with typing in it; `body`, the Body's caret mid-text;
+/// `url`, the URL line selected (not open).
+fn editor_caret_app(state: &str, profile: crate::config::KeyProfile, sending: bool) -> App {
+    let mut app = main_header_app(profile);
+    app.editor.url = LineInput::new("");
+    app.editor.sending = sending;
+    match state {
+        "cell" => {
+            click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+            assert!(app.editor.table.editing.is_some(), "the cell opened");
+            // Vim's click opens the cell in Normal: `A` appends.
+            if profile == crate::config::KeyProfile::Vim {
+                type_chars(&mut app, "A");
             }
-            "body" => {
-                app.editor.active_tab = EditorTab::Body;
-                app.editor.table.set_selected(None);
-            }
-            _ => {
-                app.editor.table.set_selected(None);
-                app.editor.sub_focus = SubFocus::Url;
-            }
+            type_chars(&mut app, "Z");
+            let typed = app.editor.table.editing.as_ref().map(|e| e.input.text().to_string());
+            assert_eq!(typed.as_deref(), Some("aZ"), "{profile:?} typed into the cell");
         }
-        rendered_row(&mut app, 200, 0);
-        app
-    };
-    let seen = |app: &App| {
-        (
-            app.editor.table.editing.is_some(),
-            app.editor.headers.get_index(0).map(|(_, e)| e.value.clone()),
-            app.editor.table.selected(),
-            app.editor.sub_focus,
-            app.editor.url_open(),
-            app.editor.active_tab,
-            app.editor.insecure,
-            app.modals.is_empty(),
-            app.should_quit,
-        )
-    };
-    // Every chip in the footer's strip, read off the hit map, so a chip
-    // the footer gains is held to the rule too.
-    let probe = start();
-    let footer = probe.settled_layout().expect("drawn").footer;
+        "body" => {
+            app.editor.active_tab = EditorTab::Body;
+            app.editor.table.set_selected(None);
+            app.editor.set_body_text("ab\ncd");
+            app.editor.body.cursor = edtui::Index2::new(1, 1);
+        }
+        _ => {
+            app.editor.table.set_selected(None);
+            app.editor.sub_focus = SubFocus::Url;
+        }
+    }
+    rendered_row(&mut app, 200, 0);
+    app
+}
+
+/// Every chip in the footer's strip, read off the last frame's hit map (the
+/// strip's middle row, each chip's first cell), so a chip the footer gains
+/// is held to the rule too.
+fn footer_strip_chips(app: &App) -> (u16, Vec<(Action, u16)>) {
+    let footer = app.settled_layout().expect("drawn").footer;
     let y = footer.y + footer.height / 2;
     let mut chips: Vec<(Action, u16)> = Vec::new();
     for x in footer.x..footer.x + footer.width {
-        if let Some(Hit::FooterChip(a)) = probe.hits.hit_at(x, y)
+        if let Some(Hit::FooterChip(a)) = app.hits.hit_at(x, y)
             && !chips.iter().any(|(b, _)| b == a)
         {
             chips.push((a.clone(), x));
         }
     }
-    let ran = |a: &Action| chips.iter().any(|(b, _)| b == a);
-    assert!(ran(&Action::CycleTabs(1)) || profile == Vim, "{state} {chips:?}");
-    assert!(ran(&Action::OpenPalette) || ran(&Action::OpenExPalette), "{state} {chips:?}");
-    for (chip, x) in &chips {
-        let mut by_action = start();
-        by_action.update(chip.clone());
-        let mut app = start();
-        app.handle_mouse(left_down(*x, y));
-        assert_eq!(seen(&app), seen(&by_action), "{state} {profile:?} sending={sending} {chip:?}");
-    }
+    (y, chips)
+}
+
+/// What a footer chip may leave changed in the editor: the open cell and
+/// its typing, the table's cursor, the sub-focus and the caret within it
+/// (the Body's row and column, the URL's column), the tab, the lock, an
+/// opened dialog, vim's mode and a quit.
+#[allow(clippy::type_complexity)]
+fn editor_seen(
+    app: &App,
+) -> (
+    bool,
+    Option<String>,
+    Option<Stop>,
+    SubFocus,
+    crate::components::editor::Caret,
+    bool,
+    EditorTab,
+    bool,
+    bool,
+    Option<String>,
+    bool,
+) {
+    (
+        app.editor.table.editing.is_some(),
+        app.editor.headers.get_index(0).map(|(_, e)| e.value.clone()),
+        app.editor.table.selected(),
+        app.editor.sub_focus,
+        app.editor.caret(),
+        app.editor.url_open(),
+        app.editor.active_tab,
+        app.editor.insecure,
+        app.modals.is_empty(),
+        app.vim_status(),
+        app.should_quit,
+    )
 }
 
 /// Task #192's report, against the keys themselves: in arrows, with a cell
@@ -15837,47 +15869,11 @@ fn an_editor_footer_chip_click_matches_its_key_with_a_cell_or_caret_up() {
         Action::ToggleInsecure => vec![alt('i')],
         _ => Vec::new(),
     };
+    use crate::config::KeyProfile::Arrows;
     for state in ["cell", "body", "url"] {
-        let start = || {
-            let mut app = main_header_app(crate::config::KeyProfile::Arrows);
-            app.editor.url = LineInput::new("");
-            match state {
-                "cell" => {
-                    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
-                    type_chars(&mut app, "Z");
-                }
-                "body" => {
-                    app.editor.active_tab = EditorTab::Body;
-                    app.editor.table.set_selected(None);
-                }
-                _ => {
-                    app.editor.table.set_selected(None);
-                    app.editor.sub_focus = SubFocus::Url;
-                }
-            }
-            rendered_row(&mut app, 200, 0);
-            app
-        };
-        let seen = |app: &App| {
-            (
-                app.editor.table.editing.is_some(),
-                app.editor.headers.get_index(0).map(|(_, e)| e.value.clone()),
-                app.editor.table.selected(),
-                app.editor.sub_focus,
-                app.editor.active_tab,
-                app.editor.insecure,
-                app.modals.is_empty(),
-            )
-        };
-        let probe = start();
-        let footer = probe.settled_layout().expect("drawn").footer;
-        let y = footer.y + footer.height / 2;
+        let (y, chips) = footer_strip_chips(&editor_caret_app(state, Arrows, false));
         let mut checked = 0;
-        for x in footer.x..footer.x + footer.width {
-            let Some(Hit::FooterChip(chip)) = probe.hits.hit_at(x, y) else { continue };
-            if x > footer.x && probe.hits.hit_at(x - 1, y) == Some(&Hit::FooterChip(chip.clone())) {
-                continue; // the chip's first cell only
-            }
+        for (chip, x) in &chips {
             let evs = keys(chip);
             // In the Body alt+arrows are word motion, and the tabs are a
             // click away (spec 2026-09-01 spaces, "The editor tabs give up
@@ -15885,13 +15881,13 @@ fn an_editor_footer_chip_click_matches_its_key_with_a_cell_or_caret_up() {
             if evs.is_empty() || state == "body" && *chip == Action::CycleTabs(1) {
                 continue;
             }
-            let mut by_key = start();
+            let mut by_key = editor_caret_app(state, Arrows, false);
             for ev in evs {
                 by_key.handle_key(ev);
             }
-            let mut app = start();
-            app.handle_mouse(left_down(x, y));
-            assert_eq!(seen(&app), seen(&by_key), "{state} {chip:?}");
+            let mut app = editor_caret_app(state, Arrows, false);
+            app.handle_mouse(left_down(*x, y));
+            assert_eq!(editor_seen(&app), editor_seen(&by_key), "{state} {chip:?}");
             checked += 1;
         }
         // send, commands and quit at least, in every state.

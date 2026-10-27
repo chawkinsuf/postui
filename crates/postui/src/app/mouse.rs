@@ -1409,6 +1409,11 @@ impl App {
         // and quit commit the cell themselves, `done` closes it, the add
         // chip moves the caret.
         //
+        // The open URL line and the method badge are left as they were:
+        // a footer chip there is still a click away, though their keys
+        // keep them too. This branch keeps to the states task #192 names;
+        // widening the gate to the whole editor would cover them.
+        //
         // The rule asks where the press landed, not which action: the app
         // bar's save/discard, the address bar's lock and the Body toolbar
         // register `FooterChip` too, and stay a click away. (Their own hit
