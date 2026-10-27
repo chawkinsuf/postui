@@ -4997,9 +4997,16 @@ fn body_lines(
     // they start at, and the display columns `crop_cols` still has to drop
     // from their front — `(0, h_scroll)` for a row built from its whole
     // text, or whatever `viewport_window` cut for a raw row.
+    //
+    // `tail` is painted after the row's text but is not part of it (a
+    // header row's gap and copy pill, #54): the copy and the search read
+    // the text alone, so the highlights and the selection are laid on
+    // `pieces` before `tail` joins them, and a selection to the row's end
+    // stops where the text does.
     let mut push = |i: usize,
                     full: usize,
                     pieces: Vec<(String, Style)>,
+                    tail: Vec<(String, Style)>,
                     highlightable: bool,
                     window: (usize, usize)| {
         let (char_start, crop) = window;
@@ -5043,6 +5050,7 @@ fn body_lines(
         if let Some((from, to)) = sel {
             line = apply_col_bg(line, from, to, t.selection);
         }
+        line.spans.extend(tail.into_iter().map(|(s, style)| Span::styled(s, style)));
         let mut line = crop_cols(line, crop);
         if focused && i == view.cursor {
             line = line.style(cursor_bg);
@@ -5081,7 +5089,7 @@ fn body_lines(
                 // A collapsed line renders its summary, not its real text, so
                 // the match columns computed over the expanded text no longer
                 // apply to it.
-                push(i, full, pieces, !line.collapsed, (0, view.h_scroll));
+                push(i, full, pieces, Vec::new(), !line.collapsed, (0, view.h_scroll));
 
                 let y = area.y.saturating_add((i - start) as u16);
                 if y < area.y.saturating_add(area.height) {
@@ -5108,7 +5116,7 @@ fn body_lines(
                 let from = mark_for(view.raw_marks.get(&i).map(Vec::as_slice), view.h_scroll);
                 let (char_start, crop, slice) =
                     viewport_window(&view.raw_lines[i], view.h_scroll, width, from);
-                push(i, i, vec![(slice.to_string(), text)], true, (char_start, crop));
+                push(i, i, vec![(slice.to_string(), text)], Vec::new(), true, (char_start, crop));
             }
         }
         ViewMode::Headers => {
@@ -5119,11 +5127,12 @@ fn body_lines(
                     HeaderRow::Divider => {
                         let rule = "\u{2500}"
                             .repeat((area.width as usize).saturating_sub(crate::ui::cells(line)));
-                        push(i, i, vec![(format!("{line}{rule}"), dim)], true, (0, view.h_scroll));
+                        let pieces = vec![(format!("{line}{rule}"), dim)];
+                        push(i, i, pieces, Vec::new(), true, (0, view.h_scroll));
                         continue;
                     }
                     HeaderRow::Note => {
-                        push(i, i, vec![(line.clone(), dim)], true, (0, view.h_scroll));
+                        push(i, i, vec![(line.clone(), dim)], Vec::new(), true, (0, view.h_scroll));
                         continue;
                     }
                     HeaderRow::Received(_) | HeaderRow::Sent(_) => {}
@@ -5142,13 +5151,17 @@ fn body_lines(
                 };
                 // The glyph sits centered in an odd-width pill so its hover
                 // highlight surrounds it symmetrically instead of leaving a
-                // blank highlighted cell on one side.
+                // blank highlighted cell on one side. The gap and the pill
+                // are the row's tail, outside its text.
                 let pieces = vec![
                     (name.to_string(), Style::default().fg(t.accent)),
-                    (format!("{value}{HEADER_PILL_GAP}"), text),
+                    (value.to_string(), text),
+                ];
+                let tail = vec![
+                    (HEADER_PILL_GAP.to_string(), text),
                     (crate::glyph::COPY_PILL.to_string(), glyph_style),
                 ];
-                push(i, i, pieces, true, (0, view.h_scroll));
+                push(i, i, pieces, tail, true, (0, view.h_scroll));
 
                 let y = area.y.saturating_add((i - start) as u16);
                 if y < area.y.saturating_add(area.height) {
@@ -7017,6 +7030,34 @@ mod tests {
             pill,
             vec![" ", "\u{F018F}", " "],
             "the hovered pill is odd-width with the glyph in its center"
+        );
+    }
+
+    /// Task #54: a selection running past a header row's end paints its
+    /// text only. The gap and the copy pill are not part of the row's text
+    /// (the copy leaves them out), so they keep their own look.
+    #[test]
+    fn a_selection_past_a_header_rows_end_leaves_its_pill_unpainted() {
+        let theme = Theme::dark();
+        let mut r = ready("{}");
+        r.set_view_mode(ViewMode::Headers);
+        let (area, _) = render_buf(&mut r);
+        // From row 0's start down into row 2 (the first sent header), so
+        // row 0 is selected to its end.
+        assert!(r.begin_selection_at(area.x, area.y));
+        assert!(r.drag_selection_to(area.x + 3, area.y + 2));
+        let (area, buf) = render_buf(&mut r);
+        let line = r.view().unwrap().header_lines[0].clone();
+        let bg = |c: usize| buf[(area.x + u16::try_from(c).unwrap(), area.y)].bg;
+        let text_end = crate::ui::cells(&line);
+        assert_eq!(bg(text_end - 1), theme.selection, "the row's last text cell is selected");
+        for c in text_end..header_pill_cols(&line).end {
+            assert_ne!(bg(c), theme.selection, "column {c}: the gap and the pill are not");
+        }
+        assert_eq!(
+            r.selected_text().as_deref(),
+            Some(format!("{line}\n{SENT_DIVIDER}\nauth").as_str()),
+            "the copy is the text the paint covers"
         );
     }
 
