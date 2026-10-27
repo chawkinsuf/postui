@@ -5,13 +5,14 @@ use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 
 /// Paints a full-width horizontal band covering rows `y0..y1` (fractional row
 /// coordinates, `y1 > y0`) across columns `x0..x1`. Whole-covered rows are
-/// filled cells; the fractional top edge row uses the lower-block family
-/// `▁▂▃▄▅▆▇` sized to the covered fraction (fg=`fill`, bg=`on`); the
-/// fractional bottom edge row uses the same glyphs with fg/bg swapped
-/// (fg=`on`, bg=`fill`) so the *upper* fraction shows `fill`.
+/// filled cells; the fractional top edge row shows `fill` in its lower
+/// covered fraction and the fractional bottom edge row in its upper one,
+/// both drawn with the lower-block family `▁▂▃▄▅▆▇` (see [`edge_row`]).
 ///
-/// If the top and bottom fractional edges land in the same row, picks the
-/// closest single glyph (top-fraction wins). Clamps to buffer area.
+/// A band inside one row is one glyph its own height, set against whichever
+/// edge of the row it is nearer: one glyph can show fill at a cell's top or
+/// bottom but not in its middle, so the nearer edge is where it lands
+/// closest to where it is. Clamps to buffer area.
 ///
 /// Every row the band paints keeps nothing of what was under it, modifiers
 /// included, so a struck or underlined page row never shows through. An
@@ -23,10 +24,18 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
     let y0_frac = y0 - y0.floor(); // fractional part of y0
     let y1_frac = y1 - y1.floor(); // fractional part of y1
 
-    // Top fractional row: shows the covered portion (from y0 to next integer)
+    if y1_int == y0_int {
+        // The whole band sits inside row y0_int. A band that starts on the
+        // row's top (y0_frac == 0) is nearer the top by this test too.
+        let part = if y0_frac <= 1.0 - y1_frac { Part::Upper } else { Part::Lower };
+        edge_row(buf, x0, x1, y0_int, y1 - y0, part, fill, on);
+        return;
+    }
+
+    // Top fractional row: the band covers it from y0 down to the row's
+    // bottom, which is (1.0 - y0_frac) of it.
     if y0_frac > 0.0 {
-        // Coverage is from y0 to (y0_int + 1), which is (1.0 - y0_frac)
-        edge_row(buf, x0, x1, y0_int, 1.0 - y0_frac, fill, on);
+        edge_row(buf, x0, x1, y0_int, 1.0 - y0_frac, Part::Lower, fill, on);
     }
 
     // Full rows between the fractional edges
@@ -38,20 +47,31 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
         super::fill(buf, full_rect, fill);
     }
 
-    // Bottom fractional row: shows the upper portion as fill
-    if y1_frac > 0.0 && y1_int > y0_int {
-        // Coverage is from y1_int to y1, which is y1_frac
-        edge_row(buf, x0, x1, y1_int, y1_frac, on, fill);
-    } else if y1_frac > 0.0 && y1_int == y0_int {
-        // Top and bottom fractions land in the same row: pick the glyph based
-        // on top-fraction coverage (top-fraction wins)
-        edge_row(buf, x0, x1, y0_int, 1.0 - y0_frac, fill, on);
+    // Bottom fractional row: the band covers it from the row's top down to
+    // y1, which is y1_frac of it.
+    if y1_frac > 0.0 {
+        edge_row(buf, x0, x1, y1_int, y1_frac, Part::Upper, fill, on);
     }
 }
 
-/// Paints one fractional edge row: the lower-block glyph for `coverage`
-/// (0..=1, in eighths) in `fg` on `bg` across columns `x0..x1` of row `y`,
-/// clipped to the buffer.
+/// Which part of a cell an edge row's fill covers.
+#[derive(Clone, Copy)]
+enum Part {
+    /// The top of the cell: the band's bottom edge.
+    Upper,
+    /// The bottom of the cell: the band's top edge.
+    Lower,
+}
+
+/// Paints one fractional edge row across columns `x0..x1` of row `y`,
+/// clipped to the buffer: `fill` over `coverage` (0..=1, rounded to
+/// eighths) of each cell, at its `part`, and `on` over the rest.
+///
+/// There are only lower-block glyphs, so a `Lower` fill is the glyph for
+/// its coverage in `fill` on `on`, and an `Upper` one is the glyph for the
+/// *rest* of the cell in `on` on `fill`: the glyph is always the part at the
+/// bottom, whichever colour that is (task #185: the bottom edge used its
+/// own coverage's glyph in `on`, and showed the inverse fraction of fill).
 ///
 /// Each cell is reset before it is painted, so it keeps nothing of what was
 /// there: a strike or underline left from the page would otherwise run
@@ -70,16 +90,30 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
 /// striped row's actual resting background, so stomping it every frame the
 /// band's edge merely grazes that row reads as a flicker distinct from the
 /// band's own motion.
-fn edge_row(buf: &mut Buffer, x0: u16, x1: u16, y: u16, coverage: f32, fg: Color, bg: Color) {
+#[allow(clippy::too_many_arguments)]
+fn edge_row(
+    buf: &mut Buffer,
+    x0: u16,
+    x1: u16,
+    y: u16,
+    coverage: f32,
+    part: Part,
+    fill: Color,
+    on: Color,
+) {
     const GLYPHS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-    let glyph_index = ((coverage * 8.0).round() as usize).min(8);
-    if glyph_index == 0 {
+    let eighths = ((coverage * 8.0).round() as usize).min(8);
+    if eighths == 0 {
         return;
     }
+    let (glyph, fg, bg) = match part {
+        Part::Lower => (GLYPHS[eighths], fill, on),
+        Part::Upper => (GLYPHS[8 - eighths], on, fill),
+    };
     for x in x0..x1.min(buf.area().right()) {
         if let Some(cell) = buf.cell_mut((x, y)) {
             cell.reset();
-            cell.set_symbol(GLYPHS[glyph_index]);
+            cell.set_symbol(glyph);
             cell.set_fg(fg);
             cell.set_bg(bg);
         }
@@ -141,23 +175,93 @@ mod tests {
         }
     }
 
-    #[test]
-    fn single_row_case_uses_top_fraction_when_top_and_bottom_land_in_same_row() {
+    /// Draws a band `y0..y1` (fill = accent, on = panel) on a 4x8 panel.
+    fn band(y0: f32, y1: f32) -> ratatui::buffer::Buffer {
         let theme = Theme::dark();
-        let mut term = Terminal::new(TestBackend::new(4, 4)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(4, 8)).unwrap();
         term.draw(|f| {
-            paint::fill(f.buffer_mut(), Rect::new(0, 0, 4, 4), theme.panel);
-            // Band from y=1.7 to y=1.9: both edges in row 1
-            // top_coverage = 1.0 - 0.7 = 0.3 → index 2 (▂)
-            // bottom_coverage = 0.9 → index 7 (▇)
-            // top-fraction wins, so we should see index 2
-            frac_vspan(f.buffer_mut(), 0, 4, 1.7, 1.9, theme.accent, theme.panel);
+            paint::fill(f.buffer_mut(), Rect::new(0, 0, 4, 8), theme.panel);
+            frac_vspan(f.buffer_mut(), 0, 4, y0, y1, theme.accent, theme.panel);
         })
         .unwrap();
-        let c = |x, y| term.backend().buffer().cell((x, y)).unwrap().clone();
-        assert_eq!(c(1, 1).symbol(), "▂"); // top-fraction wins: 30% coverage
-        assert_eq!(c(1, 1).fg, theme.accent);
-        assert_eq!(c(1, 1).bg, theme.panel);
+        term.backend().buffer().clone()
+    }
+
+    /// How many eighths of row `y` (column 1) show the fill, and whether
+    /// they sit at the cell's top (`true`) or bottom.
+    fn fill_eighths(buf: &ratatui::buffer::Buffer, y: u16) -> (usize, bool) {
+        const ORDER: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+        let fill = Theme::dark().accent;
+        let cell = &buf[(1, y)];
+        let k = ORDER.iter().position(|g| *g == cell.symbol()).unwrap();
+        if cell.fg == fill && cell.bg == fill {
+            (8, true)
+        } else if cell.fg == fill {
+            // The glyph's lower k eighths are the fill.
+            (k, false)
+        } else if cell.bg == fill {
+            // The glyph's lower k eighths cover the fill; the rest shows it.
+            (8 - k, true)
+        } else {
+            (0, true)
+        }
+    }
+
+    #[test]
+    fn the_bottom_edge_shows_its_covered_fraction_at_the_top_of_the_row() {
+        // Task #185: the bottom edge drew the glyph for its coverage in the
+        // `on` colour, so it showed the inverse fraction of fill. 0.5 is
+        // its own inverse, so these use other fractions.
+        let theme = Theme::dark();
+        // A quarter: the top quarter shows the fill, the rest `on`.
+        let buf = band(1.5, 4.25);
+        assert_eq!(buf[(1, 4)].symbol(), "▆");
+        assert_eq!((buf[(1, 4)].fg, buf[(1, 4)].bg), (theme.panel, theme.accent));
+        assert_eq!(fill_eighths(&buf, 4), (2, true));
+        // Seven eighths: one eighth of `on` left at the bottom.
+        let buf = band(1.5, 4.875);
+        assert_eq!(buf[(1, 4)].symbol(), "▁");
+        assert_eq!(fill_eighths(&buf, 4), (7, true));
+        // Nearly whole: rounds to a full row of fill, not a full block of `on`.
+        let buf = band(1.5, 4.95);
+        assert_eq!(fill_eighths(&buf, 4), (8, true));
+        // Nearly none: the row is left as it was.
+        let buf = band(1.5, 4.03);
+        assert_eq!(buf[(1, 4)].symbol(), " ");
+        assert_eq!(buf[(1, 4)].bg, theme.panel);
+    }
+
+    #[test]
+    fn a_sliding_one_row_band_keeps_its_height() {
+        // A one-row band moving in eighths shows the same total fill at
+        // every step: what leaves the top edge arrives at the bottom edge.
+        for step in 0..=8 {
+            let y0 = 2.0 + step as f32 / 8.0;
+            let buf = band(y0, y0 + 1.0);
+            let total: usize = (0..8).map(|y| fill_eighths(&buf, y).0).sum();
+            assert_eq!(total, 8, "band at {y0} shows {total} eighths");
+        }
+    }
+
+    #[test]
+    fn a_band_inside_one_row_shows_its_own_height_against_the_nearer_edge() {
+        let theme = Theme::dark();
+        // Starts on the row's top: the top quarter, not the whole row.
+        let buf = band(2.0, 2.25);
+        assert_eq!(buf[(1, 2)].symbol(), "▆");
+        assert_eq!((buf[(1, 2)].fg, buf[(1, 2)].bg), (theme.panel, theme.accent));
+        assert_eq!(fill_eighths(&buf, 2), (2, true));
+        // Nearer the top: its height (0.2 → two eighths) from the top.
+        assert_eq!(fill_eighths(&band(2.1, 2.3), 2), (2, true));
+        // Nearer the bottom: its height from the bottom.
+        let buf = band(1.7, 1.9);
+        assert_eq!(buf[(1, 1)].symbol(), "▂");
+        assert_eq!((buf[(1, 1)].fg, buf[(1, 1)].bg), (theme.accent, theme.panel));
+        // Too thin to show: the row is left as it was, not painted from the
+        // band's top to the row's bottom.
+        let buf = band(1.5, 1.55);
+        assert_eq!(buf[(1, 1)].symbol(), " ");
+        assert_eq!(buf[(1, 1)].bg, theme.panel);
     }
 
     #[test]
