@@ -44,8 +44,8 @@
 
 ## A closer look
 
-**The Vim profile.** `:send`, `ctrl+w _`, folds, search and Visual mode in the
-response.
+**The Vim profile.** Folding the response, searching it and yanking a Visual
+selection.
 
 <a href="docs/guide.md#keys"><img src="docs/images/vim.gif" alt="Sending with :send, maximizing the response with ctrl+w _, folding it, searching it and yanking a Visual selection" width="900"></a>
 
