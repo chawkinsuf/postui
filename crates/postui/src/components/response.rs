@@ -5254,8 +5254,11 @@ fn body_lines(
                         // The `─` rule out to the pane's width is the row's
                         // tail: the copy holds `── sent ` alone, so a
                         // selection across the divider stops there (#177).
-                        let rule = "\u{2500}"
-                            .repeat((area.width as usize).saturating_sub(crate::ui::cells(line)));
+                        // The crop drops `h_scroll` cells from the row's
+                        // front, rule included, so the rule runs that much
+                        // further to still reach the right edge (#190).
+                        let reach = usize::from(area.width) + view.h_scroll;
+                        let rule = "\u{2500}".repeat(reach.saturating_sub(crate::ui::cells(line)));
                         let tail = vec![Span::styled(rule, dim)];
                         push(i, i, vec![(line.clone(), dim)], tail, true, (0, view.h_scroll));
                         continue;
@@ -7249,6 +7252,30 @@ mod tests {
             Some(format!("{}\n{SENT_DIVIDER}\n{head}", lines[0])),
             "the copy holds the divider's text, its rule left out"
         );
+    }
+
+    /// Scrolled sideways, the `── sent` divider's rule still reaches the
+    /// pane's right edge: the crop drops the scrolled-off cells from the
+    /// rule too, so it is drawn that much longer (#190).
+    #[test]
+    fn the_sent_divider_rule_reaches_the_right_edge_scrolled_sideways() {
+        let mut d = data("{}");
+        d.headers = vec![("x-long".into(), "a".repeat(200))];
+        let mut r = Pane::default();
+        r.set_state(ResponseState::Ready(Box::new(d)), 0);
+        r.set_view_mode(ViewMode::Headers);
+        for scroll in [3, 20] {
+            r.view.as_mut().unwrap().h_scroll = scroll;
+            let (area, buf) = render_buf(&mut r);
+            let view = r.view().unwrap();
+            assert_eq!(view.h_scroll, scroll, "the long row keeps the scroll");
+            assert_eq!(view.header_row(1), Some(HeaderRow::Divider));
+            let text_end = crate::ui::cells(SENT_DIVIDER).saturating_sub(scroll);
+            for c in text_end..usize::from(area.width) {
+                let at = (area.x + u16::try_from(c).unwrap(), area.y + 1);
+                assert_eq!(buf[at].symbol(), "\u{2500}", "scroll {scroll}, column {c}: the rule");
+            }
+        }
     }
 
     /// A received value with wide text (`日本語`, 3 chars, 6 cells) still
