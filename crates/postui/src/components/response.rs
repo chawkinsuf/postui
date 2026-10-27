@@ -767,8 +767,8 @@ pub struct ReadyView {
     /// Width of the body viewport as of the last draw — the horizontal
     /// counterpart of `height`, used to clamp `h_scroll`.
     width: usize,
-    /// A `%` or vim search landing asked for Vim's cursor column to be
-    /// scrolled into view (task #164). The next `draw` does it
+    /// A `%` or search landing asked for the cursor's column to be scrolled
+    /// into view (tasks #164, #180). The next `draw` does it
     /// ([`ReadyView::show_cursor_col`]), once that frame's layout has given
     /// the body its width (a landing that opens a fold can make the tree
     /// overflow, so the scrollbar takes a column) and measured the widest
@@ -1767,7 +1767,7 @@ impl ReadyView {
     /// nothing, a drag selection included, as Vim's beep and a page key's
     /// edge beep don't (`j`/`k`'s edge drop is main's arrows rule). A
     /// landing on another line opens the folds at it (`'foldopen'`
-    /// `percent`), before the column is set, as `$` does. Like a vim search
+    /// `percent`), before the column is set, as `$` does. Like a search
     /// landing, it has the next frame scroll the view sideways to show the
     /// column ([`Self::show_cursor_col`]).
     fn percent(&mut self, count: Option<usize>) {
@@ -1814,7 +1814,25 @@ impl ReadyView {
     /// layout set `width`: the width this frame paints, which a landing
     /// cannot know (a fold it opens can give a column to the scrollbar).
     ///
-    /// Only `%` and the vim search's landings ask, the jumps along a line
+    /// Arrows' search landings ask too, and get the same rule (task #180):
+    /// a GUI editor's find also brings a match from out of view to the
+    /// middle. The rule reads the match's first char, the column that
+    /// lands, where a GUI find would show the whole match: a match that
+    /// starts in view and runs past the edge keeps the scroll, so one
+    /// starting in the last column shows a single highlighted cell. That is
+    /// the cost of one rule for both kinds (a vim landing must read the
+    /// cursor's char, as Vim's does), and taking the whole match would have
+    /// the landing hand over its end too; a match that scrolls has half the
+    /// width to its right, so a short one shows whole. One known gap, left
+    /// to its own task:
+    /// arrows' search opens only the match's ancestors, so a match in a
+    /// collapsed container's key leaves the cursor on that closed fold, and
+    /// nothing scrolls, as for any closed fold. The row does paint the key,
+    /// but no collapsed row paints a match highlight, so scrolling alone
+    /// would show the text without marking it; the fix is that row's
+    /// (open the container, or light its key), not this scroll's.
+    ///
+    /// Only `%` and the search's landings ask, the jumps along a line
     /// that would otherwise move an unseen column. Vim keeps its cursor in
     /// view after every command, but doing it on every move
     /// (`follow_cursor`) would undo `h` `l`'s step scroll, which moves the
@@ -2047,12 +2065,12 @@ impl ReadyView {
     /// puts the column on it (on the line's last char for a match at its
     /// end, as Vim's Normal cursor cannot be past it). A vim search opens
     /// every closed fold at the line, the one it opens included, as Vim's
-    /// `'foldopen'` `search` does, and has the next frame scroll the view
-    /// sideways to show the column ([`Self::show_cursor_col`]); arrows' only
-    /// shows the line, as on main. A jump like any other: a line selection
-    /// drops, except vim's V, which a search extends as Vim 9.1's Visual
-    /// does (probed). Its anchor is a buffer line, so a fold the landing
-    /// opens above it does not move it.
+    /// `'foldopen'` `search` does; arrows' expands only the match's
+    /// ancestors. Either has the next frame scroll the view sideways to
+    /// show the column ([`Self::show_cursor_col`]). A jump like any other:
+    /// a line selection drops, except vim's V, which a search extends as
+    /// Vim 9.1's Visual does (probed). Its anchor is a buffer line, so a
+    /// fold the landing opens above it does not move it.
     fn jump_to_match(&mut self) {
         let Some(search) = &self.search else { return };
         let Some(&(line, start, _)) = search.matches.get(search.current) else {
@@ -2077,10 +2095,7 @@ impl ReadyView {
         }
         let len = self.buffer_line(line).map_or(0, |t| t.chars().count());
         self.set_col(start.min(len.saturating_sub(1)));
-        // Keyed on the search's kind, as the fold opening above is, not on
-        // the profile: a vim search stays one when stepped after a switch to
-        // arrows, which only ever starts plain-text ones.
-        self.show_col |= vim;
+        self.show_col = true;
     }
 
     /// The buffer line shown on visible row `row`: on the tree, the line
@@ -2151,12 +2166,14 @@ impl ReadyView {
     /// stay (probed: `/bar` Enter, then `/foo` Esc leaves `@/` `bar`, the
     /// cursor and the highlight). Arrows' Esc on an empty box only closes
     /// it, as main ran nothing; on a typed one it runs the search, main's
-    /// field rule. Otherwise an empty Vim box takes the last query, as
-    /// Vim's `/` Enter does, and says Vim's E35 when there is none (probe
-    /// E1); an empty arrows box finds nothing, as on main. A Vim pattern
-    /// becomes the last one before it compiles, as Vim's `do_search()`
-    /// stores it, so one outside the engine's subset is kept too and `n`
-    /// says why again (probed: `/\(` then `n` repeats E54).
+    /// field rule, and lands as Enter does, the sideways scroll to the
+    /// match included (task #180): the Esc keeps what was typed, and its
+    /// landing is that search's. Otherwise an empty Vim box takes the last
+    /// query, as Vim's `/` Enter does, and says Vim's E35 when there is
+    /// none (probe E1); an empty arrows box finds nothing, as on main. A
+    /// Vim pattern becomes the last one before it compiles, as Vim's
+    /// `do_search()` stores it, so one outside the engine's subset is kept
+    /// too and `n` says why again (probed: `/\(` then `n` repeats E54).
     fn commit_search(&mut self, esc: bool, memory: &mut SearchMemory) {
         use crate::vim::engine::{Dir, as_stored};
         let Some(search) = self.search.as_mut() else { return };
@@ -8266,38 +8283,72 @@ mod tests {
         assert_eq!(drawn(&mut r), (1, 150, 151 - 80));
     }
 
-    /// Task #164: the sideways scroll is the vim search's. Arrows' search
-    /// keeps main's landing, which leaves the view where it was.
+    /// Task #180: arrows' search lands as the vim search does, so a match
+    /// past the view's edge is put mid-window and one in view keeps the
+    /// scroll, its steps included: arrows' `n` `N` and the ▼/▲ step are
+    /// all `Action::StepResponseSearch`, which `step_search` runs.
     #[test]
-    fn an_arrows_search_landing_does_not_scroll_sideways() {
-        let mut r = ready(&format!("start\n{}target", "d".repeat(150)));
+    fn an_arrows_search_landing_scrolls_the_match_into_view() {
+        let mut r = ready(&format!("target\n{}target target{}", "d".repeat(150), "y".repeat(100)));
         search_for(&mut r, SearchSyntax::Literal, "target");
-        assert_eq!(drawn(&mut r), (1, 150, 0));
+        assert_eq!(drawn(&mut r), (1, 150, 110), "a match past the edge");
+        assert!(r.step_search(1));
+        assert_eq!(drawn(&mut r), (1, 157, 110), "the next match in view: no scroll");
+        assert!(r.step_search(1));
+        assert_eq!(drawn(&mut r), (0, 0, 0), "the wrap back to the start");
+        assert!(r.step_search(-1));
+        assert_eq!(drawn(&mut r), (1, 157, 117), "back past the edge");
     }
 
-    /// Task #164 on the tree: the column is the painted row's, indent
-    /// included, so the match shows after the scroll.
+    /// Task #180: the other two commits of a typed arrows box land the
+    /// same way: Esc, which runs a typed search (main's field rule), and
+    /// the ▼ step while the box is still being typed in.
+    #[test]
+    fn an_arrows_box_commit_by_esc_or_step_scrolls_to_the_match() {
+        for esc in [true, false] {
+            let mut r = ready(&format!("start\n{}target{}", "d".repeat(150), "y".repeat(100)));
+            assert!(r.open_search(SearchSyntax::Literal, false));
+            for c in "target".chars() {
+                r.handle_key(ch(c));
+            }
+            if esc {
+                r.handle_key(key(KeyCode::Esc));
+            } else {
+                assert!(r.step_search(1));
+            }
+            assert_eq!(drawn(&mut r), (1, 150, 110), "esc {esc}");
+        }
+    }
+
+    /// Tasks #164 and #180 on the tree, for either profile's search: the
+    /// column is the painted row's, indent included, so the match shows
+    /// after the scroll.
     #[test]
     fn a_search_landing_on_the_tree_shows_the_match() {
-        let mut r = ready(&format!(r#"{{"k": "{}target"}}"#, "x".repeat(150)));
-        assert!(!render(&mut r).contains("target"), "off screen to start with");
-        search_for(&mut r, SearchSyntax::Vim, "target");
-        assert!(render(&mut r).contains("target"), "the match shows");
-        assert!(r.view().unwrap().h_scroll > 0);
+        for syntax in [SearchSyntax::Vim, SearchSyntax::Literal] {
+            let mut r = ready(&format!(r#"{{"k": "{}target"}}"#, "x".repeat(150)));
+            assert!(!render(&mut r).contains("target"), "off screen to start with");
+            search_for(&mut r, syntax, "target");
+            assert!(render(&mut r).contains("target"), "{syntax:?}: the match shows");
+            assert!(r.view().unwrap().h_scroll > 0);
+        }
     }
 
-    /// Task #164 on the Headers tab: a long header value's match shows.
+    /// Tasks #164 and #180 on the Headers tab: a long header value's match
+    /// shows, for either profile's search.
     #[test]
     fn a_search_landing_on_the_headers_tab_shows_the_match() {
-        let mut d = data("{}");
-        d.headers.push(("x-long".into(), format!("{}target", "v".repeat(150))));
-        let mut r = Pane::default();
-        r.set_state(ResponseState::Ready(Box::new(d)), 0);
-        r.set_view_mode(ViewMode::Headers);
-        assert!(!render(&mut r).contains("target"), "off screen to start with");
-        search_for(&mut r, SearchSyntax::Vim, "target");
-        assert!(render(&mut r).contains("target"), "the match shows");
-        assert!(r.view().unwrap().h_scroll > 0);
+        for syntax in [SearchSyntax::Vim, SearchSyntax::Literal] {
+            let mut d = data("{}");
+            d.headers.push(("x-long".into(), format!("{}target", "v".repeat(150))));
+            let mut r = Pane::default();
+            r.set_state(ResponseState::Ready(Box::new(d)), 0);
+            r.set_view_mode(ViewMode::Headers);
+            assert!(!render(&mut r).contains("target"), "off screen to start with");
+            search_for(&mut r, syntax, "target");
+            assert!(render(&mut r).contains("target"), "{syntax:?}: the match shows");
+            assert!(r.view().unwrap().h_scroll > 0);
+        }
     }
 
     /// Task #164: the width the landing is checked against is the one the
