@@ -8701,7 +8701,9 @@ impl App {
     /// for Manage commits the cell at the end of that event (`capture_undo`,
     /// the net for screen changes, spec 2026-10-19 R1), so none is open
     /// when it runs either (#153). The promote has no commit of its own:
-    /// it would serve no path the app takes.
+    /// it would serve no path the app takes. A new way to promote from the
+    /// main screen (a palette row, a tooltip action) must commit an open
+    /// Vars cell before it reads the value, as the value dialog does.
     fn debug_assert_no_open_vars_cell(&self) {
         debug_assert!(
             self.editor.active_tab != EditorTab::Vars || self.editor.table.editing.is_none(),
@@ -9100,9 +9102,10 @@ impl App {
                 E::SetFields { selector: selector.clone(), fields: fields.clone() }
             }
             VarStructOp::Promote { name, target } => {
-                // Checked before the value read below, not only at the
-                // removal after core's write: an open cell's typing is
-                // missing from the value and moves rows at the removal.
+                // Checked here, before the value read, rather than at the
+                // removal after core's write: an open cell's typing would be
+                // missing from the value, and the removal would move its
+                // row. Nothing between here and the removal opens a cell.
                 self.debug_assert_no_open_vars_cell();
                 // The value being promoted lives in the open request's
                 // buffer, which core never sees: read it here, and refuse

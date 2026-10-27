@@ -28094,14 +28094,10 @@ fn the_value_dialog_commits_an_open_ghost_cell_before_a_new_var() {
     );
 }
 
-/// #153, the way the app reaches a promote: alt+r leaves the cell, and the
-/// main loop's end-of-event capture commits it (spec 2026-10-19 R1), so
-/// the Manager's Promote never runs over an open cell
-/// (`debug_assert_no_open_vars_cell` in the promote).
-#[test]
-fn opening_manage_commits_an_open_vars_cell_before_a_promote() {
-    // Request vars `trace_id`, `b`, with b's value cell open and typed in,
-    // not yet committed.
+/// Request `main/ping` on disk with vars `trace_id = "abc-123"`, `b = "2"`,
+/// open on the Vars tab with b's value cell open and holding `typed`, not
+/// yet committed.
+fn promote_app_with_b_typed() -> (App, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let r = postui_core::model::HttpRequest::from_toml_str(
@@ -28122,7 +28118,15 @@ fn opening_manage_commits_an_open_vars_cell_before_a_promote() {
     let edit = app.editor.table.editing.as_mut().expect("the value cell is open");
     assert_eq!((edit.row, edit.col), (1, crate::components::table_editor::Col::Value));
     edit.input.set_text("typed");
+    (app, dir)
+}
 
+/// #153, the way the app reaches a promote: alt+r leaves the cell, and the
+/// main loop's end-of-event capture commits it (spec 2026-10-19 R1), so
+/// the Manager's Promote never runs over an open cell.
+#[test]
+fn opening_manage_commits_an_open_vars_cell_before_a_promote() {
+    let (mut app, _dir) = promote_app_with_b_typed();
     app.handle_key(alt('r'));
     assert_eq!(app.screen, Screen::Manage);
     app.capture_undo(); // what `main`'s loop runs after every event
@@ -28132,6 +28136,19 @@ fn opening_manage_commits_an_open_vars_cell_before_a_promote() {
     app.handle_key(plain('d')); // Default value
     assert_eq!(app.proj().variables().vars["trace_id"].default.as_deref(), Some("abc-123"));
     assert_eq!(request_vars(&app), [("b".to_string(), "typed".to_string())]);
+}
+
+/// #153: a promote over an open Vars cell is a broken invariant, caught in
+/// debug builds before the promote reads its value.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "under an open Vars cell")]
+fn a_promote_over_an_open_vars_cell_trips_the_debug_assert() {
+    let (mut app, _dir) = promote_app_with_b_typed();
+    app.update(Action::VarStruct(VarStructOp::Promote {
+        name: "trace_id".into(),
+        target: postui_core::varedit::PromoteTarget::Default,
+    }));
 }
 
 /// A pick from the insert picker (alt+v) with the caret in a token swaps
