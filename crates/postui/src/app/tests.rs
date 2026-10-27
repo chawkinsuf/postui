@@ -2112,6 +2112,17 @@ fn click_hit(app: &mut App, hit: Hit) {
     app.handle_mouse(left_down(x, r.y));
 }
 
+/// A click on the address bar's TLS lock. While the URL line holds the
+/// caret the footer draws a `tls` chip of the same action, which is its key
+/// and no click away (task #194); the lock is a click away.
+fn click_lock(app: &mut App) {
+    render_once(app);
+    let footer = app.settled_layout().expect("drawn").footer;
+    let rects = app.hits.rects_of(&Hit::FooterChip(Action::ToggleInsecure));
+    let lock = *rects.iter().find(|r| !footer.contains(r.as_position())).expect("the lock");
+    app.handle_mouse(left_down(lock.x, lock.y));
+}
+
 fn type_chars(app: &mut App, s: &str) {
     for c in s.chars() {
         app.handle_key(plain(c));
@@ -2499,7 +2510,7 @@ fn app_with_typed_url() -> App {
 #[test]
 fn a_click_that_edits_leaves_the_url_typing_its_own_undo_step() {
     let mut app = app_with_typed_url();
-    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    click_lock(&mut app);
     app.capture_undo();
     assert!(app.editor.current_request().insecure);
 
@@ -2631,7 +2642,7 @@ fn a_click_that_edits_leaves_the_vim_url_typing_its_own_undo_step() {
     }
     app.capture_undo();
     assert!(app.editor.url_open());
-    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    click_lock(&mut app);
     app.capture_undo();
     assert!(app.editor.current_request().insecure);
 
@@ -2710,7 +2721,7 @@ fn a_click_mid_insert_in_the_vim_url_line_undoes_in_order() {
         app.handle_key(ev);
     }
     app.capture_undo();
-    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    click_lock(&mut app);
     app.capture_undo();
     app.focus = PaneId::Editor;
     app.editor.open_url_from_app();
@@ -15740,14 +15751,15 @@ fn footer_chips_leave_the_table_cursor_as_their_actions_do(
 
 /// Task #192: the same with a table cell open (the cell, its typing, the
 /// cursor and the caret), with the Body's caret up, and with the URL line
-/// selected. Every chip drawn in the footer's strip, `done` and the
+/// selected; task #194 adds the open URL line (its typing and caret) and
+/// the selected method badge. Every chip drawn in the footer's strip, `done` and the
 /// address bar's `copy url` and `tls` included, leaves the editor exactly
 /// as running its action does, which is what its key does: the click is
 /// the action with no click-away before it.
 #[test]
 fn an_editor_footer_chip_click_leaves_an_open_cell_or_the_caret_as_its_action_does() {
     use crate::config::KeyProfile::{Arrows, Vim};
-    for state in ["cell", "body", "url"] {
+    for state in ["cell", "body", "url", "url_open", "method"] {
         for profile in [Arrows, Vim] {
             for sending in [false, true] {
                 let probe = editor_caret_app(state, profile, sending);
@@ -15758,6 +15770,10 @@ fn an_editor_footer_chip_click_leaves_an_open_cell_or_the_caret_as_its_action_do
                 for (chip, x) in &chips {
                     let mut by_action = editor_caret_app(state, profile, sending);
                     by_action.update(chip.clone());
+                    // The engine follows what the action did, as at the end
+                    // of any event: `done` on vim's open URL line leaves
+                    // Insert there, which steps the caret back.
+                    by_action.vim_catch_up();
                     let mut app = editor_caret_app(state, profile, sending);
                     app.handle_mouse(left_down(*x, y));
                     assert_eq!(
@@ -15771,10 +15787,11 @@ fn an_editor_footer_chip_click_leaves_an_open_cell_or_the_caret_as_its_action_do
     }
 }
 
-/// Task #192's three states, drawn wide so every footer chip fits, the URL
-/// empty so the send chip toasts rather than spawning a send: `cell`, a
-/// header's value open with typing in it; `body`, the Body's caret mid-text;
-/// `url`, the URL line selected (not open).
+/// Task #192's three states and #194's two, drawn wide so every footer chip
+/// fits, the URL blank so the send chip toasts rather than spawning a send:
+/// `cell`, a header's value open with typing in it; `body`, the Body's caret
+/// mid-text; `url`, the URL line selected (not open); `url_open`, the URL
+/// line open with typing in it; `method`, the method badge selected.
 fn editor_caret_app(state: &str, profile: crate::config::KeyProfile, sending: bool) -> App {
     let mut app = main_header_app(profile);
     app.editor.url = LineInput::new("");
@@ -15796,6 +15813,22 @@ fn editor_caret_app(state: &str, profile: crate::config::KeyProfile, sending: bo
             app.editor.table.set_selected(None);
             app.editor.set_body_text("ab\ncd");
             app.editor.body.cursor = edtui::Index2::new(1, 1);
+        }
+        "url_open" => {
+            app.editor.table.set_selected(None);
+            click_hit(&mut app, Hit::UrlBar);
+            assert!(app.editor.url_open(), "the URL line opened");
+            if profile == crate::config::KeyProfile::Vim {
+                type_chars(&mut app, "A");
+            }
+            // A space: typing that a send still finds blank, so the send
+            // chip toasts here too.
+            type_chars(&mut app, " ");
+            assert_eq!(app.editor.url.text(), " ", "{profile:?} typed into the URL line");
+        }
+        "method" => {
+            app.editor.table.set_selected(None);
+            app.editor.sub_focus = SubFocus::Method;
         }
         _ => {
             app.editor.table.set_selected(None);
@@ -15866,8 +15899,10 @@ fn editor_seen(app: &App) -> EditorSeen {
 }
 
 /// Task #192's report, against the keys themselves: in arrows, with a cell
-/// open and typed into, the Body's caret up or the URL line selected, each
-/// footer chip's click leaves the editor as its keycap's key does. Every
+/// open and typed into, the Body's caret up or the URL line selected (and,
+/// task #194, the URL line open and typed into or the method badge
+/// selected), each footer chip's click leaves the editor as its keycap's
+/// key does. Every
 /// chip drawn is checked: one with no key here fails the test.
 ///
 /// Not sending: the in-flight `esc cancel` chip's Esc is the field's first
@@ -15889,7 +15924,7 @@ fn an_editor_footer_chip_click_matches_its_key_with_a_cell_or_caret_up() {
         Action::ToggleInsecure => vec![alt('i')],
         other => panic!("no key for the {other:?} chip"),
     };
-    for state in ["cell", "body", "url"] {
+    for state in ["cell", "body", "url", "url_open", "method"] {
         let (y, chips) = footer_strip_chips(&editor_caret_app(state, Arrows, false));
         assert!(chips.len() >= 4, "{state}: {chips:?}");
         for (chip, x) in &chips {

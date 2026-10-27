@@ -91,7 +91,10 @@
   task #192, mine:* the same holds with a table cell open, with the Body's
   caret up and with the URL line selected: a footer chip's click leaves the
   cell, its typing, the cursor and the caret as its key does, and its
-  action does the rest (send and quit commit the cell, `done` closes it).)
+  action does the rest (send and quit commit the cell, `done` closes it).
+  *Amended 2026-10-27, task #194, you ("yes, it should not blur the
+  input"):* so it does with the URL line open, its typing and caret kept
+  (`done` closes it), and with the method badge selected.)
   The response chip is `Key::Pair` of the two `CopyRow` actions.
   `TableCursor` gains `headers` on `Row` and a `ResponseHeader` variant
   for the response's cursor.
