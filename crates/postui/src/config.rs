@@ -66,23 +66,28 @@ impl ProjectsRegistry {
     /// table; every unrelated key is preserved byte-for-byte. The I/O
     /// around it (and the refusal to write over a file that doesn't
     /// parse) is [`Config::edit`]'s business.
+    ///
+    /// A path that isn't UTF-8 is left out (#167): TOML can only hold it
+    /// lossily, under a name no directory has, which the next launch
+    /// would open and every later save would add again. Such a project
+    /// opens and works; it just isn't remembered.
     pub fn write_into(&self, doc: &mut toml_edit::DocumentMut) {
         let mut table = toml_edit::Table::new();
 
         let mut known = toml_edit::Array::new();
-        for p in &self.known {
-            known.push(p.to_string_lossy().into_owned());
+        for p in self.known.iter().filter_map(|p| p.to_str()) {
+            known.push(p);
         }
         table["known"] = toml_edit::value(known);
 
-        match &self.root {
-            Some(root) => table["root"] = toml_edit::value(root.to_string_lossy().into_owned()),
+        match self.root.as_deref().and_then(Path::to_str) {
+            Some(root) => table["root"] = toml_edit::value(root),
             None => {
                 table.remove("root");
             }
         }
-        match &self.last {
-            Some(last) => table["last"] = toml_edit::value(last.to_string_lossy().into_owned()),
+        match self.last.as_deref().and_then(Path::to_str) {
+            Some(last) => table["last"] = toml_edit::value(last),
             None => {
                 table.remove("last");
             }
@@ -1491,6 +1496,33 @@ mod tests {
         assert_eq!(r2.known, vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]);
         assert_eq!(r2.last, Some(PathBuf::from("/tmp/a")));
         assert_eq!(r2.root, Some(PathBuf::from("/tmp/root")));
+    }
+
+    /// #167: a path TOML can't hold as written (not UTF-8) is left out of
+    /// the save rather than written lossily under a name no directory
+    /// has. The project still opens; it just isn't remembered.
+    #[cfg(unix)]
+    #[test]
+    fn save_leaves_out_a_path_that_is_not_utf8() {
+        use std::os::unix::ffi::OsStringExt;
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        let mut cfg = Config { disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())) };
+        let raw = PathBuf::from(OsString::from_vec(b"/tmp/api-\xff".to_vec()));
+        let (mut r, _) = ProjectsRegistry::parse("");
+        r.register(PathBuf::from("/tmp/a"));
+        r.register(raw.clone());
+        cfg.save_registry(&r).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(!text.contains('\u{FFFD}'), "{text}");
+        let (mut r2, _) = ProjectsRegistry::parse(&text);
+        assert_eq!(r2.known, vec![PathBuf::from("/tmp/a")]);
+        assert_eq!(r2.last, None, "the last project isn't remembered either");
+        // Opened again, it stays one entry in memory and none on disk.
+        r2.register(raw);
+        cfg.save_registry(&r2).unwrap();
+        let (r3, _) = ProjectsRegistry::parse(&std::fs::read_to_string(&p).unwrap());
+        assert_eq!(r3.known, vec![PathBuf::from("/tmp/a")]);
     }
 
     #[test]

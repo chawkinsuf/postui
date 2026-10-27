@@ -31,6 +31,7 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] #157 `ctrl+j` in the arrows body breaks the line without auto-indent (pulled in by the user, 2026-10-27, with the two below; merged 2026-10-27: ctrl+j takes Enter's path)
 - [x] #161 A non-UTF-8 command-line argument panics (merged 2026-10-27: the arguments are read as the OS gives them; a non-UTF-8 one is the directory, or an unknown option with a dash)
 - [x] #162 Printing `--version`, `--help` or `--setup` panics when stdout can't be written (e.g. `postui --help | head`) (merged 2026-10-27 with #161: a closed pipe succeeds quietly, any other write error is said and exits 1)
+- [x] #167 A project directory whose name is not UTF-8 is saved to the config under a different name (found by #161's check, pulled in by the user, 2026-10-27; merged with #161: such a path is left out of the save, so the project opens but isn't remembered)
 
 ## Cheap fixes bundled in (all merged 2026-10-25)
 
