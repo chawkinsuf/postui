@@ -22,10 +22,9 @@
   responds to the mouse, and every action also has a key: an arrows-and-Enter
   profile or a Vim profile, your pick on first launch. The footer always shows
   the keys for what has focus, and `ctrl+p` searches every command.
-- **A real Vim mode.** If you use Vim, your muscle memory works here: text
-  objects, registers, `.` and Visual mode when you edit, search and folds in
-  the response, `:w` to save and `:q` to quit. The editing engine is tested
-  against Vim 9.1.
+- **A real Vim mode.** If you use Vim, your muscle memory works: text objects,
+  registers, `.`, Visual mode, search and folds in the response. The editing
+  engine is tested against Vim 9.1.
 - **Requests are files.** One TOML file per request, in folders, grouped into
   spaces. Review them in a diff and commit them next to the code they test.
 - **Environments, variables and secrets.** `{{tokens}}` in the URL, params and
