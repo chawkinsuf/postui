@@ -1103,13 +1103,14 @@ impl App {
         // text for the search prompt (#129), which is the body's for every
         // other mouse input: a press there places no caret. It gives the
         // body the keyboard, anchors no sweep (a sweep extends from the
-        // caret its press placed), and settles nothing, so an open search
-        // and Visual go on. Vim 9.1 does the same on its command line
-        // (probed: a click there leaves the cursor, keeps an open `/` line
-        // and Visual, and dragged up over the text selects nothing).
+        // caret its press placed), and settles as a press on Vim's command
+        // line: a half-typed command goes, an open search and Visual go
+        // on. Vim 9.1 does the same (probed: a click there leaves the
+        // cursor, keeps an open `/` line and Visual, drops a pending `d`
+        // or count, and dragged up over the text selects nothing).
         if field == FieldId::Body && self.editor.below_body_text(m.row) {
             self.move_editor_caret(SubFocus::Content);
-            self.vim_separator_press();
+            self.vim_command_line_press();
             return;
         }
         let at = self.text_at(field, m.column, m.row, open, false);
@@ -1967,12 +1968,7 @@ impl App {
                 };
                 // Closed as Enter on the row closes it, housekeeping and all
                 // (a parked field's session made live, the sidebar's
-                // right-click selection settled). Like Enter, the press is
-                // the menu's and settles nothing on the field it was opened
-                // over: the body's Paste picked while a search is typed
-                // goes into the search and the search stays open, as Vim's
-                // paste goes into its command line (#129).
-                self.vim_separator_press();
+                // right-click selection settled).
                 self.close_dropdown_and_run(action)
             }
             // A row's own button (jq views spec 17): it runs once the menu

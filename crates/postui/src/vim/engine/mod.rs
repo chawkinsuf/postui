@@ -115,6 +115,11 @@ pub enum Settled {
     Key,
     /// A left press off the buffer's text: Visual ends.
     Click,
+    /// A left press on the command line's row (the body's search row,
+    /// #129): a half-typed command (an operator, a count) is dropped, and
+    /// the cursor and Visual stay, as on Vim's command line (probed in
+    /// 9.1).
+    CommandLine,
     /// The mouse on the buffer's text, at a char (Vim's `do_mouse()`).
     Mouse(Pos, Mouse),
 }
@@ -759,8 +764,25 @@ impl Engine {
     /// becomes the wanted column.
     pub fn settle<B: TextBuf>(&mut self, t: Target<'_, B>, how: Settled) {
         let Target { buf, state } = t;
+        // While a search is being typed, Vim's mouse off the text leaves it
+        // open, and Visual under it, and moves nothing (probed in 9.1: `/li`,
+        // a click on the text, `X` types `/liX`; `/li`, a click on the
+        // command line, `X` types `/lXi`). So a press on the search's row
+        // settles nothing, nor one that picks a menu row: the body menu's
+        // Paste types into the search and the search goes on (#129).
+        if self.search.is_some() && matches!(how, Settled::Click | Settled::CommandLine) {
+            return;
+        }
         self.note = None;
         self.request = None;
+        // A press on the command line's row drops a half-typed command and
+        // nothing else (probed in 9.1: `d` or `3`, a click there, and the
+        // next key runs alone; Visual stays). Not a `rest`: nothing moved.
+        if how == Settled::CommandLine {
+            self.pending.clear();
+            self.reg_pending = None;
+            return;
+        }
         if matches!(how, Settled::Click | Settled::Mouse(_, Mouse::Press(_) | Mouse::Extend)) {
             self.clear_pending();
         }

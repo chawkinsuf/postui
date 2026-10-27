@@ -3943,14 +3943,21 @@ impl Editor {
                 // width, as Vim's command line is the screen's: under the
                 // bar when the row is kept, over it in a one-row pane while
                 // a search is open (the prompt covers that row whole).
-                let kept = (self.prompt_row && area.height > 1).then(|| {
-                    area.height -= 1;
-                    Rect { y: area.bottom(), height: 1, ..area }
-                });
-                let shared = self.prompt_row && kept.is_none();
-                let prompt_rect = kept.or(shared.then_some(area));
-                // The body row under an open prompt (a one-row body).
-                let covered = (shared && self.body_search.prompt.is_some()).then_some(area.y);
+                // A pane with no body row at all draws no prompt.
+                let prompt_rect = match (self.prompt_row, area.height) {
+                    (false, _) | (true, 0) => None,
+                    (true, 1) => Some(area),
+                    (true, _) => {
+                        area.height -= 1;
+                        Some(Rect { y: area.bottom(), height: 1, ..area })
+                    }
+                };
+                // The row kept below the text, or else the one-row body's
+                // row while an open prompt covers it.
+                let kept = prompt_rect.filter(|r| r.y == area.bottom());
+                let covered = prompt_rect
+                    .filter(|r| r.y == area.y && self.body_search.prompt.is_some())
+                    .map(|r| r.y);
                 let spec = ScrollbarSpec {
                     pane: PaneId::Editor,
                     offset: self.body.viewport_offset().1,
@@ -3976,7 +3983,12 @@ impl Editor {
                 self.last_body_area = Some(area);
                 hits.register(area, crate::hit::Hit::BodyEditor);
                 // The kept row is the body's for every mouse input; a press
-                // there places no caret (`App::press_text`).
+                // there places no caret (`App::press_text`). One hit, not a
+                // hit of its own: what reads the body's text from a point
+                // (a caret, a word, Vim's extend) goes through
+                // `last_body_area`, which stops above the row, so only the
+                // press needs telling. A hit of its own had to be taught to
+                // every mouse path in turn (focus, wheel, menu, pointer).
                 if let Some(row) = kept {
                     hits.register(row, crate::hit::Hit::BodyEditor);
                 }
@@ -5578,6 +5590,26 @@ mod tests {
         assert_eq!(body_hits(&hits), [area]);
         let top = hits.hit_at(area.x + 4, area.y);
         assert_eq!(top, Some(&crate::hit::Hit::BodyEditor));
+    }
+
+    /// #129: a pane with no body row (only its focus ring) draws no prompt,
+    /// so the open search's text never lands on the ring.
+    #[test]
+    fn a_pane_with_no_body_row_draws_no_prompt() {
+        let mut e = body_editor("{}");
+        draw_body(&mut e, true);
+        let tall = e.last_body_area.unwrap().height;
+        e.prompt_row = true;
+        e.body.mode = EditorMode::Normal;
+        e.body_search.prompt = Some(crate::vim::engine::SearchLine {
+            dir: crate::vim::engine::Dir::Forward,
+            text: "zq".into(),
+            cursor: 2,
+        });
+        let (buf, _) = draw_body_sized(&mut e, true, 24 - tall);
+        assert_eq!(e.last_body_area.map(|a| a.height), Some(0));
+        let text: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(!text.contains("/zq"), "no prompt drawn");
     }
 
     /// R8: Visual paints over the pair.

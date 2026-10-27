@@ -1839,8 +1839,9 @@ fn the_search_prompts_row_wheels_and_menus_as_the_body() {
 
 /// #129: while a search is being typed, the body's menu over the row
 /// below the text is the body's, and its Paste types into the search, which
-/// stays open, as Vim's paste goes into its command line. Picking the row
-/// settles no more than Enter on it does.
+/// stays open, as Vim's paste goes into its command line: the pick's press,
+/// as any press off the text while a search is typed, leaves the search
+/// open (probed in 9.1).
 #[test]
 fn menu_paste_while_searching_types_into_the_search() {
     use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
@@ -1930,6 +1931,27 @@ fn a_press_on_the_prompts_row_anchors_no_sweep() {
     assert!(app.editor.body_visual.is_some(), "the sweep selects");
     assert!(app.editor.body.cursor.row >= usize::from(area.height), "past the body's last row");
     mouse(&mut app, up, area.bottom());
+}
+
+/// #129: a press on the prompt's row drops a half-typed command, as one on
+/// Vim's command line does (probed in 9.1: `d`, a click there, `w` only
+/// moves; `3`, a click there, `x` deletes one char).
+#[test]
+fn a_press_on_the_prompts_row_drops_a_pending_command() {
+    let mut app = vim(Fixture::Body);
+    app.editor.set_body_text("one two three\nfour");
+    draw(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    feed(&mut app, "gg0d");
+    click_at(&mut app, area.x + 8, area.bottom());
+    feed(&mut app, "w");
+    assert_eq!(app.editor.body.lines.to_string(), "one two three\nfour", "`w` only moves");
+    assert_eq!(app.editor.body.cursor, edtui::Index2::new(0, 4));
+    feed(&mut app, "0");
+    feed(&mut app, "3");
+    click_at(&mut app, area.x + 8, area.bottom());
+    feed(&mut app, "x");
+    assert_eq!(app.editor.body.lines.to_string(), "ne two three\nfour", "one char");
 }
 
 /// #129: the bar measures the body above the prompt's row, as the thumb

@@ -63,6 +63,10 @@ pub(crate) struct VimState {
     /// gutter, or the response's header strip), which `vim_mouse_end` does
     /// not settle as a click.
     separator_press: bool,
+    /// This event's left press landed on the row the body keeps for the
+    /// search prompt (#129), which `vim_mouse_end` settles as a press on
+    /// Vim's command line.
+    command_line_press: bool,
 }
 
 /// The change `.` repeats (spec §5.12) and the history's change count
@@ -1017,6 +1021,7 @@ impl App {
             self.sync_session(None, Cause::Before);
             self.vim.text_mouse = None;
             self.vim.separator_press = false;
+            self.vim.command_line_press = false;
         }
         MouseEdge { button, left_press: m.kind == MouseEventKind::Down(MouseButton::Left) }
     }
@@ -1024,17 +1029,20 @@ impl App {
     /// After a mouse event: a button's settles the session. What the
     /// mouse did on the text of the field that has the caret now settles
     /// at its char (spec 2026-10-14); any other left press is a plain
-    /// click, except one on a window separator, and a release does
-    /// nothing, as in Vim.
+    /// click, except one on a window separator, or on the body's search
+    /// row (as on Vim's command line), and a release does nothing, as in
+    /// Vim.
     pub(super) fn vim_mouse_end(&mut self, edge: MouseEdge) {
         if !edge.button {
             return;
         }
         let separator = std::mem::take(&mut self.vim.separator_press);
+        let command_line = std::mem::take(&mut self.vim.command_line_press);
         let how = match self.vim.text_mouse.take() {
             Some((field, at, mouse)) if self.field_caret() == FieldCaret::Live(field) => {
                 Some(Settled::Mouse(at, mouse))
             }
+            _ if command_line => Some(Settled::CommandLine),
             _ => (edge.left_press && !separator).then_some(Settled::Click),
         };
         self.sync_session(None, Cause::Mouse(how));
@@ -1043,13 +1051,17 @@ impl App {
     /// A left press on a window separator (`App::is_separator_press`, spec
     /// S7): the sidebar gutter, or in vim the response's header strip.
     /// Vim keeps Visual mode and a pending operator through a press there,
-    /// so the end of the event settles nothing. Also, for #129: a press on
-    /// the row kept under the body's text for the search prompt (Vim keeps
-    /// Visual and an open `/` line through a press on its command line,
-    /// probed in 9.1), and a pick from a menu, which settles no more than
-    /// Enter on its row does.
+    /// so the end of the event settles nothing.
     pub(super) fn vim_separator_press(&mut self) {
         self.vim.separator_press = true;
+    }
+
+    /// A left press on the row the body keeps under its text for the
+    /// search prompt (#129): it settles as a press on Vim's command line
+    /// (`Settled::CommandLine`), which drops a half-typed command and keeps
+    /// the cursor, Visual and an open search.
+    pub(super) fn vim_command_line_press(&mut self) {
+        self.vim.command_line_press = true;
     }
 
     /// A left press on `field`'s text at char `(row, col)`, with Vim's click
