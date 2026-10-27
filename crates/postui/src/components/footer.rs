@@ -206,13 +206,18 @@ pub(crate) fn footer_chips(
             // the focused input takes Esc for its own there is nothing
             // honest to put in that slot, so it goes empty (#193); with a
             // field open `esc done` leads the row. The slot comes and goes
-            // only as the keyboard moves to another stop, and every stop
+            // mostly as the keyboard moves to another stop, and every stop
             // brings its own chips after it (the address bar's, the add
             // chip's keycap, the row's), so the row reflows then whether or
             // not the slot is there; a blank kept for it would read as a
-            // gap at the row's start.
-            // An open field's Esc is always the field's (the field rule),
-            // so `field_open` keeps the slot empty here too.
+            // gap at the row's start. A half-typed vim count drops it too,
+            // for as long as Esc would only drop the count: a chip that
+            // stays would name a key that does not cancel.
+            //
+            // The field rule is this function's own, as it was before
+            // #193: an open field's Esc is the field's whatever `sending`
+            // says, so `field_open` empties the slot here; where else Esc
+            // reaches the cancel is the caller's to say.
             match sending {
                 Sending::InFlight { esc_cancels: true } if !field_open => {
                     chips.push((Key::Named("esc"), "cancel", Some(Action::CancelSend)))

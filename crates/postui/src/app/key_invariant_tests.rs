@@ -774,11 +774,24 @@ async fn esc_cancel_follows_a_keys_toml_that_moves_close() {
 
 /// The body takes alt+←/→, not the tab chord: a `keys.toml` that moves the
 /// chord onto keys the body leaves alone keeps its chip in the body, and
-/// those keys switch the tab there (#193).
+/// those keys switch the tab there (#193). So does one that adds them
+/// beside alt+←/→: the keycap names a ctrl chord before an alt one
+/// (`Keymap::chord_for_action`), and the chip asks about the keys it names.
 #[test]
 fn a_rebound_tab_chord_keeps_its_chip_in_the_arrows_body() {
-    let mut app = build(Fixture::Body);
-    app.keymap.apply_overrides("tab_next = [\"ctrl+n\"]\ntab_prev = [\"ctrl+b\"]\n").unwrap();
+    for both in [false, true] {
+        let mut app = build(Fixture::Body);
+        let keys = if both {
+            "tab_next = [\"alt+right\", \"ctrl+n\"]\ntab_prev = [\"alt+left\", \"ctrl+b\"]\n"
+        } else {
+            "tab_next = [\"ctrl+n\"]\ntab_prev = [\"ctrl+b\"]\n"
+        };
+        app.keymap.apply_overrides(keys).unwrap();
+        rebound_chip_switches_the_tab(app);
+    }
+}
+
+fn rebound_chip_switches_the_tab(mut app: App) {
     draw(&mut app);
     let chips = crate::keyroute::spell::resolve(
         crate::ui::footer_chips_of(&app),
