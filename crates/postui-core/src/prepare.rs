@@ -322,11 +322,10 @@ pub fn prepare(
 /// together, at the place the name first went in (probed against a raw
 /// server, task #22). `rows` lists them in the order they go in: what the
 /// client puts in before ours (the URL's `Authorization`), ours, then what
-/// it adds after. A row of ours replaces a client row in place, so one the
-/// client put in before ours keeps its place when replaced; one it adds
-/// after ours would only be added when the name is free, so it holds no
-/// place. (Since task #174 made `Accept` ours, the rows it adds after ours
-/// are `Host` and `Content-Length`, which nothing replaces: R3a.)
+/// it adds after. A row of ours replaces a client row in place, so the one
+/// the client puts in before ours keeps its place when replaced. The rows
+/// it adds after ours (`Host`, `Content-Length`) are never replaced (R3a),
+/// so only rows of ours are ever skipped there.
 fn wire_order(rows: &[HeaderRow]) -> Vec<SentHeader> {
     let mut groups: IndexMap<String, Vec<SentHeader>> = IndexMap::new();
     let mut ours_started = false;
@@ -455,6 +454,27 @@ fn client_owned(name: &str) -> Option<&'static str> {
     CLIENT_OWNED.into_iter().find(|owned| name.eq_ignore_ascii_case(owned))
 }
 
+/// A row [`header_rows`] adds of its own rather than reads off the request
+/// or the defaults, with no `{{tokens}}` to resolve: postui's auto rows and
+/// the client's. The caller says whose it is and whether the request may
+/// take it over, so neither kind is built as the other and patched.
+fn fixed_row(
+    name: &str,
+    value: String,
+    display: String,
+    origin: HeaderOrigin,
+    unsent: Option<Unsent>,
+    override_as: Option<(String, String)>,
+) -> HeaderRow {
+    HeaderRow {
+        header: SentHeader { name: name.into(), display_name: name.into(), display, value },
+        origin,
+        unsent,
+        unresolved: Vec::new(),
+        override_as,
+    }
+}
+
 /// Every header of `req`'s send, in wire order — the client's
 /// `Authorization` from the URL's userinfo, enabled defaults, enabled
 /// request rows, the auto `Content-Type` and `Accept`, then the client's
@@ -538,19 +558,9 @@ fn rows(
     // A row the client adds, shown as `display`: masked when a secret can
     // change it (the URL's rows), else as it is sent. The request may not
     // take it over.
-    let client_row =
-        |name: &str, value: String, display: String, unsent: Option<Unsent>| HeaderRow {
-            header: SentHeader {
-                name: name.to_string(),
-                display_name: name.to_string(),
-                display,
-                value,
-            },
-            origin: HeaderOrigin::Client,
-            unsent,
-            unresolved: Vec::new(),
-            override_as: None,
-        };
+    let client_row = |name: &str, value: String, display: String, unsent: Option<Unsent>| {
+        fixed_row(name, value, display, HeaderOrigin::Client, unsent, None)
+    };
 
     let mut rows = Vec::new();
 
@@ -591,17 +601,10 @@ fn rows(
     // or project default naming `accept` (the pencil writes one) replaces
     // it. Each is shown as it is sent, and the request may take it over
     // unless it has a row naming it already.
-    let auto = |name: &str, value: &str, rows: &[HeaderRow]| HeaderRow {
-        header: SentHeader {
-            name: name.into(),
-            display_name: name.into(),
-            display: value.into(),
-            value: value.into(),
-        },
-        origin: HeaderOrigin::Auto,
-        unsent: replaced(rows, name),
-        unresolved: Vec::new(),
-        override_as: (!named_by_request(name)).then(|| (name.into(), value.into())),
+    let auto = |name: &str, value: &str, rows: &[HeaderRow]| {
+        let take_over = (!named_by_request(name)).then(|| (name.into(), value.into()));
+        let (unsent, origin) = (replaced(rows, name), HeaderOrigin::Auto);
+        fixed_row(name, value.into(), value.into(), origin, unsent, take_over)
     };
     if body_len.is_some() {
         rows.push(auto("Content-Type", "application/json", &rows));
@@ -793,7 +796,10 @@ mod tests {
     }
 
     /// The auto `Accept` every send carries after the rows written for it,
-    /// unless one of them names `accept` (task #174).
+    /// unless one of them names `accept` (task #174). Spelled out rather
+    /// than read from [`AUTO_ACCEPT`], here and in the app's tests: they pin
+    /// what the user sees on the wire and on screen, so a change to the
+    /// constant has to change them on purpose.
     fn json_accept() -> (String, String) {
         ("Accept".into(), "application/json".into())
     }
