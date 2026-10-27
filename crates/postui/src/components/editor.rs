@@ -2767,6 +2767,15 @@ impl Component for Editor {
                 // ^A splits (mac: smart Home; Linux: falls through to
                 // select-all).
                 let ev = crate::keys::fold_text_nav_bytes(ev, cfg!(target_os = "macos"));
+                // ctrl+j is the newline byte (#157): it takes Enter's path
+                // below, auto-indent and selection replace included, rather
+                // than edtui's bare break. Body only: on the one-line fields
+                // Enter means something else.
+                let ev = if ev.code == KeyCode::Char('j') && ev.modifiers == KeyModifiers::CONTROL {
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+                } else {
+                    ev
+                };
                 // GUI-style selection (plan 2026-08-23-text-selection):
                 // select-all (ctrl+a on Linux; ctrl+shift+a — either
                 // reported spelling — everywhere, cmd+a via the SUPER
@@ -9862,6 +9871,25 @@ mod body_click_tests {
         assert_eq!(screen(&e), "\t\tk\n\t\t", "a tab indent is copied as tabs");
         let e = enter_at("ab", 0, 1);
         assert_eq!(e.body_text(), "a\nb", "no indent, nothing copied");
+    }
+
+    /// #157: ctrl+j is a newline (the byte a legacy terminal sends for it),
+    /// so it breaks the line as Enter does: indented, and replacing a
+    /// selection. edtui's own ctrl+j is a bare break.
+    #[test]
+    fn ctrl_j_breaks_the_line_as_enter_does() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let ctrl_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        let mut e = editor_with_body("{\n  \"a\": 1");
+        e.body.cursor = Index2::new(1, 8);
+        e.handle_key(ctrl_j);
+        assert_eq!(e.body.cursor, Index2::new(2, 2), "the line's indent is copied");
+        assert_eq!(screen(&e), "{\n  \"a\": 1\n  ");
+        let mut e = editor_with_body("    foo bar");
+        e.body_select_all();
+        e.handle_key(ctrl_j);
+        assert_eq!(e.body_selected_text(), None);
+        assert_eq!(e.body_text(), "\n", "the selection is replaced by the break");
     }
 
     /// The buffer as drawn, untouched auto-indent included.
