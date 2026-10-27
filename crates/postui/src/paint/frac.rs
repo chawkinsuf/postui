@@ -15,8 +15,9 @@ use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 /// closest to where it is. Clamps to buffer area.
 ///
 /// Every row the band paints keeps nothing of what was under it, modifiers
-/// included, so a struck or underlined page row never shows through. A row
-/// the band covers less than half an eighth of is left as it was.
+/// included, so a struck or underlined page row never shows through. Both
+/// ends round to the nearest eighth of a row first, and a row the rounded
+/// band doesn't reach is left as it was.
 pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Color, on: Color) {
     // Both ends in eighths of a row, the glyphs' step, rounded once before
     // the band is split into rows. The painted height is then the band's
@@ -33,7 +34,7 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
     //
     // The clamp keeps every row inside u16 and a band starting above the
     // buffer from being read as a partial first row.
-    let eighths = |y: f32| (y.clamp(0.0, f32::from(u16::MAX)) * 8.0).round() as u32;
+    let eighths = |y: f32| (y.clamp(0.0, f32::from(u16::MAX)) * 8.0).round() as usize;
     let (e0, e1) = (eighths(y0), eighths(y1));
     if e1 <= e0 {
         return;
@@ -47,8 +48,10 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
         // row's top (f0 == 0) is nearer the top by this test too. A thin
         // band sliding through the middle of a row jumps from one edge to
         // the other as it passes the middle; no single glyph can show it in
-        // between, and no caller draws a band shorter than a row (a settling
-        // modal is most of its height, the list band one row).
+        // between. No caller slides one: the list band is one row, and a
+        // settling modal is most of its height, so it fits inside one row
+        // only in a one-row terminal, where it is centred and the exact tie
+        // keeps it on the top edge.
         let height = e1 - e0;
         let edge = if f0 <= 8 - f1 { Edge::Upper(height) } else { Edge::Lower(height) };
         edge_row(buf, x0, x1, r0, edge, fill, on);
@@ -81,9 +84,9 @@ const GLYPHS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇",
 #[derive(Clone, Copy)]
 enum Edge {
     /// The top of the cell: the band's bottom edge.
-    Upper(u32),
+    Upper(usize),
     /// The bottom of the cell: the band's top edge.
-    Lower(u32),
+    Lower(usize),
 }
 
 /// Paints one fractional edge row across columns `x0..x1` of row `y`,
@@ -106,8 +109,14 @@ enum Edge {
 /// a reset is the plainest way to replace the whole cell here.
 fn edge_row(buf: &mut Buffer, x0: u16, x1: u16, y: u16, edge: Edge, fill: Color, on: Color) {
     let (glyph, fg, bg) = match edge {
-        Edge::Lower(n) => (GLYPHS[n as usize], fill, on),
-        Edge::Upper(n) => (GLYPHS[8 - n as usize], on, fill),
+        Edge::Lower(n) => {
+            debug_assert!((1..=7).contains(&n), "a lower edge of {n} eighths");
+            (GLYPHS[n], fill, on)
+        }
+        Edge::Upper(n) => {
+            debug_assert!((1..=7).contains(&n), "an upper edge of {n} eighths");
+            (GLYPHS[8 - n], on, fill)
+        }
     };
     for x in x0..x1.min(buf.area().right()) {
         if let Some(cell) = buf.cell_mut((x, y)) {
@@ -349,9 +358,8 @@ mod tests {
             paint::fill(f.buffer_mut(), Rect::new(0, 1, 4, 1), stripe);
             // Top edge at y0=1.97: coverage 0.03 of row 1, under half an
             // eighth, so it lands on the row's bottom (2.0) and row 1 gets
-            // nothing. y1=3.0
-            // keeps the bottom edge integral (no second edge write to
-            // confuse the assertion).
+            // nothing. y1=3.0 keeps the bottom edge integral (no second
+            // edge write to confuse the assertion).
             frac_vspan(f.buffer_mut(), 0, 4, 1.97, 3.0, theme.accent, theme.page);
         })
         .unwrap();
