@@ -1819,11 +1819,13 @@ impl ReadyView {
     /// middle. The rule reads the match's first char, the column that
     /// lands, so a match that starts in view and runs past the edge keeps
     /// the scroll, its start and highlight showing; one that scrolls has
-    /// half the width to its right. Arrows' search leaves a container
-    /// closed when the match is on its own opening line (it opens only the
-    /// match's ancestors), and that collapsed row paints no match
-    /// highlight, as no collapsed row does, so it keeps the scroll as any
-    /// closed fold does.
+    /// half the width to its right. One known gap, left to its own task:
+    /// arrows' search opens only the match's ancestors, so a match in a
+    /// collapsed container's key leaves the cursor on that closed fold, and
+    /// nothing scrolls, as for any closed fold. The row does paint the key,
+    /// but no collapsed row paints a match highlight, so scrolling alone
+    /// would show the text without marking it; the fix is that row's
+    /// (open the container, or light its key), not this scroll's.
     ///
     /// Only `%` and the search's landings ask, the jumps along a line
     /// that would otherwise move an unseen column. Vim keeps its cursor in
