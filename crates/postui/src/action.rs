@@ -1079,7 +1079,7 @@ pub enum Action {
         selector: String,
         name: String,
     },
-    /// The option row's 󰆏 button / `c` on a grid row: holds the row —
+    /// The option row's 󰆏 button / `y` on a grid row (vim `yy`): holds the row —
     /// name, description and every field value — in
     /// [`crate::components::VarManager::stash`] so it can be pasted into
     /// another environment. Writes nothing, so it is not an undo step.

@@ -1270,6 +1270,7 @@ mod tests {
             (Surface::VarForm, "r"),
             (Surface::VarForm, "s"),
             (Surface::VarGrid, "e"),
+            (Surface::VarGrid, "c"),
             (Surface::VarGrid, "v"),
         ] {
             assert_eq!(
