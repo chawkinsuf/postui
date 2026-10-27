@@ -27826,12 +27826,13 @@ fn the_value_dialog_commits_an_open_ghost_cell_before_a_new_var() {
     edit.input.set_text("ghost");
     app.update(Action::OpenVarTokenPopup("base_url".into()));
     assert!(app.editor.table.editing.is_none(), "the cell closed");
-    app.modals.pop();
-    app.update(Action::ConfirmEditVarValue {
-        name: "base_url".into(),
-        value: "v".into(),
-        destination: crate::action::ExtractDestination::Request,
-    });
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top_mut() else {
+        panic!("expected the value dialog");
+    };
+    fields[0].input.set_text("v");
+    fields[1].input.set_text("This request");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    assert!(app.modals.is_empty(), "confirmed");
     assert_eq!(
         request_vars(&app),
         [("ghost".to_string(), String::new()), ("base_url".to_string(), "v".to_string())]

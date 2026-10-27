@@ -8661,9 +8661,10 @@ impl App {
     }
 
     /// The value dialog's request-scope writes add and remove Vars rows,
-    /// and an open cell names its row by index: the dialog commits an
-    /// open Vars cell as it opens (`open_edit_value_popup`, #151), so
-    /// none is open when they run.
+    /// and an open cell names its row by index, so its typing would land
+    /// on another row. The dialog commits an open Vars cell as it opens
+    /// (`open_edit_value_popup`, #151), and while it is up no cell can
+    /// open again, so none is open when they run.
     fn debug_assert_no_open_vars_cell(&self) {
         debug_assert!(
             self.editor.active_tab != EditorTab::Vars || self.editor.table.editing.is_none(),
@@ -8681,17 +8682,12 @@ impl App {
     fn open_edit_value_popup(&mut self, name: &str) -> bool {
         use crate::components::modal::{Modal, PromptField, PromptKind};
 
-        // An open Vars cell commits first, as its own step (#151): the
-        // dialog's request-scope writes add and remove Vars rows, and a
-        // cell names its row by index; and the cell's typing is not in
-        // `editor.variables` until it commits, so the dialog would seed
-        // from the value before it and its write would undo the typing.
+        // An open Vars cell commits first, as its own step (#151; why the
+        // writes need it: `debug_assert_no_open_vars_cell`). Here, not at
+        // the writes, because the seed below must already see the typing.
         // Any other cell stays open under the dialog, as under the
-        // tooltip's pill (#135): the dialog writes no row of its table.
-        // That is why this is not `close_open_inputs`, which would close
-        // every input. The commit is here, not at the writes, because the
-        // seed below must already see the typing; with the dialog up no
-        // cell can open again, which the writes assert.
+        // tooltip's pill (#135): the dialog writes no row of its table,
+        // which is why this is not `close_open_inputs`.
         if self.editor.active_tab == EditorTab::Vars {
             self.commit_table_edit();
         }
