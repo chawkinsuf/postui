@@ -1,5 +1,6 @@
-# The README's Vim GIF: send with :send, maximize the response with ctrl+w _,
-# fold it, search it, and yank a Visual selection.
+# The README's Vim GIF: maximize the response with ctrl+w _, fold it, search
+# it, and yank a Visual selection. The hero GIF already shows a send, so the
+# take starts on the response.
 # Run from the repo root: vhs docs/tapes/vim.tape (see README.md here).
 
 Output docs/images/vim.gif
@@ -11,23 +12,23 @@ Type `source docs/tapes/setup.sh vim && postui "$POSTUI_DEMO" || exit 1`
 Enter
 Sleep 2s
 
-Show
-Sleep 1s
-
-# Open the users/ folder, then list-users, as open-users.tape does with
-# arrows.
-Type@300ms "jj"
+# Out of sight: open the users/ folder, then list-users, as open-users.tape
+# does with arrows, and send it. `:send` opens the command palette, whose
+# list redraws at every letter, so it stays out of the take.
+Type "jj"
 Enter
 Sleep 500ms
-Type@300ms "jj"
+Type "jj"
 Enter
-Sleep 1s
+Sleep 500ms
+Type ":send"
+Enter
+# The status line: "200", then the time ("158 ms", or "1.3 s" past a second).
+Wait+Screen@15s /200 +\d/
+Sleep 500ms
 
-# Send it from the command line.
-Type@120ms ":send"
-Sleep 400ms
-Enter
-Sleep 2.5s
+Show
+Sleep 1s
 
 # Into the response window, and give it the whole column.
 Ctrl+W

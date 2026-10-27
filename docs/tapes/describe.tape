@@ -1,4 +1,5 @@
-# Screenshot: "Describe a filter…" with a request typed, over a response.
+# Screenshot: the filter "Describe a filter…" wrote (fake-ai.sh's), applied
+# to the response.
 # Run from the repo root: vhs docs/tapes/describe.tape (see README.md here).
 
 # VHS records a GIF whatever the tape is for; this one is thrown away.
@@ -14,7 +15,9 @@ Sleep 300ms
 Enter
 Sleep 800ms
 Ctrl+R
-Sleep 3s
+# The status line: "200", then the time ("158 ms", or "1.3 s" past a second).
+Wait+Screen@15s /200 +\d/
+Sleep 500ms
 # Find the command in the palette and describe the filter.
 Ctrl+P
 Sleep 500ms
@@ -24,6 +27,10 @@ Enter
 Sleep 600ms
 Type@40ms "names and companies"
 Sleep 500ms
+# The filter lands in the jq bar, applied.
+Enter
+Wait+Screen@15s /jq map\(/
+Sleep 800ms
 Show
 Sleep 500ms
 Screenshot docs/images/describe.png

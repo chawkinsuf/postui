@@ -1,4 +1,5 @@
-# Screenshot: a curl command imported in the sidebar, at its name prompt.
+# Screenshot: a curl command imported in the sidebar, open as a request and
+# sent.
 # Run from the repo root: vhs docs/tapes/curl-import.tape (see README.md here).
 # Copy puts the command on your system clipboard, replacing what's there.
 
@@ -13,6 +14,13 @@ Source docs/tapes/include/open-users.tape
 Copy "curl 'https://jsonplaceholder.typicode.com/todos?userId=1' -H 'Accept: application/json'"
 Ctrl+V
 Sleep 1s
+# Keep the suggested name; the import opens. Then send it.
+Enter
+Sleep 800ms
+Ctrl+R
+# The status line: "200", then the time ("158 ms", or "1.3 s" past a second).
+Wait+Screen@15s /200 +\d/
+Sleep 800ms
 Show
 Sleep 500ms
 Screenshot docs/images/curl-import.png
