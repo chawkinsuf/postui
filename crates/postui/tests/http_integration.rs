@@ -3,7 +3,7 @@ use postui::http;
 use postui_core::model::*;
 use postui_core::prepare::{PrepareContext, prepare};
 use std::time::Duration;
-use wiremock::matchers::{header, method, path, query_param};
+use wiremock::matchers::{header, headers, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn req_to(url: String) -> HttpRequest {
@@ -289,12 +289,14 @@ async fn disabled_request_header_row_suppresses_a_default_header() {
     let server = MockServer::start().await;
     // The request disables its own `accept` row, and the project default
     // for `accept` must not leak through. Strictly matching on postui's
-    // own `accept: application/json` (task #174; rather than the project
-    // default `text/html`) proves the default header was suppressed, not
-    // merely overridden — a leaked default would match no mock and 404.
+    // own `accept: application/json, */*;q=0.1` (task #174; rather than the
+    // project default `text/html`) proves the default header was
+    // suppressed, not merely overridden — a leaked default would match no
+    // mock and 404. (wiremock splits a value at its commas, so the matcher
+    // lists the two media ranges.)
     Mock::given(method("GET"))
         .and(path("/x"))
-        .and(header("accept", "application/json"))
+        .and(headers("accept", vec!["application/json", "*/*;q=0.1"]))
         .respond_with(ResponseTemplate::new(200))
         .mount(&server)
         .await;

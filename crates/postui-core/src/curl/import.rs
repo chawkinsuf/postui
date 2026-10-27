@@ -569,10 +569,12 @@ fn build(
         derived.push(("Authorization", crate::prepare::basic_auth(&creds)));
     }
     if json {
-        // Both are written even though postui sends the same two on its
-        // own (its `Accept` since task #174): `--json` asks for JSON
-        // outright, so a project `[default_headers] accept` must not
-        // replace it, as it would replace postui's auto row.
+        // Both are written even though postui sends a JSON `Content-Type`
+        // and `Accept` on its own (its `Accept` since task #174, with a
+        // `*/*` fallback): `--json` asks for JSON alone, as curl sends it,
+        // so the row keeps curl's value, and a project
+        // `[default_headers] accept` must not replace it, as it would
+        // replace postui's auto row.
         derived.push(("Content-Type", "application/json".into()));
         derived.push(("Accept", "application/json".into()));
     }

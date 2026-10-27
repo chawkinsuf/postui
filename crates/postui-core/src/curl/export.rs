@@ -123,7 +123,7 @@ mod tests {
         let (p, _) = prepare(&req, &PrepareContext::default()).unwrap();
         assert_eq!(
             to_curl(&p),
-            "curl -X POST 'https://x.test/a' \\\n  -H 'X-A: 1' \\\n  -H 'Content-Type: application/json' \\\n  -H 'Accept: application/json' \\\n  --data-raw '{}'"
+            "curl -X POST 'https://x.test/a' \\\n  -H 'X-A: 1' \\\n  -H 'Content-Type: application/json' \\\n  -H 'Accept: application/json, */*;q=0.1' \\\n  --data-raw '{}'"
         );
     }
 
@@ -134,7 +134,10 @@ mod tests {
     fn the_auto_accept_is_exported() {
         let get = HttpRequest::from_toml_str("url = \"https://x.test/a\"\n").unwrap();
         let (p, _) = prepare(&get, &PrepareContext::default()).unwrap();
-        assert_eq!(to_curl(&p), "curl 'https://x.test/a' \\\n  -H 'Accept: application/json'");
+        assert_eq!(
+            to_curl(&p),
+            "curl 'https://x.test/a' \\\n  -H 'Accept: application/json, */*;q=0.1'"
+        );
 
         let typed = HttpRequest::from_toml_str(
             "url = \"https://x.test/a\"\n[headers]\naccept = \"text/html\"\n",
