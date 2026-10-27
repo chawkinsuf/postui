@@ -187,7 +187,16 @@ impl VmDetail {
         }
     }
 
-    /// The left-list row that opens this detail.
+    /// The detail a left-list row opens; `None` for a label row.
+    fn of(row: &VmRow) -> Self {
+        match row {
+            VmRow::Var(n) => VmDetail::Var(n.clone()),
+            VmRow::Group(n) => VmDetail::Group(n.clone()),
+            _ => VmDetail::None,
+        }
+    }
+
+    /// The left-list row that opens this detail ([`Self::of`] reversed).
     fn row(&self) -> Option<VmRow> {
         match self {
             VmDetail::Var(n) => Some(VmRow::Var(n.clone())),
@@ -1087,6 +1096,11 @@ impl VarManager {
     /// shows (#178). The old list is the last place that knows which row
     /// the cursor meant, so the cursor moves here, before it is replaced.
     ///
+    /// The cursor stays an index on purpose: every reader (the keys, the
+    /// scroll, the hit rows each frame registers) wants one, and this is
+    /// the only place indices change, so one translation here covers them
+    /// all, where a row-keyed cursor would need one at each reader.
+    ///
     /// A moved cursor is scrolled into view on the next draw. Returns the
     /// old list, for [`Self::sync`]'s neighbour pick.
     fn rebuild_rows(&mut self, ctx: &Project) -> Vec<VmRow> {
@@ -1104,6 +1118,10 @@ impl VarManager {
     /// alike). A row that is gone gives its place: just below the nearest
     /// row above it that is still listed (`VARIABLES` always is). Clamped
     /// into range.
+    ///
+    /// Per frame this is one scan of a list `build_left_rows` has just
+    /// cloned whole, so it costs what the rebuild already does; the longer
+    /// search for a gone row runs on the one frame after it went.
     fn place_of(&self, old: &[VmRow], k: usize) -> usize {
         let find = |row: &VmRow| self.left_rows.iter().position(|r| r == row);
         let kept = match old.get(k) {
@@ -1143,7 +1161,12 @@ impl VarManager {
             // else the nearest selectable row above it. Found from the
             // detail's own row, not the cursor's, which a click may have
             // left on a header. The cursor follows, so the highlight and
-            // the pane never disagree.
+            // the pane never disagree. Every path that changes the
+            // declarations syncs before the next frame (and a closed Manage screen syncs
+            // as it opens), so `old` is the list the user last saw; were a
+            // draw to rebuild first, its `rebuild_rows` would already have
+            // put the cursor in the gone row's place, and only a cursor a
+            // click left on a header would lose the exact neighbour.
             let from = self
                 .detail
                 .row()
@@ -1152,11 +1175,7 @@ impl VarManager {
             self.detail = match self.nearest_stop(from) {
                 Some(i) => {
                     self.left_cursor = i;
-                    match &self.left_rows[i] {
-                        VmRow::Var(name) => VmDetail::Var(name.clone()),
-                        VmRow::Group(name) => VmDetail::Group(name.clone()),
-                        _ => VmDetail::None,
-                    }
+                    VmDetail::of(&self.left_rows[i])
                 }
                 None => VmDetail::None,
             };
