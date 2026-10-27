@@ -5513,9 +5513,6 @@ impl App {
                 self.cancel_stale_drags(None);
                 self.history.clear();
                 self.marked_entry = None;
-                // A copied option row names a selector in the project
-                // being left; nothing in the next one can take it.
-                self.varmanager.stash = None;
                 // The row register names a request in the project being
                 // left, or a row of a request about to close.
                 self.yank = crate::yank::Register::Empty;
@@ -5533,6 +5530,18 @@ impl App {
                 self.session.reset();
                 let name = project.display_name();
                 self.project = Some(project);
+                // Everything the Variable Manager holds indexes the project
+                // being left: the declaration it shows, its list cursor and
+                // scroll, the grid's and form's cursors, the keyboard stop,
+                // and a copied option row. Only here does the code know all
+                // of it is foreign (a same-named declaration in the new
+                // project looks the same to a sync), so it starts over, as at
+                // launch, and reads the new project's rows at once, Manage up
+                // or not, since a key can arrive ahead of the next frame
+                // (task #179). The cost: a switch to a project with a
+                // same-named declaration does not keep it open.
+                self.varmanager = VarManager::default();
+                self.sync_varmanager();
                 self.open_error = None;
                 self.sidebar.notice = None;
                 // A different tree has a different set of loose files.
