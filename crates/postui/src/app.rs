@@ -12038,11 +12038,20 @@ impl App {
             }
             None => Action::SetUiString { key: field.key(), value: text },
         };
-        // Cleared first so the flag read below is this write's own answer:
-        // `apply_ui_write` sets it when `config.toml` refused the write.
-        self.last_action_failed = false;
+        // Cleared first so the flag read below is this write's own answer
+        // (`apply_ui_write` sets it when `config.toml` refused the write),
+        // then put back: the commit runs inside other actions (through
+        // `close_open_inputs`), and their readers want their own action's
+        // answer. A caller that stops on the refusal learns it from the
+        // edit still being open (`commit_settings_edit_for_click`).
+        //
+        // The edit stays open across the write, so a refused one still has
+        // the typing; nothing the update runs reads the edit, and a landed
+        // write ends it before this returns.
+        let outer = std::mem::take(&mut self.last_action_failed);
         let redraw = self.update(action);
-        if !self.last_action_failed {
+        let refused = std::mem::replace(&mut self.last_action_failed, outer);
+        if !refused {
             self.settings.end_edit();
         }
         redraw

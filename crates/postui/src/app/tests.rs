@@ -30645,6 +30645,8 @@ fn a_landed_settings_field_write_runs_the_action_path() {
     let mut app = App::new_for_test();
     app.config = crate::config::Config::at(dir.path().to_path_buf());
     app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    // Spaces, so the width is part of the default.
+    assert_eq!(app.ui_settings.indent, crate::config::IndentKind::Spaces);
     let before = app.editor.indent_default;
     let width = if app.ui_settings.indent_width == 8 { "3" } else { "8" };
     app.settings.begin_edit(SettingsField::IndentWidth, width);
@@ -30654,6 +30656,34 @@ fn a_landed_settings_field_write_runs_the_action_path() {
     assert!(app.settings.editing.is_none(), "the write landed");
     assert_eq!(app.editor.indent_default, app.ui_settings.default_indent());
     assert_ne!(app.editor.indent_default, before, "and the editor's default followed it");
+}
+
+/// The commit reads its own write's answer from `last_action_failed` and
+/// leaves the flag as it found it: it runs inside other actions (through
+/// `close_open_inputs`), whose readers want their own answer (task #80).
+#[test]
+fn a_settings_field_commit_leaves_the_outer_action_flag_alone() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+
+    // A landed write keeps a failure the outer action already recorded.
+    app.settings.begin_edit(SettingsField::AiCmd, "my-ai --go");
+    app.last_action_failed = true;
+    app.commit_settings_edit();
+    assert!(app.settings.editing.is_none(), "the write landed");
+    assert!(app.last_action_failed, "the outer failure stands");
+
+    // A refused one does not report itself as the outer action's failure.
+    std::fs::write(dir.path().join("config.toml"), "not = [toml").unwrap();
+    app.settings.begin_edit(SettingsField::AiCmd, "other-ai");
+    app.last_action_failed = false;
+    app.commit_settings_edit();
+    assert_eq!(app.settings.editing, Some(SettingsField::AiCmd), "the write was refused");
+    assert!(!app.last_action_failed, "and the outer action's flag is untouched");
 }
 
 /// A click away from a field whose write was refused stops, as one away
