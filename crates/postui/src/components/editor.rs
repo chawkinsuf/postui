@@ -2586,7 +2586,9 @@ fn body_selection_style(theme: &Theme) -> Style {
 /// live selection. (ctrl+r and ctrl+s are Send and Save in the arrows
 /// profile, so they never got here by default; a keys.toml that frees
 /// them would have.) The kill keys (ctrl+k, alt+u) still fill edtui's
-/// clipboard, which nothing reads now: they are plain deletes.
+/// clipboard, which nothing reads now: they are plain deletes. edtui's
+/// ctrl+j (a bare line break) stays in the map but never arrives:
+/// `handle_key` folds ctrl+j into Enter first (#157).
 ///
 /// The four are every such insert-mode binding in edtui 0.11.6's
 /// `emacs_keybindings`; edtui keeps the map private, so the dependency is
@@ -2767,6 +2769,8 @@ impl Component for Editor {
                 // ^A splits (mac: smart Home; Linux: falls through to
                 // select-all).
                 let ev = crate::keys::fold_text_nav_bytes(ev, cfg!(target_os = "macos"));
+                // ctrl+j takes Enter's path below (#157).
+                let ev = crate::keys::fold_body_newline(ev);
                 // GUI-style selection (plan 2026-08-23-text-selection):
                 // select-all (ctrl+a on Linux; ctrl+shift+a — either
                 // reported spelling — everywhere, cmd+a via the SUPER
@@ -2891,7 +2895,7 @@ impl Component for Editor {
                 // reaches edtui's own emacs-style bindings (ctrl+e/k etc.)
                 // deliberately, so those keep working for body editing
                 // (all but its private paste, undo, redo and search:
-                // `body_key_handler`).
+                // `body_key_handler`; ctrl+j was folded into Enter above).
                 if ev.code == KeyCode::Esc {
                     self.sub_focus = SubFocus::None;
                     return Some(Action::Render);
@@ -9862,6 +9866,25 @@ mod body_click_tests {
         assert_eq!(screen(&e), "\t\tk\n\t\t", "a tab indent is copied as tabs");
         let e = enter_at("ab", 0, 1);
         assert_eq!(e.body_text(), "a\nb", "no indent, nothing copied");
+    }
+
+    /// #157: ctrl+j is a newline (the byte a legacy terminal sends for it),
+    /// so it breaks the line as Enter does: indented, and replacing a
+    /// selection. edtui's own ctrl+j is a bare break.
+    #[test]
+    fn ctrl_j_breaks_the_line_as_enter_does() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let ctrl_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        let mut e = editor_with_body("{\n  \"a\": 1");
+        e.body.cursor = Index2::new(1, 8);
+        e.handle_key(ctrl_j);
+        assert_eq!(e.body.cursor, Index2::new(2, 2), "the line's indent is copied");
+        assert_eq!(screen(&e), "{\n  \"a\": 1\n  ");
+        let mut e = editor_with_body("    foo bar");
+        e.body_select_all();
+        e.handle_key(ctrl_j);
+        assert_eq!(e.body_selected_text(), None);
+        assert_eq!(e.body_text(), "\n", "the selection is replaced by the break");
     }
 
     /// The buffer as drawn, untouched auto-indent included.
