@@ -772,8 +772,9 @@ pub struct ReadyView {
     /// ([`ReadyView::show_cursor_col`]), once that frame's layout has given
     /// the body its width (a landing that opens a fold can make the tree
     /// overflow, so the scrollbar takes a column) and measured the widest
-    /// line. A key between the landing and the draw only changes which
-    /// column it shows, as Vim shows its cursor after every command.
+    /// line. The ask makes the landing count as a change (`motion_mark`),
+    /// so its frame follows it, and a cursor move forgets it with the
+    /// column (`cursor_moved`).
     show_col: bool,
     /// Cached widest visible line in display columns, keyed by the (mode,
     /// visible line count, tree epoch) it was measured for — a
@@ -1257,10 +1258,12 @@ impl ReadyView {
     /// The cursor moved (a key, a click, a pull to the view's edge, a new
     /// tree or view): it is no longer on the hidden line a closed fold
     /// remembered (plan M5a Deviation 8), and its column comes from `want`
-    /// on the line it is on now.
+    /// on the line it is on now. A landing's ask to show its column goes
+    /// with the column (`show_col`; a landing asks after its own move).
     fn cursor_moved(&mut self) {
         self.fold_line = None;
         self.at_col = None;
+        self.show_col = false;
     }
 
     /// Vim's cursor column on the cursor's real line: the one set there, or
@@ -1819,9 +1822,10 @@ impl ReadyView {
     /// §5.7), and would make `j` `k` `G` and the page keys scroll sideways
     /// too, a change of their own. Those stay the known differences.
     fn show_cursor_col(&mut self, content_w: usize) {
-        // The column a landing set on the cursor's line (`set_col`). A move
-        // to another line since forgets it, and that move does not scroll
-        // sideways itself.
+        // The column the landing set on the cursor's line (`set_col`), the
+        // landing's own: its frame comes next, and a cursor move in between
+        // would have dropped the ask. Landings set it on the line's chars,
+        // never past its end.
         let Some(line) = self.real_line() else { return };
         let Some((_, col)) = self.at_col.filter(|&(l, _)| l == line) else { return };
         if self.in_closed_fold(line) {
@@ -8162,6 +8166,18 @@ mod tests {
         r.view.as_mut().unwrap().h_scroll = 100;
         assert!(r.motion(M::MatchPair { count: Some(100) }), "a frame is due");
         assert_eq!(drawn(&mut r), (1, 4, 0), "and it shows the column");
+    }
+
+    /// Task #164: the ask is the landing's. A cursor move before the frame
+    /// drops it with the column, so the move's own landing (`G` on another
+    /// line's first non-blank here) does not scroll sideways.
+    #[test]
+    fn a_cursor_move_before_the_frame_drops_the_landings_ask() {
+        use crate::action::ResponseMotion as M;
+        let mut r = ready(&format!("[{}]\n{}x", "a".repeat(200), " ".repeat(150)));
+        r.motion(M::MatchPair { count: None });
+        r.motion(M::Goto { line: None, last: true });
+        assert_eq!(drawn(&mut r), (1, 150, 0));
     }
 
     /// Task #164: `n` `N` `*` `#` land as `/` does.
