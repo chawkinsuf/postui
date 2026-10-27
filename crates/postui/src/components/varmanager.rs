@@ -3744,7 +3744,7 @@ fields = ["user_id", "customer_id"]
             crate::keyroute::Surface::VarGrid,
             vm.footer_chips(&ctx, None),
         );
-        let copy = chips.iter().find(|(k, _, _)| *k == "c").expect("copy chip is advertised");
+        let copy = chips.iter().find(|(k, _, _)| *k == "y").expect("copy chip is advertised");
         assert!(copy.2.is_some(), "copy chip armed without an environment");
     }
 
@@ -3874,14 +3874,14 @@ fields = ["user_id", "customer_id"]
             .into_iter()
             .map(|(k, _, _)| k)
             .collect();
-        assert_eq!(keys, vec!["d", "r", "e", "c", "space", "a"]);
+        assert_eq!(keys, vec!["d", "r", "e", "y", "space", "a"]);
 
         vm.stash = Some(vm.option_row(&ctx, 0).expect("row 0 is an option"));
         let keys: Vec<String> = spelled_on(Surface::VarGrid, vm.footer_chips(&ctx, None))
             .into_iter()
             .map(|(k, _, _)| k)
             .collect();
-        assert_eq!(keys, vec!["d", "r", "e", "c", "space", "a", "v"]);
+        assert_eq!(keys, vec!["d", "r", "e", "y", "space", "a", "v"]);
     }
 
     #[test]
@@ -4144,7 +4144,7 @@ fields = ["user_id", "customer_id"]
             Some(Action::OpenEditOptionPrompt { owner, key, description, .. })
                 if owner == "creds" && key == "alice" && description.as_deref() == Some("the admin")
         ));
-        let copy = chips.iter().find(|(k, _, _)| *k == "c").expect("c chip present");
+        let copy = chips.iter().find(|(k, _, _)| *k == "y").expect("y chip present");
         assert_eq!(copy.1, "copy");
         assert_eq!(copy.2, Some(Action::CopyOption { row: 0 }));
         // With nothing copied there is nothing to paste, so the chip

@@ -838,8 +838,9 @@ pub static TABLE: &[Binding] = &[
         Intent::Verb(Verb::Yank),
         CountRule::Refuse(NO_COUNTED_YANK),
     ),
-    arrows("y", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Yank)),
-    arrows("c", Surfaces::VAR_GRID, Intent::Verb(Verb::Yank)),
+    // The grid copies with `y` like every other list (#145; it had the
+    // arrows profile's old `c` copy letter).
+    arrows("y", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Yank)),
     // Spec 2026-10-26 H2, H8: a header row's `Name: value`.
     arrows("Y", Surfaces::TABLE, Intent::Act(copy_header_whole)),
     row("\"+yy", Surfaces::TABLE, Intent::Act(copy_header_whole), CountRule::Ignore),
@@ -1354,7 +1355,7 @@ mod tests {
             Some("dd")
         );
         assert_eq!(keys_for(Vim, Surface::VarGrid, &Action::OnSelection(Verb::Yank)), Some("yy"));
-        assert_eq!(keys_for(Arrows, Surface::VarGrid, &Action::OnSelection(Verb::Yank)), Some("c"));
+        assert_eq!(keys_for(Arrows, Surface::VarGrid, &Action::OnSelection(Verb::Yank)), Some("y"));
         assert_eq!(
             keys_for(Vim, Surface::VarForm, &Action::OnSelection(Verb::Reveal)),
             None,

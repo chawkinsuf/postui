@@ -1250,7 +1250,8 @@ mod tests {
         assert_eq!(feed(&mut Router::default(), &form, "r"), run(vec![sel(Verb::Reveal)]));
         assert_eq!(feed(&mut Router::default(), &form, "p"), run(vec![sel(Verb::Promote)]));
         let grid = cx(Arrows, Surface::VarGrid);
-        assert_eq!(feed(&mut Router::default(), &grid, "c"), run(vec![sel(Verb::Yank)]));
+        assert_eq!(feed(&mut Router::default(), &grid, "y"), run(vec![sel(Verb::Yank)]));
+        assert_eq!(feed(&mut Router::default(), &grid, "c"), Resolved::Declined, "#145");
         assert_eq!(
             feed(&mut Router::default(), &grid, "v"),
             run(vec![sel(Verb::Put { above: false, count: 1 })])
@@ -1269,7 +1270,7 @@ mod tests {
             (Surface::VarForm, "r"),
             (Surface::VarForm, "s"),
             (Surface::VarGrid, "e"),
-            (Surface::VarGrid, "c"),
+            (Surface::VarGrid, "v"),
         ] {
             assert_eq!(
                 feed(&mut Router::default(), &cx(Vim, surface), keys),
