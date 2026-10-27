@@ -1815,6 +1815,11 @@ impl ReadyView {
             }
         };
         let Some((start, end)) = text.map(|t| cell_span(t, col)) else { return };
+        // The last frame's width, as `follow_cursor` takes the last frame's
+        // height. A landing that opens a fold can make the next frame
+        // overflow and give a column to the scrollbar, hiding a char this
+        // found in the last column until the next landing: foreseeing it
+        // would mean redoing the draw's layout here.
         let width = self.width.max(1);
         if start < self.h_scroll || end > self.h_scroll + width {
             let max = self.content_width().saturating_sub(width);
@@ -8103,6 +8108,33 @@ mod tests {
         assert_eq!(row_col_scroll(&r), (2, 150, 110), "a landing on another line");
         r.motion(M::MatchPair { count: Some(100) });
         assert_eq!(row_col_scroll(&r), (3, 4, 0), "{{N}}% to a first non-blank in view");
+    }
+
+    /// Task #164: `n` `N` `*` `#` land as `/` does.
+    #[test]
+    fn the_search_steps_scroll_the_column_into_view() {
+        let mut r = ready(&format!("x\n{}x {}", " ".repeat(150), "y".repeat(100)));
+        r.view.as_mut().unwrap().width = 80;
+        search_for(&mut r, SearchSyntax::Vim, "x");
+        assert_eq!(row_col_scroll(&r), (1, 150, 110), "/x");
+        assert!(r.find_next(true, 1));
+        assert_eq!(row_col_scroll(&r), (0, 0, 0), "N");
+        assert!(r.find_next(false, 1));
+        assert_eq!(row_col_scroll(&r), (1, 150, 110), "n");
+        assert!(r.find_word(true, 1));
+        assert_eq!(row_col_scroll(&r), (0, 0, 0), "#");
+        assert!(r.find_word(false, 1));
+        assert_eq!(row_col_scroll(&r), (1, 150, 110), "*");
+    }
+
+    /// Task #164: the scroll stops at the widest line's end, where Vim's
+    /// window would show blank columns (Vim's `leftcol` here is 110).
+    #[test]
+    fn a_landing_scrolls_no_further_than_the_widest_line() {
+        let mut r = ready(&format!("x\n{}x", " ".repeat(150)));
+        r.view.as_mut().unwrap().width = 80;
+        search_for(&mut r, SearchSyntax::Vim, "x");
+        assert_eq!(row_col_scroll(&r), (1, 150, 151 - 80));
     }
 
     /// Task #164: the sideways scroll is the vim search's. Arrows' search
