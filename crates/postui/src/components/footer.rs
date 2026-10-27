@@ -51,6 +51,23 @@ pub enum TableCursor {
     ResponseHeader,
 }
 
+/// Whether `action` is one of the request table's cursor-row chips, the
+/// ones [`footer_chips`] adds for a [`TableCursor::Row`] or
+/// [`TableCursor::Auto`] (task #125). Such a chip is the key it
+/// advertises, so its click keeps the table's cursor and caret as the key
+/// does (`App::on_hit`'s click-away exempts it). The list sits beside the
+/// chips it names so the two change together.
+pub(crate) fn is_table_cursor_chip(action: &Action) -> bool {
+    use crate::action::CopyTarget;
+    matches!(
+        action,
+        Action::CopyToClipboard(CopyTarget::TableRow(_) | CopyTarget::ComputedHeader(_))
+            | Action::ToggleTableRow(_)
+            | Action::DeleteTableRow(_)
+            | Action::OverrideAutoHeader(_)
+    )
+}
+
 /// The context-sensitive chips for the focused pane. Each entry is `(key,
 /// label, action)`, the key a [`Key`] kind that `draw_footer` spells for
 /// the active profile; `None` actions render as plain (unregistered, muted)
@@ -213,8 +230,10 @@ pub(crate) fn footer_chips(
             // "copy" button always copies. Its keycap still names the keys,
             // so in vim the click is the pill's copy while `yy` fills the
             // register for `p`. The action names its row, as the delete
-            // chip's does: a chip click is a click away, which drops the
-            // table's cursor before the action runs.
+            // chip's does, rather than reading the cursor when it runs.
+            // These chips keep the cursor on a click
+            // ([`is_table_cursor_chip`], task #125); keep that list in step
+            // with the chips added here.
             let copy_value = |target| Some(Action::CopyToClipboard(target));
             match table_row_selected {
                 Some(TableCursor::Row { index: i, enabled, headers }) => {

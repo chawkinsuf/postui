@@ -78,8 +78,10 @@
   spelled `y/Y` in arrows and `yy/"+yy` in vim. A Params or Vars row's chip
   is the yank key alone. Every row chip's action is its pill's
   `CopyToClipboard` naming the row, as the delete chip names its row: a
-  chip click is a click away, which drops the table's cursor first. The
-  response chip is `Key::Pair` of the two `CopyRow` actions. `TableCursor`
+  chip click is a click away, which drops the table's cursor first.
+  (*Amended 2026-10-27, task #125:* the table's cursor-row chips are no
+  longer a click away; a click keeps the cursor as the chip's key does.
+  The action still names its row. mine.) The response chip is `Key::Pair` of the two `CopyRow` actions. `TableCursor`
   gains `headers` on `Row` and a `ResponseHeader` variant for the
   response's cursor.
 - **Pills.** The three copy pills' click handlers read the mouse event's
