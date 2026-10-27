@@ -710,9 +710,10 @@ pub struct ReadyView {
     awaiting_filter: bool,
     /// When the background parse started, so the wait can animate.
     parse_started: Instant,
-    /// Verbatim body lines — never reformatted, never re-wrapped. Shared,
-    /// so a background job can read the body without copying it.
-    raw_lines: Arc<Vec<String>>,
+    /// Verbatim body lines — never reformatted, never re-wrapped — without
+    /// their line ending ([`RawBody`]). Shared, so a background job can
+    /// read the body without copying it.
+    raw: Arc<RawBody>,
     /// The Headers tab's lines, one per `header_rows` entry: the response
     /// headers, the `sent` divider, then the headers the request went out
     /// with (secrets masked — the real values live in `ResponseData`).
@@ -878,6 +879,62 @@ fn aligned_header_lines<'a>(rows: impl Iterator<Item = (&'a str, &'a str)> + Clo
     rows.map(|(k, v)| format!("{k}:{} {v}", " ".repeat(width - crate::ui::cells(k)))).collect()
 }
 
+/// The response body as the Raw view holds it: its lines, verbatim, with
+/// the line ending taken off, and the ending to put back. The one place
+/// that splits the body and the one that joins it again, so a CRLF line's
+/// `\r` is never in its text (task #55: a click, drag or vim `$` past the
+/// end never lands on that unpainted `\r`) while every rebuilt body is
+/// byte for byte the response's.
+///
+/// The ending is detected as Vim's `'fileformats'` (`unix,dos`) does
+/// (probed, 9.1): CRLF when there is a `\n` and every `\n` follows a
+/// `\r`, else LF. A mixed body is LF, its `\r`s the lines' text, as Vim
+/// reads one as `unix` and shows the `^M`. A CR-only body is one line, as
+/// Vim's default has no `mac`. A `\r` with no `\n` after it is text, in a
+/// CRLF body too (`ab\r\ncd\r` is `dos`, its lines `ab` and `cd\r`).
+///
+/// A selection's copy and a vim yank take the lines alone, joined with
+/// `\n` as Vim's yank of a `dos` buffer is (probed: `ab\ncd\n`); only a
+/// rebuild of the whole body ([`RawBody::join`]) puts the `\r\n` back.
+#[derive(Debug)]
+pub struct RawBody {
+    lines: Vec<String>,
+    crlf: bool,
+    /// The body's length in bytes.
+    len: usize,
+}
+
+impl RawBody {
+    /// Splits on `\n`, then takes the `\r` off every line a `\n` ended
+    /// when all of them have one.
+    fn split(body: &str) -> Self {
+        let mut lines: Vec<String> = body.split('\n').map(str::to_string).collect();
+        let ended = lines.len() - 1;
+        let crlf = ended > 0 && lines[..ended].iter().all(|l| l.ends_with('\r'));
+        if crlf {
+            for line in &mut lines[..ended] {
+                line.pop();
+            }
+        }
+        Self { lines, crlf, len: body.len() }
+    }
+
+    /// The line break the body's lines were split on.
+    fn ending(&self) -> &'static str {
+        if self.crlf { "\r\n" } else { "\n" }
+    }
+
+    /// The body, rebuilt byte for byte.
+    pub fn join(&self) -> String {
+        self.lines.join(self.ending())
+    }
+
+    /// The body's length in bytes, without rebuilding it.
+    fn byte_len(&self) -> usize {
+        self.len
+    }
+}
+
 /// The visible lines as painted, for the shared mouse words.
 impl crate::text::Lines for ReadyView {
     fn line_count(&self) -> usize {
@@ -950,7 +1007,7 @@ impl ReadyView {
             shed: false,
             awaiting_filter: false,
             parse_started: Instant::now(),
-            raw_lines: Arc::new(data.body.split('\n').map(|l| l.to_string()).collect()),
+            raw: Arc::new(RawBody::split(&data.body)),
             header_lines,
             header_rows,
             cursor: 0,
@@ -1061,7 +1118,7 @@ impl ReadyView {
                 let tree = self.active_tree()?;
                 (line < tree.line_count()).then(|| tree.line(line).expanded_text())
             }
-            ViewMode::Raw => self.raw_lines.get(line).cloned(),
+            ViewMode::Raw => self.raw.lines.get(line).cloned(),
             ViewMode::Headers => self.header_lines.get(line).cloned(),
         }
     }
@@ -1070,7 +1127,7 @@ impl ReadyView {
     pub fn visible_len(&self) -> usize {
         match self.mode {
             ViewMode::Pretty => self.active_tree().map_or(0, |t| t.visible_len()),
-            ViewMode::Raw => self.raw_lines.len(),
+            ViewMode::Raw => self.raw.lines.len(),
             ViewMode::Headers => self.header_lines.len(),
         }
     }
@@ -1086,7 +1143,7 @@ impl ReadyView {
     /// `&mut` step `body_lines` (which borrows the view shared) relies on.
     fn index_raw_rows(&mut self, rows: std::ops::Range<usize>) {
         for i in rows {
-            let Some(line) = self.raw_lines.get(i) else {
+            let Some(line) = self.raw.lines.get(i) else {
                 break;
             };
             if line.len() > COL_MARK_STEP && !self.raw_marks.contains_key(&i) {
@@ -1105,7 +1162,7 @@ impl ReadyView {
         let key = (self.mode, self.visible_len(), self.tree_epoch);
         let w = match self.mode {
             ViewMode::Pretty => self.active_tree().map_or(0, JsonTree::visible_width),
-            ViewMode::Raw => self.raw_lines.iter().map(|l| crate::ui::cells(l)).max().unwrap_or(0),
+            ViewMode::Raw => self.raw.lines.iter().map(|l| crate::ui::cells(l)).max().unwrap_or(0),
             // A header row runs to the end of its copy pill.
             ViewMode::Headers => self
                 .header_lines
@@ -1162,28 +1219,36 @@ impl ReadyView {
             ViewMode::Pretty => {
                 Cow::Owned(self.active_tree().map(|t| t.full_text_lines()).unwrap_or_default())
             }
-            ViewMode::Raw => Cow::Borrowed(&self.raw_lines[..]),
+            ViewMode::Raw => Cow::Borrowed(&self.raw.lines[..]),
             ViewMode::Headers => Cow::Borrowed(&self.header_lines),
         }
     }
 
     /// The active tab's full text — what the toolbar's copy/save/editor
     /// actions operate on, so they follow the tab exactly as search does
-    /// (same corpus, joined into one string).
+    /// (same corpus, joined into one string). Raw's is the body byte for
+    /// byte, its own line ending put back: a save or an editor round trip
+    /// is the response itself. A selection's copy is `\n`-joined instead
+    /// (`selected_text`), on purpose: it is lines the user picked, as a
+    /// vim yank is, and a `\r` in one would land in a pasted field or an
+    /// extracted variable's value. The whole body's bytes are this copy.
     pub fn view_text(&self) -> String {
-        self.search_corpus().join("\n")
+        match self.mode {
+            ViewMode::Raw => self.raw.join(),
+            ViewMode::Pretty | ViewMode::Headers => self.search_corpus().join("\n"),
+        }
     }
 
     /// The raw response body, regardless of the active tab — what the
     /// "describe a filter" prompt shapes.
     pub fn body_text(&self) -> String {
-        self.raw_lines.join("\n")
+        self.raw.join()
     }
 
-    /// The body's lines, shared: for a background job that must not copy
-    /// the body on the UI thread.
-    pub fn body_lines(&self) -> Arc<Vec<String>> {
-        Arc::clone(&self.raw_lines)
+    /// The body, shared: for a background job that must not copy it on
+    /// the UI thread ([`RawBody::join`] rebuilds it there).
+    pub fn raw_body(&self) -> Arc<RawBody> {
+        Arc::clone(&self.raw)
     }
 
     /// The body as jq parsed it, when a run already did.
@@ -1280,7 +1345,7 @@ impl ReadyView {
     }
 
     /// Records the bracket an arrows click at Vim's column names (R10, R20).
-    /// A click on the line's trailing blanks (a CRLF's `\r` among them; a
+    /// A click on the line's trailing blanks (a stray `\r` among them; a
     /// click past the end lands on the last of them) counts as one on its
     /// last other char. That char, or the clicked one, names itself when
     /// it's a bracket. A `,` that ends the line names the bracket right
@@ -1292,7 +1357,7 @@ impl ReadyView {
         // Borrowed where it can be: a raw line can be megabytes long.
         let owned;
         let text = match self.mode {
-            ViewMode::Raw => self.raw_lines.get(line).map(String::as_str),
+            ViewMode::Raw => self.raw.lines.get(line).map(String::as_str),
             _ => {
                 owned = self.buffer_line(line);
                 owned.as_deref()
@@ -1372,7 +1437,7 @@ impl ReadyView {
             // the matcher copies the line: a raw line can be megabytes long.
             let (line, col) = (self.real_line()?, self.cur_col());
             let c = match self.mode {
-                ViewMode::Raw => self.raw_lines.get(self.cursor)?.chars().nth(col),
+                ViewMode::Raw => self.raw.lines.get(self.cursor)?.chars().nth(col),
                 _ => self.display_line_text(self.cursor)?.chars().nth(col),
             }?;
             if !is_bracket(c) {
@@ -2278,7 +2343,7 @@ impl ReadyView {
     /// tokens — the summary for a collapsed row, exactly what's painted.
     fn display_line_text(&self, i: usize) -> Option<String> {
         match self.mode {
-            ViewMode::Raw => self.raw_lines.get(i).cloned(),
+            ViewMode::Raw => self.raw.lines.get(i).cloned(),
             ViewMode::Headers => self.header_lines.get(i).cloned(),
             ViewMode::Pretty => {
                 let tree = self.active_tree()?;
@@ -2358,7 +2423,8 @@ impl ReadyView {
     }
 
     /// The selected text, lines joined with `\n`, each line's part as it
-    /// paints. `None` without a selection.
+    /// paints. `None` without a selection. A CRLF body's lines hold no
+    /// `\r`, so its copy is `\n`-joined too, as a vim yank is ([`RawBody`]).
     fn selected_text(&self) -> Option<String> {
         let rows = self.sel_rows()?;
         let first = *rows.start();
@@ -2459,7 +2525,7 @@ impl ReadyView {
                 };
                 (full..=end).map(|i| tree.line(i).expanded_text()).collect()
             }
-            ViewMode::Raw => self.raw_lines.get(row).cloned().into_iter().collect(),
+            ViewMode::Raw => self.raw.lines.get(row).cloned().into_iter().collect(),
             ViewMode::Headers => self.header_lines.get(row).cloned().into_iter().collect(),
         }
     }
@@ -3319,9 +3385,9 @@ impl Response {
         // Body parse still running: nothing to filter yet; reconcile
         // re-applies once `attach_tree` lands.
         view.tree.as_ref()?;
-        let body_len = view.raw_lines.iter().map(|l| l.len() + 1).sum::<usize>();
+        let body_len = view.raw.byte_len();
         if view.jq_doc.is_none() && body_len <= sync_limit {
-            match JqDocument::parse(&view.raw_lines.join("\n")) {
+            match JqDocument::parse(&view.raw.join()) {
                 Ok(doc) => view.jq_doc = Some(doc),
                 Err(e) => {
                     self.jq.error = Some(e);
@@ -3347,7 +3413,7 @@ impl Response {
         self.jq.pending = Some(run);
         self.jq.pending_since = Instant::now();
         let doc = view.jq_doc.clone();
-        let body = doc.is_none().then(|| view.raw_lines.join("\n"));
+        let body = doc.is_none().then(|| view.raw.join());
         Some(JqRunRequest {
             generation: view.generation,
             run,
@@ -3445,10 +3511,10 @@ impl Response {
         if view.jq_doc.is_none() && view.tree.is_none() {
             return None;
         }
-        let body_len = view.raw_lines.iter().map(|l| l.len() + 1).sum::<usize>();
+        let body_len = view.raw.byte_len();
         if body_len <= sync_limit {
             if view.jq_doc.is_none() {
-                view.jq_doc = JqDocument::parse(&view.raw_lines.join("\n")).ok();
+                view.jq_doc = JqDocument::parse(&view.raw.join()).ok();
             }
             let doc = view.jq_doc.clone()?;
             c.cached_keys = complete::keys_at(&expr, &doc);
@@ -3460,7 +3526,7 @@ impl Response {
         c.seq += 1;
         c.pending = Some((c.seq, expr.clone()));
         let doc = view.jq_doc.clone();
-        let body = doc.is_none().then(|| view.raw_lines.join("\n"));
+        let body = doc.is_none().then(|| view.raw.join());
         Some(JqCompleteRequest {
             generation: view.generation,
             seq: c.seq,
@@ -5238,10 +5304,10 @@ fn body_lines(
             // line), and this runs on every frame of a scrollbar drag: only
             // the chars that can reach the viewport are copied and styled.
             let width = area.width as usize;
-            for i in start..end.min(view.raw_lines.len()) {
+            for i in start..end.min(view.raw.lines.len()) {
                 let from = mark_for(view.raw_marks.get(&i).map(Vec::as_slice), view.h_scroll);
                 let (char_start, crop, slice) =
-                    viewport_window(&view.raw_lines[i], view.h_scroll, width, from);
+                    viewport_window(&view.raw.lines[i], view.h_scroll, width, from);
                 push(i, i, vec![(slice.to_string(), text)], Vec::new(), true, (char_start, crop));
             }
         }
@@ -6265,6 +6331,113 @@ mod tests {
         let (area, _) = render_buf(&mut r);
         assert!(r.select_word_at(area.x + 30, area.y + 1));
         assert_eq!(r.selected_text().as_deref(), Some("line"));
+    }
+
+    /// Task #55: a CRLF body's lines are split on `\r\n` ([`RawBody`]), so
+    /// no `\r` is in a line's text and past the end is its last painted
+    /// grapheme: a double click there takes the last word (A3), a drag
+    /// past the end stops on the last char, and a downward drag onto a
+    /// row's start ends on the line above's last char. A copy across lines
+    /// joins them with `\n`, as a vim yank does.
+    #[test]
+    fn past_the_end_of_a_crlf_line_is_the_grapheme_before_its_cr() {
+        let mut r = ready("ab\r\nlonger line\r\nz");
+        let (area, _) = render_buf(&mut r);
+        assert!(r.select_word_at(area.x + 30, area.y + 1));
+        assert_eq!(r.selected_text().as_deref(), Some("line"));
+        r.begin_selection_at(area.x, area.y);
+        r.drag_selection_to(area.x + 50, area.y);
+        assert_eq!(r.selected_text().as_deref(), Some("ab"));
+        let mut r = ready("hello\r\nworld\r\nthird");
+        let (area, _) = render_buf(&mut r);
+        assert!(r.begin_selection_at(area.x, area.y));
+        assert!(r.drag_selection_to(area.x, area.y + 2));
+        assert_eq!(r.selected_text().as_deref(), Some("hello\nworld"), "`\\n`-joined");
+        let mut r = ready("ab\r\n\r\nz");
+        let (area, _) = render_buf(&mut r);
+        assert!(!r.select_word_at(area.x + 5, area.y + 1), "an empty CRLF line");
+        r.begin_selection_at(area.x, area.y);
+        r.drag_selection_to(area.x + 5, area.y + 1);
+        assert_eq!(r.selected_text().as_deref(), Some("ab"), "past an empty row: the boundary");
+        // Only the ending: a trailing tab paints nothing either, but it is
+        // the line's text, and a drag past the end takes it.
+        let mut r = ready("key\tvalue\t\r\nz");
+        let (area, _) = render_buf(&mut r);
+        r.begin_selection_at(area.x, area.y);
+        r.drag_selection_to(area.x + 50, area.y);
+        assert_eq!(r.selected_text().as_deref(), Some("key\tvalue\t"));
+    }
+
+    /// Task #55: the Raw view's line ending is detected as Vim's
+    /// `'fileformats'` (`unix,dos`) detects it (probed, 9.1.0016): CRLF
+    /// when every `\n` follows a `\r`, else LF with any `\r` the lines'
+    /// text. Every body joins back byte for byte.
+    #[test]
+    fn raw_lines_split_on_the_bodys_own_line_ending() {
+        for (body, lines) in [
+            ("ab\r\ncd", &["ab", "cd"][..]),
+            ("ab\r\ncd\r\n", &["ab", "cd", ""]),
+            ("ab\r\n", &["ab", ""]),
+            // Vim: `dos`, its last line `cd\r` (no `\n` ends it).
+            ("ab\r\ncd\r", &["ab", "cd\r"]),
+            // Mixed: Vim's `unix`, the `\r` shown as `^M`.
+            ("ab\r\ncd\n", &["ab\r", "cd", ""]),
+            ("ab\ncd\r\n", &["ab", "cd\r", ""]),
+            // CR-only: one line (Vim's default has no `mac`).
+            ("ab\rcd\r", &["ab\rcd\r"]),
+            ("ab\r", &["ab\r"]),
+            ("ab\ncd", &["ab", "cd"]),
+            ("", &[""]),
+        ] {
+            let raw = RawBody::split(body);
+            assert_eq!(raw.lines, lines, "{body:?}");
+            assert_eq!(raw.join(), body, "{body:?}");
+            assert_eq!(raw.byte_len(), body.len(), "{body:?}");
+        }
+    }
+
+    /// Task #55: what rebuilds a CRLF body puts its ending back: the Raw
+    /// tab's copy/save text and the body a background job joins. Vim's `$` stops on the
+    /// last char, not on a hidden `\r`, and a `yy` holds the line without
+    /// it, as Vim's yank of a `dos` buffer does (probed: `ab\ncd\n`).
+    #[test]
+    fn a_crlf_body_is_rebuilt_with_its_ending() {
+        use crate::action::{ColMove, LinesOp, ResponseMotion as M};
+        let body = "{\"a\": \"x\"}\r\n";
+        let mut r = ready(body);
+        r.view.as_mut().unwrap().mode = ViewMode::Raw;
+        assert_eq!(r.view().unwrap().view_text(), body);
+        assert_eq!(r.view().unwrap().body_text(), body);
+        assert_eq!(r.view().unwrap().raw_body().join(), body);
+        let mut r = ready("abc\r\ndef\r\n");
+        r.vim_cursor = true;
+        r.motion(M::Col(ColMove::End(1)));
+        assert_eq!(r.view().unwrap().cur_col(), 2, "`$` on the `c`");
+        r.motion(M::Col(ColMove::Right(5)));
+        assert_eq!(r.view().unwrap().cur_col(), 2, "`l` stops there too");
+        assert_eq!(
+            r.lines(LinesOp::Yank { count: Some(2) }),
+            Some(vec!["abc".into(), "def".into()])
+        );
+    }
+
+    /// Task #55: a CRLF row sweeps as the same LF row does, its `\r` gone.
+    /// A downward drag past a one-glyph row's end is the boundary above it
+    /// (one glyph short of the pointer), on its first cell too; past a
+    /// longer row's end it takes the row through its last char.
+    #[test]
+    fn a_crlf_row_sweeps_as_its_lf_row_does() {
+        for body in ["hello\nx\nzz\nw", "hello\r\nx\r\nzz\r\nw"] {
+            let mut r = ready(body);
+            let (area, _) = render_buf(&mut r);
+            r.begin_selection_at(area.x, area.y);
+            r.drag_selection_to(area.x + 5, area.y + 1);
+            assert_eq!(r.selected_text().as_deref(), Some("hello"), "{body:?}");
+            r.drag_selection_to(area.x, area.y + 1);
+            assert_eq!(r.selected_text().as_deref(), Some("hello"), "first cell, {body:?}");
+            r.drag_selection_to(area.x + 5, area.y + 2);
+            assert_eq!(r.selected_text().as_deref(), Some("hello\nx\nzz"), "{body:?}");
+        }
     }
 
     /// Task #23 review round 7 (A3): a row scrolled right past all its text
@@ -11753,8 +11926,8 @@ mod tests {
     }
 
     /// Task #45: the scroll extent is the painted width — a row of hearts
-    /// is two cells each, a tab or `\r` none (a CRLF body's lines end in
-    /// one), so the widest row's tail scrolls just into view.
+    /// is two cells each, a tab or a stray `\r` none, so the widest row's
+    /// tail scrolls just into view.
     #[test]
     fn the_raw_scroll_extent_is_the_painted_width() {
         let mut r = ready(&format!("{}\r\nab\tc\r", HEART.repeat(40)));
