@@ -51,6 +51,60 @@ pub enum TableCursor {
     ResponseHeader,
 }
 
+/// The chips the request table's cursor adds to the editor's footer, the
+/// keyboard twins of its row's pills. [`footer_chips`] puts them before
+/// `vars` and the tabs. Each is the key it advertises, so its click keeps
+/// the table's cursor and caret as the key does, as every chip on the
+/// footer does while the cursor is up (tasks #125 and #183, `App::on_hit`).
+/// The response's header cursor adds none here; its copy chip is the
+/// response pane's own.
+fn table_cursor_chips(cursor: TableCursor) -> Vec<(Key, &'static str, Option<Action>)> {
+    use crate::action::CopyTarget;
+    // One copy chip on a header row, its keycap both keys: the value's and
+    // the whole header's (`y/Y`, vim's `yy/"+yy`; spec 2026-10-26 H5).
+    let header_copy_key =
+        || Key::Pair(Action::OnSelection(Verb::Yank), Action::CopyRow { whole: true });
+    // Every copy chip's click is its row's pill: the value to the
+    // clipboard, in both profiles (the user, 2026-10-26, Q1), so a "copy"
+    // button always copies. Its keycap still names the keys, so in vim the
+    // click is the pill's copy while `yy` fills the register for `p`. The
+    // action names its row, as the delete chip's does, rather than reading
+    // the cursor when it runs.
+    let copy_value = |target| Some(Action::CopyToClipboard(target));
+    match cursor {
+        TableCursor::Row { index: i, enabled, headers } => {
+            // Keyboard twins of the expanded row's copy pill, ● toggle and
+            // 󰆴 delete buttons; the ␣ keycap keeps the row narrow.
+            let copy_key =
+                if headers { header_copy_key() } else { Key::Of(Action::OnSelection(Verb::Yank)) };
+            vec![
+                (copy_key, "copy", copy_value(CopyTarget::TableRow(i))),
+                (
+                    Key::Named("␣"),
+                    if enabled { "disable" } else { "enable" },
+                    Some(Action::ToggleTableRow(i)),
+                ),
+                (
+                    Key::Of(Action::OnSelection(Verb::Delete { count: 1 })),
+                    "delete",
+                    Some(Action::DeleteTableRow(i)),
+                ),
+            ]
+        }
+        TableCursor::Auto { index: i, pencil } => {
+            // Keyboard twins of the auto row's copy pill and, where it has
+            // one, its 󰏫 pencil (spec 2026-10-25 S14–S16).
+            let mut chips =
+                vec![(header_copy_key(), "copy", copy_value(CopyTarget::ComputedHeader(i)))];
+            if pencil {
+                chips.push((Key::Named("enter"), "edit", Some(Action::OverrideAutoHeader(i))));
+            }
+            chips
+        }
+        TableCursor::ResponseHeader => Vec::new(),
+    }
+}
+
 /// The context-sensitive chips for the focused pane. Each entry is `(key,
 /// label, action)`, the key a [`Key`] kind that `draw_footer` spells for
 /// the active profile; `None` actions render as plain (unregistered, muted)
@@ -203,66 +257,8 @@ pub(crate) fn footer_chips(
                 );
             }
             let pos = chips.len() - 2; // before vars + tabs
-            // One copy chip on a header row, its keycap both keys: the
-            // value's and the whole header's (`y/Y`, vim's `yy/"+yy`; spec
-            // 2026-10-26 H5).
-            let header_copy_key =
-                || Key::Pair(Action::OnSelection(Verb::Yank), Action::CopyRow { whole: true });
-            // Every copy chip's click is its row's pill: the value to the
-            // clipboard, in both profiles (the user, 2026-10-26, Q1), so a
-            // "copy" button always copies. Its keycap still names the keys,
-            // so in vim the click is the pill's copy while `yy` fills the
-            // register for `p`. The action names its row, as the delete
-            // chip's does: a chip click is a click away, which drops the
-            // table's cursor before the action runs.
-            let copy_value = |target| Some(Action::CopyToClipboard(target));
-            match table_row_selected {
-                Some(TableCursor::Row { index: i, enabled, headers }) => {
-                    // Keyboard twins of the expanded row's copy pill, ●
-                    // toggle and 󰆴 delete buttons; the ␣ keycap keeps the
-                    // row narrow.
-                    let copy_key = if headers {
-                        header_copy_key()
-                    } else {
-                        Key::Of(Action::OnSelection(Verb::Yank))
-                    };
-                    chips.insert(
-                        pos,
-                        (copy_key, "copy", copy_value(crate::action::CopyTarget::TableRow(i))),
-                    );
-                    let toggle_label = if enabled { "disable" } else { "enable" };
-                    chips.insert(
-                        pos + 1,
-                        (Key::Named("␣"), toggle_label, Some(Action::ToggleTableRow(i))),
-                    );
-                    chips.insert(
-                        pos + 2,
-                        (
-                            Key::Of(Action::OnSelection(Verb::Delete { count: 1 })),
-                            "delete",
-                            Some(Action::DeleteTableRow(i)),
-                        ),
-                    );
-                }
-                Some(TableCursor::Auto { index: i, pencil }) => {
-                    // Keyboard twins of the auto row's copy pill and, where
-                    // it has one, its 󰏫 pencil (spec 2026-10-25 S14–S16).
-                    chips.insert(
-                        pos,
-                        (
-                            header_copy_key(),
-                            "copy",
-                            copy_value(crate::action::CopyTarget::ComputedHeader(i)),
-                        ),
-                    );
-                    if pencil {
-                        chips.insert(
-                            pos + 1,
-                            (Key::Named("enter"), "edit", Some(Action::OverrideAutoHeader(i))),
-                        );
-                    }
-                }
-                Some(TableCursor::ResponseHeader) | None => {}
+            if let Some(cursor) = table_row_selected {
+                chips.splice(pos..pos, table_cursor_chips(cursor));
             }
             if field_open {
                 // Inserted last so the row/address-bar chips above land

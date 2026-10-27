@@ -15586,6 +15586,195 @@ fn an_auto_pill_click_commits_an_open_cell_and_keeps_its_row() {
     }
 }
 
+/// Task #125: a footer row chip is the key it advertises, so its click
+/// keeps the table cursor (and the table's caret) where the key would
+/// leave it, in both profiles: the row's chips are still there afterwards
+/// and the next move goes on from that row.
+#[test]
+fn a_footer_row_chip_click_keeps_the_table_cursor() {
+    use crate::config::KeyProfile::{Arrows, Vim};
+    for profile in [Arrows, Vim] {
+        // A main row's copy, toggle and delete chips.
+        for chip in [
+            Action::CopyToClipboard(CopyTarget::TableRow(0)),
+            Action::ToggleTableRow(0),
+            Action::DeleteTableRow(0),
+        ] {
+            let mut app = main_header_app(profile);
+            app.editor.headers.insert(
+                "X-Two".into(),
+                postui_core::model::Entry { value: "b".into(), enabled: true },
+            );
+            // `click_hit` draws a frame first and fails if the chip isn't on it.
+            click_hit(&mut app, Hit::FooterChip(chip.clone()));
+            // The chip's action ran.
+            match chip {
+                Action::CopyToClipboard(_) => assert_eq!(last_copied(&app).as_deref(), Some("a")),
+                Action::ToggleTableRow(_) => assert!(!app.editor.headers["X-One"].enabled),
+                _ => assert_eq!(app.editor.headers.keys().collect::<Vec<_>>(), ["X-Two"]),
+            }
+            // (A delete re-selects a row itself, so for the delete chip it
+            // is the caret that tells the fix apart: a click away blurs it.)
+            assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "{profile:?} {chip:?}");
+            assert_eq!(app.editor.sub_focus, SubFocus::Content, "{profile:?} {chip:?}");
+            render_once(&mut app);
+            assert!(
+                app.hits.rect_of(&Hit::FooterChip(Action::ToggleTableRow(0))).is_some(),
+                "{profile:?} {chip:?}: the row's chips stay"
+            );
+        }
+        // An auto row's copy chip.
+        let mut app = auto_rows_app(profile);
+        app.editor.table.set_selected(Some(Stop::Section(0)));
+        let chip = Action::CopyToClipboard(CopyTarget::ComputedHeader(0));
+        click_hit(&mut app, Hit::FooterChip(chip));
+        assert_eq!(last_copied(&app).as_deref(), Some("*/*"), "{profile:?}");
+        assert_eq!(app.editor.table.selected(), Some(Stop::Section(0)), "{profile:?}");
+        assert_eq!(app.editor.sub_focus, SubFocus::Content, "{profile:?}");
+        // Its edit chip takes the row over, as Enter does: the new row's
+        // value opens under the cursor.
+        click_hit(&mut app, Hit::FooterChip(Action::OverrideAutoHeader(0)));
+        assert_eq!(app.editor.headers.get("Accept").map(|e| e.value.as_str()), Some("*/*"));
+        assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "{profile:?}");
+        assert!(app.editor.table.editing.is_some(), "{profile:?}: the value is open");
+    }
+}
+
+/// Task #125: the delete chip's step records the cursor it kept, so undo
+/// lands on the restored row, as it does after `d`.
+#[test]
+fn undoing_a_delete_chip_click_selects_the_restored_row() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("chip".into()));
+    for (k, v) in [("Accept", "application/json"), ("X-Debug", "1")] {
+        app.editor
+            .headers
+            .insert(k.into(), postui_core::model::Entry { value: v.into(), enabled: true });
+    }
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.preferred_tab = EditorTab::Headers;
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.set_selected(Some(Stop::Row(1)));
+    app.capture_undo(); // seed the shadow before the delete
+    click_hit(&mut app, Hit::FooterChip(Action::DeleteTableRow(1)));
+    app.capture_undo();
+    assert_eq!(app.editor.headers.len(), 1);
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "on the new last row");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.headers.len(), 2, "undo brings the row back");
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(1)), "on the restored X-Debug row");
+    assert_eq!(app.editor.sub_focus, SubFocus::Content);
+}
+
+/// Task #183: every chip in the editor's footer is the key it advertises,
+/// not only the ones the table's cursor adds (#125). With the cursor on a
+/// row, an auto row or `+ Add`, clicking `send` (or `cancel` while
+/// sending), the add chip, `tabs`, `commands` or `quit` leaves the cursor,
+/// the caret and the tab exactly as running the chip's action does. The
+/// action is the oracle because it is what the click dispatches: what the
+/// rule decides is only whether the click-away runs before it.
+#[test]
+fn an_editor_footer_chip_click_leaves_the_table_cursor_as_its_action_does() {
+    use crate::config::KeyProfile::{Arrows, Vim};
+    for stop in [Stop::Row(0), Stop::Section(0), Stop::Add] {
+        footer_chips_leave_the_table_cursor_as_their_actions_do(stop, Arrows);
+        footer_chips_leave_the_table_cursor_as_their_actions_do(stop, Vim);
+    }
+}
+
+fn footer_chips_leave_the_table_cursor_as_their_actions_do(
+    stop: Stop,
+    profile: crate::config::KeyProfile,
+) {
+    // An empty URL, so the send chip toasts rather than spawning a send.
+    // Drawn wide, so `tabs` fits beside the row's chips.
+    let start = |profile, sending| {
+        let mut app = main_header_app(profile);
+        app.editor.table.set_selected(Some(stop));
+        app.editor.url = LineInput::new("");
+        app.editor.sending = sending;
+        rendered_row(&mut app, 200, 0);
+        app
+    };
+    let seen = |app: &App| {
+        (
+            app.editor.table.selected(),
+            app.editor.sub_focus,
+            app.editor.active_tab,
+            app.modals.is_empty(),
+            app.should_quit,
+        )
+    };
+    let probe = start(profile, false);
+    // The commands chip is `:` in vim and the palette in arrows.
+    let palette = [Action::OpenExPalette, Action::OpenPalette]
+        .into_iter()
+        .find(|a| probe.hits.rect_of(&Hit::FooterChip(a.clone())).is_some())
+        .expect("the commands chip");
+    let quit = crate::keyroute::spell::quit_action(probe.spell_ctx());
+    for (chip, sending) in [
+        (Action::Send, false),
+        (Action::CancelSend, true),
+        (Action::TableAddRow, false),
+        (Action::CycleTabs(1), false),
+        (palette, false),
+        (quit, false),
+    ] {
+        let mut by_action = start(profile, sending);
+        by_action.update(chip.clone());
+        let mut app = start(profile, sending);
+        let r = app.hits.rect_of(&Hit::FooterChip(chip.clone())).expect("the chip is drawn");
+        let footer = app.settled_layout().expect("drawn").footer;
+        assert!(footer.contains(r.as_position()), "{profile:?} {chip:?} is the footer's");
+        app.handle_mouse(left_down(r.x + 1, r.y));
+        assert_eq!(seen(&app), seen(&by_action), "{stop:?} {profile:?} {chip:?}");
+    }
+}
+
+/// Task #183: the rule is the footer's strip, not the action. The address
+/// bar's lock registers a `FooterChip` too, and it stays a click away.
+#[test]
+fn the_address_bar_lock_is_still_a_click_away_from_the_table_cursor() {
+    let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+    assert_eq!((app.focus, app.editor.sub_focus), (PaneId::Editor, SubFocus::Content));
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "the cursor is up");
+    let insecure = app.editor.insecure;
+    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    assert_ne!(app.editor.insecure, insecure, "the lock toggled");
+    assert_eq!(app.editor.table.selected(), None);
+    assert_eq!(app.editor.sub_focus, SubFocus::None);
+}
+
+/// Task #183: the editor's chips are the footer's on the main screen only.
+/// On the Settings tab the editor keeps its table cursor behind the screen,
+/// and the tab's footer chips are still a click away for its cursor, as
+/// they are with no table cursor behind it.
+#[test]
+fn a_settings_footer_chip_click_still_drops_the_settings_cursor() {
+    use crate::components::manage::ManageTab;
+    let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "the cursor stays behind");
+    assert!(app.settings.focused);
+    click_hit(&mut app, Hit::FooterChip(Action::OpenPalette));
+    assert!(app.modals.top().is_some(), "the palette opened");
+    assert!(!app.settings.focused, "the click was a click away for the tab");
+}
+
+/// Task #183's report: the commands chip, then Esc, puts the table back as
+/// ctrl+p and Esc do, the cursor on its row and the caret in the table.
+#[test]
+fn the_commands_chip_keeps_the_table_cursor_through_the_palette() {
+    let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+    click_hit(&mut app, Hit::FooterChip(Action::OpenPalette));
+    assert!(app.modals.top().is_some(), "the palette opened");
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)));
+    assert_eq!(app.editor.sub_focus, SubFocus::Content);
+}
+
 /// The same in the vim profile: `j` moves, `yy` copies, Enter takes the
 /// row over (its value opening in Insert, as the pencil's does).
 #[test]
@@ -32438,6 +32627,165 @@ fn a_focus_gained_reload_syncs_the_variable_manager() {
     use crate::components::varmanager::{VmDetail, VmRow};
     assert!(!app.varmanager.left_rows.contains(&VmRow::Group("user".into())), "list synced");
     assert!(!matches!(app.varmanager.detail, VmDetail::Group(_)), "detail moved off it");
+}
+
+/// Task #84: a selector deleted on disk while Manage is closed is gone from
+/// the detail pane when Manage opens again. The reload runs off screen, so
+/// opening the screen is what hands the Manager the files as they are now.
+#[test]
+fn opening_manage_syncs_a_selector_removed_while_it_was_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    app.update(Action::CloseScreen);
+    std::fs::write(
+        dir.path().join("variables.toml"),
+        "# edited elsewhere, selector gone\n[base_url]\ndefault = \"http://localhost:8080\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "base_url = \"https://qa.example.com\"\n",
+    )
+    .unwrap();
+    app.on_focus_gained();
+    // No frame between the open and the asserts: the state is right before
+    // the next paint, which a key can arrive ahead of.
+    app.update(Action::OpenManage { tab: None });
+    use crate::components::varmanager::{VmDetail, VmRow};
+    assert!(!app.varmanager.left_rows.contains(&VmRow::Group("user".into())), "list synced");
+    assert_ne!(app.varmanager.detail, VmDetail::Group("user".into()), "detail moved off it");
+    assert_highlight_names_the_detail(&app);
+}
+
+/// Task #178: a declaration added on disk above the open one leaves the
+/// cursor on the open row, so the highlight and the pane agree and the
+/// next key moves from there.
+#[test]
+fn a_declaration_added_above_on_disk_keeps_the_cursor_on_the_open_row() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("api_key".into()));
+    let path = dir.path().join("variables.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("[aaa]\ndefault = \"0\"\n{text}")).unwrap();
+    app.on_focus_gained();
+    render_once(&mut app);
+    use crate::components::varmanager::VmDetail;
+    assert_eq!(app.varmanager.detail, VmDetail::Var("api_key".into()));
+    assert_highlight_names_the_detail(&app);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.varmanager.detail, VmDetail::Var("base_url".into()), "Up from the open row");
+}
+
+/// The Variable Manager's highlighted row is the one its detail pane shows.
+fn assert_highlight_names_the_detail(app: &App) {
+    use crate::components::varmanager::{VmDetail, VmRow};
+    let vm = &app.varmanager;
+    let on = match vm.left_rows.get(vm.left_cursor) {
+        Some(VmRow::Var(n)) => VmDetail::Var(n.clone()),
+        Some(VmRow::Group(n)) => VmDetail::Group(n.clone()),
+        _ => VmDetail::None,
+    };
+    assert_eq!(on, vm.detail, "the highlight and the pane agree");
+}
+
+/// Task #84: a variable an undo on the main screen removes is gone from the
+/// detail pane when Manage opens again.
+#[test]
+fn opening_manage_syncs_a_variable_an_undo_removed_while_it_was_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::VarStruct(VarStructOp::NewVar {
+        name: "widget_id".into(),
+        description: None,
+    }));
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("widget_id".into()));
+    app.update(Action::CloseScreen);
+    app.update(Action::Undo);
+    assert!(!app.project().unwrap().variables().vars.contains_key("widget_id"), "undone");
+    app.update(Action::OpenManage { tab: None });
+    use crate::components::varmanager::{VmDetail, VmRow};
+    assert!(!app.varmanager.left_rows.contains(&VmRow::Var("widget_id".into())), "list synced");
+    assert_ne!(app.varmanager.detail, VmDetail::Var("widget_id".into()), "detail moved off it");
+    assert_highlight_names_the_detail(&app);
+}
+
+/// Task #179: a project switch made on the Manage screen leaves no
+/// declaration of the project it left in the Variable Manager.
+#[test]
+fn a_project_switch_on_manage_moves_the_manager_to_the_new_project() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let other = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(other.path(), Some("other")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+    assert_eq!(app.screen, Screen::Manage, "the screen stays up");
+    // No frame between the switch and the asserts: the state is right
+    // before the next paint, which a key can arrive ahead of.
+    use crate::components::varmanager::{VmDetail, VmRow};
+    assert!(!app.varmanager.left_rows.contains(&VmRow::Group("user".into())), "list synced");
+    assert!(app.varmanager.left_rows.contains(&VmRow::SectionGroups), "the new rows are there");
+    assert_eq!(app.varmanager.detail, VmDetail::None, "detail moved off it");
+    assert_highlight_names_the_detail(&app);
+}
+
+/// Task #179: a switch to a project that declares a selector of the same
+/// name starts the Variable Manager over, as a launch does: its grid cursor
+/// and keyboard stop indexed the selector of the project it left.
+#[test]
+fn a_project_switch_starts_the_manager_over_on_a_same_named_selector() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let other = tempfile::tempdir().unwrap();
+    var_project(other.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    use crate::components::varmanager::{FormStop, VmDetail, VmField, VmFocus};
+    app.varmanager.grid.cursor = (1, 1);
+    app.varmanager.grid.scroll = 1;
+    app.varmanager.focus = VmFocus::Grid;
+    app.varmanager.left_scroll = 2;
+    app.varmanager.form_cursor = FormStop::Secret;
+    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+    let vm = &app.varmanager;
+    assert_eq!(vm.detail, VmDetail::None);
+    assert_eq!((vm.grid.cursor, vm.grid.scroll), ((0, 0), 0));
+    assert_eq!(vm.focus, VmFocus::List);
+    assert_eq!((vm.left_cursor, vm.left_scroll), (0, 0));
+    assert_eq!(vm.form_cursor, FormStop::Field(VmField::Description));
+    assert_highlight_names_the_detail(&app);
+}
+
+/// Task #179: a switch made with Manage closed shows the new project's
+/// Manager when Manage opens, with no declaration of the project it left.
+#[test]
+fn manage_opened_after_a_project_switch_shows_the_new_project() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let other = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(other.path(), Some("other")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    app.update(Action::CloseScreen);
+    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+    app.update(Action::OpenManage { tab: None });
+    use crate::components::varmanager::{VmDetail, VmRow};
+    assert!(!app.varmanager.left_rows.contains(&VmRow::Group("user".into())), "list synced");
+    assert!(app.varmanager.left_rows.contains(&VmRow::SectionGroups), "the new rows are there");
+    assert_eq!(app.varmanager.detail, VmDetail::None, "detail moved off it");
+    assert_highlight_names_the_detail(&app);
 }
 
 /// Task #76: Copy clicked in a live grid cell's own menu copies the cell's
