@@ -900,11 +900,13 @@ fn aligned_header_lines<'a>(rows: impl Iterator<Item = (&'a str, &'a str)> + Clo
 pub struct RawBody {
     lines: Vec<String>,
     crlf: bool,
+    /// The body's length in bytes.
+    len: usize,
 }
 
 impl RawBody {
-    /// One pass: split on `\n`, then take the `\r` off every line a `\n`
-    /// ended when all of them have one.
+    /// Splits on `\n`, then takes the `\r` off every line a `\n` ended
+    /// when all of them have one.
     fn split(body: &str) -> Self {
         let mut lines: Vec<String> = body.split('\n').map(str::to_string).collect();
         let ended = lines.len() - 1;
@@ -914,7 +916,7 @@ impl RawBody {
                 line.pop();
             }
         }
-        Self { lines, crlf }
+        Self { lines, crlf, len: body.len() }
     }
 
     /// The line break the body's lines were split on.
@@ -929,8 +931,7 @@ impl RawBody {
 
     /// The body's length in bytes, without rebuilding it.
     fn byte_len(&self) -> usize {
-        let breaks = self.lines.len().saturating_sub(1) * self.ending().len();
-        self.lines.iter().map(String::len).sum::<usize>() + breaks
+        self.len
     }
 }
 
@@ -1226,7 +1227,11 @@ impl ReadyView {
     /// The active tab's full text — what the toolbar's copy/save/editor
     /// actions operate on, so they follow the tab exactly as search does
     /// (same corpus, joined into one string). Raw's is the body byte for
-    /// byte, its own line ending put back.
+    /// byte, its own line ending put back: a save or an editor round trip
+    /// is the response itself. A selection's copy is `\n`-joined instead
+    /// (`selected_text`), on purpose: it is lines the user picked, as a
+    /// vim yank is, and a `\r` in one would land in a pasted field or an
+    /// extracted variable's value. The whole body's bytes are this copy.
     pub fn view_text(&self) -> String {
         match self.mode {
             ViewMode::Raw => self.raw.join(),
@@ -2740,12 +2745,6 @@ fn cell_span(text: &str, col: usize, from: ColMark) -> (usize, usize) {
     (w, w + 1)
 }
 
-/// Whether `text` paints any cell: not when it is empty or holds only
-/// graphemes that paint nothing (a stray `\r`, a tab).
-fn paints(text: &str) -> bool {
-    grapheme_at_col(text, 0, (0, 0, 0)).is_some()
-}
-
 /// The first char of `text`'s last grapheme (0 when empty). The grapheme
 /// is segmented from the end; only its char offset needs the line, as a
 /// plain char count (no segmenting, as cheap as the char count it took
@@ -4171,19 +4170,12 @@ impl Response {
             // pointer on that grapheme's first cell (line column 0), not
             // on any of its cells: on the right half of a wide first glyph
             // (`❤️`, `日`) the pointer is on that glyph, so the sweep takes
-            // it. Past the end of a row whose one painted glyph is its
-            // first, the sweep takes that glyph, as it takes a longer row's
-            // last (#55); a row that paints nothing (empty, or a stray
-            // `\r`) is the boundary. Past the end is the opposite of the
-            // upward sweep's below on purpose: down, the head is the
-            // selection's end, so the row is taken through its end; up, it
-            // is the start, so the row's end is where it starts. Scrolled
-            // sideways, the left edge is mid-line for every row and the
-            // sweep takes the cell under the pointer, a cut wide first
-            // glyph included, and a row scrolled out past its end is taken
-            // to its last grapheme, as a longer row is.
+            // it. Past a row's end (an empty row, or one glyph short of
+            // the pointer) is still the boundary. Scrolled sideways, the
+            // left edge is mid-line for every row and the sweep takes the
+            // cell under the pointer, a cut wide first glyph included.
             let text = view.display_line_text(head.0).unwrap_or_default();
-            if disp_col == 0 || !paints(&text) {
+            if disp_col == 0 || view.grapheme_at(head.0, &text, disp_col).is_none() {
                 let row = head.0 - 1;
                 // The row's last grapheme, as `cell_at` clamps a click past it.
                 let last = view.display_line_text(row).map_or(0, |t| last_grapheme(&t));
@@ -4197,7 +4189,8 @@ impl Response {
             // row to tell the two apart (a row that paints no cells has no
             // last char to spuriously grab — it stays in the sweep).
             let text = view.display_line_text(head.0).unwrap_or_default();
-            if paints(&text) && view.grapheme_at(head.0, &text, disp_col).is_none() {
+            let paints = grapheme_at_col(&text, 0, (0, 0, 0)).is_some();
+            if paints && view.grapheme_at(head.0, &text, disp_col).is_none() {
                 view.sel = Some((anchor, (head.0 + 1, 0)));
                 return true;
             }
@@ -6428,20 +6421,22 @@ mod tests {
         );
     }
 
-    /// Task #55 review: a downward sweep past the end of a one-glyph row
-    /// takes the glyph, as it takes a longer row's last one; only the
-    /// pointer on the row's first cell, or a row that paints nothing, is
-    /// the boundary above it.
+    /// Task #55: a CRLF row sweeps as the same LF row does, its `\r` gone.
+    /// A downward drag past a one-glyph row's end is the boundary above it
+    /// (one glyph short of the pointer), on its first cell too; past a
+    /// longer row's end it takes the row through its last char.
     #[test]
-    fn a_downward_drag_past_a_one_glyph_row_takes_it() {
-        for (body, want) in [("hello\nx\nz", "hello\nx"), ("hello\r\nx\r\nz", "hello\nx")] {
+    fn a_crlf_row_sweeps_as_its_lf_row_does() {
+        for body in ["hello\nx\nzz\nw", "hello\r\nx\r\nzz\r\nw"] {
             let mut r = ready(body);
             let (area, _) = render_buf(&mut r);
             r.begin_selection_at(area.x, area.y);
             r.drag_selection_to(area.x + 5, area.y + 1);
-            assert_eq!(r.selected_text().as_deref(), Some(want), "{body:?}");
+            assert_eq!(r.selected_text().as_deref(), Some("hello"), "{body:?}");
             r.drag_selection_to(area.x, area.y + 1);
-            assert_eq!(r.selected_text().as_deref(), Some(&want[..5]), "first cell, {body:?}");
+            assert_eq!(r.selected_text().as_deref(), Some("hello"), "first cell, {body:?}");
+            r.drag_selection_to(area.x + 5, area.y + 2);
+            assert_eq!(r.selected_text().as_deref(), Some("hello\nx\nzz"), "{body:?}");
         }
     }
 
