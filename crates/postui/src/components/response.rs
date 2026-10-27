@@ -7264,13 +7264,15 @@ mod tests {
         let mut r = Pane::default();
         r.set_state(ResponseState::Ready(Box::new(d)), 0);
         r.set_view_mode(ViewMode::Headers);
-        for scroll in [3, 20] {
+        // Inside the text, either side of its end, and past it.
+        let text_cells = crate::ui::cells(SENT_DIVIDER);
+        for scroll in [3, text_cells - 1, text_cells, text_cells + 1, 20] {
             r.view.as_mut().unwrap().h_scroll = scroll;
             let (area, buf) = render_buf(&mut r);
             let view = r.view().unwrap();
             assert_eq!(view.h_scroll, scroll, "the long row keeps the scroll");
             assert_eq!(view.header_row(1), Some(HeaderRow::Divider));
-            let text_end = crate::ui::cells(SENT_DIVIDER).saturating_sub(scroll);
+            let text_end = text_cells.saturating_sub(scroll);
             for c in text_end..usize::from(area.width) {
                 let at = (area.x + u16::try_from(c).unwrap(), area.y + 1);
                 assert_eq!(buf[at].symbol(), "\u{2500}", "scroll {scroll}, column {c}: the rule");
