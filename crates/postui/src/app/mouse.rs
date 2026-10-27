@@ -1442,8 +1442,38 @@ impl App {
         // still a click away for an open cell, which commits first, as on
         // main. A press on the rest of the section is the bare pane's, as
         // before.
-        let keeps_table_selection =
-            keeps_open_cell || matches!(hit, Hit::AutoHeaderCopy(_) | Hit::AutoHeaderReveal);
+        //
+        // A footer chip is the key it advertises, so while the table's
+        // cursor is live (any stop, `+ Add` included, no cell open), every
+        // chip on the main screen's footer keeps the cursor and the table's
+        // caret, as its key does: the cursor's own (task #125) and the rest
+        // (task #183; spec 2026-10-26 header-copy, Footer). The chip's action
+        // runs after, and one that moves the caret moves it itself, as the
+        // add chip does. With no cell open the commit above has nothing to
+        // close.
+        //
+        // The rule asks where the press landed, not which action: the app
+        // bar's save/discard, the address bar's lock and the Body toolbar
+        // register `FooterChip` too, and stay a click away. (Their own hit
+        // variant would say so without geometry, but every reader of
+        // `FooterChip` would have to learn it: the hints, the hover, the jq
+        // bar's rule, the mouse-parity sweep.) A dialog over the footer is
+        // the dialog rule's. The Manage screen draws its tab's chips in the
+        // same rows with the editor's cursor behind it, so the rule is the
+        // main screen's only, and the Settings rule below, which inherits
+        // it, still runs there. The settled layout's footer is the hit's
+        // frame's: `term_area` is set only by a draw, and the footer's rows
+        // don't move with the panes' eases.
+        let table_cursor_chip = matches!(hit, Hit::FooterChip(_))
+            && self.screen == Screen::Main
+            && self.focus == PaneId::Editor
+            && self.editor.table_cursor_live()
+            && self.settled_layout().is_some_and(|l| {
+                l.footer.contains(ratatui::layout::Position { x: m.column, y: m.row })
+            });
+        let keeps_table_selection = keeps_open_cell
+            || table_cursor_chip
+            || matches!(hit, Hit::AutoHeaderCopy(_) | Hit::AutoHeaderReveal);
         if !keeps_open_cell {
             self.commit_table_edit();
         }
