@@ -4513,13 +4513,13 @@ impl Component for Response {
             view.scroll_opt = None;
         }
         view.height = body_area.height as usize;
-        let spec = ScrollbarSpec {
-            pane: PaneId::Response,
-            offset: view.scroll,
-            content: content_h,
-            viewport: view.height,
-        };
         if wants_v {
+            let spec = ScrollbarSpec {
+                pane: PaneId::Response,
+                offset: view.scroll,
+                content: content_h,
+                viewport: view.height,
+            };
             let column = Rect { x: body_area.x + body_area.width - 1, width: 1, ..body_area };
             body_area.width -= 1;
             if let Some(bar) = h_bar.as_mut() {
@@ -8042,9 +8042,10 @@ mod tests {
         r.handle_scroll_h(5);
         let out = render_sized(&mut r, 82, 20);
         assert_eq!(r.view().unwrap().h_scroll, 1, "one column is clipped, so one is reachable");
-        assert!(r.h_scrollbar_spec().is_some(), "the bar's spec matches the scrollable view");
+        // Scrolled to the end: one track cell, then the thumb. The vertical
+        // bar's `█` alone (its column ends on this row) must not pass.
         let bottom = buffer_rows(&out).last().cloned().expect("rendered rows");
-        assert!(bottom.contains('█'), "thumb on the bottom row: {out}");
+        assert!(bottom.contains("─█"), "track then thumb on the bottom row: {out}");
     }
 
     #[test]
