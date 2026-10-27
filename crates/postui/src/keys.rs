@@ -233,10 +233,9 @@ pub struct KeyContext {
 }
 
 impl KeyContext {
-    /// The context on `surface`: the sidebar on the main screen is
-    /// `Surface::Sidebar`. `App::key_context` reads it off the screen's
-    /// surface; the palette off the surface it opened on (task #132), so
-    /// its key column and a key press agree on what the split keys do.
+    /// The context on a screen's `surface` (`App::screen_surface`, which
+    /// ignores modals): the sidebar on the main screen is
+    /// `Surface::Sidebar`.
     pub fn on(surface: crate::keyroute::Surface) -> Self {
         Self { sidebar_on_main: surface == crate::keyroute::Surface::Sidebar }
     }
