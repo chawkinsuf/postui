@@ -15613,6 +15613,8 @@ fn a_footer_row_chip_click_keeps_the_table_cursor() {
                 Action::ToggleTableRow(_) => assert!(!app.editor.headers["X-One"].enabled),
                 _ => assert_eq!(app.editor.headers.keys().collect::<Vec<_>>(), ["X-Two"]),
             }
+            // (A delete re-selects a row itself, so for the delete chip it
+            // is the caret that tells the fix apart: a click away blurs it.)
             assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "{profile:?} {chip:?}");
             assert_eq!(app.editor.sub_focus, SubFocus::Content, "{profile:?} {chip:?}");
             render_once(&mut app);

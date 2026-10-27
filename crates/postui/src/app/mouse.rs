@@ -1441,20 +1441,35 @@ impl App {
         // they keep the cursor that may be sitting on one, but they are
         // still a click away for an open cell, which commits first, as on
         // main. A press on the rest of the section is the bare pane's, as
-        // before. The footer's cursor-row chips (copy, toggle, delete, an
-        // auto row's edit) are the keys they advertise, so they keep the
-        // cursor and the table's caret as those keys do (task #125). They
-        // are drawn only while no cell is open, so the commit above has
-        // nothing to close for them. The rule names the chips the table's
-        // cursor adds rather than every footer chip, as the jq bar's does:
-        // the jq bar's footer is its own chip set, but the footer under the
-        // table also shows chips that aren't the table's (send, tabs,
-        // commands), and other panes' footers draw here too, and whether
-        // those clicks stay a click away is outside #125.
+        // before.
+        //
+        // The chips the table's cursor adds to the footer (copy, toggle,
+        // delete, an auto row's edit) are the keys they advertise, so they
+        // keep the cursor and the table's caret as those keys do (task
+        // #125). Whether a chip is one is asked of the footer's own builder,
+        // for the cursor the frame was drawn from, so there is no second
+        // list to keep in step. They are drawn only while the editor pane
+        // has the focus and no cell is open, so the commit above has nothing
+        // to close for them, and the Settings and editor-caret rules below,
+        // which inherit this exemption, have nothing else to keep. The rule
+        // takes the cursor's chips rather than every footer chip, as the jq
+        // bar's does: the jq bar's footer is its own chip set, but the
+        // footer under the table also shows chips that aren't the table's
+        // (send, tabs, commands), and whether those stay a click away is
+        // outside #125.
+        let cursor_chip = match &hit {
+            Hit::FooterChip(a) => {
+                crate::ui::PaneChipArgs::of(self).table_row_selected.is_some_and(|cursor| {
+                    crate::components::footer::table_cursor_chips(cursor)
+                        .iter()
+                        .any(|(_, _, chip)| chip.as_ref() == Some(a))
+                })
+            }
+            _ => false,
+        };
         let keeps_table_selection = keeps_open_cell
-            || matches!(hit, Hit::AutoHeaderCopy(_) | Hit::AutoHeaderReveal)
-            || matches!(&hit, Hit::FooterChip(a)
-                if crate::components::footer::is_table_cursor_chip(a));
+            || cursor_chip
+            || matches!(hit, Hit::AutoHeaderCopy(_) | Hit::AutoHeaderReveal);
         if !keeps_open_cell {
             self.commit_table_edit();
         }
