@@ -42,7 +42,7 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] Rust pinned at 1.97.1 (`rust-toolchain.toml`), `rust-version = "1.97"`
 - [x] Cargo metadata (`description`, `license`, `repository`, `homepage`)
 - [x] The GitHub repo is public
-- [ ] #155 The tap is `chawkinsuf/homebrew-tap`, shared so other apps can publish to it (the user, 2026-10-26); install is `brew install chawkinsuf/tap/postui`. Left: rename the GitHub repo `homebrew-postui` → `homebrew-tap` (the user, on GitHub)
+- [x] #155 The tap is `chawkinsuf/homebrew-tap`, shared so other apps can publish to it (the user, 2026-10-26); install is `brew install chawkinsuf/tap/postui`. The user renamed the GitHub repo from `homebrew-postui` (2026-10-26)
 - [x] `HOMEBREW_TAP_TOKEN` secret on chawkinsuf/postui (set by the user 2026-10-25; first used by the first full release)
 - [x] #120 Prerelease `v0.1.1-rc.1`: CI and the whole release ran green on GitHub (Homebrew skipped as a prerelease); the installer installs and runs
 - [x] macOS: the binary is unsigned. Homebrew (and the shell installer) avoid the quarantine flag, so the README makes Homebrew the recommended install (the user, 2026-10-26: "just make brew the recommended way to install"); done in #138
