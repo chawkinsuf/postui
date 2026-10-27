@@ -613,6 +613,10 @@ fn m_bottom(n: Option<usize>) -> ResponseMotion {
     ResponseMotion::Place { at: Place::Bottom, line: n }
 }
 
+fn m_percent(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::MatchPair { count: n }
+}
+
 /// Every row. Order does not matter: no complete row is a prefix of
 /// another on a shared surface (`no_two_rows_collide`).
 #[rustfmt::skip]
@@ -701,6 +705,10 @@ pub static TABLE: &[Binding] = &[
     row("zt", Surfaces::RESPONSE_LINES, Intent::Extend(m_top), CountRule::Pass),
     row("zz", Surfaces::RESPONSE_LINES, Intent::Extend(m_middle), CountRule::Pass),
     row("zb", Surfaces::RESPONSE_LINES, Intent::Extend(m_bottom), CountRule::Pass),
+    // Key list §7 (`R.percent`, task #160): Vim's `%`, and `{N}%` to the
+    // line N percent down, extending in V.
+    row("%", Surfaces::RESPONSE, Intent::Motion(m_percent), CountRule::Pass),
+    row("%", Surfaces::RESPONSE_LINES, Intent::Extend(m_percent), CountRule::Pass),
     // Key list §7 (`R.fold`, `R.foldall`): the tree's folds, counted (plan
     // M5a Deviation 9). Nothing on Raw or Headers.
     row("zo", Surfaces::RESPONSE, Intent::Counted(fold_open), CountRule::Pass),

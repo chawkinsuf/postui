@@ -325,6 +325,13 @@ const CASES: &[Case] = &[
     vim("R.visual", ResponseText, "vj", &[Toast("Only line selection (V) here"), ResponseLine(1), Mode("NORMAL")]),
     vim("R.fold", ResponseLines, "za", &[ResponseVisible(1)]),
     vim("R.fold", ResponseLines, "zaj", &[ResponseVisible(1), ResponseLine(0), NoToast]),
+    // Key list §7 (`R.percent`, task #160); the response oracle compares
+    // the rest with Vim.
+    vim("R.percent", ResponseLines, "%", &[ResponseLast]),
+    vim("R.percent", ResponseLines, "%%", &[ResponseLine(0)]),
+    vim("R.percent", ResponseLines, "zM%", &[ResponseVisible(202), ResponseLast]),
+    vim("R.percent", ResponseLines, "50%", &[ResponseLine(100)]),
+    vim("R.percent", ResponseText, "j%", &[ResponseLine(1), NoToast]),
     // Key list §8, M4a: panes by geometry (spec §5.8).
     vim("P.ctrlw", ResponseLines, "<C-w>k", &[FocusIs(PaneId::Editor)]),
     vim("P.ctrlw", ResponseLines, "<C-w>h", &[FocusIs(PaneId::Sidebar)]),

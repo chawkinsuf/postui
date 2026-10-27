@@ -1371,6 +1371,10 @@ pub enum ResponseMotion {
     /// `zt` `zz` `zb`: line N when counted (the cursor goes there), then
     /// the window placed around the cursor's line.
     Place { at: Place, line: Option<usize> },
+    /// `%`: Vim's `nv_percent()`. Uncounted, the partner of the bracket
+    /// under or after the hidden column on its line; counted N, the line N
+    /// percent of the way down, on its first non-blank.
+    MatchPair { count: Option<usize> },
 }
 
 /// A move along the response's line ([`ResponseMotion::Col`]).
