@@ -407,6 +407,12 @@ impl TableEditorState {
     /// Writes one cell into the map. Returns the row index the edit
     /// resolved to (`None` when nothing was written — an empty ghost row)
     /// plus any warning to surface.
+    ///
+    /// For a ghost name that is already taken, the row is the existing
+    /// row's, not the ghost's: Tab opens that row's value and Enter parks
+    /// the cursor on it. A caller that moves from where the caret was reads
+    /// the ghost's index before the commit instead, as `walk_cell`'s
+    /// Shift-Tab does (task #111; Up/Down still read this row, task #176).
     fn commit_cell(
         &mut self,
         map: &mut IndexMap<String, Entry>,
@@ -754,6 +760,9 @@ impl TableEditorState {
         edit: &CellEdit,
         forward: bool,
     ) -> TableOutcome {
+        // The ghost row's index before the commit: where the caret was.
+        // Clamped, since the map can shrink under an open ghost cell.
+        let ghost_at = (edit.row >= map.len()).then_some(map.len());
         let (row, warning) = self.commit_cell(map, edit);
         if forward {
             match (row, edit.col) {
@@ -765,8 +774,14 @@ impl TableEditorState {
                 (None, _) => self.exit_editing(map.len(), map),
             }
         } else {
-            // A discarded ghost row still tells us where we were.
-            let r = row.unwrap_or(edit.row).min(map.len());
+            // Step back from where the caret was. For the ghost row that is
+            // `ghost_at` whatever its commit did (a new row lands there, an
+            // empty name is discarded there, a name that exists leaves it
+            // there), while `row` for a taken name is the existing row's,
+            // which forward Tab opens (task #111). A real row's commit says
+            // where that row is now: a rename onto a taken name merges it
+            // into that row.
+            let r = ghost_at.or(row).unwrap_or(edit.row).min(map.len());
             match edit.col {
                 Col::Value => self.start_edit(r, Col::Key, map),
                 Col::Key if r > 0 => self.start_edit(r - 1, Col::Value, map),
@@ -2045,6 +2060,48 @@ mod tests {
         let edit = t.editing.as_ref().unwrap();
         assert_eq!((edit.row, edit.col), (0, Col::Value));
         assert_eq!(map.len(), 1, "the empty ghost added nothing");
+    }
+
+    /// Task #111: a ghost name that already exists makes no row, and
+    /// Shift-Tab still steps back from the ghost, where the caret was, not
+    /// from the existing row the name matched (forward Tab opens that row's
+    /// value; see `a_ghost_row_keyed_like_an_existing_row_warns_and_edits_that_row`).
+    #[test]
+    fn shift_tab_off_a_ghost_key_that_exists_lands_on_the_last_rows_value() {
+        for name in ["c", "b", "a"] {
+            let mut map = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
+            let mut t = TableEditorState::default();
+            t.click_cell(3, Col::Key, &mut map); // the ghost
+            type_str(&mut t, &mut map, name);
+            let out = t.handle_key(shift_tab(), &mut map);
+            assert!(out.warning.is_some(), "{name}: a duplicate key warns");
+            assert_eq!(map.len(), 3, "{name}: no row was added");
+            let edit = t.editing.as_ref().unwrap_or_else(|| panic!("{name}: still editing"));
+            assert_eq!((edit.row, edit.col), (2, Col::Value), "{name}: c's value opens");
+        }
+    }
+
+    /// With the map shrunk under an open ghost name, Shift-Tab steps back
+    /// from the ghost's index as it is now: past the row a new name makes,
+    /// and from the ghost itself for a name that is taken.
+    #[test]
+    fn shift_tab_off_a_ghost_key_after_the_map_shrank_steps_back_from_the_ghost() {
+        for (name, removed, before) in [("x", 1, 1), ("x", 2, 0), ("a", 1, 1)] {
+            let mut map = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
+            let mut t = TableEditorState::default();
+            t.click_cell(3, Col::Key, &mut map); // the ghost
+            type_str(&mut t, &mut map, name);
+            for _ in 0..removed {
+                map.pop();
+            }
+            t.handle_key(shift_tab(), &mut map);
+            assert_eq!(
+                map.get_index(map.len() - 1).unwrap().0,
+                if name == "x" { "x" } else { "b" }
+            );
+            let edit = t.editing.as_ref().unwrap();
+            assert_eq!((edit.row, edit.col), (before, Col::Value), "{name} less {removed}");
+        }
     }
 
     #[test]
