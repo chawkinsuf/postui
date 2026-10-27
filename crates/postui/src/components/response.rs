@@ -767,8 +767,8 @@ pub struct ReadyView {
     /// Width of the body viewport as of the last draw — the horizontal
     /// counterpart of `height`, used to clamp `h_scroll`.
     width: usize,
-    /// A `%` or vim search landing asked for Vim's cursor column to be
-    /// scrolled into view (task #164). The next `draw` does it
+    /// A `%` or search landing asked for the cursor's column to be scrolled
+    /// into view (tasks #164, #180). The next `draw` does it
     /// ([`ReadyView::show_cursor_col`]), once that frame's layout has given
     /// the body its width (a landing that opens a fold can make the tree
     /// overflow, so the scrollbar takes a column) and measured the widest
@@ -1814,7 +1814,12 @@ impl ReadyView {
     /// layout set `width`: the width this frame paints, which a landing
     /// cannot know (a fold it opens can give a column to the scrollbar).
     ///
-    /// Only `%` and the vim search's landings ask, the jumps along a line
+    /// Arrows' search landings ask too, and get the same rule (task #180):
+    /// a GUI editor's find also brings a match from out of view to the
+    /// middle, and the match's start is what lands, so a short match shows
+    /// whole with room either side.
+    ///
+    /// Only `%` and the search's landings ask, the jumps along a line
     /// that would otherwise move an unseen column. Vim keeps its cursor in
     /// view after every command, but doing it on every move
     /// (`follow_cursor`) would undo `h` `l`'s step scroll, which moves the
@@ -2047,9 +2052,9 @@ impl ReadyView {
     /// puts the column on it (on the line's last char for a match at its
     /// end, as Vim's Normal cursor cannot be past it). A vim search opens
     /// every closed fold at the line, the one it opens included, as Vim's
-    /// `'foldopen'` `search` does, and has the next frame scroll the view
-    /// sideways to show the column ([`Self::show_cursor_col`]); arrows' only
-    /// shows the line, as on main. A jump like any other: a line selection
+    /// `'foldopen'` `search` does; arrows' expands only the match's
+    /// ancestors. Either has the next frame scroll the view sideways to show
+    /// the column ([`Self::show_cursor_col`]). A jump like any other: a line selection
     /// drops, except vim's V, which a search extends as Vim 9.1's Visual
     /// does (probed). Its anchor is a buffer line, so a fold the landing
     /// opens above it does not move it.
@@ -2077,10 +2082,7 @@ impl ReadyView {
         }
         let len = self.buffer_line(line).map_or(0, |t| t.chars().count());
         self.set_col(start.min(len.saturating_sub(1)));
-        // Keyed on the search's kind, as the fold opening above is, not on
-        // the profile: a vim search stays one when stepped after a switch to
-        // arrows, which only ever starts plain-text ones.
-        self.show_col |= vim;
+        self.show_col = true;
     }
 
     /// The buffer line shown on visible row `row`: on the tree, the line
@@ -8266,13 +8268,20 @@ mod tests {
         assert_eq!(drawn(&mut r), (1, 150, 151 - 80));
     }
 
-    /// Task #164: the sideways scroll is the vim search's. Arrows' search
-    /// keeps main's landing, which leaves the view where it was.
+    /// Task #180: arrows' search lands as the vim search does, so a match
+    /// past the view's edge is put mid-window and one in view keeps the
+    /// scroll, its steps (arrows' `n` `N`, the ▼/▲ step) included.
     #[test]
-    fn an_arrows_search_landing_does_not_scroll_sideways() {
-        let mut r = ready(&format!("start\n{}target", "d".repeat(150)));
+    fn an_arrows_search_landing_scrolls_the_match_into_view() {
+        let mut r = ready(&format!("target\n{}target target{}", "d".repeat(150), "y".repeat(100)));
         search_for(&mut r, SearchSyntax::Literal, "target");
-        assert_eq!(drawn(&mut r), (1, 150, 0));
+        assert_eq!(drawn(&mut r), (1, 150, 110), "a match past the edge");
+        assert!(r.step_search(1));
+        assert_eq!(drawn(&mut r), (1, 157, 110), "the next match in view: no scroll");
+        assert!(r.step_search(1));
+        assert_eq!(drawn(&mut r), (0, 0, 0), "the wrap back to the start");
+        assert!(r.step_search(-1));
+        assert_eq!(drawn(&mut r), (1, 157, 117), "back past the edge");
     }
 
     /// Task #164 on the tree: the column is the painted row's, indent
