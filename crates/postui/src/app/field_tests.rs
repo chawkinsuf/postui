@@ -1743,8 +1743,9 @@ fn the_search_prompts_caret_follows_the_painted_cells() {
     assert_eq!(reversed, [area.x + 4], "after `/`, the heart's two cells and `x`");
 }
 
-/// Final review M-4: the prompt takes the bottom row, so a `{{token}}`
-/// that was on it registers no hit a click could find.
+/// Final review M-4: a `{{token}}` on the bottom row keeps its hit on its
+/// text, which scrolls above the prompt (#129), and the prompt's row has
+/// none a click could find.
 #[test]
 fn the_search_prompt_row_has_no_token_hits() {
     let mut app = vim(Fixture::Body);
@@ -1753,14 +1754,15 @@ fn the_search_prompt_row_has_no_token_hits() {
     lines.push("{{v}}");
     app.editor.set_body_text(&lines.join("\n"));
     draw(&mut app);
-    let area = app.editor.last_body_area.unwrap();
-    let bottom = area.bottom() - 1;
-    let on_bottom =
-        |app: &App| app.hits.rects_of(&Hit::VarToken("v".into())).iter().any(|r| r.y == bottom);
-    assert!(on_bottom(&app), "the token is drawn on the bottom row");
+    feed(&mut app, "G");
+    let full = app.editor.last_body_area.unwrap();
+    let rows = |app: &App| -> Vec<u16> {
+        app.hits.rects_of(&Hit::VarToken("v".into())).iter().map(|r| r.y).collect()
+    };
+    assert_eq!(rows(&app), [full.bottom() - 1], "the token is drawn on the bottom row");
     feed(&mut app, "/x");
     assert!(app.editor.body_search.prompt.is_some());
-    assert!(!on_bottom(&app), "the prompt row has no token hit");
+    assert_eq!(rows(&app), [full.bottom() - 2], "on its text above the prompt, none on the prompt");
 }
 
 /// Plan M3a Deviation 16: matches REVERSED, the one Enter lands on also BOLD.
