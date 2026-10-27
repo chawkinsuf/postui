@@ -5513,9 +5513,6 @@ impl App {
                 self.cancel_stale_drags(None);
                 self.history.clear();
                 self.marked_entry = None;
-                // A copied option row names a selector in the project
-                // being left; nothing in the next one can take it.
-                self.varmanager.stash = None;
                 // The row register names a request in the project being
                 // left, or a row of a request about to close.
                 self.yank = crate::yank::Register::Empty;
@@ -5533,6 +5530,18 @@ impl App {
                 self.session.reset();
                 let name = project.display_name();
                 self.project = Some(project);
+                // All of the Variable Manager's state indexes the project
+                // being left, and only here is that known (a sync can't tell
+                // a same-named declaration of the new project from the old
+                // one), so it starts over as at launch (task #179). The cost:
+                // the Manager opens with nothing selected, even into a
+                // project that declares the name that was open. With Manage
+                // up it reads the new rows now, for whatever runs before the
+                // next frame; with it closed, `OpenManage` syncs (task #84).
+                self.varmanager = VarManager::default();
+                if self.screen == Screen::Manage {
+                    self.sync_varmanager();
+                }
                 self.open_error = None;
                 self.sidebar.notice = None;
                 // A different tree has a different set of loose files.

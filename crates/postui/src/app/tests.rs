@@ -32526,6 +32526,77 @@ fn opening_manage_syncs_a_variable_an_undo_removed_while_it_was_closed() {
     assert_highlight_names_the_detail(&app);
 }
 
+/// Task #179: a project switch made on the Manage screen leaves no
+/// declaration of the project it left in the Variable Manager.
+#[test]
+fn a_project_switch_on_manage_moves_the_manager_to_the_new_project() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let other = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(other.path(), Some("other")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+    assert_eq!(app.screen, Screen::Manage, "the screen stays up");
+    // No frame between the switch and the asserts: the state is right
+    // before the next paint, which a key can arrive ahead of.
+    use crate::components::varmanager::{VmDetail, VmRow};
+    assert!(!app.varmanager.left_rows.contains(&VmRow::Group("user".into())), "list synced");
+    assert!(app.varmanager.left_rows.contains(&VmRow::SectionGroups), "the new rows are there");
+    assert_eq!(app.varmanager.detail, VmDetail::None, "detail moved off it");
+    assert_highlight_names_the_detail(&app);
+}
+
+/// Task #179: a switch to a project that declares a selector of the same
+/// name starts the Variable Manager over, as a launch does: its grid cursor
+/// and keyboard stop indexed the selector of the project it left.
+#[test]
+fn a_project_switch_starts_the_manager_over_on_a_same_named_selector() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let other = tempfile::tempdir().unwrap();
+    var_project(other.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    use crate::components::varmanager::{FormStop, VmDetail, VmField, VmFocus};
+    app.varmanager.grid.cursor = (1, 1);
+    app.varmanager.grid.scroll = 1;
+    app.varmanager.focus = VmFocus::Grid;
+    app.varmanager.left_scroll = 2;
+    app.varmanager.form_cursor = FormStop::Secret;
+    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+    let vm = &app.varmanager;
+    assert_eq!(vm.detail, VmDetail::None);
+    assert_eq!((vm.grid.cursor, vm.grid.scroll), ((0, 0), 0));
+    assert_eq!(vm.focus, VmFocus::List);
+    assert_eq!((vm.left_cursor, vm.left_scroll), (0, 0));
+    assert_eq!(vm.form_cursor, FormStop::Field(VmField::Description));
+    assert_highlight_names_the_detail(&app);
+}
+
+/// Task #179: a switch made with Manage closed shows the new project's
+/// Manager when Manage opens, with no declaration of the project it left.
+#[test]
+fn manage_opened_after_a_project_switch_shows_the_new_project() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let other = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(other.path(), Some("other")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    app.update(Action::CloseScreen);
+    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+    app.update(Action::OpenManage { tab: None });
+    use crate::components::varmanager::{VmDetail, VmRow};
+    assert!(!app.varmanager.left_rows.contains(&VmRow::Group("user".into())), "list synced");
+    assert!(app.varmanager.left_rows.contains(&VmRow::SectionGroups), "the new rows are there");
+    assert_eq!(app.varmanager.detail, VmDetail::None, "detail moved off it");
+    assert_highlight_names_the_detail(&app);
+}
+
 /// Task #76: Copy clicked in a live grid cell's own menu copies the cell's
 /// selection. The menu is a dialog, so the click no longer closes the cell
 /// under it.
