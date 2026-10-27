@@ -1078,14 +1078,25 @@ impl VarManager {
     /// shows (#178). The old list is the last place that knows which row
     /// the cursor meant, so the cursor moves here, before it is replaced.
     ///
-    /// A row still listed keeps the cursor; a spacer is found by the header
-    /// it precedes, since spacers are alike. A row that is gone leaves the
-    /// cursor in its place: just below the nearest row above it that is
-    /// still listed (`VARIABLES` always is), clamped into range.
-    fn rebuild_rows(&mut self, ctx: &Project) {
+    /// A moved cursor is scrolled into view on the next draw. Returns the
+    /// old list, for [`Self::sync`]'s neighbour pick.
+    fn rebuild_rows(&mut self, ctx: &Project) -> Vec<VmRow> {
         let old = std::mem::replace(&mut self.left_rows, build_left_rows(ctx));
+        let at = self.place_of(&old, self.left_cursor);
+        if at != self.left_cursor {
+            self.left_cursor = at;
+            self.ensure_visible = true;
+        }
+        old
+    }
+
+    /// Where `old[k]` sits in the rebuilt `left_rows`. A row still listed
+    /// is found by itself, a spacer by the header it precedes (spacers are
+    /// alike). A row that is gone gives its place: just below the nearest
+    /// row above it that is still listed (`VARIABLES` always is). Clamped
+    /// into range.
+    fn place_of(&self, old: &[VmRow], k: usize) -> usize {
         let find = |row: &VmRow| self.left_rows.iter().position(|r| r == row);
-        let k = self.left_cursor;
         let kept = match old.get(k) {
             Some(VmRow::Spacer) => old.get(k + 1).and_then(find).map(|i| i.saturating_sub(1)),
             row => row.and_then(find),
@@ -1098,15 +1109,15 @@ impl VarManager {
                 .find_map(find)
                 .map_or(0, |i| i + 1)
         });
-        self.left_cursor = at.min(self.left_rows.len().saturating_sub(1));
+        at.min(self.left_rows.len().saturating_sub(1))
     }
 
     /// Rebuilds `left_rows` from `ctx` and repairs the selection after a
     /// structural write: the cursor follows its row ([`Self::rebuild_rows`]),
     /// and a detail pane pointing at a name that no longer exists re-opens
-    /// on the neighbour row the cursor lands on instead.
+    /// on the neighbour of its row instead.
     pub fn sync(&mut self, ctx: &Project) {
-        self.rebuild_rows(ctx);
+        let old = self.rebuild_rows(ctx);
         let gone = match &self.detail {
             VmDetail::None => false,
             VmDetail::Var(name) => !ctx.variables().vars.contains_key(name),
@@ -1116,11 +1127,20 @@ impl VarManager {
             self.form = VarFormState::default();
             self.grid = OptionGridState::default();
             self.focus = VmFocus::List;
-            // The neighbour of the row that went: whatever took its place
-            // (where `rebuild_rows` left the cursor), else the nearest
-            // selectable row above it. The cursor follows, so the
-            // highlight and the pane never disagree.
-            self.detail = match self.nearest_stop(self.left_cursor) {
+            // The neighbour of the row that went: whatever took its place,
+            // else the nearest selectable row above it. Found from the
+            // detail's own row, not the cursor's, which a click may have
+            // left on a header. The cursor follows, so the highlight and
+            // the pane never disagree.
+            let row = match &self.detail {
+                VmDetail::Var(name) => Some(VmRow::Var(name.clone())),
+                VmDetail::Group(name) => Some(VmRow::Group(name.clone())),
+                VmDetail::None => None,
+            };
+            let from = row
+                .and_then(|row| old.iter().position(|r| *r == row))
+                .map_or(self.left_cursor, |k| self.place_of(&old, k));
+            self.detail = match self.nearest_stop(from) {
                 Some(i) => {
                     self.left_cursor = i;
                     match &self.left_rows[i] {
@@ -1136,7 +1156,7 @@ impl VarManager {
     }
 
     /// The row a selection lands on once the row it was on is gone: `from`
-    /// itself when something selectable slid up into that index, else the
+    /// (the gone row's place, [`Self::place_of`]) when it is selectable, else the
     /// nearest selectable row above it, else the first below. `None` only
     /// when the list holds no selectable row at all.
     fn nearest_stop(&self, from: usize) -> Option<usize> {
@@ -1695,7 +1715,9 @@ impl VarManager {
         hits: &mut HitMap,
         hovered: Option<&Hit>,
     ) {
-        self.rebuild_rows(ctx);
+        // The pane's repair for a detail that is gone is `sync`'s, run by
+        // every refresh path; the frame only keeps the cursor on its row.
+        let _ = self.rebuild_rows(ctx);
         if area.width == 0 || area.height == 0 {
             self.visible_rows = 0;
             return;
@@ -3387,6 +3409,49 @@ fields = ["user_id", "customer_id"]
         vm.sync(&ctx);
         assert_eq!(vm.detail, VmDetail::Var("d".into()));
         assert_eq!(cursor_name(&vm), Some("d"));
+
+        // The same when a click left the cursor on a header: the
+        // neighbour is the open row's, not the header's.
+        std::fs::write(dir.path().join("variables.toml"), decls(&["a", "b", "c", "d", "e"]))
+            .unwrap();
+        let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+        select_var(&mut vm, &ctx, "b");
+        vm.select_row(vm.left_rows.iter().position(|r| *r == VmRow::SectionGroups).unwrap());
+        assert_eq!(vm.detail, VmDetail::Var("b".into()));
+        std::fs::write(dir.path().join("variables.toml"), decls(&["a", "c", "d", "e"])).unwrap();
+        let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+        vm.sync(&ctx);
+        assert_eq!(vm.detail, VmDetail::Var("c".into()));
+        assert_eq!(cursor_name(&vm), Some("c"));
+    }
+
+    /// A cursor the rebuild moves is scrolled back into view.
+    #[test]
+    fn a_cursor_pushed_down_by_new_rows_stays_in_view() {
+        let (dir, _ctx) = fixture();
+        let decls = |names: &[String]| {
+            names.iter().map(|n| format!("[{n}]\ndefault = \"1\"\n\n")).collect::<String>()
+        };
+        let names: Vec<String> = (0..10).map(|i| format!("v{i:02}")).collect();
+        std::fs::write(dir.path().join("variables.toml"), decls(&names)).unwrap();
+        let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "v09");
+        render(&mut vm, &ctx);
+        assert_eq!(vm.left_scroll, 0, "the whole list fits");
+        let mut more: Vec<String> = (0..30).map(|i| format!("a{i:02}")).collect();
+        more.extend(names);
+        std::fs::write(dir.path().join("variables.toml"), decls(&more)).unwrap();
+        let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+        render(&mut vm, &ctx);
+        assert_eq!(cursor_name(&vm), Some("v09"));
+        assert!(
+            (vm.left_scroll..vm.left_scroll + vm.visible_rows).contains(&vm.left_cursor),
+            "cursor {} outside rows {}+{}",
+            vm.left_cursor,
+            vm.left_scroll,
+            vm.visible_rows
+        );
     }
 
     #[test]
