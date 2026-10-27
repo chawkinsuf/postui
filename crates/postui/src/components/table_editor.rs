@@ -55,7 +55,8 @@ struct Committed {
     /// The row the edit resolved to: the row written, or for a `+ Add` name
     /// that is already taken, the existing row it matched (Tab opens that
     /// row's value, Enter and Esc park the cursor on it). `None` when
-    /// nothing was written: an empty `+ Add` name.
+    /// nothing was written: an empty `+ Add` name, or a value cell left
+    /// past the end by a map that shrank under it.
     row: Option<usize>,
     /// Where the caret's row is now, which the moves step from (Up/Down,
     /// Shift-Tab; tasks #111, #176). For `+ Add` that is its index before
@@ -441,8 +442,8 @@ impl TableEditorState {
             // which this branch rules out.
             return Committed { row, here: row.unwrap_or(edit.row), warning };
         }
-        // The ghost's index, clamped: the map can shrink under an open
-        // ghost cell, leaving `edit.row` past the end.
+        // Past the rows is `+ Add`, at `map.len()`: `edit.row` itself can be
+        // further on when the map shrank under the open cell.
         let here = map.len();
         // The ghost row: only a non-empty key can make it a real row (its
         // value cell never opens, see `open_col`). A name that is taken
@@ -2136,13 +2137,16 @@ mod tests {
     }
 
     /// With the map shrunk under an open ghost name, Up/Down move from the
-    /// ghost's index as it is now: from the row a new name makes, and from
-    /// the ghost itself for a name that is taken.
+    /// ghost's index as it is now: from the row a new name makes (`c` is
+    /// new once its row went), and from the ghost itself for a name that
+    /// is taken.
     #[test]
     fn up_and_down_off_a_ghost_key_after_the_map_shrank_move_from_the_ghost() {
         for (name, code, lands) in [
             ("x", KeyCode::Up, Stop::Row(1)),
             ("x", KeyCode::Down, Stop::Add),
+            ("c", KeyCode::Up, Stop::Row(1)),
+            ("c", KeyCode::Down, Stop::Add),
             ("a", KeyCode::Up, Stop::Row(1)),
             ("a", KeyCode::Down, Stop::Add),
         ] {
@@ -2153,7 +2157,7 @@ mod tests {
             map.pop();
             t.handle_key(key(code), &mut map);
             let keys: Vec<&str> = map.keys().map(String::as_str).collect();
-            let want: &[&str] = if name == "x" { &["a", "b", "x"] } else { &["a", "b"] };
+            let want: &[&str] = if name == "a" { &["a", "b"] } else { &["a", "b", name] };
             assert_eq!(keys, want, "{name} {code:?}");
             assert_eq!(t.selected, Some(lands), "{name} {code:?}");
         }
