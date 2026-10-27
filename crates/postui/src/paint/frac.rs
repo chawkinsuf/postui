@@ -12,6 +12,10 @@ use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 ///
 /// If the top and bottom fractional edges land in the same row, picks the
 /// closest single glyph (top-fraction wins). Clamps to buffer area.
+///
+/// Every row the band paints keeps nothing of what was under it, modifiers
+/// included, so a struck or underlined page row never shows through. An
+/// edge whose coverage rounds to nothing is left as it was.
 pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Color, on: Color) {
     let y0_int = y0.floor() as u16;
     let y1_int = y1.floor() as u16;
@@ -53,7 +57,10 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
 /// there: a strike or underline left from the page would otherwise run
 /// through the band's edge (task #114: a settling modal's edge row over a
 /// struck header row). The band's full rows get the same from
-/// [`super::fill`].
+/// [`super::fill`], which clears the modifiers by hand rather than
+/// resetting because it sets no fg and its many callers may paint over
+/// the blank with only a symbol. An edge row sets every field it shows, so
+/// a reset is the plainest way to replace the whole cell here.
 ///
 /// Coverage that rounds to the empty glyph paints nothing, leaving the row
 /// as it was, modifiers included: the band hasn't reached it yet. Writing
@@ -197,7 +204,10 @@ mod tests {
         // Both edges in row 2.
         let buf = draw(2.2, 2.9);
         assert_eq!(buf[(1, 2)].symbol(), "▆");
-        assert_eq!(buf[(1, 2)].modifier, Modifier::empty());
+        assert_eq!((buf[(1, 2)].fg, buf[(1, 2)].bg), (theme.panel, theme.page));
+        for x in 0..4 {
+            assert_eq!(buf[(x, 2)].modifier, Modifier::empty());
+        }
     }
 
     #[test]
