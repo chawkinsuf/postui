@@ -5543,14 +5543,14 @@ impl App {
                 // the list's height) describe the old project's frame and
                 // are measured again on the next one.
                 //
-                // The sync reads the new project's rows at once, since a key
-                // on Manage can arrive ahead of the next frame. It runs with
-                // Manage closed too: the reset emptied the rows, and syncing
-                // here keeps the Manager matching the project whatever
-                // screen is up, for one list build per switch. `OpenManage`
-                // syncs again when the screen comes up (task #84).
+                // With Manage up, the sync reads the new project's rows at
+                // once, since a key can arrive ahead of the next frame. With
+                // it closed, `OpenManage` syncs as the screen comes up (task
+                // #84), as for every other refresh site.
                 self.varmanager = VarManager::default();
-                self.sync_varmanager();
+                if self.screen == Screen::Manage {
+                    self.sync_varmanager();
+                }
                 self.open_error = None;
                 self.sidebar.notice = None;
                 // A different tree has a different set of loose files.

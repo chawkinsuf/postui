@@ -32547,6 +32547,27 @@ fn a_project_switch_starts_the_manager_over_on_a_same_named_selector() {
     assert_highlight_names_the_detail(&app);
 }
 
+/// Task #179: a switch made with Manage closed shows the new project's
+/// Manager when Manage opens, with no declaration of the project it left.
+#[test]
+fn manage_opened_after_a_project_switch_shows_the_new_project() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let other = tempfile::tempdir().unwrap();
+    postui_core::fixtures::init_project(other.path(), Some("other")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    app.update(Action::CloseScreen);
+    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+    app.update(Action::OpenManage { tab: None });
+    use crate::components::varmanager::{VmDetail, VmRow};
+    assert!(!app.varmanager.left_rows.contains(&VmRow::Group("user".into())), "list synced");
+    assert!(app.varmanager.left_rows.contains(&VmRow::SectionGroups), "the new rows are there");
+    assert_eq!(app.varmanager.detail, VmDetail::None, "detail moved off it");
+    assert_highlight_names_the_detail(&app);
+}
+
 /// Task #76: Copy clicked in a live grid cell's own menu copies the cell's
 /// selection. The menu is a dialog, so the click no longer closes the cell
 /// under it.
