@@ -1601,11 +1601,11 @@ fn every_painted_keycap_resolves_to_its_chip() {
 
 /// Task #132 with S6a: the `:` line opens over a prompt too. Over the
 /// sidebar's rename prompt, with a keys.toml that binds `alt+w` in vim
-/// (the arrows defaults stand in for it), a key press still takes the
-/// sidebar's context, where `alt+w` widens the sidebar, so the split row
-/// names `:split`, not `alt+w`.
+/// (the arrows defaults stand in for it), the split row names `:split`,
+/// which runs from that line, not `alt+w`, which the prompt takes and
+/// which moves nothing there.
 #[test]
-fn the_ex_palette_over_a_sidebar_prompt_keeps_the_sidebar_key_context() {
+fn the_ex_palette_over_a_sidebar_prompt_names_split_not_alt_w() {
     let mut app = build(SidebarThree);
     app.use_profile(KeyProfile::Vim);
     app.keymap = crate::keys::Keymap::default_bindings();

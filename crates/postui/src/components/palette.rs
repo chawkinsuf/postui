@@ -559,14 +559,16 @@ pub struct PaletteState {
     /// (the response's view mode, as a response lands) decides no palette
     /// row's key.
     spell: crate::keyroute::SpellCtx,
-    /// What a key press's binding takes where the palette opened
-    /// (`App::key_context`, spec S6a), for the combo check. It is not
-    /// derived from `spell`: `App::key_context` reads the focus and screen
-    /// under any modal, `spell` the top modal's surface, and `:` opens over
-    /// a prompt. Over the sidebar's rename prompt the spelling is the
-    /// prompt's, while the context stays the sidebar's, and there `alt+w`
-    /// does not move the split, so the split row must not name it
-    /// (`the_ex_palette_over_a_sidebar_prompt_keeps_the_sidebar_key_context`).
+    /// `App::key_context` where the palette opened, for the combo check
+    /// (spec S6a): the same input the column took before task #132. It is
+    /// not derived from `spell`: it reads the focus and screen under any
+    /// modal, `spell` the top modal's surface, and `:` opens over a prompt.
+    /// Over the sidebar's rename prompt it still drops the split combo,
+    /// which is right there, as the prompt takes `alt+w` and it moves
+    /// nothing; a surface-derived context would name it
+    /// (`the_ex_palette_over_a_sidebar_prompt_names_split_not_alt_w`). Over
+    /// a modal the column can still name other combos the modal takes, as
+    /// it did before task #132.
     key_context: crate::keys::KeyContext,
     /// The `:` line's history as it stood when the line opened, oldest
     /// first (plan M5b Task 5). Empty for ctrl+p's palette.
