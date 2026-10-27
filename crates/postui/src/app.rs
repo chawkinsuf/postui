@@ -3347,10 +3347,7 @@ impl App {
     /// owns the body's motions, and the chord is the keymap's (plan M3a
     /// Deviation 6).
     fn caret_in_arrows_body(&self) -> bool {
-        self.focus == PaneId::Editor
-            && self.editor.sub_focus == SubFocus::Content
-            && self.editor.active_tab == EditorTab::Body
-            && !self.vim_owns_body()
+        self.focus == PaneId::Editor && self.editor.caret_in_body() && !self.vim_owns_body()
     }
 
     /// Whether `combo` goes to the arrows body rather than to the keymap:

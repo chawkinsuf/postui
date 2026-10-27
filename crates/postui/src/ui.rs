@@ -984,7 +984,10 @@ impl PaneChipArgs {
             focus,
             shift_enter_send: app.shift_enter_send,
             sending: if app.editor.sending {
-                Sending::InFlight { esc_cancels: app.editor_esc_cancels() }
+                // Only the editor's row has the slot.
+                Sending::InFlight {
+                    esc_cancels: focus == PaneId::Editor && app.editor_esc_cancels(),
+                }
             } else {
                 Sending::No
             },
