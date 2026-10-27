@@ -6882,6 +6882,12 @@ impl App {
                     // last was would read as a switch that never happened.
                     self.anims.clear(AnimKey::TabUnderline(StripId::ManageTabs));
                     self.anims.clear(AnimKey::TabUnderlineWidth(StripId::ManageTabs));
+                    // The refresh sites sync the Variable Manager only
+                    // while the screen is up, so whatever changed while it
+                    // was closed (an outside edit, an undo, a reload) is
+                    // handed over here, once, as the screen comes up (task
+                    // #84).
+                    self.sync_varmanager();
                 } else if prev != target {
                     self.retarget_manage_tab_underline(prev);
                 }
