@@ -6636,8 +6636,9 @@ mod tests {
         assert_eq!(r.copyable_header_row(), None, "the divider has nothing to copy");
     }
 
-    /// Plan M4a Deviation 11: `c` copies only a header row on the Headers
-    /// view; the response no longer reads its letters itself.
+    /// Plan M4a Deviation 11: the copy key (`y` since #137) copies only a
+    /// header row on the Headers view; the response no longer reads its
+    /// letters itself.
     #[test]
     fn only_a_header_row_is_copyable_and_the_letters_are_not_the_panes() {
         let mut r = ready(r#"{"a": 1}"#);

@@ -838,8 +838,7 @@ pub static TABLE: &[Binding] = &[
         Intent::Verb(Verb::Yank),
         CountRule::Refuse(NO_COUNTED_YANK),
     ),
-    // The grid copies with `y` like every other list (#145; it had the
-    // arrows profile's old `c` copy letter).
+    // One copy letter on every list, the Variables grid included (#145).
     arrows("y", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Yank)),
     // Spec 2026-10-26 H2, H8: a header row's `Name: value`.
     arrows("Y", Surfaces::TABLE, Intent::Act(copy_header_whole)),
