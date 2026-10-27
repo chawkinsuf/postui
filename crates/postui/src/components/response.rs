@@ -2218,7 +2218,10 @@ impl ReadyView {
         let line = (self.scroll + usize::from(yy - area.y)).min(self.visible_len() - 1);
         let disp_col = self.h_scroll + usize::from(xx - area.x);
         let text = self.display_line_text(line).unwrap_or_default();
-        // Past the row's end, its last grapheme that paints (not a CRLF's `\r`).
+        // Past the row's end, its last grapheme (not a CRLF's closing `\r`).
+        // The vim profile's click lands there too, as Vim's does: Vim reads
+        // a CRLF file as `fileformat=dos`, with no `\r` on the line (probed,
+        // 9.1: `ab\r\ncd\r\n` gives `dos` and `col([1, '$'])` 3).
         let col = self.grapheme_at(line, &text, disp_col).unwrap_or_else(|| last_grapheme(&text));
         Some((line, col))
     }
@@ -2570,21 +2573,20 @@ fn grapheme_at_col(text: &str, col: usize, from: ColMark) -> Option<usize> {
     None
 }
 
-/// The first char of `text`'s last grapheme that paints a cell (0 when
-/// none does): what a click past a row's end lands on. A CRLF body's lines
-/// end in a `\r`, and a tab paints nothing either, so those are passed
-/// over (task #55); [`grapheme_at_col`] never lands on them for the same
-/// reason. So is any grapheme ratatui gives no cell, a trailing U+200B
-/// among them: a click can't land on what has no cell, so a drag past the
-/// end stops before it, the cost of that rule. The walk segments from the
-/// end, past the trailing graphemes that paint nothing (usually just a
-/// `\r`), and the char offset is a plain char count; neither reads more
-/// than the line, so it costs about what the char count before #45 did.
+/// The first char of `text`'s last grapheme (0 when empty), a CRLF line's
+/// closing `\r` left out: what a click past a row's end lands on. Raw
+/// lines are the body split on `\n`, so each line of a CRLF body ends in
+/// that `\r`, which paints no cell; it is the line's terminator, not its
+/// text, so a double click past the end takes the last word (A3) and a
+/// drag past it stops on the last char (task #55). Only the terminator:
+/// a trailing tab or U+200B paints nothing either, but it is the line's
+/// own text, and a drag past the end still takes it. The grapheme is
+/// segmented from the end; only its char offset needs the line, as a
+/// plain char count (no segmenting, as cheap as the char count it took
+/// before #45).
 fn last_grapheme(text: &str) -> usize {
-    crate::ui::graphemes(text)
-        .rev()
-        .find(|&(_, _, width)| width > 0)
-        .map_or(0, |(byte, _, _)| text[..byte].chars().count())
+    let text = text.strip_suffix('\r').unwrap_or(text);
+    crate::ui::graphemes(text).next_back().map_or(0, |(byte, _, _)| text[..byte].chars().count())
 }
 
 /// The search hits that fall on one rendered line, as char ranges.
@@ -3936,7 +3938,7 @@ impl Response {
         };
         view.clear_sel();
         view.clicked = None;
-        // `cell_at` clamps a click past the line end onto its last painted grapheme, so
+        // `cell_at` clamps a click past the line end onto its last grapheme, so
         // a double click there takes the last word, as in a field (spec
         // 2026-10-14, align the text mouse, A3).
         let Some((line, col)) = view.cell_at(x, y, false) else {
@@ -4013,7 +4015,7 @@ impl Response {
             let text = view.display_line_text(head.0).unwrap_or_default();
             if disp_col == 0 || grapheme_at_col(&text, 0, (0, 0, 0)).is_none() {
                 let row = head.0 - 1;
-                // The row's last painted grapheme, as `cell_at` clamps a click past it.
+                // The row's last grapheme, as `cell_at` clamps a click past it.
                 let last = view.display_line_text(row).map_or(0, |t| last_grapheme(&t));
                 view.sel = Some((anchor, (row, last)));
                 return true;
@@ -6124,14 +6126,13 @@ mod tests {
         assert_eq!(r.selected_text().as_deref(), Some("line"));
     }
 
-    /// Task #55: a CRLF body's lines end in a `\r` that paints no cell, so
-    /// past the end is the last grapheme that paints, not the `\r`: a
+    /// Task #55: a CRLF body's lines end in a `\r` that paints no cell, the
+    /// line's terminator, so past the end is the grapheme before it: a
     /// double click there takes the last word (A3), a drag past the end
     /// stops on the last char, and a downward drag onto a row's start ends
-    /// on the line above's last char. A line that paints nothing is still
-    /// an empty line.
+    /// on the line above's last char. A line of just `\r` is an empty line.
     #[test]
-    fn past_the_end_of_a_crlf_line_is_its_last_painted_grapheme() {
+    fn past_the_end_of_a_crlf_line_is_the_grapheme_before_its_cr() {
         let mut r = ready("ab\r\nlonger line\r\nz");
         let (area, _) = render_buf(&mut r);
         assert!(r.select_word_at(area.x + 30, area.y + 1));
@@ -6150,6 +6151,13 @@ mod tests {
         r.begin_selection_at(area.x, area.y);
         r.drag_selection_to(area.x + 5, area.y + 1);
         assert_eq!(r.selected_text().as_deref(), Some("ab"), "past an empty row: the boundary");
+        // Only the terminator: a trailing tab paints nothing either, but it
+        // is the line's text, and a drag past the end takes it.
+        let mut r = ready("key\tvalue\t\r\nz");
+        let (area, _) = render_buf(&mut r);
+        r.begin_selection_at(area.x, area.y);
+        r.drag_selection_to(area.x + 50, area.y);
+        assert_eq!(r.selected_text().as_deref(), Some("key\tvalue\t"));
     }
 
     /// Task #55 review: a downward sweep past the end of a one-glyph row
@@ -11711,9 +11719,12 @@ mod tests {
         // The last grapheme, found from the end: the decomposed `c` + accent.
         assert_eq!(last_grapheme(&text), text.chars().count() - 2);
         assert_eq!(last_grapheme(""), 0);
-        // Task #55: one that paints, past a CRLF's `\r` and a tab.
-        assert_eq!(last_grapheme(&format!("{text}\t\r")), text.chars().count() - 2);
+        // Task #55: a CRLF's closing `\r` is left out, the line's own text
+        // (a trailing tab) is not.
+        assert_eq!(last_grapheme(&format!("{text}\r")), text.chars().count() - 2);
         assert_eq!(last_grapheme("ab\r"), 1);
+        assert_eq!(last_grapheme("ab\t\r"), 2);
+        assert_eq!(last_grapheme("ab\t"), 2);
         assert_eq!(last_grapheme("\r"), 0);
     }
 
