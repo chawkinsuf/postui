@@ -1376,7 +1376,32 @@ impl Editor {
             rows.push((y, segments));
             y = y.saturating_add(tall);
         }
-        Some(BodyView { x: area.x + gutter, bottom, top, rows })
+        Some(BodyView { x: area.x + gutter, right: area.right(), bottom, top, rows })
+    }
+
+    /// Paints each line break the selection takes as one selected cell
+    /// just past its line's text (spec 2026-10-26 R5): edtui paints chars
+    /// only, and a break has none. Runs after edtui renders, like
+    /// [`Self::paint_bracket_pair`]. A break whose line fills the width
+    /// has no cell to show on.
+    fn paint_selected_breaks(
+        &self,
+        buf: &mut ratatui::buffer::Buffer,
+        area: Rect,
+        bottom: u16,
+        theme: &Theme,
+    ) {
+        let Some(sel) = self.body.selection.as_ref() else { return };
+        let (start, end) = (sel.start(), sel.end());
+        let Some(view) = self.body_view(area, bottom, end.row) else { return };
+        let style = Style::default().bg(theme.selection).fg(theme.text);
+        for row in start.row.max(view.top)..=end.row {
+            if self.body_selects_break(start, end, row)
+                && let Some(at) = view.line_end(&self.body.lines, row)
+            {
+                buf[at].set_style(style);
+            }
+        }
     }
 
     /// Replaces the whole body buffer. Only explicit user actions (loading a
@@ -1917,12 +1942,22 @@ impl Editor {
     /// endpoints; the mode goes straight back to Insert (modeless
     /// invariant).
     fn set_body_selection_cells(&mut self, a: edtui::Index2, b: edtui::Index2) {
-        use edtui::actions::{Execute, SwitchMode};
         let (a, b) = (self.clamp_to_cell(a), self.clamp_to_cell(b));
+        self.set_body_selection_span(a, b);
+    }
+
+    /// Sets `body.selection` to `a..=b` (either order) as given: a char
+    /// cell, an empty row's cell, or a row's break cell
+    /// ([`Self::body_break_cell`]) at either end.
+    fn set_body_selection_span(&mut self, a: edtui::Index2, b: edtui::Index2) {
+        use edtui::actions::{Execute, SwitchMode};
         let cursor = self.body.cursor;
         self.body.cursor = a;
         SwitchMode(EditorMode::Visual).execute(&mut self.body);
         if let Some(sel) = self.body.selection.as_mut() {
+            // Both ends: Visual clamps its start onto a char, which would
+            // move a break cell back.
+            sel.start = a;
             sel.end = b;
         }
         self.body.cursor = cursor;
@@ -1930,25 +1965,47 @@ impl Editor {
     }
 
     /// Sets `body.selection` from two caret *boundaries* (keyboard
-    /// semantics: the selection covers the chars strictly between them, so
-    /// one shift+Right selects exactly one char). Clears the selection
-    /// when the boundaries coincide.
+    /// semantics: the selection covers everything strictly between them,
+    /// line breaks included, so one shift+Right selects exactly one char or
+    /// one break; spec 2026-10-26 R1). Clears the selection when the
+    /// boundaries coincide.
     fn set_body_selection_boundaries(&mut self, a: edtui::Index2, b: edtui::Index2) {
         let (lo, hi) = if (a.row, a.col) <= (b.row, b.col) { (a, b) } else { (b, a) };
         if lo == hi {
             self.body.selection = None;
             return;
         }
+        // A lower boundary at a line's end starts on that line's break.
+        let len = |row: usize| self.body.lines.len_col(row).unwrap_or(0);
+        let start = if lo.col >= len(lo.row) { self.body_break_cell(lo.row) } else { lo };
         // The exclusive upper boundary becomes an inclusive end cell: the
-        // char just before it (last char of the previous row when the
-        // boundary sits at a line start).
+        // char just before it, or the previous row's break when the
+        // boundary sits at a line start.
         let end = if hi.col > 0 {
             edtui::Index2::new(hi.row, hi.col - 1)
         } else {
-            let row = hi.row - 1; // hi > lo, so hi.row >= 1 here
-            edtui::Index2::new(row, self.body.lines.len_col(row).unwrap_or(0))
+            self.body_break_cell(hi.row - 1) // hi > lo, so hi.row >= 1 here
         };
-        self.set_body_selection_cells(lo, end);
+        self.set_body_selection_span(start, end);
+    }
+
+    /// The cell that stands for `row`'s line break in a selection (spec
+    /// 2026-10-26): just past its last char, and column 1 on an empty row,
+    /// whose column 0 is its (empty) char cell. Only a keyboard selection
+    /// ends on one: a mouse selection's cells are clamped onto chars.
+    fn body_break_cell(&self, row: usize) -> edtui::Index2 {
+        edtui::Index2::new(row, self.body.lines.len_col(row).unwrap_or(0).max(1))
+    }
+
+    /// Whether the selection `start..=end` takes `row`'s line break: its
+    /// break cell lies inside. That holds for every row a selection spans
+    /// but its last, and for the last when it ends on the break. The body's
+    /// last row has no break.
+    fn body_selects_break(&self, start: edtui::Index2, end: edtui::Index2, row: usize) -> bool {
+        let at = self.body_break_cell(row);
+        row + 1 < self.body.lines.len()
+            && (start.row, start.col) <= (at.row, at.col)
+            && (at.row, at.col) <= (end.row, end.col)
     }
 
     /// Clamps a caret position onto a character cell of its line (col
@@ -1959,32 +2016,50 @@ impl Editor {
     }
 
     /// Deletes the selected body text (cursor collapses to the selection
-    /// start), staying in Insert mode. A selection covers characters,
-    /// never the line break after it, but edtui's `DeleteSelection` takes
-    /// that break too for some shapes (a whole row) and not others (a word
-    /// at a row's end). So the delete counts breaks: the selection holds
-    /// `end.row - start.row` of its own (a body selection is never
-    /// line-mode), and one more gone is put back (#124). The delete stays
+    /// start), staying in Insert mode. A selection takes the breaks whose
+    /// break cells it covers ([`Self::body_selects_break`]), but edtui's
+    /// `DeleteSelection` takes a break for some shapes and not others (a
+    /// whole row takes the one after it; a start on a break is moved back
+    /// onto the char before). So the delete counts breaks and puts the
+    /// count right at the selection start (#124, #128). The delete stays
     /// edtui's, like every other body edit (the user's call on #124).
     fn delete_body_selection(&mut self) {
-        use edtui::actions::{DeleteSelection, Execute, LineBreak};
+        use edtui::actions::{DeleteSelection, Execute, JoinLineWithLineBelow, LineBreak};
         let Some(sel) = self.body.selection.as_ref() else {
             self.body_sel_anchor = None;
             return;
         };
         let (start, end) = (sel.start(), sel.end());
+        let taken = (start.row..=end.row).filter(|&r| self.body_selects_break(start, end, r));
         // Selecting everything can leave no rows at all: no break either.
         let breaks = |e: &EditorState| e.lines.len().saturating_sub(1);
-        let breaks_before = breaks(&self.body);
-        DeleteSelection.execute(&mut self.body);
-        if breaks(&self.body) + (end.row - start.row) < breaks_before {
-            // edtui leaves the cursor at the selection start, where the
-            // lost break belongs: a split there, or a new empty row when
-            // the whole row went (a whole last row leaves an empty row, as
-            // in a GUI editor). `deleting_any_selection_removes_exactly_its_text`
-            // pins this for every selection shape.
+        let want = breaks(&self.body) - taken.count();
+        let len = self.body.lines.len_col(start.row).unwrap_or(0);
+        let caret = edtui::Index2::new(start.row, start.col.min(len));
+        if start == self.body_break_cell(start.row) {
+            // A start on the row's break: edtui would delete from the char
+            // before it. Delete from the next row instead (when the
+            // selection reaches it); the break goes in the count below.
+            if end.row > start.row {
+                self.set_body_selection_span(edtui::Index2::new(start.row + 1, 0), end);
+                DeleteSelection.execute(&mut self.body);
+            }
+            self.body.selection = None;
+        } else {
+            DeleteSelection.execute(&mut self.body);
+        }
+        // edtui leaves the cursor at the selection start, where a break it
+        // took too many belongs (a whole last row leaves an empty row, as
+        // in a GUI editor), and where one it left joins.
+        // `deleting_any_selection_removes_exactly_its_text` pins this for
+        // every selection shape.
+        self.body.cursor = caret;
+        while breaks(&self.body) < want {
             LineBreak(1).execute(&mut self.body);
-            self.body.cursor = start;
+            self.body.cursor = caret;
+        }
+        while breaks(&self.body) > want {
+            JoinLineWithLineBelow.execute(&mut self.body);
         }
         self.body_sel_anchor = None;
         self.body.mode = EditorMode::Insert;
@@ -2027,12 +2102,12 @@ impl Editor {
         for (row, line) in
             self.body.lines.iter_row().enumerate().skip(start.row).take(end.row - start.row + 1)
         {
-            if row > start.row {
-                out.push('\n');
-            }
             let from = if row == start.row { start.col } else { 0 };
             let to = if row == end.row { (end.col + 1).min(line.len()) } else { line.len() };
             out.extend(line.iter().skip(from).take(to.saturating_sub(from)));
+            if self.body_selects_break(start, end, row) {
+                out.push('\n');
+            }
         }
         Some(out)
     }
@@ -2066,6 +2141,11 @@ impl Editor {
             Some(sel) => (sel.start().row, sel.end().row),
             None => (self.body.cursor.row, self.body.cursor.row),
         };
+        // An endpoint on a break stays on its row's break, wherever the
+        // shift moves the row's end (#128).
+        let on_break = |e: &Self, i: edtui::Index2| i == e.body_break_cell(i.row);
+        let breaks_at =
+            self.body.selection.as_ref().map(|s| (on_break(self, s.start), on_break(self, s.end)));
         let indent = self.body_indent();
         let unit: Vec<char> = indent.unit().chars().collect();
         // A dedent strips one leading tab, or up to one level of spaces: a
@@ -2108,8 +2188,14 @@ impl Editor {
             sel.start = shift_of(sel.start);
             sel.end = shift_of(sel.end);
         }
-        if let Some(sel) = self.body.selection.take() {
-            self.set_body_selection_cells(sel.start, sel.end);
+        if let (Some(sel), Some((start_break, end_break))) = (self.body.selection.take(), breaks_at)
+        {
+            let place = |e: &Self, i: edtui::Index2, on_break: bool| {
+                if on_break { e.body_break_cell(i.row) } else { e.clamp_to_cell(i) }
+            };
+            let (start, end) =
+                (place(self, sel.start, start_break), place(self, sel.end, end_break));
+            self.set_body_selection_span(start, end);
         }
     }
 
@@ -2296,6 +2382,8 @@ fn line_number_gutter_width(line_count: usize) -> u16 {
 struct BodyView {
     /// The first text column, right of the line numbers.
     x: u16,
+    /// The first column past the text area.
+    right: u16,
     bottom: u16,
     top: usize,
     rows: Vec<(u16, Vec<std::ops::Range<usize>>)>,
@@ -2315,6 +2403,27 @@ impl BodyView {
         let x: usize = line[segment.start..at.col].iter().map(|&c| body_char_width(c)).sum();
         let x = self.x + u16::try_from(x).ok()?;
         (y < self.bottom).then_some((x, y))
+    }
+
+    /// The screen cell just past `row`'s text, on its last wrapped row
+    /// (the first text column of an empty row), when it is in view and
+    /// inside the text area.
+    fn line_end<L: crate::text::Lines + ?Sized>(
+        &self,
+        lines: &L,
+        row: usize,
+    ) -> Option<(u16, u16)> {
+        let (y0, segments) = self.rows.get(row.checked_sub(self.top)?)?;
+        let (y, x) = match segments.last() {
+            None => (*y0, 0),
+            Some(last) => {
+                let k = u16::try_from(segments.len() - 1).ok()?;
+                let line = lines.line(row);
+                (y0.saturating_add(k), line[last.clone()].iter().map(|&c| body_char_width(c)).sum())
+            }
+        };
+        let x = self.x.checked_add(u16::try_from(x).ok()?)?;
+        (y < self.bottom && x < self.right).then_some((x, y))
     }
 }
 
@@ -3811,8 +3920,9 @@ impl Editor {
                 // The engine's search prompt covers the bottom row (below).
                 let prompt_row =
                     self.body_search.prompt.is_some().then(|| area.bottom().saturating_sub(1));
+                let bottom = prompt_row.unwrap_or(area.bottom());
+                self.paint_selected_breaks(frame.buffer_mut(), area, bottom, theme);
                 if focused {
-                    let bottom = prompt_row.unwrap_or(area.bottom());
                     self.paint_bracket_pair(frame.buffer_mut(), area, bottom, theme);
                 }
                 // Body coverage (spec §7): edtui paints the text itself, so
@@ -5104,6 +5214,22 @@ mod tests {
         let x = area.x + gutter + u16::try_from(col).unwrap();
         let y = area.y + u16::try_from(row - top).unwrap();
         buf[(x, y)].clone()
+    }
+
+    /// Spec 2026-10-26 R5: a selected break paints as one selected cell
+    /// after its line's text, or at the start of an empty line.
+    #[test]
+    fn a_selected_break_paints_one_cell_past_its_line() {
+        let theme = Theme::dark();
+        let mut e = body_editor("ab\n\nef");
+        e.body.cursor = edtui::Index2::new(0, 1);
+        for _ in 0..3 {
+            e.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+        }
+        assert_eq!(e.body_selected_text().as_deref(), Some("b\n\n"));
+        assert_eq!(body_cell_at(&mut e, true, 0, 2).bg, theme.selection, "after ab");
+        assert_eq!(body_cell_at(&mut e, true, 1, 0).bg, theme.selection, "the empty line");
+        assert_ne!(body_cell_at(&mut e, true, 2, 2).bg, theme.selection, "the last line's end");
     }
 
     fn bracket_lit(cell: &ratatui::buffer::Cell) -> bool {
@@ -9125,16 +9251,24 @@ mod body_click_tests {
     fn deleting_any_selection_removes_exactly_its_text() {
         // Every selection, either direction, over rows that end in a
         // word, a single char, a multi-byte char, nothing, and a last row
-        // with and without text after the final break. A selection takes
-        // the chars from its start cell through its end cell and the
-        // breaks between its rows, never the break after its end row.
+        // with and without text after the final break. Each row has its
+        // char cells (an empty row one empty cell) and, but the last, a
+        // break cell after them at `max(len, 1)` (#128). A selection takes
+        // every char and break whose cell lies from its start cell through
+        // its end cell: so the breaks between its rows, and the break after
+        // its end row only when it ends on that break cell.
         let bodies = ["ab\nc\n\nde\n", "ab\ncd", "ab", "ab\n", "\n", "", "é\nb"];
         for body in bodies {
             let rows: Vec<Vec<char>> = body.split('\n').map(|r| r.chars().collect()).collect();
+            let brk = |r: usize| rows[r].len().max(1);
             let cells: Vec<Index2> = rows
                 .iter()
                 .enumerate()
-                .flat_map(|(r, row)| (0..row.len().max(1)).map(move |c| Index2::new(r, c)))
+                .flat_map(|(r, row)| {
+                    let chars = (0..row.len().max(1)).map(move |c| Index2::new(r, c));
+                    let brk = (r + 1 < rows.len()).then(|| Index2::new(r, row.len().max(1)));
+                    chars.chain(brk)
+                })
                 .collect();
             for &a in &cells {
                 for &b in &cells {
@@ -9149,12 +9283,11 @@ mod body_click_tests {
                             if inside(r, c) { removed.push(ch) } else { want.push(ch) }
                         }
                         if r + 1 < rows.len() {
-                            let joined = start.row <= r && r < end.row;
-                            if joined { removed.push('\n') } else { want.push('\n') }
+                            if inside(r, brk(r)) { removed.push('\n') } else { want.push('\n') }
                         }
                     }
                     let mut e = editor_with_body(body);
-                    e.set_body_selection_cells(a, b);
+                    e.set_body_selection_span(a, b);
                     let at = format!("{body:?}: selection {a:?}..{b:?}");
                     assert_eq!(
                         e.body_selected_text().as_deref(),
@@ -9163,7 +9296,8 @@ mod body_click_tests {
                     );
                     e.delete_body_selection();
                     assert_eq!(e.body_text(), want, "{at}");
-                    assert_eq!(e.body.cursor, start, "caret, {at}");
+                    let caret = Index2::new(start.row, start.col.min(rows[start.row].len()));
+                    assert_eq!(e.body.cursor, caret, "caret, {at}");
                 }
             }
         }
@@ -9187,6 +9321,8 @@ mod body_click_tests {
         assert_eq!(e.body.mode, EditorMode::Insert);
     }
 
+    /// Spec 2026-10-26 R2 (the user's): shift+Down from a line start takes
+    /// the line and its break, so Delete removes the line.
     #[test]
     fn shift_down_selects_the_first_line() {
         use ratatui::crossterm::event::KeyCode;
@@ -9194,7 +9330,61 @@ mod body_click_tests {
         e.body.cursor = Index2::new(0, 0);
         e.handle_key(skey(KeyCode::Down));
         assert_eq!(e.body.cursor, Index2::new(1, 0));
-        assert_eq!(e.body_selected_text().as_deref(), Some("hello"));
+        assert_eq!(e.body_selected_text().as_deref(), Some("hello\n"));
+        e.handle_key(pkey(KeyCode::Delete));
+        assert_eq!(e.body_text(), "world\n");
+        assert_eq!(e.body.cursor, Index2::new(0, 0));
+    }
+
+    /// Spec R1: a keyboard selection covers everything between the anchor
+    /// and the caret, line breaks included.
+    #[test]
+    fn keyboard_selections_take_the_line_breaks_they_cross() {
+        use ratatui::crossterm::event::KeyCode;
+        // shift+Right at a line's end selects its break; Delete joins.
+        let mut e = editor_with_body("ab\ncd\nef");
+        e.body.cursor = Index2::new(0, 2);
+        e.handle_key(skey(KeyCode::Right));
+        assert_eq!(e.body_selected_text().as_deref(), Some("\n"));
+        e.handle_key(pkey(KeyCode::Delete));
+        assert_eq!(e.body_text(), "abcd\nef");
+        assert_eq!(e.body.cursor, Index2::new(0, 2));
+        // shift+Left from a line start selects the break before it.
+        let mut e = editor_with_body("ab\ncd\nef");
+        e.body.cursor = Index2::new(1, 0);
+        e.handle_key(skey(KeyCode::Left));
+        assert_eq!(e.body_selected_text().as_deref(), Some("\n"));
+        e.handle_key(pkey(KeyCode::Backspace));
+        assert_eq!(e.body_text(), "abcd\nef");
+        // shift+End, then shift+Right takes the break too.
+        let mut e = editor_with_body("ab\ncd\nef");
+        e.body.cursor = Index2::new(0, 1);
+        e.handle_key(skey(KeyCode::End));
+        e.handle_key(skey(KeyCode::Right));
+        assert_eq!(e.body_selected_text().as_deref(), Some("b\n"));
+        // An empty line's break, typed over.
+        let mut e = editor_with_body("ab\n\nef");
+        e.body.cursor = Index2::new(1, 0);
+        e.handle_key(skey(KeyCode::Down));
+        assert_eq!(e.body_selected_text().as_deref(), Some("\n"));
+        e.handle_key(pkey(KeyCode::Char('x')));
+        assert_eq!(e.body_text(), "ab\nxef");
+    }
+
+    /// A Tab indent keeps a selection that ends on a break ending on it.
+    #[test]
+    fn an_indent_keeps_a_selection_ending_on_a_break() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body("a\nb\nc");
+        e.body.cursor = Index2::new(0, 0);
+        e.handle_key(skey(KeyCode::Down));
+        e.handle_key(skey(KeyCode::Down));
+        assert_eq!(e.body_selected_text().as_deref(), Some("a\nb\n"));
+        e.handle_key(pkey(KeyCode::Tab));
+        assert_eq!(e.body_text(), "  a\n  b\nc");
+        // The start rides its line's shift, as it always has; the end
+        // stays on b's break.
+        assert_eq!(e.body_selected_text().as_deref(), Some("a\n  b\n"));
     }
 
     #[test]
