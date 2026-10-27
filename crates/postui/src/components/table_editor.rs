@@ -48,6 +48,33 @@ pub struct CellEdit {
     pub input: LineInput,
 }
 
+/// What committing one cell did ([`TableEditorState::commit_cell`]). It
+/// names two rows because a `+ Add` name that is already taken makes none:
+/// the row it names is the existing one, while the caret was on `+ Add`.
+///
+/// `here` equals `row` except past the rows (`+ Add`, or a value cell the
+/// map shrank from under), so a caller could work it out itself, but only
+/// from the map as it was before the commit: each mover
+/// would have to remember to read it first. Shift-Tab (task #111) and
+/// Up/Down (task #176) were both wrong for want of that, so the commit,
+/// which sees both rows, says both.
+struct Committed {
+    /// The row the edit resolved to: the row written, or for a `+ Add` name
+    /// that is already taken, the existing row it matched (Tab opens that
+    /// row's value, Enter and Esc park the cursor on it). `None` when
+    /// nothing was written: an empty `+ Add` name, or a value cell left
+    /// past the end by a map that shrank under it.
+    row: Option<usize>,
+    /// Where the caret's row is now, which the moves step from (Up/Down,
+    /// Shift-Tab; tasks #111, #176). For `+ Add` that is its index before
+    /// the commit, whatever the commit did: a new row lands there, an empty
+    /// name is discarded there, a taken name leaves it there. For a real
+    /// row it is `row`, where that row is after the commit (for a rename
+    /// onto a taken name, the row it merged into).
+    here: usize,
+    warning: Option<String>,
+}
+
 /// Result of a `TableEditorState` interaction.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TableOutcome {
@@ -399,31 +426,32 @@ impl TableEditorState {
         let Some(edit) = self.editing.take() else {
             return TableOutcome::not_consumed();
         };
-        let (row, warning) = self.commit_cell(map, &edit);
-        self.set_selected(Some(Stop::of_row(row.unwrap_or(map.len()), map.len())));
+        let Committed { row, here, warning } = self.commit_cell(map, &edit);
+        self.set_selected(Some(Stop::of_row(row.unwrap_or(here), map.len())));
         TableOutcome::maybe_warn(warning)
     }
 
-    /// Writes one cell into the map. Returns the row index the edit
-    /// resolved to (`None` when nothing was written — an empty ghost row)
-    /// plus any warning to surface.
-    fn commit_cell(
-        &mut self,
-        map: &mut IndexMap<String, Entry>,
-        edit: &CellEdit,
-    ) -> (Option<usize>, Option<String>) {
+    /// Writes one cell into the map, and says which row that names and
+    /// where the caret's row is now ([`Committed`]), plus any warning to
+    /// surface.
+    fn commit_cell(&mut self, map: &mut IndexMap<String, Entry>, edit: &CellEdit) -> Committed {
         let typed = edit.input.text().to_string();
-        if edit.row < map.len() {
-            return match edit.col {
+        if let Some((key, e)) = map.get_index_mut(edit.row) {
+            let (row, warning) = match edit.col {
                 Col::Value => {
-                    if let Some((_, e)) = map.get_index_mut(edit.row) {
-                        e.value = typed;
-                    }
-                    (Some(edit.row), None)
+                    e.value = typed;
+                    (edit.row, None)
                 }
-                Col::Key => Self::commit_key(map, edit.row, typed),
+                Col::Key => {
+                    let (orig, entry) = (key.clone(), e.clone());
+                    Self::commit_key(map, edit.row, orig, entry, typed)
+                }
             };
+            return Committed { row: Some(row), here: row, warning };
         }
+        // Past the rows is `+ Add`, at `map.len()`: `edit.row` itself can be
+        // further on when the map shrank under the open cell.
+        let here = map.len();
         // The ghost row: only a non-empty key can make it a real row (its
         // value cell never opens, see `open_col`). A name that is taken
         // makes none; the warning says only that, since what is open after
@@ -433,32 +461,33 @@ impl TableEditorState {
         // cell, leaving its row index one past the end; it names no row,
         // so it writes nothing, as it never made a row before either.
         if edit.col != Col::Key || typed.trim().is_empty() {
-            return (None, None);
+            return Committed { row: None, here, warning: None };
         }
         if let Some(other) = map.get_index_of(&typed) {
-            return (Some(other), Some(format!("'{typed}' already exists \u{2014} no row added")));
+            let warning = format!("'{typed}' already exists \u{2014} no row added");
+            return Committed { row: Some(other), here, warning: Some(warning) };
         }
         map.insert(typed, Entry { value: String::new(), enabled: true });
-        (Some(map.len() - 1), None)
+        Committed { row: Some(here), here, warning: None }
     }
 
-    /// Renames row `idx` to `new_key`, keeping its position, value and
-    /// enabled flag. Renaming onto a key that already exists collapses the
-    /// two rows (the target keeps its slot and takes this row's value) and
-    /// warns; blanking a key is refused with a warning.
+    /// Renames row `idx` (named `orig`, holding `entry`) to `new_key`,
+    /// keeping its position, value and enabled flag. Renaming onto a key
+    /// that already exists collapses the two rows (the target keeps its
+    /// slot and takes this row's value) and warns; blanking a key is
+    /// refused with a warning. Returns where the row is now.
     fn commit_key(
         map: &mut IndexMap<String, Entry>,
         idx: usize,
+        orig: String,
+        entry: Entry,
         new_key: String,
-    ) -> (Option<usize>, Option<String>) {
-        let Some((orig, entry)) = map.get_index(idx).map(|(k, e)| (k.clone(), e.clone())) else {
-            return (None, None);
-        };
+    ) -> (usize, Option<String>) {
         if new_key == orig {
-            return (Some(idx), None);
+            return (idx, None);
         }
         if new_key.trim().is_empty() {
-            return (Some(idx), Some(format!("a row needs a name — kept '{orig}'")));
+            return (idx, Some(format!("a row needs a name — kept '{orig}'")));
         }
         if let Some(other_idx) = map.get_index_of(&new_key) {
             map.shift_remove_index(idx);
@@ -467,13 +496,13 @@ impl TableEditorState {
                 e.value = entry.value;
             }
             return (
-                Some(adjusted),
+                adjusted,
                 Some(format!("duplicate key '{new_key}' replaced the existing value")),
             );
         }
         map.shift_remove_index(idx);
         map.shift_insert(idx, new_key, entry);
-        (Some(idx), None)
+        (idx, None)
     }
 
     /// Begins editing the selected row's cursor cell (the `Enter` path, and
@@ -704,8 +733,8 @@ impl TableEditorState {
             // cursor stays on the row — Enter does the same (spec
             // 2026-09-16), it just also commits. Discard is undo.
             KeyCode::Esc => {
-                let (row, warning) = self.commit_cell(map, &edit);
-                self.exit_editing(row.unwrap_or(edit.row), map);
+                let Committed { row, here, warning } = self.commit_cell(map, &edit);
+                self.exit_editing(row.unwrap_or(here), map);
                 TableOutcome::maybe_warn(warning)
             }
             KeyCode::Enter => {
@@ -726,9 +755,11 @@ impl TableEditorState {
             // don't count the section under the table (on Vars that is a
             // scan of every field per keystroke), so ↓ from an open `+ Add`
             // closes it onto `+ Add`, and the next ↓ goes on to the section.
+            // They step from where the caret was (`here`), so a `+ Add` name
+            // that is taken moves from `+ Add`, not from the row it matched
+            // (task #176).
             KeyCode::Up | KeyCode::Down => {
-                let (row, warning) = self.commit_cell(map, &edit);
-                let here = row.unwrap_or(edit.row).min(map.len());
+                let Committed { here, warning, .. } = self.commit_cell(map, &edit);
                 let target = if ev.code == KeyCode::Up { here.saturating_sub(1) } else { here + 1 };
                 self.exit_editing(target, map);
                 TableOutcome::maybe_warn(warning)
@@ -754,7 +785,7 @@ impl TableEditorState {
         edit: &CellEdit,
         forward: bool,
     ) -> TableOutcome {
-        let (row, warning) = self.commit_cell(map, edit);
+        let Committed { row, here, warning } = self.commit_cell(map, edit);
         if forward {
             match (row, edit.col) {
                 (Some(r), Col::Key) => self.start_edit(r, Col::Value, map),
@@ -762,15 +793,16 @@ impl TableEditorState {
                 // next row is at most the ghost, whose name opens.
                 (Some(r), Col::Value) => self.start_edit(r + 1, Col::Key, map),
                 // Past the ghost row, its name left empty: done.
-                (None, _) => self.exit_editing(map.len(), map),
+                (None, _) => self.exit_editing(here, map),
             }
         } else {
-            // A discarded ghost row still tells us where we were.
-            let r = row.unwrap_or(edit.row).min(map.len());
+            // Step back from where the caret was (`here`), not from the
+            // existing row a taken `+ Add` name matched, which forward Tab
+            // opens (task #111).
             match edit.col {
-                Col::Value => self.start_edit(r, Col::Key, map),
-                Col::Key if r > 0 => self.start_edit(r - 1, Col::Value, map),
-                Col::Key => self.exit_editing(r, map),
+                Col::Value => self.start_edit(here, Col::Key, map),
+                Col::Key if here > 0 => self.start_edit(here - 1, Col::Value, map),
+                Col::Key => self.exit_editing(here, map),
             }
         }
         TableOutcome::maybe_warn(warning)
@@ -2045,6 +2077,124 @@ mod tests {
         let edit = t.editing.as_ref().unwrap();
         assert_eq!((edit.row, edit.col), (0, Col::Value));
         assert_eq!(map.len(), 1, "the empty ghost added nothing");
+    }
+
+    /// Task #111: a ghost name that already exists makes no row, and
+    /// Shift-Tab still steps back from the ghost, where the caret was, not
+    /// from the existing row the name matched (forward Tab opens that row's
+    /// value; see `a_ghost_row_keyed_like_an_existing_row_warns_and_edits_that_row`).
+    #[test]
+    fn shift_tab_off_a_ghost_key_that_exists_lands_on_the_last_rows_value() {
+        for name in ["c", "b", "a"] {
+            let mut map = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
+            let mut t = TableEditorState::default();
+            t.click_cell(3, Col::Key, &mut map); // the ghost
+            type_str(&mut t, &mut map, name);
+            let out = t.handle_key(shift_tab(), &mut map);
+            assert!(out.warning.is_some(), "{name}: a duplicate key warns");
+            assert_eq!(map.len(), 3, "{name}: no row was added");
+            let edit = t.editing.as_ref().unwrap_or_else(|| panic!("{name}: still editing"));
+            assert_eq!((edit.row, edit.col), (2, Col::Value), "{name}: c's value opens");
+        }
+    }
+
+    /// With the map shrunk under an open ghost name, Shift-Tab steps back
+    /// from the ghost's index as it is now: past the row a new name makes,
+    /// and from the ghost itself for a name that is taken.
+    #[test]
+    fn shift_tab_off_a_ghost_key_after_the_map_shrank_steps_back_from_the_ghost() {
+        for (name, removed, before) in [("x", 1, 1), ("x", 2, 0), ("a", 1, 1)] {
+            let mut map = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
+            let mut t = TableEditorState::default();
+            t.click_cell(3, Col::Key, &mut map); // the ghost
+            type_str(&mut t, &mut map, name);
+            for _ in 0..removed {
+                map.pop();
+            }
+            t.handle_key(shift_tab(), &mut map);
+            assert_eq!(
+                map.get_index(map.len() - 1).unwrap().0,
+                if name == "x" { "x" } else { "b" }
+            );
+            let edit = t.editing.as_ref().unwrap();
+            assert_eq!((edit.row, edit.col), (before, Col::Value), "{name} less {removed}");
+        }
+    }
+
+    /// Task #176: Up/Down off a ghost name that already exists make no row
+    /// and move from the ghost, where the caret was, not from the existing
+    /// row the name matched: Up onto the last row, Down onto `+ Add`, as
+    /// with an empty name.
+    #[test]
+    fn up_and_down_off_a_ghost_key_that_exists_move_from_the_ghost() {
+        for name in ["", "a", "b", "c"] {
+            for (code, lands) in [(KeyCode::Up, Stop::Row(2)), (KeyCode::Down, Stop::Add)] {
+                let mut map = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
+                let mut t = TableEditorState::default();
+                t.click_cell(3, Col::Key, &mut map); // the ghost
+                type_str(&mut t, &mut map, name);
+                let out = t.handle_key(key(code), &mut map);
+                assert!(out.consumed, "{name:?} {code:?}");
+                assert_eq!(out.warning.is_some(), !name.is_empty(), "{name:?} {code:?}: warns");
+                assert_eq!(map.len(), 3, "{name:?} {code:?}: no row was added");
+                assert!(t.editing.is_none(), "{name:?} {code:?}: the cell closed");
+                assert_eq!(t.selected, Some(lands), "{name:?} {code:?}");
+            }
+        }
+    }
+
+    /// With the map shrunk under an open ghost name, Up/Down move from the
+    /// ghost's index as it is now: from the row a new name makes (`c` is
+    /// new once its row went), and from the ghost itself for a name that
+    /// is taken.
+    #[test]
+    fn up_and_down_off_a_ghost_key_after_the_map_shrank_move_from_the_ghost() {
+        for (name, code, lands) in [
+            ("x", KeyCode::Up, Stop::Row(1)),
+            ("x", KeyCode::Down, Stop::Add),
+            ("c", KeyCode::Up, Stop::Row(1)),
+            ("c", KeyCode::Down, Stop::Add),
+            ("a", KeyCode::Up, Stop::Row(1)),
+            ("a", KeyCode::Down, Stop::Add),
+        ] {
+            let mut map = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
+            let mut t = TableEditorState::default();
+            t.click_cell(3, Col::Key, &mut map); // the ghost
+            type_str(&mut t, &mut map, name);
+            map.pop();
+            let out = t.handle_key(key(code), &mut map);
+            assert_eq!(out.warning.is_some(), name == "a", "{name} {code:?}: warns");
+            assert!(t.editing.is_none(), "{name} {code:?}: the cell closed");
+            let keys: Vec<&str> = map.keys().map(String::as_str).collect();
+            let want: &[&str] = if name == "a" { &["a", "b"] } else { &["a", "b", name] };
+            assert_eq!(keys, want, "{name} {code:?}");
+            assert_eq!(t.selected, Some(lands), "{name} {code:?}");
+        }
+    }
+
+    /// Esc and Enter close the cell where it is, and for a ghost name that
+    /// is taken that is the row it matched (the warning's row), unlike the
+    /// moves above. With nothing written they stay on `+ Add`, even when
+    /// the map shrank under the open cell.
+    #[test]
+    fn esc_and_enter_off_a_ghost_key_park_on_the_row_it_names() {
+        for code in [KeyCode::Esc, KeyCode::Enter] {
+            for (name, removed, lands) in
+                [("b", 0, Stop::Row(1)), ("", 0, Stop::Add), ("", 2, Stop::Add)]
+            {
+                let mut map = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
+                let mut t = TableEditorState::default();
+                t.click_cell(3, Col::Key, &mut map); // the ghost
+                type_str(&mut t, &mut map, name);
+                for _ in 0..removed {
+                    map.pop();
+                }
+                let out = t.handle_key(key(code), &mut map);
+                assert_eq!(out.warning.is_some(), !name.is_empty(), "{code:?} {name:?}");
+                assert!(t.editing.is_none(), "{code:?} {name:?}: the cell closed");
+                assert_eq!(t.selected, Some(lands), "{code:?} {name:?} less {removed}");
+            }
+        }
     }
 
     #[test]

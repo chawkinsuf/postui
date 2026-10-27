@@ -5513,9 +5513,6 @@ impl App {
                 self.cancel_stale_drags(None);
                 self.history.clear();
                 self.marked_entry = None;
-                // A copied option row names a selector in the project
-                // being left; nothing in the next one can take it.
-                self.varmanager.stash = None;
                 // The row register names a request in the project being
                 // left, or a row of a request about to close.
                 self.yank = crate::yank::Register::Empty;
@@ -5533,6 +5530,18 @@ impl App {
                 self.session.reset();
                 let name = project.display_name();
                 self.project = Some(project);
+                // All of the Variable Manager's state indexes the project
+                // being left, and only here is that known (a sync can't tell
+                // a same-named declaration of the new project from the old
+                // one), so it starts over as at launch (task #179). The cost:
+                // the Manager opens with nothing selected, even into a
+                // project that declares the name that was open. With Manage
+                // up it reads the new rows now, for whatever runs before the
+                // next frame; with it closed, `OpenManage` syncs (task #84).
+                self.varmanager = VarManager::default();
+                if self.screen == Screen::Manage {
+                    self.sync_varmanager();
+                }
                 self.open_error = None;
                 self.sidebar.notice = None;
                 // A different tree has a different set of loose files.
@@ -6882,6 +6891,29 @@ impl App {
                     // last was would read as a switch that never happened.
                     self.anims.clear(AnimKey::TabUnderline(StripId::ManageTabs));
                     self.anims.clear(AnimKey::TabUnderlineWidth(StripId::ManageTabs));
+                    // Most refresh sites (reloads, undo's landing, env
+                    // switches) sync the Variable Manager only while the
+                    // screen is up, so whatever changed while it was closed
+                    // is handed over here, once, as the screen comes up
+                    // (task #84). This one call covers every off-screen
+                    // change to the declarations, including a path that
+                    // forgot to sync at all, so no refresh site has to sync
+                    // a hidden screen; dropping the sites' guards instead
+                    // would cover only the sites that sync. This is the one
+                    // place the screen comes up. It runs whichever tab
+                    // opens: a tab switch on
+                    // screen (`SelectManageTab`) doesn't sync, and the
+                    // on-screen sites keep the Manager current from here on.
+                    //
+                    // Why here and not in `VarManager::draw`: the state has
+                    // to be right before the next key, which can arrive
+                    // ahead of the next frame, and a per-frame sync would
+                    // snap the list onto the cursor on every paint,
+                    // undoing the wheel. The cost: like every sync, this
+                    // one snaps the list onto the cursor, so a list
+                    // wheel-scrolled away from its selection reopens
+                    // showing the selection again.
+                    self.sync_varmanager();
                 } else if prev != target {
                     self.retarget_manage_tab_underline(prev);
                 }
