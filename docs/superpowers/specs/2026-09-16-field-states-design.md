@@ -311,6 +311,17 @@ runs it and moves its own step between the stacks, as every replay arm
 calls the layer under the recording action. `SetKeyProfile`, which
 applies even a refused write, applies through `apply_ui` too (`mine`).
 
+2026-10-27, task #195: `before` read from `ui_settings` is the value in
+effect, not what the file held, so the undo of the first change to an
+unset key wrote the default into `config.toml`. A `Config` step now
+holds what the file held on each side, read through `Config`
+(`Config::holds_ui_key`): `UiValue::Unset` for a key the file did not
+carry, which `App::write_ui_value` writes as no key
+(`Config::remove_ui_key`) and applies as the default. The undo puts the
+file back as it was (the user: "yes" to fixing it), and a write that
+leaves the file as it was, such as clearing an unset AI command,
+records no step (`mine`).
+
 `u` and ctrl+z on the Settings tab already reach `Action::Undo`
 through the whitelist; the arm's "commit the open table edit" prelude
 becomes "close any open field on the current screen", so a live

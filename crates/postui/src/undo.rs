@@ -21,11 +21,17 @@ pub struct Step {
     pub context: Context,
 }
 
+/// What `config.toml` holds for one Settings key, as a `Config` step
+/// records it on each side of the change.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiValue {
     Flag(bool),
     Text(String),
     Int(usize),
+    /// The file carries no such key, so the default applies: writing it
+    /// removes the key (task #195). Only a recorded step holds it; the
+    /// Settings actions always write a value.
+    Unset,
 }
 
 #[derive(Debug, Clone)]
@@ -59,7 +65,8 @@ pub enum StepKind {
     },
     /// One Settings-tab write (`Action::SetUiFlag` / `SetUiString` /
     /// `SetUiInt`), spec 2026-09-16: undoing writes `before` back through
-    /// `Config::save_ui_*` and reapplies it; redoing writes `after`. Never
+    /// `App::write_ui_value` and reapplies it; redoing writes `after`. Both
+    /// are what the file held, so a key it lacked is `UiValue::Unset`. Never
     /// coalesced — each commit (a field close, a toggle, a segment flip)
     /// is its own step.
     Config { key: &'static str, before: UiValue, after: UiValue },

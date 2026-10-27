@@ -31239,6 +31239,79 @@ fn redo_of_a_cleared_ai_command_applies_the_default() {
     assert_eq!(app.ui_settings.clipboard_cmd, None, "the redo applies no command");
 }
 
+/// Task #195: undo puts config.toml back as it was. A key the file did
+/// not carry before the change is absent again after its undo, not
+/// written as the default that was in effect; the redo writes the change
+/// again. A text, a flag and an integer setting, since each kind is
+/// written by its own `save_ui_*`.
+#[test]
+fn undo_of_the_first_change_to_an_unset_setting_removes_its_key() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "theme = \"terminal\"\n").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    let defaults = crate::config::UiSettings::default();
+    let file = || std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+
+    app.update(Action::SetUiString { key: "ai_cmd", value: "my-cmd".to_string() });
+    app.update(Action::SetUiFlag { key: "hover_hints", value: !defaults.hover_hints });
+    app.update(Action::SetUiInt { key: "indent_width", value: 4 });
+    assert!(file().contains("ai_cmd"), "{:?}", file());
+
+    for _ in 0..3 {
+        app.update(Action::Undo);
+    }
+    assert_eq!(file(), "theme = \"terminal\"\n", "every key the changes added is gone");
+    assert_eq!(app.ui_settings.ai_cmd, defaults.ai_cmd, "the default applies again");
+    assert_eq!(app.ui_settings.hover_hints, defaults.hover_hints);
+    assert_eq!(app.ui_settings.indent_width, defaults.indent_width);
+
+    for _ in 0..3 {
+        app.update(Action::Redo);
+    }
+    assert_eq!(app.ui_settings.ai_cmd, "my-cmd");
+    assert_eq!(app.ui_settings.hover_hints, !defaults.hover_hints);
+    assert_eq!(app.ui_settings.indent_width, 4);
+    let (redone, _) = crate::config::UiSettings::parse(&file());
+    assert_eq!(redone.ai_cmd, "my-cmd", "the redo wrote the change again: {:?}", file());
+    assert_eq!(redone.hover_hints, !defaults.hover_hints);
+    assert_eq!(redone.indent_width, 4);
+}
+
+/// Task #195: a key the file already carries is written back on undo,
+/// even when its value is the default.
+#[test]
+fn undo_of_a_change_to_a_set_setting_writes_its_value_back() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "ai_cmd = \"claude -p\"\n").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+
+    app.update(Action::SetUiString { key: "ai_cmd", value: "my-cmd".to_string() });
+    app.update(Action::Undo);
+
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert_eq!(text, "ai_cmd = \"claude -p\"\n");
+}
+
+/// Task #195: clearing an AI command the file never set leaves the file
+/// as it was, so there is nothing to undo.
+#[test]
+fn clearing_an_unset_ai_command_records_no_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+
+    app.update(Action::SetUiString { key: "ai_cmd", value: String::new() });
+    app.update(Action::Undo);
+
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains("Nothing to undo")),
+        "the clear changed nothing, so it recorded nothing: {:?}",
+        app.toasts.messages()
+    );
+}
+
 /// A write that never lands records nothing to undo -- `osc52_limit` past
 /// `i64::MAX` is refused by `Config::save_ui_int` itself, so the follow-up
 /// `Undo` has no Settings step waiting for it (or anything else).
@@ -34430,6 +34503,10 @@ fn undo_or_redo_back_into_vim_warns_of_shadowing_letters() {
     use crate::config::KeyProfile;
     let mut app = App::new_for_test();
     let dir = config_at_tempdir(&mut app);
+    // The file says what the test app's settings say: arrows answered.
+    // Undo restores the file (task #195), so without the key the undo
+    // would unset the keymap rather than go back to arrows.
+    std::fs::write(dir.path().join("config.toml"), "keymap = \"arrows\"\n").unwrap();
     std::fs::write(dir.path().join("keys.toml"), "save = [\"ctrl+s\", \"j\"]\n").unwrap();
     let shadow = "keys.toml binds `j`, which shadows vim's `j`".to_string();
     let warned = |app: &App| warning_toasts(app).iter().filter(|m| **m == shadow).count();

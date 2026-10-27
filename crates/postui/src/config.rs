@@ -1034,6 +1034,26 @@ impl Config {
         self.edit(CONFIG_TOML, |doc| doc[key] = toml_edit::value(value))
     }
 
+    /// Removes one top-level key of `config.toml`, so the setting falls
+    /// back to its default: what an undo writes for a key the file did
+    /// not carry before the change (task #195).
+    pub fn remove_ui_key(&mut self, key: &str) -> Result<(), String> {
+        self.edit(CONFIG_TOML, |doc| {
+            doc.remove(key);
+        })
+    }
+
+    /// Whether `config.toml` carries the top-level `key`: `Some(false)`
+    /// when the file or the key is absent. `None` when that is not known:
+    /// no files behind this `Config` ([`Self::none`]), or a file that will
+    /// not read or parse (which [`Self::edit`] refuses to write anyway).
+    pub fn holds_ui_key(&mut self, key: &str) -> Option<bool> {
+        self.disk.as_ref()?;
+        let text = self.read(CONFIG_TOML).ok()?.unwrap_or_default();
+        let doc: toml_edit::DocumentMut = text.parse().ok()?;
+        Some(doc.contains_key(key))
+    }
+
     /// Clears the UI settings from `config.toml` by *removing* their
     /// keys, so the file stays minimal and every unrelated key survives
     /// byte-for-byte -- the pattern `ProjectsRegistry::write_into`
@@ -2219,6 +2239,32 @@ osc52_limit = 1024
             reloaded.config.unwrap().0.known,
             vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]
         );
+    }
+
+    /// Task #195: what an undo step reads and writes for a key the file
+    /// did not carry.
+    #[test]
+    fn holds_ui_key_tells_a_carried_key_from_an_absent_one_and_remove_drops_it() {
+        assert_eq!(Config::none().holds_ui_key("ai_cmd"), None, "no files: unknown");
+
+        let dir = tempdir().unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+        assert_eq!(cfg.holds_ui_key("ai_cmd"), Some(false), "no file: absent");
+
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "theme = \"y\"\nai_cmd = \"x\"\nanimations = false\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.holds_ui_key("ai_cmd"), Some(true));
+        assert_eq!(cfg.holds_ui_key("hover_hints"), Some(false));
+
+        cfg.remove_ui_key("ai_cmd").unwrap();
+        let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert_eq!(text, "theme = \"y\"\nanimations = false\n", "only the key went");
+
+        std::fs::write(dir.path().join("config.toml"), "ai_cmd = [").unwrap();
+        assert_eq!(cfg.holds_ui_key("ai_cmd"), None, "unparseable: unknown");
     }
 
     #[test]
