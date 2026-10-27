@@ -1399,13 +1399,13 @@ impl App {
         // (The footer's quit chip, once its exception, is not drawn under a
         // dialog since task #85: no quit runs under one.)
         let in_dialog = !self.modals.is_empty();
-        // A footer chip is the key it advertises. While the editor's caret
-        // is in its content (on any tab: the table's cursor on any stop, an
-        // open cell, the Body), on the URL line (selected or open) or on
-        // the method badge, every chip on the main screen's footer is no
-        // click away at all: the cell, its typing, the line's edit, the
-        // cursor and the caret stay as its key leaves them (tasks #125,
-        // #183, #192 and #194; spec 2026-10-26 header-copy, Footer). The
+        // A footer chip is the key it advertises. While the editor has the
+        // focus, wherever its caret is (the table's cursor on any stop, an
+        // open cell, the Body, the URL line selected or open, the method
+        // badge), every chip on the main screen's footer is no click away
+        // at all: the cell, its typing, the line's edit, the cursor and the
+        // caret stay as its key leaves them (tasks #125, #183, #192 and
+        // #194; spec 2026-10-26 header-copy, Footer). The
         // click is the chip's action and nothing else, which is what its
         // key runs: send and quit commit the cell themselves, `done` closes
         // it or the URL line, the add chip moves the caret. Where a
@@ -1428,7 +1428,6 @@ impl App {
         let editor_footer_chip = matches!(hit, Hit::FooterChip(_))
             && self.screen == Screen::Main
             && self.focus == PaneId::Editor
-            && self.editor.sub_focus != SubFocus::None
             && self.settled_layout().is_some_and(|l| {
                 l.footer.contains(ratatui::layout::Position { x: m.column, y: m.row })
             });

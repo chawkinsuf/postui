@@ -2526,6 +2526,38 @@ fn a_click_that_edits_leaves_the_url_typing_its_own_undo_step() {
     assert!(app.editor.current_request().insecure, "then the toggle");
 }
 
+/// Task #194: the footer's `tls` chip is its key, not a click away, so the
+/// URL line stays open through it and the undo steps are alt+i's: the
+/// toggle made while the line holds its typing goes with that typing when
+/// the line closes.
+#[test]
+fn the_footer_tls_chip_over_url_typing_undoes_as_alt_i_does() {
+    let undo_trail = |app: &mut App| {
+        assert!(app.editor.url_open(), "the line stayed open");
+        assert!(app.editor.current_request().insecure, "the toggle ran");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.capture_undo();
+        let mut trail = Vec::new();
+        for _ in 0..2 {
+            app.update(Action::Undo);
+            app.capture_undo();
+            trail.push((app.editor.url.text().to_string(), app.editor.current_request().insecure));
+        }
+        trail
+    };
+    let mut by_key = app_with_typed_url();
+    by_key.handle_key(alt('i'));
+    by_key.capture_undo();
+    let mut app = app_with_typed_url();
+    render_once(&mut app);
+    let footer = app.settled_layout().expect("drawn").footer;
+    let rects = app.hits.rects_of(&Hit::FooterChip(Action::ToggleInsecure));
+    let chip = *rects.iter().find(|r| footer.contains(r.as_position())).expect("the tls chip");
+    app.handle_mouse(left_down(chip.x + 1, chip.y));
+    app.capture_undo();
+    assert_eq!(undo_trail(&mut app), undo_trail(&mut by_key));
+}
+
 /// The same for a click that puts the caret in the table and acts there
 /// (a row's checkbox).
 #[test]
@@ -15902,8 +15934,8 @@ fn editor_seen(app: &App) -> EditorSeen {
 /// open and typed into, the Body's caret up or the URL line selected (and,
 /// task #194, the URL line open and typed into or the method badge
 /// selected), each footer chip's click leaves the editor as its keycap's
-/// key does. Every
-/// chip drawn is checked: one with no key here fails the test.
+/// key does. Every chip drawn is checked: one with no key here fails the
+/// test.
 ///
 /// Not sending: the in-flight `esc cancel` chip's Esc is the field's first
 /// where a field holds the caret (a selected URL line deselects), so its
@@ -15939,6 +15971,55 @@ fn an_editor_footer_chip_click_matches_its_key_with_a_cell_or_caret_up() {
                 by_key.handle_key(ev);
             }
             let mut app = editor_caret_app(state, Arrows, false);
+            app.handle_mouse(left_down(*x, y));
+            assert_eq!(editor_seen(&app), editor_seen(&by_key), "{state} {chip:?}");
+        }
+    }
+}
+
+/// Task #194, against vim's keys: with the URL line open in Insert and
+/// typed into, and with the method badge selected (Normal), each footer
+/// chip's click leaves the editor as its keycap's key does. Every chip
+/// drawn is checked: one with no key here fails the test.
+///
+/// In Insert the `esc done` keycap's Esc leaves Insert first, and only a
+/// second one closes the line: the chip is the close, so its key here is
+/// both.
+#[test]
+fn an_editor_footer_chip_click_matches_its_vim_key_on_the_url_line_or_method() {
+    use crate::config::KeyProfile::Vim;
+    let events = |s: &str| crate::keyroute::notation::events(s).into_iter().collect::<Vec<_>>();
+    let keys = |a: &Action| match a {
+        Action::CloseField => events("<Esc><Esc>"),
+        Action::FocusUrl => events("<CR>"),
+        Action::Send => vec![KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)],
+        Action::CopyToClipboard(crate::action::CopyTarget::Url) => vec![alt('y')],
+        Action::ToggleInsecure => vec![alt('i')],
+        Action::OpenVarPicker { completing: false } => vec![alt('v')],
+        Action::CycleTabs(1) => events("gt"),
+        Action::OpenPalette => vec![ctrl('p')],
+        Action::OpenExPalette => events(":"),
+        Action::Quit => vec![ctrl('c'), ctrl('c')],
+        Action::CloseWindow { write: false, force: false } => events(":q<CR>"),
+        other => panic!("no key for the {other:?} chip"),
+    };
+    for state in ["url_open", "method"] {
+        let (y, chips) = footer_strip_chips(&editor_caret_app(state, Vim, false));
+        assert!(chips.len() >= 4, "{state}: {chips:?}");
+        for (chip, x) in &chips {
+            // The `gT/gt` chip runs arrows' tab chord (`CycleTabs`), which
+            // never lands the caret, where vim's `gt` (`GoTab`) lands it in
+            // the new tab's content. That is the chip's action, not the
+            // click away this test is about: the chip's own test is its
+            // action's, above.
+            if *chip == Action::CycleTabs(1) {
+                continue;
+            }
+            let mut by_key = editor_caret_app(state, Vim, false);
+            for ev in keys(chip) {
+                by_key.handle_key(ev);
+            }
+            let mut app = editor_caret_app(state, Vim, false);
             app.handle_mouse(left_down(*x, y));
             assert_eq!(editor_seen(&app), editor_seen(&by_key), "{state} {chip:?}");
         }
