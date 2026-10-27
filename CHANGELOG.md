@@ -4,7 +4,7 @@ Notable changes to postui, newest first. Versions follow
 [Semantic Versioning](https://semver.org/); before 1.0, a release may still
 change the project file format.
 
-## [0.2.0] - Unreleased
+## [0.2.0] - 2026-10-27
 
 The first public release. postui is a terminal HTTP client where everything
 works by mouse or by keyboard, and requests are plain TOML files in a project
