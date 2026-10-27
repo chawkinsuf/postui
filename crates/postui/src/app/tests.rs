@@ -4107,6 +4107,25 @@ fn clicking_the_horizontal_track_pages_sideways() {
     );
 }
 
+/// #127: through the app's key routing, ctrl+y in the arrows body puts
+/// back none of a deleted selection.
+#[test]
+fn ctrl_y_in_the_body_pastes_nothing_back() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.sub_focus = SubFocus::Content;
+    app.focus = PaneId::Editor;
+    app.editor.set_body_text("hello world");
+    app.editor.body.cursor = edtui::Index2::new(0, 6);
+    for _ in 0..5 {
+        app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+    assert_eq!(app.editor.body_text(), "hello ");
+    app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+    assert_eq!(app.editor.body_text(), "hello ");
+}
+
 #[test]
 fn wheel_over_body_editor_forwards_to_the_editor() {
     let mut app = App::new_for_test();

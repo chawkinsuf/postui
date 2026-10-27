@@ -2407,10 +2407,12 @@ fn new_body_state(text: &str) -> EditorState {
     state
 }
 
-/// edtui's emacs keymap for the body, less ctrl+y (#127). The keymap's
-/// ctrl+y pastes from edtui's own clipboard, which every selection delete
-/// fills, so it put the last deleted text back; the arrows profile leaves
-/// ctrl+y unbound, and an unbound key does nothing.
+/// edtui's emacs keymap for the body, less ctrl+y (#127). The body keeps
+/// the keymap's editing keys on purpose (see the fall-through in
+/// `handle_key`), but its ctrl+y is a paste from edtui's own clipboard,
+/// which every selection delete fills: it put the last deleted text back.
+/// The app's paste is ctrl+v, from the system clipboard; ctrl+y is
+/// unbound in the arrows profile (`keys.rs` pins it).
 fn body_key_handler() -> EditorEventHandler {
     use edtui::events::{KeyEventRegister, KeyInput};
     let mut handler = EditorEventHandler::emacs_mode();
