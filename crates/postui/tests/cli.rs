@@ -4,8 +4,8 @@
 use std::process::{Command, Stdio};
 
 /// Runs the binary in a throwaway home with stdin closed, so a case that
-/// regressed into starting the app fails here instead of touching the
-/// real config or waiting on a terminal.
+/// regressed into starting the app can't touch the real config. (It could
+/// still open `/dev/tty` from an interactive shell; in CI there is none.)
 fn postui(args: &[&str]) -> std::process::Output {
     let home = tempfile::tempdir().unwrap();
     Command::new(env!("CARGO_BIN_EXE_postui"))
@@ -40,12 +40,14 @@ fn a_bad_argument_prints_usage_to_stderr_and_fails() {
         &["a", "b"],
         &["--keydump=abc"],
         &["--debug-ai", "--debug-ai"],
+        &["-x", "--help"],
     ] {
         let out = postui(args);
         assert_eq!(out.status.code(), Some(2), "{args:?}");
         assert!(out.stdout.is_empty(), "{args:?}");
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stderr.starts_with("usage: postui"), "{args:?}: {stderr}");
+        assert!(stderr.starts_with("postui: "), "the reason first: {stderr}");
+        assert!(stderr.contains("\n\nusage: postui"), "{args:?}: {stderr}");
     }
 }
 

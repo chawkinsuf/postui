@@ -1134,12 +1134,13 @@ pub enum CliParse {
     /// Run the app: a project directory (or none), tilde-expanded, and
     /// whether `--debug-ai` asked for the AI command's log.
     Root { root: Option<PathBuf>, debug_ai: bool },
-    /// `--help` or `-h`, anywhere: print usage to stdout and exit 0.
+    /// `--help` or `-h` on an otherwise valid line: print usage to stdout
+    /// and exit 0.
     Help,
-    /// Any other leading-dash argument (`-x`, `-v`, ...) or a second
-    /// directory: a mistake, so usage goes to stderr and the exit status
-    /// is 2 (#144).
-    Usage,
+    /// A mistake (an unknown option, a second directory, ...), said in
+    /// `reason`: it and the usage go to stderr and the exit status is 2
+    /// (#144). A help flag on the line doesn't hide it.
+    Usage { reason: String },
     /// `--setup`: print terminal keyboard-config guidance and exit.
     Setup,
     /// `--version` or `-V`: print `postui <version>` and exit.
@@ -1152,27 +1153,40 @@ pub enum CliParse {
     Keydump { flags: Option<u8> },
 }
 
-/// What `--help` prints to stdout, and a usage error to stderr. Every flag
-/// [`parse_cli`] reads is listed (a test checks).
+/// What `--help` prints to stdout, and a usage error to stderr after its
+/// reason. Every flag [`parse_cli`] reads is listed (a test checks).
 pub const USAGE: &str = "\
 usage: postui [--debug-ai] [directory]
-       --debug-ai        log every AI filter prompt and reply to a file
-       postui --setup    terminal keyboard setup (macOS opt/cmd keys)
-       postui --version  print the version (also -V)
-       postui --keydump[=BITS]  echo raw key and mouse events (kitty flag bits; 0=none)
-       postui --help     print this (also -h)
+       postui --setup | --version | --keydump[=BITS] | --help
+
+  --debug-ai        log every AI filter prompt and reply to a file
+  --setup           terminal keyboard setup (macOS opt/cmd keys)
+  --version, -V     print the version
+  --keydump[=BITS]  echo raw key and mouse events (kitty flag bits; 0=none)
+  --help, -h        print this
 ";
 
-/// Parses `postui`'s arguments (without the program name). `--help` (or
-/// `-h`) anywhere asks for help: it is never a mistake. `--setup`,
+/// Parses `postui`'s arguments (without the program name). `--setup`,
 /// `--version` and `--keydump` run alone; otherwise at most one project
 /// directory and at most one `--debug-ai`, in either order. Any other
 /// value starting with `-` (e.g. `-x`) is a usage error rather than a
 /// project directory, since no real path starts with a dash without `./`.
+/// `--help` (or `-h`) anywhere on a line that is otherwise valid asks for
+/// help; it never turns a mistake into a success.
 pub fn parse_cli(args: Vec<String>) -> CliParse {
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        return CliParse::Help;
+    let is_help = |a: &String| a == "--help" || a == "-h";
+    let help = args.iter().any(is_help);
+    let parsed = parse_cli_line(args.into_iter().filter(|a| !is_help(a)).collect());
+    match parsed {
+        CliParse::Usage { .. } => parsed,
+        _ if help => CliParse::Help,
+        _ => parsed,
     }
+}
+
+/// [`parse_cli`] for a line with its help flags taken out.
+fn parse_cli_line(args: Vec<String>) -> CliParse {
+    let usage = |reason: String| CliParse::Usage { reason };
     if let [only] = args.as_slice() {
         if only == "--setup" {
             return CliParse::Setup;
@@ -1186,17 +1200,28 @@ pub fn parse_cli(args: Vec<String>) -> CliParse {
         if let Some(bits) = only.strip_prefix("--keydump=") {
             return match bits.parse::<u8>() {
                 Ok(bits) => CliParse::Keydump { flags: Some(bits) },
-                Err(_) => CliParse::Usage,
+                Err(_) => {
+                    usage(format!("--keydump=BITS takes a number from 0 to 255, not '{bits}'"))
+                }
             };
         }
     }
     let mut root = None;
     let mut debug_ai = false;
     for arg in args {
-        if arg == "--debug-ai" && !debug_ai {
+        let run_alone = ["--setup", "--version", "-V", "--keydump"].contains(&arg.as_str())
+            || arg.starts_with("--keydump=");
+        if run_alone {
+            return usage(format!("{arg} takes no other arguments"));
+        } else if arg == "--debug-ai" {
+            if debug_ai {
+                return usage("--debug-ai is given twice".into());
+            }
             debug_ai = true;
-        } else if arg.starts_with('-') || root.is_some() {
-            return CliParse::Usage;
+        } else if arg.starts_with('-') {
+            return usage(format!("unknown option '{arg}'"));
+        } else if root.is_some() {
+            return usage(format!("one directory at most; '{arg}' is a second"));
         } else {
             root = Some(expand_tilde(&arg));
         }
@@ -1976,33 +2001,44 @@ osc52_limit = 1024
         parse_cli(args.iter().map(|a| a.to_string()).collect())
     }
 
+    /// The reason a usage error gives; panics on anything else.
+    fn mistake(args: &[&str]) -> String {
+        match cli(args) {
+            CliParse::Usage { reason } => reason,
+            other => panic!("{args:?} parsed as {other:?}"),
+        }
+    }
+
     #[test]
     fn parse_cli_leading_dash_is_usage() {
-        assert_eq!(cli(&["-x"]), CliParse::Usage);
-        assert_eq!(cli(&["/abs/x", "-x"]), CliParse::Usage);
+        assert_eq!(mistake(&["-x"]), "unknown option '-x'");
+        assert_eq!(mistake(&["/abs/x", "-x"]), "unknown option '-x'");
     }
 
     /// #144: help asked for is not a mistake (stdout, exit 0), wherever it
-    /// sits on the line.
+    /// sits on an otherwise valid line; on a line with a mistake the
+    /// mistake wins, so a script still sees it.
     #[test]
     fn parse_cli_help_flag() {
         assert_eq!(cli(&["--help"]), CliParse::Help);
         assert_eq!(cli(&["-h"]), CliParse::Help);
         assert_eq!(cli(&["--help", "/abs/x"]), CliParse::Help);
         assert_eq!(cli(&["--debug-ai", "-h"]), CliParse::Help);
-        assert_eq!(cli(&["-x", "--help"]), CliParse::Help);
-        assert_eq!(cli(&["--help-x"]), CliParse::Usage);
+        assert_eq!(cli(&["--version", "-h"]), CliParse::Help);
+        assert_eq!(mistake(&["-x", "--help"]), "unknown option '-x'");
+        assert_eq!(mistake(&["a", "b", "-h"]), "one directory at most; 'b' is a second");
+        assert_eq!(mistake(&["--help-x"]), "unknown option '--help-x'");
     }
 
-    /// The usage names every flag `parse_cli` reads.
+    /// The usage names every flag `parse_cli` reads, each as a whole word.
     #[test]
     fn usage_lists_every_flag() {
+        let words: Vec<&str> = USAGE
+            .split(|c: char| c.is_whitespace() || "[]|,".contains(c))
+            .map(|w| w.split('=').next().unwrap_or(w))
+            .collect();
         for flag in ["--help", "-h", "--setup", "--version", "-V", "--keydump", "--debug-ai"] {
-            let spelled = USAGE.contains(&format!("{flag} "))
-                || USAGE.contains(&format!("{flag}["))
-                || USAGE.contains(&format!("{flag})"))
-                || USAGE.contains(&format!("{flag}]"));
-            assert!(spelled, "{flag} missing from:\n{USAGE}");
+            assert!(words.contains(&flag), "{flag} missing from:\n{USAGE}");
         }
     }
 
@@ -2010,10 +2046,10 @@ osc52_limit = 1024
     fn parse_cli_setup_flag() {
         assert_eq!(cli(&["--setup"]), CliParse::Setup);
         // Not a prefix match: anything else dashed is still usage.
-        assert_eq!(cli(&["--setup-x"]), CliParse::Usage);
+        assert_eq!(mistake(&["--setup-x"]), "unknown option '--setup-x'");
         // It runs alone.
-        assert_eq!(cli(&["--setup", "/abs/x"]), CliParse::Usage);
-        assert_eq!(cli(&["--debug-ai", "--setup"]), CliParse::Usage);
+        assert_eq!(mistake(&["--setup", "/abs/x"]), "--setup takes no other arguments");
+        assert_eq!(mistake(&["--debug-ai", "--setup"]), "--setup takes no other arguments");
     }
 
     #[test]
@@ -2021,10 +2057,10 @@ osc52_limit = 1024
         assert_eq!(cli(&["--version"]), CliParse::Version);
         assert_eq!(cli(&["-V"]), CliParse::Version);
         // Exact spellings only, and it runs alone.
-        assert_eq!(cli(&["-v"]), CliParse::Usage);
-        assert_eq!(cli(&["--version-x"]), CliParse::Usage);
-        assert_eq!(cli(&["--version", "/abs/x"]), CliParse::Usage);
-        assert_eq!(cli(&["--debug-ai", "-V"]), CliParse::Usage);
+        assert_eq!(mistake(&["-v"]), "unknown option '-v'");
+        assert_eq!(mistake(&["--version-x"]), "unknown option '--version-x'");
+        assert_eq!(mistake(&["--version", "/abs/x"]), "--version takes no other arguments");
+        assert_eq!(mistake(&["--debug-ai", "-V"]), "-V takes no other arguments");
     }
 
     #[test]
@@ -2033,10 +2069,12 @@ osc52_limit = 1024
         assert_eq!(cli(&["--keydump=0"]), CliParse::Keydump { flags: Some(0) });
         assert_eq!(cli(&["--keydump=5"]), CliParse::Keydump { flags: Some(5) });
         // A malformed bitmask is usage, not a silent default.
-        assert_eq!(cli(&["--keydump=x"]), CliParse::Usage);
-        assert_eq!(cli(&["--keydump="]), CliParse::Usage);
-        assert_eq!(cli(&["--keydump-x"]), CliParse::Usage);
-        assert_eq!(cli(&["--keydump", "/abs/x"]), CliParse::Usage);
+        let bits = |b: &str| format!("--keydump=BITS takes a number from 0 to 255, not '{b}'");
+        assert_eq!(mistake(&["--keydump=x"]), bits("x"));
+        assert_eq!(mistake(&["--keydump="]), bits(""));
+        assert_eq!(mistake(&["--keydump=300"]), bits("300"));
+        assert_eq!(mistake(&["--keydump-x"]), "unknown option '--keydump-x'");
+        assert_eq!(mistake(&["--keydump", "/abs/x"]), "--keydump takes no other arguments");
     }
 
     #[test]
@@ -2047,7 +2085,7 @@ osc52_limit = 1024
         );
         assert_eq!(cli(&[]), CliParse::Root { root: None, debug_ai: false });
         // One directory at most.
-        assert_eq!(cli(&["/abs/x", "/abs/y"]), CliParse::Usage);
+        assert_eq!(mistake(&["/abs/x", "/abs/y"]), "one directory at most; '/abs/y' is a second");
     }
 
     #[test]
@@ -2057,7 +2095,7 @@ osc52_limit = 1024
         assert_eq!(cli(&["/abs/x", "--debug-ai"]), with_root);
         assert_eq!(cli(&["--debug-ai"]), CliParse::Root { root: None, debug_ai: true });
         // Once, like the directory.
-        assert_eq!(cli(&["--debug-ai", "--debug-ai"]), CliParse::Usage);
+        assert_eq!(mistake(&["--debug-ai", "--debug-ai"]), "--debug-ai is given twice");
     }
 
     #[test]
