@@ -5535,11 +5535,20 @@ impl App {
                 // scroll, the grid's and form's cursors, the keyboard stop,
                 // and a copied option row. Only here does the code know all
                 // of it is foreign (a same-named declaration in the new
-                // project looks the same to a sync), so it starts over, as at
-                // launch, and reads the new project's rows at once, Manage up
-                // or not, since a key can arrive ahead of the next frame
-                // (task #179). The cost: a switch to a project with a
-                // same-named declaration does not keep it open.
+                // project looks the same to a sync), so it starts over in
+                // the state a launch opens it in (task #179). The cost: every
+                // switch opens the Manager with nothing selected, as a
+                // launch does, even into a project that declares the name
+                // that was open. The draw caches it drops (the grid's area,
+                // the list's height) describe the old project's frame and
+                // are measured again on the next one.
+                //
+                // The sync reads the new project's rows at once, since a key
+                // on Manage can arrive ahead of the next frame. It runs with
+                // Manage closed too: the reset emptied the rows, and syncing
+                // here keeps the Manager matching the project whatever
+                // screen is up, for one list build per switch. `OpenManage`
+                // syncs again when the screen comes up (task #84).
                 self.varmanager = VarManager::default();
                 self.sync_varmanager();
                 self.open_error = None;
