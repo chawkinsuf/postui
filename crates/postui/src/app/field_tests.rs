@@ -1765,6 +1765,38 @@ fn a_click_on_the_search_prompt_leaves_the_body_caret() {
     assert_eq!(prompt, Some("x"), "the search stays open");
 }
 
+/// #129: the prompt's row is the body's for the wheel and the right
+/// button too: a notch there scrolls the body as one on its text does,
+/// and a right press opens the body's text menu.
+#[test]
+fn the_search_prompts_row_wheels_and_menus_as_the_body() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = vim(Fixture::Body);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    let wheel = |app: &mut App, row: u16| {
+        let kind = MouseEventKind::ScrollDown;
+        app.handle_mouse(MouseEvent {
+            kind,
+            column: area.x + 8,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        draw(app);
+        app.editor.body.viewport_offset().1
+    };
+    let on_text = wheel(&mut app, area.bottom() - 1);
+    assert!(on_text > 0, "the notch scrolls the body");
+    assert_eq!(wheel(&mut app, area.bottom()), on_text * 2, "the same notch on the prompt's row");
+    let kind = MouseEventKind::Down(MouseButton::Right);
+    let row = area.bottom();
+    app.handle_mouse(MouseEvent { kind, column: area.x + 8, row, modifiers: KeyModifiers::NONE });
+    let Some(Modal::Dropdown(d)) = app.modals.top() else { panic!("the body's text menu") };
+    assert!(d.items.iter().any(|i| i.label == "Paste"));
+}
+
 /// #129: the bar measures the body above the prompt's row, as the thumb
 /// drag's spec does, and stays as it is when the prompt opens.
 #[test]

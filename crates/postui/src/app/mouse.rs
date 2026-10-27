@@ -665,7 +665,22 @@ impl App {
                     let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
                     return self.modals.scroll_top(d);
                 }
-                if matches!(self.hits.hit_at(m.column, m.row), Some(Hit::BodyEditor))
+                // The search prompt's row wheels the body as its text does,
+                // the notch taken on the body's nearest cell (#129).
+                let body_wheel = match self.hits.hit_at(m.column, m.row) {
+                    Some(Hit::BodyEditor) => Some(m),
+                    Some(Hit::BodyPromptRow) => {
+                        self.editor.last_body_area.filter(|a| !a.is_empty()).map(|a| {
+                            ratatui::crossterm::event::MouseEvent {
+                                column: m.column.clamp(a.x, a.right() - 1),
+                                row: m.row.clamp(a.y, a.bottom() - 1),
+                                ..m
+                            }
+                        })
+                    }
+                    _ => None,
+                };
+                if let Some(m) = body_wheel
                     && self.editor.handle_mouse(m)
                 {
                     return self.update(Action::Render);

@@ -10125,7 +10125,9 @@ impl App {
                 self.update(Action::FocusUrl);
                 (TextSurface::Url, true)
             }
-            Hit::BodyEditor => {
+            // The search prompt's row is the body's for focus (#129), so
+            // its menu is the body's too.
+            Hit::BodyEditor | Hit::BodyPromptRow => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.move_editor_caret(SubFocus::Content);
                 (TextSurface::Body, true)

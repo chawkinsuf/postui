@@ -245,7 +245,12 @@ pub struct Editor {
     /// command line is a row of its own at all times (`'cmdheight'` 1,
     /// never 0), so the body is one row shorter whether or not a search
     /// is open, and `/` never resizes it (#129). A display copy of the
-    /// profile, as the response's `set_vim_cursor` is.
+    /// profile, as the response's `set_vim_cursor` is: `ui::draw` is the
+    /// one path that draws the editor, and sets it first. What it gives
+    /// up: a key handled between a profile switch and the next frame
+    /// reads the last frame's `last_body_area`, as after a resize; a
+    /// `DrawCtx` field would not change that, since the geometry is the
+    /// last frame's either way.
     pub(crate) prompt_row: bool,
     /// The fixed end of an in-progress body selection: planted by a left
     /// click (mouse) or the first shifted motion (keyboard), consumed by
@@ -3917,6 +3922,10 @@ impl Editor {
                 // current window always has a line (`'winminheight'`: "the
                 // cursor has to have somewhere to go"), and in a one-row
                 // terminal its `/` line draws over that line (probed).
+                // Taken before the bar's column, so it is the pane's full
+                // width, as Vim's command line is the screen's: under the
+                // bar when the row is kept, over it in a one-row pane while
+                // a search is open (the prompt covers that row whole).
                 let prompt_row = (self.prompt_row && area.height > 0).then(|| {
                     if area.height > 1 {
                         area.height -= 1;
@@ -5267,11 +5276,16 @@ mod tests {
 
     /// Draws `e` at 120×24, the pane focused or not, and returns the frame.
     fn draw_body(e: &mut Editor, focused: bool) -> ratatui::buffer::Buffer {
-        draw_body_sized(e, focused, 24)
+        draw_body_sized(e, focused, 24).0
     }
 
-    /// Draws `e` at 120×`rows`, the pane focused or not.
-    fn draw_body_sized(e: &mut Editor, focused: bool, rows: u16) -> ratatui::buffer::Buffer {
+    /// Draws `e` at 120×`rows`, the pane focused or not, and returns the
+    /// frame and its hits.
+    fn draw_body_sized(
+        e: &mut Editor,
+        focused: bool,
+        rows: u16,
+    ) -> (ratatui::buffer::Buffer, crate::hit::HitMap) {
         let theme = Theme::dark();
         let ctx = DrawCtx {
             theme: &theme,
@@ -5285,7 +5299,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(120, rows)).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
-        terminal.backend().buffer().clone()
+        (terminal.backend().buffer().clone(), hits)
     }
 
     /// Draws `e` and returns the buffer cell holding the first occurrence
@@ -5525,22 +5539,7 @@ mod tests {
         e.set_body_text("{{v}} line");
         e.body.mode = EditorMode::Normal;
         e.prompt_row = true;
-        let theme = Theme::dark();
-        let ctx = DrawCtx {
-            theme: &theme,
-            focused: true,
-            hovered: None,
-            pointer: None,
-            dragging: false,
-            anims: test_anims(),
-            now: std::time::Instant::now(),
-        };
-        let draw = |e: &mut Editor| {
-            let mut terminal = Terminal::new(TestBackend::new(120, rows)).unwrap();
-            let mut hits = crate::hit::HitMap::default();
-            terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
-            (terminal.backend().buffer().clone(), hits)
-        };
+        let draw = |e: &mut Editor| draw_body_sized(e, true, rows);
         let (buf, hits) = draw(&mut e);
         let area = e.last_body_area.unwrap();
         assert_eq!(area.height, 1, "the body keeps the row");
