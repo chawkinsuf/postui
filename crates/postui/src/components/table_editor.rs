@@ -407,6 +407,12 @@ impl TableEditorState {
     /// Writes one cell into the map. Returns the row index the edit
     /// resolved to (`None` when nothing was written — an empty ghost row)
     /// plus any warning to surface.
+    ///
+    /// For a ghost name that is already taken, the row is the existing
+    /// row's, not the ghost's: Tab opens that row's value and Enter parks
+    /// the cursor on it. A caller that moves from where the caret was reads
+    /// the ghost's index before the commit instead, as `walk_cell`'s
+    /// Shift-Tab does (task #111; Up/Down still read this row, task #176).
     fn commit_cell(
         &mut self,
         map: &mut IndexMap<String, Entry>,
@@ -2062,7 +2068,7 @@ mod tests {
     /// value; see `a_ghost_row_keyed_like_an_existing_row_warns_and_edits_that_row`).
     #[test]
     fn shift_tab_off_a_ghost_key_that_exists_lands_on_the_last_rows_value() {
-        for name in ["b", "a"] {
+        for name in ["c", "b", "a"] {
             let mut map = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
             let mut t = TableEditorState::default();
             t.click_cell(3, Col::Key, &mut map); // the ghost
@@ -2075,22 +2081,26 @@ mod tests {
         }
     }
 
-    /// A ghost name typed while the map shrank under it (a reload) still
-    /// steps back past the row it makes, onto the row before it.
+    /// With the map shrunk under an open ghost name, Shift-Tab steps back
+    /// from the ghost's index as it is now: past the row a new name makes,
+    /// and from the ghost itself for a name that is taken.
     #[test]
-    fn shift_tab_off_a_ghost_key_after_the_map_shrank_steps_back_past_the_new_row() {
-        for (removed, before) in [(1, 1), (2, 0)] {
+    fn shift_tab_off_a_ghost_key_after_the_map_shrank_steps_back_from_the_ghost() {
+        for (name, removed, before) in [("x", 1, 1), ("x", 2, 0), ("a", 1, 1)] {
             let mut map = map_of(&[("a", "1"), ("b", "2"), ("c", "3")]);
             let mut t = TableEditorState::default();
             t.click_cell(3, Col::Key, &mut map); // the ghost
-            type_str(&mut t, &mut map, "x");
+            type_str(&mut t, &mut map, name);
             for _ in 0..removed {
                 map.pop();
             }
             t.handle_key(shift_tab(), &mut map);
-            assert_eq!(map.get_index(map.len() - 1).unwrap().0, "x", "{removed}: x was added");
+            assert_eq!(
+                map.get_index(map.len() - 1).unwrap().0,
+                if name == "x" { "x" } else { "b" }
+            );
             let edit = t.editing.as_ref().unwrap();
-            assert_eq!((edit.row, edit.col), (before, Col::Value), "{removed}: the row before x");
+            assert_eq!((edit.row, edit.col), (before, Col::Value), "{name} less {removed}");
         }
     }
 
