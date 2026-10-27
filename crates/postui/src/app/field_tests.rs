@@ -1761,8 +1761,20 @@ fn a_click_on_the_search_prompt_leaves_the_body_caret() {
     click_at(&mut app, area.x + 8, area.bottom());
     assert_eq!(app.editor.body.cursor, caret, "the open prompt");
     assert!(held(&app));
-    let prompt = app.editor.body_search.prompt.as_ref().map(|p| p.text.as_str());
-    assert_eq!(prompt, Some("x"), "the search stays open");
+    // The next key still types into the search (probed: Vim's `/li`, a
+    // click on its line, `X` gives `/lXi`; postui's prompt has no click
+    // caret, so it types at the end).
+    feed(&mut app, "y");
+    let prompt = app.editor.body_search.prompt.as_ref().map(|p| p.text.clone());
+    assert_eq!(prompt.as_deref(), Some("xy"), "the search stays open");
+    // Visual too survives a press there, as in Vim (probed: `vj`, a click
+    // on the command line, `y` yanks the two lines' span).
+    feed(&mut app, "<Esc>vj");
+    let span = app.editor.body_visual;
+    assert!(span.is_some());
+    click_at(&mut app, area.x + 8, area.bottom());
+    draw(&mut app);
+    assert_eq!(app.editor.body_visual, span, "Visual stays");
 }
 
 /// #129: the prompt's row is the body's for the wheel and the right

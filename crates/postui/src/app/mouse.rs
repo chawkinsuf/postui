@@ -1556,14 +1556,16 @@ impl App {
                 self.update(Action::Render)
             }
             // The body's for focus, with no caret move and no sweep: a
-            // click on Vim's command line leaves the cursor, and an open
-            // search stays open (#129). Probed in Vim 9.1: a press there
-            // dragged up over the text selects nothing, while a sweep from
-            // the text down onto it is past the window's bottom and
+            // click on Vim's command line leaves the cursor, and keeps
+            // Visual and an open search, so the press settles nothing, as
+            // one on a separator doesn't (#129). Probed in Vim 9.1: a press
+            // there dragged up over the text selects nothing, while a sweep
+            // from the text down onto it is past the window's bottom and
             // scrolls, as `body_cursor_for_drag` does below the body.
             Hit::BodyPromptRow => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.move_editor_caret(SubFocus::Content);
+                self.vim_separator_press();
                 self.update(Action::Render)
             }
             Hit::HeaderProject => self.update(Action::OpenProjectChooser),

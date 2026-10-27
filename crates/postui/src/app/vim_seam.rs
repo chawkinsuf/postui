@@ -1039,7 +1039,9 @@ impl App {
     /// A left press on a window separator (`App::is_separator_press`, spec
     /// S7): the sidebar gutter, or in vim the response's header strip.
     /// Vim keeps Visual mode and a pending operator through a press there,
-    /// so the end of the event settles nothing.
+    /// so the end of the event settles nothing. Also a press on the body's
+    /// search prompt row (#129): Vim keeps Visual and an open `/` line
+    /// through a press on its command line (probed in 9.1).
     pub(super) fn vim_separator_press(&mut self) {
         self.vim.separator_press = true;
     }
