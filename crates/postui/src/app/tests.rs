@@ -15700,6 +15700,7 @@ fn footer_chips_leave_the_table_cursor_as_their_actions_do(
             app.editor.sub_focus,
             app.editor.active_tab,
             app.modals.is_empty(),
+            app.should_quit,
         )
     };
     let probe = start(profile, false);
@@ -15735,6 +15736,8 @@ fn footer_chips_leave_the_table_cursor_as_their_actions_do(
 #[test]
 fn the_address_bar_lock_is_still_a_click_away_from_the_table_cursor() {
     let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+    assert_eq!((app.focus, app.editor.sub_focus), (PaneId::Editor, SubFocus::Content));
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "the cursor is up");
     let insecure = app.editor.insecure;
     click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
     assert_ne!(app.editor.insecure, insecure, "the lock toggled");

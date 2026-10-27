@@ -1444,15 +1444,22 @@ impl App {
         // before.
         //
         // A footer chip is the key it advertises, so while the table's
-        // cursor is up (on a row, an auto row or `+ Add`; the editor
-        // focused, its caret in a table tab, no cell open), every chip on
-        // the editor's footer keeps the cursor and the table's caret, as
-        // the keys do: the cursor's own (copy, toggle, delete, an auto row's
-        // edit; task #125) and the rest (send or cancel, add, vars, tabs,
-        // commands, quit; task #183). With no cell open the commit above has
-        // nothing to close for them. The footer's other editor chips (`esc
-        // done`, `enter edit`, `copy url`, `tls`) show only without the
-        // cursor, so they stay a click away as before.
+        // cursor is up (on whichever stop it is: a row, an auto row, `+ Add`;
+        // the editor focused, its caret in a table tab, no cell open), every
+        // chip on the editor's footer keeps the cursor and the table's
+        // caret, as the keys do: the cursor's own (copy, toggle, delete, an
+        // auto row's edit; task #125) and the rest (send or cancel, add,
+        // tabs, commands, quit; task #183; `vars` keeps it already, above).
+        // With no cell open the commit above has nothing to close for them.
+        // The footer's other editor chips (`esc done`, `enter edit`, `copy
+        // url`, `tls`) show only without the cursor, so they stay a click
+        // away as before.
+        //
+        // This asks the editor for its cursor rather than the footer's
+        // builder (`PaneChipArgs::table_row_selected`), because the two ask
+        // different things: the builder, which row's chips to show, and
+        // `+ Add` has none; this rule, whether there is a cursor to keep,
+        // and `+ Add` is one.
         //
         // The rule asks where the press landed, in the footer's rows,
         // rather than listing actions: the app bar's save/discard and the
@@ -1469,7 +1476,9 @@ impl App {
         // which inherits this exemption. The cursor is read off the app now,
         // which is the one the hit's frame was drawn from (the loop redraws
         // after any event that reports a change, as the dialog rule above
-        // relies on).
+        // relies on), and so are the footer's rows: the settled layout is
+        // measured on `term_area`, which only a draw sets, and the footer's
+        // rows don't move with the panes' eases.
         let table_cursor_chip = matches!(hit, Hit::FooterChip(_))
             && self.screen == Screen::Main
             && self.focus == PaneId::Editor
