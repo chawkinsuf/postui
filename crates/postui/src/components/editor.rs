@@ -1222,6 +1222,13 @@ impl Editor {
         }
         let row = end.row;
         self.auto_indent = None;
+        // A selection end on the row's break stays on it (#128): read
+        // before the row's length changes.
+        let on_break = self
+            .body
+            .selection
+            .as_ref()
+            .map(|s| (self.is_body_break_cell(s.start), self.is_body_break_cell(s.end)));
         if let Some(line) = self.body.lines.get_mut(edtui::RowIndex::new(row)) {
             line.clear();
         }
@@ -1246,10 +1253,20 @@ impl Editor {
                 to_start(p.row, &mut p.col);
             }
         }
+        if let (Some(sel), Some((start, end))) = (self.body.selection.as_mut(), on_break) {
+            let brk = edtui::Index2::new(row, 1); // the emptied row's break cell
+            if start && sel.start.row == row {
+                sel.start = brk;
+            }
+            if end && sel.end.row == row {
+                sel.end = brk;
+            }
+        }
         // A selection wholly inside the blanks has nothing left to select.
         // Its anchor stays, as a collapsed selection's does, so a drag
         // through the blanks goes on selecting.
-        if self.body.selection.as_ref().is_some_and(|s| s.start.row == row && s.end.row == row) {
+        let in_blanks = |s: &edtui::Index2| s.row == row && s.col == 0;
+        if self.body.selection.as_ref().is_some_and(|s| in_blanks(&s.start) && in_blanks(&s.end)) {
             self.body.selection = None;
         }
         true
@@ -1395,7 +1412,8 @@ impl Editor {
         let (start, end) = (sel.start(), sel.end());
         let Some(view) = self.body_view(area, bottom, end.row) else { return };
         let style = Style::default().bg(theme.selection).fg(theme.text);
-        for row in start.row.max(view.top)..=end.row {
+        // Only the rows in view can paint (`rows` stops at `end.row`).
+        for row in start.row.max(view.top)..view.top + view.rows.len() {
             if self.body_selects_break(start, end, row)
                 && let Some(at) = view.line_end(&self.body.lines, row)
             {
@@ -1997,6 +2015,14 @@ impl Editor {
         edtui::Index2::new(row, self.body.lines.len_col(row).unwrap_or(0).max(1))
     }
 
+    /// Whether a selection endpoint is its row's break cell. Unambiguous:
+    /// only [`Self::set_body_selection_boundaries`] and the paths that keep
+    /// a break end in place store one; a mouse selection's ends are
+    /// clamped onto chars, and edtui's own mouse path never selects.
+    fn is_body_break_cell(&self, at: edtui::Index2) -> bool {
+        at == self.body_break_cell(at.row)
+    }
+
     /// Whether the selection `start..=end` takes `row`'s line break: its
     /// break cell lies inside. That holds for every row a selection spans
     /// but its last, and for the last when it ends on the break. The body's
@@ -2036,7 +2062,7 @@ impl Editor {
         let want = breaks(&self.body) - taken.count();
         let len = self.body.lines.len_col(start.row).unwrap_or(0);
         let caret = edtui::Index2::new(start.row, start.col.min(len));
-        if start == self.body_break_cell(start.row) {
+        if self.is_body_break_cell(start) {
             // A start on the row's break: edtui would delete from the char
             // before it. Delete from the next row instead (when the
             // selection reaches it); the break goes in the count below.
@@ -2059,7 +2085,11 @@ impl Editor {
             self.body.cursor = caret;
         }
         while breaks(&self.body) > want {
+            let before = breaks(&self.body);
             JoinLineWithLineBelow.execute(&mut self.body);
+            if breaks(&self.body) == before {
+                break; // the caret's row is the last: nothing below to join
+            }
         }
         self.body_sel_anchor = None;
         self.body.mode = EditorMode::Insert;
@@ -2143,9 +2173,11 @@ impl Editor {
         };
         // An endpoint on a break stays on its row's break, wherever the
         // shift moves the row's end (#128).
-        let on_break = |e: &Self, i: edtui::Index2| i == e.body_break_cell(i.row);
-        let breaks_at =
-            self.body.selection.as_ref().map(|s| (on_break(self, s.start), on_break(self, s.end)));
+        let breaks_at = self
+            .body
+            .selection
+            .as_ref()
+            .map(|s| (self.is_body_break_cell(s.start), self.is_body_break_cell(s.end)));
         let indent = self.body_indent();
         let unit: Vec<char> = indent.unit().chars().collect();
         // A dedent strips one leading tab, or up to one level of spaces: a
@@ -2413,16 +2445,16 @@ impl BodyView {
         lines: &L,
         row: usize,
     ) -> Option<(u16, u16)> {
-        let (y0, segments) = self.rows.get(row.checked_sub(self.top)?)?;
-        let (y, x) = match segments.last() {
-            None => (*y0, 0),
-            Some(last) => {
-                let k = u16::try_from(segments.len() - 1).ok()?;
-                let line = lines.line(row);
-                (y0.saturating_add(k), line[last.clone()].iter().map(|&c| body_char_width(c)).sum())
+        let line = lines.line(row);
+        let (x, y) = match line.last() {
+            // An empty row: its first text column.
+            None => (self.x, self.rows.get(row.checked_sub(self.top)?)?.0),
+            // Just past the last char's cell (`cell` measures it).
+            Some(&c) => {
+                let (x, y) = self.cell(lines, crate::text::Pos::new(row, line.len() - 1))?;
+                (x.checked_add(u16::try_from(body_char_width(c)).ok()?)?, y)
             }
         };
-        let x = self.x.checked_add(u16::try_from(x).ok()?)?;
         (y < self.bottom && x < self.right).then_some((x, y))
     }
 }
@@ -9298,6 +9330,15 @@ mod body_click_tests {
                     assert_eq!(e.body_text(), want, "{at}");
                     let caret = Index2::new(start.row, start.col.min(rows[start.row].len()));
                     assert_eq!(e.body.cursor, caret, "caret, {at}");
+                    // Pasting over it puts the text where the selection began.
+                    let mut e = editor_with_body(body);
+                    e.set_body_selection_span(a, b);
+                    assert!(e.paste_body("X"));
+                    let mut typed: Vec<String> = want.split('\n').map(str::to_string).collect();
+                    let line = &mut typed[caret.row];
+                    let at_byte = line.char_indices().nth(caret.col).map_or(line.len(), |(i, _)| i);
+                    line.insert(at_byte, 'X');
+                    assert_eq!(e.body_text(), typed.join("\n"), "paste over, {at}");
                 }
             }
         }
@@ -9810,8 +9851,9 @@ mod body_click_tests {
         assert_eq!(screen(&e), "    a\n\nb");
         assert_eq!(e.body_sel_anchor, Some(Index2::new(1, 0)));
         let sel = e.body.selection.as_ref().expect("the selection survives");
-        assert_eq!(sel.start().row, 1);
-        assert_eq!(sel.start().col, 0);
+        // The selection began at the blanks' end, so on the row's break
+        // (#128); emptied, that row's break cell is column 1.
+        assert_eq!(sel.start(), Index2::new(1, 1));
         assert_eq!(e.body_selected_text().as_deref(), Some("\nb"), "the emptied row through b");
     }
 
@@ -9836,6 +9878,22 @@ mod body_click_tests {
         assert_eq!(e.body.cursor, Index2::new(1, 0));
         assert!(e.body.selection.is_none());
         assert_eq!(e.body_sel_anchor, Some(Index2::new(1, 0)));
+    }
+
+    /// #128 review r1: a selection of the blank line's break keeps it when
+    /// the blanks go; it is the line's break, not something in the blanks.
+    #[test]
+    fn a_selected_break_survives_the_blanks_going() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = enter_at("    a\n}", 0, 5);
+        assert_eq!(screen(&e), "    a\n    \n}");
+        e.handle_key(skey(KeyCode::Right));
+        assert_eq!(e.body_selected_text().as_deref(), Some("\n"));
+        e.settle_auto_indent(true);
+        assert_eq!(screen(&e), "    a\n\n}");
+        assert_eq!(e.body_selected_text().as_deref(), Some("\n"), "still the break");
+        e.handle_key(pkey(KeyCode::Delete));
+        assert_eq!(e.body_text(), "    a\n}");
     }
 
     /// R3, review round 4: the indent rests only with the caret right after
