@@ -374,6 +374,10 @@ fn cancel_top() -> Action {
     Action::CancelTopModal
 }
 
+fn cancel_send() -> Action {
+    Action::CancelSend
+}
+
 fn fold_of(op: crate::action::FoldOp, n: Option<usize>) -> Action {
     Action::TreeFold { op, count: count1(n) }
 }
@@ -783,7 +787,11 @@ pub static TABLE: &[Binding] = &[
     // Vim's Esc in Normal moves nothing: on the method badge, the closed
     // URL line and a table it keeps the selection where it is, where
     // arrows' Esc steps out of the badge or line and deselects the row.
-    row("<Esc>", Surfaces::METHOD.or(Surfaces::URL_LINE).or(Surfaces::TABLE), Intent::Swallow, CountRule::Ignore),
+    // It is still the app's cancel shortcut (the footer's `esc cancel`):
+    // with the open request in flight it cancels the send, and with none
+    // `CancelSend` does nothing (#191). Swallowing it would keep it from
+    // the global esc → `Close` → cancel fall-through.
+    row("<Esc>", Surfaces::METHOD.or(Surfaces::URL_LINE).or(Surfaces::TABLE), Intent::Act(cancel_send), CountRule::Ignore),
     // Key list §7 and spec §4.5 (plan M4a Deviation 11): `/` is the same in
     // both profiles. Vim's `n` `N` are counted and follow `?`/`#`'s
     // direction; arrows' step down and up, as the ▼/▲ buttons do (plan M5a
