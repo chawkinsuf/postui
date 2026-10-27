@@ -1047,9 +1047,11 @@ impl Config {
     /// when the file or the key is absent. `None` when that is not known:
     /// no files behind this `Config` ([`Self::none`]), or a file that will
     /// not read or parse (which [`Self::edit`] refuses to write anyway).
-    pub fn holds_ui_key(&mut self, key: &str) -> Option<bool> {
-        self.disk.as_ref()?;
-        let text = self.read(CONFIG_TOML).ok()?.unwrap_or_default();
+    /// A query, so it reads without recording a stamp (`Disk::peek`).
+    pub fn holds_ui_key(&self, key: &str) -> Option<bool> {
+        let disk = self.disk.as_ref()?;
+        let rel = postui_core::disk::RelPath::new(CONFIG_TOML).ok()?;
+        let text = disk.peek(&rel).ok()?.unwrap_or_default();
         let doc: toml_edit::DocumentMut = text.parse().ok()?;
         Some(doc.contains_key(key))
     }

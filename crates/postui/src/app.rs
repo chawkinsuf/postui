@@ -3509,23 +3509,20 @@ impl App {
                 }
                 let key = SettingsField::Keymap.key();
                 let after = UiValue::Text(profile.spelling().to_string());
-                match self.write_and_record_ui_value(key, after.clone()) {
-                    Ok(()) => {}
-                    // Applied whether or not it landed (spec §4.2): left
-                    // unset, the question would come straight back, and a
-                    // question that cannot be answered is worse than one
-                    // asked again at the next launch.
-                    Err(e) => {
-                        self.toasts.push(
-                            format!(
-                                "could not save {}: {e}; using {} keys for this session",
-                                crate::config::CONFIG_TOML,
-                                profile.spelling()
-                            ),
-                            ToastKind::Error,
-                        );
-                        self.apply_ui(key, &after);
-                    }
+                // Applied whether or not it landed (spec §4.2): left
+                // unset, the question would come straight back, and a
+                // question that cannot be answered is worse than one
+                // asked again at the next launch.
+                if let Err(e) = self.write_and_record_ui_value(key, after.clone()) {
+                    self.toasts.push(
+                        format!(
+                            "could not save {}: {e}; using {} keys for this session",
+                            crate::config::CONFIG_TOML,
+                            profile.spelling()
+                        ),
+                        ToastKind::Error,
+                    );
+                    self.apply_ui(key, &after);
                 }
                 if matches!(self.modals.top(), Some(Modal::KeymapChoice { .. })) {
                     self.modals.pop();
@@ -12041,19 +12038,26 @@ impl App {
     /// the default that was in effect, and a write that changed neither
     /// (clearing an unset AI command) records nothing (task #195).
     ///
-    /// A value already in effect writes nothing, as an untouched field
-    /// commit and a re-picked keymap already do: the write would only pin
-    /// a default into the file, which a click on the lit segment never
-    /// asked for, and its undo step would change nothing on screen.
+    /// The value already in effect for a key the file lacks writes
+    /// nothing, as an untouched field commit already does: the write
+    /// would only pin the default into the file, which a click on the lit
+    /// segment never asked for, and its undo step would change nothing on
+    /// screen. A key the file carries is written even so, so a click can
+    /// replace a hand-written value that read back as the default
+    /// (`jq_tab = "bogus"`).
+    ///
+    /// `after` is read back from the file rather than worked out from
+    /// `value`: which writes remove the key is `Config::save_ui_*`'s
+    /// rule, and a copy of it here would drift.
     fn write_and_record_ui_value(
         &mut self,
         key: &'static str,
         value: crate::undo::UiValue,
     ) -> Result<(), String> {
-        if ui_value(&self.ui_settings, key) == value {
+        let before = self.held_ui_value(key);
+        if before == crate::undo::UiValue::Unset(Box::new(value.clone())) {
             return Ok(());
         }
-        let before = self.held_ui_value(key);
         self.write_ui_value(key, &value)?;
         let after = self.held_ui_value(key);
         self.record_config_step(key, before, after);
@@ -12064,7 +12068,14 @@ impl App {
     /// does not carry the key: read through `Config`, which owns the file.
     /// With no files behind the app, or a file that will not read, there
     /// is nothing to tell, and the value in effect stands alone.
-    fn held_ui_value(&mut self, key: &'static str) -> crate::undo::UiValue {
+    ///
+    /// The file is asked only whether it carries the key. A carried
+    /// value is taken as the one in effect, which is what the Settings
+    /// tab last wrote or the last load read; a hand edit since then that
+    /// has not been reloaded, or a value that reads back as the default,
+    /// is undone to the value in effect, as before task #195, which is
+    /// about the absent key.
+    fn held_ui_value(&self, key: &'static str) -> crate::undo::UiValue {
         let value = ui_value(&self.ui_settings, key);
         match self.config.holds_ui_key(key) {
             Some(false) => crate::undo::UiValue::Unset(Box::new(value)),
@@ -12076,8 +12087,8 @@ impl App {
     /// in `config.toml` and, once that landed, applies it
     /// ([`Self::apply_ui`]).
     ///
-    /// It records nothing. The Settings actions record their step after
-    /// it ([`Self::set_ui_value`]); an undo or redo of a `Config` step
+    /// It records nothing. The Settings actions record their step around
+    /// it ([`Self::write_and_record_ui_value`]); an undo or redo of a `Config` step
     /// replays through it and moves its own step between the stacks, the
     /// way every replay arm calls the layer under the action that
     /// recorded it (task #182: the replay kept its own copy of the

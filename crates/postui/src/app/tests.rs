@@ -31295,8 +31295,8 @@ fn undo_of_a_change_to_a_set_setting_writes_its_value_back() {
 }
 
 /// Task #195: undo puts back the app as well as the file. A value the
-/// session applied but the file never took (a hand edit not yet
-/// reloaded, a keymap whose write was refused) is in effect again after
+/// session applied but the file never took (a key removed by hand and not
+/// yet reloaded, a keymap whose write was refused) is in effect again after
 /// the undo, with the key still absent from the file.
 #[test]
 fn undo_restores_a_session_value_the_file_never_carried() {
@@ -31313,18 +31313,20 @@ fn undo_restores_a_session_value_the_file_never_carried() {
     assert!(!text.contains("ai_cmd"), "{text:?}");
 }
 
-/// Task #195: picking the value already in effect (a click on the lit
-/// segment) writes nothing, so it pins no default into the file and
-/// leaves no undo step that changes nothing on screen.
+/// Task #195: picking the value already in effect for a key the file
+/// lacks (a click on the lit segment) writes nothing, so it pins no
+/// default into the file and leaves no undo step that changes nothing on
+/// screen. A key the file carries is written even so: the click replaces
+/// a hand-written value that read back as the default.
 #[test]
-fn picking_the_value_in_effect_writes_and_records_nothing() {
+fn picking_the_value_in_effect_pins_no_default() {
     use crate::components::settings::jq_tab_spelling;
     let dir = tempfile::tempdir().unwrap();
     let mut app = App::new_for_test();
     app.config = crate::config::Config::at(dir.path().to_path_buf());
     let lit = jq_tab_spelling(app.ui_settings.jq_tab).to_string();
 
-    app.update(Action::SetUiString { key: "jq_tab", value: lit });
+    app.update(Action::SetUiString { key: "jq_tab", value: lit.clone() });
     app.update(Action::Undo);
 
     assert!(!dir.path().join("config.toml").exists(), "nothing was written");
@@ -31333,6 +31335,11 @@ fn picking_the_value_in_effect_writes_and_records_nothing() {
         "{:?}",
         app.toasts.messages()
     );
+
+    std::fs::write(dir.path().join("config.toml"), "jq_tab = \"bogus\"\n").unwrap();
+    app.update(Action::SetUiString { key: "jq_tab", value: lit.clone() });
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert_eq!(text, format!("jq_tab = \"{lit}\"\n"), "the carried key was replaced");
 }
 
 /// Task #195: clearing an AI command the file never set leaves the file

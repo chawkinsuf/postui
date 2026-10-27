@@ -320,9 +320,10 @@ for a key the file did not carry, which `App::write_ui_value` writes as
 no key (`Config::remove_ui_key`) and applies as the boxed value. The
 undo puts the file back as it was (the user: "yes" to fixing it) and
 the app with it, and a write that changes neither, such as clearing an
-unset AI command, records no step (`mine`). A value already in effect
-writes nothing, as an untouched field commit already does, so a click
-on the lit segment pins no default and records no step (`mine`). Not
+unset AI command, records no step (`mine`). The value already in effect
+for a key the file lacks writes nothing, as an untouched field commit
+already does, so a click on the lit segment pins no default and records
+no step; a carried key is still written (`mine`). Not
 covered: a carried value that does not read back as itself (`jq_tab =
 "bogus"`, a wrong type) is undone to the value in effect (`mine`).
 
