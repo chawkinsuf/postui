@@ -80,10 +80,24 @@ fn row_for(at: SpellCtx, action: &Action) -> Option<&'static str> {
 /// ex verb where `:` applies (spec §4.6; plan M4b Deviations 20 and 21).
 /// `None` when nothing binds it.
 pub fn spell(at: SpellCtx, action: &Action, keymap: &Keymap) -> Option<String> {
+    spell_unless(at, action, keymap, false)
+}
+
+/// [`spell`], skipping the keymap's combo when `combo_remapped`: the
+/// palette's key column (task #132), where a combo can mean something else
+/// at the place it opened (the sidebar's `alt+w` steps the sidebar,
+/// `KeyContext::action`, spec S6a) while a table row or an ex verb still
+/// runs the row's own action there.
+pub fn spell_unless(
+    at: SpellCtx,
+    action: &Action,
+    keymap: &Keymap,
+    combo_remapped: bool,
+) -> Option<String> {
     if let Some(keys) = row_for(at, action) {
         return Some(notation::display(keys));
     }
-    if let Some(combo) = keymap.combo_for_action(action) {
+    if !combo_remapped && let Some(combo) = keymap.combo_for_action(action) {
         return Some(combo);
     }
     colon_applies(at).then(|| super::ex::spelling(action)).flatten()

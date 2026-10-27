@@ -550,9 +550,13 @@ pub struct PaletteState {
     /// changed: on the ex line, Enter with nothing typed runs only a
     /// picked row, as Vim's `:<CR>` runs nothing.
     picked: bool,
-    /// Where the palette opened, for the key column: a row shows its key
-    /// only when the key means the row's action there (spec S6a).
+    /// Where the palette opened, for the key column: a row shows a keymap
+    /// combo only when the combo means the row's action there (spec S6a).
     key_context: crate::keys::KeyContext,
+    /// Where the palette opened, for the key column's spelling (task #132):
+    /// taken as it opens, since once it is up `App::surface` is the
+    /// palette's own `Picker`, where no row is looked up.
+    spell: crate::keyroute::SpellCtx,
     /// The `:` line's history as it stood when the line opened, oldest
     /// first (plan M5b Task 5). Empty for ctrl+p's palette.
     history: Vec<String>,
@@ -593,16 +597,21 @@ impl PaletteState {
             refused: None,
             picked: false,
             key_context: crate::keys::KeyContext::default(),
+            spell: crate::keyroute::SpellCtx::default(),
             history: Vec::new(),
             hist_at: None,
             lookfor: None,
         }
     }
 
-    /// Records where the palette opened (`App::key_context`, see the
-    /// field).
-    pub fn with_key_context(self, key_context: crate::keys::KeyContext) -> Self {
-        Self { key_context, ..self }
+    /// Records where the palette opened (`App::key_context` and
+    /// `App::spell_ctx`, see the fields).
+    pub fn opened_at(
+        self,
+        key_context: crate::keys::KeyContext,
+        spell: crate::keyroute::SpellCtx,
+    ) -> Self {
+        Self { key_context, spell, ..self }
     }
 
     /// Lists the pills of the variable tooltip open as the palette opened,
@@ -922,21 +931,23 @@ impl PaletteState {
         stepped
     }
 
-    /// The key `c`'s row shows: the combo the keymap binds to its action
-    /// (task #105: looked up by the action itself, so no row can miss its
-    /// key), unless that key means something else where the palette opened
-    /// (the same [`crate::keys::KeyContext::action`] every key press
-    /// takes). A row whose action no key sends shows none, as "Manage:
-    /// variables" does: `alt+r` opens the tab Manage last had. So do the
-    /// sidebar width rows: no key sends their action as such, only `alt+w`
-    /// remapped while the sidebar has focus (spec S6b,
+    /// The key `c`'s row shows: the key the footer would name for its
+    /// action where the palette opened (task #132, spec E12a amended),
+    /// through [`crate::keyroute::spell`]: the router's table row, then the
+    /// keymap's combo, then the ex verb where `:` opens. The action itself
+    /// is looked up (task #105), so no row can miss its key. The combo is
+    /// skipped where it means something else (the same
+    /// [`crate::keys::KeyContext::action`] every key press takes), but a
+    /// table row or an ex verb is never remapped: from the vim sidebar the
+    /// split rows show `:split`. A row whose action no key sends shows
+    /// none, as "Manage: variables" does: `alt+r` opens the tab Manage last
+    /// had. So do the sidebar width rows: no key sends their action as
+    /// such, only `alt+w` remapped while the sidebar has focus (spec S6b,
     /// `palette_carries_the_sidebar_width_steps`).
     pub(crate) fn key_column(&self, c: &Command, keymap: &crate::keys::Keymap) -> Option<String> {
         let action = key_action(&c.action);
-        if self.key_context.action(action.clone().into_owned()) != *action {
-            return None;
-        }
-        keymap.combo_for_action(&action)
+        let remapped = self.key_context.action(action.clone().into_owned()) != *action;
+        crate::keyroute::spell::spell_unless(self.spell, &action, keymap, remapped)
     }
 
     #[cfg(test)]
@@ -1257,6 +1268,98 @@ mod tests {
                 assert_eq!(key(id), Some(want), "{id} in {profile:?}");
             }
             assert_eq!(key("manage-variables"), None, "{profile:?}");
+        }
+    }
+
+    /// The key column of row `id` in a palette opened at `at` with the
+    /// profile's default keymap.
+    fn key_at(at: crate::keyroute::SpellCtx, id: &str) -> Option<String> {
+        let keymap = crate::keys::Keymap::default_bindings_for(at.profile);
+        let p = PaletteState::new(&crate::usage::UsageStore::default(), 0)
+            .opened_at(crate::keys::KeyContext::default(), at);
+        let cmd = all_commands().into_iter().find(|c| c.id == id).expect(id);
+        p.key_column(&cmd, &keymap)
+    }
+
+    /// Task #132 (spec E12a, amended): a row names the key the footer
+    /// names where the palette opened, the router's table and the Ex verbs
+    /// included. In vim, undo is `u`, not the keymap's `^Z`, and save is
+    /// `:w`; Quit keeps `^C`, the key of the quit it runs.
+    #[test]
+    fn vim_rows_name_the_keys_the_footer_names() {
+        use crate::keyroute::{SpellCtx, Surface};
+        let vim = crate::config::KeyProfile::Vim;
+        let surfaces = [
+            Surface::Sidebar,
+            Surface::UrlLine,
+            Surface::Body,
+            Surface::Response(crate::components::response::ViewMode::Pretty),
+        ];
+        for surface in surfaces {
+            let at = SpellCtx { profile: vim, surface, ..SpellCtx::default() };
+            for (id, want) in [
+                ("undo", "u"),
+                ("redo", "^R"),
+                ("request-save", ":w"),
+                ("split-step", ":split"),
+                ("split-step-back", ":splitback"),
+                ("request-import-curl", ":import"),
+                ("request-copy-curl", ":copycurl"),
+                ("quit", "^C"),
+            ] {
+                assert_eq!(key_at(at, id).as_deref(), Some(want), "{id} on {surface:?}");
+            }
+        }
+    }
+
+    /// Task #132: the response's search row is `/` opened from the
+    /// response, in both profiles, and has no key elsewhere.
+    #[test]
+    fn the_search_row_is_slash_from_the_response() {
+        use crate::keyroute::{SpellCtx, Surface};
+        let response = Surface::Response(crate::components::response::ViewMode::Pretty);
+        for profile in [crate::config::KeyProfile::Arrows, crate::config::KeyProfile::Vim] {
+            let at = |surface| SpellCtx { profile, surface, ..SpellCtx::default() };
+            assert_eq!(
+                key_at(at(response), "response-search").as_deref(),
+                Some("/"),
+                "{profile:?}"
+            );
+            assert_eq!(key_at(at(Surface::Sidebar), "response-search"), None, "{profile:?}");
+        }
+    }
+
+    /// Task #132: opened from a field that is typing, every key types, so
+    /// only the keymap's combos spell, as in the footer.
+    #[test]
+    fn rows_opened_from_a_typing_field_name_keymap_combos_only() {
+        use crate::keyroute::{FieldSpell, SpellCtx, Surface};
+        let at = SpellCtx {
+            profile: crate::config::KeyProfile::Vim,
+            surface: Surface::UrlLine,
+            field: FieldSpell::Typing,
+        };
+        assert_eq!(key_at(at, "undo").as_deref(), Some("^Z"));
+        assert_eq!(key_at(at, "request-save"), None);
+    }
+
+    /// Task #132 with S6a: opened from the sidebar, the split rows drop
+    /// the keymap's `alt+w` (it widens the sidebar there) but keep an Ex
+    /// verb, which always moves the split.
+    #[test]
+    fn the_sidebar_drops_the_split_combo_but_not_the_ex_verb() {
+        use crate::keyroute::{SpellCtx, Surface};
+        let sidebar = crate::keys::KeyContext { sidebar_on_main: true };
+        let keymap = crate::keys::Keymap::default_bindings();
+        let cmd = all_commands().into_iter().find(|c| c.id == "split-step").expect("split-step");
+        for (profile, want) in [
+            (crate::config::KeyProfile::Arrows, None),
+            (crate::config::KeyProfile::Vim, Some(":split".to_string())),
+        ] {
+            let at = SpellCtx { profile, surface: Surface::Sidebar, ..SpellCtx::default() };
+            let p =
+                PaletteState::new(&crate::usage::UsageStore::default(), 0).opened_at(sidebar, at);
+            assert_eq!(p.key_column(&cmd, &keymap), want, "{profile:?}");
         }
     }
 
