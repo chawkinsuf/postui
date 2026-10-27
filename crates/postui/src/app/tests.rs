@@ -753,6 +753,7 @@ fn ctrl_j_breaks_the_body_line_through_the_router() {
     app.editor.body.cursor = edtui::Index2::new(0, 3);
     app.handle_key(ctrl('j'));
     assert_eq!(app.editor.body.cursor, edtui::Index2::new(1, 2), "indented like Enter");
+    assert_eq!(app.editor.body.lines.to_string(), "  a\n  ", "the indent is on screen");
 }
 
 /// ctrl+d is unbound at the global keymap, so it must reach the focused
