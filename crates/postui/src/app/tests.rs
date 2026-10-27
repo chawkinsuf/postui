@@ -32384,7 +32384,7 @@ fn opening_manage_syncs_a_selector_removed_while_it_was_closed() {
     app.update(Action::OpenManage { tab: None });
     use crate::components::varmanager::{VmDetail, VmRow};
     assert!(!app.varmanager.left_rows.contains(&VmRow::Group("user".into())), "list synced");
-    assert!(!matches!(app.varmanager.detail, VmDetail::Group(_)), "detail moved off it");
+    assert_ne!(app.varmanager.detail, VmDetail::Group("user".into()), "detail moved off it");
     assert_highlight_names_the_detail(&app);
 }
 

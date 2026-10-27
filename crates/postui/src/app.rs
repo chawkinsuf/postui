@@ -6887,8 +6887,12 @@ impl App {
                     // screen is up, so whatever changed while it was closed
                     // is handed over here, once, as the screen comes up
                     // (task #84). This one call covers every off-screen
-                    // change, so no refresh site has to sync a hidden
-                    // screen. It runs whichever tab opens: a tab switch on
+                    // change to the declarations, including a path that
+                    // forgot to sync at all, so no refresh site has to sync
+                    // a hidden screen; dropping the sites' guards instead
+                    // would cover only the sites that sync. This is the one
+                    // place the screen comes up. It runs whichever tab
+                    // opens: a tab switch on
                     // screen (`SelectManageTab`) doesn't sync, and the
                     // on-screen sites keep the Manager current from here on.
                     //
