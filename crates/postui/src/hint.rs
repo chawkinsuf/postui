@@ -286,6 +286,7 @@ fn hint_source(hit: &Hit, ctx: &HintCtx) -> Option<Source> {
         | Hit::TableCell { .. }
         | Hit::AutoHeaderRow(_)
         | Hit::BodyEditor
+        | Hit::BodyPromptRow
         | Hit::SplitHandle
         | Hit::StripControls
         | Hit::SidebarGutter

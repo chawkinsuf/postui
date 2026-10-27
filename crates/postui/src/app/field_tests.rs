@@ -1737,22 +1737,32 @@ fn l_then_slash_keeps_the_carets_line_in_view() {
 }
 
 /// #129: the prompt's row is not the body's, open or not, so a click on
-/// it doesn't move the body's caret to a line the body doesn't show.
+/// it doesn't move the body's caret to a line the body doesn't show. It
+/// is still the body's for focus, as a click on Vim's command line leaves
+/// the window and its cursor (probed: `3G`, a click there, the cursor on
+/// line 3 in Normal), and an open search stays open.
 #[test]
 fn a_click_on_the_search_prompt_leaves_the_body_caret() {
     let mut app = vim(Fixture::Body);
     let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
     app.editor.set_body_text(&lines.join("\n"));
     draw(&mut app);
+    feed(&mut app, "3G");
     let caret = app.editor.body.cursor;
     let area = app.editor.last_body_area.unwrap();
     assert!(!app.hits.rects_of(&Hit::BodyEditor).iter().any(|r| r.bottom() > area.bottom()));
+    let held = |app: &App| app.focus == PaneId::Editor && app.editor.sub_focus == SubFocus::Content;
+    assert!(held(&app));
     click_at(&mut app, area.x + 8, area.bottom());
     assert_eq!(app.editor.body.cursor, caret, "the blank row");
+    assert!(held(&app), "the body keeps the keyboard");
     feed(&mut app, "/x");
     assert!(!app.hits.rects_of(&Hit::BodyEditor).iter().any(|r| r.bottom() > area.bottom()));
     click_at(&mut app, area.x + 8, area.bottom());
     assert_eq!(app.editor.body.cursor, caret, "the open prompt");
+    assert!(held(&app));
+    let prompt = app.editor.body_search.prompt.as_ref().map(|p| p.text.as_str());
+    assert_eq!(prompt, Some("x"), "the search stays open");
 }
 
 /// #129: the bar measures the body above the prompt's row, as the thumb

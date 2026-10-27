@@ -131,6 +131,10 @@ pub enum Hit {
     SidebarGutter,
     /// Raw mouse event forwarded to edtui (click-to-place, wheel).
     BodyEditor,
+    /// The vim profile's search prompt row under the body (#129). A click
+    /// there is the body's for focus but moves no caret, as a click on
+    /// Vim's command line leaves the window's cursor where it is.
+    BodyPromptRow,
     ResponseTab(crate::components::response::ViewMode),
     CopyBodyButton,
     SaveBodyButton,
@@ -466,6 +470,7 @@ impl PointerShape {
             Some(
                 Hit::Pane(_)
                 | Hit::StripControls
+                | Hit::BodyPromptRow
                 | Hit::ModalOutside
                 | Hit::ModalBody
                 | Hit::TipPanel(_)

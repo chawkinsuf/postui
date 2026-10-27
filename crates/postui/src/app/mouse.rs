@@ -1537,8 +1537,8 @@ impl App {
         // sub-focus (UrlBar, BodyEditor, the table hits) re-set it right
         // after; dialog and scrollbar clicks are excluded above so an open
         // popup or a scroll never blurs the input under it.
-        let keeps_editor_input =
-            keeps_table_selection || matches!(hit, Hit::UrlBar | Hit::BodyEditor | Hit::CopyUrl);
+        let keeps_editor_input = keeps_table_selection
+            || matches!(hit, Hit::UrlBar | Hit::BodyEditor | Hit::BodyPromptRow | Hit::CopyUrl);
         if !keeps_editor_input {
             self.move_editor_caret(SubFocus::None);
         }
@@ -1550,6 +1550,14 @@ impl App {
                 // The caret, a double click's word, and a sweep armed:
                 // whole words after a double click.
                 self.press_text(FieldId::Body, m, clicks, true);
+                self.update(Action::Render)
+            }
+            // The body's for focus, with no caret move and no sweep: a
+            // click on Vim's command line leaves the cursor, and an open
+            // search stays open (#129).
+            Hit::BodyPromptRow => {
+                self.update(Action::FocusPane(PaneId::Editor));
+                self.move_editor_caret(SubFocus::Content);
                 self.update(Action::Render)
             }
             Hit::HeaderProject => self.update(Action::OpenProjectChooser),

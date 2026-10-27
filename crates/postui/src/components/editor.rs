@@ -243,9 +243,9 @@ pub struct Editor {
     /// Whether the body pane keeps its bottom row for the engine's search
     /// prompt: the vim profile's, set by `ui::draw` every frame. Vim's
     /// command line is a row of its own at all times (`'cmdheight'` 1,
-    /// never 0),
-    /// so the body is one row shorter whether or not a search is open,
-    /// and `/` never resizes it (#129).
+    /// never 0), so the body is one row shorter whether or not a search
+    /// is open, and `/` never resizes it (#129). A display copy of the
+    /// profile, as the response's `set_vim_cursor` is.
     pub(crate) prompt_row: bool,
     /// The fixed end of an in-progress body selection: planted by a left
     /// click (mouse) or the first shifted motion (keyboard), consumed by
@@ -3912,11 +3912,25 @@ impl Editor {
                 // all see the body above it, so `/` never resizes the body
                 // or shifts its text, and nothing the body shows sits under
                 // the prompt (#129). The row is blank while no search is
-                // open, as Vim's command line is.
+                // open, as Vim's command line is. A pane of one row keeps
+                // it for the body, and an open prompt draws over it: Vim's
+                // current window always has a line (`'winminheight'`: "the
+                // cursor has to have somewhere to go"), and in a one-row
+                // terminal its `/` line draws over that line (probed).
                 let prompt_row = (self.prompt_row && area.height > 0).then(|| {
-                    area.height -= 1;
-                    Rect { y: area.bottom(), height: 1, ..area }
+                    if area.height > 1 {
+                        area.height -= 1;
+                        Rect { y: area.bottom(), height: 1, ..area }
+                    } else {
+                        area
+                    }
                 });
+                // The prompt's row when it is not the body's: kept below
+                // it, or drawn over a one-row body while a search is open.
+                let prompt_open = self.body_search.prompt.is_some();
+                let prompt_hit = prompt_row.filter(|row| prompt_open || row.y >= area.bottom());
+                // The body row under an open prompt (a one-row body).
+                let covered = prompt_hit.filter(|row| row.y < area.bottom()).map(|row| row.y);
                 let spec = ScrollbarSpec {
                     pane: PaneId::Editor,
                     offset: self.body.viewport_offset().1,
@@ -4001,16 +4015,11 @@ impl Editor {
                 } else if !focused {
                     edtui_theme = edtui_theme.hide_cursor();
                 }
-                // A body with no row left (a one-row pane whose row is the
-                // prompt's) draws edtui nothing: it would paint its caret
-                // outside the area, on the prompt's row.
-                if area.height > 0 {
-                    let view = EditorView::new(&mut self.body)
-                        .theme(edtui_theme)
-                        .wrap(true)
-                        .line_numbers(LineNumbers::Absolute);
-                    frame.render_widget(view, area);
-                }
+                let view = EditorView::new(&mut self.body)
+                    .theme(edtui_theme)
+                    .wrap(true)
+                    .line_numbers(LineNumbers::Absolute);
+                frame.render_widget(view, area);
                 self.paint_selected_breaks(frame.buffer_mut(), area, theme);
                 if focused {
                     self.paint_bracket_pair(frame.buffer_mut(), area, theme);
@@ -4022,6 +4031,11 @@ impl Editor {
                 // — the documented limitation of this approach.
                 let buf = frame.buffer_mut();
                 for y in area.y..area.bottom() {
+                    // A token under an open prompt gets no hit a click
+                    // could find (final review M-4).
+                    if Some(y) == covered {
+                        continue;
+                    }
                     let row = Rect::new(area.x, y, area.width, 1);
                     let text = crate::components::var_tokens::row_text(buf, row);
                     if !text.contains("{{") {
@@ -4053,12 +4067,18 @@ impl Editor {
                 }
                 // The engine's search prompt on the pane's bottom row (spec
                 // §5.6; plan M3a Deviation 16), on the row kept for it
-                // above.
+                // above. Its hit is over the body's and the tokens', so a
+                // click there never reaches a line under it.
+                if let Some(row) = prompt_hit {
+                    hits.register(row, crate::hit::Hit::BodyPromptRow);
+                }
                 if let (Some(line), Some(row)) = (&self.body_search.prompt, prompt_row) {
                     let y = row.y;
                     let style = Style::default().bg(theme.panel).fg(theme.text);
                     let buf = frame.buffer_mut();
-                    // The panel fill reaches past the query.
+                    // Blank the row first, modifiers too: the panel fill
+                    // reaches past the query, and a one-row body's text and
+                    // caret under it never show (#115).
                     crate::paint::fill(buf, row, theme.panel);
                     let text = format!("{}{}", line.dir.delim(), line.text);
                     buf.set_stringn(row.x, y, &text, usize::from(row.width), style);
@@ -5493,23 +5513,57 @@ mod tests {
         assert!(row(&open, area.bottom()).starts_with('/'), "the prompt is below it");
     }
 
-    /// #129: a pane of one row gives it to the prompt; edtui draws nothing,
-    /// so its caret never lands on the prompt's row.
+    /// #129: a pane of one row keeps it for the body, as Vim's current
+    /// window always has a line; an open prompt draws over it, and nothing
+    /// of the body (its caret, a `{{token}}`'s hit) shows or clicks there.
     #[test]
-    fn a_one_row_pane_keeps_its_row_for_the_prompt() {
+    fn a_one_row_pane_keeps_its_row_for_the_body() {
         let mut e = body_editor("{}");
         draw_body(&mut e, true);
         let tall = e.last_body_area.unwrap().height;
         let rows = 24 - (tall - 1); // a terminal whose pane has one row
+        e.set_body_text("{{v}} line");
         e.body.mode = EditorMode::Normal;
         e.prompt_row = true;
-        let buf = draw_body_sized(&mut e, true, rows);
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            pointer: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let draw = |e: &mut Editor| {
+            let mut terminal = Terminal::new(TestBackend::new(120, rows)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal.draw(|f| e.draw(f, f.area(), &ctx, &mut hits)).unwrap();
+            (terminal.backend().buffer().clone(), hits)
+        };
+        let (buf, hits) = draw(&mut e);
         let area = e.last_body_area.unwrap();
-        assert_eq!(area.height, 0, "the prompt has the row");
-        assert!(
-            (area.x..area.right()).all(|x| !buf[(x, area.y)].modifier.contains(Modifier::REVERSED)),
-            "no caret on the prompt's row"
-        );
+        assert_eq!(area.height, 1, "the body keeps the row");
+        let row: String = (area.x..area.right()).map(|x| buf[(x, area.y)].symbol()).collect();
+        assert!(row.contains("line"), "{row:?}");
+        assert!(hits.rect_of(&crate::hit::Hit::BodyPromptRow).is_none());
+        e.body_search.prompt = Some(crate::vim::engine::SearchLine {
+            dir: crate::vim::engine::Dir::Forward,
+            text: "x".into(),
+            cursor: 1,
+        });
+        let (buf, hits) = draw(&mut e);
+        assert_eq!(e.last_body_area, Some(area), "the same body");
+        let row: String = (area.x..area.right()).map(|x| buf[(x, area.y)].symbol()).collect();
+        assert_eq!(row.trim_end(), "/x", "the prompt over it");
+        let reversed: Vec<u16> = (area.x..area.right())
+            .filter(|&x| buf[(x, area.y)].modifier.contains(Modifier::REVERSED))
+            .map(|x| x - area.x)
+            .collect();
+        assert_eq!(reversed, [2], "only the prompt's caret");
+        assert!(hits.rects_of(&crate::hit::Hit::VarToken("v".into())).is_empty());
+        let top = hits.hit_at(area.x + 4, area.y);
+        assert_eq!(top, Some(&crate::hit::Hit::BodyPromptRow));
     }
 
     /// R8: Visual paints over the pair.
