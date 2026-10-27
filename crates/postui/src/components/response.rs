@@ -1796,16 +1796,19 @@ impl ReadyView {
     ///
     /// Only `%` and the vim search's landings call it, the jumps along a
     /// line that would otherwise move an unseen column. Vim keeps its cursor
-    /// in view after every command; here `h` `l` `0` `$` keep their steps,
-    /// and a move to another line keeps the scroll (spec §5.7's known
-    /// differences).
+    /// in view after every command, but a call from every move
+    /// (`follow_cursor`) would undo `h` `l`'s step scroll, which moves the
+    /// view a step while the column moves one char (the user's ruling, spec
+    /// §5.7), and would make `j` `k` `G` and the page keys scroll sideways
+    /// too, a change of their own. Those stay the known differences.
     fn show_cursor_col(&mut self) {
-        let Some(line) = self.real_line() else { return };
+        // The column as the landing just set it (`set_col`), read without
+        // `cur_col`, which copies the line to clamp it, and the line
+        // borrowed where it can be: a raw line can be megabytes long.
+        let Some((line, col)) = self.at_col else { return };
         if self.in_closed_fold(line) {
             return;
         }
-        let col = self.cur_col();
-        // Borrowed where it can be: a raw line can be megabytes long.
         let owned;
         let text = match self.mode {
             ViewMode::Raw => self.raw_lines.get(self.cursor).map(String::as_str),
@@ -2054,6 +2057,9 @@ impl ReadyView {
         }
         let len = self.buffer_line(line).map_or(0, |t| t.chars().count());
         self.set_col(start.min(len.saturating_sub(1)));
+        // Keyed on the search's kind, as the fold opening above is, not on
+        // the profile: a vim search stays one when stepped after a switch to
+        // arrows, which only ever starts plain-text ones.
         if vim {
             self.show_cursor_col();
         }
