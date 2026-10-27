@@ -96,9 +96,8 @@
   input", typed in answer to whether a chip click should keep the open URL
   line and the method badge's selection):* so it does with the URL line
   open, its typing and caret kept (`done` closes it), and with the method
-  badge selected. *Mine:* the rule is the editor's whole footer, whatever
-  the sub-focus, so a chip with none set leaves the editor as its key
-  does too.)
+  badge selected. With no sub-focus a chip click is still a click away, as
+  before.)
   The response chip is `Key::Pair` of the two `CopyRow` actions.
   `TableCursor` gains `headers` on `Row` and a `ResponseHeader` variant
   for the response's cursor.

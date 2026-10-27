@@ -1399,19 +1399,26 @@ impl App {
         // (The footer's quit chip, once its exception, is not drawn under a
         // dialog since task #85: no quit runs under one.)
         let in_dialog = !self.modals.is_empty();
-        // A footer chip is the key it advertises. While the editor has the
-        // focus, wherever its caret is (the table's cursor on any stop, an
-        // open cell, the Body, the URL line selected or open, the method
-        // badge), every chip on the main screen's footer is no click away
-        // at all: the cell, its typing, the line's edit, the cursor and the
-        // caret stay as its key leaves them (tasks #125, #183, #192 and
-        // #194; spec 2026-10-26 header-copy, Footer). The
-        // click is the chip's action and nothing else, which is what its
-        // key runs: send and quit commit the cell themselves, `done` closes
-        // it or the URL line, the add chip moves the caret. Where a
-        // keycap's key does something else first (the in-flight `esc
-        // cancel` chip's Esc on a selected URL line deselects it), the
-        // click is still the action the chip names.
+        // A footer chip is the key it advertises. While the editor's caret
+        // is anywhere in it (the table's cursor on any stop, an open cell,
+        // the Body, the URL line selected or open, the method badge), every
+        // chip on the main screen's footer is no click away at all: the
+        // cell, its typing, the line's edit, the cursor and the caret stay
+        // as its key leaves them (tasks #125, #183, #192 and #194; spec
+        // 2026-10-26 header-copy, Footer). The click is the chip's action
+        // and nothing else, which is what its key runs: send and quit
+        // commit the cell themselves, `done` closes it or the URL line, the
+        // add chip moves the caret. Where a keycap's key does something
+        // else first (the in-flight `esc cancel` chip's Esc on a selected
+        // URL line deselects it), the click is still the action the chip
+        // names.
+        //
+        // With no sub-focus there is no caret to keep, and the click away
+        // is left as it was: the tasks name the states above, and the only
+        // thing it could take there is a table cursor left over from
+        // another state, which it has always dropped. The vars and
+        // tooltip-edit chips' own exemptions below hold there, and on the
+        // screens and panes this gate leaves out.
         //
         // The rule asks where the press landed, not which action: the app
         // bar's save/discard, the address bar's lock and the Body toolbar
@@ -1428,6 +1435,7 @@ impl App {
         let editor_footer_chip = matches!(hit, Hit::FooterChip(_))
             && self.screen == Screen::Main
             && self.focus == PaneId::Editor
+            && self.editor.sub_focus != SubFocus::None
             && self.settled_layout().is_some_and(|l| {
                 l.footer.contains(ratatui::layout::Position { x: m.column, y: m.row })
             });
