@@ -6882,15 +6882,24 @@ impl App {
                     // last was would read as a switch that never happened.
                     self.anims.clear(AnimKey::TabUnderline(StripId::ManageTabs));
                     self.anims.clear(AnimKey::TabUnderlineWidth(StripId::ManageTabs));
-                    // The refresh sites sync the Variable Manager only
-                    // while the screen is up, so whatever changed while it
-                    // was closed (an outside edit, an undo, a reload) is
-                    // handed over here, once, as the screen comes up (task
-                    // #84). This one call covers every off-screen change,
-                    // so no refresh site has to sync a hidden screen. It
-                    // runs whichever tab opens: a tab switch on screen
-                    // (`SelectManageTab`) doesn't sync, and the on-screen
-                    // sites keep the Manager current from here on.
+                    // Most refresh sites (reloads, undo's landing, env
+                    // switches) sync the Variable Manager only while the
+                    // screen is up, so whatever changed while it was closed
+                    // is handed over here, once, as the screen comes up
+                    // (task #84). This one call covers every off-screen
+                    // change, so no refresh site has to sync a hidden
+                    // screen. It runs whichever tab opens: a tab switch on
+                    // screen (`SelectManageTab`) doesn't sync, and the
+                    // on-screen sites keep the Manager current from here on.
+                    //
+                    // Why here and not in `VarManager::draw`: the state has
+                    // to be right before the next key, which can arrive
+                    // ahead of the next frame, and a per-frame sync would
+                    // snap the list onto the cursor on every paint,
+                    // undoing the wheel. The cost: like every sync, this
+                    // one snaps the list onto the cursor, so a list
+                    // wheel-scrolled away from its selection reopens
+                    // showing the selection again.
                     self.sync_varmanager();
                 } else if prev != target {
                     self.retarget_manage_tab_underline(prev);

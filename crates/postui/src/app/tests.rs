@@ -32379,11 +32379,25 @@ fn opening_manage_syncs_a_selector_removed_while_it_was_closed() {
     )
     .unwrap();
     app.on_focus_gained();
+    // No frame between the open and the asserts: the state is right before
+    // the next paint, which a key can arrive ahead of.
     app.update(Action::OpenManage { tab: None });
-    rendered_text(&mut app);
     use crate::components::varmanager::{VmDetail, VmRow};
     assert!(!app.varmanager.left_rows.contains(&VmRow::Group("user".into())), "list synced");
     assert!(!matches!(app.varmanager.detail, VmDetail::Group(_)), "detail moved off it");
+    assert_highlight_names_the_detail(&app);
+}
+
+/// The Variable Manager's highlighted row is the one its detail pane shows.
+fn assert_highlight_names_the_detail(app: &App) {
+    use crate::components::varmanager::{VmDetail, VmRow};
+    let vm = &app.varmanager;
+    let on = match vm.left_rows.get(vm.left_cursor) {
+        Some(VmRow::Var(n)) => VmDetail::Var(n.clone()),
+        Some(VmRow::Group(n)) => VmDetail::Group(n.clone()),
+        _ => VmDetail::None,
+    };
+    assert_eq!(on, vm.detail, "the highlight and the pane agree");
 }
 
 /// Task #84: a variable an undo on the main screen removes is gone from the
@@ -32403,10 +32417,10 @@ fn opening_manage_syncs_a_variable_an_undo_removed_while_it_was_closed() {
     app.update(Action::Undo);
     assert!(!app.project().unwrap().variables().vars.contains_key("widget_id"), "undone");
     app.update(Action::OpenManage { tab: None });
-    rendered_text(&mut app);
     use crate::components::varmanager::{VmDetail, VmRow};
     assert!(!app.varmanager.left_rows.contains(&VmRow::Var("widget_id".into())), "list synced");
     assert_ne!(app.varmanager.detail, VmDetail::Var("widget_id".into()), "detail moved off it");
+    assert_highlight_names_the_detail(&app);
 }
 
 /// Task #76: Copy clicked in a live grid cell's own menu copies the cell's
