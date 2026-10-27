@@ -28,7 +28,7 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] #156 `ctrl+u` in the arrows body runs edtui's own one-character undo (pulled in by the user with #127)
 - [x] #159 A copy pill's shift+click never arrives, even in Ghostty (filed by the user, 2026-10-26; merged 2026-10-27: the whole-header click is alt+click, `opt+click` on macOS)
 - [x] #166 A shift+arrow after a click selects from the click point, not the caret (pulled in by the user, 2026-10-27; merged 2026-10-27: with no live selection, the caret is the anchor)
-- [ ] #157 `ctrl+j` in the arrows body breaks the line without auto-indent (pulled in by the user, 2026-10-27, with the two below)
+- [x] #157 `ctrl+j` in the arrows body breaks the line without auto-indent (pulled in by the user, 2026-10-27, with the two below; merged 2026-10-27: ctrl+j takes Enter's path)
 - [ ] #161 A non-UTF-8 command-line argument panics
 - [ ] #162 Printing `--version`, `--help` or `--setup` panics when stdout can't be written (e.g. `postui --help | head`)
 

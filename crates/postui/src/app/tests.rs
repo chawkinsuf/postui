@@ -740,6 +740,21 @@ fn ctrl_u_reaches_an_open_text_field_through_the_router() {
     assert_eq!(app.modals.focused_input().unwrap().text(), "", "the prompt cleared");
 }
 
+/// #157: ctrl+j is unbound at the global keymap, so it reaches the arrows
+/// body through the router, where it breaks the line as Enter does.
+#[test]
+fn ctrl_j_breaks_the_body_line_through_the_router() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("r".into()));
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.set_body_text("  a");
+    app.editor.body.cursor = edtui::Index2::new(0, 3);
+    app.handle_key(ctrl('j'));
+    assert_eq!(app.editor.body.cursor, edtui::Index2::new(1, 2), "indented like Enter");
+}
+
 /// ctrl+d is unbound at the global keymap, so it must reach the focused
 /// sidebar's own `handle_key` through the app router (app.rs "step 5").
 #[test]
