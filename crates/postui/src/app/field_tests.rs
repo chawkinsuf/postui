@@ -1667,184 +1667,117 @@ fn cells_of(buf: &ratatui::buffer::Buffer, area: ratatui::layout::Rect, c: &str)
         .collect()
 }
 
-/// Spec §5.6: the prompt is drawn on the body pane's bottom row, a row
-/// the body gives up while it is open (#129).
+/// Spec §5.6: the prompt is drawn on the body pane's bottom row, which
+/// the vim profile keeps for it, open or not, as Vim keeps its command
+/// line (#129): the body stays the rows above it.
 #[test]
 fn the_search_prompt_draws_on_the_bodys_bottom_row() {
     let mut app = vim(Fixture::Body);
     app.editor.set_body_text("foo bar foo");
-    let full = app.editor.last_body_area.unwrap();
-    feed(&mut app, "/fo");
     let buf = draw_buffer(&mut app);
     let area = app.editor.last_body_area.unwrap();
-    assert_eq!(area.height + 1, full.height, "the body gives the prompt its bottom row");
-    let bottom = row_text(&buf, full, full.bottom() - 1);
+    assert_eq!(row_text(&buf, area, area.bottom()).trim(), "", "a blank row below the body");
+    feed(&mut app, "/fo");
+    let buf = draw_buffer(&mut app);
+    assert_eq!(app.editor.last_body_area, Some(area), "the body keeps its size");
+    let bottom = row_text(&buf, area, area.bottom());
     assert!(bottom.starts_with("/fo"), "{bottom:?}");
     feed(&mut app, "<Esc>");
     let buf = draw_buffer(&mut app);
-    assert_eq!(app.editor.last_body_area, Some(full), "Esc gives the row back");
-    assert!(!row_text(&buf, full, full.bottom() - 1).starts_with("/fo"), "Esc closes the prompt");
+    assert_eq!(app.editor.last_body_area, Some(area), "and after Esc");
+    assert_eq!(row_text(&buf, area, area.bottom()).trim(), "", "Esc closes the prompt");
 }
 
-/// #129: in the frame `/` opens the prompt, a caret on the body's last
-/// row (`L`) scrolls up to show above it, and the engine's view is the
-/// shorter body.
+/// #129: the arrows profile keeps no row for the vim prompt: its body
+/// has the pane's rows, one more than the vim profile's.
 #[test]
-fn the_search_prompt_keeps_the_carets_line_in_view() {
+fn the_arrows_body_keeps_no_prompt_row() {
+    let mut app = vim(Fixture::Body);
+    let area = app.editor.last_body_area.unwrap();
+    app.use_profile(KeyProfile::Arrows);
+    draw(&mut app);
+    let arrows = app.editor.last_body_area.unwrap();
+    assert_eq!(arrows, ratatui::layout::Rect { height: area.height + 1, ..area });
+}
+
+/// #129, the task's steps: `L` puts the caret on the body's last row, and
+/// `/` shows it there above the prompt, nothing moved. Esc leaves the
+/// view as it was. The engine's window is the body's rows throughout.
+#[test]
+fn l_then_slash_keeps_the_carets_line_in_view() {
     let mut app = vim(Fixture::Body);
     let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
     app.editor.set_body_text(&lines.join("\n"));
     draw(&mut app);
     feed(&mut app, "L");
-    let full = app.editor.last_body_area.unwrap();
+    let before = draw_buffer(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    let h = usize::from(area.height);
     let caret = app.editor.body.cursor.row;
-    assert_eq!(caret, usize::from(full.height) - 1, "L: the last row");
+    assert_eq!(caret, h - 1, "L: the last row");
+    assert_eq!(app.view_ctx(FieldId::Body).viewport_rows, Some(h));
+    let body = |buf: &ratatui::buffer::Buffer| -> Vec<String> {
+        (area.y..area.bottom()).map(|y| row_text(buf, area, y)).collect()
+    };
     // One key and one frame, no settling draw after.
     for ev in crate::keyroute::notation::events("/") {
         app.handle_key(ev);
     }
-    let buf = draw_buffer(&mut app);
-    let area = app.editor.last_body_area.unwrap();
-    let last = row_text(&buf, area, area.bottom() - 1);
+    let open = draw_buffer(&mut app);
+    assert_eq!(app.editor.last_body_area, Some(area));
+    assert_eq!(body(&open), body(&before), "nothing shifts");
+    let last = row_text(&open, area, area.bottom() - 1);
     assert!(last.trim_end().ends_with(&format!("row{caret}")), "{last:?}");
-    assert!(row_text(&buf, full, full.bottom() - 1).starts_with('/'));
-}
-
-/// #129: the engine's window keeps the prompt's row, as Vim's command
-/// line is never taken from its window: Enter runs the search after the
-/// prompt closes, so a match on the pane's last row needs no scroll.
-#[test]
-fn the_engine_window_keeps_the_search_prompts_row() {
-    let mut app = vim(Fixture::Body);
-    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
-    app.editor.set_body_text(&lines.join("\n"));
-    draw(&mut app);
-    let full = app.editor.last_body_area.unwrap();
-    let h = usize::from(full.height);
-    feed(&mut app, "L/");
+    assert!(row_text(&open, area, area.bottom()).starts_with('/'));
     assert_eq!(app.view_ctx(FieldId::Body).viewport_rows, Some(h));
-    assert_eq!(app.editor.body.viewport_offset().1, 1, "the caret's line moved up");
-    // The line just past the shorter body, on the pane's last row.
-    feed(&mut app, &format!("row{h}<CR>"));
-    assert_eq!(app.editor.body.cursor.row, h);
-    assert_eq!(app.editor.body.viewport_offset().1, 1, "it shows without a scroll");
+    feed(&mut app, "<Esc>");
+    let closed = draw_buffer(&mut app);
+    assert_eq!(app.editor.body.viewport_offset().1, 0);
+    assert_eq!(body(&closed), body(&before), "Esc leaves the view as it was");
 }
 
-/// #129: the prompt row is not the body's, so a click on it doesn't move
-/// the body's caret to a line it can't show.
+/// #129: the prompt's row is not the body's, open or not, so a click on
+/// it doesn't move the body's caret to a line the body doesn't show.
 #[test]
 fn a_click_on_the_search_prompt_leaves_the_body_caret() {
     let mut app = vim(Fixture::Body);
     let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
     app.editor.set_body_text(&lines.join("\n"));
     draw(&mut app);
-    feed(&mut app, "/x");
     let caret = app.editor.body.cursor;
     let area = app.editor.last_body_area.unwrap();
     assert!(!app.hits.rects_of(&Hit::BodyEditor).iter().any(|r| r.bottom() > area.bottom()));
     click_at(&mut app, area.x + 8, area.bottom());
-    assert_eq!(app.editor.body.cursor, caret);
+    assert_eq!(app.editor.body.cursor, caret, "the blank row");
+    feed(&mut app, "/x");
+    assert!(!app.hits.rects_of(&Hit::BodyEditor).iter().any(|r| r.bottom() > area.bottom()));
+    click_at(&mut app, area.x + 8, area.bottom());
+    assert_eq!(app.editor.body.cursor, caret, "the open prompt");
 }
 
-/// #129: the prompt's row is the body's again once it closes, and the
-/// view stays where the prompt scrolled it: `L`, `/`, Esc leaves the body
-/// one line down, the caret's line one row above the bottom.
+/// #129: the bar measures the body above the prompt's row, as the thumb
+/// drag's spec does, and stays as it is when the prompt opens.
 #[test]
-fn closing_the_search_prompt_keeps_the_view() {
-    let mut app = vim(Fixture::Body);
-    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
-    app.editor.set_body_text(&lines.join("\n"));
-    draw(&mut app);
-    feed(&mut app, "L");
-    let full = app.editor.last_body_area.unwrap();
-    feed(&mut app, "/");
-    assert_eq!(app.editor.body.viewport_offset().1, 1, "the caret's line moved up");
-    feed(&mut app, "<Esc>");
-    let buf = draw_buffer(&mut app);
-    assert_eq!(app.editor.last_body_area, Some(full));
-    assert_eq!(app.editor.body.viewport_offset().1, 1, "no scroll back");
-    let caret = app.editor.body.cursor.row;
-    let row = row_text(&buf, full, full.bottom() - 2);
-    assert!(row.trim_end().ends_with(&format!("row{caret}")), "{row:?}");
-}
-
-/// #129: the prompt scrolls the body only for a caret on the row it
-/// takes: a caret higher up leaves the view where it is.
-#[test]
-fn the_search_prompt_leaves_the_view_for_a_caret_above_its_row() {
-    let mut app = vim(Fixture::Body);
-    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
-    app.editor.set_body_text(&lines.join("\n"));
-    draw(&mut app);
-    feed(&mut app, "Lk");
-    feed(&mut app, "/");
-    assert_eq!(app.editor.body.viewport_offset().1, 0);
-}
-
-/// #129: a Visual span that reaches the prompt's row scrolls the body up
-/// one line too, unless the caret is on the top line (scrolling it away
-/// would hide the caret instead).
-#[test]
-fn the_search_prompt_scrolls_for_a_selection_on_its_row() {
-    let mut app = vim(Fixture::Body);
-    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
-    app.editor.set_body_text(&lines.join("\n"));
-    draw(&mut app);
-    feed(&mut app, "Lvk");
-    feed(&mut app, "/");
-    assert_eq!(app.editor.body.viewport_offset().1, 1, "the span's end shows");
-    feed(&mut app, "<Esc><Esc>gg");
-    draw(&mut app);
-    feed(&mut app, "LvH");
-    assert_eq!(app.editor.body.cursor.row, 0);
-    feed(&mut app, "/");
-    assert_eq!(app.editor.body.viewport_offset().1, 0, "the caret's top line stays");
-}
-
-/// #129: the body scrolls once, as the prompt opens: a span that runs on
-/// past the prompt's row doesn't scroll it again on every frame.
-#[test]
-fn the_search_prompt_scrolls_once_for_a_span_past_its_row() {
-    let mut app = vim(Fixture::Body);
-    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
-    app.editor.set_body_text(&lines.join("\n"));
-    draw(&mut app);
-    feed(&mut app, "30Gv3G");
-    assert_eq!(app.editor.body.viewport_offset().1, 0);
-    assert_eq!(app.editor.body.cursor.row, 2);
-    feed(&mut app, "/");
-    assert_eq!(app.editor.body.viewport_offset().1, 1);
-    feed(&mut app, "xyz");
-    draw(&mut app);
-    assert_eq!(app.editor.body.viewport_offset().1, 1, "no scroll after the first");
-}
-
-/// #129: the bar's column is the pane's, so a body of exactly the pane's
-/// rows takes none as the prompt opens (no rewrap), and a bar that is
-/// drawn measures the shorter body, as the thumb drag's spec does.
-#[test]
-fn the_search_prompt_takes_no_scrollbar_column() {
+fn the_search_prompt_leaves_the_scrollbar() {
     let mut app = vim(Fixture::Body);
     let h = usize::from(app.editor.last_body_area.expect("the body is drawn").height);
+    let thumb = |app: &App| app.hits.rect_of(&Hit::ScrollbarThumb(PaneId::Editor));
     app.editor.set_body_text(&vec!["x"; h].join("\n"));
     draw(&mut app);
-    let full = app.editor.last_body_area.unwrap();
-    let thumb = |app: &App| app.hits.rect_of(&Hit::ScrollbarThumb(PaneId::Editor));
-    assert_eq!(thumb(&app), None, "it fits");
-    feed(&mut app, "/");
-    assert_eq!(thumb(&app), None, "no bar for the prompt's row");
-    assert_eq!(app.editor.last_body_area.unwrap().width, full.width, "no column taken");
-    feed(&mut app, "<Esc>");
-    app.editor.set_body_text(&vec!["x"; h * 3].join("\n"));
-    feed(&mut app, "/");
+    assert_eq!(thumb(&app), None, "the body's rows fit");
+    app.editor.set_body_text(&vec!["x"; h + 1].join("\n"));
+    draw(&mut app);
+    let bar = thumb(&app).expect("one line more than the body shows");
     let area = app.editor.last_body_area.unwrap();
     let spec = app.editor.scrollbar_spec().unwrap();
-    let (_, height) = crate::hit::thumb_geometry(&spec, area.height);
-    assert_eq!(thumb(&app).map(|r| r.height), Some(height));
+    assert_eq!(crate::hit::thumb_geometry(&spec, area.height).1, bar.height);
+    feed(&mut app, "/");
+    assert_eq!(thumb(&app), Some(bar));
+    assert_eq!(app.editor.last_body_area, Some(area));
 }
 
-/// #129: in a one-row body the prompt takes the only row; the frame after
-/// Enter still paints the match the search jumped to.
+/// #129: a two-row pane gives the body one row above the prompt's; the
+/// frame after Enter still paints the match the search jumped to.
 #[test]
 fn a_one_row_body_paints_the_match_after_the_prompt() {
     use ratatui::Terminal;
@@ -1894,8 +1827,8 @@ fn the_search_prompts_caret_follows_the_painted_cells() {
     assert_eq!(reversed, [area.x + 4], "after `/`, the heart's two cells and `x`");
 }
 
-/// Final review M-4: a `{{token}}` on the bottom row keeps its hit on its
-/// text, which scrolls above the prompt (#129), and the prompt's row has
+/// Final review M-4: a `{{token}}` on the body's bottom row keeps its hit
+/// there as the prompt opens below it (#129), and the prompt's row has
 /// none a click could find.
 #[test]
 fn the_search_prompt_row_has_no_token_hits() {
@@ -1903,17 +1836,17 @@ fn the_search_prompt_row_has_no_token_hits() {
     let h = usize::from(app.editor.last_body_area.expect("the body is drawn").height);
     let mut lines = vec!["x"; h - 1];
     lines.push("{{v}}");
+    lines.push("{{v}}"); // one line below the body
     app.editor.set_body_text(&lines.join("\n"));
     draw(&mut app);
-    feed(&mut app, "G");
-    let full = app.editor.last_body_area.unwrap();
+    let area = app.editor.last_body_area.unwrap();
     let rows = |app: &App| -> Vec<u16> {
         app.hits.rects_of(&Hit::VarToken("v".into())).iter().map(|r| r.y).collect()
     };
-    assert_eq!(rows(&app), [full.bottom() - 1], "the token is drawn on the bottom row");
+    assert_eq!(rows(&app), [area.bottom() - 1], "the body's bottom row only");
     feed(&mut app, "/x");
     assert!(app.editor.body_search.prompt.is_some());
-    assert_eq!(rows(&app), [full.bottom() - 2], "on its text above the prompt, none on the prompt");
+    assert_eq!(rows(&app), [area.bottom() - 1], "the same, none on the prompt");
 }
 
 /// Plan M3a Deviation 16: matches REVERSED, the one Enter lands on also BOLD.

@@ -91,9 +91,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
 
     // Every frame, whichever screen shows: the profile is switched from
-    // Settings, and the response's clicked bracket follows it.
+    // Settings, and the response's clicked bracket follows it, as does the
+    // body's row for the search prompt (#129).
     let vim = app.profile() == crate::config::KeyProfile::Vim;
     app.session.response.set_vim_cursor(vim);
+    app.editor.prompt_row = vim;
     match screen {
         Screen::Main => {
             hits.register(layout.sidebar, Hit::Pane(PaneId::Sidebar));

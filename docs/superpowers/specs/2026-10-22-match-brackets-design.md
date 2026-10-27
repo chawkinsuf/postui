@@ -135,7 +135,10 @@ and `%` don't change.
   repainted.
   - Rows in view are edtui's own viewport after its scroll, walked in wrap
     rows down to the bottom, or to the vim search prompt's row when it's
-    open.
+    open. (Amended 2026-10-27, task #129, `Vim`: the vim profile keeps
+    the pane's bottom row for the prompt at all times, as Vim's command
+    line is a row of its own, so the body's area already stops above it
+    and the painters walk to the area's bottom.)
   - A cell the Visual span, a search hit or the selection already paints
     keeps that paint.
   - The caret's cell keeps its reverse, because only the colours are

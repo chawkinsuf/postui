@@ -559,9 +559,10 @@ impl App {
     }
 
     /// What the engine needs to know about the view (piece 3 §4.1): the
-    /// body's rows as last drawn, the search prompt's included (#129).
+    /// body's rows as last drawn. The search prompt's row is not among
+    /// them, as Vim's command line is not its window's (#129).
     pub(crate) fn view_ctx(&self, id: FieldId) -> ViewCtx {
-        let rows = self.editor.body_window_rows();
+        let rows = self.editor.last_body_area.map(|a| usize::from(a.height));
         ViewCtx { viewport_rows: if id == FieldId::Body { rows } else { None } }
     }
 
@@ -817,10 +818,11 @@ impl App {
             return;
         }
         let top = self.editor.body.viewport_offset().1;
-        // The prompt's row counts: a one-row body under it drew none, and
-        // the frame after it closes shows one (#129).
-        let rows = match self.editor.body_window_rows() {
-            Some(h) => top.saturating_sub(h)..top.saturating_add(h.saturating_mul(2)),
+        let rows = match self.editor.last_body_area {
+            Some(a) => {
+                let h = usize::from(a.height);
+                top.saturating_sub(h)..top.saturating_add(h.saturating_mul(2))
+            }
             None => 0..usize::MAX,
         };
         let found = self.vim.glue.body_search(
