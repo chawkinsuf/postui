@@ -6668,22 +6668,18 @@ impl App {
                 });
                 true
             }
-            Action::InsertVarText(text) => {
+            Action::InsertVarText { text, completing } => {
                 self.no_coalesce = true;
                 // A whole `{{token}}` put while the caret is in a token
                 // takes that token's place: a token never lands inside
-                // another (#149). A completion (`name}}`
-                // after a typed `{{`) isn't whole, so it goes in at the
-                // caret as before.
-                let whole = postui_core::vars::find_tokens(&text)
-                    .first()
-                    .is_some_and(|t| t.start == 0 && t.end == text.len());
-                let over = whole.then(|| self.editor.caret_token_span()).flatten();
+                // another (#149). A completion goes in at the caret.
+                let over = (!completing).then(|| self.editor.caret_token_span()).flatten();
                 // A vim field the engine runs takes the token as one engine
                 // step (spec §3.7).
-                if self.vim_insert(&text, over.as_ref().map(|s| (s.row, s.chars.clone()))) {
+                if self.vim_insert(&text, over.clone()) {
                     return true;
                 }
+                let over = over.filter(crate::components::editor::CaretTokenSpan::holds_bar_caret);
                 if self.focus == PaneId::Editor && self.editor.url_open() {
                     match over {
                         Some(span) => self.editor.url.replace_chars(span.chars, &text),

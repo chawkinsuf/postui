@@ -8379,7 +8379,7 @@ fn stale_table_edit_does_not_capture_insert_var_text_after_focus_moves() {
     // The jump commits the cell it leaves (spec 2026-10-19 R1), so there
     // is no stale edit left for the insert to land in.
     app.update(Action::FocusPane(PaneId::Response));
-    app.update(Action::InsertVarText("x".into()));
+    app.update(Action::InsertVarText { text: "x".into(), completing: false });
 
     let text = rendered_text(&mut app);
     assert!(
@@ -27776,6 +27776,10 @@ fn a_picked_variable_replaces_the_token_the_caret_is_in() {
     pick_base_url(&mut app);
     assert_eq!(app.editor.url.text(), "{{base_url}}/x");
     assert_eq!(app.editor.url.cursor(), "{{base_url}}".len(), "caret after it");
+    // A caret before the first brace is in front of the token, not in it.
+    app.editor.url.set_cursor(0);
+    pick_base_url(&mut app);
+    assert_eq!(app.editor.url.text(), "{{base_url}}{{base_url}}/x");
     // A cell.
     let (mut app, _dir, _out) = tooltip_app("x");
     open_value_cell(&mut app, EditorTab::Headers, "a {{old}} b", 4);
@@ -27826,7 +27830,7 @@ fn a_created_variable_replaces_the_token_the_caret_is_in() {
 fn a_completion_still_goes_in_at_the_caret() {
     let (mut app, _dir, _out) = tooltip_app("x");
     open_value_cell(&mut app, EditorTab::Headers, "{{{{old}}", 2);
-    app.update(Action::InsertVarText("base_url}}".into()));
+    app.update(Action::InsertVarText { text: "base_url}}".into(), completing: true });
     assert_eq!(app.editor.table.editing.as_ref().unwrap().input.text(), "{{base_url}}{{old}}");
 }
 

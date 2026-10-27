@@ -752,13 +752,13 @@ impl App {
     /// `Glue::rebase` does. Only the fields main inserts into: the URL
     /// line, a cell, the body. `false` leaves it to today's path. A token
     /// into the body turns on the body's variables, as today's path does.
-    /// `over`, the caret's token (its row and chars), takes `text` in its
-    /// place instead (#149): typed over from Insert, the
-    /// caret after it; as Vim's paste over a selection from Normal.
+    /// `over`, the caret's token, takes `text` in its place instead (#149):
+    /// typed over from Insert, the caret after it; as Vim's paste over a
+    /// selection from Normal. A Visual selection still wins.
     pub(crate) fn vim_insert(
         &mut self,
         text: &str,
-        over: Option<(usize, std::ops::Range<usize>)>,
+        over: Option<crate::components::editor::CaretTokenSpan>,
     ) -> bool {
         let Some(id) = self.vim.glue.owned() else { return false };
         if !matches!(id, FieldId::Url | FieldId::TableCell { .. } | FieldId::Body) {
@@ -770,18 +770,21 @@ impl App {
         );
         let (glue, buf) = self.session_parts(id);
         let Some(mut buf) = buf else { return false };
-        let span = over.map(|(row, chars)| {
-            (engine_glue::Pos::new(row, chars.start), engine_glue::Pos::new(row, chars.end))
-        });
-        let edit = if let Some((from, to)) = span {
-            if typing {
-                engine_glue::Edit::ReplaceTyping(from, to, text)
-            } else {
-                engine_glue::Edit::Replace(from, to, text)
+        let span = |s: crate::components::editor::CaretTokenSpan| {
+            (engine_glue::Pos::new(s.row, s.chars.start), engine_glue::Pos::new(s.row, s.chars.end))
+        };
+        let edit = if typing {
+            match over.filter(crate::components::editor::CaretTokenSpan::holds_bar_caret) {
+                Some(s) => {
+                    let (from, to) = span(s);
+                    engine_glue::Edit::ReplaceTyping(from, to, text)
+                }
+                None => engine_glue::Edit::AtCaret(text),
             }
-        } else if typing {
-            engine_glue::Edit::AtCaret(text)
         } else if let Some((from, to)) = glue.visual_span(&mut buf) {
+            engine_glue::Edit::Replace(from, to, text)
+        } else if let Some(s) = over {
+            let (from, to) = span(s);
             engine_glue::Edit::Replace(from, to, text)
         } else {
             engine_glue::Edit::Append(text)

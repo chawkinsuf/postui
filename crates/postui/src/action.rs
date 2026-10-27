@@ -832,8 +832,14 @@ pub enum Action {
     /// Insert `text` at the currently focused text field: the URL line, an
     /// in-progress table cell edit, or the body buffer (Body tab +
     /// content focus). Toasts "nowhere to insert" when focus isn't on a
-    /// text field.
-    InsertVarText(String),
+    /// text field. `completing` marks a completion (`name}}` after a typed
+    /// `{{`), which goes in at the caret; otherwise `text` is a whole
+    /// `{{name}}`, which takes the place of the token the caret is in
+    /// (#149).
+    InsertVarText {
+        text: String,
+        completing: bool,
+    },
     /// Copy `surface`'s live selection to the clipboard — the context
     /// menu's "Copy" row (right-click on a text surface). Toasts like the
     /// ctrl+c selection copy; a no-op when nothing is selected there.

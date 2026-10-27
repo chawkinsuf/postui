@@ -157,6 +157,17 @@ pub struct CaretTokenSpan {
     pub row: usize,
     /// The token's chars in that row, braces included.
     pub chars: std::ops::Range<usize>,
+    /// The caret's char in that row.
+    pub caret: usize,
+}
+
+impl CaretTokenSpan {
+    /// Whether text put at a caret that sits between chars (arrows, vim
+    /// Insert) would land inside the token. Such a caret on the token's
+    /// first brace is in front of it; a vim Normal caret there is on it.
+    pub fn holds_bar_caret(&self) -> bool {
+        self.caret > self.chars.start
+    }
 }
 
 /// Which sub-region of the editor pane has keyboard focus: the method
@@ -1167,13 +1178,16 @@ impl Editor {
     /// anywhere else, and whenever the caret is outside every token.
     pub fn caret_token(&self) -> Option<String> {
         // A cell's caret raises no tooltip; only the span reads it.
-        if self.sub_focus == SubFocus::Content
-            && self.active_tab != EditorTab::Body
-            && self.table.editing.is_some()
-        {
+        if self.sub_focus == SubFocus::Content && self.cell_tab() {
             return None;
         }
         self.caret_token_span().map(|t| t.name)
+    }
+
+    /// Whether the active tab is one whose table cell a caret can be in,
+    /// the tabs `Action::InsertVarText` writes a cell on.
+    fn cell_tab(&self) -> bool {
+        matches!(self.active_tab, EditorTab::Params | EditorTab::Headers | EditorTab::Vars)
     }
 
     /// The `{{token}}` the keyboard caret is in, and where: its row (the
@@ -1193,7 +1207,8 @@ impl Editor {
                 let line: String = self.body.lines.iter_row().nth(cursor.row)?.iter().collect();
                 (line.into(), cursor.row, cursor.col)
             }
-            SubFocus::Content if let Some(edit) = &self.table.editing => {
+            SubFocus::Content if self.cell_tab() => {
+                let edit = self.table.editing.as_ref()?;
                 (edit.input.text().into(), 0, edit.input.cursor())
             }
             _ => return None,
@@ -1207,7 +1222,7 @@ impl Editor {
             .find(|t| byte_off >= t.start && byte_off < t.end)?;
         let start = text[..token.start].chars().count();
         let end = start + text[token.start..token.end].chars().count();
-        Some(CaretTokenSpan { name: token.name, row, chars: start..end })
+        Some(CaretTokenSpan { name: token.name, row, chars: start..end, caret })
     }
 
     /// The body as the request holds it, lines joined by `\n`: the buffer's
@@ -1288,18 +1303,15 @@ impl Editor {
     }
 
     /// Replaces chars `cols` of body line `row` with `s`, the caret after
-    /// it: a picked `{{token}}` over the token the caret was in. Typed
-    /// through the body's own keys, as [`Self::body_insert_str`] types.
+    /// it: a picked `{{token}}` over the token the caret was in. Selects
+    /// them and pastes over the selection, as [`Self::paste_body`] does.
     pub fn body_replace_in_row(&mut self, row: usize, cols: std::ops::Range<usize>, s: &str) {
-        self.body.selection = None;
-        self.body.cursor = edtui::Index2::new(row, cols.start);
-        for _ in cols {
-            self.body_handler.on_key_event(
-                KeyEvent::new(KeyCode::Delete, ratatui::crossterm::event::KeyModifiers::NONE),
-                &mut self.body,
-            );
-        }
-        self.body_insert_str(s);
+        self.body_word_anchor = None;
+        self.set_body_selection_boundaries(
+            edtui::Index2::new(row, cols.start),
+            edtui::Index2::new(row, cols.end),
+        );
+        self.paste_body(s);
     }
 
     /// Feeds each char of `s` through the body's key handler as a

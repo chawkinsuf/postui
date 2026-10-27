@@ -1569,7 +1569,7 @@ impl ModalStack {
                     if *completing { format!("{name}}}}}") } else { format!("{{{{{name}}}}}") };
                 Some(vec![
                     Action::VarStruct(VarStructOp::NewVar { name, description: None }),
-                    Action::InsertVarText(insert_text),
+                    Action::InsertVarText { text: insert_text, completing: *completing },
                 ])
             }
             PromptKind::AddSelectorField { selector } => Some(vec![Action::AddSelectorField {
