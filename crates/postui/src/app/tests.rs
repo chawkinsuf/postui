@@ -15783,15 +15783,16 @@ fn footer_chips_leave_the_table_cursor_as_their_actions_do(
 
 /// Task #192: the same with a table cell open (the cell, its typing, the
 /// cursor and the caret), with the Body's caret up, and with the URL line
-/// selected; task #194 adds the open URL line (its typing and caret) and
-/// the selected method badge. Every chip drawn in the footer's strip, `done` and the
-/// address bar's `copy url` and `tls` included, leaves the editor exactly
-/// as running its action does, which is what its key does: the click is
-/// the action with no click-away before it.
+/// selected; task #194 adds the open URL line (its typing and caret), the
+/// selected method badge and no sub-focus at all. Every chip drawn in the
+/// footer's strip, `done` and the address bar's `copy url` and `tls`
+/// included, leaves the editor exactly as running its action does, which
+/// is what its key does: the click is the action with no click-away before
+/// it.
 #[test]
 fn an_editor_footer_chip_click_leaves_an_open_cell_or_the_caret_as_its_action_does() {
     use crate::config::KeyProfile::{Arrows, Vim};
-    for state in ["cell", "body", "url", "url_open", "method"] {
+    for state in ["cell", "body", "url", "url_open", "method", "none"] {
         for profile in [Arrows, Vim] {
             for sending in [false, true] {
                 let probe = editor_caret_app(state, profile, sending);
@@ -15819,11 +15820,12 @@ fn an_editor_footer_chip_click_leaves_an_open_cell_or_the_caret_as_its_action_do
     }
 }
 
-/// Task #192's three states and #194's two, drawn wide so every footer chip
-/// fits, the URL blank so the send chip toasts rather than spawning a send:
-/// `cell`, a header's value open with typing in it; `body`, the Body's caret
-/// mid-text; `url`, the URL line selected (not open); `url_open`, the URL
-/// line open with typing in it; `method`, the method badge selected.
+/// Task #192's three states and #194's three, drawn wide so every footer
+/// chip fits, the URL blank so the send chip toasts rather than spawning a
+/// send: `cell`, a header's value open with typing in it; `body`, the Body's
+/// caret mid-text; `url`, the URL line selected (not open); `url_open`, the
+/// URL line open with typing in it; `method`, the method badge selected;
+/// `none`, the editor focused with no sub-focus.
 fn editor_caret_app(state: &str, profile: crate::config::KeyProfile, sending: bool) -> App {
     let mut app = main_header_app(profile);
     app.editor.url = LineInput::new("");
@@ -15861,6 +15863,10 @@ fn editor_caret_app(state: &str, profile: crate::config::KeyProfile, sending: bo
         "method" => {
             app.editor.table.set_selected(None);
             app.editor.sub_focus = SubFocus::Method;
+        }
+        "none" => {
+            app.editor.table.set_selected(None);
+            app.editor.sub_focus = SubFocus::None;
         }
         _ => {
             app.editor.table.set_selected(None);
@@ -15956,7 +15962,7 @@ fn an_editor_footer_chip_click_matches_its_key_with_a_cell_or_caret_up() {
         Action::ToggleInsecure => vec![alt('i')],
         other => panic!("no key for the {other:?} chip"),
     };
-    for state in ["cell", "body", "url", "url_open", "method"] {
+    for state in ["cell", "body", "url", "url_open", "method", "none"] {
         let (y, chips) = footer_strip_chips(&editor_caret_app(state, Arrows, false));
         assert!(chips.len() >= 4, "{state}: {chips:?}");
         for (chip, x) in &chips {
@@ -15978,7 +15984,8 @@ fn an_editor_footer_chip_click_matches_its_key_with_a_cell_or_caret_up() {
 }
 
 /// Task #194, against vim's keys: with the URL line open in Insert and
-/// typed into, and with the method badge selected (Normal), each footer
+/// typed into, with the method badge selected (Normal) and with no
+/// sub-focus, each footer
 /// chip's click leaves the editor as its keycap's key does. Every chip
 /// drawn is checked: one with no key here fails the test.
 ///
@@ -16003,7 +16010,7 @@ fn an_editor_footer_chip_click_matches_its_vim_key_on_the_url_line_or_method() {
         Action::CloseWindow { write: false, force: false } => events(":q<CR>"),
         other => panic!("no key for the {other:?} chip"),
     };
-    for state in ["url_open", "method"] {
+    for state in ["url_open", "method", "none"] {
         let (y, chips) = footer_strip_chips(&editor_caret_app(state, Vim, false));
         assert!(chips.len() >= 4, "{state}: {chips:?}");
         for (chip, x) in &chips {
