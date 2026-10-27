@@ -82,7 +82,12 @@
   (*Amended 2026-10-27, task #125, mine:* this used to say a chip click is
   a click away, which drops the table's cursor first. The table's
   cursor-row chips now keep the cursor and the table's caret, as their
-  keys do.)
+  keys do. *Amended 2026-10-27, task #183, mine:* so does every other chip
+  on the main screen's footer while the table's cursor is up on any stop
+  (a row, an auto row, a section row, `+ Add`), with no cell open (send or
+  cancel, add, tabs, commands, quit). The app bar's save/discard, the
+  address bar's lock and the Body toolbar are not the footer and stay a
+  click away, as do the Manage screen's footer chips.)
   The response chip is `Key::Pair` of the two `CopyRow` actions.
   `TableCursor` gains `headers` on `Row` and a `ResponseHeader` variant
   for the response's cursor.

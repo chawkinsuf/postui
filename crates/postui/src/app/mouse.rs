@@ -1443,34 +1443,36 @@ impl App {
         // main. A press on the rest of the section is the bare pane's, as
         // before.
         //
-        // The chips the table's cursor adds to the footer (copy, toggle,
-        // delete, an auto row's edit) are the keys they advertise, so they
-        // keep the cursor and the table's caret as those keys do (task
-        // #125). Whether a chip is one is asked of the footer's own builder,
-        // for the app's cursor now, which is the one the hit's frame was
-        // drawn from (the loop redraws after any event that reports a
-        // change, as the dialog rule above relies on), so there is no second
-        // list to keep in step. They are drawn only while the editor pane
-        // has the focus and no cell is open, so the commit above has nothing
-        // to close for them, and the Settings and editor-caret rules below,
-        // which inherit this exemption, have nothing else to keep. The rule
-        // takes the cursor's chips rather than every footer chip, as the jq
-        // bar's does: the jq bar's footer is its own chip set, but the
-        // footer under the table also shows chips that aren't the table's
-        // (send, tabs, commands), and whether those stay a click away is
-        // outside #125.
-        let cursor_chip = match &hit {
-            Hit::FooterChip(a) => {
-                crate::ui::PaneChipArgs::of(self).table_row_selected.is_some_and(|cursor| {
-                    crate::components::footer::table_cursor_chips(cursor)
-                        .iter()
-                        .any(|(_, _, chip)| chip.as_ref() == Some(a))
-                })
-            }
-            _ => false,
-        };
+        // A footer chip is the key it advertises, so while the table's
+        // cursor is live (any stop, `+ Add` included, no cell open), every
+        // chip on the main screen's footer keeps the cursor and the table's
+        // caret, as its key does: the cursor's own (task #125) and the rest
+        // (task #183; spec 2026-10-26 header-copy, Footer). The chip's action
+        // runs after, and one that moves the caret moves it itself, as the
+        // add chip does. With no cell open the commit above has nothing to
+        // close.
+        //
+        // The rule asks where the press landed, not which action: the app
+        // bar's save/discard, the address bar's lock and the Body toolbar
+        // register `FooterChip` too, and stay a click away. (Their own hit
+        // variant would say so without geometry, but every reader of
+        // `FooterChip` would have to learn it: the hints, the hover, the jq
+        // bar's rule, the mouse-parity sweep.) A dialog over the footer is
+        // the dialog rule's. The Manage screen draws its tab's chips in the
+        // same rows with the editor's cursor behind it, so the rule is the
+        // main screen's only, and the Settings rule below, which inherits
+        // it, still runs there. The settled layout's footer is the hit's
+        // frame's: `term_area` is set only by a draw, and the footer's rows
+        // don't move with the panes' eases.
+        let table_cursor_chip = matches!(hit, Hit::FooterChip(_))
+            && self.screen == Screen::Main
+            && self.focus == PaneId::Editor
+            && self.editor.table_cursor_live()
+            && self.settled_layout().is_some_and(|l| {
+                l.footer.contains(ratatui::layout::Position { x: m.column, y: m.row })
+            });
         let keeps_table_selection = keeps_open_cell
-            || cursor_chip
+            || table_cursor_chip
             || matches!(hit, Hit::AutoHeaderCopy(_) | Hit::AutoHeaderReveal);
         if !keeps_open_cell {
             self.commit_table_edit();
