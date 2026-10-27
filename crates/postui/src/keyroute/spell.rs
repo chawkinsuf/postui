@@ -60,10 +60,8 @@ pub enum Nav {
 /// The table row that runs `action` at `at`, if the router would look it
 /// up there: the surface's rows with no field, the field class's rows in a
 /// field's idle Normal (where `u` and `ctrl+r` are the surface's, handed
-/// on by the engine), none while typing. Its keys are in the table's
-/// notation (`<Esc>`): the router's first look, before any component or
-/// the keymap, as `App::editor_esc_cancels` reads it.
-pub(crate) fn row_for(at: SpellCtx, action: &Action) -> Option<&'static str> {
+/// on by the engine), none while typing.
+fn row_for(at: SpellCtx, action: &Action) -> Option<&'static str> {
     match at.field {
         FieldSpell::None => table::keys_for(at.profile, at.surface, action),
         FieldSpell::Normal(class) => {
@@ -74,6 +72,25 @@ pub(crate) fn row_for(at: SpellCtx, action: &Action) -> Option<&'static str> {
             })
         }
         FieldSpell::Typing => None,
+    }
+}
+
+/// The row a press of `keys`, with nothing pending, completes at `at`,
+/// looked up where the router looks first (`Router::resolve`): the
+/// surface's rows with no field, the field class's in a field's idle
+/// Normal. `None` where no row does, and the key goes on to the focused
+/// component and the keymap: what Esc does at a stop
+/// (`App::editor_esc_cancels`) is asked here, not guessed.
+pub(crate) fn row_completed(at: SpellCtx, keys: &str) -> Option<&'static table::Binding> {
+    let typed = notation::parse(keys);
+    let found = match at.field {
+        FieldSpell::None => table::lookup(&typed, at.profile, at.surface),
+        FieldSpell::Normal(class) => table::lookup_class(&typed, at.profile, class),
+        FieldSpell::Typing => return None,
+    };
+    match found {
+        table::Match::Complete(row) => Some(row),
+        table::Match::Prefix | table::Match::NoMatch => None,
     }
 }
 

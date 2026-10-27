@@ -758,6 +758,20 @@ async fn the_editors_cancel_and_tab_chips_show_where_their_keys_work() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
+/// On the blurred arrows editor Esc cancels through the keymap's `close`:
+/// a `keys.toml` that moves `close` off Esc leaves Esc cancelling nothing
+/// there, and the footer says so (#193).
+#[tokio::test]
+async fn esc_cancel_follows_a_keys_toml_that_moves_close() {
+    let mut app = sending_at(KeyProfile::Arrows, EditorStop::Blurred);
+    app.keymap.apply_overrides("close = [\"ctrl+g\"]\n").unwrap();
+    draw(&mut app);
+    let chips = crate::ui::footer_chips_of(&app);
+    assert!(!chips.iter().any(|(_, l, _)| l == "cancel"), "{chips:?}");
+    feed(&mut app, "<Esc>");
+    assert!(!app.session.in_flight.is_empty(), "Esc cancelled nothing");
+}
+
 /// The body takes alt+←/→, not the tab chord: a `keys.toml` that moves the
 /// chord onto keys the body leaves alone keeps its chip in the body, and
 /// those keys switch the tab there (#193).

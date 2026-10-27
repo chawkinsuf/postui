@@ -205,7 +205,12 @@ pub(crate) fn footer_chips(
             // shortcut — is advertised instead where Esc reaches it. Where
             // the focused input takes Esc for its own there is nothing
             // honest to put in that slot, so it goes empty (#193); with a
-            // field open `esc done` leads the row.
+            // field open `esc done` leads the row. The slot comes and goes
+            // only as the keyboard moves to another stop, and every stop
+            // brings its own chips after it (the address bar's, the add
+            // chip's keycap, the row's), so the row reflows then whether or
+            // not the slot is there; a blank kept for it would read as a
+            // gap at the row's start.
             match sending {
                 Sending::InFlight { esc_cancels: false } => {}
                 Sending::InFlight { esc_cancels: true } => {
