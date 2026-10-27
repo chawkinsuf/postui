@@ -665,24 +665,12 @@ impl App {
                     let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
                     return self.modals.scroll_top(d);
                 }
-                // The search prompt's row wheels the body as its text does,
-                // the notch taken on the body's nearest cell (#129).
-                let body_wheel = match self.hits.hit_at(m.column, m.row) {
-                    Some(Hit::BodyEditor) => Some(m),
-                    Some(Hit::BodyPromptRow) => {
-                        self.editor.last_body_area.filter(|a| !a.is_empty()).map(|a| {
-                            ratatui::crossterm::event::MouseEvent {
-                                column: m.column.clamp(a.x, a.right() - 1),
-                                row: m.row.clamp(a.y, a.bottom() - 1),
-                                ..m
-                            }
-                        })
-                    }
-                    _ => None,
+                let body_wheeled = match self.hits.hit_at(m.column, m.row) {
+                    Some(Hit::BodyEditor) => self.editor.handle_mouse(m),
+                    Some(Hit::BodyPromptRow) => self.editor.wheel_on_prompt_row(m),
+                    _ => false,
                 };
-                if let Some(m) = body_wheel
-                    && self.editor.handle_mouse(m)
-                {
+                if body_wheeled {
                     return self.update(Action::Render);
                 }
                 if self.screen == Screen::Manage {
@@ -1569,7 +1557,10 @@ impl App {
             }
             // The body's for focus, with no caret move and no sweep: a
             // click on Vim's command line leaves the cursor, and an open
-            // search stays open (#129).
+            // search stays open (#129). Probed in Vim 9.1: a press there
+            // dragged up over the text selects nothing, while a sweep from
+            // the text down onto it is past the window's bottom and
+            // scrolls, as `body_cursor_for_drag` does below the body.
             Hit::BodyPromptRow => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.move_editor_caret(SubFocus::Content);

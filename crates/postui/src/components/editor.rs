@@ -1706,6 +1706,18 @@ impl Editor {
         }
     }
 
+    /// A wheel notch on the vim search prompt's row (`Hit::BodyPromptRow`)
+    /// scrolls the body as one on its text does (#129): it is taken on
+    /// the body's nearest cell.
+    pub fn wheel_on_prompt_row(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
+        let Some(a) = self.last_body_area.filter(|a| !a.is_empty()) else { return false };
+        self.handle_mouse(ratatui::crossterm::event::MouseEvent {
+            column: m.column.clamp(a.x, a.right() - 1),
+            row: m.row.clamp(a.y, a.bottom() - 1),
+            ..m
+        })
+    }
+
     /// Forwards a raw mouse event to the body editor when the Body tab is
     /// active and the event landed inside the area it was last drawn into.
     /// Returns `true` when the event was consumed (edtui itself does its own
@@ -3926,20 +3938,20 @@ impl Editor {
                 // width, as Vim's command line is the screen's: under the
                 // bar when the row is kept, over it in a one-row pane while
                 // a search is open (the prompt covers that row whole).
-                let prompt_row = (self.prompt_row && area.height > 0).then(|| {
-                    if area.height > 1 {
-                        area.height -= 1;
-                        Rect { y: area.bottom(), height: 1, ..area }
-                    } else {
-                        area
-                    }
-                });
-                // The prompt's row when it is not the body's: kept below
-                // it, or drawn over a one-row body while a search is open.
+                let kept = self.prompt_row && area.height > 1;
+                let shared = self.prompt_row && area.height == 1;
+                let prompt_rect = if kept {
+                    area.height -= 1;
+                    Some(Rect { y: area.bottom(), height: 1, ..area })
+                } else {
+                    shared.then_some(area)
+                };
                 let prompt_open = self.body_search.prompt.is_some();
-                let prompt_hit = prompt_row.filter(|row| prompt_open || row.y >= area.bottom());
+                // The prompt's row while it is not the body's: kept, or
+                // over a one-row body while a search is open.
+                let prompt_hit = prompt_rect.filter(|_| kept || prompt_open);
                 // The body row under an open prompt (a one-row body).
-                let covered = prompt_hit.filter(|row| row.y < area.bottom()).map(|row| row.y);
+                let covered = (shared && prompt_open).then_some(area.y);
                 let spec = ScrollbarSpec {
                     pane: PaneId::Editor,
                     offset: self.body.viewport_offset().1,
@@ -4081,7 +4093,7 @@ impl Editor {
                 if let Some(row) = prompt_hit {
                     hits.register(row, crate::hit::Hit::BodyPromptRow);
                 }
-                if let (Some(line), Some(row)) = (&self.body_search.prompt, prompt_row) {
+                if let (Some(line), Some(row)) = (&self.body_search.prompt, prompt_rect) {
                     let y = row.y;
                     let style = Style::default().bg(theme.panel).fg(theme.text);
                     let buf = frame.buffer_mut();
