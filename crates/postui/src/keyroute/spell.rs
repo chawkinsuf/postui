@@ -75,6 +75,13 @@ fn row_for(at: SpellCtx, action: &Action) -> Option<&'static str> {
     }
 }
 
+/// The keys of the table row that runs `action` at `at`, in the table's
+/// notation (`<Esc>`): the router's first look, before any component or
+/// the keymap. `None` where no row runs it there.
+pub fn row_keys(at: SpellCtx, action: &Action) -> Option<&'static str> {
+    row_for(at, action)
+}
+
 /// The key that runs `action` at `at`: the table's row first (the router
 /// looks there before anything else), then the keymap's combo, then the
 /// ex verb where `:` applies (spec §4.6; plan M4b Deviations 20 and 21).

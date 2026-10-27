@@ -890,11 +890,15 @@ mod tests {
     /// real words. (`alt+w` read "CycleSplit" before this test existed.)
     #[test]
     fn no_chip_falls_through_to_the_debug_name() {
-        use crate::components::footer::{JqBarState, TableCursor, footer_chips};
+        use crate::components::footer::{JqBarState, Sending, TableCursor, footer_chips};
         use crate::layout::PaneId;
         let keymap = Keymap::default_bindings();
         for focus in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
-            for sending in [false, true] {
+            for sending in [
+                Sending::No,
+                Sending::InFlight { esc_cancels: true },
+                Sending::InFlight { esc_cancels: false },
+            ] {
                 for url_focused in [false, true] {
                     for row in [
                         None,
@@ -917,6 +921,7 @@ mod tests {
                                     focus,
                                     false,
                                     sending,
+                                    true,
                                     Some("add param"),
                                     url_focused,
                                     false,

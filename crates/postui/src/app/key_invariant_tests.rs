@@ -630,3 +630,127 @@ fn paging_chords_survive_the_guard() {
     }
     assert_eq!(ran, 2 * 6 * 4, "every paging list, both profiles, four chords");
 }
+
+/// An editor stop the footer's send-slot and tab chips are checked on.
+#[derive(Debug, Clone, Copy)]
+enum EditorStop {
+    Blurred,
+    Method,
+    UrlSelected,
+    UrlOpen,
+    TableRow,
+    TableAdd,
+    CellOpen,
+    Body,
+    /// Vim's body in Insert; arrows' body as `Body`.
+    BodyInsert,
+    /// The URL line selected on the Body tab.
+    BodyTabUrl,
+}
+
+/// `stop` in `profile`, with the open request's send in flight.
+fn sending_at(profile: KeyProfile, stop: EditorStop) -> App {
+    use EditorStop as S;
+    let fixture = match stop {
+        S::Body | S::BodyInsert | S::BodyTabUrl => Fixture::Body,
+        S::Method => Fixture::Method,
+        S::UrlSelected | S::UrlOpen => Fixture::UrlLine,
+        _ => Fixture::TableThreeHeaders,
+    };
+    let mut app = build(fixture);
+    app.use_profile(profile);
+    app.editor.url = LineInput::new("http://127.0.0.1:9");
+    draw(&mut app);
+    let vim = profile == KeyProfile::Vim;
+    match stop {
+        S::Blurred => app.editor.sub_focus = SubFocus::None,
+        S::TableAdd => app.editor.table.set_selected(Some(Stop::Add)),
+        S::BodyTabUrl => app.editor.sub_focus = SubFocus::Url,
+        S::UrlOpen => feed(&mut app, "<CR>"),
+        S::CellOpen => feed(&mut app, if vim { "i" } else { "<CR>" }),
+        S::BodyInsert if vim => feed(&mut app, "i"),
+        _ => {}
+    }
+    app.update(Action::ForceSend);
+    draw(&mut app);
+    assert!(!app.session.in_flight.is_empty(), "{stop:?}: the send is in flight");
+    app
+}
+
+/// The footer's `esc cancel` and tab chips are there exactly where their
+/// keys do what they say (#193, the user: "probably don't put esc in the
+/// footer when in another input", and for the tab chip "same as esc"): on
+/// every editor stop, in both profiles, with a send in flight, the chip
+/// shows only where the key, pressed, cancels the send or switches the
+/// tab, and `esc cancel` shows wherever Esc cancels.
+#[tokio::test]
+async fn the_editors_cancel_and_tab_chips_show_where_their_keys_work() {
+    use EditorStop as S;
+    let stops = [
+        S::Blurred,
+        S::Method,
+        S::UrlSelected,
+        S::UrlOpen,
+        S::TableRow,
+        S::TableAdd,
+        S::CellOpen,
+        S::Body,
+        S::BodyInsert,
+        S::BodyTabUrl,
+    ];
+    let mut wrong = Vec::new();
+    for profile in [KeyProfile::Arrows, KeyProfile::Vim] {
+        for stop in stops {
+            let app = sending_at(profile, stop);
+            let chips = crate::keyroute::spell::resolve(
+                crate::ui::footer_chips_of(&app),
+                app.spell_ctx(),
+                &app.keymap,
+            );
+            let shows = |label: &str| chips.iter().any(|(_, l, _)| l == label);
+            let mut esc = sending_at(profile, stop);
+            feed(&mut esc, "<Esc>");
+            let cancels = esc.session.in_flight.is_empty();
+            if shows("cancel") != cancels {
+                wrong.push(format!(
+                    "{profile:?} {stop:?}: esc cancel shown {}, Esc cancels {cancels}",
+                    shows("cancel")
+                ));
+            }
+            // The tab chip's key: arrows' alt+→, vim's `gt`.
+            let mut tab = sending_at(profile, stop);
+            let before = tab.editor.active_tab;
+            match profile {
+                KeyProfile::Arrows => {
+                    tab.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+                }
+                KeyProfile::Vim => feed(&mut tab, "gt"),
+            }
+            let cycles = tab.editor.active_tab != before;
+            if shows("tabs") && !cycles {
+                wrong.push(format!(
+                    "{profile:?} {stop:?}: tabs chip shown, its key switches no tab"
+                ));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// The body takes alt+←/→, not the tab chord: a `keys.toml` that moves the
+/// chord onto keys the body leaves alone keeps its chip in the body, and
+/// those keys switch the tab there (#193).
+#[test]
+fn a_rebound_tab_chord_keeps_its_chip_in_the_arrows_body() {
+    let mut app = build(Fixture::Body);
+    app.keymap.apply_overrides("tab_next = [\"ctrl+n\"]\ntab_prev = [\"ctrl+b\"]\n").unwrap();
+    draw(&mut app);
+    let chips = crate::keyroute::spell::resolve(
+        crate::ui::footer_chips_of(&app),
+        app.spell_ctx(),
+        &app.keymap,
+    );
+    assert!(chips.iter().any(|(k, l, _)| k == "^B/^N" && *l == "tabs"), "{chips:?}");
+    app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+    assert_ne!(app.editor.active_tab, EditorTab::Body, "the chip's key switched the tab");
+}

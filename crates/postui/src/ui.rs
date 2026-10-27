@@ -303,6 +303,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         pane.focus,
         pane.shift_enter_send,
         pane.sending,
+        pane.tabs_chord,
         pane.add_row_label,
         pane.url_focused,
         pane.url_selected,
@@ -963,7 +964,8 @@ pub(crate) fn footer_chips_of(app: &App) -> Vec<FooterChip> {
 pub(crate) struct PaneChipArgs {
     pub focus: PaneId,
     pub shift_enter_send: bool,
-    pub sending: bool,
+    pub sending: crate::components::footer::Sending,
+    pub tabs_chord: bool,
     pub add_row_label: Option<&'static str>,
     pub url_focused: bool,
     pub url_selected: bool,
@@ -975,13 +977,18 @@ pub(crate) struct PaneChipArgs {
 impl PaneChipArgs {
     pub(crate) fn of(app: &App) -> Self {
         use crate::components::editor::SubFocus;
-        use crate::components::footer::JqBarState;
+        use crate::components::footer::{JqBarState, Sending};
         let focus = app.focus;
         let response = &app.session.response;
         Self {
             focus,
             shift_enter_send: app.shift_enter_send,
-            sending: app.editor.sending,
+            sending: if app.editor.sending {
+                Sending::InFlight { esc_cancels: app.editor_esc_cancels() }
+            } else {
+                Sending::No
+            },
+            tabs_chord: app.tab_chord_cycles(),
             // No add chip while a new row is already mid-add (the ghost-row
             // edit); editing an existing row keeps it.
             add_row_label: (!app.editor.adding_row())
@@ -1051,6 +1058,7 @@ impl PaneChipArgs {
             self.focus,
             self.shift_enter_send,
             self.sending,
+            self.tabs_chord,
             self.add_row_label,
             self.url_focused,
             self.url_selected,

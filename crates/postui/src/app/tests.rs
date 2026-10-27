@@ -2227,7 +2227,8 @@ fn the_footer_field_flag_is_pane_local() {
     let chips = crate::keyroute::spell::spelled(crate::components::footer::footer_chips(
         PaneId::Response,
         false,
-        false,
+        crate::components::footer::Sending::No,
+        true,
         None,
         false,
         false,
@@ -15730,7 +15731,14 @@ fn footer_chips_leave_the_table_cursor_as_their_actions_do(
         let mut by_action = start(profile, sending);
         by_action.update(chip.clone());
         let mut app = start(profile, sending);
-        let r = app.hits.rect_of(&Hit::FooterChip(chip.clone())).expect("the chip is drawn");
+        let rect = app.hits.rect_of(&Hit::FooterChip(chip.clone()));
+        // Arrows' Esc on the table deselects or blurs, so no `esc cancel`
+        // is drawn there (#193); vim's cancels (#191).
+        if chip == Action::CancelSend && profile == crate::config::KeyProfile::Arrows {
+            assert!(rect.is_none(), "{stop:?}: Esc is the table's");
+            continue;
+        }
+        let r = rect.expect("the chip is drawn");
         let footer = app.settled_layout().expect("drawn").footer;
         assert!(footer.contains(r.as_position()), "{profile:?} {chip:?} is the footer's");
         app.handle_mouse(left_down(r.x + 1, r.y));
@@ -15753,7 +15761,13 @@ fn an_editor_footer_chip_click_leaves_an_open_cell_or_the_caret_as_its_action_do
                 let probe = editor_caret_app(state, profile, sending);
                 let (y, chips) = footer_strip_chips(&probe);
                 let drawn = |a: &Action| chips.iter().any(|(b, _)| b == a);
-                assert!(drawn(&Action::CycleTabs(1)) || profile == Vim, "{state} {chips:?}");
+                // The arrows body takes alt+←/→ for its word jump, so no tab
+                // chip there (#193); vim's is spelled from its own keys.
+                let arrows_body = profile == Arrows && state == "body";
+                assert!(
+                    drawn(&Action::CycleTabs(1)) != arrows_body || profile == Vim,
+                    "{state} {chips:?}"
+                );
                 assert!(drawn(&Action::OpenPalette) || drawn(&Action::OpenExPalette), "{chips:?}");
                 for (chip, x) in &chips {
                     let mut by_action = editor_caret_app(state, profile, sending);
@@ -18860,7 +18874,8 @@ fn every_named_action_is_mouse_reachable() {
             crate::components::footer::footer_chips(
                 pane,
                 false,
-                false,
+                crate::components::footer::Sending::No,
+                true,
                 Some("add header"),
                 false,
                 false,
@@ -18877,7 +18892,8 @@ fn every_named_action_is_mouse_reachable() {
             crate::components::footer::footer_chips(
                 pane,
                 false,
-                false,
+                crate::components::footer::Sending::No,
+                true,
                 Some("add header"),
                 true,
                 false,
@@ -18895,7 +18911,8 @@ fn every_named_action_is_mouse_reachable() {
             crate::components::footer::footer_chips(
                 pane,
                 false,
-                false,
+                crate::components::footer::Sending::No,
+                true,
                 Some("add header"),
                 false,
                 false,
@@ -23996,7 +24013,8 @@ fn the_focused_bar_advertises_enter_apply_and_esc_done() {
     let chips = crate::keyroute::spell::spelled(crate::components::footer::footer_chips(
         PaneId::Response,
         false,
-        false,
+        crate::components::footer::Sending::No,
+        true,
         None,
         false,
         false,
@@ -24322,7 +24340,8 @@ fn the_footer_and_palette_reach_the_jq_bar() {
     let chips = crate::keyroute::spell::spelled(crate::components::footer::footer_chips(
         PaneId::Response,
         false,
-        false,
+        crate::components::footer::Sending::No,
+        true,
         None,
         false,
         false,
@@ -24553,7 +24572,8 @@ fn the_response_footer_always_offers_alt_q_filter_and_close_only_while_open() {
         crate::keyroute::spell::spelled(crate::components::footer::footer_chips(
             PaneId::Response,
             false,
-            false,
+            crate::components::footer::Sending::No,
+            true,
             None,
             false,
             false,

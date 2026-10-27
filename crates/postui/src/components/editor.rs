@@ -464,6 +464,14 @@ impl Editor {
         }
     }
 
+    /// Whether `handle_key` takes Esc for the pane's own: on every stop but
+    /// the blurred pane it closes a field, deselects, blurs or steps out.
+    /// Blurred, Esc falls through to the app's esc → `Close`, the cancel
+    /// shortcut, so only there may the footer say `esc cancel` (#193).
+    pub fn takes_esc(&self) -> bool {
+        self.sub_focus != SubFocus::None
+    }
+
     /// Whether the URL line has the caret right now (spec 2026-09-16).
     pub fn url_open(&self) -> bool {
         self.sub_focus == SubFocus::Url && self.url_open

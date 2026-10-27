@@ -38,6 +38,17 @@ pub enum JqBarState {
     Describing,
 }
 
+/// The open request's send, for the editor's leading chip: `send` while
+/// nothing is in flight; once it is, the send keys go dead (`Action::Send`
+/// refuses), and `esc cancel` stands in where Esc reaches the cancel
+/// (`App::editor_esc_cancels`). Where the focused input takes Esc for its
+/// own (a field, the body, a selected stop), the slot goes empty (#193).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sending {
+    No,
+    InFlight { esc_cancels: bool },
+}
+
 /// The row under the focused pane's cursor, for the chips naming its
 /// keys: an editable row (its copy, toggle and delete; `headers` on the
 /// Headers tab, where copy has a whole-header key too), an auto row of the
@@ -119,7 +130,11 @@ fn table_cursor_chips(cursor: TableCursor) -> Vec<(Key, &'static str, Option<Act
 pub(crate) fn footer_chips(
     focus: PaneId,
     shift_enter_send: bool,
-    sending: bool,
+    sending: Sending,
+    // The tab chip's keys switch tabs here (`App::tab_chord_cycles`): not
+    // in the arrows body, which takes alt+←/→ for its word jump, so the
+    // chip goes there (#193).
+    tabs_chord: bool,
     add_row_label: Option<&'static str>,
     // The editor pane's focus sits on the address bar (method or URL).
     // There alt+a targets no visible table, so its chip gives way to the
@@ -144,11 +159,12 @@ pub(crate) fn footer_chips(
     // not the app-wide `field_open` (a live cell edit survives a jump to
     // the response pane, and must not put the editor's chips on its row).
     // Esc closes such a field keeping its text (the field rule, spec
-    // 2026-09-15), so the pane advertises `esc done` and never `esc
-    // cancel`. On the response pane it also picks out the search box's own
-    // pair, the field the jq bar isn't.
+    // 2026-09-15), so the pane advertises `esc done` (and `sending` never
+    // says `esc cancel` then). On the response pane it also picks out the
+    // search box's own pair, the field the jq bar isn't.
     field_open: bool,
 ) -> Vec<(Key, &'static str, Option<Action>)> {
+    let tabs = || tabs_chord.then(|| (tabs_key(), "tabs", Some(Action::CycleTabs(1))));
     let chips: Vec<(Key, &'static str, Option<Action>)> = match focus {
         PaneId::Sidebar => vec![
             (Key::Named("enter"), "open", None),
@@ -185,81 +201,63 @@ pub(crate) fn footer_chips(
             // protocol; where the terminal can't deliver it, ^R is the
             // advertised send key (both bindings stay active regardless).
             // While the open request is in flight the send shortcuts go
-            // dead, and esc — the cancel shortcut — is advertised instead.
-            // With a field open there is nothing honest to put in that
-            // slot: Esc belongs to the field, and the send keys are dead
-            // too (`Action::Send` refuses while the open request is in
-            // flight), so the slot goes empty and `esc done` leads the row.
-            match (sending, field_open) {
-                (true, true) => {}
-                (true, false) => {
+            // dead (`Action::Send` refuses), and esc — the cancel
+            // shortcut — is advertised instead where Esc reaches it. Where
+            // the focused input takes Esc for its own there is nothing
+            // honest to put in that slot, so it goes empty (#193); with a
+            // field open `esc done` leads the row.
+            match sending {
+                Sending::InFlight { esc_cancels: false } => {}
+                Sending::InFlight { esc_cancels: true } => {
                     chips.push((Key::Named("esc"), "cancel", Some(Action::CancelSend)))
                 }
-                _ => chips.push((
+                Sending::No => chips.push((
                     Key::Send { shift_enter: shift_enter_send },
                     "send",
                     Some(Action::Send),
                 )),
             }
-            chips.extend([
-                (
-                    Key::Of(Action::OpenVarPicker { completing: false }),
-                    "vars",
-                    Some(Action::OpenVarPicker { completing: false }),
-                ),
-                // The split cycle's alt+w is found in the palette (spec
-                // E12a), not here.
-                // Arrows are the primary route (method ← URL ↓ content)
-                // and get no chip of their own (2026-09-18: the old
-                // `↑↓←→ navigate` chip made way for the tab chord — the
-                // URL-focused row must keep hover-hint room at 160 cols);
-                // ctrl-digits switch spaces.
-                // The tab chord chip every strip shares (response pane,
-                // Manage tabs): same keycap, same wording. Last, so the
-                // dynamic inserts below never shift it.
-                (tabs_key(), "tabs", Some(Action::CycleTabs(1))),
-            ]);
-            // Every insert below lands before the trailing vars + tabs
-            // pair, so it keeps its place whether or not the leading
-            // send/cancel slot is there.
             if url_focused {
                 // "tls" leans on context (the padlock sits in the focused
                 // bar); labels stay tight so the vars chip survives the
                 // 120-col dirty footer.
-                let at = chips.len() - 2;
-                chips.insert(
-                    at,
+                chips.extend([
                     (
                         Key::Of(Action::CopyToClipboard(crate::action::CopyTarget::Url)),
                         "copy url",
                         Some(Action::CopyToClipboard(crate::action::CopyTarget::Url)),
                     ),
-                );
-                chips.insert(
-                    at + 1,
                     (Key::Of(Action::ToggleInsecure), "tls", Some(Action::ToggleInsecure)),
-                );
+                ]);
             } else if let Some(label) = add_row_label {
                 // Named for what it adds on the active tab ("add header" on
                 // Headers, …); hidden on the Body tab, where the action is
-                // inert.
-                let at = chips.len() - 2;
-                // The keycap is the table's `a`; where that row does not
-                // apply (`SubFocus::None`, a live cell edit) arrows'
+                // inert. The keycap is the table's `a`; where that row does
+                // not apply (`SubFocus::None`, a live cell edit) arrows'
                 // `alt+a` stands in, and vim shows no key.
-                chips.insert(
-                    at,
-                    (
-                        Key::OneOf(Action::OnSelection(Verb::Add), Action::TableAddRow),
-                        label,
-                        Some(Action::TableAddRow),
-                    ),
-                );
+                chips.push((
+                    Key::OneOf(Action::OnSelection(Verb::Add), Action::TableAddRow),
+                    label,
+                    Some(Action::TableAddRow),
+                ));
             }
-            let pos = chips.len() - 2; // before vars + tabs
             if let Some(cursor) = table_row_selected {
-                chips.splice(pos..pos, table_cursor_chips(cursor));
+                chips.extend(table_cursor_chips(cursor));
             }
+            chips.push((
+                Key::Of(Action::OpenVarPicker { completing: false }),
+                "vars",
+                Some(Action::OpenVarPicker { completing: false }),
+            ));
+            // The split cycle's alt+w is found in the palette (spec E12a),
+            // not here. Arrows are the primary route (method ← URL ↓
+            // content) and get no chip of their own (2026-09-18: the old
+            // `↑↓←→ navigate` chip made way for the tab chord — the
+            // URL-focused row must keep hover-hint room at 160 cols);
+            // ctrl-digits switch spaces. The tab chord chip every strip
+            // shares (response pane, Manage tabs): same keycap, same
+            // wording. Last, so the chips before it never shift it.
+            chips.extend(tabs());
             if field_open {
                 // Inserted last so the row/address-bar chips above land
                 // where they mean to; it leads the row all the same.
@@ -342,8 +340,8 @@ pub(crate) fn footer_chips(
                     (Key::Named("esc"), "done", Some(Action::CloseField)),
                 ]
             } else {
-                let mut chips = vec![
-                    (tabs_key(), "tabs", Some(Action::CycleTabs(1))),
+                let mut chips: Vec<_> = tabs().into_iter().collect();
+                chips.extend([
                     // The search row's key in both profiles (spec §4.6).
                     (
                         Key::Of(Action::OpenResponseSearch { backward: false }),
@@ -351,7 +349,7 @@ pub(crate) fn footer_chips(
                         Some(Action::OpenResponseSearch { backward: false }),
                     ),
                     (Key::Of(Action::OpenJqBar), "filter", Some(Action::OpenJqBar)),
-                ];
+                ]);
                 if jq_bar == JqBarState::Open {
                     chips.push((
                         Key::Of(Action::ToggleJqBar),
@@ -416,7 +414,9 @@ pub fn draw_footer(
     theme: &Theme,
     focus: PaneId,
     shift_enter_send: bool,
-    sending: bool,
+    sending: Sending,
+    // See `footer_chips`: the tab chip's keys switch tabs here.
+    tabs_chord: bool,
     add_row_label: Option<&'static str>,
     // See `footer_chips`: the editor pane's focus sits on the address bar.
     url_focused: bool,
@@ -550,6 +550,7 @@ pub fn draw_footer(
             focus,
             shift_enter_send,
             sending,
+            tabs_chord,
             add_row_label,
             url_focused,
             url_selected,
@@ -764,7 +765,7 @@ mod tests {
     fn footer_chips(
         focus: PaneId,
         shift_enter_send: bool,
-        sending: bool,
+        sending: Sending,
         add_row_label: Option<&'static str>,
         url_focused: bool,
         url_selected: bool,
@@ -782,6 +783,7 @@ mod tests {
                 focus,
                 shift_enter_send,
                 sending,
+                true,
                 add_row_label,
                 url_focused,
                 url_selected,
@@ -863,7 +865,8 @@ mod tests {
                         &theme,
                         PaneId::Sidebar,
                         false,
-                        false,
+                        Sending::No,
+                        true,
                         None,
                         false,
                         false,
@@ -945,7 +948,8 @@ mod tests {
                     &theme,
                     PaneId::Sidebar,
                     false,
-                    false,
+                    Sending::No,
+                    true,
                     Some("add header"),
                     false,
                     false,
@@ -1082,10 +1086,20 @@ mod tests {
     #[test]
     fn a_completion_ghost_advertises_tab_and_accept() {
         let chips = |state: JqBarState| {
-            footer_chips(PaneId::Response, false, false, None, false, false, None, state, false)
-                .into_iter()
-                .map(|(k, l, _)| format!("{k} {l}"))
-                .collect::<Vec<_>>()
+            footer_chips(
+                PaneId::Response,
+                false,
+                Sending::No,
+                None,
+                false,
+                false,
+                None,
+                state,
+                false,
+            )
+            .into_iter()
+            .map(|(k, l, _)| format!("{k} {l}"))
+            .collect::<Vec<_>>()
         };
         let focused = chips(JqBarState::Focused);
         assert!(!focused.iter().any(|c| c.starts_with("tab")), "{focused:?}");
@@ -1113,7 +1127,7 @@ mod tests {
         let chips = footer_chips(
             PaneId::Response,
             false,
-            false,
+            Sending::No,
             None,
             false,
             false,
@@ -1135,7 +1149,8 @@ mod tests {
         let chips = super::footer_chips(
             PaneId::Response,
             false,
-            false,
+            Sending::No,
+            true,
             None,
             false,
             false,
@@ -1154,7 +1169,7 @@ mod tests {
         let chips = footer_chips(
             PaneId::Response,
             false,
-            false,
+            Sending::No,
             None,
             false,
             false,
@@ -1195,7 +1210,8 @@ mod tests {
                     &theme,
                     focus,
                     false,
-                    false,
+                    Sending::No,
+                    true,
                     Some("add header"),
                     false,
                     false,
@@ -1225,7 +1241,7 @@ mod tests {
         let with = footer_chips(
             PaneId::Editor,
             true,
-            false,
+            Sending::No,
             Some("add header"),
             false,
             false,
@@ -1237,7 +1253,7 @@ mod tests {
         let without = footer_chips(
             PaneId::Editor,
             false,
-            false,
+            Sending::No,
             Some("add header"),
             false,
             false,
@@ -1250,20 +1266,25 @@ mod tests {
 
     /// While the open request is in flight, the send shortcuts go dead and
     /// esc is the cancel shortcut — the footer must advertise that instead
-    /// of a send key that would do nothing.
+    /// of a send key that would do nothing. Where the focused input takes
+    /// Esc for its own, the slot goes empty: neither key would do what its
+    /// chip says (#193).
     #[test]
     fn send_chip_becomes_esc_cancel_while_the_open_request_is_in_flight() {
-        let sending = footer_chips(
-            PaneId::Editor,
-            false,
-            true,
-            Some("add header"),
-            false,
-            false,
-            None,
-            JqBarState::Closed,
-            false,
-        );
+        let in_flight = |esc_cancels| {
+            footer_chips(
+                PaneId::Editor,
+                false,
+                Sending::InFlight { esc_cancels },
+                Some("add header"),
+                false,
+                false,
+                None,
+                JqBarState::Closed,
+                false,
+            )
+        };
+        let sending = in_flight(true);
         assert!(
             sending
                 .iter()
@@ -1273,17 +1294,23 @@ mod tests {
             !sending.iter().any(|(_, l, _)| *l == "send"),
             "a dead send key must not be advertised"
         );
+        let taken = in_flight(false);
+        assert!(
+            !taken.iter().any(|(_, l, _)| *l == "send" || *l == "cancel"),
+            "Esc is the input's: {taken:?}"
+        );
     }
 
     /// An open text field owns Esc (the field rule, spec 2026-09-15): the
     /// footer says `esc done` and never `esc cancel` on that surface —
-    /// sending or not.
+    /// sending or not (in flight, `App::editor_esc_cancels` says Esc is the
+    /// field's).
     #[test]
     fn an_open_field_advertises_esc_done_and_never_esc_cancel() {
         let chips = footer_chips(
             PaneId::Editor,
             false,
-            true,
+            Sending::InFlight { esc_cancels: false },
             Some("add header"),
             true,
             false,
@@ -1307,7 +1334,7 @@ mod tests {
         let chips = footer_chips(
             PaneId::Response,
             false,
-            false,
+            Sending::No,
             None,
             false,
             false,
@@ -1325,7 +1352,7 @@ mod tests {
         let chips = footer_chips(
             PaneId::Response,
             false,
-            false,
+            Sending::No,
             None,
             false,
             false,
@@ -1364,7 +1391,7 @@ mod tests {
         let chips = footer_chips(
             PaneId::Editor,
             false,
-            false,
+            Sending::No,
             Some("add header"),
             false,
             false,
@@ -1389,7 +1416,7 @@ mod tests {
         let chips = footer_chips(
             PaneId::Editor,
             false,
-            false,
+            Sending::No,
             Some("add header"),
             true,
             false,
@@ -1411,7 +1438,7 @@ mod tests {
         let chips = footer_chips(
             PaneId::Editor,
             false,
-            false,
+            Sending::No,
             Some("add header"),
             false,
             false,
@@ -1438,7 +1465,7 @@ mod tests {
         let chips = footer_chips(
             PaneId::Editor,
             false,
-            false,
+            Sending::No,
             None,
             true,
             true,
@@ -1463,7 +1490,7 @@ mod tests {
         let chips = footer_chips(
             PaneId::Editor,
             false,
-            false,
+            Sending::No,
             None,
             true,
             false,
@@ -1505,7 +1532,8 @@ mod tests {
                 let chips = super::footer_chips(
                     pane,
                     false,
-                    false,
+                    Sending::No,
+                    true,
                     Some("add header"),
                     url_focused,
                     false,
@@ -1553,7 +1581,7 @@ mod tests {
         let chips = footer_chips(
             PaneId::Editor,
             false,
-            false,
+            Sending::No,
             Some("add header"),
             false,
             false,
@@ -1573,7 +1601,7 @@ mod tests {
         let chips = footer_chips(
             PaneId::Editor,
             false,
-            false,
+            Sending::No,
             Some("add header"),
             false,
             false,
@@ -1588,7 +1616,7 @@ mod tests {
         let chips = footer_chips(
             PaneId::Editor,
             false,
-            false,
+            Sending::No,
             Some("add header"),
             false,
             false,
@@ -1654,7 +1682,8 @@ mod tests {
                     &theme,
                     PaneId::Response,
                     false,
-                    false,
+                    Sending::No,
+                    true,
                     Some("add header"),
                     false,
                     false,
@@ -1697,7 +1726,8 @@ mod tests {
                     &theme,
                     PaneId::Sidebar,
                     false,
-                    false,
+                    Sending::No,
+                    true,
                     Some("add header"),
                     false,
                     false,
@@ -1747,7 +1777,8 @@ mod tests {
                     &theme,
                     PaneId::Sidebar,
                     false,
-                    false,
+                    Sending::No,
+                    true,
                     Some("add header"),
                     false,
                     false,
@@ -1792,7 +1823,8 @@ mod tests {
                     &theme,
                     PaneId::Sidebar,
                     false,
-                    false,
+                    Sending::No,
+                    true,
                     Some("add header"),
                     false,
                     false,
@@ -1871,7 +1903,8 @@ mod tests {
                     &theme,
                     PaneId::Sidebar,
                     false,
-                    false,
+                    Sending::No,
+                    true,
                     Some("add header"),
                     false,
                     false,
@@ -1933,7 +1966,8 @@ mod tests {
                     &theme,
                     PaneId::Sidebar,
                     false,
-                    false,
+                    Sending::No,
+                    true,
                     Some("add header"),
                     false,
                     false,
@@ -2035,7 +2069,8 @@ mod tests {
                     &theme,
                     PaneId::Sidebar,
                     false,
-                    false,
+                    Sending::No,
+                    true,
                     Some("add header"),
                     false,
                     false,
@@ -2093,7 +2128,8 @@ mod tests {
                         &theme,
                         PaneId::Sidebar,
                         false,
-                        false,
+                        Sending::No,
+                        true,
                         None,
                         false,
                         false,

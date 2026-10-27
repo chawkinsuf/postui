@@ -3311,6 +3311,44 @@ impl App {
         }
     }
 
+    /// Whether Esc on the focused editor reaches the cancel shortcut, so
+    /// the footer may say `esc cancel` there (#193, the user: "probably
+    /// don't put esc in the footer when in another input"). It asks the
+    /// key's own path in its order: vim's Normal Esc row on the method
+    /// badge, the closed URL line and the table runs the cancel first
+    /// (#191); past the router, the editor's stops keep Esc for their own
+    /// (`Editor::takes_esc`), and with none selected it falls through to
+    /// the app's esc → `Close`, which cancels.
+    pub(crate) fn editor_esc_cancels(&self) -> bool {
+        crate::keyroute::spell::row_keys(self.spell_ctx(), &Action::CancelSend) == Some("<Esc>")
+            || !self.editor.takes_esc()
+    }
+
+    /// Whether `combo` goes to the arrows body rather than to the keymap:
+    /// with the caret live in the body editor, alt+←/→ are the macOS
+    /// word-jump spelling (option+arrow), so the tab chord's default keys
+    /// switch no tab from inside the body (`handle_key_routed`'s step 4
+    /// exception, which asks this). In vim the engine owns the body's
+    /// motions, and the chord is the keymap's (plan M3a Deviation 6).
+    fn body_takes_chord(&self, combo: &KeyCombo) -> bool {
+        combo.modifiers.contains(KeyModifiers::ALT)
+            && matches!(combo.code, KeyCode::Left | KeyCode::Right)
+            && self.focus == PaneId::Editor
+            && self.editor.sub_focus == SubFocus::Content
+            && self.editor.active_tab == EditorTab::Body
+            && !self.vim_owns_body()
+    }
+
+    /// Whether the keys the footer's tab chip names switch tabs here: not
+    /// where the body takes them first ([`Self::body_takes_chord`]), so the
+    /// chip goes there (#193, the user: "same as esc"). A `keys.toml` that
+    /// moves the chord off alt+←/→ keeps its chip in the body too.
+    pub(crate) fn tab_chord_cycles(&self) -> bool {
+        [Action::CycleTabs(-1), Action::CycleTabs(1)]
+            .iter()
+            .all(|a| !self.keymap.chord_for_action(a).is_some_and(|c| self.body_takes_chord(c)))
+    }
+
     /// Whether an open text field has keystrokes of its own to undo — the
     /// condition under which the undo keys belong to it.
     pub(crate) fn open_text_field_edited(&mut self) -> bool {
@@ -11748,21 +11786,14 @@ impl App {
         }
 
         // 4-exception: with the caret live in the body editor, alt+←/→
-        // are the macOS word-jump spelling (option+arrow) and go to the
-        // editor instead of the global tab-cycle binding; tab switching
-        // from inside the body is mouse-only (ctrl-digits now switch
-        // spaces), and everywhere else alt+arrows cycle as before. The
-        // shifted variants and alt+backspace need no carve-out: those
+        // go to the editor instead of the global tab-cycle binding
+        // (`body_takes_chord`, which the footer's tab chip asks too); tab
+        // switching from inside the body is mouse-only (ctrl-digits now
+        // switch spaces), and everywhere else alt+arrows cycle as before.
+        // The shifted variants and alt+backspace need no carve-out: those
         // combos are unbound, so step 4 already falls through to the
         // component.
-        if ev.modifiers.contains(KeyModifiers::ALT)
-            && matches!(ev.code, KeyCode::Left | KeyCode::Right)
-            && self.focus == PaneId::Editor
-            && self.editor.sub_focus == SubFocus::Content
-            && self.editor.active_tab == EditorTab::Body
-            // In vim the engine owns the body's motions: the chord is the
-            // keymap's (plan M3a Deviation 6).
-            && !self.vim_owns_body()
+        if self.body_takes_chord(&combo)
             && let Some(a) = self.focused_component_key(ev)
         {
             return self.update(a);

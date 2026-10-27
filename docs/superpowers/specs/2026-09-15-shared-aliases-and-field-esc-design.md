@@ -148,6 +148,16 @@ The footer is what makes the two-press cancel legible:
   relabelled to match: the jq bar shows `esc done`; the in-flight
   `esc cancel` is unchanged because it is not a field.
 
+Amended 2026-10-27 (task #193, `you`: "probably don't put esc in the
+footer when in another input", and for the tab chip "same as esc"): the
+in-flight `esc cancel` shows only where Esc reaches the cancel. Where the
+focused input takes Esc for its own (arrows' method badge, selected URL
+line and table, the body in either profile), the slot stays empty, as it
+does for an open field. The same goes for the tab chip: the arrows body
+takes alt+←/→ for its word jump, so the chip goes there while those are
+its keys. `App::editor_esc_cancels` and `App::tab_chord_cycles` read the
+key's own path, so the chips follow it.
+
 ## Undo inside a text field
 
 ### Two text classes
