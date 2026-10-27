@@ -30454,6 +30454,11 @@ fn a_click_away_from_a_refused_settings_write_is_swallowed() {
     assert_eq!(app.settings.editing, Some(SettingsField::AiCmd), "the edit stays open");
     assert_eq!(app.settings.field_text(), "my-ai --go");
     assert_eq!(app.settings.cursor, ai_row, "and the click did not move the cursor");
+
+    // A change that closes the inputs first stops there too.
+    app.update(Action::SelectManageTab(ManageTab::Environments));
+    assert_eq!(app.manage.tab, ManageTab::Settings, "the tab switch is refused");
+    assert_eq!(app.settings.field_text(), "my-ai --go", "and the typing is kept");
 }
 
 /// A live Settings field does not survive a click that lands anywhere
