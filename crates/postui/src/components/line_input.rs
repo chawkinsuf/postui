@@ -505,11 +505,15 @@ impl LineInput {
 
     /// Puts a picked variable's `text` as a paste does: over a live
     /// selection, else at the caret. A `whole` `{{token}}` that would land
-    /// inside a token takes that token's place instead (#149).
+    /// inside a token takes that token's place instead (#149). A completion
+    /// meets no live selection: the `{{` it completes was typed, which
+    /// replaced any, and its picker is modal.
     pub fn put_var(&mut self, text: &str, whole: bool) {
         // Recorded before the token is selected, so an undo puts the caret
         // back where the user had it.
         self.record(EditKind::Whole);
+        // The token is looked for at the caret the paste will use.
+        self.snap_to_graphemes();
         if whole
             && self.selection().is_none()
             && let Some(token) = crate::text::token_around(&self.text, self.cursor)

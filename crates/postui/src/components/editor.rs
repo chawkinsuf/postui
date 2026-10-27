@@ -1257,7 +1257,10 @@ impl Editor {
 
     /// Puts a picked variable's `text` as [`Self::paste_body`] does: over a
     /// live selection, else at the caret. A `whole` `{{token}}` that would
-    /// land inside a token takes that token's place instead (#149).
+    /// land inside a token takes that token's place instead (#149). Unlike
+    /// a one-line field's own history, the app's undo of this stores no
+    /// caret: undo leaves the caret where it is, for every body edit
+    /// (undo.rs, ruling 2026-09-18).
     pub fn body_put_var(&mut self, text: &str, whole: bool) {
         let caret = self.body.cursor;
         if whole && self.body.selection.is_none() {
