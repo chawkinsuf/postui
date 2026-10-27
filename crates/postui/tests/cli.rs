@@ -141,6 +141,7 @@ fn a_bad_argument_fails_with_status_2_even_when_stderr_is_full() {
         c.stderr(dev_full());
     });
     assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty(), "the usage never moves to stdout");
 }
 
 /// #168: `--keydump`'s banner write error ends the run as its later writes
@@ -154,4 +155,5 @@ fn keydump_into_a_full_stdout_fails_without_a_panic() {
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains("panicked"), "{stderr}");
+    assert!(stderr.starts_with("Error: ") && stderr.contains("os error 28"), "{stderr}");
 }

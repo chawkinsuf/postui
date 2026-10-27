@@ -67,9 +67,9 @@ pub fn resolve_flags(flags: Option<u8>) -> KeyboardEnhancementFlags {
 pub fn run(flags: Option<u8>) -> anyhow::Result<()> {
     use std::io::Write;
     let resolved = resolve_flags(flags);
-    let supported =
-        matches!(ratatui::crossterm::terminal::supports_keyboard_enhancement(), Ok(true));
-    // A write error ends the run like the echo loop's do, not a panic (#168).
+    // A write error ends the run like the echo loop's do, not a panic
+    // (#168). The first lines go out before the terminal probe, so a
+    // stdout that can't take them fails before the tty is touched.
     let mut out = std::io::stdout();
     writeln!(
         out,
@@ -81,6 +81,9 @@ pub fn run(flags: Option<u8>) -> anyhow::Result<()> {
         std::env::var("TERM").ok(),
         std::env::var("TERM_PROGRAM").ok()
     )?;
+    out.flush()?;
+    let supported =
+        matches!(ratatui::crossterm::terminal::supports_keyboard_enhancement(), Ok(true));
     writeln!(out, "terminal reports kitty keyboard protocol support: {supported}")?;
     writeln!(out, "pushing enhancement flags: {:?} (bits {})", resolved, resolved.bits())?;
     out.flush()?;
