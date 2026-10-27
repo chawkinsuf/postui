@@ -70,6 +70,14 @@ lines = [
   "esc \\( not (yes)",
 ]
 
+[body.bracketswide]
+view = "raw"
+lines = ["\tif (a) {", "日本 [語] x", "\t\t(deep)", "  x\ty (z)", "}"]
+
+[body.strings]
+view = "pretty"
+json = '''{"a": "x(y", "b": [1, "]"], "c": {"d": "{", "e": [")"]}, "f": "tail"}'''
+
 [body.tree]
 view = "pretty"
 json = '''{"id": 1, "name": "foo", "tags": ["a", "b", "foo"], "owner": {"name": "bar", "email": "foo@x.test", "roles": ["admin", "dev"]}, "items": [{"id": 1, "name": "foo"}, {"id": 2, "name": "bar"}, {"id": 3, "name": "baz"}], "meta": {"a": {"b": {"c": "foo"}}}, "count": 3, "next": null, "tail": "foo"}'''
@@ -286,4 +294,20 @@ body = "tree"
 cases = [
   "%", "%%", "j%", "3j%", "3j%%", "7j%", "8j%", "3jzc%", "3jzc%%", "zM%", "zM%%", "zMzo3j%", "zMzo3j%%",
   "zMzo3jV%", "zMzo3j$%", "3jzcV%", "zM50%", "zMzo50%", "zM100%", "zMzo3j%k", "zMzo8j%",
+]
+
+[[group]]
+id = "percentwide"
+body = "bracketswide"
+cases = [
+  "%", "%%", "$%", "l%", "j%", "j%%", "jl%", "j$%", "2j%", "2j%%", "3j%", "3jl%", "3j$%", "4j%",
+  "$j%", "$jj%", "3j$k%",
+]
+
+[[group]]
+id = "percentstrings"
+body = "strings"
+cases = [
+  "%", "j%", "j$%", "2j%", "2j$%", "3j%", "3j$%", "4j%", "5j%", "6j%", "6j$%", "7j%", "8j%", "9j%",
+  "zM%", "zMzoj$%",
 ]

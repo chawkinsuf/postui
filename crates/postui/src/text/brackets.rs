@@ -27,6 +27,13 @@ fn pair(c: char) -> Option<(char, char)> {
     }
 }
 
+/// Vim's `{N}%` (`nv_percent()`): the row N percent of the way down
+/// `lines` rows (at least 1), rounding up. `None` for N over 100, which
+/// beeps.
+pub(crate) fn percent_row(count: usize, lines: usize) -> Option<usize> {
+    (count <= 100).then(|| (count * lines).div_ceil(100).clamp(1, lines) - 1)
+}
+
 /// Whether `c` is one of the brackets this module matches.
 pub(crate) fn is_bracket(c: char) -> bool {
     pair(c).is_some()

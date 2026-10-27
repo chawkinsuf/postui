@@ -12,7 +12,7 @@ use super::view::View;
 use super::{
     BufState, Engine, LastSearch, Mode, Note, ViewCtx, first_non_blank, first_non_blank_fix,
 };
-use crate::text::brackets::{MatchFrom, find_match};
+use crate::text::brackets::{MatchFrom, find_match, percent_row};
 use crate::text::class::class;
 use unicode_width::UnicodeWidthChar;
 
@@ -533,18 +533,14 @@ pub(crate) fn run<B: TextBuf>(
                 WantUpdate::Here,
             )
         }
-        Motion::MatchPair if count > 0 => {
-            if count > 100 {
-                return Moved::refused(from);
-            }
-            let lines = buf.line_count();
-            let row = ((count * lines).div_ceil(100)).clamp(1, lines) - 1;
-            Moved::to(
+        Motion::MatchPair if count > 0 => match percent_row(count, buf.line_count()) {
+            Some(row) => Moved::to(
                 Pos::new(row, first_non_blank(&buf.line(row))),
                 MKind::Linewise,
                 WantUpdate::Here,
-            )
-        }
+            ),
+            None => Moved::refused(from),
+        },
         Motion::MatchPair => match find_match(buf, from, MatchFrom::Percent, true) {
             Some(to) => Moved::to(to, MKind::Inclusive, WantUpdate::Here),
             None => Moved::refused(from),
