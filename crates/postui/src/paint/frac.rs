@@ -75,7 +75,9 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
 /// so it also clears the modifiers the cell had, as [`super::fill`] does
 /// for the band's full rows: a strike or underline left from the page
 /// would otherwise run through the band's edge (task #114: a settling
-/// modal's edge row over a struck header row).
+/// modal's edge row over a struck header row). An edge whose coverage
+/// rounds to nothing never gets here, so that row stays as the page left
+/// it, modifiers included: the band hasn't reached it yet.
 fn edge_row(buf: &mut Buffer, x0: u16, x1: u16, y: u16, glyph: &str, fg: Color, bg: Color) {
     for x in x0..x1.min(buf.area().right()) {
         if let Some(cell) = buf.cell_mut((x, y)) {
@@ -189,8 +191,16 @@ mod tests {
         // Top edge in row 1, full rows 2..3, bottom edge in row 4.
         let buf = draw(1.5, 4.5);
         for y in 1..=4 {
-            assert_eq!(buf[(1, y)].modifier, Modifier::empty(), "row {y} keeps a modifier");
+            for x in 0..4 {
+                assert_eq!(buf[(x, y)].modifier, Modifier::empty(), "({x}, {y}) keeps a modifier");
+            }
         }
+        // The bottom edge swaps the colours so its upper half shows the fill.
+        assert_eq!(buf[(1, 4)].symbol(), "▄");
+        assert_eq!((buf[(1, 4)].fg, buf[(1, 4)].bg), (theme.page, theme.panel));
+        // Rows the band doesn't reach keep theirs.
+        assert_eq!(buf[(1, 0)].modifier, marks);
+        assert_eq!(buf[(1, 5)].modifier, marks);
         // Both edges in row 2.
         let buf = draw(2.2, 2.9);
         assert_eq!(buf[(1, 2)].symbol(), "▆");
