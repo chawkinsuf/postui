@@ -347,14 +347,18 @@ fn wire_order(rows: &[HeaderRow]) -> Vec<SentHeader> {
 }
 
 /// The `Accept` postui sends on every request unless a request row or
-/// project default names `accept` (task #174): JSON first, because the app
-/// is about JSON, with every other type still acceptable at a low weight,
-/// so a server that only serves HTML, CSV or a file answers it as it would
-/// reqwest's `*/*` rather than with 406 (the value is the user's). A curl
-/// import with no `Accept` adds no row, so it sends this one too: with the
-/// fallback it differs from curl's `*/*` only in preferring JSON (curl
-/// spec, the 2026-10-27 amendments under §5.2).
-pub const AUTO_ACCEPT: &str = "application/json, */*;q=0.1";
+/// project default names `accept` (task #174): JSON, because the app is
+/// about JSON, and the value curl's `--json` sends. It has no `*/*`
+/// fallback on purpose: Rails ignores an Accept with `*/*` next to a comma
+/// as a browser's (`BROWSER_LIKE_ACCEPTS`, unless the app opts into
+/// `strict_accept_header`) and answers its default format, usually HTML,
+/// so a fallback would lose the JSON preference on one of the most common
+/// API frameworks. The cost is that a server that only serves another type
+/// may answer 406; the pencil or a project default overrides it (the
+/// value and that trade are the user's). A curl import with no `Accept`
+/// adds no row, so it sends this one too (curl spec, the 2026-10-27
+/// amendments under §5.2).
+pub const AUTO_ACCEPT: &str = "application/json";
 
 /// Where a header row comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -588,9 +592,16 @@ fn rows(
     // it. Each is shown as it is sent, and the request may take it over
     // unless it has a row naming it already.
     let auto = |name: &str, value: &str, rows: &[HeaderRow]| HeaderRow {
+        header: SentHeader {
+            name: name.into(),
+            display_name: name.into(),
+            display: value.into(),
+            value: value.into(),
+        },
         origin: HeaderOrigin::Auto,
-        override_as: (!named_by_request(name)).then(|| (name.to_string(), value.to_string())),
-        ..client_row(name, value.to_string(), value.to_string(), replaced(rows, name))
+        unsent: replaced(rows, name),
+        unresolved: Vec::new(),
+        override_as: (!named_by_request(name)).then(|| (name.into(), value.into())),
     };
     if body_len.is_some() {
         rows.push(auto("Content-Type", "application/json", &rows));
@@ -784,7 +795,7 @@ mod tests {
     /// The auto `Accept` every send carries after the rows written for it,
     /// unless one of them names `accept` (task #174).
     fn json_accept() -> (String, String) {
-        ("Accept".into(), "application/json, */*;q=0.1".into())
+        ("Accept".into(), "application/json".into())
     }
 
     fn ctx(vars: &[(&str, &str)], defaults: &[(&str, &str, bool)]) -> PrepareContext {
@@ -1450,7 +1461,7 @@ mod tests {
         assert_eq!(causes.into_keys().collect::<Vec<_>>(), ["gone"]);
     }
 
-    /// The auto `Accept: application/json, */*;q=0.1` row, for any method.
+    /// The auto `Accept: application/json` row, for any method.
     fn auto_accept(rows: &[HeaderRow]) -> &HeaderRow {
         auto(rows, "Accept").unwrap_or_else(|| panic!("no auto Accept row in {rows:#?}"))
     }
@@ -1464,7 +1475,7 @@ mod tests {
         let req = base("https://api.example.com/v1");
         let rows = header_rows(&req, &PrepareContext::default());
         let accept = auto_accept(&rows);
-        assert_eq!(accept.header.value, "application/json, */*;q=0.1");
+        assert_eq!(accept.header.value, "application/json");
         assert!(accept.sent());
         let names: Vec<&str> = rows.iter().map(|r| r.header.name.as_str()).collect();
         assert_eq!(names, ["Accept", "Host"], "wire order");
@@ -1725,7 +1736,7 @@ mod tests {
         let (p, _) = prepare(&req, &PrepareContext::default()).unwrap();
         assert_eq!(
             names(&p),
-            ["x-a=1", "x-a=3", "x-b=2", "accept=application/json, */*;q=0.1", "host=x.test"]
+            ["x-a=1", "x-a=3", "x-b=2", "accept=application/json", "host=x.test"]
         );
 
         let mut req = base("http://u:pw@x.test/p");
@@ -1739,7 +1750,7 @@ mod tests {
                 "authorization=t1",
                 "authorization=t2",
                 "x-one=1",
-                "accept=application/json, */*;q=0.1",
+                "accept=application/json",
                 "host=x.test"
             ]
         );
@@ -1954,10 +1965,7 @@ mod tests {
             overriding(HeaderOrigin::Auto, "Content-Type"),
             Some(("Content-Type", "application/json"))
         );
-        assert_eq!(
-            overriding(HeaderOrigin::Auto, "Accept"),
-            Some(("Accept", "application/json, */*;q=0.1"))
-        );
+        assert_eq!(overriding(HeaderOrigin::Auto, "Accept"), Some(("Accept", "application/json")));
         let mine = HeaderOrigin::Request { row: 0 };
         assert_eq!(overriding(mine, "X-Mine"), None, "already the request's");
         assert_eq!(overriding(HeaderOrigin::Default, "X-Mine"), None, "replaced, so not sent");

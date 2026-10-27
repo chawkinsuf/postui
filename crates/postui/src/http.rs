@@ -342,7 +342,7 @@ mod tests {
     /// value for value, in order — including what reqwest and hyper add on
     /// their own (`authorization` from the URL's userinfo, `host`,
     /// `content-length`, which core's `header_rows` predicts), with names
-    /// in their wire case. postui's own `accept: application/json, */*;q=0.1`
+    /// in their wire case. postui's own `accept: application/json`
     /// goes in place of reqwest's `*/*` whatever the method (task #174). A typed
     /// `Host`, `Content-Length` or `Transfer-Encoding` is never sent (spec
     /// 2026-10-18 R3a): the client's own row goes out instead, if it sends
@@ -426,11 +426,7 @@ mod tests {
             assert!(!raw.to_ascii_lowercase().contains("transfer-encoding"), "{raw}");
             let accepts: Vec<&str> =
                 wire.iter().filter(|(k, _)| k == "accept").map(|(_, v)| v.as_str()).collect();
-            assert_eq!(
-                accepts,
-                ["application/json, */*;q=0.1"],
-                "postui's Accept, every method:\n{raw}"
-            );
+            assert_eq!(accepts, ["application/json"], "postui's Accept, every method:\n{raw}");
             if !userinfo.is_empty() && userinfo != "u%FF:p@" {
                 assert!(wire.iter().any(|(k, _)| k == "authorization"), "{userinfo}: {raw}");
             }

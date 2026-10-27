@@ -8359,10 +8359,7 @@ url = "https://api.example.com/users""#,
         let mut terminal = Terminal::new(TestBackend::new(140, 70)).unwrap();
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
         let buf = terminal.backend().buffer();
-        assert!(
-            buffer_has_crossed_out(buf, "Accept: application/json, */*;q=0.1"),
-            "the auto Accept"
-        );
+        assert!(buffer_has_crossed_out(buf, "Accept: application/json"), "the auto Accept");
         assert!(
             buffer_has_crossed_out(buf, "Content-Type: application/json"),
             "the auto Content-Type"
@@ -8388,7 +8385,7 @@ url = "https://api.example.com/users""#,
         assert!(format!("{buf:?}").contains("Accept: text/html"), "the default is drawn");
         assert!(!buffer_has_crossed_out(buf, "text/html"), "and sent");
         assert!(
-            buffer_has_crossed_out(buf, "Accept: application/json, */*;q=0.1"),
+            buffer_has_crossed_out(buf, "Accept: application/json"),
             "the auto Accept it replaces"
         );
     }
@@ -8414,8 +8411,7 @@ url = "https://api.example.com/users""#,
         let (x, y) = (0..buf.area.height)
             .find_map(|y| {
                 let line: String = (0..width).map(|x| buf.cell((x, y)).unwrap().symbol()).collect();
-                line.find("Accept: application/json, */*;q=0.1")
-                    .map(|i| (line[..i].chars().count() as u16, y))
+                line.find("Accept: application/json").map(|i| (line[..i].chars().count() as u16, y))
             })
             .expect("the auto Accept row is drawn");
         assert!(struck(x, y), "the name's first char is struck");
@@ -8550,7 +8546,7 @@ url = "https://api.example.com/users""#,
             ..auto_header(name, value)
         };
         e.computed.rows = vec![
-            overridable("Accept", "application/json, */*;q=0.1"),
+            overridable("Accept", "application/json"),
             auto_header("Host", "x.test"),
             postui_core::prepare::HeaderRow {
                 unsent: Some(postui_core::prepare::Unsent::Replaced),

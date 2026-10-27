@@ -625,7 +625,7 @@ fn copied(out: &std::path::Path) -> Option<String> {
 /// A plain GET of `url` as Copy as curl writes it: postui's own `Accept`
 /// is on the wire, so it is in the command (task #174).
 fn json_get(url: &str) -> String {
-    format!("curl '{url}' \\\n  -H 'Accept: application/json, */*;q=0.1'")
+    format!("curl '{url}' \\\n  -H 'Accept: application/json'")
 }
 
 #[test]
@@ -646,7 +646,7 @@ fn copy_on_a_closed_request_reads_its_file_without_opening_it() {
     assert_eq!(
         copied(&out).as_deref(),
         Some(
-            "curl -X POST 'https://x/other' \\\n  -H 'X-A: 1' \\\n  -H 'Accept: application/json, */*;q=0.1'"
+            "curl -X POST 'https://x/other' \\\n  -H 'X-A: 1' \\\n  -H 'Accept: application/json'"
         )
     );
     assert!(app.proj().held_request("main/other").is_none(), "not held");
