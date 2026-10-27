@@ -1443,35 +1443,42 @@ impl App {
         // main. A press on the rest of the section is the bare pane's, as
         // before.
         //
-        // A footer chip is the key it advertises, so while the editor's
-        // footer shows the table's cursor, every chip on it keeps the cursor
-        // and the table's caret as its key does: the cursor's own (copy,
-        // toggle, delete, an auto row's edit; task #125) and the rest (send
-        // or cancel, add, vars, tabs, commands, quit; task #183). The rule
-        // asks where the press landed, in the footer's rows, rather than
-        // listing actions: the app bar's save/discard and the address bar's
-        // lock are `FooterChip`s too, and they stay a click away. (A dialog
-        // drawn over the footer registers its own, but the dialog rule above
-        // already keeps everything under one.) The footer shows the editor's
-        // chips on the main screen only: the Manage screen draws its tab's
-        // own over the same rows while the editor keeps its cursor behind
-        // it, and there the chips stay a click away for the Settings rule
-        // below, which inherits this exemption. The cursor is read off the
-        // app now, which is the one the hit's frame was drawn from (the loop
-        // redraws after any event that reports a change, as the dialog rule
-        // above relies on). It shows only while the editor pane has the
-        // focus and no cell is open, so the commit above has nothing to
-        // close for these chips. The footer's other editor chips (`esc
+        // A footer chip is the key it advertises, so while the table's
+        // cursor is up (on a row, an auto row or `+ Add`; the editor
+        // focused, its caret in a table tab, no cell open), every chip on
+        // the editor's footer keeps the cursor and the table's caret, as
+        // the keys do: the cursor's own (copy, toggle, delete, an auto row's
+        // edit; task #125) and the rest (send or cancel, add, vars, tabs,
+        // commands, quit; task #183). With no cell open the commit above has
+        // nothing to close for them. The footer's other editor chips (`esc
         // done`, `enter edit`, `copy url`, `tls`) show only without the
         // cursor, so they stay a click away as before.
-        let in_footer = self.settled_layout().is_some_and(|l| {
-            l.footer.contains(ratatui::layout::Position { x: m.column, y: m.row })
-        });
-        let table_cursor_chip =
-            matches!(hit, Hit::FooterChip(_)) && in_footer && self.screen == Screen::Main && {
-                let pane = crate::ui::PaneChipArgs::of(self);
-                pane.focus == PaneId::Editor && pane.table_row_selected.is_some()
-            };
+        //
+        // The rule asks where the press landed, in the footer's rows,
+        // rather than listing actions: the app bar's save/discard and the
+        // address bar's lock register `FooterChip` too, and they stay a
+        // click away. Giving those their own hit would say it without the
+        // geometry, but every reader of `FooterChip` (the hints, the hover,
+        // the jq bar's rule, the mouse-parity sweep) would have to learn the
+        // new one, which is more than this rule needs. A dialog drawn over
+        // the footer registers its own chips, but the dialog rule above
+        // already keeps everything under one. The footer shows the editor's
+        // chips on the main screen only: the Manage screen draws its tab's
+        // own over the same rows while the editor keeps its cursor behind
+        // it, and there they stay a click away for the Settings rule below,
+        // which inherits this exemption. The cursor is read off the app now,
+        // which is the one the hit's frame was drawn from (the loop redraws
+        // after any event that reports a change, as the dialog rule above
+        // relies on).
+        let table_cursor_chip = matches!(hit, Hit::FooterChip(_))
+            && self.screen == Screen::Main
+            && self.focus == PaneId::Editor
+            && self.editor.sub_focus == SubFocus::Content
+            && self.editor.table.editing.is_none()
+            && self.editor.table_cursor().is_some()
+            && self.settled_layout().is_some_and(|l| {
+                l.footer.contains(ratatui::layout::Position { x: m.column, y: m.row })
+            });
         let keeps_table_selection = keeps_open_cell
             || table_cursor_chip
             || matches!(hit, Hit::AutoHeaderCopy(_) | Hit::AutoHeaderReveal);

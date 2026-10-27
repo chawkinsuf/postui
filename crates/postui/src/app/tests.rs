@@ -15669,15 +15669,26 @@ fn undoing_a_delete_chip_click_selects_the_restored_row() {
 
 /// Task #183: every chip in the editor's footer is the key it advertises,
 /// not only the ones the table's cursor adds (#125). With the cursor on a
-/// row, clicking `send` (or `cancel` while sending), the add chip, `tabs`,
-/// `commands` or `quit` leaves the cursor, the caret and the tab exactly
-/// as running the chip's action does.
+/// row or on `+ Add`, clicking `send` (or `cancel` while sending), the add
+/// chip, `tabs`, `commands` or `quit` leaves the cursor, the caret and the
+/// tab exactly as running the chip's action does.
 #[test]
 fn an_editor_footer_chip_click_leaves_the_table_cursor_as_its_action_does() {
     use crate::config::KeyProfile::{Arrows, Vim};
+    for stop in [Stop::Row(0), Stop::Add] {
+        footer_chips_leave_the_table_cursor_as_their_actions_do(stop, Arrows);
+        footer_chips_leave_the_table_cursor_as_their_actions_do(stop, Vim);
+    }
+}
+
+fn footer_chips_leave_the_table_cursor_as_their_actions_do(
+    stop: Stop,
+    profile: crate::config::KeyProfile,
+) {
     // An empty URL, so the send chip toasts rather than spawning a send.
     let start = |profile, sending| {
         let mut app = main_header_app(profile);
+        app.editor.table.set_selected(Some(stop));
         app.editor.url = LineInput::new("");
         app.editor.sending = sending;
         render_once(&mut app);
@@ -15691,33 +15702,31 @@ fn an_editor_footer_chip_click_leaves_the_table_cursor_as_its_action_does() {
             app.modals.is_empty(),
         )
     };
-    for profile in [Arrows, Vim] {
-        let probe = start(profile, false);
-        // The commands chip is `:` in vim and the palette in arrows.
-        let palette = [Action::OpenExPalette, Action::OpenPalette]
-            .into_iter()
-            .find(|a| probe.hits.rect_of(&Hit::FooterChip(a.clone())).is_some())
-            .expect("the commands chip");
-        let quit = crate::keyroute::spell::quit_action(probe.spell_ctx());
-        for (chip, sending) in [
-            (Action::Send, false),
-            (Action::CancelSend, true),
-            (Action::TableAddRow, false),
-            (Action::CycleTabs(1), false),
-            (palette, false),
-            (quit, false),
-        ] {
-            let mut by_action = start(profile, sending);
-            by_action.update(chip.clone());
-            let mut app = start(profile, sending);
-            // Drawn wide, so `tabs` fits beside the row's chips.
-            rendered_row(&mut app, 200, 0);
-            let r = app.hits.rect_of(&Hit::FooterChip(chip.clone())).expect("the chip is drawn");
-            let footer = app.settled_layout().expect("drawn").footer;
-            assert!(footer.contains(r.as_position()), "{profile:?} {chip:?} is the footer's");
-            app.handle_mouse(left_down(r.x + 1, r.y));
-            assert_eq!(seen(&app), seen(&by_action), "{profile:?} {chip:?}");
-        }
+    let probe = start(profile, false);
+    // The commands chip is `:` in vim and the palette in arrows.
+    let palette = [Action::OpenExPalette, Action::OpenPalette]
+        .into_iter()
+        .find(|a| probe.hits.rect_of(&Hit::FooterChip(a.clone())).is_some())
+        .expect("the commands chip");
+    let quit = crate::keyroute::spell::quit_action(probe.spell_ctx());
+    for (chip, sending) in [
+        (Action::Send, false),
+        (Action::CancelSend, true),
+        (Action::TableAddRow, false),
+        (Action::CycleTabs(1), false),
+        (palette, false),
+        (quit, false),
+    ] {
+        let mut by_action = start(profile, sending);
+        by_action.update(chip.clone());
+        let mut app = start(profile, sending);
+        // Drawn wide, so `tabs` fits beside the row's chips.
+        rendered_row(&mut app, 200, 0);
+        let r = app.hits.rect_of(&Hit::FooterChip(chip.clone())).expect("the chip is drawn");
+        let footer = app.settled_layout().expect("drawn").footer;
+        assert!(footer.contains(r.as_position()), "{profile:?} {chip:?} is the footer's");
+        app.handle_mouse(left_down(r.x + 1, r.y));
+        assert_eq!(seen(&app), seen(&by_action), "{stop:?} {profile:?} {chip:?}");
     }
 }
 
