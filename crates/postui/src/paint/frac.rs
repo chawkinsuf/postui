@@ -12,9 +12,11 @@ use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 ///
 /// If the top and bottom fractional edges land in the same row, picks the
 /// closest single glyph (top-fraction wins). Clamps to buffer area.
+///
+/// Every row the band paints keeps nothing of what was under it, modifiers
+/// included, so a struck or underlined page row never shows through. An
+/// edge whose coverage rounds to nothing is left as it was.
 pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Color, on: Color) {
-    const GLYPHS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-
     let y0_int = y0.floor() as u16;
     let y1_int = y1.floor() as u16;
 
@@ -24,26 +26,7 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
     // Top fractional row: shows the covered portion (from y0 to next integer)
     if y0_frac > 0.0 {
         // Coverage is from y0 to (y0_int + 1), which is (1.0 - y0_frac)
-        let coverage = 1.0 - y0_frac;
-        let glyph_index = (coverage * 8.0).round() as usize;
-        let glyph_index = glyph_index.min(8);
-        // A glyph index of 0 rounds down to imperceptible coverage — a
-        // literal space filled with `on`. Skipping the write here leaves
-        // whatever was already painted underneath (e.g. a caller's own
-        // zebra stripe) alone instead of flattening it to `on` for a
-        // frame; `on` is a fixed color the caller passes in and isn't
-        // guaranteed to match a striped row's actual resting background,
-        // so stomping it every frame the band's edge merely grazes that
-        // row reads as a flicker distinct from the band's own motion.
-        if glyph_index > 0 {
-            for x in x0..x1.min(buf.area().right()) {
-                if let Some(cell) = buf.cell_mut((x, y0_int)) {
-                    cell.set_symbol(GLYPHS[glyph_index]);
-                    cell.set_fg(fill);
-                    cell.set_bg(on);
-                }
-            }
-        }
+        edge_row(buf, x0, x1, y0_int, 1.0 - y0_frac, fill, on);
     }
 
     // Full rows between the fractional edges
@@ -58,32 +41,47 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
     // Bottom fractional row: shows the upper portion as fill
     if y1_frac > 0.0 && y1_int > y0_int {
         // Coverage is from y1_int to y1, which is y1_frac
-        let glyph_index = (y1_frac * 8.0).round() as usize;
-        let glyph_index = glyph_index.min(8);
-        // Same imperceptible-coverage skip as the top edge above.
-        if glyph_index > 0 {
-            for x in x0..x1.min(buf.area().right()) {
-                if let Some(cell) = buf.cell_mut((x, y1_int)) {
-                    cell.set_symbol(GLYPHS[glyph_index]);
-                    cell.set_fg(on);
-                    cell.set_bg(fill);
-                }
-            }
-        }
+        edge_row(buf, x0, x1, y1_int, y1_frac, on, fill);
     } else if y1_frac > 0.0 && y1_int == y0_int {
         // Top and bottom fractions land in the same row: pick the glyph based
         // on top-fraction coverage (top-fraction wins)
-        let top_coverage = 1.0 - y0_frac;
-        let glyph_index = (top_coverage * 8.0).round() as usize;
-        let glyph_index = glyph_index.min(8);
-        if glyph_index > 0 {
-            for x in x0..x1.min(buf.area().right()) {
-                if let Some(cell) = buf.cell_mut((x, y0_int)) {
-                    cell.set_symbol(GLYPHS[glyph_index]);
-                    cell.set_fg(fill);
-                    cell.set_bg(on);
-                }
-            }
+        edge_row(buf, x0, x1, y0_int, 1.0 - y0_frac, fill, on);
+    }
+}
+
+/// Paints one fractional edge row: the lower-block glyph for `coverage`
+/// (0..=1, in eighths) in `fg` on `bg` across columns `x0..x1` of row `y`,
+/// clipped to the buffer.
+///
+/// Each cell is reset before it is painted, so it keeps nothing of what was
+/// there: a strike or underline left from the page would otherwise run
+/// through the band's edge (task #114: a settling modal's edge row over a
+/// struck header row). The band's full rows get the same from
+/// [`super::fill`], which clears the modifiers by hand rather than
+/// resetting because it sets no fg and its many callers may paint over
+/// the blank with only a symbol. An edge row sets every field it shows, so
+/// a reset is the plainest way to replace the whole cell here.
+///
+/// Coverage that rounds to the empty glyph paints nothing, leaving the row
+/// as it was, modifiers included: the band hasn't reached it yet. Writing
+/// that literal space in `on` would instead flatten whatever was painted
+/// underneath (e.g. a caller's own zebra stripe) to `on` for a frame; `on`
+/// is a fixed color the caller passes in and isn't guaranteed to match a
+/// striped row's actual resting background, so stomping it every frame the
+/// band's edge merely grazes that row reads as a flicker distinct from the
+/// band's own motion.
+fn edge_row(buf: &mut Buffer, x0: u16, x1: u16, y: u16, coverage: f32, fg: Color, bg: Color) {
+    const GLYPHS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+    let glyph_index = ((coverage * 8.0).round() as usize).min(8);
+    if glyph_index == 0 {
+        return;
+    }
+    for x in x0..x1.min(buf.area().right()) {
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            cell.reset();
+            cell.set_symbol(GLYPHS[glyph_index]);
+            cell.set_fg(fg);
+            cell.set_bg(bg);
         }
     }
 }
@@ -160,6 +158,56 @@ mod tests {
         assert_eq!(c(1, 1).symbol(), "▂"); // top-fraction wins: 30% coverage
         assert_eq!(c(1, 1).fg, theme.accent);
         assert_eq!(c(1, 1).bg, theme.panel);
+    }
+
+    #[test]
+    fn edge_rows_clear_the_modifiers_of_the_cells_under_them() {
+        // Task #114: a settling modal's edge row painted over a struck
+        // header row kept the strike, because the edge writes replaced
+        // only the symbol and colours. Every edge case (top, bottom, and
+        // both edges in one row) must leave a plain cell, as the full
+        // rows' `paint::fill` does.
+        use ratatui::style::Modifier;
+        let theme = Theme::dark();
+        let marks = Modifier::CROSSED_OUT | Modifier::BOLD | Modifier::UNDERLINED;
+        let draw = |y0: f32, y1: f32| {
+            let mut term = Terminal::new(TestBackend::new(4, 6)).unwrap();
+            term.draw(|f| {
+                let buf = f.buffer_mut();
+                paint::fill(buf, Rect::new(0, 0, 4, 6), theme.page);
+                for y in 0..6 {
+                    for x in 0..4 {
+                        buf[(x, y)].modifier = marks;
+                    }
+                }
+                frac_vspan(buf, 0, 4, y0, y1, theme.panel, theme.page);
+            })
+            .unwrap();
+            term.backend().buffer().clone()
+        };
+        // Top edge in row 1, full rows 2..3, bottom edge in row 4.
+        let buf = draw(1.5, 4.5);
+        for y in 1..=4 {
+            for x in 0..4 {
+                assert_eq!(buf[(x, y)].modifier, Modifier::empty(), "({x}, {y}) keeps a modifier");
+            }
+        }
+        // The top edge's lower half shows the fill; the bottom edge swaps the
+        // colours so its upper half does.
+        assert_eq!(buf[(1, 1)].symbol(), "▄");
+        assert_eq!((buf[(1, 1)].fg, buf[(1, 1)].bg), (theme.panel, theme.page));
+        assert_eq!(buf[(1, 4)].symbol(), "▄");
+        assert_eq!((buf[(1, 4)].fg, buf[(1, 4)].bg), (theme.page, theme.panel));
+        // Rows the band doesn't reach keep theirs.
+        assert_eq!(buf[(1, 0)].modifier, marks);
+        assert_eq!(buf[(1, 5)].modifier, marks);
+        // Both edges in row 2.
+        let buf = draw(2.2, 2.9);
+        assert_eq!(buf[(1, 2)].symbol(), "▆");
+        assert_eq!((buf[(1, 2)].fg, buf[(1, 2)].bg), (theme.panel, theme.page));
+        for x in 0..4 {
+            assert_eq!(buf[(x, 2)].modifier, Modifier::empty());
+        }
     }
 
     #[test]
