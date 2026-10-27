@@ -31202,6 +31202,37 @@ fn ctrl_z_reverts_a_settings_text_commit() {
     assert_eq!(app.ui_settings.ai_cmd, before);
 }
 
+/// Task #182: a redo applies what the commit applied. Clearing the AI
+/// command removes the key and runs the default command; redoing that
+/// clear must run the default again, not an empty command.
+#[test]
+fn redo_of_a_cleared_ai_command_applies_the_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    let default = crate::config::UiSettings::default().ai_cmd;
+
+    app.update(Action::SetUiString { key: "ai_cmd", value: "my-cmd".to_string() });
+    app.update(Action::SetUiString { key: "ai_cmd", value: String::new() });
+    assert_eq!(app.ui_settings.ai_cmd, default, "the commit applies the default");
+
+    app.update(Action::Undo);
+    assert_eq!(app.ui_settings.ai_cmd, "my-cmd");
+
+    app.update(Action::Redo);
+    assert_eq!(app.ui_settings.ai_cmd, default, "the redo applies the default too");
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(!text.contains("ai_cmd"), "the redo removed the key again: {text:?}");
+
+    // The other key an empty value removes: its redo is no command.
+    app.update(Action::SetUiString { key: "clipboard_cmd", value: "my-copy".to_string() });
+    app.update(Action::SetUiString { key: "clipboard_cmd", value: String::new() });
+    app.update(Action::Undo);
+    assert_eq!(app.ui_settings.clipboard_cmd.as_deref(), Some("my-copy"));
+    app.update(Action::Redo);
+    assert_eq!(app.ui_settings.clipboard_cmd, None, "the redo applies no command");
+}
+
 /// A write that never lands records nothing to undo -- `osc52_limit` past
 /// `i64::MAX` is refused by `Config::save_ui_int` itself, so the follow-up
 /// `Undo` has no Settings step waiting for it (or anything else).
