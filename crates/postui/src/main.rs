@@ -21,8 +21,10 @@ async fn main() -> anyhow::Result<ExitCode> {
     let (cli_root, debug_ai) = match cli {
         postui::config::CliParse::Help => return Ok(print_out(postui::config::USAGE)),
         // A mistake, not a request: scripts see a failure (#144).
+        // A stderr that can't take it has nowhere left to be told (#168).
         postui::config::CliParse::Usage { reason } => {
-            eprint!("postui: {reason}\n\n{}", postui::config::USAGE);
+            use std::io::Write;
+            let _ = write!(std::io::stderr(), "postui: {reason}\n\n{}", postui::config::USAGE);
             return Ok(ExitCode::from(2));
         }
         postui::config::CliParse::Version => {

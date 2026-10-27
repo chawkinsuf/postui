@@ -69,17 +69,23 @@ pub fn run(flags: Option<u8>) -> anyhow::Result<()> {
     let resolved = resolve_flags(flags);
     let supported =
         matches!(ratatui::crossterm::terminal::supports_keyboard_enhancement(), Ok(true));
-    println!("postui --keydump: raw key-event echo (ctrl+d exits); mouse events are reported too");
-    println!(
+    // A write error ends the run like the echo loop's do, not a panic (#168).
+    let mut out = std::io::stdout();
+    writeln!(
+        out,
+        "postui --keydump: raw key-event echo (ctrl+d exits); mouse events are reported too"
+    )?;
+    writeln!(
+        out,
         "TERM={:?} TERM_PROGRAM={:?}",
         std::env::var("TERM").ok(),
         std::env::var("TERM_PROGRAM").ok()
-    );
-    println!("terminal reports kitty keyboard protocol support: {supported}");
-    println!("pushing enhancement flags: {:?} (bits {})", resolved, resolved.bits());
+    )?;
+    writeln!(out, "terminal reports kitty keyboard protocol support: {supported}")?;
+    writeln!(out, "pushing enhancement flags: {:?} (bits {})", resolved, resolved.bits())?;
+    out.flush()?;
 
     enable_raw_mode()?;
-    let mut out = std::io::stdout();
     let _ = execute!(out, EnableBracketedPaste);
     let _ = execute!(out, EnableMouseCapture);
     let pushed = !resolved.is_empty();
