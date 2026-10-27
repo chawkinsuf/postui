@@ -1079,7 +1079,7 @@ pub enum Action {
         selector: String,
         name: String,
     },
-    /// The option row's 󰆏 button / `c` on a grid row: holds the row —
+    /// The option row's 󰆏 button / `y` on a grid row (vim `yy`): holds the row —
     /// name, description and every field value — in
     /// [`crate::components::VarManager::stash`] so it can be pasted into
     /// another environment. Writes nothing, so it is not an undo step.
@@ -1371,6 +1371,10 @@ pub enum ResponseMotion {
     /// `zt` `zz` `zb`: line N when counted (the cursor goes there), then
     /// the window placed around the cursor's line.
     Place { at: Place, line: Option<usize> },
+    /// `%`: Vim's `nv_percent()`. Uncounted, the partner of the bracket
+    /// under or after the hidden column on its line; counted N, the line N
+    /// percent of the way down, on its first non-blank.
+    MatchPair { count: Option<usize> },
 }
 
 /// A move along the response's line ([`ResponseMotion::Col`]).

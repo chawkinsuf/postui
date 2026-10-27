@@ -4107,6 +4107,26 @@ fn clicking_the_horizontal_track_pages_sideways() {
     );
 }
 
+/// #127: through the app's key routing, an unbound ctrl chord reaches the
+/// body's emacs keys (ctrl+k deletes to the line's end), and ctrl+y puts
+/// back none of what a delete took (the editor's own test pins why).
+#[test]
+fn ctrl_y_in_the_body_pastes_nothing_back() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.sub_focus = SubFocus::Content;
+    app.focus = PaneId::Editor;
+    app.editor.set_body_text("hello world");
+    app.editor.body.cursor = edtui::Index2::new(0, 5);
+    app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
+    assert_eq!(app.editor.body_text(), "hello");
+    app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+    assert_eq!(app.editor.body_text(), "hello");
+    // #156: nor does ctrl+u undo the kill through edtui's own history.
+    app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    assert_eq!(app.editor.body_text(), "hello");
+}
+
 #[test]
 fn wheel_over_body_editor_forwards_to_the_editor() {
     let mut app = App::new_for_test();

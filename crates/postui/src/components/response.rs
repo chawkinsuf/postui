@@ -880,6 +880,21 @@ impl crate::text::Lines for ReadyView {
     }
 }
 
+/// The view's buffer lines, a closed fold's hidden ones included, read a
+/// row at a time: the lines Vim's cursor and its column are in, for `%`'s
+/// bracket match. The visible rows are `ReadyView`'s own `Lines`.
+struct BufferLines<'a>(&'a ReadyView);
+
+impl crate::text::Lines for BufferLines<'_> {
+    fn line_count(&self) -> usize {
+        self.0.buffer_line_count().max(1)
+    }
+
+    fn line(&self, row: usize) -> std::borrow::Cow<'_, [char]> {
+        std::borrow::Cow::Owned(self.0.buffer_line(row).unwrap_or_default().chars().collect())
+    }
+}
+
 impl ReadyView {
     fn new(data: &crate::http::ResponseData, generation: u64) -> Self {
         // A big body is parsed off-thread; until that lands there is no
@@ -1725,7 +1740,45 @@ impl ReadyView {
                     Place::Bottom => w.scroll_cursor_bot(self, 0, true),
                 }
             }
+            ResponseMotion::MatchPair { count } => self.percent(count),
         }
+    }
+
+    /// Vim's `nv_percent()`: `{N}%` lands on the line N percent down, on its
+    /// first non-blank, and beeps for N over 100; `%` lands on the partner
+    /// of the bracket under or after Vim's cursor on its line, found in the
+    /// buffer lines, so a closed fold's hidden lines count. A beep changes
+    /// nothing, a drag selection included, as Vim's beep and a page key's
+    /// edge beep don't (`j`/`k`'s edge drop is main's arrows rule). A
+    /// landing on another line opens the folds at it (`'foldopen'`
+    /// `percent`), before the column is set, as `$` does. Like a search
+    /// landing, it does not scroll the view sideways: the response draws no
+    /// caret for a sideways scroll to follow.
+    fn percent(&mut self, count: Option<usize>) {
+        use crate::text::brackets::{MatchFrom, find_match, percent_row};
+        let Some(from) = self.real_line() else { return };
+        let (line, col) = match count {
+            Some(n) => match percent_row(n, self.buffer_line_count()) {
+                Some(row) => (row, None),
+                None => return,
+            },
+            None => {
+                let at = crate::text::Pos::new(from, self.cur_col());
+                match find_match(&BufferLines(self), at, MatchFrom::Percent, true) {
+                    Some(to) => (to.row, Some(to.col)),
+                    None => return,
+                }
+            }
+        };
+        self.land_line(line);
+        if line != from {
+            self.open_folds_at_cursor();
+        }
+        match col {
+            Some(col) => self.set_col(col),
+            None => self.col_first_non_blank(),
+        }
+        self.follow_cursor();
     }
 
     /// The rest of `halfpage()`'s move down, once the window hit the end:
@@ -6636,8 +6689,9 @@ mod tests {
         assert_eq!(r.copyable_header_row(), None, "the divider has nothing to copy");
     }
 
-    /// Plan M4a Deviation 11: `c` copies only a header row on the Headers
-    /// view; the response no longer reads its letters itself.
+    /// Plan M4a Deviation 11: the copy key (`y` since #137) copies only a
+    /// header row on the Headers view; the response no longer reads its
+    /// letters itself.
     #[test]
     fn only_a_header_row_is_copyable_and_the_letters_are_not_the_panes() {
         let mut r = ready(r#"{"a": 1}"#);
@@ -6647,7 +6701,9 @@ mod tests {
         assert_eq!(r.handle_key(ch('n')), None);
         r.set_view_mode(ViewMode::Headers);
         render(&mut r);
-        assert_eq!(r.handle_key(ch('c')), None);
+        for c in ['y', 'Y', 'c'] {
+            assert_eq!(r.handle_key(ch(c)), None, "{c}");
+        }
         let row = (0..20)
             .find(|&i| matches!(r.view().unwrap().header_row(i), Some(HeaderRow::Received(_))));
         let row = row.expect("the fixture has a received header");

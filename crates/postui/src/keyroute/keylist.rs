@@ -93,6 +93,7 @@ pub static KEY_LIST: &[Row] = &[
     row("R.star", Two, Ship, M5a, false),
     row("R.yy", Two, Ship, M5a, false),
     row("R.visual", Two, Ship, M5a, false),
+    row("R.percent", Two, Ship, M5b, false),
     row("P.ctrlw", One, Ship, M4a, true),
     row("P.ctrlw-arrows", Two, Ship, M5a, false),
     row("P.gt", One, Ship, M4a, true),

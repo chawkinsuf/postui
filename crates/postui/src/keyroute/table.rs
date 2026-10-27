@@ -613,6 +613,10 @@ fn m_bottom(n: Option<usize>) -> ResponseMotion {
     ResponseMotion::Place { at: Place::Bottom, line: n }
 }
 
+fn m_percent(n: Option<usize>) -> ResponseMotion {
+    ResponseMotion::MatchPair { count: n }
+}
+
 /// Every row. Order does not matter: no complete row is a prefix of
 /// another on a shared surface (`no_two_rows_collide`).
 #[rustfmt::skip]
@@ -701,6 +705,10 @@ pub static TABLE: &[Binding] = &[
     row("zt", Surfaces::RESPONSE_LINES, Intent::Extend(m_top), CountRule::Pass),
     row("zz", Surfaces::RESPONSE_LINES, Intent::Extend(m_middle), CountRule::Pass),
     row("zb", Surfaces::RESPONSE_LINES, Intent::Extend(m_bottom), CountRule::Pass),
+    // Key list §7 (`R.percent`, task #160): Vim's `%`, and `{N}%` to the
+    // line N percent down, extending in V.
+    row("%", Surfaces::RESPONSE, Intent::Motion(m_percent), CountRule::Pass),
+    row("%", Surfaces::RESPONSE_LINES, Intent::Extend(m_percent), CountRule::Pass),
     // Key list §7 (`R.fold`, `R.foldall`): the tree's folds, counted (plan
     // M5a Deviation 9). Nothing on Raw or Headers.
     row("zo", Surfaces::RESPONSE, Intent::Counted(fold_open), CountRule::Pass),
@@ -838,17 +846,20 @@ pub static TABLE: &[Binding] = &[
         Intent::Verb(Verb::Yank),
         CountRule::Refuse(NO_COUNTED_YANK),
     ),
-    arrows("y", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Yank)),
-    arrows("c", Surfaces::VAR_GRID, Intent::Verb(Verb::Yank)),
+    // One copy and one paste letter on every list that copies rows: the
+    // sidebar, the tables and the Variables grid (#145). Arrows gives the
+    // grid no `P`: a pasted option has no position, so it would only be a
+    // second `p`. Vim's `P` row keeps the grid, where `P` is Vim's paste
+    // (`grid_verb` ignores `above`).
+    arrows("y", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Yank)),
     // Spec 2026-10-26 H2, H8: a header row's `Name: value`.
     arrows("Y", Surfaces::TABLE, Intent::Act(copy_header_whole)),
     row("\"+yy", Surfaces::TABLE, Intent::Act(copy_header_whole), CountRule::Ignore),
     row("\"+Y", Surfaces::TABLE, Intent::Act(copy_header_whole), CountRule::Ignore),
     row("p", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Put { above: false, count: 1 }), CountRule::Pass),
     row("P", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Put { above: true, count: 1 }), CountRule::Pass),
-    arrows("p", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Put { above: false, count: 1 })),
+    arrows("p", Surfaces::SIDEBAR.or(Surfaces::TABLE).or(Surfaces::VAR_GRID), Intent::Verb(Verb::Put { above: false, count: 1 })),
     arrows("P", Surfaces::SIDEBAR.or(Surfaces::TABLE), Intent::Verb(Verb::Put { above: true, count: 1 })),
-    arrows("v", Surfaces::VAR_GRID, Intent::Verb(Verb::Put { above: false, count: 1 })),
     arrows("p", Surfaces::VAR_FORM, Intent::Verb(Verb::Promote)),
     arrows("s", Surfaces::VAR_LIST.or(Surfaces::VAR_FORM), Intent::Verb(Verb::Secret)),
     arrows("x", Surfaces::VAR_FORM, Intent::Verb(Verb::ClearValue)),
@@ -1354,7 +1365,7 @@ mod tests {
             Some("dd")
         );
         assert_eq!(keys_for(Vim, Surface::VarGrid, &Action::OnSelection(Verb::Yank)), Some("yy"));
-        assert_eq!(keys_for(Arrows, Surface::VarGrid, &Action::OnSelection(Verb::Yank)), Some("c"));
+        assert_eq!(keys_for(Arrows, Surface::VarGrid, &Action::OnSelection(Verb::Yank)), Some("y"));
         assert_eq!(
             keys_for(Vim, Surface::VarForm, &Action::OnSelection(Verb::Reveal)),
             None,
