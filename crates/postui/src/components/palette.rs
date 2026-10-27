@@ -555,7 +555,11 @@ pub struct PaletteState {
     key_context: crate::keys::KeyContext,
     /// Where the palette opened, for the key column's spelling (task #132):
     /// taken as it opens, since once it is up `App::surface` is the
-    /// palette's own `Picker`, where no row is looked up.
+    /// palette's own `Picker`, where no row is looked up. Kept beside
+    /// `key_context`, not derived from it or it from this: they are the
+    /// app's two separate inputs (`App::key_context` for a key press's
+    /// binding, `App::spell_ctx` for the footer's), and the palette records
+    /// each as the app defines it.
     spell: crate::keyroute::SpellCtx,
     /// The `:` line's history as it stood when the line opened, oldest
     /// first (plan M5b Task 5). Empty for ctrl+p's palette.
@@ -932,27 +936,35 @@ impl PaletteState {
     }
 
     /// The key `c`'s row shows: the key that runs its action where the
-    /// palette opened, spelled as the footer spells an action's key (task
-    /// #132, spec E12a amended), through [`crate::keyroute::spell`]: the
-    /// router's table row, then the keymap's combo, then the ex verb where
-    /// `:` opens. The row's own action is looked up (task #105), so no row
-    /// can miss its key; a footer chip that runs the row's action through
-    /// another one (the sidebar's `a new` is the list verb `Add`) is not
-    /// matched to the row. The text is the combo's own spelling
-    /// (`alt+left`), not the footer's arrow glyphs, which the palette has
-    /// never drawn (task #132's choice, mine (approved)). The combo is
-    /// skipped where it means something else (the same
-    /// [`crate::keys::KeyContext::action`] every key press takes), but a
-    /// table row or an ex verb is never remapped: from the vim sidebar the
-    /// split rows show `:split`. A row whose action no key sends shows
-    /// none, as "Manage: variables" does: `alt+r` opens the tab Manage last
-    /// had. So do the sidebar width rows: no key sends their action as
-    /// such, only `alt+w` remapped while the sidebar has focus (spec S6b,
-    /// `palette_carries_the_sidebar_width_steps`).
+    /// palette opened, as [`crate::keyroute::spell`] names it for a footer
+    /// chip's `Key::Of` (task #132, spec E12a amended): the router's table
+    /// row, then the keymap's combo, then the ex verb where `:` opens. The
+    /// row's own action is looked up (task #105), so no row can miss its
+    /// key. What the footer adds on top of `spell` is not copied here: a
+    /// chip that runs the row's action through another one (the sidebar's
+    /// `a new` is the list verb `Add`) is not matched to the row; the
+    /// chips' own keycaps (`Key::Send`'s `⇧enter` where the terminal
+    /// reports it, `Key::Quit`'s `:q`) are not used, so Send shows its
+    /// combo and Quit the `^C` of the quit its row runs; and the text is
+    /// the combo's own spelling (`alt+left`), not the footer's arrow
+    /// glyphs, which the palette has never drawn (task #132's choices,
+    /// mine (approved)). The combo is skipped where it means something
+    /// else (the same [`crate::keys::KeyContext::action`] every key press
+    /// takes), but a table row or an ex verb is never remapped: from the
+    /// vim sidebar the split rows show `:split`. A row whose action no key
+    /// sends shows none, as "Manage: variables" does: `alt+r` opens the
+    /// tab Manage last had. So do the sidebar width rows: no key sends
+    /// their action as such, only `alt+w` remapped while the sidebar has
+    /// focus (spec S6b, `palette_carries_the_sidebar_width_steps`).
+    ///
+    /// It runs per visible row per frame, as the footer's chips spell per
+    /// frame: a few scans of the binding table each, too few to cache.
     pub(crate) fn key_column(&self, c: &Command, keymap: &crate::keys::Keymap) -> Option<String> {
         let action = key_action(&c.action);
-        let remapped = self.key_context.action(action.clone().into_owned()) != *action;
-        crate::keyroute::spell::spell_unless(self.spell, &action, keymap, remapped)
+        let combo = keymap
+            .combo_for_action(&action)
+            .filter(|_| self.key_context.action(action.clone().into_owned()) == *action);
+        crate::keyroute::spell::spell_with(self.spell, &action, combo)
     }
 
     #[cfg(test)]
@@ -1224,15 +1236,22 @@ mod tests {
         }
     }
 
+    /// A palette opened in `profile` with no surface of its own.
+    fn opened_in(profile: crate::config::KeyProfile) -> PaletteState {
+        let at = crate::keyroute::SpellCtx { profile, ..Default::default() };
+        PaletteState::new(&crate::usage::UsageStore::default(), 0)
+            .opened_at(crate::keys::KeyContext::default(), at)
+    }
+
     /// Task #91: the hide/show panel rows show the key that does the same
     /// thing, `alt+p` and `alt+shift+p`, in both profiles (vim keeps both).
     #[test]
     fn the_hide_show_panel_rows_show_their_keys() {
         let alt = crate::keys::alt_label();
-        let p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
         let commands = all_commands();
         for profile in [crate::config::KeyProfile::Arrows, crate::config::KeyProfile::Vim] {
             let keymap = crate::keys::Keymap::default_bindings_for(profile);
+            let p = opened_in(profile);
             for (id, key) in [
                 ("editor-toggle", format!("{alt}+p")),
                 ("response-toggle", format!("{alt}+shift+p")),
@@ -1251,10 +1270,10 @@ mod tests {
     #[test]
     fn rows_show_the_key_bound_to_their_action() {
         let alt = crate::keys::alt_label();
-        let p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
         let commands = all_commands();
         for profile in [crate::config::KeyProfile::Arrows, crate::config::KeyProfile::Vim] {
             let keymap = crate::keys::Keymap::default_bindings_for(profile);
+            let p = opened_in(profile);
             let key = |id: &str| {
                 let cmd = commands.iter().find(|c| c.id == id).expect(id);
                 p.key_column(cmd, &keymap)

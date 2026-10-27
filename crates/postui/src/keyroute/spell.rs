@@ -80,30 +80,18 @@ fn row_for(at: SpellCtx, action: &Action) -> Option<&'static str> {
 /// ex verb where `:` applies (spec §4.6; plan M4b Deviations 20 and 21).
 /// `None` when nothing binds it.
 pub fn spell(at: SpellCtx, action: &Action, keymap: &Keymap) -> Option<String> {
-    spell_unless(at, action, keymap, false)
+    spell_with(at, action, keymap.combo_for_action(action))
 }
 
-/// [`spell`], skipping the keymap's combo when `combo_remapped`: the
-/// palette's key column (task #132), where a combo can mean something else
-/// at the place it opened (the sidebar's `alt+w` steps the sidebar,
-/// `KeyContext::action`, spec S6a) while a table row or an ex verb still
-/// runs the row's own action there. Only the palette needs the flag: no
-/// footer chip or hint spells a split key (S6 dropped the chip, and E12a's
-/// split-chip hints name the hide/show toggles), so the remap stays out of
-/// `SpellCtx`, which every spelling site builds.
-pub fn spell_unless(
-    at: SpellCtx,
-    action: &Action,
-    keymap: &Keymap,
-    combo_remapped: bool,
-) -> Option<String> {
+/// [`spell`] with the caller's `combo` in the keymap's place: the
+/// palette's key column (task #132) passes none where the combo means
+/// something else at the place it opened (`KeyContext::action`, spec S6a),
+/// and a table row or an ex verb still spells there.
+pub fn spell_with(at: SpellCtx, action: &Action, combo: Option<String>) -> Option<String> {
     if let Some(keys) = row_for(at, action) {
         return Some(notation::display(keys));
     }
-    if !combo_remapped && let Some(combo) = keymap.combo_for_action(action) {
-        return Some(combo);
-    }
-    colon_applies(at).then(|| super::ex::spelling(action)).flatten()
+    combo.or_else(|| colon_applies(at).then(|| super::ex::spelling(action)).flatten())
 }
 
 /// What the quit chip runs at `at`: in vim where the line opens, the verb
