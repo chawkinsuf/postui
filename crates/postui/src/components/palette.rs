@@ -444,11 +444,12 @@ pub fn all_commands() -> Vec<Command> {
 /// keymap binds `^C` to `Quit`, the same quit as a key press; the row
 /// shows `^C`. A pill row names the tooltip's variable (`TipPillOn`),
 /// while its key presses the open tooltip's pill (`TipPill`, #135).
-fn key_action(action: &Action) -> Action {
+fn key_action(action: &Action) -> std::borrow::Cow<'_, Action> {
+    use std::borrow::Cow;
     match action {
-        Action::GatedQuit => Action::Quit,
-        Action::TipPillOn { pill, .. } => Action::TipPill(*pill),
-        other => other.clone(),
+        Action::GatedQuit => Cow::Owned(Action::Quit),
+        Action::TipPillOn { pill, .. } => Cow::Owned(Action::TipPill(*pill)),
+        other => Cow::Borrowed(other),
     }
 }
 
@@ -932,7 +933,7 @@ impl PaletteState {
     /// `palette_carries_the_sidebar_width_steps`).
     pub(crate) fn key_column(&self, c: &Command, keymap: &crate::keys::Keymap) -> Option<String> {
         let action = key_action(&c.action);
-        if self.key_context.action(action.clone()) != action {
+        if self.key_context.action(action.clone().into_owned()) != *action {
             return None;
         }
         keymap.combo_for_action(&action)

@@ -28057,6 +28057,33 @@ fn an_open_tooltip_puts_its_edit_key_in_the_footer() {
     assert!(app.editor.table.editing.is_some(), "the cell stays open");
 }
 
+/// A pointer's tooltip gets no footer chip: it goes as the pointer heads
+/// for the footer, so the chip could never be clicked.
+#[test]
+fn a_hover_tooltip_puts_no_chip_in_the_footer() {
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    assert!(app.var_token_tip().is_some());
+    let edit = Hit::FooterChip(Action::TipPill(crate::action::TipPill::Edit));
+    assert!(app.hits.rect_of(&edit).is_none());
+}
+
+/// A pill's key is bound only while the open tooltip shows the pill;
+/// otherwise the combo is unbound and goes where an unbound one goes.
+#[test]
+fn a_tip_key_is_bound_only_while_its_pill_shows() {
+    use crate::action::TipPill;
+    let combo = |s: &str| crate::keys::KeyCombo::parse(s).unwrap();
+    let (mut app, _dir, _out) = tooltip_app("x");
+    open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
+    render_once(&mut app);
+    assert_eq!(app.lookup_key(&combo("alt+o")), None, "no tooltip yet");
+    rest_caret(&mut app);
+    assert_eq!(app.lookup_key(&combo("alt+o")), Some(Action::TipPill(TipPill::Edit)));
+    assert_eq!(app.lookup_key(&combo("alt+n")), Some(Action::TipPill(TipPill::Copy)));
+    assert_eq!(app.lookup_key(&combo("alt+h")), None, "a plain value has no reveal");
+}
+
 /// The vim profile keeps the keys: in an open URL line's Normal they act
 /// on the caret's tip as in arrows.
 #[test]

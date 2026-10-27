@@ -433,8 +433,9 @@ pub fn draw_footer(
     // See `footer_chips`: this pane's own text field owns the caret, so
     // Esc is its.
     field_open: bool,
-    // A variable tooltip is open this frame: its edit pill's key gets a
-    // chip after the pane's own (#135; its copy and reveal keys don't).
+    // The caret's variable tooltip is open this frame: its edit pill's key
+    // gets a chip after the pane's own (#135; its copy and reveal keys
+    // don't, nor does a pointer's tooltip, gone before a click lands).
     tip_open: bool,
     // Replaces the per-pane chips wholesale when `Some` — a modal's own
     // chip set, or the Variable Manager screen's

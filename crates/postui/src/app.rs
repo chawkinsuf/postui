@@ -2601,7 +2601,21 @@ impl App {
     /// included, `handle_key_routed`, `App::user_bare`, and the vim seam's
     /// forwarded keys), with [`Self::key_context`] applied.
     pub(crate) fn lookup_key(&self, combo: &KeyCombo) -> Option<Action> {
-        self.keymap.lookup(combo).map(|a| self.key_context().action(a))
+        let action = self.key_context().action(self.keymap.lookup(combo)?);
+        // A tooltip pill's key is bound only while the open tooltip shows
+        // the pill (#135, the user's context actions): otherwise it is no
+        // key of the app's, and goes where an unbound combo goes.
+        if let Action::TipPill(pill) = action
+            && !self.tip_shows(pill)
+        {
+            return None;
+        }
+        Some(action)
+    }
+
+    /// Whether a variable tooltip is open and shows `pill` (#135).
+    fn tip_shows(&self, pill: crate::action::TipPill) -> bool {
+        self.var_token_tip().is_some_and(|tip| self.editor.vars.describe(&tip.name).offers(pill))
     }
 
     /// Where the keyboard is, for [`crate::keys::KeyContext::action`]: the
@@ -2904,20 +2918,32 @@ impl App {
         {
             return Some(TokenTip { name: name.to_string(), anchor });
         }
+        self.caret_tip_in(hits)
+    }
+
+    /// The caret's tooltip, read off `hits`: what [`Self::var_token_tip_in`]
+    /// shows with no pointer tip. The footer's edit chip is for this one
+    /// alone: a pointer tip goes as the pointer heads for the footer.
+    pub(crate) fn caret_tip_in(&self, hits: &crate::hit::HitMap) -> Option<TokenTip> {
         if !self.caret_tip_shown || !self.caret_tip_allowed() {
             return None;
         }
         // Against the instance the caret is in, not another drawn token of
-        // the same name; none when the field's window cuts it (#135).
+        // the same name; none when the field's window cuts it or the body
+        // wraps it, as a token drawn nowhere raises none (#135).
         let name = self.caret_token.clone()?;
         let (drawn, anchor) = hits.caret_token()?;
         (drawn == name).then_some(TokenTip { name, anchor })
     }
 
     /// The open tooltip's variable and the pills it shows, for the
-    /// palette's rows (#135).
+    /// palette's rows (#135). Main screen only, where the pills' keys run
+    /// (another screen swallows them), so a row never shows a dead key.
     fn tip_offers(&self) -> Option<(String, Vec<crate::action::TipPill>)> {
         use crate::action::TipPill;
+        if self.screen != Screen::Main {
+            return None;
+        }
         let tip = self.var_token_tip()?;
         let info = self.editor.vars.describe(&tip.name);
         let offers = [TipPill::Edit, TipPill::Copy, TipPill::Reveal]
@@ -6568,13 +6594,21 @@ impl App {
                 }
                 self.open_insert_var_picker(completing, None)
             }
-            // A key: the tooltip open now, if it shows that pill.
+            // A key: the tooltip open now (`lookup_key` binds the key only
+            // while it shows that pill).
             Action::TipPill(pill) => {
                 let Some(tip) = self.var_token_tip() else { return false };
                 self.press_tip_pill(pill, tip.name)
             }
-            // A palette row: the variable it was listed for.
-            Action::TipPillOn { pill, name } => self.press_tip_pill(pill, name),
+            // A palette row: the variable it was listed for. Its reveal
+            // always reveals, as the row says: the palette over the
+            // tooltip masked it, and nothing else need have run since.
+            Action::TipPillOn { pill, name } => {
+                if pill == crate::action::TipPill::Reveal {
+                    self.tip_revealed = None;
+                }
+                self.press_tip_pill(pill, name)
+            }
             Action::OpenVarTokenPopup(name) => {
                 self.apply(Action::ReloadProjectFiles);
                 use postui_core::varmodel::VarMeta;
