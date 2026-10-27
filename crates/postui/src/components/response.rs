@@ -1585,7 +1585,9 @@ impl ReadyView {
     }
 
     /// What a motion can change: when none of it did, the motion beeped and
-    /// the frame needs no redraw.
+    /// the frame needs no redraw. A landing's ask to show its column
+    /// (`show_col`) counts: the sideways scroll it stands for is the next
+    /// frame's to make.
     #[allow(clippy::type_complexity)]
     fn motion_mark(
         &self,
@@ -1598,6 +1600,7 @@ impl ReadyView {
         Option<((usize, usize), (usize, usize))>,
         Option<usize>,
         usize,
+        bool,
     ) {
         (
             self.cursor,
@@ -1608,6 +1611,7 @@ impl ReadyView {
             self.sel,
             self.line_anchor,
             self.visible_len(),
+            self.show_col,
         )
     }
 
@@ -1823,7 +1827,13 @@ impl ReadyView {
         if self.in_closed_fold(line) {
             return;
         }
-        // Out of a closed fold, the row paints the line's whole text.
+        // Out of a closed fold, the row paints the line's whole text. It is
+        // copied, once per landing: the landing itself already copied the
+        // line (`set_col`) and walked it to the column (`want_at`), so a
+        // borrow here would not change what a megabyte line costs. The
+        // walk to the column resumes from the line's column index when a
+        // sideways-scrolled frame built one; a scrolling landing's own
+        // frame builds it (`index_raw_rows`).
         let Some(text) = self.buffer_line(line) else { return };
         let from = match self.mode {
             ViewMode::Raw => mark_at_char(self.raw_marks.get(&line).map(Vec::as_slice), col),
@@ -8138,6 +8148,20 @@ mod tests {
         assert_eq!(drawn(&mut r), (2, 150, 110), "a landing on another line");
         r.motion(M::MatchPair { count: Some(100) });
         assert_eq!(drawn(&mut r), (3, 4, 0), "{{N}}% to a first non-blank in view");
+    }
+
+    /// Task #164: a landing that moves nothing but asks the frame to show
+    /// its column still needs that frame. `{N}%` back onto the cursor's own
+    /// first non-blank, after the view was scrolled away from it, is one.
+    #[test]
+    fn a_landing_that_only_asks_for_its_column_needs_a_frame() {
+        use crate::action::ResponseMotion as M;
+        let mut r = ready(&format!("{}\n    abc", "x".repeat(300)));
+        r.motion(M::MatchPair { count: Some(100) });
+        assert_eq!(drawn(&mut r), (1, 4, 0));
+        r.view.as_mut().unwrap().h_scroll = 100;
+        assert!(r.motion(M::MatchPair { count: Some(100) }), "a frame is due");
+        assert_eq!(drawn(&mut r), (1, 4, 0), "and it shows the column");
     }
 
     /// Task #164: `n` `N` `*` `#` land as `/` does.
