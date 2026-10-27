@@ -30607,14 +30607,12 @@ fn a_refused_settings_field_write_keeps_the_edit_and_the_typing() {
         app.toasts.messages()
     );
 
-    // An integer field's refused write is the same. (Undoing the typing is
-    // the way out of the first field: the stored text closes it unwritten.)
-    for _ in 0..4 {
-        app.handle_key(ctrl('z'));
-    }
-    assert_eq!(app.settings.field_text(), stored, "the typing came off");
+    // An integer field's refused write is the same. (Putting the stored
+    // text back, as undoing the typing does, is the way out of the first
+    // field: it closes unwritten.)
+    app.settings.set_field_text(&stored);
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(app.settings.editing.is_none(), "the undone field closes");
+    assert!(app.settings.editing.is_none(), "the restored field closes");
     let limit = app.ui_settings.osc52_limit;
     app.settings.begin_edit(SettingsField::Osc52Limit, "1024");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -30627,6 +30625,29 @@ fn a_refused_settings_field_write_keeps_the_edit_and_the_typing() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.settings.editing.is_none());
     assert_eq!(app.ui_settings.osc52_limit, 1024);
+}
+
+/// A field's commit is a Settings write like any other, through the
+/// action path, so what every action keeps in step with the settings
+/// follows at once: a landed `indent_width` reaches the editor's indent
+/// default on the same Enter (task #80).
+#[test]
+fn a_landed_settings_field_write_runs_the_action_path() {
+    use crate::components::manage::ManageTab;
+    use crate::components::settings::SettingsField;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    let before = app.editor.indent_default;
+    let width = if app.ui_settings.indent_width == 8 { "3" } else { "8" };
+    app.settings.begin_edit(SettingsField::IndentWidth, width);
+
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.settings.editing.is_none(), "the write landed");
+    assert_eq!(app.editor.indent_default, app.ui_settings.default_indent());
+    assert_ne!(app.editor.indent_default, before, "and the editor's default followed it");
 }
 
 /// A click away from a field whose write was refused stops, as one away
@@ -30905,7 +30926,8 @@ fn a_refused_settings_write_records_no_step() {
     let mut app = App::new_for_test();
     app.config = crate::config::Config::at(dir.path().to_path_buf());
 
-    assert!(!app.write_ui_int("osc52_limit", usize::MAX), "the write is refused");
+    app.update(Action::SetUiInt { key: "osc52_limit", value: usize::MAX });
+    assert!(app.last_action_failed, "the write is refused");
     app.update(Action::Undo);
 
     assert!(

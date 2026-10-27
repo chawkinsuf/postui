@@ -436,12 +436,13 @@ pub struct App {
     /// The most recent left press, for the click counts
     /// ([`mouse::count_clicks`]).
     last_click: Option<mouse::LastClick>,
-    /// Set by `Action::VarStruct`'s handler when `apply_var_struct` returns
-    /// `Err` (and cleared before every action `update` dispatches), so
-    /// `apply_modal_result` can stop a sequenced `ModalResult` — e.g.
-    /// `PromptKind::NewVariableAndInsert`'s `[NewVar, InsertVarText]` — from
-    /// running its later actions after an earlier one failed. Nothing else
-    /// reads or sets this; every other action leaves it `false`.
+    /// Set by an action that failed, for a caller that has to stop after
+    /// it: `apply_modal_result` stops a sequenced `ModalResult` — e.g.
+    /// `PromptKind::NewVariableAndInsert`'s `[NewVar, InsertVarText]` —
+    /// from running its later actions after an earlier one failed, and a
+    /// Settings field commit keeps its edit open when `config.toml`
+    /// refused the write. A reader clears it before the action whose
+    /// answer it wants.
     last_action_failed: bool,
     /// The loose-file half of the last `list_requests` warning that was
     /// toasted. A file directly under `requests/` is a chronic state (it is
@@ -3660,7 +3661,8 @@ impl App {
                 use crate::undo::UiValue;
                 let before = self.ui_flag(key);
                 let saved = self.config.save_ui_flag(key, value);
-                let landed = self.apply_ui_write(saved, |ui| match key {
+                let landed = saved.is_ok();
+                let redraw = self.apply_ui_write(saved, |ui| match key {
                     "animations" => ui.animations = value,
                     "hover_hints" => ui.hover_hints = value,
                     "curl_button" => ui.curl_button = value,
@@ -3674,11 +3676,53 @@ impl App {
                 if landed {
                     self.record_config_step(key, UiValue::Flag(before), UiValue::Flag(value));
                 }
-                true
+                redraw
             }
             Action::SetUiString { key, value } => {
-                self.write_ui_string(key, value);
-                true
+                use crate::undo::UiValue;
+                let before = self.ui_string(key);
+                let saved = self.config.save_ui_string(key, &value);
+                let landed = saved.is_ok();
+                // An empty commit removed the key (see
+                // `Config::save_ui_string`), so what applies is the
+                // default, not an empty command.
+                let default = crate::config::UiSettings::default();
+                let after = value.clone();
+                let redraw = self.apply_ui_write(saved, move |ui| match key {
+                    "ai_cmd" => ui.ai_cmd = if value.is_empty() { default.ai_cmd } else { value },
+                    "clipboard_cmd" => ui.clipboard_cmd = (!value.is_empty()).then_some(value),
+                    "jq_tab" => {
+                        ui.jq_tab = if value == "menu" {
+                            crate::config::JqTab::Menu
+                        } else {
+                            crate::config::JqTab::Cycle
+                        }
+                    }
+                    "indent" => {
+                        ui.indent =
+                            crate::config::IndentKind::from_spelling(&value).unwrap_or_default()
+                    }
+                    other => debug_assert!(false, "no string setting named {other:?}"),
+                });
+                if landed {
+                    self.record_config_step(key, UiValue::Text(before), UiValue::Text(after));
+                }
+                redraw
+            }
+            Action::SetUiInt { key, value } => {
+                use crate::undo::UiValue;
+                let before = self.ui_int(key);
+                let saved = self.config.save_ui_int(key, value);
+                let landed = saved.is_ok();
+                let redraw = self.apply_ui_write(saved, |ui| match key {
+                    "osc52_limit" => ui.osc52_limit = value,
+                    "indent_width" => ui.indent_width = value,
+                    other => debug_assert!(false, "no integer setting named {other:?}"),
+                });
+                if landed {
+                    self.record_config_step(key, UiValue::Int(before), UiValue::Int(value));
+                }
+                redraw
             }
             // A quit closes the open inputs first, saved (`leaving_unsaved`
             // did when the gate above ran); a refused close never stops a
@@ -11985,18 +12029,22 @@ impl App {
             SettingsField::IndentWidth => Some(parse_indent_width(&text)),
             _ => None,
         };
-        let landed = match int {
-            Some(Ok(value)) => self.write_ui_int(field.key(), value),
+        let action = match int {
+            Some(Ok(value)) => Action::SetUiInt { key: field.key(), value },
             Some(Err(why)) => {
                 self.toasts.push(format!("{}: {why}", field.label()), ToastKind::Error);
-                false
+                return true;
             }
-            None => self.write_ui_string(field.key(), text),
+            None => Action::SetUiString { key: field.key(), value: text },
         };
-        if landed {
+        // Cleared first so the flag read below is this write's own answer:
+        // `apply_ui_write` sets it when `config.toml` refused the write.
+        self.last_action_failed = false;
+        let redraw = self.update(action);
+        if !self.last_action_failed {
             self.settings.end_edit();
         }
-        true
+        redraw
     }
 
     /// [`Self::commit_settings_edit`] for a click that is about to land
@@ -12013,63 +12061,14 @@ impl App {
         self.settings.editing.is_none()
     }
 
-    /// `Action::SetUiString`'s write, answering whether it landed: the
-    /// Settings field commit closes its edit only on `true`.
-    fn write_ui_string(&mut self, key: &'static str, value: String) -> bool {
-        use crate::undo::UiValue;
-        let before = self.ui_string(key);
-        let saved = self.config.save_ui_string(key, &value);
-        // An empty commit removed the key (see
-        // `Config::save_ui_string`), so what applies is the
-        // default, not an empty command.
-        let default = crate::config::UiSettings::default();
-        let after = value.clone();
-        let landed = self.apply_ui_write(saved, move |ui| match key {
-            "ai_cmd" => ui.ai_cmd = if value.is_empty() { default.ai_cmd } else { value },
-            "clipboard_cmd" => ui.clipboard_cmd = (!value.is_empty()).then_some(value),
-            "jq_tab" => {
-                ui.jq_tab = if value == "menu" {
-                    crate::config::JqTab::Menu
-                } else {
-                    crate::config::JqTab::Cycle
-                }
-            }
-            "indent" => {
-                ui.indent = crate::config::IndentKind::from_spelling(&value).unwrap_or_default()
-            }
-            other => debug_assert!(false, "no string setting named {other:?}"),
-        });
-        if landed {
-            self.record_config_step(key, UiValue::Text(before), UiValue::Text(after));
-        }
-        landed
-    }
-
-    /// A number field's write (`osc52_limit`, `indent_width`), answering
-    /// whether it landed, as [`Self::write_ui_string`] does. Only the
-    /// field commit writes these, so there is no action for it.
-    fn write_ui_int(&mut self, key: &'static str, value: usize) -> bool {
-        use crate::undo::UiValue;
-        let before = self.ui_int(key);
-        let saved = self.config.save_ui_int(key, value);
-        let landed = self.apply_ui_write(saved, |ui| match key {
-            "osc52_limit" => ui.osc52_limit = value,
-            "indent_width" => ui.indent_width = value,
-            other => debug_assert!(false, "no integer setting named {other:?}"),
-        });
-        if landed {
-            self.record_config_step(key, UiValue::Int(before), UiValue::Int(value));
-        }
-        landed
-    }
-
-    /// The tail every Settings-tab write shares, answering whether the
-    /// write landed. `Config::edit` refuses a `config.toml` that will not
-    /// parse, so a refused write says so and changes nothing — the
-    /// control keeps painting the value on disk rather than one that
-    /// never landed. A write that did land is applied through the same
-    /// `reapply_ui_settings` path `ReloadFromDisk` uses, so the tab and a
-    /// hand-edit converge.
+    /// The tail every Settings-tab write shares. `Config::edit` refuses
+    /// a `config.toml` that will not parse, so a refused write says so
+    /// and changes nothing — the control keeps painting the value on
+    /// disk rather than one that never landed — and sets
+    /// `last_action_failed`, which the field commit reads to keep its
+    /// edit open (task #80). A write that did land is applied through the
+    /// same `reapply_ui_settings` path `ReloadFromDisk` uses, so the tab
+    /// and a hand-edit converge.
     fn apply_ui_write(
         &mut self,
         saved: Result<(), String>,
@@ -12080,7 +12079,8 @@ impl App {
                 format!("could not save {}: {e}", crate::config::CONFIG_TOML),
                 ToastKind::Error,
             );
-            return false;
+            self.last_action_failed = true;
+            return true;
         }
         let mut ui = self.ui_settings.clone();
         apply(&mut ui);

@@ -338,7 +338,12 @@ refused the same way, and its edit stays open with what was typed, as a
 rejected `osc52_limit` does: the toast names the file, the stored value
 stands, and the typing is there to save once the file is fixed. The
 close counts as refused, so a click away or a change that closes inputs
-first stops there. The field ends only once its write landed.
+first stops there. The field ends only once its write landed. Kept on
+review with its cost (the Files row's Edit… and Reset can't be clicked
+while the field holds the tab): mine (approved). The commit writes
+through `SetUiString` / `SetUiInt` like every Settings write, and reads
+whether it landed from `last_action_failed`, which the refused write
+sets (you: "reads and writes must follow the proper pattern").
 
 After a successful write the in-memory settings are applied through the
 same path `ReloadFromDisk` uses (`reapply_ui_settings`), so a change

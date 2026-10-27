@@ -267,6 +267,11 @@ pub enum Action {
         key: &'static str,
         value: String,
     },
+    /// Persist and apply one integer setting.
+    SetUiInt {
+        key: &'static str,
+        value: usize,
+    },
     /// Choose the key profile (piece 4 spec §4.2–§4.3): writes `keymap`
     /// to `config.toml`, swaps the live keymap, and is one config undo
     /// step. A write that fails still applies for this session.

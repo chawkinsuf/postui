@@ -57,8 +57,8 @@ pub enum StepKind {
         before: Box<View>,
         after: Box<View>,
     },
-    /// One Settings-tab write (`Action::SetUiFlag` / `SetUiString`, or a
-    /// number field's commit through `App::write_ui_int`), spec 2026-09-16: undoing writes `before` back through
+    /// One Settings-tab write (`Action::SetUiFlag` / `SetUiString` /
+    /// `SetUiInt`), spec 2026-09-16: undoing writes `before` back through
     /// `Config::save_ui_*` and reapplies it; redoing writes `after`. Never
     /// coalesced — each commit (a field close, a toggle, a segment flip)
     /// is its own step.
