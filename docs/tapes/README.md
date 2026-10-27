@@ -58,7 +58,9 @@ same state. The tapes run the release build in `target/release`.
 The recording config uses the `catppuccin-mocha` theme, turns off hover hints
 (VHS has no mouse to hover with), and points `ai_cmd` at `fake-ai.sh`, which
 answers "Describe a filter…" with a fixed filter, so no AI account is needed
-and the result is the same every time.
+and the result is the same every time. The project copy gets a
+`.postui/layout.toml` with a narrower sidebar than the default. The key
+profile is arrows, except for `vim.tape`, which passes `vim` to `setup.sh`.
 
 `curl-import.tape` puts its curl command on your system clipboard with VHS's
 `Copy`, so recording it replaces whatever you had copied. On Linux that needs
@@ -67,8 +69,11 @@ a desktop session and a clipboard tool (`wl-clipboard` on Wayland, `xclip` or
 it with `ctrl+v`. VHS's `Paste` won't do here: it types the text as keys, and
 the sidebar takes those as commands.
 
-Each tape starts with `include/common.tape`: the recording settings, and the
-hidden launch through `setup.sh`. `include/open-users.tape` holds the sidebar
+Each tape starts with `include/common.tape`: the recording settings from
+`include/settings.tape`, and the hidden launch through `setup.sh`. `vim.tape`
+sources the settings alone and launches with the Vim profile itself. The
+font size sets the terminal to about 100 columns, so the text stays readable
+when GitHub scales the images down to its README column. `include/open-users.tape` holds the sidebar
 steps into the demo's `users/` folder, the one place the tapes depend on the
 demo project's layout. It sits in its own folder so the
 `docs/tapes/*.tape` loop doesn't record it on its own.

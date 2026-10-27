@@ -39,10 +39,31 @@
 - **Themes.** Built-in dark and light themes, your terminal's own colors, a
   contrast control, and custom themes from six colors.
 
-| | |
-|:---:|:---:|
-| <img src="docs/images/manage.png" alt="The Manage screen: a variable's description and its value in the active environment" width="440"> | <img src="docs/images/curl-import.png" alt="Importing a pasted curl command as a request" width="440"> |
-| <img src="docs/images/themes.png" alt="The theme picker with its contrast control" width="440"> | <img src="docs/images/describe.png" alt="Describing a jq filter for the AI command to write" width="440"> |
+## A closer look
+
+**The Vim profile.** `:send`, `ctrl+w _`, folds, search and Visual mode in the
+response.
+
+<a href="docs/guide.md#keys"><img src="docs/images/vim.gif" alt="Sending with :send, maximizing the response with ctrl+w _, folding it, searching it and yanking a Visual selection" width="900"></a>
+
+**Variables and environments.** The Manage screen (`alt+r`) shows a variable's
+description and its value in the active environment.
+
+<a href="docs/guide.md#environments-variables-and-secrets"><img src="docs/images/manage.png" alt="The Manage screen: a variable's description and its value in the active environment" width="900"></a>
+
+**Describe a filter.** An AI command writes the jq filter from the response's
+shape, never its values.
+
+<a href="docs/guide.md#the-jq-filter"><img src="docs/images/describe.png" alt="Describing a jq filter for the AI command to write" width="900"></a>
+
+**curl in.** Paste a curl command into the sidebar to import it as a request.
+
+<a href="docs/guide.md#curl"><img src="docs/images/curl-import.png" alt="Importing a pasted curl command as a request" width="900"></a>
+
+**Themes.** Built-in dark and light themes, your terminal's own colors, and a
+contrast control.
+
+<a href="docs/configuration.md#themes"><img src="docs/images/themes.png" alt="The theme picker with its contrast control" width="900"></a>
 
 ## Requests are plain files
 
