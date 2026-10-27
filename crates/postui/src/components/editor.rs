@@ -1980,9 +1980,10 @@ impl Editor {
     /// one break; spec 2026-10-26 R1). Clears the selection when the
     /// boundaries coincide.
     fn set_body_selection_boundaries(&mut self, a: edtui::Index2, b: edtui::Index2) {
-        // A boundary is a caret position, never past its line's end: an
-        // anchor left behind by typing that shortened the line comes back
-        // onto it, so it can't reach the line's break.
+        // A boundary is a caret position, never past its line's end: Up and
+        // Down keep the caret's column (edtui), so onto a shorter line it
+        // sits past the end, and comes back onto it here so it can't reach
+        // the line's break.
         let len = |row: usize| self.body.lines.len_col(row).unwrap_or(0);
         let onto_line = |p: edtui::Index2| edtui::Index2::new(p.row, p.col.min(len(p.row)));
         let (a, b) = (onto_line(a), onto_line(b));
@@ -2798,6 +2799,17 @@ impl Component for Editor {
                         | KeyCode::End
                 );
                 if is_motion && ev.modifiers.contains(KeyModifiers::SHIFT) {
+                    // The anchor extends a live selection only. With none,
+                    // the caret is the anchor (#166), as in a GUI editor.
+                    // The field is shared with the mouse: every click plants
+                    // it for a drag, and typing, plain motions and reloads
+                    // leave it behind. Rather than clear it on each of those
+                    // paths, this one reader drops it when nothing is
+                    // selected. A shift run that collapsed back loses
+                    // nothing: its anchor is the caret.
+                    if self.body.selection.is_none() {
+                        self.body_sel_anchor = None;
+                    }
                     let anchor = *self.body_sel_anchor.get_or_insert(self.body.cursor);
                     let stripped =
                         KeyEvent::new(ev.code, ev.modifiers.difference(KeyModifiers::SHIFT));
@@ -9437,17 +9449,84 @@ mod body_click_tests {
         assert_eq!(e.body_text(), "ab\nxef");
     }
 
-    /// #128 review r2: an anchor left past a line's end (typing shortened
-    /// the line under it) counts from the line's end, so it never reaches
-    /// the line's break.
+    /// #166: with no live selection, a shift motion anchors at the caret,
+    /// not at the click point the caret has since left.
     #[test]
-    fn a_stale_anchor_past_the_line_end_takes_no_break() {
+    fn a_shift_motion_after_a_click_and_moves_anchors_at_the_caret() {
         use ratatui::crossterm::event::KeyCode;
-        let mut e = editor_with_body("hello\nwo\nx");
-        e.body_sel_anchor = Some(Index2::new(1, 5)); // where `world` ended
-        e.body.cursor = Index2::new(1, 2);
+        let mut e = editor_with_body("hello world");
+        e.handle_mouse(left_down(35, 0));
+        assert_eq!(e.body.cursor, Index2::new(0, 11));
+        for _ in 0..5 {
+            e.handle_key(pkey(KeyCode::Left));
+        }
+        e.handle_key(skey(KeyCode::Left));
+        assert_eq!(e.body_selected_text().as_deref(), Some(" "));
+    }
+
+    /// #166: typing after a click carries the caret past the click point.
+    #[test]
+    fn a_shift_motion_after_a_click_and_typing_anchors_at_the_caret() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body("ab");
+        e.handle_mouse(left_down(35, 0));
+        e.handle_key(pkey(KeyCode::Char('c')));
+        e.handle_key(pkey(KeyCode::Char('d')));
+        e.handle_key(skey(KeyCode::Left));
+        assert_eq!(e.body_selected_text().as_deref(), Some("d"));
+    }
+
+    /// #166: Backspace after a click leaves the click point past the
+    /// line's end, where an anchor would reach the line's break.
+    #[test]
+    fn a_shift_motion_after_a_click_and_backspace_takes_no_break() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body("hello\nworld\nx");
+        e.handle_mouse(left_down(35, 1));
+        for _ in 0..3 {
+            e.handle_key(pkey(KeyCode::Backspace));
+        }
         e.handle_key(skey(KeyCode::Left));
         assert_eq!(e.body_selected_text().as_deref(), Some("o"));
+    }
+
+    /// Up and Down keep the caret's column (edtui), so onto a shorter line
+    /// the caret sits past its end. A boundary there counts from the
+    /// line's end, so it never reaches the line's break.
+    #[test]
+    fn a_caret_past_a_shorter_line_end_takes_no_break() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body("hello\nab\nx");
+        e.body.cursor = Index2::new(0, 5);
+        e.handle_key(skey(KeyCode::Down));
+        assert_eq!(e.body_selected_text().as_deref(), Some("\nab"));
+        let mut e = editor_with_body("hello\nab\nx");
+        e.body.cursor = Index2::new(0, 5);
+        e.handle_key(pkey(KeyCode::Down));
+        e.handle_key(skey(KeyCode::Left));
+        assert_eq!(e.body_selected_text().as_deref(), Some("b"));
+        let mut e = editor_with_body("hello\nab\nx");
+        e.body.cursor = Index2::new(0, 5);
+        e.handle_key(pkey(KeyCode::Down));
+        e.handle_key(skey(KeyCode::Home));
+        assert_eq!(e.body_selected_text().as_deref(), Some("ab"));
+    }
+
+    /// #166: a reload drops the selection; the next shift motion starts at
+    /// the caret, not at the old text's anchor.
+    #[test]
+    fn a_shift_motion_after_a_reload_anchors_at_the_caret() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body("hello");
+        e.body.cursor = Index2::new(0, 5);
+        e.handle_key(skey(KeyCode::Left));
+        e.set_body_text("a\nb\nc");
+        for _ in 0..2 {
+            e.handle_key(pkey(KeyCode::Down));
+        }
+        e.handle_key(pkey(KeyCode::End));
+        e.handle_key(skey(KeyCode::Left));
+        assert_eq!(e.body_selected_text().as_deref(), Some("c"));
     }
 
     /// A Tab indent keeps a selection that ends on a break ending on it.
