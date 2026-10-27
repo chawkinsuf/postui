@@ -1728,37 +1728,78 @@ fn a_click_on_the_search_prompt_leaves_the_body_caret() {
 }
 
 /// #129: the prompt's row is the body's again once it closes, and the
-/// view it scrolled goes back: `L`, `/`, Esc leaves the body as it was,
-/// as Vim's window never moves for its command line.
+/// view stays where the prompt scrolled it: `L`, `/`, Esc leaves the body
+/// one line down, the caret's line one row above the bottom.
 #[test]
-fn closing_the_search_prompt_gives_the_view_back() {
+fn closing_the_search_prompt_keeps_the_view() {
     let mut app = vim(Fixture::Body);
     let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
     app.editor.set_body_text(&lines.join("\n"));
     draw(&mut app);
     feed(&mut app, "L");
-    let before = draw_buffer(&mut app);
+    let full = app.editor.last_body_area.unwrap();
     feed(&mut app, "/");
     assert_eq!(app.editor.body.viewport_offset().1, 1, "the caret's line moved up");
     feed(&mut app, "<Esc>");
-    assert_eq!(app.editor.body.viewport_offset().1, 0);
-    assert_eq!(draw_buffer(&mut app), before, "the body as it was");
+    let buf = draw_buffer(&mut app);
+    assert_eq!(app.editor.last_body_area, Some(full));
+    assert_eq!(app.editor.body.viewport_offset().1, 1, "no scroll back");
+    let caret = app.editor.body.cursor.row;
+    let row = row_text(&buf, full, full.bottom() - 2);
+    assert!(row.trim_end().ends_with(&format!("row{caret}")), "{row:?}");
 }
 
-/// #129: a body of exactly the pane's rows gains no scrollbar while the
-/// prompt is open (it would take a column and rewrap the text).
+/// #129: the prompt scrolls the body only for a caret on the row it
+/// takes: a caret higher up leaves the view where it is.
 #[test]
-fn the_search_prompt_adds_no_scrollbar() {
+fn the_search_prompt_leaves_the_view_for_a_caret_above_its_row() {
+    let mut app = vim(Fixture::Body);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    feed(&mut app, "Lk");
+    feed(&mut app, "/");
+    assert_eq!(app.editor.body.viewport_offset().1, 0);
+}
+
+/// #129: a Visual span that reaches the prompt's row scrolls the body up
+/// one line too, unless the caret is on the top line (scrolling it away
+/// would hide the caret instead).
+#[test]
+fn the_search_prompt_scrolls_for_a_selection_on_its_row() {
+    let mut app = vim(Fixture::Body);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    feed(&mut app, "Lvk");
+    feed(&mut app, "/");
+    assert_eq!(app.editor.body.viewport_offset().1, 1, "the span's end shows");
+    feed(&mut app, "<Esc><Esc>gg");
+    draw(&mut app);
+    feed(&mut app, "LvH");
+    assert_eq!(app.editor.body.cursor.row, 0);
+    feed(&mut app, "/");
+    assert_eq!(app.editor.body.viewport_offset().1, 0, "the caret's top line stays");
+}
+
+/// #129: the prompt's row is the body's, so a body of exactly the pane's
+/// rows no longer fits while it is open: the drawn bar and the thumb
+/// drag's spec both measure the shorter body.
+#[test]
+fn the_search_prompt_bar_measures_the_shorter_body() {
     let mut app = vim(Fixture::Body);
     let h = usize::from(app.editor.last_body_area.expect("the body is drawn").height);
     app.editor.set_body_text(&vec!["x"; h].join("\n"));
     draw(&mut app);
-    let full = app.editor.last_body_area.unwrap();
     let bar = |app: &App| !app.hits.rects_of(&Hit::ScrollbarThumb(PaneId::Editor)).is_empty();
     assert!(!bar(&app), "it fits");
     feed(&mut app, "/");
-    assert!(!bar(&app), "no bar for the prompt's row");
-    assert_eq!(app.editor.last_body_area.unwrap().width, full.width, "no column taken");
+    assert!(bar(&app), "one line more than the shorter body shows");
+    let area = app.editor.last_body_area.unwrap();
+    let spec = app.editor.scrollbar_spec().unwrap();
+    assert_eq!(spec.viewport, usize::from(area.height));
+    feed(&mut app, "<Esc>");
+    assert!(!bar(&app), "it fits again");
 }
 
 /// #129: in a one-row body the prompt takes the only row; the frame after
