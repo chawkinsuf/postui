@@ -28017,6 +28017,13 @@ fn vars_app_with_b_typed() -> (App, tempfile::TempDir, std::path::PathBuf) {
     let entry = |v: &str| postui_core::model::Entry { value: v.into(), enabled: true };
     app.editor.variables.insert("a".into(), entry("1"));
     app.editor.variables.insert("b".into(), entry("2"));
+    open_b_value_cell_typed(&mut app);
+    (app, dir, out)
+}
+
+/// Opens the Vars tab's row-1 var (b) value cell and types `typed` in it,
+/// not yet committed.
+fn open_b_value_cell_typed(app: &mut App) {
     app.editor.active_tab = EditorTab::Vars;
     app.editor.sub_focus = SubFocus::Content;
     app.focus = PaneId::Editor;
@@ -28027,7 +28034,6 @@ fn vars_app_with_b_typed() -> (App, tempfile::TempDir, std::path::PathBuf) {
     let edit = app.editor.table.editing.as_mut().expect("b's value cell is open");
     assert_eq!((edit.row, edit.col), (1, crate::components::table_editor::Col::Value));
     edit.input.set_text("typed");
-    (app, dir, out)
 }
 
 fn request_vars(app: &App) -> Vec<(String, String)> {
@@ -28108,16 +28114,7 @@ fn promote_app_with_b_typed() -> (App, tempfile::TempDir) {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/ping".into()));
-    app.editor.active_tab = EditorTab::Vars;
-    app.editor.sub_focus = SubFocus::Content;
-    app.focus = PaneId::Editor;
-    app.editor.table.set_selected(Some(Stop::Row(1)));
-    let map = app.editor.variables.clone();
-    app.editor.table.begin_edit_selected(&map);
-    app.editor.table.handle_key(tab_key(), &mut app.editor.variables);
-    let edit = app.editor.table.editing.as_mut().expect("the value cell is open");
-    assert_eq!((edit.row, edit.col), (1, crate::components::table_editor::Col::Value));
-    edit.input.set_text("typed");
+    open_b_value_cell_typed(&mut app);
     (app, dir)
 }
 
@@ -28126,7 +28123,7 @@ fn promote_app_with_b_typed() -> (App, tempfile::TempDir) {
 /// the Manager's Promote never runs over an open cell.
 #[test]
 fn opening_manage_commits_an_open_vars_cell_before_a_promote() {
-    let (mut app, _dir) = promote_app_with_b_typed();
+    let (mut app, dir) = promote_app_with_b_typed();
     app.handle_key(alt('r'));
     assert_eq!(app.screen, Screen::Manage);
     app.capture_undo(); // what `main`'s loop runs after every event
@@ -28136,6 +28133,10 @@ fn opening_manage_commits_an_open_vars_cell_before_a_promote() {
     app.handle_key(plain('d')); // Default value
     assert_eq!(app.proj().variables().vars["trace_id"].default.as_deref(), Some("abc-123"));
     assert_eq!(request_vars(&app), [("b".to_string(), "typed".to_string())]);
+    // The request file the promote saves has the typing too.
+    let on_disk = postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap();
+    assert_eq!(on_disk.variables.keys().collect::<Vec<_>>(), ["b"]);
+    assert_eq!(on_disk.variables["b"].value, "typed");
 }
 
 /// #153: a promote over an open Vars cell is a broken invariant, caught in
