@@ -25,7 +25,7 @@ rm -rf "$demo/project/.postui"
 # A narrower sidebar than the default 28%, which leaves the demo's short
 # request names a lot of empty space and the editor and response too little.
 mkdir -p "$demo/project/.postui" || return 1
-printf 'sidebar_width = 22\n' >"$demo/project/.postui/layout.toml" || return 1
+printf 'sidebar_width = 24\n' >"$demo/project/.postui/layout.toml" || return 1
 # The stand-in AI command runs from the temp folder rather than the repo,
 # whose path may hold spaces or quotes.
 cp "$repo/docs/tapes/fake-ai.sh" "$demo/fake-ai.sh" || return 1

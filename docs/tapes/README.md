@@ -72,8 +72,9 @@ the sidebar takes those as commands.
 Each tape starts with `include/common.tape`: the recording settings from
 `include/settings.tape`, and the hidden launch through `setup.sh`. `vim.tape`
 sources the settings alone and launches with the Vim profile itself. The
-font size sets the terminal to about 100 columns, so the text stays readable
-when GitHub scales the images down to its README column. `include/open-users.tape` holds the sidebar
+font size and height set the terminal to about 105 columns by 34 rows, so
+the text stays readable when GitHub scales the images down to its README
+column. `include/open-users.tape` holds the sidebar
 steps into the demo's `users/` folder, the one place the tapes depend on the
 demo project's layout. It sits in its own folder so the
 `docs/tapes/*.tape` loop doesn't record it on its own.
