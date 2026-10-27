@@ -829,13 +829,7 @@ impl App {
             rows,
             &mut self.vim.search_memory,
         );
-        // The frame the prompt opens in is the one that takes the body's
-        // row from it.
-        let opens = self.editor.body_search.prompt.is_none() && found.prompt.is_some();
         self.editor.body_search = found;
-        if opens {
-            self.editor.scroll_off_prompt_row();
-        }
     }
 
     /// `{{` typed into the URL line or a cell opens the variable picker, as
