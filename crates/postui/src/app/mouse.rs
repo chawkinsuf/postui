@@ -1447,7 +1447,9 @@ impl App {
         // delete, an auto row's edit) are the keys they advertise, so they
         // keep the cursor and the table's caret as those keys do (task
         // #125). Whether a chip is one is asked of the footer's own builder,
-        // for the cursor the frame was drawn from, so there is no second
+        // for the app's cursor now, which is the one the hit's frame was
+        // drawn from (the loop redraws after any event that reports a
+        // change, as the dialog rule above relies on), so there is no second
         // list to keep in step. They are drawn only while the editor pane
         // has the focus and no cell is open, so the commit above has nothing
         // to close for them, and the Settings and editor-caret rules below,
