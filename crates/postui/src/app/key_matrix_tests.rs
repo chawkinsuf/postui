@@ -1598,3 +1598,32 @@ fn every_painted_keycap_resolves_to_its_chip() {
         }
     }
 }
+
+/// Task #132: a palette opened from a vim field's idle Normal spells its
+/// rows from that field's context, as the footer did a key before: the
+/// key that opens it (`:` or ctrl+p) leaves the context as it was, so
+/// undo reads `u` and save `:w` there, not the keymap's or nothing.
+#[test]
+fn a_palette_from_a_vim_field_in_normal_spells_from_the_field() {
+    use crate::keyroute::FieldSpell;
+    for opener in [":", "<C-p>"] {
+        let mut app = build(UrlLine);
+        app.use_profile(KeyProfile::Vim);
+        draw(&mut app);
+        feed(&mut app, "i<Esc>");
+        let at = app.spell_ctx();
+        assert!(matches!(at.field, FieldSpell::Normal(_)), "{opener}: {at:?}");
+        feed(&mut app, opener);
+        let Some(Modal::Palette(palette)) = app.modals.top() else {
+            panic!("{opener}: the palette is open");
+        };
+        for (id, key) in [("undo", "u"), ("request-save", ":w")] {
+            let row = palette.filtered().iter().find(|c| c.id == id).expect(id);
+            let shown = palette.key_column(row, &app.keymap);
+            assert_eq!(shown.as_deref(), Some(key), "{id} from {opener}");
+            let action = &row.action;
+            let footer = crate::keyroute::spell::spell(at, action, &app.keymap);
+            assert_eq!(shown, footer, "{id} from {opener}: as the footer spells it");
+        }
+    }
+}

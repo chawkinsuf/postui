@@ -2633,13 +2633,13 @@ impl App {
     }
 
     /// Where the keyboard is, for [`crate::keys::KeyContext::action`]: the
-    /// one input a key's action takes context from. Both palettes are
-    /// opened with it too, so their key column names a key only where it
-    /// runs the row.
+    /// one input a key's action takes context from, read off the screen's
+    /// surface (the sidebar focused on the main screen is
+    /// `Surface::Sidebar`). Both palettes build the same context from the
+    /// surface they opened on, so their key column names a key only where
+    /// it runs the row.
     pub(crate) fn key_context(&self) -> crate::keys::KeyContext {
-        crate::keys::KeyContext {
-            sidebar_on_main: self.focus == PaneId::Sidebar && self.screen == Screen::Main,
-        }
+        crate::keys::KeyContext::on(self.screen_surface())
     }
 
     /// Moves the sidebar's edge `delta` columns from the width on screen,
@@ -3850,8 +3850,8 @@ impl App {
                 // Where the keys mean what is known only here, where the
                 // palette is opened from a focus: once it is pushed, the
                 // keys go to the palette (task #132).
-                let mut palette = PaletteState::new(&self.usage, crate::usage::now())
-                    .opened_at(self.key_context(), self.spell_ctx());
+                let mut palette =
+                    PaletteState::new(&self.usage, crate::usage::now()).opened_at(self.spell_ctx());
                 if let Some((name, offers)) = self.tip_offers() {
                     palette = palette.with_tip(&name, &offers);
                 }

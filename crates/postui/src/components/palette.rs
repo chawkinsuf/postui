@@ -550,16 +550,10 @@ pub struct PaletteState {
     /// changed: on the ex line, Enter with nothing typed runs only a
     /// picked row, as Vim's `:<CR>` runs nothing.
     picked: bool,
-    /// Where the palette opened, for the key column: a row shows a keymap
-    /// combo only when the combo means the row's action there (spec S6a).
-    key_context: crate::keys::KeyContext,
-    /// Where the palette opened, for the key column's spelling (task #132):
-    /// taken as it opens, since once it is up `App::surface` is the
-    /// palette's own `Picker`, where no row is looked up. Kept beside
-    /// `key_context`, not derived from it or it from this: they are the
-    /// app's two separate inputs (`App::key_context` for a key press's
-    /// binding, `App::spell_ctx` for the footer's), and the palette records
-    /// each as the app defines it.
+    /// Where the palette opened, for the key column (task #132): taken as
+    /// it opens, since once it is up `App::surface` is the palette's own
+    /// `Picker`, where no row is looked up. Its surface also gives the
+    /// combo check its `KeyContext` (spec S6a, `KeyContext::on`).
     spell: crate::keyroute::SpellCtx,
     /// The `:` line's history as it stood when the line opened, oldest
     /// first (plan M5b Task 5). Empty for ctrl+p's palette.
@@ -600,7 +594,6 @@ impl PaletteState {
             pinned: None,
             refused: None,
             picked: false,
-            key_context: crate::keys::KeyContext::default(),
             spell: crate::keyroute::SpellCtx::default(),
             history: Vec::new(),
             hist_at: None,
@@ -608,14 +601,9 @@ impl PaletteState {
         }
     }
 
-    /// Records where the palette opened (`App::key_context` and
-    /// `App::spell_ctx`, see the fields).
-    pub fn opened_at(
-        self,
-        key_context: crate::keys::KeyContext,
-        spell: crate::keyroute::SpellCtx,
-    ) -> Self {
-        Self { key_context, spell, ..self }
+    /// Records where the palette opened (`App::spell_ctx`, see the field).
+    pub fn opened_at(self, spell: crate::keyroute::SpellCtx) -> Self {
+        Self { spell, ..self }
     }
 
     /// Lists the pills of the variable tooltip open as the palette opened,
@@ -950,8 +938,10 @@ impl PaletteState {
     /// glyphs, which the palette has never drawn (task #132's choices,
     /// mine (approved)). The combo is skipped where it means something
     /// else (the same [`crate::keys::KeyContext::action`] every key press
-    /// takes), but a table row or an ex verb is never remapped: from the
-    /// vim sidebar the split rows show `:split`. A row whose action no key
+    /// takes, on the context [`crate::keys::KeyContext::on`] gives the
+    /// surface the palette opened on), but a table row or an ex verb is
+    /// never remapped: from the vim sidebar the split rows show `:split`.
+    /// A row whose action no key
     /// sends shows none, as "Manage: variables" does: `alt+r` opens the
     /// tab Manage last had. So do the sidebar width rows: no key sends
     /// their action as such, only `alt+w` remapped while the sidebar has
@@ -966,9 +956,11 @@ impl PaletteState {
     /// frame: a few scans of the binding table each, too few to cache.
     pub(crate) fn key_column(&self, c: &Command, keymap: &crate::keys::Keymap) -> Option<String> {
         let action = key_action(&c.action);
+        let here = crate::keys::KeyContext::on(self.spell.surface);
         crate::keyroute::spell::spell_with(self.spell, &action, || {
-            let runs_here = self.key_context.action(action.clone().into_owned()) == *action;
-            keymap.combo_for_action(&action).filter(|_| runs_here)
+            keymap
+                .combo_for_action(&action)
+                .filter(|_| here.action(action.clone().into_owned()) == *action)
         })
     }
 
@@ -1244,8 +1236,7 @@ mod tests {
     /// A palette opened in `profile` with no surface of its own.
     fn opened_in(profile: crate::config::KeyProfile) -> PaletteState {
         let at = crate::keyroute::SpellCtx { profile, ..Default::default() };
-        PaletteState::new(&crate::usage::UsageStore::default(), 0)
-            .opened_at(crate::keys::KeyContext::default(), at)
+        PaletteState::new(&crate::usage::UsageStore::default(), 0).opened_at(at)
     }
 
     /// Task #91: the hide/show panel rows show the key that does the same
@@ -1304,8 +1295,7 @@ mod tests {
     /// profile's default keymap.
     fn key_at(at: crate::keyroute::SpellCtx, id: &str) -> Option<String> {
         let keymap = crate::keys::Keymap::default_bindings_for(at.profile);
-        let p = PaletteState::new(&crate::usage::UsageStore::default(), 0)
-            .opened_at(crate::keys::KeyContext::default(), at);
+        let p = PaletteState::new(&crate::usage::UsageStore::default(), 0).opened_at(at);
         let cmd = all_commands().into_iter().find(|c| c.id == id).expect(id);
         p.key_column(&cmd, &keymap)
     }
@@ -1378,17 +1368,19 @@ mod tests {
     #[test]
     fn the_sidebar_drops_the_split_combo_but_not_the_ex_verb() {
         use crate::keyroute::{SpellCtx, Surface};
-        let sidebar = crate::keys::KeyContext { sidebar_on_main: true };
+        // The arrows keymap in both profiles: it binds `alt+w`, as a vim
+        // keys.toml could.
         let keymap = crate::keys::Keymap::default_bindings();
         let cmd = all_commands().into_iter().find(|c| c.id == "split-step").expect("split-step");
-        for (profile, want) in [
-            (crate::config::KeyProfile::Arrows, None),
-            (crate::config::KeyProfile::Vim, Some(":split".to_string())),
+        let alt = crate::keys::alt_label();
+        for (profile, surface, want) in [
+            (crate::config::KeyProfile::Arrows, Surface::Sidebar, None),
+            (crate::config::KeyProfile::Vim, Surface::Sidebar, Some(":split".to_string())),
+            (crate::config::KeyProfile::Vim, Surface::UrlLine, Some(format!("{alt}+w"))),
         ] {
-            let at = SpellCtx { profile, surface: Surface::Sidebar, ..SpellCtx::default() };
-            let p =
-                PaletteState::new(&crate::usage::UsageStore::default(), 0).opened_at(sidebar, at);
-            assert_eq!(p.key_column(&cmd, &keymap), want, "{profile:?}");
+            let at = SpellCtx { profile, surface, ..SpellCtx::default() };
+            let p = PaletteState::new(&crate::usage::UsageStore::default(), 0).opened_at(at);
+            assert_eq!(p.key_column(&cmd, &keymap), want, "{profile:?} on {surface:?}");
         }
     }
 

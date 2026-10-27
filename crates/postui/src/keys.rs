@@ -233,6 +233,14 @@ pub struct KeyContext {
 }
 
 impl KeyContext {
+    /// The context on `surface`: the sidebar on the main screen is
+    /// `Surface::Sidebar`. `App::key_context` reads it off the screen's
+    /// surface; the palette off the surface it opened on (task #132), so
+    /// its key column and a key press agree on what the split keys do.
+    pub fn on(surface: crate::keyroute::Surface) -> Self {
+        Self { sidebar_on_main: surface == crate::keyroute::Surface::Sidebar }
+    }
+
     /// What a key bound to `action` does here. With the sidebar focused on
     /// the main screen, the split keys (`alt+w`, `shift+alt+w`, or whatever
     /// keys.toml binds to `cycle_split` / `cycle_split_back`) step the

@@ -1386,7 +1386,7 @@ impl App {
                     scope,
                     self.vim.cmdline_history.lines(),
                 )
-                .opened_at(self.key_context(), self.spell_ctx());
+                .opened_at(self.spell_ctx());
                 if let Some((name, offers)) = self.tip_offers() {
                     palette = palette.with_tip(&name, &offers);
                 }
