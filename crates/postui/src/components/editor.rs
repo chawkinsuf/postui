@@ -1703,16 +1703,24 @@ impl Editor {
         }
     }
 
-    /// A wheel notch on the vim search prompt's row (`Hit::BodyPromptRow`)
-    /// scrolls the body as one on its text does (#129): it is taken on
-    /// the body's nearest cell.
-    pub fn wheel_on_prompt_row(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
+    /// A wheel notch on the body's hit (`Hit::BodyEditor`), taken at the
+    /// text's nearest cell: in the vim profile the hit also covers the row
+    /// kept under the text for the search prompt (#129), and a notch there
+    /// scrolls the body as one on the text does.
+    pub fn handle_wheel(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
         let Some(a) = self.last_body_area.filter(|a| !a.is_empty()) else { return false };
         self.handle_mouse(ratatui::crossterm::event::MouseEvent {
             column: m.column.clamp(a.x, a.right() - 1),
             row: m.row.clamp(a.y, a.bottom() - 1),
             ..m
         })
+    }
+
+    /// Whether screen row `y` of a press on the body's hit is below its
+    /// text: the row the vim profile keeps there for the search prompt
+    /// (#129), where a press places no caret (`App::press_text`).
+    pub(crate) fn below_body_text(&self, y: u16) -> bool {
+        self.active_tab == EditorTab::Body && self.last_body_area.is_some_and(|a| y >= a.bottom())
     }
 
     /// Forwards a raw mouse event to the body editor when the Body tab is
@@ -3935,20 +3943,14 @@ impl Editor {
                 // width, as Vim's command line is the screen's: under the
                 // bar when the row is kept, over it in a one-row pane while
                 // a search is open (the prompt covers that row whole).
-                let kept = self.prompt_row && area.height > 1;
-                let shared = self.prompt_row && area.height == 1;
-                let prompt_rect = if kept {
+                let kept = (self.prompt_row && area.height > 1).then(|| {
                     area.height -= 1;
-                    Some(Rect { y: area.bottom(), height: 1, ..area })
-                } else {
-                    shared.then_some(area)
-                };
-                let prompt_open = self.body_search.prompt.is_some();
-                // The prompt's row while it is not the body's: kept, or
-                // over a one-row body while a search is open.
-                let prompt_hit = prompt_rect.filter(|_| kept || prompt_open);
+                    Rect { y: area.bottom(), height: 1, ..area }
+                });
+                let shared = self.prompt_row && kept.is_none();
+                let prompt_rect = kept.or(shared.then_some(area));
                 // The body row under an open prompt (a one-row body).
-                let covered = (shared && prompt_open).then_some(area.y);
+                let covered = (shared && self.body_search.prompt.is_some()).then_some(area.y);
                 let spec = ScrollbarSpec {
                     pane: PaneId::Editor,
                     offset: self.body.viewport_offset().1,
@@ -3973,6 +3975,11 @@ impl Editor {
                 }
                 self.last_body_area = Some(area);
                 hits.register(area, crate::hit::Hit::BodyEditor);
+                // The kept row is the body's for every mouse input; a press
+                // there places no caret (`App::press_text`).
+                if let Some(row) = kept {
+                    hits.register(row, crate::hit::Hit::BodyEditor);
+                }
                 if focused {
                     // Fades in via the shared `AnimKey::FocusFade` (the URL
                     // well's own focus lift retargets the same key — see
@@ -4085,11 +4092,7 @@ impl Editor {
                 }
                 // The engine's search prompt on the pane's bottom row (spec
                 // §5.6; plan M3a Deviation 16), on the row kept for it
-                // above. Its hit is over the body's and the tokens', so a
-                // click there never reaches a line under it.
-                if let Some(row) = prompt_hit {
-                    hits.register(row, crate::hit::Hit::BodyPromptRow);
-                }
+                // above.
                 if let (Some(line), Some(row)) = (&self.body_search.prompt, prompt_rect) {
                     let y = row.y;
                     let style = Style::default().bg(theme.panel).fg(theme.text);
@@ -5538,7 +5541,8 @@ mod tests {
 
     /// #129: a pane of one row keeps it for the body, as Vim's current
     /// window always has a line; an open prompt draws over it, and nothing
-    /// of the body (its caret, a `{{token}}`'s hit) shows or clicks there.
+    /// of the body (its caret, a `{{token}}`'s hit) shows there. The row
+    /// stays the body's for the mouse: it is the body's text row.
     #[test]
     fn a_one_row_pane_keeps_its_row_for_the_body() {
         let mut e = body_editor("{}");
@@ -5554,7 +5558,8 @@ mod tests {
         assert_eq!(area.height, 1, "the body keeps the row");
         let row: String = (area.x..area.right()).map(|x| buf[(x, area.y)].symbol()).collect();
         assert!(row.contains("line"), "{row:?}");
-        assert!(hits.rect_of(&crate::hit::Hit::BodyPromptRow).is_none());
+        let body_hits = |hits: &crate::hit::HitMap| hits.rects_of(&crate::hit::Hit::BodyEditor);
+        assert_eq!(body_hits(&hits), [area], "no row kept below it");
         e.body_search.prompt = Some(crate::vim::engine::SearchLine {
             dir: crate::vim::engine::Dir::Forward,
             text: "x".into(),
@@ -5570,8 +5575,9 @@ mod tests {
             .collect();
         assert_eq!(reversed, [2], "only the prompt's caret");
         assert!(hits.rects_of(&crate::hit::Hit::VarToken("v".into())).is_empty());
+        assert_eq!(body_hits(&hits), [area]);
         let top = hits.hit_at(area.x + 4, area.y);
-        assert_eq!(top, Some(&crate::hit::Hit::BodyPromptRow));
+        assert_eq!(top, Some(&crate::hit::Hit::BodyEditor));
     }
 
     /// R8: Visual paints over the pair.

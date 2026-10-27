@@ -1758,11 +1758,12 @@ fn l_then_slash_keeps_the_carets_line_in_view() {
     assert_eq!(body(&closed), body(&before), "Esc leaves the view as it was");
 }
 
-/// #129: the prompt's row is not the body's, open or not, so a click on
-/// it doesn't move the body's caret to a line the body doesn't show. It
-/// is still the body's for focus, as a click on Vim's command line leaves
-/// the window and its cursor (probed: `3G`, a click there, the cursor on
-/// line 3 in Normal), and an open search stays open.
+/// #129: the prompt's row is the body's for the mouse, open or not, but a
+/// press there places no caret, so it never moves the body's caret to a
+/// line the body doesn't show. It keeps the keyboard on the body, as a
+/// click on Vim's command line leaves the window and its cursor (probed:
+/// `3G`, a click there, the cursor on line 3 in Normal), and an open
+/// search stays open.
 #[test]
 fn a_click_on_the_search_prompt_leaves_the_body_caret() {
     let mut app = vim(Fixture::Body);
@@ -1772,14 +1773,19 @@ fn a_click_on_the_search_prompt_leaves_the_body_caret() {
     feed(&mut app, "3G");
     let caret = app.editor.body.cursor;
     let area = app.editor.last_body_area.unwrap();
-    assert!(!app.hits.rects_of(&Hit::BodyEditor).iter().any(|r| r.bottom() > area.bottom()));
+    assert_eq!(app.hits.hit_at(area.x + 8, area.bottom()), Some(&Hit::BodyEditor));
     let held = |app: &App| app.focus == PaneId::Editor && app.editor.sub_focus == SubFocus::Content;
     assert!(held(&app));
     click_at(&mut app, area.x + 8, area.bottom());
     assert_eq!(app.editor.body.cursor, caret, "the blank row");
     assert!(held(&app), "the body keeps the keyboard");
+    // Nor from the keyboard's other pane: the press gives the body it.
+    app.update(Action::FocusPane(PaneId::Sidebar));
+    click_at(&mut app, area.x + 8, area.bottom());
+    assert_eq!(app.editor.body.cursor, caret);
+    assert!(held(&app), "the press gives the body the keyboard");
     feed(&mut app, "/x");
-    assert!(!app.hits.rects_of(&Hit::BodyEditor).iter().any(|r| r.bottom() > area.bottom()));
+    assert_eq!(app.hits.hit_at(area.x + 8, area.bottom()), Some(&Hit::BodyEditor));
     click_at(&mut app, area.x + 8, area.bottom());
     assert_eq!(app.editor.body.cursor, caret, "the open prompt");
     assert!(held(&app));
@@ -1829,6 +1835,101 @@ fn the_search_prompts_row_wheels_and_menus_as_the_body() {
     app.handle_mouse(MouseEvent { kind, column: area.x + 8, row, modifiers: KeyModifiers::NONE });
     let Some(Modal::Dropdown(d)) = app.modals.top() else { panic!("the body's text menu") };
     assert!(d.items.iter().any(|i| i.label == "Paste"));
+}
+
+/// #129: while a search is being typed, the body's menu over the row
+/// below the text is the body's, and its Paste types into the search, which
+/// stays open, as Vim's paste goes into its command line. Picking the row
+/// settles no more than Enter on it does.
+#[test]
+fn menu_paste_while_searching_types_into_the_search() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = vim(Fixture::Body);
+    let mut clip = crate::clipboard::Clipboard::new_for_test(None, 65536);
+    clip.set_read_for_test("ab");
+    app.set_clipboard_for_test(clip);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    let text = app.editor.body.lines.to_string();
+    feed(&mut app, "/x");
+    let kind = MouseEventKind::Down(MouseButton::Right);
+    let row = area.bottom();
+    app.handle_mouse(MouseEvent { kind, column: area.x + 8, row, modifiers: KeyModifiers::NONE });
+    draw(&mut app);
+    let Some(Modal::Dropdown(d)) = app.modals.top() else { panic!("the body's text menu") };
+    let i = d.items.iter().position(|i| i.label == "Paste").expect("Paste");
+    let at = app.hits.rect_of(&Hit::DropdownRow(i)).expect("the Paste row");
+    click_at(&mut app, at.x + 1, at.y);
+    draw(&mut app);
+    let prompt = app.editor.body_search.prompt.as_ref().map(|p| p.text.clone());
+    assert_eq!(prompt.as_deref(), Some("xab"), "typed into the open search");
+    assert_eq!(app.editor.body.lines.to_string(), text, "the body unchanged");
+}
+
+/// #129: a paste while a search begun from a selection is typed goes into
+/// the search, not over the selection, as Vim's paste goes into its
+/// command line.
+#[test]
+fn a_paste_while_searching_from_visual_types_into_the_search() {
+    let mut app = vim(Fixture::Body);
+    app.editor.set_body_text("one\ntwo\nthree");
+    draw(&mut app);
+    let text = app.editor.body.lines.to_string();
+    feed(&mut app, "vj/x");
+    assert!(app.paste_text("ab"));
+    draw(&mut app);
+    let prompt = app.editor.body_search.prompt.as_ref().map(|p| p.text.clone());
+    assert_eq!(prompt.as_deref(), Some("xab"));
+    assert_eq!(app.editor.body.lines.to_string(), text, "the selection kept its text");
+}
+
+/// #129: a press on the prompt's row anchors nothing: a double click
+/// there selects no word, and a sweep from it up over the text selects
+/// nothing, as in Vim (probed: a press on the command line dragged up
+/// over the text selects nothing). A sweep from the text down onto the
+/// row is the body's below-the-text sweep and scrolls on.
+#[test]
+fn a_press_on_the_prompts_row_anchors_no_sweep() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = vim(Fixture::Body);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    feed(&mut app, "3G");
+    let caret = app.editor.body.cursor;
+    let area = app.editor.last_body_area.unwrap();
+    let mouse = |app: &mut App, kind, row| {
+        app.handle_mouse(MouseEvent {
+            kind,
+            column: area.x + 8,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+        draw(app);
+    };
+    let down = MouseEventKind::Down(MouseButton::Left);
+    let up = MouseEventKind::Up(MouseButton::Left);
+    let drag = MouseEventKind::Drag(MouseButton::Left);
+    for _ in 0..2 {
+        mouse(&mut app, down, area.bottom());
+        mouse(&mut app, up, area.bottom());
+    }
+    assert_eq!(app.editor.body.cursor, caret, "no word");
+    assert!(app.editor.body_visual.is_none() && app.editor.body.selection.is_none());
+    mouse(&mut app, down, area.bottom());
+    mouse(&mut app, drag, area.y + 1);
+    mouse(&mut app, up, area.y + 1);
+    assert_eq!(app.editor.body.cursor, caret, "no sweep");
+    assert!(app.editor.body_visual.is_none() && app.editor.body.selection.is_none());
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+    // From the text down onto the row: Visual, and the view scrolls on.
+    mouse(&mut app, down, area.y + 1);
+    mouse(&mut app, drag, area.bottom());
+    assert!(app.editor.body_visual.is_some(), "the sweep selects");
+    assert!(app.editor.body.cursor.row >= usize::from(area.height), "past the body's last row");
+    mouse(&mut app, up, area.bottom());
 }
 
 /// #129: the bar measures the body above the prompt's row, as the thumb

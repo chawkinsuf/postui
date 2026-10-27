@@ -665,12 +665,9 @@ impl App {
                     let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
                     return self.modals.scroll_top(d);
                 }
-                let body_wheeled = match self.hits.hit_at(m.column, m.row) {
-                    Some(Hit::BodyEditor) => self.editor.handle_mouse(m),
-                    Some(Hit::BodyPromptRow) => self.editor.wheel_on_prompt_row(m),
-                    _ => false,
-                };
-                if body_wheeled {
+                if matches!(self.hits.hit_at(m.column, m.row), Some(Hit::BodyEditor))
+                    && self.editor.handle_wheel(m)
+                {
                     return self.update(Action::Render);
                 }
                 if self.screen == Screen::Manage {
@@ -1102,6 +1099,19 @@ impl App {
         clicks: Clicks,
         open: bool,
     ) {
+        // The one rule for the row the vim profile keeps under the body's
+        // text for the search prompt (#129), which is the body's for every
+        // other mouse input: a press there places no caret. It gives the
+        // body the keyboard, anchors no sweep (a sweep extends from the
+        // caret its press placed), and settles nothing, so an open search
+        // and Visual go on. Vim 9.1 does the same on its command line
+        // (probed: a click there leaves the cursor, keeps an open `/` line
+        // and Visual, and dragged up over the text selects nothing).
+        if field == FieldId::Body && self.editor.below_body_text(m.row) {
+            self.move_editor_caret(SubFocus::Content);
+            self.vim_separator_press();
+            return;
+        }
         let at = self.text_at(field, m.column, m.row, open, false);
         if field == FieldId::Body || at.is_some() {
             self.text_drag = Some(TextDrag::Field(field));
@@ -1553,8 +1563,8 @@ impl App {
         // sub-focus (UrlBar, BodyEditor, the table hits) re-set it right
         // after; dialog and scrollbar clicks are excluded above so an open
         // popup or a scroll never blurs the input under it.
-        let keeps_editor_input = keeps_table_selection
-            || matches!(hit, Hit::UrlBar | Hit::BodyEditor | Hit::BodyPromptRow | Hit::CopyUrl);
+        let keeps_editor_input =
+            keeps_table_selection || matches!(hit, Hit::UrlBar | Hit::BodyEditor | Hit::CopyUrl);
         if !keeps_editor_input {
             self.move_editor_caret(SubFocus::None);
         }
@@ -1566,19 +1576,6 @@ impl App {
                 // The caret, a double click's word, and a sweep armed:
                 // whole words after a double click.
                 self.press_text(FieldId::Body, m, clicks, true);
-                self.update(Action::Render)
-            }
-            // The body's for focus, with no caret move and no sweep: a
-            // click on Vim's command line leaves the cursor, and keeps
-            // Visual and an open search, so the press settles nothing, as
-            // one on a separator doesn't (#129). Probed in Vim 9.1: a press
-            // there dragged up over the text selects nothing, while a sweep
-            // from the text down onto it is past the window's bottom and
-            // scrolls, as `body_cursor_for_drag` does below the body.
-            Hit::BodyPromptRow => {
-                self.update(Action::FocusPane(PaneId::Editor));
-                self.move_editor_caret(SubFocus::Content);
-                self.vim_separator_press();
                 self.update(Action::Render)
             }
             Hit::HeaderProject => self.update(Action::OpenProjectChooser),
@@ -1970,7 +1967,12 @@ impl App {
                 };
                 // Closed as Enter on the row closes it, housekeeping and all
                 // (a parked field's session made live, the sidebar's
-                // right-click selection settled).
+                // right-click selection settled). Like Enter, the press is
+                // the menu's and settles nothing on the field it was opened
+                // over: the body's Paste picked while a search is typed
+                // goes into the search and the search stays open, as Vim's
+                // paste goes into its command line (#129).
+                self.vim_separator_press();
                 self.close_dropdown_and_run(action)
             }
             // A row's own button (jq views spec 17): it runs once the menu
