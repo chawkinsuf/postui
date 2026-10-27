@@ -27972,6 +27972,23 @@ fn a_promote_commits_an_open_vars_cell_before_the_rows_shift() {
     );
 }
 
+/// #153, the way the app reaches a promote: alt+r leaves the cell, and the
+/// main loop's end-of-event capture commits it (spec 2026-10-19 R1), so
+/// the Manager's Promote never runs over an open cell.
+#[test]
+fn opening_manage_commits_an_open_vars_cell_before_a_promote() {
+    let (mut app, _dir) = promote_app_with_cell_typed(1, "typed");
+    app.handle_key(alt('r'));
+    assert_eq!(app.screen, Screen::Manage);
+    app.capture_undo(); // what `main`'s loop runs after every event
+    assert!(app.editor.table.editing.is_none(), "leaving for Manage closed the cell");
+    app.update(Action::PromptPromoteVar { name: "trace_id".into() });
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    app.handle_key(plain('d')); // Default value
+    assert_eq!(app.proj().variables().vars["trace_id"].default.as_deref(), Some("abc-123"));
+    assert_eq!(request_vars(&app), [("b".to_string(), "typed".to_string())]);
+}
+
 /// #153: typing in the promoted var's own cell is the value promoted, and
 /// does not land on the row that moves up into its place.
 #[test]
