@@ -1444,44 +1444,30 @@ impl App {
         // before.
         //
         // A footer chip is the key it advertises, so while the table's
-        // cursor is up (`Editor::live_table_cursor`, on whichever stop it
-        // is: a row, an auto row, a section row, `+ Add`; with the editor
-        // focused), every chip on the editor's footer keeps the cursor and
-        // the table's caret, as the keys do: the cursor's own (copy, toggle,
-        // delete, an auto row's edit; task #125) and the rest (send or
-        // cancel, add, tabs, commands, quit; task #183; `vars` keeps it
-        // already, above). The live cursor has no cell open, so the commit
-        // above has nothing to close for them. The footer's other editor
-        // chips (`esc done`, `enter edit`, `copy url`, `tls`) show only
-        // without it, so they stay a click away as before.
+        // cursor is live (any stop, `+ Add` included, no cell open), every
+        // chip on the main screen's footer keeps the cursor and the table's
+        // caret, as its key does: the cursor's own (task #125) and the rest
+        // (task #183; spec 2026-10-26 header-copy, Footer). The chip's action
+        // runs after, and one that moves the caret moves it itself, as the
+        // add chip does. With no cell open the commit above has nothing to
+        // close.
         //
-        // The footer's builder reads the same live cursor, to pick which
-        // stop's chips to show (`PaneChipArgs::table_row_selected`, none on
-        // `+ Add`); this rule asks only whether there is one to keep, and
-        // `+ Add` is one.
-        //
-        // The rule asks where the press landed, in the footer's rows,
-        // rather than listing actions: the app bar's save/discard and the
-        // address bar's lock register `FooterChip` too, and they stay a
-        // click away. Giving those their own hit would say it without the
-        // geometry, but every reader of `FooterChip` (the hints, the hover,
-        // the jq bar's rule, the mouse-parity sweep) would have to learn the
-        // new one, which is more than this rule needs. A dialog drawn over
-        // the footer registers its own chips, but the dialog rule above
-        // already keeps everything under one. The footer shows the editor's
-        // chips on the main screen only: the Manage screen draws its tab's
-        // own over the same rows while the editor keeps its cursor behind
-        // it, and there they stay a click away for the Settings rule below,
-        // which inherits this exemption. The cursor is read off the app now,
-        // which is the one the hit's frame was drawn from (the loop redraws
-        // after any event that reports a change, as the dialog rule above
-        // relies on), and so are the footer's rows: the settled layout is
-        // measured on `term_area`, which only a draw sets, and the footer's
-        // rows don't move with the panes' eases.
+        // The rule asks where the press landed, not which action: the app
+        // bar's save/discard, the address bar's lock and the Body toolbar
+        // register `FooterChip` too, and stay a click away. (Their own hit
+        // variant would say so without geometry, but every reader of
+        // `FooterChip` would have to learn it: the hints, the hover, the jq
+        // bar's rule, the mouse-parity sweep.) A dialog over the footer is
+        // the dialog rule's. The Manage screen draws its tab's chips in the
+        // same rows with the editor's cursor behind it, so the rule is the
+        // main screen's only, and the Settings rule below, which inherits
+        // it, still runs there. The settled layout's footer is the hit's
+        // frame's: `term_area` is set only by a draw, and the footer's rows
+        // don't move with the panes' eases.
         let table_cursor_chip = matches!(hit, Hit::FooterChip(_))
             && self.screen == Screen::Main
             && self.focus == PaneId::Editor
-            && self.editor.live_table_cursor().is_some()
+            && self.editor.table_cursor_live()
             && self.settled_layout().is_some_and(|l| {
                 l.footer.contains(ratatui::layout::Position { x: m.column, y: m.row })
             });

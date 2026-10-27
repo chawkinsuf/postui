@@ -1002,25 +1002,22 @@ impl PaneChipArgs {
                 response
                     .copyable_header_row()
                     .map(|_| crate::components::footer::TableCursor::ResponseHeader)
+            } else if focus == PaneId::Editor && app.editor.table_cursor_live() {
+                use crate::components::editor::{CursorRow, EditorTab};
+                use crate::components::footer::TableCursor;
+                let editor = &app.editor;
+                editor.cursor_row().map(|row| match row {
+                    CursorRow::Main(i) => TableCursor::Row {
+                        index: i,
+                        enabled: editor.table_row_enabled(i),
+                        headers: editor.active_tab == EditorTab::Headers,
+                    },
+                    CursorRow::Auto(j) => {
+                        TableCursor::Auto { index: j, pencil: editor.auto_row_overridable(j) }
+                    }
+                })
             } else {
-                (focus == PaneId::Editor && app.editor.live_table_cursor().is_some())
-                    .then(|| {
-                        use crate::components::editor::{CursorRow, EditorTab};
-                        use crate::components::footer::TableCursor;
-                        let editor = &app.editor;
-                        Some(match editor.cursor_row()? {
-                            CursorRow::Main(i) => TableCursor::Row {
-                                index: i,
-                                enabled: editor.table_row_enabled(i),
-                                headers: editor.active_tab == EditorTab::Headers,
-                            },
-                            CursorRow::Auto(j) => TableCursor::Auto {
-                                index: j,
-                                pencil: editor.auto_row_overridable(j),
-                            },
-                        })
-                    })
-                    .flatten()
+                None
             },
             jq_bar: if response.jq_focused() {
                 if response.jq_bar().ai_asking.is_some() {

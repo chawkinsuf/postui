@@ -15669,13 +15669,15 @@ fn undoing_a_delete_chip_click_selects_the_restored_row() {
 
 /// Task #183: every chip in the editor's footer is the key it advertises,
 /// not only the ones the table's cursor adds (#125). With the cursor on a
-/// row or on `+ Add`, clicking `send` (or `cancel` while sending), the add
-/// chip, `tabs`, `commands` or `quit` leaves the cursor, the caret and the
-/// tab exactly as running the chip's action does.
+/// row, an auto row or `+ Add`, clicking `send` (or `cancel` while
+/// sending), the add chip, `tabs`, `commands` or `quit` leaves the cursor,
+/// the caret and the tab exactly as running the chip's action does. The
+/// action is the oracle because it is what the click dispatches: what the
+/// rule decides is only whether the click-away runs before it.
 #[test]
 fn an_editor_footer_chip_click_leaves_the_table_cursor_as_its_action_does() {
     use crate::config::KeyProfile::{Arrows, Vim};
-    for stop in [Stop::Row(0), Stop::Add] {
+    for stop in [Stop::Row(0), Stop::Section(0), Stop::Add] {
         footer_chips_leave_the_table_cursor_as_their_actions_do(stop, Arrows);
         footer_chips_leave_the_table_cursor_as_their_actions_do(stop, Vim);
     }
