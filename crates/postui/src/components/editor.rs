@@ -2412,7 +2412,10 @@ fn new_body_state(text: &str) -> EditorState {
 /// `handle_key`), but its ctrl+y is a paste from edtui's own clipboard,
 /// which every selection delete fills: it put the last deleted text back.
 /// The app's paste is ctrl+v, from the system clipboard; ctrl+y is
-/// unbound in the arrows profile (`keys.rs` pins it).
+/// unbound in the arrows profile by default (`keys.rs` pins it), so here
+/// it puts nothing back and, like any unbound chord, only drops a live
+/// selection. The kill keys (ctrl+k, alt+d…) still fill edtui's
+/// clipboard, which nothing reads now: they are plain deletes.
 fn body_key_handler() -> EditorEventHandler {
     use edtui::events::{KeyEventRegister, KeyInput};
     let mut handler = EditorEventHandler::emacs_mode();
