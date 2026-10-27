@@ -1980,7 +1980,13 @@ impl Editor {
     /// one break; spec 2026-10-26 R1). Clears the selection when the
     /// boundaries coincide.
     fn set_body_selection_boundaries(&mut self, a: edtui::Index2, b: edtui::Index2) {
+        // A boundary is a caret position, never past its line's end: Up and
+        // Down keep the caret's column (edtui), so onto a shorter line it
+        // sits past the end, and comes back onto it here so it can't reach
+        // the line's break.
         let len = |row: usize| self.body.lines.len_col(row).unwrap_or(0);
+        let onto_line = |p: edtui::Index2| edtui::Index2::new(p.row, p.col.min(len(p.row)));
+        let (a, b) = (onto_line(a), onto_line(b));
         let (lo, hi) = if (a.row, a.col) <= (b.row, b.col) { (a, b) } else { (b, a) };
         if lo == hi {
             self.body.selection = None;
@@ -9482,6 +9488,28 @@ mod body_click_tests {
         }
         e.handle_key(skey(KeyCode::Left));
         assert_eq!(e.body_selected_text().as_deref(), Some("o"));
+    }
+
+    /// Up and Down keep the caret's column (edtui), so onto a shorter line
+    /// the caret sits past its end. A boundary there counts from the
+    /// line's end, so it never reaches the line's break.
+    #[test]
+    fn a_caret_past_a_shorter_line_end_takes_no_break() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body("hello\nab\nx");
+        e.body.cursor = Index2::new(0, 5);
+        e.handle_key(skey(KeyCode::Down));
+        assert_eq!(e.body_selected_text().as_deref(), Some("\nab"));
+        let mut e = editor_with_body("hello\nab\nx");
+        e.body.cursor = Index2::new(0, 5);
+        e.handle_key(pkey(KeyCode::Down));
+        e.handle_key(skey(KeyCode::Left));
+        assert_eq!(e.body_selected_text().as_deref(), Some("b"));
+        let mut e = editor_with_body("hello\nab\nx");
+        e.body.cursor = Index2::new(0, 5);
+        e.handle_key(pkey(KeyCode::Down));
+        e.handle_key(skey(KeyCode::Home));
+        assert_eq!(e.body_selected_text().as_deref(), Some("ab"));
     }
 
     /// #166: a reload drops the selection; the next shift motion starts at
