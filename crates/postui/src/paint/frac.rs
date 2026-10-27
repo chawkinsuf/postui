@@ -15,75 +15,83 @@ use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 /// closest to where it is. Clamps to buffer area.
 ///
 /// Every row the band paints keeps nothing of what was under it, modifiers
-/// included, so a struck or underlined page row never shows through. An
-/// edge whose coverage rounds to nothing is left as it was.
+/// included, so a struck or underlined page row never shows through. A row
+/// the band covers less than half an eighth of is left as it was.
 pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Color, on: Color) {
-    // Snap both ends to the nearest eighth of a row, the glyphs' step, once,
-    // before splitting the band into rows. Every edge's coverage is then a
-    // whole number of eighths and the painted height is the band's own:
-    // rounding each edge's coverage on its own rounds a half-eighth up at
-    // both ends, so a sliding band would grow by an eighth for that frame.
-    // Exact eighths also make the one-row nearer-edge test below exact.
-    let y0 = (y0 * 8.0).round() / 8.0;
-    let y1 = (y1 * 8.0).round() / 8.0;
-    if y1 <= y0 {
+    // Both ends in eighths of a row, the glyphs' step, rounded once before
+    // the band is split into rows. The painted height is then the band's
+    // own: rounding each edge's coverage on its own rounds a half-eighth up
+    // at both ends, so a sliding band would grow by an eighth for that frame.
+    //
+    // An end within half an eighth of a row boundary lands on it, so a row
+    // the band merely grazes isn't painted at all. Painting it as a blank
+    // in `on` would flatten whatever the caller drew there (e.g. its own
+    // zebra stripe) to `on` for a frame; `on` is a fixed colour the caller
+    // passes in and isn't guaranteed to match a striped row's resting
+    // background, so stomping it every frame the edge grazes that row reads
+    // as a flicker distinct from the band's own motion (task 8e).
+    //
+    // The clamp keeps every row inside u16 and a band starting above the
+    // buffer from being read as a partial first row.
+    let eighths = |y: f32| (y.clamp(0.0, f32::from(u16::MAX)) * 8.0).round() as u32;
+    let (e0, e1) = (eighths(y0), eighths(y1));
+    if e1 <= e0 {
+        return;
+    }
+    // Each end's row, and how many eighths into that row it sits.
+    let (r0, f0) = ((e0 / 8) as u16, e0 % 8);
+    let (r1, f1) = ((e1 / 8) as u16, e1 % 8);
+
+    if r0 == r1 {
+        // The whole band sits inside row r0. A band that starts on the
+        // row's top (f0 == 0) is nearer the top by this test too. A thin
+        // band sliding through the middle of a row jumps from one edge to
+        // the other as it passes the middle; no single glyph can show it in
+        // between, and no caller draws a band shorter than a row (a settling
+        // modal is most of its height, the list band one row).
+        let height = e1 - e0;
+        let edge = if f0 <= 8 - f1 { Edge::Upper(height) } else { Edge::Lower(height) };
+        edge_row(buf, x0, x1, r0, edge, fill, on);
         return;
     }
 
-    let y0_int = y0.floor() as u16;
-    let y1_int = y1.floor() as u16;
-
-    let y0_frac = y0 - y0.floor(); // fractional part of y0
-    let y1_frac = y1 - y1.floor(); // fractional part of y1
-
-    if y1_int == y0_int {
-        // The whole band sits inside row y0_int. A band that starts on the
-        // row's top (y0_frac == 0) is nearer the top by this test too.
-        let part = if y0_frac <= 1.0 - y1_frac { Part::Upper } else { Part::Lower };
-        edge_row(buf, x0, x1, y0_int, y1 - y0, part, fill, on);
-        return;
+    // Top edge row: the band covers it from f0 down to the row's bottom.
+    if f0 > 0 {
+        edge_row(buf, x0, x1, r0, Edge::Lower(8 - f0), fill, on);
     }
 
-    // Top fractional row: the band covers it from y0 down to the row's
-    // bottom, which is (1.0 - y0_frac) of it.
-    if y0_frac > 0.0 {
-        edge_row(buf, x0, x1, y0_int, 1.0 - y0_frac, Part::Lower, fill, on);
-    }
-
-    // Full rows between the fractional edges
-    // If y0_frac == 0.0, row y0_int is fully covered; otherwise start from y0_int + 1
-    let start_full = if y0_frac > 0.0 { y0_int + 1 } else { y0_int };
-    if start_full < y1_int {
-        let full_rect =
-            Rect::new(x0, start_full, x1.saturating_sub(x0), y1_int.saturating_sub(start_full));
+    // Whole rows between the edges.
+    let start_full = if f0 > 0 { r0 + 1 } else { r0 };
+    if start_full < r1 {
+        let full_rect = Rect::new(x0, start_full, x1.saturating_sub(x0), r1 - start_full);
         super::fill(buf, full_rect, fill);
     }
 
-    // Bottom fractional row: the band covers it from the row's top down to
-    // y1, which is y1_frac of it.
-    if y1_frac > 0.0 {
-        edge_row(buf, x0, x1, y1_int, y1_frac, Part::Upper, fill, on);
+    // Bottom edge row: the band covers it from the row's top down to f1.
+    if f1 > 0 {
+        edge_row(buf, x0, x1, r1, Edge::Upper(f1), fill, on);
     }
 }
 
 /// The lower-block glyphs by eighths covered, from the bottom of the cell.
 const GLYPHS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 
-/// Which part of a cell an edge row's fill covers.
+/// An edge row's fill: how many eighths of the cell (1..=7) it covers, at
+/// the cell's top or bottom.
 #[derive(Clone, Copy)]
-enum Part {
+enum Edge {
     /// The top of the cell: the band's bottom edge.
-    Upper,
+    Upper(u32),
     /// The bottom of the cell: the band's top edge.
-    Lower,
+    Lower(u32),
 }
 
 /// Paints one fractional edge row across columns `x0..x1` of row `y`,
-/// clipped to the buffer: `fill` over `coverage` (0..=1, rounded to
-/// eighths) of each cell, at its `part`, and `on` over the rest.
+/// clipped to the buffer: `fill` over the part of each cell `edge` covers,
+/// and `on` over the rest.
 ///
 /// There are only lower-block glyphs, so a `Lower` fill is the glyph for
-/// its coverage in `fill` on `on`, and an `Upper` one is the glyph for the
+/// its eighths in `fill` on `on`, and an `Upper` one is the glyph for the
 /// *rest* of the cell in `on` on `fill`: the glyph is always the part at the
 /// bottom, whichever colour that is (task #185: the bottom edge used its
 /// own coverage's glyph in `on`, and showed the inverse fraction of fill).
@@ -96,33 +104,10 @@ enum Part {
 /// resetting because it sets no fg and its many callers may paint over
 /// the blank with only a symbol. An edge row sets every field it shows, so
 /// a reset is the plainest way to replace the whole cell here.
-///
-/// Coverage that rounds to the empty glyph paints nothing, leaving the row
-/// as it was, modifiers included: the band hasn't reached it yet. Writing
-/// that literal space in `on` would instead flatten whatever was painted
-/// underneath (e.g. a caller's own zebra stripe) to `on` for a frame; `on`
-/// is a fixed color the caller passes in and isn't guaranteed to match a
-/// striped row's actual resting background, so stomping it every frame the
-/// band's edge merely grazes that row reads as a flicker distinct from the
-/// band's own motion.
-#[allow(clippy::too_many_arguments)]
-fn edge_row(
-    buf: &mut Buffer,
-    x0: u16,
-    x1: u16,
-    y: u16,
-    coverage: f32,
-    part: Part,
-    fill: Color,
-    on: Color,
-) {
-    let eighths = ((coverage * 8.0).round() as usize).min(8);
-    if eighths == 0 {
-        return;
-    }
-    let (glyph, fg, bg) = match part {
-        Part::Lower => (GLYPHS[eighths], fill, on),
-        Part::Upper => (GLYPHS[8 - eighths], on, fill),
+fn edge_row(buf: &mut Buffer, x0: u16, x1: u16, y: u16, edge: Edge, fill: Color, on: Color) {
+    let (glyph, fg, bg) = match edge {
+        Edge::Lower(n) => (GLYPHS[n as usize], fill, on),
+        Edge::Upper(n) => (GLYPHS[8 - n as usize], on, fill),
     };
     for x in x0..x1.min(buf.area().right()) {
         if let Some(cell) = buf.cell_mut((x, y)) {
@@ -320,13 +305,26 @@ mod tests {
         // Rows the band doesn't reach keep theirs.
         assert_eq!(buf[(1, 0)].modifier, marks);
         assert_eq!(buf[(1, 5)].modifier, marks);
-        // Both edges in row 2: five eighths, against its nearer (bottom) edge.
+        // Both edges in row 2, against either edge of the row.
         let buf = draw(2.25, 2.875);
         assert_eq!(buf[(1, 2)].symbol(), "▅");
         assert_eq!((buf[(1, 2)].fg, buf[(1, 2)].bg), (theme.panel, theme.page));
         for x in 0..4 {
             assert_eq!(buf[(x, 2)].modifier, Modifier::empty());
         }
+        let buf = draw(2.125, 2.375);
+        assert_eq!(buf[(1, 2)].symbol(), "▆");
+        assert_eq!((buf[(1, 2)].fg, buf[(1, 2)].bg), (theme.page, theme.panel));
+        for x in 0..4 {
+            assert_eq!(buf[(x, 2)].modifier, Modifier::empty());
+        }
+    }
+
+    #[test]
+    fn a_band_starting_above_the_buffer_fills_its_first_row() {
+        let buf = band(-0.5, 1.25);
+        assert_eq!(fill_eighths(&buf, 0), (8, true));
+        assert_eq!(fill_eighths(&buf, 1), (2, true));
     }
 
     #[test]
@@ -339,9 +337,9 @@ mod tests {
         // `on` for the one frame the band's edge merely grazed that row,
         // then the next frame's own repaint restored the stripe —
         // alternating content is exactly what reads as flicker. The fix:
-        // skip the write when rounded coverage is zero, leaving whatever
-        // the caller already painted (here, a distinct "stripe" color)
-        // alone.
+        // don't write a row the edge covers under half an eighth of,
+        // leaving whatever the caller already painted (here, a distinct
+        // "stripe" color) alone.
         let theme = Theme::dark();
         let stripe = theme.zebra_alt;
         let mut term = Terminal::new(TestBackend::new(4, 4)).unwrap();
@@ -349,8 +347,9 @@ mod tests {
             paint::fill(f.buffer_mut(), Rect::new(0, 0, 4, 4), theme.page);
             // Pre-paint row 1 as a "zebra" stripe, distinct from `on`.
             paint::fill(f.buffer_mut(), Rect::new(0, 1, 4, 1), stripe);
-            // Top edge at y0=1.97: coverage 0.03 of row 1, which snaps to
-            // the row's bottom (y0 = 2.0), so row 1 gets nothing. y1=3.0
+            // Top edge at y0=1.97: coverage 0.03 of row 1, under half an
+            // eighth, so it lands on the row's bottom (2.0) and row 1 gets
+            // nothing. y1=3.0
             // keeps the bottom edge integral (no second edge write to
             // confuse the assertion).
             frac_vspan(f.buffer_mut(), 0, 4, 1.97, 3.0, theme.accent, theme.page);
