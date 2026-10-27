@@ -2418,12 +2418,12 @@ fn new_body_state(text: &str) -> EditorState {
 /// steps. Here they do nothing and, like any unbound chord, only drop a
 /// live selection. (ctrl+r and ctrl+s are Send and Save in the arrows
 /// profile, so they never got here by default; a keys.toml that frees
-/// them would have.) The kill keys (ctrl+k, alt+d…) still fill edtui's
+/// them would have.) The kill keys (ctrl+k, alt+u) still fill edtui's
 /// clipboard, which nothing reads now: they are plain deletes.
 ///
 /// The four are every such insert-mode binding in edtui 0.11.6's
-/// `emacs_keybindings`; edtui keeps the map private, so an upgrade needs
-/// this list checked against its new one.
+/// `emacs_keybindings`; edtui keeps the map private, so the dependency is
+/// pinned to that version and an upgrade needs this list checked.
 fn body_key_handler() -> EditorEventHandler {
     use edtui::events::{KeyEventRegister, KeyInput};
     let mut handler = EditorEventHandler::emacs_mode();
@@ -4768,6 +4768,8 @@ mod tests {
         assert_eq!(stock.lines.to_string(), "XY");
         handler.on_key_event(ctrl('r'), &mut stock);
         assert_eq!(stock.lines.to_string(), "XYZ");
+        handler.on_key_event(ctrl('s'), &mut stock);
+        assert_eq!(stock.mode, EditorMode::Search, "and ctrl+s searches");
         e.handle_key(ctrl('u'));
         assert_eq!(e.body_text(), "XYZ");
         e.handle_key(ctrl('r'));
