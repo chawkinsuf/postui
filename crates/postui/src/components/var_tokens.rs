@@ -358,7 +358,7 @@ fn paint_tokens(
         }
         let rect = Rect::new(start as u16, row.y, (end - start) as u16, 1);
         if caret.is_some_and(|c| token.start <= c && c < token.end) {
-            hits.set_caret_token(&token.name, rect);
+            hits.set_caret_token(token.name.clone(), rect);
         }
         hits.register(rect, Hit::VarToken(token.name));
     }

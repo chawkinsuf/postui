@@ -28012,6 +28012,7 @@ fn the_tip_keys_do_nothing_without_their_pill() {
     }
     assert!(app.modals.is_empty());
     assert!(std::fs::read_to_string(&out).is_err(), "nothing copied");
+    assert!(app.toasts.messages().iter().any(|m| m.contains("no variable tooltip")));
     // A plain value has no reveal; an undefined one nothing to copy.
     rest_caret(&mut app);
     app.handle_key(alt('h'));
@@ -28030,6 +28031,30 @@ fn the_tip_keys_act_on_a_hover_tip() {
     hover_token(&mut app, "base_url");
     app.handle_key(alt('n'));
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
+}
+
+/// While a tooltip is open the footer offers its edit key, after the
+/// pane's own chips, and drops it when the tooltip goes. It fits beside an
+/// open header cell's chips at 120 columns. Its click is the pill's: the
+/// cell stays open.
+#[test]
+fn an_open_tooltip_puts_its_edit_key_in_the_footer() {
+    let edit = Hit::FooterChip(Action::TipPill(crate::action::TipPill::Edit));
+    let (mut app, _dir, _out) = tooltip_app("x");
+    open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
+    render_once(&mut app);
+    assert!(app.hits.rect_of(&edit).is_none(), "no tooltip, no chip");
+    rest_caret(&mut app);
+    let chip = app.hits.rect_of(&edit).expect("the edit chip");
+    let tabs = app.hits.rect_of(&Hit::FooterChip(Action::CycleTabs(1))).unwrap();
+    assert!(chip.x > tabs.x, "after the pane's chips");
+    assert!(tooltip_text(&mut app).contains("alt+o  edit"));
+    click_hit(&mut app, edit);
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::MultiPrompt { kind: PromptKind::EditVarValue { .. }, .. })
+    ));
+    assert!(app.editor.table.editing.is_some(), "the cell stays open");
 }
 
 /// The vim profile keeps the keys: in an open URL line's Normal they act
@@ -28086,6 +28111,26 @@ fn the_palette_runs_a_tip_key_on_the_tip_it_covered() {
     }
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
+}
+
+/// The frame the palette covered had the pointer on the palette: a token
+/// drawn beneath it is no hover tip for the pick, the caret's tip is.
+#[test]
+fn a_palette_pick_ignores_a_token_under_the_pointer() {
+    let (mut app, _dir, out) = tooltip_app("api_key");
+    open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
+    rest_caret(&mut app);
+    app.update(Action::OpenPalette);
+    render_once(&mut app);
+    // The pointer rests over the URL's {{api_key}}, under the palette.
+    let url = app.hits.rects_of(&Hit::VarToken("api_key".into()))[0];
+    app.pointer = Some((url.x + 1, url.y));
+    render_once(&mut app);
+    for c in "copy the tooltip".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
 }
 

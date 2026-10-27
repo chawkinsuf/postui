@@ -433,6 +433,9 @@ pub fn draw_footer(
     // See `footer_chips`: this pane's own text field owns the caret, so
     // Esc is its.
     field_open: bool,
+    // A variable tooltip is open this frame: its edit pill's key gets a
+    // chip after the pane's own (#135; its copy and reveal keys don't).
+    tip_open: bool,
     // Replaces the per-pane chips wholesale when `Some` — a modal's own
     // chip set, or the Variable Manager screen's
     // (`VarManager::footer_chips`), whose actions target
@@ -562,6 +565,11 @@ pub fn draw_footer(
             let l = if vim_search_box && k == Key::Named("esc") { "cancel" } else { l };
             (k, l.to_string(), a)
         })
+        // Last, so the chips that stay never move when it comes and goes.
+        .chain(tip_open.then(|| {
+            let edit = Action::TipPill(crate::action::TipPill::Edit);
+            (Key::Of(edit.clone()), "edit".to_string(), Some(edit))
+        }))
         .collect(),
     };
     let owned = resolve(raw, spell, keymap);
@@ -865,6 +873,7 @@ mod tests {
                         None,
                         JqBarState::Closed,
                         false,
+                        false,
                         Some(chips),
                         true,
                         true,
@@ -945,6 +954,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     false,
                     None,
                     true,
@@ -1194,6 +1204,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     false,
                     None,
                     true,
@@ -1653,6 +1664,7 @@ mod tests {
                     None,
                     JqBarState::Closed,
                     false,
+                    false,
                     None,
                     true,
                     true,
@@ -1694,6 +1706,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     false,
                     None,
                     true,
@@ -1744,6 +1757,7 @@ mod tests {
                     None,
                     JqBarState::Closed,
                     false,
+                    false,
                     None,
                     true,
                     true,
@@ -1787,6 +1801,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     false,
                     None,
                     true,
@@ -1866,6 +1881,7 @@ mod tests {
                     None,
                     JqBarState::Closed,
                     false,
+                    false,
                     None,
                     true,
                     true,
@@ -1926,6 +1942,7 @@ mod tests {
                     false,
                     None,
                     JqBarState::Closed,
+                    false,
                     false,
                     None,
                     true,
@@ -2028,6 +2045,7 @@ mod tests {
                     None,
                     JqBarState::Closed,
                     false,
+                    false,
                     None,
                     true,
                     true,
@@ -2084,6 +2102,7 @@ mod tests {
                         false,
                         None,
                         JqBarState::Closed,
+                        false,
                         false,
                         None,
                         true,

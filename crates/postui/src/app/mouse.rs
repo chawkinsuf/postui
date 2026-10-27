@@ -1422,6 +1422,10 @@ impl App {
                     // blurring the URL line (or committing the cell) first
                     // would leave the picker it opens with nowhere to insert.
                     | Hit::FooterChip(Action::OpenVarPicker { .. })
+                    // The open tooltip's edit chip is its 󰏫, whose click
+                    // keeps the cell open too (#135); committing it first
+                    // would take the caret's tooltip down before it acts.
+                    | Hit::FooterChip(Action::TipPill(_))
             )
             // The tooltip floats over the rows: clicking one of its pills
             // must neither commit the cell under edit nor drop the selection.

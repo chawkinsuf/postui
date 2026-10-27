@@ -292,6 +292,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 });
     let vm_chips = override_chips(app);
     let pane = PaneChipArgs::of(app);
+    // Settled from this frame's hits, the panes drawn: the tooltip painted
+    // last below is this one, so the footer's chip for it is current.
+    let tip_open = app.var_token_tip_in(&hits).is_some();
     let vim_status = app.vim_status();
     crate::components::footer::draw_footer(
         frame,
@@ -306,6 +309,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         pane.table_row_selected,
         pane.jq_bar,
         pane.field_open,
+        tip_open,
         vm_chips,
         globals_live,
         quit_live,
@@ -330,6 +334,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         &app.anims,
         now,
     );
+    if !app.modals.is_empty() {
+        hits.set_under_modal();
+    }
     // Toasts paint over the modal stack: a validation error raised by a
     // modal's own confirm must arrive at full strength, not dimmed under
     // the backdrop it is commenting on. They stack bottom-right, and the
@@ -344,7 +351,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // The variable tooltip is painted last of all, over every pane — after
     // the hit map is back on `app`, because a caret-raised tip is anchored
     // at the `VarToken` rect this very frame registered. It never covers a
-    // dialog: `var_token_tip` yields nothing while a modal is up.
+    // dialog: `var_token_tip` yields nothing while a modal is up. The tip's
+    // keys and footer chip go by `var_token_tip` too, so they agree with
+    // each other even where a terminal too small for the panel draws none
+    // (the chip and the keys' toasts are then the cue, #135).
     match app.var_token_tip() {
         Some(tip) => {
             let info = app.editor.vars.describe(&tip.name);

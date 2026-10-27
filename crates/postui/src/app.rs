@@ -2888,16 +2888,25 @@ impl App {
     /// Suppressed while a modal is up: the tooltip draws above everything
     /// else, and must not float over a dialog.
     pub fn var_token_tip(&self) -> Option<TokenTip> {
+        self.var_token_tip_in(&self.hits)
+    }
+
+    /// [`Self::var_token_tip`] read off `hits`: the frame being drawn, for
+    /// the footer, which is drawn before the tooltip (#135).
+    pub(crate) fn var_token_tip_in(&self, hits: &crate::hit::HitMap) -> Option<TokenTip> {
         if !self.modals.is_empty() {
             return None;
         }
         if self.tip_held
             && let Some(held) = &self.drawn_tip
         {
-            return self.hits.var_token_drawn_at(held.anchor, &held.name).then(|| held.clone());
+            return hits.var_token_drawn_at(held.anchor, &held.name).then(|| held.clone());
         }
-        if let Some((x, y)) = self.pointer
-            && let Some((name, anchor)) = self.hits.var_token_at(x, y)
+        // A frame drawn under a dialog had the pointer on the dialog: a
+        // palette pick, run as the palette closes, reads that frame's hits.
+        if !hits.under_modal()
+            && let Some((x, y)) = self.pointer
+            && let Some((name, anchor)) = hits.var_token_at(x, y)
         {
             return Some(TokenTip { name: name.to_string(), anchor });
         }
@@ -2907,7 +2916,7 @@ impl App {
         // Against the instance the caret is in, not another drawn token of
         // the same name; none when the field's window cuts it (#135).
         let name = self.caret_token.clone()?;
-        let (drawn, anchor) = self.hits.caret_token()?;
+        let (drawn, anchor) = hits.caret_token()?;
         (drawn == name).then_some(TokenTip { name, anchor })
     }
 
@@ -6540,7 +6549,12 @@ impl App {
             Action::TipPill(pill) => {
                 // The tooltip open now: by the time a palette pick runs the
                 // palette has closed, so the tip it covered counts again.
-                let Some(tip) = self.var_token_tip() else { return false };
+                // With none, a palette pick would otherwise do nothing
+                // without a word.
+                let Some(tip) = self.var_token_tip() else {
+                    self.toasts.push("no variable tooltip is open", ToastKind::Info);
+                    return true;
+                };
                 self.press_tip_pill(pill, tip.name)
             }
             Action::OpenVarTokenPopup(name) => {

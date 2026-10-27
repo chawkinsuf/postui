@@ -3826,8 +3826,7 @@ impl Editor {
                         .and_then(|view| view.cell(&self.body.lines, at))
                         && let Some((name, rect)) = hits.var_token_at(x, y)
                     {
-                        let name = name.to_string();
-                        hits.set_caret_token(&name, rect);
+                        hits.set_caret_token(name.to_string(), rect);
                     }
                 }
                 // The engine's search prompt on the pane's bottom row (spec
