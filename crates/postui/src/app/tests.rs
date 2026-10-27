@@ -27755,6 +27755,58 @@ fn open_value_cell(app: &mut App, tab: EditorTab, value: &str, caret: usize) {
     edit.input.set_cursor(caret);
 }
 
+/// #151: the variable dialog's request-scope writes close an open Vars
+/// cell first, so its typing lands on the row it was typed into. The
+/// cell names its row by index, and a removal shifts the rows under it.
+#[test]
+fn a_request_var_removal_commits_an_open_vars_cell_first() {
+    let (mut app, _dir, _out) = tooltip_app("x");
+    let entry = |v: &str| postui_core::model::Entry { value: v.into(), enabled: true };
+    app.editor.variables.insert("a".into(), entry("1"));
+    app.editor.variables.insert("b".into(), entry("2"));
+    app.editor.active_tab = EditorTab::Vars;
+    app.editor.sub_focus = SubFocus::Content;
+    app.focus = PaneId::Editor;
+    app.editor.table.set_selected(Some(Stop::Row(1)));
+    let map = app.editor.variables.clone();
+    app.editor.table.begin_edit_selected(&map);
+    app.editor.table.handle_key(tab_key(), &mut app.editor.variables);
+    let edit = app.editor.table.editing.as_mut().expect("b's value cell is open");
+    assert_eq!((edit.row, edit.col), (1, crate::components::table_editor::Col::Value));
+    edit.input.set_text("typed");
+    app.update(Action::RemoveVarValue {
+        name: "a".into(),
+        destination: crate::action::ExtractDestination::Request,
+    });
+    assert!(app.editor.table.editing.is_none(), "the cell closed");
+    let vars: Vec<_> =
+        app.editor.variables.iter().map(|(k, e)| (k.as_str(), e.value.as_str())).collect();
+    assert_eq!(vars, [("b", "typed")]);
+}
+
+/// #151: a request-scope write that adds a row closes an open + Add cell
+/// first, so the ghost row's typing does not land on the new row.
+#[test]
+fn a_new_request_var_commits_an_open_ghost_cell_first() {
+    let (mut app, _dir, _out) = tooltip_app("x");
+    app.editor.active_tab = EditorTab::Vars;
+    app.editor.sub_focus = SubFocus::Content;
+    app.focus = PaneId::Editor;
+    app.editor.table.set_selected(Some(Stop::Row(0)));
+    let map = app.editor.variables.clone();
+    app.editor.table.begin_edit_selected(&map);
+    let edit = app.editor.table.editing.as_mut().expect("the + Add name cell is open");
+    edit.input.set_text("ghost");
+    app.update(Action::ConfirmEditVarValue {
+        name: "base_url".into(),
+        value: "v".into(),
+        destination: crate::action::ExtractDestination::Request,
+    });
+    assert!(app.editor.table.editing.is_none(), "the cell closed");
+    assert_eq!(app.editor.variables["base_url"].value, "v");
+    assert_eq!(app.editor.variables.get("ghost").map(|e| e.value.as_str()), Some(""));
+}
+
 /// A pick from the insert picker (alt+v) with the caret in a token swaps
 /// that token, in the URL line, a cell and the body alike.
 #[test]

@@ -6673,6 +6673,12 @@ impl App {
             }
             Action::ConfirmEditVarValue { name, value, destination } => {
                 use crate::action::ExtractDestination;
+                // A request-scope write changes the Vars table's rows, and
+                // an open cell (the dialog floats over it) names its row by
+                // index: it closes first (#151), as the removal below does.
+                if destination == ExtractDestination::Request && !self.close_inputs_or_stop(true) {
+                    return true;
+                }
                 let op = match destination {
                     ExtractDestination::Request => VarEditOp::SetRequestVar { name, value },
                     ExtractDestination::ActiveEnv => {
@@ -6692,6 +6698,11 @@ impl App {
                 use postui_core::varedit;
                 match destination {
                     ExtractDestination::Request => {
+                        // The removal shifts the Vars rows under an open
+                        // cell, which names its row by index (#151).
+                        if !self.close_inputs_or_stop(true) {
+                            return true;
+                        }
                         self.no_coalesce = true;
                         self.editor.variables.shift_remove(&name);
                         self.toasts.push(
