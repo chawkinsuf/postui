@@ -28012,7 +28012,7 @@ fn the_tip_keys_do_nothing_without_their_pill() {
     }
     assert!(app.modals.is_empty());
     assert!(std::fs::read_to_string(&out).is_err(), "nothing copied");
-    assert!(app.toasts.messages().iter().any(|m| m.contains("no variable tooltip")));
+    assert!(app.toasts.messages().is_empty(), "and nothing said");
     // A plain value has no reveal; an undefined one nothing to copy.
     rest_caret(&mut app);
     app.handle_key(alt('h'));
@@ -28114,8 +28114,70 @@ fn the_palette_runs_a_tip_key_on_the_tip_it_covered() {
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
 }
 
-/// The frame the palette covered had the pointer on the palette: a token
-/// drawn beneath it is no hover tip for the pick, the caret's tip is.
+/// The palette lists the tooltip's pills only while a tooltip shows them:
+/// none with no tooltip, edit and copy for a plain value, all three for a
+/// secret, only edit for a name defined nowhere.
+#[test]
+fn the_palette_lists_only_the_open_tooltips_pills() {
+    use crate::action::TipPill;
+    let rows = |app: &App| -> Vec<Action> {
+        let Some(Modal::Palette(p)) = app.modals.top() else { panic!("no palette") };
+        p.filtered()
+            .iter()
+            .filter(|c| matches!(c.action, Action::TipPillOn { .. }))
+            .map(|c| c.action.clone())
+            .collect()
+    };
+    let on = |pill, name: &str| Action::TipPillOn { pill, name: name.into() };
+    let (mut app, _dir, _out) = tooltip_app("x");
+    app.update(Action::OpenPalette);
+    assert!(rows(&app).is_empty(), "no tooltip, no rows");
+    for (value, name, want) in [
+        ("{{base_url}}", "base_url", vec![TipPill::Edit, TipPill::Copy]),
+        ("{{api_key}}", "api_key", vec![TipPill::Edit, TipPill::Copy, TipPill::Reveal]),
+        ("{{nowhere}}", "nowhere", vec![TipPill::Edit]),
+    ] {
+        let (mut app, _dir, _out) = tooltip_app("x");
+        open_value_cell(&mut app, EditorTab::Headers, value, 3);
+        rest_caret(&mut app);
+        app.update(Action::OpenPalette);
+        let want: Vec<Action> = want.into_iter().map(|p| on(p, name)).collect();
+        assert_eq!(rows(&app), want, "{name}");
+    }
+}
+
+/// A hovered tooltip's pills are in the palette too, for its variable.
+#[test]
+fn the_palette_reaches_a_hover_tooltip() {
+    let (mut app, _dir, out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    app.update(Action::OpenPalette);
+    render_once(&mut app);
+    for c in "copy the tooltip".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
+}
+
+/// A jump to another pane takes the caret's tooltip and its keys down at
+/// once, not at the next tick.
+#[test]
+fn leaving_the_editor_takes_the_caret_tip_down_at_once() {
+    let (mut app, _dir, out) = tooltip_app("x");
+    open_value_cell(&mut app, EditorTab::Headers, "{{api_key}}", 3);
+    rest_caret(&mut app);
+    assert!(app.var_token_tip().is_some());
+    app.focus = PaneId::Response; // the cell stays open, as after a click
+    render_once(&mut app);
+    assert!(app.editor.table.editing.is_some());
+    assert!(app.var_token_tip().is_none(), "no tick in between");
+    app.handle_key(alt('n'));
+    assert!(std::fs::read_to_string(&out).is_err(), "nothing copied");
+}
+
+/// The palette's row names the variable it was listed for, so a token the
+/// closed palette uncovers under the pointer doesn't take its place.
 #[test]
 fn a_palette_pick_ignores_a_token_under_the_pointer() {
     let (mut app, _dir, out) = tooltip_app("api_key");

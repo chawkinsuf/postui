@@ -828,6 +828,12 @@ pub enum Action {
     /// it does, for the tooltip open now (the pointer's or the caret's),
     /// and nothing with no tooltip open or that pill not offered (#135).
     TipPill(TipPill),
+    /// [`Action::TipPill`] for `name`'s tooltip: the palette's row, named
+    /// as the tooltip stood when the palette opened over it.
+    TipPillOn {
+        pill: TipPill,
+        name: String,
+    },
     /// The value-edit popup's confirm: write `value` for `name` into the
     /// chosen destination — the request's `[variables]`, the active
     /// environment's flat value, or the declaration default.

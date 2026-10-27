@@ -85,6 +85,18 @@ impl TokenInfo {
         self.value.is_some()
     }
 
+    /// Whether this token's tooltip shows `pill`: edit always, copy with a
+    /// value, reveal for a secret with one. The tooltip's draw, its keys
+    /// and the palette's rows all read this (#135).
+    pub fn offers(&self, pill: crate::action::TipPill) -> bool {
+        use crate::action::TipPill;
+        match pill {
+            TipPill::Edit => true,
+            TipPill::Copy => self.value.is_some(),
+            TipPill::Reveal => self.secret && self.value.is_some(),
+        }
+    }
+
     /// The value as it may appear on screen: always [`SECRET_MASK`] for a
     /// secret, a dash when there is nothing to show.
     pub fn display_value(&self) -> String {

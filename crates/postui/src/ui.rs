@@ -334,9 +334,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         &app.anims,
         now,
     );
-    if !app.modals.is_empty() {
-        hits.set_under_modal();
-    }
     // Toasts paint over the modal stack: a validation error raised by a
     // modal's own confirm must arrive at full strength, not dimmed under
     // the backdrop it is commenting on. They stack bottom-right, and the
@@ -354,7 +351,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // dialog: `var_token_tip` yields nothing while a modal is up. The tip's
     // keys and footer chip go by `var_token_tip` too, so they agree with
     // each other even where a terminal too small for the panel draws none
-    // (the chip and the keys' toasts are then the cue, #135).
+    // (the chip is then the cue, #135).
     match app.var_token_tip() {
         Some(tip) => {
             let info = app.editor.vars.describe(&tip.name);
@@ -443,12 +440,13 @@ fn draw_var_tooltip(
     use ratatui::layout::Rect;
     // The icon pills: three cells each (` 󰆏 `) so the hover fill
     // surrounds the glyph.
+    use crate::action::TipPill;
     let mut pills: Vec<(&str, Hit)> = Vec::new();
-    if info.secret && info.value.is_some() {
+    if info.offers(TipPill::Reveal) {
         let eye = if revealed { crate::glyph::EYE_OFF_PILL } else { crate::glyph::EYE_PILL };
         pills.push((eye, Hit::TipReveal(tip.name.clone())));
     }
-    if info.value.is_some() {
+    if info.offers(TipPill::Copy) {
         pills.push((crate::glyph::COPY_PILL, Hit::TipCopy(tip.name.clone())));
     }
     pills.push((crate::glyph::PENCIL_PILL, Hit::TipEdit(tip.name.clone())));

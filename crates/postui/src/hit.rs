@@ -517,7 +517,6 @@ pub struct HitMap {
     tracks: Vec<(PaneId, Rect)>,
     h_tracks: Vec<(PaneId, Rect)>,
     caret_token: Option<(String, Rect)>,
-    under_modal: bool,
 }
 
 impl HitMap {
@@ -526,25 +525,12 @@ impl HitMap {
         self.tracks.clear();
         self.h_tracks.clear();
         self.caret_token = None;
-        self.under_modal = false;
     }
 
     /// Records `{{name}}`, drawn at `rect`, as the token the editor's caret
     /// is in.
     pub fn set_caret_token(&mut self, name: String, rect: Rect) {
         self.caret_token = Some((name, rect));
-    }
-
-    /// Records that this frame drew a dialog over the screen: its pointer
-    /// was over the dialog, whatever token its regions hold beneath.
-    pub fn set_under_modal(&mut self) {
-        self.under_modal = true;
-    }
-
-    /// Whether this frame drew a dialog over the screen
-    /// ([`Self::set_under_modal`]).
-    pub fn under_modal(&self) -> bool {
-        self.under_modal
     }
 
     /// The drawn `{{token}}` holding the editor's caret this frame, with

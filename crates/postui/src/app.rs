@@ -2854,10 +2854,7 @@ impl App {
     /// Returns whether the tooltip's visibility could have changed, so the
     /// tick redraws.
     fn track_caret_token(&mut self, now: Instant) -> bool {
-        // Only the focused editor's caret counts: a cell left open by a
-        // jump to another pane keeps its caret, but not its tip (#135).
-        let focused = self.screen == Screen::Main && self.focus == PaneId::Editor;
-        let token = focused.then(|| self.editor.caret_token()).flatten();
+        let token = self.caret_tip_allowed().then(|| self.editor.caret_token()).flatten();
         if token != self.caret_token {
             let was_showing = self.caret_tip_shown;
             self.caret_token_since = token.is_some().then_some(now);
@@ -2902,15 +2899,12 @@ impl App {
         {
             return hits.var_token_drawn_at(held.anchor, &held.name).then(|| held.clone());
         }
-        // A frame drawn under a dialog had the pointer on the dialog: a
-        // palette pick, run as the palette closes, reads that frame's hits.
-        if !hits.under_modal()
-            && let Some((x, y)) = self.pointer
+        if let Some((x, y)) = self.pointer
             && let Some((name, anchor)) = hits.var_token_at(x, y)
         {
             return Some(TokenTip { name: name.to_string(), anchor });
         }
-        if !self.caret_tip_shown {
+        if !self.caret_tip_shown || !self.caret_tip_allowed() {
             return None;
         }
         // Against the instance the caret is in, not another drawn token of
@@ -2920,12 +2914,37 @@ impl App {
         (drawn == name).then_some(TokenTip { name, anchor })
     }
 
+    /// The open tooltip's variable and the pills it shows, for the
+    /// palette's rows (#135).
+    fn tip_offers(&self) -> Option<(String, Vec<crate::action::TipPill>)> {
+        use crate::action::TipPill;
+        let tip = self.var_token_tip()?;
+        let info = self.editor.vars.describe(&tip.name);
+        let offers = [TipPill::Edit, TipPill::Copy, TipPill::Reveal]
+            .into_iter()
+            .filter(|&pill| info.offers(pill))
+            .collect();
+        Some((tip.name, offers))
+    }
+
+    /// Whether the editor's caret may raise a tooltip: only the focused
+    /// editor's, on the main screen (#135). A cell left open by a jump to
+    /// another pane keeps its caret, but not its tip. Read where the dwell
+    /// is tracked and where the tip is worked out, so a focus change
+    /// takes the tip and its keys down at once, not at the next tick.
+    fn caret_tip_allowed(&self) -> bool {
+        self.screen == Screen::Main && self.focus == PaneId::Editor
+    }
+
     /// What the tooltip pill `pill` does for token `name`, clicked or keyed
     /// (#135). `false` where the tooltip doesn't offer that pill: copy
     /// needs a value, reveal a secret with one.
     pub(crate) fn press_tip_pill(&mut self, pill: crate::action::TipPill, name: String) -> bool {
         use crate::action::TipPill;
         let info = self.editor.vars.describe(&name);
+        if !info.offers(pill) {
+            return false;
+        }
         match pill {
             // The path from "what is this?" to the variable itself (spec
             // §7): the popup action picks the editor the token calls for,
@@ -2939,7 +2958,7 @@ impl App {
                 true
             }
             TipPill::Reveal => {
-                let Some(value) = info.value.filter(|_| info.secret) else { return false };
+                let Some(value) = info.value else { return false };
                 let already =
                     self.tip_revealed.as_ref().is_some_and(|(n, v)| *n == name && *v == value);
                 self.tip_revealed = (!already).then_some((name, value));
@@ -3795,8 +3814,11 @@ impl App {
                 use crate::components::palette::PaletteState;
                 // Where the keys mean what is known only here, where the
                 // palette is opened from a focus.
-                let palette = PaletteState::new(&self.usage, crate::usage::now())
+                let mut palette = PaletteState::new(&self.usage, crate::usage::now())
                     .with_key_context(self.key_context());
+                if let Some((name, offers)) = self.tip_offers() {
+                    palette = palette.with_tip(&name, &offers);
+                }
                 self.push_modal(Modal::Palette(palette));
                 true
             }
@@ -6546,17 +6568,13 @@ impl App {
                 }
                 self.open_insert_var_picker(completing, None)
             }
+            // A key: the tooltip open now, if it shows that pill.
             Action::TipPill(pill) => {
-                // The tooltip open now: by the time a palette pick runs the
-                // palette has closed, so the tip it covered counts again.
-                // With none, a palette pick would otherwise do nothing
-                // without a word.
-                let Some(tip) = self.var_token_tip() else {
-                    self.toasts.push("no variable tooltip is open", ToastKind::Info);
-                    return true;
-                };
+                let Some(tip) = self.var_token_tip() else { return false };
                 self.press_tip_pill(pill, tip.name)
             }
+            // A palette row: the variable it was listed for.
+            Action::TipPillOn { pill, name } => self.press_tip_pill(pill, name),
             Action::OpenVarTokenPopup(name) => {
                 self.apply(Action::ReloadProjectFiles);
                 use postui_core::varmodel::VarMeta;

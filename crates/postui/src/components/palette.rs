@@ -278,8 +278,9 @@ pub fn all_commands() -> Vec<Command> {
             description: "Insert a {{variable}} token at the cursor",
             action: Action::OpenVarPicker { completing: false },
         },
-        // The variable tooltip's pills (#135): they act on the tooltip open
-        // when the palette closes, the caret's or the pointer's.
+        // The variable tooltip's pills (#135). Listed only while a tooltip
+        // offering the pill is open, and then for its variable
+        // (`PaletteState::with_tip`).
         Command {
             id: "vars-tip-edit",
             name: "Variables: edit the tooltip's variable",
@@ -298,7 +299,7 @@ pub fn all_commands() -> Vec<Command> {
             // The palette covering the tooltip masks its secret again (a
             // tip out of sight never stays revealed), so from here it
             // always reveals; alt+h on the tooltip toggles.
-            description: "Show the secret in the open tooltip",
+            description: "Show the secret in the tooltip",
             action: Action::TipPill(crate::action::TipPill::Reveal),
         },
         Command {
@@ -438,13 +439,16 @@ pub fn all_commands() -> Vec<Command> {
 }
 
 /// The action whose key a row with `action` shows: its own, except the
-/// palette's Quit. That row runs `GatedQuit`, the quit that is refused
-/// while a dialog is up (task #85), and the keymap binds `^C` to `Quit`,
-/// the same quit as a key press; the row shows `^C`.
-fn key_action(action: &Action) -> &Action {
+/// palette's Quit and the tooltip's pills. The Quit row runs `GatedQuit`,
+/// the quit that is refused while a dialog is up (task #85), and the
+/// keymap binds `^C` to `Quit`, the same quit as a key press; the row
+/// shows `^C`. A pill row names the tooltip's variable (`TipPillOn`),
+/// while its key presses the open tooltip's pill (`TipPill`, #135).
+fn key_action(action: &Action) -> Action {
     match action {
-        Action::GatedQuit => &Action::Quit,
-        other => other,
+        Action::GatedQuit => Action::Quit,
+        Action::TipPillOn { pill, .. } => Action::TipPill(*pill),
+        other => other.clone(),
     }
 }
 
@@ -565,7 +569,11 @@ impl PaletteState {
     /// `now_secs` and opens with an empty query, so `filtered()` starts out
     /// equal to `base`.
     pub fn new(usage: &crate::usage::UsageStore, now_secs: i64) -> Self {
-        let mut base = all_commands();
+        // The tooltip's pills come in only with an open tooltip (`with_tip`).
+        let mut base: Vec<Command> = all_commands()
+            .into_iter()
+            .filter(|c| !matches!(c.action, Action::TipPill(_)))
+            .collect();
         base.sort_by(|a, b| {
             usage
                 .score(b.id, now_secs)
@@ -594,6 +602,21 @@ impl PaletteState {
     /// field).
     pub fn with_key_context(self, key_context: crate::keys::KeyContext) -> Self {
         Self { key_context, ..self }
+    }
+
+    /// Lists the pills of the variable tooltip open as the palette opened,
+    /// `name`'s and only those it `offers`, first (#135). Each row names
+    /// the variable, so it acts on it whatever the closed palette uncovers.
+    pub fn with_tip(mut self, name: &str, offers: &[crate::action::TipPill]) -> Self {
+        let rows = all_commands().into_iter().filter_map(|c| match c.action {
+            Action::TipPill(pill) if offers.contains(&pill) => {
+                Some(Command { action: Action::TipPillOn { pill, name: name.to_string() }, ..c })
+            }
+            _ => None,
+        });
+        self.base.splice(0..0, rows);
+        self.filtered = self.base.clone();
+        self
     }
 
     /// The same palette opened by vim's `:` (spec §5.9), reading its query
@@ -909,10 +932,10 @@ impl PaletteState {
     /// `palette_carries_the_sidebar_width_steps`).
     pub(crate) fn key_column(&self, c: &Command, keymap: &crate::keys::Keymap) -> Option<String> {
         let action = key_action(&c.action);
-        if self.key_context.action(action.clone()) != *action {
+        if self.key_context.action(action.clone()) != action {
             return None;
         }
-        keymap.combo_for_action(action)
+        keymap.combo_for_action(&action)
     }
 
     #[cfg(test)]
@@ -1335,7 +1358,12 @@ mod tests {
     fn zero_score_commands_keep_declaration_order() {
         let p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
         let ids: Vec<&str> = p.filtered().iter().map(|c| c.id).collect();
-        let declared: Vec<&str> = all_commands().iter().map(|c| c.id).collect();
+        // The tooltip's pills wait for an open tooltip (`with_tip`).
+        let declared: Vec<&str> = all_commands()
+            .iter()
+            .filter(|c| !matches!(c.action, Action::TipPill(_)))
+            .map(|c| c.id)
+            .collect();
         assert_eq!(ids, declared, "stable sort must preserve order among ties");
     }
 
