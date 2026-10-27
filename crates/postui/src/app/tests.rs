@@ -15829,36 +15829,40 @@ fn click_pill(app: &mut App, hit: Hit, modifiers: KeyModifiers) {
 /// some terminal passes on is a plain click (#159).
 #[test]
 fn a_copy_pills_alt_click_copies_the_whole_header() {
-    let mut app = main_header_app(crate::config::KeyProfile::Arrows);
-    for (hit, value, whole) in
-        [(Hit::TableCopy(0), "a", "X-One: a"), (Hit::AutoHeaderCopy(0), "*/*", "Accept: */*")]
-    {
+    let main = || main_header_app(crate::config::KeyProfile::Arrows);
+    let response = || response_headers_app(crate::config::KeyProfile::Arrows);
+    let cases: [(&dyn Fn() -> App, Hit, &str, &str); 3] = [
+        (&main, Hit::TableCopy(0), "a", "X-One: a"),
+        (&main, Hit::AutoHeaderCopy(0), "*/*", "Accept: */*"),
+        (&response, Hit::HeaderCopy(0), "application/json", "content-type: application/json"),
+    ];
+    for (app_of, hit, value, whole) in cases {
         for (mods, copied) in
             [(KeyModifiers::NONE, value), (KeyModifiers::ALT, whole), (KeyModifiers::SHIFT, value)]
         {
+            let mut app = app_of();
             render_once(&mut app);
             click_pill(&mut app, hit.clone(), mods);
             assert_eq!(last_copied(&app).as_deref(), Some(copied), "{hit:?} {mods:?}");
         }
     }
-    let mut app = response_headers_app(crate::config::KeyProfile::Arrows);
-    click_pill(&mut app, Hit::HeaderCopy(0), KeyModifiers::ALT);
-    assert_eq!(last_copied(&app).as_deref(), Some("content-type: application/json"));
 }
 
-/// H6: a Params row's pill has no whole header to copy: alt or not, the
-/// value.
+/// H6: a Params row's pill has no whole header to copy: whatever is held,
+/// the value.
 #[test]
 fn a_params_pills_alt_click_copies_its_value() {
-    let mut app = main_header_app(crate::config::KeyProfile::Arrows);
-    app.editor
-        .params
-        .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
-    app.editor.active_tab = EditorTab::Params;
-    app.editor.table.set_selected(Some(Stop::Row(0)));
-    render_once(&mut app);
-    click_pill(&mut app, Hit::TableCopy(0), KeyModifiers::ALT);
-    assert_eq!(last_copied(&app).as_deref(), Some("2"));
+    for mods in [KeyModifiers::NONE, KeyModifiers::ALT, KeyModifiers::SHIFT] {
+        let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+        app.editor
+            .params
+            .insert("page".into(), postui_core::model::Entry { value: "2".into(), enabled: true });
+        app.editor.active_tab = EditorTab::Params;
+        app.editor.table.set_selected(Some(Stop::Row(0)));
+        render_once(&mut app);
+        click_pill(&mut app, Hit::TableCopy(0), mods);
+        assert_eq!(last_copied(&app).as_deref(), Some("2"), "{mods:?}");
+    }
 }
 
 /// H5 (the user's Q1): the footer's copy chip copies the row's value to the
@@ -15918,7 +15922,11 @@ fn vim_quote_plus_yy_on_the_response_body_gives_the_registers_note() {
 #[test]
 fn a_header_copy_pills_hint_names_its_alt_click() {
     let mut app = main_header_app(crate::config::KeyProfile::Arrows);
-    let want = format!("Copy value · {}+click: whole header", crate::keys::alt_label());
+    let want = if cfg!(target_os = "macos") {
+        "Copy value · opt+click: whole header"
+    } else {
+        "Copy value · alt+click: whole header"
+    };
     for hit in [Hit::TableCopy(0), Hit::AutoHeaderCopy(0)] {
         let tip = crate::hint::hint_for(&hit, &app.keymap, &app.hint_ctx(&hit)).unwrap();
         assert_eq!(tip, want, "{hit:?}");

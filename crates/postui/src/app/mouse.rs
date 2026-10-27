@@ -77,7 +77,12 @@ fn is_quit_chip(hit: &Hit) -> bool {
 /// A copy pill's alt+click copies the whole header, `Name: value`, not
 /// its value (spec 2026-10-26 H6). Alt, not shift (#159): terminals keep
 /// shift+click for their own text selection under mouse capture, Ghostty
-/// included, so a shift+click never reached the pill; alt+click does.
+/// included, so a shift+click never reached the pill; alt+click does
+/// there. No modifier reaches every app: iTerm2 is said to keep option+click
+/// for its selection, and window managers that move windows on alt+drag
+/// (XFCE, Openbox, i3) take the press first. There the whole header is
+/// the keyboard's `Y`; one modifier and one tip were chosen over also
+/// taking shift (mine (approved), #159).
 fn alt_click(m: &ratatui::crossterm::event::MouseEvent) -> bool {
     m.modifiers.contains(ratatui::crossterm::event::KeyModifiers::ALT)
 }
