@@ -15586,6 +15586,87 @@ fn an_auto_pill_click_commits_an_open_cell_and_keeps_its_row() {
     }
 }
 
+/// Task #125: a footer row chip is the key it advertises, so its click
+/// keeps the table cursor (and the table's caret) where the key would
+/// leave it, in both profiles: the row's chips are still there afterwards
+/// and the next move goes on from that row.
+#[test]
+fn a_footer_row_chip_click_keeps_the_table_cursor() {
+    use crate::config::KeyProfile::{Arrows, Vim};
+    for profile in [Arrows, Vim] {
+        // A main row's copy, toggle and delete chips.
+        for chip in [
+            Action::CopyToClipboard(CopyTarget::TableRow(0)),
+            Action::ToggleTableRow(0),
+            Action::DeleteTableRow(0),
+        ] {
+            let mut app = main_header_app(profile);
+            app.editor.headers.insert(
+                "X-Two".into(),
+                postui_core::model::Entry { value: "b".into(), enabled: true },
+            );
+            // `click_hit` draws a frame first and fails if the chip isn't on it.
+            click_hit(&mut app, Hit::FooterChip(chip.clone()));
+            // The chip's action ran.
+            match chip {
+                Action::CopyToClipboard(_) => assert_eq!(last_copied(&app).as_deref(), Some("a")),
+                Action::ToggleTableRow(_) => assert!(!app.editor.headers["X-One"].enabled),
+                _ => assert_eq!(app.editor.headers.keys().collect::<Vec<_>>(), ["X-Two"]),
+            }
+            // (A delete re-selects a row itself, so for the delete chip it
+            // is the caret that tells the fix apart: a click away blurs it.)
+            assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "{profile:?} {chip:?}");
+            assert_eq!(app.editor.sub_focus, SubFocus::Content, "{profile:?} {chip:?}");
+            render_once(&mut app);
+            assert!(
+                app.hits.rect_of(&Hit::FooterChip(Action::ToggleTableRow(0))).is_some(),
+                "{profile:?} {chip:?}: the row's chips stay"
+            );
+        }
+        // An auto row's copy chip.
+        let mut app = auto_rows_app(profile);
+        app.editor.table.set_selected(Some(Stop::Section(0)));
+        let chip = Action::CopyToClipboard(CopyTarget::ComputedHeader(0));
+        click_hit(&mut app, Hit::FooterChip(chip));
+        assert_eq!(last_copied(&app).as_deref(), Some("*/*"), "{profile:?}");
+        assert_eq!(app.editor.table.selected(), Some(Stop::Section(0)), "{profile:?}");
+        assert_eq!(app.editor.sub_focus, SubFocus::Content, "{profile:?}");
+        // Its edit chip takes the row over, as Enter does: the new row's
+        // value opens under the cursor.
+        click_hit(&mut app, Hit::FooterChip(Action::OverrideAutoHeader(0)));
+        assert_eq!(app.editor.headers.get("Accept").map(|e| e.value.as_str()), Some("*/*"));
+        assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "{profile:?}");
+        assert!(app.editor.table.editing.is_some(), "{profile:?}: the value is open");
+    }
+}
+
+/// Task #125: the delete chip's step records the cursor it kept, so undo
+/// lands on the restored row, as it does after `d`.
+#[test]
+fn undoing_a_delete_chip_click_selects_the_restored_row() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("chip".into()));
+    for (k, v) in [("Accept", "application/json"), ("X-Debug", "1")] {
+        app.editor
+            .headers
+            .insert(k.into(), postui_core::model::Entry { value: v.into(), enabled: true });
+    }
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.preferred_tab = EditorTab::Headers;
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.set_selected(Some(Stop::Row(1)));
+    app.capture_undo(); // seed the shadow before the delete
+    click_hit(&mut app, Hit::FooterChip(Action::DeleteTableRow(1)));
+    app.capture_undo();
+    assert_eq!(app.editor.headers.len(), 1);
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "on the new last row");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.headers.len(), 2, "undo brings the row back");
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(1)), "on the restored X-Debug row");
+    assert_eq!(app.editor.sub_focus, SubFocus::Content);
+}
+
 /// The same in the vim profile: `j` moves, `yy` copies, Enter takes the
 /// row over (its value opening in Insert, as the pencil's does).
 #[test]
