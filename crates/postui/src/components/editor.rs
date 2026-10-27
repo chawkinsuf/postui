@@ -2408,21 +2408,26 @@ fn new_body_state(text: &str) -> EditorState {
 }
 
 /// edtui's emacs keymap for the body, less the keys that reach edtui's own
-/// clipboard and history: ctrl+y (Paste), ctrl+u (Undo) and ctrl+r (Redo)
-/// (#127, #156). The body keeps the keymap's editing keys on purpose (see
-/// the fall-through in `handle_key`), but the app owns copy and paste
-/// (ctrl+c/ctrl+v, the system clipboard) and undo (ctrl+z), so these three
-/// ran a second, private version beside the app's: ctrl+y put back the
-/// last deleted selection, ctrl+u undid one character behind the app's
+/// clipboard, history and search: ctrl+y (Paste), ctrl+u (Undo), ctrl+r
+/// (Redo) and ctrl+s (its search mode) (#127, #156). The body keeps the
+/// keymap's editing keys on purpose (see the fall-through in
+/// `handle_key`), but the app owns copy and paste (ctrl+c/ctrl+v, the
+/// system clipboard) and undo (ctrl+z), and uses none of edtui's own, so
+/// these ran a second, private version beside the app's: ctrl+y put back
+/// the last deleted selection, ctrl+u undid one character behind the app's
 /// steps. Here they do nothing and, like any unbound chord, only drop a
-/// live selection. (ctrl+r is Send in the arrows profile, so it never got
-/// here by default; a keys.toml that frees it would have.) The kill keys
-/// (ctrl+k, alt+d…) still fill edtui's clipboard, which nothing reads now:
-/// they are plain deletes.
+/// live selection. (ctrl+r and ctrl+s are Send and Save in the arrows
+/// profile, so they never got here by default; a keys.toml that frees
+/// them would have.) The kill keys (ctrl+k, alt+d…) still fill edtui's
+/// clipboard, which nothing reads now: they are plain deletes.
+///
+/// The four are every such insert-mode binding in edtui 0.11.6's
+/// `emacs_keybindings`; edtui keeps the map private, so an upgrade needs
+/// this list checked against its new one.
 fn body_key_handler() -> EditorEventHandler {
     use edtui::events::{KeyEventRegister, KeyInput};
     let mut handler = EditorEventHandler::emacs_mode();
-    for private in ['y', 'u', 'r'] {
+    for private in ['y', 'u', 'r', 's'] {
         handler.key_handler.remove(&KeyEventRegister::i(vec![KeyInput::ctrl(private)]));
     }
     handler
@@ -2707,7 +2712,7 @@ impl Component for Editor {
                 // unbound modified combo falls through to this component and
                 // reaches edtui's own emacs-style bindings (ctrl+e/k etc.)
                 // deliberately, so those keep working for body editing
-                // (all but its private paste, undo and redo:
+                // (all but its private paste, undo, redo and search:
                 // `body_key_handler`).
                 if ev.code == KeyCode::Esc {
                     self.sub_focus = SubFocus::None;
@@ -4767,6 +4772,9 @@ mod tests {
         assert_eq!(e.body_text(), "XYZ");
         e.handle_key(ctrl('r'));
         assert_eq!(e.body_text(), "XYZ");
+        // Nor does ctrl+s start edtui's own search mode.
+        e.handle_key(ctrl('s'));
+        assert_eq!(e.body.mode, EditorMode::Insert);
     }
 
     #[test]
