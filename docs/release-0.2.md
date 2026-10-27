@@ -27,7 +27,7 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] #127 `ctrl+y` in the arrows body pastes back the last deleted selection (merged with #156: the body drops edtui's private paste, undo, redo and search keys)
 - [x] #156 `ctrl+u` in the arrows body runs edtui's own one-character undo (pulled in by the user with #127)
 - [x] #159 A copy pill's shift+click never arrives, even in Ghostty (filed by the user, 2026-10-26; merged 2026-10-27: the whole-header click is alt+click, `opt+click` on macOS)
-- [ ] #166 A shift+arrow after a click selects from the click point, not the caret (pulled in by the user, 2026-10-27)
+- [x] #166 A shift+arrow after a click selects from the click point, not the caret (pulled in by the user, 2026-10-27; merged 2026-10-27: with no live selection, the caret is the anchor)
 
 ## Cheap fixes bundled in (all merged 2026-10-25)
 
