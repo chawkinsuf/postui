@@ -1134,7 +1134,11 @@ pub enum CliParse {
     /// Run the app: a project directory (or none), tilde-expanded, and
     /// whether `--debug-ai` asked for the AI command's log.
     Root { root: Option<PathBuf>, debug_ai: bool },
-    /// A leading-dash argument (`--help`, `-x`, ...): print usage and exit.
+    /// `--help` or `-h`: print usage to stdout and exit 0.
+    Help,
+    /// Any other leading-dash argument (`-x`, `-v`, ...) or a second
+    /// directory: a mistake, so usage goes to stderr and the exit status
+    /// is 2 (#144).
     Usage,
     /// `--setup`: print terminal keyboard-config guidance and exit.
     Setup,
@@ -1148,14 +1152,16 @@ pub enum CliParse {
     Keydump { flags: Option<u8> },
 }
 
-/// Parses `postui`'s arguments (without the program name). `--setup`,
-/// `--version` and `--keydump` run alone; otherwise at most one project
-/// directory and at most one `--debug-ai`, in either order. Any other value
-/// starting with `-` (e.g. `--help`, `-x`) is treated as a request for usage
-/// rather than a project directory, since no real path starts with a dash
-/// without `./`.
+/// Parses `postui`'s arguments (without the program name). `--help`,
+/// `--setup`, `--version` and `--keydump` run alone; otherwise at most one
+/// project directory and at most one `--debug-ai`, in either order. Any
+/// other value starting with `-` (e.g. `-x`) is a usage error rather than
+/// a project directory, since no real path starts with a dash without `./`.
 pub fn parse_cli(args: Vec<String>) -> CliParse {
     if let [only] = args.as_slice() {
+        if only == "--help" || only == "-h" {
+            return CliParse::Help;
+        }
         if only == "--setup" {
             return CliParse::Setup;
         }
@@ -1960,9 +1966,19 @@ osc52_limit = 1024
 
     #[test]
     fn parse_cli_leading_dash_is_usage() {
-        assert_eq!(cli(&["--help"]), CliParse::Usage);
         assert_eq!(cli(&["-x"]), CliParse::Usage);
         assert_eq!(cli(&["/abs/x", "-x"]), CliParse::Usage);
+    }
+
+    /// #144: help asked for is not a mistake (stdout, exit 0); it runs
+    /// alone, like `--version`.
+    #[test]
+    fn parse_cli_help_flag() {
+        assert_eq!(cli(&["--help"]), CliParse::Help);
+        assert_eq!(cli(&["-h"]), CliParse::Help);
+        assert_eq!(cli(&["--help-x"]), CliParse::Usage);
+        assert_eq!(cli(&["--help", "/abs/x"]), CliParse::Usage);
+        assert_eq!(cli(&["--debug-ai", "-h"]), CliParse::Usage);
     }
 
     #[test]

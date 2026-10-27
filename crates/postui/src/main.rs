@@ -14,19 +14,27 @@ use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{EndSynchronizedUpdate, SetTitle};
 use std::time::Duration;
 
+const USAGE: &str = "\
+usage: postui [--debug-ai] [directory]
+       --debug-ai        log every AI filter prompt and reply to a file
+       postui --setup    terminal keyboard setup (macOS opt/cmd keys)
+       postui --version  print the version (also -V)
+       postui --keydump[=BITS]  echo raw key and mouse events (kitty flag bits; 0=none)
+       postui --help     print this (also -h)
+";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = postui::config::parse_cli(std::env::args().skip(1).collect());
     let (cli_root, debug_ai) = match cli {
-        postui::config::CliParse::Usage => {
-            println!("usage: postui [--debug-ai] [directory]");
-            println!("       --debug-ai        log every AI filter prompt and reply to a file");
-            println!("       postui --setup    terminal keyboard setup (macOS opt/cmd keys)");
-            println!("       postui --version  print the version (also -V)");
-            println!(
-                "       postui --keydump[=BITS]  echo raw key and mouse events (kitty flag bits; 0=none)"
-            );
+        postui::config::CliParse::Help => {
+            print!("{USAGE}");
             return Ok(());
+        }
+        // A mistake, not a request: scripts see a failure (#144).
+        postui::config::CliParse::Usage => {
+            eprint!("{USAGE}");
+            std::process::exit(2);
         }
         postui::config::CliParse::Version => {
             println!("postui {}", env!("CARGO_PKG_VERSION"));
