@@ -470,7 +470,6 @@ pub fn draw_footer(
 ) {
     let buf = frame.buffer_mut();
     fill(buf, area, theme.panel);
-    hits.set_footer(area);
 
     if area.height == 0 {
         return;

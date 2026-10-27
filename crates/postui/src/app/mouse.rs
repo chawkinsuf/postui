@@ -1448,20 +1448,27 @@ impl App {
         // and the table's caret as its key does: the cursor's own (copy,
         // toggle, delete, an auto row's edit; task #125) and the rest (send
         // or cancel, add, vars, tabs, commands, quit; task #183). The rule
-        // asks where the press landed, the footer's strip as the last frame
-        // drew it, rather than listing actions: the app bar's save/discard
-        // and the address bar's lock are `FooterChip`s too, and they stay a
-        // click away. The cursor is read off the app now, which is the one
-        // the hit's frame was drawn from (the loop redraws after any event
-        // that reports a change, as the dialog rule above relies on). It
-        // shows only while the editor pane has the focus and no cell is
-        // open, so the commit above has nothing to close for these chips,
-        // and on the main screen there is no Settings field for the rule
-        // below, which inherits this exemption, to keep. The footer's other
-        // editor chips (`esc done`, `enter edit`, `copy url`, `tls`) show
-        // only without the cursor, so they stay a click away as before.
+        // asks where the press landed, in the footer's rows, rather than
+        // listing actions: the app bar's save/discard and the address bar's
+        // lock are `FooterChip`s too, and they stay a click away. (A dialog
+        // drawn over the footer registers its own, but the dialog rule above
+        // already keeps everything under one.) The footer shows the editor's
+        // chips on the main screen only: the Manage screen draws its tab's
+        // own over the same rows while the editor keeps its cursor behind
+        // it, and there the chips stay a click away for the Settings rule
+        // below, which inherits this exemption. The cursor is read off the
+        // app now, which is the one the hit's frame was drawn from (the loop
+        // redraws after any event that reports a change, as the dialog rule
+        // above relies on). It shows only while the editor pane has the
+        // focus and no cell is open, so the commit above has nothing to
+        // close for these chips. The footer's other editor chips (`esc
+        // done`, `enter edit`, `copy url`, `tls`) show only without the
+        // cursor, so they stay a click away as before.
+        let in_footer = self.settled_layout().is_some_and(|l| {
+            l.footer.contains(ratatui::layout::Position { x: m.column, y: m.row })
+        });
         let table_cursor_chip =
-            matches!(hit, Hit::FooterChip(_)) && self.hits.in_footer(m.column, m.row) && {
+            matches!(hit, Hit::FooterChip(_)) && in_footer && self.screen == Screen::Main && {
                 let pane = crate::ui::PaneChipArgs::of(self);
                 pane.focus == PaneId::Editor && pane.table_row_selected.is_some()
             };

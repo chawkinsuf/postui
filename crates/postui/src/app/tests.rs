@@ -15713,7 +15713,8 @@ fn an_editor_footer_chip_click_leaves_the_table_cursor_as_its_action_does() {
             // Drawn wide, so `tabs` fits beside the row's chips.
             rendered_row(&mut app, 200, 0);
             let r = app.hits.rect_of(&Hit::FooterChip(chip.clone())).expect("the chip is drawn");
-            assert!(app.hits.in_footer(r.x, r.y), "{profile:?} {chip:?} is the footer's");
+            let footer = app.settled_layout().expect("drawn").footer;
+            assert!(footer.contains(r.as_position()), "{profile:?} {chip:?} is the footer's");
             app.handle_mouse(left_down(r.x + 1, r.y));
             assert_eq!(seen(&app), seen(&by_action), "{profile:?} {chip:?}");
         }
@@ -15730,6 +15731,22 @@ fn the_address_bar_lock_is_still_a_click_away_from_the_table_cursor() {
     assert_ne!(app.editor.insecure, insecure, "the lock toggled");
     assert_eq!(app.editor.table.selected(), None);
     assert_eq!(app.editor.sub_focus, SubFocus::None);
+}
+
+/// Task #183: the editor's chips are the footer's on the main screen only.
+/// On the Settings tab the editor keeps its table cursor behind the screen,
+/// and the tab's footer chips are still a click away for its cursor, as
+/// they are with no table cursor behind it.
+#[test]
+fn a_settings_footer_chip_click_still_drops_the_settings_cursor() {
+    use crate::components::manage::ManageTab;
+    let mut app = main_header_app(crate::config::KeyProfile::Arrows);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "the cursor stays behind");
+    assert!(app.settings.focused);
+    click_hit(&mut app, Hit::FooterChip(Action::OpenPalette));
+    assert!(app.modals.top().is_some(), "the palette opened");
+    assert!(!app.settings.focused, "the click was a click away for the tab");
 }
 
 /// Task #183's report: the commands chip, then Esc, puts the table back as
