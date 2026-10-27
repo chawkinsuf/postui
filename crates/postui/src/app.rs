@@ -436,12 +436,13 @@ pub struct App {
     /// The most recent left press, for the click counts
     /// ([`mouse::count_clicks`]).
     last_click: Option<mouse::LastClick>,
-    /// Set by `Action::VarStruct`'s handler when `apply_var_struct` returns
-    /// `Err` (and cleared before every action `update` dispatches), so
-    /// `apply_modal_result` can stop a sequenced `ModalResult` — e.g.
-    /// `PromptKind::NewVariableAndInsert`'s `[NewVar, InsertVarText]` — from
-    /// running its later actions after an earlier one failed. Nothing else
-    /// reads or sets this; every other action leaves it `false`.
+    /// Set by an action that failed, for a caller that has to stop after
+    /// it: `apply_modal_result` stops a sequenced `ModalResult` — e.g.
+    /// `PromptKind::NewVariableAndInsert`'s `[NewVar, InsertVarText]` —
+    /// from running its later actions after an earlier one failed, and a
+    /// Settings field commit keeps its edit open when `config.toml`
+    /// refused the write. A reader clears it before the action whose
+    /// answer it wants.
     last_action_failed: bool,
     /// The loose-file half of the last `list_requests` warning that was
     /// toasted. A file directly under `requests/` is a chronic state (it is
@@ -5158,7 +5159,8 @@ impl App {
                 // leaves the session (amendment A4-2).
                 //
                 // A close the field refuses (a Settings number that does not
-                // parse) leaves it open and sets `last_action_failed`, so
+                // parse, or a Settings write `config.toml` refuses) leaves it
+                // open and sets `last_action_failed`, so
                 // nothing after it in a row or on the `:` line runs on the
                 // stale text (the final review's ruling I-2).
                 // A dialog's field always closes.
@@ -12005,6 +12007,10 @@ impl App {
     /// commit. `osc52_limit` and `indent_width` are validated here and
     /// *rejected* rather than coerced: the edit stays open with what was
     /// typed, the stored value stands, and a toast says what was expected.
+    /// A write `config.toml` refuses (it no longer parses, or cannot be
+    /// written) is the same: the edit stays open with the typing, to save
+    /// once the file is fixed, and the toast says why (task #80). The edit
+    /// ends only once its write landed.
     pub(crate) fn commit_settings_edit(&mut self) -> bool {
         use crate::components::settings::{SettingsField, parse_indent_width, parse_osc52_limit};
         let Some(field) = self.settings.editing else {
@@ -12024,31 +12030,42 @@ impl App {
             SettingsField::IndentWidth => Some(parse_indent_width(&text)),
             _ => None,
         };
-        if let Some(parsed) = int {
-            return match parsed {
-                Ok(value) => {
-                    self.settings.end_edit();
-                    self.update(Action::SetUiInt { key: field.key(), value })
-                }
-                Err(why) => {
-                    self.toasts.push(format!("{}: {why}", field.label()), ToastKind::Error);
-                    true
-                }
-            };
+        let action = match int {
+            Some(Ok(value)) => Action::SetUiInt { key: field.key(), value },
+            Some(Err(why)) => {
+                self.toasts.push(format!("{}: {why}", field.label()), ToastKind::Error);
+                return true;
+            }
+            None => Action::SetUiString { key: field.key(), value: text },
+        };
+        // Cleared first so the flag read below is this write's own answer
+        // (`apply_ui_write` sets it when `config.toml` refused the write),
+        // then put back: the commit runs inside other actions (through
+        // `close_open_inputs`), and their readers want their own action's
+        // answer. A caller that stops on the refusal learns it from the
+        // edit still being open (`commit_settings_edit_for_click`).
+        //
+        // The edit stays open across the write, so a refused one still has
+        // the typing; nothing the update runs reads the edit, and a landed
+        // write ends it before this returns.
+        let outer = std::mem::take(&mut self.last_action_failed);
+        let redraw = self.update(action);
+        let refused = std::mem::replace(&mut self.last_action_failed, outer);
+        if !refused {
+            self.settings.end_edit();
         }
-        self.settings.end_edit();
-        self.update(Action::SetUiString { key: field.key(), value: text })
+        redraw
     }
 
     /// [`Self::commit_settings_edit`] for a click that is about to land
     /// somewhere else, reporting whether that click may proceed.
     ///
-    /// A rejected `osc52_limit` keeps its edit open, so the click has to
-    /// stop: moving `settings.cursor` out from under a still-live edit
-    /// would leave the painted well on a row the cursor has left, with
-    /// `editing` and `cursor` naming different rows. The toast the
-    /// refusal raised is the answer to the click, and the typed text is
-    /// still there to fix.
+    /// A rejected value, or a write `config.toml` refused, keeps the edit
+    /// open, so the click has to stop: moving `settings.cursor` out from
+    /// under a still-live edit would leave the painted well on a row the
+    /// cursor has left, with `editing` and `cursor` naming different rows.
+    /// The toast the refusal raised is the answer to the click, and the
+    /// typed text is still there to fix.
     pub(crate) fn commit_settings_edit_for_click(&mut self) -> bool {
         self.commit_settings_edit();
         self.settings.editing.is_none()
@@ -12057,9 +12074,11 @@ impl App {
     /// The tail every Settings-tab write shares. `Config::edit` refuses
     /// a `config.toml` that will not parse, so a refused write says so
     /// and changes nothing — the control keeps painting the value on
-    /// disk rather than one that never landed. A write that did land is
-    /// applied through the same `reapply_ui_settings` path
-    /// `ReloadFromDisk` uses, so the tab and a hand-edit converge.
+    /// disk rather than one that never landed — and sets
+    /// `last_action_failed`, which the field commit reads to keep its
+    /// edit open (task #80). A write that did land is applied through the
+    /// same `reapply_ui_settings` path `ReloadFromDisk` uses, so the tab
+    /// and a hand-edit converge.
     fn apply_ui_write(
         &mut self,
         saved: Result<(), String>,
@@ -12070,6 +12089,7 @@ impl App {
                 format!("could not save {}: {e}", crate::config::CONFIG_TOML),
                 ToastKind::Error,
             );
+            self.last_action_failed = true;
             return true;
         }
         let mut ui = self.ui_settings.clone();
