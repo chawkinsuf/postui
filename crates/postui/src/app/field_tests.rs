@@ -1667,19 +1667,64 @@ fn cells_of(buf: &ratatui::buffer::Buffer, area: ratatui::layout::Rect, c: &str)
         .collect()
 }
 
-/// Spec §5.6: the prompt is drawn on the body pane's bottom row.
+/// Spec §5.6: the prompt is drawn on the body pane's bottom row, a row
+/// the body gives up while it is open (#129).
 #[test]
 fn the_search_prompt_draws_on_the_bodys_bottom_row() {
     let mut app = vim(Fixture::Body);
     app.editor.set_body_text("foo bar foo");
+    let full = app.editor.last_body_area.unwrap();
     feed(&mut app, "/fo");
     let buf = draw_buffer(&mut app);
     let area = app.editor.last_body_area.unwrap();
-    let bottom = row_text(&buf, area, area.bottom() - 1);
+    assert_eq!(area.height + 1, full.height, "the body gives the prompt its bottom row");
+    let bottom = row_text(&buf, full, full.bottom() - 1);
     assert!(bottom.starts_with("/fo"), "{bottom:?}");
     feed(&mut app, "<Esc>");
     let buf = draw_buffer(&mut app);
-    assert!(!row_text(&buf, area, area.bottom() - 1).starts_with("/fo"), "Esc closes the prompt");
+    assert_eq!(app.editor.last_body_area, Some(full), "Esc gives the row back");
+    assert!(!row_text(&buf, full, full.bottom() - 1).starts_with("/fo"), "Esc closes the prompt");
+}
+
+/// #129: in the frame `/` opens the prompt, a caret on the body's last
+/// row (`L`) scrolls up to show above it, and the engine's view is the
+/// shorter body.
+#[test]
+fn the_search_prompt_keeps_the_carets_line_in_view() {
+    let mut app = vim(Fixture::Body);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    feed(&mut app, "L");
+    let full = app.editor.last_body_area.unwrap();
+    let caret = app.editor.body.cursor.row;
+    assert_eq!(caret, usize::from(full.height) - 1, "L: the last row");
+    // One key and one frame, no settling draw after.
+    for ev in crate::keyroute::notation::events("/") {
+        app.handle_key(ev);
+    }
+    let buf = draw_buffer(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    let last = row_text(&buf, area, area.bottom() - 1);
+    assert!(last.trim_end().ends_with(&format!("row{caret}")), "{last:?}");
+    assert!(row_text(&buf, full, full.bottom() - 1).starts_with('/'));
+    assert_eq!(app.view_ctx(FieldId::Body).viewport_rows, Some(usize::from(area.height)));
+}
+
+/// #129: the prompt row is not the body's, so a click on it doesn't move
+/// the body's caret to a line it can't show.
+#[test]
+fn a_click_on_the_search_prompt_leaves_the_body_caret() {
+    let mut app = vim(Fixture::Body);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    feed(&mut app, "/x");
+    let caret = app.editor.body.cursor;
+    let area = app.editor.last_body_area.unwrap();
+    assert!(!app.hits.rects_of(&Hit::BodyEditor).iter().any(|r| r.bottom() > area.bottom()));
+    click_at(&mut app, area.x + 8, area.bottom());
+    assert_eq!(app.editor.body.cursor, caret);
 }
 
 /// The prompt's caret stands past the cells its text paints: `❤️` (a
@@ -1691,15 +1736,15 @@ fn the_search_prompts_caret_follows_the_painted_cells() {
     feed(&mut app, "/\u{2764}\u{fe0f}x");
     let buf = draw_buffer(&mut app);
     let area = app.editor.last_body_area.unwrap();
-    let y = area.bottom() - 1;
+    let y = area.bottom(); // the prompt's row, below the body
     let reversed: Vec<u16> = (area.x..area.right())
         .filter(|&x| buf[(x, y)].modifier.contains(Modifier::REVERSED))
         .collect();
     assert_eq!(reversed, [area.x + 4], "after `/`, the heart's two cells and `x`");
 }
 
-/// Final review M-4: the prompt covers the bottom row, so a `{{token}}`
-/// under it registers no hit a click could find.
+/// Final review M-4: the prompt takes the bottom row, so a `{{token}}`
+/// that was on it registers no hit a click could find.
 #[test]
 fn the_search_prompt_row_has_no_token_hits() {
     let mut app = vim(Fixture::Body);
