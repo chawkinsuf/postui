@@ -81,7 +81,7 @@ Accept = "application/json"
 **Homebrew** (macOS and Linux) is the recommended way:
 
 ```sh
-brew install chawkinsuf/postui/postui
+brew install chawkinsuf/tap/postui
 ```
 
 Or use the **shell installer**, which puts `postui` in `~/.local/bin`:

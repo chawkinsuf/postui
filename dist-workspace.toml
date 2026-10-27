@@ -16,8 +16,9 @@ pr-run-mode = "skip"
 # The installers to generate for each app
 installers = ["shell", "homebrew"]
 # The tap the formula is pushed to, by the homebrew publish job with the
-# HOMEBREW_TAP_TOKEN secret.
-tap = "chawkinsuf/homebrew-postui"
+# HOMEBREW_TAP_TOKEN secret. A shared tap, not one per app, so other
+# projects can publish their formulas to it too.
+tap = "chawkinsuf/homebrew-tap"
 publish-jobs = ["homebrew"]
 # Target platforms to build apps for (Rust target-triple syntax). No
 # Windows for 1.0. Linux is glibc, not musl: onig_sys, aws-lc-sys and ring
