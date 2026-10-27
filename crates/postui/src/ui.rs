@@ -293,12 +293,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let vm_chips = override_chips(app);
     let pane = PaneChipArgs::of(app);
     // Settled from this frame's hits, the panes drawn: the tooltip painted
-    // last below is this one, so the footer's chip for it is current. Only
-    // for the caret's tooltip: a pointer's goes as the pointer heads for
-    // the chip.
-    let tip_open = app
-        .var_token_tip_in(&hits)
-        .is_some_and(|tip| app.caret_tip_in(&hits).is_some_and(|caret| caret == tip));
+    // last below is this one, so the footer's chip for it is current.
+    let tip_open = app.keyboard_tip_in(&hits).is_some();
     let vim_status = app.vim_status();
     crate::components::footer::draw_footer(
         frame,

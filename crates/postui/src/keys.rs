@@ -444,11 +444,11 @@ impl Keymap {
             ("alt+e", Action::OpenBodyInEditor),
             ("ctrl+v", Action::Paste),
             ("alt+v", Action::OpenVarPicker { completing: false }),
-            // The variable tooltip's pills, live while a tooltip is open
-            // (#135): o for open, h for hide/show; copy takes n, since c
-            // and y are taken. Of the three only edit gets a footer chip,
-            // while a tooltip is open; copy and reveal are in the palette
-            // and "just known" (the user's calls on #135).
+            // The variable tooltip's pills, live while the caret's tooltip
+            // is shown (#135): o for open, h for hide/show; copy takes n,
+            // since c and y are taken. Of the three only edit gets a
+            // footer chip; copy and reveal are in the palette and "just
+            // known" (the user's calls on #135).
             ("alt+o", Action::TipPill(crate::action::TipPill::Edit)),
             ("alt+n", Action::TipPill(crate::action::TipPill::Copy)),
             ("alt+h", Action::TipPill(crate::action::TipPill::Reveal)),

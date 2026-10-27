@@ -825,8 +825,9 @@ pub enum Action {
     /// create flow).
     OpenVarTokenPopup(String),
     /// A key for one of the variable tooltip's pills: does what a click on
-    /// it does, for the tooltip open now (the pointer's or the caret's),
-    /// and nothing with no tooltip open or that pill not offered (#135).
+    /// it does, for the caret's tooltip while it is the one shown
+    /// (`App::keyboard_tip_in`, #135). Bound only while that tooltip shows
+    /// the pill.
     TipPill(TipPill),
     /// [`Action::TipPill`] for `name`'s tooltip: the palette's row, named
     /// as the tooltip stood when the palette opened over it.

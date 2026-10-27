@@ -2602,9 +2602,9 @@ impl App {
     /// forwarded keys), with [`Self::key_context`] applied.
     pub(crate) fn lookup_key(&self, combo: &KeyCombo) -> Option<Action> {
         let action = self.key_context().action(self.keymap.lookup(combo)?);
-        // A tooltip pill's key is bound only while the open tooltip shows
-        // the pill (#135, the user's context actions): otherwise it is no
-        // key of the app's, and goes where an unbound combo goes.
+        // A tooltip pill's key is bound only while the keyboard's tooltip
+        // shows the pill (#135, the user's context actions): otherwise it
+        // is no key of the app's, and goes where an unbound combo goes.
         if let Action::TipPill(pill) = action
             && !self.tip_shows(pill)
         {
@@ -2613,14 +2613,23 @@ impl App {
         Some(action)
     }
 
-    /// Whether a variable tooltip is open on the Main screen, the one place
-    /// its keys run (another screen swallows them), and shows `pill`
-    /// (#135).
+    /// Whether the keyboard's tooltip ([`Self::keyboard_tip_in`]) shows
+    /// `pill` (#135).
     fn tip_shows(&self, pill: crate::action::TipPill) -> bool {
-        self.screen == Screen::Main
-            && self
-                .var_token_tip()
-                .is_some_and(|tip| self.editor.vars.describe(&tip.name).offers(pill))
+        self.keyboard_tip_in(&self.hits)
+            .is_some_and(|tip| self.editor.vars.describe(&tip.name).offers(pill))
+    }
+
+    /// The tooltip the keyboard acts on (#135): the caret's, while it is
+    /// the one shown. The pills' keys, the footer's edit chip and the
+    /// palette's pill rows all read this one rule. A pointer's tooltip has
+    /// its pills to click and none of these: its chip would go as the
+    /// pointer heads for it, and it is gone once a palette closes. The
+    /// caret's tooltip is the focused editor's on the Main screen only
+    /// (`caret_tip_allowed`), where the keys run.
+    pub(crate) fn keyboard_tip_in(&self, hits: &crate::hit::HitMap) -> Option<TokenTip> {
+        let caret = self.caret_tip_in(hits)?;
+        (self.var_token_tip_in(hits).as_ref() == Some(&caret)).then_some(caret)
     }
 
     /// Where the keyboard is, for [`crate::keys::KeyContext::action`]: the
@@ -2927,9 +2936,8 @@ impl App {
     }
 
     /// The caret's tooltip, read off `hits`: what [`Self::var_token_tip_in`]
-    /// shows with no pointer tip. The footer's edit chip is for this one
-    /// alone: a pointer tip goes as the pointer heads for the footer.
-    pub(crate) fn caret_tip_in(&self, hits: &crate::hit::HitMap) -> Option<TokenTip> {
+    /// shows with no pointer tip.
+    fn caret_tip_in(&self, hits: &crate::hit::HitMap) -> Option<TokenTip> {
         if !self.caret_tip_shown || !self.caret_tip_allowed() {
             return None;
         }
@@ -2941,14 +2949,11 @@ impl App {
         (drawn == name).then_some(TokenTip { name, anchor })
     }
 
-    /// The caret's open tooltip's variable and the pills it shows, for the
-    /// palette's rows (#135). The caret's alone, as for the footer chip: a
-    /// pointer's tooltip is gone once the palette closes, which would
-    /// leave its reveal nothing to show; its own pills stay a click away.
-    /// The caret's is Main-screen only, where the pills' keys run.
+    /// The keyboard's tooltip's variable and the pills it shows, for the
+    /// palette's rows (#135).
     fn tip_offers(&self) -> Option<(String, Vec<crate::action::TipPill>)> {
         use crate::action::TipPill;
-        let tip = self.caret_tip_in(&self.hits)?;
+        let tip = self.keyboard_tip_in(&self.hits)?;
         let info = self.editor.vars.describe(&tip.name);
         let offers = [TipPill::Edit, TipPill::Copy, TipPill::Reveal]
             .into_iter()
@@ -6598,10 +6603,10 @@ impl App {
                 }
                 self.open_insert_var_picker(completing, None)
             }
-            // A key: the tooltip open now (`lookup_key` binds the key only
-            // while it shows that pill).
+            // A key: the keyboard's tooltip (`lookup_key` binds the key
+            // only while it shows that pill).
             Action::TipPill(pill) => {
-                let Some(tip) = self.var_token_tip() else { return false };
+                let Some(tip) = self.keyboard_tip_in(&self.hits) else { return false };
                 self.press_tip_pill(pill, tip.name)
             }
             // A palette row: the variable it was listed for. Its reveal

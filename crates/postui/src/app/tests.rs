@@ -28024,13 +28024,24 @@ fn the_tip_keys_do_nothing_without_their_pill() {
     assert!(std::fs::read_to_string(&out).is_err(), "nothing copied");
 }
 
-/// The keys follow the tip that is open, the pointer's included.
+/// The keys are the caret's tooltip's: a pointer's tooltip has its pills
+/// to click, and a hover over another token hides the caret's, so its
+/// keys go too.
 #[test]
-fn the_tip_keys_act_on_a_hover_tip() {
+fn the_tip_keys_leave_a_hover_tip_to_its_pills() {
     let (mut app, _dir, out) = tooltip_app("base_url");
     hover_token(&mut app, "base_url");
+    assert!(app.var_token_tip().is_some());
     app.handle_key(alt('n'));
-    assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://qa.example.com");
+    assert!(std::fs::read_to_string(&out).is_err(), "a hover tip's copy is its pill");
+
+    let (mut app, _dir, out) = tooltip_app("api_key");
+    open_value_cell(&mut app, EditorTab::Headers, "{{base_url}}", 3);
+    rest_caret(&mut app);
+    hover_token(&mut app, "api_key");
+    assert_eq!(app.var_token_tip().map(|t| t.name), Some("api_key".into()));
+    app.handle_key(alt('n'));
+    assert!(std::fs::read_to_string(&out).is_err(), "the caret's tip is hidden");
 }
 
 /// While a tooltip is open the footer offers its edit key, after the
