@@ -1096,9 +1096,10 @@ impl VarManager {
     /// shows (#178). The old list is the last place that knows which row
     /// the cursor meant, so the cursor moves here, before it is dropped. A
     /// cursor whose own row went (a header or spacer a click left it on)
-    /// joins the open row, so it never sits on a stop the pane isn't
-    /// showing; with no open row left either, it takes the gone row's
-    /// place ([`Self::place_of`]).
+    /// joins the open row while that is still listed, so it doesn't sit on
+    /// a stop the pane isn't showing; otherwise it takes the gone row's
+    /// place ([`Self::place_of`]), and when the gone row was the open one,
+    /// [`Self::sync`] opens whatever is there.
     ///
     /// The cursor stays an index on purpose: every reader (the keys, the
     /// scroll, the hit rows each frame registers) wants one, and this is
@@ -1111,9 +1112,11 @@ impl VarManager {
         let old = std::mem::replace(&mut self.left_rows, build_left_rows(ctx));
         let before = self.left_cursor;
         let open_at =
-            self.detail.row().and_then(|row| self.left_rows.iter().position(|r| *r == row));
-        self.left_cursor =
-            self.index_of(&old, before).or(open_at).unwrap_or_else(|| self.place_of(&old, before));
+            || self.detail.row().and_then(|row| self.left_rows.iter().position(|r| *r == row));
+        self.left_cursor = self
+            .index_of(&old, before)
+            .or_else(open_at)
+            .unwrap_or_else(|| self.place_of(&old, before));
         if self.left_cursor != before {
             self.ensure_visible = true;
         }
@@ -1140,11 +1143,7 @@ impl VarManager {
     /// is). Clamped into range.
     fn place_of(&self, old: &[VmRow], k: usize) -> usize {
         let at = self.index_of(old, k).unwrap_or_else(|| {
-            (0..k.min(old.len()))
-                .rev()
-                .filter(|j| old[*j] != VmRow::Spacer)
-                .find_map(|j| self.index_of(old, j))
-                .map_or(0, |i| i + 1)
+            (0..k.min(old.len())).rev().find_map(|j| self.index_of(old, j)).map_or(0, |i| i + 1)
         });
         at.min(self.left_rows.len().saturating_sub(1))
     }
@@ -1174,10 +1173,14 @@ impl VarManager {
             // The neighbour of the row that went: whatever took its place,
             // else the nearest selectable row above it. Found from the
             // detail's own row in the list the user last saw, not the
-            // cursor's, which a click may have left on a header. Should a
-            // frame have rebuilt the list first, the detail's row is no
-            // longer in `old`, but that frame already put the cursor in its
-            // place, so the cursor is the place.
+            // cursor's, which a click may have left on a header. Every path
+            // that changes the declarations syncs before the next frame (a
+            // closed Manage screen as it opens), so `old` is that list.
+            // Should a frame ever rebuild first, the detail's row is no
+            // longer in `old` and the cursor stands in: that frame moved a
+            // cursor on the detail's row to its place, while one a click
+            // left on a header picks from the header. Coarser, not wrong:
+            // the pane and the highlight still agree after this.
             let from = self
                 .detail
                 .row()
@@ -1754,7 +1757,9 @@ impl VarManager {
         hits: &mut HitMap,
         hovered: Option<&Hit>,
     ) {
-        // Rows and cursor only; a detail that is gone waits for `sync`.
+        // Every frame rebuilds the rows, so the list on screen is the files
+        // as they are even on a path that forgot to sync; the cursor comes
+        // with them. A detail that is gone waits for `sync` (see there).
         let _ = self.rebuild_rows(ctx);
         if area.width == 0 || area.height == 0 {
             self.visible_rows = 0;
