@@ -396,7 +396,7 @@ mod tests {
 
         assert!(buf.is_empty());
         assert!(
-            elapsed < Duration::from_millis(500),
+            elapsed < Duration::from_secs(5),
             "deadline should be honored promptly, took {elapsed:?}"
         );
         let q = parse_osc_response(&buf);

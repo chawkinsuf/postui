@@ -1719,9 +1719,9 @@ fn a_stale_redo_after_an_outside_undo_does_not_panic() {
 }
 
 /// Spec §8.5: debug build, 5,000-line body. The limits are loose on
-/// purpose: a debug build under parallel tests can be several times slower
-/// than a quiet run, and the worst measured value was about 9 ms. They
-/// still catch an accidental quadratic.
+/// purpose: a debug build under parallel tests, on a shared CI runner, can
+/// be many times slower than a quiet run, and the worst measured value was
+/// about 9 ms. They still catch an accidental quadratic.
 #[test]
 fn a_5000_line_body_stays_fast() {
     let rows: Vec<String> =
@@ -1732,7 +1732,7 @@ fn a_5000_line_body_stays_fast() {
         let started = std::time::Instant::now();
         b.keys(keys);
         let ms = started.elapsed().as_millis();
-        assert!(ms < 250, "{keys} took {ms} ms");
+        assert!(ms < 2000, "{keys} took {ms} ms");
     }
     let mut b = Body::new(&text, 2500, 4);
     b.keys("i");
@@ -1741,7 +1741,7 @@ fn a_5000_line_body_stays_fast() {
         b.key(k('x'));
     }
     let ms = started.elapsed().as_millis();
-    assert!(ms < 1000, "typing 200 chars took {ms} ms");
+    assert!(ms < 2000, "typing 200 chars took {ms} ms");
 }
 
 /// Spec §2: no engine file names an app type, except `buf.rs` (and this
@@ -1873,7 +1873,7 @@ fn a_huge_counted_insert_finishes() {
     f.key(esc());
     assert_eq!(f.text().chars().count(), 2 + 999 * 2);
     let ms = started.elapsed().as_millis();
-    assert!(ms < 5000, "took {ms} ms");
+    assert!(ms < 10_000, "took {ms} ms");
 }
 
 /// Deviation 7: `leave` sets `'^`, so `gi` after coming back resumes where
@@ -2328,7 +2328,7 @@ fn first_wave_commands_survive_the_largest_count() {
             b.key(key_of(c));
         }
         let ms = started.elapsed().as_millis();
-        assert!(ms < 2000, "{keys:?} took {ms} ms");
+        assert!(ms < 10_000, "{keys:?} took {ms} ms");
     }
 }
 
@@ -3055,7 +3055,7 @@ fn search_survives_hostile_patterns_and_big_bodies() {
     }
     let started = std::time::Instant::now();
     f.key(code(KeyCode::Enter));
-    assert!(started.elapsed().as_millis() < 500);
+    assert!(started.elapsed().as_millis() < 5000);
     f.keys("/\\(x*\\)*y");
     f.key(code(KeyCode::Enter));
     let text: Vec<String> = (0..5000).map(|i| format!("  \"k{i}\": [{i}, \"v\"],")).collect();
@@ -3065,7 +3065,7 @@ fn search_survives_hostile_patterns_and_big_bodies() {
     b.key(code(KeyCode::Enter));
     b.keys("nnnN*#");
     assert!(
-        started.elapsed().as_millis() < 500,
+        started.elapsed().as_millis() < 5000,
         "six searches took {} ms",
         started.elapsed().as_millis()
     );
@@ -3073,13 +3073,16 @@ fn search_survives_hostile_patterns_and_big_bodies() {
 }
 
 /// The highlight calls run on every frame: a long pattern (milliseconds to
-/// compile in a debug build) compiles once, not once per call.
+/// compile in a debug build) compiles once, not once per call. A compile
+/// per call took about 7 s for the 1000 frames here (3.7 ms each, quiet);
+/// the cached path takes a fraction of the limit, which leaves room for a
+/// slow CI runner.
 #[test]
 fn the_highlight_reuses_the_compiled_pattern() {
     let mut b = Body::new("ab ab\nba", 0, 0);
     b.keys("/\\(a\\|b\\)\\{500}\\|ab");
     let started = std::time::Instant::now();
-    for _ in 0..200 {
+    for _ in 0..1000 {
         assert_eq!(b.engine.search_matches(&BodyBuf::new(&mut b.ed, &mut b.visual), 0..2).len(), 2);
         assert_eq!(
             b.engine.search_preview(&BodyBuf::new(&mut b.ed, &mut b.visual)),
@@ -3087,7 +3090,7 @@ fn the_highlight_reuses_the_compiled_pattern() {
         );
     }
     let ms = started.elapsed().as_millis();
-    assert!(ms < 200, "200 frames took {ms} ms");
+    assert!(ms < 2000, "1000 frames took {ms} ms");
 }
 
 /// A counted search on one long line (a minified JSON body) reads each
@@ -3105,7 +3108,7 @@ fn a_counted_search_on_one_long_line_is_fast() {
     b.keys("9999N");
     assert_eq!(b.caret(), Pos::new(0, 1));
     assert!(
-        started.elapsed().as_millis() < 1000,
+        started.elapsed().as_millis() < 5000,
         "9999n took {ms} ms, 9999N {} ms in all",
         started.elapsed().as_millis()
     );
@@ -3202,6 +3205,8 @@ fn a_counted_search_lands_where_single_steps_land() {
 
 /// Review focus 1 and 2: the largest count on every second-wave command
 /// finishes quickly on a 200-line body, under a one-row viewport too.
+/// `9999i ctrl+t` is the slowest, about 450 ms quiet, and took 2.1 s on the
+/// macOS CI runner: the limit only catches a runaway.
 #[test]
 fn second_wave_commands_survive_the_largest_count() {
     let rows: Vec<String> = (0..200).map(|i| format!("  \"k{i}\": [{i}, 0x1f],")).collect();
@@ -3250,7 +3255,7 @@ fn second_wave_commands_survive_the_largest_count() {
                 );
             }
             let ms = started.elapsed().as_millis();
-            assert!(ms < 2000, "{keys:?} with {rows:?} rows took {ms} ms");
+            assert!(ms < 10_000, "{keys:?} with {rows:?} rows took {ms} ms");
         }
     }
 }

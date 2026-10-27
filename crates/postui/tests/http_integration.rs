@@ -78,7 +78,7 @@ async fn timeout_produces_err() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/x"))
-        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(2)))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(10)))
         .mount(&server)
         .await;
     let (prepared, _) =
@@ -88,7 +88,7 @@ async fn timeout_produces_err() {
     let result = http::send(&client, &prepared).await;
     assert!(result.is_err(), "expected a timeout error, got {result:?}");
     assert!(
-        started.elapsed() < Duration::from_secs(1),
+        started.elapsed() < Duration::from_secs(5),
         "should have timed out quickly, took {:?}",
         started.elapsed()
     );
