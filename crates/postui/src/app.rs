@@ -8694,15 +8694,22 @@ impl App {
         stage_value_removal(fields, kind) && self.update(Action::Render)
     }
 
-    /// The value dialog's request-scope writes add and remove Vars rows,
-    /// and an open cell names its row by index, so its typing would land
-    /// on another row. The dialog commits an open Vars cell as it opens
-    /// (`open_edit_value_popup`, #151), and while it is up no cell can
-    /// open again, so none is open when they run.
+    /// The value dialog's request-scope writes and a promote's removal add
+    /// and remove Vars rows, and an open cell names its row by index, so
+    /// its typing would land on another row. The dialog commits an open
+    /// Vars cell as it opens (`open_edit_value_popup`, #151), and while it
+    /// is up no cell can open again, so none is open when they run. A
+    /// promote runs only from the Variable Manager, and leaving the editor
+    /// for Manage commits the cell at the end of that event (`capture_undo`,
+    /// the net for screen changes, spec 2026-10-19 R1), so none is open
+    /// when it runs either (#153). The promote has no commit of its own:
+    /// it would serve no path the app takes. A new way to promote from the
+    /// main screen (a palette row, a tooltip action) must commit an open
+    /// Vars cell before it reads the value, as the value dialog does.
     fn debug_assert_no_open_vars_cell(&self) {
         debug_assert!(
             self.editor.active_tab != EditorTab::Vars || self.editor.table.editing.is_none(),
-            "a request-scope var write under an open Vars cell"
+            "a Vars row write (value dialog or promote) under an open Vars cell"
         );
     }
 
@@ -9097,6 +9104,11 @@ impl App {
                 E::SetFields { selector: selector.clone(), fields: fields.clone() }
             }
             VarStructOp::Promote { name, target } => {
+                // Checked here, before the value read, rather than at the
+                // removal after core's write: an open cell's typing would be
+                // missing from the value, and the removal would move its
+                // row. Nothing between here and the removal opens a cell.
+                self.debug_assert_no_open_vars_cell();
                 // The value being promoted lives in the open request's
                 // buffer, which core never sees: read it here, and refuse
                 // in the same words as before when it isn't there.
