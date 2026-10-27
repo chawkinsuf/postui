@@ -2,6 +2,7 @@
 //! `[projects]` table: known project paths (cycle order), an optional
 //! configured root directory, and the last-used project.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -1173,24 +1174,30 @@ usage: postui [--debug-ai] [directory]
 /// project directory, since no real path starts with a dash without `./`.
 /// `--help` (or `-h`) anywhere on a line that is otherwise valid asks for
 /// help; it never turns a mistake into a success.
-pub fn parse_cli(args: Vec<String>) -> CliParse {
-    let is_help = |a: &String| a == "--help" || a == "-h";
+///
+/// The arguments come as the OS gave them (#161). Each is matched and
+/// named by its lossy text: a value that isn't UTF-8 holds a U+FFFD there,
+/// which no flag has, so it is never a flag. The directory keeps the
+/// original bytes.
+pub fn parse_cli(args: Vec<OsString>) -> CliParse {
+    let is_help = |a: &OsString| a == "--help" || a == "-h";
     let help = args.iter().any(is_help);
     let parsed = parse_cli_line(args.into_iter().filter(|a| !is_help(a)).collect());
     if help && !matches!(parsed, CliParse::Usage { .. }) { CliParse::Help } else { parsed }
 }
 
 /// [`parse_cli`] for a line with its help flags taken out.
-fn parse_cli_line(args: Vec<String>) -> CliParse {
+fn parse_cli_line(args: Vec<OsString>) -> CliParse {
     let usage = |reason: String| CliParse::Usage { reason };
     if let [only] = args.as_slice()
-        && let Some(parsed) = run_alone_flag(only)
+        && let Some(parsed) = run_alone_flag(&only.to_string_lossy())
     {
         return parsed;
     }
     let mut root = None;
     let mut debug_ai = false;
-    for arg in args {
+    for os_arg in args {
+        let arg = os_arg.to_string_lossy();
         if let Some(parsed) = run_alone_flag(&arg) {
             // A malformed one says so first: that is the mistake to fix.
             return match parsed {
@@ -1207,7 +1214,13 @@ fn parse_cli_line(args: Vec<String>) -> CliParse {
         } else if root.is_some() {
             return usage(format!("one directory at most; '{arg}' is a second"));
         } else {
-            root = Some(expand_tilde(&arg));
+            // A name that isn't UTF-8 is taken as written: the tilde
+            // expansion is for a quoted `~`, and the shell has already
+            // expanded a bare one.
+            root = Some(match os_arg.to_str() {
+                Some(s) => expand_tilde(s),
+                None => PathBuf::from(os_arg),
+            });
         }
     }
     CliParse::Root { root, debug_ai }
@@ -2002,7 +2015,40 @@ osc52_limit = 1024
     }
 
     fn cli(args: &[&str]) -> CliParse {
-        parse_cli(args.iter().map(|a| a.to_string()).collect())
+        parse_cli(args.iter().map(OsString::from).collect())
+    }
+
+    /// #161: an argument that isn't UTF-8 is never a flag. Without a dash
+    /// it is the directory, its bytes kept; with one it is an unknown
+    /// option, said lossily. Either way the line's other mistakes still
+    /// count.
+    #[cfg(unix)]
+    #[test]
+    fn parse_cli_takes_a_non_utf8_argument_as_a_path() {
+        use std::os::unix::ffi::OsStringExt;
+        let raw = |b: &[u8]| OsString::from_vec(b.to_vec());
+        assert_eq!(
+            parse_cli(vec![raw(b"api-\xff")]),
+            CliParse::Root { root: Some(PathBuf::from(raw(b"api-\xff"))), debug_ai: false }
+        );
+        assert_eq!(
+            parse_cli(vec!["--debug-ai".into(), raw(b"\xff")]),
+            CliParse::Root { root: Some(PathBuf::from(raw(b"\xff"))), debug_ai: true }
+        );
+        let reason = |args| match parse_cli(args) {
+            CliParse::Usage { reason } => reason,
+            other => panic!("parsed as {other:?}"),
+        };
+        assert_eq!(reason(vec![raw(b"-\xff")]), "unknown option '-\u{FFFD}'");
+        assert_eq!(
+            reason(vec![raw(b"\xff"), "b".into()]),
+            "one directory at most; 'b' is a second"
+        );
+        assert_eq!(
+            reason(vec!["a".into(), raw(b"\xff")]),
+            "one directory at most; '\u{FFFD}' is a second"
+        );
+        assert_eq!(parse_cli(vec![raw(b"\xff"), "-h".into()]), CliParse::Help);
     }
 
     /// The reason a usage error gives; panics on anything else.
