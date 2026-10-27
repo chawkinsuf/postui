@@ -52,8 +52,9 @@ pub struct CellEdit {
 /// names two rows because a `+ Add` name that is already taken makes none:
 /// the row it names is the existing one, while the caret was on `+ Add`.
 ///
-/// `here` equals `row` except on `+ Add`, so a caller could work it out
-/// itself, but only from the map as it was before the commit: each mover
+/// `here` equals `row` except past the rows (`+ Add`, or a value cell the
+/// map shrank from under), so a caller could work it out itself, but only
+/// from the map as it was before the commit: each mover
 /// would have to remember to read it first. Shift-Tab (task #111) and
 /// Up/Down (task #176) were both wrong for want of that, so the commit,
 /// which sees both rows, says both.
@@ -68,7 +69,9 @@ struct Committed {
     /// Shift-Tab; tasks #111, #176). For `+ Add` that is its index before
     /// the commit, whatever the commit did: a new row lands there, an empty
     /// name is discarded there, a taken name leaves it there. For a real
-    /// row it is `row`: a rename onto a taken name merges into that row.
+    /// row it is `row`, even for a rename onto a taken name: unlike `+ Add`,
+    /// which is still there after its taken name, the renamed row is gone,
+    /// merged into the row it matched, so that row is where it now is.
     here: usize,
     warning: Option<String>,
 }
@@ -791,7 +794,7 @@ impl TableEditorState {
                 // next row is at most the ghost, whose name opens.
                 (Some(r), Col::Value) => self.start_edit(r + 1, Col::Key, map),
                 // Past the ghost row, its name left empty: done.
-                (None, _) => self.exit_editing(map.len(), map),
+                (None, _) => self.exit_editing(here, map),
             }
         } else {
             // Step back from where the caret was (`here`), not from the
