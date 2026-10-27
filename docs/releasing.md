@@ -14,7 +14,7 @@ Releases are built and published by [dist](https://axodotdev.github.io/cargo-dis
 3. only if the gates and every build passed, creates the GitHub Release with
    a `.tar.xz` and `.sha256` per target, a shell installer
    (`postui-installer.sh`) and a source tarball;
-4. pushes the Homebrew formula to the tap `chawkinsuf/homebrew-postui`.
+4. pushes the Homebrew formula to the tap `chawkinsuf/homebrew-tap`.
 
 Windows isn't built, and nothing is published to crates.io.
 
@@ -22,7 +22,7 @@ Users then install with either of:
 
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/chawkinsuf/postui/releases/latest/download/postui-installer.sh | sh
-brew install chawkinsuf/postui/postui
+brew install chawkinsuf/tap/postui
 ```
 
 The shell installer puts `postui` in `~/.local/bin` (`install-path` in
@@ -44,16 +44,18 @@ Done once, by hand, before the first release:
    arm64 Linux runner (`ubuntu-22.04-arm`) is free only for public
    repositories; in a private one the `aarch64-unknown-linux-gnu` build
    never gets a runner.
-2. **Create the tap repository** `chawkinsuf/homebrew-postui` on GitHub:
+2. **Create the tap repository** `chawkinsuf/homebrew-tap` on GitHub:
    public (Homebrew clones it without credentials), with a README so it has
-   a default branch. dist manages everything else in it (`Formula/postui.rb`).
+   a default branch. dist manages postui's formula in it
+   (`Formula/postui.rb`); other projects can publish their own formulas to
+   the same tap.
    Its commits are authored as `axo bot <admin+bot@axo.dev>`: dist's
    template sets that identity, and it can't be changed without editing
    `release.yml`. That is accepted (the user's answer on #116: "Axo bot is
    fine I guess").
 3. **Create a token that can push to the tap.** Either:
    - a fine-grained personal access token: resource owner `chawkinsuf`,
-     repository access "Only select repositories" → `homebrew-postui`,
+     repository access "Only select repositories" → `homebrew-tap`,
      repository permission **Contents: Read and write**; or
    - a classic personal access token with the `repo` scope (what dist's
      docs describe).
