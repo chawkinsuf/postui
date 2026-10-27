@@ -37,7 +37,7 @@ around edtui, and whole-row shapes already do (#124).
 | # | Rule | Source |
 |---|---|---|
 | R1 | A keyboard selection covers everything strictly between the anchor and the caret, line breaks included. One shift+Right at a line's end selects its break. | mine (the GUI rule the task names) |
-| R2 | shift+Down from a line start selects that line and its break, and Delete removes the line. `shift_down_selects_the_first_line` changes to expect `hello\n`. | **yours to decide** |
+| R2 | shift+Down from a line start selects that line and its break, and Delete removes the line. `shift_down_selects_the_first_line` changes to expect `hello\n`. | you, 2026-10-26: "yes, select the line and its line break" |
 | R3 | Copy (ctrl+c) of a selection holding a break copies the `\n`. | mine |
 | R4 | Delete, Backspace, typing over and pasting over remove exactly the selected text, breaks included: the one rule `deleting_any_selection_removes_exactly_its_text` checks for every shape, now with breaks in the shapes. | mine |
 | R5 | A selected break paints as one selected cell after its line's last character (empty line: at column 0). | mine |
@@ -73,4 +73,5 @@ around edtui, and whole-row shapes already do (#124).
 
 ## Choices for you to veto
 
-R1 and R3–R7 above are mine. R2 is yours to decide.
+R1 and R3–R7 above are mine; none was vetoed when the spec was presented
+(2026-10-26). R2 is yours.
