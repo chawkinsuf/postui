@@ -53,12 +53,11 @@ pub enum TableCursor {
 
 /// The chips the request table's cursor adds to the editor's footer, the
 /// keyboard twins of its row's pills. [`footer_chips`] puts them before
-/// `vars` and the tabs. `App::on_hit` asks this same list whether a
-/// clicked chip is one of them: such a chip is the key it advertises, so
-/// its click keeps the table's cursor and caret as the key does (task
-/// #125). The response's header cursor adds none here; its copy chip is
-/// the response pane's own.
-pub(crate) fn table_cursor_chips(cursor: TableCursor) -> Vec<(Key, &'static str, Option<Action>)> {
+/// `vars` and the tabs. Like every chip on that footer, each is the key it
+/// advertises, so its click keeps the table's cursor and caret as the key
+/// does (tasks #125 and #183, `App::on_hit`). The response's header cursor
+/// adds none here; its copy chip is the response pane's own.
+fn table_cursor_chips(cursor: TableCursor) -> Vec<(Key, &'static str, Option<Action>)> {
     use crate::action::CopyTarget;
     // One copy chip on a header row, its keycap both keys: the value's and
     // the whole header's (`y/Y`, vim's `yy/"+yy`; spec 2026-10-26 H5).
@@ -471,6 +470,7 @@ pub fn draw_footer(
 ) {
     let buf = frame.buffer_mut();
     fill(buf, area, theme.panel);
+    hits.set_footer(area);
 
     if area.height == 0 {
         return;

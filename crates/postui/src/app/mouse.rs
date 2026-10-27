@@ -1443,34 +1443,30 @@ impl App {
         // main. A press on the rest of the section is the bare pane's, as
         // before.
         //
-        // The chips the table's cursor adds to the footer (copy, toggle,
-        // delete, an auto row's edit) are the keys they advertise, so they
-        // keep the cursor and the table's caret as those keys do (task
-        // #125). Whether a chip is one is asked of the footer's own builder,
-        // for the app's cursor now, which is the one the hit's frame was
-        // drawn from (the loop redraws after any event that reports a
-        // change, as the dialog rule above relies on), so there is no second
-        // list to keep in step. They are drawn only while the editor pane
-        // has the focus and no cell is open, so the commit above has nothing
-        // to close for them, and the Settings and editor-caret rules below,
-        // which inherit this exemption, have nothing else to keep. The rule
-        // takes the cursor's chips rather than every footer chip, as the jq
-        // bar's does: the jq bar's footer is its own chip set, but the
-        // footer under the table also shows chips that aren't the table's
-        // (send, tabs, commands), and whether those stay a click away is
-        // outside #125.
-        let cursor_chip = match &hit {
-            Hit::FooterChip(a) => {
-                crate::ui::PaneChipArgs::of(self).table_row_selected.is_some_and(|cursor| {
-                    crate::components::footer::table_cursor_chips(cursor)
-                        .iter()
-                        .any(|(_, _, chip)| chip.as_ref() == Some(a))
-                })
-            }
-            _ => false,
-        };
+        // A footer chip is the key it advertises, so while the editor's
+        // footer shows the table's cursor, every chip on it keeps the cursor
+        // and the table's caret as its key does: the cursor's own (copy,
+        // toggle, delete, an auto row's edit; task #125) and the rest (send
+        // or cancel, add, vars, tabs, commands, quit; task #183). The rule
+        // asks where the press landed, the footer's strip as the last frame
+        // drew it, rather than listing actions: the app bar's save/discard
+        // and the address bar's lock are `FooterChip`s too, and they stay a
+        // click away. The cursor is read off the app now, which is the one
+        // the hit's frame was drawn from (the loop redraws after any event
+        // that reports a change, as the dialog rule above relies on). It
+        // shows only while the editor pane has the focus and no cell is
+        // open, so the commit above has nothing to close for these chips,
+        // and on the main screen there is no Settings field for the rule
+        // below, which inherits this exemption, to keep. The footer's other
+        // editor chips (`esc done`, `enter edit`, `copy url`, `tls`) show
+        // only without the cursor, so they stay a click away as before.
+        let table_cursor_chip =
+            matches!(hit, Hit::FooterChip(_)) && self.hits.in_footer(m.column, m.row) && {
+                let pane = crate::ui::PaneChipArgs::of(self);
+                pane.focus == PaneId::Editor && pane.table_row_selected.is_some()
+            };
         let keeps_table_selection = keeps_open_cell
-            || cursor_chip
+            || table_cursor_chip
             || matches!(hit, Hit::AutoHeaderCopy(_) | Hit::AutoHeaderReveal);
         if !keeps_open_cell {
             self.commit_table_edit();

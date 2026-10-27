@@ -511,12 +511,17 @@ impl Hit {
 /// The drawn `{{token}}` holding the editor's text caret rides along for the
 /// same reason (#135): only the draw knows which of a name's drawn
 /// instances the caret is in, and the caret's tip sits against that one.
+///
+/// So does the footer's strip (#183): [`Hit::FooterChip`] is registered by
+/// the app bar's save/discard and the address bar's lock too, so only the
+/// draw knows which chips are the footer's.
 #[derive(Default)]
 pub struct HitMap {
     regions: Vec<(Rect, Hit)>,
     tracks: Vec<(PaneId, Rect)>,
     h_tracks: Vec<(PaneId, Rect)>,
     caret_token: Option<(String, Rect)>,
+    footer: Rect,
 }
 
 impl HitMap {
@@ -525,6 +530,17 @@ impl HitMap {
         self.tracks.clear();
         self.h_tracks.clear();
         self.caret_token = None;
+        self.footer = Rect::default();
+    }
+
+    /// Records the footer's strip as drawn this frame.
+    pub fn set_footer(&mut self, area: Rect) {
+        self.footer = area;
+    }
+
+    /// Whether the point lies in the footer's strip on the last frame.
+    pub fn in_footer(&self, x: u16, y: u16) -> bool {
+        self.footer.contains(ratatui::layout::Position { x, y })
     }
 
     /// Records `{{name}}`, drawn at `rect`, as the token the editor's caret
