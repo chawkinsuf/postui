@@ -6670,21 +6670,18 @@ impl App {
             }
             Action::InsertVarText { text, completing } => {
                 self.no_coalesce = true;
-                // A whole `{{token}}` put while the caret is in a token
-                // takes that token's place: a token never lands inside
-                // another (#149). A completion goes in at the caret.
-                let over = (!completing).then(|| self.editor.caret_token_span()).flatten();
+                // A whole `{{token}}` never lands inside another: where it
+                // would, it takes that token's place (#149). Each field
+                // looks at its own caret as it puts it. A completion goes
+                // in at the caret.
+                let whole = !completing;
                 // A vim field the engine runs takes the token as one engine
                 // step (spec §3.7).
-                if self.vim_insert(&text, over.clone()) {
+                if self.vim_insert(&text, whole) {
                     return true;
                 }
-                let over = over.filter(crate::components::editor::CaretTokenSpan::holds_bar_caret);
                 if self.focus == PaneId::Editor && self.editor.url_open() {
-                    match over {
-                        Some(span) => self.editor.url.replace_chars(span.chars, &text),
-                        None => self.editor.url.insert_str(&text),
-                    }
+                    self.editor.url.put_var(&text, whole);
                 } else if self.focus == PaneId::Editor
                     && matches!(
                         self.editor.active_tab,
@@ -6694,18 +6691,12 @@ impl App {
                     && self.editor.table.editing.is_some()
                 {
                     let edit = self.editor.table.editing.as_mut().unwrap();
-                    match over {
-                        Some(span) => edit.input.replace_chars(span.chars, &text),
-                        None => edit.input.insert_str(&text),
-                    }
+                    edit.input.put_var(&text, whole);
                 } else if self.focus == PaneId::Editor
                     && self.editor.active_tab == EditorTab::Body
                     && self.editor.sub_focus == SubFocus::Content
                 {
-                    match over {
-                        Some(span) => self.editor.body_replace_in_row(span.row, span.chars, &text),
-                        None => self.editor.body_insert_str(&text),
-                    }
+                    self.editor.body_put_var(&text, whole);
                     self.turn_on_body_vars();
                 } else {
                     self.toasts

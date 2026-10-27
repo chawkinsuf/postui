@@ -27834,14 +27834,20 @@ fn a_completion_still_goes_in_at_the_caret() {
     assert_eq!(app.editor.table.editing.as_ref().unwrap().input.text(), "{{base_url}}{{old}}");
 }
 
-/// A cell's caret in a token raises no caret tooltip: only the URL line
-/// and the body do.
+/// A live selection is what a pick replaces, as a paste does, even with
+/// the caret inside a token.
 #[test]
-fn a_cells_caret_in_a_token_raises_no_tip() {
+fn a_selection_wins_over_the_carets_token() {
     let (mut app, _dir, _out) = tooltip_app("x");
-    open_value_cell(&mut app, EditorTab::Headers, "a {{old}} b", 4);
-    assert_eq!(app.editor.caret_token(), None);
-    assert_eq!(app.editor.caret_token_span().map(|t| t.chars), Some(2..9));
+    open_value_cell(&mut app, EditorTab::Headers, "ab{{old}}", 0);
+    let input = &mut app.editor.table.editing.as_mut().unwrap().input;
+    input.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+    for _ in 0..3 {
+        input.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+    }
+    assert_eq!(input.selection(), Some((0, 4)));
+    app.update(Action::InsertVarText { text: "{{v}}".into(), completing: false });
+    assert_eq!(app.editor.table.editing.as_ref().unwrap().input.text(), "{{v}}old}}");
 }
 
 // --- a project that refuses to open ---------------------------------------

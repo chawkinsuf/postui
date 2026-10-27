@@ -26,6 +26,19 @@ impl Pos {
     }
 }
 
+/// The chars of the `{{token}}` that text put at char `at` of `line` would
+/// land inside: one that starts before `at` and ends after it. A put just
+/// before a token's first brace or just after its last lands outside it
+/// (#149).
+pub fn token_around(line: &[char], at: usize) -> Option<std::ops::Range<usize>> {
+    let text: String = line.iter().collect();
+    postui_core::vars::find_tokens(&text).into_iter().find_map(|t| {
+        let start = text[..t.start].chars().count();
+        let end = start + text[t.start..t.end].chars().count();
+        (start < at && at < end).then_some(start..end)
+    })
+}
+
 /// Text by lines: all the shapes here read.
 pub trait Lines {
     /// At least 1: an empty text is one empty line.

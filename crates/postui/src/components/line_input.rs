@@ -177,14 +177,6 @@ impl LineInput {
         self.run = None;
     }
 
-    /// Replaces chars `range` with `text` as one step of this input's
-    /// history, the caret after it: a picked `{{token}}` over the token the
-    /// caret was in (#149).
-    pub fn replace_chars(&mut self, range: std::ops::Range<usize>, text: &str) {
-        self.record(EditKind::Whole);
-        self.splice_raw(range.start, range.end, text);
-    }
-
     /// Records the state before an edit of `kind`. A same-kind edit
     /// extends the current run (no new snapshot); anything else opens a
     /// new step. Any edit drops the redo branch.
@@ -503,6 +495,20 @@ impl LineInput {
         self.cursor += flat.chars().count();
         self.anchor = None;
         self.click_span = None;
+    }
+
+    /// Puts a picked variable's `text` as a paste does: over a live
+    /// selection, else at the caret. A `whole` `{{token}}` that would land
+    /// inside a token takes that token's place instead (#149).
+    pub fn put_var(&mut self, text: &str, whole: bool) {
+        if whole && self.selection().is_none() {
+            let chars: Vec<char> = self.text.chars().collect();
+            if let Some(token) = crate::text::token_around(&chars, self.cursor) {
+                self.anchor = Some(token.start);
+                self.cursor = token.end;
+            }
+        }
+        self.paste(text);
     }
 
     /// Whether the text *before* the cursor ends with `suffix`. Used to spot

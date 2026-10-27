@@ -1519,6 +1519,19 @@ fn a_picked_token_replaces_the_token_the_caret_is_in() {
     feed(&mut app, "<CR>0i");
     app.update(Action::InsertVarText { text: "{{v}}".into(), completing: false });
     assert_eq!(url(&app), ("{{v}}{{old}}", 5));
+
+    // Insert ctrl+o after a token: the token goes in where Insert resumes,
+    // after the token, not over it.
+    let mut app = url_line("a{{old}}");
+    feed(&mut app, "<CR>A<C-o>");
+    app.update(Action::InsertVarText { text: "{{v}}".into(), completing: false });
+    assert_eq!(url(&app).0, "a{{old}}{{v}}");
+
+    // Normal on the last brace: the put goes after it, outside the token.
+    let mut app = url_line("a{{old}}");
+    feed(&mut app, "<CR>$");
+    app.update(Action::InsertVarText { text: "{{v}}".into(), completing: false });
+    assert_eq!(url(&app).0, "a{{old}}{{v}}");
 }
 
 /// #149: a Visual selection whose caret ends in a token is still what a

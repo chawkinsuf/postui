@@ -148,28 +148,6 @@ struct AutoIndent {
     lines: usize,
 }
 
-/// The `{{token}}` the keyboard caret is in, and where
-/// ([`Editor::caret_token_span`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CaretTokenSpan {
-    pub name: String,
-    /// The body's line; 0 in a one-line field.
-    pub row: usize,
-    /// The token's chars in that row, braces included.
-    pub chars: std::ops::Range<usize>,
-    /// The caret's char in that row.
-    pub caret: usize,
-}
-
-impl CaretTokenSpan {
-    /// Whether text put at a caret that sits between chars (arrows, vim
-    /// Insert) would land inside the token. Such a caret on the token's
-    /// first brace is in front of it; a vim Normal caret there is on it.
-    pub fn holds_bar_caret(&self) -> bool {
-        self.caret > self.chars.start
-    }
-}
-
 /// Which sub-region of the editor pane has keyboard focus: the method
 /// badge, the URL line, the active tab's content (params table / headers
 /// table / body editor), or nothing — the blurred state Enter/Esc/
@@ -1177,52 +1155,27 @@ impl Editor {
     /// rest in: the URL line, and the body editor's current line. `None`
     /// anywhere else, and whenever the caret is outside every token.
     pub fn caret_token(&self) -> Option<String> {
-        // A cell's caret raises no tooltip; only the span reads it.
-        if self.sub_focus == SubFocus::Content && self.cell_tab() {
-            return None;
-        }
-        self.caret_token_span().map(|t| t.name)
-    }
-
-    /// Whether the active tab is one whose table cell a caret can be in,
-    /// the tabs `Action::InsertVarText` writes a cell on.
-    fn cell_tab(&self) -> bool {
-        matches!(self.active_tab, EditorTab::Params | EditorTab::Headers | EditorTab::Vars)
-    }
-
-    /// The `{{token}}` the keyboard caret is in, and where: its row (the
-    /// body's line; 0 in a one-line field) and its chars in that row, for
-    /// putting a token over it. Covers the URL line, the body's current
-    /// line and a table cell under edit.
-    pub fn caret_token_span(&self) -> Option<CaretTokenSpan> {
-        use std::borrow::Cow;
-        // The field's text, borrowed where it is one string already, and
-        // the caret's row and char index in it. The body's line is
-        // collected from edtui's chars: one pass over the caret's line,
-        // the same order of work as edtui's own render of it each frame.
-        let (text, row, caret): (Cow<str>, usize, usize) = match self.sub_focus {
-            SubFocus::Url if self.url_open => (self.url.text().into(), 0, self.url.cursor()),
+        let (text, byte_off) = match self.sub_focus {
+            SubFocus::Url if self.url_open => {
+                let text = self.url.text().to_string();
+                let off = char_byte_offset(&text, self.url.cursor());
+                (text, off)
+            }
             SubFocus::Content if self.active_tab == EditorTab::Body => {
                 let cursor = self.body.cursor;
                 let line: String = self.body.lines.iter_row().nth(cursor.row)?.iter().collect();
-                (line.into(), cursor.row, cursor.col)
-            }
-            SubFocus::Content if self.cell_tab() => {
-                let edit = self.table.editing.as_ref()?;
-                (edit.input.text().into(), 0, edit.input.cursor())
+                let off = char_byte_offset(&line, cursor.col);
+                (line, off)
             }
             _ => return None,
         };
-        let byte_off = char_byte_offset(&text, caret);
         // Strictly inside the span: a caret parked immediately *after* a
         // token (the natural resting place right after typing one) would
         // otherwise hold a tooltip open over the pane indefinitely.
-        let token = postui_core::vars::find_tokens(&text)
+        postui_core::vars::find_tokens(&text)
             .into_iter()
-            .find(|t| byte_off >= t.start && byte_off < t.end)?;
-        let start = text[..token.start].chars().count();
-        let end = start + text[token.start..token.end].chars().count();
-        Some(CaretTokenSpan { name: token.name, row, chars: start..end, caret })
+            .find(|t| byte_off >= t.start && byte_off < t.end)
+            .map(|t| t.name)
     }
 
     /// The body as the request holds it, lines joined by `\n`: the buffer's
@@ -1302,29 +1255,25 @@ impl Editor {
         true
     }
 
-    /// Replaces chars `cols` of body line `row` with `s`, the caret after
-    /// it: a picked `{{token}}` over the token the caret was in. Selects
-    /// them and pastes over the selection, as [`Self::paste_body`] does.
-    pub fn body_replace_in_row(&mut self, row: usize, cols: std::ops::Range<usize>, s: &str) {
-        self.body_word_anchor = None;
-        self.set_body_selection_boundaries(
-            edtui::Index2::new(row, cols.start),
-            edtui::Index2::new(row, cols.end),
-        );
-        self.paste_body(s);
-    }
-
-    /// Feeds each char of `s` through the body's key handler as a
-    /// synthesized plain `KeyCode::Char` event, as if the user had typed it.
-    /// Used to splice a picked variable token into the body buffer, which
-    /// (unlike `LineInput`) has no direct string-insertion API of its own.
-    pub fn body_insert_str(&mut self, s: &str) {
-        for c in s.chars() {
-            self.body_handler.on_key_event(
-                KeyEvent::new(KeyCode::Char(c), ratatui::crossterm::event::KeyModifiers::NONE),
-                &mut self.body,
+    /// Puts a picked variable's `text` as [`Self::paste_body`] does: over a
+    /// live selection, else at the caret. A `whole` `{{token}}` that would
+    /// land inside a token takes that token's place instead (#149).
+    pub fn body_put_var(&mut self, text: &str, whole: bool) {
+        let caret = self.body.cursor;
+        if whole && self.body.selection.is_none() {
+            let token = crate::text::token_around(
+                &crate::text::Lines::line(&self.body.lines, caret.row),
+                caret.col,
             );
+            if let Some(token) = token {
+                self.body_word_anchor = None;
+                self.set_body_selection_boundaries(
+                    edtui::Index2::new(caret.row, token.start),
+                    edtui::Index2::new(caret.row, token.end),
+                );
+            }
         }
+        self.paste_body(text);
     }
 
     /// The overlays this draw wants, in precedence order (see `Overlay`).
