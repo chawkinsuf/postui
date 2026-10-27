@@ -4999,12 +4999,13 @@ fn body_lines(
     // text, or whatever `viewport_window` cut for a raw row.
     //
     // `tail` is painted after the row's text but is not part of it (a
-    // header row's gap and copy pill, #54; the divider's rule, #177): the copy and the search read
-    // the text alone, so the highlights and the selection are laid on
-    // `pieces` before `tail` joins them, and a selection to the row's end
-    // (`v$` included) stops where the text does, as on a Raw or Pretty
-    // row, which has no cell past its text to paint. Only the cursor
-    // row's tint, a whole-line style, still spans the tail.
+    // header row's gap and copy pill, #54; the divider's rule, #177): the
+    // copy and the search read the text alone, so the highlights and the
+    // selection are laid on `pieces` before `tail` joins them, and a
+    // selection to the row's end (`v$` included) stops where the text
+    // does, as on a Raw or Pretty row, which has no cell past its text to
+    // paint. Only the cursor row's tint, a whole-line style, still spans
+    // the tail.
     let mut push = |i: usize,
                     full: usize,
                     pieces: Vec<(String, Style)>,
