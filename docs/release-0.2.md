@@ -23,7 +23,7 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] #151 The variable edit dialog changes request vars under an open cell (pulled in by the user, 2026-10-26, with the four below; merged 2026-10-26: the dialog commits an open Vars cell as it opens)
 - [x] #144 A bad command-line argument prints usage and exits 0 (merged 2026-10-26: `postui: <reason>` and the usage on stderr, exit 2; `--help`/`-h` on stdout)
 - [x] #145 Variable Manager grid: arrows copy key is `c` while every other list copies with `y` (merged 2026-10-26: `y` copies, `p` pastes, as on every list)
-- [ ] #128 Arrows body keyboard selections can't include a line break
+- [x] #128 Arrows body keyboard selections can't include a line break (merged 2026-10-27: selections take the breaks they cross; shift+Down takes the line and its break, the user's call)
 - [x] #127 `ctrl+y` in the arrows body pastes back the last deleted selection (merged with #156: the body drops edtui's private paste, undo, redo and search keys)
 - [x] #156 `ctrl+u` in the arrows body runs edtui's own one-character undo (pulled in by the user with #127)
 
