@@ -3510,25 +3510,23 @@ impl App {
                 let key = SettingsField::Keymap.key();
                 let before = UiValue::Text(self.ui_string(key));
                 let after = UiValue::Text(profile.spelling().to_string());
-                let saved = self.config.save_ui_string(key, profile.spelling());
-                let landed = saved.is_ok();
-                // Applied whether or not it landed (spec §4.2): left unset,
-                // the question would come straight back, and a question
-                // that cannot be answered is worse than one asked again
-                // at the next launch.
-                if let Err(e) = &saved {
-                    self.toasts.push(
-                        format!(
-                            "could not save {}: {e}; using {} keys for this session",
-                            crate::config::CONFIG_TOML,
-                            profile.spelling()
-                        ),
-                        ToastKind::Error,
-                    );
-                }
-                self.apply_ui(key, &after);
-                if landed {
-                    self.record_config_step(key, before, after);
+                match self.write_ui_value(key, &after) {
+                    Ok(()) => self.record_config_step(key, before, after),
+                    // Applied whether or not it landed (spec §4.2): left
+                    // unset, the question would come straight back, and a
+                    // question that cannot be answered is worse than one
+                    // asked again at the next launch.
+                    Err(e) => {
+                        self.toasts.push(
+                            format!(
+                                "could not save {}: {e}; using {} keys for this session",
+                                crate::config::CONFIG_TOML,
+                                profile.spelling()
+                            ),
+                            ToastKind::Error,
+                        );
+                        self.apply_ui(key, &after);
+                    }
                 }
                 if matches!(self.modals.top(), Some(Modal::KeymapChoice { .. })) {
                     self.modals.pop();
@@ -12068,9 +12066,9 @@ impl App {
     /// `ReloadFromDisk` uses, so the tab and a hand-edit converge. A
     /// keymap value also swaps the live bindings, warns of the
     /// `keys.toml` letters that shadow vim's (spec §4.4), and drops a
-    /// half-typed chord. [`Self::write_ui_value`]'s tail, and
-    /// `SetKeyProfile`'s on its own, which applies even a refused write
-    /// (spec §4.2).
+    /// half-typed chord. [`Self::write_ui_value`]'s tail, and called on
+    /// its own only by `SetKeyProfile`, which applies even a refused
+    /// write (spec §4.2).
     fn apply_ui(&mut self, key: &'static str, value: &crate::undo::UiValue) {
         let mut ui = self.ui_settings.clone();
         apply_ui_value(&mut ui, key, value);
@@ -12862,8 +12860,9 @@ fn apply_ui_value(ui: &mut crate::config::UiSettings, key: &str, value: &crate::
         ("indent_width", UiValue::Int(v)) => ui.indent_width = *v,
         // A key that writes to disk but applies to nothing is the "state
         // that never landed" defect wearing the other shoe. Keys are
-        // `&'static str` from `SettingsField::key`, so this can only be a
-        // typo.
+        // `&'static str` from `SettingsField::key`, and a replayed step
+        // carries the key and value kind its action wrote through here,
+        // so this can only be a typo in a new key's wiring.
         (other, value) => debug_assert!(false, "no setting {other:?} taking {value:?}"),
     }
 }
