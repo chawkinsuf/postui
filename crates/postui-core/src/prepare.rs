@@ -577,7 +577,12 @@ fn rows(
     // postui's own rows, put on the request like a typed one: a body's
     // `Content-Type`, then an `Accept` for JSON on every send (task #174).
     // Left to the client, `Accept` would be reqwest's `*/*`, and Copy as
-    // curl would leave it to curl's, so it is ours to send.
+    // curl would leave it to curl's, so it is ours to send. It is JSON
+    // alone, with no `*/*` fallback, because the app is about JSON and the
+    // user asked for that default; a server that only serves another type
+    // may answer 406, and a request row or project default naming
+    // `accept` (the pencil writes one) replaces it. A curl import with no
+    // `Accept` adds no row, so it sends this one too (curl spec §5.2).
     let auto = |name: &str, value: &str, rows: &[HeaderRow]| HeaderRow {
         origin: HeaderOrigin::Auto,
         ..fixed(name, value.into(), replaced(rows, name))
@@ -610,8 +615,8 @@ fn rows(
     let by_secret = with_stand_ins(&req.url, &url_tokens, vars, secrets);
     // reqwest turns the URL's userinfo into `Authorization: Basic …` as it
     // builds the request, before any row of ours, so it leads the wire. A
-    // sent row naming `authorization` replaces it, like `Accept`. None
-    // while a token still unresolved can change it.
+    // sent row naming `authorization` replaces it in place (`wire_order`).
+    // None while a token still unresolved can change it.
     let authorization: fn(&UrlHeaders) -> &Option<String> = |h| &h.authorization;
     let by_token = || with_stand_ins(&req.url, &url_tokens, vars, &unresolved);
     if let Some(auth) = real.authorization.clone().filter(|_| !changed(&by_token(), authorization))
@@ -1247,6 +1252,11 @@ mod tests {
             .unwrap_or_else(|| panic!("no client {name} row in {rows:#?}"))
     }
 
+    /// postui's own row named `name`, if it adds one.
+    fn auto<'a>(rows: &'a [HeaderRow], name: &str) -> Option<&'a HeaderRow> {
+        rows.iter().find(|r| r.origin == HeaderOrigin::Auto && r.header.name == name)
+    }
+
     #[test]
     fn header_rows_list_an_unsent_default_and_mask_a_secret_in_display_only() {
         let mut req = base("https://api.example.com/v1/users");
@@ -1285,28 +1295,23 @@ mod tests {
     fn header_rows_add_auto_content_type_only_with_a_body_and_unsend_it_when_named() {
         let mut req = base("https://x.test");
         req.method = Method::Post;
-        let auto_content_type = |rows: &[HeaderRow]| {
-            rows.iter()
-                .find(|r| r.origin == HeaderOrigin::Auto && r.header.name == "Content-Type")
-                .cloned()
-        };
         assert_eq!(
-            auto_content_type(&header_rows(&req, &PrepareContext::default())),
+            auto(&header_rows(&req, &PrepareContext::default()), "Content-Type"),
             None,
             "no body: no auto content-type"
         );
 
         req.body = Some(Body::Json { text: "{}".into() });
         let rows = header_rows(&req, &PrepareContext::default());
-        let auto = row(&rows, "content-type");
-        assert_eq!(auto.origin, HeaderOrigin::Auto);
-        assert_eq!(auto.header.value, "application/json");
-        assert!(auto.sent());
+        let ct = row(&rows, "content-type");
+        assert_eq!(ct.origin, HeaderOrigin::Auto);
+        assert_eq!(ct.header.value, "application/json");
+        assert!(ct.sent());
 
         req.headers.insert("content-TYPE".into(), on("application/vnd.x+json"));
         let rows = header_rows(&req, &PrepareContext::default());
-        let auto = auto_content_type(&rows).unwrap();
-        assert!(!auto.sent(), "an explicit content-type wins case-insensitively");
+        let ct = auto(&rows, "Content-Type").unwrap();
+        assert!(!ct.sent(), "an explicit content-type wins case-insensitively");
     }
 
     #[test]
@@ -1442,9 +1447,7 @@ mod tests {
 
     /// The auto `Accept: application/json` row, for any method.
     fn auto_accept(rows: &[HeaderRow]) -> &HeaderRow {
-        rows.iter()
-            .find(|r| r.origin == HeaderOrigin::Auto && r.header.name == "Accept")
-            .unwrap_or_else(|| panic!("no auto Accept row in {rows:#?}"))
+        auto(rows, "Accept").unwrap_or_else(|| panic!("no auto Accept row in {rows:#?}"))
     }
 
     /// postui asks for JSON on every send, a GET included (task #174),
@@ -1820,7 +1823,7 @@ mod tests {
         assert_eq!(client(&rows, "Authorization").header.value, basic_auth("u:ab{{cd"));
     }
 
-    /// Like `Accept`, the URL's `Authorization` stands aside for a sent row
+    /// Like the auto `Accept`, the URL's `Authorization` stands aside for a sent row
     /// naming it, from the request or the defaults.
     #[test]
     fn a_sent_authorization_row_replaces_the_urls() {

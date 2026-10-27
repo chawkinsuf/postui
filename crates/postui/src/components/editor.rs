@@ -7713,7 +7713,7 @@ url = "https://api.example.com/users""#,
         let row = app.hits.rect_of(&hit).expect("the auto row is a hover surface");
         assert_eq!(row.y, vy, "on the default's own row");
         let accept = app.editor.computed.rows.iter().position(|r| r.header.name == "Accept");
-        let accept = Hit::AutoHeaderRow(accept.expect("the client's Accept row"));
+        let accept = Hit::AutoHeaderRow(accept.expect("the auto Accept row"));
         assert_eq!(app.hits.rect_of(&accept), None, "an ordinary row stays the bare pane");
         app.hovered = Some(hit);
         let (terminal, content) = draw_wide(&mut app);
@@ -8528,11 +8528,12 @@ url = "https://api.example.com/users""#,
     fn an_overridable_auto_row_has_a_pencil_pill_after_its_copy_pill() {
         let mut e = Editor::default();
         let overridable = |name: &str, value: &str| postui_core::prepare::HeaderRow {
+            origin: postui_core::prepare::HeaderOrigin::Auto,
             override_as: Some((name.into(), value.into())),
             ..auto_header(name, value)
         };
         e.computed.rows = vec![
-            overridable("Accept", "*/*"),
+            overridable("Accept", "application/json"),
             auto_header("Host", "x.test"),
             postui_core::prepare::HeaderRow {
                 unsent: Some(postui_core::prepare::Unsent::Replaced),

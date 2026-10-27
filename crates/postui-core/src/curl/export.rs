@@ -32,7 +32,9 @@ pub fn to_curl(req: &PreparedRequest) -> String {
     let mut lines = vec![head];
     // Only the rows the request sets, postui's `Content-Type` and `Accept`
     // among them: the ones the client adds itself (in `wire` only: `Host`,
-    // the userinfo's `Authorization`, …) are curl's to add too.
+    // the userinfo's `Authorization`, …) are curl's to add too. A copy
+    // pasted back in imports postui's rows as typed ones, as it does a
+    // project default's: the command is the wire (D2), not the file.
     for h in &req.headers {
         let (name, value) = (&h.name, &h.value);
         // `Name:` with only blanks after it tells curl to drop the header;

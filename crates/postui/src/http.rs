@@ -343,10 +343,10 @@ mod tests {
     /// their own (`authorization` from the URL's userinfo, `host`,
     /// `content-length`, which core's `header_rows` predicts), with names
     /// in their wire case. postui's own `accept: application/json` goes in
-    /// place of reqwest's `*/*` whatever the method (task #174). A typed `Host`, `Content-Length` or
-    /// `Transfer-Encoding` is never sent (spec 2026-10-18 R3a): the
-    /// client's own row goes out instead, if it sends one. The userinfo
-    /// cases pin core's copy of reqwest's decoding.
+    /// place of reqwest's `*/*` whatever the method (task #174). A typed
+    /// `Host`, `Content-Length` or `Transfer-Encoding` is never sent (spec
+    /// 2026-10-18 R3a): the client's own row goes out instead, if it sends
+    /// one. The userinfo cases pin core's copy of reqwest's decoding.
     #[tokio::test]
     async fn sent_headers_match_the_wire() {
         use postui_core::model::{Body, Entry, HttpRequest, Method};

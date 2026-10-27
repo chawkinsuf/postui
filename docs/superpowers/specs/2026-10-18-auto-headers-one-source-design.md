@@ -220,7 +220,7 @@ first, so `https:///host` has a `Host` row like the wire does.
 
 - Core: today's `computed_headers_*` tests move onto `header_rows`.
   New tests cover:
-  - R3: a sent `Accept` default makes the client's `Accept` unsent.
+  - R3: a sent `Accept` default makes the client's `Accept` unsent (since task #174, the auto `Accept`).
   - R3a: a request or default `Host` or `{{h}}`→`Host` row, any case, is
     unsent and the client's `Host` stays sent. Likewise
     `Content-Length`, with a body and without. `prepare` succeeds and
@@ -347,7 +347,7 @@ opposite direction, from the request up into the project.
 |---|---|
 | An auto row the request may take over carries a `󰏫` pill right after its copy pill; the copy pill keeps its place on every row. Footer hint: `Edit this header in the request`. | `mine (approved)` |
 | A click adds the header to the request's Headers table, last, focuses the editor and opens the new row's value with the caret at the end. The auto row then strikes, overridden (R5). | `mine (approved)`, from the user's reason above |
-| A default's row is written as the project writes it, `{{tokens}}` and all; the auto `Content-Type` and the client's `Accept` as sent. | `mine (approved)` |
+| A default's row is written as the project writes it, `{{tokens}}` and all; the auto `Content-Type` and the client's `Accept` (since task #174, the auto `Accept`) as sent. | `mine (approved)` |
 | No pencil on a row that isn't sent (it is already overridden), on `Host`, `Content-Length` and `Transfer-Encoding` (R3a), or on the URL's `Authorization`, which would write the URL's credentials into the request file in the clear. | `you` for the client-owned rows (task text); `mine (approved)` for the rest |
 | No pencil on an auto or client row the request has a disabled row naming (a disabled row leaves `Accept` and `Content-Type` sent): that row is the one to edit. | `mine` |
 | Undo takes the value edit back first, then the row, as with any row added and then edited. | `mine (approved)` |
