@@ -1224,11 +1224,7 @@ impl Editor {
         self.auto_indent = None;
         // A selection end on the row's break stays on it (#128): read
         // before the row's length changes.
-        let on_break = self
-            .body
-            .selection
-            .as_ref()
-            .map(|s| (self.is_body_break_cell(s.start), self.is_body_break_cell(s.end)));
+        let break_ends = self.selection_break_ends();
         if let Some(line) = self.body.lines.get_mut(edtui::RowIndex::new(row)) {
             line.clear();
         }
@@ -1253,15 +1249,7 @@ impl Editor {
                 to_start(p.row, &mut p.col);
             }
         }
-        if let (Some(sel), Some((start, end))) = (self.body.selection.as_mut(), on_break) {
-            let brk = edtui::Index2::new(row, 1); // the emptied row's break cell
-            if start && sel.start.row == row {
-                sel.start = brk;
-            }
-            if end && sel.end.row == row {
-                sel.end = brk;
-            }
-        }
+        self.keep_selection_break_ends(break_ends, false);
         // A selection wholly inside the blanks has nothing left to select.
         // Its anchor stays, as a collapsed selection's does, so a drag
         // through the blanks goes on selecting.
@@ -1410,6 +1398,9 @@ impl Editor {
     ) {
         let Some(sel) = self.body.selection.as_ref() else { return };
         let (start, end) = (sel.start(), sel.end());
+        if start.row == end.row && !self.is_body_break_cell(end) {
+            return; // within one line: no break taken, nothing to lay out
+        }
         let Some(view) = self.body_view(area, bottom, end.row) else { return };
         let style = Style::default().bg(theme.selection).fg(theme.text);
         // Only the rows in view can paint (`rows` stops at `end.row`).
@@ -1988,13 +1979,18 @@ impl Editor {
     /// one break; spec 2026-10-26 R1). Clears the selection when the
     /// boundaries coincide.
     fn set_body_selection_boundaries(&mut self, a: edtui::Index2, b: edtui::Index2) {
+        // A boundary is a caret position, never past its line's end: an
+        // anchor left behind by typing that shortened the line comes back
+        // onto it, so it can't reach the line's break.
+        let len = |row: usize| self.body.lines.len_col(row).unwrap_or(0);
+        let onto_line = |p: edtui::Index2| edtui::Index2::new(p.row, p.col.min(len(p.row)));
+        let (a, b) = (onto_line(a), onto_line(b));
         let (lo, hi) = if (a.row, a.col) <= (b.row, b.col) { (a, b) } else { (b, a) };
         if lo == hi {
             self.body.selection = None;
             return;
         }
         // A lower boundary at a line's end starts on that line's break.
-        let len = |row: usize| self.body.lines.len_col(row).unwrap_or(0);
         let start = if lo.col >= len(lo.row) { self.body_break_cell(lo.row) } else { lo };
         // The exclusive upper boundary becomes an inclusive end cell: the
         // char just before it, or the previous row's break when the
@@ -2021,6 +2017,34 @@ impl Editor {
     /// clamped onto chars, and edtui's own mouse path never selects.
     fn is_body_break_cell(&self, at: edtui::Index2) -> bool {
         at == self.body_break_cell(at.row)
+    }
+
+    /// Which ends of the selection sit on a break, read before an edit
+    /// changes row lengths, for [`Self::keep_selection_break_ends`].
+    fn selection_break_ends(&self) -> Option<(bool, bool)> {
+        let sel = self.body.selection.as_ref()?;
+        Some((self.is_body_break_cell(sel.start), self.is_body_break_cell(sel.end)))
+    }
+
+    /// After an edit changed row lengths, puts the selection ends that sat
+    /// on a break ([`Self::selection_break_ends`]) back on their row's
+    /// break cell, and the others onto a char (`clamp`).
+    fn keep_selection_break_ends(&mut self, ends: Option<(bool, bool)>, clamp: bool) {
+        let (Some(sel), Some((start_break, end_break))) = (self.body.selection.as_ref(), ends)
+        else {
+            return;
+        };
+        let place = |i: edtui::Index2, on_break: bool| {
+            if on_break {
+                self.body_break_cell(i.row)
+            } else if clamp {
+                self.clamp_to_cell(i)
+            } else {
+                i
+            }
+        };
+        let (start, end) = (place(sel.start, start_break), place(sel.end, end_break));
+        self.set_body_selection_span(start, end);
     }
 
     /// Whether the selection `start..=end` takes `row`'s line break: its
@@ -2173,11 +2197,7 @@ impl Editor {
         };
         // An endpoint on a break stays on its row's break, wherever the
         // shift moves the row's end (#128).
-        let breaks_at = self
-            .body
-            .selection
-            .as_ref()
-            .map(|s| (self.is_body_break_cell(s.start), self.is_body_break_cell(s.end)));
+        let break_ends = self.selection_break_ends();
         let indent = self.body_indent();
         let unit: Vec<char> = indent.unit().chars().collect();
         // A dedent strips one leading tab, or up to one level of spaces: a
@@ -2220,15 +2240,7 @@ impl Editor {
             sel.start = shift_of(sel.start);
             sel.end = shift_of(sel.end);
         }
-        if let (Some(sel), Some((start_break, end_break))) = (self.body.selection.take(), breaks_at)
-        {
-            let place = |e: &Self, i: edtui::Index2, on_break: bool| {
-                if on_break { e.body_break_cell(i.row) } else { e.clamp_to_cell(i) }
-            };
-            let (start, end) =
-                (place(self, sel.start, start_break), place(self, sel.end, end_break));
-            self.set_body_selection_span(start, end);
-        }
+        self.keep_selection_break_ends(break_ends, true);
     }
 
     /// Plain Tab in the arrows body (spec 2026-10-15 R8): under spaces,
@@ -9289,7 +9301,8 @@ mod body_click_tests {
         // every char and break whose cell lies from its start cell through
         // its end cell: so the breaks between its rows, and the break after
         // its end row only when it ends on that break cell.
-        let bodies = ["ab\nc\n\nde\n", "ab\ncd", "ab", "ab\n", "\n", "", "é\nb"];
+        let bodies =
+            ["ab\nc\n\nde\n", "ab\ncd", "ab", "ab\n", "\n", "", "é\nb", "ab\ncd\n\n\nef\ng"];
         for body in bodies {
             let rows: Vec<Vec<char>> = body.split('\n').map(|r| r.chars().collect()).collect();
             let brk = |r: usize| rows[r].len().max(1);
@@ -9410,6 +9423,19 @@ mod body_click_tests {
         assert_eq!(e.body_selected_text().as_deref(), Some("\n"));
         e.handle_key(pkey(KeyCode::Char('x')));
         assert_eq!(e.body_text(), "ab\nxef");
+    }
+
+    /// #128 review r2: an anchor left past a line's end (typing shortened
+    /// the line under it) counts from the line's end, so it never reaches
+    /// the line's break.
+    #[test]
+    fn a_stale_anchor_past_the_line_end_takes_no_break() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body("hello\nwo\nx");
+        e.body_sel_anchor = Some(Index2::new(1, 5)); // where `world` ended
+        e.body.cursor = Index2::new(1, 2);
+        e.handle_key(skey(KeyCode::Left));
+        assert_eq!(e.body_selected_text().as_deref(), Some("o"));
     }
 
     /// A Tab indent keeps a selection that ends on a break ending on it.
