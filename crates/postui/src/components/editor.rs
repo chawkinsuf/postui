@@ -2793,15 +2793,18 @@ impl Component for Editor {
                         | KeyCode::End
                 );
                 if is_motion && ev.modifiers.contains(KeyModifiers::SHIFT) {
-                    // The anchor extends a live selection. With none, the
-                    // caret is the anchor (#166): a click's drag anchor, or
-                    // one typing or a reload left behind, is stale, and a
-                    // collapsed selection's anchor is the caret already.
-                    let anchor = match self.body_sel_anchor {
-                        Some(a) if self.body.selection.is_some() => a,
-                        _ => self.body.cursor,
-                    };
-                    self.body_sel_anchor = Some(anchor);
+                    // The anchor extends a live selection only. With none,
+                    // the caret is the anchor (#166), as in a GUI editor.
+                    // The field is shared with the mouse: every click plants
+                    // it for a drag, and typing, plain motions and reloads
+                    // leave it behind. Rather than clear it on each of those
+                    // paths, this one reader drops it when nothing is
+                    // selected. A shift run that collapsed back loses
+                    // nothing: its anchor is the caret.
+                    if self.body.selection.is_none() {
+                        self.body_sel_anchor = None;
+                    }
+                    let anchor = *self.body_sel_anchor.get_or_insert(self.body.cursor);
                     let stripped =
                         KeyEvent::new(ev.code, ev.modifiers.difference(KeyModifiers::SHIFT));
                     if !self.body_nav_key(&stripped) {
@@ -9441,11 +9444,10 @@ mod body_click_tests {
     }
 
     /// #166: with no live selection, a shift motion anchors at the caret,
-    /// whatever anchor a click, typing or a reload left behind.
+    /// not at the click point the caret has since left.
     #[test]
-    fn a_shift_motion_with_no_selection_anchors_at_the_caret() {
+    fn a_shift_motion_after_a_click_and_moves_anchors_at_the_caret() {
         use ratatui::crossterm::event::KeyCode;
-        // A click plants a drag anchor at the line's end; the caret moves on.
         let mut e = editor_with_body("hello world");
         e.handle_mouse(left_down(35, 0));
         assert_eq!(e.body.cursor, Index2::new(0, 11));
@@ -9454,15 +9456,25 @@ mod body_click_tests {
         }
         e.handle_key(skey(KeyCode::Left));
         assert_eq!(e.body_selected_text().as_deref(), Some(" "));
-        // Typing after the click: the line grows past the click point.
+    }
+
+    /// #166: typing after a click carries the caret past the click point.
+    #[test]
+    fn a_shift_motion_after_a_click_and_typing_anchors_at_the_caret() {
+        use ratatui::crossterm::event::KeyCode;
         let mut e = editor_with_body("ab");
         e.handle_mouse(left_down(35, 0));
         e.handle_key(pkey(KeyCode::Char('c')));
         e.handle_key(pkey(KeyCode::Char('d')));
         e.handle_key(skey(KeyCode::Left));
         assert_eq!(e.body_selected_text().as_deref(), Some("d"));
-        // Backspace after the click: the click point is past the line's
-        // end, where it would reach the break.
+    }
+
+    /// #166: Backspace after a click leaves the click point past the
+    /// line's end, where an anchor would reach the line's break.
+    #[test]
+    fn a_shift_motion_after_a_click_and_backspace_takes_no_break() {
+        use ratatui::crossterm::event::KeyCode;
         let mut e = editor_with_body("hello\nworld\nx");
         e.handle_mouse(left_down(35, 1));
         for _ in 0..3 {
@@ -9470,11 +9482,21 @@ mod body_click_tests {
         }
         e.handle_key(skey(KeyCode::Left));
         assert_eq!(e.body_selected_text().as_deref(), Some("o"));
-        // A reload after a selection.
+    }
+
+    /// #166: a reload drops the selection; the next shift motion starts at
+    /// the caret, not at the old text's anchor.
+    #[test]
+    fn a_shift_motion_after_a_reload_anchors_at_the_caret() {
+        use ratatui::crossterm::event::KeyCode;
         let mut e = editor_with_body("hello");
+        e.body.cursor = Index2::new(0, 5);
         e.handle_key(skey(KeyCode::Left));
         e.set_body_text("a\nb\nc");
-        e.body.cursor = Index2::new(2, 1);
+        for _ in 0..2 {
+            e.handle_key(pkey(KeyCode::Down));
+        }
+        e.handle_key(pkey(KeyCode::End));
         e.handle_key(skey(KeyCode::Left));
         assert_eq!(e.body_selected_text().as_deref(), Some("c"));
     }
