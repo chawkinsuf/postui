@@ -58,7 +58,7 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] Windows: not supported natively for 0.2; WSL 2 is recommended (the user, 2026-10-26). The README says so (#138)
 - [x] #139 `postui --version` flag (also `-V`; prints `postui <version>`, in `--help`)
 - [x] #140 CHANGELOG.md: one short first-release entry (the user, 2026-10-26: "go with the tiny changelog"). dist puts the matching section on the GitHub Release as its notes and takes the title from the heading, so #142 dates it
-- [ ] #141 The repo's GitHub description and topics
+- [x] #141 The repo's GitHub description and topics (set by the user 2026-10-27: the README tagline as the description, 15 topics, no homepage)
 - [ ] #142 Last (the user, 2026-10-26): bump the workspace version to `0.2.0` (Cargo.lock follows), then tag: `git tag -a v0.2.0 -m "postui 0.2.0"`, then `git push origin v0.2.0`
 
 ## Name
