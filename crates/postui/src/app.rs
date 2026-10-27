@@ -8699,11 +8699,13 @@ impl App {
     /// is up no cell can open again, so none is open when they run. A
     /// promote runs only from the Variable Manager, and leaving the editor
     /// for Manage commits the cell at the end of that event (`capture_undo`,
-    /// spec 2026-10-19 R1), so none is open when it runs either (#153).
+    /// the net for screen changes, spec 2026-10-19 R1), so none is open
+    /// when it runs either (#153). The promote has no commit of its own:
+    /// it would serve no path the app takes.
     fn debug_assert_no_open_vars_cell(&self) {
         debug_assert!(
             self.editor.active_tab != EditorTab::Vars || self.editor.table.editing.is_none(),
-            "a request-scope var write under an open Vars cell"
+            "a Vars row write (value dialog or promote) under an open Vars cell"
         );
     }
 
@@ -9098,6 +9100,10 @@ impl App {
                 E::SetFields { selector: selector.clone(), fields: fields.clone() }
             }
             VarStructOp::Promote { name, target } => {
+                // Checked before the value read below, not only at the
+                // removal after core's write: an open cell's typing is
+                // missing from the value and moves rows at the removal.
+                self.debug_assert_no_open_vars_cell();
                 // The value being promoted lives in the open request's
                 // buffer, which core never sees: read it here, and refuse
                 // in the same words as before when it isn't there.
@@ -9177,7 +9183,6 @@ impl App {
             // both places. A save failure is reported as a toast rather
             // than an `Err` (which would incorrectly roll back an op that,
             // on the project side, already committed).
-            self.debug_assert_no_open_vars_cell();
             self.editor.variables.shift_remove(name);
             if let Err(e) = self.save_open_request() {
                 self.toasts.push(

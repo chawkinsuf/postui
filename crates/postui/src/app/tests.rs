@@ -28094,10 +28094,14 @@ fn the_value_dialog_commits_an_open_ghost_cell_before_a_new_var() {
     );
 }
 
-/// Request `main/ping` on disk with vars `trace_id = "abc-123"`, `b = "2"`,
-/// open on the Vars tab with row `row`'s value cell open and holding
-/// `typed`, not yet committed.
-fn promote_app_with_cell_typed(row: usize, typed: &str) -> (App, tempfile::TempDir) {
+/// #153, the way the app reaches a promote: alt+r leaves the cell, and the
+/// main loop's end-of-event capture commits it (spec 2026-10-19 R1), so
+/// the Manager's Promote never runs over an open cell
+/// (`debug_assert_no_open_vars_cell` in the promote).
+#[test]
+fn opening_manage_commits_an_open_vars_cell_before_a_promote() {
+    // Request vars `trace_id`, `b`, with b's value cell open and typed in,
+    // not yet committed.
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let r = postui_core::model::HttpRequest::from_toml_str(
@@ -28111,23 +28115,14 @@ fn promote_app_with_cell_typed(row: usize, typed: &str) -> (App, tempfile::TempD
     app.editor.active_tab = EditorTab::Vars;
     app.editor.sub_focus = SubFocus::Content;
     app.focus = PaneId::Editor;
-    app.editor.table.set_selected(Some(Stop::Row(row)));
+    app.editor.table.set_selected(Some(Stop::Row(1)));
     let map = app.editor.variables.clone();
     app.editor.table.begin_edit_selected(&map);
     app.editor.table.handle_key(tab_key(), &mut app.editor.variables);
     let edit = app.editor.table.editing.as_mut().expect("the value cell is open");
-    assert_eq!((edit.row, edit.col), (row, crate::components::table_editor::Col::Value));
-    edit.input.set_text(typed);
-    (app, dir)
-}
+    assert_eq!((edit.row, edit.col), (1, crate::components::table_editor::Col::Value));
+    edit.input.set_text("typed");
 
-/// #153, the way the app reaches a promote: alt+r leaves the cell, and the
-/// main loop's end-of-event capture commits it (spec 2026-10-19 R1), so
-/// the Manager's Promote never runs over an open cell
-/// (`debug_assert_no_open_vars_cell` on its removal).
-#[test]
-fn opening_manage_commits_an_open_vars_cell_before_a_promote() {
-    let (mut app, _dir) = promote_app_with_cell_typed(1, "typed");
     app.handle_key(alt('r'));
     assert_eq!(app.screen, Screen::Manage);
     app.capture_undo(); // what `main`'s loop runs after every event
