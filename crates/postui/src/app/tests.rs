@@ -30402,7 +30402,9 @@ fn a_refused_settings_field_write_keeps_the_edit_and_the_typing() {
     app.config = crate::config::Config::at(dir.path().to_path_buf());
     app.update(Action::OpenManage { tab: Some(ManageTab::Settings) });
     let stored = app.ui_settings.ai_cmd.clone();
-    app.settings.begin_edit(SettingsField::AiCmd, "");
+    // Seeded as the row's Enter seeds it; the typing replaces the
+    // selected stored text.
+    app.settings.begin_edit(SettingsField::AiCmd, &stored);
     type_chars(&mut app, "my-ai --go");
 
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -30416,7 +30418,14 @@ fn a_refused_settings_field_write_keeps_the_edit_and_the_typing() {
         app.toasts.messages()
     );
 
-    // An integer field's refused write is the same.
+    // An integer field's refused write is the same. (Undoing the typing is
+    // the way out of the first field: the stored text closes it unwritten.)
+    for _ in 0..4 {
+        app.handle_key(ctrl('z'));
+    }
+    assert_eq!(app.settings.field_text(), stored, "the typing came off");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.settings.editing.is_none(), "the undone field closes");
     let limit = app.ui_settings.osc52_limit;
     app.settings.begin_edit(SettingsField::Osc52Limit, "1024");
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
@@ -30707,7 +30716,7 @@ fn a_refused_settings_write_records_no_step() {
     let mut app = App::new_for_test();
     app.config = crate::config::Config::at(dir.path().to_path_buf());
 
-    app.update(Action::SetUiInt { key: "osc52_limit", value: usize::MAX });
+    assert!(!app.write_ui_int("osc52_limit", usize::MAX), "the write is refused");
     app.update(Action::Undo);
 
     assert!(

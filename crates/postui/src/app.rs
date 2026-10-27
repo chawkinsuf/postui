@@ -3680,10 +3680,6 @@ impl App {
                 self.write_ui_string(key, value);
                 true
             }
-            Action::SetUiInt { key, value } => {
-                self.write_ui_int(key, value);
-                true
-            }
             // A quit closes the open inputs first, saved (`leaving_unsaved`
             // did when the gate above ran); a refused close never stops a
             // quit, or a bad value could hold the app open. `ForceQuit` abandons them:
@@ -12017,8 +12013,9 @@ impl App {
         landed
     }
 
-    /// `Action::SetUiInt`'s write, answering whether it landed, as
-    /// [`Self::write_ui_string`] does.
+    /// A number field's write (`osc52_limit`, `indent_width`), answering
+    /// whether it landed, as [`Self::write_ui_string`] does. Only the
+    /// field commit writes these, so there is no action for it.
     fn write_ui_int(&mut self, key: &'static str, value: usize) -> bool {
         use crate::undo::UiValue;
         let before = self.ui_int(key);
