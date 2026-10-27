@@ -526,7 +526,7 @@ const CASES: &[Case] = &[
     vim_u("L.yank", TableThreeHeaders, "yyp", &[Headers(&["a", "b", "b-copy", "c"]), TableRow(2)]),
     arrows_u("L.yank", TableThreeHeaders, "yP", &[Headers(&["a", "b-copy", "b", "c"]), TableRow(1)]),
     vim_u("L.yank", VarGrid, "yyp", &[OptionCount(3)]),
-    arrows_u("L.yank", VarGrid, "cv", &[OptionCount(3)]),
+    arrows_u("L.yank", VarGrid, "yp", &[OptionCount(3)]),
     // Key list §6 (`L.dot`), M5b: `.` repeats the last list change.
     vim("L.dot", SidebarThree, "dd.", &[Requests(&["main/alpha"])]),
     vim("L.dot", SidebarThree, ".", &[Requests(&["main/alpha", "main/beta", "main/gamma"]), NoToast]),

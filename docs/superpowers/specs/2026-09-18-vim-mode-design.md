@@ -217,7 +217,7 @@ of that work in default mode, as they did before that round.
 
 Plain letters belong to vim. The per-surface app verbs bound to them
 today — `n` new, `r` rename, `d` delete, `m` move, `e` edit, `p`
-promote, `c` copy, `v` paste, `o`, `s`, `x`, `t`, `a` add, and the
+promote, `c` copy, `v` paste (`y` and `p` since #145, below), `o`, `s`, `x`, `t`, `a` add, and the
 per-surface `q` arms (`varmanager.rs:1146`, `:1299`,
 `manage_list.rs:526`) alongside the global one — are all removed in vim
 mode. Every one of them has a vim meaning that a vim user's fingers
@@ -235,7 +235,9 @@ Four take vim spellings directly:
 `yy` and `p` act on an in-app register, not the system clipboard —
 which is what the Variable Manager's `c`/`v` option stash already is
 (App state, never leaving its own selector). `ctrl+v` remains the
-system-clipboard paste, in both profiles.
+system-clipboard paste, in both profiles. *Amended 2026-10-26 (#145):*
+the default profile's grid copies with `y` and pastes with `p` now, as
+its other lists do; `c` and `v` are gone there.
 
 The rest — new, rename, move, promote, group fields, reveal, set
 default environment — have no vim analogue and are reached **only** by
