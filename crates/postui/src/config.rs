@@ -2,6 +2,7 @@
 //! `[projects]` table: known project paths (cycle order), an optional
 //! configured root directory, and the last-used project.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -65,26 +66,37 @@ impl ProjectsRegistry {
     /// table; every unrelated key is preserved byte-for-byte. The I/O
     /// around it (and the refusal to write over a file that doesn't
     /// parse) is [`Config::edit`]'s business.
+    ///
+    /// A path that isn't UTF-8 is never written (#167): TOML can only hold
+    /// it lossily, under a name no directory has, which the next launch
+    /// would open and every later save would add again. Such a project
+    /// (only the command line opens one) isn't remembered: it is left out
+    /// of `known`, and `last` keeps the file's, so the next launch reopens
+    /// the project used before it. (`root` is only ever read from the
+    /// file's text, so it is always UTF-8.)
     pub fn write_into(&self, doc: &mut toml_edit::DocumentMut) {
         let mut table = toml_edit::Table::new();
 
         let mut known = toml_edit::Array::new();
-        for p in &self.known {
-            known.push(p.to_string_lossy().into_owned());
+        for p in self.known.iter().filter_map(|p| p.to_str()) {
+            known.push(p);
         }
         table["known"] = toml_edit::value(known);
 
-        match &self.root {
-            Some(root) => table["root"] = toml_edit::value(root.to_string_lossy().into_owned()),
-            None => {
-                table.remove("root");
-            }
+        if let Some(root) = self.root.as_deref().and_then(Path::to_str) {
+            table["root"] = toml_edit::value(root);
         }
-        match &self.last {
-            Some(last) => table["last"] = toml_edit::value(last.to_string_lossy().into_owned()),
-            None => {
-                table.remove("last");
-            }
+        let last = match self.last.as_deref().map(Path::to_str) {
+            Some(Some(last)) => Some(last.to_owned()),
+            Some(None) => doc
+                .get("projects")
+                .and_then(|p| p.get("last"))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+            None => None,
+        };
+        if let Some(last) = last {
+            table["last"] = toml_edit::value(last);
         }
 
         doc["projects"] = toml_edit::Item::Table(table);
@@ -1173,24 +1185,31 @@ usage: postui [--debug-ai] [directory]
 /// project directory, since no real path starts with a dash without `./`.
 /// `--help` (or `-h`) anywhere on a line that is otherwise valid asks for
 /// help; it never turns a mistake into a success.
-pub fn parse_cli(args: Vec<String>) -> CliParse {
-    let is_help = |a: &String| a == "--help" || a == "-h";
+///
+/// The arguments come as the OS gave them (#161). Each is matched and
+/// named by its lossy text: a value that isn't UTF-8 holds a U+FFFD there,
+/// which no flag spelling has, so it is never taken for a valid flag (a
+/// `--keydump=` with such a value is a malformed one). The directory keeps
+/// the original bytes.
+pub fn parse_cli(args: Vec<OsString>) -> CliParse {
+    let is_help = |a: &OsString| a == "--help" || a == "-h";
     let help = args.iter().any(is_help);
     let parsed = parse_cli_line(args.into_iter().filter(|a| !is_help(a)).collect());
     if help && !matches!(parsed, CliParse::Usage { .. }) { CliParse::Help } else { parsed }
 }
 
 /// [`parse_cli`] for a line with its help flags taken out.
-fn parse_cli_line(args: Vec<String>) -> CliParse {
+fn parse_cli_line(args: Vec<OsString>) -> CliParse {
     let usage = |reason: String| CliParse::Usage { reason };
     if let [only] = args.as_slice()
-        && let Some(parsed) = run_alone_flag(only)
+        && let Some(parsed) = run_alone_flag(&only.to_string_lossy())
     {
         return parsed;
     }
     let mut root = None;
     let mut debug_ai = false;
-    for arg in args {
+    for os_arg in args {
+        let arg = os_arg.to_string_lossy();
         if let Some(parsed) = run_alone_flag(&arg) {
             // A malformed one says so first: that is the mistake to fix.
             return match parsed {
@@ -1207,7 +1226,13 @@ fn parse_cli_line(args: Vec<String>) -> CliParse {
         } else if root.is_some() {
             return usage(format!("one directory at most; '{arg}' is a second"));
         } else {
-            root = Some(expand_tilde(&arg));
+            // A name that isn't UTF-8 is taken as written: the tilde
+            // expansion is for a quoted `~`, and the shell has already
+            // expanded a bare one.
+            root = Some(match os_arg.to_str() {
+                Some(s) => expand_tilde(s),
+                None => PathBuf::from(os_arg),
+            });
         }
     }
     CliParse::Root { root, debug_ai }
@@ -1478,6 +1503,35 @@ mod tests {
         assert_eq!(r2.known, vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]);
         assert_eq!(r2.last, Some(PathBuf::from("/tmp/a")));
         assert_eq!(r2.root, Some(PathBuf::from("/tmp/root")));
+    }
+
+    /// #167: a path TOML can't hold as written (not UTF-8) is never saved,
+    /// lossily or otherwise: it is left out of `known`, and `last` keeps
+    /// the project used before it.
+    #[cfg(unix)]
+    #[test]
+    fn save_leaves_out_a_path_that_is_not_utf8() {
+        use std::os::unix::ffi::OsStringExt;
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        let mut cfg = Config { disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())) };
+        let raw = PathBuf::from(OsString::from_vec(b"/tmp/api-\xff".to_vec()));
+        let (mut r, _) = ProjectsRegistry::parse("");
+        r.register(PathBuf::from("/tmp/a"));
+        cfg.save_registry(&r).unwrap();
+        r.register(raw.clone());
+        cfg.save_registry(&r).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(!text.contains('\u{FFFD}'), "{text}");
+        let (mut r2, _) = ProjectsRegistry::parse(&text);
+        assert_eq!(r2.known, vec![PathBuf::from("/tmp/a")]);
+        assert_eq!(r2.last, Some(PathBuf::from("/tmp/a")), "the project used before it");
+        // Opened again, it stays out of the file.
+        r2.register(raw);
+        cfg.save_registry(&r2).unwrap();
+        let (r3, _) = ProjectsRegistry::parse(&std::fs::read_to_string(&p).unwrap());
+        assert_eq!(r3.known, vec![PathBuf::from("/tmp/a")]);
+        assert_eq!(r3.last, Some(PathBuf::from("/tmp/a")));
     }
 
     #[test]
@@ -2002,7 +2056,40 @@ osc52_limit = 1024
     }
 
     fn cli(args: &[&str]) -> CliParse {
-        parse_cli(args.iter().map(|a| a.to_string()).collect())
+        parse_cli(args.iter().map(OsString::from).collect())
+    }
+
+    /// #161: an argument that isn't UTF-8 is never a flag. Without a dash
+    /// it is the directory, its bytes kept; with one it is an unknown
+    /// option, said lossily. Either way the line's other mistakes still
+    /// count.
+    #[cfg(unix)]
+    #[test]
+    fn parse_cli_takes_a_non_utf8_argument_as_a_path() {
+        use std::os::unix::ffi::OsStringExt;
+        let raw = |b: &[u8]| OsString::from_vec(b.to_vec());
+        assert_eq!(
+            parse_cli(vec![raw(b"api-\xff")]),
+            CliParse::Root { root: Some(PathBuf::from(raw(b"api-\xff"))), debug_ai: false }
+        );
+        assert_eq!(
+            parse_cli(vec!["--debug-ai".into(), raw(b"\xff")]),
+            CliParse::Root { root: Some(PathBuf::from(raw(b"\xff"))), debug_ai: true }
+        );
+        let reason = |args| match parse_cli(args) {
+            CliParse::Usage { reason } => reason,
+            other => panic!("parsed as {other:?}"),
+        };
+        assert_eq!(reason(vec![raw(b"-\xff")]), "unknown option '-\u{FFFD}'");
+        assert_eq!(
+            reason(vec![raw(b"\xff"), "b".into()]),
+            "one directory at most; 'b' is a second"
+        );
+        assert_eq!(
+            reason(vec!["a".into(), raw(b"\xff")]),
+            "one directory at most; '\u{FFFD}' is a second"
+        );
+        assert_eq!(parse_cli(vec![raw(b"\xff"), "-h".into()]), CliParse::Help);
     }
 
     /// The reason a usage error gives; panics on anything else.
