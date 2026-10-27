@@ -32404,7 +32404,8 @@ fn opening_manage_syncs_a_variable_an_undo_removed_while_it_was_closed() {
     assert!(!app.project().unwrap().variables().vars.contains_key("widget_id"), "undone");
     app.update(Action::OpenManage { tab: None });
     rendered_text(&mut app);
-    use crate::components::varmanager::VmDetail;
+    use crate::components::varmanager::{VmDetail, VmRow};
+    assert!(!app.varmanager.left_rows.contains(&VmRow::Var("widget_id".into())), "list synced");
     assert_ne!(app.varmanager.detail, VmDetail::Var("widget_id".into()), "detail moved off it");
 }
 

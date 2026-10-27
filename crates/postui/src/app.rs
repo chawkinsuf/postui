@@ -6886,7 +6886,11 @@ impl App {
                     // while the screen is up, so whatever changed while it
                     // was closed (an outside edit, an undo, a reload) is
                     // handed over here, once, as the screen comes up (task
-                    // #84).
+                    // #84). This one call covers every off-screen change,
+                    // so no refresh site has to sync a hidden screen. It
+                    // runs whichever tab opens: a tab switch on screen
+                    // (`SelectManageTab`) doesn't sync, and the on-screen
+                    // sites keep the Manager current from here on.
                     self.sync_varmanager();
                 } else if prev != target {
                     self.retarget_manage_tab_underline(prev);
