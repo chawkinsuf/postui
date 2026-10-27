@@ -1094,7 +1094,11 @@ impl VarManager {
     /// above it (an outside edit, a reload) shifts the indices, and an
     /// index kept as-is would highlight a different row than the pane
     /// shows (#178). The old list is the last place that knows which row
-    /// the cursor meant, so the cursor moves here, before it is replaced.
+    /// the cursor meant, so the cursor moves here, before it is dropped. A
+    /// cursor whose own row went (a header or spacer a click left it on)
+    /// joins the open row, so it never sits on a stop the pane isn't
+    /// showing; with no open row left either, it takes the gone row's
+    /// place ([`Self::place_of`]).
     ///
     /// The cursor stays an index on purpose: every reader (the keys, the
     /// scroll, the hit rows each frame registers) wants one, and this is
@@ -1105,35 +1109,41 @@ impl VarManager {
     /// old list, for [`Self::sync`]'s neighbour pick.
     fn rebuild_rows(&mut self, ctx: &Project) -> Vec<VmRow> {
         let old = std::mem::replace(&mut self.left_rows, build_left_rows(ctx));
-        let at = self.place_of(&old, self.left_cursor);
-        if at != self.left_cursor {
-            self.left_cursor = at;
+        let before = self.left_cursor;
+        let open_at =
+            self.detail.row().and_then(|row| self.left_rows.iter().position(|r| *r == row));
+        self.left_cursor =
+            self.index_of(&old, before).or(open_at).unwrap_or_else(|| self.place_of(&old, before));
+        if self.left_cursor != before {
             self.ensure_visible = true;
         }
         old
     }
 
-    /// Where `old[k]` sits in the rebuilt `left_rows`. A row still listed
-    /// is found by itself, a spacer by the header it precedes (spacers are
-    /// alike). A row that is gone gives its place: just below the nearest
-    /// row above it that is still listed (`VARIABLES` always is). Clamped
-    /// into range.
+    /// Where `old[k]` sits in the rebuilt `left_rows`, if it is still
+    /// listed: found by itself, or a spacer by the header it precedes
+    /// (spacers are alike).
     ///
     /// Per frame this is one scan of a list `build_left_rows` has just
     /// cloned whole, so it costs what the rebuild already does; the longer
-    /// search for a gone row runs on the one frame after it went.
-    fn place_of(&self, old: &[VmRow], k: usize) -> usize {
+    /// search in [`Self::place_of`] runs on the one frame after a row went.
+    fn index_of(&self, old: &[VmRow], k: usize) -> Option<usize> {
         let find = |row: &VmRow| self.left_rows.iter().position(|r| r == row);
-        let kept = match old.get(k) {
+        match old.get(k) {
             Some(VmRow::Spacer) => old.get(k + 1).and_then(find).map(|i| i.saturating_sub(1)),
             row => row.and_then(find),
-        };
-        let at = kept.unwrap_or_else(|| {
-            old[..k.min(old.len())]
-                .iter()
+        }
+    }
+
+    /// [`Self::index_of`], or for a row that is gone its place: just below
+    /// the nearest row above it that is still listed (`VARIABLES` always
+    /// is). Clamped into range.
+    fn place_of(&self, old: &[VmRow], k: usize) -> usize {
+        let at = self.index_of(old, k).unwrap_or_else(|| {
+            (0..k.min(old.len()))
                 .rev()
-                .filter(|r| **r != VmRow::Spacer)
-                .find_map(find)
+                .filter(|j| old[*j] != VmRow::Spacer)
+                .find_map(|j| self.index_of(old, j))
                 .map_or(0, |i| i + 1)
         });
         at.min(self.left_rows.len().saturating_sub(1))
@@ -1143,6 +1153,10 @@ impl VarManager {
     /// structural write: the cursor follows its row ([`Self::rebuild_rows`]),
     /// and a detail pane pointing at a name that no longer exists re-opens
     /// on the neighbour of its row instead.
+    ///
+    /// The repair is `sync`'s alone, never the frame's: it drops the form
+    /// and grid, an open edit included, which only a refresh path that has
+    /// already closed the screen's inputs may do.
     pub fn sync(&mut self, ctx: &Project) {
         let old = self.rebuild_rows(ctx);
         // Declared is listed: `build_left_rows` leaves out selector fields,
@@ -1159,14 +1173,11 @@ impl VarManager {
             self.focus = VmFocus::List;
             // The neighbour of the row that went: whatever took its place,
             // else the nearest selectable row above it. Found from the
-            // detail's own row, not the cursor's, which a click may have
-            // left on a header. The cursor follows, so the highlight and
-            // the pane never disagree. Every path that changes the
-            // declarations syncs before the next frame (and a closed Manage screen syncs
-            // as it opens), so `old` is the list the user last saw; were a
-            // draw to rebuild first, its `rebuild_rows` would already have
-            // put the cursor in the gone row's place, and only a cursor a
-            // click left on a header would lose the exact neighbour.
+            // detail's own row in the list the user last saw, not the
+            // cursor's, which a click may have left on a header. Should a
+            // frame have rebuilt the list first, the detail's row is no
+            // longer in `old`, but that frame already put the cursor in its
+            // place, so the cursor is the place.
             let from = self
                 .detail
                 .row()
@@ -1743,8 +1754,7 @@ impl VarManager {
         hits: &mut HitMap,
         hovered: Option<&Hit>,
     ) {
-        // The pane's repair for a detail that is gone is `sync`'s, run by
-        // every refresh path; the frame only keeps the cursor on its row.
+        // Rows and cursor only; a detail that is gone waits for `sync`.
         let _ = self.rebuild_rows(ctx);
         if area.width == 0 || area.height == 0 {
             self.visible_rows = 0;
@@ -3448,6 +3458,54 @@ fields = ["user_id", "customer_id"]
         assert_eq!(vm.detail, VmDetail::Var("b".into()));
         std::fs::write(dir.path().join("variables.toml"), decls(&["a", "c", "d", "e"])).unwrap();
         let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+        vm.sync(&ctx);
+        assert_eq!(vm.detail, VmDetail::Var("c".into()));
+        assert_eq!(cursor_name(&vm), Some("c"));
+    }
+
+    /// A label row the cursor was on going away (the last shared selector
+    /// removed) sends the cursor to the open row, not to whatever stop the
+    /// label's place now holds.
+    #[test]
+    fn a_cursor_whose_label_row_went_joins_the_open_row() {
+        let (dir, _ctx) = fixture_with_shared_selector();
+        let path = dir.path().join("variables.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let without_region = text.split("\n[selectors.region]").next().unwrap().to_string();
+        for label in [VmRow::SectionShared, VmRow::Spacer] {
+            std::fs::write(&path, &text).unwrap();
+            let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+            let mut vm = VarManager::default();
+            select_var(&mut vm, &ctx, "base_url");
+            vm.select_row(vm.left_rows.iter().rposition(|r| *r == label).unwrap());
+            std::fs::write(&path, &without_region).unwrap();
+            let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+            render(&mut vm, &ctx);
+            assert!(!vm.left_rows.contains(&VmRow::SectionShared));
+            assert_eq!(vm.detail, VmDetail::Var("base_url".into()), "{label:?}");
+            assert_eq!(cursor_name(&vm), Some("base_url"), "{label:?}");
+        }
+    }
+
+    /// A frame drawn before `sync` leaves the pane alone (its repair drops
+    /// the form, which only `sync` may do) but puts the cursor in the gone
+    /// row's place, so the later `sync` still opens the right neighbour.
+    #[test]
+    fn a_frame_before_sync_leaves_the_gone_detail_to_sync() {
+        let (dir, _ctx) = fixture();
+        let decls = |names: &[&str]| {
+            names.iter().map(|n| format!("[{n}]\ndefault = \"1\"\n\n")).collect::<String>()
+        };
+        std::fs::write(dir.path().join("variables.toml"), decls(&["a", "b", "c", "d", "e"]))
+            .unwrap();
+        let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "b");
+        std::fs::write(dir.path().join("variables.toml"), decls(&["a", "c", "d", "e"])).unwrap();
+        let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
+        render(&mut vm, &ctx);
+        assert_eq!(vm.detail, VmDetail::Var("b".into()), "the frame leaves the pane");
+        assert_eq!(cursor_name(&vm), Some("c"), "but takes the cursor to b's place");
         vm.sync(&ctx);
         assert_eq!(vm.detail, VmDetail::Var("c".into()));
         assert_eq!(cursor_name(&vm), Some("c"));

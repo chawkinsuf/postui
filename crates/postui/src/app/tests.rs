@@ -32469,6 +32469,28 @@ fn opening_manage_syncs_a_selector_removed_while_it_was_closed() {
     assert_highlight_names_the_detail(&app);
 }
 
+/// Task #178: a declaration added on disk above the open one leaves the
+/// cursor on the open row, so the highlight and the pane agree and the
+/// next key moves from there.
+#[test]
+fn a_declaration_added_above_on_disk_keeps_the_cursor_on_the_open_row() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| r == &crate::components::varmanager::VmRow::Var("api_key".into()));
+    let path = dir.path().join("variables.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("[aaa]\ndefault = \"0\"\n{text}")).unwrap();
+    app.on_focus_gained();
+    render_once(&mut app);
+    use crate::components::varmanager::VmDetail;
+    assert_eq!(app.varmanager.detail, VmDetail::Var("api_key".into()));
+    assert_highlight_names_the_detail(&app);
+    app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.varmanager.detail, VmDetail::Var("base_url".into()), "Up from the open row");
+}
+
 /// The Variable Manager's highlighted row is the one its detail pane shows.
 fn assert_highlight_names_the_detail(app: &App) {
     use crate::components::varmanager::{VmDetail, VmRow};
