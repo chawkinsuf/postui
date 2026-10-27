@@ -1,7 +1,9 @@
-//! The command line's own output, outside the TUI (`--help`, `--version`,
-//! `--setup`, the `--keydump` banner, a usage error). Every such print goes
-//! through here (#162, #168), so a stream that can't be written ends the
-//! run with a status rather than the panic `print!`/`eprint!` give.
+//! The command line's own text, printed before any terminal mode is set
+//! (`--help`, `--version`, `--setup`, the `--keydump` banner, a usage
+//! error). Each of those goes through here (#162, #168), so a stream that
+//! can't be written ends the run with a status rather than the panic
+//! `print!`/`eprint!` give. Once keydump's echo loop runs in raw mode, its
+//! write and terminal errors end the run as errors, as they always have.
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -22,7 +24,7 @@ pub fn print_out(text: &str) -> Option<ExitCode> {
     }
 }
 
-/// Writes `text` to stderr in one write. A failure there has nowhere left
+/// Writes `text` to stderr with one `write_all`. A failure there has nowhere left
 /// to be told, so it is dropped: the caller's exit status still says what
 /// happened.
 pub fn print_err(text: &str) {
