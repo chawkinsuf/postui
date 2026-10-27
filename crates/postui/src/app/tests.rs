@@ -8379,7 +8379,7 @@ fn stale_table_edit_does_not_capture_insert_var_text_after_focus_moves() {
     // The jump commits the cell it leaves (spec 2026-10-19 R1), so there
     // is no stale edit left for the insert to land in.
     app.update(Action::FocusPane(PaneId::Response));
-    app.update(Action::InsertVarText("x".into()));
+    app.update(Action::InsertVarText { name: "x".into(), completing: false });
 
     let text = rendered_text(&mut app);
     assert!(
@@ -27728,6 +27728,157 @@ fn a_held_tip_closes_when_its_token_moves_instead_of_swapping_to_a_covered_one()
     app.update(Action::Render);
     render_once(&mut app);
     assert!(app.var_token_tip().is_none(), "the hold died with the tip");
+}
+
+// --- a picked token replaces the token the caret is in ---------------------
+
+/// Opens row 0's value cell on `tab`, holding `value`, with the caret at
+/// char `caret` and the editor focused.
+fn open_value_cell(app: &mut App, tab: EditorTab, value: &str, caret: usize) {
+    app.editor.active_tab = tab;
+    app.editor.sub_focus = SubFocus::Content;
+    app.focus = PaneId::Editor;
+    let entry = postui_core::model::Entry { value: value.into(), enabled: true };
+    app.editor.table_map_mut(tab).expect("a table tab").insert("k".into(), entry);
+    app.editor.table.set_selected(Some(Stop::Row(0)));
+    let map = app.editor.table_map(tab).unwrap().clone();
+    app.editor.table.begin_edit_selected(&map);
+    let map = match tab {
+        EditorTab::Params => &mut app.editor.params,
+        EditorTab::Headers => &mut app.editor.headers,
+        _ => &mut app.editor.variables,
+    };
+    app.editor.table.handle_key(tab_key(), map);
+    let edit = app.editor.table.editing.as_mut().expect("the value cell is open");
+    assert_eq!(edit.col, crate::components::table_editor::Col::Value);
+    edit.input.set_cursor(caret);
+}
+
+/// A pick from the insert picker (alt+v) with the caret in a token swaps
+/// that token, in the URL line, a cell and the body alike.
+#[test]
+fn a_picked_variable_replaces_the_token_the_caret_is_in() {
+    let pick_base_url = |app: &mut App| {
+        app.handle_key(alt('v'));
+        assert!(matches!(app.modals.top(), Some(Modal::VarPicker(_))));
+        for c in "base_url".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.modals.is_empty());
+    };
+    // The URL line.
+    let (mut app, _dir, _out) = tooltip_app("x");
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    app.editor.url.set_cursor(3);
+    render_once(&mut app);
+    pick_base_url(&mut app);
+    assert_eq!(app.editor.url.text(), "{{base_url}}/x");
+    assert_eq!(app.editor.url.cursor(), "{{base_url}}".len(), "caret after it");
+    // A caret before the first brace is in front of the token, not in it.
+    app.editor.url.set_cursor(0);
+    pick_base_url(&mut app);
+    assert_eq!(app.editor.url.text(), "{{base_url}}{{base_url}}/x");
+    // A cell.
+    let (mut app, _dir, _out) = tooltip_app("x");
+    open_value_cell(&mut app, EditorTab::Headers, "a {{old}} b", 4);
+    render_once(&mut app);
+    pick_base_url(&mut app);
+    assert_eq!(app.editor.table.editing.as_ref().unwrap().input.text(), "a {{base_url}} b");
+    // The body.
+    let (mut app, _dir, _out) = tooltip_app("x");
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.set_body_text("{\n  \"u\": \"{{old}}\"\n}");
+    app.editor.body.cursor = edtui::Index2::new(1, 11);
+    render_once(&mut app);
+    pick_base_url(&mut app);
+    assert_eq!(app.editor.body_text(), "{\n  \"u\": \"{{base_url}}\"\n}");
+}
+
+/// The picker's new-variable flow puts its token over the caret's token
+/// too, rather than nesting it.
+#[test]
+fn a_created_variable_replaces_the_token_the_caret_is_in() {
+    let (mut app, _dir, _out) = tooltip_app("x");
+    open_value_cell(&mut app, EditorTab::Headers, "Bearer {{old}}", 10);
+    render_once(&mut app);
+    app.handle_key(alt('v'));
+    for c in "auth_token".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)); // + new variable…
+    assert!(
+        matches!(
+            app.modals.top(),
+            Some(Modal::Prompt { kind: PromptKind::NewVariableAndInsert { .. }, .. })
+        ),
+        "the new-variable prompt"
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
+    let edit = app.editor.table.editing.as_ref().expect("the cell stays open");
+    assert_eq!(edit.input.text(), "Bearer {{auth_token}}", "replaced, not nested");
+    assert_eq!(edit.input.cursor(), "Bearer {{auth_token}}".chars().count(), "caret after it");
+}
+
+/// A completion, `name}}` after a typed `{{`, still goes in at the caret,
+/// even with the caret on the next token's first brace.
+#[test]
+fn a_completion_still_goes_in_at_the_caret() {
+    let (mut app, _dir, _out) = tooltip_app("x");
+    open_value_cell(&mut app, EditorTab::Headers, "{{{{old}}", 2);
+    app.update(Action::InsertVarText { name: "base_url".into(), completing: true });
+    assert_eq!(app.editor.table.editing.as_ref().unwrap().input.text(), "{{base_url}}{{old}}");
+}
+
+/// Undo after a pick over a token puts the text back, and in a one-line
+/// field (whose own history stores the caret) the caret too.
+#[test]
+fn undoing_a_pick_over_a_token_restores_the_caret() {
+    let ctrl_z = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL);
+    let (mut app, _dir, _out) = tooltip_app("x");
+    app.focus = PaneId::Editor;
+    app.editor.open_url_from_app();
+    app.editor.url.set_cursor(3);
+    render_once(&mut app);
+    app.update(Action::InsertVarText { name: "v".into(), completing: false });
+    assert_eq!(app.editor.url.text(), "{{v}}/x");
+    app.handle_key(ctrl_z);
+    assert_eq!((app.editor.url.text(), app.editor.url.cursor()), ("{{x}}/x", 3));
+
+    let (mut app, _dir, _out) = tooltip_app("x");
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.set_body_text("{\n  \"u\": \"{{old}}\"\n}");
+    app.editor.body.cursor = edtui::Index2::new(1, 11);
+    render_once(&mut app);
+    app.capture_undo();
+    app.update(Action::InsertVarText { name: "v".into(), completing: false });
+    app.capture_undo();
+    assert_eq!(app.editor.body_text(), "{\n  \"u\": \"{{v}}\"\n}");
+    // The app's undo stores no caret (undo.rs); the text comes back whole.
+    app.update(Action::Undo);
+    assert_eq!(app.editor.body_text(), "{\n  \"u\": \"{{old}}\"\n}");
+}
+
+/// A live selection is what a pick replaces, as a paste does, even with
+/// the caret inside a token.
+#[test]
+fn a_selection_wins_over_the_carets_token() {
+    let (mut app, _dir, _out) = tooltip_app("x");
+    open_value_cell(&mut app, EditorTab::Headers, "ab{{old}}", 0);
+    let input = &mut app.editor.table.editing.as_mut().unwrap().input;
+    input.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+    for _ in 0..3 {
+        input.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+    }
+    assert_eq!(input.selection(), Some((0, 4)));
+    app.update(Action::InsertVarText { name: "v".into(), completing: false });
+    assert_eq!(app.editor.table.editing.as_ref().unwrap().input.text(), "{{v}}old}}");
 }
 
 // --- a project that refuses to open ---------------------------------------

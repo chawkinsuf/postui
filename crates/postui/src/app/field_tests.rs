@@ -1487,11 +1487,61 @@ fn a_body_paste_in_linewise_visual_replaces_the_lines() {
 fn a_picked_token_in_visual_replaces_the_selection() {
     let mut app = url_line("abcdef");
     feed(&mut app, "<CR>0llvl");
-    app.update(Action::InsertVarText("{{v}}".into()));
+    app.update(Action::InsertVarText { name: "v".into(), completing: false });
     assert_eq!(url(&app), ("ab{{v}}ef", 6));
     assert_eq!(app.mode_indicator(), Some("NORMAL"));
     feed(&mut app, "u");
     assert_eq!(url(&app).0, "abcdef", "one engine step");
+}
+
+/// #149: a picked `{{token}}` with the caret in a token
+/// takes that token's place, as one engine step: from Normal the caret
+/// lands on its last char (Vim's paste over a selection), from Insert
+/// after it.
+#[test]
+fn a_picked_token_replaces_the_token_the_caret_is_in() {
+    let mut app = url_line("a{{old}}b");
+    feed(&mut app, "<CR>0lll");
+    app.update(Action::InsertVarText { name: "v".into(), completing: false });
+    assert_eq!(url(&app), ("a{{v}}b", 5));
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+    feed(&mut app, "u");
+    assert_eq!(url(&app).0, "a{{old}}b", "one engine step");
+
+    let mut app = url_line("a{{old}}b");
+    feed(&mut app, "<CR>0llli");
+    app.update(Action::InsertVarText { name: "v".into(), completing: false });
+    assert_eq!(url(&app), ("a{{v}}b", 6));
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+
+    // Insert's caret before the first brace is in front of the token.
+    let mut app = url_line("{{old}}");
+    feed(&mut app, "<CR>0i");
+    app.update(Action::InsertVarText { name: "v".into(), completing: false });
+    assert_eq!(url(&app), ("{{v}}{{old}}", 5));
+
+    // Insert ctrl+o after a token: the token goes in where Insert resumes,
+    // after the token, not over it.
+    let mut app = url_line("a{{old}}");
+    feed(&mut app, "<CR>A<C-o>");
+    app.update(Action::InsertVarText { name: "v".into(), completing: false });
+    assert_eq!(url(&app).0, "a{{old}}{{v}}");
+
+    // Normal on the last brace: the put goes after it, outside the token.
+    let mut app = url_line("a{{old}}");
+    feed(&mut app, "<CR>$");
+    app.update(Action::InsertVarText { name: "v".into(), completing: false });
+    assert_eq!(url(&app).0, "a{{old}}{{v}}");
+}
+
+/// #149: a Visual selection whose caret ends in a token is still what a
+/// picked token replaces, as a paste over it.
+#[test]
+fn a_visual_selection_wins_over_the_carets_token() {
+    let mut app = url_line("ab{{old}}");
+    feed(&mut app, "<CR>0vlll");
+    app.update(Action::InsertVarText { name: "v".into(), completing: false });
+    assert_eq!(url(&app).0, "{{v}}old}}");
 }
 
 /// An app whose clipboard writes to a file, and that file.
@@ -1557,7 +1607,7 @@ fn ctrl_c_copies_the_bodys_visual() {
 fn a_picked_token_goes_in_at_the_insert_caret() {
     let mut app = url_line("ab");
     feed(&mut app, "<CR>A");
-    app.update(Action::InsertVarText("{{v}}".into()));
+    app.update(Action::InsertVarText { name: "v".into(), completing: false });
     assert_eq!(url(&app), ("ab{{v}}", 7));
     assert_eq!(app.mode_indicator(), Some("INSERT"));
 }
@@ -1569,7 +1619,7 @@ fn a_picked_token_after_insert_ctrl_o_goes_in_at_the_insert_caret() {
     let mut app = url_line("abc");
     feed(&mut app, "<CR>$i<C-o>");
     assert_eq!(app.mode_indicator(), Some("(insert)"));
-    app.update(Action::InsertVarText("{{v}}".into()));
+    app.update(Action::InsertVarText { name: "v".into(), completing: false });
     assert_eq!(url(&app), ("ab{{v}}c", 7));
     assert_eq!(app.mode_indicator(), Some("INSERT"));
 }
@@ -1578,7 +1628,7 @@ fn a_picked_token_after_insert_ctrl_o_goes_in_at_the_insert_caret() {
 fn a_picked_token_in_normal_goes_after_the_caret() {
     let mut app = url_line("ab");
     feed(&mut app, "<CR>");
-    app.update(Action::InsertVarText("{{v}}".into()));
+    app.update(Action::InsertVarText { name: "v".into(), completing: false });
     assert_eq!(url(&app).0, "ab{{v}}");
     feed(&mut app, "u");
     assert_eq!(url(&app).0, "ab", "one engine step");

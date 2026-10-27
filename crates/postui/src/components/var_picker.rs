@@ -292,11 +292,9 @@ impl VarPickerState {
         let &idx = self.filtered.get(self.selected)?;
         match &self.mode {
             PickerMode::Insert => {
-                let name = &self.entries[idx].name;
-                let text =
-                    if self.completing { format!("{name}}}}}") } else { format!("{{{{{name}}}}}") };
+                let name = self.entries[idx].name.clone();
                 Some(super::modal::ModalResult {
-                    actions: vec![Action::InsertVarText(text)],
+                    actions: vec![Action::InsertVarText { name, completing: self.completing }],
                     close: true,
                     ..Default::default()
                 })
@@ -892,10 +890,16 @@ mod tests {
         let entries = vec![var_entry("base_url", None, Some("x"))];
         let mut p = VarPickerState::new(entries.clone(), true);
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
-        assert_eq!(res.actions, vec![Action::InsertVarText("base_url}}".into())]);
+        assert_eq!(
+            res.actions,
+            vec![Action::InsertVarText { name: "base_url".into(), completing: true }]
+        );
         let mut p = VarPickerState::new(entries, false);
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
-        assert_eq!(res.actions, vec![Action::InsertVarText("{{base_url}}".into())]);
+        assert_eq!(
+            res.actions,
+            vec![Action::InsertVarText { name: "base_url".into(), completing: false }]
+        );
     }
 
     #[test]
@@ -930,7 +934,10 @@ mod tests {
             p.handle_key(key(KeyCode::Char(c)));
         }
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
-        assert_eq!(res.actions, vec![Action::InsertVarText("{{base}}".into())]);
+        assert_eq!(
+            res.actions,
+            vec![Action::InsertVarText { name: "base".into(), completing: false }]
+        );
     }
 
     #[test]
@@ -1509,6 +1516,9 @@ mod tests {
         let mut p = VarPickerState::new(entries(&["env"]), false);
         p.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
-        assert_eq!(res.actions, vec![Action::InsertVarText("{{env}}".into())]);
+        assert_eq!(
+            res.actions,
+            vec![Action::InsertVarText { name: "env".into(), completing: false }]
+        );
     }
 }

@@ -1255,17 +1255,27 @@ impl Editor {
         true
     }
 
-    /// Feeds each char of `s` through the body's key handler as a
-    /// synthesized plain `KeyCode::Char` event, as if the user had typed it.
-    /// Used to splice a picked variable token into the body buffer, which
-    /// (unlike `LineInput`) has no direct string-insertion API of its own.
-    pub fn body_insert_str(&mut self, s: &str) {
-        for c in s.chars() {
-            self.body_handler.on_key_event(
-                KeyEvent::new(KeyCode::Char(c), ratatui::crossterm::event::KeyModifiers::NONE),
-                &mut self.body,
-            );
+    /// Puts a picked variable's `text` as [`Self::paste_body`] does: over a
+    /// live selection, else at the caret. A `whole` `{{token}}` that would
+    /// land inside a token takes that token's place instead (#149). Unlike
+    /// a one-line field's own history, the app's undo of this stores no
+    /// caret: undo leaves the caret where it is, for every body edit
+    /// (undo.rs, ruling 2026-09-18).
+    pub fn body_put_var(&mut self, text: &str, whole: bool) {
+        let caret = self.body.cursor;
+        if whole && self.body.selection.is_none() {
+            let line: String =
+                crate::text::Lines::line(&self.body.lines, caret.row).iter().collect();
+            let token = crate::text::token_around(&line, caret.col);
+            if let Some(token) = token {
+                self.body_word_anchor = None;
+                self.set_body_selection_boundaries(
+                    edtui::Index2::new(caret.row, token.start),
+                    edtui::Index2::new(caret.row, token.end),
+                );
+            }
         }
+        self.paste_body(text);
     }
 
     /// The overlays this draw wants, in precedence order (see `Overlay`).

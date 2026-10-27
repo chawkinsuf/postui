@@ -6668,15 +6668,22 @@ impl App {
                 });
                 true
             }
-            Action::InsertVarText(text) => {
+            Action::InsertVarText { name, completing } => {
                 self.no_coalesce = true;
+                // A whole `{{token}}` never lands inside another: where it
+                // would, it takes that token's place (#149). Each field
+                // looks at its own caret as it puts it. A completion goes
+                // in at the caret.
+                let whole = !completing;
+                let text =
+                    if completing { format!("{name}}}}}") } else { format!("{{{{{name}}}}}") };
                 // A vim field the engine runs takes the token as one engine
                 // step (spec §3.7).
-                if self.vim_insert(&text) {
+                if self.vim_insert(&text, whole) {
                     return true;
                 }
                 if self.focus == PaneId::Editor && self.editor.url_open() {
-                    self.editor.url.insert_str(&text);
+                    self.editor.url.put_var(&text, whole);
                 } else if self.focus == PaneId::Editor
                     && matches!(
                         self.editor.active_tab,
@@ -6686,12 +6693,12 @@ impl App {
                     && self.editor.table.editing.is_some()
                 {
                     let edit = self.editor.table.editing.as_mut().unwrap();
-                    edit.input.insert_str(&text);
+                    edit.input.put_var(&text, whole);
                 } else if self.focus == PaneId::Editor
                     && self.editor.active_tab == EditorTab::Body
                     && self.editor.sub_focus == SubFocus::Content
                 {
-                    self.editor.body_insert_str(&text);
+                    self.editor.body_put_var(&text, whole);
                     self.turn_on_body_vars();
                 } else {
                     self.toasts

@@ -752,7 +752,10 @@ impl App {
     /// `Glue::rebase` does. Only the fields main inserts into: the URL
     /// line, a cell, the body. `false` leaves it to today's path. A token
     /// into the body turns on the body's variables, as today's path does.
-    pub(crate) fn vim_insert(&mut self, text: &str) -> bool {
+    /// A `whole` `{{token}}` that would land inside a token takes that
+    /// token's place instead (#149), found at the caret the edit puts it at
+    /// (after ctrl+o's resume). A Visual selection still wins.
+    pub(crate) fn vim_insert(&mut self, text: &str, whole: bool) -> bool {
         let Some(id) = self.vim.glue.owned() else { return false };
         if !matches!(id, FieldId::Url | FieldId::TableCell { .. } | FieldId::Body) {
             return false;
@@ -764,9 +767,15 @@ impl App {
         let (glue, buf) = self.session_parts(id);
         let Some(mut buf) = buf else { return false };
         let edit = if typing {
-            engine_glue::Edit::AtCaret(text)
+            if whole {
+                engine_glue::Edit::AtCaretOverToken(text)
+            } else {
+                engine_glue::Edit::AtCaret(text)
+            }
         } else if let Some((from, to)) = glue.visual_span(&mut buf) {
             engine_glue::Edit::Replace(from, to, text)
+        } else if whole {
+            engine_glue::Edit::AppendOverToken(text)
         } else {
             engine_glue::Edit::Append(text)
         };

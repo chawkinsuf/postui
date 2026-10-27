@@ -94,6 +94,14 @@ pub enum Edit<'a> {
     /// Vim and GUI editors replace a selection (the user's ruling, final
     /// review).
     Replace(Pos, Pos, &'a str),
+    /// A picked whole `{{token}}` as [`Edit::AtCaret`] puts it, except that
+    /// where it would land inside a token it takes that token's place, the
+    /// caret after it (#149). The token is found at the caret the edit runs
+    /// at, after ctrl+o's resume.
+    AtCaretOverToken(&'a str),
+    /// The same for [`Edit::Append`]: over the token the put would land
+    /// inside, the caret on its last char, as [`Edit::Replace`] leaves it.
+    AppendOverToken(&'a str),
 }
 
 impl Edit<'_> {
@@ -105,15 +113,36 @@ impl Edit<'_> {
                 s.set_cursor(end_of(caret, text));
             }
             Edit::Append(text) => {
-                let len = s.buf().line_len(caret.row);
-                let at = if caret.col == 0 {
-                    caret
-                } else {
-                    Pos::new(caret.row, (caret.col + 1).min(len))
-                };
+                let at = append_at(s.buf(), caret);
                 s.splice(at, at, text);
                 let end = end_of(at, text);
                 s.set_cursor(Pos::new(end.row, end.col.saturating_sub(1)));
+            }
+            Edit::AtCaretOverToken(text) => {
+                let line: String = s.buf().line(caret.row).iter().collect();
+                let token = crate::text::token_around(&line, caret.col);
+                match token {
+                    Some(token) => {
+                        let from = Pos::new(caret.row, token.start);
+                        s.splice(from, Pos::new(caret.row, token.end), text);
+                        s.set_cursor(end_of(from, text));
+                    }
+                    None => Edit::AtCaret(text).apply(s),
+                }
+            }
+            Edit::AppendOverToken(text) => {
+                let at = append_at(s.buf(), caret);
+                let line: String = s.buf().line(at.row).iter().collect();
+                let token = crate::text::token_around(&line, at.col);
+                match token {
+                    Some(token) => Edit::Replace(
+                        Pos::new(at.row, token.start),
+                        Pos::new(at.row, token.end),
+                        text,
+                    )
+                    .apply(s),
+                    None => Edit::Append(text).apply(s),
+                }
             }
             Edit::Whole(text) => {
                 let last = s.buf().line_count() - 1;
@@ -127,6 +156,16 @@ impl Edit<'_> {
                 s.set_cursor(Pos::new(end.row, end.col.saturating_sub(1)));
             }
         }
+    }
+}
+
+/// Where [`Edit::Append`] puts its text: after the caret's char, or before
+/// it at column 0.
+fn append_at<B: TextBuf>(b: &B, caret: Pos) -> Pos {
+    if caret.col == 0 {
+        caret
+    } else {
+        Pos::new(caret.row, (caret.col + 1).min(b.line_len(caret.row)))
     }
 }
 

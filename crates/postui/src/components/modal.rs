@@ -1565,11 +1565,12 @@ impl ModalStack {
             })]),
             PromptKind::NewVariableAndInsert { completing } => {
                 let name = text.to_string();
-                let insert_text =
-                    if *completing { format!("{name}}}}}") } else { format!("{{{{{name}}}}}") };
                 Some(vec![
-                    Action::VarStruct(VarStructOp::NewVar { name, description: None }),
-                    Action::InsertVarText(insert_text),
+                    Action::VarStruct(VarStructOp::NewVar {
+                        name: name.clone(),
+                        description: None,
+                    }),
+                    Action::InsertVarText { name, completing: *completing },
                 ])
             }
             PromptKind::AddSelectorField { selector } => Some(vec![Action::AddSelectorField {
