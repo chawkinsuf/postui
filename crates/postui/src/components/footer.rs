@@ -211,11 +211,13 @@ pub(crate) fn footer_chips(
             // chip's keycap, the row's), so the row reflows then whether or
             // not the slot is there; a blank kept for it would read as a
             // gap at the row's start.
+            // An open field's Esc is always the field's (the field rule),
+            // so `field_open` keeps the slot empty here too.
             match sending {
-                Sending::InFlight { esc_cancels: false } => {}
-                Sending::InFlight { esc_cancels: true } => {
+                Sending::InFlight { esc_cancels: true } if !field_open => {
                     chips.push((Key::Named("esc"), "cancel", Some(Action::CancelSend)))
                 }
+                Sending::InFlight { .. } => {}
                 Sending::No => chips.push((
                     Key::Send { shift_enter: shift_enter_send },
                     "send",
@@ -1336,14 +1338,13 @@ mod tests {
 
     /// An open text field owns Esc (the field rule, spec 2026-09-15): the
     /// footer says `esc done` and never `esc cancel` on that surface —
-    /// sending or not (in flight, `App::editor_esc_cancels` says Esc is the
-    /// field's).
+    /// sending or not, whatever the caller says of Esc.
     #[test]
     fn an_open_field_advertises_esc_done_and_never_esc_cancel() {
         let chips = footer_chips(
             PaneId::Editor,
             false,
-            Sending::InFlight { esc_cancels: false },
+            Sending::InFlight { esc_cancels: true },
             Some("add header"),
             true,
             false,
