@@ -33,7 +33,7 @@ Started 2026-10-25 as the 1.0 checklist. The first public release is 0.2.0 inste
 - [x] #162 Printing `--version`, `--help` or `--setup` panics when stdout can't be written (e.g. `postui --help | head`) (merged 2026-10-27 with #161: a closed pipe succeeds quietly, any other write error is said and exits 1)
 - [x] #167 A project directory whose name is not UTF-8 is saved to the config under a different name (found by #161's check, pulled in by the user, 2026-10-27; merged with #161: such a path is left out of the save, so the project opens but isn't remembered)
 - [x] #168 A usage error or the `--keydump` banner panics when its stream can't be written (filed during #162; pulled in by the user, 2026-10-27; merged 2026-10-27: every print outside the TUI goes through `cli_out`, so a usage error exits 2 whatever stderr does and the banner follows the `--help` rules)
-- [x] #169 A worker panic aborts the app when stderr can't be written (filed during #168; pulled in by the user, 2026-10-27; merged 2026-10-27: the panic hook prints through `cli_out::print_err`)
+- [x] #169 A worker panic aborts the app when stderr can't be written (filed during #168; pulled in by the user, 2026-10-27; merged 2026-10-27: the panic hook drops a failed stderr write)
 
 ## Cheap fixes bundled in (all merged 2026-10-25)
 

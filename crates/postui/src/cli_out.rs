@@ -1,14 +1,9 @@
-//! Prints that must not panic on a stream that can't be written, which
-//! `print!`/`eprint!` do. Two kinds use it:
-//!
-//! - the command line's own text, before any terminal mode is set
-//!   (`--help`, `--version`, `--setup`, the `--keydump` banner, a usage
-//!   error; #162, #168): a failed write ends the run with a status. Once
-//!   keydump's echo loop runs in raw mode, its write and terminal errors
-//!   end the run as errors, as they always have;
-//! - the app's panic hook, reporting a worker thread's panic while the TUI
-//!   runs (#169): a panic inside the hook would abort, so [`print_err`]
-//!   drops a failed write. Both modes pass the text through untouched.
+//! The command line's own text, printed before any terminal mode is set
+//! (`--help`, `--version`, `--setup`, the `--keydump` banner, a usage
+//! error). Each of those goes through here (#162, #168), so a stream that
+//! can't be written ends the run with a status rather than the panic
+//! `print!`/`eprint!` give. Once keydump's echo loop runs in raw mode, its
+//! write and terminal errors end the run as errors, as they always have.
 
 use std::io::Write;
 use std::process::ExitCode;

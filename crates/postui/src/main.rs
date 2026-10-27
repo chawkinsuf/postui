@@ -142,13 +142,14 @@ fn enable_mouse_and_wrap_panic_hook() {
     std::panic::set_hook(Box::new(move |info| {
         // Only the main thread — the one drawing — owns the terminal. A
         // panic on a tokio worker (a jq run, a body parse) ends only that
-        // task (its awaiter gets a `JoinError`); restoring the terminal
-        // for it would leave the still-running main loop drawing into a
-        // cooked-mode primary screen. Print the report and leave the
-        // terminal alone. Through `print_err`, which drops a failed write:
-        // `eprintln!` would panic inside this hook, and that aborts (#169).
+        // task; restoring the terminal for it would leave the
+        // still-running main loop drawing into a cooked-mode primary
+        // screen. Print the report and leave the terminal alone. A failed
+        // write is dropped: `eprintln!` would panic inside this hook, and
+        // that aborts the app (#169).
         if std::thread::current().id() != main_thread {
-            postui::cli_out::print_err(&format!("{info}\n"));
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr().lock(), "{info}");
             return;
         }
         // `stdout().sync_update(...)` around `terminal.draw` (main.rs's
