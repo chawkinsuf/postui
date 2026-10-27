@@ -28121,49 +28121,10 @@ fn promote_app_with_cell_typed(row: usize, typed: &str) -> (App, tempfile::TempD
     (app, dir)
 }
 
-fn promote_trace_id(app: &mut App) {
-    app.update(Action::VarStruct(VarStructOp::Promote {
-        name: "trace_id".into(),
-        target: postui_core::varedit::PromoteTarget::Default,
-    }));
-}
-
-/// #153: a promote removes its row from the request's vars, and an open
-/// cell names its row by index, so the cell commits before the rows shift:
-/// the typing lands on b, in the editor and in the file the promote saves.
-#[test]
-fn a_promote_commits_an_open_vars_cell_before_the_rows_shift() {
-    let (mut app, dir) = promote_app_with_cell_typed(1, "typed");
-    promote_trace_id(&mut app);
-    assert!(app.editor.table.editing.is_none(), "the cell closed");
-    assert_eq!(request_vars(&app), [("b".to_string(), "typed".to_string())]);
-    assert!(!app.editor.is_dirty(), "the promote saved the request");
-    let on_disk = postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap();
-    assert_eq!(on_disk.variables["b"].value, "typed");
-    // The commit is its own step: undo takes the whole promote back first
-    // (its request and project halves are steps of their own), then the
-    // typing.
-    for _ in 0..4 {
-        if !app.proj().variables().vars.contains_key("trace_id") {
-            break;
-        }
-        app.update(Action::Undo);
-    }
-    assert!(!app.proj().variables().vars.contains_key("trace_id"), "the promote is undone");
-    assert_eq!(
-        request_vars(&app),
-        [("trace_id".to_string(), "abc-123".to_string()), ("b".to_string(), "typed".to_string())]
-    );
-    app.update(Action::Undo);
-    assert_eq!(
-        request_vars(&app),
-        [("trace_id".to_string(), "abc-123".to_string()), ("b".to_string(), "2".to_string())]
-    );
-}
-
 /// #153, the way the app reaches a promote: alt+r leaves the cell, and the
 /// main loop's end-of-event capture commits it (spec 2026-10-19 R1), so
-/// the Manager's Promote never runs over an open cell.
+/// the Manager's Promote never runs over an open cell
+/// (`debug_assert_no_open_vars_cell` on its removal).
 #[test]
 fn opening_manage_commits_an_open_vars_cell_before_a_promote() {
     let (mut app, _dir) = promote_app_with_cell_typed(1, "typed");
@@ -28176,17 +28137,6 @@ fn opening_manage_commits_an_open_vars_cell_before_a_promote() {
     app.handle_key(plain('d')); // Default value
     assert_eq!(app.proj().variables().vars["trace_id"].default.as_deref(), Some("abc-123"));
     assert_eq!(request_vars(&app), [("b".to_string(), "typed".to_string())]);
-}
-
-/// #153: typing in the promoted var's own cell is the value promoted, and
-/// does not land on the row that moves up into its place.
-#[test]
-fn a_promote_takes_the_typing_in_the_promoted_vars_own_cell() {
-    let (mut app, _dir) = promote_app_with_cell_typed(0, "typed");
-    promote_trace_id(&mut app);
-    assert!(app.editor.table.editing.is_none(), "the cell closed");
-    assert_eq!(app.proj().variables().vars["trace_id"].default.as_deref(), Some("typed"));
-    assert_eq!(request_vars(&app), [("b".to_string(), "2".to_string())]);
 }
 
 /// A pick from the insert picker (alt+v) with the caret in a token swaps
