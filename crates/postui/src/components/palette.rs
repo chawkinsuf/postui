@@ -957,14 +957,19 @@ impl PaletteState {
     /// their action as such, only `alt+w` remapped while the sidebar has
     /// focus (spec S6b, `palette_carries_the_sidebar_width_steps`).
     ///
+    /// The S6a check sits here, not in `SpellCtx` for every spelling site:
+    /// the palette is the only place that spells a split key, since S6
+    /// dropped the footer's split chip and E12a's split-chip hints name the
+    /// hide/show toggles instead.
+    ///
     /// It runs per visible row per frame, as the footer's chips spell per
     /// frame: a few scans of the binding table each, too few to cache.
     pub(crate) fn key_column(&self, c: &Command, keymap: &crate::keys::Keymap) -> Option<String> {
         let action = key_action(&c.action);
-        let combo = keymap
-            .combo_for_action(&action)
-            .filter(|_| self.key_context.action(action.clone().into_owned()) == *action);
-        crate::keyroute::spell::spell_with(self.spell, &action, combo)
+        crate::keyroute::spell::spell_with(self.spell, &action, || {
+            let runs_here = self.key_context.action(action.clone().into_owned()) == *action;
+            keymap.combo_for_action(&action).filter(|_| runs_here)
+        })
     }
 
     #[cfg(test)]
@@ -1179,7 +1184,7 @@ mod tests {
         assert_eq!(cmd.action, Action::ReloadFromDisk);
         assert_eq!(cmd.name, "Reload from disk");
         let keymap = crate::keys::Keymap::default_bindings();
-        let p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        let p = opened_in(crate::config::KeyProfile::Arrows);
         let alt = crate::keys::alt_label();
         assert_eq!(p.key_column(&cmd, &keymap), Some(format!("{alt}+shift+r")));
     }
@@ -1202,7 +1207,7 @@ mod tests {
     fn palette_carries_the_sidebar_width_steps() {
         let step = crate::layout::SIDEBAR_STEP_COLS;
         let keymap = crate::keys::Keymap::default_bindings();
-        let p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        let p = opened_in(crate::config::KeyProfile::Arrows);
         for (id, name, action) in [
             ("sidebar-widen", "Widen sidebar", Action::StepSidebar(step)),
             ("sidebar-narrow", "Narrow sidebar", Action::StepSidebar(-step)),
@@ -1220,7 +1225,7 @@ mod tests {
     fn palette_carries_the_split_steps_with_their_keys() {
         let alt = crate::keys::alt_label();
         let keymap = crate::keys::Keymap::default_bindings();
-        let p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        let p = opened_in(crate::config::KeyProfile::Arrows);
         for (id, name, action, key) in [
             ("split-step", "Step the split", Action::CycleSplit, format!("{alt}+w")),
             (
