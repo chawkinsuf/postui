@@ -87,7 +87,10 @@ pub fn spell(at: SpellCtx, action: &Action, keymap: &Keymap) -> Option<String> {
 /// palette's key column (task #132), where a combo can mean something else
 /// at the place it opened (the sidebar's `alt+w` steps the sidebar,
 /// `KeyContext::action`, spec S6a) while a table row or an ex verb still
-/// runs the row's own action there.
+/// runs the row's own action there. Only the palette needs the flag: no
+/// footer chip or hint spells a split key (S6 dropped the chip, and E12a's
+/// split-chip hints name the hide/show toggles), so the remap stays out of
+/// `SpellCtx`, which every spelling site builds.
 pub fn spell_unless(
     at: SpellCtx,
     action: &Action,

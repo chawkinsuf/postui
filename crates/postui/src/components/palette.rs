@@ -931,11 +931,16 @@ impl PaletteState {
         stepped
     }
 
-    /// The key `c`'s row shows: the key the footer would name for its
-    /// action where the palette opened (task #132, spec E12a amended),
-    /// through [`crate::keyroute::spell`]: the router's table row, then the
-    /// keymap's combo, then the ex verb where `:` opens. The action itself
-    /// is looked up (task #105), so no row can miss its key. The combo is
+    /// The key `c`'s row shows: the key that runs its action where the
+    /// palette opened, spelled as the footer spells an action's key (task
+    /// #132, spec E12a amended), through [`crate::keyroute::spell`]: the
+    /// router's table row, then the keymap's combo, then the ex verb where
+    /// `:` opens. The row's own action is looked up (task #105), so no row
+    /// can miss its key; a footer chip that runs the row's action through
+    /// another one (the sidebar's `a new` is the list verb `Add`) is not
+    /// matched to the row. The text is the combo's own spelling
+    /// (`alt+left`), not the footer's arrow glyphs, which the palette has
+    /// never drawn (task #132's choice, mine (approved)). The combo is
     /// skipped where it means something else (the same
     /// [`crate::keys::KeyContext::action`] every key press takes), but a
     /// table row or an ex verb is never remapped: from the vim sidebar the
