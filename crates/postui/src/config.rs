@@ -1134,7 +1134,7 @@ pub enum CliParse {
     /// Run the app: a project directory (or none), tilde-expanded, and
     /// whether `--debug-ai` asked for the AI command's log.
     Root { root: Option<PathBuf>, debug_ai: bool },
-    /// `--help` or `-h`: print usage to stdout and exit 0.
+    /// `--help` or `-h`, anywhere: print usage to stdout and exit 0.
     Help,
     /// Any other leading-dash argument (`-x`, `-v`, ...) or a second
     /// directory: a mistake, so usage goes to stderr and the exit status
@@ -1152,16 +1152,28 @@ pub enum CliParse {
     Keydump { flags: Option<u8> },
 }
 
-/// Parses `postui`'s arguments (without the program name). `--help`,
-/// `--setup`, `--version` and `--keydump` run alone; otherwise at most one
-/// project directory and at most one `--debug-ai`, in either order. Any
-/// other value starting with `-` (e.g. `-x`) is a usage error rather than
-/// a project directory, since no real path starts with a dash without `./`.
+/// What `--help` prints to stdout, and a usage error to stderr. Every flag
+/// [`parse_cli`] reads is listed (a test checks).
+pub const USAGE: &str = "\
+usage: postui [--debug-ai] [directory]
+       --debug-ai        log every AI filter prompt and reply to a file
+       postui --setup    terminal keyboard setup (macOS opt/cmd keys)
+       postui --version  print the version (also -V)
+       postui --keydump[=BITS]  echo raw key and mouse events (kitty flag bits; 0=none)
+       postui --help     print this (also -h)
+";
+
+/// Parses `postui`'s arguments (without the program name). `--help` (or
+/// `-h`) anywhere asks for help: it is never a mistake. `--setup`,
+/// `--version` and `--keydump` run alone; otherwise at most one project
+/// directory and at most one `--debug-ai`, in either order. Any other
+/// value starting with `-` (e.g. `-x`) is a usage error rather than a
+/// project directory, since no real path starts with a dash without `./`.
 pub fn parse_cli(args: Vec<String>) -> CliParse {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        return CliParse::Help;
+    }
     if let [only] = args.as_slice() {
-        if only == "--help" || only == "-h" {
-            return CliParse::Help;
-        }
         if only == "--setup" {
             return CliParse::Setup;
         }
@@ -1970,15 +1982,28 @@ osc52_limit = 1024
         assert_eq!(cli(&["/abs/x", "-x"]), CliParse::Usage);
     }
 
-    /// #144: help asked for is not a mistake (stdout, exit 0); it runs
-    /// alone, like `--version`.
+    /// #144: help asked for is not a mistake (stdout, exit 0), wherever it
+    /// sits on the line.
     #[test]
     fn parse_cli_help_flag() {
         assert_eq!(cli(&["--help"]), CliParse::Help);
         assert_eq!(cli(&["-h"]), CliParse::Help);
+        assert_eq!(cli(&["--help", "/abs/x"]), CliParse::Help);
+        assert_eq!(cli(&["--debug-ai", "-h"]), CliParse::Help);
+        assert_eq!(cli(&["-x", "--help"]), CliParse::Help);
         assert_eq!(cli(&["--help-x"]), CliParse::Usage);
-        assert_eq!(cli(&["--help", "/abs/x"]), CliParse::Usage);
-        assert_eq!(cli(&["--debug-ai", "-h"]), CliParse::Usage);
+    }
+
+    /// The usage names every flag `parse_cli` reads.
+    #[test]
+    fn usage_lists_every_flag() {
+        for flag in ["--help", "-h", "--setup", "--version", "-V", "--keydump", "--debug-ai"] {
+            let spelled = USAGE.contains(&format!("{flag} "))
+                || USAGE.contains(&format!("{flag}["))
+                || USAGE.contains(&format!("{flag})"))
+                || USAGE.contains(&format!("{flag}]"));
+            assert!(spelled, "{flag} missing from:\n{USAGE}");
+        }
     }
 
     #[test]
