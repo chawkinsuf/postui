@@ -55,8 +55,10 @@ pub enum TableCursor {
 /// ones [`footer_chips`] adds for a [`TableCursor::Row`] or
 /// [`TableCursor::Auto`] (task #125). Such a chip is the key it
 /// advertises, so its click keeps the table's cursor and caret as the key
-/// does (`App::on_hit`'s click-away exempts it). The list sits beside the
-/// chips it names so the two change together.
+/// does: `App::on_hit` doesn't drop them for it. It is still a click away
+/// for an open cell, which the chips never show over (`ui.rs` draws them
+/// only while no cell is open). The list sits beside the chips it names,
+/// and `every_table_cursor_chip_keeps_the_cursor` checks the two agree.
 pub(crate) fn is_table_cursor_chip(action: &Action) -> bool {
     use crate::action::CopyTarget;
     matches!(
@@ -1623,6 +1625,44 @@ mod tests {
             !chips.iter().any(|(_, l, _)| *l == "disable" || *l == "enable" || *l == "delete"),
             "no row selected: no row chips"
         );
+    }
+
+    /// Task #125: every chip the table's cursor adds is one
+    /// `is_table_cursor_chip` names, so its click keeps the cursor, and no
+    /// other editor chip is: the hand-kept list and the chips agree.
+    #[test]
+    fn every_table_cursor_chip_keeps_the_cursor() {
+        let chips_for = |cursor| {
+            super::footer_chips(
+                PaneId::Editor,
+                false,
+                false,
+                Some("add header"),
+                false,
+                false,
+                cursor,
+                JqBarState::Closed,
+                false,
+            )
+        };
+        let actions = |cursor| -> Vec<Action> {
+            chips_for(cursor).into_iter().filter_map(|(_, _, a)| a).collect()
+        };
+        let bare = actions(None);
+        assert!(!bare.iter().any(super::is_table_cursor_chip), "{bare:?}");
+        for cursor in [
+            TableCursor::Row { index: 2, enabled: true, headers: true },
+            TableCursor::Row { index: 2, enabled: false, headers: false },
+            TableCursor::Auto { index: 1, pencil: true },
+            TableCursor::Auto { index: 1, pencil: false },
+        ] {
+            let added: Vec<Action> =
+                actions(Some(cursor)).into_iter().filter(|a| !bare.contains(a)).collect();
+            assert!(!added.is_empty(), "{cursor:?}");
+            for a in &added {
+                assert!(super::is_table_cursor_chip(a), "{cursor:?}: {a:?} is a cursor chip");
+            }
+        }
     }
 
     #[test]

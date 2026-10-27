@@ -1445,7 +1445,12 @@ impl App {
         // auto row's edit) are the keys they advertise, so they keep the
         // cursor and the table's caret as those keys do (task #125). They
         // are drawn only while no cell is open, so the commit above has
-        // nothing to close for them.
+        // nothing to close for them. The rule names the chips the table's
+        // cursor adds rather than every footer chip, as the jq bar's does:
+        // the jq bar's footer is its own chip set, but the footer under the
+        // table also shows chips that aren't the table's (send, tabs,
+        // commands), and other panes' footers draw here too, and whether
+        // those clicks stay a click away is outside #125.
         let keeps_table_selection = keeps_open_cell
             || matches!(hit, Hit::AutoHeaderCopy(_) | Hit::AutoHeaderReveal)
             || matches!(&hit, Hit::FooterChip(a)

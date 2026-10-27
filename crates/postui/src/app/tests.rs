@@ -15605,7 +15605,14 @@ fn a_footer_row_chip_click_keeps_the_table_cursor() {
                 "X-Two".into(),
                 postui_core::model::Entry { value: "b".into(), enabled: true },
             );
+            // `click_hit` draws a frame first and fails if the chip isn't on it.
             click_hit(&mut app, Hit::FooterChip(chip.clone()));
+            // The chip's action ran.
+            match chip {
+                Action::CopyToClipboard(_) => assert_eq!(last_copied(&app).as_deref(), Some("a")),
+                Action::ToggleTableRow(_) => assert!(!app.editor.headers["X-One"].enabled),
+                _ => assert_eq!(app.editor.headers.keys().collect::<Vec<_>>(), ["X-Two"]),
+            }
             assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "{profile:?} {chip:?}");
             assert_eq!(app.editor.sub_focus, SubFocus::Content, "{profile:?} {chip:?}");
             render_once(&mut app);
@@ -15629,6 +15636,33 @@ fn a_footer_row_chip_click_keeps_the_table_cursor() {
         assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "{profile:?}");
         assert!(app.editor.table.editing.is_some(), "{profile:?}: the value is open");
     }
+}
+
+/// Task #125: the delete chip's step records the cursor it kept, so undo
+/// lands on the restored row, as it does after `d`.
+#[test]
+fn undoing_a_delete_chip_click_selects_the_restored_row() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("chip".into()));
+    for (k, v) in [("Accept", "application/json"), ("X-Debug", "1")] {
+        app.editor
+            .headers
+            .insert(k.into(), postui_core::model::Entry { value: v.into(), enabled: true });
+    }
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.preferred_tab = EditorTab::Headers;
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.set_selected(Some(Stop::Row(1)));
+    app.capture_undo(); // seed the shadow before the delete
+    click_hit(&mut app, Hit::FooterChip(Action::DeleteTableRow(1)));
+    app.capture_undo();
+    assert_eq!(app.editor.headers.len(), 1);
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(0)), "on the new last row");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.headers.len(), 2, "undo brings the row back");
+    assert_eq!(app.editor.table.selected(), Some(Stop::Row(1)), "on the restored X-Debug row");
+    assert_eq!(app.editor.sub_focus, SubFocus::Content);
 }
 
 /// The same in the vim profile: `j` moves, `yy` copies, Enter takes the
