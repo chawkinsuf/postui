@@ -6692,6 +6692,7 @@ impl App {
                 use postui_core::varedit;
                 match destination {
                     ExtractDestination::Request => {
+                        self.debug_assert_no_open_vars_cell();
                         self.no_coalesce = true;
                         self.editor.variables.shift_remove(&name);
                         self.toasts.push(
@@ -8659,6 +8660,18 @@ impl App {
         stage_value_removal(fields, kind) && self.update(Action::Render)
     }
 
+    /// The value dialog's request-scope writes add and remove Vars rows,
+    /// and an open cell names its row by index, so its typing would land
+    /// on another row. The dialog commits an open Vars cell as it opens
+    /// (`open_edit_value_popup`, #151), and while it is up no cell can
+    /// open again, so none is open when they run.
+    fn debug_assert_no_open_vars_cell(&self) {
+        debug_assert!(
+            self.editor.active_tab != EditorTab::Vars || self.editor.table.editing.is_none(),
+            "a request-scope var write under an open Vars cell"
+        );
+    }
+
     /// Builds and opens the value-edit popup for a simple (or
     /// request-scoped / stray-env) variable's `{{token}}`: a `value` field
     /// seeded with the current effective value and a `destination` choice
@@ -8669,6 +8682,15 @@ impl App {
     fn open_edit_value_popup(&mut self, name: &str) -> bool {
         use crate::components::modal::{Modal, PromptField, PromptKind};
 
+        // An open Vars cell commits first, as its own step (#151; why the
+        // writes need it: `debug_assert_no_open_vars_cell`). Here, not at
+        // the writes, because the seed below must already see the typing.
+        // Any other cell stays open under the dialog, as under the
+        // tooltip's pill (#135): the dialog writes no row of its table,
+        // which is why this is not `close_open_inputs`.
+        if self.editor.active_tab == EditorTab::Vars {
+            self.commit_table_edit();
+        }
         let request_value =
             self.editor.variables.get(name).filter(|e| e.enabled).map(|e| e.value.clone());
         let env_value = self.env_data().values.get(name).cloned();
@@ -8914,6 +8936,7 @@ impl App {
                 // Editor-only: the open request's `[variables]` option
                 // rides the editor's own dirty/save path, so nothing is
                 // written (and nothing journaled) here.
+                self.debug_assert_no_open_vars_cell();
                 match self.editor.variables.get_mut(name) {
                     Some(option) => option.value = value.clone(),
                     None => {
