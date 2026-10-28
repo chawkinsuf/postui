@@ -133,7 +133,7 @@ impl App {
     pub(super) fn push_curl_prompt(&mut self, run: CurlImportRun) {
         let space = self.active_space();
         let folder = run.folder.clone().unwrap_or_else(|| space.clone());
-        let name = self.free_request_name(&folder, &run.current().suggested_name);
+        let name = self.free_request_name(&folder, &run.current().suggested_name());
         // The prompt speaks folders inside the space, as New request does.
         let prefill = match folder.strip_prefix(&format!("{space}/")) {
             Some(rel) => format!("{rel}/{name}"),
@@ -255,7 +255,8 @@ impl App {
     /// clipboard's one curl command replaces the request in the editor.
     /// `slug` names a sidebar row, opened first, through the dirty gate
     /// (U7). Everything that can refuse (the clipboard, the parse, the
-    /// target's file, the variables' sort) runs before the gate, so a
+    /// target's file, the variables' sort, a `# @name` rename's checks)
+    /// runs before the gate, so a
     /// refusal only toasts and the gate's answer is never left undone.
     pub(super) fn replace_with_curl(&mut self, slug: Option<String>) -> bool {
         if self.refuse_without_project() {
@@ -302,9 +303,21 @@ impl App {
                 return true;
             }
         };
+        // A scratch has no file to rename (N4).
+        let target = other.clone().or_else(|| self.editor.slug.clone());
+        let rename = match (target, &batch.commands[0].named) {
+            (Some(slug), Some(named)) => match self.curl_rename(&slug, named) {
+                Ok(rename) => rename,
+                Err(msg) => {
+                    self.toasts.push(format!("cannot replace: {msg}"), ToastKind::Error);
+                    return true;
+                }
+            },
+            _ => None,
+        };
         let (commands, notes) = PasteNotes::split(batch);
         let import = commands.into_iter().next().expect("checked: one command");
-        let replace = CurlReplace { import, notes, vars };
+        let replace = CurlReplace { import, notes, vars, rename };
         match other {
             // Every gate asks through `leaving_unsaved`, so none can forget
             // the cell; here the flush above has already committed it.
@@ -316,6 +329,41 @@ impl App {
             None => self.apply_curl_replace(replace),
         }
         true
+    }
+
+    /// The display path a paste's `# @name` renames `slug` to (replace spec
+    /// §6, N3 as amended): a name with a `/` in it (a leading one too)
+    /// reads from the space's top, as the Rename prompt and a top-level
+    /// import read it, so replaying the paste that imported a request
+    /// lands where the import put it; a bare name keeps the request's
+    /// folder. `None` when the request already has that name, spelled the
+    /// same, in that folder (N5): a different spelling, case included, is
+    /// what the comment
+    /// asks for, as the Rename prompt takes a case-only change. Asked
+    /// before the rename's checks, so a name that changes nothing never
+    /// refuses. What the rename would refuse is refused here, before the
+    /// dirty gate, in its own words (N2), a file gone from disk included:
+    /// the paste asks for a rename that cannot happen, and refusing before
+    /// anything changes says so, where replacing without it would drop the
+    /// comment unsaid (a bare curl still replaces). A rename that fails
+    /// only after the gate goes on without it instead (N1), since by then
+    /// the gate's answer has acted.
+    fn curl_rename(&self, slug: &str, named: &str) -> Result<Option<String>, String> {
+        let folder = slug.rsplit_once('/').map(|(f, _)| f);
+        let base = if named.contains('/') { postui_core::storage::space_of(slug) } else { folder };
+        let named = named.trim_start_matches('/');
+        let to = match base {
+            Some(base) => format!("{base}/{named}"),
+            None => named.to_string(),
+        };
+        let same = postui_core::storage::split_display_path(&to).is_some_and(|(f, leaf)| {
+            Some(f.as_str()) == folder && leaf == self.request_display(slug)
+        });
+        let Some(p) = self.project().filter(|_| !same) else {
+            return Ok(None);
+        };
+        p.check_rename_request(slug, &to).map_err(|e| self.rename_refusal(slug, &e))?;
+        Ok(Some(to))
     }
 
     /// `Action::ForceReplaceWithCurl`, and a clean editor's way there:
@@ -340,9 +388,8 @@ impl App {
     /// are: the editor change is then the next `capture_undo`'s own step,
     /// so undoing it never reloads the request over unsaved work.
     fn apply_curl_replace(&mut self, replace: CurlReplace) {
-        let CurlReplace { import, notes, vars: CurlVariables { secrets, kept, reserved } } =
+        let CurlReplace { import, notes, vars: CurlVariables { secrets, kept, reserved }, rename } =
             replace;
-        let current = self.editor.current_request();
         let env = self.project().and_then(|p| p.active_env().map(|e| p.env_name(e)));
         if !secrets.is_empty() {
             // The variables' names, not the request's: the editor change is
@@ -361,6 +408,27 @@ impl App {
                 return;
             }
         }
+        let display = |app: &Self| match app.editor.slug.clone() {
+            Some(slug) => app.request_display(&slug),
+            None => "the unsaved request".to_string(),
+        };
+        let old = display(self);
+        // The paste's `# @name` (replace spec §6, N1): rename's own step,
+        // between the declarations and the editor change, so undo takes
+        // back the edit first, then the rename. A rename checked before the
+        // gate can still fail on the disk (a file written while the gate
+        // was up): it toasts why and the replace goes on under the old
+        // name, so the declarations above are never left without the
+        // request that uses them.
+        let renamed = match (rename, self.editor.slug.clone()) {
+            // The rename re-keys the undo shadow, so the editor change below
+            // is still its own step.
+            (Some(to), Some(from)) if self.rename_request(&from, &to) => Some(display(self)),
+            _ => None,
+        };
+        // Read after the rename: the name kept is the new one, and a rename
+        // alone is no field change.
+        let current = self.editor.current_request();
         let replaced = postui_core::model::HttpRequest {
             name: current.name.clone(),
             jq: current.jq.clone(),
@@ -374,16 +442,12 @@ impl App {
         self.editor.apply_snapshot(&replaced, None);
         self.sync_active_tab();
         let changed = self.editor.current_request() != current;
-        let name = match self.editor.slug.clone() {
-            Some(slug) => self.request_display(&slug),
-            None => "the unsaved request".to_string(),
-        };
         // The hint only when there is a step to undo: a curl the request
         // already matches changes nothing in the editor.
-        let undoable = changed || !secrets.is_empty();
+        let undoable = changed || renamed.is_some() || !secrets.is_empty();
         let saved_any = secrets.iter().any(|(_, v)| v.is_some());
         let created = CreatedImport {
-            name: name.clone(),
+            name: renamed.clone().unwrap_or_else(|| old.clone()),
             ignored: import.ignored,
             converted: import.converted,
             secrets,
@@ -393,10 +457,11 @@ impl App {
         let secrets_env = env.as_deref().filter(|_| saved_any);
         let (parts, kind) =
             crate::curl_import::summary_parts(&[created], false, &notes, secrets_env);
-        let head = if changed {
-            format!("Replaced {name} from curl")
-        } else {
-            format!("Nothing to replace: {name} already matches the curl")
+        // A rename is a change even when the fields already match (N6).
+        let head = match (&renamed, changed) {
+            (Some(new), _) => format!("Replaced {old} from curl, renamed to {new}"),
+            (None, true) => format!("Replaced {old} from curl"),
+            (None, false) => format!("Nothing to replace: {old} already matches the curl"),
         };
         let text = std::iter::once(head).chain(parts).collect::<Vec<_>>().join("; ");
         let hint = if undoable { self.undo_hint() } else { String::new() };

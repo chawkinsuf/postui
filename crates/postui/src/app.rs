@@ -4893,61 +4893,13 @@ impl App {
                 true
             }
             Action::RenameRequest { from, to } => {
-                use postui_core::project::Error;
                 // The typed name is relative to the active space, same as
                 // a create.
                 let to = format!("{}/{}", self.active_space(), to.trim_start_matches('/'));
-                let cursor_on = self.sidebar.selected_slug().as_deref() == Some(from.as_str());
-                let t = self.begin_op();
-                let Some(p) = self.project.as_mut() else {
-                    self.op_in_flight = false;
-                    return true;
-                };
-                match p.rename_request(&from, &to) {
-                    Ok((slug, leaf)) => {
-                        let label = crate::undo::StepLabel::rename(leaf.clone());
-                        self.follow_slug(&from, &slug);
-                        // The editor follows the new slug in place, never
-                        // reloading.
-                        if self.editor.slug.as_deref() == Some(from.as_str()) {
-                            self.editor.slug = Some(slug.clone());
-                            // The body's engine state follows too (amendment C2).
-                            self.vim_body_moved(Some(&from));
-                            // The rename wrote the new display name to
-                            // disk; mirror it in both the live fields and
-                            // the saved snapshot so a rename alone never
-                            // reads as dirty.
-                            self.editor.name = Some(leaf.clone());
-                            if let Some(saved) = self.editor.saved.as_mut() {
-                                saved.name = Some(leaf);
-                            }
-                        }
-                        // The cursor follows the row through a re-sort
-                        // (sweep-7 bug b).
-                        self.land(Landing {
-                            cursor: cursor_on.then(|| CursorAim::On(RowKey::Request(slug.clone()))),
-                            ..Landing::default()
-                        });
-                        self.record_project_step(t, label);
-                    }
-                    Err(Error::AlreadyExists(taken)) => {
-                        self.toasts.push(
-                            format!("a request named {taken:?} already exists here"),
-                            ToastKind::Error,
-                        );
-                        self.last_action_failed = true;
-                    }
-                    Err(Error::BadName(_)) => {
-                        self.toasts.push("request name cannot be empty", ToastKind::Error);
-                        self.last_action_failed = true;
-                    }
-                    Err(e) => {
-                        self.toasts.push(
-                            format!("could not rename {}: {e}", self.request_display(&from)),
-                            ToastKind::Error,
-                        );
-                        self.last_action_failed = true;
-                    }
+                // A refusal brings the prompt back with what was typed; no
+                // project at all returns quietly, as it always did.
+                if !self.rename_request(&from, &to) && self.project.is_some() {
+                    self.last_action_failed = true;
                 }
                 true
             }
@@ -10802,6 +10754,84 @@ impl App {
             .and_then(|p| p.requests().iter().find(|l| l.slug == slug))
             .and_then(|l| l.name.clone())
             .unwrap_or_else(|| slug.rsplit('/').next().unwrap_or(slug).to_string())
+    }
+
+    /// Renames the request at `from` to the display path `to` (space
+    /// included) as one journaled step: `Action::RenameRequest`, and a
+    /// replace with curl whose paste carries a `# @name` (replace spec §6).
+    /// The editor follows in place, never reloading. A refusal toasts
+    /// (`rename_refusal`); whether the action failed is the caller's to
+    /// say, since a replace goes on without its rename. `true` when it
+    /// renamed.
+    pub(super) fn rename_request(&mut self, from: &str, to: &str) -> bool {
+        let cursor_on = self.sidebar.selected_slug().as_deref() == Some(from);
+        let t = self.begin_op();
+        let Some(p) = self.project.as_mut() else {
+            self.op_in_flight = false;
+            return false;
+        };
+        match p.rename_request(from, to) {
+            Ok((slug, leaf)) => {
+                let label = crate::undo::StepLabel::rename(leaf.clone());
+                self.follow_slug(from, &slug);
+                // The editor follows the new slug in place, never
+                // reloading.
+                if self.editor.slug.as_deref() == Some(from) {
+                    self.editor.slug = Some(slug.clone());
+                    // The body's engine state follows too (amendment C2).
+                    self.vim_body_moved(Some(from));
+                    // The rename wrote the new display name to
+                    // disk; mirror it in both the live fields and
+                    // the saved snapshot so a rename alone never
+                    // reads as dirty.
+                    self.editor.name = Some(leaf.clone());
+                    if let Some(saved) = self.editor.saved.as_mut() {
+                        saved.name = Some(leaf);
+                    }
+                    // The shadow is re-keyed too, name included, as the
+                    // rename's undo and redo re-key it (`after_replay`):
+                    // the rename is the project step, so the next capture
+                    // must see neither the slug change (it would only
+                    // re-seed, dropping an edit made in the same event, as
+                    // a replace with curl makes) nor the name (a rename that
+                    // keeps the slug would record it as an editor edit, and
+                    // undoing that put the old name back over the file's).
+                    // Only the key moves; what the shadow holds otherwise is
+                    // untouched, so no pending edit is swallowed.
+                    if let Some(shadow) = self.shadow.as_mut()
+                        && shadow.slug.as_deref() == Some(from)
+                    {
+                        shadow.slug = Some(slug.clone());
+                        shadow.req.name = self.editor.name.clone();
+                    }
+                }
+                // The cursor follows the row through a re-sort
+                // (sweep-7 bug b).
+                self.land(Landing {
+                    cursor: cursor_on.then(|| CursorAim::On(RowKey::Request(slug.clone()))),
+                    ..Landing::default()
+                });
+                self.record_project_step(t, label);
+                true
+            }
+            Err(e) => {
+                // The caller may go on (a replace without its rename).
+                self.op_in_flight = false;
+                let msg = self.rename_refusal(from, &e);
+                self.toasts.push(msg, ToastKind::Error);
+                false
+            }
+        }
+    }
+
+    /// A refused rename of `from`, in the words the toast reads.
+    pub(super) fn rename_refusal(&self, from: &str, e: &postui_core::project::Error) -> String {
+        use postui_core::project::Error;
+        match e {
+            Error::AlreadyExists(taken) => format!("a request named {taken:?} already exists here"),
+            Error::BadName(_) => "request name cannot be empty".to_string(),
+            e => format!("could not rename {}: {e}", self.request_display(from)),
+        }
     }
 
     /// Inserts a copy of `key`/`entry` into `tab`'s table at row `at`

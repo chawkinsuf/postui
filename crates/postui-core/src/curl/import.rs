@@ -24,10 +24,20 @@ pub struct CurlImport {
     /// (`$(…)`, `$BASE/x`) and for a variable the paste never assigned.
     pub variables: Vec<(String, Option<String>)>,
     /// The text of a `# @name …` comment line above the command, spaces
-    /// folded (a `/` in it means a folder, as typed into the prompt).
-    /// Else `{METHOD} {last non-empty path segment, else host}`, which
-    /// never holds a `/`.
-    pub suggested_name: String,
+    /// folded (a `/` in it means a folder, as typed into the prompt);
+    /// `None` without one. A replace renames only from it (replace spec
+    /// §6, task #148); an import falls back to the URL
+    /// ([`Self::suggested_name`]).
+    pub named: Option<String>,
+}
+
+impl CurlImport {
+    /// The name an import prompts with: the `# @name` comment's, else
+    /// `{METHOD} {last non-empty path segment, else host}`, which never
+    /// holds a `/`.
+    pub fn suggested_name(&self) -> String {
+        self.named.clone().unwrap_or_else(|| url_name(self.request.method, &self.request.url))
+    }
 }
 
 /// Every curl command of a paste.
@@ -120,9 +130,7 @@ pub fn parse(text: &str) -> Result<CurlBatch, CurlError> {
         cmd.marks.drain(..lead);
         let mut import = parse_command(cmd)
             .map_err(|kind| CurlError { command: many.then_some(i + 1), kind })?;
-        if let Some(name) = name.take() {
-            import.suggested_name = name;
-        }
+        import.named = name.take();
         import.ignored.splice(0..0, leading);
         import.variables =
             import.converted.iter().map(|n| (n.clone(), env.get(n).cloned().flatten())).collect();
@@ -609,7 +617,6 @@ fn build(
     );
     ignored.extend(tail);
 
-    let suggested_name = suggested_name(method, &url);
     Ok(CurlImport {
         request: HttpRequest {
             name: None,
@@ -630,7 +637,7 @@ fn build(
         converted,
         // Filled in by `parse`, which sees the lines before this one.
         variables: Vec::new(),
-        suggested_name,
+        named: None,
     })
 }
 
@@ -654,7 +661,7 @@ fn has_scheme(url: &str) -> bool {
     })
 }
 
-fn suggested_name(method: Method, url: &str) -> String {
+fn url_name(method: Method, url: &str) -> String {
     let rest = match url.split_once("://") {
         Some((_, r)) if has_scheme(url) => r,
         _ => url,
@@ -700,19 +707,31 @@ mod tests {
         assert!(c.request.headers.is_empty());
         assert_eq!(body(&c), None);
         assert!(c.ignored.is_empty());
-        assert_eq!(c.suggested_name, "GET users");
+        assert_eq!(c.suggested_name(), "GET users");
     }
 
     #[test]
     fn a_name_comment_is_the_suggested_name() {
         let batch =
             parse("# @name List users\ncurl https://api.x/users\ncurl https://api.x/me").unwrap();
-        let names: Vec<&str> = batch.commands.iter().map(|c| c.suggested_name.as_str()).collect();
+        let names: Vec<String> = batch.commands.iter().map(|c| c.suggested_name()).collect();
         assert_eq!(names, ["List users", "GET me"]);
         // It names the next curl command, past other lines, and is not a
         // skipped line: values still land.
         let c = one("# @name Me\nexport T=abc\ncurl -H \"X: $T\" https://api.x/me");
-        assert_eq!((c.suggested_name.as_str(), c.variables[0].1.as_deref()), ("Me", Some("abc")));
+        assert_eq!((c.suggested_name().as_str(), c.variables[0].1.as_deref()), ("Me", Some("abc")));
+    }
+
+    /// Replace renames only from a comment (replace spec §6, task #148),
+    /// so the comment is kept apart from the URL's suggestion.
+    #[test]
+    fn named_holds_the_name_comment_alone() {
+        let batch =
+            parse("# @name api/List  users\ncurl https://api.x/users\ncurl https://api.x/me")
+                .unwrap();
+        let named: Vec<Option<&str>> = batch.commands.iter().map(|c| c.named.as_deref()).collect();
+        assert_eq!(named, [Some("api/List users"), None]);
+        assert_eq!(one("# @name\ncurl https://api.x/me").named, None, "empty falls back");
     }
 
     #[test]
@@ -731,7 +750,7 @@ mod tests {
         assert_eq!(names, ["accept", "authorization", "content-type"]);
         assert_eq!(body(&c), Some(r#"{"name":"it's","note":"line1\nline2"}"#));
         assert_eq!(c.ignored, ["--compressed"]);
-        assert_eq!(c.suggested_name, "POST items");
+        assert_eq!(c.suggested_name(), "POST items");
     }
 
     #[test]
@@ -755,7 +774,7 @@ mod tests {
         assert_eq!(c.request.method, Method::Put);
         assert_eq!(body(&c), Some(r#"{"done": true}"#));
         assert_eq!(header(&c, "Content-Type"), Some("application/json"));
-        assert_eq!(c.suggested_name, "PUT 1");
+        assert_eq!(c.suggested_name(), "PUT 1");
     }
 
     #[test]
@@ -812,7 +831,7 @@ mod tests {
     fn head_flag() {
         let c = one("curl -I https://x");
         assert_eq!(c.request.method, Method::Head);
-        assert_eq!(c.suggested_name, "HEAD x");
+        assert_eq!(c.suggested_name(), "HEAD x");
     }
 
     #[test]
@@ -976,11 +995,11 @@ mod tests {
     #[test]
     fn credentials_in_the_url_never_reach_the_name() {
         assert_eq!(
-            one("curl https://admin:s3cret@api.example.com").suggested_name,
+            one("curl https://admin:s3cret@api.example.com").suggested_name(),
             "GET api.example.com"
         );
-        assert_eq!(one("curl https://u:p@h:8080/").suggested_name, "GET h:8080");
-        assert_eq!(one("curl https://u:p@h/items").suggested_name, "GET items");
+        assert_eq!(one("curl https://u:p@h:8080/").suggested_name(), "GET h:8080");
+        assert_eq!(one("curl https://u:p@h/items").suggested_name(), "GET items");
     }
 
     #[test]
@@ -1019,12 +1038,12 @@ mod tests {
     fn a_scheme_less_url_gets_http_unless_it_is_a_variable() {
         assert_eq!(one("curl example.com/x").request.url, "http://example.com/x");
         assert_eq!(one("curl '{{base}}/x'").request.url, "{{base}}/x");
-        assert_eq!(one("curl $BASE/users").suggested_name, "GET users");
+        assert_eq!(one("curl $BASE/users").suggested_name(), "GET users");
         // A `://` later in the URL is not a scheme.
         let q = one("curl 'example.com/login?next=https://app/x'");
         assert_eq!(q.request.url, "http://example.com/login?next=https://app/x");
-        assert_eq!(q.suggested_name, "GET login");
-        assert_eq!(one("curl '{{base}}/login?next=https://app/x'").suggested_name, "GET login");
+        assert_eq!(q.suggested_name(), "GET login");
+        assert_eq!(one("curl '{{base}}/login?next=https://app/x'").suggested_name(), "GET login");
         assert_eq!(one("curl HTTPS://x/a").request.url, "HTTPS://x/a");
     }
 
@@ -1055,7 +1074,7 @@ mod tests {
         let batch = parse("export TOKEN=abc\necho hi\n# note\ncurl -H \"Authorization: Bearer $TOKEN\" https://x/me\ncurl -X POST https://x/b -d '{}'").unwrap();
         assert_eq!(batch.skipped_lines, 1, "the echo; an assignment is not skipped");
         assert!(batch.values_dropped, "the echo took TOKEN's value");
-        let names: Vec<&str> = batch.commands.iter().map(|c| c.suggested_name.as_str()).collect();
+        let names: Vec<String> = batch.commands.iter().map(|c| c.suggested_name()).collect();
         assert_eq!(names, ["GET me", "POST b"]);
         assert_eq!(batch.commands[0].converted, ["TOKEN"]);
         assert_eq!(header(&batch.commands[0], "Authorization"), Some("Bearer {{TOKEN}}"));
@@ -1175,7 +1194,7 @@ mod tests {
         let b = parse("export T=old\nT=new X=1 curl -H \"A: $T\" https://x/me").unwrap();
         assert_eq!(b.skipped_lines, 0);
         let c = &b.commands[0];
-        assert_eq!(c.suggested_name, "GET me");
+        assert_eq!(c.suggested_name(), "GET me");
         assert_eq!(vars(c), [("T", Some("old"))], "bash expands curl's words before T=new");
         assert_eq!(c.ignored, ["T=\u{2026}", "X=\u{2026}"]);
         let after = parse("T=new curl https://x\ncurl -H \"A: $T\" https://x").unwrap();
