@@ -138,8 +138,9 @@ and `%` don't change.
     open.
   - A cell the Visual span, a search hit or the selection already paints
     keeps that paint.
-  - The caret's cell keeps its reverse, because only the colours are
-    patched.
+  - The caret's cell is not painted, so it keeps the caret's look (R8).
+    (Until #187 this read "keeps its reverse, because only the colours
+    are patched", and the code lit it. See the amendment below.)
 - R2's `before` is `self.body.mode == EditorMode::Insert`. The engine
   already paints Insert and Replace as edtui's `Insert`, and Normal and
   Visual as `Normal` and `Visual` (`BodyBuf::show`). The arrows body is
@@ -190,6 +191,20 @@ and `%` don't change.
   costs about 0.4 µs.
 
 **Removed:** nothing.
+
+**Amendment, 2026-10-27 (#187).** The body lit the caret's own bracket
+against R8. edtui draws the caret as its char reversed, and
+`paint_bracket_pair` then set the pair's colours on that cell. The reverse
+stayed, so the cell showed `accent` text on `on_accent`: it read as an
+ordinary coloured char, and the caret was hard to find (the user's report,
+in the arrows profile: "the matching highlight makes the cursor mostly
+invisible"). The fix follows R8 as written. The caret's cell is left alone
+in both profiles, as Vim's cursor covers its own bracket under MatchParen.
+The partner still lights, and so does the bracket before a caret between
+chars (R2), since that is not the caret's cell. Under a selection that
+doesn't cover the caret, the draw hides the caret, so that cell lights as
+before. The response draws no caret (a tinted cursor row only), so its
+pair is unchanged.
 
 ## 4. Tests
 
