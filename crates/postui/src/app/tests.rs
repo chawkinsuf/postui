@@ -33331,6 +33331,29 @@ fn a_parked_cursor_whose_item_went_outside_settles_on_the_first_row() {
     assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("prod"));
 }
 
+/// #83 N6, N6a: a selector opened where it has no options is on nothing;
+/// entering its grid lands on the ghost row, the only row. Opened where it
+/// has none and then shown where it has some, it is on the first option
+/// once the keyboard enters, not on the ghost row.
+#[test]
+fn an_empty_grid_opens_on_nothing_and_is_entered_on_the_ghost_row() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::SwitchEnv(Some("dev".into()))); // dev has no options
+    goto_group(&mut app, "user");
+    assert_eq!(grid_at(&app), None);
+    app.update(Action::SwitchEnv(Some("qa".into())));
+    enter_grid(&mut app);
+    assert_eq!(grid_at(&app), Some((0, 0)), "alice, not the ghost row");
+    app.update(Action::SwitchEnv(Some("dev".into())));
+    app.varmanager.focus = crate::components::varmanager::VmFocus::List;
+    enter_grid(&mut app);
+    assert_eq!(grid_at(&app), Some((0, 0)));
+    assert_eq!(app.varmanager.entry_at(app.proj(), 0), None, "the ghost row");
+}
+
 /// #83 N7: deleting another environment (from the header) leaves the
 /// cursor on its own environment, below the deleted one too.
 #[test]

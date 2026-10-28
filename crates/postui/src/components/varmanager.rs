@@ -408,7 +408,10 @@ fn env_stores(ctx: &Project, name: &str) -> bool {
 pub struct GridEdit {
     /// Index into the selector's options — or `options.len()`, the ghost row
     /// that becomes a real option the moment its name cell commits
-    /// non-empty.
+    /// non-empty. An index, unlike the grid cursor (task #83): an open cell
+    /// is never re-read under, since the inputs close before every reload
+    /// and every op (#75, #78), so its row cannot go stale while it is open
+    /// (spec 2026-10-27, choice 8).
     pub row: usize,
     /// `0` is the option-name column; `n` is the selector's `n-1`th field.
     pub col: usize,
@@ -829,12 +832,21 @@ impl VarManager {
     }
 
     /// A fresh grid for the selector the pane just opened, its cursor on
-    /// the first row (spec 2026-10-27 N6a): space from the left list acts
-    /// on the grid's cursor before the keyboard ever enters the grid, and
-    /// a fresh selector's space selects its first option, as it always has.
+    /// the first option (spec 2026-10-27 N6a): space from the left list
+    /// acts on the grid's cursor before the keyboard ever enters the grid,
+    /// and a fresh selector's space selects its first option, as it always
+    /// has. With no options (none here yet, or no environment) it stays on
+    /// nothing rather than on the ghost row: the ghost is a place the user
+    /// goes to (N4), and a cursor parked there by the open would stay on
+    /// it once options arrive. Entering the grid settles it (N6).
     fn open_grid(&mut self, ctx: &Project) {
         self.grid = OptionGridState::default();
-        self.settle_grid(ctx);
+        let VmDetail::Group(selector) = &self.detail else {
+            return;
+        };
+        if shown_options(ctx, selector).is_some_and(|o| !o.is_empty()) {
+            self.point_grid(ctx, 0, 0);
+        }
     }
 
     /// Click option point for a form field (`Hit::VmFormField`): seeds
@@ -914,9 +926,8 @@ impl VarManager {
     }
 
     /// A grid cursor on nothing goes to the first row (the ghost row when
-    /// there are no options): how the grid comes up when the pane opens a
-    /// selector or the keyboard enters it (spec N6, N6a). A cursor on
-    /// something stays where it is.
+    /// there are no options): how the grid comes up when the keyboard
+    /// enters it (spec N6). A cursor on something stays where it is.
     pub fn settle_grid(&mut self, ctx: &Project) {
         if self.grid_at(ctx).is_none() {
             self.point_grid(ctx, 0, self.grid.cursor.col);
@@ -1339,7 +1350,6 @@ impl VarManager {
         };
         if gone {
             self.form = VarFormState::default();
-            self.grid = OptionGridState::default();
             self.focus = VmFocus::List;
             // The neighbour of the row that went: whatever took its place,
             // else the nearest selectable row above it. Found from the
@@ -1364,9 +1374,9 @@ impl VarManager {
                 }
                 None => VmDetail::None,
             };
-            // A selector opened in its place comes up on its first row,
-            // as any freshly opened selector does (spec N6a).
-            self.settle_grid(ctx);
+            // A selector opened in its place comes up as any freshly
+            // opened selector does (spec N6a).
+            self.open_grid(ctx);
         }
         self.ensure_visible = true;
     }
@@ -1564,6 +1574,11 @@ impl VarManager {
         // list, on the selector the detail pane has open (spec §3.4); it
         // comes first so it never falls through to a left-list command that
         // would act on a different row than the grid the user is looking at.
+        // A grid cursor on nothing (its option went, or an environment
+        // switch found no option of its name) selects nothing: the grid
+        // paints no cursor while the list has the keyboard, so picking
+        // whatever sits at some row would act on an option nobody pointed
+        // at (task #83, spec 2026-10-27 N5, N10).
         if let VmDetail::Group(selector) = self.detail.clone()
             && ev.code == KeyCode::Char(' ')
             && plain
@@ -4437,7 +4452,9 @@ fields = ["user_id", "customer_id"]
 
     /// #83 N6a: a freshly opened selector's grid is on its first row, so
     /// space from the left list selects its first option, as it always
-    /// has; a selector with no options there opens on the ghost row.
+    /// has. A selector with no options there opens on nothing, not on the
+    /// ghost row, so it is on the first option once options come; entering
+    /// the grid settles it.
     #[test]
     fn a_freshly_opened_selectors_grid_is_on_its_first_row() {
         let (_dir, mut ctx) = fixture();
@@ -4456,8 +4473,12 @@ fields = ["user_id", "customer_id"]
         ctx.set_active_env(None);
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
-        assert_eq!(vm.grid_at(&ctx), Some((0, 0)));
-        assert_eq!(vm.entry_at(&ctx, 0), None, "the ghost row: no env, no options");
+        assert_eq!(vm.grid_at(&ctx), None, "no env, no options: on nothing");
+        ctx.set_active_env(Some("qa".into()));
+        assert_eq!(vm.grid_at(&ctx), None, "still on nothing once qa's options show");
+        assert!(vm.enter_detail(&ctx));
+        assert_eq!(vm.grid_at(&ctx), Some((0, 0)), "entering lands on the first option");
+        assert_eq!(vm.entry_at(&ctx, 0).as_deref(), Some("alice"));
     }
 
     #[test]

@@ -223,6 +223,7 @@ impl ManageList {
     pub fn renamed(&mut self, from: &str, to: &str) {
         if self.cursor.as_deref() == Some(from) {
             self.cursor = Some(to.to_string());
+            self.ensure_visible = true;
         }
     }
 

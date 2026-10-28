@@ -8011,10 +8011,8 @@ impl App {
                 match p.move_space(&name, delta) {
                     Ok(_) => {
                         // The Manage screen's list lands on the space that
-                        // just moved and scrolls it into view. The cursor
-                        // holds names, so one on that space stays on it
-                        // anyway; this is main's jump onto the moved row,
-                        // kept as it was.
+                        // just moved and scrolls it into view, so a row
+                        // moved past the edge of the list stays in sight.
                         if self.screen == Screen::Manage {
                             self.manage_select_name(&name);
                         }
@@ -8043,8 +8041,7 @@ impl App {
                 match p.move_environment(&name, delta) {
                     Ok(_) => {
                         // As `MoveSpace`: the list lands on the moved
-                        // environment and scrolls it into view (main's
-                        // jump; a cursor on it stays on it by name anyway).
+                        // environment and scrolls it into view.
                         if self.screen == Screen::Manage {
                             self.manage_select_name(&name);
                         }
@@ -10075,11 +10072,8 @@ impl App {
         };
         let mut reordered = None;
         if commit && drag.working != drag.original && self.project.is_some() {
-            // The cursor index followed the row through the working order;
-            // read against the order on disk it names another row. Put it
-            // back on the dragged item first, so the step's before-view
-            // holds the row the drag started from.
-            self.manage_select_name(&drag.name);
+            // The cursor holds the dragged item's name from `begin_drag`
+            // on, so the step's before-view already records that row.
             let t = self.begin_op();
             let Some(p) = self.project.as_mut() else { return true };
             let (written, label) = match drag.tab {
