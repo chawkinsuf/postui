@@ -673,14 +673,10 @@ impl App {
                     let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
                     return self.modals.scroll_top(d);
                 }
-                let top = self.editor.view_offset();
                 if matches!(self.hits.hit_at(m.column, m.row), Some(Hit::BodyEditor))
                     && self.editor.handle_wheel(m)
                 {
-                    // A notch at a limit moved nothing, the caret neither.
-                    if self.editor.view_offset() != top {
-                        self.vim_body_scrolled();
-                    }
+                    self.vim_body_scrolled();
                     return self.update(Action::Render);
                 }
                 if self.screen == Screen::Manage {

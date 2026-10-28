@@ -1956,6 +1956,32 @@ fn the_wheel_drops_an_operator_and_spends_ctrl_o() {
     assert_eq!(app.editor.body_text().lines().nth(5), Some("Xrow5"));
 }
 
+/// #201: a notch that moves nothing (the view at the top) is still Vim's
+/// wheel command (probed in 9.1: at the top, `d`, the wheel up, `j` deletes
+/// nothing; `i` ctrl+o, the wheel up, `x` types).
+#[test]
+fn a_wheel_notch_at_the_top_still_drops_an_operator_and_spends_ctrl_o() {
+    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+    let mut app = vim_long_body();
+    let area = app.editor.last_body_area.unwrap();
+    let notch_up = |app: &mut App| {
+        let kind = MouseEventKind::ScrollUp;
+        let (column, row) = (area.x + 8, area.y + 1);
+        app.handle_mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE });
+        draw(app);
+    };
+    feed(&mut app, "ggd");
+    notch_up(&mut app);
+    assert_eq!(app.editor.body.viewport_offset().1, 0, "nothing moved");
+    feed(&mut app, "j");
+    assert_eq!(app.editor.body_text().lines().count(), 120, "nothing deleted");
+    feed(&mut app, "gg0i<C-o>");
+    notch_up(&mut app);
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+    feed(&mut app, "x");
+    assert_eq!(app.editor.body_text().lines().next(), Some("xrow0"));
+}
+
 /// #201: in the arrows profile the wheel moves the view, not the caret
 /// (the user: "Yes arrows should scroll the view and not the cursor"):
 /// the caret stays on line 3 off screen, and the next typed char goes in

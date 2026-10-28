@@ -1468,8 +1468,8 @@ impl Editor {
     /// scroll the view and not the cursor"); `body_scrolled_away` keeps
     /// the draw from scrolling back to it. In vim the caret follows the
     /// view in, once, as Vim's wheel moves the cursor only to keep it in
-    /// the window (`'scrolloff'` 0), and the app repaints a Visual span to
-    /// it (`App::vim_body_scrolled`).
+    /// the window (`'scrolloff'` 0), and the app settles the engine as
+    /// Vim's wheel does (`App::vim_body_scrolled`).
     ///
     /// postui moves the top itself (#181) rather than through edtui's
     /// wheel, which moves the top a line per notch and then pulls the

@@ -1218,31 +1218,27 @@ impl App {
         self.vim.glue.follow_body(from, self.editor.slug.as_deref());
     }
 
-    /// The body's wheel or scrollbar moved its view (`Editor::scroll_body`),
-    /// which in the vim profile pulls the caret into it. A live session
-    /// settles as Vim's wheel does (`Settled::Scroll`, #201): a half-typed
-    /// command drops, an Insert the pull moved splits, ctrl+o's command
-    /// is spent, and a Visual span follows the cursor. A body changed
-    /// outside the engine rebases first, as before a key's settle
-    /// (`sync_session`'s `Edge::Same`), so the settle never records text
-    /// the engine's history doesn't describe. A parked session only
-    /// repaints its span. Nothing to do when the engine doesn't hold the
-    /// body.
+    /// The body took a wheel notch or a scrollbar move
+    /// (`Editor::scroll_body`), which in the vim profile pulls the caret
+    /// into the view. It is a mouse event like a click, so it goes through
+    /// the one path a click's end takes (`sync_session`): a body changed
+    /// outside the engine rebases there first, and a live body settles as
+    /// Vim's wheel does (`Settled::Scroll`, #201): a half-typed command
+    /// drops, an Insert the pull moved splits, ctrl+o's command is spent,
+    /// and a Visual span follows the cursor. Every notch, one that moves
+    /// nothing at a limit too: Vim's wheel is a command either way (probed
+    /// in 9.1: at the top, `d`, the wheel up, `j` deletes nothing).
+    ///
+    /// Only the live body settles. A parked one (another pane has the
+    /// keys) keeps its mode, its pending command and its paint until it is
+    /// live again; what that gives up: a parked Visual span still shows the
+    /// pre-scroll cursor until then.
     pub(crate) fn vim_body_scrolled(&mut self) {
         if !self.vim_owns_body() {
             return;
         }
-        let live = self.vim.glue.live() == Some(FieldId::Body);
-        let (glue, buf) = self.session_parts(FieldId::Body);
-        let Some(mut buf) = buf else { return };
-        if glue.differs(&buf) {
-            glue.rebase(&mut buf);
-        }
-        if live {
-            glue.settle(&mut buf, Settled::Scroll);
-        } else {
-            glue.repaint(&mut buf);
-        }
+        let how = (self.vim.glue.live() == Some(FieldId::Body)).then_some(Settled::Scroll);
+        self.sync_session(None, Cause::Mouse(how));
     }
 
     /// The editor's body is a new buffer with no slug to tell it apart (a

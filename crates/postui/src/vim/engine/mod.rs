@@ -863,16 +863,6 @@ impl Engine {
         self.rest(buf, state);
     }
 
-    /// The view pulled the caret of a parked session into the window (the
-    /// body's wheel or scrollbar while another pane has the keys, #201):
-    /// the mode paints again from where the caret is now, so a Visual span
-    /// follows it. Only the paint: the caret, the mode and what is pending
-    /// stay until the session is live again. A live session settles with
-    /// `Settled::Scroll` instead.
-    pub fn repaint<B: TextBuf>(&self, t: Target<'_, B>) {
-        self.paint(t.buf);
-    }
-
     /// Adopts a GUI selection's anchor as charwise Visual. An open Insert
     /// session ends first, as `leave` ends it (no step back). `settle` has
     /// already split a session the event moved, so an unused autoindent
