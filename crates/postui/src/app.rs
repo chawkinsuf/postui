@@ -8820,13 +8820,13 @@ impl App {
         let request_row = self.editor.variables.get(name);
         let request_value = request_row.map(|e| e.value.clone());
         let request_disabled = request_row.is_some_and(|e| !e.enabled);
-        let request_supplies = request_value.is_some() && !request_disabled;
+        let request_supplies = request_row.is_some_and(|e| e.enabled);
         let env_value = self.env_data().values.get(name).cloned();
         let has_env = self.active_env().is_some();
 
-        let seed = request_value
-            .clone()
-            .filter(|_| request_supplies)
+        let seed = request_row
+            .filter(|e| e.enabled)
+            .map(|e| e.value.clone())
             .or_else(|| self.resolved().values.get(name).cloned())
             .unwrap_or_default();
 

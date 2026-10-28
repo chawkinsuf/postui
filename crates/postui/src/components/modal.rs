@@ -3453,7 +3453,8 @@ impl ModalStack {
                         // nothing visible says why (#154).
                         if matches!(kind, PromptKind::EditVarValue { request_disabled: true, .. })
                             && field.key == "destination"
-                            && field.input.text() == "This request"
+                            && destination_from_label(field.input.text())
+                                == ExtractDestination::Request
                         {
                             content.push_span(ratatui::text::Span::styled(
                                 " (disabled)",
