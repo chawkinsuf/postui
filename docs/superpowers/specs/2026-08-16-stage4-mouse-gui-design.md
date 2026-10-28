@@ -170,7 +170,9 @@ line and the span from it to line 40); a half-typed operator drops (`d`, the whe
 ctrl+o, the wheel, `X` types); an Insert the pull moved splits its undo step (`iBB`,
 the wheel, `CC` Esc `u` undoes only `CC`). A search being typed stays open (`mine`,
 not probed: as a press off the text keeps it, #129). A body session another pane
-has the keys of settles nothing until it is live again (`mine`).
+has the keys of settles nothing until it is live again (`mine`). A scrollbar
+gesture starts with a press, which settles as a click off the text and so ends
+Visual and drops a pending command before the drag moves anything, as before #201.
 
 ## 5. Method dropdown and the popup primitive
 

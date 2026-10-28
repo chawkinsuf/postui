@@ -1869,7 +1869,9 @@ fn the_search_prompts_row_wheels_and_menus_as_the_body() {
 /// #201: in Visual the wheel pulls the cursor into the window and the
 /// span follows it, as Vim's does (probed in 9.1: `v` on line 3, the wheel
 /// down, the span runs from line 3 to the cursor at the window's top, and
-/// `y` takes it). The scrollbar's drag is the same move.
+/// `y` takes it). A scroll by `Action::ScrollPane` is the same move. (A
+/// real scrollbar gesture starts with a press, which settles as a click
+/// off the text and ends Visual first, as it did before #201.)
 #[test]
 fn the_wheel_in_visual_carries_the_span_with_the_cursor() {
     use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
@@ -1899,7 +1901,7 @@ fn the_wheel_in_visual_carries_the_span_with_the_cursor() {
     assert_eq!(span(&app), Some(((2, 0), (40, 1))), "the span follows it");
     app.update(Action::ScrollPane(PaneId::Editor, 10));
     draw(&mut app);
-    assert_eq!(span(&app), Some(((2, 0), (50, 1))), "and the scrollbar's move");
+    assert_eq!(span(&app), Some(((2, 0), (50, 1))), "and a ScrollPane's");
     feed(&mut app, "y");
     assert_eq!(app.mode_indicator(), Some("NORMAL"));
 }

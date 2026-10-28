@@ -1016,9 +1016,12 @@ impl App {
 
     /// Before a mouse event: a button can open, move or close a field;
     /// motion and the wheel cannot, so only a button event syncs the
-    /// session (spec §3.1). Of the drags only the left button's sweeps a
-    /// selection: some terminals (Ghostty) report hover as `Drag(Right)`,
-    /// and each sync reads the whole body (final review T4).
+    /// session here (spec §3.1). Of the drags only the left button's sweeps
+    /// a selection: some terminals (Ghostty) report hover as `Drag(Right)`,
+    /// and each sync reads the whole body (final review T4). The one wheel
+    /// that does sync is a notch or scrollbar move the body takes while its
+    /// session is live, after the move ([`Self::vim_body_scrolled`]): the
+    /// pull is a Vim command, and pays that read per notch.
     pub(super) fn vim_mouse_start(
         &mut self,
         m: &ratatui::crossterm::event::MouseEvent,
@@ -1229,16 +1232,16 @@ impl App {
     /// nothing at a limit too: Vim's wheel is a command either way (probed
     /// in 9.1: at the top, `d`, the wheel up, `j` deletes nothing).
     ///
-    /// Only the live body settles. A parked one (another pane has the
-    /// keys) keeps its mode, its pending command and its paint until it is
-    /// live again; what that gives up: a parked Visual span still shows the
-    /// pre-scroll cursor until then.
+    /// Only the live body syncs and settles, so a notch on any other pane's
+    /// behalf costs no whole-body read (final review T4). A parked body
+    /// (another pane has the keys) keeps its mode, its pending command and
+    /// its paint until it is live again; what that gives up: a parked
+    /// Visual span still shows the pre-scroll cursor until then.
     pub(crate) fn vim_body_scrolled(&mut self) {
-        if !self.vim_owns_body() {
+        if self.vim.glue.live() != Some(FieldId::Body) {
             return;
         }
-        let how = (self.vim.glue.live() == Some(FieldId::Body)).then_some(Settled::Scroll);
-        self.sync_session(None, Cause::Mouse(how));
+        self.sync_session(None, Cause::Mouse(Some(Settled::Scroll)));
     }
 
     /// The editor's body is a new buffer with no slug to tell it apart (a
