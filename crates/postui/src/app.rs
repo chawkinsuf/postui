@@ -4795,8 +4795,9 @@ impl App {
                     None => false,
                 }
             }
-            // An option row menu's item: its action, unless the grid draws
-            // no option row now (task #208, `VarManager::entry_context_menu`).
+            // An option row menu's item: its action, unless the open grid
+            // drew no option row in the last frame (task #208,
+            // `VarManager::entry_context_menu`).
             Action::OptionMenu(action) => {
                 if self.project().is_some_and(|p| self.varmanager.no_rows_drawn(p)) {
                     return false;

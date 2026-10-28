@@ -2081,24 +2081,24 @@ impl VarManager {
 
     /// The right-click menu for the option row the grid cursor is on (spec
     /// §3.4): the right click points the cursor at its row before it asks.
-    /// `None` for the ghost row (nothing to act on yet) and when no
-    /// environment is active (there are no options at all then).
+    /// `None` where the grid's delete has no target: the ghost row (nothing
+    /// to act on yet), and no active environment (no options at all then).
     ///
-    /// Each item is what the grid's own verb does on the row now
-    /// ([`Self::grid_verb`], which its keys and chips read), built as the
-    /// menu opens, so it names the environment, selector and option the
-    /// menu opened on (task #208). It is wrapped in `Action::OptionMenu`,
-    /// which runs it when picked only while the grid draws an option row:
-    /// a shrink that leaves none drawn while the menu is open makes each
-    /// item act on nothing, as the grid's keys do then, with no toast.
-    /// Before, the items ran regardless: Paste wrote an option no row
-    /// showed. The menu stays open over the shrink, its items painted as
-    /// they opened, and acts on the row again once it is drawn: closing it
-    /// would need the dropdown to know which grid it belongs to, and check
-    /// that at every draw. An item is disabled when its verb has nothing to
-    /// act on as the menu opens (Paste with nothing copied): shown rather
-    /// than hidden, so the menu keeps its shape and the copy and paste read
-    /// as a pair.
+    /// Each item is the action the grid's own verb ([`Self::grid_verb`],
+    /// which its keys and chips read) has on the row as the menu opens,
+    /// as it was before task #208: Delete and Edit name the option, Copy
+    /// and Rename its row. Each is wrapped in `Action::OptionMenu`, which
+    /// runs it when picked unless the open grid drew no option row in the
+    /// last frame: a shrink that leaves none drawn while the menu is open
+    /// makes each item act on nothing, as the grid's keys do then, with no
+    /// toast (task #208; before, Paste wrote an option no row showed). The
+    /// menu stays open over the shrink, its items painted as they opened,
+    /// and acts on the row again once it is drawn: closing it would need
+    /// the dropdown to know which grid it belongs to, and check that at
+    /// every draw. An item is disabled when its verb has nothing to act on
+    /// as the menu opens (Paste with nothing copied): shown rather than
+    /// hidden, so the menu keeps its shape and the copy and paste read as a
+    /// pair.
     pub fn entry_context_menu(
         &self,
         ctx: &Project,
@@ -2107,21 +2107,20 @@ impl VarManager {
         let VmDetail::Group(selector) = &self.detail else {
             return None;
         };
-        op_env(ctx, selector)?;
-        let (row, _) = self.grid_at(ctx)?;
-        self.entry_at(ctx, row)?;
-        let item = |label: &str, verb: Verb| match self.grid_verb(ctx, selector, verb) {
+        let item = |label: &str, action: Option<Action>| match action {
             Some(action) => MenuItem::new(label, Action::OptionMenu(Box::new(action))),
             None => MenuItem::disabled(label),
         };
+        let verb = |verb: Verb| self.grid_verb(ctx, selector, verb);
+        let delete = verb(Verb::Delete { count: 1 })?;
         Some(vec![
-            item("Edit\u{2026}", Verb::EditValue),
-            item("Copy option", Verb::Yank),
-            item("Paste option", Verb::Put { above: false, count: 1 }),
+            item("Edit\u{2026}", verb(Verb::EditValue)),
+            item("Copy option", verb(Verb::Yank)),
+            item("Paste option", verb(Verb::Put { above: false, count: 1 })),
             // No ellipsis: rename is the inline name-cell edit, not a
             // dialog.
-            item("Rename", Verb::Rename),
-            item("Delete", Verb::Delete { count: 1 }),
+            item("Rename", verb(Verb::Rename)),
+            item("Delete", Some(delete)),
         ])
     }
 
