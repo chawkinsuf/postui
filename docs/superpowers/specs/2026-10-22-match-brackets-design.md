@@ -59,7 +59,7 @@ Two consequences:
 
 | # | Rule | From |
 |---|---|---|
-| R1 | Body: when the caret is on a bracket that has a partner, both light. | you (the feature); both-light is mine (approved) |
+| R1 | Body: when the caret is on a bracket that has a partner, both light, except the cell the caret is drawn on (R8, #187). | you (the feature); both-light is mine (approved) |
 | R2 | Body, which char: the one under the caret. When it isn't a bracket and the caret is between chars (arrows always; vim Insert and Replace), the one before it. A vim Normal or Visual caret looks only under itself. | Vim (N2, I1–I3); the arrows half is mine (approved) |
 | R3 | The pairs are `()` `[]` `{}`. | Vim (`matchpairs` default) |
 | R4 | A bracket inside a string is skipped, unless the caret's own bracket is inside one; then nothing is skipped. A string is a run between unescaped `"` on one line. This can differ from where `%` goes (N3). | Vim with JSON syntax (N1, N3, N3b); applying it to non-JSON text (Raw, Headers) is mine (approved) |
@@ -140,7 +140,9 @@ and `%` don't change.
     keeps that paint.
   - The caret's cell is not painted, so it keeps the caret's look (R8).
     The cell is the one edtui reports drawing the caret on
-    (`cursor_screen_position`), read after the render like the viewport.
+    (`cursor_screen_position`), read after the render like the viewport,
+    and neither end lights there (a zero-width char under an Insert caret
+    puts the caret on the partner's cell).
     (Until #187 this read "keeps its reverse, because only the colours
     are patched", and the code lit it. See the amendment below.)
 - R2's `before` is `self.body.mode == EditorMode::Insert`. The engine

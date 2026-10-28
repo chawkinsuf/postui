@@ -1372,18 +1372,20 @@ impl Editor {
         // disappeared. Why that differs from Vim's paint (its cursor is the
         // terminal's, drawn over MatchParen) is in the spec's #187
         // amendment. The cell is the one edtui drew the caret on, read
-        // back, not worked out again. Only `a` can be it: `bracket_at`
-        // takes the char under the caret first, so the partner never is. A
-        // hidden caret (under a selection that doesn't cover it) has no
+        // back on screen, so whichever end is drawn there (the partner
+        // too, when a zero-width char under the caret puts the caret on
+        // the next cell) keeps the caret, and a light never lands on it.
+        // Comparing screen cells, not text positions, is what keeps the
+        // caret visible: were this layout and edtui's ever to disagree,
+        // the light would land beside the caret, never over it. A hidden
+        // caret (under a selection that doesn't cover it) has no
         // look to keep, so its bracket lights.
-        let on_caret = caret_shown
-            && self.body.cursor_screen_position() == Some(ratatui::layout::Position::from(cell_a));
+        let caret_at = self.body.cursor_screen_position().filter(|_| caret_shown);
         let lit = Style::default().fg(theme.on_accent).bg(theme.accent);
-        if !on_caret && !covered(a) {
-            buf[cell_a].set_style(lit);
-        }
-        if !covered(b) {
-            buf[cell_b].set_style(lit);
+        for (at, cell) in [(a, cell_a), (b, cell_b)] {
+            if caret_at != Some(cell.into()) && !covered(at) {
+                buf[cell].set_style(lit);
+            }
         }
     }
 
@@ -5340,9 +5342,10 @@ mod tests {
         (cell.fg, cell.bg) == (theme.on_accent, theme.accent)
     }
 
-    /// Whether the focused body shows the caret's look at (`row`, `col`):
-    /// edtui's reverse over the char's own colours, the ones an unfocused
-    /// draw (no caret, no pair) gives it.
+    /// Whether the focused body shows the caret's look on the bracket at
+    /// (`row`, `col`): edtui's reverse over the bracket's own colours. An
+    /// unfocused draw (no pair) gives those: its hidden caret stamps the
+    /// base style, which is what the JSON colours leave a bracket in.
     fn caret_look(e: &mut Editor, row: usize, col: usize) -> bool {
         let own = body_cell_at(e, false, row, col);
         let cell = body_cell_at(e, true, row, col);
@@ -5370,6 +5373,20 @@ mod tests {
         e.body.cursor = edtui::Index2::new(0, 1);
         assert!(caret_look(&mut e, 0, 1), "the caret's `}}`");
         assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 0)), "the partner `{{`");
+    }
+
+    /// R8 (#187): the cell the caret is drawn on never takes the pair's
+    /// colours, whichever end sits there. A zero-width char under an
+    /// Insert caret draws the caret on the next cell, the partner's.
+    #[test]
+    fn the_caret_keeps_its_look_on_the_partner_under_it() {
+        let mut e = body_editor("{\u{200B}}");
+        e.body.cursor = edtui::Index2::new(0, 1);
+        let buf = draw_body(&mut e, true);
+        let at = e.body.cursor_screen_position().unwrap();
+        let cell = &buf[at];
+        assert!(cell.modifier.contains(Modifier::REVERSED), "the caret's cell");
+        assert!(!bracket_lit(cell), "keeps the caret's look");
     }
 
     /// R7: only the focused body lights.
