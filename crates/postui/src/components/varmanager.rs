@@ -1944,6 +1944,18 @@ impl VarManager {
         }
     }
 
+    /// What a click on the selector pane's title-row option button does:
+    /// `Verb::Add` for `+ Option`, `Verb::Put` for `Paste`. The grid's own
+    /// verb whatever has the keyboard, so the button acts exactly when the
+    /// grid's key would: nothing with no option row drawn (task #207),
+    /// where the draw doesn't paint the button either.
+    pub fn option_button_action(&self, ctx: &Project, verb: Verb) -> Option<Action> {
+        let VmDetail::Group(selector) = &self.detail else {
+            return None;
+        };
+        self.grid_verb(ctx, selector, verb)
+    }
+
     fn list_verb(&self, ctx: &Project, verb: Verb) -> Option<Action> {
         let name = self.selected_row().and_then(VmRow::name).map(str::to_string);
         match verb {
@@ -2266,11 +2278,10 @@ impl VarManager {
         // per-environment selector with no environment (no grid at all,
         // `NO_ENV_HINT` in its place), all of them stay as on main: that
         // state is not a pane too small for the rows, and `+ Option`
-        // answers it with the hint's toast. A click meets the hits of the
-        // last frame drawn, and a resize always draws one, so a pane that
-        // lost its rows has no button left to click. The title block ends
-        // where the grid starts, so the order their hits register in
-        // changes nothing.
+        // answers it with the hint's toast. A click on either button asks
+        // the same verbs (`option_button_action`), so it acts only when
+        // the button would be painted. The title block ends where the grid
+        // starts, so the order their hits register in changes nothing.
         let grid_y = if title_fits { y + TALL_PILL_H } else { y };
         self.draw_option_grid(buf, right, grid_y, theme, ctx, hits, hovered, selector);
         let no_rows = self.no_rows_drawn(ctx);
@@ -5040,11 +5051,23 @@ fields = ["user_id", "customer_id"]
         for hit in [Hit::VmEditFields, Hit::VmRename, Hit::VmDelete] {
             assert_eq!(hits.rect_of(&hit), tall.rect_of(&hit), "{hit:?} moved");
         }
+        // Nor would a click on them act: they ask the grid's verbs, from
+        // the left list's focus as from the grid's.
+        assert_eq!(vm.focus, VmFocus::List);
+        let paste = Verb::Put { above: false, count: 1 };
+        for verb in [Verb::Add, paste] {
+            assert_eq!(vm.option_button_action(&ctx, verb), None, "{verb:?}");
+        }
 
         let (_, hits) = render_buf_at(&mut vm, &ctx, 116);
         for hit in [Hit::VmNewOption, Hit::VmPasteOption] {
             assert_eq!(hits.rect_of(&hit), tall.rect_of(&hit), "{hit:?} is back");
         }
+        assert_eq!(vm.option_button_action(&ctx, Verb::Add), Some(Action::StartNewOptionEdit));
+        assert!(matches!(
+            vm.option_button_action(&ctx, paste),
+            Some(Action::VarStruct(VarStructOp::PasteOption { count: 1, .. }))
+        ));
     }
 
     /// Task #202: with no option row drawn, the grid's verbs resolve to
