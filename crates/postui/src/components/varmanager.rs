@@ -1076,22 +1076,16 @@ impl VarManager {
         Some((ghost, shown))
     }
 
-    /// The grid cursor's row while it is on screen: [`Self::grid_at`]'s
-    /// row when the last frame drew the grid's option rows (the draw
-    /// scrolls the cursor's into view), `None` when it drew none (task
-    /// #202). What the verbs that act on the cursor's option (delete,
-    /// copy, edit value, select) take as their target, so with a pane too
-    /// narrow or too short for the grid they act on nothing, as the cell
-    /// edits open nothing (#200). `grid_at` keeps answering the cursor's
-    /// option all the same: an undo step, an op's landing and the
-    /// keyboard's way in read where the cursor is, which a pane too small
-    /// to show it doesn't change.
-    fn shown_cursor_row(&self, ctx: &Project) -> Option<usize> {
-        let (_, ncols) = self.grid_shape(ctx)?;
-        if ncols == 0 {
-            return None;
-        }
-        self.grid_at(ctx).map(|(row, _)| row)
+    /// Whether the open grid is there but the last frame drew none of its
+    /// option rows (task #202): a pane too narrow or too short for them.
+    /// The grid's verbs (`grid_verb`) and select then act on nothing and
+    /// their chips drop, as its cell edits open nothing (#200): nothing
+    /// acts on a grid nobody can see. [`Self::grid_at`] keeps answering
+    /// the cursor's option all the same: an undo step, an op's landing
+    /// and the keyboard's way in read where the cursor is, which a pane
+    /// too small to show it doesn't change.
+    fn no_rows_drawn(&self, ctx: &Project) -> bool {
+        matches!(self.grid_shape(ctx), Some((_, 0)))
     }
 
     /// Whether the last draw left off screen a cell edit the draw before it
@@ -1838,9 +1832,7 @@ impl VarManager {
         // move over: Tab and Right keep the stored column, the row moves
         // keep the cursor's option (task #202), both come back as they
         // were once the grid is drawn again, and Enter and F2 open nothing
-        // (`start_cell_edit`). Left, Esc and BackTab still leave it. The
-        // check is this `ncols`, not `shown_cursor_row`, so the no-grid
-        // case above keeps its moves as before.
+        // (`start_cell_edit`). Left, Esc and BackTab still leave it.
         let (last_row, ncols) = self.grid_shape(ctx).unwrap_or((0, 1));
         let last_col = ncols.saturating_sub(1);
         // The column the cursor shows on (`grid_at` clamps on read): the
@@ -1921,10 +1913,13 @@ impl VarManager {
     /// no active environment, and with no option row drawn (task #202:
     /// from the left list too, which reads the same cursor).
     fn select_entry_action(&self, ctx: &Project, selector: &str) -> Option<Action> {
+        if self.no_rows_drawn(ctx) {
+            return None;
+        }
         Some(Action::VarEdit(VarEditOp::SelectOption {
             env: op_env(ctx, selector)?,
             selector: selector.to_string(),
-            option: self.entry_at(ctx, self.shown_cursor_row(ctx)?)?,
+            option: self.entry_at(ctx, self.grid_at(ctx)?.0)?,
         }))
     }
 
@@ -1970,24 +1965,24 @@ impl VarManager {
     }
 
     fn grid_verb(&self, ctx: &Project, selector: &str, verb: Verb) -> Option<Action> {
+        // With no option row drawn (task #202) no verb acts on the grid:
+        // delete, copy and edit value would act on an option nobody can
+        // see, paste would write one, and rename and new option would open
+        // a cell edit #200 refuses. Each resolves to nothing, so its key
+        // does nothing and its chip drops (`footer_chips`), where #200 kept
+        // the rename and new option chips showing. Edit fields stays: it
+        // edits the selector, named in the left list, not the grid.
+        if self.no_rows_drawn(ctx) && !matches!(verb, Verb::Fields) {
+            return None;
+        }
         // The cursor's option, with the row it is at now. On nothing (spec
         // N5) no option verb has a target; add and paste need none.
-        // A verb acts on that option only while it is on screen (task
-        // #202): with no option row drawn there is no target, and the
-        // chips drop.
-        let option_at = |row| Some((row, op_env(ctx, selector)?, self.entry_at(ctx, row)?));
-        let target = self.shown_cursor_row(ctx).and_then(option_at);
+        let target = self
+            .grid_at(ctx)
+            .and_then(|(row, _)| Some((row, op_env(ctx, selector)?, self.entry_at(ctx, row)?)));
         match verb {
             Verb::Add => Some(Action::StartNewOptionEdit),
-            // Rename alone reads the cursor whatever is drawn: it is the
-            // name cell's edit, which `start_cell_edit` refuses when the
-            // cell isn't drawn. Like `+ Option`, it then does nothing and
-            // keeps its chip, #200's rule for a grid with no cell drawn
-            // (the commands in `App::update` say so).
-            Verb::Rename => self
-                .grid_at(ctx)
-                .and_then(|(row, _)| option_at(row))
-                .map(|(row, _, _)| Action::StartOptionNameEdit { row }),
+            Verb::Rename => target.map(|(row, _, _)| Action::StartOptionNameEdit { row }),
             Verb::Delete { .. } => target.map(|(_, env, name)| Action::DeleteEntry {
                 env,
                 selector: selector.to_string(),
@@ -4966,7 +4961,6 @@ fields = ["user_id", "customer_id"]
         let (buf, hits) = render_buf_sized(&mut vm, &ctx, 116, TALL_PILL_H + 3);
         assert!(format!("{buf:?}").contains("ENTRY"), "the header is drawn");
         assert!(hits.rect_of(&Hit::VmEntryCell { row: 0, col: 0 }).is_none(), "no row drawn");
-
         vm.handle_key(key(KeyCode::Enter), &ctx);
         assert!(vm.grid.editing.is_none(), "Enter opens nothing");
         vm.start_cell_edit(&ctx, 1, 1);
@@ -4977,11 +4971,12 @@ fields = ["user_id", "customer_id"]
         assert_eq!(vm.handle_key(key(KeyCode::Char(' ')), &ctx), None, "Space");
     }
 
-    /// Task #202: with no option row drawn, the option verbs have no
-    /// target: delete, copy, edit value and select resolve to nothing, so
-    /// neither their keys nor their chips act on an option nobody can see.
-    /// Rename is the name cell's edit and stays as #200 left it (its chip
-    /// shows, its edit opens nothing). Before, Delete removed bob unseen.
+    /// Task #202: with no option row drawn, the grid's verbs resolve to
+    /// nothing: delete, copy, edit value and select have no option on
+    /// screen to act on, paste would write one nobody can see, and rename
+    /// and new option would open a cell edit #200 refuses. So neither their
+    /// keys nor their chips act, and the footer shows none of them. Before,
+    /// Delete removed bob unseen.
     #[test]
     fn a_pane_too_narrow_for_the_grid_gives_the_option_verbs_no_target() {
         let (_dir, ctx) = fixture_with_description();
@@ -4990,20 +4985,33 @@ fields = ["user_id", "customer_id"]
         vm.focus = VmFocus::Grid;
         render_buf_at(&mut vm, &ctx, 116);
         vm.point_grid(&ctx, 1, 0); // bob
+        vm.stash = vm.option_row(&ctx, 0); // alice copied
         render_buf_at(&mut vm, &ctx, LEFT_W + 5);
         assert_eq!(vm.grid_shape(&ctx), Some((2, 0)), "no column drawn");
 
-        for verb in [Verb::Delete { count: 1 }, Verb::Yank, Verb::EditValue] {
+        let paste = Verb::Put { above: false, count: 1 };
+        for verb in
+            [Verb::Delete { count: 1 }, Verb::Yank, Verb::EditValue, Verb::Rename, Verb::Add, paste]
+        {
             assert_eq!(vm.verb_action(&ctx, None, verb), None, "{verb:?}");
         }
         assert_eq!(vm.handle_key(key(KeyCode::Delete), &ctx), None, "Delete");
         assert_eq!(vm.handle_key(key(KeyCode::Char(' ')), &ctx), None, "Space");
         let labels: Vec<&str> = vm.footer_chips(&ctx, None).iter().map(|(_, l, _)| *l).collect();
-        assert_eq!(labels, ["rename", "new option"]);
+        assert!(labels.is_empty(), "no chip acts on a grid not drawn: {labels:?}");
 
-        // Drawn again, the same verbs act on bob.
+        // Drawn again, the same verbs act on bob, and the paste is armed.
         render_buf_at(&mut vm, &ctx, 116);
         assert_eq!(vm.verb_action(&ctx, None, Verb::Yank), Some(Action::CopyOption { row: 1 }));
+        assert_eq!(
+            vm.verb_action(&ctx, None, Verb::Rename),
+            Some(Action::StartOptionNameEdit { row: 1 })
+        );
+        assert_eq!(vm.verb_action(&ctx, None, Verb::Add), Some(Action::StartNewOptionEdit));
+        assert!(matches!(
+            vm.verb_action(&ctx, None, paste),
+            Some(Action::VarStruct(VarStructOp::PasteOption { .. }))
+        ));
         assert!(matches!(
             vm.handle_key(key(KeyCode::Delete), &ctx),
             Some(Action::DeleteEntry { name, .. }) if name == "bob"
