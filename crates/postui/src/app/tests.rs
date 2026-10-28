@@ -19091,7 +19091,9 @@ fn the_keyboard_reaches_the_grid_selects_a_row_and_edits_the_focused_cell() {
 }
 
 /// Task 8 parity for the grid's cell walk: `Tab` runs on in reading order
-/// (wrapping to the next row), `BackTab` runs back.
+/// (wrapping to the next row), `BackTab` runs back. Task #188: a row's
+/// cells are its name, each field, then its description, so the walk goes
+/// through the description column on its way to the next row.
 #[test]
 fn tab_and_backtab_walk_the_grid_in_reading_order() {
     let dir = tempfile::tempdir().unwrap();
@@ -19100,23 +19102,103 @@ fn tab_and_backtab_walk_the_grid_in_reading_order() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_group(&mut app, "user");
     let at = |app: &App| app.varmanager.grid.editing.as_ref().map(|e| (e.row, e.col));
+    let tab = |app: &mut App| app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    let back = |app: &mut App| app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
 
-    // Start on alice's value cell (the last column of row 0).
+    // Start on alice's value cell (her one field, column 1).
     let r = cell_rect(&mut app, 0, 1);
     app.handle_mouse(left_down(r.x, r.y));
     assert_eq!(at(&app), Some((0, 1)));
 
-    // Off the end of the row wraps to the next row's name cell…
-    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    // The last field steps on to the row's description…
+    tab(&mut app);
+    assert_eq!(at(&app), Some((0, 2)));
+    // …and off the end of the row wraps to the next row's name cell…
+    tab(&mut app);
     assert_eq!(at(&app), Some((1, 0)));
-    // …and BackTab runs back the same way.
-    app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+    // …and BackTab runs back the same way, description first.
+    back(&mut app);
+    assert_eq!(at(&app), Some((0, 2)));
+    back(&mut app);
     assert_eq!(at(&app), Some((0, 1)));
-    app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+    back(&mut app);
     assert_eq!(at(&app), Some((0, 0)));
     // Nothing is before the first cell: the edit stays put.
-    app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+    back(&mut app);
     assert_eq!(at(&app), Some((0, 0)));
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+}
+
+/// Task #188, the far end: the last option's description steps on to the
+/// name of the `+ Add` row, where an empty name stops the walk (the ghost
+/// has no cell but its name until it is an option), and BackTab from it
+/// comes back to that description.
+#[test]
+fn tab_from_the_last_description_reaches_the_ghost_row_and_stops_there() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let at = |app: &App| app.varmanager.grid.editing.as_ref().map(|e| (e.row, e.col));
+    let tab = |app: &mut App| app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    let back = |app: &mut App| app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+
+    app.vm_start_cell_edit(1, 2); // bob's description, the last option's
+    tab(&mut app);
+    assert_eq!(at(&app), Some((2, 0)), "the ghost row's name");
+    tab(&mut app);
+    assert_eq!(at(&app), Some((2, 0)), "an empty ghost name goes no further");
+    back(&mut app);
+    assert_eq!(at(&app), Some((1, 2)), "back to bob's description");
+    assert_eq!(option_names(&app, "user"), ["alice", "bob"], "nothing created");
+    // A name typed there creates the option, and Tab walks on into its
+    // first field, then its description.
+    tab(&mut app);
+    type_chars(&mut app, "carol");
+    tab(&mut app);
+    assert_eq!(option_names(&app, "user"), ["alice", "bob", "carol"]);
+    assert_eq!(at(&app), Some((2, 1)), "carol's first field");
+    tab(&mut app);
+    assert_eq!(at(&app), Some((2, 2)), "carol's description");
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+}
+
+/// Task #188 with two fields: the walk crosses both fields before the
+/// description, and BackTab off the next row's name lands on it.
+#[test]
+fn tab_walks_every_field_then_the_description_with_two_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let vars = dir.path().join("variables.toml");
+    let text = std::fs::read_to_string(&vars).unwrap();
+    std::fs::write(&vars, text.replace("fields = [\"user\"]", "fields = [\"user\", \"token\"]"))
+        .unwrap();
+    // Every option sets every field.
+    let qa = dir.path().join("environments/qa.toml");
+    let text = std::fs::read_to_string(&qa).unwrap();
+    std::fs::write(
+        &qa,
+        text.replace("user = \"1001\"", "user = \"1001\"\ntoken = \"ta\"")
+            .replace("user = \"2002\"", "user = \"2002\"\ntoken = \"tb\""),
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let at = |app: &App| app.varmanager.grid.editing.as_ref().map(|e| (e.row, e.col));
+    let tab = |app: &mut App| app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    let back = |app: &mut App| app.handle_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+
+    app.vm_start_cell_edit(0, 0); // alice's name
+    let mut walked = Vec::new();
+    for _ in 0..4 {
+        tab(&mut app);
+        walked.push(at(&app));
+    }
+    assert_eq!(walked, [Some((0, 1)), Some((0, 2)), Some((0, 3)), Some((1, 0))]);
+    back(&mut app);
+    assert_eq!(at(&app), Some((0, 3)), "alice's description");
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
 }
 
@@ -33953,8 +34035,14 @@ fn the_cell_walks_go_on_from_the_option_by_name_across_their_write() {
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     assert_eq!(option_names(&app, "user"), ["aaron", "alice", "bob", "zed", "new"]);
     let edit = app.varmanager.grid.editing.as_ref().expect("stepped on");
+    // Task #188: the cell after alice's user is her description.
+    assert_eq!(app.varmanager.entry_at(app.proj(), edit.row).as_deref(), Some("alice"));
+    assert_eq!(edit.col, 2, "alice's description, the one after her user, not aaron's");
+    // The wrap off her description goes on from her new row too.
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    let edit = app.varmanager.grid.editing.as_ref().expect("wrapped on");
     assert_eq!(app.varmanager.entry_at(app.proj(), edit.row).as_deref(), Some("bob"));
-    assert_eq!(edit.col, 0, "bob's name cell, the one after alice's user");
+    assert_eq!(edit.col, 0, "bob's name cell");
 }
 
 /// #83 N7: an environment delete re-lists the environment files on disk,

@@ -59,7 +59,7 @@ Two consequences:
 
 | # | Rule | From |
 |---|---|---|
-| R1 | Body: when the caret is on a bracket that has a partner, both light. | you (the feature); both-light is mine (approved) |
+| R1 | Body: when the caret is on a bracket that has a partner, both light, except the cell the caret is drawn on (R8, #187). | you (the feature); both-light is mine (approved) |
 | R2 | Body, which char: the one under the caret. When it isn't a bracket and the caret is between chars (arrows always; vim Insert and Replace), the one before it. A vim Normal or Visual caret looks only under itself. | Vim (N2, I1–I3); the arrows half is mine (approved) |
 | R3 | The pairs are `()` `[]` `{}`. | Vim (`matchpairs` default) |
 | R4 | A bracket inside a string is skipped, unless the caret's own bracket is inside one; then nothing is skipped. A string is a run between unescaped `"` on one line. This can differ from where `%` goes (N3). | Vim with JSON syntax (N1, N3, N3b); applying it to non-JSON text (Raw, Headers) is mine (approved) |
@@ -141,8 +141,13 @@ and `%` don't change.
     and the painters walk to the area's bottom.)
   - A cell the Visual span, a search hit or the selection already paints
     keeps that paint.
-  - The caret's cell keeps its reverse, because only the colours are
-    patched.
+  - The caret's cell is not painted, so it keeps the caret's look (R8).
+    The cell is the one edtui reports drawing the caret on
+    (`cursor_screen_position`), read after the render like the viewport,
+    and neither end lights there (a zero-width char under an Insert caret
+    puts the caret on the partner's cell).
+    (Until #187 this read "keeps its reverse, because only the colours
+    are patched", and the code lit it. See the amendment below.)
 - R2's `before` is `self.body.mode == EditorMode::Insert`. The engine
   already paints Insert and Replace as edtui's `Insert`, and Normal and
   Visual as `Normal` and `Visual` (`BodyBuf::show`). The arrows body is
@@ -194,6 +199,30 @@ and `%` don't change.
 
 **Removed:** nothing.
 
+**Amendment, 2026-10-27 (#187).** The body lit the caret's own bracket
+against R8. edtui draws the caret as its char reversed, and
+`paint_bracket_pair` then set the pair's colours on that cell. The reverse
+stayed, so the cell showed `accent` text on `on_accent`: it read as an
+ordinary coloured char, and the caret was hard to find (the user's report,
+in the arrows profile: "the matching highlight makes the cursor mostly
+invisible"). The fix follows R8 as written. The caret's cell is left alone
+in both profiles, as Vim's cursor covers its own bracket under MatchParen.
+The partner still lights, and so does the bracket before a caret between
+chars (R2), since that is not the caret's cell. Under a selection that
+doesn't cover the caret, the draw hides the caret, so that cell lights as
+before. The response draws no caret (a tinted cursor row only), so its
+pair is unchanged.
+
+What is kept from Vim is the outcome, not the paint. Vim's matchparen
+does colour the cursor's bracket, and a terminal that reverses the cell
+under its cursor then shows MatchParen reversed, which is what the old
+code drew. But that cursor is the terminal's own (often blinking or in
+its own colour), so it stays findable. postui's caret is a painted cell,
+and the same reversed colours read as an ordinary coloured char. The
+Insert caret is drawn as a block on the char too (arrows always), so the
+rule covers it: on `{|}` the `}` keeps the caret's look and the `{`
+lights.
+
 ## 4. Tests
 
 - `brackets.rs`: `bracket_at` with `partner_of` covers each row of the probe table (N1,
@@ -201,7 +230,9 @@ and `%` don't change.
   walk. An escaped quote (`"a\"{"`) doesn't end a string. The existing `%`
   tests pass unchanged.
 - `editor.rs` (render tests, like `the_vim_visual_span_draws_over_the_json_colours`):
-  - arrows caret on `{` lights both, and a caret just after `}` lights both (R1, R2);
+  - arrows caret on `{` lights its partner, and a caret just after `}` lights both (R1, R2);
+  - the caret's own cell keeps the caret's look, in arrows and vim Normal, and
+    lights when the draw hides the caret under a selection (R8, #187);
   - an unfocused body lights nothing (R7);
   - a partner outside the view lights nothing (R5);
   - Visual and a search match paint over the bracket style (R8);
