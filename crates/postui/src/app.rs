@@ -8772,20 +8772,20 @@ impl App {
         }
     }
 
-    /// Commits the table cell under edit through the active tab's own
-    /// `Enter` handling, so the new text lands in the map (not left as a
-    /// pending edit) and rides the same dirty/save path as any row commit.
+    /// Commits the table cell under edit as `Enter` does (the table's
+    /// `commit`), so the new text lands in the map (not left as a pending
+    /// edit) and rides the same dirty/save path as any row commit. No undo
+    /// capture of its own: the token and its commit are part of the
+    /// extract's step.
+    ///
     /// The table's warning (a name that is taken refuses or merges the
-    /// row) shows as it does when Enter is typed by hand (#204).
+    /// row) shows as it does when Enter is typed by hand (#204). The
+    /// extract's own "extracted to {{name}}" still follows it: the variable
+    /// was written either way, and the warning says what became of the
+    /// row. The extract is not refused up front for this, since the same
+    /// commit typed by hand is not refused either.
     fn commit_table_edit_with_enter(&mut self) {
-        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        let outcome = match self.editor.active_tab {
-            EditorTab::Params => self.editor.table.handle_key(enter, &mut self.editor.params),
-            EditorTab::Headers => self.editor.table.handle_key(enter, &mut self.editor.headers),
-            EditorTab::Vars => self.editor.table.handle_key(enter, &mut self.editor.variables),
-            EditorTab::Body => return,
-        };
-        if let Some(w) = outcome.warning {
+        if let Some(w) = self.editor.commit_table().warning {
             self.toasts.push(w, ToastKind::Warning);
         }
     }
