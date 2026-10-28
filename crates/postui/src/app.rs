@@ -12220,9 +12220,10 @@ impl App {
         }
     }
 
-    /// Records a Settings write as one undo step, once it has landed —
-    /// `before`/`after` already computed by the caller so a refused write
-    /// (which changes nothing) never reaches here.
+    /// Records a Settings write as one undo step, once it has landed: a
+    /// refused write (which changes nothing) never reaches here. `before`
+    /// and `after` are what [`Self::held_ui_value`] read around the write,
+    /// `after` read back from the file, never the requested value.
     fn record_config_step(
         &mut self,
         key: &'static str,
