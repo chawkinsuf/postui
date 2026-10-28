@@ -2220,27 +2220,7 @@ impl VarManager {
             VmDetail::Group(name) if ctx.variables().selectors.contains_key(&name) => {
                 let buf = frame.buffer_mut();
                 fill(buf, right, theme.page);
-                let option_buttons =
-                    self.draw_entry_grid(buf, right, theme, ctx, hits, hovered, &name);
-                // The title row's option buttons paint only once the grid
-                // has, and only if it drew an option row (task #207): with
-                // none drawn, their keys and chips act on nothing (#202),
-                // and so do they, by not being there. A paste would write
-                // an option no row shows. `no_rows_drawn` reads this
-                // frame's record, which the title row comes too early for.
-                // It is the keys' and chips' own check, read rather than a
-                // flag of the draw's, so the buttons, keys and chips can't
-                // disagree: where it is false with no row (a per-environment
-                // selector with no environment, no grid at all), they all
-                // stay as they were.
-                if !self.no_rows_drawn(ctx) {
-                    for (button, rect, hit) in option_buttons {
-                        let painted = button.paint(buf, rect, theme);
-                        if let Some(hit) = hit {
-                            hits.register(painted, hit);
-                        }
-                    }
-                }
+                self.draw_entry_grid(buf, right, theme, ctx, hits, hovered, &name);
             }
             _ => draw_detail_placeholder(frame, right, theme),
         }
@@ -2254,10 +2234,6 @@ impl VarManager {
     /// no active environment there is nowhere for options to live, so the
     /// grid is replaced by [`NO_ENV_HINT`] (the top bar's environment
     /// switcher, drawn either way, is the way out of that state).
-    ///
-    /// Returns the title row's two option buttons laid out but not painted,
-    /// each with the hit it takes clicks under (`None`: greyed), for `draw`
-    /// to paint once it knows the grid drew an option row (task #207).
     #[allow(clippy::too_many_arguments)]
     fn draw_entry_grid(
         &mut self,
@@ -2268,10 +2244,9 @@ impl VarManager {
         hits: &mut HitMap,
         hovered: Option<&Hit>,
         selector: &str,
-    ) -> Vec<(Button<'static>, Rect, Option<Hit>)> {
-        let mut option_buttons = Vec::new();
+    ) {
         if right.width < 8 || right.height < 3 {
-            return option_buttons;
+            return;
         }
         let state_of = |hit: &Hit| {
             if hovered == Some(hit) { ControlState::Hover } else { ControlState::Normal }
@@ -2279,11 +2254,20 @@ impl VarManager {
         let x0 = right.x + 2;
         let inner_w = right.width.saturating_sub(4).max(1);
         let bottom = right.y + right.height;
-        let mut y = right.y + 1;
+        let y = right.y + 1;
+        let title_fits = y + TALL_PILL_H <= bottom;
 
-        // A shared selector's options don't live in an environment, so its
-        // grid works with none active; everyone else gets the hint.
-        let shared = is_shared(ctx, selector);
+        // The grid under the title block paints first (task #207): the
+        // title row's two option buttons show only if it drew an option
+        // row, which `no_rows_drawn` answers from the record the rows
+        // write as they paint. It is the keys' and chips' own check (#202),
+        // read rather than a flag of the draw's, so the buttons, keys and
+        // chips can't disagree. A click finds no button the last frame
+        // didn't paint (the main loop draws after every event), so the
+        // click handlers need no check of their own.
+        let grid_y = if title_fits { y + TALL_PILL_H } else { y };
+        self.draw_option_grid(buf, right, grid_y, theme, ctx, hits, hovered, selector);
+        let no_rows = self.no_rows_drawn(ctx);
 
         // --- title row: name + the pane's four buttons ------------------
         // A full-size `Button`, like the variable pane's title row: a Manage detail
@@ -2298,7 +2282,7 @@ impl VarManager {
         // bevelled `Button`, which put its own label on `y + 1` -- and
         // once all three panes drew the same control that row of
         // difference was simply visible.
-        if y + TALL_PILL_H <= bottom {
+        if title_fits {
             let label = format!("Selector: {selector}");
             text(buf, x0, y, &label, theme.text, theme.page, true);
             // Painted right to left, so the array runs that way too: the
@@ -2321,51 +2305,46 @@ impl VarManager {
                 ("Delete", ButtonKind::Secondary, Hit::VmDelete, 1),
             ] {
                 let Some(rect) = row.next(lbl, gap) else { break };
+                // With no option row drawn the two option buttons are not
+                // there (task #207): their keys and chips act on nothing
+                // then (#202), and a paste would write an option no row
+                // shows. Their place is laid out all the same, so the
+                // selector's three don't move.
+                if no_rows && matches!(hit, Hit::VmNewOption | Hit::VmPasteOption) {
+                    continue;
+                }
                 // Paste stands there greyed with nothing copied — the one
                 // control that says the pair exists before it is used —
                 // and takes no clicks and no hover while it does.
                 let disabled = hit == Hit::VmPasteOption && !can_paste;
                 let state = if disabled { ControlState::Disabled } else { state_of(&hit) };
-                let button = Button { label: lbl, kind, state };
-                let option = matches!(hit, Hit::VmNewOption | Hit::VmPasteOption);
-                let hit = (!disabled).then_some(hit);
-                // The option ones wait for the grid: `draw` paints them if
-                // it drew an option row (task #207). Their place is laid
-                // out either way, so the selector's three never move.
-                if option {
-                    option_buttons.push((button, rect, hit));
-                    continue;
-                }
-                let painted = button.paint(buf, rect, theme);
-                if let Some(hit) = hit {
+                let painted = Button { label: lbl, kind, state }.paint(buf, rect, theme);
+                if !disabled {
                     hits.register(painted, hit);
                 }
             }
-            y += TALL_PILL_H;
             // The scope line goes in the blank row under the title rather
             // than beside it: the title row's remaining width belongs to
             // the buttons, and crowding a badge in there would push
             // `+ Option` off the pane at ordinary widths. With no
-            // environment active there is nothing to say — the grid is
-            // about to be replaced by `NO_ENV_HINT`, which says it.
-            let scope_badge = if shared {
+            // environment active there is nothing to say — the grid's
+            // place holds `NO_ENV_HINT`, which says it.
+            let scope_badge = if is_shared(ctx, selector) {
                 Some(SHARED_BADGE)
             } else if ctx.active_env().is_some() {
                 Some(PER_ENV_BADGE)
             } else {
                 None
             };
-            if let Some(badge) = scope_badge
-                && y > right.y
-                && y - 1 < bottom
-            {
+            // The block's last row, inside the pane since the block fits.
+            if let Some(badge) = scope_badge {
                 // Both lines are the same kind of statement, so they get
                 // the same weight — the SHARED SELECTORS section is what
                 // flags the unusual case now.
                 text(
                     buf,
                     x0,
-                    y - 1,
+                    grid_y - 1,
                     crate::ui::clip(badge, inner_w),
                     theme.text_muted,
                     theme.page,
@@ -2373,8 +2352,29 @@ impl VarManager {
                 );
             }
         }
+    }
 
-        if ctx.active_env().is_none() && !shared {
+    /// The selector pane under its title block, from row `y`: the options
+    /// grid, or [`NO_ENV_HINT`] in its place (see [`Self::draw_entry_grid`]).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_option_grid(
+        &mut self,
+        buf: &mut Buffer,
+        right: Rect,
+        mut y: u16,
+        theme: &Theme,
+        ctx: &Project,
+        hits: &mut HitMap,
+        hovered: Option<&Hit>,
+        selector: &str,
+    ) {
+        let x0 = right.x + 2;
+        let inner_w = right.width.saturating_sub(4).max(1);
+        let bottom = right.y + right.height;
+
+        // A shared selector's options don't live in an environment, so its
+        // grid works with none active; everyone else gets the hint.
+        if ctx.active_env().is_none() && !is_shared(ctx, selector) {
             if y < bottom {
                 text(
                     buf,
@@ -2386,14 +2386,14 @@ impl VarManager {
                     false,
                 );
             }
-            return option_buttons;
+            return;
         }
 
         // --- column headers ---------------------------------------------
         let fields = group_fields(ctx, selector);
         let cols = grid_columns(x0, inner_w, grid_ncols(fields.len()));
         if y >= bottom || cols.x.is_empty() {
-            return option_buttons;
+            return;
         }
         // The header strip is exactly as wide as the rows beneath it, so
         // the grid reads as one inset block with the pane's margin around it.
@@ -2588,7 +2588,6 @@ impl VarManager {
                 false,
             );
         }
-        option_buttons
     }
 
     /// The right pane for `VmDetail::Var(name)` (spec §3.4): a title row

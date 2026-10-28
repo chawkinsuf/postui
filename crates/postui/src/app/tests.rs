@@ -18428,6 +18428,7 @@ fn a_paste_click_on_a_pane_too_short_for_an_option_row_writes_nothing() {
         app.hits.rect_of(&crate::hit::Hit::VmEntryCell { row: 0, col: 0 }).is_none(),
         "no option row is drawn"
     );
+    assert_eq!(app.hits.hit_at(paste.x + 2, paste.y + 1), None, "nothing stands there");
     app.handle_mouse(left_down(paste.x + 2, paste.y + 1));
     let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert!(!env.options["user"].contains_key("alice copy"), "{:?}", env.options["user"].keys());

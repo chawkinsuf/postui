@@ -2546,6 +2546,9 @@ impl App {
                 self.vm_point_grid(row, 0);
                 self.update(Action::CopyOption { row })
             }
+            // Not painted, so not here, while the grid draws no option row
+            // (task #207, `VarManager::draw_entry_grid`): this hit is the
+            // last frame's, and the main loop draws after every event.
             Hit::VmPasteOption => {
                 let crate::components::varmanager::VmDetail::Group(selector) =
                     self.varmanager.detail.clone()
