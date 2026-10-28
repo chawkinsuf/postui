@@ -8578,6 +8578,23 @@ impl App {
                 }
             }
             ExtractDestination::Request => {
+                // The variable goes into the map an open Vars cell edits,
+                // and the cell names its row by index (see
+                // `debug_assert_no_open_vars_cell`). When the cell is not
+                // the source (a response, URL or body selection), nothing
+                // lands in it, so it commits now, as its own step, the way
+                // the value dialog commits it (#151, #203): before the
+                // name check, which then sees a key typed there. When it
+                // is the source, it stays open until the token lands in
+                // it (spec 2026-10-19 R6), and the write waits (below).
+                let from_cell = matches!(
+                    source,
+                    ExtractSource::FocusedField
+                        | ExtractSource::Selection(crate::action::TextSurface::TableCell)
+                );
+                if !from_cell && self.editor.active_tab == EditorTab::Vars {
+                    self.commit_table_edit();
+                }
                 // No structural-file hazard here — `[variables]`
                 // options are a separate resolution layer (spec §2)
                 // with no `validate_env`-style cross-checks — but an
@@ -8635,10 +8652,10 @@ impl App {
                     // open, the new variable became the cell's row, and the
                     // token renamed it away. The cell still holds the
                     // typing until the token lands in it (spec 2026-10-19
-                    // R6), and the two writes are one editor step. This
-                    // orders only the cell's own extract: a response
-                    // selection extracted while a Vars cell is open still
-                    // writes under that cell, as before #152.
+                    // R6), and the two writes are one editor step. Any
+                    // other source committed an open Vars cell before the
+                    // name check (above), so none is open here.
+                    self.debug_assert_no_open_vars_cell();
                     self.editor.variables.insert(
                         name.clone(),
                         postui_core::model::Entry { value: text, enabled: true },
@@ -8787,11 +8804,14 @@ impl App {
     /// when it runs either (#153). The promote has no commit of its own:
     /// it would serve no path the app takes. A new way to promote from the
     /// main screen (a palette row, a tooltip action) must commit an open
-    /// Vars cell before it reads the value, as the value dialog does.
+    /// Vars cell before it reads the value, as the value dialog does. An
+    /// extract to "This request" adds a row too: it commits the cell
+    /// itself, or first lands its token there (`confirm_extract`, #152,
+    /// #203).
     fn debug_assert_no_open_vars_cell(&self) {
         debug_assert!(
             self.editor.active_tab != EditorTab::Vars || self.editor.table.editing.is_none(),
-            "a Vars row write (value dialog or promote) under an open Vars cell"
+            "a Vars row write (value dialog, promote or extract) under an open Vars cell"
         );
     }
 

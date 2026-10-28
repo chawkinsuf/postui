@@ -23899,6 +23899,101 @@ fn extracting_the_vars_add_name_to_the_request_keeps_the_new_variable() {
     }
 }
 
+/// Task #203: a response selection extracted to "This request" while the
+/// Vars "+ Add" name cell is open. The cell is not the source, so it
+/// commits first, as its own step, and the new variable takes a row of its
+/// own: before, it took the "+ Add" index and the cell's commit renamed it
+/// to the typing. Driven through the real right-click menu.
+#[test]
+fn extracting_a_response_selection_to_the_request_keeps_an_open_vars_cell_apart() {
+    use crate::action::TextSurface;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let mut ping = req("https://x/ping");
+    ping.variables
+        .insert("a".into(), postui_core::model::Entry { value: "1".into(), enabled: true });
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &ping).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("main/ping".into()));
+    ready_response(&mut app, "session abc123 ok"); // not JSON -> Raw view
+    render_once(&mut app);
+    let area = app.session.response.view().unwrap().last_area.expect("body area recorded");
+    app.handle_mouse(left_down(area.x + 9, area.y));
+    app.handle_mouse(left_down(area.x + 9, area.y)); // double click: "abc123"
+    app.handle_mouse(left_up(area.x + 9, area.y));
+    assert_eq!(app.session.response.selected_text().as_deref(), Some("abc123"));
+
+    app.editor.active_tab = EditorTab::Vars;
+    app.editor.preferred_tab = EditorTab::Vars;
+    app.focus = PaneId::Editor;
+    app.capture_undo();
+    click_hit(&mut app, Hit::TableCell { row: 1, col: 0 });
+    type_chars(&mut app, "abc");
+    assert_eq!(app.editor.table.editing.as_ref().map(|e| e.row), Some(1), "+ Add is open");
+    render_once(&mut app);
+    app.handle_mouse(right_down(area.x + 9, area.y));
+    let open = menu_action(&app, "Extract to variable\u{2026}").unwrap();
+    app.update(Action::Close);
+    app.update(open);
+    assert!(app.editor.table.editing.is_some(), "the cell stays open under the dialog (R2)");
+    app.update(Action::Close);
+    app.update(Action::ConfirmExtractSelection {
+        name: "nv".into(),
+        destination: crate::action::ExtractDestination::Request,
+        surface: TextSurface::Response,
+    });
+    app.capture_undo();
+
+    assert!(app.editor.table.editing.is_none(), "the cell commits");
+    let pair = |k: &str, v: &str| (k.to_string(), v.to_string());
+    assert_eq!(request_vars(&app), [pair("a", "1"), pair("abc", ""), pair("nv", "abc123")]);
+    let saved = postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap();
+    assert_eq!(saved.variables["nv"].value, "abc123", "saved");
+    app.update(Action::Undo);
+    assert_eq!(request_vars(&app), [pair("a", "1"), pair("abc", "")], "the extract is one step");
+    app.update(Action::Undo);
+    assert_eq!(request_vars(&app), [pair("a", "1")], "the cell's commit is its own step");
+}
+
+/// Task #203: the open cell commits before the request's name check, so a
+/// key typed there that is the extract's name is refused as "already
+/// exists", like any row of that name, rather than overwritten by the
+/// extract.
+#[test]
+fn extracting_a_response_selection_to_the_request_refuses_the_open_cell_s_key() {
+    use crate::action::TextSurface;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("main/ping".into()));
+    ready_response(&mut app, "session abc123 ok");
+    render_once(&mut app);
+    let area = app.session.response.view().unwrap().last_area.expect("body area recorded");
+    app.handle_mouse(left_down(area.x + 9, area.y));
+    app.handle_mouse(left_down(area.x + 9, area.y));
+    app.handle_mouse(left_up(area.x + 9, area.y));
+    app.editor.active_tab = EditorTab::Vars;
+    app.editor.preferred_tab = EditorTab::Vars;
+    app.focus = PaneId::Editor;
+    app.capture_undo();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 0 });
+    type_chars(&mut app, "nv");
+    assert!(app.editor.table.editing.is_some(), "+ Add is open");
+    app.update(Action::ConfirmExtractSelection {
+        name: "nv".into(),
+        destination: crate::action::ExtractDestination::Request,
+        surface: TextSurface::Response,
+    });
+    app.capture_undo();
+
+    assert!(app.toasts.messages().iter().any(|m| m.contains("already exists")));
+    let pair = |k: &str, v: &str| (k.to_string(), v.to_string());
+    assert_eq!(request_vars(&app), [pair("nv", "")], "the typed key keeps its empty value");
+}
+
 #[test]
 fn extracting_a_body_selection_replaces_it_with_the_token() {
     use crate::action::TextSurface;
