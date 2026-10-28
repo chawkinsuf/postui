@@ -547,11 +547,11 @@ fn write_option(
 }
 
 /// Creates `[options.<selector>."<option>"]` as [`upsert_option`] writes
-/// it (whose update of an existing option stays as it was), but only when `doc` has no option by that name yet: `Conflict` if
+/// it, but only when `doc` has no option by that name yet: `Conflict` if
 /// it has, since writing a new option's values over an existing one would
 /// replace them (task #196). The check reads `doc`, the file as the write
 /// finds it, so an option another program added since the last reload is
-/// refused too, not overwritten.
+/// refused too, not overwritten. [`upsert_option`] still updates.
 pub fn create_option(
     doc: &str,
     selector: &str,
@@ -1266,6 +1266,26 @@ tier = "g-1"
         assert_eq!(e.options["user"]["user 1"].values["user_id"], "9999");
         assert_eq!(e.options["user"]["user 1"].description.as_deref(), Some("admin"));
         assert_eq!(e.values["base_url"], "x");
+    }
+
+    /// Task #196: a create writes a new option as an upsert does, and
+    /// refuses one the document already holds (leaving it as it was), or
+    /// the reserved name.
+    #[test]
+    fn create_option_writes_a_new_option_and_refuses_an_existing_one() {
+        let new = vals(&[("user_id", "1003"), ("customer_id", "c-03")]);
+        let out = create_option(ENV, "test-user", "user 3", Some("third"), &new).unwrap();
+        assert_eq!(out, upsert_option(ENV, "test-user", "user 3", Some("third"), &new).unwrap());
+
+        let blank = vals(&[("user_id", ""), ("customer_id", "")]);
+        assert_eq!(
+            create_option(ENV, "test-user", "user 1", None, &blank),
+            Err(EditError::Conflict("option \"user 1\" already exists on test-user".into()))
+        );
+        assert!(matches!(
+            create_option(ENV, "test-user", "description", None, &blank),
+            Err(EditError::Conflict(m)) if m.contains("reserved")
+        ));
     }
 
     #[test]

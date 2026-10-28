@@ -7440,6 +7440,11 @@ impl App {
                     // Core refuses a name the file already holds (a create,
                     // never an update), among its other refusals: failing
                     // the action re-opens the prompt with what was typed.
+                    // The refusal comes after `begin_op`, as every core
+                    // refusal does: the check reads the file the write
+                    // reads, and an app pre-check would read the loaded
+                    // options instead. The op's opening close only saves
+                    // typing that was already due to land.
                     Err(msg) => {
                         self.toasts.push(msg, ToastKind::Error);
                         self.last_action_failed = true;
