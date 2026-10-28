@@ -1338,14 +1338,23 @@ impl Editor {
     /// Lights the bracket by the caret and its partner on the drawn frame
     /// (spec 2026-10-22, matching brackets, R1–R8). It runs after edtui
     /// renders, so the viewport is the one on screen, not a guess at
-    /// edtui's scroll. `area` is the rect edtui drew into.
+    /// edtui's scroll. `area` is the rect edtui drew into. `caret_shown` is
+    /// whether the draw had edtui paint the caret this frame.
     ///
     /// A caret between chars (edtui's `Insert`: arrows always, Vim's Insert
     /// and Replace) also takes the bracket before it; Vim's Normal and
     /// Visual carets sit on a char. Both ends must show (R5). A cell the
     /// Visual span, a search hit or the selection paints keeps that paint,
-    /// and the caret's cell keeps its reverse.
-    fn paint_bracket_pair(&self, buf: &mut ratatui::buffer::Buffer, area: Rect, theme: &Theme) {
+    /// and so does a shown caret's cell (R8, #187), so the caret stays
+    /// visible on its bracket as Vim's cursor does: only the partner, or
+    /// the bracket before a caret between chars, lights.
+    fn paint_bracket_pair(
+        &self,
+        buf: &mut ratatui::buffer::Buffer,
+        area: Rect,
+        caret_shown: bool,
+        theme: &Theme,
+    ) {
         use crate::text::brackets::{bracket_at, partner_of};
         use crate::text::{Lines as _, Pos};
         let lines = &self.body.lines;
@@ -1368,10 +1377,24 @@ impl Editor {
             overlays.iter().any(|h| h.contains(&at))
                 || self.body.selection.as_ref().is_some_and(|s| s.contains(&at))
         };
+        // A shown caret keeps its cell (R8, #187): the pair's colours under
+        // edtui's reverse read as an ordinary coloured char, and the caret
+        // disappeared. Why that differs from Vim's paint (its cursor is the
+        // terminal's, drawn over MatchParen) is in the spec's #187
+        // amendment. The cell is the one edtui drew the caret on, read
+        // back on screen, so whichever end is drawn there (the partner
+        // too, when a zero-width char under the caret puts the caret on
+        // the next cell) keeps the caret, and a light never lands on it.
+        // Comparing screen cells, not text positions, is what keeps the
+        // caret visible: were this layout and edtui's ever to disagree,
+        // the light would land beside the caret, never over it. A hidden
+        // caret (under a selection that doesn't cover it) has no
+        // look to keep, so its bracket lights.
+        let caret_at = self.body.cursor_screen_position().filter(|_| caret_shown);
         let lit = Style::default().fg(theme.on_accent).bg(theme.accent);
-        for (at, (x, y)) in [(a, cell_a), (b, cell_b)] {
-            if !covered(at) {
-                buf[(x, y)].set_style(lit);
+        for (at, cell) in [(a, cell_a), (b, cell_b)] {
+            if caret_at != Some(cell.into()) && !covered(at) {
+                buf[cell].set_style(lit);
             }
         }
     }
@@ -4064,14 +4087,14 @@ impl Editor {
                 // `hide_cursor` (= base style) there erases the head
                 // cell's highlight (the first char of the first line, on
                 // an upward whole-lines sweep).
-                if let Some(sel) = self.body.selection.as_ref() {
-                    edtui_theme = if sel.contains(&self.body.cursor) {
-                        edtui_theme.cursor_style(body_selection_style(theme))
-                    } else {
-                        edtui_theme.hide_cursor()
-                    };
-                } else if !focused {
+                let caret_shown = match self.body.selection.as_ref() {
+                    Some(sel) => sel.contains(&self.body.cursor),
+                    None => focused,
+                };
+                if !caret_shown {
                     edtui_theme = edtui_theme.hide_cursor();
+                } else if self.body.selection.is_some() {
+                    edtui_theme = edtui_theme.cursor_style(body_selection_style(theme));
                 }
                 let view = EditorView::new(&mut self.body)
                     .theme(edtui_theme)
@@ -4080,7 +4103,7 @@ impl Editor {
                 frame.render_widget(view, area);
                 self.paint_selected_breaks(frame.buffer_mut(), area, theme);
                 if focused {
-                    self.paint_bracket_pair(frame.buffer_mut(), area, theme);
+                    self.paint_bracket_pair(frame.buffer_mut(), area, caret_shown, theme);
                 }
                 // Body coverage (spec §7): edtui paints the text itself, so
                 // its tokens are found by reading the rendered rows back out
@@ -5394,19 +5417,51 @@ mod tests {
         (cell.fg, cell.bg) == (theme.on_accent, theme.accent)
     }
 
+    /// Whether the focused body shows the caret's look on the bracket at
+    /// (`row`, `col`): edtui's reverse over the bracket's own colours. An
+    /// unfocused draw (no pair) gives those: its hidden caret stamps the
+    /// base style, which is what the JSON colours leave a bracket in.
+    fn caret_look(e: &mut Editor, row: usize, col: usize) -> bool {
+        let own = body_cell_at(e, false, row, col);
+        let cell = body_cell_at(e, true, row, col);
+        cell.modifier.contains(Modifier::REVERSED) && (cell.fg, cell.bg) == (own.fg, own.bg)
+    }
+
     /// Spec 2026-10-22 (matching brackets) R1, R2: the caret on a bracket,
-    /// or just after one, lights it and its partner.
+    /// or just after one, lights its partner; a caret just after one
+    /// lights both. R8 (#187): the caret's own cell keeps the caret's look.
     #[test]
-    fn the_caret_on_or_after_a_bracket_lights_the_pair() {
+    fn a_caret_on_or_after_a_bracket_lights_its_partner() {
         let mut e = body_editor("{\"a\": [1]}");
         e.body.cursor = edtui::Index2::new(0, 0);
         assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 9)), "the partner `}}`");
-        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 0)), "the caret's `{{`");
+        assert!(caret_look(&mut e, 0, 0), "the caret's `{{`");
         assert!(!bracket_lit(&body_cell_at(&mut e, true, 0, 6)), "an unrelated `[`");
         e.body.cursor = edtui::Index2::new(0, 10);
-        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 0)), "after `}}`, the `{{` lights");
+        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 9)), "after `}}`, the `}}` lights");
+        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 0)), "and so does its `{{`");
         e.body.cursor = edtui::Index2::new(0, 2);
         assert!(!bracket_lit(&body_cell_at(&mut e, true, 0, 0)), "on `a` nothing lights");
+        // `{|}`: the char under the caret wins over the one before it
+        // (R2), so the caret keeps its look on the `}` and the `{` lights.
+        let mut e = body_editor("{}");
+        e.body.cursor = edtui::Index2::new(0, 1);
+        assert!(caret_look(&mut e, 0, 1), "the caret's `}}`");
+        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 0)), "the partner `{{`");
+    }
+
+    /// R8 (#187): the cell the caret is drawn on never takes the pair's
+    /// colours, whichever end sits there. A zero-width char under an
+    /// Insert caret draws the caret on the next cell, the partner's.
+    #[test]
+    fn the_caret_keeps_its_look_on_the_partner_under_it() {
+        let mut e = body_editor("{\u{200B}}");
+        e.body.cursor = edtui::Index2::new(0, 1);
+        let buf = draw_body(&mut e, true);
+        let at = e.body.cursor_screen_position().unwrap();
+        let cell = &buf[at];
+        assert!(cell.modifier.contains(Modifier::REVERSED), "the caret's cell");
+        assert!(!bracket_lit(cell), "keeps the caret's look");
     }
 
     /// R7: only the focused body lights.
@@ -5426,10 +5481,11 @@ mod tests {
         }
         text.push('}');
         let mut e = body_editor(&text);
-        e.body.cursor = edtui::Index2::new(0, 0);
+        // Just after the `{`, so it would light if its `}` showed.
+        e.body.cursor = edtui::Index2::new(0, 1);
         assert!(!bracket_lit(&body_cell_at(&mut e, true, 0, 0)));
-        // From the `}`, edtui scrolls to it; the `{` is far above.
-        e.body.cursor = edtui::Index2::new(41, 0);
+        // From just after the `}`, edtui scrolls to it; the `{` is far above.
+        e.body.cursor = edtui::Index2::new(41, 1);
         assert!(!bracket_lit(&body_cell_at(&mut e, true, 41, 0)));
         // A short block lights across its rows.
         let mut e = body_editor("{\n  1\n}");
@@ -5460,7 +5516,9 @@ mod tests {
             });
         }
         let mut e = body_editor(&text);
-        e.body.cursor = edtui::Index2::new(41, 0);
+        // Just after the `}`, so both ends light (the caret's cell would
+        // keep the caret's look, R8).
+        e.body.cursor = edtui::Index2::new(41, 1);
         let mut lit = 0;
         for frame in 0..2 {
             lit = lit_body_cells(&mut e);
@@ -5489,7 +5547,8 @@ mod tests {
         }
         text.push('}');
         e.set_body_text(&text);
-        e.body.cursor = edtui::Index2::new(0, 0);
+        // Just after the `{`, so both ends light.
+        e.body.cursor = edtui::Index2::new(0, 1);
         assert_eq!(lit_body_cells(&mut e), 2, "both show");
         e.prompt_row = true;
         let buf = draw_body(&mut e, true);
@@ -5617,6 +5676,49 @@ mod tests {
         assert!(!bracket_lit(&body_cell_at(&mut e, true, 0, 0)));
         e.body.mode = EditorMode::Insert;
         assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 0)));
+    }
+
+    /// R8 (#187): a caret the draw hides (a selection that doesn't cover
+    /// it) has no look to keep, so its own bracket lights.
+    #[test]
+    fn a_hidden_caret_on_a_bracket_lights_it() {
+        let mut e = body_editor("{\"a\": [1]}");
+        e.body.cursor = edtui::Index2::new(0, 4);
+        for _ in 0..2 {
+            e.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+        }
+        assert_eq!(e.body_selected_text().as_deref(), Some(": "));
+        assert_eq!(e.body.cursor, edtui::Index2::new(0, 6), "the caret on `[`");
+        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 6)), "the caret's `[`");
+        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 8)), "the partner `]`");
+    }
+
+    /// R8: a selection that covers the caret keeps its fill on the
+    /// caret's bracket; the partner lights. (The selection rule covers
+    /// that cell on its own; this pins that a shown caret under a
+    /// selection, the third `caret_shown` case, neither lights nor loses
+    /// the fill.)
+    #[test]
+    fn a_selection_over_the_caret_keeps_its_fill_on_the_bracket() {
+        let theme = Theme::dark();
+        let mut e = body_editor("{\"a\": [1]}");
+        e.body.cursor = edtui::Index2::new(0, 7);
+        e.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+        assert_eq!(e.body.cursor, edtui::Index2::new(0, 6), "the caret on `[`");
+        assert!(e.body.selection.as_ref().is_some_and(|s| s.contains(&e.body.cursor)));
+        assert_eq!(body_cell_at(&mut e, true, 0, 6).bg, theme.selection, "the caret's `[`");
+        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 8)), "the partner `]`");
+    }
+
+    /// R8 (#187): a vim Normal caret on a bracket keeps the caret's look,
+    /// as Vim's cursor covers its own bracket; the partner lights.
+    #[test]
+    fn a_normal_caret_on_a_bracket_keeps_its_look() {
+        let mut e = body_editor("[1], 2");
+        e.body.mode = EditorMode::Normal;
+        e.body.cursor = edtui::Index2::new(0, 2);
+        assert!(caret_look(&mut e, 0, 2), "the caret's `]`");
+        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 0)), "the partner `[`");
     }
 
     /// The engine's Visual span draws over the JSON colours, survives an
