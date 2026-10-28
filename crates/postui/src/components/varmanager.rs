@@ -451,6 +451,27 @@ pub enum GridRow {
     Ghost,
 }
 
+/// A grid row by identity across a write or an undo (task #83, spec N3):
+/// the selector, the environment whose options it was in (`None` for a
+/// shared selector, whose options are the same in every one), and the row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GridSpot {
+    pub selector: String,
+    pub env: Option<String>,
+    pub row: GridRow,
+}
+
+impl GridSpot {
+    fn new(ctx: &Project, selector: &str, row: GridRow) -> Self {
+        Self { selector: selector.to_string(), env: Self::env_of(ctx, selector), row }
+    }
+
+    /// The environment whose options `selector`'s grid shows now.
+    fn env_of(ctx: &Project, selector: &str) -> Option<String> {
+        if is_shared(ctx, selector) { None } else { ctx.active_env().map(str::to_string) }
+    }
+}
+
 /// The grid's keyboard cursor: the row by identity, the column by index
 /// (name, field 1..n, description; spec N11). `row: None`, or a name the
 /// grid no longer lists, is the cursor on nothing (N5): nothing paints as
@@ -952,29 +973,36 @@ impl VarManager {
     /// - A delete of the cursor's option: the option after it, the ghost
     ///   row when it is the last (N7). A delete of another one leaves the
     ///   cursor on its own option.
-    /// - An add with the cursor on the ghost row: the option it adds (a
-    ///   create's name, the name a paste takes, the first of a counted
-    ///   paste) (N9).
+    /// - An add with the cursor on the ghost row, or on nothing: the option
+    ///   it adds (a create's name, the name a paste takes, the first of a
+    ///   counted paste) (N9).
     /// - A rename of the cursor's option: the new name (N8).
-    pub fn grid_target(&self, ctx: &Project, op: &VarStructOp) -> Option<(String, GridRow)> {
-        let on = self.grid.cursor.row.as_ref()?;
+    pub fn grid_target(&self, ctx: &Project, op: &VarStructOp) -> Option<GridSpot> {
+        // The row the cursor is on; `None` on nothing (N5).
+        let on = self.grid_at(ctx).and(self.grid.cursor.row.as_ref());
+        // An add lands on what it adds from the ghost row, and from nothing
+        // too: a cursor that is nowhere (a selector opened with no options,
+        // N6a) has no place of its own to keep, and lands on the new option
+        // as it does from the ghost row in an empty grid.
+        let adds_here = matches!(on, None | Some(GridRow::Ghost));
         // Every arm has passed `grid_shows`, so the op's selector is the
         // one the grid shows.
         let (selector, row) = match op {
             VarStructOp::DeleteOption { env, selector, name }
-                if self.grid_shows(ctx, env, selector) && *on == GridRow::Named(name.clone()) =>
+                if self.grid_shows(ctx, env, selector)
+                    && on == Some(&GridRow::Named(name.clone())) =>
             {
                 let options = shown_options(ctx, selector)?;
                 let next = options.get_index(options.get_index_of(name)? + 1);
                 (selector, next.map_or(GridRow::Ghost, |(n, _)| GridRow::Named(n.clone())))
             }
             VarStructOp::NewOption { env, selector, name, .. }
-                if self.grid_shows(ctx, env, selector) && *on == GridRow::Ghost =>
+                if self.grid_shows(ctx, env, selector) && adds_here =>
             {
                 (selector, GridRow::Named(name.clone()))
             }
             VarStructOp::PasteOption { env, selector, .. }
-                if self.grid_shows(ctx, env, selector) && *on == GridRow::Ghost =>
+                if self.grid_shows(ctx, env, selector) && adds_here =>
             {
                 let stash = self.stash.as_ref().filter(|s| s.selector == *selector)?;
                 let taken = shown_options(ctx, selector);
@@ -984,35 +1012,37 @@ impl VarManager {
                 (selector, GridRow::Named(name))
             }
             VarStructOp::RenameOption { env, selector, from, to }
-                if self.grid_shows(ctx, env, selector) && *on == GridRow::Named(from.clone()) =>
+                if self.grid_shows(ctx, env, selector)
+                    && on == Some(&GridRow::Named(from.clone())) =>
             {
                 (selector, GridRow::Named(to.clone()))
             }
             _ => return None,
         };
-        Some((selector.clone(), row))
+        Some(GridSpot::new(ctx, selector, row))
     }
 
-    /// The selector the grid shows and the row its cursor is on, for an
-    /// undo step's view (spec N3). `None` when no selector is open or the
-    /// cursor is on nothing.
-    pub fn grid_spot(&self, ctx: &Project) -> Option<(String, GridRow)> {
+    /// Where the grid cursor is, by identity, for an undo step's view (spec
+    /// N3). `None` when no selector is open or the cursor is on nothing.
+    pub fn grid_spot(&self, ctx: &Project) -> Option<GridSpot> {
         let VmDetail::Group(selector) = &self.detail else {
             return None;
         };
         self.grid_at(ctx)?;
-        Some((selector.clone(), self.grid.cursor.row.clone()?))
+        Some(GridSpot::new(ctx, selector, self.grid.cursor.row.clone()?))
     }
 
-    /// Puts the grid cursor on `row` of `selector`: an undo landing (spec
-    /// N3), or an op's [`Self::grid_target`]. A no-op when the pane shows
-    /// another selector. The row is matched by name in whichever
-    /// environment the grid shows, as an environment switch keeps it
-    /// (N10): an undo made after a switch lands on the same-named option
-    /// there, visibly, or on nothing.
-    pub fn land_grid(&mut self, selector: &str, row: &GridRow) {
-        if self.detail == VmDetail::Group(selector.to_string()) {
-            self.grid.cursor.row = Some(row.clone());
+    /// Puts the grid cursor on `spot`: an undo landing (spec N3), or an
+    /// op's [`Self::grid_target`]. A no-op unless the grid shows that
+    /// spot's selector in that spot's environment: an undo made after an
+    /// environment switch restores an option of the environment it was
+    /// recorded in, so landing on a same-named option of this one would
+    /// put the cursor on a different option than the one restored.
+    pub fn land_grid(&mut self, ctx: &Project, spot: &GridSpot) {
+        if self.detail == VmDetail::Group(spot.selector.clone())
+            && GridSpot::env_of(ctx, &spot.selector) == spot.env
+        {
+            self.grid.cursor.row = Some(spot.row.clone());
         }
     }
 

@@ -31,7 +31,7 @@ pub(crate) struct Landing {
     pub cursor: Option<CursorAim>,
     pub row: Option<ListRow>,
     /// The Variable Manager grid's cursor row (spec 2026-10-27 N3).
-    pub grid: Option<crate::undo::GridSpot>,
+    pub grid: Option<crate::components::varmanager::GridSpot>,
     /// Once the cursor is placed, open the request under it over what
     /// `open` seated (a removal's scratch, §4.5).
     pub open_cursor: bool,
@@ -356,10 +356,7 @@ impl App {
                 Some(tab) => self.list_row_of(tab),
                 None => self.list_row(),
             },
-            grid: self
-                .project()
-                .and_then(|p| self.varmanager.grid_spot(p))
-                .map(|(selector, row)| crate::undo::GridSpot { selector, row }),
+            grid: self.project().and_then(|p| self.varmanager.grid_spot(p)),
         }
     }
 
@@ -513,8 +510,10 @@ impl App {
             self.place_list_row(row);
         }
         // ...then the grid's row, once the pane shows its selector again.
-        if let Some(spot) = l.grid {
-            self.varmanager.land_grid(&spot.selector, &spot.row);
+        if let Some(spot) = l.grid
+            && let Self { project: Some(p), varmanager, .. } = self
+        {
+            varmanager.land_grid(p, &spot);
         }
 
         // 7. The travel band, and local state whenever it disagrees with

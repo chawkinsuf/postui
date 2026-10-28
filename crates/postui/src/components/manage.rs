@@ -101,6 +101,14 @@ impl Manage {
         self.live = tab;
     }
 
+    /// Both list tabs' state starts over, as at launch: a project switch,
+    /// whose lists name another project's items (task #83: the cursors
+    /// hold slugs). Which tab is up stays.
+    pub fn reset_lists(&mut self) {
+        self.list = Default::default();
+        self.parked = Default::default();
+    }
+
     /// `tab`'s own list, live or parked (spec R5: an undo reselects a row
     /// in a list that is not on screen).
     pub fn list_for(&self, tab: ManageTab) -> &crate::components::manage_list::ManageList {

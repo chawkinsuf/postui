@@ -33589,6 +33589,73 @@ fn an_env_switch_keeps_the_grid_cursor_on_the_same_named_option() {
     assert_eq!(grid_at(&app), None, "prod has no bob");
 }
 
+/// #83 N9: a paste with the grid cursor on nothing (here an environment
+/// switch found no option of its name) lands on the pasted option.
+#[test]
+fn a_paste_with_the_grid_on_nothing_lands_on_the_pasted_option() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    app.update(Action::CopyOption { row: 0 }); // alice
+    point_grid(&mut app, 1, 0); // bob, which dev does not have
+    app.update(Action::SwitchEnv(Some("dev".into()))); // no options
+    assert_eq!(grid_at(&app), None);
+    let paste = Action::VarStruct(VarStructOp::PasteOption {
+        env: "dev".into(),
+        selector: "user".into(),
+        count: 1,
+    });
+    app.update(paste);
+    assert_eq!(option_names(&app, "user"), ["alice"]);
+    assert_eq!(grid_at(&app), Some((0, 0)), "on the pasted alice");
+}
+
+/// #83 N3: an undo made after an environment switch restores the option in
+/// the environment it was recorded in, so the grid does not land on a
+/// same-named option of the environment it shows now.
+#[test]
+fn an_undo_after_an_env_switch_does_not_land_on_another_envs_option() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    std::fs::write(
+        dir.path().join("environments/dev.toml"),
+        "[options.user.carol]\nuser = \"3\"\n\n[options.user.dave]\nuser = \"4\"\n\n[options.user.bob]\nuser = \"2\"\n",
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    enter_grid(&mut app);
+    point_grid(&mut app, 1, 0); // bob in qa, the last option
+    let dd = app.varmanager.verb_action(app.proj(), None, Verb::Delete { count: 1 }).unwrap();
+    app.update(dd);
+    assert_eq!(grid_at(&app), Some((1, 0)), "qa's ghost row");
+    app.update(Action::SwitchEnv(Some("dev".into())));
+    assert_eq!(grid_at(&app), Some((3, 0)), "dev's ghost row");
+    app.update(Action::Undo);
+    assert_eq!(grid_at(&app), Some((3, 0)), "not dev's bob at row 2");
+}
+
+/// #83: a project switch starts the Manage lists over, so a slug of the
+/// project left does not select the same-named item of the new one.
+#[test]
+fn a_project_switch_starts_the_manage_lists_over() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let other = tempfile::tempdir().unwrap();
+    var_project(other.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    app.select_list_row(ManageTab::Environments, "qa");
+    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+    let first = app.proj().environments()[0].clone();
+    assert_ne!(first, "qa", "the test needs qa not to be first");
+    assert_eq!(app.manage_selected(ManageTab::Environments), Some(first));
+}
+
 /// #83 N8 + N3: renaming the environment the parked list is on, from the
 /// header with the screen closed, keeps the list on it; undo puts the list
 /// back on the old name.

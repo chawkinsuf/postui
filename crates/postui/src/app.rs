@@ -5514,6 +5514,21 @@ impl App {
                 if self.screen == Screen::Manage {
                     self.sync_varmanager();
                 }
+                // The same for the Environments and Spaces lists: their
+                // cursors hold the old project's slugs (task #83), which
+                // must not land on a same-named item here. With Manage up on
+                // one of them, it settles on the new project's first item now.
+                self.manage.reset_lists();
+                let tab = self.manage.tab;
+                if self.screen == Screen::Manage
+                    && matches!(
+                        tab,
+                        crate::components::manage::ManageTab::Environments
+                            | crate::components::manage::ManageTab::Spaces
+                    )
+                {
+                    self.settle_list(tab);
+                }
                 self.open_error = None;
                 self.sidebar.notice = None;
                 // A different tree has a different set of loose files.
@@ -7969,6 +7984,7 @@ impl App {
                 // disk: the cursor's neighbour (spec 2026-10-27 N7).
                 let next = self.list_neighbour(spaces, &name);
                 let Some(p) = self.project.as_mut() else {
+                    self.op_in_flight = false;
                     return true;
                 };
                 match p.delete_space(&name) {
@@ -9193,8 +9209,10 @@ impl App {
             p.cascade(edit.label(), |p| (0..times).try_for_each(|_| p.apply_var_edit(&edit)))
         }
         .map_err(|e| e.to_string())?;
-        if let Some((selector, row)) = grid_target {
-            self.varmanager.land_grid(&selector, &row);
+        if let Some(spot) = grid_target
+            && let Self { project: Some(p), varmanager, .. } = self
+        {
+            varmanager.land_grid(p, &spot);
         }
         if let VarStructOp::Promote { name, .. } = op {
             // The project side of the promote is durable the moment core
