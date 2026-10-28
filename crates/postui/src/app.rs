@@ -12326,9 +12326,10 @@ impl App {
     /// Keys while a selector-grid cell owns the keyboard — the same contract
     /// as [`Self::handle_var_form_key`]: `Esc` and `Enter` both commit
     /// (the field rule), anything else goes to the cell's own `LineInput`.
-    /// `Tab` commits and steps one column right on the same row, so a
-    /// freshly created option can be filled in without reaching for the
-    /// mouse; a commit that failed keeps its edit and stays put, and fails
+    /// `Tab` commits and opens the next cell in reading order (name, each
+    /// field, description, then the next row; [`Self::step_grid_edit`]),
+    /// so a freshly created option can be filled in without reaching for
+    /// the mouse; a commit that failed keeps its edit and stays put, and fails
     /// the key (`last_action_failed`), as the add-option prompt's refusal
     /// fails its confirm.
     fn handle_grid_key(&mut self, ev: KeyEvent) -> bool {
