@@ -319,7 +319,12 @@ fn observed(app: &App) -> String {
         app.editor.sub_focus,
         app.editor.table.selected(),
         app.editor.table.col,
-        app.manage.list.cursor_in(app.manage_items(app.manage.tab)),
+        // Both lists, live and parked, whichever tab is up.
+        [
+            crate::components::manage::ManageTab::Environments,
+            crate::components::manage::ManageTab::Spaces
+        ]
+        .map(|tab| app.manage.list_for(tab).cursor_in(app.manage_items(tab))),
         app.manage.list.detail_row,
         app.manage.list.detail_col,
         app.varmanager.left_cursor,

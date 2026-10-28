@@ -593,13 +593,10 @@ impl App {
                             Hit::VmEntryCell { col, .. } => *col,
                             _ => 0,
                         };
-                        let Self { project, varmanager, .. } = self;
-                        if let Some(p) = project {
-                            changed |= varmanager.grid_at(p) != Some((*row, col))
-                                || varmanager.focus != VmFocus::Grid;
-                            varmanager.point_grid(p, *row, col);
-                            varmanager.focus = VmFocus::Grid;
-                        }
+                        changed |= self.project().and_then(|p| self.varmanager.grid_at(p))
+                            != Some((*row, col))
+                            || self.varmanager.focus != VmFocus::Grid;
+                        self.vm_point_grid(*row, col);
                     }
                     Hit::TableRow(i)
                     | Hit::TableCheckbox(i)

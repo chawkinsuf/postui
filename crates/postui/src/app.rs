@@ -1727,14 +1727,26 @@ impl App {
         self.manage.list_for_mut(tab).renamed(from, to);
     }
 
-    /// The app's own delete of `name` from `tab`'s list, which held it at
-    /// `at` before the delete: that list's cursor, live or parked, moves to
-    /// the neighbour if it was on it (spec N7).
-    fn list_removed(&mut self, tab: crate::components::manage::ManageTab, name: &str, at: usize) {
-        let Self { project, manage, .. } = self;
-        if let Some(p) = project {
-            manage.list_for_mut(tab).removed(tab, p, name, at);
-        }
+    /// The neighbour a delete of `name` from `tab`'s list hands the cursor
+    /// to, read before the delete (spec N7, `ManageList::neighbour`).
+    fn list_neighbour(
+        &self,
+        tab: crate::components::manage::ManageTab,
+        name: &str,
+    ) -> Option<String> {
+        self.project()
+            .and_then(|p| crate::components::manage_list::ManageList::neighbour(tab, p, name))
+    }
+
+    /// The app's own delete of `name` from `tab`'s list landed: that list's
+    /// cursor, live or parked, moves to `next` if it was on it (spec N7).
+    fn list_removed(
+        &mut self,
+        tab: crate::components::manage::ManageTab,
+        name: &str,
+        next: Option<String>,
+    ) {
+        self.manage.list_for_mut(tab).removed(name, next);
     }
 
     /// Re-reads the project's own documents, without the app-level
@@ -7823,10 +7835,11 @@ impl App {
             }
             Action::ForceDeleteEnv(name) => {
                 let display = self.env_name(&name);
-                let t = self.begin_list_op(crate::components::manage::ManageTab::Environments);
-                // Read before the delete: where it sat, for the cursor's
-                // neighbour (spec 2026-10-27 N7).
-                let at = self.environments().iter().position(|e| *e == name).unwrap_or(0);
+                let envs = crate::components::manage::ManageTab::Environments;
+                let t = self.begin_list_op(envs);
+                // Named before the delete, which re-reads the list from
+                // disk: the cursor's neighbour (spec 2026-10-27 N7).
+                let next = self.list_neighbour(envs, &name);
                 let Some(p) = self.project.as_mut() else {
                     return true;
                 };
@@ -7844,11 +7857,7 @@ impl App {
                         if self.screen == Screen::Manage {
                             self.sync_varmanager();
                         }
-                        self.list_removed(
-                            crate::components::manage::ManageTab::Environments,
-                            &name,
-                            at,
-                        );
+                        self.list_removed(envs, &name, next);
                         self.record_project_step(t, crate::undo::StepLabel::delete_env(&display));
                     }
                     Err(e) => {
@@ -7961,10 +7970,11 @@ impl App {
                 if was_active || self.open_in_space(&name) {
                     self.commit_table_edit();
                 }
-                let t = self.begin_list_op(crate::components::manage::ManageTab::Spaces);
-                // Read before the delete: where it sat, for the cursor's
-                // neighbour (spec 2026-10-27 N7).
-                let at = self.spaces().iter().position(|s| *s == name).unwrap_or(0);
+                let spaces = crate::components::manage::ManageTab::Spaces;
+                let t = self.begin_list_op(spaces);
+                // Named before the delete, which re-reads the list from
+                // disk: the cursor's neighbour (spec 2026-10-27 N7).
+                let next = self.list_neighbour(spaces, &name);
                 let Some(p) = self.project.as_mut() else {
                     return true;
                 };
@@ -7983,7 +7993,7 @@ impl App {
                         } else {
                             self.land(Landing::default());
                         }
-                        self.list_removed(crate::components::manage::ManageTab::Spaces, &name, at);
+                        self.list_removed(spaces, &name, next);
                         self.record_project_step(t, crate::undo::StepLabel::delete_space(&display));
                     }
                     Err(e) => {
@@ -8000,9 +8010,11 @@ impl App {
                 };
                 match p.move_space(&name, delta) {
                     Ok(_) => {
-                        // The Manage screen's list cursor follows the space
-                        // that just moved, rather than staying on the row
-                        // index the reorder swapped something else into.
+                        // The Manage screen's list lands on the space that
+                        // just moved and scrolls it into view. The cursor
+                        // holds names, so one on that space stays on it
+                        // anyway; this is main's jump onto the moved row,
+                        // kept as it was.
                         if self.screen == Screen::Manage {
                             self.manage_select_name(&name);
                         }
@@ -8030,10 +8042,9 @@ impl App {
                 };
                 match p.move_environment(&name, delta) {
                     Ok(_) => {
-                        // The Manage screen's list cursor follows the
-                        // environment that just moved, rather than staying
-                        // on the row index the reorder swapped something
-                        // else into.
+                        // As `MoveSpace`: the list lands on the moved
+                        // environment and scrolls it into view (main's
+                        // jump; a cursor on it stays on it by name anyway).
                         if self.screen == Screen::Manage {
                             self.manage_select_name(&name);
                         }
@@ -9179,10 +9190,10 @@ impl App {
             VarStructOp::PasteOption { count, .. } => (*count).max(1),
             _ => 1,
         };
-        // The grid cursor's row just before the write: an option delete or
-        // an add from the ghost row moves the cursor to that index once the
-        // write lands (spec 2026-10-27 N7, N9).
-        let grid_row = self.project().and_then(|p| self.varmanager.grid_at(p)).map(|(r, _)| r);
+        // Where the grid cursor goes once the write lands, named now: the
+        // write re-reads the file, so only a name survives it (spec
+        // 2026-10-27 N7–N9).
+        let grid_target = self.project().and_then(|p| self.varmanager.grid_target(p, op));
         let p = self.project_mut().ok_or_else(|| NO_PROJECT.to_string())?;
         if times == 1 {
             p.apply_var_edit(&edit)
@@ -9190,8 +9201,8 @@ impl App {
             p.cascade(edit.label(), |p| (0..times).try_for_each(|_| p.apply_var_edit(&edit)))
         }
         .map_err(|e| e.to_string())?;
-        if let Self { project: Some(p), varmanager, .. } = self {
-            varmanager.follow_option_op(p, op, grid_row);
+        if let Some((selector, row)) = grid_target {
+            self.varmanager.land_grid(&selector, &row);
         }
         if let VarStructOp::Promote { name, .. } = op {
             // The project side of the promote is durable the moment core

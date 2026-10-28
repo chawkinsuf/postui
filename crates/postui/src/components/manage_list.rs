@@ -197,17 +197,25 @@ impl ManageList {
         }
     }
 
-    /// The app's own delete of `name`, which sat at index `at` before it
-    /// (spec N7): a cursor on it moves to the item now at that index, the
-    /// last one when it was the last, nothing when the list is empty. A
-    /// cursor on another item stays on its own.
-    pub fn removed(&mut self, tab: ManageTab, ctx: &Project, name: &str, at: usize) {
-        if self.cursor.as_deref() != Some(name) {
-            return;
-        }
+    /// The item a delete of `name` hands the cursor to (spec N7): the one
+    /// after it, else the one before it, else none. Read before the delete,
+    /// where the list is the one the user saw: the delete re-reads the
+    /// list from disk, so an index taken now could name another item once
+    /// it lands, while a name cannot.
+    pub fn neighbour(tab: ManageTab, ctx: &Project, name: &str) -> Option<String> {
         let items = Self::items(tab, ctx);
-        self.cursor = items.get(at.min(items.len().saturating_sub(1))).cloned();
-        self.ensure_visible = true;
+        let i = items.iter().position(|s| s == name)?;
+        items.get(i + 1).or_else(|| i.checked_sub(1).and_then(|j| items.get(j))).cloned()
+    }
+
+    /// The app's own delete of `name` landed: a cursor on it moves to
+    /// `next`, its [`Self::neighbour`] read before the delete. A cursor on
+    /// another item stays on its own.
+    pub fn removed(&mut self, name: &str, next: Option<String>) {
+        if self.cursor.as_deref() == Some(name) {
+            self.cursor = next;
+            self.ensure_visible = true;
+        }
     }
 
     /// The app's own rename of `from` to `to` (spec N8): a cursor on it
@@ -1157,20 +1165,26 @@ mod tests {
     }
 
     /// #83 N7: the app's delete moves a cursor on the deleted item to the
-    /// item now at its index (the last when it was last), and leaves a
-    /// cursor on another item on its own.
+    /// item after it (the one before when it was last), named before the
+    /// delete, and leaves a cursor on another item on its own.
     #[test]
     fn removed_lands_on_the_neighbour_or_keeps_its_own_item() {
         let (mut ctx, _dir) = ctx();
         let spaces = ManageTab::Spaces;
+        assert_eq!(ManageList::neighbour(spaces, &ctx, "main").as_deref(), Some("auth"));
+        assert_eq!(ManageList::neighbour(spaces, &ctx, "billing").as_deref(), Some("auth"));
         let mut on_auth = on_row(spaces, &ctx, 1);
         let mut on_billing = on_row(spaces, &ctx, 2);
+        let next = ManageList::neighbour(spaces, &ctx, "main");
         ctx.delete_space("main").unwrap();
-        on_auth.removed(spaces, &ctx, "main", 0);
+        on_auth.removed("main", next);
         assert_eq!(on_auth.selected(spaces, &ctx), Some("auth"), "another item: its own");
+        let next = ManageList::neighbour(spaces, &ctx, "billing");
         ctx.delete_space("billing").unwrap();
-        on_billing.removed(spaces, &ctx, "billing", 1);
+        on_billing.removed("billing", next);
         assert_eq!(on_billing.selected(spaces, &ctx), Some("auth"), "the last went: the one above");
+        let next = ManageList::neighbour(spaces, &ctx, "auth");
+        assert_eq!(next, None, "the only item has no neighbour");
     }
 
     fn draw_at(l: &mut ManageList, tab: ManageTab, ctx: &Project, w: u16) -> HitMap {

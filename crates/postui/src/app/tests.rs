@@ -33359,6 +33359,56 @@ fn deleting_the_last_option_puts_the_grid_cursor_on_the_ghost_row() {
     assert_eq!(app.varmanager.entry_at(app.proj(), 1), None);
 }
 
+/// #83 N7, N9: the app's own create and delete re-read the env file they
+/// write, so another program's edit lands with them; the cursor still goes
+/// to the option the op meant (named before the write), not to whatever
+/// took that index.
+#[test]
+fn grid_ops_land_by_name_when_their_write_takes_in_an_outside_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    app.vm_start_cell_edit(2, 0); // the ghost row
+    type_chars(&mut app, "new");
+    // Another program adds zed, ahead of the create.
+    let path = dir.path().join("environments/qa.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("# zed\n{text}\n[options.user.zed]\nuser = \"9\"\n")).unwrap();
+    assert!(app.close_manager_input(), "the create saved");
+    let names = option_names(&app, "user");
+    assert_eq!(names, ["alice", "bob", "zed", "new"]);
+    assert_eq!(grid_at(&app), Some((3, 0)), "on new, not on zed at the ghost's old index");
+    // Another program puts aaron first; the delete of alice lands on bob.
+    point_grid(&mut app, 0, 0); // alice
+    let text = std::fs::read_to_string(&path).unwrap().replacen(
+        "[options.user.alice]",
+        "[options.user.aaron]\nuser = \"0\"\n\n[options.user.alice]",
+        1,
+    );
+    std::fs::write(&path, format!("# aaron\n{text}")).unwrap();
+    let dd = app.varmanager.verb_action(app.proj(), None, Verb::Delete { count: 1 }).unwrap();
+    app.update(dd);
+    assert_eq!(option_names(&app, "user"), ["aaron", "bob", "zed", "new"]);
+    assert_eq!(grid_at(&app), Some((1, 0)), "on bob, alice's neighbour, not on aaron");
+}
+
+/// #83 N7: an environment delete re-lists the environment files on disk,
+/// so one another program added lands with it; the cursor still goes to
+/// the deleted one's neighbour by name.
+#[test]
+fn an_environment_delete_lands_by_name_when_it_takes_in_an_outside_edit() {
+    let (mut app, dir) = app_with_envs();
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("prod"));
+    std::fs::write(dir.path().join("environments/aaa.toml"), "").unwrap();
+    app.update(Action::DeleteEnv("prod".into()));
+    // aaa sorts first, so prod's old index now holds it.
+    assert_eq!(app.proj().environments(), ["aaa", "qa"]);
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"));
+}
+
 /// #83 N3: `dd` then undo lands on the restored option; redo on the
 /// neighbour that took its place.
 #[test]
