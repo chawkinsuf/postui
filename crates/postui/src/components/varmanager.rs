@@ -2078,52 +2078,46 @@ impl VarManager {
         Some(vec![rename, duplicate, MenuItem::new("Delete", Action::DeleteVar { name })])
     }
 
-    /// The right-click menu for option row `i` of the open selector (spec
-    /// §3.4). `None` for the ghost row (nothing to act on yet) and when no
-    /// environment is active (there are no options at all then).
+    /// The right-click menu for the option row the grid cursor is on (spec
+    /// §3.4): the right click points the cursor at its row and gives the
+    /// grid the keyboard before it asks. `None` for the ghost row (nothing
+    /// to act on yet) and when no environment is active (there are no
+    /// options at all then).
+    ///
+    /// Each item is its grid verb, `Action::OnSelection`, which the app
+    /// resolves once the menu has closed, through [`Self::grid_verb`] as
+    /// the key and the chip are (task #208). An item built as the finished
+    /// action instead kept acting on the row the menu opened on after a
+    /// shrink left no option row drawn: Paste wrote an option no row
+    /// showed. Resolved at the pick, it acts on nothing then, and the menu
+    /// stays open over the shrink, its items painted as they opened:
+    /// closing it would need the menu to know which row it belongs to.
+    /// An item is disabled when its verb has nothing to act on as the menu
+    /// opens (Paste with nothing copied): shown rather than hidden, so the
+    /// menu keeps its shape and the copy and paste read as a pair.
     pub fn entry_context_menu(
         &self,
         ctx: &Project,
-        i: usize,
     ) -> Option<Vec<crate::components::modal::MenuItem>> {
         use crate::components::modal::MenuItem;
         let VmDetail::Group(selector) = &self.detail else {
             return None;
         };
-        let env = op_env(ctx, selector)?;
-        let name = self.entry_at(ctx, i)?;
-        let (selector, n) = (selector.clone(), name.clone());
-        let decl = postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), &selector)
-            .and_then(|options| options.get(&n))?;
+        op_env(ctx, selector)?;
+        let (row, _) = self.grid_at(ctx)?;
+        self.entry_at(ctx, row)?;
+        let item = |label: &str, verb: Verb| match self.grid_verb(ctx, selector, verb) {
+            Some(_) => MenuItem::new(label, Action::OnSelection(verb)),
+            None => MenuItem::disabled(label),
+        };
         Some(vec![
-            MenuItem::new(
-                "Edit\u{2026}",
-                Action::OpenEditOptionPrompt {
-                    owner: selector.clone(),
-                    key: n.clone(),
-                    description: decl.description.clone(),
-                    values: decl.values.clone(),
-                },
-            ),
-            MenuItem::new("Copy option", Action::CopyOption { row: i }),
-            // Shown disabled rather than hidden with nothing copied, so
-            // the menu keeps its shape and the pair reads as a pair.
-            if self.can_paste(&selector) {
-                MenuItem::new(
-                    "Paste option",
-                    Action::VarStruct(VarStructOp::PasteOption {
-                        env: env.clone(),
-                        selector: selector.clone(),
-                        count: 1,
-                    }),
-                )
-            } else {
-                MenuItem::disabled("Paste option")
-            },
+            item("Edit\u{2026}", Verb::EditValue),
+            item("Copy option", Verb::Yank),
+            item("Paste option", Verb::Put { above: false, count: 1 }),
             // No ellipsis: rename is the inline name-cell edit, not a
             // dialog.
-            MenuItem::new("Rename", Action::StartOptionNameEdit { row: i }),
-            MenuItem::new("Delete", Action::DeleteEntry { env, selector, name }),
+            item("Rename", Verb::Rename),
+            item("Delete", Verb::Delete { count: 1 }),
         ])
     }
 
@@ -4516,10 +4510,7 @@ fields = ["user_id", "customer_id"]
                 name: "en".into(),
             })
         );
-        assert!(
-            vm.entry_context_menu(&ctx, 0).is_some(),
-            "options exist, so the row menu does too"
-        );
+        assert!(vm.entry_context_menu(&ctx).is_some(), "options exist, so the row menu does too");
         // The footer's grid chips stay armed too — their actions carry the
         // same empty env the ops above do.
         let chips = crate::keyroute::spell::spelled_on(
@@ -5420,33 +5411,40 @@ fields = ["user_id", "customer_id"]
         let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
-        let items = vm.entry_context_menu(&ctx, 1).expect("option menu");
+        // As the right click leaves it: the grid has the keyboard, its
+        // cursor on the clicked row.
+        vm.focus = VmFocus::Grid;
+        vm.point_grid(&ctx, 1, 0); // bob
+        let items = vm.entry_context_menu(&ctx).expect("option menu");
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         // "Rename" carries no ellipsis: it starts the inline name-cell
         // edit rather than opening a dialog.
         assert_eq!(labels, vec!["Edit\u{2026}", "Copy option", "Paste option", "Rename", "Delete"]);
-        let Some(Action::OpenEditOptionPrompt { owner, key, values, .. }) = &items[0].action else {
+        // Each item is its grid verb (task #208), and what it runs is what
+        // that verb resolves to on the row.
+        let runs = |i: usize| match items[i].action {
+            Some(Action::OnSelection(verb)) => vm.verb_action(&ctx, None, verb),
+            ref other => panic!("{}: {other:?}", items[i].label),
+        };
+        let Some(Action::OpenEditOptionPrompt { owner, key, values, .. }) = runs(0) else {
             panic!("Edit… opens the option edit prompt: {:?}", items[0].action)
         };
         assert_eq!((owner.as_str(), key.as_str()), ("creds", "bob"));
         assert_eq!(values["user_id"], "2002");
-        assert_eq!(items[1].label, "Copy option");
-        assert_eq!(items[1].action, Some(Action::CopyOption { row: 1 }));
+        assert_eq!(runs(1), Some(Action::CopyOption { row: 1 }));
         // Paste keeps its place in the menu with nothing copied, disabled.
         assert_eq!(items[2].label, "Paste option");
         assert_eq!(items[2].action, None);
-        assert_eq!(items[3].action, Some(Action::StartOptionNameEdit { row: 1 }));
+        assert_eq!(runs(3), Some(Action::StartOptionNameEdit { row: 1 }));
         assert_eq!(
-            items[4].action,
+            runs(4),
             Some(Action::DeleteEntry {
                 env: "qa".into(),
                 selector: "creds".into(),
                 name: "bob".into(),
             })
         );
-        assert!(
-            vm.entry_context_menu(&ctx, 2).is_none(),
-            "the ghost row has nothing to act on yet"
-        );
+        vm.point_grid(&ctx, 2, 0);
+        assert!(vm.entry_context_menu(&ctx).is_none(), "the ghost row has nothing to act on yet");
     }
 }

@@ -14881,15 +14881,7 @@ fn the_option_menus_edit_opens_the_prompt_in_the_environment_that_holds_it() {
 
     // Row 0 is "alice" (first option, file order); its context menu's
     // "Edit…" opens the full edit prompt (values + description).
-    let items = app.varmanager.entry_context_menu(app.proj(), 0).expect("option menu");
-    let edit = items
-        .iter()
-        .find(|i| i.label.starts_with("Edit"))
-        .expect("an Edit… item")
-        .action
-        .clone()
-        .expect("enabled");
-    app.update(edit);
+    pick_from_row_menu_at_height(&mut app, 46, "Edit\u{2026}");
 
     let Some(Modal::MultiPrompt { kind, fields, .. }) = app.modals.top() else {
         panic!("expected the edit-option multi-prompt");
@@ -18472,6 +18464,65 @@ fn a_paste_click_on_a_pane_too_short_for_an_option_row_writes_nothing() {
     assert!(env.options["user"].contains_key("alice copy"), "{:?}", env.options["user"].keys());
 }
 
+/// Right-clicks option row 0 at 130x46, redraws at `h` rows, and clicks
+/// the menu's `label` item where that frame draws it.
+fn pick_from_row_menu_at_height(app: &mut App, h: u16, label: &str) {
+    rendered_text_at(app, 130, 46);
+    let cell =
+        app.hits.rect_of(&crate::hit::Hit::VmEntryCell { row: 0, col: 0 }).expect("row 0 is drawn");
+    app.handle_mouse(right_down(cell.x, cell.y));
+    let i = menu_labels(app).iter().position(|l| l == label).expect("the item is listed");
+    rendered_text_at(app, 130, h);
+    let item = app.hits.rect_of(&crate::hit::Hit::DropdownRow(i)).expect("the menu is drawn");
+    app.handle_mouse(left_down(item.x + 1, item.y));
+    assert!(
+        !matches!(app.modals.top(), Some(Modal::Dropdown(_))),
+        "{label}: the pick closes the menu"
+    );
+}
+
+/// Task #208: an option row's menu left open while the pane shrinks past
+/// its last option row acts on nothing, as the grid's keys, chips and title
+/// buttons do there (#202, #207). Before, its items still acted on the row
+/// the menu opened on: Paste wrote an option no row showed.
+#[test]
+fn an_option_rows_menu_acts_on_nothing_once_no_option_row_is_drawn() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    rendered_text_at(&mut app, 130, 46);
+    let copy = app.hits.rect_of(&crate::hit::Hit::VmEntryCopy(1)).expect("row 1 has a copy button");
+    app.handle_mouse(left_down(copy.x, copy.y));
+    assert_eq!(app.varmanager.stash.as_ref().map(|s| s.name.as_str()), Some("bob"));
+
+    for label in ["Edit\u{2026}", "Copy option", "Paste option", "Rename", "Delete"] {
+        pick_from_row_menu_at_height(&mut app, 14, label);
+        assert!(
+            app.hits.rect_of(&crate::hit::Hit::VmEntryCell { row: 0, col: 0 }).is_none(),
+            "no option row is drawn"
+        );
+        assert!(app.modals.is_empty(), "{label}: no dialog opens");
+        assert!(app.varmanager.grid.editing.is_none(), "{label}: no cell edit opens");
+        assert_eq!(
+            app.varmanager.stash.as_ref().map(|s| s.name.as_str()),
+            Some("bob"),
+            "{label}: nothing is copied"
+        );
+        let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
+        let names: Vec<&String> = env.options["user"].keys().collect();
+        assert_eq!(names, ["alice", "bob"], "{label}: nothing is written");
+    }
+
+    // With the rows drawn again, the same items act on the row.
+    pick_from_row_menu_at_height(&mut app, 46, "Copy option");
+    assert_eq!(app.varmanager.stash.as_ref().map(|s| s.name.as_str()), Some("alice"));
+    pick_from_row_menu_at_height(&mut app, 46, "Delete");
+    let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
+    assert!(!env.options["user"].contains_key("alice"), "{:?}", env.options["user"].keys());
+}
+
 #[test]
 fn clicking_an_entrys_radio_records_the_selection_and_re_resolves_every_field() {
     let dir = tempfile::tempdir().unwrap();
@@ -19307,12 +19358,12 @@ fn right_clicking_another_row_commits_the_live_cell_to_the_entry_it_belongs_to()
         env.options["user"]["alice"].values["user"], "1001",
         "the right-clicked entry is untouched"
     );
-    // …and the menu is the one for the row that was right-clicked.
-    let Some(Modal::Dropdown(state)) = app.modals.top() else {
-        panic!("no entry menu");
-    };
+    // …and the menu is the one for the row that was right-clicked: its
+    // Delete is the grid's (task #208), whose cursor is on alice.
+    let delete = crate::action::Verb::Delete { count: 1 };
+    assert_eq!(menu_action(&app, "Delete"), Some(Action::OnSelection(delete)));
     assert_eq!(
-        state.items[4].action,
+        app.varmanager.verb_action(app.proj(), None, delete),
         Some(Action::DeleteEntry {
             env: "qa".into(),
             selector: "user".into(),

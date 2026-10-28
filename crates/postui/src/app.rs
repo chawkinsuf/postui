@@ -10530,9 +10530,10 @@ impl App {
                 );
             }
             // An option row (either half of it — the radio and the cells all
-            // belong to the same record).
-            Hit::VmEntryRadio(row) | Hit::VmEntryCell { row, .. } => {
-                return self.varmanager.entry_context_menu(self.project()?, *row);
+            // belong to the same record). The right-click handler has
+            // already pointed the grid cursor at it, which the menu reads.
+            Hit::VmEntryRadio(_) | Hit::VmEntryCell { .. } => {
+                return self.varmanager.entry_context_menu(self.project()?);
             }
             // A params/headers/vars row (Task 17, spec §5): the right-click
             // handler has already re-resolved `i` past any commit and
