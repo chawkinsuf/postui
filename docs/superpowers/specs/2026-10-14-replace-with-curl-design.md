@@ -35,14 +35,14 @@ Two facts shape the design:
 | # | Behaviour | From |
 |---|---|---|
 | U1 | The curl's request replaces the open request **in the editor**, as unsaved edits: the request shows dirty; Save writes it; Discard or undo reverts it. | you |
-| U2 | Replaced: method, URL (query verbatim, curl R2), params (cleared: the query rides in the URL), headers, body, `substitute_body`, `insecure`. Kept: name, slug (folder, position), jq filter and its on/off, request variables. | you |
+| U2 | Replaced: method, URL (query verbatim, curl R2), params (cleared: the query rides in the URL), headers, body, `substitute_body`, `insecure`. Kept: name, slug (folder, position), jq filter and its on/off, request variables. **Amended by #148 (§6):** a `# @name` renames. | you |
 | U3 | Shell variables go through import's pipeline unchanged (curl R7, D15–D17): a `$NAME` the project doesn't have is declared a secret, with the paste's literal value in the active environment when it has one; names the project has are kept as they are; reserved names are not saved. | you |
 | U4 | A clipboard with more than one curl command refuses: error toast `clipboard holds 3 curl commands; replace takes one`. Nothing changes. | you |
 | U5 | Undo: the declarations are one `Project` step and the editor change is the next one, an `EditorDelta`, as extract-to-variable does. The first undo puts the request back exactly as it was (unsaved edits included); the second removes the declarations. Discard reverts the request and leaves the declarations. Replace without new declarations is one step. | you (accepted with "same as import") |
 | U6 | Entry points: request row right-click **"Replace with curl"** directly after "Copy as curl" (not on broken rows); palette **"Request: replace with curl from clipboard"** for what the editor holds, scratch included. No new key, no new vim ex verb: vim's `:` line already reaches palette rows. | mine (as curl R5) |
 | U7 | Replacing a row that is not open opens it first. Unsaved work in the editor meets the usual dirty gate (`open`), then the replace runs. Everything that can refuse runs **before** the gate: the clipboard read, the parse, reading the row's file, and sorting the variables (an unreadable environment file). A refusal only toasts, and the gate's follow-on carries what was read, so the clipboard is never read twice (first review round, 2026-10-14). | mine |
 | U8 | Replacing the open request needs no gate: its unsaved edits are replaced in place and undo brings them back (U5). No confirm (delete-never-confirms: undo is the net). | mine |
-| U9 | `# @name` (D18) is ignored: replace never renames. | mine |
+| U9 | ~~`# @name` (D18) is ignored: replace never renames.~~ **Reversed by #148 (§6, N1–N6).** | mine |
 | U10 | A curl variable named like one of the request's own **enabled** variables counts as kept: the request variable wins at send, so nothing is declared over it. A disabled one sends nothing, so the name is sorted as if it were absent (first review round). | mine |
 | U11 | Toast: `Replaced {name} from curl`, then import's summary parts (§4.3: ignored flags, converted, saved, declared with no value, kept, reserved, values dropped, skipped lines) after `; `, then the undo hint (` — ^Z undoes`). A scratch is named `the unsaved request`. Its kind is the summary's (warning or success); success when the summary is empty. A curl the request already matches reads `Nothing to replace: {name} already matches the curl`, with the undo hint only when it declared something (third review round). | mine |
 | U12 | Errors as import: unreadable clipboard, `CurlError`, no project, and a refused declaration (an unreadable environment file) each toast and change nothing. | mine |
@@ -127,3 +127,50 @@ U6 (entry points, no ex verb), U7 (open-then-replace with a parse before
 the gate), U8 (no gate on the open request), U9 (no rename from
 `# @name`), U10 (request variable counts as kept), U11 (toast wording),
 U12.
+
+## 6. Amendment 2026-10-28 (task #148): `# @name` renames
+
+Task #148: "Replace request with curl does not replace name". The user
+picked the rule from my options, so it is `mine (approved)`: replace
+renames the request only when the curl text carries a `# @name X`
+comment (D18), read as import reads it (spaces folded, an empty comment
+falls back to no name). A bare curl keeps the name, as before. This
+reverses U9 and the "name kept" part of U2.
+
+Today a rename (`Action::RenameRequest`, `Project::rename_request`) is
+immediate and journaled: the file moves to the new name's slug, its
+`name` is rewritten, a taken name is refused, and the editor follows in
+place with no reload. The editor's `name` is never an unsaved edit: a
+rename and its undo set the live and saved copies together. So the
+replace's rename goes through that path rather than landing in the
+editor as an unsaved name (which would show nowhere until Save, write
+the name under the old file name, skip the taken-name check, and be
+reset by a rename's undo).
+
+| # | Behaviour | From |
+|---|---|---|
+| N1 | Replace runs the existing rename first, as its own journaled project step, then lands the editor change as U1 says. The order of steps is declarations (U5), rename, editor change, so undo takes back the editor change, then the rename, then the declarations. Discard reverts the fields and keeps the rename; undo takes it back. | mine (approved) |
+| N2 | The rename's checks (an empty leaf, a name another request in the target folder answers to) run up front with U7's other refusals, before the dirty gate. A refusal toasts rename's own words (`a request named "X" already exists here`, `request name cannot be empty`) and changes nothing. | mine (approved) |
+| N3 | A `/` in the name reads relative to the request's own folder (`# @name sub/X` on `api/ping` lands at `api/sub/X`), through rename's folder move, inside the request's space. A bare name keeps the folder. | mine (approved) |
+| N4 | A scratch request ignores `# @name`: it has no file to rename, and Save still asks for a name. | mine (approved) |
+| N5 | A `# @name` the request already answers to, ignoring case, in its own folder, renames nothing. | mine |
+| N6 | Toast: `Replaced {old} from curl, renamed to {new}`, then U11's summary parts and undo hint. A rename with no field change still reads `Replaced …` (it changed something). | mine |
+
+Design: core `CurlImport` gains `named: Option<String>`, the `# @name`
+text alone, set only from the comment (`suggested_name` keeps folding
+the comment with the URL fallback for import's prompt). `CurlReplace`
+carries the checked rename target. `apply_curl_replace` runs the rename
+through the method the `RenameRequest` arm now calls, then seats the
+undo shadow at the renamed request itself, in this one caller: a capture
+that sees the slug change only re-seeds, so without the seat the editor
+change would not be recorded, and a rename that keeps the slug would
+record the name as an editor edit. It then reads the editor for the kept
+fields, so the name kept is the new one.
+
+Tests (`curl_tests.rs`): a `# @name` renames the open request and a row
+not yet open; a folder in the name moves it under the request's folder;
+a taken name refuses before the gate with nothing changed; the same name
+in another case renames nothing; a scratch ignores it; a bare curl keeps
+the name; undo takes back the editor change, then the rename, then the
+declarations; Discard keeps the rename. Core: `named` is set only from
+the comment.
