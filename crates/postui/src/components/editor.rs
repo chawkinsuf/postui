@@ -738,13 +738,13 @@ impl Editor {
                 let col = (*col).min(self.body.lines.len_col(row).unwrap_or(0));
                 self.body.cursor = edtui::Index2::new(row, col);
                 // An undo/redo snapshot swap rebuilt the edtui state, whose
-                // fresh view (num_rows = 0) makes edtui's own
-                // scroll-to-cursor a no-op on the very next render — the
-                // view would show the buffer top instead of the edit. Seed
-                // the viewport here: the restored row roughly centered in
-                // the last-drawn body height (top-aligned when no draw has
+                // fresh view sits at the buffer top; left there, edtui's
+                // scroll-to-cursor would put the edit on the body's bottom
+                // row, with nothing below it in view. Seed the viewport
+                // here: the restored row roughly centered in the
+                // last-drawn body height (top-aligned when no draw has
                 // recorded one yet). Wrapped lines make this approximate;
-                // edtui trues it up as soon as the cursor moves.
+                // edtui's render trues it up when the row falls outside.
                 let half = self.last_body_area.map(|a| usize::from(a.height) / 2).unwrap_or(0);
                 self.body.set_viewport_offset(0, row.saturating_sub(half));
             }
@@ -4073,6 +4073,17 @@ impl Editor {
                 } else if !focused {
                     edtui_theme = edtui_theme.hide_cursor();
                 }
+                // edtui scrolls down to the caret only when it is past the
+                // text lines the frame before showed (its `num_rows`), so in
+                // the frame the body gets shorter (a resize, a divider drag)
+                // a caret on a line that no longer fits would stay below
+                // the area until the next draw, which waits for an event
+                // (#181). Tell it the lines this area shows from its top
+                // before it renders. One wrap walk of the lines in view,
+                // the one edtui's render does too.
+                if let Some(view) = self.body_view(area, usize::MAX) {
+                    self.body.set_viewport_height(view.rows.len());
+                }
                 let view = EditorView::new(&mut self.body)
                     .theme(edtui_theme)
                     .wrap(true)
@@ -5305,6 +5316,32 @@ mod tests {
         e.last_body_area = None;
         e.restore_caret(&Caret::Body { row: 50, col: 0 }, None);
         assert_eq!(e.body.viewport_offset().1, 50, "unknown height: top-align the restored row");
+    }
+
+    /// #181: the first frame after the body gets shorter (a resize, a
+    /// divider drag) shows the caret, which was on a row that no longer
+    /// fits. Nothing redraws until the next event, so a frame late is
+    /// hidden until then.
+    #[test]
+    fn the_caret_stays_in_view_in_the_frame_the_body_gets_shorter() {
+        let text: String = (0..40).map(|i| format!("\"l{i}\": {i},\n")).collect();
+        let mut e = body_editor(&text);
+        draw_body_sized(&mut e, true, 24);
+        let tall = usize::from(e.last_body_area.unwrap().height);
+        // The caret on the last row in view.
+        e.body.cursor = edtui::Index2::new(tall - 1, 0);
+        draw_body_sized(&mut e, true, 24);
+        assert_eq!(e.body.viewport_offset().1, 0);
+        draw_body_sized(&mut e, true, 18);
+        let short = usize::from(e.last_body_area.unwrap().height);
+        assert!(short < tall, "the body got shorter ({tall} → {short} rows)");
+        let top = e.body.viewport_offset().1;
+        assert!(
+            (top..top + short).contains(&(tall - 1)),
+            "the caret's row ({}) is in view (rows {top}..{})",
+            tall - 1,
+            top + short
+        );
     }
 
     /// Draws `e` and returns the fg color of the buffer cell holding the
