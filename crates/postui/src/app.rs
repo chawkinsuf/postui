@@ -9554,6 +9554,44 @@ impl App {
         }
     }
 
+    /// Whether the selector grid has a cell edit open on a column it draws
+    /// at the width it was last drawn in ([`VarManager::grid_shape`], the
+    /// grid's one narrow-width rule). Read by the main loop before each
+    /// draw, for [`Self::commit_grid_edit_off_screen`] after it.
+    ///
+    /// [`VarManager::grid_shape`]: crate::components::varmanager::VarManager::grid_shape
+    pub fn grid_edit_drawn(&self) -> bool {
+        let Some(edit) = &self.varmanager.grid.editing else {
+            return false;
+        };
+        self.project()
+            .and_then(|p| self.varmanager.grid_shape(p))
+            .is_some_and(|(_, ncols)| edit.col < ncols)
+    }
+
+    /// After a draw: a grid edit whose column was drawn before the draw
+    /// (`drawn_before`, [`Self::grid_edit_drawn`]) and is not after it
+    /// commits, saved, through [`Self::commit_grid_edit`], as closing an
+    /// input does (task #199; the user: "198 a."). Only a narrower pane
+    /// drops a column, and the draw is the one place that learns the
+    /// width, so this runs at the event boundary right after it rather
+    /// than in the draw, which writes nothing. Returns whether anything
+    /// changed (the caller repaints).
+    ///
+    /// A refused commit keeps its edit and toasts, as every refusal does.
+    /// Its column stays hidden, so the edit stays live off screen with the
+    /// toast saying why; widening the pane shows it again, and its keys
+    /// (Enter, Esc, Tab) commit as before. It is not retried here: the
+    /// next draw finds the column already hidden, so a refusal toasts
+    /// once rather than once a frame. (mine)
+    pub fn commit_grid_edit_off_screen(&mut self, drawn_before: bool) -> bool {
+        if !drawn_before || self.grid_edit_drawn() {
+            return false;
+        }
+        self.commit_grid_edit(false);
+        true
+    }
+
     /// [`Action::DuplicateVar`]: copies a declaration under `<name>-copy`
     /// (then `-copy-2`, …). A variable keeps its description, its default
     /// and its secret flag; a selector copies its field list only — options
@@ -12396,7 +12434,8 @@ impl App {
         // The walk's last cell is the ghost row's name, its only cell.
         let last = (ghost * ncols) as i32;
         // A cell the pane dropped after its edit opened (a narrower
-        // terminal, task #198) sits past the row's last drawn one: Tab
+        // terminal, task #198, whose commit then was refused: task #199
+        // commits it otherwise) sits past the row's last drawn one: Tab
         // goes on to the next row, BackTab back to that last drawn cell.
         let flat = if col >= ncols {
             (row * ncols + ncols) as i32 - i32::from(dir < 0)

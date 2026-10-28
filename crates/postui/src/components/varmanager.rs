@@ -2358,11 +2358,10 @@ impl VarManager {
             }
 
             // Only the drawn columns paint. An edit opened while its column
-            // was drawn and then dropped by a narrower terminal stays live
-            // unpainted, as it always has: task #198 keeps the keyboard and
-            // new edits off undrawn columns, and what should become of an
-            // open edit whose column goes (commit, cancel, or keep it
-            // drawn) is a separate decision, not made here.
+            // was drawn and then dropped by a narrower terminal is not
+            // painted in this frame: the main loop commits it right after
+            // the draw (`App::commit_grid_edit_off_screen`, task #199),
+            // since a draw writes nothing.
             for col in 0..cols.x.len() {
                 let (cx, cw) = (cols.x[col], cols.w[col]);
                 // The focused cell keeps a lift of its own inside the

@@ -19239,6 +19239,73 @@ fn tab_skips_a_description_column_the_narrow_grid_does_not_draw() {
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
 }
 
+/// One frame as the main loop draws it at `w`×`h`: whether the open grid
+/// edit's column is drawn is read before the draw, and an edit the draw
+/// dropped commits after it (task #199).
+fn main_loop_frame_at(app: &mut App, w: u16, h: u16) {
+    let drawn = app.grid_edit_drawn();
+    rendered_text_at(app, w, h);
+    app.commit_grid_edit_off_screen(drawn);
+}
+
+/// Task #199 (the user: "198 a."): a resize that drops the column of an
+/// open grid edit commits it, saved, as closing an input does, so the
+/// typing is kept and nothing stays live off screen.
+#[test]
+fn a_resize_that_hides_an_open_grid_edit_commits_it() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    main_loop_frame_at(&mut app, 100, 46);
+    app.vm_start_cell_edit(0, 2); // alice's description
+    for c in "first".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    main_loop_frame_at(&mut app, 100, 46);
+    assert!(app.varmanager.grid.editing.is_some(), "drawn when wide: still open");
+
+    main_loop_frame_at(&mut app, 50, 30);
+    assert!(app.varmanager.grid.editing.is_none(), "no edit live off screen");
+    let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(qa.contains("description = \"first\""), "{qa}");
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+
+    // An edit on a column the narrow grid still draws stays open.
+    app.vm_start_cell_edit(0, 1); // alice's one field
+    main_loop_frame_at(&mut app, 50, 30);
+    assert!(app.varmanager.grid.editing.is_some(), "the field column is drawn");
+}
+
+/// Task #199: a commit the resize starts that refuses keeps its edit, as
+/// every refusal does, and toasts once: the next frames find the column
+/// already hidden and leave the edit alone rather than retrying it on
+/// every draw. A later key commits it (and is refused) as before.
+#[test]
+fn a_refused_commit_of_a_hidden_grid_edit_keeps_it_and_toasts_once() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    main_loop_frame_at(&mut app, 100, 46);
+    app.vm_start_cell_edit(0, 2);
+    app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    // The file stops parsing under the edit: core refuses the write.
+    let qa = dir.path().join("environments/qa.toml");
+    std::fs::write(&qa, "not = [valid").unwrap();
+
+    main_loop_frame_at(&mut app, 50, 30);
+    let edit = app.varmanager.grid.editing.as_ref().expect("a refusal keeps the edit");
+    assert_eq!((edit.row, edit.col, edit.input.text()), (0, 2, "x"));
+    assert_eq!(app.toasts.messages().len(), 1, "{:?}", app.toasts.messages());
+    main_loop_frame_at(&mut app, 50, 30);
+    main_loop_frame_at(&mut app, 49, 30);
+    assert_eq!(app.toasts.messages().len(), 1, "no retry per frame: {:?}", app.toasts.messages());
+    assert_eq!(std::fs::read_to_string(&qa).unwrap(), "not = [valid");
+}
+
 #[test]
 fn the_new_entry_button_starts_the_ghost_row_and_edit_fields_opens_the_editor() {
     let dir = tempfile::tempdir().unwrap();
