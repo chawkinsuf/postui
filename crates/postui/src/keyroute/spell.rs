@@ -75,6 +75,25 @@ fn row_for(at: SpellCtx, action: &Action) -> Option<&'static str> {
     }
 }
 
+/// The row a press of `keys`, with nothing pending, completes at `at`,
+/// looked up where the router looks first (`Router::resolve`): the
+/// surface's rows with no field, the field class's in a field's idle
+/// Normal. `None` where no row does, and the key goes on to the focused
+/// component and the keymap: what Esc does at a stop
+/// (`App::editor_esc_cancels`) is asked here, not guessed.
+pub(crate) fn row_completed(at: SpellCtx, keys: &str) -> Option<&'static table::Binding> {
+    let typed = notation::parse(keys);
+    let found = match at.field {
+        FieldSpell::None => table::lookup(&typed, at.profile, at.surface),
+        FieldSpell::Normal(class) => table::lookup_class(&typed, at.profile, class),
+        FieldSpell::Typing => return None,
+    };
+    match found {
+        table::Match::Complete(row) => Some(row),
+        table::Match::Prefix | table::Match::NoMatch => None,
+    }
+}
+
 /// The key that runs `action` at `at`: the table's row first (the router
 /// looks there before anything else), then the keymap's combo, then the
 /// ex verb where `:` applies (spec §4.6; plan M4b Deviations 20 and 21).

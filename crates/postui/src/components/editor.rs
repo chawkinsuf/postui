@@ -464,6 +464,14 @@ impl Editor {
         }
     }
 
+    /// Whether `handle_key` takes Esc for the pane's own: on every stop but
+    /// the blurred pane it closes a field, deselects, blurs or steps out.
+    /// Blurred, Esc falls through to the app's esc → `Close`, the cancel
+    /// shortcut, so only there may the footer say `esc cancel` (#193).
+    pub fn takes_esc(&self) -> bool {
+        self.sub_focus != SubFocus::None
+    }
+
     /// Whether the URL line has the caret right now (spec 2026-09-16).
     pub fn url_open(&self) -> bool {
         self.sub_focus == SubFocus::Url && self.url_open
@@ -5968,6 +5976,43 @@ mod tests {
             "{",
             "emacs mode: chars insert without entering a vim insert mode"
         );
+    }
+
+    /// `takes_esc` says what `handle_key` does with Esc, on every stop and
+    /// tab, the table with a row, `+ Add` or nothing selected, the URL line
+    /// open or closed: it takes it everywhere but the blurred pane, where
+    /// Esc falls through to the app's (#193).
+    #[test]
+    fn takes_esc_is_what_handle_key_does_with_esc() {
+        use crate::components::table_editor::Stop;
+        let tabs = [EditorTab::Params, EditorTab::Headers, EditorTab::Vars, EditorTab::Body];
+        let subs = [SubFocus::None, SubFocus::Method, SubFocus::Url, SubFocus::Content];
+        for tab in tabs {
+            for sub in subs {
+                for (open_url, row) in [
+                    (false, None),
+                    (true, None),
+                    (false, Some(Stop::Row(0))),
+                    (false, Some(Stop::Add)),
+                ] {
+                    let mut e = Editor::default();
+                    e.load(
+                        Some("a".into()),
+                        HttpRequest::from_toml_str("url = \"https://x\"\n[headers]\nA = \"1\"\n")
+                            .unwrap(),
+                    );
+                    e.active_tab = tab;
+                    e.sub_focus = sub;
+                    if open_url && sub == SubFocus::Url {
+                        e.open_url();
+                    }
+                    e.table.set_selected(row);
+                    let takes = e.takes_esc();
+                    let at = format!("{tab:?} {sub:?} open_url={open_url} {row:?}");
+                    assert_eq!(e.handle_key(key(KeyCode::Esc)).is_some(), takes, "{at}");
+                }
+            }
+        }
     }
 
     #[test]

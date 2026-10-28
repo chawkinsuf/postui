@@ -148,6 +148,27 @@ The footer is what makes the two-press cancel legible:
   relabelled to match: the jq bar shows `esc done`; the in-flight
   `esc cancel` is unchanged because it is not a field.
 
+Amended 2026-10-27 (task #193, `you`: "probably don't put esc in the
+footer when in another input", and for the tab chip "same as esc"): the
+in-flight `esc cancel` shows only where Esc reaches the cancel. Where the
+focused input takes Esc for its own (arrows' method badge, selected URL
+line and table, the body in either profile), the slot stays empty, as it
+does for an open field. The same goes for the tab chip: the arrows body
+takes alt+←/→ for its word jump, so the chip goes there while those are
+its keys. `App::editor_esc_cancels` and `App::tab_chord_cycles` read the
+key's own path, so the chips follow it.
+
+Amended 2026-10-27 (task #193, `you`: "193 c.", choosing the trailing
+slot over a kept blank): the send slot (`send`, `esc cancel` or nothing)
+moves from the start of the editor's row to its end, after the tab chip.
+During a send it now comes and goes on one stop (a half-typed vim count,
+the end of the send), and at the end it moves no other chip. The caret
+tooltip's `edit` chip still follows it. The cost: the footer drops chips
+from the row's end when narrow, so the send chip goes first (at 120
+columns a selected Headers row already has no room for it); the address
+bar's send/cancel button and the palette's Send row keep the action on
+screen.
+
 ## Undo inside a text field
 
 ### Two text classes

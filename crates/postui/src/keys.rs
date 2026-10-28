@@ -667,6 +667,13 @@ impl Keymap {
     /// nothing in this keymap is. What a keycap and the palette's key
     /// column spell from, every frame.
     pub fn combo_for_action(&self, target: &Action) -> Option<String> {
+        self.chord_for_action(target).map(format_combo)
+    }
+
+    /// The combo [`Self::combo_for_action`] spells, unformatted: the key a
+    /// keycap names, for asking whether something takes that key first
+    /// (`App::tab_chord_cycles`, #193).
+    pub fn chord_for_action(&self, target: &Action) -> Option<&KeyCombo> {
         let combos: Vec<&KeyCombo> = self
             .bindings
             .iter()
@@ -682,7 +689,7 @@ impl Keymap {
         let modified: Vec<&&KeyCombo> = combos.iter().filter(|c| !c.modifiers.is_empty()).collect();
         let pool: Vec<&KeyCombo> =
             if modified.is_empty() { combos } else { modified.into_iter().copied().collect() };
-        pool.into_iter().map(format_combo).min()
+        pool.into_iter().min_by_key(|c| format_combo(c))
     }
 
     /// Every combo bound to `action_id`, in `keys.toml`'s input grammar
