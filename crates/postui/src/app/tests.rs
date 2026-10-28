@@ -7544,6 +7544,26 @@ fn an_unchanged_rename_changes_nothing() {
     }
 }
 
+/// #210's skip is for the name as it is: a case-only change to a nameless
+/// file is still a rename, and writes the name.
+#[test]
+fn a_case_only_rename_still_renames() {
+    let mut app = App::new_for_test();
+    let path = postui_core::storage::request_path(app.proj().root(), "main/ping-");
+    std::fs::write(&path, "# hand-made\nurl = \"https://x/a\"\n").unwrap();
+    app.update(Action::RefreshSidebar);
+    let steps = app.history.undo_len();
+    app.update(Action::RenameRequest { from: "main/ping-".into(), to: "PING-".into() });
+    assert_eq!(
+        postui_core::fixtures::load_request(app.proj().root(), "main/ping")
+            .unwrap()
+            .name
+            .as_deref(),
+        Some("PING-")
+    );
+    assert_eq!(app.history.undo_len(), steps + 1);
+}
+
 #[test]
 fn delete_open_request_clears_editor_and_removes_file() {
     let mut app = App::new_for_test();

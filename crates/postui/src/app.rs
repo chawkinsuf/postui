@@ -10770,6 +10770,16 @@ impl App {
     /// opened (#210) and a paste's `# @name` (replace spec N5) both skip
     /// it before anything else, as an unchanged environment or space
     /// rename does.
+    ///
+    /// "Before anything else" means before the rename's own checks too:
+    /// what asks for nothing refuses nothing, so a file gone from disk is
+    /// left to the watcher to report, as the curl path already leaves it
+    /// (N5). The name is compared as stored, not trimmed: a hand-made
+    /// `" Get User "` comes back from the prompt as `Get User`, which is a
+    /// change to the stored name and goes through as a rename, as a padded
+    /// environment name does. Core's own same-name test (#209) is a
+    /// different question, which slug a rename that does go through lands
+    /// at, so it trims.
     fn names_request_as_is(&self, slug: &str, to: &str) -> bool {
         let folder = slug.rsplit_once('/').map(|(f, _)| f);
         postui_core::storage::split_display_path(to).is_some_and(|(f, leaf)| {
