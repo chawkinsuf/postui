@@ -540,13 +540,17 @@ pub struct VarManager {
     grid_area: Rect,
     /// How many option rows that region showed, for the wheel's clamp.
     grid_visible: usize,
-    /// The width the grid's columns were last laid out in ([`grid_columns`]),
+    /// The width the grid's cells were last painted in ([`grid_columns`]),
     /// or `None` before the grid was first drawn: what
     /// [`Self::grid_shape`] counts the drawn columns from, so the keyboard
-    /// and the cell edits reach only what is on screen (task #198). The
-    /// pane's width, not the selector's: opening another selector keeps it.
-    /// The main loop draws after every event that changes anything (a
-    /// resize included), so a key always meets the width on screen.
+    /// and the cell edits reach only what is on screen (task #198). `0`
+    /// when the grid's last draw painted no cell (task #200): a pane too
+    /// narrow for the grid, or too short for one option row. Zero cells
+    /// fit no column, so the shape counts none and no cell edit opens.
+    /// The pane's width, not the selector's: opening another selector
+    /// keeps it. The main loop draws after every event that changes
+    /// anything (a resize included), so a key always meets the width on
+    /// screen.
     grid_width: Option<u16>,
     /// Whether the last `draw` painted the cell [`OptionGridState::editing`]
     /// holds, and whether the draw before it did: what
@@ -981,7 +985,8 @@ impl VarManager {
     /// the grid cursor there. Like [`Self::start_field_edit`], a second
     /// click on the cell already under edit is the caller's job to no-op.
     /// A no-op with no selector selected, and on a column the grid doesn't
-    /// draw ([`Self::grid_shape`], task #198): an edit always opens on
+    /// draw ([`Self::grid_shape`], task #198; every column, when the pane
+    /// is too small to draw the grid's rows, task #200): an edit always opens on
     /// screen, and it is always the cell asked for, never a neighbour
     /// standing in for it (the ghost row's step on into a first field that
     /// a narrow pane dropped opens nothing; a Tab walk then goes on over
@@ -1031,9 +1036,10 @@ impl VarManager {
         // The column clamps here, on read, to the last one drawn (task
         // #198): a pane narrowed for a moment shows the cursor on a cell
         // it draws without forgetting the column it was on, which comes
-        // back once the pane is wide enough again.
+        // back once the pane is wide enough again. With no column drawn
+        // (task #200) the cursor keeps its option, on the name column.
         let (_, ncols) = self.grid_shape(ctx)?;
-        Some((i, self.grid.cursor.col.min(ncols - 1)))
+        Some((i, self.grid.cursor.col.min(ncols.saturating_sub(1))))
     }
 
     /// The open selector's grid as `ctx` lists it now: the ghost row's
@@ -1059,11 +1065,12 @@ impl VarManager {
         // draw storing it: it also depends on the field list, which an
         // edit can change before the next frame, while the width only
         // changes with the terminal. `GridFit` is arithmetic, no layout.
-        // The `max(1)` never acts: a recorded width is at least 4 cells
-        // (the draw returns before recording anything narrower), and
-        // `GridFit` keeps the name column at any width over the radio's.
-        let shown =
-            self.grid_width.map_or(ncols, |w| usize::from(GridFit::new(w, ncols).count.max(1)));
+        // A grid that painted no cell recorded `0`, which fits no column
+        // (task #200): the shape is the rows with no cell on screen, and
+        // every reader that counts columns meets zero. Any other recorded
+        // width is at least 4 cells (the draw records nothing narrower),
+        // where `GridFit` keeps the name column.
+        let shown = self.grid_width.map_or(ncols, |w| usize::from(GridFit::new(w, ncols).count));
         Some((ghost, shown))
     }
 
@@ -1807,8 +1814,10 @@ impl VarManager {
         // narrow pane drops columns, and the keys stop where it does).
         // No grid (a per-environment selector with no environment) is the
         // bare ghost row: the moves go nowhere, and Esc still leaves.
+        // A grid that drew no column (task #200) keeps its moves, and its
+        // Enter and F2 open nothing (`start_cell_edit`).
         let (last_row, ncols) = self.grid_shape(ctx).unwrap_or((0, 1));
-        let last_col = ncols - 1;
+        let last_col = ncols.saturating_sub(1);
         // The column the cursor shows on (`grid_at` clamps on read): the
         // one Left, Right, Tab and Enter act from. A row move keeps the
         // stored column, so a column a narrow pane hides comes back when
@@ -2194,6 +2203,10 @@ impl VarManager {
         hovered: Option<&Hit>,
         selector: &str,
     ) {
+        // Before any early return: a draw that paints no option row leaves
+        // no cell for a key to open (task #200). The rows below record the
+        // width once they paint.
+        self.grid_width = Some(0);
         if right.width < 8 || right.height < 3 {
             return;
         }
@@ -2306,7 +2319,6 @@ impl VarManager {
         // --- column headers ---------------------------------------------
         let fields = group_fields(ctx, selector);
         let cols = grid_columns(x0, inner_w, grid_ncols(fields.len()));
-        self.grid_width = Some(inner_w);
         if y >= bottom || cols.x.is_empty() {
             return;
         }
@@ -2331,6 +2343,12 @@ impl VarManager {
         // The last line of the pane belongs to the legend.
         let rows_bottom = bottom.saturating_sub(1).max(y);
         let visible = (rows_bottom - y) as usize;
+        // The rows paint from here on, the cursor's (or the edit's) in view
+        // (the scroll below), so their cells are on screen. Recorded before
+        // `grid_at` reads it for the cursor.
+        if visible > 0 {
+            self.grid_width = Some(inner_w);
+        }
         let total = rows.len() + 1;
         // A column a field removal left past the last one clamps back. The
         // row needs no clamp: it is found by its option's name (task #83),
@@ -3104,8 +3122,17 @@ fields = ["user_id", "customer_id"]
     }
 
     fn render_buf_at(vm: &mut VarManager, ctx: &Project, width: u16) -> (Buffer, HitMap) {
+        render_buf_sized(vm, ctx, width, 24)
+    }
+
+    fn render_buf_sized(
+        vm: &mut VarManager,
+        ctx: &Project,
+        width: u16,
+        height: u16,
+    ) -> (Buffer, HitMap) {
         let theme = Theme::dark();
-        let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let mut hits = HitMap::default();
         terminal.draw(|f| vm.draw(f, f.area(), &theme, ctx, None, &mut hits, None)).unwrap();
         (terminal.backend().buffer().clone(), hits)
@@ -4815,6 +4842,55 @@ fields = ["user_id", "customer_id"]
         vm.start_cell_edit(&ctx, 0, drawn - 1);
         let edit = vm.grid.editing.as_ref().unwrap();
         assert_eq!((edit.row, edit.col), (0, drawn - 1));
+    }
+
+    /// Task #200: a pane too narrow to draw the grid at all draws no
+    /// column, so no cell edit opens: not by Enter on the cursor, not by
+    /// a direct start. Before, the edit opened from the width the grid was
+    /// last drawn at, and what was typed went into a cell nobody could see.
+    #[test]
+    fn a_pane_too_narrow_for_the_grid_opens_no_cell_edit() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.focus = VmFocus::Grid;
+        render_buf_at(&mut vm, &ctx, 116);
+        let (_, hits) = render_buf_at(&mut vm, &ctx, LEFT_W + 5);
+        assert!(hits.rect_of(&Hit::VmEntryCell { row: 0, col: 0 }).is_none(), "no grid drawn");
+        assert_eq!(vm.grid_shape(&ctx), Some((2, 0)), "no column drawn");
+
+        vm.handle_key(key(KeyCode::Enter), &ctx);
+        assert!(vm.grid.editing.is_none(), "Enter opens nothing");
+        vm.start_cell_edit(&ctx, 0, 0);
+        assert!(vm.grid.editing.is_none(), "nor does a direct start");
+        // The cursor keeps its option while the grid is gone.
+        assert_eq!(vm.grid_at(&ctx), Some((0, 0)));
+
+        // Wide again, the same Enter opens the cell.
+        render_buf_at(&mut vm, &ctx, 116);
+        vm.handle_key(key(KeyCode::Enter), &ctx);
+        let edit = vm.grid.editing.as_ref().expect("drawn again: the edit opens");
+        assert_eq!((edit.row, edit.col), (0, 0));
+    }
+
+    /// Task #200: a pane tall enough for the grid's header but not for one
+    /// option row draws no cell either, so no cell edit opens.
+    #[test]
+    fn a_pane_too_short_for_an_option_row_opens_no_cell_edit() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.focus = VmFocus::Grid;
+        render_buf_at(&mut vm, &ctx, 116);
+        // The title block, the header row, and the legend's line.
+        let (buf, hits) = render_buf_sized(&mut vm, &ctx, 116, TALL_PILL_H + 3);
+        assert!(format!("{buf:?}").contains("ENTRY"), "the header is drawn");
+        assert!(hits.rect_of(&Hit::VmEntryCell { row: 0, col: 0 }).is_none(), "no row drawn");
+
+        vm.handle_key(key(KeyCode::Enter), &ctx);
+        assert!(vm.grid.editing.is_none(), "Enter opens nothing");
+        vm.start_cell_edit(&ctx, 1, 1);
+        assert!(vm.grid.editing.is_none(), "nor does a direct start");
     }
 
     /// Task #198: the row's copy and delete buttons keep a zone no column

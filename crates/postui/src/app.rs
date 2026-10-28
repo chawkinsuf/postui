@@ -12445,6 +12445,11 @@ impl App {
         else {
             return true;
         };
+        // A grid that drew no cell (task #200) has none to walk on to:
+        // the commit stands and no edit opens.
+        if ncols == 0 {
+            return true;
+        }
         // The walk's last cell is the ghost row's name, its only cell.
         let last = (ghost * ncols) as i32;
         // A cell the pane dropped after its edit opened (a narrower

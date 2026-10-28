@@ -19322,6 +19322,67 @@ fn a_refused_commit_of_a_hidden_grid_edit_keeps_it_and_toasts_once() {
     assert_eq!(app.toasts.messages().len(), 2, "{:?}", app.toasts.messages());
 }
 
+/// Task #200: a pane too narrow to draw the grid opens no cell edit, so
+/// nothing typed there lands in a cell nobody can see. Before, Enter opened
+/// alice's name cell from the width the grid was last drawn at, `zz` went
+/// into it unseen, and widening showed `alicezz` still in edit.
+#[test]
+fn a_pane_too_narrow_for_the_grid_opens_no_cell_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    main_loop_frame_at(&mut app, 100, 46);
+    let press = |app: &mut App, code| app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.varmanager.focus, VmFocus::Grid, "the keyboard is on the grid");
+    let qa = dir.path().join("environments/qa.toml");
+    let before = std::fs::read_to_string(&qa).unwrap();
+
+    main_loop_frame_at(&mut app, 36, 30);
+    let cell = crate::hit::Hit::VmEntryCell { row: 0, col: 0 };
+    assert!(app.hits.rect_of(&cell).is_none(), "no grid at this width");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.varmanager.grid.editing.is_none(), "Enter opens nothing");
+    press(&mut app, KeyCode::F(2));
+    assert!(app.varmanager.grid.editing.is_none(), "F2 opens nothing");
+    app.update(Action::StartNewOptionEdit);
+    assert!(app.varmanager.grid.editing.is_none(), "a new option opens nothing");
+    press(&mut app, KeyCode::Char('z'));
+    press(&mut app, KeyCode::Char('z'));
+    main_loop_frame_at(&mut app, 36, 30);
+
+    main_loop_frame_at(&mut app, 100, 46);
+    assert!(app.varmanager.grid.editing.is_none(), "no edit waiting when wide again");
+    assert_eq!(std::fs::read_to_string(&qa).unwrap(), before, "nothing written");
+    // Drawn again, Enter opens alice's name as before.
+    press(&mut app, KeyCode::Enter);
+    let edit = app.varmanager.grid.editing.as_ref().expect("the edit opens");
+    assert_eq!((edit.row, edit.col, edit.input.text()), (0, 0, "alice"));
+}
+
+/// Task #200: Tab out of an edit the grid no longer draws any cell for
+/// commits it and walks on to nothing, since no cell is on screen. A
+/// bare draw, without the main loop's commit of a hidden edit (#199),
+/// stands in for that commit having been refused before.
+#[test]
+fn tab_out_of_an_edit_with_no_grid_drawn_commits_and_opens_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    rendered_text_at(&mut app, 100, 46);
+    app.vm_start_cell_edit(0, 1); // alice's one field
+    app.handle_key(KeyEvent::new(KeyCode::Char('9'), KeyModifiers::NONE));
+    rendered_text_at(&mut app, 36, 30);
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(app.varmanager.grid.editing.is_none(), "no cell to walk on to");
+    let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(qa.contains("user = \"10019\""), "{qa}");
+}
+
 #[test]
 fn the_new_entry_button_starts_the_ghost_row_and_edit_fields_opens_the_editor() {
     let dir = tempfile::tempdir().unwrap();
