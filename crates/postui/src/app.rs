@@ -12350,9 +12350,10 @@ impl App {
     }
 
     /// `Tab`/`BackTab` inside a live grid cell: commit, then open the cell
-    /// one step away in reading order (Task 8's table parity) — off the end
-    /// of a row wraps to the next row's first column, and off the front of
-    /// one wraps back to the previous row's last. The ghost row is the far
+    /// one step away in reading order (Task 8's table parity) — a row's
+    /// cells are its name, each field, then its description; off the end
+    /// of a row wraps to the next row's name, and off the front of one
+    /// wraps back to the previous row's description. The ghost row is the far
     /// end in both directions: forward stops there (it becomes a real option
     /// only once its name commits), and there is nothing before row 0's
     /// name cell.
@@ -12382,7 +12383,9 @@ impl App {
         let VmDetail::Group(selector) = self.varmanager.detail.clone() else {
             return true;
         };
-        let ncols = 1 + self.variables().selectors.get(&selector).map_or(0, |g| g.fields.len());
+        // A row's cells: its name, each field, then its description (task
+        // #188: the description column was left out of the walk).
+        let ncols = 2 + self.variables().selectors.get(&selector).map_or(0, |g| g.fields.len());
         let last_row =
             postui_core::varmodel::options_of(self.variables(), self.env_data(), &selector)
                 .map_or(0, indexmap::IndexMap::len);
