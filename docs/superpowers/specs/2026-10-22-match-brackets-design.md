@@ -213,7 +213,9 @@ pair is unchanged.
   walk. An escaped quote (`"a\"{"`) doesn't end a string. The existing `%`
   tests pass unchanged.
 - `editor.rs` (render tests, like `the_vim_visual_span_draws_over_the_json_colours`):
-  - arrows caret on `{` lights both, and a caret just after `}` lights both (R1, R2);
+  - arrows caret on `{` lights its partner, and a caret just after `}` lights both (R1, R2);
+  - the caret's own cell keeps the caret's look, in arrows and vim Normal, and
+    lights when the draw hides the caret under a selection (R8, #187);
   - an unfocused body lights nothing (R7);
   - a partner outside the view lights nothing (R5);
   - Visual and a search match paint over the bracket style (R8);
