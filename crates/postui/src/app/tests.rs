@@ -15004,6 +15004,15 @@ fn extracting_a_header_name_keeps_the_tables_warning() {
                 ["{{auth}}"],
                 "{warning} {selection}: no second row"
             );
+            // A refused row leaves the taken one as it was; a merge gives it
+            // the renamed row's value, as the same rename by hand does.
+            let kept = if from_add { "Bearer" } else { "v" };
+            assert_eq!(app.editor.headers["{{auth}}"].value, kept, "{warning} {selection}");
+            assert_eq!(
+                app.variables().vars.get("auth").and_then(|d| d.default.as_deref()),
+                Some("abc"),
+                "{warning} {selection}: the variable is written"
+            );
             assert_eq!(
                 app.toasts.entries(),
                 [(warning, &ToastKind::Warning), ("extracted to {{auth}}", &ToastKind::Success)],

@@ -1208,10 +1208,24 @@ impl App {
         }
         debug_assert!(!self.field_gate(), "a table cell open beside a field session");
         self.capture_step();
+        self.commit_table_cell();
+        self.capture_step();
+    }
+
+    /// Commits the open table cell, as Enter does, and shows the table's
+    /// warning (a name that is taken refuses or merges the row), with no
+    /// undo capture of its own: [`Self::commit_table_edit`] brackets it as
+    /// its own step, and an extract's token commit is part of the extract's
+    /// step (`replace_focused_field_with_token`).
+    ///
+    /// An extract's own "extracted to {{name}}" still follows the warning
+    /// (#204): the variable was written either way, and the warning says
+    /// what became of the row. The extract is not refused up front for
+    /// this, since the same commit typed by hand is not refused either.
+    pub(crate) fn commit_table_cell(&mut self) {
         if let Some(w) = self.editor.commit_table().warning {
             self.toasts.push(w, ToastKind::Warning);
         }
-        self.capture_step();
     }
 
     /// Moves the editor's caret for a click's dispatch, left or right. A URL
