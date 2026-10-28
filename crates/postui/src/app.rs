@@ -8814,18 +8814,24 @@ impl App {
         if self.editor.active_tab == EditorTab::Vars {
             self.commit_table_edit();
         }
-        let request_value =
-            self.editor.variables.get(name).filter(|e| e.enabled).map(|e| e.value.clone());
+        // A disabled row is shown for what it is (#154): This request
+        // holds its stored value, marked disabled, but it supplies nothing,
+        // so the seed and the landing scope come from what does.
+        let request_row = self.editor.variables.get(name);
+        let request_value = request_row.map(|e| e.value.clone());
+        let request_disabled = request_row.is_some_and(|e| !e.enabled);
+        let request_supplies = request_value.is_some() && !request_disabled;
         let env_value = self.env_data().values.get(name).cloned();
         let has_env = self.active_env().is_some();
 
         let seed = request_value
             .clone()
+            .filter(|_| request_supplies)
             .or_else(|| self.resolved().values.get(name).cloned())
             .unwrap_or_default();
 
         let (choices, preselect) = crate::components::modal::value_popup_choices(
-            request_value.is_some(),
+            request_supplies,
             has_env,
             env_value.is_some(),
         );
@@ -8853,6 +8859,7 @@ impl App {
                 name: name.to_string(),
                 scope_values,
                 pending_removals: Vec::new(),
+                request_disabled,
             },
         });
         true

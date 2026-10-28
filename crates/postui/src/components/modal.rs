@@ -159,10 +159,20 @@ pub enum PromptKind {
     /// twin below; Cancel simply drops them with the popup. Confirming
     /// emits one `Action::RemoveVarValue` per pending scope and then
     /// `Action::ConfirmEditVarValue`.
+    ///
+    /// `request_disabled`: the request's `[variables]` row is unchecked
+    /// (#154). Its "This request" entry still holds the row's stored
+    /// value, so the box, the remove and the footer show it for what it
+    /// is, and the choice is painted with a muted "(disabled)" mark. A
+    /// disabled row supplies nothing, so it never decides which scope the
+    /// popup lands on. Set once at open: a write keeps the row's enabled
+    /// status, and a removal pending on it still writes into the row when
+    /// a value is typed back (see the confirm), so the mark stays.
     EditVarValue {
         name: String,
         scope_values: Vec<(String, Option<String>)>,
         pending_removals: Vec<String>,
+        request_disabled: bool,
     },
 }
 
@@ -402,18 +412,19 @@ pub(crate) fn chosen_scope(
 }
 
 /// The value popup's Write-to choices and preselection for a variable
-/// whose scopes currently store (`request_stored`, `env_stored`) — and
-/// whether an environment is active at all. Only the supplying scope and
-/// narrower are on offer: a scope shadowed by a higher-precedence value
-/// (request beats env beats default) would take the write and change
-/// nothing visible; wider scopes stay editable in the Variable Manager.
+/// whose request row supplies it (`request_supplies`: stored and enabled)
+/// or whose env stores it (`env_stored`) — and whether an environment is
+/// active at all. Only the supplying scope and narrower are on offer: a
+/// scope shadowed by a higher-precedence value (request beats env beats
+/// default) would take the write and change nothing visible; wider scopes
+/// stay editable in the Variable Manager.
 pub(crate) fn value_popup_choices(
-    request_stored: bool,
+    request_supplies: bool,
     has_env: bool,
     env_stored: bool,
 ) -> (Vec<&'static str>, &'static str) {
     let mut choices: Vec<&'static str> = Vec::new();
-    let preselect = if request_stored {
+    let preselect = if request_supplies {
         "This request"
     } else if has_env && env_stored {
         "Active env value"
@@ -438,7 +449,8 @@ pub(crate) fn value_popup_choices(
 /// in turn (or "(not set)" when nothing would supply at all). Returns
 /// `false`, changing nothing, when the chosen scope stores nothing.
 pub(crate) fn stage_value_removal(fields: &mut [PromptField], kind: &mut PromptKind) -> bool {
-    let PromptKind::EditVarValue { scope_values, pending_removals, .. } = kind else {
+    let PromptKind::EditVarValue { scope_values, pending_removals, request_disabled, .. } = kind
+    else {
         return false;
     };
     let (chosen, stored) = chosen_scope(fields, scope_values);
@@ -453,8 +465,10 @@ pub(crate) fn stage_value_removal(fields: &mut [PromptField], kind: &mut PromptK
     }
     let stores = |label: &str| scope_values.iter().any(|(l, v)| l == label && v.is_some());
     let has_env = scope_values.iter().any(|(l, _)| l == "Active env value");
+    // A disabled request row stores a value but supplies nothing.
+    let request_supplies = stores("This request") && !*request_disabled;
     let (choices, preselect) =
-        value_popup_choices(stores("This request"), has_env, stores("Active env value"));
+        value_popup_choices(request_supplies, has_env, stores("Active env value"));
     if let Some(dest) = fields.iter_mut().find(|f| f.key == "destination") {
         dest.choices = choices.iter().map(|s| s.to_string()).collect();
         dest.input = LineInput::new(preselect);
@@ -3432,7 +3446,20 @@ impl ModalStack {
                         // direction (the box's own click still steps
                         // forward). No painted bg of their own — they sit
                         // on the field's fill, whatever the focus state.
-                        let content = Line::from(format!("  {}", field.input.text()));
+                        let mut content = Line::from(format!("  {}", field.input.text()));
+                        // A disabled request row is on show as This
+                        // request's value, marked muted (the "(not set)"
+                        // placeholder's style), so a write that changes
+                        // nothing visible says why (#154).
+                        if matches!(kind, PromptKind::EditVarValue { request_disabled: true, .. })
+                            && field.key == "destination"
+                            && field.input.text() == "This request"
+                        {
+                            content.push_span(ratatui::text::Span::styled(
+                                " (disabled)",
+                                Style::default().fg(theme.text_muted),
+                            ));
+                        }
                         TextField {
                             content,
                             state: if focused {
