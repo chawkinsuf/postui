@@ -448,7 +448,24 @@ impl Project {
         if self.sibling_name_taken(&folder, &leaf, Some(from_slug)) {
             return Err(Error::AlreadyExists(leaf));
         }
-        let to_slug = self.unique_slug(&folder, &leaf, Some(from_slug));
+        // The slug is derived from the name, but a file need not sit at the
+        // slug its name derives: a nameless hand-made `ping-.toml` is named
+        // `ping-`, which `slugify` makes `ping`, and a file can carry any
+        // name. So a rename that keeps the name as it is, in the same
+        // folder and spelled the same, keeps the slug instead of deriving
+        // one and moving the file (#209). Any other name derives its slug.
+        let (from_folder, from_leaf) = from_slug.rsplit_once('/').unwrap_or(("", from_slug));
+        let same_name = folder == from_folder
+            && self
+                .listing
+                .iter()
+                .find(|l| l.slug == from_slug)
+                .is_some_and(|l| l.name.as_deref().unwrap_or(from_leaf) == leaf);
+        let to_slug = if same_name {
+            from_slug.to_string()
+        } else {
+            self.unique_slug(&folder, &leaf, Some(from_slug))
+        };
         // A rename stays in its space (the order bookkeeping below is
         // keyed by one space); crossing spaces is `move_request`'s job.
         if crate::storage::space_of(from_slug) != crate::storage::space_of(&to_slug) {
@@ -1051,6 +1068,43 @@ mod tests {
         assert_eq!(slug, "old-/fresh");
         assert!(dir.path().join("requests/old-/fresh.toml").is_file());
         assert!(!dir.path().join("requests/old").exists());
+    }
+
+    /// #209: a rename that leaves the name as it is leaves the file where
+    /// it is, even when the file's slug is not the one its name derives: a
+    /// nameless hand-made `ping-` (whose name `slugify` turns into `ping`,
+    /// free or taken), and a named file under a slug of its own.
+    #[test]
+    fn a_rename_to_the_same_name_keeps_the_slug() {
+        for ping_taken in [false, true] {
+            let (dir, mut p) = fixture();
+            std::fs::write(
+                dir.path().join("requests/main/ping-.toml"),
+                "method = \"GET\"\nurl = \"u\"\n",
+            )
+            .unwrap();
+            // The fixture has a `main/ping`.
+            if !ping_taken {
+                std::fs::remove_file(dir.path().join("requests/main/ping.toml")).unwrap();
+            }
+            p.relist();
+            let (slug, leaf) = p.rename_request("main/ping-", "main/ping-").unwrap();
+            assert_eq!((slug.as_str(), leaf.as_str()), ("main/ping-", "ping-"), "{ping_taken}");
+            assert!(dir.path().join("requests/main/ping-.toml").is_file());
+            assert!(!dir.path().join("requests/main/ping-2.toml").exists());
+            assert_eq!(dir.path().join("requests/main/ping.toml").exists(), ping_taken);
+        }
+
+        let (dir, mut p) = fixture();
+        std::fs::write(
+            dir.path().join("requests/main/odd.toml"),
+            "name = \"Get User\"\nmethod = \"GET\"\nurl = \"u\"\n",
+        )
+        .unwrap();
+        p.relist();
+        let (slug, _) = p.rename_request("main/odd", "main/Get User").unwrap();
+        assert_eq!(slug, "main/odd");
+        assert!(!dir.path().join("requests/main/get-user.toml").exists());
     }
 
     #[test]
