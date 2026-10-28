@@ -251,9 +251,11 @@ pub fn editor_share_for(column_height: u16, editor_rows: u16) -> f32 {
 pub fn editor_rows_for(column_height: u16, editor_share: f32) -> u16 {
     let editor_chrome = editor::CHROME_HEIGHT.min(column_height);
     let content = content_rows(column_height);
-    let rows = (content as f32 * editor_share.clamp(0.0, 1.0)).round() as u16;
-    let floor = editor_floor(column_height).map_or(0, |f| f - editor::CHROME_HEIGHT);
-    (editor_chrome + rows.max(floor)).min(column_height)
+    let mut rows = (content as f32 * editor_share.clamp(0.0, 1.0)).round() as u16;
+    if editor_floor(column_height).is_some() {
+        rows = rows.max(editor::CONTENT_MIN_HEIGHT);
+    }
+    (editor_chrome + rows).min(column_height)
 }
 
 /// The fewest rows the shown editor has in a `column_height`-row column:
@@ -328,6 +330,11 @@ fn content_rows(column_height: u16) -> u16 {
 /// response content fits below it. Both snaps keep `start.ratio`, so
 /// restoring lands where the user left it. Anywhere between, both show at
 /// the matching share.
+///
+/// Leaving a minimized editor has one too: a drag out of it opens the
+/// editor only at its floor, so the pointer goes the floor's rows past the
+/// chrome before the line follows it (#129). The cost is the same lead,
+/// never a wrong split.
 ///
 /// Leaving a minimized response therefore has a dead zone: its strip is
 /// one row ([`crate::components::response::COLLAPSED_HEIGHT`]), but a

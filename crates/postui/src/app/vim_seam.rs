@@ -1055,7 +1055,11 @@ impl App {
             Some((field, at, mouse)) if self.field_caret() == FieldCaret::Live(field) => {
                 Some(Settled::Mouse(at, mouse))
             }
-            _ if command_line => Some(Settled::CommandLine),
+            // Only once the body has the caret: a press whose caret move a
+            // field refused settles on that field as any other click.
+            _ if command_line && self.field_caret() == FieldCaret::Live(FieldId::Body) => {
+                Some(Settled::CommandLine)
+            }
             _ => (edge.left_press && !separator).then_some(Settled::Click),
         };
         self.sync_session(None, Cause::Mouse(how));

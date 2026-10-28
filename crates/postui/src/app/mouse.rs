@@ -1425,10 +1425,12 @@ impl App {
         // the search being typed and a half-typed command before it acts
         // (`vim_control_press`). A press on the body's own window (its
         // text, its search row, its scrollbar) is Vim's own click, which
-        // keeps them; a divider moves only itself; and a menu or dialog acts
-        // in the mode it was opened over, so the body menu's Paste types
-        // into the search (Vim's command-line Paste is a `:cmenu` entry)
-        // (#129, #194). A pane's bare surface, the body's ring gutter
+        // keeps them; a divider moves only itself; and an open menu (its
+        // rows, or the backdrop that dismisses it) acts in the mode it was
+        // opened over, so the body menu's Paste types into the search (Vim's
+        // command-line Paste is a `:cmenu` entry) (#129, #194). A dialog's
+        // buttons are controls like any other, for a search typed in the
+        // dialog's own field. A pane's bare surface, the body's ring gutter
         // included, is no exception: a press there is a click away that
         // takes the caret from the body (`move_editor_caret` below), which
         // ends its search as it did before #129.
@@ -1438,7 +1440,8 @@ impl App {
                 | Hit::ScrollbarThumb(PaneId::Editor)
                 | Hit::ScrollbarTrack(PaneId::Editor, _)
         );
-        if !(in_dialog || body_window || self.is_separator_press(&hit)) {
+        let in_menu = matches!(self.modals.top(), Some(Modal::Dropdown(_)));
+        if !(in_menu || body_window || self.is_separator_press(&hit)) {
             self.vim_control_press();
         }
         // A footer chip is the key it advertises. While the editor's caret
