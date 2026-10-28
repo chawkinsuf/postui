@@ -7336,6 +7336,9 @@ impl App {
                 if self.active_env().is_none() && !self.selector_is_shared(&selector) {
                     return false;
                 }
+                // A grid that drew no cell (task #200) opens nothing, and
+                // this still returns handled with no toast: the same rule as
+                // #198's hidden column, whose chips stay advertised too.
                 self.vm_start_cell_edit(row, 0);
                 true
             }
@@ -7373,6 +7376,9 @@ impl App {
                 let row =
                     postui_core::varmodel::options_of(self.variables(), self.env_data(), &selector)
                         .map_or(0, indexmap::IndexMap::len);
+                // A grid that drew no cell (task #200) opens nothing, and
+                // this still returns handled with no toast: the same rule as
+                // #198's hidden column, whose chips stay advertised too.
                 self.vm_start_cell_edit(row, 0);
                 true
             }

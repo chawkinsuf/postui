@@ -11772,6 +11772,9 @@ fn goto_row(app: &mut App, pred: impl Fn(&crate::components::varmanager::VmRow) 
     rendered_text(app);
     let i = app.varmanager.left_rows.iter().position(pred).expect("no row matched");
     vm_select_row(app, i);
+    // The frame the main loop draws after the click: a key meets the
+    // detail pane as that frame painted it (task #200).
+    rendered_text(app);
 }
 
 /// The Variable Manager's left list onto row `i`, as a click.

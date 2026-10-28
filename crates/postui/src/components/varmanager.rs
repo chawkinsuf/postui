@@ -540,18 +540,19 @@ pub struct VarManager {
     grid_area: Rect,
     /// How many option rows that region showed, for the wheel's clamp.
     grid_visible: usize,
-    /// The width the grid's cells were last painted in ([`grid_columns`]),
-    /// or `None` before the grid was first drawn: what
-    /// [`Self::grid_shape`] counts the drawn columns from, so the keyboard
-    /// and the cell edits reach only what is on screen (task #198). `0`
-    /// when the grid's last draw painted no cell (task #200): a pane too
-    /// narrow for the grid, too short for one option row, or a frame that
-    /// gave the Manager no area at all (`draw`'s own early return). Zero cells
-    /// fit no column, so the shape counts none and no cell edit opens.
-    /// The pane's width, not the selector's: opening another selector
-    /// keeps it. The main loop draws after every event that changes
-    /// anything (a resize included), so a key always meets the width on
-    /// screen.
+    /// The width the last frame painted the grid's cells in
+    /// ([`grid_columns`]), or `None` before the Manager was first drawn:
+    /// what [`Self::grid_shape`] counts the drawn columns from, so the
+    /// keyboard and the cell edits reach only what is on screen (task
+    /// #198). The frame's own record: `draw` resets it to `0` and only
+    /// `draw_entry_grid`'s option rows write the width, so any frame that
+    /// painted no option row records `0` (task #200): a pane too narrow
+    /// for the grid, too short for one row, no area at all, or a Var or
+    /// placeholder page. Zero cells fit no column, so the shape counts
+    /// none and no cell edit opens. The main loop draws after every event
+    /// that changes anything (a resize, or opening a selector, included),
+    /// so a key always meets the last frame: one selector to another
+    /// draws the new grid, at the pane's width, before any key reaches it.
     grid_width: Option<u16>,
     /// Whether the last `draw` painted the cell [`OptionGridState::editing`]
     /// holds, and whether the draw before it did: what
@@ -2165,11 +2166,13 @@ impl VarManager {
         // Before any early return: a frame that paints no grid paints no
         // edit either.
         self.edit_painted_before = std::mem::take(&mut self.edit_painted);
+        // Likewise, a frame records the grid cells it painted (task #200):
+        // none until `draw_entry_grid`'s option rows paint and record
+        // their width, so no early return can leave a cell for a key to
+        // open that is not on screen.
+        self.grid_width = Some(0);
         if area.width == 0 || area.height == 0 {
             self.visible_rows = 0;
-            // No grid painted, so no cell for a key to open (task #200),
-            // as `draw_entry_grid` records when it paints no row.
-            self.grid_width = Some(0);
             return;
         }
 
@@ -2212,10 +2215,6 @@ impl VarManager {
         hovered: Option<&Hit>,
         selector: &str,
     ) {
-        // Before any early return: a draw that paints no option row leaves
-        // no cell for a key to open (task #200). The rows below record the
-        // width once they paint.
-        self.grid_width = Some(0);
         if right.width < 8 || right.height < 3 {
             return;
         }
@@ -4492,6 +4491,9 @@ fields = ["user_id", "customer_id"]
         render(vm, ctx); // populates left_rows
         let i = vm.left_rows.iter().position(|r| r == &VmRow::Group(name.into())).unwrap();
         vm.select_row(ctx, i);
+        // The frame the main loop draws after the click: a key meets the
+        // grid as that frame painted it (task #200).
+        render(vm, ctx);
     }
 
     /// #35: the legend names the environment as the header does.
