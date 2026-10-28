@@ -9574,6 +9574,17 @@ impl App {
     /// dialog that changes project state closes the open inputs first
     /// anyway (close-input-first).
     ///
+    /// A frame that draws no grid for a reason other than size (no
+    /// environment, the selector gone) never meets a live edit here: every
+    /// change that could bring those about closes the Manager's input
+    /// first (an environment switch, a selector delete, a reload, task
+    /// #78), so `commit_grid_edit`'s early returns are as unreachable from
+    /// here as from a click away.
+    ///
+    /// A refusal does not set `last_action_failed`: that flag stops the
+    /// key or action sequence a refusal happens in, and no key is running
+    /// after a draw.
+    ///
     /// A refused commit keeps its edit and toasts, as every refusal does
     /// (a refused close keeps its input). Its cell is still off screen, so
     /// the edit stays live there with the toast saying why; widening the
