@@ -510,6 +510,11 @@ pub enum Action {
     /// resolved by `App::selection_action` on the surface the keyboard
     /// is on.
     OnSelection(Verb),
+    /// A Variable Manager option row's menu item (task #208): the grid
+    /// verb's action for the row, as `VarManager::entry_context_menu` built
+    /// it when the menu opened, run when it is picked unless the open grid
+    /// drew no option row in the last frame (`VarManager::no_rows_drawn`).
+    OptionMenu(Box<Action>),
     /// Row menu "Move to space…": opens the chooser of the other spaces
     /// for the request at `slug`; picking one dispatches
     /// `MoveRequestToSpace`.

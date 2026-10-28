@@ -4795,6 +4795,15 @@ impl App {
                     None => false,
                 }
             }
+            // An option row menu's item: its action, unless the open grid
+            // drew no option row in the last frame (task #208,
+            // `VarManager::entry_context_menu`).
+            Action::OptionMenu(action) => {
+                if self.project().is_some_and(|p| self.varmanager.no_rows_drawn(p)) {
+                    return false;
+                }
+                self.apply(*action)
+            }
             Action::PromptMoveSelectedRequestToSpace => {
                 if let Some(slug) = self.sidebar.selected_slug() {
                     self.apply(Action::PromptMoveRequestToSpace(slug));
@@ -10533,9 +10542,10 @@ impl App {
                 );
             }
             // An option row (either half of it — the radio and the cells all
-            // belong to the same record).
-            Hit::VmEntryRadio(row) | Hit::VmEntryCell { row, .. } => {
-                return self.varmanager.entry_context_menu(self.project()?, *row);
+            // belong to the same record). The right-click handler has
+            // already pointed the grid cursor at it, which the menu reads.
+            Hit::VmEntryRadio(_) | Hit::VmEntryCell { .. } => {
+                return self.varmanager.entry_context_menu(self.project()?);
             }
             // A params/headers/vars row (Task 17, spec §5): the right-click
             // handler has already re-resolved `i` past any commit and
