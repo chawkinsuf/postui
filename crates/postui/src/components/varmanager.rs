@@ -2228,6 +2228,11 @@ impl VarManager {
                 // and so do they, by not being there. A paste would write
                 // an option no row shows. `no_rows_drawn` reads this
                 // frame's record, which the title row comes too early for.
+                // It is the keys' and chips' own check, read rather than a
+                // flag of the draw's, so the buttons, keys and chips can't
+                // disagree: where it is false with no row (a per-environment
+                // selector with no environment, no grid at all), they all
+                // stay as they were.
                 if !self.no_rows_drawn(ctx) {
                     for (button, rect, hit) in option_buttons {
                         let painted = button.paint(buf, rect, theme);

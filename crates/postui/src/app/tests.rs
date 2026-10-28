@@ -18431,6 +18431,12 @@ fn a_paste_click_on_a_pane_too_short_for_an_option_row_writes_nothing() {
     app.handle_mouse(left_down(paste.x + 2, paste.y + 1));
     let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert!(!env.options["user"].contains_key("alice copy"), "{:?}", env.options["user"].keys());
+
+    // The same click with the rows drawn again lands the paste.
+    rendered_text_at(&mut app, 130, 46);
+    app.handle_mouse(left_down(paste.x + 2, paste.y + 1));
+    let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
+    assert!(env.options["user"].contains_key("alice copy"), "{:?}", env.options["user"].keys());
 }
 
 #[test]
