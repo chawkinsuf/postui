@@ -1720,7 +1720,9 @@ impl Editor {
     /// text: the row the vim profile keeps there for the search prompt
     /// (#129), where a press places no caret (`App::press_text`).
     pub(crate) fn below_body_text(&self, y: u16) -> bool {
-        self.active_tab == EditorTab::Body && self.last_body_area.is_some_and(|a| y >= a.bottom())
+        self.active_tab == EditorTab::Body
+            && self.prompt_row
+            && self.last_body_area.is_some_and(|a| y == a.bottom())
     }
 
     /// Forwards a raw mouse event to the body editor when the Body tab is

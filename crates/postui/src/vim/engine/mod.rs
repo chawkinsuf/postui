@@ -774,7 +774,9 @@ impl Engine {
         // into the search and the search goes on, #129), or on any other
         // spot that keeps the caret (a chip, the bar). The rest of the
         // settle still runs, for whatever that press's own action moved.
-        // A press on the text itself still ends the search, as before #129.
+        // Two of Vim's ways are not followed here, as before #129: a press
+        // on the text itself still ends the search and places the caret,
+        // and the prompt has no click caret, so typing goes on at its end.
         let searching =
             self.search.is_some() && matches!(how, Settled::Click | Settled::CommandLine);
         // A press on the command line's row (`CommandLine`) is a `Click`
