@@ -7340,9 +7340,9 @@ impl App {
                     return false;
                 }
                 // A grid that drew no cell (task #200) opens nothing, and
-                // this still returns handled with no toast. Its chip and
-                // key don't reach here then (`grid_verb`, task #202); F2
-                // and a command still do, and open nothing.
+                // this still returns handled with no toast. The rename
+                // verb's key and chip resolve to nothing then (`grid_verb`,
+                // task #202); whatever else sends this opens nothing.
                 self.vm_start_cell_edit(row, 0);
                 true
             }
@@ -7381,9 +7381,10 @@ impl App {
                     postui_core::varmodel::options_of(self.variables(), self.env_data(), &selector)
                         .map_or(0, indexmap::IndexMap::len);
                 // A grid that drew no cell (task #200) opens nothing, and
-                // this still returns handled with no toast. Its chip
-                // doesn't reach here then (`grid_verb`, task #202); the
-                // `+ Option` key and a command still do, and open nothing.
+                // this still returns handled with no toast. The add verb's
+                // key and chip resolve to nothing then (`grid_verb`, task
+                // #202); arrows' `o`, the `+ Option` button and a command
+                // still send this, and open nothing.
                 self.vm_start_cell_edit(row, 0);
                 true
             }
