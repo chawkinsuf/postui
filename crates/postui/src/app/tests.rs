@@ -7505,6 +7505,45 @@ fn rename_request_updates_disk_and_open_slug() {
     assert_eq!(app.sidebar.open_slug.as_deref(), Some("main/new"));
 }
 
+/// #210: submitting the Rename prompt as it opened changes nothing, as an
+/// unchanged environment or space rename changes nothing: a hand-made
+/// file keeps its bytes (no `name` added, its comment kept), and no undo
+/// step or toast follows. A nameless file at a slug its name does not
+/// derive (`ping-`), in a folder too, and a named one.
+#[test]
+fn an_unchanged_rename_changes_nothing() {
+    for (slug, prefill, text) in [
+        ("main/ping-", "ping-", "# hand-made\nmethod = \"GET\"\nurl = \"https://x/a\"\n"),
+        ("main/api/ping-", "api/ping-", "# hand-made\nurl = \"https://x/b\"\nmethod = \"GET\"\n"),
+        (
+            "main/odd",
+            "Get User",
+            "# hand-made\nurl = \"u\"\nname = \"Get User\"\nmethod = \"GET\"\n",
+        ),
+    ] {
+        let mut app = App::new_for_test();
+        let path = postui_core::storage::request_path(app.proj().root(), slug);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        app.update(Action::RefreshSidebar);
+        app.update(Action::ForceOpenRequest(slug.into()));
+        app.focus = PaneId::Sidebar;
+        let row = app.sidebar.row_of(slug).expect("listed");
+        app.sidebar.select_row(row);
+        let steps = app.history.undo_len();
+        let toasts = app.toasts.messages().len();
+        app.handle_key(plain('r'));
+        assert_eq!(app.modals.focused_input().unwrap().text(), prefill);
+        submit_prompt(&mut app);
+
+        assert!(app.modals.is_empty(), "{slug}: the prompt closes");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "{slug}: the file is untouched");
+        assert_eq!(app.history.undo_len(), steps, "{slug}: no undo step");
+        assert_eq!(app.toasts.messages().len(), toasts, "{slug}: no toast");
+        assert_eq!(app.editor.slug.as_deref(), Some(slug));
+    }
+}
+
 #[test]
 fn delete_open_request_clears_editor_and_removes_file() {
     let mut app = App::new_for_test();

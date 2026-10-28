@@ -356,9 +356,7 @@ impl App {
             Some(base) => format!("{base}/{named}"),
             None => named.to_string(),
         };
-        let same = postui_core::storage::split_display_path(&to).is_some_and(|(f, leaf)| {
-            Some(f.as_str()) == folder && leaf == self.request_display(slug)
-        });
+        let same = self.names_request_as_is(slug, &to);
         let Some(p) = self.project().filter(|_| !same) else {
             return Ok(None);
         };

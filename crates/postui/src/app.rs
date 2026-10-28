@@ -4896,6 +4896,9 @@ impl App {
                 // The typed name is relative to the active space, same as
                 // a create.
                 let to = format!("{}/{}", self.active_space(), to.trim_start_matches('/'));
+                if self.names_request_as_is(&from, &to) {
+                    return true;
+                }
                 // A refusal brings the prompt back with what was typed; no
                 // project at all returns quietly, as it always did.
                 if !self.rename_request(&from, &to) && self.project.is_some() {
@@ -10758,6 +10761,20 @@ impl App {
             .and_then(|p| p.requests().iter().find(|l| l.slug == slug))
             .map_or_else(|| slug.rsplit('/').next().unwrap_or(slug), |l| l.display_name())
             .to_string()
+    }
+
+    /// Whether the display path `to` (space included) names the request at
+    /// `slug` as it already is: its folder, and the name it shows spelled
+    /// the same (case included, as a case-only change is a rename). A
+    /// rename to it changes nothing, so the Rename prompt submitted as it
+    /// opened (#210) and a paste's `# @name` (replace spec N5) both skip
+    /// it before anything else, as an unchanged environment or space
+    /// rename does.
+    fn names_request_as_is(&self, slug: &str, to: &str) -> bool {
+        let folder = slug.rsplit_once('/').map(|(f, _)| f);
+        postui_core::storage::split_display_path(to).is_some_and(|(f, leaf)| {
+            Some(f.as_str()) == folder && leaf == self.request_display(slug)
+        })
     }
 
     /// Renames the request at `from` to the display path `to` (space
