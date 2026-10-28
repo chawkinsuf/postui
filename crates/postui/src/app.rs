@@ -12263,19 +12263,19 @@ impl App {
     /// the key (`last_action_failed`), as the add-option prompt's refusal
     /// fails its confirm.
     fn handle_grid_key(&mut self, ev: KeyEvent) -> bool {
-        match ev.code {
-            KeyCode::Esc | KeyCode::Enter => {
-                if !self.commit_grid_edit(true) {
-                    self.last_action_failed = true;
-                }
-            }
+        let committed = match ev.code {
+            KeyCode::Esc | KeyCode::Enter => self.commit_grid_edit(true),
             KeyCode::Tab => self.step_grid_edit(1),
             KeyCode::BackTab => self.step_grid_edit(-1),
             _ => {
                 if let Some(edit) = self.varmanager.grid.editing.as_mut() {
                     edit.input.handle_key(ev);
                 }
+                true
             }
+        };
+        if !committed {
+            self.last_action_failed = true;
         }
         self.update(Action::Render)
     }
@@ -12289,28 +12289,29 @@ impl App {
     /// name cell.
     ///
     /// A commit that failed keeps its own edit (spec §5) and this leaves it
-    /// exactly where it is; a ghost-row commit that already walked the edit
-    /// on into the new option's first field is likewise left alone.
+    /// exactly where it is, answering `false` (the commit's own answer); a
+    /// ghost-row commit that already walked the edit on into the new
+    /// option's first field is likewise left alone.
     ///
     /// The step counts from the committed option's row *after* the commit,
     /// read from the grid cursor, which stays on that option by name (a
     /// rename follows it, N8): the commit's write re-reads the file, so an
     /// edit another program made can have moved the option off the row the
     /// cell was opened at (task #83).
-    fn step_grid_edit(&mut self, dir: i32) {
+    fn step_grid_edit(&mut self, dir: i32) -> bool {
         let col = self.varmanager.grid.editing.as_ref().map(|e| e.col);
         if !self.commit_grid_edit(true) {
-            self.last_action_failed = true;
+            return false;
         }
-        let Some(col) = col else { return };
+        let Some(col) = col else { return true };
         if self.varmanager.grid.editing.is_some() {
-            return;
+            return true;
         }
         let Some((row, _)) = self.project().and_then(|p| self.varmanager.grid_at(p)) else {
-            return;
+            return true;
         };
         let VmDetail::Group(selector) = self.varmanager.detail.clone() else {
-            return;
+            return true;
         };
         let ncols = 1 + self.variables().selectors.get(&selector).map_or(0, |g| g.fields.len());
         let last_row =
@@ -12328,6 +12329,7 @@ impl App {
             }
         };
         self.vm_start_cell_edit(next_row, next_col);
+        true
     }
 
     fn focused_component_key(&mut self, ev: KeyEvent) -> Option<Action> {

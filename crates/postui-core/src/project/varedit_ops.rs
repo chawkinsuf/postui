@@ -472,7 +472,10 @@ impl Project {
                 // exactly a duplicate of it. The name is picked from the
                 // loaded options; the write is a create, so a name another
                 // program took since the last reload is refused rather
-                // than written over (task #196).
+                // than written over (task #196). Refused, not stepped
+                // aside: re-picking against the file would be a second
+                // name rule inside the write; after a reload the paste
+                // steps aside as usual.
                 let taken = self.options_of_for(env, selector).unwrap_or_default();
                 let fresh = pasted_option_name(name, |n| taken.contains_key(n));
                 self.cascade(label, |p| {

@@ -519,6 +519,19 @@ pub fn upsert_option(
 ) -> Result<String, EditError> {
     check_option_name(option)?;
     let mut doc = parse(doc)?;
+    write_option(&mut doc, selector, option, description, values)?;
+    Ok(doc.to_string())
+}
+
+/// The write half of [`upsert_option`] and [`create_option`], on a parsed
+/// document whose `option` name has been checked.
+fn write_option(
+    doc: &mut DocumentMut,
+    selector: &str,
+    option: &str,
+    description: Option<&str>,
+    values: &IndexMap<String, String>,
+) -> Result<(), EditError> {
     let root = doc.as_table_mut();
     let options = table_mut(root, "options", true)?;
     let selector_table = table_mut(options, selector, true)?;
@@ -530,11 +543,11 @@ pub fn upsert_option(
     for (k, v) in values {
         t[k.as_str()] = value(v.as_str());
     }
-    Ok(doc.to_string())
+    Ok(())
 }
 
 /// Creates `[options.<selector>."<option>"]` as [`upsert_option`] writes
-/// it, but only when `doc` has no option by that name yet: `Conflict` if
+/// it (whose update of an existing option stays as it was), but only when `doc` has no option by that name yet: `Conflict` if
 /// it has, since writing a new option's values over an existing one would
 /// replace them (task #196). The check reads `doc`, the file as the write
 /// finds it, so an option another program added since the last reload is
@@ -547,14 +560,14 @@ pub fn create_option(
     values: &IndexMap<String, String>,
 ) -> Result<String, EditError> {
     check_option_name(option)?;
-    let mut parsed = parse(doc)?;
-    if options_selector_mut(parsed.as_table_mut(), selector).is_some_and(|g| g.contains_key(option))
-    {
+    let mut doc = parse(doc)?;
+    if options_selector_mut(doc.as_table_mut(), selector).is_some_and(|g| g.contains_key(option)) {
         return Err(EditError::Conflict(format!(
             "option \"{option}\" already exists on {selector}"
         )));
     }
-    upsert_option(doc, selector, option, description, values)
+    write_option(&mut doc, selector, option, description, values)?;
+    Ok(doc.to_string())
 }
 
 /// Renames one option of `selector`. `NotFound` if the selector or the option

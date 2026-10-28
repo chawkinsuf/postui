@@ -126,7 +126,8 @@ pub enum VarStructOp {
     SetFields { selector: String, fields: Vec<String> },
     /// Promote a request-scoped variable to the project (spec §4).
     Promote { name: String, target: postui_core::varedit::PromoteTarget },
-    /// A new option of `selector` in `env` (`varedit::upsert_option`).
+    /// A new option of `selector` in `env` (`varedit::create_option`):
+    /// refused when the file already holds an option by `name`.
     NewOption {
         env: String,
         selector: String,
