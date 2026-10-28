@@ -8594,17 +8594,20 @@ impl App {
                 // A refusal below therefore finds the cell already
                 // committed, and it stays closed with its typing kept as
                 // one undoable step, as Cancel leaves it at a dirty gate
-                // (R4). Checking first would leave it open, but would miss
-                // a key typed there that is this name, and the insert
-                // would then overwrite that row.
+                // (R4); the commit is the one Enter or a click away makes.
+                // Checking first would leave it open, but would miss a key
+                // typed there that is this name, and the insert would then
+                // overwrite that row. The refusals before this arm (an
+                // invalid name, no selection) read nothing of the map, so
+                // they leave the cell open.
                 let from_cell = match source {
                     ExtractSource::FocusedField => !self.editor.url_open(),
                     ExtractSource::Selection(surface) => {
                         surface == crate::action::TextSurface::TableCell
                     }
                 };
-                if !from_cell && self.editor.active_tab == EditorTab::Vars {
-                    self.commit_table_edit();
+                if !from_cell {
+                    self.commit_open_vars_cell();
                 }
                 // No structural-file hazard here — `[variables]`
                 // options are a separate resolution layer (spec §2)
@@ -8826,6 +8829,16 @@ impl App {
         );
     }
 
+    /// Commits an open Vars cell, as its own step, ahead of a write that
+    /// adds or removes request-variable rows (why:
+    /// [`Self::debug_assert_no_open_vars_cell`]). A cell on another tab
+    /// stays open: those writes touch no row of its table.
+    fn commit_open_vars_cell(&mut self) {
+        if self.editor.active_tab == EditorTab::Vars {
+            self.commit_table_edit();
+        }
+    }
+
     /// Builds and opens the value-edit popup for a simple (or
     /// request-scoped / stray-env) variable's `{{token}}`: a `value` field
     /// seeded with the current effective value and a `destination` choice
@@ -8842,9 +8855,7 @@ impl App {
         // Any other cell stays open under the dialog, as under the
         // tooltip's pill (#135): the dialog writes no row of its table,
         // which is why this is not `close_open_inputs`.
-        if self.editor.active_tab == EditorTab::Vars {
-            self.commit_table_edit();
-        }
+        self.commit_open_vars_cell();
         let request_value =
             self.editor.variables.get(name).filter(|e| e.enabled).map(|e| e.value.clone());
         let env_value = self.env_data().values.get(name).cloned();

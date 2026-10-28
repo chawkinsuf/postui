@@ -23989,7 +23989,14 @@ fn extracting_a_response_selection_to_the_request_refuses_the_open_cell_s_key() 
     });
     app.capture_undo();
 
-    assert!(app.toasts.messages().iter().any(|m| m.contains("already exists")));
+    assert!(
+        app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.contains("\"nv\" already exists in this request's variables")),
+        "the extract's name check refuses: {:?}",
+        app.toasts.messages()
+    );
     let pair = |k: &str, v: &str| (k.to_string(), v.to_string());
     assert_eq!(request_vars(&app), [pair("nv", "")], "the typed key keeps its empty value");
     let saved = postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap();
