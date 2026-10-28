@@ -127,6 +127,23 @@ impl VarEdit {
     }
 }
 
+/// The name a pasted option called `name` takes among the options `taken`
+/// says exist ([`VarEdit::PasteOption`]): its own when free, else
+/// `"<name> copy"`, then `"<name> copy-2"`, … while the name is taken. The
+/// app reads it before the paste to know which row the paste lands.
+pub fn pasted_option_name(name: &str, taken: impl Fn(&str) -> bool) -> String {
+    if !taken(name) {
+        return name.to_string();
+    }
+    let mut fresh = format!("{name} copy");
+    let mut n = 2;
+    while taken(&fresh) {
+        fresh = format!("{name} copy-{n}");
+        n += 1;
+    }
+    fresh
+}
+
 fn edit(msg: String) -> Error {
     Error::Edit(msg)
 }
@@ -449,15 +466,7 @@ impl Project {
                 // pasting back into the environment a row came from is
                 // exactly a duplicate of it.
                 let taken = self.options_of_for(env, selector).unwrap_or_default();
-                let mut fresh = name.clone();
-                if taken.contains_key(&fresh) {
-                    fresh = format!("{name} copy");
-                    let mut n = 2;
-                    while taken.contains_key(&fresh) {
-                        fresh = format!("{name} copy-{n}");
-                        n += 1;
-                    }
-                }
+                let fresh = pasted_option_name(name, |n| taken.contains_key(n));
                 self.cascade(label, |p| {
                     p.edit_options_home(selector, env, |doc| {
                         varedit::upsert_option(
