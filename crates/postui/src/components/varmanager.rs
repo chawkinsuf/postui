@@ -703,6 +703,12 @@ pub(crate) fn desc_col(n_fields: usize) -> usize {
     n_fields + 1
 }
 
+/// How many cells a grid row has for `n_fields` fields: through its
+/// description, the last one ([`desc_col`]).
+fn grid_ncols(n_fields: usize) -> usize {
+    desc_col(n_fields) + 1
+}
+
 /// `selector`'s declared field list (empty for an undeclared name).
 fn group_fields(ctx: &Project, selector: &str) -> Vec<String> {
     ctx.variables().selectors.get(selector).map(|g| g.fields.clone()).unwrap_or_default()
@@ -947,15 +953,20 @@ impl VarManager {
 
     /// The open selector's grid as `ctx` lists it now: the ghost row's
     /// index (one past the last option) and the columns in a row (name,
-    /// each field, description: [`desc_col`]). Read from the same options
+    /// each field, description: [`grid_ncols`]). Read from the same options
     /// the draw and [`Self::grid_at`] read, so a walk over it covers
-    /// exactly the cells on screen. `None` with no selector open.
+    /// exactly the cells on screen. `None` where `grid_at` is: no selector
+    /// open, or a per-environment one with no environment (no grid).
     pub fn grid_shape(&self, ctx: &Project) -> Option<(usize, usize)> {
         let VmDetail::Group(selector) = &self.detail else {
             return None;
         };
+        if ctx.active_env().is_none() && !is_shared(ctx, selector) {
+            return None;
+        }
+        // No options table yet is an empty grid: just the ghost row.
         let ghost = shown_options(ctx, selector).map_or(0, IndexMap::len);
-        Some((ghost, desc_col(group_fields(ctx, selector).len()) + 1))
+        Some((ghost, grid_ncols(group_fields(ctx, selector).len())))
     }
 
     /// Puts the grid cursor on row `row` of the options `ctx` lists now
@@ -2169,7 +2180,7 @@ impl VarManager {
 
         // --- column headers ---------------------------------------------
         let fields = group_fields(ctx, selector);
-        let cols = grid_columns(x0, inner_w, desc_col(fields.len()) + 1);
+        let cols = grid_columns(x0, inner_w, grid_ncols(fields.len()));
         if y >= bottom || cols.x.is_empty() {
             return;
         }

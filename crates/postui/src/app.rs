@@ -9409,13 +9409,14 @@ impl App {
 
     /// Commits whatever cell the selector grid's [`OptionGridState::editing`]
     /// holds (click-away, click-another-cell, or `Enter`) — Task 8's rules,
-    /// on the three kinds of cell the grid has: the ghost row's name cell
+    /// on the four kinds of cell the grid has: the ghost row's name cell
     /// creates an option (with an empty value for every field, so the new
     /// record validates) and, with `walk_on`, continues into its first
     /// field cell (the keyboard's Enter, Esc and Tab; a close for a click
     /// away or a state change does not), a real option's name cell renames
-    /// it, and a field cell writes that one value. Text that didn't change
-    /// writes nothing.
+    /// it, a field cell writes that one value, and the description cell
+    /// sets the option's description (an emptied one removes it). Text
+    /// that didn't change writes nothing.
     ///
     /// A write failure toasts and puts the edit back exactly as it was, so
     /// the typed text survives a retry (spec §5) — including the reserved
@@ -12380,22 +12381,21 @@ impl App {
         if self.varmanager.grid.editing.is_some() {
             return true;
         }
-        let Some(((row, _), (last_row, ncols))) = self
+        let Some(((row, _), (ghost, ncols))) = self
             .project()
             .and_then(|p| Some((self.varmanager.grid_at(p)?, self.varmanager.grid_shape(p)?)))
         else {
             return true;
         };
+        // The walk's last cell is the ghost row's name, its only cell.
+        let last = (ghost * ncols) as i32;
         let flat = (row * ncols + col) as i32 + dir;
         let (next_row, next_col) = match flat {
             // Off either end of the grid: the walk stops rather than
             // closing the edit out from under the user — the same cell
             // re-opens, now showing what was just committed.
-            f if f < 0 => (row, col),
-            f => {
-                let (r, c) = (f as usize / ncols, f as usize % ncols);
-                if r > last_row { (row, col) } else { (r, c) }
-            }
+            f if f < 0 || f > last => (row, col),
+            f => (f as usize / ncols, f as usize % ncols),
         };
         self.vm_start_cell_edit(next_row, next_col);
         true
