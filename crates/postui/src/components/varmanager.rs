@@ -958,37 +958,37 @@ impl VarManager {
     /// - A rename of the cursor's option: the new name (N8).
     pub fn grid_target(&self, ctx: &Project, op: &VarStructOp) -> Option<(String, GridRow)> {
         let on = self.grid.cursor.row.as_ref()?;
-        let row = match op {
+        // Every arm has passed `grid_shows`, so the op's selector is the
+        // one the grid shows.
+        let (selector, row) = match op {
             VarStructOp::DeleteOption { env, selector, name }
                 if self.grid_shows(ctx, env, selector) && *on == GridRow::Named(name.clone()) =>
             {
                 let options = shown_options(ctx, selector)?;
                 let next = options.get_index(options.get_index_of(name)? + 1);
-                next.map_or(GridRow::Ghost, |(n, _)| GridRow::Named(n.clone()))
+                (selector, next.map_or(GridRow::Ghost, |(n, _)| GridRow::Named(n.clone())))
             }
             VarStructOp::NewOption { env, selector, name, .. }
                 if self.grid_shows(ctx, env, selector) && *on == GridRow::Ghost =>
             {
-                GridRow::Named(name.clone())
+                (selector, GridRow::Named(name.clone()))
             }
             VarStructOp::PasteOption { env, selector, .. }
                 if self.grid_shows(ctx, env, selector) && *on == GridRow::Ghost =>
             {
                 let stash = self.stash.as_ref().filter(|s| s.selector == *selector)?;
                 let taken = shown_options(ctx, selector);
-                GridRow::Named(postui_core::project::pasted_option_name(&stash.name, |n| {
+                let name = postui_core::project::pasted_option_name(&stash.name, |n| {
                     taken.is_some_and(|t| t.contains_key(n))
-                }))
+                });
+                (selector, GridRow::Named(name))
             }
             VarStructOp::RenameOption { env, selector, from, to }
                 if self.grid_shows(ctx, env, selector) && *on == GridRow::Named(from.clone()) =>
             {
-                GridRow::Named(to.clone())
+                (selector, GridRow::Named(to.clone()))
             }
             _ => return None,
-        };
-        let VmDetail::Group(selector) = &self.detail else {
-            return None;
         };
         Some((selector.clone(), row))
     }
@@ -1028,7 +1028,7 @@ impl VarManager {
         let VmDetail::Group(selector) = &self.detail else {
             return None;
         };
-        entry_rows(ctx, selector).get(row).map(|(n, _, _)| n.clone())
+        shown_options(ctx, selector)?.get_index(row).map(|(n, _)| n.clone())
     }
 
     /// Whether a paste into `selector` has something to land. A copied row
@@ -1612,7 +1612,7 @@ impl VarManager {
         if self.grid.editing.is_some() {
             return None;
         }
-        let last_row = entry_rows(ctx, selector).len(); // == the ghost row
+        let last_row = shown_options(ctx, selector).map_or(0, IndexMap::len); // == the ghost row
         // Cols: 0 = name, 1..=fields = the field values, fields+1 = the
         // option's description.
         let last_col = group_fields(ctx, selector).len() + 1;

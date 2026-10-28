@@ -1695,15 +1695,6 @@ impl App {
         true
     }
 
-    /// Moves the Manage screen's list cursor onto `name` in the open tab.
-    fn manage_select_name(&mut self, name: &str) {
-        let Self { project, manage, .. } = self;
-        if let Some(p) = project {
-            let tab = manage.tab;
-            manage.list_for_mut(tab).select_name(tab, p, name);
-        }
-    }
-
     /// Puts `tab`'s own list cursor (live or parked) on `name`.
     fn select_list_row(&mut self, tab: crate::components::manage::ManageTab, name: &str) {
         let Self { project, manage, .. } = self;
@@ -7756,6 +7747,7 @@ impl App {
                 // (spec 2026-10-27 N3, N8).
                 let t = self.begin_list_op(crate::components::manage::ManageTab::Environments);
                 let Some(p) = self.project.as_mut() else {
+                    self.op_in_flight = false;
                     return true;
                 };
                 match p.rename_environment(&from, &to) {
@@ -7841,6 +7833,7 @@ impl App {
                 // disk: the cursor's neighbour (spec 2026-10-27 N7).
                 let next = self.list_neighbour(envs, &name);
                 let Some(p) = self.project.as_mut() else {
+                    self.op_in_flight = false;
                     return true;
                 };
                 // Core drops the table, the secrets and the selections,
@@ -8010,11 +8003,12 @@ impl App {
                 };
                 match p.move_space(&name, delta) {
                     Ok(_) => {
-                        // The Manage screen's list lands on the space that
+                        // The Spaces list on screen lands on the space that
                         // just moved and scrolls it into view, so a row
                         // moved past the edge of the list stays in sight.
-                        if self.screen == Screen::Manage {
-                            self.manage_select_name(&name);
+                        let spaces = crate::components::manage::ManageTab::Spaces;
+                        if self.screen == Screen::Manage && self.manage.tab == spaces {
+                            self.select_list_row(spaces, &name);
                         }
                         // A burst merges in core: the journal's top id
                         // stays the same, so nothing is re-recorded and
@@ -8042,8 +8036,9 @@ impl App {
                     Ok(_) => {
                         // As `MoveSpace`: the list lands on the moved
                         // environment and scrolls it into view.
-                        if self.screen == Screen::Manage {
-                            self.manage_select_name(&name);
+                        let envs = crate::components::manage::ManageTab::Environments;
+                        if self.screen == Screen::Manage && self.manage.tab == envs {
+                            self.select_list_row(envs, &name);
                         }
                         // A burst merges in core: the journal's top id
                         // stays the same, so nothing is re-recorded and
@@ -9469,11 +9464,19 @@ impl App {
         match result {
             Ok(()) => {
                 self.sync_varmanager();
-                // The ghost flow keeps going left-to-right: the row that
-                // was the ghost is now a real option (appended, so it keeps
-                // its index) with its first field cell live.
-                if walk_on && ghost && !fields.is_empty() {
-                    self.vm_start_cell_edit(edit.row, 1);
+                // The ghost flow keeps going left-to-right into the new
+                // option's first field cell. Its row is read from the grid
+                // cursor, which the create left on the option by name
+                // (spec 2026-10-27 N9): the write re-read the file, so an
+                // edit another program made can have moved the option off
+                // the ghost's old index.
+                let created = self.project().and_then(|p| self.varmanager.grid_at(p));
+                if walk_on
+                    && ghost
+                    && !fields.is_empty()
+                    && let Some((row, _)) = created
+                {
+                    self.vm_start_cell_edit(row, 1);
                 }
                 self.record_project_step(t, label);
                 true
@@ -10097,9 +10100,10 @@ impl App {
                 Err(e) => self.toasts.push(format!("cannot reorder: {e}"), ToastKind::Warning),
             }
         }
-        // The list cursor follows the item that was dragged, wherever it
-        // ended up — committed or snapped back.
-        self.manage_select_name(&drag.name);
+        // The list cursor is on the dragged item by name already; this
+        // scrolls it into view wherever it ended up, committed or snapped
+        // back.
+        self.select_list_row(drag.tab, &drag.name);
         if let Some((t, label)) = reordered {
             self.record_project_step(t, label);
         }
@@ -12286,13 +12290,22 @@ impl App {
     /// A commit that failed keeps its own edit (spec §5) and this leaves it
     /// exactly where it is; a ghost-row commit that already walked the edit
     /// on into the new option's first field is likewise left alone.
+    ///
+    /// The step counts from the committed option's row *after* the commit,
+    /// read from the grid cursor, which stays on that option by name (a
+    /// rename follows it, N8): the commit's write re-reads the file, so an
+    /// edit another program made can have moved the option off the row the
+    /// cell was opened at (task #83).
     fn step_grid_edit(&mut self, dir: i32) {
-        let at = self.varmanager.grid.editing.as_ref().map(|e| (e.row, e.col));
+        let col = self.varmanager.grid.editing.as_ref().map(|e| e.col);
         self.commit_grid_edit(true);
-        let Some((row, col)) = at else { return };
+        let Some(col) = col else { return };
         if self.varmanager.grid.editing.is_some() {
             return;
         }
+        let Some((row, _)) = self.project().and_then(|p| self.varmanager.grid_at(p)) else {
+            return;
+        };
         let VmDetail::Group(selector) = self.varmanager.detail.clone() else {
             return;
         };

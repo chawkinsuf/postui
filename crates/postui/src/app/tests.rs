@@ -5482,14 +5482,14 @@ fn deleting_a_parked_lists_item_lands_its_cursor_on_the_neighbour() {
 #[test]
 fn deleting_an_environment_lands_the_manage_cursor_on_the_neighbour() {
     let (mut app, _dir) = manage_envs_app();
-    app.manage_select_name("dev");
+    app.select_list_row(ManageTab::Environments, "dev");
     app.update(Action::DeleteEnv("dev".into()));
     assert_eq!(
         app.manage_selected(crate::components::manage::ManageTab::Environments).as_deref(),
         Some("qa"),
         "the last row went: the one above"
     );
-    app.manage_select_name("prod");
+    app.select_list_row(ManageTab::Environments, "prod");
     app.update(Action::DeleteEnv("prod".into()));
     assert_eq!(
         app.manage_selected(crate::components::manage::ManageTab::Environments).as_deref(),
@@ -8504,7 +8504,7 @@ fn manage_environments_pane_has_a_tls_control_that_writes_the_force() {
     use postui_core::project::TlsPolicy;
     let (mut app, _dir) = app_with_envs();
     app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
-    app.manage_select_name("prod");
+    app.select_list_row(ManageTab::Environments, "prod");
     let text = rendered_text_tall(&mut app);
     assert!(text.contains("TLS"), "{text}");
     assert!(text.contains("Per request"), "{text}");
@@ -21976,9 +21976,9 @@ mod undo_tests {
     #[test]
     fn deleting_an_environment_from_the_manage_list_undo_reselects_it() {
         let (mut app, _dir) = manage_envs_app();
-        app.manage_select_name("qa");
+        app.select_list_row(ManageTab::Environments, "qa");
         app.update(Action::DeleteEnv("qa".into()));
-        app.manage_select_name("prod");
+        app.select_list_row(ManageTab::Environments, "prod");
         app.update(Action::Undo);
         assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"));
     }
@@ -21986,9 +21986,9 @@ mod undo_tests {
     #[test]
     fn deleting_a_space_from_the_manage_list_undo_reselects_it() {
         let (mut app, _dir) = manage_spaces_app();
-        app.manage_select_name("auth");
+        app.select_list_row(ManageTab::Spaces, "auth");
         app.update(Action::DeleteSpace("auth".into()));
-        app.manage_select_name("main");
+        app.select_list_row(ManageTab::Spaces, "main");
         app.update(Action::Undo);
         assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("auth"));
     }
@@ -21996,7 +21996,7 @@ mod undo_tests {
     #[test]
     fn undoing_an_env_delete_off_screen_reselects_it_when_the_tab_opens() {
         let (mut app, _dir) = manage_envs_app();
-        app.manage_select_name("qa");
+        app.select_list_row(ManageTab::Environments, "qa");
         app.update(Action::DeleteEnv("qa".into()));
         app.update(Action::SelectManageTab(ManageTab::Spaces));
         app.update(Action::Undo);
@@ -22067,9 +22067,9 @@ mod undo_tests {
     #[test]
     fn undoing_one_of_two_env_deletes_reselects_the_right_row() {
         let (mut app, _dir) = manage_envs_app();
-        app.manage_select_name("qa");
+        app.select_list_row(ManageTab::Environments, "qa");
         app.update(Action::DeleteEnv("qa".into()));
-        app.manage_select_name("dev");
+        app.select_list_row(ManageTab::Environments, "dev");
         app.update(Action::DeleteEnv("dev".into()));
         app.update(Action::Undo);
         assert_eq!(app.proj().environments(), ["prod", "dev"]);
@@ -33171,7 +33171,7 @@ fn a_reload_with_a_grid_cell_open_keeps_the_parked_environment_cursor() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
-    app.manage_select_name("qa");
+    app.select_list_row(ManageTab::Environments, "qa");
     app.update(Action::SelectManageTab(ManageTab::Variables));
     goto_group(&mut app, "user");
     app.vm_start_cell_edit(1, 1); // bob's user
@@ -33268,7 +33268,7 @@ fn a_reload_under_a_manage_drag_leaves_the_cursor_on_the_dragged_row() {
 #[test]
 fn an_environment_deleted_outside_leaves_the_manage_cursor_on_nothing() {
     let (mut app, dir) = manage_envs_app();
-    app.manage_select_name("qa");
+    app.select_list_row(ManageTab::Environments, "qa");
     std::fs::remove_file(dir.path().join("environments/qa.toml")).unwrap();
     app.on_focus_gained();
     let text = rendered_text_wide(&mut app);
@@ -33322,7 +33322,7 @@ fn the_first_open_of_the_environments_tab_selects_the_first_row() {
 #[test]
 fn a_parked_cursor_whose_item_went_outside_settles_on_the_first_row() {
     let (mut app, dir) = manage_envs_app();
-    app.manage_select_name("dev");
+    app.select_list_row(ManageTab::Environments, "dev");
     app.update(Action::SelectManageTab(ManageTab::Spaces));
     std::fs::remove_file(dir.path().join("environments/dev.toml")).unwrap();
     app.on_focus_gained();
@@ -33359,7 +33359,7 @@ fn an_empty_grid_opens_on_nothing_and_is_entered_on_the_ghost_row() {
 #[test]
 fn deleting_another_environment_leaves_the_manage_cursor_on_its_own() {
     let (mut app, _dir) = manage_envs_app();
-    app.manage_select_name("qa");
+    app.select_list_row(ManageTab::Environments, "qa");
     app.update(Action::DeleteEnv("prod".into()));
     assert_eq!(app.proj().environments(), ["qa", "dev"]);
     assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"));
@@ -33415,6 +33415,43 @@ fn grid_ops_land_by_name_when_their_write_takes_in_an_outside_edit() {
     app.update(dd);
     assert_eq!(option_names(&app, "user"), ["aaron", "bob", "zed", "new"]);
     assert_eq!(grid_at(&app), Some((1, 0)), "on bob, alice's neighbour, not on aaron");
+}
+
+/// #83 N9: the ghost row's walk-on (Enter) opens the new option's first
+/// field even when the create's write took in an option another program
+/// added, and Tab from a cell steps from the committed option's row after
+/// its write, not from the row the cell was opened at.
+#[test]
+fn the_cell_walks_go_on_from_the_option_by_name_across_their_write() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let path = dir.path().join("environments/qa.toml");
+    app.vm_start_cell_edit(2, 0); // the ghost row
+    type_chars(&mut app, "new");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("# zed\n{text}\n[options.user.zed]\nuser = \"9\"\n")).unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(option_names(&app, "user"), ["alice", "bob", "zed", "new"]);
+    let edit = app.varmanager.grid.editing.as_ref().expect("walked on");
+    assert_eq!((edit.row, edit.col), (3, 1), "new's first field, not zed's");
+    assert!(app.close_manager_input());
+    // Tab from alice's value cell, with aaron put first by another program.
+    app.vm_start_cell_edit(0, 1); // alice's user
+    type_chars(&mut app, "7");
+    let text = std::fs::read_to_string(&path).unwrap().replacen(
+        "[options.user.alice]",
+        "[options.user.aaron]\nuser = \"0\"\n\n[options.user.alice]",
+        1,
+    );
+    std::fs::write(&path, format!("# aaron\n{text}")).unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(option_names(&app, "user"), ["aaron", "alice", "bob", "zed", "new"]);
+    let edit = app.varmanager.grid.editing.as_ref().expect("stepped on");
+    assert_eq!(app.varmanager.entry_at(app.proj(), edit.row).as_deref(), Some("bob"));
+    assert_eq!(edit.col, 0, "bob's name cell, the one after alice's user");
 }
 
 /// #83 N7: an environment delete re-lists the environment files on disk,
@@ -33558,7 +33595,7 @@ fn an_env_switch_keeps_the_grid_cursor_on_the_same_named_option() {
 #[test]
 fn a_header_rename_with_the_screen_closed_keeps_the_list_on_the_environment() {
     let (mut app, _dir) = manage_envs_app();
-    app.manage_select_name("qa");
+    app.select_list_row(ManageTab::Environments, "qa");
     app.update(Action::CloseScreen);
     app.update(Action::RenameEnv { from: "qa".into(), to: "staging".into() });
     app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
@@ -33573,7 +33610,7 @@ fn a_header_rename_with_the_screen_closed_keeps_the_list_on_the_environment() {
 #[test]
 fn a_rename_of_a_parked_space_keeps_its_list_on_it() {
     let (mut app, _dir) = manage_spaces_app();
-    app.manage_select_name("auth");
+    app.select_list_row(ManageTab::Spaces, "auth");
     app.update(Action::SelectManageTab(ManageTab::Environments));
     app.update(Action::RenameSpace { from: "auth".into(), to: "identity".into() });
     app.update(Action::SelectManageTab(ManageTab::Spaces));
