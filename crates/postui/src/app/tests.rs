@@ -31336,27 +31336,26 @@ fn undo_restores_a_session_value_the_file_never_carried() {
 }
 
 /// Task #195: picking the value already in effect for a key the file
-/// lacks (a click on the lit segment) writes nothing, so it pins no
-/// default into the file and leaves no undo step that changes nothing on
-/// screen. A key the file carries is written even so: the click replaces
+/// lacks (a click on the lit segment) writes the key, as before #195, and
+/// its undo removes the key again, the value on screen unchanged
+/// throughout. A key the file carries is written too: the click replaces
 /// a hand-written value that read back as the default.
 #[test]
-fn picking_the_value_in_effect_pins_no_default() {
+fn picking_the_value_in_effect_writes_it_and_undo_removes_it() {
     use crate::components::settings::jq_tab_spelling;
     let dir = tempfile::tempdir().unwrap();
     let mut app = App::new_for_test();
     app.config = crate::config::Config::at(dir.path().to_path_buf());
-    let lit = jq_tab_spelling(app.ui_settings.jq_tab).to_string();
+    let in_effect = app.ui_settings.jq_tab;
+    let lit = jq_tab_spelling(in_effect).to_string();
+    let file = || std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
 
     app.update(Action::SetUiString { key: "jq_tab", value: lit.clone() });
-    app.update(Action::Undo);
+    assert_eq!(file(), format!("jq_tab = \"{lit}\"\n"), "the click wrote the key");
 
-    assert!(!dir.path().join("config.toml").exists(), "nothing was written");
-    assert!(
-        app.toasts.messages().iter().any(|m| m.contains("Nothing to undo")),
-        "{:?}",
-        app.toasts.messages()
-    );
+    app.update(Action::Undo);
+    assert!(!file().contains("jq_tab"), "the undo removed it: {:?}", file());
+    assert_eq!(app.ui_settings.jq_tab, in_effect, "nothing changed on screen");
 
     std::fs::write(dir.path().join("config.toml"), "jq_tab = \"bogus\"\n").unwrap();
     app.update(Action::SetUiString { key: "jq_tab", value: lit.clone() });

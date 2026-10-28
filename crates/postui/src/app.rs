@@ -12117,13 +12117,17 @@ impl App {
     /// the default that was in effect, and a write that changed neither
     /// (clearing an unset AI command) records nothing (task #195).
     ///
-    /// The value already in effect for a key the file lacks writes
-    /// nothing, as an untouched field commit already does: the write
-    /// would only pin the default into the file, which a click on the lit
-    /// segment never asked for, and its undo step would change nothing on
-    /// screen. A key the file carries is written even so, so a click can
-    /// replace a hand-written value that read back as the default
-    /// (`jq_tab = "bogus"`).
+    /// Every value is written, the one already in effect too, as before
+    /// task #195: a click on the lit segment (jq Tab behavior, Indent) of
+    /// a key the file lacks writes the key and records a step whose undo
+    /// removes it again. That costs one ctrl+z step whose "Undid change
+    /// to …" toast shows nothing visibly changing (only the file does),
+    /// and the click clears the redo stack. Judging which values count as
+    /// no change before the write would have to guess at state the file
+    /// and the session hold (a carried value that reads back as the
+    /// default, a session value the file never took), and each guess was
+    /// wrong somewhere; the step compares what the file held instead
+    /// (task #195, `mine (approved)`).
     ///
     /// `after` is read back from the file rather than worked out from
     /// `value`: which writes remove the key is `Config::save_ui_*`'s
@@ -12134,9 +12138,6 @@ impl App {
         value: crate::undo::UiValue,
     ) -> Result<(), String> {
         let before = self.held_ui_value(key);
-        if before == crate::undo::UiValue::Unset(Box::new(value.clone())) {
-            return Ok(());
-        }
         self.write_ui_value(key, &value)?;
         let after = self.held_ui_value(key);
         self.record_config_step(key, before, after);
