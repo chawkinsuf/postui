@@ -18503,6 +18503,14 @@ fn an_existing_name_in_the_ghost_row_is_refused_and_keeps_the_typed_text() {
     assert_eq!(after, before, "nothing written");
     let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert_eq!(env.options["user"]["alice"].values["user"], "1001");
+
+    // Tab is refused the same way: it neither walks on into alice's value
+    // cell nor writes.
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    let edit = app.varmanager.grid.editing.as_ref().expect("Tab left the edit in place");
+    assert_eq!((edit.row, edit.col, edit.input.text()), (2, 0, "alice"));
+    let after = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert_eq!(after, before, "nothing written");
 }
 
 #[test]

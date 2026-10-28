@@ -122,6 +122,13 @@ fn name_taken(model: &postui_core::varmodel::VarModel, n: &str) -> bool {
         || model.selectors.contains_key(n)
 }
 
+/// The refusal both option-create paths (the add-option prompt and the
+/// Variable Manager grid's + Add row) give a name `selector` already has,
+/// so the two say it in the same words.
+fn option_name_taken(selector: &str, name: &str) -> String {
+    format!("option \"{name}\" already exists on {selector}")
+}
+
 /// The option-name seed for "Extract to selector": the value itself when
 /// it is short and reads as a name (letters, digits, `-`, `_`, `.`, spaces),
 /// so `en` or `user 1` arrive ready to confirm; blank for a UUID, a URL or
@@ -7410,8 +7417,13 @@ impl App {
                         return true;
                     }
                 };
-                if let Some(msg) = self.option_name_taken(&owner, &key) {
-                    self.toasts.push(msg, ToastKind::Error);
+                // Create means create: writing over an existing option of
+                // the same name from the add prompt would silently clobber
+                // its values.
+                if postui_core::varmodel::options_of(self.variables(), self.env_data(), &owner)
+                    .is_some_and(|options| options.contains_key(&key))
+                {
+                    self.toasts.push(option_name_taken(&owner, &key), ToastKind::Error);
                     self.last_action_failed = true;
                     return true;
                 }
@@ -9347,32 +9359,6 @@ impl App {
         }
     }
 
-    /// The refusal for creating option `name` on `selector` when the
-    /// selector already has one by that name, as the active environment
-    /// (or, for a shared selector, variables.toml) holds it; `None` when
-    /// the name is free. Create means create: core's `NewOption` is an
-    /// upsert, so writing an existing name would silently replace that
-    /// option's values. Both create paths ask it, the add-option prompt
-    /// and the grid's + Add row.
-    ///
-    /// Why here and not in core: core's `NewOption` writes through
-    /// `varedit::upsert_option`, whose update of an existing option is
-    /// pinned by its own test, and the only other `NewOption` caller
-    /// (extract to selector) adds to a selector it has just declared. The
-    /// "create, not update" rule belongs to the two surfaces that create,
-    /// and it reads the options through `options_of`, as everything that
-    /// shows them does. What that gives up: the check reads the loaded
-    /// snapshot while the write reads the file, so an option another
-    /// program added since the last reload is still written over (undo
-    /// brings it back). The prompt has had that gap since it gained its
-    /// check; a refusal against the file itself would be a create-only
-    /// core op, which neither path has yet.
-    fn option_name_taken(&self, selector: &str, name: &str) -> Option<String> {
-        postui_core::varmodel::options_of(self.variables(), self.env_data(), selector)
-            .is_some_and(|options| options.contains_key(name))
-            .then(|| format!("option \"{name}\" already exists on {selector}"))
-    }
-
     /// Commits whatever cell the selector grid's [`OptionGridState::editing`]
     /// holds (click-away, click-another-cell, or `Enter`) — Task 8's rules,
     /// on the three kinds of cell the grid has: the ghost row's name cell
@@ -9388,7 +9374,9 @@ impl App {
     /// option name `description`, which core refuses. The ghost row's name
     /// cell refuses a name the selector already has the same way (task
     /// #196): it creates, and core's `NewOption` would write the empty
-    /// values over that option. `false` only for a refusal.
+    /// values over that option. `false` only for a refusal; a caller that
+    /// runs a sequence stops on it (`close_inputs_or_stop` sets
+    /// `last_action_failed` from it).
     pub(crate) fn commit_grid_edit(&mut self, walk_on: bool) -> bool {
         let Some(edit) = self.varmanager.grid.editing.take() else {
             return true;
@@ -9428,15 +9416,23 @@ impl App {
             if edit.col != 0 || value.is_empty() {
                 return true;
             }
-            // A taken name is refused like a failed write: the toast, and
-            // the typing kept for a retry, as a rename onto a taken name
-            // (core's conflict) keeps its cell. Esc commits too (the field
-            // rule),
+            // Create means create, as in the add-option prompt: core's
+            // `NewOption` writes through `upsert_option`, which updates an
+            // option that is already there (pinned by its own test), so a
+            // taken name would have every value written over with "". The
+            // check reads the options the grid shows, as the prompt and
+            // core's own paste do (`options_of_for`); an option another
+            // program added since the last reload is not among them, the
+            // same gap those two have.
+            //
+            // The refusal is a failed write's: the toast, and the typing
+            // kept for a retry, as a rename onto a taken name (core's
+            // conflict) keeps its cell. Esc commits too (the field rule),
             // so it is refused the same way; clearing the name is the way
             // out, since an empty ghost name creates nothing.
-            if let Some(msg) = self.option_name_taken(&selector, &value) {
+            if options.contains(&value) {
+                self.toasts.push(option_name_taken(&selector, &value), ToastKind::Error);
                 self.varmanager.grid.editing = Some(edit);
-                self.toasts.push(msg, ToastKind::Error);
                 return false;
             }
             let values = fields
