@@ -622,8 +622,8 @@ const MIN_COL_W: u16 = 4;
 ///   verbs with another way in are the ones a narrow pane drops.
 ///
 /// A column that isn't drawn isn't there for the keyboard either:
-/// [`VarManager::grid_shape`] counts columns here, from the width the
-/// grid was last drawn at.
+/// [`VarManager::grid_shape`] counts columns here ([`GridFit`]), from the
+/// width the grid was last drawn at.
 struct GridCols {
     radio_x: u16,
     x: Vec<u16>,
@@ -632,31 +632,54 @@ struct GridCols {
     actions_x: Option<u16>,
 }
 
-fn grid_columns(x0: u16, width: u16, ncols: usize) -> GridCols {
-    let first = x0.saturating_add(RADIO_W);
-    let right = x0.saturating_add(width);
-    let n = ncols.max(1) as u16;
-    // The columns that fit between `first` and `right`, `(x, w)` each.
-    let fit = |right: u16| -> Vec<(u16, u16)> {
-        let each = (right.saturating_sub(first) / n).max(6);
-        (0..n)
-            .map(|i| first.saturating_add(i.saturating_mul(each)))
-            .take_while(|cx| cx.saturating_add(MIN_COL_W) <= right)
-            .map(|cx| (cx, (each - 1).min(right - cx)))
-            .collect()
-    };
-    let beside = right.saturating_sub(ROW_ACTIONS_ZONE_W);
-    let with_actions = fit(beside);
-    let without = fit(right);
-    let (mut cols, actions_x) = if !with_actions.is_empty() && with_actions.len() == without.len() {
-        (with_actions, Some(beside))
-    } else {
-        (without, None)
-    };
-    if cols.is_empty() && first < right {
-        cols.push((first, right - first));
+/// The grid's columns as numbers, measured from the grid's left edge:
+/// how many are drawn, the step from one to the next, the edge they stop
+/// at, and whether the row buttons keep their zone. [`grid_columns`] lays
+/// them out; [`VarManager::grid_shape`] needs only the count.
+struct GridFit {
+    count: u16,
+    each: u16,
+    right: u16,
+    actions: bool,
+}
+
+impl GridFit {
+    fn new(width: u16, ncols: usize) -> Self {
+        let n = u16::try_from(ncols.max(1)).unwrap_or(u16::MAX);
+        // How many columns fit between the radio column and `right`, and
+        // the step between them.
+        let fit = |right: u16| -> (u16, u16) {
+            let each = (right.saturating_sub(RADIO_W) / n).max(6);
+            let count = match right.checked_sub(RADIO_W + MIN_COL_W) {
+                Some(room) => (room / each + 1).min(n),
+                None => 0,
+            };
+            (count, each)
+        };
+        let beside = width.saturating_sub(ROW_ACTIONS_ZONE_W);
+        let (with_actions, each_with) = fit(beside);
+        let (without, each_without) = fit(width);
+        if with_actions > 0 && with_actions == without {
+            Self { count: with_actions, each: each_with, right: beside, actions: true }
+        } else if without > 0 {
+            Self { count: without, each: each_without, right: width, actions: false }
+        } else {
+            // The name column is the floor, at whatever width is left.
+            let count = u16::from(width > RADIO_W);
+            Self { count, each: width.saturating_sub(RADIO_W) + 1, right: width, actions: false }
+        }
     }
-    let (x, w) = cols.into_iter().unzip();
+}
+
+fn grid_columns(x0: u16, width: u16, ncols: usize) -> GridCols {
+    let fit = GridFit::new(width, ncols);
+    let (x, w) = (0..fit.count)
+        .map(|i| {
+            let cx = RADIO_W + i * fit.each;
+            (x0.saturating_add(cx), (fit.each - 1).min(fit.right - cx))
+        })
+        .unzip();
+    let actions_x = fit.actions.then(|| x0.saturating_add(fit.right));
     GridCols { radio_x: x0, x, w, actions_x }
 }
 
@@ -950,10 +973,11 @@ impl VarManager {
     /// the grid cursor there. Like [`Self::start_field_edit`], a second
     /// click on the cell already under edit is the caller's job to no-op.
     /// A no-op with no selector selected, and on a column the grid doesn't
-    /// draw ([`Self::grid_shape`], task #198): an edit is always on screen,
-    /// and it is always the cell asked for, never a neighbour standing in
-    /// for it (the ghost row's walk on into a first field that a narrow
-    /// pane dropped just stops). A ghost-row cell other than the name
+    /// draw ([`Self::grid_shape`], task #198): an edit always opens on
+    /// screen, and it is always the cell asked for, never a neighbour
+    /// standing in for it (the ghost row's step on into a first field that
+    /// a narrow pane dropped opens nothing; a Tab walk then goes on over
+    /// the cells that are drawn). A ghost-row cell other than the name
     /// column opens the name cell: there is no option yet for a value to
     /// belong to.
     pub fn start_cell_edit(&mut self, ctx: &Project, row: usize, col: usize) {
@@ -1023,12 +1047,15 @@ impl VarManager {
         let ghost = shown_options(ctx, selector).map_or(0, IndexMap::len);
         let ncols = grid_ncols(group_fields(ctx, selector).len());
         // Before the first draw nothing is on screen to measure: every
-        // column. The name column is the floor (`grid_columns` keeps it).
-        // The layout is rerun from the width rather than the draw storing
-        // its column count: the count also depends on the field list, which
-        // an edit can change before the next frame, while the width only
-        // changes with the terminal. It is a few columns of arithmetic.
-        let shown = self.grid_width.map_or(ncols, |w| grid_columns(0, w, ncols).x.len().max(1));
+        // column. The count is worked out from the width rather than the
+        // draw storing it: it also depends on the field list, which an
+        // edit can change before the next frame, while the width only
+        // changes with the terminal. `GridFit` is arithmetic, no layout.
+        // The `max(1)` never acts: a recorded width is at least 4 cells
+        // (the draw returns before recording anything narrower), and
+        // `GridFit` keeps the name column at any width over the radio's.
+        let shown =
+            self.grid_width.map_or(ncols, |w| usize::from(GridFit::new(w, ncols).count.max(1)));
         Some((ghost, shown))
     }
 
@@ -2330,6 +2357,12 @@ impl VarManager {
                 hits.register(Rect::new(cols.radio_x, ry, RADIO_W, 1), Hit::VmEntryRadio(i));
             }
 
+            // Only the drawn columns paint. An edit opened while its column
+            // was drawn and then dropped by a narrower terminal stays live
+            // unpainted, as it always has: task #198 keeps the keyboard and
+            // new edits off undrawn columns, and what should become of an
+            // open edit whose column goes (commit, cancel, or keep it
+            // drawn) is a separate decision, not made here.
             for col in 0..cols.x.len() {
                 let (cx, cw) = (cols.x[col], cols.w[col]);
                 // The focused cell keeps a lift of its own inside the
