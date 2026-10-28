@@ -19600,6 +19600,47 @@ fn tab_out_of_an_edit_with_no_grid_drawn_commits_and_opens_nothing() {
     assert!(qa.contains("user = \"10019\""), "{qa}");
 }
 
+/// Task #202: a pane too narrow to draw the grid's rows gives the arrows
+/// keys nothing to act on: Delete, `d`, `y`, `e` and Space leave the
+/// option alone, and ↓ leaves the cursor on it. Before, ↓ moved onto bob
+/// unseen and Delete removed him; the rest copied, opened the edit prompt
+/// and selected an option nobody could see.
+#[test]
+fn a_pane_too_narrow_for_the_grid_keeps_the_option_keys_off_its_options() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    main_loop_frame_at(&mut app, 100, 46);
+    let press = |app: &mut App, code| app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.varmanager.focus, VmFocus::Grid, "the keyboard is on the grid");
+    assert_eq!(grid_at(&app), Some((0, 0)), "on alice");
+    let qa = dir.path().join("environments/qa.toml");
+    let before = std::fs::read_to_string(&qa).unwrap();
+
+    main_loop_frame_at(&mut app, 36, 30);
+    for code in [
+        KeyCode::Down,
+        KeyCode::Delete,
+        KeyCode::Char('d'),
+        KeyCode::Char('y'),
+        KeyCode::Char('e'),
+        KeyCode::Char(' '),
+    ] {
+        press(&mut app, code);
+        main_loop_frame_at(&mut app, 36, 30);
+        assert!(app.modals.is_empty(), "{code:?} opened nothing");
+    }
+
+    main_loop_frame_at(&mut app, 100, 46);
+    assert_eq!(grid_at(&app), Some((0, 0)), "still on alice");
+    assert_eq!(std::fs::read_to_string(&qa).unwrap(), before, "nothing deleted");
+    assert!(app.varmanager.stash.is_none(), "nothing copied");
+    assert!(!app.proj().selections_for("qa").contains_key("user"), "nothing selected");
+}
+
 #[test]
 fn the_new_entry_button_starts_the_ghost_row_and_edit_fields_opens_the_editor() {
     let dir = tempfile::tempdir().unwrap();

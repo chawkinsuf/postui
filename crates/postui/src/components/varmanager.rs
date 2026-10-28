@@ -1076,6 +1076,19 @@ impl VarManager {
         Some((ghost, shown))
     }
 
+    /// Whether the last frame drew the open grid's option rows, so the
+    /// cursor's row is on screen (the draw scrolls it into view): what the
+    /// option verbs that act on the cursor's option (delete, copy, edit
+    /// value, select) check first (task #202). A pane too narrow or too
+    /// short for the grid draws none, and those verbs then act on nothing,
+    /// as the cell edits open nothing (#200). [`Self::grid_at`] keeps
+    /// answering the cursor's option all the same: an undo step, an op's
+    /// landing and the keyboard's way in read where the cursor is, which
+    /// a pane too small to show it doesn't change.
+    fn rows_drawn(&self, ctx: &Project) -> bool {
+        self.grid_shape(ctx).is_some_and(|(_, ncols)| ncols > 0)
+    }
+
     /// Whether the last draw left off screen a cell edit the draw before it
     /// painted (task #199): its column dropped by a narrower pane, or the
     /// grid not drawn at all. Answers once per draw, so a commit of that
@@ -1816,9 +1829,11 @@ impl VarManager {
         // narrow pane drops columns, and the keys stop where it does).
         // No grid (a per-environment selector with no environment) is the
         // bare ghost row: the moves go nowhere, and Esc still leaves.
-        // A grid that drew no column (task #200) keeps its row moves; Tab
-        // and Right have no column to go to and keep the stored one, and
-        // Enter and F2 open nothing (`start_cell_edit`).
+        // A grid that drew no column (task #200) has nothing on screen to
+        // move over: Tab and Right keep the stored column, the row moves
+        // keep the cursor's option (task #202), both come back as they
+        // were once the grid is drawn again, and Enter and F2 open nothing
+        // (`start_cell_edit`). Left, Esc and BackTab still leave it.
         let (last_row, ncols) = self.grid_shape(ctx).unwrap_or((0, 1));
         let last_col = ncols.saturating_sub(1);
         // The column the cursor shows on (`grid_at` clamps on read): the
@@ -1833,7 +1848,9 @@ impl VarManager {
         let plain = ev.modifiers.is_empty();
         let ctrl = ev.modifiers == KeyModifiers::CONTROL;
         let step_to = |this: &mut Self, row: usize| {
-            this.point_grid(ctx, row.min(last_row), this.grid.cursor.col);
+            if ncols > 0 {
+                this.point_grid(ctx, row.min(last_row), this.grid.cursor.col);
+            }
             None
         };
         // A named key acts bare only; any other chord does nothing (piece
@@ -1893,9 +1910,13 @@ impl VarManager {
     }
 
     /// `space`: select the option the grid cursor is on for the active
-    /// environment. `None` on the ghost row (nothing to select yet) and
-    /// with no active environment.
+    /// environment. `None` on the ghost row (nothing to select yet), with
+    /// no active environment, and with no option row drawn (task #202:
+    /// from the left list too, which reads the same cursor).
     fn select_entry_action(&self, ctx: &Project, selector: &str) -> Option<Action> {
+        if !self.rows_drawn(ctx) {
+            return None;
+        }
         Some(Action::VarEdit(VarEditOp::SelectOption {
             env: op_env(ctx, selector)?,
             selector: selector.to_string(),
@@ -1950,16 +1971,22 @@ impl VarManager {
         let target = self
             .grid_at(ctx)
             .and_then(|(row, _)| Some((row, op_env(ctx, selector)?, self.entry_at(ctx, row)?)));
+        // The verbs that act on that option act only on one on screen
+        // (task #202): with no option row drawn they have no target and
+        // their chips drop. Rename is the name cell's edit instead, which
+        // `start_cell_edit` already refuses when the cell isn't drawn, and
+        // keeps its chip as a column a narrow pane hides does (#198, #200).
+        let shown = if self.rows_drawn(ctx) { target.clone() } else { None };
         match verb {
             Verb::Add => Some(Action::StartNewOptionEdit),
             Verb::Rename => target.map(|(row, _, _)| Action::StartOptionNameEdit { row }),
-            Verb::Delete { .. } => target.map(|(_, env, name)| Action::DeleteEntry {
+            Verb::Delete { .. } => shown.map(|(_, env, name)| Action::DeleteEntry {
                 env,
                 selector: selector.to_string(),
                 name,
             }),
             Verb::EditValue => {
-                let (_, _, option) = target?;
+                let (_, _, option) = shown?;
                 let decl =
                     postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), selector)?
                         .get(&option)?
@@ -1971,7 +1998,7 @@ impl VarManager {
                     values: decl.values,
                 })
             }
-            Verb::Yank => target.map(|(row, _, _)| Action::CopyOption { row }),
+            Verb::Yank => shown.map(|(row, _, _)| Action::CopyOption { row }),
             // A pasted option has no place in the grid to go above or
             // below: `above` is ignored, so vim's `P` pastes as `p` does
             // (arrows binds only `p`, #145).
@@ -4936,6 +4963,59 @@ fields = ["user_id", "customer_id"]
         assert!(vm.grid.editing.is_none(), "Enter opens nothing");
         vm.start_cell_edit(&ctx, 1, 1);
         assert!(vm.grid.editing.is_none(), "nor does a direct start");
+    }
+
+    /// Task #202: with no option row drawn, the option verbs have no
+    /// target: delete, copy, edit value and select resolve to nothing, so
+    /// neither their keys nor their chips act on an option nobody can see.
+    /// Rename is the name cell's edit and stays as #200 left it (its chip
+    /// shows, its edit opens nothing). Before, Delete removed bob unseen.
+    #[test]
+    fn a_pane_too_narrow_for_the_grid_gives_the_option_verbs_no_target() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.focus = VmFocus::Grid;
+        render_buf_at(&mut vm, &ctx, 116);
+        vm.point_grid(&ctx, 1, 0); // bob
+        render_buf_at(&mut vm, &ctx, LEFT_W + 5);
+        assert_eq!(vm.grid_shape(&ctx), Some((2, 0)), "no column drawn");
+
+        for verb in [Verb::Delete { count: 1 }, Verb::Yank, Verb::EditValue] {
+            assert_eq!(vm.verb_action(&ctx, None, verb), None, "{verb:?}");
+        }
+        assert_eq!(vm.handle_key(key(KeyCode::Delete), &ctx), None, "Delete");
+        assert_eq!(vm.handle_key(key(KeyCode::Char(' ')), &ctx), None, "Space");
+        let labels: Vec<&str> = vm.footer_chips(&ctx, None).iter().map(|(_, l, _)| *l).collect();
+        assert_eq!(labels, ["rename", "new option"]);
+
+        // Drawn again, the same verbs act on bob.
+        render_buf_at(&mut vm, &ctx, 116);
+        assert_eq!(vm.verb_action(&ctx, None, Verb::Yank), Some(Action::CopyOption { row: 1 }));
+        assert!(matches!(
+            vm.handle_key(key(KeyCode::Delete), &ctx),
+            Some(Action::DeleteEntry { name, .. }) if name == "bob"
+        ));
+    }
+
+    /// Task #202: with no option row drawn, the row moves have no row on
+    /// screen to move over and keep the cursor's option, as #200's Tab and
+    /// Right keep its column; drawn again, it is where it was.
+    #[test]
+    fn row_moves_with_no_grid_drawn_keep_the_cursor_option() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.focus = VmFocus::Grid;
+        render_buf_at(&mut vm, &ctx, 116);
+        vm.point_grid(&ctx, 1, 0); // bob
+        render_buf_at(&mut vm, &ctx, LEFT_W + 5);
+        for code in [KeyCode::Up, KeyCode::Home, KeyCode::Down, KeyCode::End] {
+            vm.handle_key(key(code), &ctx);
+            assert_eq!(vm.grid_at(&ctx), Some((1, 0)), "{code:?} kept bob");
+        }
+        render_buf_at(&mut vm, &ctx, 116);
+        assert_eq!(vm.grid_at(&ctx), Some((1, 0)), "still on bob");
     }
 
     /// Task #198: the row's copy and delete buttons keep a zone no column
