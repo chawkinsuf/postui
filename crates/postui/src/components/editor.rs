@@ -5739,12 +5739,12 @@ mod tests {
         assert!(e.body_drag_to(x + 1, area.y));
         assert_eq!(e.body_selected_text().as_deref(), Some("{\""));
         assert_eq!(lit_body_cells(&mut e), 0, "a mouse selection");
-        // A double click on the `[` takes its block.
-        assert!(e.body_select_word_at(x + 6, area.y));
-        assert_eq!(e.body_selected_text().as_deref(), Some("[1]"));
-        assert_eq!(lit_body_cells(&mut e), 0, "a double click's block");
-        e.body_select_all();
-        assert_eq!(lit_body_cells(&mut e), 0, "select-all");
+        // A double click on the `1` takes the word and leaves the caret on
+        // the `]`, whose pair is outside the selection.
+        assert!(e.body_select_word_at(x + 7, area.y));
+        assert_eq!(e.body_selected_text().as_deref(), Some("1"));
+        assert_eq!(e.body.cursor, edtui::Index2::new(0, 8), "the caret on `]`");
+        assert_eq!(lit_body_cells(&mut e), 0, "a double click's word");
     }
 
     /// #189 (spec R21): the vim profile keeps Vim's matchparen in Visual
