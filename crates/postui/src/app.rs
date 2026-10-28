@@ -1684,14 +1684,11 @@ impl App {
     /// does not show. The request editor's are not the screen's and stay
     /// as they are. `false`, with no switch, when one refuses to.
     fn switch_manage_tab_state(&mut self, tab: crate::components::manage::ManageTab) -> bool {
-        use crate::components::manage::ManageTab;
         if !self.close_inputs_or_stop(false) {
             return false;
         }
         self.manage.switch_list(tab);
-        if matches!(tab, ManageTab::Environments | ManageTab::Spaces) {
-            self.settle_list(tab);
-        }
+        self.settle_list(tab);
         true
     }
 
@@ -1704,18 +1701,18 @@ impl App {
     }
 
     /// Settles `tab`'s own list cursor on the first item when it is on
-    /// nothing, as the list comes on screen (spec 2026-10-27 N6).
+    /// nothing, as the list comes on screen (spec 2026-10-27 N6). A no-op
+    /// for the tabs with no list (Variables, Settings): `list_for_mut`
+    /// would hand back the live list, which is another tab's.
     fn settle_list(&mut self, tab: crate::components::manage::ManageTab) {
+        use crate::components::manage::ManageTab;
+        if !matches!(tab, ManageTab::Environments | ManageTab::Spaces) {
+            return;
+        }
         let Self { project, manage, .. } = self;
         if let Some(p) = project {
             manage.list_for_mut(tab).settle(tab, p);
         }
-    }
-
-    /// The app's own rename of `from` to `to` in `tab`'s list: that list's
-    /// cursor, live or parked, follows it (spec N8).
-    fn list_renamed(&mut self, tab: crate::components::manage::ManageTab, from: &str, to: &str) {
-        self.manage.list_for_mut(tab).renamed(from, to);
     }
 
     /// The neighbour a delete of `name` from `tab`'s list hands the cursor
@@ -1727,17 +1724,6 @@ impl App {
     ) -> Option<String> {
         self.project()
             .and_then(|p| crate::components::manage_list::ManageList::neighbour(tab, p, name))
-    }
-
-    /// The app's own delete of `name` from `tab`'s list landed: that list's
-    /// cursor, live or parked, moves to `next` if it was on it (spec N7).
-    fn list_removed(
-        &mut self,
-        tab: crate::components::manage::ManageTab,
-        name: &str,
-        next: Option<String>,
-    ) {
-        self.manage.list_for_mut(tab).removed(name, next);
     }
 
     /// Re-reads the project's own documents, without the app-level
@@ -5519,15 +5505,8 @@ impl App {
                 // must not land on a same-named item here. With Manage up on
                 // one of them, it settles on the new project's first item now.
                 self.manage.reset_lists();
-                let tab = self.manage.tab;
-                if self.screen == Screen::Manage
-                    && matches!(
-                        tab,
-                        crate::components::manage::ManageTab::Environments
-                            | crate::components::manage::ManageTab::Spaces
-                    )
-                {
-                    self.settle_list(tab);
+                if self.screen == Screen::Manage {
+                    self.settle_list(self.manage.tab);
                 }
                 self.open_error = None;
                 self.sidebar.notice = None;
@@ -5730,6 +5709,7 @@ impl App {
                 }
                 let t = self.begin_list_op(crate::components::manage::ManageTab::Environments);
                 let Some(p) = self.project.as_mut() else {
+                    self.op_in_flight = false;
                     return true;
                 };
                 match p.create_environment(&name) {
@@ -6872,14 +6852,9 @@ impl App {
                     // The list tab coming up settles its cursor on its
                     // first item when it is on nothing (spec 2026-10-27
                     // N6): the first open, or its item went while the
-                    // screen was down. A tab switch above already did.
-                    if matches!(
-                        target,
-                        crate::components::manage::ManageTab::Environments
-                            | crate::components::manage::ManageTab::Spaces
-                    ) {
-                        self.settle_list(target);
-                    }
+                    // screen was down. (A tab switch above settled it
+                    // already; settling is idempotent.)
+                    self.settle_list(target);
                     self.prior_focus = self.focus;
                     self.screen = Screen::Manage;
                     // A freshly opened screen snaps its underline onto
@@ -7717,6 +7692,7 @@ impl App {
                 }
                 let t = self.begin_list_op(crate::components::manage::ManageTab::Spaces);
                 let Some(p) = self.project.as_mut() else {
+                    self.op_in_flight = false;
                     return true;
                 };
                 match p.create_space(&name) {
@@ -7768,7 +7744,7 @@ impl App {
                 match p.rename_environment(&from, &to) {
                     Ok(to) => {
                         let envs = crate::components::manage::ManageTab::Environments;
-                        self.list_renamed(envs, &from, &to);
+                        self.manage.list_for_mut(envs).renamed(&from, &to);
                         if self.screen == Screen::Manage {
                             self.sync_varmanager();
                             // With its tab on screen, the list jumps onto
@@ -7865,7 +7841,7 @@ impl App {
                         if self.screen == Screen::Manage {
                             self.sync_varmanager();
                         }
-                        self.list_removed(envs, &name, next);
+                        self.manage.list_for_mut(envs).removed(&name, next);
                         self.record_project_step(t, crate::undo::StepLabel::delete_env(&display));
                     }
                     Err(e) => {
@@ -7902,7 +7878,7 @@ impl App {
                 };
                 match p.rename_space(&from, &to) {
                     Ok(to) => {
-                        self.list_renamed(spaces, &from, &to);
+                        self.manage.list_for_mut(spaces).renamed(&from, &to);
                         self.follow_space(&from, &to);
                         let from_prefix = format!("{from}/");
                         let rekey = |s: &str| {
@@ -8002,7 +7978,7 @@ impl App {
                         } else {
                             self.land(Landing::default());
                         }
-                        self.list_removed(spaces, &name, next);
+                        self.manage.list_for_mut(spaces).removed(&name, next);
                         self.record_project_step(t, crate::undo::StepLabel::delete_space(&display));
                     }
                     Err(e) => {

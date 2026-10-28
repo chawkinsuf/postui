@@ -922,6 +922,12 @@ impl VarManager {
         let VmDetail::Group(selector) = &self.detail else {
             return None;
         };
+        // A per-environment selector with no environment active has no
+        // grid (the pane shows its hint), so no ghost row either: on
+        // nothing.
+        if ctx.active_env().is_none() && !is_shared(ctx, selector) {
+            return None;
+        }
         let options = shown_options(ctx, selector);
         let i = match self.grid.cursor.row.as_ref()? {
             GridRow::Ghost => options.map_or(0, IndexMap::len),
@@ -1004,6 +1010,13 @@ impl VarManager {
             VarStructOp::PasteOption { env, selector, .. }
                 if self.grid_shows(ctx, env, selector) && adds_here =>
             {
+                // The name core will give the paste, by core's own rule
+                // (`pasted_option_name`) over the options core counts as
+                // taken: `grid_shows` holds, so `env` is the active
+                // environment (or the selector is shared) and the table
+                // read here is the one core's `options_of_for` reads. The
+                // alternative, core returning the name it wrote, would
+                // change `apply_var_edit`'s contract for this one op.
                 let stash = self.stash.as_ref().filter(|s| s.selector == *selector)?;
                 let taken = shown_options(ctx, selector);
                 let name = postui_core::project::pasted_option_name(&stash.name, |n| {
