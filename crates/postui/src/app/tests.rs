@@ -780,9 +780,9 @@ fn ctrl_d_pages_the_manage_list_through_the_router() {
         app.update(Action::CreateSpace(n.into()));
     }
     app.update(Action::OpenManage { tab: Some(crate::components::manage::ManageTab::Spaces) });
-    app.manage.list.cursor = 0;
+    set_manage_cursor(&mut app, 0);
     app.handle_key(ctrl('d'));
-    assert_ne!(app.manage.list.cursor, 0, "ctrl+d must move the cursor");
+    assert_ne!(manage_cursor(&app), Some(0), "ctrl+d must move the cursor");
 }
 
 /// ctrl+d is unbound at the global keymap, so it must reach the focused
@@ -5435,14 +5435,15 @@ fn each_manage_list_tab_keeps_its_own_cursor() {
     assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
     assert_eq!(app.proj().environments(), ["prod", "qa"]);
     app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
-    app.manage.list.cursor = 1;
+    set_manage_cursor(&mut app, 1);
     app.update(Action::SelectManageTab(ManageTab::Spaces));
     assert_eq!(
-        app.manage.list.cursor, 2,
+        manage_cursor(&app),
+        Some(2),
         "the Spaces tab arrives on its own cursor (the create left it on billing), not on the env cursor"
     );
     assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("billing"));
-    app.manage.list.cursor = 1;
+    set_manage_cursor(&mut app, 1);
     app.update(Action::SelectManageTab(ManageTab::Environments));
     assert_eq!(
         app.manage_selected(ManageTab::Environments).as_deref(),
@@ -5458,34 +5459,37 @@ fn each_manage_list_tab_keeps_its_own_cursor() {
         "Spaces kept its own cursor"
     );
     app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
-    assert_eq!(app.manage.list.cursor, 1, "OpenManage keeps it too");
+    assert_eq!(manage_cursor(&app), Some(1), "OpenManage keeps it too");
 }
 
+/// #83 N7 (was "a parked cursor clamps", 2026-09-27 R7): the app's own
+/// delete of a parked list's item moves that list's cursor to the item now
+/// at its index, the last one when it was the last.
 #[test]
-fn a_parked_manage_cursor_clamps_to_a_shrunken_list() {
+fn deleting_a_parked_lists_item_lands_its_cursor_on_the_neighbour() {
     use crate::components::manage::ManageTab;
     let (mut app, _dir) = manage_envs_app();
     assert_eq!(app.proj().environments(), ["prod", "qa", "dev"]);
-    app.manage.list.cursor = 2;
+    set_manage_cursor(&mut app, 2);
     app.update(Action::SelectManageTab(ManageTab::Spaces));
     app.update(Action::DeleteEnv("dev".into()));
     assert_eq!(app.proj().environments(), ["prod", "qa"]);
     app.update(Action::SelectManageTab(ManageTab::Environments));
-    assert_eq!(app.manage.list.cursor, 1, "clamped to the last row");
+    assert_eq!(manage_cursor(&app), Some(1), "the last row");
     assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"));
 }
 
 #[test]
 fn deleting_an_environment_lands_the_manage_cursor_on_the_neighbour() {
     let (mut app, _dir) = manage_envs_app();
-    app.manage_select_name("dev");
+    app.select_list_row(ManageTab::Environments, "dev");
     app.update(Action::DeleteEnv("dev".into()));
     assert_eq!(
         app.manage_selected(crate::components::manage::ManageTab::Environments).as_deref(),
         Some("qa"),
         "the last row went: the one above"
     );
-    app.manage_select_name("prod");
+    app.select_list_row(ManageTab::Environments, "prod");
     app.update(Action::DeleteEnv("prod".into()));
     assert_eq!(
         app.manage_selected(crate::components::manage::ManageTab::Environments).as_deref(),
@@ -8500,7 +8504,7 @@ fn manage_environments_pane_has_a_tls_control_that_writes_the_force() {
     use postui_core::project::TlsPolicy;
     let (mut app, _dir) = app_with_envs();
     app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
-    app.manage_select_name("prod");
+    app.select_list_row(ManageTab::Environments, "prod");
     let text = rendered_text_tall(&mut app);
     assert!(text.contains("TLS"), "{text}");
     assert!(text.contains("Per request"), "{text}");
@@ -11697,7 +11701,19 @@ fn goto_row(app: &mut App, pred: impl Fn(&crate::components::varmanager::VmRow) 
     }
     rendered_text(app);
     let i = app.varmanager.left_rows.iter().position(pred).expect("no row matched");
-    app.varmanager.select_row(i);
+    vm_select_row(app, i);
+}
+
+/// The Variable Manager's left list onto row `i`, as a click.
+fn vm_select_row(app: &mut App, i: usize) {
+    let App { project, varmanager, .. } = app;
+    varmanager.select_row(project.as_ref().expect("a project"), i);
+}
+
+/// The Variable Manager's left list onto the declaration `name`.
+fn vm_select_name(app: &mut App, name: &str) {
+    let App { project, varmanager, .. } = app;
+    varmanager.select_name(project.as_ref().expect("a project"), name);
 }
 
 #[test]
@@ -12134,7 +12150,7 @@ fn shared_selector_grid_edit_and_ghost_row_work_without_an_env() {
     let mut app = shared_locale_app(dir.path());
     app.update(Action::SwitchEnv(None));
     app.sync_varmanager();
-    app.varmanager.select_name("locale");
+    vm_select_name(&mut app, "locale");
 
     // The ghost row starts a new option with no environment active…
     app.update(Action::StartNewOptionEdit);
@@ -13116,7 +13132,7 @@ fn every_manage_button_lands_on_the_same_rows_in_both_columns() {
         // frame under it before it can name a row.
         rendered_text_wide_tall(&mut app);
         if let Some(name) = select {
-            app.varmanager.select_name(name);
+            vm_select_name(&mut app, name);
         }
         rendered_text_wide_tall(&mut app);
         let rects: Vec<(String, ratatui::layout::Rect)> = buttons
@@ -18321,7 +18337,7 @@ fn vm_footer_drops_chips_with_no_target() {
     // Grid focus with the cursor on the ghost row: only "new option".
     goto_group(&mut app, "user");
     app.varmanager.focus = VmFocus::Grid;
-    app.varmanager.grid.cursor = (2, 0); // alice, bob, then the ghost
+    point_grid(&mut app, 2, 0); // alice, bob, then the ghost
     let keys: Vec<String> =
         spelled_on(Surface::VarGrid, app.varmanager.footer_chips(app.proj(), None))
             .into_iter()
@@ -18358,7 +18374,7 @@ fn option_rename_is_the_inline_name_cell_edit() {
     // The grid's `F2` opens the same inline edit on the cursor row (`e` is
     // the full Edit prompt now).
     app.varmanager.focus = VmFocus::Grid;
-    app.varmanager.grid.cursor = (0, 1);
+    point_grid(&mut app, 0, 1);
     app.handle_key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
     assert!(app.modals.is_empty(), "no rename modal");
     let edit = app.varmanager.grid.editing.as_ref().expect("inline edit");
@@ -18666,7 +18682,7 @@ fn the_keyboard_reaches_the_grid_selects_a_row_and_edits_the_focused_cell() {
     app.handle_key(arrow(KeyCode::Right));
     assert_eq!(app.varmanager.focus, VmFocus::Grid);
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    assert_eq!(app.varmanager.grid.cursor.0, 1);
+    assert_eq!(grid_at(&app).map(|(row, _)| row), Some(1));
     assert_eq!(
         app.varmanager.detail,
         crate::components::varmanager::VmDetail::Group("user".into()),
@@ -19611,7 +19627,7 @@ fn manage_pane_buttons_sit_right_aligned_on_the_title_row() {
     app.update(Action::ReloadProjectFiles);
     app.update(Action::SelectManageTab(ManageTab::Variables));
     rendered_text_wide_tall(&mut app); // builds the left rows
-    app.varmanager.select_row(1); // row 0 is the "Variables" section header
+    vm_select_row(&mut app, 1); // row 0 is the "Variables" section header
     rendered_text_wide_tall(&mut app);
     let vm_delete = app.hits.rect_of(&Hit::VmDelete).expect("a var's Delete");
     assert_eq!(vm_delete.y, delete.y);
@@ -19637,13 +19653,13 @@ fn alt_arrows_reorder_the_environments_tab_too() {
     let (mut app, _dir) = app_with_envs();
     app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    assert_eq!(app.manage.list.cursor, 1);
+    assert_eq!(manage_cursor(&app), Some(1));
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
     assert_eq!(app.proj().environments(), ["qa", "prod"]);
-    assert_eq!(app.manage.list.cursor, 0, "cursor follows the moved environment");
+    assert_eq!(manage_cursor(&app), Some(0), "cursor follows the moved environment");
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
     assert_eq!(app.proj().environments(), ["prod", "qa"]);
-    assert_eq!(app.manage.list.cursor, 1);
+    assert_eq!(manage_cursor(&app), Some(1));
 }
 
 #[test]
@@ -19652,10 +19668,10 @@ fn list_keys_move_delete_and_rename_through_the_prompt() {
     let (mut app, _dir) = spaced_app();
     app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    assert_eq!(app.manage.list.cursor, 1);
+    assert_eq!(manage_cursor(&app), Some(1));
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
     assert_eq!(app.proj().spaces(), ["auth", "main"]);
-    assert_eq!(app.manage.list.cursor, 0, "cursor follows the moved space");
+    assert_eq!(manage_cursor(&app), Some(0), "cursor follows the moved space");
 
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty(), "Enter is not rename");
@@ -19723,7 +19739,7 @@ fn clicking_new_delete_and_a_row_dispatch_the_right_actions() {
     app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
     rendered_text_tall(&mut app);
     click_hit(&mut app, Hit::ManageRow(1));
-    assert_eq!(app.manage.list.cursor, 1);
+    assert_eq!(manage_cursor(&app), Some(1));
     click_hit(&mut app, Hit::ManageNew);
     assert!(matches!(
         app.modals.top(),
@@ -19743,7 +19759,7 @@ fn right_clicking_an_environment_row_opens_its_menu_with_move_items() {
     rendered_text_tall(&mut app);
     let r = app.hits.rect_of(&Hit::ManageRow(1)).unwrap();
     app.handle_mouse(right_down(r.x + 1, r.y));
-    assert_eq!(app.manage.list.cursor, 1, "the right click selects the row");
+    assert_eq!(manage_cursor(&app), Some(1), "the right click selects the row");
     let Some(Modal::Dropdown(menu)) = app.modals.top() else {
         panic!("expected a context menu");
     };
@@ -19767,7 +19783,7 @@ fn right_clicking_a_space_row_opens_its_menu_with_move_items() {
     rendered_text_tall(&mut app);
     let r = app.hits.rect_of(&Hit::ManageRow(0)).unwrap();
     app.handle_mouse(right_down(r.x + 1, r.y));
-    assert_eq!(app.manage.list.cursor, 0);
+    assert_eq!(manage_cursor(&app), Some(0));
     let Some(Modal::Dropdown(menu)) = app.modals.top() else {
         panic!("expected a context menu");
     };
@@ -21960,9 +21976,9 @@ mod undo_tests {
     #[test]
     fn deleting_an_environment_from_the_manage_list_undo_reselects_it() {
         let (mut app, _dir) = manage_envs_app();
-        app.manage_select_name("qa");
+        app.select_list_row(ManageTab::Environments, "qa");
         app.update(Action::DeleteEnv("qa".into()));
-        app.manage_select_name("prod");
+        app.select_list_row(ManageTab::Environments, "prod");
         app.update(Action::Undo);
         assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"));
     }
@@ -21970,9 +21986,9 @@ mod undo_tests {
     #[test]
     fn deleting_a_space_from_the_manage_list_undo_reselects_it() {
         let (mut app, _dir) = manage_spaces_app();
-        app.manage_select_name("auth");
+        app.select_list_row(ManageTab::Spaces, "auth");
         app.update(Action::DeleteSpace("auth".into()));
-        app.manage_select_name("main");
+        app.select_list_row(ManageTab::Spaces, "main");
         app.update(Action::Undo);
         assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("auth"));
     }
@@ -21980,7 +21996,7 @@ mod undo_tests {
     #[test]
     fn undoing_an_env_delete_off_screen_reselects_it_when_the_tab_opens() {
         let (mut app, _dir) = manage_envs_app();
-        app.manage_select_name("qa");
+        app.select_list_row(ManageTab::Environments, "qa");
         app.update(Action::DeleteEnv("qa".into()));
         app.update(Action::SelectManageTab(ManageTab::Spaces));
         app.update(Action::Undo);
@@ -21996,13 +22012,18 @@ mod undo_tests {
     fn undoing_a_space_create_off_manage_puts_the_spaces_cursor_back() {
         let (mut app, _dir) = spaced_app();
         assert_eq!(app.screen, Screen::Main);
-        assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("main"));
+        // Never shown, the list is on nothing (task #83, spec 2026-10-27
+        // N6): it settles on its first item as it comes on screen.
+        assert_eq!(app.manage_selected(ManageTab::Spaces), None);
         app.update(Action::CreateSpace("Zeta".into()));
         assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("zeta"));
         app.update(Action::Undo);
-        assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("main"));
+        assert_eq!(app.manage_selected(ManageTab::Spaces), None, "back on nothing");
         app.update(Action::Redo);
         assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("zeta"));
+        app.update(Action::Undo);
+        app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
+        assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("main"));
     }
 
     #[test]
@@ -22011,12 +22032,13 @@ mod undo_tests {
         var_project(dir.path());
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::with_root(tx, dir.path().to_path_buf());
-        let before = app.manage_selected(ManageTab::Environments);
-        assert!(before.is_some());
+        let first = app.proj().environments()[0].clone();
         app.update(Action::CreateEnv("Stage".into()));
         assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("stage"));
         app.update(Action::Undo);
-        assert_eq!(app.manage_selected(ManageTab::Environments), before);
+        assert_eq!(app.manage_selected(ManageTab::Environments), None, "back on nothing");
+        app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+        assert_eq!(app.manage_selected(ManageTab::Environments), Some(first));
     }
 
     #[test]
@@ -22045,9 +22067,9 @@ mod undo_tests {
     #[test]
     fn undoing_one_of_two_env_deletes_reselects_the_right_row() {
         let (mut app, _dir) = manage_envs_app();
-        app.manage_select_name("qa");
+        app.select_list_row(ManageTab::Environments, "qa");
         app.update(Action::DeleteEnv("qa".into()));
-        app.manage_select_name("dev");
+        app.select_list_row(ManageTab::Environments, "dev");
         app.update(Action::DeleteEnv("dev".into()));
         app.update(Action::Undo);
         assert_eq!(app.proj().environments(), ["prod", "dev"]);
@@ -27207,7 +27229,7 @@ fn a_press_and_wiggle_on_one_space_row_is_not_a_drag() {
     assert!(app.manage.list.drag.is_none(), "same row, no drag");
     app.handle_mouse(left_up(r1.x + 6, r1.y));
     assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"]);
-    assert_eq!(app.manage.list.cursor, 1, "the press still selected it");
+    assert_eq!(manage_cursor(&app), Some(1), "the press still selected it");
 }
 
 #[test]
@@ -31612,7 +31634,7 @@ fn every_text_surface_under_edit_answers_the_mouse_identically() {
                 // and its neighbours do.
                 app.update(Action::OpenManage { tab: Some(ManageTab::Variables) });
                 render_once(&mut app); // builds the left rows
-                app.varmanager.select_name("base");
+                vm_select_name(&mut app, "base");
                 let hit = Hit::VmFormField(VmField::Description);
                 click_hit(&mut app, hit.clone());
                 assert!(app.varmanager.form.editing.is_some(), "field is live");
@@ -33026,6 +33048,642 @@ fn a_declaration_added_above_on_disk_keeps_the_cursor_on_the_open_row() {
     assert_eq!(app.varmanager.detail, VmDetail::Var("base_url".into()), "Up from the open row");
 }
 
+// ---- Task #83: the Manage cursors remember their item by name ----------
+
+use crate::action::Verb;
+
+/// The grid cursor's `(row, col)` now, or `None` when it is on nothing.
+fn grid_at(app: &App) -> Option<(usize, usize)> {
+    app.varmanager.grid_at(app.proj())
+}
+
+/// Puts the grid cursor on `(row, col)`, through the owner's writer.
+fn point_grid(app: &mut App, row: usize, col: usize) {
+    let App { project, varmanager, .. } = app;
+    varmanager.point_grid(project.as_ref().expect("a project"), row, col);
+}
+
+/// The keyboard into the grid, as Tab from the left list.
+fn enter_grid(app: &mut App) {
+    let App { project, varmanager, .. } = app;
+    assert!(varmanager.enter_detail(project.as_ref().expect("a project")), "the grid takes it");
+}
+
+/// The open Manage list tab's cursor as a row index, or `None` on nothing.
+fn manage_cursor(app: &App) -> Option<usize> {
+    let tab = app.manage.tab;
+    app.manage.list.cursor_in(app.manage_items(tab))
+}
+
+/// Puts the open Manage list tab's cursor on row `i`, as a click does.
+fn set_manage_cursor(app: &mut App, i: usize) {
+    let App { project, manage, .. } = app;
+    let tab = manage.tab;
+    manage.list.select_index(tab, project.as_ref().expect("a project"), i);
+}
+
+/// Another program reordering the spaces. `mark` is a trailing comment
+/// that changes the file's length, so the mtime gate sees the rewrite even
+/// on a coarse-mtime filesystem (a reorder alone keeps the length).
+fn reorder_spaces_outside(dir: &std::path::Path, order: &[String], mark: &str) {
+    postui_core::fixtures::write_spaces(dir, order).unwrap();
+    let path = dir.join("project.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("{text}\n# {mark}\n")).unwrap();
+}
+
+/// The option names `selector` shows in the active environment, in order.
+fn option_names(app: &App, selector: &str) -> Vec<String> {
+    postui_core::varmodel::options_of(app.variables(), app.env_data(), selector)
+        .map(|e| e.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// #83 N1, the task's repro: an outside edit that drops alice moves bob up
+/// a row, and the grid cursor goes with him, so `dd` deletes bob.
+#[test]
+fn an_outside_edit_that_renumbers_the_options_keeps_the_grid_cursor_on_its_option() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    enter_grid(&mut app);
+    point_grid(&mut app, 1, 1);
+    assert_eq!(app.varmanager.entry_at(app.proj(), 1).as_deref(), Some("bob"));
+    rewrite_qa_without_alice(dir.path());
+    app.on_focus_gained();
+    render_once(&mut app);
+    assert_eq!(option_names(&app, "user"), ["bob", "carol"]);
+    assert_eq!(grid_at(&app), Some((0, 1)), "bob moved up a row and the cursor with him");
+    assert_eq!(
+        app.varmanager.verb_action(app.proj(), None, Verb::Delete { count: 1 }),
+        Some(Action::DeleteEntry { env: "qa".into(), selector: "user".into(), name: "bob".into() })
+    );
+}
+
+/// #83 N1: with typing open in bob's cell, the reload's close saves it
+/// into the file as it is on disk (alice gone), and the cursor stays on
+/// bob, which the close's own re-read moved up a row.
+#[test]
+fn a_reload_with_a_grid_cell_open_keeps_the_cursor_on_its_option() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    app.vm_start_cell_edit(1, 1); // bob's user
+    type_chars(&mut app, "7");
+    rewrite_qa_without_alice(dir.path());
+    app.on_focus_gained();
+    render_once(&mut app);
+    assert!(app.varmanager.grid.editing.is_none(), "the cell closed");
+    assert_eq!(grid_at(&app), Some((0, 1)));
+    assert_eq!(app.varmanager.entry_at(app.proj(), 0).as_deref(), Some("bob"));
+}
+
+/// #83 N1 + N8: a rename typed into bob's name cell, saved by the reload's
+/// close, leaves the cursor on the renamed option.
+#[test]
+fn a_reload_that_saves_a_rename_keeps_the_cursor_on_the_renamed_option() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    app.vm_start_cell_edit(1, 0); // bob's name
+    type_chars(&mut app, "by");
+    rewrite_qa_without_alice(dir.path());
+    app.on_focus_gained();
+    render_once(&mut app);
+    assert!(app.varmanager.grid.editing.is_none(), "the cell closed");
+    assert_eq!(option_names(&app, "user"), ["bobby", "carol"]);
+    assert_eq!(grid_at(&app), Some((0, 0)));
+}
+
+/// #83 N1: the reload's close of a grid cell writes the env file, which
+/// re-lists the environments as they are on disk; the parked Environments
+/// cursor stays on the environment it was on.
+#[test]
+fn a_reload_with_a_grid_cell_open_keeps_the_parked_environment_cursor() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    app.select_list_row(ManageTab::Environments, "qa");
+    app.update(Action::SelectManageTab(ManageTab::Variables));
+    goto_group(&mut app, "user");
+    app.vm_start_cell_edit(1, 1); // bob's user
+    type_chars(&mut app, "7");
+    std::fs::write(dir.path().join("environments/alpha.toml"), "").unwrap();
+    app.on_focus_gained();
+    assert!(app.varmanager.grid.editing.is_none(), "the cell closed");
+    assert_eq!(app.proj().environments()[0], "alpha");
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"));
+}
+
+/// #83 N4: the ghost row is its own place, so an option added on disk
+/// leaves a cursor on the ghost row on the ghost row.
+#[test]
+fn an_option_added_on_disk_leaves_a_ghost_row_cursor_on_the_ghost() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    enter_grid(&mut app);
+    point_grid(&mut app, 2, 0); // alice, bob, then the ghost
+    let path = dir.path().join("environments/qa.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("{text}\n[options.user.carol]\nuser = \"3003\"\n")).unwrap();
+    app.on_focus_gained();
+    render_once(&mut app);
+    assert_eq!(option_names(&app, "user"), ["alice", "bob", "carol"]);
+    assert_eq!(grid_at(&app), Some((3, 0)), "still the ghost row");
+}
+
+/// #83 N1: an environment added on disk above the selected one leaves the
+/// Manage Environments cursor on it.
+#[test]
+fn an_environment_added_above_on_disk_keeps_the_manage_cursor_on_its_row() {
+    let (mut app, dir) = app_with_envs();
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    set_manage_cursor(&mut app, 1);
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"));
+    std::fs::write(dir.path().join("environments/alpha.toml"), "tok = \"a\"\n").unwrap();
+    app.on_focus_gained();
+    render_once(&mut app);
+    assert_eq!(app.proj().environments(), ["alpha", "prod", "qa"]);
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"));
+    assert_eq!(manage_cursor(&app), Some(2));
+}
+
+/// #83 N1: an outside reorder of the spaces leaves both the live and a
+/// parked Manage cursor on the space each was on.
+#[test]
+fn an_outside_space_reorder_keeps_live_and_parked_manage_cursors_on_their_rows() {
+    let (mut app, dir) = spaced_app();
+    postui_core::fixtures::create_space(dir.path(), "billing").unwrap();
+    app.resync_project();
+    assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
+    set_manage_cursor(&mut app, 1);
+    assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("auth"));
+    let order = ["billing", "main", "auth"].map(String::from);
+    reorder_spaces_outside(dir.path(), &order, "a");
+    app.on_focus_gained();
+    assert_eq!(app.proj().spaces(), order);
+    assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("auth"), "live");
+    // Parked: the Spaces cursor waits while Environments is on screen.
+    app.update(Action::SelectManageTab(ManageTab::Environments));
+    let order = ["auth", "billing", "main"].map(String::from);
+    reorder_spaces_outside(dir.path(), &order, "bb");
+    app.on_focus_gained();
+    app.update(Action::SelectManageTab(ManageTab::Spaces));
+    assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("auth"), "parked");
+}
+
+/// #83 N12: a reload under a live Manage drag cancels it and leaves the
+/// cursor on the dragged space in the order on disk.
+#[test]
+fn a_reload_under_a_manage_drag_leaves_the_cursor_on_the_dragged_row() {
+    let (mut app, dir) = manage_spaces_app();
+    let r0 = manage_row(&mut app, 0);
+    let r2 = manage_row(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert_eq!(app.manage.list.drag.as_ref().unwrap().working, ["auth", "billing", "main"]);
+    let order = ["main", "billing", "auth"].map(String::from);
+    reorder_spaces_outside(dir.path(), &order, "a");
+    app.on_focus_gained();
+    assert!(app.manage.list.drag.is_none());
+    assert_eq!(app.proj().spaces(), order);
+    assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("main"));
+}
+
+/// #83 N5: another program deleting the selected environment leaves the
+/// list on nothing: no row highlighted, the pane's hint, and `dd` acts on
+/// nothing. ↓ then lands on the first row.
+#[test]
+fn an_environment_deleted_outside_leaves_the_manage_cursor_on_nothing() {
+    let (mut app, dir) = manage_envs_app();
+    app.select_list_row(ManageTab::Environments, "qa");
+    std::fs::remove_file(dir.path().join("environments/qa.toml")).unwrap();
+    app.on_focus_gained();
+    let text = rendered_text_wide(&mut app);
+    assert!(!app.proj().environments().contains(&"qa".to_string()), "qa is gone");
+    assert_eq!(manage_cursor(&app), None);
+    assert_eq!(app.manage_selected(ManageTab::Environments), None);
+    assert!(text.contains("Select an environment"), "{text}");
+    let ctx = app.proj();
+    assert_eq!(
+        app.manage.list.verb_action(ManageTab::Environments, ctx, Verb::Delete { count: 1 }),
+        None
+    );
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(manage_cursor(&app), Some(0));
+}
+
+/// #83 N5: the same for a grid option another program deleted.
+#[test]
+fn an_option_deleted_outside_leaves_the_grid_cursor_on_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    enter_grid(&mut app);
+    point_grid(&mut app, 1, 0); // bob
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "# edited elsewhere\nbase_url = \"https://qa.example.com\"\n\n[options.user.alice]\nuser = \"1001\"\n\n[options.user.carol]\nuser = \"3003\"\n",
+    )
+    .unwrap();
+    app.on_focus_gained();
+    render_once(&mut app);
+    assert_eq!(option_names(&app, "user"), ["alice", "carol"]);
+    assert_eq!(grid_at(&app), None);
+    assert_eq!(app.varmanager.verb_action(app.proj(), None, Verb::Delete { count: 1 }), None);
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(grid_at(&app), Some((0, 0)), "↓ lands on the first row");
+}
+
+/// #83 N6: the first open of an Environments list selects its first item.
+#[test]
+fn the_first_open_of_the_environments_tab_selects_the_first_row() {
+    let (mut app, _dir) = app_with_envs();
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("prod"));
+}
+
+/// #83 N6: a parked list whose item another program removed settles on
+/// the first row when its tab comes back, not on the end of the list.
+#[test]
+fn a_parked_cursor_whose_item_went_outside_settles_on_the_first_row() {
+    let (mut app, dir) = manage_envs_app();
+    app.select_list_row(ManageTab::Environments, "dev");
+    app.update(Action::SelectManageTab(ManageTab::Spaces));
+    std::fs::remove_file(dir.path().join("environments/dev.toml")).unwrap();
+    app.on_focus_gained();
+    assert_eq!(app.proj().environments(), ["prod", "qa"]);
+    app.update(Action::SelectManageTab(ManageTab::Environments));
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("prod"));
+}
+
+/// #83 N6, N6a: a selector opened where it has no options is on nothing;
+/// entering its grid lands on the ghost row, the only row. Opened where it
+/// has none and then shown where it has some, it is on the first option
+/// once the keyboard enters, not on the ghost row.
+#[test]
+fn an_empty_grid_opens_on_nothing_and_is_entered_on_the_ghost_row() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::SwitchEnv(Some("dev".into()))); // dev has no options
+    goto_group(&mut app, "user");
+    assert_eq!(grid_at(&app), None);
+    app.update(Action::SwitchEnv(Some("qa".into())));
+    enter_grid(&mut app);
+    assert_eq!(grid_at(&app), Some((0, 0)), "alice, not the ghost row");
+    app.update(Action::SwitchEnv(Some("dev".into())));
+    app.varmanager.focus = crate::components::varmanager::VmFocus::List;
+    enter_grid(&mut app);
+    assert_eq!(grid_at(&app), Some((0, 0)));
+    assert_eq!(app.varmanager.entry_at(app.proj(), 0), None, "the ghost row");
+}
+
+/// #83 N7: deleting another environment (from the header) leaves the
+/// cursor on its own environment, below the deleted one too.
+#[test]
+fn deleting_another_environment_leaves_the_manage_cursor_on_its_own() {
+    let (mut app, _dir) = manage_envs_app();
+    app.select_list_row(ManageTab::Environments, "qa");
+    app.update(Action::DeleteEnv("prod".into()));
+    assert_eq!(app.proj().environments(), ["qa", "dev"]);
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"));
+}
+
+/// #83 N7: deleting the last option puts the grid cursor on the ghost row.
+#[test]
+fn deleting_the_last_option_puts_the_grid_cursor_on_the_ghost_row() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    enter_grid(&mut app);
+    point_grid(&mut app, 1, 0); // bob, the last option
+    let dd = app.varmanager.verb_action(app.proj(), None, Verb::Delete { count: 1 }).unwrap();
+    app.update(dd);
+    assert_eq!(option_names(&app, "user"), ["alice"]);
+    assert_eq!(grid_at(&app), Some((1, 0)), "the ghost row");
+    assert_eq!(app.varmanager.entry_at(app.proj(), 1), None);
+}
+
+/// #83 N7, N9: the app's own create and delete re-read the env file they
+/// write, so another program's edit lands with them; the cursor still goes
+/// to the option the op meant (named before the write), not to whatever
+/// took that index.
+#[test]
+fn grid_ops_land_by_name_when_their_write_takes_in_an_outside_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    app.vm_start_cell_edit(2, 0); // the ghost row
+    type_chars(&mut app, "new");
+    // Another program adds zed, ahead of the create.
+    let path = dir.path().join("environments/qa.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("# zed\n{text}\n[options.user.zed]\nuser = \"9\"\n")).unwrap();
+    assert!(app.close_manager_input(), "the create saved");
+    let names = option_names(&app, "user");
+    assert_eq!(names, ["alice", "bob", "zed", "new"]);
+    assert_eq!(grid_at(&app), Some((3, 0)), "on new, not on zed at the ghost's old index");
+    // Another program puts aaron first; the delete of alice lands on bob.
+    point_grid(&mut app, 0, 0); // alice
+    let text = std::fs::read_to_string(&path).unwrap().replacen(
+        "[options.user.alice]",
+        "[options.user.aaron]\nuser = \"0\"\n\n[options.user.alice]",
+        1,
+    );
+    std::fs::write(&path, format!("# aaron\n{text}")).unwrap();
+    let dd = app.varmanager.verb_action(app.proj(), None, Verb::Delete { count: 1 }).unwrap();
+    app.update(dd);
+    assert_eq!(option_names(&app, "user"), ["aaron", "bob", "zed", "new"]);
+    assert_eq!(grid_at(&app), Some((1, 0)), "on bob, alice's neighbour, not on aaron");
+}
+
+/// #83 N9: the ghost row's walk-on (Enter) opens the new option's first
+/// field even when the create's write took in an option another program
+/// added, and Tab from a cell steps from the committed option's row after
+/// its write, not from the row the cell was opened at.
+#[test]
+fn the_cell_walks_go_on_from_the_option_by_name_across_their_write() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let path = dir.path().join("environments/qa.toml");
+    app.vm_start_cell_edit(2, 0); // the ghost row
+    type_chars(&mut app, "new");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("# zed\n{text}\n[options.user.zed]\nuser = \"9\"\n")).unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(option_names(&app, "user"), ["alice", "bob", "zed", "new"]);
+    let edit = app.varmanager.grid.editing.as_ref().expect("walked on");
+    assert_eq!((edit.row, edit.col), (3, 1), "new's first field, not zed's");
+    assert!(app.close_manager_input());
+    // Tab from alice's value cell, with aaron put first by another program.
+    app.vm_start_cell_edit(0, 1); // alice's user
+    type_chars(&mut app, "7");
+    let text = std::fs::read_to_string(&path).unwrap().replacen(
+        "[options.user.alice]",
+        "[options.user.aaron]\nuser = \"0\"\n\n[options.user.alice]",
+        1,
+    );
+    std::fs::write(&path, format!("# aaron\n{text}")).unwrap();
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(option_names(&app, "user"), ["aaron", "alice", "bob", "zed", "new"]);
+    let edit = app.varmanager.grid.editing.as_ref().expect("stepped on");
+    assert_eq!(app.varmanager.entry_at(app.proj(), edit.row).as_deref(), Some("bob"));
+    assert_eq!(edit.col, 0, "bob's name cell, the one after alice's user");
+}
+
+/// #83 N7: an environment delete re-lists the environment files on disk,
+/// so one another program added lands with it; the cursor still goes to
+/// the deleted one's neighbour by name.
+#[test]
+fn an_environment_delete_lands_by_name_when_it_takes_in_an_outside_edit() {
+    let (mut app, dir) = app_with_envs();
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("prod"));
+    std::fs::write(dir.path().join("environments/aaa.toml"), "").unwrap();
+    app.update(Action::DeleteEnv("prod".into()));
+    // aaa sorts first, so prod's old index now holds it.
+    assert_eq!(app.proj().environments(), ["aaa", "qa"]);
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"));
+}
+
+/// #83 N3: `dd` then undo lands on the restored option; redo on the
+/// neighbour that took its place.
+#[test]
+fn grid_dd_then_undo_lands_on_the_restored_option() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    enter_grid(&mut app);
+    point_grid(&mut app, 0, 0); // alice
+    let dd = app.varmanager.verb_action(app.proj(), None, Verb::Delete { count: 1 }).unwrap();
+    app.update(dd);
+    assert_eq!(option_names(&app, "user"), ["bob"]);
+    assert_eq!(
+        app.varmanager.entry_at(app.proj(), grid_at(&app).unwrap().0).as_deref(),
+        Some("bob")
+    );
+    app.update(Action::Undo);
+    assert_eq!(option_names(&app, "user"), ["alice", "bob"]);
+    assert_eq!(grid_at(&app), Some((0, 0)), "on alice, restored");
+    app.update(Action::Redo);
+    assert_eq!(option_names(&app, "user"), ["bob"]);
+    assert_eq!(grid_at(&app), Some((0, 0)), "on bob, the neighbour");
+}
+
+/// #83 N3 + N9: a ghost-row create lands on the new option, and its undo
+/// on the ghost row.
+#[test]
+fn a_ghost_row_create_and_its_undo_land_on_the_option_then_the_ghost() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    app.vm_start_cell_edit(2, 0); // the ghost row
+    type_chars(&mut app, "carol");
+    assert!(app.close_manager_input(), "the create saved");
+    assert_eq!(option_names(&app, "user"), ["alice", "bob", "carol"]);
+    assert_eq!(
+        app.varmanager.entry_at(app.proj(), grid_at(&app).unwrap().0).as_deref(),
+        Some("carol")
+    );
+    app.update(Action::Undo);
+    assert_eq!(option_names(&app, "user"), ["alice", "bob"]);
+    assert_eq!(grid_at(&app), Some((2, 0)), "the ghost row");
+}
+
+/// #83 N3 + N8: a grid rename keeps the cursor on the option under its new
+/// name, and its undo on the old one.
+#[test]
+fn a_grid_rename_and_its_undo_keep_the_cursor_on_the_option() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    app.vm_start_cell_edit(0, 0); // alice's name
+    type_chars(&mut app, "z");
+    assert!(app.close_manager_input(), "the rename saved");
+    assert_eq!(option_names(&app, "user"), ["alicez", "bob"]);
+    assert_eq!(grid_at(&app), Some((0, 0)));
+    // An outside edit puts carol first: the cursor stays on alicez by name.
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "# edited elsewhere\n[options.user.carol]\nuser = \"3003\"\n\n[options.user.alicez]\nuser = \"1001\"\n\n[options.user.bob]\nuser = \"2002\"\n",
+    )
+    .unwrap();
+    app.on_focus_gained();
+    assert_eq!(grid_at(&app), Some((1, 0)), "on alicez");
+}
+
+/// #83 N9: a paste with the cursor on the ghost row lands on the option
+/// it added.
+#[test]
+fn a_paste_on_the_ghost_row_lands_on_the_pasted_option() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    enter_grid(&mut app);
+    point_grid(&mut app, 0, 0);
+    app.update(Action::CopyOption { row: 0 });
+    point_grid(&mut app, 2, 0); // the ghost row
+    let paste = app
+        .varmanager
+        .verb_action(app.proj(), None, Verb::Put { above: false, count: 1 })
+        .expect("armed");
+    app.update(paste);
+    let names = option_names(&app, "user");
+    assert_eq!(names.len(), 3, "{names:?}");
+    assert_eq!(grid_at(&app), Some((2, 0)), "on the pasted option: {names:?}");
+    assert_eq!(app.varmanager.entry_at(app.proj(), 2).as_deref(), Some(names[2].as_str()));
+}
+
+/// #83 N10: an environment switch keeps the grid cursor on the option of
+/// the same name, wherever it sits there, and on nothing where there is
+/// none.
+#[test]
+fn an_env_switch_keeps_the_grid_cursor_on_the_same_named_option() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    std::fs::write(
+        dir.path().join("environments/dev.toml"),
+        "[options.user.carol]\nuser = \"3\"\n\n[options.user.dave]\nuser = \"4\"\n\n[options.user.bob]\nuser = \"2\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("environments/prod.toml"), "").unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    enter_grid(&mut app);
+    point_grid(&mut app, 1, 1); // bob in qa
+    app.update(Action::SwitchEnv(Some("dev".into())));
+    assert_eq!(grid_at(&app), Some((2, 1)), "bob in dev");
+    app.update(Action::SwitchEnv(Some("prod".into())));
+    assert_eq!(grid_at(&app), None, "prod has no bob");
+}
+
+/// #83 N9: a paste with the grid cursor on nothing (here an environment
+/// switch found no option of its name) lands on the pasted option.
+#[test]
+fn a_paste_with_the_grid_on_nothing_lands_on_the_pasted_option() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    app.update(Action::CopyOption { row: 0 }); // alice
+    point_grid(&mut app, 1, 0); // bob, which dev does not have
+    app.update(Action::SwitchEnv(Some("dev".into()))); // no options
+    assert_eq!(grid_at(&app), None);
+    let paste = Action::VarStruct(VarStructOp::PasteOption {
+        env: "dev".into(),
+        selector: "user".into(),
+        count: 1,
+    });
+    app.update(paste);
+    assert_eq!(option_names(&app, "user"), ["alice"]);
+    assert_eq!(grid_at(&app), Some((0, 0)), "on the pasted alice");
+}
+
+/// #83 N3: an undo made after an environment switch restores the option in
+/// the environment it was recorded in, so the grid does not land on a
+/// same-named option of the environment it shows now.
+#[test]
+fn an_undo_after_an_env_switch_does_not_land_on_another_envs_option() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    std::fs::write(
+        dir.path().join("environments/dev.toml"),
+        "[options.user.carol]\nuser = \"3\"\n\n[options.user.dave]\nuser = \"4\"\n\n[options.user.bob]\nuser = \"2\"\n",
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    enter_grid(&mut app);
+    point_grid(&mut app, 1, 0); // bob in qa, the last option
+    let dd = app.varmanager.verb_action(app.proj(), None, Verb::Delete { count: 1 }).unwrap();
+    app.update(dd);
+    assert_eq!(grid_at(&app), Some((1, 0)), "qa's ghost row");
+    app.update(Action::SwitchEnv(Some("dev".into())));
+    assert_eq!(grid_at(&app), Some((3, 0)), "dev's ghost row");
+    app.update(Action::Undo);
+    assert_eq!(grid_at(&app), Some((3, 0)), "not dev's bob at row 2");
+}
+
+/// #83: a project switch starts the Manage lists over, so a slug of the
+/// project left does not select the same-named item of the new one.
+#[test]
+fn a_project_switch_starts_the_manage_lists_over() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let other = tempfile::tempdir().unwrap();
+    var_project(other.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    app.select_list_row(ManageTab::Environments, "qa");
+    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+    let first = app.proj().environments()[0].clone();
+    assert_ne!(first, "qa", "the test needs qa not to be first");
+    assert_eq!(app.manage_selected(ManageTab::Environments), Some(first));
+}
+
+/// #83 N8 + N3: renaming the environment the parked list is on, from the
+/// header with the screen closed, keeps the list on it; undo puts the list
+/// back on the old name.
+#[test]
+fn a_header_rename_with_the_screen_closed_keeps_the_list_on_the_environment() {
+    let (mut app, _dir) = manage_envs_app();
+    app.select_list_row(ManageTab::Environments, "qa");
+    app.update(Action::CloseScreen);
+    app.update(Action::RenameEnv { from: "qa".into(), to: "staging".into() });
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("staging"));
+    app.update(Action::CloseScreen);
+    app.update(Action::Undo);
+    app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
+    assert_eq!(app.manage_selected(ManageTab::Environments).as_deref(), Some("qa"));
+}
+
+/// #83 N8: the same for a space, renamed while its tab is parked.
+#[test]
+fn a_rename_of_a_parked_space_keeps_its_list_on_it() {
+    let (mut app, _dir) = manage_spaces_app();
+    app.select_list_row(ManageTab::Spaces, "auth");
+    app.update(Action::SelectManageTab(ManageTab::Environments));
+    app.update(Action::RenameSpace { from: "auth".into(), to: "identity".into() });
+    app.update(Action::SelectManageTab(ManageTab::Spaces));
+    assert_eq!(app.manage_selected(ManageTab::Spaces).as_deref(), Some("identity"));
+}
+
 /// The Variable Manager's highlighted row is the one its detail pane shows.
 fn assert_highlight_names_the_detail(app: &App) {
     use crate::components::varmanager::{VmDetail, VmRow};
@@ -33096,7 +33754,7 @@ fn a_project_switch_starts_the_manager_over_on_a_same_named_selector() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_group(&mut app, "user");
     use crate::components::varmanager::{FormStop, VmDetail, VmField, VmFocus};
-    app.varmanager.grid.cursor = (1, 1);
+    point_grid(&mut app, 1, 1);
     app.varmanager.grid.scroll = 1;
     app.varmanager.focus = VmFocus::Grid;
     app.varmanager.left_scroll = 2;
@@ -33104,7 +33762,7 @@ fn a_project_switch_starts_the_manager_over_on_a_same_named_selector() {
     app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
     let vm = &app.varmanager;
     assert_eq!(vm.detail, VmDetail::None);
-    assert_eq!((vm.grid.cursor, vm.grid.scroll), ((0, 0), 0));
+    assert_eq!((grid_at(&app), vm.grid.scroll), (None, 0));
     assert_eq!(vm.focus, VmFocus::List);
     assert_eq!((vm.left_cursor, vm.left_scroll), (0, 0));
     assert_eq!(vm.form_cursor, FormStop::Field(VmField::Description));
@@ -34606,7 +35264,7 @@ fn a_variables_edit_left_on_another_tab_does_not_take_the_caret() {
     app.use_profile(KeyProfile::Vim);
     app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
     assert!(app.manage_items(ManageTab::Environments).len() >= 2);
-    app.manage.list.cursor = 0;
+    set_manage_cursor(&mut app, 0);
 
     for form in [true, false] {
         if form {
@@ -34621,9 +35279,9 @@ fn a_variables_edit_left_on_another_tab_does_not_take_the_caret() {
             });
         }
         assert_eq!(app.field_caret(), FieldCaret::None, "form edit: {form}");
-        app.manage.list.cursor = 0;
+        set_manage_cursor(&mut app, 0);
         app.handle_key(plain('j'));
-        assert_eq!(app.manage.list.cursor, 1, "vim j moves the list (form edit: {form})");
+        assert_eq!(manage_cursor(&app), Some(1), "vim j moves the list (form edit: {form})");
     }
 }
 
@@ -34815,7 +35473,7 @@ fn selection_action_on_the_manage_lists() {
         app.update(Action::CreateEnv(name.into()));
     }
     app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
-    app.manage.list.cursor = 0;
+    set_manage_cursor(&mut app, 0);
     let first = app.manage_selected(ManageTab::Environments).unwrap();
     for s in [
         Surface::ManageList(ManageTab::Environments),
@@ -34877,7 +35535,7 @@ fn selection_action_on_the_variables_tab() {
 
     goto_row(&mut app, |r| *r == VmRow::Group("user".into()));
     app.varmanager.focus = VmFocus::Grid;
-    app.varmanager.grid.cursor = (0, 0);
+    point_grid(&mut app, 0, 0);
     assert_eq!(app.selection_action(Surface::VarGrid, Verb::Add), Some(Action::StartNewOptionEdit));
     assert_eq!(
         app.selection_action(Surface::VarGrid, Verb::Yank),
@@ -34952,7 +35610,7 @@ fn option_rename_starts_on_a_shared_selector_without_an_environment() {
     assert!(app.active_env().is_none(), "no environment is active");
     goto_row(&mut app, |r| *r == VmRow::Group("locale".into()));
     app.varmanager.focus = VmFocus::Grid;
-    app.varmanager.grid.cursor = (0, 0);
+    point_grid(&mut app, 0, 0);
     app.update(Action::StartOptionNameEdit { row: 0 });
     assert!(app.varmanager.grid.editing.is_some());
 }

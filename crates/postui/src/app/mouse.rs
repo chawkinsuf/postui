@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::components::manage::ManageTab;
+use crate::components::manage_list::ManageList;
 use crate::keyroute::{FieldCaret, FieldId};
 
 /// A left press's click counts. `list` is a pair (same hit within 400 ms;
@@ -568,14 +569,21 @@ impl App {
                     }
                     Hit::VmLeftRow(i) => {
                         changed |= self.varmanager.left_cursor != *i;
-                        self.varmanager.select_row(*i);
+                        let Self { project, varmanager, .. } = self;
+                        if let Some(p) = project {
+                            varmanager.select_row(p, *i);
+                        }
                     }
                     // An Environments/Spaces row: the click lands the
                     // list's cursor on it (the detail pane follows) before
                     // its menu opens, like a left click would.
                     Hit::ManageRow(i) => {
-                        changed |= self.manage.list.cursor != *i;
-                        self.manage.list.cursor = *i;
+                        let Self { project, manage, .. } = self;
+                        if let Some(p) = project {
+                            let tab = manage.tab;
+                            changed |= manage.list.cursor_in(ManageList::items(tab, p)) != Some(*i);
+                            manage.list.select_index(tab, p, *i);
+                        }
                     }
                     // Same rule for a grid row: the click moves the grid's
                     // cursor onto it (and the keyboard with it) before its
@@ -585,10 +593,10 @@ impl App {
                             Hit::VmEntryCell { col, .. } => *col,
                             _ => 0,
                         };
-                        changed |= self.varmanager.grid.cursor != (*row, col)
+                        changed |= self.project().and_then(|p| self.varmanager.grid_at(p))
+                            != Some((*row, col))
                             || self.varmanager.focus != VmFocus::Grid;
-                        self.varmanager.grid.cursor = (*row, col);
-                        self.varmanager.focus = VmFocus::Grid;
+                        self.vm_point_grid(*row, col);
                     }
                     Hit::TableRow(i)
                     | Hit::TableCheckbox(i)
@@ -1591,7 +1599,11 @@ impl App {
                 crate::components::manage::ManageTab::from_index(i),
             )),
             Hit::ManageRow(i) => {
-                self.manage.list.cursor = i;
+                let Self { project, manage, .. } = self;
+                if let Some(p) = project {
+                    let tab = manage.tab;
+                    manage.list.select_index(tab, p, i);
+                }
                 self.manage.list.leave_detail();
                 // A press on a Spaces or Environments row also arms a
                 // possible row drag; the click itself still just selects
@@ -2418,7 +2430,10 @@ impl App {
             // refused swallowed the click there), so selecting a row never
             // resets `form`/`grid` over live typing.
             Hit::VmLeftRow(i) => {
-                self.varmanager.select_row(i);
+                let Self { project, varmanager, .. } = self;
+                if let Some(p) = project {
+                    varmanager.select_row(p, i);
+                }
                 self.update(Action::Render)
             }
             // The Manager's environment switcher is the header env chip's
@@ -2456,7 +2471,7 @@ impl App {
                     .as_ref()
                     .is_some_and(|e| e.row == row && e.col == col);
                 if !already_editing {
-                    self.varmanager.grid.cursor = (row, col);
+                    // Puts the grid cursor on the cell too (`point_grid`).
                     self.vm_start_cell_edit(row, col);
                 }
                 // The cell draws windowed at the hit rect's own left edge;
@@ -2478,15 +2493,13 @@ impl App {
                 ) else {
                     return false;
                 };
-                self.varmanager.grid.cursor = (row, 0);
-                self.varmanager.focus = VmFocus::Grid;
+                self.vm_point_grid(row, 0);
                 self.update(Action::VarEdit(VarEditOp::SelectOption { env, selector, option }))
             }
             Hit::VmEntryCopy(row) => {
                 // The click takes the grid the way the trash beside it
                 // does, so the keyboard is left where the pointer acted.
-                self.varmanager.grid.cursor = (row, 0);
-                self.varmanager.focus = VmFocus::Grid;
+                self.vm_point_grid(row, 0);
                 self.update(Action::CopyOption { row })
             }
             Hit::VmPasteOption => {
@@ -2515,8 +2528,7 @@ impl App {
                 ) else {
                     return false;
                 };
-                self.varmanager.grid.cursor = (row, 0);
-                self.varmanager.focus = VmFocus::Grid;
+                self.vm_point_grid(row, 0);
                 self.update(Action::DeleteEntry { env, selector, name })
             }
             Hit::VmNewOption => {

@@ -605,7 +605,15 @@ fn var_app() -> App {
 /// Puts the Variables list cursor (and detail pane) on `row`.
 fn select_var_row(app: &mut App, row: VmRow) {
     let i = app.varmanager.left_rows.iter().position(|r| *r == row).expect("the row is listed");
-    app.varmanager.select_row(i);
+    let App { project, varmanager, .. } = app;
+    varmanager.select_row(project.as_ref().expect("a project"), i);
+}
+
+/// Puts the open Manage list tab's cursor on its first row.
+fn manage_cursor_on_first(app: &mut App) {
+    let App { project, manage, .. } = app;
+    let tab = manage.tab;
+    manage.list.select_index(tab, project.as_ref().expect("a project"), 0);
 }
 
 pub(super) fn build(f: Fixture) -> App {
@@ -765,7 +773,7 @@ pub(super) fn build(f: Fixture) -> App {
                 app.update(Action::CreateEnv(name.into()));
             }
             app.update(Action::OpenManage { tab: Some(ManageTab::Environments) });
-            app.manage.list.cursor = 0;
+            manage_cursor_on_first(&mut app);
             if matches!(f, ManageEnvDetail) {
                 // In by the arrows profile's own key, after a draw has
                 // painted the buttons the aim lands on.
@@ -794,7 +802,8 @@ pub(super) fn build(f: Fixture) -> App {
         VarGrid => {
             select_var_row(&mut app, VmRow::Group("user".into()));
             app.varmanager.focus = VmFocus::Grid;
-            app.varmanager.grid.cursor = (0, 0);
+            let App { project, varmanager, .. } = &mut app;
+            varmanager.point_grid(project.as_ref().expect("a project"), 0, 0);
         }
         VarForm => {
             select_var_row(&mut app, VmRow::Var("alpha".into()));
@@ -804,7 +813,7 @@ pub(super) fn build(f: Fixture) -> App {
         ManageSpaces => {
             app.update(Action::CreateSpace("auth".into()));
             app.update(Action::OpenManage { tab: Some(ManageTab::Spaces) });
-            app.manage.list.cursor = 0;
+            manage_cursor_on_first(&mut app);
         }
         VarListGroup => select_var_row(&mut app, VmRow::Group("user".into())),
         Body => {
@@ -866,7 +875,7 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
             app.session.response.view().is_some_and(|v| v.scroll + v.height() - 1 == n)
         }
         Unnamed(s) => app.vim.glue.unnamed_text() == s,
-        ManageCursor(n) => app.manage.list.cursor == n,
+        ManageCursor(n) => app.manage.list.cursor_in(app.manage_items(app.manage.tab)) == Some(n),
         ManageFocus(f) => app.manage.list.focus == f,
         DetailAim(row, col) => {
             app.manage.list.focus == ListFocus::Detail
@@ -880,7 +889,9 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
                 == Some(name)
         }
         VmFocusIs(f) => app.varmanager.focus == f,
-        GridCell(row, col) => app.varmanager.grid.cursor == (row, col),
+        GridCell(row, col) => {
+            app.project.as_ref().and_then(|p| app.varmanager.grid_at(p)) == Some((row, col))
+        }
         FormAt(stop) => app.varmanager.form_cursor == stop,
         PromptOpen => matches!(app.modals.top(), Some(Modal::Prompt { .. })),
         FieldLive(live) => app.field_caret().is_live() == live,
@@ -944,7 +955,7 @@ fn check(app: &App, e: Expect) -> Result<(), String> {
             app.editor.table.selected(),
             app.editor.sub_focus,
             app.varmanager.focus,
-            app.varmanager.grid.cursor,
+            app.project.as_ref().and_then(|p| app.varmanager.grid_at(p)),
             app.varmanager.form_cursor,
             app.manage.list.detail_row,
             app.manage.list.detail_col,

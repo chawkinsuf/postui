@@ -95,6 +95,10 @@ pub struct View {
     pub open: Open,
     pub cursor: Option<RowKey>,
     pub row: Option<ListRow>,
+    /// The Variable Manager grid's cursor row, while its pane shows a
+    /// selector and the cursor is on something (task #83, spec 2026-10-27
+    /// N3), so undoing a `dd` lands on the restored option.
+    pub grid: Option<crate::components::varmanager::GridSpot>,
 }
 
 /// What the editor holds. `buffer` is `Some` only while the editor holds
