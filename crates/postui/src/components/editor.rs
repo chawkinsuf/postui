@@ -1488,7 +1488,9 @@ impl Editor {
         let (y0, segments) = &view.rows[row - view.top];
         let shown = usize::from(view.bottom.saturating_sub(*y0)).min(segments.len());
         let col = match shown.checked_sub(1) {
-            Some(k) if shown < segments.len() => before.col.min(segments[k].end - 1),
+            // `saturating_sub`: a wide char too wide for a one-cell text
+            // column leaves an empty first row (`wrap_segments`).
+            Some(k) if shown < segments.len() => before.col.min(segments[k].end.saturating_sub(1)),
             _ => before.col,
         };
         // edtui's column clamp: on a char in Normal, after one otherwise.
@@ -5574,6 +5576,19 @@ mod tests {
         assert_eq!(e.body.viewport_offset().1, 0);
         assert!(wheel(&mut e, true), "the notch is still the body's");
         assert_eq!(e.body.cursor, caret);
+    }
+
+    /// #181, review round 9: a cut-off line whose first row is empty (a
+    /// wide char in a one-cell text column) takes the caret without an
+    /// underflow.
+    #[test]
+    fn the_caret_follows_onto_a_cut_off_line_with_an_empty_first_row() {
+        let mut e = body_editor("a\n中中");
+        // Gutter 2, one text column, two rows: "a", then the first of the
+        // wide line's three (empty, 中, 中).
+        let area = Rect::new(0, 0, line_number_gutter_width(2) + 1, 2);
+        e.caret_into_view(area, edtui::Index2::new(1, 1));
+        assert_eq!(e.body.cursor.row, 1);
     }
 
     /// #181, review round 6: the wheel goes down until the last line shows
