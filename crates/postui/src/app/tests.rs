@@ -19243,7 +19243,9 @@ fn tab_skips_a_description_column_the_narrow_grid_does_not_draw() {
 /// commit of a grid edit the draw left off screen (task #199).
 fn main_loop_frame_at(app: &mut App, w: u16, h: u16) {
     rendered_text_at(app, w, h);
-    app.commit_grid_edit_off_screen();
+    if app.commit_grid_edit_off_screen() {
+        app.vim_catch_up();
+    }
 }
 
 /// Task #199 (the user: "198 a."): a resize that drops the column of an
@@ -19307,6 +19309,9 @@ fn a_refused_commit_of_a_hidden_grid_edit_keeps_it_and_toasts_once() {
     let edit = app.varmanager.grid.editing.as_ref().expect("a refusal keeps the edit");
     assert_eq!((edit.row, edit.col, edit.input.text()), (0, 2, "x"));
     assert_eq!(app.toasts.messages().len(), 1, "{:?}", app.toasts.messages());
+    // The commit ends with the event tail every input gets: the op the
+    // refusal opened is not left in flight.
+    assert!(!app.op_in_flight);
     main_loop_frame_at(&mut app, 50, 30);
     main_loop_frame_at(&mut app, 49, 30);
     assert_eq!(app.toasts.messages().len(), 1, "no retry per frame: {:?}", app.toasts.messages());

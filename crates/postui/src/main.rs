@@ -244,7 +244,10 @@ async fn run(
             redraw = app.resync_hover();
             // A narrower terminal can leave an open grid edit off screen:
             // it commits here, after the draw that hid it (task #199).
-            redraw |= app.commit_grid_edit_off_screen();
+            if app.commit_grid_edit_off_screen() {
+                redraw = true;
+                app.vim_catch_up();
+            }
         }
 
         tokio::select! {

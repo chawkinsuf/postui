@@ -9561,16 +9561,27 @@ impl App {
     /// the user: "198 a."), so the typing is kept and nothing stays live
     /// off screen. The draw is the one place that learns what fits, and a
     /// draw writes nothing, so it records what it painted
-    /// ([`VarManager::take_edit_hidden_by_draw`]) and the write happens
-    /// here, at the event boundary right after it. Returns whether
-    /// anything changed (the caller repaints).
+    /// ([`VarManager::take_edit_hidden_by_draw`]; the recorded grid width
+    /// would miss a frame with no room for the grid, which records none)
+    /// and the write happens here, at the event boundary right after it.
+    /// It ends as the grid's own keys do (`handle_grid_key`), through
+    /// `update(Action::Render)`, so the commit gets the same event tail
+    /// as any input. Returns whether it acted (the caller repaints and
+    /// catches the vim session up, as for an async action).
     ///
-    /// A refused commit keeps its edit and toasts, as every refusal does.
-    /// Its cell is still off screen, so the edit stays live there with the
-    /// toast saying why; widening the pane shows it again, and its keys
-    /// (Enter, Esc, Tab) commit as before. It is not retried on the next
-    /// draw (the edit was not painted, so nothing went off screen), so a
-    /// refusal toasts once rather than once a frame. (mine)
+    /// A dialog over the screen doesn't stop it: the commit saves what was
+    /// typed into the cell and nothing else, as a click away would, and a
+    /// dialog that changes project state closes the open inputs first
+    /// anyway (close-input-first).
+    ///
+    /// A refused commit keeps its edit and toasts, as every refusal does
+    /// (a refused close keeps its input). Its cell is still off screen, so
+    /// the edit stays live there with the toast saying why; widening the
+    /// pane shows it again, and its keys (Enter, Esc, Tab) commit as
+    /// before. Cancelling it instead would lose the typing the ruling
+    /// keeps. It is not retried on the next draw (the edit was not
+    /// painted, so nothing went off screen), so a refusal toasts once
+    /// rather than once a frame. (mine)
     ///
     /// [`VarManager::take_edit_hidden_by_draw`]: crate::components::varmanager::VarManager::take_edit_hidden_by_draw
     pub fn commit_grid_edit_off_screen(&mut self) -> bool {
@@ -9578,6 +9589,7 @@ impl App {
             return false;
         }
         self.commit_grid_edit(false);
+        self.update(Action::Render);
         true
     }
 
