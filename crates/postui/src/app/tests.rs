@@ -15862,7 +15862,7 @@ fn an_editor_footer_chip_click_leaves_an_open_cell_or_the_caret_as_its_action_do
     }
 }
 
-/// Task #192's three states and #194's two, drawn wide so every footer
+/// Task #192's three states and #194's three, drawn wide so every footer
 /// chip fits, the URL blank so the send chip toasts rather than spawning a
 /// send: `cell`, a header's value open with typing in it; `body`, the Body's
 /// caret mid-text; `url`, the URL line selected (not open); `url_open`, the
@@ -16052,6 +16052,8 @@ fn an_editor_footer_chip_click_matches_its_vim_key_on_the_url_line_or_method() {
         Action::OpenVarPicker { completing: false } => vec![alt('v')],
         Action::CycleTabs(1) => events("gt"),
         Action::OpenPalette => vec![ctrl('p')],
+        // Normal's chips (the method badge): in Insert the footer draws
+        // `^P commands` and `^C quit` instead.
         Action::OpenExPalette => events(":"),
         Action::Quit => vec![ctrl('c'), ctrl('c')],
         Action::CloseWindow { write: false, force: false } => events(":q<CR>"),
@@ -16144,6 +16146,44 @@ fn a_footer_chip_click_drops_a_pending_operator_and_ctrl_o_in_vim() {
     type_keys(&mut app, "x");
     assert_eq!(app.editor.url.text(), "xabc", "the click ended the ctrl+o");
     assert_eq!(app.vim_status().as_deref(), Some("INSERT"));
+}
+
+/// Task #194: the vars chip is the one chip whose action reads vim's mode:
+/// its picker takes a Visual selection (the pick replaces it), a pending
+/// operator and a ctrl+o as alt+v does, though the click's settle comes
+/// after the action. Checked by the text and mode after a pick and the
+/// next key.
+#[test]
+fn the_footer_vars_chip_click_picks_as_alt_v_does_in_vim() {
+    for (before, after) in [("0vl", ""), ("0d", "l"), ("0i<C-o>", "x")] {
+        let run = |by_key: bool| {
+            let mut app = app_with_vars();
+            app.anims.enabled = false;
+            app.use_profile(crate::config::KeyProfile::Vim);
+            app.editor.url = LineInput::new("abc");
+            app.focus = PaneId::Editor;
+            app.editor.table.set_selected(None);
+            click_hit(&mut app, Hit::UrlBar);
+            type_keys(&mut app, before);
+            if by_key {
+                app.handle_key(alt('v'));
+            } else {
+                render_once(&mut app);
+                let footer = app.settled_layout().expect("drawn").footer;
+                let chip = Hit::FooterChip(Action::OpenVarPicker { completing: false });
+                let rects = app.hits.rects_of(&chip);
+                let r = rects.iter().find(|r| footer.contains(r.as_position())).expect("vars");
+                app.handle_mouse(left_down(r.x, r.y));
+            }
+            assert!(matches!(app.modals.top(), Some(Modal::VarPicker(_))), "{before}");
+            click_hit(&mut app, Hit::VarPickerRow(0));
+            type_keys(&mut app, after);
+            (app.editor.url.text().to_string(), app.editor.url_open(), app.vim_status())
+        };
+        let by_click = run(false);
+        assert_eq!(by_click, run(true), "{before}");
+        assert!(by_click.0.starts_with("{{base}}"), "{before}: {by_click:?}");
+    }
 }
 
 /// Task #183: the rule is the footer's strip, not the action. The address
