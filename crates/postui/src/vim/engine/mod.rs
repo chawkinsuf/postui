@@ -759,7 +759,9 @@ impl Engine {
     /// Visual from Normal or Insert; any other GUI selection is dropped. A
     /// `Click`, a press off the text, ends Visual. A query box has no Visual layer, so its GUI
     /// selection stays (typing replaces it). A press drops a half-typed
-    /// command. In Insert, a caret the event moved splits the session as a
+    /// command. A `CommandLine` press keeps Visual, and while a search is
+    /// typed a press off the text keeps the search, its operator and Visual
+    /// (#129, below). In Insert, a caret the event moved splits the session as a
     /// cursor key does (Vim's `ins_mouse()`). Then the caret is clamped and
     /// becomes the wanted column.
     pub fn settle<B: TextBuf>(&mut self, t: Target<'_, B>, how: Settled) {

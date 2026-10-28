@@ -2676,10 +2676,11 @@ impl App {
     /// Moves the editor/response line `editor_delta` rows down (up when
     /// negative) from where the split's state puts it, un-eased, and saves
     /// a change (spec E13, P2). A minimized pane counts from its snap: the
-    /// editor from one row short of its floor (#129), the response from its
-    /// full header strip, so one row out of either end shows the editor at
-    /// its floor or one row of response content. Past either end it snaps
-    /// there, keeping the share (E6, E9a).
+    /// editor from one row short of its floor (`layout::editor_floor`,
+    /// #129; its chrome on a column too short for the floor), the response
+    /// from its full header strip, so one row out of either end shows the
+    /// editor at its floor or one row of response content. Past either end
+    /// it snaps there, keeping the share (E6, E9a).
     ///
     /// The rows come from the state at the settled layout's column height,
     /// not from a drawn editor rect: right after an eased change (`alt+w`,
@@ -2699,8 +2700,8 @@ impl App {
         };
         let now = self.split_state();
         let editor_rows = if now.editor_minimized {
-            use crate::components::editor::{CHROME_HEIGHT, CONTENT_MIN_HEIGHT};
-            CHROME_HEIGHT + CONTENT_MIN_HEIGHT - 1
+            crate::layout::editor_floor(column.height)
+                .map_or(crate::components::editor::CHROME_HEIGHT, |floor| floor - 1)
         } else if now.response_minimized {
             column.height.saturating_sub(crate::components::response::HEADER_STRIP_HEIGHT)
         } else {

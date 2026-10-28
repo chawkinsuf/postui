@@ -244,22 +244,33 @@ pub fn editor_share_for(column_height: u16, editor_rows: u16) -> f32 {
 /// that counts rows reads it from the split's state, since a frame drawn
 /// mid-ease shows rows the state has already left (review round 2 G6).
 ///
-/// The editor's content rows are floored at [`editor::CONTENT_MIN_HEIGHT`],
-/// so the body pane never shows fewer than [`editor::BODY_MIN_ROWS`] rows
-/// (#129): a share that would give fewer (a stop on a short window, a
-/// window made shorter) draws the floor. A floor, not a snap: the share is
-/// kept as it is. A column whose content rows can't hold the floor and a
-/// row of response content besides (the least a shown response has, as
-/// [`split_for_editor_rows`] has it) draws the share's rows, and the body
-/// counts as minimized there.
+/// The editor's rows are floored at [`editor_floor`], so the body pane
+/// never shows fewer than [`editor::BODY_MIN_ROWS`] rows (#129): a share
+/// that would give fewer (a stop on a short window, a window made shorter)
+/// draws the floor. A floor, not a snap: the share is kept as it is.
 pub fn editor_rows_for(column_height: u16, editor_share: f32) -> u16 {
     let editor_chrome = editor::CHROME_HEIGHT.min(column_height);
     let content = content_rows(column_height);
-    let mut rows = (content as f32 * editor_share.clamp(0.0, 1.0)).round() as u16;
-    if content > editor::CONTENT_MIN_HEIGHT {
-        rows = rows.max(editor::CONTENT_MIN_HEIGHT);
-    }
-    (editor_chrome + rows).min(column_height)
+    let rows = (content as f32 * editor_share.clamp(0.0, 1.0)).round() as u16;
+    let floor = editor_floor(column_height).map_or(0, |f| f - editor::CHROME_HEIGHT);
+    (editor_chrome + rows.max(floor)).min(column_height)
+}
+
+/// The fewest rows the shown editor has in a `column_height`-row column:
+/// its chrome plus [`editor::CONTENT_MIN_HEIGHT`], so the body pane shows
+/// [`editor::BODY_MIN_ROWS`] rows (#129; the user: "Shouldn't we not allow
+/// it to be less than 2 rows?"). One rule for both profiles and every
+/// tab: [`editor_rows_for`] draws no fewer, [`split_for_editor_rows`]
+/// minimizes the editor short of it, and a minimized editor's first
+/// `ctrl+w +` lands on it.
+///
+/// `None` on a column too short to give it and a row of response content
+/// besides (the least a shown response has): there the split behaves as
+/// it did before the floor, any rows from one past the chrome up, and the
+/// body counts as minimized while it has fewer than two rows.
+pub fn editor_floor(column_height: u16) -> Option<u16> {
+    (content_rows(column_height) > editor::CONTENT_MIN_HEIGHT)
+        .then_some(editor::CHROME_HEIGHT + editor::CONTENT_MIN_HEIGHT)
 }
 
 /// The rows a `column_height`-row main column has left after both panes'
@@ -282,15 +293,15 @@ fn content_rows(column_height: u16) -> u16 {
 }
 
 /// The split a drag of the editor/response boundary to `editor_rows` rows
-/// of editor means. Within the response's header strip of the bottom the
-/// response is minimized. Otherwise, short of the editor's floor (its
-/// chrome plus [`editor::CONTENT_MIN_HEIGHT`], so the body pane keeps two
-/// rows, #129) the editor is minimized: a drag stops at the floor and one
-/// row further minimizes, as a drag into the chrome always has. The
-/// response's test goes first, so on a column too short for both (where
-/// the two overlap) a drag to the bottom still minimizes the response.
-/// Both snaps keep `start.ratio`, so restoring lands where the user left
-/// it. Anywhere between, both show at the matching share.
+/// of editor means. Short of the editor's floor ([`editor_floor`], so the
+/// body pane keeps two rows, #129; on a column too short for the floor,
+/// at or above the chrome) the editor is minimized: a drag stops at the
+/// floor and one row further minimizes, as a drag into the chrome always
+/// has. Within the response's header strip of the bottom the response is.
+/// The floor never reaches the strip: it applies only where a row of
+/// response content fits below it. Both snaps keep `start.ratio`, so
+/// restoring lands where the user left it. Anywhere between, both show at
+/// the matching share.
 ///
 /// Leaving a minimized response therefore has a dead zone: its strip is
 /// one row ([`crate::components::response::COLLAPSED_HEIGHT`]), but a
@@ -305,17 +316,18 @@ pub fn split_for_editor_rows(
     editor_rows: i32,
 ) -> SplitState {
     let column = i32::from(column_height);
+    let floor = editor_floor(column_height).unwrap_or(editor::CHROME_HEIGHT + 1);
+    if editor_rows < i32::from(floor) {
+        return SplitState {
+            editor_minimized: true,
+            response_minimized: false,
+            ratio: start.ratio,
+        };
+    }
     if column - editor_rows <= i32::from(crate::components::response::HEADER_STRIP_HEIGHT) {
         return SplitState {
             editor_minimized: false,
             response_minimized: true,
-            ratio: start.ratio,
-        };
-    }
-    if editor_rows < i32::from(editor::CHROME_HEIGHT + editor::CONTENT_MIN_HEIGHT) {
-        return SplitState {
-            editor_minimized: true,
-            response_minimized: false,
             ratio: start.ratio,
         };
     }
@@ -738,16 +750,23 @@ mod tests {
             assert_eq!(editor_rows_for(column, 0.0), editor::CHROME_HEIGHT, "content {short}");
         }
         assert_eq!(editor_rows_for(editor::CHROME_HEIGHT + strip + min + 1, 0.0), floor);
-        // On such a column a drag to the bottom still minimizes the
-        // response, and one higher minimizes the editor: no shown split
-        // fits.
-        for short in [min - 1, min] {
+        // On such a column the split goes on as before the floor: a drag
+        // to the bottom minimizes the response, one row past the chrome
+        // shows both (the body then counts as minimized), the chrome
+        // minimizes the editor.
+        for short in [0, min - 1, min] {
             let column = editor::CHROME_HEIGHT + strip + short;
-            let bottom = i32::from(column - strip);
-            let s = split_for_editor_rows(start, column, bottom);
-            assert!(s.response_minimized && !s.editor_minimized, "content {short}");
-            let s = split_for_editor_rows(start, column, bottom - 1);
+            assert_eq!(editor_floor(column), None);
+            if short > 0 {
+                let s = split_for_editor_rows(start, column, i32::from(column - strip));
+                assert!(s.response_minimized && !s.editor_minimized, "content {short}");
+            }
+            let s = split_for_editor_rows(start, column, i32::from(editor::CHROME_HEIGHT));
             assert!(s.editor_minimized && !s.response_minimized, "content {short}");
+            if short > 1 {
+                let s = split_for_editor_rows(start, column, i32::from(editor::CHROME_HEIGHT) + 1);
+                assert!(!s.editor_minimized && !s.response_minimized, "content {short}");
+            }
         }
     }
 

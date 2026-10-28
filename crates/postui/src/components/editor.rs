@@ -3990,7 +3990,6 @@ impl Editor {
                     );
                 }
                 self.last_body_area = Some(area);
-                hits.register(area, crate::hit::Hit::BodyEditor);
                 // The kept row is the body's for every mouse input; a press
                 // there places no caret (`App::press_text`). One hit, not a
                 // hit of its own: what reads the body's text from a point
@@ -4000,9 +3999,12 @@ impl Editor {
                 // every mouse path in turn (focus, wheel, menu, pointer).
                 // The pointer is the body's text one there too: the row is
                 // the body's, as the rows past a short body's last line are.
+                // Registered before the text's rect, so `rect_of` (the last
+                // one registered) still answers the text's.
                 if let Some(row) = prompt_rect {
                     hits.register(row, crate::hit::Hit::BodyEditor);
                 }
+                hits.register(area, crate::hit::Hit::BodyEditor);
                 if focused {
                     // Fades in via the shared `AnimKey::FocusFade` (the URL
                     // well's own focus lift retargets the same key — see
