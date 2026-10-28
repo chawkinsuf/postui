@@ -96,8 +96,15 @@
   input", typed in answer to whether a chip click should keep the open URL
   line and the method badge's selection):* so it does with the URL line
   open, its typing and caret kept (`done` closes it), and with the method
-  badge selected. *Mine:* in vim the press is no click for the engine
-  either, so Visual stays up as the chip's key leaves it. With no sub-focus a chip click is still a click away, as before.)
+  badge selected. With no sub-focus a chip click is still a click away, as
+  before. *Vim, and you ("Yes let's follow vim for mouse interactions as
+  well"):* for vim's engine the press is still a click: it ends Visual and
+  drops a half-typed operator and a ctrl+o before the chip acts. Vim:
+  gVim's `:amenu` inserts `<C-C>` in Visual/Op-pending (gui.txt; probed in
+  Vim 9.1: `d`, an `:amenu` item, `l` deletes nothing). A footer chip is
+  that kind of item. Here the click and its key differ: alt+i or
+  ctrl+Enter keeps Visual up on the open URL line. The click follows Vim's
+  menu rule, the key follows the key.)
   The response chip is `Key::Pair` of the two `CopyRow` actions.
   `TableCursor` gains `headers` on `Row` and a `ResponseHeader` variant
   for the response's cursor.
