@@ -7336,6 +7336,9 @@ impl App {
                 if self.active_env().is_none() && !self.selector_is_shared(&selector) {
                     return false;
                 }
+                // A grid that drew no cell (task #200) opens nothing, and
+                // this still returns handled with no toast: the same rule as
+                // #198's hidden column, whose chips stay advertised too.
                 self.vm_start_cell_edit(row, 0);
                 true
             }
@@ -7373,6 +7376,9 @@ impl App {
                 let row =
                     postui_core::varmodel::options_of(self.variables(), self.env_data(), &selector)
                         .map_or(0, indexmap::IndexMap::len);
+                // A grid that drew no cell (task #200) opens nothing, and
+                // this still returns handled with no toast: the same rule as
+                // #198's hidden column, whose chips stay advertised too.
                 self.vm_start_cell_edit(row, 0);
                 true
             }
@@ -12445,6 +12451,11 @@ impl App {
         else {
             return true;
         };
+        // A grid that drew no cell (task #200) has none to walk on to:
+        // the commit stands and no edit opens.
+        if ncols == 0 {
+            return true;
+        }
         // The walk's last cell is the ghost row's name, its only cell.
         let last = (ghost * ncols) as i32;
         // A cell the pane dropped after its edit opened (a narrower
