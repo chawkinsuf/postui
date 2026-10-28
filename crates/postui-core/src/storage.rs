@@ -124,8 +124,14 @@ pub fn slugify_or(name: &str, fallback: &str) -> String {
 /// The prompts prefill a folder by its on-disk name, and `slugify` is not
 /// the identity on every valid name (it trims a leading or trailing `-`),
 /// so slugifying every segment moved a request out of a hand-made `old-`
-/// into `old` (#206). The cost: a typed new folder keeps a dash at either
-/// end (`x-/Name` makes `x-/`, `-/Name` makes `-/`).
+/// into `old` (#206). The cost, accepted on #206: a typed new folder keeps
+/// a dash at either end (`x-/Name` makes `x-/`, `-/Name` makes `-/`), so a
+/// stray dash no longer folds into the folder beside it.
+///
+/// Spaces and environments still name their directory or file with
+/// `slugify`: they carry a display name in `project.toml`, so their slug is
+/// never what the user types. A request folder has no display name; the
+/// typed segment is its on-disk name, which is why a valid one is kept.
 pub fn split_display_path(input: &str) -> Option<(String, String)> {
     let (folders, leaf) = match input.rsplit_once('/') {
         Some((f, l)) => (f, l),
@@ -203,7 +209,10 @@ mod tests {
             Some(("old-stuff".into(), "Ping".into())),
             "a segment that is not a slug is slugified as before"
         );
-        assert_eq!(split_display_path("../Ping"), Some(("request".into(), "Ping".into())));
+        for dots in ["..", "."] {
+            let (folder, _) = split_display_path(&format!("{dots}/Ping")).unwrap();
+            assert!(validate_slug(&folder).is_ok(), "{dots:?} is never kept as typed: {folder:?}");
+        }
     }
 
     #[test]
