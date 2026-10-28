@@ -1400,7 +1400,7 @@ impl Editor {
     }
 
     /// Tells edtui how many text lines `area` shows from its current top
-    /// (its `num_rows`), and returns the last of them. edtui keeps the
+    /// (its `num_rows`), and returns the view it measured. edtui keeps the
     /// caret in view by measuring it against that count, which it records
     /// only as it renders, so after the top or the area changed it is the
     /// count of a view that is gone: the draw calls this before edtui
@@ -1409,11 +1409,51 @@ impl Editor {
     /// counts. (A caret on such a line's cut-off rows stays hidden; that
     /// is edtui's rule on every frame, and not this one's to change.) One
     /// wrap walk of the lines in view, the one edtui's render does too.
-    /// `None` also when no line is in view (a top past the text).
-    fn fit_body_rows(&mut self, area: Rect) -> Option<usize> {
+    /// `None` when no text column fits, where nothing draws and edtui's
+    /// render records its own count.
+    fn fit_body_rows(&mut self, area: Rect) -> Option<BodyView> {
         let view = self.body_view(area, usize::MAX)?;
         self.body.set_viewport_height(view.rows.len());
-        view.rows.len().checked_sub(1).map(|n| view.top + n)
+        Some(view)
+    }
+
+    /// The wheel's caret, after edtui moved the top for a notch: `before`
+    /// (the caret ahead of the notch) pulled into the lines now in view,
+    /// as edtui's own pull does, with the count from the new top.
+    ///
+    /// edtui pulls the caret in with the line count from the top before
+    /// the move. Above a run of wrapped lines the new top shows fewer
+    /// lines, so that left the caret below the view, and the next render
+    /// (told the true count, #181) scrolled back down to it: the wheel
+    /// stopped there. So its pull is redone here from `before`, once:
+    /// pulled from where edtui left it, the column would be cut to a line
+    /// the caret only passed through. The caret ends on one of its line's
+    /// rows in view (the last line can be cut off at the bottom, and the
+    /// top one too when it is taller than the body), not on a row that
+    /// isn't drawn: the view moved, and the caret follows it.
+    ///
+    /// Why only the wheel: it is the one move that sets the top and lets
+    /// the caret follow. Every other move (keys, the vim engine's scrolls,
+    /// a restored caret) places the caret, and the render then brings it
+    /// into view, which is what it should do. Here that scroll undid the
+    /// wheel's top.
+    fn wheel_caret_into_view(&mut self, area: Rect, before: edtui::Index2) {
+        let Some(view) = self.fit_body_rows(area) else { return };
+        let Some(last) = view.rows.len().checked_sub(1).map(|n| view.top + n) else { return };
+        let row = before.row.clamp(view.top, last);
+        let (y0, segments) = &view.rows[row - view.top];
+        let shown = usize::from(view.bottom.saturating_sub(*y0)).min(segments.len());
+        let col = match shown.checked_sub(1) {
+            Some(k) if shown < segments.len() => before.col.min(segments[k].end - 1),
+            _ => before.col,
+        };
+        // edtui's column clamp: on a char in Normal, after one otherwise.
+        let at = edtui::Index2::new(row, col);
+        self.body.cursor = if self.body.mode == EditorMode::Normal {
+            self.clamp_to_cell(at)
+        } else {
+            edtui::Index2::new(row, col.min(self.body.lines.len_col(row).unwrap_or(0)))
+        };
     }
 
     /// Where the body's text rows sit in `area` from edtui's viewport top.
@@ -1797,33 +1837,13 @@ impl Editor {
         if m.kind == MouseEventKind::Down(MouseButton::Left) {
             self.sub_focus = SubFocus::Content;
         }
+        let before = self.body.cursor;
         self.body_handler.on_mouse_event(m, &mut self.body);
-        // edtui's wheel moves the top a line and then pulls the caret into
-        // the view, measured with the line count from the top before the
-        // move. Above a run of wrapped lines the new top shows fewer
-        // lines, so that leaves the caret below the view, and the next
-        // render (told the true count, #181) scrolls back down to it: the
-        // wheel would stop there. Its pull again, with the count from the
-        // new top (which also tells the next notch, and `handle_scroll`'s
-        // notches arrive with no render between them).
-        //
-        // Why only here: the wheel is the one move that sets the top and
-        // lets the caret follow. Every other move (keys, the vim engine's
-        // scrolls, a restored caret) places the caret, and the render then
-        // brings it into view, which is what it should do. Here that
-        // scroll undid the wheel's top.
-        if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown)
-            && let Some(last) = self.fit_body_rows(area)
-            && self.body.cursor.row > last
-        {
-            // edtui's column clamp: on a char in Normal, after one
-            // otherwise.
-            let at = edtui::Index2::new(last, self.body.cursor.col);
-            self.body.cursor = if self.body.mode == EditorMode::Normal {
-                self.clamp_to_cell(at)
-            } else {
-                edtui::Index2::new(last, at.col.min(self.body.lines.len_col(last).unwrap_or(0)))
-            };
+        // A notch: the caret follows the top edtui moved, pulled with the
+        // count from the new top, which also tells the next notch
+        // (`handle_scroll`'s arrive with no render between them).
+        if matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
+            self.wheel_caret_into_view(area, before);
         }
         // edtui 0.11.6 gets the caret wrong on a plain click: its own
         // click→cursor mapping clamps the column to `len - 1` (so a click
@@ -5448,6 +5468,68 @@ mod tests {
             tops.push(top);
         }
         assert_eq!(tops, [12, 11, 10, 9, 8, 7]);
+    }
+
+    fn wheel_up(e: &mut Editor) {
+        use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+        let area = e.last_body_area.unwrap();
+        e.handle_wheel(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: area.right() - 1,
+            row: area.y,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+
+    /// #181, review round 5: the wheel's pull keeps the caret's column
+    /// up to the length of the line it lands on, not of a line edtui's
+    /// own pull (with the count from the old top) passed it through.
+    #[test]
+    fn the_wheel_pull_keeps_the_column() {
+        let mut e = body_editor("{}");
+        draw_body_sized(&mut e, true, 24);
+        let area = e.last_body_area.unwrap();
+        let width = usize::from(area.width - line_number_gutter_width(40));
+        // 10 lines wrapping over 3 rows, then 30 of 20 chars, but line 23.
+        let long = "x".repeat(width * 2 + 5);
+        let mut text: String = (0..10).map(|_| format!("{long}\n")).collect();
+        let short: Vec<String> =
+            (10..40).map(|i| if i == 23 { "ab".into() } else { "y".repeat(20) }).collect();
+        text.push_str(&short.join("\n"));
+        e.set_body_text(&text);
+        e.body.set_viewport_offset(0, 10);
+        e.body.cursor = edtui::Index2::new(24, 15);
+        draw_body_sized(&mut e, true, 24);
+        assert_eq!(e.body.viewport_offset().1, 10);
+        // From top 9 the view ends at line 21; edtui's pull stopped on
+        // line 23 ("ab").
+        wheel_up(&mut e);
+        assert_eq!(e.body.cursor, edtui::Index2::new(21, 15));
+    }
+
+    /// #181, review round 5: a notch that leaves the caret's line cut off
+    /// at the bottom moves the caret onto that line's rows in view.
+    #[test]
+    fn the_wheel_pull_lands_on_a_drawn_row() {
+        let mut e = body_editor("{}");
+        draw_body_sized(&mut e, true, 23);
+        let area = e.last_body_area.unwrap();
+        assert_eq!(area.height, 14);
+        let width = usize::from(area.width - line_number_gutter_width(20));
+        // Every line wraps over 3 rows: 14 rows show 4 lines and 2 rows of
+        // a fifth.
+        let long = "x".repeat(width * 2 + 5);
+        e.set_body_text(&vec![long; 20].join("\n"));
+        e.body.set_viewport_offset(0, 5);
+        e.body.cursor = edtui::Index2::new(8, width * 2 + 1);
+        draw_body_sized(&mut e, true, 23);
+        assert_eq!(e.body.viewport_offset().1, 5);
+        assert!(caret_cell(&e).is_some(), "on line 8's third row");
+        wheel_up(&mut e);
+        draw_body_sized(&mut e, true, 23);
+        assert_eq!(e.body.viewport_offset().1, 4);
+        assert_eq!(e.body.cursor.row, 8);
+        assert!(caret_cell(&e).is_some(), "on line 8's second row, the last drawn");
     }
 
     /// #181: the first frame after the body gets shorter (a resize, a
