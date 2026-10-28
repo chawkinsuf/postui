@@ -8603,13 +8603,14 @@ impl App {
                 // Request destination touches neither, so this is a
                 // no-op there). The editor-side half (the token
                 // replacement, and a Request destination's
-                // `[variables]` insert) is captured by the next
-                // `capture_undo` as an EditorDelta — undo peels the
-                // token-replacement, then the declaration. The step is
-                // recorded before the replacement, so its views carry no
-                // buffer (see `confirm_extract_to_selector`). A `Request`
-                // destination journals nothing: its save below is not an
-                // undo step.
+                // `[variables]` insert below) is captured by the next
+                // `capture_undo` as an EditorDelta. For a var file, undo
+                // peels the token replacement, then the declaration; the
+                // step is recorded before the replacement, so its views
+                // carry no buffer (see `confirm_extract_to_selector`). A
+                // `Request` destination journals nothing, and its save
+                // below is not an undo step: the token and the insert are
+                // its one step.
                 if let Some(t) = t {
                     self.record_project_step(
                         t,
@@ -8632,6 +8633,7 @@ impl App {
                 // still holds the typing until the token lands in it (spec
                 // 2026-10-19 R6), and the two writes are one editor step.
                 if wrote_to_request {
+                    self.debug_assert_no_open_vars_cell();
                     self.editor.variables.insert(
                         name.clone(),
                         postui_core::model::Entry { value: text, enabled: true },
@@ -8784,10 +8786,13 @@ impl App {
     /// it would serve no path the app takes. A new way to promote from the
     /// main screen (a palette row, a tooltip action) must commit an open
     /// Vars cell before it reads the value, as the value dialog does.
+    /// Extract to "This request" is the third writer: it keeps the cell
+    /// open until the token lands in it (spec 2026-10-19 R6), and writes
+    /// its variable only after that commit (`confirm_extract`, #152).
     fn debug_assert_no_open_vars_cell(&self) {
         debug_assert!(
             self.editor.active_tab != EditorTab::Vars || self.editor.table.editing.is_none(),
-            "a Vars row write (value dialog or promote) under an open Vars cell"
+            "a Vars row write (value dialog, promote or extract) under an open Vars cell"
         );
     }
 
