@@ -8592,10 +8592,9 @@ impl App {
                     self.last_action_failed = true;
                     return true;
                 }
-                self.editor.variables.insert(
-                    name.clone(),
-                    postui_core::model::Entry { value: text.clone(), enabled: true },
-                );
+                // The write itself waits for the token (below). This
+                // check still holds then: the token's commit can only
+                // write a key holding `{{name}}`, never `name` itself.
                 Ok(())
             }
         };
@@ -8606,13 +8605,14 @@ impl App {
                 // Request destination touches neither, so this is a
                 // no-op there). The editor-side half (the token
                 // replacement, and a Request destination's
-                // `[variables]` insert) is captured by the next
-                // `capture_undo` as an EditorDelta — undo peels the
-                // token-replacement, then the declaration. The step is
-                // recorded before the replacement, so its views carry no
-                // buffer (see `confirm_extract_to_selector`). A `Request`
-                // destination journals nothing: its save below is not an
-                // undo step.
+                // `[variables]` insert below) is captured by the next
+                // `capture_undo` as an EditorDelta. For a var file, undo
+                // peels the token replacement, then the declaration; the
+                // step is recorded before the replacement, so its views
+                // carry no buffer (see `confirm_extract_to_selector`). A
+                // `Request` destination journals nothing, and its save
+                // below is not an undo step: the token and the insert are
+                // its one step.
                 if let Some(t) = t {
                     self.record_project_step(
                         t,
@@ -8625,20 +8625,36 @@ impl App {
                         self.replace_selection_with_token(surface, &name);
                     }
                 }
-                // Finding 2, same ruling as promote: the
-                // `Request` destination's write only exists so far
-                // in the dirty editor buffer (both the new
-                // `[variables]` option above and the field text
-                // `replace_focused_field_with_token` just
-                // committed) — save it synchronously rather than
-                // leaving it save-on-demand, so "extract to
-                // request, then quit" can't lose it.
-                // Nothing has been committed through core on this arm (a
-                // `Request` destination touches no var file), so unlike
-                // promote this save can afford to ask: it goes through the
-                // ordinary checked save, whose confirm carries the same
-                // Overwrite / Reload / Cancel choice ctrl+s offers.
                 if wrote_to_request {
+                    // A `Request` destination writes its variable only
+                    // now, after the token has landed in the field and an
+                    // open cell has committed (#152). On the Vars tab the
+                    // cell edits this same map and names its row by index,
+                    // and "+ Add" is the index one past the rows: the very
+                    // index an insert takes. Written while the cell was
+                    // open, the new variable became the cell's row, and the
+                    // token renamed it away. The cell still holds the
+                    // typing until the token lands in it (spec 2026-10-19
+                    // R6), and the two writes are one editor step. This
+                    // orders only the cell's own extract: a response
+                    // selection extracted while a Vars cell is open still
+                    // writes under that cell, as before #152.
+                    self.editor.variables.insert(
+                        name.clone(),
+                        postui_core::model::Entry { value: text, enabled: true },
+                    );
+                    // Finding 2, same ruling as promote: the write only
+                    // exists so far in the dirty editor buffer (both the
+                    // new `[variables]` option and the field text
+                    // `replace_focused_field_with_token` just committed)
+                    // — save it synchronously rather than leaving it
+                    // save-on-demand, so "extract to request, then quit"
+                    // can't lose it. Nothing has been committed through
+                    // core on this arm (a `Request` destination touches no
+                    // var file), so unlike promote this save can afford to
+                    // ask: it goes through the ordinary checked save, whose
+                    // confirm carries the same Overwrite / Reload / Cancel
+                    // choice ctrl+s offers.
                     if self.editor.slug.is_some() {
                         // Cleared first so the flag read below is this
                         // save's own answer. `save_request_checked` sets
