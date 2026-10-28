@@ -14947,6 +14947,81 @@ fn extract_to_variable_prompts_writes_and_replaces_field_text_dirty_saved() {
     assert!(doc.contains("abc123"), "{doc}");
 }
 
+/// Task #204: a header name cell extracted to a variable commits its token
+/// through the table, and the table's own warning shows when it refuses
+/// the row (+ Add, the token's name is taken) or merges it (a rename onto
+/// the taken name), as it does when the same commit is typed by hand. The
+/// extract's own toast still says where the value went. Whole cell and a
+/// selection in it alike.
+#[test]
+fn extracting_a_header_name_keeps_the_tables_warning() {
+    use crate::action::{ExtractDestination, TextSurface};
+    let refused = "'{{auth}}' already exists \u{2014} no row added";
+    let merged = "duplicate key '{{auth}}' replaced the existing value";
+    for (from_add, warning) in [(true, refused), (false, merged)] {
+        for selection in [false, true] {
+            let mut app = App::new_for_test();
+            app.editor.headers.insert(
+                "{{auth}}".into(),
+                postui_core::model::Entry { value: "Bearer".into(), enabled: true },
+            );
+            if !from_add {
+                app.editor.headers.insert(
+                    "abc".into(),
+                    postui_core::model::Entry { value: "v".into(), enabled: true },
+                );
+            }
+            app.editor.mark_saved();
+            app.editor.active_tab = EditorTab::Headers;
+            app.editor.sub_focus = SubFocus::Content;
+            app.focus = PaneId::Editor;
+            app.editor.table.set_selected(Some(if from_add { Stop::Add } else { Stop::Row(1) }));
+            let map = app.editor.headers.clone();
+            app.editor.table.begin_edit_selected(&map);
+            if from_add {
+                type_chars(&mut app, "abc");
+            }
+            let edit = app.editor.table.editing.as_mut().expect("the name cell is open");
+            assert_eq!((edit.row, edit.input.text()), (1, "abc"), "{warning} {selection}");
+            if selection {
+                edit.input.set_cursor(0);
+                edit.input.begin_mouse_selection();
+                edit.input.extend_mouse_selection_to(3);
+                app.update(Action::ConfirmExtractSelection {
+                    name: "auth".into(),
+                    destination: ExtractDestination::ProjectDefault,
+                    surface: TextSurface::TableCell,
+                });
+            } else {
+                app.update(Action::ConfirmExtractVariable {
+                    name: "auth".into(),
+                    destination: ExtractDestination::ProjectDefault,
+                });
+            }
+            assert!(app.editor.table.editing.is_none(), "{warning} {selection}: the cell commits");
+            assert_eq!(
+                app.editor.headers.keys().collect::<Vec<_>>(),
+                ["{{auth}}"],
+                "{warning} {selection}: no second row"
+            );
+            // A refused row leaves the taken one as it was; a merge gives it
+            // the renamed row's value, as the same rename by hand does.
+            let kept = if from_add { "Bearer" } else { "v" };
+            assert_eq!(app.editor.headers["{{auth}}"].value, kept, "{warning} {selection}");
+            assert_eq!(
+                app.variables().vars.get("auth").and_then(|d| d.default.as_deref()),
+                Some("abc"),
+                "{warning} {selection}: the variable is written"
+            );
+            assert_eq!(
+                app.toasts.entries(),
+                [(warning, &ToastKind::Warning), ("extracted to {{auth}}", &ToastKind::Success)],
+                "{selection}"
+            );
+        }
+    }
+}
+
 /// MINOR 9 (Task 18 review, sweep finding left inconclusive): a table cell
 /// genuinely in editing state, then the palette opened and "Extract to
 /// variable" run through it (not `Action::ExtractToVariable` dispatched

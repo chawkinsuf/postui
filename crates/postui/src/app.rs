@@ -8725,9 +8725,9 @@ impl App {
     /// — modals capture all input) with `{{name}}`. For the URL, that's a
     /// direct field replacement (already "dirty" the instant it differs
     /// from the saved snapshot); for a table cell under edit, the new text
-    /// is committed through the table's own `Enter` path so it lands in the
-    /// map (not left as a pending, uncommitted edit) and rides the same
-    /// dirty/save path as any other row commit.
+    /// is committed as Enter commits it ([`Self::commit_table_cell`]) so it
+    /// lands in the map (not left as a pending, uncommitted edit) and rides
+    /// the same dirty/save path as any other row commit.
     fn replace_focused_field_with_token(&mut self, name: &str) {
         let token = format!("{{{{{name}}}}}");
         if self.editor.url_open() {
@@ -8739,13 +8739,13 @@ impl App {
         } else {
             return;
         }
-        self.commit_table_edit_with_enter();
+        self.commit_table_cell();
     }
 
     /// Replaces `surface`'s live selection with `{{name}}`, keeping the
     /// rest of the text: the line inputs and the body all take it through
     /// their paste path (which replaces a selection); a table cell is then
-    /// committed through the table's own `Enter` path, exactly like
+    /// committed as Enter commits it, exactly like
     /// [`Self::replace_focused_field_with_token`]. The response is
     /// read-only — nothing to replace.
     fn replace_selection_with_token(&mut self, surface: crate::action::TextSurface, name: &str) {
@@ -8759,7 +8759,7 @@ impl App {
             TextSurface::TableCell => {
                 if let Some(edit) = self.editor.table.editing.as_mut() {
                     edit.input.paste(&token);
-                    self.commit_table_edit_with_enter();
+                    self.commit_table_cell();
                 }
             }
             TextSurface::Response => {}
@@ -8769,25 +8769,6 @@ impl App {
             | TextSurface::VmCell
             | TextSurface::Jq
             | TextSurface::Settings => {}
-        }
-    }
-
-    /// Commits the table cell under edit through the active tab's own
-    /// `Enter` handling, so the new text lands in the map (not left as a
-    /// pending edit) and rides the same dirty/save path as any row commit.
-    fn commit_table_edit_with_enter(&mut self) {
-        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        match self.editor.active_tab {
-            EditorTab::Params => {
-                self.editor.table.handle_key(enter, &mut self.editor.params);
-            }
-            EditorTab::Headers => {
-                self.editor.table.handle_key(enter, &mut self.editor.headers);
-            }
-            EditorTab::Vars => {
-                self.editor.table.handle_key(enter, &mut self.editor.variables);
-            }
-            EditorTab::Body => {}
         }
     }
 

@@ -574,9 +574,8 @@ impl TableEditorState {
 
     /// [`Self::handle_key_with_tail`] for a table with no section under it:
     /// a closed table's keys treat a section stop as stale and clamp it onto
-    /// `+ Add`. The editor's table tabs always pass their section's length;
-    /// this is for a cell's own keys (`commit_table_edit_with_enter`) and
-    /// tables that draw no section.
+    /// `+ Add`. The editor's table tabs always pass their section's length,
+    /// so only tests drive a table through this.
     pub fn handle_key(&mut self, ev: KeyEvent, map: &mut IndexMap<String, Entry>) -> TableOutcome {
         self.handle_key_with_tail(ev, map, 0)
     }
