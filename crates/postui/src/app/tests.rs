@@ -2112,6 +2112,26 @@ fn click_hit(app: &mut App, hit: Hit) {
     app.handle_mouse(left_down(x, r.y));
 }
 
+/// A click on the address bar's TLS lock (`in_footer` false) or on the
+/// footer's `tls` chip of the same action (true), after a draw. While the
+/// URL line holds the caret the footer draws that chip, which is its key
+/// and no click away (task #194); the lock is a click away.
+fn click_tls(app: &mut App, in_footer: bool) {
+    render_once(app);
+    let footer = app.settled_layout().expect("drawn").footer;
+    let rects = app.hits.rects_of(&Hit::FooterChip(Action::ToggleInsecure));
+    let r = *rects
+        .iter()
+        .find(|r| footer.contains(r.as_position()) == in_footer)
+        .unwrap_or_else(|| panic!("no tls control (in the footer: {in_footer}) on {rects:?}"));
+    app.handle_mouse(left_down(r.x, r.y));
+}
+
+/// [`click_tls`] on the address bar's lock.
+fn click_lock(app: &mut App) {
+    click_tls(app, false);
+}
+
 fn type_chars(app: &mut App, s: &str) {
     for c in s.chars() {
         app.handle_key(plain(c));
@@ -2500,7 +2520,7 @@ fn app_with_typed_url() -> App {
 #[test]
 fn a_click_that_edits_leaves_the_url_typing_its_own_undo_step() {
     let mut app = app_with_typed_url();
-    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    click_lock(&mut app);
     app.capture_undo();
     assert!(app.editor.current_request().insecure);
 
@@ -2514,6 +2534,55 @@ fn a_click_that_edits_leaves_the_url_typing_its_own_undo_step() {
     assert!(!app.editor.current_request().insecure);
     app.update(Action::Redo);
     assert!(app.editor.current_request().insecure, "then the toggle");
+}
+
+/// Task #194: the footer's `tls` chip is its key, not a click away, so the
+/// URL line stays open through it and the undo steps are alt+i's: the
+/// toggle made while the line holds its typing goes with that typing when
+/// the line closes. In vim too, mid-Insert.
+#[test]
+fn the_footer_tls_chip_over_url_typing_undoes_as_alt_i_does() {
+    let vim_typed_url = || {
+        let mut app = App::new_for_test();
+        app.use_profile(crate::config::KeyProfile::Vim);
+        app.editor.url = LineInput::new("https://e.com");
+        app.capture_undo();
+        app.focus = PaneId::Editor;
+        app.editor.open_url_from_app();
+        for ev in crate::keyroute::notation::events("Ax") {
+            app.handle_key(ev);
+        }
+        app.capture_undo();
+        app
+    };
+    let fixtures: [(&dyn Fn() -> App, &str); 2] =
+        [(&app_with_typed_url, "<Esc>"), (&vim_typed_url, "<Esc><Esc>")];
+    for (fixture, close) in fixtures {
+        let undo_trail = |app: &mut App| {
+            assert!(app.editor.url_open(), "the line stayed open");
+            assert!(app.editor.current_request().insecure, "the toggle ran");
+            for ev in crate::keyroute::notation::events(close) {
+                app.handle_key(ev);
+            }
+            app.capture_undo();
+            assert!(!app.editor.url_open(), "{close} closed the line");
+            let mut trail = Vec::new();
+            for _ in 0..2 {
+                app.update(Action::Undo);
+                app.capture_undo();
+                let insecure = app.editor.current_request().insecure;
+                trail.push((app.editor.url.text().to_string(), insecure));
+            }
+            trail
+        };
+        let mut by_key = fixture();
+        by_key.handle_key(alt('i'));
+        by_key.capture_undo();
+        let mut app = fixture();
+        click_tls(&mut app, true);
+        app.capture_undo();
+        assert_eq!(undo_trail(&mut app), undo_trail(&mut by_key), "{close}");
+    }
 }
 
 /// The same for a click that puts the caret in the table and acts there
@@ -2632,7 +2701,7 @@ fn a_click_that_edits_leaves_the_vim_url_typing_its_own_undo_step() {
     }
     app.capture_undo();
     assert!(app.editor.url_open());
-    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    click_lock(&mut app);
     app.capture_undo();
     assert!(app.editor.current_request().insecure);
 
@@ -2711,7 +2780,7 @@ fn a_click_mid_insert_in_the_vim_url_line_undoes_in_order() {
         app.handle_key(ev);
     }
     app.capture_undo();
-    click_hit(&mut app, Hit::FooterChip(Action::ToggleInsecure));
+    click_lock(&mut app);
     app.capture_undo();
     app.focus = PaneId::Editor;
     app.editor.open_url_from_app();
@@ -15764,14 +15833,16 @@ fn footer_chips_leave_the_table_cursor_as_their_actions_do(
 
 /// Task #192: the same with a table cell open (the cell, its typing, the
 /// cursor and the caret), with the Body's caret up, and with the URL line
-/// selected. Every chip drawn in the footer's strip, `done` and the
-/// address bar's `copy url` and `tls` included, leaves the editor exactly
-/// as running its action does, which is what its key does: the click is
-/// the action with no click-away before it.
+/// selected; task #194 adds the open URL line (its typing and caret) and
+/// the selected method badge. Every chip drawn in the
+/// footer's strip, `done` and the address bar's `copy url` and `tls`
+/// included, leaves the editor exactly as running its action does, which
+/// is what its key does: the click is the action with no click-away before
+/// it.
 #[test]
 fn an_editor_footer_chip_click_leaves_an_open_cell_or_the_caret_as_its_action_does() {
     use crate::config::KeyProfile::{Arrows, Vim};
-    for state in ["cell", "body", "url"] {
+    for state in ["cell", "body", "url", "url_open", "method"] {
         for profile in [Arrows, Vim] {
             for sending in [false, true] {
                 let probe = editor_caret_app(state, profile, sending);
@@ -15788,6 +15859,10 @@ fn an_editor_footer_chip_click_leaves_an_open_cell_or_the_caret_as_its_action_do
                 for (chip, x) in &chips {
                     let mut by_action = editor_caret_app(state, profile, sending);
                     by_action.update(chip.clone());
+                    // The engine follows what the action did, as at the end
+                    // of any event: `done` on vim's open URL line leaves
+                    // Insert there, which steps the caret back.
+                    by_action.vim_catch_up();
                     let mut app = editor_caret_app(state, profile, sending);
                     app.handle_mouse(left_down(*x, y));
                     assert_eq!(
@@ -15801,10 +15876,12 @@ fn an_editor_footer_chip_click_leaves_an_open_cell_or_the_caret_as_its_action_do
     }
 }
 
-/// Task #192's three states, drawn wide so every footer chip fits, the URL
-/// empty so the send chip toasts rather than spawning a send: `cell`, a
-/// header's value open with typing in it; `body`, the Body's caret mid-text;
-/// `url`, the URL line selected (not open).
+/// Task #192's three states and #194's three, drawn wide so every footer
+/// chip fits, the URL blank so the send chip toasts rather than spawning a
+/// send: `cell`, a header's value open with typing in it; `body`, the Body's
+/// caret mid-text; `url`, the URL line selected (not open); `url_open`, the
+/// URL line open with typing in it; `url_visual` (vim only), the open
+/// line's blanks selected in Visual; `method`, the method badge selected.
 fn editor_caret_app(state: &str, profile: crate::config::KeyProfile, sending: bool) -> App {
     let mut app = main_header_app(profile);
     app.editor.url = LineInput::new("");
@@ -15826,6 +15903,31 @@ fn editor_caret_app(state: &str, profile: crate::config::KeyProfile, sending: bo
             app.editor.table.set_selected(None);
             app.editor.set_body_text("ab\ncd");
             app.editor.body.cursor = edtui::Index2::new(1, 1);
+        }
+        "url_open" => {
+            app.editor.table.set_selected(None);
+            click_hit(&mut app, Hit::UrlBar);
+            assert!(app.editor.url_open(), "the URL line opened");
+            if profile == crate::config::KeyProfile::Vim {
+                type_chars(&mut app, "A");
+            }
+            // A space: typing that a send still finds blank, so the send
+            // chip toasts here too.
+            type_chars(&mut app, " ");
+            assert_eq!(app.editor.url.text(), " ", "{profile:?} typed into the URL line");
+        }
+        "url_visual" => {
+            assert_eq!(profile, crate::config::KeyProfile::Vim, "Visual is vim's");
+            app.editor.table.set_selected(None);
+            click_hit(&mut app, Hit::UrlBar);
+            for ev in crate::keyroute::notation::events("A  <Esc>vh") {
+                app.handle_key(ev);
+            }
+            assert_eq!(app.vim_status().as_deref(), Some("VISUAL"));
+        }
+        "method" => {
+            app.editor.table.set_selected(None);
+            app.editor.sub_focus = SubFocus::Method;
         }
         _ => {
             app.editor.table.set_selected(None);
@@ -15896,9 +15998,11 @@ fn editor_seen(app: &App) -> EditorSeen {
 }
 
 /// Task #192's report, against the keys themselves: in arrows, with a cell
-/// open and typed into, the Body's caret up or the URL line selected, each
-/// footer chip's click leaves the editor as its keycap's key does. Every
-/// chip drawn is checked: one with no key here fails the test.
+/// open and typed into, the Body's caret up or the URL line selected (and,
+/// task #194, the URL line open and typed into or the method badge
+/// selected), each footer chip's click leaves the editor as its keycap's
+/// key does. Every chip drawn is checked: one with no key here fails the
+/// test.
 ///
 /// Not sending: the in-flight `esc cancel` chip's Esc is the field's first
 /// where a field holds the caret (a selected URL line deselects), so its
@@ -15919,7 +16023,7 @@ fn an_editor_footer_chip_click_matches_its_key_with_a_cell_or_caret_up() {
         Action::ToggleInsecure => vec![alt('i')],
         other => panic!("no key for the {other:?} chip"),
     };
-    for state in ["cell", "body", "url"] {
+    for state in ["cell", "body", "url", "url_open", "method"] {
         let (y, chips) = footer_strip_chips(&editor_caret_app(state, Arrows, false));
         assert!(chips.len() >= 4, "{state}: {chips:?}");
         for (chip, x) in &chips {
@@ -15937,6 +16041,162 @@ fn an_editor_footer_chip_click_matches_its_key_with_a_cell_or_caret_up() {
             app.handle_mouse(left_down(*x, y));
             assert_eq!(editor_seen(&app), editor_seen(&by_key), "{state} {chip:?}");
         }
+    }
+}
+
+/// Task #194, against vim's keys: with the URL line open in Insert and
+/// typed into, and with the method badge selected (Normal), each footer
+/// chip's click leaves the editor as its keycap's key does. Every chip
+/// drawn is checked: one with no key here fails the test. (With Visual up
+/// the click and the key differ, as gVim's menus do: the next tests.)
+///
+/// In Insert the `esc done` keycap's Esc leaves Insert first, and only a
+/// second one closes the line: the chip is the close, so its key here is
+/// both.
+#[test]
+fn an_editor_footer_chip_click_matches_its_vim_key_on_the_url_line_or_method() {
+    use crate::config::KeyProfile::Vim;
+    let events = |s: &str| crate::keyroute::notation::events(s).into_iter().collect::<Vec<_>>();
+    let keys = |a: &Action| match a {
+        Action::CloseField => events("<Esc><Esc>"),
+        Action::FocusUrl => events("<CR>"),
+        Action::Send => vec![KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)],
+        Action::CopyToClipboard(crate::action::CopyTarget::Url) => vec![alt('y')],
+        Action::ToggleInsecure => vec![alt('i')],
+        Action::OpenVarPicker { completing: false } => vec![alt('v')],
+        Action::CycleTabs(1) => events("gt"),
+        Action::OpenPalette => vec![ctrl('p')],
+        // Normal's chips (the method badge): in Insert the footer draws
+        // `^P commands` and `^C quit` instead.
+        Action::OpenExPalette => events(":"),
+        Action::Quit => vec![ctrl('c'), ctrl('c')],
+        Action::CloseWindow { write: false, force: false } => events(":q<CR>"),
+        other => panic!("no key for the {other:?} chip"),
+    };
+    for state in ["url_open", "method"] {
+        let (y, chips) = footer_strip_chips(&editor_caret_app(state, Vim, false));
+        assert!(chips.len() >= 4, "{state}: {chips:?}");
+        for (chip, x) in &chips {
+            // The `gT/gt` chip runs arrows' tab chord (`CycleTabs`), which
+            // never lands the caret, where vim's `gt` (`GoTab`) lands it in
+            // the new tab's content. That is the chip's action, not the
+            // click away this test is about: the chip's own test is its
+            // action's, above.
+            if *chip == Action::CycleTabs(1) {
+                continue;
+            }
+            let mut by_key = editor_caret_app(state, Vim, false);
+            for ev in keys(chip) {
+                by_key.handle_key(ev);
+            }
+            let mut app = editor_caret_app(state, Vim, false);
+            app.handle_mouse(left_down(*x, y));
+            assert_eq!(editor_seen(&app), editor_seen(&by_key), "{state} {chip:?}");
+        }
+    }
+}
+
+/// Task #194, Vim's menu rule: gVim's `:amenu` inserts `<C-C>` before an
+/// item in Visual mode (gui.txt), so a footer chip's click with Visual up
+/// on the open URL line ends Visual, and the line stays open through the
+/// chips that act on the request in place (send, copy url, tls). Its key
+/// differs: alt+i is a key and keeps Visual up.
+#[test]
+fn a_footer_chip_click_ends_visual_on_the_open_url_line_in_vim() {
+    use crate::config::KeyProfile::Vim;
+    let (y, chips) = footer_strip_chips(&editor_caret_app("url_visual", Vim, false));
+    let in_place = [
+        Action::Send,
+        Action::CopyToClipboard(crate::action::CopyTarget::Url),
+        Action::ToggleInsecure,
+    ];
+    for a in &in_place {
+        assert!(chips.iter().any(|(b, _)| b == a), "{a:?} drawn: {chips:?}");
+    }
+    for (chip, x) in &chips {
+        let mut app = editor_caret_app("url_visual", Vim, false);
+        app.handle_mouse(left_down(*x, y));
+        assert_ne!(app.vim_status().as_deref(), Some("VISUAL"), "{chip:?}");
+        if in_place.contains(chip) {
+            assert!(app.editor.url_open(), "{chip:?}: the line stayed open");
+            assert_eq!(app.editor.sub_focus, SubFocus::Url, "{chip:?}");
+        }
+        if *chip == Action::ToggleInsecure {
+            assert!(app.editor.insecure, "the toggle ran");
+        }
+    }
+    let mut by_key = editor_caret_app("url_visual", Vim, false);
+    by_key.handle_key(alt('i'));
+    assert!(by_key.editor.insecure, "the toggle ran");
+    assert_eq!(by_key.vim_status().as_deref(), Some("VISUAL"), "alt+i keeps Visual");
+}
+
+/// Task #194, Vim's menu rule in Op-pending: `<C-C>` goes before the item
+/// (gui.txt; probed in Vim 9.1: `d`, an `:amenu` item, `l` leaves the line
+/// whole and moves), so after a footer chip's click on the open URL line a
+/// half-typed `d` is gone and the next `l` only moves. A click also ends an
+/// `i_CTRL-O`, so the next `x` is typed, not a delete.
+#[test]
+fn a_footer_chip_click_drops_a_pending_operator_and_ctrl_o_in_vim() {
+    let open_url = |before: &str| {
+        let mut app = main_header_app(crate::config::KeyProfile::Vim);
+        app.editor.url = LineInput::new("abc");
+        app.editor.table.set_selected(None);
+        click_hit(&mut app, Hit::UrlBar);
+        assert!(app.editor.url_open(), "the URL line opened");
+        type_keys(&mut app, before);
+        app
+    };
+    let mut app = open_url("0d");
+    click_tls(&mut app, true);
+    assert!(app.editor.insecure, "the toggle ran");
+    type_keys(&mut app, "l");
+    assert_eq!(app.editor.url.text(), "abc", "the d went with the click");
+    assert!(app.editor.url_open(), "the line stayed open");
+
+    let mut app = open_url("0i<C-o>");
+    click_tls(&mut app, true);
+    assert!(app.editor.insecure, "the toggle ran");
+    type_keys(&mut app, "x");
+    assert_eq!(app.editor.url.text(), "xabc", "the click ended the ctrl+o");
+    assert_eq!(app.vim_status().as_deref(), Some("INSERT"));
+}
+
+/// Task #194: the vars chip is the one chip whose action reads vim's mode:
+/// its picker takes a Visual selection (the pick replaces it), a pending
+/// operator and a ctrl+o as alt+v does, though the click's settle comes
+/// after the action. Checked by the text and mode after a pick and the
+/// next key.
+#[test]
+fn the_footer_vars_chip_click_picks_as_alt_v_does_in_vim() {
+    for (before, after) in [("0vl", ""), ("0d", "l"), ("0i<C-o>", "x")] {
+        let run = |by_key: bool| {
+            let mut app = app_with_vars();
+            app.anims.enabled = false;
+            app.use_profile(crate::config::KeyProfile::Vim);
+            app.editor.url = LineInput::new("abc");
+            app.focus = PaneId::Editor;
+            app.editor.table.set_selected(None);
+            click_hit(&mut app, Hit::UrlBar);
+            type_keys(&mut app, before);
+            if by_key {
+                app.handle_key(alt('v'));
+            } else {
+                render_once(&mut app);
+                let footer = app.settled_layout().expect("drawn").footer;
+                let chip = Hit::FooterChip(Action::OpenVarPicker { completing: false });
+                let rects = app.hits.rects_of(&chip);
+                let r = rects.iter().find(|r| footer.contains(r.as_position())).expect("vars");
+                app.handle_mouse(left_down(r.x, r.y));
+            }
+            assert!(matches!(app.modals.top(), Some(Modal::VarPicker(_))), "{before}");
+            click_hit(&mut app, Hit::VarPickerRow(0));
+            type_keys(&mut app, after);
+            (app.editor.url.text().to_string(), app.editor.url_open(), app.vim_status())
+        };
+        let by_click = run(false);
+        assert_eq!(by_click, run(true), "{before}");
+        assert!(by_click.0.starts_with("{{base}}"), "{before}: {by_click:?}");
     }
 }
 
