@@ -1390,7 +1390,19 @@ impl ReadyView {
 
     /// [`ReadyView::bracket_pair`], worked out again only when what it reads
     /// changed since the last frame.
+    ///
+    /// Arrows lights no pair while a selection is up (#189, spec R21),
+    /// whether or not it is in view: it is still what a copy takes. Vim
+    /// keeps it under `V` or a drag, as Vim's matchparen does in Visual.
+    /// The selection only hides the pair: the click stays, so once the
+    /// selection goes the pair is back, as the body's is by its caret. A
+    /// drag that began on a bracket is a press on it, which records the
+    /// click as any press there does (R10); forgetting it when a drag
+    /// starts would be a second rule for one press.
     fn lit_pair(&mut self, vim: bool) -> Option<(crate::text::Pos, crate::text::Pos)> {
+        if !vim && self.sel.is_some() {
+            return None;
+        }
         // Each profile's own start: vim reads its cursor, arrows the click.
         // A key in arrows keeps the click (#89), so it never walks again.
         let start = if vim {
@@ -12042,6 +12054,38 @@ mod tests {
         r.set_view_mode(ViewMode::Raw);
         r.set_view_mode(ViewMode::Pretty);
         assert!(!bracket_lit_at(&mut r, true, 1, open), "a view switch forgets it");
+    }
+
+    /// #189 (spec R21): in arrows a selection, from a drag or shift+↓, lights no pair; the
+    /// clicked pair is back once the selection goes.
+    #[test]
+    fn an_arrows_selection_lights_no_pair() {
+        // 0 `{`, 1 `"a": [`, 2 `1,`, 3 `2`, 4 `]`, 5 `}`.
+        let mut r = ready(r#"{"a": [1, 2]}"#);
+        let open = col_of(&r, 1, '[');
+        let close = col_of(&r, 4, ']');
+        click_cell(&mut r, 1, open);
+        assert!(bracket_lit_at(&mut r, true, 4, close), "a plain click lights it");
+        let (area, _) = render_buf(&mut r);
+        let at = |col: usize| area.x + u16::try_from(col).unwrap();
+        assert!(r.drag_selection_to(at(open - 2), area.y + 1));
+        assert!(r.selected_text().is_some());
+        assert!(!bracket_lit_at(&mut r, true, 4, close), "a drag's selection");
+        assert!(r.clear_selection());
+        assert!(bracket_lit_at(&mut r, true, 4, close), "no selection: the pair is back");
+        r.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+        assert!(r.line_selection());
+        assert!(!bracket_lit_at(&mut r, true, 4, close), "shift+↓'s lines");
+    }
+
+    /// #189: the vim profile keeps Vim's matchparen under `V`.
+    #[test]
+    fn vims_line_selection_keeps_the_pair() {
+        let mut r = ready(r#"{"a": [1, 2]}"#);
+        r.vim_cursor = true;
+        r.lines(crate::action::LinesOp::Start);
+        assert!(r.line_selection());
+        assert!(bracket_lit_at(&mut r, true, 5, 0), "the root `{{`'s `}}`");
     }
 
     /// R11: in vim, Vim's cursor column drives it, so the first line's `{`

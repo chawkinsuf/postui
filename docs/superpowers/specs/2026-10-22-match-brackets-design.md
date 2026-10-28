@@ -140,7 +140,7 @@ and `%` don't change.
     line is a row of its own, so the body's area already stops above it
     and the painters walk to the area's bottom.)
   - A cell the Visual span, a search hit or the selection already paints
-    keeps that paint.
+    keeps that paint. (Since #189 an arrows selection lights nothing at all, §7.)
   - The caret's cell is not painted, so it keeps the caret's look (R8).
     The cell is the one edtui reports drawing the caret on
     (`cursor_screen_position`), read after the render like the viewport,
@@ -210,7 +210,7 @@ in both profiles, as Vim's cursor covers its own bracket under MatchParen.
 The partner still lights, and so does the bracket before a caret between
 chars (R2), since that is not the caret's cell. Under a selection that
 doesn't cover the caret, the draw hides the caret, so that cell lights as
-before. The response draws no caret (a tinted cursor row only), so its
+before. (Since #189 that holds in the vim profile only; arrows lights no pair under a selection, §7.) The response draws no caret (a tinted cursor row only), so its
 pair is unchanged.
 
 What is kept from Vim is the outcome, not the paint. Vim's matchparen
@@ -232,7 +232,8 @@ lights.
 - `editor.rs` (render tests, like `the_vim_visual_span_draws_over_the_json_colours`):
   - arrows caret on `{` lights its partner, and a caret just after `}` lights both (R1, R2);
   - the caret's own cell keeps the caret's look, in arrows and vim Normal, and
-    lights when the draw hides the caret under a selection (R8, #187);
+    lights when the draw hides the caret under a selection (R8, #187;
+    the vim profile's since #189, §7);
   - an unfocused body lights nothing (R7);
   - a partner outside the view lights nothing (R5);
   - Visual and a search match paint over the bracket style (R8);
@@ -367,3 +368,46 @@ and the user picked the recommended option for each (`mine (approved)`):
 - **R20 is a line-end comma.** Only a `,` that ends its line (blanks may
   follow) takes the bracket before it. Before, any `,` right after a
   bracket did, so a click on the comma in Raw's `f(a),g(b)` lit `(a)`.
+
+## 7. Amendment, 2026-10-27: no pair under an arrows selection (#189)
+
+The task asked: "When selecting text, the brace matching should be
+disabled." Vim's matchparen does the opposite. `plugin/matchparen.vim`
+(Vim 9.1) runs on every `CursorMoved`, Visual included, and returns early
+only for the popup menu or when there are no colours. Asked about the vim
+profile, the user said:
+
+> No only in arrows mode. Any testing I do is referring specifically to
+> arrows mode. Vim mode follows vim.
+
+| # | Rule | From |
+|---|---|---|
+| R21 | Arrows, body and response: while text is selected (a drag, a double click, shift+arrows, select-all, the response's shift+↑/↓ lines), no pair lights, whether or not the selection is in view (it is still what a copy takes). A drag back onto its own anchor selects nothing, so the pair shows there until the drag moves on. Once the selection goes, the pair lights again by R1/R10 (the response's click is kept, not forgotten). The vim profile keeps the pair in Visual and under a drag, as Vim does. | you; in-view-or-not, the drag back onto its anchor and the kept click are mine |
+
+**Design.**
+
+- Body: `paint_bracket_pair` returns first when the profile is arrows and
+  `body.selection` is set. The editor's per-frame profile copy, which
+  #129 named `prompt_row`, is renamed `vim_profile`, since it now decides
+  this too.
+- The vim profile can still draw with `body.selection` set, so R8's two
+  selection cases from #187 stay for it: a selected cell keeps its fill
+  over the pair, and a caret hidden under a selection lights its own
+  bracket (the painter's `caret_shown` argument). The path: a selection
+  made in arrows outlives a switch to vim until the engine settles it at
+  the next key or click routed to the body; the session that opens on
+  return does not settle. Review round 2 removed these cases as
+  unreachable, and round 3 found the path. The user, asked whether to
+  put them back: "189 back to round 1."
+- Response: `ReadyView::lit_pair` answers `None` first in arrows while
+  `sel` is set, before its memo, so the rule sits where the pair comes
+  from, as the body's does.
+
+**Tests.** Editor: an arrows selection from keys or a drag lights nothing,
+and the pair is back once it goes; vim Visual keeps the partner lit, and
+an edtui selection stops only the arrows draw. The #187 hidden-caret and
+covered-caret tests run in the vim profile, and an app test switches an
+arrows selection to vim and checks the selected bracket keeps its fill
+and the partner lights. Response: an arrows drag
+and shift+↓ light nothing, and clearing the selection brings the clicked
+pair back; vim's `V` keeps the pair.
