@@ -28,6 +28,10 @@ pub struct CurlImport {
     /// Else `{METHOD} {last non-empty path segment, else host}`, which
     /// never holds a `/`.
     pub suggested_name: String,
+    /// The `# @name …` comment's text alone, `None` without one: a replace
+    /// renames only from a comment, never from the URL's suggestion
+    /// (replace spec §6, task #148).
+    pub named: Option<String>,
 }
 
 /// Every curl command of a paste.
@@ -121,7 +125,8 @@ pub fn parse(text: &str) -> Result<CurlBatch, CurlError> {
         let mut import = parse_command(cmd)
             .map_err(|kind| CurlError { command: many.then_some(i + 1), kind })?;
         if let Some(name) = name.take() {
-            import.suggested_name = name;
+            import.suggested_name = name.clone();
+            import.named = Some(name);
         }
         import.ignored.splice(0..0, leading);
         import.variables =
@@ -631,6 +636,7 @@ fn build(
         // Filled in by `parse`, which sees the lines before this one.
         variables: Vec::new(),
         suggested_name,
+        named: None,
     })
 }
 
@@ -713,6 +719,18 @@ mod tests {
         // skipped line: values still land.
         let c = one("# @name Me\nexport T=abc\ncurl -H \"X: $T\" https://api.x/me");
         assert_eq!((c.suggested_name.as_str(), c.variables[0].1.as_deref()), ("Me", Some("abc")));
+    }
+
+    /// Replace renames only from a comment (replace spec §6, task #148),
+    /// so the comment is kept apart from the URL's suggestion.
+    #[test]
+    fn named_holds_the_name_comment_alone() {
+        let batch =
+            parse("# @name api/List  users\ncurl https://api.x/users\ncurl https://api.x/me")
+                .unwrap();
+        let named: Vec<Option<&str>> = batch.commands.iter().map(|c| c.named.as_deref()).collect();
+        assert_eq!(named, [Some("api/List users"), None]);
+        assert_eq!(one("# @name\ncurl https://api.x/me").named, None, "empty falls back");
     }
 
     #[test]

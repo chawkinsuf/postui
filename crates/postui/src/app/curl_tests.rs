@@ -974,6 +974,158 @@ fn an_unreadable_environment_refuses_the_replace() {
     assert_eq!(*kind, crate::components::toast::ToastKind::Error);
 }
 
+// Replace spec §6 (task #148): a `# @name` comment renames.
+
+/// The file at `slug`, read straight off the disk.
+fn on_disk(app: &App, slug: &str) -> Option<postui_core::model::HttpRequest> {
+    postui_core::fixtures::load_request(app.proj().root(), slug).ok()
+}
+
+#[test]
+fn a_name_comment_renames_the_open_request_and_undo_takes_it_back_after_the_edit() {
+    let mut app = kept_app("# @name Fresh\nexport TOKEN=abc\ncurl -H \"A: $TOKEN\" https://x/new");
+    let before = app.editor.current_request();
+    replace(&mut app, None);
+    // N1: the rename is on disk at once; the fields are unsaved edits.
+    assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"));
+    assert_eq!(app.editor.name.as_deref(), Some("Fresh"));
+    assert!(on_disk(&app, "main/kept").is_none(), "the file moved");
+    let moved = on_disk(&app, "main/fresh").expect("renamed file");
+    assert_eq!((moved.name.as_deref(), moved.url.as_str()), (Some("Fresh"), "https://x/old"));
+    assert_eq!(app.editor.url.text(), "https://x/new");
+    assert!(app.editor_holds_unsaved());
+    assert_eq!(slug_named(&app, "Fresh").as_deref(), Some("main/fresh"));
+    let msg = app.toasts.last_message().unwrap();
+    assert!(msg.starts_with("Replaced Kept from curl, renamed to Fresh; "), "{msg}");
+    assert!(msg.ends_with(" undoes"), "{msg}");
+    // Undo: the editor change, then the rename, then the declarations.
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"));
+    assert_eq!(app.editor.url.text(), "https://x/old");
+    assert_eq!(app.editor.name.as_deref(), Some("Fresh"));
+    assert!(!app.editor_holds_unsaved(), "the name matches the file");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/kept"));
+    assert_eq!(app.editor.current_request(), before);
+    assert!(!app.editor_holds_unsaved());
+    assert!(app.proj().variables().vars.contains_key("TOKEN"));
+    app.update(Action::Undo);
+    assert!(!app.proj().variables().vars.contains_key("TOKEN"));
+    assert_eq!(app.editor.current_request(), before);
+}
+
+#[test]
+fn discard_after_a_renaming_replace_keeps_the_rename() {
+    let mut app = kept_app("# @name Fresh\ncurl https://x/new");
+    replace(&mut app, None);
+    app.update(Action::DiscardChanges);
+    app.capture_undo();
+    assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"));
+    assert_eq!(app.editor.name.as_deref(), Some("Fresh"));
+    assert_eq!(app.editor.url.text(), "https://x/old");
+    assert!(!app.editor_holds_unsaved());
+}
+
+/// A rename that keeps the slug (only `name` changes) still leaves the
+/// editor change its own step, with the new name on both sides.
+#[test]
+fn a_rename_that_keeps_the_slug_is_not_recorded_as_an_editor_edit() {
+    let mut app = kept_app("# @name Kept!\ncurl https://x/new");
+    replace(&mut app, None);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/kept"));
+    assert_eq!(on_disk(&app, "main/kept").unwrap().name.as_deref(), Some("Kept!"));
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://x/old");
+    assert_eq!(app.editor.name.as_deref(), Some("Kept!"));
+    assert!(!app.editor_holds_unsaved());
+    app.update(Action::Undo);
+    assert_eq!(app.editor.name.as_deref(), Some("Kept"));
+    assert_eq!(on_disk(&app, "main/kept").unwrap().name.as_deref(), Some("Kept"));
+    assert!(!app.editor_holds_unsaved());
+}
+
+#[test]
+fn a_name_comment_renames_a_row_that_was_not_open() {
+    let mut app = kept_app("# @name Topper\ncurl https://x/new");
+    replace(&mut app, Some("main/top"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/topper"));
+    assert_eq!(app.editor.url.text(), "https://x/new");
+    let msg = app.toasts.last_message().unwrap();
+    assert!(msg.starts_with("Replaced top from curl, renamed to Topper"), "{msg}");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/topper"));
+    assert_eq!(app.editor.url.text(), "https://x/top");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/top"));
+    assert!(!app.editor_holds_unsaved());
+}
+
+/// N3: a folder in the name reads from the request's own folder.
+#[test]
+fn a_folder_in_the_name_comment_reads_from_the_request_folder() {
+    let mut app = app_with_clip("# @name sub/Pong\ncurl https://x/new");
+    replace(&mut app, Some("main/api/ping"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/api/sub/pong"));
+    assert_eq!(app.editor.name.as_deref(), Some("Pong"));
+    assert_eq!(app.editor.url.text(), "https://x/new");
+}
+
+/// N2: the rename's refusals come before the dirty gate and change
+/// nothing.
+#[test]
+fn a_taken_or_empty_name_refuses_before_the_dirty_gate() {
+    for (clip, toast) in [
+        ("# @name PONG\ncurl https://x/new", "a request named \"PONG\" already exists here"),
+        ("# @name sub/\ncurl https://x/new", "request name cannot be empty"),
+    ] {
+        let mut app = kept_app(clip);
+        let pong = req("https://x/pong");
+        postui_core::fixtures::save_request(app.proj().root(), "main/api/pong", &pong).unwrap();
+        app.update(Action::RefreshSidebar);
+        app.editor.url = LineInput::new("https://x/edited");
+        app.capture_undo();
+        let edited = app.editor.current_request();
+        replace(&mut app, Some("main/api/ping"));
+        assert!(app.modals.is_empty(), "{clip}: no gate");
+        assert_eq!(app.editor.slug.as_deref(), Some("main/kept"));
+        assert_eq!(app.editor.current_request(), edited);
+        assert_eq!(on_disk(&app, "main/api/ping").unwrap().url, "https://x/ping");
+        assert_eq!(app.toasts.last_message(), Some(toast), "{clip}");
+        // The open request refuses the same way.
+        let mut app = kept_app(&clip.replace("PONG", "TOP"));
+        let before = app.editor.current_request();
+        replace(&mut app, None);
+        assert_eq!(app.editor.slug.as_deref(), Some("main/kept"));
+        assert_eq!(app.editor.current_request(), before, "{clip}");
+    }
+}
+
+/// N5: the name the request already answers to renames nothing.
+#[test]
+fn the_current_name_in_another_case_renames_nothing() {
+    let mut app = kept_app("# @name KEPT\ncurl https://x/new");
+    replace(&mut app, None);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/kept"));
+    assert_eq!(app.editor.name.as_deref(), Some("Kept"));
+    assert_eq!(on_disk(&app, "main/kept").unwrap().name.as_deref(), Some("Kept"));
+    let msg = app.toasts.last_message().unwrap();
+    assert!(msg.starts_with("Replaced Kept from curl \u{2014}"), "{msg}");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://x/old", "one step");
+    assert!(!app.editor_holds_unsaved());
+}
+
+/// N4: a scratch has no file to rename.
+#[test]
+fn a_scratch_ignores_the_name_comment() {
+    let mut app = app_with_clip("# @name Fresh\ncurl https://x/new");
+    replace(&mut app, None);
+    assert_eq!(app.editor.slug, None);
+    assert_eq!(app.editor.name, None);
+    assert_eq!(app.editor.url.text(), "https://x/new");
+    assert!(slug_named(&app, "Fresh").is_none());
+}
+
 #[test]
 fn the_request_menu_offers_replace_after_copy_as_curl_and_the_palette_lists_it() {
     let (mut app, _dir, _out) = copy_app();

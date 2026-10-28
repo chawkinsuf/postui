@@ -429,10 +429,12 @@ impl Project {
         Ok((slug, leaf))
     }
 
-    /// Renames to a new typed display path; rewrites `name` when the file
-    /// parses (a broken file just moves).
-    pub fn rename_request(
-        &mut self,
+    /// What [`Self::rename_request`] would refuse, without writing: the
+    /// slug and display name it would land at, else its error. A caller
+    /// that must refuse before it changes anything else (replace with
+    /// curl's rename, which runs before the dirty gate) asks here first.
+    pub fn check_rename_request(
+        &self,
         from_slug: &str,
         display_path: &str,
     ) -> Result<(String, String), Error> {
@@ -447,7 +449,6 @@ impl Project {
             return Err(Error::AlreadyExists(leaf));
         }
         let to_slug = self.unique_slug(&folder, &leaf, Some(from_slug));
-        let to_path = request_rel(&to_slug)?;
         // A rename stays in its space (the order bookkeeping below is
         // keyed by one space); crossing spaces is `move_request`'s job.
         if crate::storage::space_of(from_slug) != crate::storage::space_of(&to_slug) {
@@ -455,6 +456,19 @@ impl Project {
                 "{display_path}: a rename stays in its space — move the request instead"
             )));
         }
+        Ok((to_slug, leaf))
+    }
+
+    /// Renames to a new typed display path; rewrites `name` when the file
+    /// parses (a broken file just moves).
+    pub fn rename_request(
+        &mut self,
+        from_slug: &str,
+        display_path: &str,
+    ) -> Result<(String, String), Error> {
+        let from_path = request_rel(from_slug)?;
+        let (to_slug, leaf) = self.check_rename_request(from_slug, display_path)?;
+        let to_path = request_rel(&to_slug)?;
         // Which held entries still matched their file BEFORE this op
         // touched anything: only those may be re-stamped afterwards (see
         // `rekey_held_after_own_op`).

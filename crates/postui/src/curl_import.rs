@@ -47,6 +47,10 @@ pub struct CurlReplace {
     pub import: CurlImport,
     pub notes: PasteNotes,
     pub vars: CurlVariables,
+    /// The display path (space included) the paste's `# @name` renames
+    /// the request to, checked against the project (replace spec §6, N2);
+    /// `None` keeps the name.
+    pub rename: Option<String>,
 }
 
 /// What a paste says beside its commands (`CurlBatch`'s other fields),
