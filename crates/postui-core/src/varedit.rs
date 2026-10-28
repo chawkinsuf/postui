@@ -519,6 +519,19 @@ pub fn upsert_option(
 ) -> Result<String, EditError> {
     check_option_name(option)?;
     let mut doc = parse(doc)?;
+    write_option(&mut doc, selector, option, description, values)?;
+    Ok(doc.to_string())
+}
+
+/// The write half of [`upsert_option`] and [`create_option`], on a parsed
+/// document whose `option` name has been checked.
+fn write_option(
+    doc: &mut DocumentMut,
+    selector: &str,
+    option: &str,
+    description: Option<&str>,
+    values: &IndexMap<String, String>,
+) -> Result<(), EditError> {
     let root = doc.as_table_mut();
     let options = table_mut(root, "options", true)?;
     let selector_table = table_mut(options, selector, true)?;
@@ -530,6 +543,30 @@ pub fn upsert_option(
     for (k, v) in values {
         t[k.as_str()] = value(v.as_str());
     }
+    Ok(())
+}
+
+/// Creates `[options.<selector>."<option>"]` as [`upsert_option`] writes
+/// it, but only when `doc` has no option by that name yet: `Conflict` if
+/// it has, since writing a new option's values over an existing one would
+/// replace them (task #196). The check reads `doc`, the file as the write
+/// finds it, so an option another program added since the last reload is
+/// refused too, not overwritten. [`upsert_option`] still updates.
+pub fn create_option(
+    doc: &str,
+    selector: &str,
+    option: &str,
+    description: Option<&str>,
+    values: &IndexMap<String, String>,
+) -> Result<String, EditError> {
+    check_option_name(option)?;
+    let mut doc = parse(doc)?;
+    if options_selector_mut(doc.as_table_mut(), selector).is_some_and(|g| g.contains_key(option)) {
+        return Err(EditError::Conflict(format!(
+            "option \"{option}\" already exists on {selector}"
+        )));
+    }
+    write_option(&mut doc, selector, option, description, values)?;
     Ok(doc.to_string())
 }
 
@@ -1229,6 +1266,26 @@ tier = "g-1"
         assert_eq!(e.options["user"]["user 1"].values["user_id"], "9999");
         assert_eq!(e.options["user"]["user 1"].description.as_deref(), Some("admin"));
         assert_eq!(e.values["base_url"], "x");
+    }
+
+    /// Task #196: a create writes a new option as an upsert does, and
+    /// refuses one the document already holds (leaving it as it was), or
+    /// the reserved name.
+    #[test]
+    fn create_option_writes_a_new_option_and_refuses_an_existing_one() {
+        let new = vals(&[("user_id", "1003"), ("customer_id", "c-03")]);
+        let out = create_option(ENV, "test-user", "user 3", Some("third"), &new).unwrap();
+        assert_eq!(out, upsert_option(ENV, "test-user", "user 3", Some("third"), &new).unwrap());
+
+        let blank = vals(&[("user_id", ""), ("customer_id", "")]);
+        assert_eq!(
+            create_option(ENV, "test-user", "user 1", None, &blank),
+            Err(EditError::Conflict("option \"user 1\" already exists on test-user".into()))
+        );
+        assert!(matches!(
+            create_option(ENV, "test-user", "description", None, &blank),
+            Err(EditError::Conflict(m)) if m.contains("reserved")
+        ));
     }
 
     #[test]

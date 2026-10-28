@@ -7400,19 +7400,6 @@ impl App {
                         return true;
                     }
                 };
-                // Create means create: writing over an existing option of
-                // the same name from the add prompt would silently clobber
-                // its values.
-                if postui_core::varmodel::options_of(self.variables(), self.env_data(), &owner)
-                    .is_some_and(|options| options.contains_key(&key))
-                {
-                    self.toasts.push(
-                        format!("option \"{key}\" already exists on {owner}"),
-                        ToastKind::Error,
-                    );
-                    self.last_action_failed = true;
-                    return true;
-                }
                 // An option has to supply every field of its selector or
                 // `validate_env` rejects it: the prompt collects one value
                 // per field, and any field it didn't know about (a caller
@@ -7440,7 +7427,18 @@ impl App {
                         self.record_project_step(t, crate::undo::StepLabel::variable(&owner));
                         self.toasts.push(self.selection_toast(&owner, &key), ToastKind::Success);
                     }
-                    Err(msg) => self.toasts.push(msg, ToastKind::Error),
+                    // Core refuses a name the file already holds (a create,
+                    // never an update), among its other refusals: failing
+                    // the action re-opens the prompt with what was typed.
+                    // The refusal comes after `begin_op`, as every core
+                    // refusal does: the check reads the file the write
+                    // reads, and an app pre-check would read the loaded
+                    // options instead. The op's opening close only saves
+                    // typing that was already due to land.
+                    Err(msg) => {
+                        self.toasts.push(msg, ToastKind::Error);
+                        self.last_action_failed = true;
+                    }
                 }
                 true
             }
@@ -9357,8 +9355,12 @@ impl App {
     ///
     /// A write failure toasts and puts the edit back exactly as it was, so
     /// the typed text survives a retry (spec §5) — including the reserved
-    /// option name `description`, which core refuses. `false` only for
-    /// that refusal.
+    /// option name `description` and, on the ghost row, a name the file
+    /// already holds (task #196), both of which core refuses. `false` only
+    /// for a refusal. It leaves `last_action_failed` to its callers, which
+    /// each decide what a refusal means: the grid's own keys fail, a close
+    /// before a state change stops it (`close_inputs_or_stop`), an op's
+    /// opening close goes on (`begin_op`), and a reload cancels the edit.
     pub(crate) fn commit_grid_edit(&mut self, walk_on: bool) -> bool {
         let Some(edit) = self.varmanager.grid.editing.take() else {
             return true;
@@ -9398,6 +9400,12 @@ impl App {
             if edit.col != 0 || value.is_empty() {
                 return true;
             }
+            // Core's `NewOption` is a create: a name the file already
+            // holds is refused (task #196) and lands in the failed-write
+            // arm below, which keeps the typing in the cell, as a rename
+            // onto a taken name does. Esc commits too (the field rule), so
+            // it is refused the same way; clearing the name is the way out,
+            // since an empty ghost name creates nothing.
             let values = fields
                 .iter()
                 .map(|f| (f.clone(), String::new()))
@@ -12263,19 +12271,23 @@ impl App {
     /// (the field rule), anything else goes to the cell's own `LineInput`.
     /// `Tab` commits and steps one column right on the same row, so a
     /// freshly created option can be filled in without reaching for the
-    /// mouse; a commit that failed keeps its edit and stays put.
+    /// mouse; a commit that failed keeps its edit and stays put, and fails
+    /// the key (`last_action_failed`), as the add-option prompt's refusal
+    /// fails its confirm.
     fn handle_grid_key(&mut self, ev: KeyEvent) -> bool {
-        match ev.code {
-            KeyCode::Esc | KeyCode::Enter => {
-                self.commit_grid_edit(true);
-            }
+        let committed = match ev.code {
+            KeyCode::Esc | KeyCode::Enter => self.commit_grid_edit(true),
             KeyCode::Tab => self.step_grid_edit(1),
             KeyCode::BackTab => self.step_grid_edit(-1),
             _ => {
                 if let Some(edit) = self.varmanager.grid.editing.as_mut() {
                     edit.input.handle_key(ev);
                 }
+                true
             }
+        };
+        if !committed {
+            self.last_action_failed = true;
         }
         self.update(Action::Render)
     }
@@ -12289,26 +12301,29 @@ impl App {
     /// name cell.
     ///
     /// A commit that failed keeps its own edit (spec §5) and this leaves it
-    /// exactly where it is; a ghost-row commit that already walked the edit
-    /// on into the new option's first field is likewise left alone.
+    /// exactly where it is, answering `false` (the commit's own answer); a
+    /// ghost-row commit that already walked the edit on into the new
+    /// option's first field is likewise left alone.
     ///
     /// The step counts from the committed option's row *after* the commit,
     /// read from the grid cursor, which stays on that option by name (a
     /// rename follows it, N8): the commit's write re-reads the file, so an
     /// edit another program made can have moved the option off the row the
     /// cell was opened at (task #83).
-    fn step_grid_edit(&mut self, dir: i32) {
+    fn step_grid_edit(&mut self, dir: i32) -> bool {
         let col = self.varmanager.grid.editing.as_ref().map(|e| e.col);
-        self.commit_grid_edit(true);
-        let Some(col) = col else { return };
+        if !self.commit_grid_edit(true) {
+            return false;
+        }
+        let Some(col) = col else { return true };
         if self.varmanager.grid.editing.is_some() {
-            return;
+            return true;
         }
         let Some((row, _)) = self.project().and_then(|p| self.varmanager.grid_at(p)) else {
-            return;
+            return true;
         };
         let VmDetail::Group(selector) = self.varmanager.detail.clone() else {
-            return;
+            return true;
         };
         let ncols = 1 + self.variables().selectors.get(&selector).map_or(0, |g| g.fields.len());
         let last_row =
@@ -12326,6 +12341,7 @@ impl App {
             }
         };
         self.vm_start_cell_edit(next_row, next_col);
+        true
     }
 
     fn focused_component_key(&mut self, ev: KeyEvent) -> Option<Action> {
