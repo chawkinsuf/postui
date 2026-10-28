@@ -545,6 +545,8 @@ pub struct VarManager {
     /// [`Self::grid_shape`] counts the drawn columns from, so the keyboard
     /// and the cell edits reach only what is on screen (task #198). The
     /// pane's width, not the selector's: opening another selector keeps it.
+    /// The main loop draws after every event that changes anything (a
+    /// resize included), so a key always meets the width on screen.
     grid_width: Option<u16>,
     /// Set by a keyboard move so the next `draw` snaps `left_scroll` to
     /// keep `left_cursor` visible; a wheel/drag gesture clears it (those
@@ -947,11 +949,13 @@ impl VarManager {
     /// `(row, col)` with its current text and a caret at the end, and puts
     /// the grid cursor there. Like [`Self::start_field_edit`], a second
     /// click on the cell already under edit is the caller's job to no-op.
-    /// A no-op with no selector selected. A ghost-row cell other than the
-    /// name column opens the name cell (there is no option yet for a value
-    /// to belong to), and a column the grid doesn't draw opens the last one
-    /// it does ([`Self::grid_shape`], task #198): an edit is always on
-    /// screen.
+    /// A no-op with no selector selected, and on a column the grid doesn't
+    /// draw ([`Self::grid_shape`], task #198): an edit is always on screen,
+    /// and it is always the cell asked for, never a neighbour standing in
+    /// for it (the ghost row's walk on into a first field that a narrow
+    /// pane dropped just stops). A ghost-row cell other than the name
+    /// column opens the name cell: there is no option yet for a value to
+    /// belong to.
     pub fn start_cell_edit(&mut self, ctx: &Project, row: usize, col: usize) {
         let VmDetail::Group(selector) = &self.detail else {
             return;
@@ -959,8 +963,10 @@ impl VarManager {
         let selector = selector.clone();
         let rows = entry_rows(ctx, &selector);
         let row = row.min(rows.len());
-        let last_col = self.grid_shape(ctx).map_or(0, |(_, ncols)| ncols - 1);
-        let col = if row == rows.len() { 0 } else { col.min(last_col) };
+        let col = if row == rows.len() { 0 } else { col };
+        if self.grid_shape(ctx).is_some_and(|(_, ncols)| col >= ncols) {
+            return;
+        }
         let original = grid_cell_text(ctx, &selector, row, col);
         // Typing into a cell is the grid holding the keyboard, however the
         // edit was started — so `Esc` out of it lands in the grid, not back
@@ -4698,10 +4704,11 @@ fields = ["user_id", "customer_id"]
         assert_eq!((edit.row, edit.col), (0, drawn - 1), "Enter opens a cell on screen");
     }
 
-    /// Task #198: an edit asked for on a column the grid doesn't draw (a
-    /// walk, a verb) opens the last one it does, so it is always on screen.
+    /// Task #198: an edit asked for on a column the grid doesn't draw opens
+    /// nothing, rather than an edit nobody can see or a neighbour's cell
+    /// standing in for the one asked for.
     #[test]
-    fn a_cell_edit_on_an_undrawn_column_opens_the_last_drawn_one() {
+    fn a_cell_edit_on_an_undrawn_column_opens_nothing() {
         let (_dir, ctx) = fixture_with_description();
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
@@ -4709,9 +4716,11 @@ fields = ["user_id", "customer_id"]
         let (_, drawn) = vm.grid_shape(&ctx).unwrap();
         assert!(drawn < 4, "the description column is dropped at this width");
         vm.start_cell_edit(&ctx, 0, desc_col(2));
+        assert!(vm.grid.editing.is_none());
+        // A drawn column still opens.
+        vm.start_cell_edit(&ctx, 0, drawn - 1);
         let edit = vm.grid.editing.as_ref().unwrap();
         assert_eq!((edit.row, edit.col), (0, drawn - 1));
-        assert_eq!(vm.grid_at(&ctx), Some((0, drawn - 1)));
     }
 
     /// Task #198: the row's copy and delete buttons keep a zone no column

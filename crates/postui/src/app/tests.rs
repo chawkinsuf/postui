@@ -19225,6 +19225,17 @@ fn tab_skips_a_description_column_the_narrow_grid_does_not_draw() {
     assert_eq!(at(&app), Some((1, 0)), "bob's name, past the undrawn description");
     back(&mut app);
     assert_eq!(at(&app), Some((0, 1)), "back to alice's field");
+
+    // An edit opened on the description while it was drawn, then dropped
+    // by a narrower pane, walks as if just past the row's last drawn cell.
+    for (step, to) in [(tab as fn(&mut App) -> bool, (1, 0)), (back, (0, 1))] {
+        rendered_text_tall(&mut app);
+        app.vm_start_cell_edit(0, 2);
+        assert_eq!(at(&app), Some((0, 2)), "the description is drawn when wide");
+        rendered_text_at(&mut app, 50, 30);
+        step(&mut app);
+        assert_eq!(at(&app), Some(to));
+    }
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
 }
 

@@ -12395,7 +12395,14 @@ impl App {
         };
         // The walk's last cell is the ghost row's name, its only cell.
         let last = (ghost * ncols) as i32;
-        let flat = (row * ncols + col) as i32 + dir;
+        // A cell the pane dropped after its edit opened (a narrower
+        // terminal, task #198) sits past the row's last drawn one: Tab
+        // goes on to the next row, BackTab back to that last drawn cell.
+        let flat = if col >= ncols {
+            (row * ncols + ncols) as i32 - i32::from(dir < 0)
+        } else {
+            (row * ncols + col) as i32 + dir
+        };
         let (next_row, next_col) = match flat {
             // Off either end of the grid: the walk stops rather than
             // closing the edit out from under the user — the same cell
