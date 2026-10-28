@@ -1227,8 +1227,8 @@ impl App {
     /// one path a click's end takes (`sync_session`): a body changed
     /// outside the engine rebases there first, and a live body settles as
     /// Vim's wheel does (`Settled::Scroll`, #201): an operator the engine
-    /// holds drops (a count or prefix the router holds stays, as for a
-    /// click), an Insert the pull moved splits, ctrl+o's command is spent,
+    /// holds drops (a count or prefix the router holds stays: a press
+    /// drops those in `handle_mouse`, the wheel does not), an Insert the pull moved splits, ctrl+o's command is spent,
     /// and a Visual span follows the cursor. Every notch, one that moves
     /// nothing at a limit too: Vim's wheel is a command either way (probed
     /// in 9.1: at the top, `d`, the wheel up, `j` deletes nothing).

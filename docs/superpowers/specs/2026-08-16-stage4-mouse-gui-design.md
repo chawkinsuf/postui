@@ -166,8 +166,10 @@ notch, one that moves nothing at a limit too: a Visual span follows the cursor (
 on line 3, the wheel down, the cursor on the window's top line in its column, the
 span from line 3 to it; the wheel up from line 40, the cursor on the window's bottom
 line and the span from it to line 40); a half-typed operator drops (`d`, the wheel,
-`j` deletes nothing, at the top too; a count or a `g`/`z` prefix stays, as it does
-for a click); Insert ctrl+o's one command is the wheel (`i`
+`j` deletes nothing, at the top too; a count or a `g`/`z` prefix the router holds
+stays, though a click drops it, a known gap); the wanted column stays (`j` from col
+21 onto `{`, a notch, `k` lands on col 21, moved or not; Vim also puts the pulled
+cursor at that column, which the pull here does not yet, a known gap); Insert ctrl+o's one command is the wheel (`i`
 ctrl+o, the wheel, `X` types); an Insert the pull moved splits its undo step (`iBB`,
 the wheel, `CC` Esc `u` undoes only `CC`). A search being typed stays open (`mine`,
 not probed: as a press off the text keeps it, #129). A body session another pane

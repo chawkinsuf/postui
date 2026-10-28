@@ -2000,6 +2000,30 @@ fn a_wheel_notch_at_the_top_still_drops_an_operator_and_spends_ctrl_o() {
     assert_eq!(app.editor.body_text().lines().next(), Some("xrow0"));
 }
 
+/// #201: the wheel keeps Vim's wanted column, moved or not (probed in
+/// 9.1: `j` from col 21 onto `{`, a notch at the top that moves nothing,
+/// `k` lands on col 21; a notch that pulls the cursor, then `j`, col 21).
+#[test]
+fn the_wheel_keeps_the_wanted_column() {
+    let mut app = vim(Fixture::Body);
+    let mut lines = vec!["x".repeat(20); 120];
+    lines[1] = "{".into();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    let caret = |app: &App| (app.editor.body.cursor.row, app.editor.body.cursor.col);
+    feed(&mut app, "gg010lj");
+    assert_eq!(caret(&app), (1, 0), "on the short line");
+    scroll_body(&mut app, -1);
+    assert_eq!(app.editor.body.viewport_offset().1, 0, "nothing moved");
+    feed(&mut app, "k");
+    assert_eq!(caret(&app), (0, 10), "a notch that moves nothing keeps it");
+    feed(&mut app, "j");
+    scroll_body(&mut app, 3);
+    assert_eq!(caret(&app).0, 3, "the pull");
+    feed(&mut app, "j");
+    assert_eq!(caret(&app), (4, 10), "a notch that pulls keeps it too");
+}
+
 /// #201: in arrows a wheel pull clears the selection (the user: "I think
 /// just clear the selection on arrows maybe"), but a drag still held goes
 /// on from its press: its next motion selects from there to the pointer,
