@@ -2269,19 +2269,17 @@ impl VarManager {
         let y = right.y + 1;
         let title_fits = y + TALL_PILL_H <= bottom;
 
-        // The grid under the title block paints first (task #207): the
-        // title row's two option buttons show only if it drew an option
-        // row, which `no_rows_drawn` answers from the record the rows
-        // write as they paint. It is the keys' and chips' own check (#202),
-        // read rather than a flag of the draw's, so the buttons, keys and
-        // chips can't disagree. So where it answers false with no row, a
-        // per-environment selector with no environment (no grid at all,
-        // `NO_ENV_HINT` in its place), all of them stay as on main: that
-        // state is not a pane too small for the rows, and `+ Option`
-        // answers it with the hint's toast. A click on either button asks
-        // the same verbs (`option_button_action`), so it acts only when
-        // the button would be painted. The title block ends where the grid
-        // starts, so the order their hits register in changes nothing.
+        // The grid under the title block paints first (task #207), so the
+        // title row knows whether it drew an option row: the two option
+        // buttons are hidden exactly when `no_rows_drawn` (`grid_shape` is
+        // `Some((_, 0))`), the check the grid's keys and chips read (#202),
+        // and a click on either asks those same verbs
+        // (`option_button_action`). It answers false for a per-environment
+        // selector with no environment, which has no grid at all
+        // (`NO_ENV_HINT` in its place) rather than one too small for its
+        // rows: the buttons, keys and chips all keep their ways there. The
+        // title block ends where the grid starts, so the order their hits
+        // register in changes nothing.
         let grid_y = if title_fits { y + TALL_PILL_H } else { y };
         self.draw_option_grid(buf, right, grid_y, theme, ctx, hits, hovered, selector);
         let no_rows = self.no_rows_drawn(ctx);

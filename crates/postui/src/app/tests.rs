@@ -18421,9 +18421,14 @@ fn a_paste_click_on_a_pane_too_short_for_an_option_row_writes_nothing() {
     rendered_text_at(&mut app, 130, 46);
     let paste =
         app.hits.rect_of(&crate::hit::Hit::VmPasteOption).expect("the copy armed the paste button");
+    let rename = app.hits.rect_of(&crate::hit::Hit::VmRename);
 
     rendered_text_at(&mut app, 130, 14);
-    assert!(app.hits.rect_of(&crate::hit::Hit::VmRename).is_some(), "the title row is drawn");
+    assert_eq!(
+        app.hits.rect_of(&crate::hit::Hit::VmRename),
+        rename,
+        "the title row is drawn where it was"
+    );
     assert!(
         app.hits.rect_of(&crate::hit::Hit::VmEntryCell { row: 0, col: 0 }).is_none(),
         "no option row is drawn"
