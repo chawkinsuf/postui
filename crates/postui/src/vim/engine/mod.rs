@@ -122,6 +122,15 @@ pub enum Settled {
     CommandLine,
     /// The mouse on the buffer's text, at a char (Vim's `do_mouse()`).
     Mouse(Pos, Mouse),
+    /// The wheel or the scrollbar moved the view and, with `'scrolloff'`
+    /// 0, pulled the cursor into it (Vim's `nv_mousescroll()` and
+    /// `ins_mousescroll()`, #201). Probed in 9.1: a half-typed operator
+    /// is dropped (`d`, the wheel, `j` deletes nothing); Insert ctrl+o's
+    /// one command is the wheel (`i` ctrl+o, the wheel, `X` types); an
+    /// Insert the pull moved splits (`iBB`, the wheel, `CC` Esc `u` takes
+    /// only `CC`); Visual stays and its span follows the cursor. A search
+    /// being typed stays, as for a press off the text.
+    Scroll,
 }
 
 /// Footer text: a key a vim user expects but the engine does not do
@@ -781,8 +790,8 @@ impl Engine {
         // Two of Vim's ways are not followed here, as before #129: a press
         // on the text itself still ends the search and places the caret,
         // and the prompt has no click caret, so typing goes on at its end.
-        let searching =
-            self.search.is_some() && matches!(how, Settled::Click | Settled::CommandLine);
+        let searching = self.search.is_some()
+            && matches!(how, Settled::Click | Settled::CommandLine | Settled::Scroll);
         // A press on the command line's row (`CommandLine`) is a `Click`
         // that keeps Visual and Insert ctrl+o's one command (probed in 9.1:
         // `d` or `3`, a click there, and the next key runs alone; Visual
@@ -794,6 +803,7 @@ impl Engine {
                 how,
                 Settled::Click
                     | Settled::CommandLine
+                    | Settled::Scroll
                     | Settled::Mouse(_, Mouse::Press(_) | Mouse::Extend)
             )
         {
@@ -853,12 +863,12 @@ impl Engine {
         self.rest(buf, state);
     }
 
-    /// The view pulled the caret into the window (the body's wheel or
-    /// scrollbar, Vim's `nv_mousescroll()` with `'scrolloff'` 0): the mode
-    /// paints again from where the caret is now, so a Visual span follows
-    /// it (#201; probed in 9.1: `v` on line 3, wheel down, the span runs
-    /// from line 3 to the cursor at the window's top, and `y` takes it).
-    /// Only the paint: the caret, the mode and what is pending stay.
+    /// The view pulled the caret of a parked session into the window (the
+    /// body's wheel or scrollbar while another pane has the keys, #201):
+    /// the mode paints again from where the caret is now, so a Visual span
+    /// follows it. Only the paint: the caret, the mode and what is pending
+    /// stay until the session is live again. A live session settles with
+    /// `Settled::Scroll` instead.
     pub fn repaint<B: TextBuf>(&self, t: Target<'_, B>) {
         self.paint(t.buf);
     }

@@ -1218,16 +1218,29 @@ impl App {
         self.vim.glue.follow_body(from, self.editor.slug.as_deref());
     }
 
-    /// The body's wheel or scrollbar scrolled it (`Editor::scroll_body`),
-    /// which in the vim profile pulls the caret into the view: a Visual
-    /// span the engine painted repaints to the caret, as Vim's follows the
-    /// cursor (#201). Nothing to do when the engine doesn't hold the body.
+    /// The body's wheel or scrollbar moved its view (`Editor::scroll_body`),
+    /// which in the vim profile pulls the caret into it. A live session
+    /// settles as Vim's wheel does (`Settled::Scroll`, #201): a half-typed
+    /// command drops, an Insert the pull moved splits, ctrl+o's command
+    /// is spent, and a Visual span follows the cursor. A body changed
+    /// outside the engine rebases first, as before a key's settle
+    /// (`sync_session`'s `Edge::Same`), so the settle never records text
+    /// the engine's history doesn't describe. A parked session only
+    /// repaints its span. Nothing to do when the engine doesn't hold the
+    /// body.
     pub(crate) fn vim_body_scrolled(&mut self) {
         if !self.vim_owns_body() {
             return;
         }
+        let live = self.vim.glue.live() == Some(FieldId::Body);
         let (glue, buf) = self.session_parts(FieldId::Body);
-        if let Some(mut buf) = buf {
+        let Some(mut buf) = buf else { return };
+        if glue.differs(&buf) {
+            glue.rebase(&mut buf);
+        }
+        if live {
+            glue.settle(&mut buf, Settled::Scroll);
+        } else {
             glue.repaint(&mut buf);
         }
     }

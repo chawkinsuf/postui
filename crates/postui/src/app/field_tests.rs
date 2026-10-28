@@ -1904,6 +1904,58 @@ fn the_wheel_in_visual_carries_the_span_with_the_cursor() {
     assert_eq!(app.mode_indicator(), Some("NORMAL"));
 }
 
+/// The vim body with 120 lines `row{i}`, drawn.
+fn vim_long_body() -> App {
+    let mut app = vim(Fixture::Body);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    app
+}
+
+/// `n` scrollbar lines down, a frame after each.
+fn scroll_body(app: &mut App, n: usize) {
+    for _ in 0..n {
+        app.update(Action::ScrollPane(PaneId::Editor, 1));
+        draw(app);
+    }
+}
+
+/// #201: the wheel's pull ends an Insert step as Vim's does (probed in
+/// 9.1: `iBB`, the wheel, `CC` Esc `u` takes only `CC`; a second `u`
+/// takes `BB`).
+#[test]
+fn the_wheel_in_insert_splits_the_undo_step() {
+    let mut app = vim_long_body();
+    feed(&mut app, "ggjj0iBB");
+    scroll_body(&mut app, 20);
+    assert_eq!(app.editor.body.cursor.row, 20, "the pull");
+    feed(&mut app, "CC<Esc>u");
+    let text = app.editor.body_text();
+    assert_eq!(text.lines().nth(2), Some("BBrow2"), "`BB` stays");
+    assert_eq!(text.lines().nth(20), Some("row20"), "`CC` is undone");
+    feed(&mut app, "u");
+    assert_eq!(app.editor.body_text().lines().nth(2), Some("row2"));
+}
+
+/// #201: the wheel drops a half-typed operator (probed in 9.1: `d`, the
+/// wheel, `j` moves and deletes nothing) and is Insert ctrl+o's one
+/// command (`i` ctrl+o, the wheel, `X` types at the pulled cursor).
+#[test]
+fn the_wheel_drops_an_operator_and_spends_ctrl_o() {
+    let mut app = vim_long_body();
+    feed(&mut app, "ggjjd");
+    scroll_body(&mut app, 3);
+    feed(&mut app, "j");
+    assert_eq!(app.editor.body_text().lines().count(), 120, "nothing deleted");
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+    feed(&mut app, "gg0i<C-o>");
+    scroll_body(&mut app, 5);
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+    feed(&mut app, "X");
+    assert_eq!(app.editor.body_text().lines().nth(5), Some("Xrow5"));
+}
+
 /// #201: in the arrows profile the wheel moves the view, not the caret
 /// (the user: "Yes arrows should scroll the view and not the cursor"):
 /// the caret stays on line 3 off screen, and the next typed char goes in

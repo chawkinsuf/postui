@@ -277,16 +277,14 @@ pub struct Editor {
     /// The caret as the last arrows wheel or scrollbar scroll left it
     /// (#201): the view moved and the caret stayed, so the draw keeps the
     /// view where the scroll put it, however far off it the caret is.
-    /// While the caret and the text stay as they were, the view stays;
-    /// the draw drops it once either changed (a key moved the caret or
-    /// typed, a click placed it, an undo, a load), and the view goes back
-    /// to following the caret, as edtui's render does on every other
-    /// frame. The table's `scrolled_away` is the same rule. A copy of the
-    /// caret, not a flag cleared where input comes in: the caret has no
-    /// setter of its own (edtui's handlers, the vim engine and the app all
-    /// write `body.cursor`), and comparing it catches every way it moves
-    /// without sorting them. `None` in the vim profile, whose wheel moves
-    /// the caret into the view, as Vim's does.
+    /// Any key routed to the body drops it (`handle_key`), whatever the key
+    /// does, as a GUI editor reveals its caret. Past keys, the caret has no
+    /// setter of its own (edtui's mouse, the app's undo, restores and
+    /// loads all write `body.cursor`), so the draw also drops it once the
+    /// caret or the text differs from what the scroll left, and the view
+    /// goes back to following the caret, as edtui's render does on every
+    /// other frame. `None` in the vim profile, whose wheel moves the
+    /// caret into the view, as Vim's does.
     body_scrolled_away: Option<edtui::Index2>,
     /// The indent arrows Enter left alone on a new line, while it is
     /// untouched (spec 2026-10-16): the request's body leaves the line out
@@ -3011,6 +3009,11 @@ impl Component for Editor {
                     }
                     return None;
                 }
+                // Any key that reaches the body acts at the caret, so the
+                // view goes back to it, even when the key moves nothing (an
+                // arrow at the text's edge) or two keys undo each other
+                // before a frame (#201), as a GUI editor reveals its caret.
+                self.body_scrolled_away = None;
                 // The emacs caret bytes (ctrl+e → End, ESC b/f → word
                 // hops with shift riding along — also what mac terminals
                 // send for cmd/option+arrows) fold into the GUI keys the
@@ -4215,11 +4218,11 @@ impl Editor {
                 let text_now = self.body.lines.to_string();
                 let text_changed = self.body_hl_text != text_now;
                 // An arrows scroll's view stays only while the caret and
-                // the text are as the scroll left them (#201): a key that
-                // moved the caret or typed, a click, an undo or a load
-                // brings the view back to the caret. The draw follows the
-                // event that changed them (one event, then a frame), so the
-                // text as the last frame drew it is the text the scroll saw.
+                // the text are as the scroll left them (#201): a click, an
+                // undo or a load brings the view back to the caret (a key
+                // has already dropped it, `handle_key`). The text as the
+                // last frame drew it is the text the scroll saw: the scroll
+                // itself asks for a frame (`Action::Render`).
                 if text_changed
                     || self.vim_profile
                     || self.body_scrolled_away != Some(self.body.cursor)
@@ -5808,6 +5811,26 @@ mod tests {
                 KeyCode::Down => assert_eq!(e.body.cursor, edtui::Index2::new(3, 2)),
                 _ => assert_eq!(line3.as_deref(), Some("lie2")),
             }
+        }
+    }
+
+    /// #201: any key that reaches the body brings the view back to the
+    /// caret, one that moves nothing (Left at the text's start) and two
+    /// that cancel out before a frame (Down, Up) included.
+    #[test]
+    fn any_body_key_after_the_arrows_wheel_shows_the_caret() {
+        for keys in [&[KeyCode::Left][..], &[KeyCode::Down, KeyCode::Up]] {
+            let mut e = arrows_long_body();
+            e.body.cursor = edtui::Index2::new(0, 0);
+            draw_body(&mut e, true);
+            wheel_down(&mut e, 20);
+            for &key in keys {
+                e.handle_key(KeyEvent::new(key, KeyModifiers::NONE));
+            }
+            assert_eq!(e.body.cursor, edtui::Index2::new(0, 0), "{keys:?}");
+            draw_body(&mut e, true);
+            assert_eq!(e.body.viewport_offset().1, 0, "{keys:?}: the view is back");
+            assert!(caret_cell(&e).is_some(), "{keys:?}");
         }
     }
 

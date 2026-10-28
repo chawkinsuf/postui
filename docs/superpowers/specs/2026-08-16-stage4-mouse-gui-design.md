@@ -152,16 +152,21 @@ up/down. Wheel scrolling unchanged.
 profile they move the view, not the caret (`you`: "Yes arrows should scroll the view
 and not the cursor"). The caret stays where it was, off screen too, and so does a
 selection, as in GUI editors; the frames after keep the view where the scroll left
-it. The first key that moves the caret or changes the text acts at the caret and
-brings the view back to it, and so does anything else that moves the caret (a click,
-an undo, a load) (`mine`). A key that changes neither (an arrow at the text's edge,
-an unbound chord) leaves the view where it is (`mine`, the table's rule in
-`2026-10-25-headers-tab-scroll-design.md` S6). In the vim profile the caret follows
-the view in, once, as Vim's wheel moves the cursor only to keep it in the window
-(`'scrolloff'` 0), and a Visual span follows the cursor (`Vim`, probed in 9.1 in
-tmux: `v` on line 3, the wheel down, the cursor on the window's top line in its
-column, the span from line 3 to it; the wheel up from line 40, the cursor on the
-window's bottom line and the span from it to line 40).
+it. The next key that reaches the body acts at the caret and brings the view back
+to it, whatever it does (an arrow at the text's edge too), as a GUI editor reveals
+its caret; so does anything else that moves the caret or changes the text (a click,
+an undo, a load) (`mine`). Keys the app takes before the body (the palette, Send,
+copy) leave the view. In the vim profile the caret follows the view in, once, as
+Vim's wheel moves the cursor only to keep it in the window (`'scrolloff'` 0), and
+the scroll settles the engine as Vim's `nv_mousescroll()`/`ins_mousescroll()` do
+(`Vim`, probed in 9.1 in tmux): a Visual span follows the cursor (`v` on line 3, the
+wheel down, the cursor on the window's top line in its column, the span from line 3
+to it; the wheel up from line 40, the cursor on the window's bottom line and the
+span from it to line 40); a half-typed operator drops (`d`, the wheel, `j` deletes
+nothing); Insert ctrl+o's one command is the wheel (`i` ctrl+o, the wheel, `X`
+types); an Insert the pull moved splits its undo step (`iBB`, the wheel, `CC` Esc
+`u` undoes only `CC`). A search being typed stays open (`mine`, not probed: as a
+press off the text keeps it, #129).
 
 ## 5. Method dropdown and the popup primitive
 

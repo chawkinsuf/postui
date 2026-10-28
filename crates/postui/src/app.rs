@@ -9727,7 +9727,9 @@ impl App {
         let before = self.editor.view_offset();
         self.editor.handle_scroll(delta);
         if self.editor.active_tab == EditorTab::Body {
-            self.vim_body_scrolled();
+            if self.editor.view_offset() != before {
+                self.vim_body_scrolled();
+            }
             return;
         }
         if self.editor.view_offset() == before {
