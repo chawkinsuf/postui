@@ -99,7 +99,9 @@
   badge selected. With no sub-focus a chip click is still a click away, as
   before. *Vim, and you ("Yes let's follow vim for mouse interactions as
   well"):* for vim's engine the press is still a click: it ends Visual and
-  drops a half-typed operator and a ctrl+o before the chip acts. Vim:
+  drops a half-typed operator and a ctrl+o (settled at the end of the
+  event; only the vars chip's picker reads the mode, and takes it as
+  alt+v does). Vim:
   gVim's `:amenu` inserts `<C-C>` in Visual/Op-pending (gui.txt; probed in
   Vim 9.1: `d`, an `:amenu` item, `l` deletes nothing). A footer chip is
   that kind of item. Here the click and its key differ: alt+i or

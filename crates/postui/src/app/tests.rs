@@ -16083,18 +16083,29 @@ fn an_editor_footer_chip_click_matches_its_vim_key_on_the_url_line_or_method() {
 /// Task #194, Vim's menu rule: gVim's `:amenu` inserts `<C-C>` before an
 /// item in Visual mode (gui.txt), so a footer chip's click with Visual up
 /// on the open URL line ends Visual, and the line stays open through the
-/// `tls` chip. Its key differs: alt+i is a key and keeps Visual up.
+/// chips that act on the request in place (send, copy url, tls). Its key
+/// differs: alt+i is a key and keeps Visual up.
 #[test]
 fn a_footer_chip_click_ends_visual_on_the_open_url_line_in_vim() {
     use crate::config::KeyProfile::Vim;
     let (y, chips) = footer_strip_chips(&editor_caret_app("url_visual", Vim, false));
-    assert!(chips.iter().any(|(a, _)| *a == Action::ToggleInsecure), "{chips:?}");
+    let in_place = [
+        Action::Send,
+        Action::CopyToClipboard(crate::action::CopyTarget::Url),
+        Action::ToggleInsecure,
+    ];
+    for a in &in_place {
+        assert!(chips.iter().any(|(b, _)| b == a), "{a:?} drawn: {chips:?}");
+    }
     for (chip, x) in &chips {
         let mut app = editor_caret_app("url_visual", Vim, false);
         app.handle_mouse(left_down(*x, y));
         assert_ne!(app.vim_status().as_deref(), Some("VISUAL"), "{chip:?}");
+        if in_place.contains(chip) {
+            assert!(app.editor.url_open(), "{chip:?}: the line stayed open");
+            assert_eq!(app.editor.sub_focus, SubFocus::Url, "{chip:?}");
+        }
         if *chip == Action::ToggleInsecure {
-            assert!(app.editor.url_open(), "the line stayed open");
             assert!(app.editor.insecure, "the toggle ran");
         }
     }

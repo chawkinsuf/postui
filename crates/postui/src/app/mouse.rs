@@ -1445,14 +1445,18 @@ impl App {
             && self.settled_layout().is_some_and(|l| {
                 l.footer.contains(ratatui::layout::Position { x: m.column, y: m.row })
             });
-        // For vim's engine the press is still a click, which `vim_mouse_end`
-        // settles: it ends Visual and drops a half-typed operator and a
-        // ctrl+o before the chip acts, as a menu item does in gVim.
+        // For vim's engine the press is still a click: `vim_mouse_end`
+        // settles it at the end of the event, which ends Visual and drops
+        // a half-typed operator and a ctrl+o, as a menu item does in gVim.
         // Vim: gVim's :amenu inserts <C-C> in Visual/Op-pending (gui.txt).
-        // Here the click and its key differ: alt+i (or ctrl+Enter) keeps
-        // Visual up on the open URL line. The click follows Vim's menu
-        // rule, the key follows the key (task #194; spec 2026-10-26
-        // header-copy, Footer).
+        // gVim's <C-C> goes before the item and this settle comes after
+        // the chip's action; the chips' actions don't read the engine's
+        // mode, save the vars chip's picker, which takes Visual and a
+        // pending operator as alt+v does (its own exemption below, which
+        // #194 leaves as it was). Here the click and its key differ:
+        // alt+i (or ctrl+Enter) keeps Visual up on the open URL line. The
+        // click follows Vim's menu rule, the key follows the key (task
+        // #194; spec 2026-10-26 header-copy, Footer).
         // A click anywhere that isn't the params/headers table itself (and
         // isn't in a dialog) is a click away: it commits whatever cell was
         // being edited (typing is never silently thrown away) and clears
