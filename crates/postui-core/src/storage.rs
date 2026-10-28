@@ -128,10 +128,14 @@ pub fn slugify_or(name: &str, fallback: &str) -> String {
 /// a dash at either end (`x-/Name` makes `x-/`, `-/Name` makes `-/`), so a
 /// stray dash no longer folds into the folder beside it.
 ///
-/// Spaces and environments still name their directory or file with
-/// `slugify`: they carry a display name in `project.toml`, so their slug is
-/// never what the user types. A request folder has no display name; the
-/// typed segment is its on-disk name, which is why a valid one is kept.
+/// The first segment of a path the app builds here is the space's
+/// directory name (the active space, or the request's own), and it follows
+/// the same rule, so a hand-made space `old-` stays `old-`. Creating or
+/// renaming a space or environment is different: that names its directory
+/// or file with `slugify`, since they carry a display name in
+/// `project.toml` and their slug is never what the user types. A request
+/// folder has no display name; the typed segment is its on-disk name,
+/// which is why a valid one is kept.
 pub fn split_display_path(input: &str) -> Option<(String, String)> {
     let (folders, leaf) = match input.rsplit_once('/') {
         Some((f, l)) => (f, l),
@@ -173,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn split_display_path_slugifies_folders_and_keeps_the_leaf_verbatim() {
+    fn split_display_path_slugifies_non_slug_folders_and_keeps_the_leaf_verbatim() {
         assert_eq!(
             split_display_path("API Auth/Get User"),
             Some(("api-auth".into(), "Get User".into()))
