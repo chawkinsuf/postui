@@ -1408,23 +1408,23 @@ impl App {
         // dialog since task #85: no quit runs under one.)
         let in_dialog = !self.modals.is_empty();
         // A footer chip is the key it advertises. While the editor's caret
-        // is in its content (on any tab: the table's cursor on any stop, an
-        // open cell, the Body) or on the selected URL line, every chip on
-        // the main screen's footer is no click away at all: the cell, its
-        // typing, the cursor and the caret stay as its key leaves them
-        // (tasks #125, #183 and #192; spec 2026-10-26 header-copy, Footer).
-        // The click is the chip's action and nothing else, which is what
-        // its key runs: send and quit commit the cell themselves, `done`
-        // closes it, the add chip moves the caret. Where a keycap's key
-        // does something else first (the in-flight `esc cancel` chip's Esc
-        // on a selected URL line deselects it), the click is still the
-        // action the chip names.
+        // is anywhere in it (the table's cursor on any stop, an open cell,
+        // the Body, the URL line selected or open, the method badge), every
+        // chip on the main screen's footer is no click away at all: the
+        // cell, its typing, the line's edit, the cursor and the caret stay
+        // as its key leaves them (tasks #125, #183, #192 and #194; spec
+        // 2026-10-26 header-copy, Footer). The click is the chip's action
+        // and nothing else, which is what its key runs: send and quit
+        // commit the cell themselves, `done` closes it or the URL line, the
+        // add chip moves the caret. Where a keycap's key does something
+        // else first (the in-flight `esc cancel` chip's Esc on a selected
+        // URL line deselects it), the click is still the action the chip
+        // names.
         //
-        // The open URL line and the method badge are left as they were:
-        // a footer chip there is still a click away, though their keys
-        // keep them too. Task #192 names the states above; widening the
-        // gate to the whole editor would cover these two as well. The vars
-        // and tooltip-edit chips' own exemptions below still hold there.
+        // With no sub-focus there is no caret to keep, and the click away
+        // is left as it was: the tasks name the states above, not that one.
+        // The vars and tooltip-edit chips' own exemptions below hold there,
+        // and on the screens and panes this gate leaves out.
         //
         // The rule asks where the press landed, not which action: the app
         // bar's save/discard, the address bar's lock and the Body toolbar
@@ -1441,14 +1441,22 @@ impl App {
         let editor_footer_chip = matches!(hit, Hit::FooterChip(_))
             && self.screen == Screen::Main
             && self.focus == PaneId::Editor
-            && match self.editor.sub_focus {
-                SubFocus::Content => true,
-                SubFocus::Url => !self.editor.url_open(),
-                SubFocus::Method | SubFocus::None => false,
-            }
+            && self.editor.sub_focus != SubFocus::None
             && self.settled_layout().is_some_and(|l| {
                 l.footer.contains(ratatui::layout::Position { x: m.column, y: m.row })
             });
+        // For vim's engine the press is still a click: `vim_mouse_end`
+        // settles it at the end of the event, which ends Visual and drops
+        // a half-typed operator and a ctrl+o, as a menu item does in gVim.
+        // Vim: gVim's :amenu inserts <C-C> in Visual/Op-pending (gui.txt).
+        // gVim's <C-C> goes before the item and this settle comes after
+        // the chip's action; the chips' actions don't read the engine's
+        // mode, save the vars chip's picker, which takes Visual and a
+        // pending operator as alt+v does (its own exemption below, which
+        // #194 leaves as it was). Here the click and its key differ:
+        // alt+i (or ctrl+Enter) keeps Visual up on the open URL line. The
+        // click follows Vim's menu rule, the key follows the key (task
+        // #194; spec 2026-10-26 header-copy, Footer).
         // A click anywhere that isn't the params/headers table itself (and
         // isn't in a dialog) is a click away: it commits whatever cell was
         // being edited (typing is never silently thrown away) and clears

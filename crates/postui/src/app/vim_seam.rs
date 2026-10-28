@@ -1020,7 +1020,9 @@ impl App {
     /// mouse did on the text of the field that has the caret now settles
     /// at its char (spec 2026-10-14); any other left press is a plain
     /// click, except one on a window separator, and a release does
-    /// nothing, as in Vim.
+    /// nothing, as in Vim. An editor footer chip's press is a click too,
+    /// as a gVim menu item inserts `<C-C>` in Visual/Op-pending (gui.txt;
+    /// task #194, `App::on_hit`).
     pub(super) fn vim_mouse_end(&mut self, edge: MouseEdge) {
         if !edge.button {
             return;
