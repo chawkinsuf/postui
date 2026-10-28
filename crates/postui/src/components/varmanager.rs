@@ -1968,25 +1968,27 @@ impl VarManager {
     fn grid_verb(&self, ctx: &Project, selector: &str, verb: Verb) -> Option<Action> {
         // The cursor's option, with the row it is at now. On nothing (spec
         // N5) no option verb has a target; add and paste need none.
-        let target = self
-            .grid_at(ctx)
-            .and_then(|(row, _)| Some((row, op_env(ctx, selector)?, self.entry_at(ctx, row)?)));
-        // The verbs that act on that option act only on one on screen
-        // (task #202): with no option row drawn they have no target and
-        // their chips drop. Rename is the name cell's edit instead, which
-        // `start_cell_edit` already refuses when the cell isn't drawn, and
-        // keeps its chip as a column a narrow pane hides does (#198, #200).
-        let shown = if self.rows_drawn(ctx) { target.clone() } else { None };
+        let option_at = |row| Some((row, op_env(ctx, selector)?, self.entry_at(ctx, row)?));
+        let cursor_row = self.grid_at(ctx).map(|(row, _)| row);
+        // A verb acts on that option only while it is on screen (task
+        // #202): with no option row drawn there is no target, and the
+        // chips drop. Rename alone reads the cursor whatever is drawn: it
+        // is the name cell's edit, which `start_cell_edit` refuses when
+        // the cell isn't drawn, and it keeps its chip as a column a narrow
+        // pane hides does (#198, #200).
+        let target = cursor_row.filter(|_| self.rows_drawn(ctx)).and_then(option_at);
         match verb {
             Verb::Add => Some(Action::StartNewOptionEdit),
-            Verb::Rename => target.map(|(row, _, _)| Action::StartOptionNameEdit { row }),
-            Verb::Delete { .. } => shown.map(|(_, env, name)| Action::DeleteEntry {
+            Verb::Rename => cursor_row
+                .and_then(option_at)
+                .map(|(row, _, _)| Action::StartOptionNameEdit { row }),
+            Verb::Delete { .. } => target.map(|(_, env, name)| Action::DeleteEntry {
                 env,
                 selector: selector.to_string(),
                 name,
             }),
             Verb::EditValue => {
-                let (_, _, option) = shown?;
+                let (_, _, option) = target?;
                 let decl =
                     postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), selector)?
                         .get(&option)?
@@ -1998,7 +2000,7 @@ impl VarManager {
                     values: decl.values,
                 })
             }
-            Verb::Yank => shown.map(|(row, _, _)| Action::CopyOption { row }),
+            Verb::Yank => target.map(|(row, _, _)| Action::CopyOption { row }),
             // A pasted option has no place in the grid to go above or
             // below: `above` is ignored, so vim's `P` pastes as `p` does
             // (arrows binds only `p`, #145).
