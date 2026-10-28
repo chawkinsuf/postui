@@ -9494,7 +9494,7 @@ impl App {
                 from: options[edit.row].clone(),
                 to: value,
             })
-        } else if edit.col == fields.len() + 1 {
+        } else if edit.col == crate::components::varmanager::desc_col(fields.len()) {
             // The trailing description column: an emptied cell removes the
             // stored key (clearing a text value, not an entity remove).
             t = self.begin_op();
@@ -9525,7 +9525,9 @@ impl App {
                 // cursor, which the create left on the option by name
                 // (spec 2026-10-27 N9): the write re-read the file, so an
                 // edit another program made can have moved the option off
-                // the ghost's old index.
+                // the ghost's old index. A selector always has a field
+                // (core refuses an empty field list, `varmodel::EmptyFields`),
+                // so the `is_empty` check is only a guard, never a path.
                 let created = self.project().and_then(|p| self.varmanager.grid_at(p));
                 if walk_on
                     && ghost
@@ -12378,18 +12380,12 @@ impl App {
         if self.varmanager.grid.editing.is_some() {
             return true;
         }
-        let Some((row, _)) = self.project().and_then(|p| self.varmanager.grid_at(p)) else {
+        let Some(((row, _), (last_row, ncols))) = self
+            .project()
+            .and_then(|p| Some((self.varmanager.grid_at(p)?, self.varmanager.grid_shape(p)?)))
+        else {
             return true;
         };
-        let VmDetail::Group(selector) = self.varmanager.detail.clone() else {
-            return true;
-        };
-        // A row's cells: its name, each field, then its description (task
-        // #188: the description column was left out of the walk).
-        let ncols = 2 + self.variables().selectors.get(&selector).map_or(0, |g| g.fields.len());
-        let last_row =
-            postui_core::varmodel::options_of(self.variables(), self.env_data(), &selector)
-                .map_or(0, indexmap::IndexMap::len);
         let flat = (row * ncols + col) as i32 + dir;
         let (next_row, next_col) = match flat {
             // Off either end of the grid: the walk stops rather than

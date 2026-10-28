@@ -19152,6 +19152,15 @@ fn tab_from_the_last_description_reaches_the_ghost_row_and_stops_there() {
     back(&mut app);
     assert_eq!(at(&app), Some((1, 2)), "back to bob's description");
     assert_eq!(option_names(&app, "user"), ["alice", "bob"], "nothing created");
+    // A name typed there creates the option, and Tab walks on into its
+    // first field, then its description.
+    tab(&mut app);
+    type_chars(&mut app, "carol");
+    tab(&mut app);
+    assert_eq!(option_names(&app, "user"), ["alice", "bob", "carol"]);
+    assert_eq!(at(&app), Some((2, 1)), "carol's first field");
+    tab(&mut app);
+    assert_eq!(at(&app), Some((2, 2)), "carol's description");
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
 }
 

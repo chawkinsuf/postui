@@ -688,11 +688,19 @@ fn grid_cell_text(ctx: &Project, selector: &str, row: usize, col: usize) -> Stri
         return name.clone();
     }
     let fields = group_fields(ctx, selector);
-    // The trailing column past the fields is the option's description.
-    if col == fields.len() + 1 {
+    if col == desc_col(fields.len()) {
         return description.clone().unwrap_or_default();
     }
     fields.get(col - 1).and_then(|f| values.get(f)).cloned().unwrap_or_default()
+}
+
+/// The grid's description column for a selector with `n_fields` fields:
+/// a row's cells are its name (column 0), each field (1..=n), then its
+/// description, one past the last field. The one place that says so: the
+/// draw, the cursor, the cell edits and the Tab walk all ask here (task
+/// #188: the walk once counted a row one cell short of the draw).
+pub(crate) fn desc_col(n_fields: usize) -> usize {
+    n_fields + 1
 }
 
 /// `selector`'s declared field list (empty for an undeclared name).
@@ -935,6 +943,19 @@ impl VarManager {
             GridRow::Named(name) => options?.get_index_of(name)?,
         };
         Some((i, self.grid.cursor.col))
+    }
+
+    /// The open selector's grid as `ctx` lists it now: the ghost row's
+    /// index (one past the last option) and the columns in a row (name,
+    /// each field, description: [`desc_col`]). Read from the same options
+    /// the draw and [`Self::grid_at`] read, so a walk over it covers
+    /// exactly the cells on screen. `None` with no selector open.
+    pub fn grid_shape(&self, ctx: &Project) -> Option<(usize, usize)> {
+        let VmDetail::Group(selector) = &self.detail else {
+            return None;
+        };
+        let ghost = shown_options(ctx, selector).map_or(0, IndexMap::len);
+        Some((ghost, desc_col(group_fields(ctx, selector).len()) + 1))
     }
 
     /// Puts the grid cursor on row `row` of the options `ctx` lists now
@@ -1657,9 +1678,7 @@ impl VarManager {
             return None;
         }
         let last_row = shown_options(ctx, selector).map_or(0, IndexMap::len); // == the ghost row
-        // Cols: 0 = name, 1..=fields = the field values, fields+1 = the
-        // option's description.
-        let last_col = group_fields(ctx, selector).len() + 1;
+        let last_col = desc_col(group_fields(ctx, selector).len());
         let col = self.grid.cursor.col.min(last_col);
         self.grid.cursor.col = col;
         // The row the name is at now; on nothing (spec N5) a move starts
@@ -2150,8 +2169,7 @@ impl VarManager {
 
         // --- column headers ---------------------------------------------
         let fields = group_fields(ctx, selector);
-        // One column per field plus the name and the trailing description.
-        let cols = grid_columns(x0, inner_w, 2 + fields.len());
+        let cols = grid_columns(x0, inner_w, desc_col(fields.len()) + 1);
         if y >= bottom || cols.x.is_empty() {
             return;
         }
@@ -2180,7 +2198,7 @@ impl VarManager {
         // A column a field removal left past the last one clamps back. The
         // row needs no clamp: it is found by its option's name (task #83),
         // and a cursor whose option went is on nothing (spec N5).
-        self.grid.cursor.col = self.grid.cursor.col.min(fields.len() + 1);
+        self.grid.cursor.col = self.grid.cursor.col.min(desc_col(fields.len()));
         let at = self.grid_at(ctx);
         let cursor = at.filter(|_| self.focus == VmFocus::Grid);
         self.grid_visible = visible;
@@ -2259,10 +2277,10 @@ impl VarManager {
                     }
                 } else {
                     let (name, description, values) = &rows[i];
-                    let desc_col = col == fields.len() + 1;
+                    let is_desc = col == desc_col(fields.len());
                     let value = match col {
                         0 => Some(name),
-                        _ if desc_col => description.as_ref(),
+                        _ if is_desc => description.as_ref(),
                         n => fields.get(n - 1).and_then(|f| values.get(f)),
                     };
                     // A missing description is fine (the column is
@@ -2270,9 +2288,9 @@ impl VarManager {
                     // carrying the fields' "(empty)" nudge; a present one
                     // reads muted, like secondary text elsewhere.
                     let (shown, fg) = match value {
-                        Some(v) if !v.is_empty() && desc_col => (v.as_str(), theme.text_muted),
+                        Some(v) if !v.is_empty() && is_desc => (v.as_str(), theme.text_muted),
                         Some(v) if !v.is_empty() => (v.as_str(), theme.text),
-                        _ if desc_col => ("", theme.text_muted),
+                        _ if is_desc => ("", theme.text_muted),
                         _ => ("(empty)", theme.text_muted),
                     };
                     // The last column's text stops short of the row's own
