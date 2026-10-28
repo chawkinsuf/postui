@@ -4795,6 +4795,17 @@ impl App {
                     None => false,
                 }
             }
+            // An option row menu's item: the grid's verb now, or nothing
+            // (task #208, `VarManager::entry_context_menu`).
+            Action::OptionMenu { selector, verb } => {
+                match self
+                    .project()
+                    .and_then(|p| self.varmanager.open_grid_verb(p, &selector, verb))
+                {
+                    Some(a) => self.apply(a),
+                    None => false,
+                }
+            }
             Action::PromptMoveSelectedRequestToSpace => {
                 if let Some(slug) = self.sidebar.selected_slug() {
                     self.apply(Action::PromptMoveRequestToSpace(slug));
