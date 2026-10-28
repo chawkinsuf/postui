@@ -4079,8 +4079,13 @@ impl Editor {
                 // a caret on a line that no longer fits would stay below
                 // the area until the next draw, which waits for an event
                 // (#181). Tell it the lines this area shows from its top
-                // before it renders. One wrap walk of the lines in view,
-                // the one edtui's render does too.
+                // before it renders, counted as its render counts them: a
+                // wrapped line cut off at the bottom counts, so the count
+                // is the one edtui records after this frame, a frame
+                // early. (A caret on such a line's cut-off rows stays
+                // hidden; that is edtui's rule on every frame, resize or
+                // not, and not this one's to change.) One wrap walk of the
+                // lines in view, the one edtui's render does too.
                 if let Some(view) = self.body_view(area, usize::MAX) {
                     self.body.set_viewport_height(view.rows.len());
                 }
