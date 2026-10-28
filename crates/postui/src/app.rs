@@ -4896,8 +4896,9 @@ impl App {
                 // The typed name is relative to the active space, same as
                 // a create.
                 let to = format!("{}/{}", self.active_space(), to.trim_start_matches('/'));
-                if !self.rename_request(&from, &to) {
-                    // The prompt comes back with what was typed.
+                // A refusal brings the prompt back with what was typed; no
+                // project at all returns quietly, as it always did.
+                if !self.rename_request(&from, &to) && self.project.is_some() {
                     self.last_action_failed = true;
                 }
                 true

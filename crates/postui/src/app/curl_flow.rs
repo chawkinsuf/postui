@@ -338,7 +338,12 @@ impl App {
     /// asks for, as the Rename prompt takes a case-only change. Asked
     /// before the rename's checks, so a name that changes nothing never
     /// refuses. What the rename would refuse is refused here, before the
-    /// dirty gate, in its own words (N2). A leading `/` is dropped, as the
+    /// dirty gate, in its own words (N2), a file gone from disk included:
+    /// the paste asks for a rename that cannot happen, and refusing before
+    /// anything changes says so, where replacing without it would drop the
+    /// comment unsaid (a bare curl still replaces). A rename that fails
+    /// only after the gate goes on without it instead (N1), since by then
+    /// the gate's answer has acted. A leading `/` is dropped, as the
     /// Rename prompt drops it: the name is never read from the space's
     /// top.
     fn curl_rename(&self, slug: &str, named: &str) -> Result<Option<String>, String> {
