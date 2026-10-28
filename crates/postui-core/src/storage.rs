@@ -35,6 +35,14 @@ pub struct RequestListing {
     pub name: Option<String>,
 }
 
+impl RequestListing {
+    /// What the request is called on screen: its `name`, else its slug
+    /// leaf (a legacy or broken file).
+    pub fn display_name(&self) -> &str {
+        self.name.as_deref().unwrap_or_else(|| self.slug.rsplit('/').next().unwrap_or(&self.slug))
+    }
+}
+
 /// The default project directory: `<config dir>/default`.
 pub fn default_project_dir() -> Option<PathBuf> {
     crate::config_dir().map(|dir| dir.join("default"))

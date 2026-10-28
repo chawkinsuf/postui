@@ -10756,8 +10756,8 @@ impl App {
     fn request_display(&self, slug: &str) -> String {
         self.project()
             .and_then(|p| p.requests().iter().find(|l| l.slug == slug))
-            .and_then(|l| l.name.clone())
-            .unwrap_or_else(|| slug.rsplit('/').next().unwrap_or(slug).to_string())
+            .map_or_else(|| slug.rsplit('/').next().unwrap_or(slug), |l| l.display_name())
+            .to_string()
     }
 
     /// Renames the request at `from` to the display path `to` (space

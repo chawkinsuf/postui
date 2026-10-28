@@ -7384,6 +7384,26 @@ fn rename_and_new_request_here_keep_a_hand_made_folder() {
     assert_eq!(app.editor.slug.as_deref(), Some("main/old-/fresh"));
 }
 
+/// #209: the Rename prompt submitted as prefilled leaves a hand-made
+/// nameless `ping-` (a name `slugify` would make `ping`) where it is.
+#[test]
+fn rename_prompt_left_as_is_keeps_a_hand_made_file() {
+    let mut app = App::new_for_test();
+    let ping =
+        postui_core::model::HttpRequest::from_toml_str("url = \"https://x/ping\"\n").unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), "main/ping-", &ping).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/ping-".into()));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/ping-"));
+    app.update(Action::PromptRenameRequest);
+    assert_eq!(app.modals.focused_input().unwrap().text(), "ping-");
+    submit_prompt(&mut app);
+    assert!(app.proj().request_exists("main/ping-"), "{:?}", app.toasts.messages());
+    assert!(!app.proj().request_exists("main/ping"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/ping-"));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/ping-"));
+}
+
 #[test]
 fn delete_and_duplicate_toasts_show_display_names() {
     let mut app = App::new_for_test();
