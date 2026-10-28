@@ -990,10 +990,13 @@ impl App {
 
 /// Whether a mouse event syncs the session, between
 /// [`App::vim_mouse_start`] and [`App::vim_mouse_end`]: a button's does,
-/// and `left_press` tells a left press.
+/// and `left_press` tells a left press. `wheel` is a vertical notch on
+/// the editor pane with no dialog up, the one wheel the body takes
+/// ([`App::vim_body_scrolled`]).
 pub(super) struct MouseEdge {
     button: bool,
     left_press: bool,
+    wheel: bool,
 }
 
 /// The rest of the App calls these, and only these, to reach vim: each is
@@ -1016,9 +1019,12 @@ impl App {
 
     /// Before a mouse event: a button can open, move or close a field;
     /// motion and the wheel cannot, so only a button event syncs the
-    /// session (spec §3.1). Of the drags only the left button's sweeps a
-    /// selection: some terminals (Ghostty) report hover as `Drag(Right)`,
-    /// and each sync reads the whole body (final review T4).
+    /// session here (spec §3.1). Of the drags only the left button's sweeps
+    /// a selection: some terminals (Ghostty) report hover as `Drag(Right)`,
+    /// and each sync reads the whole body (final review T4). The one wheel
+    /// that does sync is a notch on the editor pane while the body's
+    /// session is live, after the move ([`Self::vim_body_scrolled`]): the
+    /// pull is a Vim command, and pays that read per notch.
     pub(super) fn vim_mouse_start(
         &mut self,
         m: &ratatui::crossterm::event::MouseEvent,
@@ -1036,7 +1042,13 @@ impl App {
             self.vim.separator_press = false;
             self.vim.command_line_press = false;
         }
-        MouseEdge { button, left_press: m.kind == MouseEventKind::Down(MouseButton::Left) }
+        // Read before the event, on the frame the pointer saw: the wheel
+        // arm sends a notch to a dialog while one is up, and otherwise to
+        // the body's text or the pane under the pointer.
+        let wheel = matches!(m.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown)
+            && self.modals.is_empty()
+            && self.hits.pane_at(m.column, m.row) == Some(PaneId::Editor);
+        MouseEdge { button, left_press: m.kind == MouseEventKind::Down(MouseButton::Left), wheel }
     }
 
     /// After a mouse event: a button's settles the session. What the
@@ -1048,6 +1060,10 @@ impl App {
     /// item inserts `<C-C>` in Visual/Op-pending (gui.txt; task #194,
     /// `App::on_hit`).
     pub(super) fn vim_mouse_end(&mut self, edge: MouseEdge) {
+        if edge.wheel {
+            self.vim_body_scrolled();
+            return;
+        }
         if !edge.button {
             return;
         }
@@ -1216,6 +1232,38 @@ impl App {
     /// (amendment C2).
     pub(crate) fn vim_body_moved(&mut self, from: Option<&str>) {
         self.vim.glue.follow_body(from, self.editor.slug.as_deref());
+    }
+
+    /// The end of a wheel notch on the editor pane (`MouseEdge::wheel`,
+    /// from [`Self::vim_mouse_end`]), which on the Body tab scrolled the
+    /// body (`Editor::scroll_body`) and pulled the caret into the view. It
+    /// is a mouse event like a click, so it goes through the one path a
+    /// click's end takes (`sync_session`): a body changed outside the
+    /// engine rebases there first, and a live body settles as Vim's wheel
+    /// does (`Settled::Scroll`, #201): an operator the engine holds drops
+    /// (a count or prefix the router holds stays: a press drops those in
+    /// `handle_mouse`, the wheel does not), an Insert the pull moved
+    /// splits, ctrl+o's command is spent, the wanted column stays, and a
+    /// Visual span follows the cursor. Every notch, one that moves nothing
+    /// at a limit too: Vim's wheel is a command either way (probed in 9.1:
+    /// at the top, `d`, the wheel up, `j` deletes nothing).
+    ///
+    /// The wheel only. The scrollbar is a press, which settles as a click
+    /// off the text at the event's end, as before #201: settling its page
+    /// or drag as a scroll too would end Visual at the pulled caret rather
+    /// than where the press found it.
+    ///
+    /// Only the live body syncs and settles, so a notch on a table tab or
+    /// for a parked body costs no whole-body read (final review T4): the
+    /// body is live only while its tab is up and it has the caret. A
+    /// parked body (another pane has the keys) keeps its mode, its pending
+    /// command and its paint until it is live again; what that gives up:
+    /// a parked Visual span still shows the pre-scroll cursor until then.
+    fn vim_body_scrolled(&mut self) {
+        if self.vim.glue.live() != Some(FieldId::Body) {
+            return;
+        }
+        self.sync_session(None, Cause::Mouse(Some(Settled::Scroll)));
     }
 
     /// The editor's body is a new buffer with no slug to tell it apart (a

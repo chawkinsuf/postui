@@ -122,6 +122,14 @@ pub enum Settled {
     CommandLine,
     /// The mouse on the buffer's text, at a char (Vim's `do_mouse()`).
     Mouse(Pos, Mouse),
+    /// A wheel notch moved the view and, with `'scrolloff'` 0, pulled the
+    /// cursor into it (Vim's `nv_mousescroll()` and `ins_mousescroll()`,
+    /// #201). Probed in 9.1: a half-typed operator is dropped (`d`, the wheel, `j` deletes nothing); Insert ctrl+o's
+    /// one command is the wheel (`i` ctrl+o, the wheel, `X` types); an
+    /// Insert the pull moved splits (`iBB`, the wheel, `CC` Esc `u` takes
+    /// only `CC`); Visual stays and its span follows the cursor. A search
+    /// being typed stays, as for a press off the text.
+    Scroll,
 }
 
 /// Footer text: a key a vim user expects but the engine does not do
@@ -763,11 +771,20 @@ impl Engine {
     /// typed a press off the text keeps the search, its operator and Visual
     /// (#129, below). In Insert, a caret the event moved splits the session as a
     /// cursor key does (Vim's `ins_mouse()`). Then the caret is clamped and
-    /// becomes the wanted column.
+    /// becomes the wanted column, except after a `Scroll`, which keeps the
+    /// one it had.
     pub fn settle<B: TextBuf>(&mut self, t: Target<'_, B>, how: Settled) {
         let Target { buf, state } = t;
         self.note = None;
         self.request = None;
+        // Vim's wheel leaves `w_curswant` as it was, moved or not (probed in
+        // 9.1: `j` from col 21 onto `{`, a notch at the top that moves
+        // nothing, `k` lands on col 21; a notch that pulls the cursor, then
+        // `j`, col 21 too). The want is kept for the caret the pull left.
+        // (Vim also places the pulled cursor at the want; the pull here
+        // keeps the caret's own column, #201's known gap.)
+        let kept_want =
+            (how == Settled::Scroll).then(|| self.rested.and_then(|at| state.want(at))).flatten();
         // While a search is being typed, Vim's mouse leaves it open, with
         // what it is typed for (`d/`) and Visual under it (probed in 9.1:
         // `/li`, a click on the command line, `X` types `/lXi`; a click on
@@ -781,8 +798,8 @@ impl Engine {
         // Two of Vim's ways are not followed here, as before #129: a press
         // on the text itself still ends the search and places the caret,
         // and the prompt has no click caret, so typing goes on at its end.
-        let searching =
-            self.search.is_some() && matches!(how, Settled::Click | Settled::CommandLine);
+        let searching = self.search.is_some()
+            && matches!(how, Settled::Click | Settled::CommandLine | Settled::Scroll);
         // A press on the command line's row (`CommandLine`) is a `Click`
         // that keeps Visual and Insert ctrl+o's one command (probed in 9.1:
         // `d` or `3`, a click there, and the next key runs alone; Visual
@@ -794,6 +811,7 @@ impl Engine {
                 how,
                 Settled::Click
                     | Settled::CommandLine
+                    | Settled::Scroll
                     | Settled::Mouse(_, Mouse::Press(_) | Mouse::Extend)
             )
         {
@@ -851,6 +869,9 @@ impl Engine {
             }
         }
         self.rest(buf, state);
+        if let Some(want) = kept_want {
+            state.set_want(want, buf.cursor());
+        }
     }
 
     /// Adopts a GUI selection's anchor as charwise Visual. An open Insert

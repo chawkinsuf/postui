@@ -1531,6 +1531,19 @@ impl Editor {
         } else {
             edtui::Index2::new(row, col.min(self.body.lines.len_col(row).unwrap_or(0)))
         };
+        // A pull that moved the caret leaves no selection (#201, the user:
+        // "I think just clear the selection on arrows maybe"): one left as
+        // it was would end away from the caret. A pull that left the caret
+        // keeps it, measured before the column clamp above: a caret Up or
+        // Down left past a shorter line's end is only put back onto it, and
+        // a shift selection already ends there. Only edtui's selection goes,
+        // not its anchor: a drag
+        // still held rebuilds it from the anchor at its next motion, and a
+        // shift motion drops a stale anchor itself. The vim profile keeps
+        // its Visual in the engine, not here (`App::vim_body_scrolled`).
+        if at != before {
+            self.body.selection = None;
+        }
     }
 
     /// The line-number gutter edtui splits off the left of `area`, and the
@@ -5648,6 +5661,72 @@ mod tests {
         draw_body_sized(&mut e, true, 24);
         assert_eq!(e.body.viewport_offset().1, 0);
         assert!(caret_cell(&e).is_some());
+    }
+
+    /// 60 short lines `line{i}`, drawn, `line2..line3` selected by shift+Down
+    /// from (2, 2): the caret on line 3.
+    fn selected_long_body() -> Editor {
+        let text: Vec<String> = (0..60).map(|i| format!("line{i}")).collect();
+        let mut e = body_editor(&text.join("\n"));
+        e.body.cursor = edtui::Index2::new(2, 2);
+        draw_body(&mut e, true);
+        e.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+        draw_body(&mut e, true);
+        assert_eq!(e.body_selected_text().as_deref(), Some("ne2\nli"));
+        e
+    }
+
+    /// #201, the user: "I think just clear the selection on arrows maybe".
+    /// A wheel pull that moves the caret clears the selection, which
+    /// would otherwise end away from the caret; the scrollbar's too.
+    #[test]
+    fn a_wheel_pull_clears_the_selection() {
+        let mut e = selected_long_body();
+        for _ in 0..20 {
+            wheel(&mut e, false);
+            draw_body(&mut e, true);
+        }
+        assert!(e.body.cursor.row >= 20, "the caret was pulled");
+        assert_eq!(e.body.selection, None);
+        let mut e = selected_long_body();
+        e.handle_scroll(30);
+        draw_body(&mut e, true);
+        assert_eq!(e.body.selection, None, "the scrollbar's pull");
+    }
+
+    /// #201: a notch that leaves the caret where it was keeps the
+    /// selection.
+    #[test]
+    fn a_wheel_notch_that_keeps_the_caret_keeps_the_selection() {
+        let mut e = selected_long_body();
+        let caret = e.body.cursor;
+        assert!(wheel(&mut e, false));
+        draw_body(&mut e, true);
+        assert_eq!(e.body.viewport_offset().1, 1, "the view moved");
+        assert_eq!(e.body.cursor, caret, "the caret is still in view");
+        assert_eq!(e.body_selected_text().as_deref(), Some("ne2\nli"));
+    }
+
+    /// #201: a caret shift+Down left past a shorter line's end is only put
+    /// back onto it by a notch that keeps it in view: the selection stays.
+    #[test]
+    fn a_notch_that_only_clamps_the_caret_keeps_the_selection() {
+        let mut text: Vec<String> = (0..60).map(|i| format!("line{i}")).collect();
+        text[2] = "a longer line".into();
+        text[3] = "ab".into();
+        let mut e = body_editor(&text.join("\n"));
+        e.body.cursor = edtui::Index2::new(2, 10);
+        draw_body(&mut e, true);
+        e.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+        assert!(e.body.cursor.col > 2, "past the end of `ab`");
+        let selected = e.body_selected_text();
+        assert_eq!(selected.as_deref(), Some("ine\nab"));
+        draw_body(&mut e, true);
+        assert!(wheel(&mut e, false));
+        draw_body(&mut e, true);
+        assert_eq!(e.body.viewport_offset().1, 1, "the view moved");
+        assert_eq!(e.body.cursor.row, 3, "the caret is still in view");
+        assert_eq!(e.body_selected_text(), selected);
     }
 
     /// #181: the first frame after the body gets shorter (a resize, a

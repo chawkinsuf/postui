@@ -1866,6 +1866,200 @@ fn the_search_prompts_row_wheels_and_menus_as_the_body() {
     assert!(d.items.iter().any(|i| i.label == "Paste"));
 }
 
+/// #201: in Visual the wheel pulls the cursor into the window and the
+/// span follows it, as Vim's does (probed in 9.1: `v` on line 3, the wheel
+/// down, the span runs from line 3 to the cursor at the window's top, and
+/// `y` takes it). A notch on the editor pane off the body's text scrolls
+/// the body too, and is the same wheel. (The scrollbar is a press, which
+/// settles as a click off the text and ends Visual, as before #201.)
+#[test]
+fn the_wheel_in_visual_carries_the_span_with_the_cursor() {
+    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+    let mut app = vim_long_body();
+    feed(&mut app, "ggjjvl");
+    assert_eq!(app.mode_indicator(), Some("VISUAL"));
+    let area = app.editor.last_body_area.unwrap();
+    let span = |app: &App| app.editor.body_visual.map(|(a, b)| ((a.row, a.col), (b.row, b.col)));
+    scroll_body(&mut app, 40);
+    let top = app.editor.body.viewport_offset().1;
+    assert_eq!(top, 40);
+    let caret = app.editor.body.cursor;
+    assert_eq!((caret.row, caret.col), (40, 1), "the cursor at the window's top");
+    assert_eq!(span(&app), Some(((2, 0), (40, 1))), "the span follows it");
+    // The row above the text: the body's chip row, still the editor pane.
+    let (column, row) = (area.x + 1, area.y - 1);
+    assert_eq!(app.hits.pane_at(column, row), Some(PaneId::Editor));
+    assert_ne!(app.hits.hit_at(column, row), Some(&crate::hit::Hit::BodyEditor));
+    let kind = MouseEventKind::ScrollDown;
+    app.handle_mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE });
+    draw(&mut app);
+    assert_eq!(span(&app), Some(((2, 0), (43, 1))), "the pane's notch: three lines");
+    feed(&mut app, "y");
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+}
+
+/// #201: a press on the body's scrollbar track is a click off the text,
+/// as before: Visual ends at the span it had before the press (`gv` takes
+/// it back), and the page the track moves settles nothing of its own.
+#[test]
+fn a_scrollbar_track_press_ends_visual_where_it_was() {
+    use crate::hit::Hit;
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = vim_long_body();
+    feed(&mut app, "ggjjvl");
+    let area = app.editor.last_body_area.unwrap();
+    let (column, row) = (area.y..area.bottom() + 1)
+        .flat_map(|y| (area.x..area.right() + 2).map(move |x| (x, y)))
+        .find(|&(x, y)| {
+            matches!(app.hits.hit_at(x, y), Some(Hit::ScrollbarTrack(PaneId::Editor, d)) if *d > 0)
+        })
+        .expect("the track below the thumb");
+    for kind in [MouseEventKind::Down(MouseButton::Left), MouseEventKind::Up(MouseButton::Left)] {
+        app.handle_mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE });
+    }
+    draw(&mut app);
+    assert!(app.editor.body.viewport_offset().1 > 0, "the track paged");
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+    feed(&mut app, "gv");
+    let span = app.editor.body_visual.map(|(a, b)| ((a.row, a.col), (b.row, b.col)));
+    assert_eq!(span, Some(((2, 0), (2, 1))), "the span before the press");
+}
+
+/// The vim body with 120 lines `row{i}`, drawn.
+fn vim_long_body() -> App {
+    let mut app = vim(Fixture::Body);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    app
+}
+
+/// `n` wheel notches on the body's text, down (up when `n` is negative),
+/// a frame after each.
+fn scroll_body(app: &mut App, n: i32) {
+    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+    let area = app.editor.last_body_area.unwrap();
+    let kind = if n < 0 { MouseEventKind::ScrollUp } else { MouseEventKind::ScrollDown };
+    for _ in 0..n.unsigned_abs() {
+        let (column, row) = (area.x + 8, area.y + 1);
+        app.handle_mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE });
+        draw(app);
+    }
+}
+
+/// #201: the wheel's pull ends an Insert step as Vim's does (probed in
+/// 9.1: `iBB`, the wheel, `CC` Esc `u` takes only `CC`; a second `u`
+/// takes `BB`).
+#[test]
+fn the_wheel_in_insert_splits_the_undo_step() {
+    let mut app = vim_long_body();
+    feed(&mut app, "ggjj0iBB");
+    scroll_body(&mut app, 20);
+    assert_eq!(app.editor.body.cursor.row, 20, "the pull");
+    feed(&mut app, "CC<Esc>u");
+    let text = app.editor.body_text();
+    assert_eq!(text.lines().nth(2), Some("BBrow2"), "`BB` stays");
+    assert_eq!(text.lines().nth(20), Some("row20"), "`CC` is undone");
+    feed(&mut app, "u");
+    assert_eq!(app.editor.body_text().lines().nth(2), Some("row2"));
+}
+
+/// #201: the wheel drops a half-typed operator (probed in 9.1: `d`, the
+/// wheel, `j` moves and deletes nothing) and is Insert ctrl+o's one
+/// command (`i` ctrl+o, the wheel, `X` types at the pulled cursor).
+#[test]
+fn the_wheel_drops_an_operator_and_spends_ctrl_o() {
+    let mut app = vim_long_body();
+    feed(&mut app, "ggjjd");
+    scroll_body(&mut app, 3);
+    feed(&mut app, "j");
+    assert_eq!(app.editor.body_text().lines().count(), 120, "nothing deleted");
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+    feed(&mut app, "gg0i<C-o>");
+    scroll_body(&mut app, 5);
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+    feed(&mut app, "X");
+    assert_eq!(app.editor.body_text().lines().nth(5), Some("Xrow5"));
+}
+
+/// #201: a notch that moves nothing (the view at the top) is still Vim's
+/// wheel command (probed in 9.1: at the top, `d`, the wheel up, `j` deletes
+/// nothing; `i` ctrl+o, the wheel up, `x` types).
+#[test]
+fn a_wheel_notch_at_the_top_still_drops_an_operator_and_spends_ctrl_o() {
+    let mut app = vim_long_body();
+    feed(&mut app, "ggd");
+    scroll_body(&mut app, -1);
+    assert_eq!(app.editor.body.viewport_offset().1, 0, "nothing moved");
+    feed(&mut app, "j");
+    assert_eq!(app.editor.body_text().lines().count(), 120, "nothing deleted");
+    feed(&mut app, "gg0i<C-o>");
+    scroll_body(&mut app, -1);
+    assert_eq!(app.mode_indicator(), Some("INSERT"));
+    feed(&mut app, "x");
+    assert_eq!(app.editor.body_text().lines().next(), Some("xrow0"));
+}
+
+/// #201: the wheel keeps Vim's wanted column, moved or not (probed in
+/// 9.1: `j` from col 21 onto `{`, a notch at the top that moves nothing,
+/// `k` lands on col 21; a notch that pulls the cursor, then `j`, col 21).
+#[test]
+fn the_wheel_keeps_the_wanted_column() {
+    let mut app = vim(Fixture::Body);
+    let mut lines = vec!["x".repeat(20); 120];
+    lines[1] = "{".into();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    let caret = |app: &App| (app.editor.body.cursor.row, app.editor.body.cursor.col);
+    feed(&mut app, "gg010lj");
+    assert_eq!(caret(&app), (1, 0), "on the short line");
+    scroll_body(&mut app, -1);
+    assert_eq!(app.editor.body.viewport_offset().1, 0, "nothing moved");
+    feed(&mut app, "k");
+    assert_eq!(caret(&app), (0, 10), "a notch that moves nothing keeps it");
+    feed(&mut app, "j");
+    scroll_body(&mut app, 3);
+    assert_eq!(caret(&app).0, 3, "the pull");
+    feed(&mut app, "j");
+    assert_eq!(caret(&app), (4, 10), "a notch that pulls keeps it too");
+}
+
+/// #201: in arrows a wheel pull clears the selection (the user: "I think
+/// just clear the selection on arrows maybe"), but a drag still held goes
+/// on from its press: its next motion selects from there to the pointer,
+/// as before the wheel.
+#[test]
+fn an_arrows_drag_held_through_the_wheel_selects_from_its_press() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = build(Fixture::Body);
+    let lines: Vec<String> = (0..120).map(|i| format!("row{i}")).collect();
+    app.editor.set_body_text(&lines.join("\n"));
+    draw(&mut app);
+    let area = app.editor.last_body_area.unwrap();
+    // The text starts past the line numbers: three digits and a space.
+    let x = area.x + 4;
+    let at = |kind, column, row| MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE };
+    app.handle_mouse(at(MouseEventKind::Down(MouseButton::Left), x, area.y + 2));
+    draw(&mut app);
+    app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), x + 2, area.y + 3));
+    draw(&mut app);
+    assert!(app.editor.body_selected_text().is_some_and(|t| t.starts_with("row2\n")));
+    for _ in 0..20 {
+        app.handle_mouse(at(MouseEventKind::ScrollDown, x + 2, area.y + 3));
+        draw(&mut app);
+    }
+    let top = app.editor.body.viewport_offset().1;
+    assert_eq!(top, 20);
+    assert_eq!(app.editor.body.selection, None, "the pull cleared it");
+    app.handle_mouse(at(MouseEventKind::Drag(MouseButton::Left), x + 2, area.y + 3));
+    draw(&mut app);
+    let selected = app.editor.body_selected_text().unwrap_or_default();
+    assert!(selected.starts_with("row2\n"), "from the press: {selected:?}");
+    // Cells, inclusive: through the one under the pointer.
+    assert!(selected.ends_with("\nrow22\nrow"), "to the pointer on row 23: {selected:?}");
+    app.handle_mouse(at(MouseEventKind::Up(MouseButton::Left), x + 2, area.y + 3));
+}
+
 /// #129: while a search is being typed, the body's menu over the row
 /// below the text is the body's, and its Paste types into the search, which
 /// stays open, as Vim's paste goes into its command line: the pick's press,
