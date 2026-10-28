@@ -47,11 +47,7 @@ pub fn order_level<'a>(
         }
     }
     listed.sort_by_key(|(p, _)| *p);
-    unlisted.sort_by_key(|e| {
-        let leaf = e.slug.rsplit('/').next().unwrap_or(&e.slug);
-        let display = e.name.as_deref().unwrap_or(leaf);
-        (display.to_lowercase(), e.slug.clone())
-    });
+    unlisted.sort_by_key(|e| (e.display_name().to_lowercase(), e.slug.clone()));
     listed.into_iter().map(|(_, e)| e).chain(unlisted).collect()
 }
 

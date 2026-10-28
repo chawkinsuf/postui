@@ -240,8 +240,8 @@ impl Project {
             if exclude == Some(l.slug.as_str()) {
                 return false;
             }
-            let (dir, leaf) = l.slug.rsplit_once('/').unwrap_or(("", l.slug.as_str()));
-            dir == folder && l.name.as_deref().unwrap_or(leaf).to_lowercase() == wanted
+            let dir = l.slug.rsplit_once('/').map_or("", |(dir, _)| dir);
+            dir == folder && l.display_name().to_lowercase() == wanted
         })
     }
 
@@ -451,18 +451,22 @@ impl Project {
         // The slug is derived from the name, but a file need not sit at the
         // slug its name derives: a nameless hand-made `ping-.toml` is named
         // `ping-`, which `slugify` makes `ping`, and a file can carry any
-        // name. So the slug moves only when the new name derives another
-        // slug than the current name does: a rename in the same folder to
-        // the same name, or to a spelling that derives the same slug (case,
-        // surrounding spaces), keeps the file where it is (#209), as it
-        // always did for a file at its derived slug.
-        let (from_folder, from_leaf) = from_slug.rsplit_once('/').unwrap_or(("", from_slug));
-        let same_slug = folder == from_folder
-            && self.listing.iter().find(|l| l.slug == from_slug).is_some_and(|l| {
-                let current = l.name.as_deref().unwrap_or(from_leaf);
-                crate::storage::slugify(current) == crate::storage::slugify(&leaf)
-            });
-        let to_slug = if same_slug {
+        // name. So a rename that leaves the name as it is, in the same
+        // folder, keeps the slug instead of deriving one and moving the file
+        // (#209). "As it is" means as the Rename prompt shows it and reads
+        // it back: the prompt prefills the current name and the leaf comes
+        // back trimmed, so the current name is compared trimmed too. Any
+        // other name, a case change included, derives its slug as before,
+        // so a file at a `-2` slug still returns to a freed base slug on a
+        // rename that changes its name.
+        let from_folder = from_slug.rsplit_once('/').map_or("", |(dir, _)| dir);
+        let same_name = folder == from_folder
+            && self
+                .listing
+                .iter()
+                .find(|l| l.slug == from_slug)
+                .is_some_and(|l| l.display_name().trim() == leaf);
+        let to_slug = if same_name {
             from_slug.to_string()
         } else {
             self.unique_slug(&folder, &leaf, Some(from_slug))
@@ -1074,10 +1078,9 @@ mod tests {
     /// #209: a rename that leaves the name as it is leaves the file where
     /// it is, even when the file's slug is not the one its name derives: a
     /// nameless hand-made `ping-` (whose name `slugify` turns into `ping`,
-    /// free or taken), and a named file under a slug of its own. The same
-    /// holds for a new spelling that derives the same slug (case, the
-    /// spaces the prompt trims), as it does for a file at its derived slug;
-    /// a name that derives another slug moves the file as before.
+    /// free or taken), and a named file under a slug of its own, its name
+    /// read as the prompt reads it back (trimmed). Another name, or the
+    /// same name in another folder, derives its slug as before.
     #[test]
     fn a_rename_to_the_same_name_keeps_the_slug() {
         for ping_taken in [false, true] {
@@ -1097,8 +1100,6 @@ mod tests {
             assert!(dir.path().join("requests/main/ping-.toml").is_file());
             assert!(!dir.path().join("requests/main/ping-2.toml").exists());
             assert_eq!(dir.path().join("requests/main/ping.toml").exists(), ping_taken);
-            let (slug, _) = p.rename_request("main/ping-", "main/Ping-").unwrap();
-            assert_eq!(slug, "main/ping-", "a case change keeps the slug too");
         }
 
         let (dir, mut p) = fixture();
@@ -1113,8 +1114,23 @@ mod tests {
             assert_eq!(slug, "main/odd", "{typed:?}");
         }
         assert_eq!(slugs(&p).iter().filter(|s| s.starts_with("main/")).count(), 2);
-        let (slug, _) = p.rename_request("main/odd", "main/Other").unwrap();
-        assert_eq!(slug, "main/other", "a name that derives another slug moves the file");
+        let (slug, _) = p.rename_request("main/odd", "main/sub/ Pong ").unwrap();
+        assert_eq!(slug, "main/sub/pong", "the same name in another folder moves the file");
+        let (slug, _) = p.rename_request("main/sub/pong", "main/Other").unwrap();
+        assert_eq!(slug, "main/other", "another name derives its slug");
+    }
+
+    /// #209 keeps only an unchanged name's slug: a request at a `-2` slug
+    /// renamed to another spelling still moves to its freed base slug.
+    #[test]
+    fn a_changed_name_still_takes_a_freed_base_slug() {
+        let (_dir, mut p) = fixture();
+        p.create_request("main/Get User", req("u")).unwrap();
+        let (b, _) = p.create_request("main/get user!", req("u")).unwrap();
+        assert_eq!(b, "main/get-user-2");
+        p.delete_request("main/get-user").unwrap();
+        let (slug, _) = p.rename_request(&b, "main/Get User").unwrap();
+        assert_eq!(slug, "main/get-user");
     }
 
     #[test]
