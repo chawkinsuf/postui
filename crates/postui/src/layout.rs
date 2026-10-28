@@ -243,11 +243,21 @@ pub fn editor_share_for(column_height: u16, editor_rows: u16) -> f32 {
 /// calls it, and the forward direction of [`editor_share_for`]. A resize
 /// that counts rows reads it from the split's state, since a frame drawn
 /// mid-ease shows rows the state has already left (review round 2 G6).
+///
+/// The editor's content rows are floored at [`editor::CONTENT_MIN_HEIGHT`],
+/// so the body pane never shows fewer than [`editor::BODY_MIN_ROWS`] rows
+/// (#129): a share that would give fewer (a stop on a short window, a
+/// window made shorter) draws the floor. A floor, not a snap: the share is
+/// kept as it is. A column whose content rows can't hold the floor draws
+/// the share's rows, and the body counts as minimized there.
 pub fn editor_rows_for(column_height: u16, editor_share: f32) -> u16 {
     let editor_chrome = editor::CHROME_HEIGHT.min(column_height);
     let content = content_rows(column_height);
-    let editor_h = editor_chrome + (content as f32 * editor_share.clamp(0.0, 1.0)).round() as u16;
-    editor_h.min(column_height)
+    let mut rows = (content as f32 * editor_share.clamp(0.0, 1.0)).round() as u16;
+    if content >= editor::CONTENT_MIN_HEIGHT {
+        rows = rows.max(editor::CONTENT_MIN_HEIGHT);
+    }
+    (editor_chrome + rows).min(column_height)
 }
 
 /// The rows a `column_height`-row main column has left after both panes'
@@ -270,10 +280,13 @@ fn content_rows(column_height: u16) -> u16 {
 }
 
 /// The split a drag of the editor/response boundary to `editor_rows` rows
-/// of editor means. At or above the editor's chrome the editor is
-/// minimized; within the response's header strip of the bottom the
-/// response is. Both snaps keep `start.ratio`, so restoring lands where
-/// the user left it. Anywhere between, both show at the matching share.
+/// of editor means. Short of the editor's floor (its chrome plus
+/// [`editor::CONTENT_MIN_HEIGHT`], so the body pane keeps two rows, #129)
+/// the editor is minimized: a drag stops at the floor and one row further
+/// minimizes, as a drag into the chrome always has. Within the response's
+/// header strip of the bottom the response is minimized. Both snaps keep
+/// `start.ratio`, so restoring lands where the user left it. Anywhere
+/// between, both show at the matching share.
 ///
 /// Leaving a minimized response therefore has a dead zone: its strip is
 /// one row ([`crate::components::response::COLLAPSED_HEIGHT`]), but a
@@ -288,7 +301,7 @@ pub fn split_for_editor_rows(
     editor_rows: i32,
 ) -> SplitState {
     let column = i32::from(column_height);
-    if editor_rows <= i32::from(editor::CHROME_HEIGHT) {
+    if editor_rows < i32::from(editor::CHROME_HEIGHT + editor::CONTENT_MIN_HEIGHT) {
         return SplitState {
             editor_minimized: true,
             response_minimized: false,
@@ -691,6 +704,31 @@ mod tests {
         let s = at(20);
         assert!(!s.editor_minimized && !s.response_minimized);
         assert_eq!(s.ratio, editor_share_for(34, 20));
+    }
+
+    /// #129: the body pane never shows fewer than two rows. A share that
+    /// would give the editor fewer content rows than the floor draws the
+    /// floor, and a drag one row short of the floor minimizes the editor.
+    /// A column too short for the floor draws the share's rows.
+    #[test]
+    fn the_editor_is_floored_so_the_body_keeps_two_rows() {
+        let min = editor::CONTENT_MIN_HEIGHT;
+        let floor = editor::CHROME_HEIGHT + min;
+        for share in [0.0, 0.05, 0.1] {
+            assert_eq!(editor_rows_for(34, share), floor, "share {share}");
+        }
+        assert!(editor_rows_for(34, 0.5) > floor);
+        let start = SplitState { ratio: 0.5, ..Default::default() };
+        let s = split_for_editor_rows(start, 34, i32::from(floor));
+        assert!(!s.editor_minimized && !s.response_minimized);
+        assert_eq!(editor_rows_for(34, s.ratio), floor);
+        let s = split_for_editor_rows(start, 34, i32::from(floor) - 1);
+        assert!(s.editor_minimized, "one row short of the floor");
+        assert_eq!(s.ratio, 0.5);
+        // Content rows short of the floor: the share's rows, unfloored.
+        let short =
+            editor::CHROME_HEIGHT + crate::components::response::HEADER_STRIP_HEIGHT + min - 1;
+        assert_eq!(editor_rows_for(short, 0.0), editor::CHROME_HEIGHT);
     }
 
     #[test]
