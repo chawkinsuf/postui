@@ -9726,11 +9726,7 @@ impl App {
     pub(crate) fn scroll_editor(&mut self, delta: i16) {
         let before = self.editor.view_offset();
         self.editor.handle_scroll(delta);
-        if self.editor.active_tab == EditorTab::Body {
-            self.vim_body_scrolled();
-            return;
-        }
-        if self.editor.view_offset() == before {
+        if self.editor.active_tab == EditorTab::Body || self.editor.view_offset() == before {
             return;
         }
         if self.profile() == crate::config::KeyProfile::Vim {

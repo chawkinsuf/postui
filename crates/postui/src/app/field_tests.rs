@@ -1869,9 +1869,9 @@ fn the_search_prompts_row_wheels_and_menus_as_the_body() {
 /// #201: in Visual the wheel pulls the cursor into the window and the
 /// span follows it, as Vim's does (probed in 9.1: `v` on line 3, the wheel
 /// down, the span runs from line 3 to the cursor at the window's top, and
-/// `y` takes it). A scroll by `Action::ScrollPane` is the same move. (A
-/// real scrollbar gesture starts with a press, which settles as a click
-/// off the text and ends Visual first, as it did before #201.)
+/// `y` takes it). A notch on the editor pane off the body's text scrolls
+/// the body too, and is the same wheel. (The scrollbar is a press, which
+/// settles as a click off the text and ends Visual, as before #201.)
 #[test]
 fn the_wheel_in_visual_carries_the_span_with_the_cursor() {
     use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
@@ -1899,11 +1899,43 @@ fn the_wheel_in_visual_carries_the_span_with_the_cursor() {
     let caret = app.editor.body.cursor;
     assert_eq!((caret.row, caret.col), (40, 1), "the cursor at the window's top");
     assert_eq!(span(&app), Some(((2, 0), (40, 1))), "the span follows it");
-    app.update(Action::ScrollPane(PaneId::Editor, 10));
+    // The row above the text: the body's chip row, still the editor pane.
+    let (column, row) = (area.x + 1, area.y - 1);
+    assert_eq!(app.hits.pane_at(column, row), Some(PaneId::Editor));
+    assert_ne!(app.hits.hit_at(column, row), Some(&crate::hit::Hit::BodyEditor));
+    let kind = MouseEventKind::ScrollDown;
+    app.handle_mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE });
     draw(&mut app);
-    assert_eq!(span(&app), Some(((2, 0), (50, 1))), "and a ScrollPane's");
+    assert_eq!(span(&app), Some(((2, 0), (43, 1))), "the pane's notch: three lines");
     feed(&mut app, "y");
     assert_eq!(app.mode_indicator(), Some("NORMAL"));
+}
+
+/// #201: a press on the body's scrollbar track is a click off the text,
+/// as before: Visual ends at the span it had before the press (`gv` takes
+/// it back), and the page the track moves settles nothing of its own.
+#[test]
+fn a_scrollbar_track_press_ends_visual_where_it_was() {
+    use crate::hit::Hit;
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = vim_long_body();
+    feed(&mut app, "ggjjvl");
+    let area = app.editor.last_body_area.unwrap();
+    let (column, row) = (area.y..area.bottom() + 1)
+        .flat_map(|y| (area.x..area.right() + 2).map(move |x| (x, y)))
+        .find(|&(x, y)| {
+            matches!(app.hits.hit_at(x, y), Some(Hit::ScrollbarTrack(PaneId::Editor, d)) if *d > 0)
+        })
+        .expect("the track below the thumb");
+    for kind in [MouseEventKind::Down(MouseButton::Left), MouseEventKind::Up(MouseButton::Left)] {
+        app.handle_mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE });
+    }
+    draw(&mut app);
+    assert!(app.editor.body.viewport_offset().1 > 0, "the track paged");
+    assert_eq!(app.mode_indicator(), Some("NORMAL"));
+    feed(&mut app, "gv");
+    let span = app.editor.body_visual.map(|(a, b)| ((a.row, a.col), (b.row, b.col)));
+    assert_eq!(span, Some(((2, 0), (2, 1))), "the span before the press");
 }
 
 /// The vim body with 120 lines `row{i}`, drawn.
@@ -1915,10 +1947,14 @@ fn vim_long_body() -> App {
     app
 }
 
-/// `n` scrollbar lines down, a frame after each.
+/// `n` wheel notches down on the body's text, a frame after each.
 fn scroll_body(app: &mut App, n: usize) {
+    use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+    let area = app.editor.last_body_area.unwrap();
     for _ in 0..n {
-        app.update(Action::ScrollPane(PaneId::Editor, 1));
+        let (column, row) = (area.x + 8, area.y + 1);
+        let kind = MouseEventKind::ScrollDown;
+        app.handle_mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE });
         draw(app);
     }
 }

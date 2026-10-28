@@ -160,19 +160,21 @@ arrows maybe"). A notch that leaves the caret where it was keeps the selection
 (`mine`). Only the selection goes, not the press it grew from: a drag still held
 selects from its press to the pointer again at its next motion (`mine`).
 
-In the vim profile the scroll settles the engine as Vim's
+In the vim profile the wheel settles the engine as Vim's
 `nv_mousescroll()`/`ins_mousescroll()` do (`Vim`, probed in 9.1 in tmux), on every
 notch, one that moves nothing at a limit too: a Visual span follows the cursor (`v`
 on line 3, the wheel down, the cursor on the window's top line in its column, the
 span from line 3 to it; the wheel up from line 40, the cursor on the window's bottom
 line and the span from it to line 40); a half-typed operator drops (`d`, the wheel,
-`j` deletes nothing, at the top too); Insert ctrl+o's one command is the wheel (`i`
+`j` deletes nothing, at the top too; a count or a `g`/`z` prefix stays, as it does
+for a click); Insert ctrl+o's one command is the wheel (`i`
 ctrl+o, the wheel, `X` types); an Insert the pull moved splits its undo step (`iBB`,
 the wheel, `CC` Esc `u` undoes only `CC`). A search being typed stays open (`mine`,
 not probed: as a press off the text keeps it, #129). A body session another pane
-has the keys of settles nothing until it is live again (`mine`). A scrollbar
-gesture starts with a press, which settles as a click off the text and so ends
-Visual and drops a pending command before the drag moves anything, as before #201.
+has the keys of settles nothing until it is live again (`mine`). The scrollbar is
+not the wheel here: its press settles as a click off the text, ending Visual where
+the press found it and dropping a pending command, and its page or drag settles
+nothing more, as before #201 (`mine`).
 
 ## 5. Method dropdown and the popup primitive
 

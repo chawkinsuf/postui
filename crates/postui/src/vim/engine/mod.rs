@@ -122,10 +122,9 @@ pub enum Settled {
     CommandLine,
     /// The mouse on the buffer's text, at a char (Vim's `do_mouse()`).
     Mouse(Pos, Mouse),
-    /// The wheel or the scrollbar moved the view and, with `'scrolloff'`
-    /// 0, pulled the cursor into it (Vim's `nv_mousescroll()` and
-    /// `ins_mousescroll()`, #201). Probed in 9.1: a half-typed operator
-    /// is dropped (`d`, the wheel, `j` deletes nothing); Insert ctrl+o's
+    /// A wheel notch moved the view and, with `'scrolloff'` 0, pulled the
+    /// cursor into it (Vim's `nv_mousescroll()` and `ins_mousescroll()`,
+    /// #201). Probed in 9.1: a half-typed operator is dropped (`d`, the wheel, `j` deletes nothing); Insert ctrl+o's
     /// one command is the wheel (`i` ctrl+o, the wheel, `X` types); an
     /// Insert the pull moved splits (`iBB`, the wheel, `CC` Esc `u` takes
     /// only `CC`); Visual stays and its span follows the cursor. A search

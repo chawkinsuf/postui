@@ -1019,7 +1019,7 @@ impl App {
     /// session here (spec §3.1). Of the drags only the left button's sweeps
     /// a selection: some terminals (Ghostty) report hover as `Drag(Right)`,
     /// and each sync reads the whole body (final review T4). The one wheel
-    /// that does sync is a notch or scrollbar move the body takes while its
+    /// that does sync is a notch on the editor pane while the body's
     /// session is live, after the move ([`Self::vim_body_scrolled`]): the
     /// pull is a Vim command, and pays that read per notch.
     pub(super) fn vim_mouse_start(
@@ -1221,16 +1221,22 @@ impl App {
         self.vim.glue.follow_body(from, self.editor.slug.as_deref());
     }
 
-    /// The body took a wheel notch or a scrollbar move
-    /// (`Editor::scroll_body`), which in the vim profile pulls the caret
-    /// into the view. It is a mouse event like a click, so it goes through
-    /// the one path a click's end takes (`sync_session`): a body changed
+    /// A wheel notch landed on the editor pane, which on the Body tab
+    /// scrolls the body (`Editor::scroll_body`) and pulls the caret into
+    /// the view. It is a mouse event like a click, so it goes through the
+    /// one path a click's end takes (`sync_session`): a body changed
     /// outside the engine rebases there first, and a live body settles as
-    /// Vim's wheel does (`Settled::Scroll`, #201): a half-typed command
-    /// drops, an Insert the pull moved splits, ctrl+o's command is spent,
+    /// Vim's wheel does (`Settled::Scroll`, #201): an operator the engine
+    /// holds drops (a count or prefix the router holds stays, as for a
+    /// click), an Insert the pull moved splits, ctrl+o's command is spent,
     /// and a Visual span follows the cursor. Every notch, one that moves
     /// nothing at a limit too: Vim's wheel is a command either way (probed
     /// in 9.1: at the top, `d`, the wheel up, `j` deletes nothing).
+    ///
+    /// The wheel only. The scrollbar is a press, which settles as a click
+    /// off the text at the event's end (`vim_mouse_end`), as before #201:
+    /// settling its page or drag as a scroll too would end Visual at the
+    /// pulled caret rather than where the press found it.
     ///
     /// Only the live body syncs and settles, so a notch on any other pane's
     /// behalf costs no whole-body read (final review T4). A parked body

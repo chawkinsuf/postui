@@ -690,7 +690,13 @@ impl App {
                 }
                 if let Some(pane) = self.hits.pane_at(m.column, m.row) {
                     let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
-                    return self.update(Action::ScrollPane(pane, d));
+                    let redraw = self.update(Action::ScrollPane(pane, d));
+                    // A notch on the editor pane off the body's text scrolls
+                    // the body too, when its tab is up: the same wheel.
+                    if pane == PaneId::Editor {
+                        self.vim_body_scrolled();
+                    }
+                    return redraw;
                 }
                 false
             }
