@@ -12076,6 +12076,29 @@ fn shared_selector_inline_new_option_needs_no_active_env_and_selects_globally() 
     assert_eq!(app.proj().resolved().values["lang"], "de");
 }
 
+/// The add-option prompt creates, so a name the selector already has
+/// (here a shared selector's, which lives in variables.toml) is refused
+/// and nothing is written. Task #196 shares this check with the grid's
+/// + Add row.
+#[test]
+fn the_add_option_prompt_refuses_a_name_that_already_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = shared_locale_app(dir.path());
+    let before = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+
+    app.update(Action::ConfirmNewOptionInline {
+        owner: "locale".into(),
+        key: "en".into(),
+        values: indexmap::IndexMap::from([("lang".to_string(), String::new())]),
+        description: None,
+    });
+
+    assert_eq!(app.toasts.last_message(), Some("option \"en\" already exists on locale"));
+    assert!(app.last_action_failed);
+    let after = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert_eq!(after, before, "nothing written");
+}
+
 #[test]
 fn deleting_a_shared_selector_removes_its_options_and_global_selection() {
     let dir = tempfile::tempdir().unwrap();

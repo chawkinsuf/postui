@@ -9354,6 +9354,19 @@ impl App {
     /// upsert, so writing an existing name would silently replace that
     /// option's values. Both create paths ask it, the add-option prompt
     /// and the grid's + Add row.
+    ///
+    /// Why here and not in core: core's `NewOption` writes through
+    /// `varedit::upsert_option`, whose update of an existing option is
+    /// pinned by its own test, and the only other `NewOption` caller
+    /// (extract to selector) adds to a selector it has just declared. The
+    /// "create, not update" rule belongs to the two surfaces that create,
+    /// and it reads the options through `options_of`, as everything that
+    /// shows them does. What that gives up: the check reads the loaded
+    /// snapshot while the write reads the file, so an option another
+    /// program added since the last reload is still written over (undo
+    /// brings it back). The prompt has had that gap since it gained its
+    /// check; a refusal against the file itself would be a create-only
+    /// core op, which neither path has yet.
     fn option_name_taken(&self, selector: &str, name: &str) -> Option<String> {
         postui_core::varmodel::options_of(self.variables(), self.env_data(), selector)
             .is_some_and(|options| options.contains_key(name))
@@ -9416,7 +9429,11 @@ impl App {
                 return true;
             }
             // A taken name is refused like a failed write: the toast, and
-            // the typing kept for a retry.
+            // the typing kept for a retry, as a rename onto a taken name
+            // (core's conflict) keeps its cell. Esc commits too (the field
+            // rule),
+            // so it is refused the same way; clearing the name is the way
+            // out, since an empty ghost name creates nothing.
             if let Some(msg) = self.option_name_taken(&selector, &value) {
                 self.varmanager.grid.editing = Some(edit);
                 self.toasts.push(msg, ToastKind::Error);
