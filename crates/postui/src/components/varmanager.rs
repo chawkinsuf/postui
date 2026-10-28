@@ -2262,9 +2262,15 @@ impl VarManager {
         // row, which `no_rows_drawn` answers from the record the rows
         // write as they paint. It is the keys' and chips' own check (#202),
         // read rather than a flag of the draw's, so the buttons, keys and
-        // chips can't disagree. A click finds no button the last frame
-        // didn't paint (the main loop draws after every event), so the
-        // click handlers need no check of their own.
+        // chips can't disagree. So where it answers false with no row, a
+        // per-environment selector with no environment (no grid at all,
+        // `NO_ENV_HINT` in its place), all of them stay as on main: that
+        // state is not a pane too small for the rows, and `+ Option`
+        // answers it with the hint's toast. A click meets the hits of the
+        // last frame drawn, and a resize always draws one, so a pane that
+        // lost its rows has no button left to click. The title block ends
+        // where the grid starts, so the order their hits register in
+        // changes nothing.
         let grid_y = if title_fits { y + TALL_PILL_H } else { y };
         self.draw_option_grid(buf, right, grid_y, theme, ctx, hits, hovered, selector);
         let no_rows = self.no_rows_drawn(ctx);
@@ -2309,7 +2315,10 @@ impl VarManager {
                 // there (task #207): their keys and chips act on nothing
                 // then (#202), and a paste would write an option no row
                 // shows. Their place is laid out all the same, so the
-                // selector's three don't move.
+                // selector's three don't move. Not there rather than greyed
+                // like Paste with nothing copied: greyed says "copy one
+                // first", and nothing here would make these work but a
+                // taller pane; the footer drops their chips the same way.
                 if no_rows && matches!(hit, Hit::VmNewOption | Hit::VmPasteOption) {
                     continue;
                 }
