@@ -21,11 +21,23 @@ pub struct Step {
     pub context: Context,
 }
 
+/// One Settings key's value, in the shape the Settings actions write it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiValue {
     Flag(bool),
     Text(String),
     Int(usize),
+}
+
+/// One side of a `Config` step: the value in effect, and whether
+/// `config.toml` carried the key. Writing one that was not carried
+/// removes the key and applies `value` (the default, unless the session
+/// applied one the file never took), so an undo puts back both the file
+/// and the app (task #195).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeldUiValue {
+    pub value: UiValue,
+    pub carried: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -59,10 +71,11 @@ pub enum StepKind {
     },
     /// One Settings-tab write (`Action::SetUiFlag` / `SetUiString` /
     /// `SetUiInt`), spec 2026-09-16: undoing writes `before` back through
-    /// `Config::save_ui_*` and reapplies it; redoing writes `after`. Never
+    /// `App::write_ui_value` and reapplies it; redoing writes `after`. Both
+    /// say whether the file carried the key ([`HeldUiValue`]). Never
     /// coalesced — each commit (a field close, a toggle, a segment flip)
     /// is its own step.
-    Config { key: &'static str, before: UiValue, after: UiValue },
+    Config { key: &'static str, before: HeldUiValue, after: HeldUiValue },
     /// A `config.toml` / `keys.toml` Reset (`Action::ForceResetConfigFile`).
     /// `before` is the file's bytes before the reset (`None` when the file
     /// did not exist); undo writes `before` back (or removes the file) and
@@ -600,23 +613,16 @@ mod tests {
     #[test]
     fn a_config_step_round_trips_through_a_history_record() {
         let mut h = History::new();
+        let held = |v| HeldUiValue { value: UiValue::Flag(v), carried: true };
         h.record_no_coalesce(Step {
-            kind: StepKind::Config {
-                key: "hover_hints",
-                before: UiValue::Flag(true),
-                after: UiValue::Flag(false),
-            },
+            kind: StepKind::Config { key: "hover_hints", before: held(true), after: held(false) },
             context: Context { slug: None },
         });
         let popped = h.pop_undo().expect("the step is there");
-        assert!(matches!(
-            popped.kind,
-            StepKind::Config {
-                key: "hover_hints",
-                before: UiValue::Flag(true),
-                after: UiValue::Flag(false),
-            }
-        ));
+        let StepKind::Config { key, before, after } = popped.kind else {
+            panic!("a Config step: {:?}", popped.kind);
+        };
+        assert_eq!((key, before, after), ("hover_hints", held(true), held(false)));
     }
 
     #[test]

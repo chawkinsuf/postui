@@ -311,6 +311,26 @@ runs it and moves its own step between the stacks, as every replay arm
 calls the layer under the recording action. `SetKeyProfile`, which
 applies even a refused write, applies through `apply_ui` too (`mine`).
 
+2026-10-27, task #195: `before` read from `ui_settings` is the value in
+effect, not what the file held, so the undo of the first change to an
+unset key wrote the default into `config.toml`. Each side of a `Config`
+step is now the value in effect plus whether the file carried the key,
+read through `Config` (`Config::holds_ui_key`), as `undo::HeldUiValue`.
+`App::write_ui_value` writes an uncarried side as no key
+(`Config::remove_ui_key`) and applies the value it holds. The
+undo puts the file back as it was (the user: "yes" to fixing it) and
+the app with it, and a write that changes neither, such as clearing an
+unset AI command, records no step (`mine`). A click on the lit segment
+(jq Tab behavior, Indent) of a key the file lacks still writes the key,
+as before, and records a step whose undo removes it (`mine (approved)`):
+that ctrl+z step's toast shows nothing visibly changing (the file
+changes), and the click clears the redo stack. Skipping that write
+needed a guess at which values count as no change, and each guess
+misjudged a state (a carried value reading back as the default, a
+session value the file never took). Not
+covered: a carried value that does not read back as itself (`jq_tab =
+"bogus"`, a wrong type) is undone to the value in effect (`mine`).
+
 `u` and ctrl+z on the Settings tab already reach `Action::Undo`
 through the whitelist; the arm's "commit the open table edit" prelude
 becomes "close any open field on the current screen", so a live

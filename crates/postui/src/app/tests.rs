@@ -31521,6 +31521,126 @@ fn redo_of_a_cleared_ai_command_applies_the_default() {
     assert_eq!(app.ui_settings.clipboard_cmd, None, "the redo applies no command");
 }
 
+/// Task #195: undo puts config.toml back as it was. A key the file did
+/// not carry before the change is absent again after its undo, not
+/// written as the default that was in effect; the redo writes the change
+/// again. A text, a flag and an integer setting, since each kind is
+/// written by its own `save_ui_*`.
+#[test]
+fn undo_of_the_first_change_to_an_unset_setting_removes_its_key() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "theme = \"terminal\"\n").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    let defaults = crate::config::UiSettings::default();
+    let file = || std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+
+    app.update(Action::SetUiString { key: "ai_cmd", value: "my-cmd".to_string() });
+    app.update(Action::SetUiFlag { key: "hover_hints", value: !defaults.hover_hints });
+    app.update(Action::SetUiInt { key: "indent_width", value: 4 });
+    assert!(file().contains("ai_cmd"), "{:?}", file());
+
+    for _ in 0..3 {
+        app.update(Action::Undo);
+    }
+    assert_eq!(file(), "theme = \"terminal\"\n", "every key the changes added is gone");
+    assert_eq!(app.ui_settings.ai_cmd, defaults.ai_cmd, "the default applies again");
+    assert_eq!(app.ui_settings.hover_hints, defaults.hover_hints);
+    assert_eq!(app.ui_settings.indent_width, defaults.indent_width);
+
+    for _ in 0..3 {
+        app.update(Action::Redo);
+    }
+    assert_eq!(app.ui_settings.ai_cmd, "my-cmd");
+    assert_eq!(app.ui_settings.hover_hints, !defaults.hover_hints);
+    assert_eq!(app.ui_settings.indent_width, 4);
+    let (redone, _) = crate::config::UiSettings::parse(&file());
+    assert_eq!(redone.ai_cmd, "my-cmd", "the redo wrote the change again: {:?}", file());
+    assert_eq!(redone.hover_hints, !defaults.hover_hints);
+    assert_eq!(redone.indent_width, 4);
+}
+
+/// Task #195: a key the file already carries is written back on undo,
+/// even when its value is the default.
+#[test]
+fn undo_of_a_change_to_a_set_setting_writes_its_value_back() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "ai_cmd = \"claude -p\"\n").unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+
+    app.update(Action::SetUiString { key: "ai_cmd", value: "my-cmd".to_string() });
+    app.update(Action::Undo);
+
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert_eq!(text, "ai_cmd = \"claude -p\"\n");
+}
+
+/// Task #195: undo puts back the app as well as the file. A value the
+/// session applied but the file never took (a key removed by hand and not
+/// yet reloaded, a keymap whose write was refused) is in effect again after
+/// the undo, with the key still absent from the file.
+#[test]
+fn undo_restores_a_session_value_the_file_never_carried() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    app.ui_settings.ai_cmd = "session-cmd".to_string();
+
+    app.update(Action::SetUiString { key: "ai_cmd", value: "my-cmd".to_string() });
+    app.update(Action::Undo);
+
+    assert_eq!(app.ui_settings.ai_cmd, "session-cmd");
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(!text.contains("ai_cmd"), "{text:?}");
+}
+
+/// Task #195: picking the value already in effect for a key the file
+/// lacks (a click on the lit segment) writes the key, as before #195, and
+/// its undo removes the key again, the value on screen unchanged
+/// throughout. A key the file carries is written too: the click replaces
+/// a hand-written value that read back as the default.
+#[test]
+fn picking_the_value_in_effect_writes_it_and_undo_removes_it() {
+    use crate::components::settings::jq_tab_spelling;
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+    let in_effect = app.ui_settings.jq_tab;
+    let lit = jq_tab_spelling(in_effect).to_string();
+    let file = || std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+
+    app.update(Action::SetUiString { key: "jq_tab", value: lit.clone() });
+    assert_eq!(file(), format!("jq_tab = \"{lit}\"\n"), "the click wrote the key");
+
+    app.update(Action::Undo);
+    assert!(!file().contains("jq_tab"), "the undo removed it: {:?}", file());
+    assert_eq!(app.ui_settings.jq_tab, in_effect, "nothing changed on screen");
+
+    std::fs::write(dir.path().join("config.toml"), "jq_tab = \"bogus\"\n").unwrap();
+    app.update(Action::SetUiString { key: "jq_tab", value: lit.clone() });
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert_eq!(text, format!("jq_tab = \"{lit}\"\n"), "the carried key was replaced");
+}
+
+/// Task #195: clearing an AI command the file never set leaves the file
+/// without the key, as it was, so there is nothing to undo.
+#[test]
+fn clearing_an_unset_ai_command_records_no_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::new_for_test();
+    app.config = crate::config::Config::at(dir.path().to_path_buf());
+
+    app.update(Action::SetUiString { key: "ai_cmd", value: String::new() });
+    app.update(Action::Undo);
+
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains("Nothing to undo")),
+        "the clear changed nothing, so it recorded nothing: {:?}",
+        app.toasts.messages()
+    );
+}
+
 /// A write that never lands records nothing to undo -- `osc52_limit` past
 /// `i64::MAX` is refused by `Config::save_ui_int` itself, so the follow-up
 /// `Undo` has no Settings step waiting for it (or anything else).

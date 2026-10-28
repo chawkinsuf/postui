@@ -948,13 +948,19 @@ impl Config {
             return Ok(());
         };
         let rel = postui_core::disk::RelPath::new(name).map_err(|e| e.to_string())?;
-        let existing = disk.read(&rel).map_err(|e| e.to_string())?.unwrap_or_default();
-        let mut doc: toml_edit::DocumentMut =
-            existing.parse().map_err(|e: toml_edit::TomlError| {
-                format!("{name} has a syntax error and was left unchanged: {e}")
-            })?;
+        let existing = disk.read(&rel).map_err(|e| e.to_string())?;
+        let mut doc = Self::parse_doc(name, existing)?;
         f(&mut doc);
         disk.write(&rel, &doc.to_string()).map_err(|e| e.to_string())
+    }
+
+    /// `name`'s text as a document, the one load [`Self::edit`] and
+    /// [`Self::holds_ui_key`] share: an absent file is an empty document,
+    /// and one that does not parse is refused.
+    fn parse_doc(name: &str, text: Option<String>) -> Result<toml_edit::DocumentMut, String> {
+        text.unwrap_or_default().parse().map_err(|e: toml_edit::TomlError| {
+            format!("{name} has a syntax error and was left unchanged: {e}")
+        })
     }
 
     /// Persists the `[projects]` table of `config.toml`.
@@ -1032,6 +1038,28 @@ impl Config {
         let value = i64::try_from(value)
             .map_err(|_| format!("too large to store; the most is {}", i64::MAX))?;
         self.edit(CONFIG_TOML, |doc| doc[key] = toml_edit::value(value))
+    }
+
+    /// Removes one top-level key of `config.toml`: what an undo writes for
+    /// a key the file did not carry before the change (task #195). The
+    /// next load reads the key's default; the app applies what the undo
+    /// step held, which is the default unless the session ran another.
+    pub fn remove_ui_key(&mut self, key: &str) -> Result<(), String> {
+        self.edit(CONFIG_TOML, |doc| {
+            doc.remove(key);
+        })
+    }
+
+    /// Whether `config.toml` carries the top-level `key`: `Some(false)`
+    /// when the file or the key is absent. `None` when that is not known:
+    /// no files behind this `Config` ([`Self::none`]), or a file that will
+    /// not read or parse (which [`Self::edit`] refuses to write anyway).
+    /// A query, so it reads without recording a stamp (`Disk::peek`).
+    pub fn holds_ui_key(&self, key: &str) -> Option<bool> {
+        let disk = self.disk.as_ref()?;
+        let rel = postui_core::disk::RelPath::new(CONFIG_TOML).ok()?;
+        let doc = Self::parse_doc(CONFIG_TOML, disk.peek(&rel).ok()?).ok()?;
+        Some(doc.contains_key(key))
     }
 
     /// Clears the UI settings from `config.toml` by *removing* their
@@ -2219,6 +2247,32 @@ osc52_limit = 1024
             reloaded.config.unwrap().0.known,
             vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]
         );
+    }
+
+    /// Task #195: what an undo step reads and writes for a key the file
+    /// did not carry.
+    #[test]
+    fn holds_ui_key_tells_a_carried_key_from_an_absent_one_and_remove_drops_it() {
+        assert_eq!(Config::none().holds_ui_key("ai_cmd"), None, "no files: unknown");
+
+        let dir = tempdir().unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+        assert_eq!(cfg.holds_ui_key("ai_cmd"), Some(false), "no file: absent");
+
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "theme = \"y\"\nai_cmd = \"x\"\nanimations = false\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.holds_ui_key("ai_cmd"), Some(true));
+        assert_eq!(cfg.holds_ui_key("hover_hints"), Some(false));
+
+        cfg.remove_ui_key("ai_cmd").unwrap();
+        let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert_eq!(text, "theme = \"y\"\nanimations = false\n", "only the key went");
+
+        std::fs::write(dir.path().join("config.toml"), "ai_cmd = [").unwrap();
+        assert_eq!(cfg.holds_ui_key("ai_cmd"), None, "unparseable: unknown");
     }
 
     #[test]

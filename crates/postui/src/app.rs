@@ -3524,25 +3524,21 @@ impl App {
                     return true;
                 }
                 let key = SettingsField::Keymap.key();
-                let before = UiValue::Text(self.ui_string(key));
                 let after = UiValue::Text(profile.spelling().to_string());
-                match self.write_ui_value(key, &after) {
-                    Ok(()) => self.record_config_step(key, before, after),
-                    // Applied whether or not it landed (spec §4.2): left
-                    // unset, the question would come straight back, and a
-                    // question that cannot be answered is worse than one
-                    // asked again at the next launch.
-                    Err(e) => {
-                        self.toasts.push(
-                            format!(
-                                "could not save {}: {e}; using {} keys for this session",
-                                crate::config::CONFIG_TOML,
-                                profile.spelling()
-                            ),
-                            ToastKind::Error,
-                        );
-                        self.apply_ui(key, &after);
-                    }
+                // Applied whether or not it landed (spec §4.2): left
+                // unset, the question would come straight back, and a
+                // question that cannot be answered is worse than one
+                // asked again at the next launch.
+                if let Err(e) = self.write_and_record_ui_value(key, after.clone()) {
+                    self.toasts.push(
+                        format!(
+                            "could not save {}: {e}; using {} keys for this session",
+                            crate::config::CONFIG_TOML,
+                            profile.spelling()
+                        ),
+                        ToastKind::Error,
+                    );
+                    self.apply_ui(key, &after);
                 }
                 if matches!(self.modals.top(), Some(Modal::KeymapChoice { .. })) {
                     self.modals.pop();
@@ -3665,19 +3661,13 @@ impl App {
                 }
             }
             Action::SetUiFlag { key, value } => {
-                use crate::undo::UiValue;
-                let before = UiValue::Flag(self.ui_flag(key));
-                self.set_ui_value(key, before, UiValue::Flag(value))
+                self.set_ui_value(key, crate::undo::UiValue::Flag(value))
             }
             Action::SetUiString { key, value } => {
-                use crate::undo::UiValue;
-                let before = UiValue::Text(self.ui_string(key));
-                self.set_ui_value(key, before, UiValue::Text(value))
+                self.set_ui_value(key, crate::undo::UiValue::Text(value))
             }
             Action::SetUiInt { key, value } => {
-                use crate::undo::UiValue;
-                let before = UiValue::Int(self.ui_int(key));
-                self.set_ui_value(key, before, UiValue::Int(value))
+                self.set_ui_value(key, crate::undo::UiValue::Int(value))
             }
             // A quit closes the open inputs first, saved (`leaving_unsaved`
             // did when the gate above ran); a refused close never stops a
@@ -12101,37 +12091,96 @@ impl App {
     }
 
     /// The body every Settings-tab action shares (`SetUiFlag` /
-    /// `SetUiString` / `SetUiInt`): the write, then its undo step.
-    /// `Config::edit` refuses a `config.toml` that will not parse, so a
-    /// refused write says so and changes nothing — the control keeps
-    /// painting the value on disk rather than one that never landed —
-    /// records nothing, and sets `last_action_failed`, which the field
-    /// commit reads to keep its edit open (task #80).
-    fn set_ui_value(
-        &mut self,
-        key: &'static str,
-        before: crate::undo::UiValue,
-        after: crate::undo::UiValue,
-    ) -> bool {
-        match self.write_ui_value(key, &after) {
-            Ok(()) => self.record_config_step(key, before, after),
-            Err(e) => {
-                self.toasts.push(
-                    format!("could not save {}: {e}", crate::config::CONFIG_TOML),
-                    ToastKind::Error,
-                );
-                self.last_action_failed = true;
-            }
+    /// `SetUiString` / `SetUiInt`): the write and its undo step
+    /// ([`Self::write_and_record_ui_value`]). `Config::edit` refuses a
+    /// `config.toml` that will not parse, so a refused write says so and
+    /// changes nothing — the control keeps painting the value on disk
+    /// rather than one that never landed — records nothing, and sets
+    /// `last_action_failed`, which the field commit reads to keep its edit
+    /// open (task #80).
+    fn set_ui_value(&mut self, key: &'static str, value: crate::undo::UiValue) -> bool {
+        if let Err(e) = self.write_and_record_ui_value(key, value) {
+            self.toasts.push(
+                format!("could not save {}: {e}", crate::config::CONFIG_TOML),
+                ToastKind::Error,
+            );
+            self.last_action_failed = true;
         }
         true
     }
 
-    /// The one write behind a Settings value: saves `value` under `key`
-    /// in `config.toml` and, once that landed, applies it
-    /// ([`Self::apply_ui`]).
+    /// A Settings action's write ([`Self::write_ui_value`]) and, once it
+    /// landed, its undo step. Each side of the step is the state around
+    /// the write ([`Self::held_ui_value`]): the value in effect and
+    /// whether `config.toml` carried the key. So the undo of the first
+    /// change to an unset key removes the key again rather than writing
+    /// the default that was in effect, and a write that changed neither
+    /// (clearing an unset AI command) records nothing (task #195).
     ///
-    /// It records nothing. The Settings actions record their step after
-    /// it ([`Self::set_ui_value`]); an undo or redo of a `Config` step
+    /// Every value is written, the one already in effect too, as before
+    /// task #195: a click on the lit segment (jq Tab behavior, Indent) of
+    /// a key the file lacks, or a field commit that types the value in
+    /// effect another way (`04` for an indent width of 4), writes the key
+    /// and records a step whose undo removes it again. That costs one
+    /// ctrl+z step whose "Undid change to …" toast shows nothing visibly
+    /// changing (only the file does), and the write clears the redo
+    /// stack. Judging which values count as
+    /// no change before the write would have to guess at state the file
+    /// and the session hold (a carried value that reads back as the
+    /// default, a session value the file never took), and each guess was
+    /// wrong somewhere; the step compares what the file held instead
+    /// (task #195, `mine (approved)`).
+    ///
+    /// `after` is read back from the file rather than worked out from
+    /// `value`: which writes remove the key is `Config::save_ui_*`'s
+    /// rule, and a copy of it here would drift.
+    fn write_and_record_ui_value(
+        &mut self,
+        key: &'static str,
+        value: crate::undo::UiValue,
+    ) -> Result<(), String> {
+        let before = self.held_ui_value(key);
+        self.write_ui_value(key, &crate::undo::HeldUiValue { value, carried: true })?;
+        let after = self.held_ui_value(key);
+        self.record_config_step(key, before, after);
+        Ok(())
+    }
+
+    /// `key`'s value in effect, and whether `config.toml` carries the key:
+    /// read through `Config`, which owns the file. With no files behind
+    /// the app, or a file that will not read, there is nothing to tell,
+    /// and the key counts as carried, so its value is written back as
+    /// before task #195.
+    ///
+    /// An uncarried side holds the value in effect, not the default, so
+    /// an undo puts back the pre-change state exactly: when the session
+    /// runs a value the file never took (a refused keymap write), the
+    /// undo leaves the file without the key and the session on that
+    /// value, as it was. It gives up the file and the session agreeing
+    /// after the undo; writing the session value instead would put a key
+    /// into the file it never held.
+    ///
+    /// The file is asked only whether it carries the key. A carried
+    /// value is taken as the one in effect, which is what the Settings
+    /// tab last wrote or the last load read; a hand edit since then that
+    /// has not been reloaded, or a value that reads back as the default,
+    /// is undone to the value in effect, as before task #195, which is
+    /// about the absent key.
+    fn held_ui_value(&self, key: &'static str) -> crate::undo::HeldUiValue {
+        crate::undo::HeldUiValue {
+            value: ui_value(&self.ui_settings, key),
+            carried: self.config.holds_ui_key(key) != Some(false),
+        }
+    }
+
+    /// The one write behind a Settings value: saves `held.value` under
+    /// `key` in `config.toml` (by `Config::save_ui_*`'s rule, which removes
+    /// the key for an empty text), or removes the key when it was not
+    /// carried, and once that landed applies the value ([`Self::apply_ui`]).
+    /// A Settings action always writes its value as carried.
+    ///
+    /// It records nothing. The Settings actions record their step around
+    /// it ([`Self::write_and_record_ui_value`]); an undo or redo of a `Config` step
     /// replays through it and moves its own step between the stacks, the
     /// way every replay arm calls the layer under the action that
     /// recorded it (task #182: the replay kept its own copy of the
@@ -12139,15 +12188,16 @@ impl App {
     fn write_ui_value(
         &mut self,
         key: &'static str,
-        value: &crate::undo::UiValue,
+        held: &crate::undo::HeldUiValue,
     ) -> Result<(), String> {
         use crate::undo::UiValue;
-        match value {
+        match &held.value {
+            _ if !held.carried => self.config.remove_ui_key(key),
             UiValue::Flag(v) => self.config.save_ui_flag(key, *v),
             UiValue::Text(v) => self.config.save_ui_string(key, v),
             UiValue::Int(v) => self.config.save_ui_int(key, *v),
         }?;
-        self.apply_ui(key, value);
+        self.apply_ui(key, &held.value);
         Ok(())
     }
 
@@ -12170,58 +12220,15 @@ impl App {
         }
     }
 
-    /// The Settings tab's current value for `key`, read straight from
-    /// `ui_settings` — the "before" half of a `Config` undo step. Panics
-    /// only on a typo `Action::SetUi*` can't otherwise reach (same
-    /// contract as `apply_ui_value`'s `debug_assert!` arm).
-    fn ui_flag(&self, key: &'static str) -> bool {
-        match key {
-            "animations" => self.ui_settings.animations,
-            "hover_hints" => self.ui_settings.hover_hints,
-            "curl_button" => self.ui_settings.curl_button,
-            "ai_confirmed" => self.ui_settings.ai_confirmed,
-            other => {
-                debug_assert!(false, "no boolean setting named {other:?}");
-                false
-            }
-        }
-    }
-
-    fn ui_string(&self, key: &'static str) -> String {
-        match key {
-            "ai_cmd" => self.ui_settings.ai_cmd.clone(),
-            "clipboard_cmd" => self.ui_settings.clipboard_cmd.clone().unwrap_or_default(),
-            "jq_tab" => {
-                crate::components::settings::jq_tab_spelling(self.ui_settings.jq_tab).to_string()
-            }
-            "keymap" => self.ui_settings.keymap.map_or(String::new(), |p| p.spelling().to_string()),
-            "indent" => self.ui_settings.indent.spelling().to_string(),
-            other => {
-                debug_assert!(false, "no string setting named {other:?}");
-                String::new()
-            }
-        }
-    }
-
-    fn ui_int(&self, key: &'static str) -> usize {
-        match key {
-            "osc52_limit" => self.ui_settings.osc52_limit,
-            "indent_width" => self.ui_settings.indent_width,
-            other => {
-                debug_assert!(false, "no integer setting named {other:?}");
-                0
-            }
-        }
-    }
-
-    /// Records a Settings write as one undo step, once it has landed —
-    /// `before`/`after` already computed by the caller so a refused write
-    /// (which changes nothing) never reaches here.
+    /// Records a Settings write as one undo step, once it has landed: a
+    /// refused write (which changes nothing) never reaches here. `before`
+    /// and `after` are what [`Self::held_ui_value`] read around the write,
+    /// `after` read back from the file, never the requested value.
     fn record_config_step(
         &mut self,
         key: &'static str,
-        before: crate::undo::UiValue,
-        after: crate::undo::UiValue,
+        before: crate::undo::HeldUiValue,
+        after: crate::undo::HeldUiValue,
     ) {
         if before == after {
             return; // no-op commit: nothing to undo, matching the field rule
@@ -12963,6 +12970,34 @@ fn apply_ui_value(ui: &mut crate::config::UiSettings, key: &str, value: &crate::
         // carries the key and value kind its action wrote through here,
         // so this can only be a typo in a new key's wiring.
         (other, value) => debug_assert!(false, "no setting {other:?} taking {value:?}"),
+    }
+}
+
+/// `ui`'s value for the Settings `key`, in the shape the Settings action
+/// writes it: the inverse of [`apply_ui_value`]. An unset clipboard
+/// command or keymap reads as `""`, which writes as no key. Panics (in a
+/// debug build) only on a typo `Action::SetUi*` can't otherwise reach,
+/// the same contract as `apply_ui_value`'s `debug_assert!` arm.
+fn ui_value(ui: &crate::config::UiSettings, key: &str) -> crate::undo::UiValue {
+    use crate::undo::UiValue;
+    match key {
+        "animations" => UiValue::Flag(ui.animations),
+        "hover_hints" => UiValue::Flag(ui.hover_hints),
+        "curl_button" => UiValue::Flag(ui.curl_button),
+        "ai_confirmed" => UiValue::Flag(ui.ai_confirmed),
+        "ai_cmd" => UiValue::Text(ui.ai_cmd.clone()),
+        "clipboard_cmd" => UiValue::Text(ui.clipboard_cmd.clone().unwrap_or_default()),
+        "jq_tab" => {
+            UiValue::Text(crate::components::settings::jq_tab_spelling(ui.jq_tab).to_string())
+        }
+        "keymap" => UiValue::Text(ui.keymap.map_or(String::new(), |p| p.spelling().to_string())),
+        "indent" => UiValue::Text(ui.indent.spelling().to_string()),
+        "osc52_limit" => UiValue::Int(ui.osc52_limit),
+        "indent_width" => UiValue::Int(ui.indent_width),
+        other => {
+            debug_assert!(false, "no setting named {other:?}");
+            UiValue::Text(String::new())
+        }
     }
 }
 
