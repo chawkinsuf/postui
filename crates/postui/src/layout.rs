@@ -286,7 +286,9 @@ pub fn editor_min_rows(column_height: u16) -> u16 {
 /// the response) asks for, `editor_rows`, as the split takes them: a target
 /// past the chrome but short of [`editor_min_rows`] lands there, as Vim
 /// never closes a window with a count (#129; the user's "Go"). At or above
-/// the chrome it minimizes the editor, as it did before the floor. A
+/// the chrome (`0<C-w>_` on the editor, a response count that leaves the
+/// editor no content row) it minimizes the editor, as it did before the
+/// floor; Vim keeps `'winminheight'` there, which postui never did. A
 /// single `ctrl+w -` from the floor still minimizes (mine (approved)).
 pub fn counted_editor_rows(column_height: u16, editor_rows: i32) -> i32 {
     let min = i32::from(editor_min_rows(column_height));

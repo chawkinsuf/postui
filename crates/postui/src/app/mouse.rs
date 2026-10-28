@@ -1428,7 +1428,10 @@ impl App {
         // keeps them; a divider moves only itself; and a menu or dialog acts
         // in the mode it was opened over, so the body menu's Paste types
         // into the search (Vim's command-line Paste is a `:cmenu` entry)
-        // (#129, #194).
+        // (#129, #194). A pane's bare surface, the body's ring gutter
+        // included, is no exception: a press there is a click away that
+        // takes the caret from the body (`move_editor_caret` below), which
+        // ends its search as it did before #129.
         let body_window = matches!(
             hit,
             Hit::BodyEditor
