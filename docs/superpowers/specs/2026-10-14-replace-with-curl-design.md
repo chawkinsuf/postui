@@ -149,8 +149,8 @@ reset by a rename's undo).
 
 | # | Behaviour | From |
 |---|---|---|
-| N1 | Replace runs the existing rename first, as its own journaled project step, then lands the editor change as U1 says. The order of steps is declarations (U5), rename, editor change, so undo takes back the editor change, then the rename, then the declarations. Discard reverts the fields and keeps the rename; undo takes it back. | mine (approved) |
-| N2 | The rename's checks (an empty leaf, a name another request in the target folder answers to) run up front with U7's other refusals, before the dirty gate. A refusal toasts rename's own words (`a request named "X" already exists here`, `request name cannot be empty`) and changes nothing. | mine (approved) |
+| N1 | Replace runs the existing rename first, as its own journaled project step, then lands the editor change as U1 says. The order of steps is declarations (U5), rename, editor change, so undo takes back the editor change, then the rename, then the declarations. Discard reverts the fields and keeps the rename; undo takes it back. A rename that still fails when it runs (a file written while the gate was up) toasts rename's error and the replace lands under the old name, so the declarations are never left without the request that uses them (mine, first review round). | mine (approved) |
+| N2 | The rename's checks (an empty leaf, a name another request in the target folder answers to) run up front with U7's other refusals, before the dirty gate. A refusal toasts rename's own words after U12's `cannot replace: ` (`cannot replace: a request named "X" already exists here`, first review round) and changes nothing. | mine (approved) |
 | N3 | A `/` in the name reads relative to the request's own folder (`# @name sub/X` on `api/ping` lands at `api/sub/X`), through rename's folder move, inside the request's space. A bare name keeps the folder. | mine (approved) |
 | N4 | A scratch request ignores `# @name`: it has no file to rename, and Save still asks for a name. | mine (approved) |
 | N5 | A `# @name` the request already answers to, ignoring case, in its own folder, renames nothing. | mine |

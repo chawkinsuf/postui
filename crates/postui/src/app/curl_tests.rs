@@ -1075,8 +1075,11 @@ fn a_folder_in_the_name_comment_reads_from_the_request_folder() {
 #[test]
 fn a_taken_or_empty_name_refuses_before_the_dirty_gate() {
     for (clip, toast) in [
-        ("# @name PONG\ncurl https://x/new", "a request named \"PONG\" already exists here"),
-        ("# @name sub/\ncurl https://x/new", "request name cannot be empty"),
+        (
+            "# @name PONG\ncurl https://x/new",
+            "cannot replace: a request named \"PONG\" already exists here",
+        ),
+        ("# @name sub/\ncurl https://x/new", "cannot replace: request name cannot be empty"),
     ] {
         let mut app = kept_app(clip);
         let pong = req("https://x/pong");
@@ -1098,6 +1101,42 @@ fn a_taken_or_empty_name_refuses_before_the_dirty_gate() {
         assert_eq!(app.editor.slug.as_deref(), Some("main/kept"));
         assert_eq!(app.editor.current_request(), before, "{clip}");
     }
+}
+
+/// A name taken while the dirty gate was up: the rename toasts why and the
+/// replace still lands under the old name, so the declarations it made are
+/// never left without the request that uses them.
+#[test]
+fn a_rename_refused_after_the_gate_still_replaces_under_the_old_name() {
+    let mut app = kept_app("# @name Fresh\nexport TOKEN=abc\ncurl -H \"A: $TOKEN\" https://x/new");
+    app.editor.url = LineInput::new("https://x/edited");
+    app.capture_undo();
+    replace(&mut app, Some("main/top"));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })), "the gate");
+    let mut taken = req("https://x/fresh");
+    taken.name = Some("Fresh".into());
+    postui_core::fixtures::save_request(app.proj().root(), "main/fresh", &taken).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    app.capture_undo();
+    assert_eq!(app.editor.slug.as_deref(), Some("main/top"));
+    assert_eq!(app.editor.url.text(), "https://x/new");
+    assert!(app.proj().variables().vars.contains_key("TOKEN"));
+    let msgs: Vec<&str> = app.toasts.entries().iter().map(|(m, _)| *m).collect();
+    assert!(msgs.contains(&"a request named \"Fresh\" already exists here"), "{msgs:?}");
+    let last = app.toasts.last_message().unwrap();
+    assert!(last.starts_with("Replaced top from curl; "), "{last}");
+    app.update(Action::Undo);
+    assert_eq!(app.editor.url.text(), "https://x/top");
+}
+
+/// A leading `/` reads from the request's folder too, as the Rename
+/// prompt drops it.
+#[test]
+fn a_leading_slash_in_the_name_comment_is_dropped() {
+    let mut app = app_with_clip("# @name /Pong\ncurl https://x/new");
+    replace(&mut app, Some("main/api/ping"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/api/pong"));
 }
 
 /// N5: the name the request already answers to renames nothing.

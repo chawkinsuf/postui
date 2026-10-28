@@ -309,7 +309,7 @@ impl App {
             (Some(slug), Some(named)) => match self.curl_rename(&slug, named) {
                 Ok(rename) => rename,
                 Err(msg) => {
-                    self.toasts.push(msg, ToastKind::Error);
+                    self.toasts.push(format!("cannot replace: {msg}"), ToastKind::Error);
                     return true;
                 }
             },
@@ -335,8 +335,10 @@ impl App {
     /// §6), read from the request's own folder (N3); `None` when the
     /// request already answers to it there, ignoring case (N5). What the
     /// rename would refuse is refused here, before the dirty gate, in its
-    /// own words (N2).
+    /// own words (N2). A leading `/` is dropped, as the Rename prompt drops
+    /// it: the name is never read from the space's top.
     fn curl_rename(&self, slug: &str, named: &str) -> Result<Option<String>, String> {
+        let named = named.trim_start_matches('/');
         let to = match slug.rsplit_once('/') {
             Some((folder, _)) => format!("{folder}/{named}"),
             None => named.to_string(),
@@ -402,13 +404,12 @@ impl App {
         // The paste's `# @name` (replace spec §6, N1): rename's own step,
         // between the declarations and the editor change, so undo takes
         // back the edit first, then the rename. A rename checked before the
-        // gate can still fail on the disk; it toasts why and the replace
-        // stops there, like a refused declaration.
+        // gate can still fail on the disk (a file written while the gate
+        // was up): it toasts why and the replace goes on under the old
+        // name, so the declarations above are never left without the
+        // request that uses them.
         let renamed = match (rename, self.editor.slug.clone()) {
-            (Some(to), Some(from)) => {
-                if !self.rename_request(&from, &to) {
-                    return;
-                }
+            (Some(to), Some(from)) if self.rename_request(&from, &to) => {
                 // A capture that sees the slug change only re-seeds, and one
                 // that sees the same slug with the new name records it as an
                 // edit: either way the editor change below would not be its
