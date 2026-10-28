@@ -38,7 +38,7 @@ pub enum JqBarState {
     Describing,
 }
 
-/// The open request's send, for the editor's leading chip: `send` while
+/// The open request's send, for the chip that ends the editor's row: `send` while
 /// nothing is in flight; once it is, the send keys go dead (`Action::Send`
 /// refuses), and `esc cancel` stands in where Esc reaches the cancel
 /// (`App::editor_esc_cancels`). Where the focused input takes Esc for its
@@ -197,38 +197,6 @@ pub(crate) fn footer_chips(
         ],
         PaneId::Editor => {
             let mut chips: Vec<(Key, &'static str, Option<Action>)> = Vec::new();
-            // Shift+Enter is only reportable under the kitty keyboard
-            // protocol; where the terminal can't deliver it, ^R is the
-            // advertised send key (both bindings stay active regardless).
-            // While the open request is in flight the send shortcuts go
-            // dead (`Action::Send` refuses), and esc — the cancel
-            // shortcut — is advertised instead where Esc reaches it. Where
-            // the focused input takes Esc for its own there is nothing
-            // honest to put in that slot, so it goes empty (#193); with a
-            // field open `esc done` leads the row. The slot comes and goes
-            // mostly as the keyboard moves to another stop, and every stop
-            // brings its own chips after it (the address bar's, the add
-            // chip's keycap, the row's), so the row reflows then whether or
-            // not the slot is there; a blank kept for it would read as a
-            // gap at the row's start. A half-typed vim count drops it too,
-            // for as long as Esc would only drop the count: a chip that
-            // stays would name a key that does not cancel.
-            //
-            // The field rule is this function's own, as it was before
-            // #193: an open field's Esc is the field's whatever `sending`
-            // says, so `field_open` empties the slot here; where else Esc
-            // reaches the cancel is the caller's to say.
-            match sending {
-                Sending::InFlight { esc_cancels: true } if !field_open => {
-                    chips.push((Key::Named("esc"), "cancel", Some(Action::CancelSend)))
-                }
-                Sending::InFlight { .. } => {}
-                Sending::No => chips.push((
-                    Key::Send { shift_enter: shift_enter_send },
-                    "send",
-                    Some(Action::Send),
-                )),
-            }
             if url_focused {
                 // "tls" leans on context (the padlock sits in the focused
                 // bar); labels stay tight so the vars chip survives the
@@ -268,8 +236,40 @@ pub(crate) fn footer_chips(
             // URL-focused row must keep hover-hint room at 160 cols);
             // ctrl-digits switch spaces. The tab chord chip every strip
             // shares (response pane, Manage tabs): same keycap, same
-            // wording. Last, so the chips before it never shift it.
+            // wording. After the stop's own chips, so they never shift it.
             chips.extend(tabs());
+            // The send slot ends the row. Shift+Enter is only reportable
+            // under the kitty keyboard protocol; where the terminal can't
+            // deliver it, ^R is the advertised send key (both bindings stay
+            // active regardless). While the open request is in flight the
+            // send shortcuts go dead (`Action::Send` refuses), and esc — the
+            // cancel shortcut — is advertised instead where Esc reaches it.
+            // Where the focused input takes Esc for its own there is
+            // nothing honest to put in the slot, so it goes empty (#193); a
+            // half-typed vim count empties it too, for as long as Esc would
+            // only drop the count. So during a send it comes and goes on
+            // one stop, and at the row's end that moves no other chip (the
+            // user, #193: "c", the trailing slot over a kept blank). Its
+            // cost: the row drops chips from its end when narrow, so this
+            // one goes first; the address bar's send/cancel button and the
+            // palette's row keep the action on screen.
+            //
+            // The field rule is this function's own, as it was before
+            // #193: an open field's Esc is the field's whatever `sending`
+            // says, so `field_open` empties the slot here (`esc done` leads
+            // the row instead); where else Esc reaches the cancel is the
+            // caller's to say.
+            match sending {
+                Sending::InFlight { esc_cancels: true } if !field_open => {
+                    chips.push((Key::Named("esc"), "cancel", Some(Action::CancelSend)))
+                }
+                Sending::InFlight { .. } => {}
+                Sending::No => chips.push((
+                    Key::Send { shift_enter: shift_enter_send },
+                    "send",
+                    Some(Action::Send),
+                )),
+            }
             if field_open {
                 // Inserted last so the row/address-bar chips above land
                 // where they mean to; it leads the row all the same.
@@ -575,7 +575,9 @@ pub fn draw_footer(
             let l = if vim_search_box && k == Key::Named("esc") { "cancel" } else { l };
             (k, l.to_string(), a)
         })
-        // Last, so the chips that stay never move when it comes and goes.
+        // Last, so the chips that stay never move when it comes and goes;
+        // after the editor's send slot too, since it comes and goes as the
+        // caret crosses a token, more often than a send starts or ends.
         .chain(tip_open.then(|| {
             let edit = Action::TipPill(crate::action::TipPill::Edit);
             (Key::Of(edit.clone()), "edit".to_string(), Some(edit))
@@ -1311,6 +1313,55 @@ mod tests {
             !taken.iter().any(|(_, l, _)| *l == "send" || *l == "cancel"),
             "Esc is the input's: {taken:?}"
         );
+    }
+
+    /// The send slot ends the editor's row (#193, the user's "c"): it
+    /// comes and goes during a send (a stop that takes Esc, a half-typed
+    /// count), and from the end it never moves a chip beside it. On every
+    /// stop the chips before it are the same whether it shows `send`,
+    /// `esc cancel` or nothing.
+    #[test]
+    fn the_send_slot_ends_the_editor_row_and_moves_no_chip() {
+        // (url_focused, url_selected, add_row_label, row, field_open)
+        let stops = [
+            (true, true, None, None, false),
+            (true, false, None, None, false),
+            (false, false, Some("add header"), None, false),
+            (false, false, Some("add header"), Some((1, true)), false),
+            (false, false, None, None, false),
+            (true, true, None, None, true),
+        ];
+        for (url_focused, url_selected, add, row, field_open) in stops {
+            let labels = |sending| {
+                footer_chips(
+                    PaneId::Editor,
+                    false,
+                    sending,
+                    add,
+                    url_focused,
+                    url_selected,
+                    row,
+                    JqBarState::Closed,
+                    field_open,
+                )
+                .into_iter()
+                .map(|(_, l, _)| l)
+                .collect::<Vec<_>>()
+            };
+            let at = format!("url {url_focused}/{url_selected} add {add:?} row {row:?}");
+            let empty = labels(Sending::InFlight { esc_cancels: false });
+            assert!(!empty.contains(&"send") && !empty.contains(&"cancel"), "{at}: {empty:?}");
+            let idle = labels(Sending::No);
+            assert_eq!(idle.last(), Some(&"send"), "{at}: {idle:?}");
+            assert_eq!(idle[..idle.len() - 1], empty[..], "{at}");
+            let cancel = labels(Sending::InFlight { esc_cancels: true });
+            if field_open {
+                assert_eq!(cancel, empty, "an open field's Esc is the field's: {at}");
+            } else {
+                assert_eq!(cancel.last(), Some(&"cancel"), "{at}: {cancel:?}");
+                assert_eq!(cancel[..cancel.len() - 1], empty[..], "{at}");
+            }
+        }
     }
 
     /// Where the tab chip's keys switch no tab (the arrows body's word

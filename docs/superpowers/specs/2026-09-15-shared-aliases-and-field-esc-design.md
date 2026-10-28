@@ -158,6 +158,17 @@ takes alt+←/→ for its word jump, so the chip goes there while those are
 its keys. `App::editor_esc_cancels` and `App::tab_chord_cycles` read the
 key's own path, so the chips follow it.
 
+Amended 2026-10-27 (task #193, `you`: "193 c.", choosing the trailing
+slot over a kept blank): the send slot (`send`, `esc cancel` or nothing)
+moves from the start of the editor's row to its end, after the tab chip.
+During a send it now comes and goes on one stop (a half-typed vim count,
+the end of the send), and at the end it moves no other chip. The caret
+tooltip's `edit` chip still follows it. The cost: the footer drops chips
+from the row's end when narrow, so the send chip goes first (at 120
+columns a selected Headers row already has no room for it); the address
+bar's send/cancel button and the palette's Send row keep the action on
+screen.
+
 ## Undo inside a text field
 
 ### Two text classes
