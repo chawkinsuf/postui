@@ -206,6 +206,16 @@ doesn't cover the caret, the draw hides the caret, so that cell lights as
 before. The response draws no caret (a tinted cursor row only), so its
 pair is unchanged.
 
+What is kept from Vim is the outcome, not the paint. Vim's matchparen
+does colour the cursor's bracket, and a terminal that reverses the cell
+under its cursor then shows MatchParen reversed, which is what the old
+code drew. But that cursor is the terminal's own (often blinking or in
+its own colour), so it stays findable. postui's caret is a painted cell,
+and the same reversed colours read as an ordinary coloured char. The
+Insert caret is drawn as a block on the char too (arrows always), so the
+rule covers it: on `{|}` the `}` keeps the caret's look and the `{`
+lights.
+
 ## 4. Tests
 
 - `brackets.rs`: `bracket_at` with `partner_of` covers each row of the probe table (N1,
