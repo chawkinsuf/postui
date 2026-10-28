@@ -255,6 +255,11 @@ pub struct Editor {
     /// - The arrows profile lights no bracket pair while text is selected
     ///   (#189); the vim profile follows Vim's matchparen, which keeps it
     ///   ([`Self::paint_bracket_pair`]).
+    ///
+    /// One field for both, named for what it holds: each follows the
+    /// profile and nothing else, so a copy per job would be two things to
+    /// keep in step. A job that one day depends on more than the profile
+    /// gets its own field then.
     pub(crate) vim_profile: bool,
     /// The fixed end of an in-progress body selection: planted by a left
     /// click (mouse) or the first shifted motion (keyboard), consumed by
@@ -5692,9 +5697,7 @@ mod tests {
         assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 0)));
     }
 
-    /// #189 (the user: "No only in arrows mode. Any testing I do is
-    /// referring specifically to arrows mode. Vim mode follows vim."): in
-    /// the arrows profile a selection lights no pair, whether it hides the
+    /// #189 (spec R21): in the arrows profile a selection lights no pair, whether it hides the
     /// caret or covers it, from a key or a drag. The pair is back once the
     /// selection goes.
     #[test]
@@ -5730,9 +5733,10 @@ mod tests {
         assert_eq!(lit_body_cells(&mut e), 0, "a mouse selection");
     }
 
-    /// #189: the vim profile keeps Vim's matchparen in Visual (its
-    /// `plugin/matchparen.vim` runs on every `CursorMoved`, Visual
-    /// included), so the partner outside the span lights.
+    /// #189 (spec R21): the vim profile keeps Vim's matchparen under a
+    /// selection, so the partner outside it lights: in Visual (the
+    /// engine's span, which `body.selection` doesn't hold) and under a
+    /// selection the same keys make in arrows, which lights nothing there.
     #[test]
     fn vim_visual_keeps_the_pair() {
         let mut e = body_editor("{\"a\": [1]}");
@@ -5740,7 +5744,15 @@ mod tests {
         e.body.mode = EditorMode::Visual;
         e.body.cursor = edtui::Index2::new(0, 6);
         e.body_visual = Some((edtui::Index2::new(0, 4), edtui::Index2::new(0, 6)));
-        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 8)), "the partner `]`");
+        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 8)), "Visual: the partner `]`");
+        e.body.mode = EditorMode::Insert;
+        e.body_visual = None;
+        e.body.cursor = edtui::Index2::new(0, 7);
+        e.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+        assert!(e.body.selection.is_some());
+        assert!(bracket_lit(&body_cell_at(&mut e, true, 0, 8)), "a selection: the partner");
+        e.vim_profile = false;
+        assert!(!bracket_lit(&body_cell_at(&mut e, true, 0, 8)), "the same in arrows");
     }
 
     /// R8 (#187): a caret the draw hides (a selection that doesn't cover

@@ -4719,10 +4719,13 @@ impl Component for Response {
         if view.mode == ViewMode::Raw && view.h_scroll > 0 {
             view.index_raw_rows(view.scroll..view.scroll + view.height);
         }
-        // Arrows lights no pair while a selection shows (#189, the user:
-        // "No only in arrows mode. Any testing I do is referring
-        // specifically to arrows mode. Vim mode follows vim."); vim keeps
-        // it under `V` or a drag, as Vim's matchparen does in Visual.
+        // Arrows lights no pair while a selection shows (#189, spec R21);
+        // vim keeps it under `V` or a drag, as Vim's matchparen does in
+        // Visual. The selection only hides the pair: the click stays, so
+        // once the selection goes the pair is back, as the body's is by
+        // its caret. A drag that began on a bracket is a press on it, which
+        // records the click as any press there does (R10); forgetting it
+        // when a drag starts would be a second rule for one press.
         let lights = ctx.focused && (self.vim_cursor || view.sel.is_none());
         let pair = if lights { view.lit_pair(self.vim_cursor) } else { None };
         let body = body_lines(view, t, ctx.focused, ctx.hovered, hits, body_area, pair);
@@ -12049,9 +12052,7 @@ mod tests {
         assert!(!bracket_lit_at(&mut r, true, 1, open), "a view switch forgets it");
     }
 
-    /// #189 (the user: "No only in arrows mode. Any testing I do is
-    /// referring specifically to arrows mode. Vim mode follows vim."): in
-    /// arrows a selection, from a drag or shift+↓, lights no pair; the
+    /// #189 (spec R21): in arrows a selection, from a drag or shift+↓, lights no pair; the
     /// clicked pair is back once the selection goes.
     #[test]
     fn an_arrows_selection_lights_no_pair() {
