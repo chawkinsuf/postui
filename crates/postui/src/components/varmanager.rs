@@ -4971,6 +4971,10 @@ fields = ["user_id", "customer_id"]
         assert!(vm.grid.editing.is_none(), "Enter opens nothing");
         vm.start_cell_edit(&ctx, 1, 1);
         assert!(vm.grid.editing.is_none(), "nor does a direct start");
+        // Task #202: nor does an option verb act on the hidden row.
+        vm.point_grid(&ctx, 1, 0); // bob
+        assert_eq!(vm.verb_action(&ctx, None, Verb::Delete { count: 1 }), None);
+        assert_eq!(vm.handle_key(key(KeyCode::Char(' ')), &ctx), None, "Space");
     }
 
     /// Task #202: with no option row drawn, the option verbs have no
