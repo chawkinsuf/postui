@@ -545,7 +545,8 @@ pub struct VarManager {
     /// [`Self::grid_shape`] counts the drawn columns from, so the keyboard
     /// and the cell edits reach only what is on screen (task #198). `0`
     /// when the grid's last draw painted no cell (task #200): a pane too
-    /// narrow for the grid, or too short for one option row. Zero cells
+    /// narrow for the grid, too short for one option row, or a frame that
+    /// gave the Manager no area at all (`draw`'s own early return). Zero cells
     /// fit no column, so the shape counts none and no cell edit opens.
     /// The pane's width, not the selector's: opening another selector
     /// keeps it. The main loop draws after every event that changes
@@ -1814,7 +1815,8 @@ impl VarManager {
         // narrow pane drops columns, and the keys stop where it does).
         // No grid (a per-environment selector with no environment) is the
         // bare ghost row: the moves go nowhere, and Esc still leaves.
-        // A grid that drew no column (task #200) keeps its moves, and its
+        // A grid that drew no column (task #200) keeps its row moves; Tab
+        // and Right have no column to go to and keep the stored one, and
         // Enter and F2 open nothing (`start_cell_edit`).
         let (last_row, ncols) = self.grid_shape(ctx).unwrap_or((0, 1));
         let last_col = ncols.saturating_sub(1);
@@ -1851,11 +1853,15 @@ impl VarManager {
                 None
             }
             KeyCode::Tab => {
-                self.grid.cursor.col = (col + 1).min(last_col);
+                if ncols > 0 {
+                    self.grid.cursor.col = (col + 1).min(last_col);
+                }
                 None
             }
             KeyCode::Right if plain => {
-                self.grid.cursor.col = (col + 1).min(last_col);
+                if ncols > 0 {
+                    self.grid.cursor.col = (col + 1).min(last_col);
+                }
                 None
             }
             // ctrl+Home/End are a second spelling of Home/End, and what
@@ -2161,6 +2167,9 @@ impl VarManager {
         self.edit_painted_before = std::mem::take(&mut self.edit_painted);
         if area.width == 0 || area.height == 0 {
             self.visible_rows = 0;
+            // No grid painted, so no cell for a key to open (task #200),
+            // as `draw_entry_grid` records when it paints no row.
+            self.grid_width = Some(0);
             return;
         }
 
@@ -4871,6 +4880,40 @@ fields = ["user_id", "customer_id"]
         vm.handle_key(key(KeyCode::Enter), &ctx);
         let edit = vm.grid.editing.as_ref().expect("drawn again: the edit opens");
         assert_eq!((edit.row, edit.col), (0, 0));
+    }
+
+    /// Task #200: a frame that gives the Manager no area at all (a terminal
+    /// too short for the body) draws no grid, so no cell edit opens.
+    #[test]
+    fn a_manager_with_no_area_opens_no_cell_edit() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.focus = VmFocus::Grid;
+        render_buf_at(&mut vm, &ctx, 116);
+        render_buf_sized(&mut vm, &ctx, 116, 0);
+        vm.handle_key(key(KeyCode::Enter), &ctx);
+        assert!(vm.grid.editing.is_none(), "Enter opens nothing");
+    }
+
+    /// Task #200: with no column drawn, Tab and Right have nowhere to go
+    /// and keep the stored column, which comes back when the grid does
+    /// (as #198's narrow pane keeps it).
+    #[test]
+    fn column_moves_with_no_grid_drawn_keep_the_cursor_column() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.focus = VmFocus::Grid;
+        render_buf_at(&mut vm, &ctx, 116);
+        vm.handle_key(key(KeyCode::Right), &ctx);
+        vm.handle_key(key(KeyCode::Right), &ctx);
+        assert_eq!(vm.grid_at(&ctx), Some((0, 2)));
+        render_buf_at(&mut vm, &ctx, LEFT_W + 5);
+        vm.handle_key(key(KeyCode::Tab), &ctx);
+        vm.handle_key(key(KeyCode::Right), &ctx);
+        render_buf_at(&mut vm, &ctx, 116);
+        assert_eq!(vm.grid_at(&ctx), Some((0, 2)), "the column comes back");
     }
 
     /// Task #200: a pane tall enough for the grid's header but not for one
