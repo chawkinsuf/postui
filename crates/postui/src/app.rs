@@ -6729,6 +6729,9 @@ impl App {
                         self.debug_assert_no_open_vars_cell();
                         self.no_coalesce = true;
                         self.editor.variables.shift_remove(&name);
+                        // Names the row removed, enabled or not (a
+                        // disabled row is still this request's override
+                        // entry on the Vars tab), not the value it leaves.
                         self.toasts.push(
                             format!("removed this request's {name} override"),
                             ToastKind::Success,
@@ -8814,42 +8817,35 @@ impl App {
         if self.editor.active_tab == EditorTab::Vars {
             self.commit_table_edit();
         }
-        // A disabled row is shown for what it is (#154): This request
-        // holds its stored value, marked disabled, but it supplies nothing,
-        // so the seed and the landing scope come from what does.
+        // What each destination currently stores (`None` = nothing), so
+        // cycling the scope can reseed the value field, and the Remove
+        // button knows whether there is anything to delete there. A
+        // disabled row is shown for what it is (#154): This request holds
+        // its stored value, marked disabled, but it supplies nothing, so
+        // the landing scope (and with it the seed) is what does.
         let request_row = self.editor.variables.get(name);
         let request_value = request_row.map(|e| e.value.clone());
         let request_disabled = request_row.is_some_and(|e| !e.enabled);
-        let request_supplies = request_row.is_some_and(|e| e.enabled);
-        let env_value = self.env_data().values.get(name).cloned();
-        let has_env = self.active_env().is_some();
-
-        let seed = request_row
-            .filter(|e| e.enabled)
-            .map(|e| e.value.clone())
-            .or_else(|| self.resolved().values.get(name).cloned())
-            .unwrap_or_default();
-
-        let (choices, preselect) = crate::components::modal::value_popup_choices(
-            request_supplies,
-            has_env,
-            env_value.is_some(),
-        );
-
-        let mut destination = PromptField::choice("destination", "Write to", &choices);
-        destination.input = LineInput::new(preselect);
-
-        // What each destination currently stores (`None` = nothing), so
-        // cycling the scope can reseed the value field, and the Remove
-        // button knows whether there is anything to delete there.
         let default_value = self.variables().vars.get(name).and_then(|d| d.default.clone());
         let mut scope_values = vec![
             ("Project default".to_string(), default_value),
             ("This request".to_string(), request_value.clone()),
         ];
-        if has_env {
-            scope_values.push(("Active env value".to_string(), env_value.clone()));
+        if self.active_env().is_some() {
+            let env_value = self.env_data().values.get(name).cloned();
+            scope_values.push(("Active env value".to_string(), env_value));
         }
+
+        let (choices, preselect) =
+            crate::components::modal::value_popup_choices(&scope_values, request_disabled);
+        let seed = match crate::components::modal::destination_from_label(preselect) {
+            crate::action::ExtractDestination::Request => request_value,
+            _ => self.resolved().values.get(name).cloned(),
+        }
+        .unwrap_or_default();
+
+        let mut destination = PromptField::choice("destination", "Write to", &choices);
+        destination.input = LineInput::new(preselect);
 
         self.push_modal(Modal::MultiPrompt {
             title: format!("{{{{{name}}}}}"),

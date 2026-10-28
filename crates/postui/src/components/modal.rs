@@ -411,18 +411,23 @@ pub(crate) fn chosen_scope(
     (chosen, stored)
 }
 
-/// The value popup's Write-to choices and preselection for a variable
-/// whose request row supplies it (`request_supplies`: stored and enabled)
-/// or whose env stores it (`env_stored`) — and whether an environment is
-/// active at all. Only the supplying scope and narrower are on offer: a
-/// scope shadowed by a higher-precedence value (request beats env beats
-/// default) would take the write and change nothing visible; wider scopes
-/// stay editable in the Variable Manager.
+/// The value popup's Write-to choices and preselection, read off what
+/// each scope stores (`scope_values`, which lists the env scope only when
+/// an environment is active). The popup lands on the scope that supplies
+/// the value, both as it opens and after a staged removal. Only that
+/// scope and narrower are on offer: a scope shadowed by a
+/// higher-precedence value (request beats env beats default) would take
+/// the write and change nothing visible; wider scopes stay editable in the
+/// Variable Manager. A disabled request row (`request_disabled`, #154)
+/// stores a value but supplies nothing.
 pub(crate) fn value_popup_choices(
-    request_supplies: bool,
-    has_env: bool,
-    env_stored: bool,
+    scope_values: &[(String, Option<String>)],
+    request_disabled: bool,
 ) -> (Vec<&'static str>, &'static str) {
+    let stores = |label: &str| scope_values.iter().any(|(l, v)| l == label && v.is_some());
+    let has_env = scope_values.iter().any(|(l, _)| l == "Active env value");
+    let request_supplies = stores("This request") && !request_disabled;
+    let env_stored = stores("Active env value");
     let mut choices: Vec<&'static str> = Vec::new();
     let preselect = if request_supplies {
         "This request"
@@ -463,12 +468,7 @@ pub(crate) fn stage_value_removal(fields: &mut [PromptField], kind: &mut PromptK
     if !pending_removals.contains(&chosen) {
         pending_removals.push(chosen);
     }
-    let stores = |label: &str| scope_values.iter().any(|(l, v)| l == label && v.is_some());
-    let has_env = scope_values.iter().any(|(l, _)| l == "Active env value");
-    // A disabled request row stores a value but supplies nothing.
-    let request_supplies = stores("This request") && !*request_disabled;
-    let (choices, preselect) =
-        value_popup_choices(request_supplies, has_env, stores("Active env value"));
+    let (choices, preselect) = value_popup_choices(scope_values, *request_disabled);
     if let Some(dest) = fields.iter_mut().find(|f| f.key == "destination") {
         dest.choices = choices.iter().map(|s| s.to_string()).collect();
         dest.input = LineInput::new(preselect);
@@ -3450,7 +3450,13 @@ impl ModalStack {
                         // A disabled request row is on show as This
                         // request's value, marked muted (the "(not set)"
                         // placeholder's style), so a write that changes
-                        // nothing visible says why (#154).
+                        // nothing visible says why (#154). It marks where a
+                        // write lands, so it stays on after the row is
+                        // marked for removal: a value typed back replaces
+                        // the removal (see the confirm) and goes into the
+                        // row, still disabled, since a write never changes
+                        // a row's enabled status. Confirmed empty, the row
+                        // goes, as the "(not set)" box above shows.
                         if matches!(kind, PromptKind::EditVarValue { request_disabled: true, .. })
                             && field.key == "destination"
                             && destination_from_label(field.input.text())
