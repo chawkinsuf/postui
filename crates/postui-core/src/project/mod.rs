@@ -16,7 +16,7 @@ mod variables;
 pub use meta::*;
 pub use requests::HeldDrift;
 pub use undo::Undone;
-pub use varedit_ops::VarEdit;
+pub use varedit_ops::{VarEdit, pasted_option_name};
 
 use crate::disk::{Disk, DiskError, RelPath, Stamp, Ticket};
 use crate::journal::{Entry, EntryId, EntryMeta, Journal, Op};

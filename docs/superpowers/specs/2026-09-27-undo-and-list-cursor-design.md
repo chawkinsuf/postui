@@ -227,7 +227,20 @@ The vim-mode code is used as reference only (§5).
   - Environments and Spaces each keep their own cursor, scroll and pane
     focus across tab switches. A parked cursor clamps if its list
     shrank while it was away.
+
+    *Amended 2026-10-27 (task #83, spec
+    `2026-10-27-manage-cursors-by-name-design.md` N6):* the cursors hold
+    their item's name, not an index, so there is no clamp. A list whose
+    cursor is on nothing (never set, or its item went while the list was
+    off screen) settles on its first item when it comes on screen: the
+    Manage screen opening on it, or the tab switching to it. Who: `mine
+    (approved)`.
   - Deleting a row lands on the neighbour: the same index, clamped.
+
+    *Amended 2026-10-27 (task #83, N7):* the delete itself moves the
+    cursor, where it knows the row's index: a cursor on the deleted item
+    goes to the item now at that index (the last one when it was the last),
+    and a cursor on another item stays on its own. Who: `mine (approved)`.
   - In the Variables list, deleting the open declaration opens the row
     now under the cursor. If that row is a header or spacer, it opens
     the nearest declaration above instead.

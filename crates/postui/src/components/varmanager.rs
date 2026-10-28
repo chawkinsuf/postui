@@ -408,7 +408,10 @@ fn env_stores(ctx: &Project, name: &str) -> bool {
 pub struct GridEdit {
     /// Index into the selector's options — or `options.len()`, the ghost row
     /// that becomes a real option the moment its name cell commits
-    /// non-empty.
+    /// non-empty. An index, unlike the grid cursor (task #83): an open cell
+    /// is never re-read under, since the inputs close before every reload
+    /// and every op (#75, #78), so its row cannot go stale while it is open
+    /// (spec 2026-10-27, choice 8).
     pub row: usize,
     /// `0` is the option-name column; `n` is the selector's `n-1`th field.
     pub col: usize,
@@ -425,14 +428,58 @@ pub struct GridEdit {
 /// [`VarFormState`] for the same contract on the variable form.
 #[derive(Debug, Default)]
 pub struct OptionGridState {
-    /// The keyboard cursor's `(row, col)`; `space`/`o`/`m` act here.
-    pub cursor: (usize, usize),
+    /// The keyboard cursor; `space`/`o`/`m` act here. Private: every read
+    /// and write goes through [`VarManager::grid_at`] /
+    /// [`VarManager::point_grid`] and the op methods beside them (task
+    /// #83, spec 2026-10-27 N2).
+    cursor: GridCursor,
     /// The cell under edit, or `None` when nothing in the grid owns the
     /// keyboard — consulted by the command-key gate in
     /// [`VarManager::handle_key`].
     pub editing: Option<GridEdit>,
     /// First visible option row.
     pub scroll: usize,
+}
+
+/// The grid row a cursor is on, by identity (task #83): an option by its
+/// name, or the ghost row, which is a place of its own rather than "past
+/// the last option" (spec 2026-10-27 N4). An outside edit that renumbers
+/// the options leaves the cursor on its option with no code following it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GridRow {
+    Named(String),
+    Ghost,
+}
+
+/// A grid row by identity across a write or an undo (task #83, spec N3):
+/// the selector, the environment whose options it was in (`None` for a
+/// shared selector, whose options are the same in every one), and the row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GridSpot {
+    pub selector: String,
+    pub env: Option<String>,
+    pub row: GridRow,
+}
+
+impl GridSpot {
+    fn new(ctx: &Project, selector: &str, row: GridRow) -> Self {
+        Self { selector: selector.to_string(), env: Self::env_of(ctx, selector), row }
+    }
+
+    /// The environment whose options `selector`'s grid shows now.
+    fn env_of(ctx: &Project, selector: &str) -> Option<String> {
+        if is_shared(ctx, selector) { None } else { ctx.active_env().map(str::to_string) }
+    }
+}
+
+/// The grid's keyboard cursor: the row by identity, the column by index
+/// (name, field 1..n, description; spec N11). `row: None`, or a name the
+/// grid no longer lists, is the cursor on nothing (N5): nothing paints as
+/// the cursor's and nothing acts on it.
+#[derive(Debug, Default)]
+struct GridCursor {
+    row: Option<GridRow>,
+    col: usize,
 }
 
 /// Which of the screen's keyboard focus stops has the keyboard: the left
@@ -606,10 +653,7 @@ pub fn op_env(ctx: &Project, selector: &str) -> Option<String> {
 /// non-shared one has no active environment).
 type EntryRow = (String, Option<String>, IndexMap<String, String>);
 fn entry_rows(ctx: &Project, selector: &str) -> Vec<EntryRow> {
-    if ctx.active_env().is_none() && !is_shared(ctx, selector) {
-        return Vec::new();
-    }
-    postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), selector)
+    shown_options(ctx, selector)
         .map(|options| {
             options
                 .iter()
@@ -617,6 +661,18 @@ fn entry_rows(ctx: &Project, selector: &str) -> Vec<EntryRow> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The options [`entry_rows`] lists, borrowed: what the grid cursor reads
+/// its row from, several times a frame, without cloning the table.
+fn shown_options<'a>(
+    ctx: &'a Project,
+    selector: &str,
+) -> Option<&'a IndexMap<String, postui_core::varmodel::OptionDecl>> {
+    if ctx.active_env().is_none() && !is_shared(ctx, selector) {
+        return None;
+    }
+    postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), selector)
 }
 
 /// The text grid cell `(row, col)` currently shows — the seed a click
@@ -718,6 +774,11 @@ impl VarManager {
         match self.detail_focus(ctx) {
             Some(focus) => {
                 self.focus = focus;
+                // A grid on nothing (its option went) is entered on its
+                // first row (spec 2026-10-27 N6).
+                if focus == VmFocus::Grid {
+                    self.settle_grid(ctx);
+                }
                 true
             }
             None => false,
@@ -764,7 +825,7 @@ impl VarManager {
     /// Picking a row is the left list acting, so the keyboard comes back to
     /// it — a grid the pane may no longer even be showing must never keep
     /// the arrows.
-    pub fn select_row(&mut self, i: usize) {
+    pub fn select_row(&mut self, ctx: &Project, i: usize) {
         if i >= self.left_rows.len() {
             return;
         }
@@ -783,11 +844,29 @@ impl VarManager {
             VmRow::Group(name) => {
                 let target = VmDetail::Group(name.clone());
                 if self.detail != target {
-                    self.grid = OptionGridState::default();
+                    self.detail = target;
+                    self.open_grid(ctx);
                 }
-                self.detail = target;
             }
             VmRow::SectionVars | VmRow::SectionGroups | VmRow::SectionShared | VmRow::Spacer => {}
+        }
+    }
+
+    /// A fresh grid for the selector the pane just opened, its cursor on
+    /// the first option (spec 2026-10-27 N6a): space from the left list
+    /// acts on the grid's cursor before the keyboard ever enters the grid,
+    /// and a fresh selector's space selects its first option, as it always
+    /// has. With no options (none here yet, or no environment) it stays on
+    /// nothing rather than on the ghost row: the ghost is a place the user
+    /// goes to (N4), and a cursor parked there by the open would stay on
+    /// it once options arrive. Entering the grid settles it (N6).
+    fn open_grid(&mut self, ctx: &Project) {
+        self.grid = OptionGridState::default();
+        let VmDetail::Group(selector) = &self.detail else {
+            return;
+        };
+        if shown_options(ctx, selector).is_some_and(|o| !o.is_empty()) {
+            self.point_grid(ctx, 0, 0);
         }
     }
 
@@ -830,8 +909,154 @@ impl VarManager {
         // edit was started — so `Esc` out of it lands in the grid, not back
         // in the left list.
         self.focus = VmFocus::Grid;
-        self.grid.cursor = (row, col);
+        self.point_grid(ctx, row, col);
         self.grid.editing = Some(GridEdit { row, col, input: LineInput::new(&original), original });
+    }
+
+    /// The grid cursor's `(row, col)` in the options `ctx` lists now: the
+    /// row its option's name is at (the ghost row is `options.len()`), or
+    /// `None` when the cursor is on nothing (spec 2026-10-27 N5): never
+    /// set, or its option is no longer listed. The one reader of the
+    /// cursor: the draw, the keys, the verbs and the mouse all ask here.
+    pub fn grid_at(&self, ctx: &Project) -> Option<(usize, usize)> {
+        let VmDetail::Group(selector) = &self.detail else {
+            return None;
+        };
+        // A per-environment selector with no environment active has no
+        // grid (the pane shows its hint), so no ghost row either: on
+        // nothing.
+        if ctx.active_env().is_none() && !is_shared(ctx, selector) {
+            return None;
+        }
+        let options = shown_options(ctx, selector);
+        let i = match self.grid.cursor.row.as_ref()? {
+            GridRow::Ghost => options.map_or(0, IndexMap::len),
+            GridRow::Named(name) => options?.get_index_of(name)?,
+        };
+        Some((i, self.grid.cursor.col))
+    }
+
+    /// Puts the grid cursor on row `row` of the options `ctx` lists now
+    /// (the ghost row at or past their end) and on column `col`. The one
+    /// writer a key or a click goes through: it stores the option's name,
+    /// read where the row is known (spec N1).
+    pub fn point_grid(&mut self, ctx: &Project, row: usize, col: usize) {
+        let row = match &self.detail {
+            VmDetail::Group(selector) => Some(
+                shown_options(ctx, selector)
+                    .and_then(|options| options.get_index(row))
+                    .map_or(GridRow::Ghost, |(name, _)| GridRow::Named(name.clone())),
+            ),
+            _ => None,
+        };
+        self.grid.cursor = GridCursor { row, col };
+    }
+
+    /// A grid cursor on nothing goes to the first row (the ghost row when
+    /// there are no options): how the grid comes up when the keyboard
+    /// enters it (spec N6). A cursor on something stays where it is.
+    pub fn settle_grid(&mut self, ctx: &Project) {
+        if self.grid_at(ctx).is_none() {
+            self.point_grid(ctx, 0, self.grid.cursor.col);
+        }
+    }
+
+    /// Whether the grid shows `selector`'s options as `env` holds them: the
+    /// selector the pane has open, in the active environment (a shared
+    /// selector's options are the same in every one).
+    fn grid_shows(&self, ctx: &Project, env: &str, selector: &str) -> bool {
+        self.detail == VmDetail::Group(selector.to_string())
+            && (is_shared(ctx, selector) || ctx.active_env() == Some(env))
+    }
+
+    /// Where the grid cursor goes once the app's own option op `op` lands
+    /// (spec N7–N9), named by its option *before* the write, where the op
+    /// knows what it will do: the write re-reads the file it saves into,
+    /// so an index taken now could name another option by the time it
+    /// lands, while a name cannot. `None` when the op leaves the cursor
+    /// where it is. The caller puts it in place with [`Self::land_grid`].
+    ///
+    /// - A delete of the cursor's option: the option after it, the ghost
+    ///   row when it is the last (N7). A delete of another one leaves the
+    ///   cursor on its own option.
+    /// - An add with the cursor on the ghost row, or on nothing: the option
+    ///   it adds (a create's name, the name a paste takes, the first of a
+    ///   counted paste) (N9).
+    /// - A rename of the cursor's option: the new name (N8).
+    pub fn grid_target(&self, ctx: &Project, op: &VarStructOp) -> Option<GridSpot> {
+        // The row the cursor is on; `None` on nothing (N5).
+        let on = self.grid_at(ctx).and(self.grid.cursor.row.as_ref());
+        // An add lands on what it adds from the ghost row, and from nothing
+        // too: a cursor that is nowhere (a selector opened with no options,
+        // N6a) has no place of its own to keep, and lands on the new option
+        // as it does from the ghost row in an empty grid.
+        let adds_here = matches!(on, None | Some(GridRow::Ghost));
+        // Every arm has passed `grid_shows`, so the op's selector is the
+        // one the grid shows.
+        let (selector, row) = match op {
+            VarStructOp::DeleteOption { env, selector, name }
+                if self.grid_shows(ctx, env, selector)
+                    && on == Some(&GridRow::Named(name.clone())) =>
+            {
+                let options = shown_options(ctx, selector)?;
+                let next = options.get_index(options.get_index_of(name)? + 1);
+                (selector, next.map_or(GridRow::Ghost, |(n, _)| GridRow::Named(n.clone())))
+            }
+            VarStructOp::NewOption { env, selector, name, .. }
+                if self.grid_shows(ctx, env, selector) && adds_here =>
+            {
+                (selector, GridRow::Named(name.clone()))
+            }
+            VarStructOp::PasteOption { env, selector, .. }
+                if self.grid_shows(ctx, env, selector) && adds_here =>
+            {
+                // The name core will give the paste, by core's own rule
+                // (`pasted_option_name`) over the options core counts as
+                // taken: `grid_shows` holds, so `env` is the active
+                // environment (or the selector is shared) and the table
+                // read here is the one core's `options_of_for` reads. The
+                // alternative, core returning the name it wrote, would
+                // change `apply_var_edit`'s contract for this one op.
+                let stash = self.stash.as_ref().filter(|s| s.selector == *selector)?;
+                let taken = shown_options(ctx, selector);
+                let name = postui_core::project::pasted_option_name(&stash.name, |n| {
+                    taken.is_some_and(|t| t.contains_key(n))
+                });
+                (selector, GridRow::Named(name))
+            }
+            VarStructOp::RenameOption { env, selector, from, to }
+                if self.grid_shows(ctx, env, selector)
+                    && on == Some(&GridRow::Named(from.clone())) =>
+            {
+                (selector, GridRow::Named(to.clone()))
+            }
+            _ => return None,
+        };
+        Some(GridSpot::new(ctx, selector, row))
+    }
+
+    /// Where the grid cursor is, by identity, for an undo step's view (spec
+    /// N3). `None` when no selector is open or the cursor is on nothing.
+    pub fn grid_spot(&self, ctx: &Project) -> Option<GridSpot> {
+        let VmDetail::Group(selector) = &self.detail else {
+            return None;
+        };
+        self.grid_at(ctx)?;
+        Some(GridSpot::new(ctx, selector, self.grid.cursor.row.clone()?))
+    }
+
+    /// Puts the grid cursor on `spot`: an undo landing (spec N3), or an
+    /// op's [`Self::grid_target`]. A no-op unless the grid shows that
+    /// spot's selector in that spot's environment: an undo made after an
+    /// environment switch restores an option of the environment it was
+    /// recorded in, so landing on a same-named option of this one would
+    /// put the cursor on a different option than the one restored.
+    pub fn land_grid(&mut self, ctx: &Project, spot: &GridSpot) {
+        if self.detail == VmDetail::Group(spot.selector.clone())
+            && GridSpot::env_of(ctx, &spot.selector) == spot.env
+        {
+            self.grid.cursor.row = Some(spot.row.clone());
+        }
     }
 
     /// Drops the form's and the grid's live edits, keeping nothing: vim's
@@ -846,7 +1071,7 @@ impl VarManager {
         let VmDetail::Group(selector) = &self.detail else {
             return None;
         };
-        entry_rows(ctx, selector).get(row).map(|(n, _, _)| n.clone())
+        shown_options(ctx, selector)?.get_index(row).map(|(n, _)| n.clone())
     }
 
     /// Whether a paste into `selector` has something to land. A copied row
@@ -1168,7 +1393,6 @@ impl VarManager {
         };
         if gone {
             self.form = VarFormState::default();
-            self.grid = OptionGridState::default();
             self.focus = VmFocus::List;
             // The neighbour of the row that went: whatever took its place,
             // else the nearest selectable row above it. Found from the
@@ -1193,6 +1417,9 @@ impl VarManager {
                 }
                 None => VmDetail::None,
             };
+            // A selector opened in its place comes up as any freshly
+            // opened selector does (spec N6a).
+            self.open_grid(ctx);
         }
         self.ensure_visible = true;
     }
@@ -1213,19 +1440,19 @@ impl VarManager {
     /// Points the cursor and detail pane at the row declaring `name`
     /// (variable or selector) — how a just-created declaration becomes the
     /// selected one. A quiet no-op if no row names it.
-    pub fn select_name(&mut self, name: &str) {
+    pub fn select_name(&mut self, ctx: &Project, name: &str) {
         if let Some(i) = self
             .left_rows
             .iter()
             .position(|r| matches!(r, VmRow::Var(n) | VmRow::Group(n) if n == name))
         {
-            self.select_row(i);
+            self.select_row(ctx, i);
         }
     }
 
     /// Moves the cursor one selectable row in `dir` (`-1`/`1`), skipping
     /// section headers, and opens whatever it lands on.
-    fn move_cursor(&mut self, dir: i32) {
+    fn move_cursor(&mut self, ctx: &Project, dir: i32) {
         let mut i = self.left_cursor as i32;
         loop {
             i += dir;
@@ -1233,7 +1460,7 @@ impl VarManager {
                 return;
             }
             if self.left_rows[i as usize].is_stop() {
-                self.select_row(i as usize);
+                self.select_row(ctx, i as usize);
                 self.ensure_visible = true;
                 return;
             }
@@ -1242,9 +1469,9 @@ impl VarManager {
 
     /// Repeats [`Self::move_cursor`] `n` times in `dir` — the paging keys'
     /// shared body (ctrl+d/u/f/b and PageUp/PageDown).
-    fn move_cursor_n(&mut self, dir: i32, n: usize) {
+    fn move_cursor_n(&mut self, ctx: &Project, dir: i32, n: usize) {
         for _ in 0..n {
-            self.move_cursor(dir);
+            self.move_cursor(ctx, dir);
         }
     }
 
@@ -1256,14 +1483,14 @@ impl VarManager {
 
     /// `g`/Home and `G`/End: jumps to the first or last selectable row,
     /// mirroring `move_cursor`'s own skip of section headers.
-    fn jump_to_edge(&mut self, last: bool) {
+    fn jump_to_edge(&mut self, ctx: &Project, last: bool) {
         let found = if last {
             self.left_rows.iter().rposition(|r| r.is_stop())
         } else {
             self.left_rows.iter().position(|r| r.is_stop())
         };
         if let Some(i) = found {
-            self.select_row(i);
+            self.select_row(ctx, i);
             self.ensure_visible = true;
         }
     }
@@ -1330,46 +1557,46 @@ impl VarManager {
         match ev.code {
             KeyCode::Esc => return Some(Action::CloseScreen),
             KeyCode::Up if plain => {
-                self.move_cursor(-1);
+                self.move_cursor(ctx, -1);
                 return None;
             }
             KeyCode::Down if plain => {
-                self.move_cursor(1);
+                self.move_cursor(ctx, 1);
                 return None;
             }
             // Home/End jump to the first/last selectable row; ctrl+Home/End
             // are a second spelling, and what macOS's cmd+↑/↓ fold to
             // (`keys::normalize_super_keys`).
             KeyCode::Home if plain || ctrl => {
-                self.jump_to_edge(false);
+                self.jump_to_edge(ctx, false);
                 return None;
             }
             KeyCode::End if plain || ctrl => {
-                self.jump_to_edge(true);
+                self.jump_to_edge(ctx, true);
                 return None;
             }
             KeyCode::PageDown if plain => {
-                self.move_cursor_n(1, self.page());
+                self.move_cursor_n(ctx, 1, self.page());
                 return None;
             }
             KeyCode::PageUp if plain => {
-                self.move_cursor_n(-1, self.page());
+                self.move_cursor_n(ctx, -1, self.page());
                 return None;
             }
             KeyCode::Char('d') if ev.modifiers == KeyModifiers::CONTROL => {
-                self.move_cursor_n(1, (self.page() / 2).max(1));
+                self.move_cursor_n(ctx, 1, (self.page() / 2).max(1));
                 return None;
             }
             KeyCode::Char('u') if ev.modifiers == KeyModifiers::CONTROL => {
-                self.move_cursor_n(-1, (self.page() / 2).max(1));
+                self.move_cursor_n(ctx, -1, (self.page() / 2).max(1));
                 return None;
             }
             KeyCode::Char('f') if ev.modifiers == KeyModifiers::CONTROL => {
-                self.move_cursor_n(1, self.page());
+                self.move_cursor_n(ctx, 1, self.page());
                 return None;
             }
             KeyCode::Char('b') if ev.modifiers == KeyModifiers::CONTROL => {
-                self.move_cursor_n(-1, self.page());
+                self.move_cursor_n(ctx, -1, self.page());
                 return None;
             }
             // Into the grid or the form, whichever the detail pane shows.
@@ -1390,6 +1617,11 @@ impl VarManager {
         // list, on the selector the detail pane has open (spec §3.4); it
         // comes first so it never falls through to a left-list command that
         // would act on a different row than the grid the user is looking at.
+        // A grid cursor on nothing (its option went, or an environment
+        // switch found no option of its name) selects nothing: the grid
+        // paints no cursor while the list has the keyboard, so picking
+        // whatever sits at some row would act on an option nobody pointed
+        // at (task #83, spec 2026-10-27 N5, N10).
         if let VmDetail::Group(selector) = self.detail.clone()
             && ev.code == KeyCode::Char(' ')
             && plain
@@ -1423,59 +1655,55 @@ impl VarManager {
         if self.grid.editing.is_some() {
             return None;
         }
-        let last_row = entry_rows(ctx, selector).len(); // == the ghost row
+        let last_row = shown_options(ctx, selector).map_or(0, IndexMap::len); // == the ghost row
         // Cols: 0 = name, 1..=fields = the field values, fields+1 = the
         // option's description.
         let last_col = group_fields(ctx, selector).len() + 1;
-        let (row, col) = &mut self.grid.cursor;
-        *row = (*row).min(last_row);
-        *col = (*col).min(last_col);
-        // A named key acts bare only; any other chord does nothing (piece
-        // 4 spec §5.1). Esc, BackTab and Tab stay unguarded.
+        let col = self.grid.cursor.col.min(last_col);
+        self.grid.cursor.col = col;
+        // The row the name is at now; on nothing (spec N5) a move starts
+        // above the first row, so ↓ or ↑ lands on the first and End on the
+        // last. Every move stores the name it lands on (`point_grid`).
+        let at = self.grid_at(ctx).map(|(r, _)| r);
         let plain = ev.modifiers.is_empty();
         let ctrl = ev.modifiers == KeyModifiers::CONTROL;
+        let step_to = |this: &mut Self, row: usize| {
+            this.point_grid(ctx, row.min(last_row), col);
+            None
+        };
+        // A named key acts bare only; any other chord does nothing (piece
+        // 4 spec §5.1). Esc, BackTab and Tab stay unguarded.
         match ev.code {
             KeyCode::Esc | KeyCode::BackTab => {
                 self.focus = VmFocus::List;
                 None
             }
-            KeyCode::Up if plain => {
-                *row = row.saturating_sub(1);
-                None
-            }
-            KeyCode::Down if plain => {
-                *row = (*row + 1).min(last_row);
-                None
-            }
+            KeyCode::Up if plain => step_to(self, at.map_or(0, |r| r.saturating_sub(1))),
+            KeyCode::Down if plain => step_to(self, at.map_or(0, |r| r + 1)),
             KeyCode::Left if plain => {
-                if *col == 0 {
+                if col == 0 {
                     self.focus = VmFocus::List;
                 } else {
-                    *col -= 1;
+                    self.grid.cursor.col = col - 1;
                 }
                 None
             }
             KeyCode::Tab => {
-                *col = (*col + 1).min(last_col);
+                self.grid.cursor.col = (col + 1).min(last_col);
                 None
             }
             KeyCode::Right if plain => {
-                *col = (*col + 1).min(last_col);
+                self.grid.cursor.col = (col + 1).min(last_col);
                 None
             }
             // ctrl+Home/End are a second spelling of Home/End, and what
             // macOS's cmd+↑/↓ fold to (`keys::normalize_super_keys`).
-            KeyCode::Home if plain || ctrl => {
-                *row = 0;
-                None
-            }
-            KeyCode::End if plain || ctrl => {
-                *row = last_row;
-                None
-            }
+            KeyCode::Home if plain || ctrl => step_to(self, 0),
+            KeyCode::End if plain || ctrl => step_to(self, last_row),
             KeyCode::Enter if plain => {
-                let (row, col) = self.grid.cursor;
-                self.start_cell_edit(ctx, row, col);
+                if let Some(row) = at {
+                    self.start_cell_edit(ctx, row, col);
+                }
                 None
             }
             KeyCode::Char(' ') if plain => self.select_entry_action(ctx, selector),
@@ -1483,7 +1711,9 @@ impl VarManager {
             // router's rows through `grid_verb`; `F2` stays the inline
             // name-cell rename, and `Enter` on the name cell does the same.
             KeyCode::F(2) => {
-                self.start_cell_edit(ctx, self.grid.cursor.0, 0);
+                if let Some(row) = at {
+                    self.start_cell_edit(ctx, row, 0);
+                }
                 None
             }
             // Plain only: ctrl+d is the list's half-page motion one `h`
@@ -1500,7 +1730,7 @@ impl VarManager {
         Some(Action::VarEdit(VarEditOp::SelectOption {
             env: op_env(ctx, selector)?,
             selector: selector.to_string(),
-            option: self.entry_at(ctx, self.grid.cursor.0)?,
+            option: self.entry_at(ctx, self.grid_at(ctx)?.0)?,
         }))
     }
 
@@ -1546,18 +1776,21 @@ impl VarManager {
     }
 
     fn grid_verb(&self, ctx: &Project, selector: &str, verb: Verb) -> Option<Action> {
-        let row = self.grid.cursor.0;
-        let target = op_env(ctx, selector).zip(self.entry_at(ctx, row));
+        // The cursor's option, with the row it is at now. On nothing (spec
+        // N5) no option verb has a target; add and paste need none.
+        let target = self
+            .grid_at(ctx)
+            .and_then(|(row, _)| Some((row, op_env(ctx, selector)?, self.entry_at(ctx, row)?)));
         match verb {
             Verb::Add => Some(Action::StartNewOptionEdit),
-            Verb::Rename => target.map(|_| Action::StartOptionNameEdit { row }),
-            Verb::Delete { .. } => target.map(|(env, name)| Action::DeleteEntry {
+            Verb::Rename => target.map(|(row, _, _)| Action::StartOptionNameEdit { row }),
+            Verb::Delete { .. } => target.map(|(_, env, name)| Action::DeleteEntry {
                 env,
                 selector: selector.to_string(),
                 name,
             }),
             Verb::EditValue => {
-                let (_, option) = target?;
+                let (_, _, option) = target?;
                 let decl =
                     postui_core::varmodel::options_of(ctx.variables(), ctx.env_data(), selector)?
                         .get(&option)?
@@ -1569,7 +1802,7 @@ impl VarManager {
                     values: decl.values,
                 })
             }
-            Verb::Yank => target.map(|_| Action::CopyOption { row }),
+            Verb::Yank => target.map(|(row, _, _)| Action::CopyOption { row }),
             // A pasted option has no place in the grid to go above or
             // below: `above` is ignored, so vim's `P` pastes as `p` does
             // (arrows binds only `p`, #145).
@@ -1943,22 +2176,25 @@ impl VarManager {
         let rows_bottom = bottom.saturating_sub(1).max(y);
         let visible = (rows_bottom - y) as usize;
         let total = rows.len() + 1;
-        // A cursor that outlived the rows it pointed at (an option deleted,
-        // a field removed) clamps back into the grid.
-        self.grid.cursor.0 = self.grid.cursor.0.min(total - 1);
-        self.grid.cursor.1 = self.grid.cursor.1.min(fields.len() + 1);
-        let cursor = (self.focus == VmFocus::Grid).then_some(self.grid.cursor);
+        // A column a field removal left past the last one clamps back. The
+        // row needs no clamp: it is found by its option's name (task #83),
+        // and a cursor whose option went is on nothing (spec N5).
+        self.grid.cursor.col = self.grid.cursor.col.min(fields.len() + 1);
+        let at = self.grid_at(ctx);
+        let cursor = at.filter(|_| self.focus == VmFocus::Grid);
         self.grid_visible = visible;
         self.grid_area = Rect::new(right.x, y, right.width, (rows_bottom - y).max(1));
         // Keep whatever the keyboard is on (the cell under edit, else the
         // cursor) in view, then clamp — the wheel places the viewport
         // freely, but never past the last row.
-        let focus_row = self.grid.editing.as_ref().map_or(self.grid.cursor.0, |e| e.row);
+        let focus_row = self.grid.editing.as_ref().map(|e| e.row).or(at.map(|(r, _)| r));
         if visible > 0 {
-            if focus_row < self.grid.scroll {
-                self.grid.scroll = focus_row;
-            } else if focus_row >= self.grid.scroll + visible {
-                self.grid.scroll = focus_row + 1 - visible;
+            if let Some(focus_row) = focus_row {
+                if focus_row < self.grid.scroll {
+                    self.grid.scroll = focus_row;
+                } else if focus_row >= self.grid.scroll + visible {
+                    self.grid.scroll = focus_row + 1 - visible;
+                }
             }
             self.grid.scroll = self.grid.scroll.min(total.saturating_sub(visible));
         }
@@ -2809,7 +3045,7 @@ fields = ["user_id", "customer_id"]
         assert_eq!(left_row_text(&mut vm, &ctx, 3), "");
         assert_eq!(left_row_text(&mut vm, &ctx, 6), "");
         // Down from the last variable skips the spacer and the header.
-        vm.select_row(2);
+        vm.select_row(&ctx, 2);
         vm.handle_key(key(KeyCode::Down), &ctx);
         assert_eq!(vm.left_cursor, 5);
         vm.handle_key(key(KeyCode::Up), &ctx);
@@ -2854,12 +3090,12 @@ fields = ["user_id", "customer_id"]
         let group_row =
             vm.left_rows.iter().position(|r| r == &VmRow::Group("creds".into())).unwrap();
 
-        vm.select_row(group_row);
+        vm.select_row(&ctx, group_row);
         assert_eq!(vm.detail, VmDetail::Group("creds".into()));
         assert_eq!(vm.left_cursor, group_row);
 
         // …and a variable row, likewise.
-        vm.select_row(1);
+        vm.select_row(&ctx, 1);
         assert_eq!(vm.detail, VmDetail::Var("base_url".into()));
     }
 
@@ -2868,8 +3104,8 @@ fields = ["user_id", "customer_id"]
         let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
         render(&mut vm, &ctx);
-        vm.select_row(1);
-        vm.select_row(0);
+        vm.select_row(&ctx, 1);
+        vm.select_row(&ctx, 0);
         assert_eq!(vm.left_cursor, 0);
         assert_eq!(vm.detail, VmDetail::Var("base_url".into()));
     }
@@ -2885,7 +3121,7 @@ fields = ["user_id", "customer_id"]
         let at =
             |vm: &VarManager, want: &VmRow| vm.left_rows.iter().position(|r| r == want).unwrap();
         let creds = VmRow::Group("creds".into());
-        vm.select_row(at(&vm, &creds));
+        vm.select_row(&ctx, at(&vm, &creds));
         assert_eq!(
             vm.verb_action(&ctx, None, Verb::Fields),
             Some(Action::PromptGroupFields { selector: "creds".into() }),
@@ -2894,8 +3130,8 @@ fields = ["user_id", "customer_id"]
         for (open, header) in
             [(VmRow::Var("base_url".into()), VmRow::SectionVars), (creds, VmRow::SectionGroups)]
         {
-            vm.select_row(at(&vm, &open));
-            vm.select_row(at(&vm, &header));
+            vm.select_row(&ctx, at(&vm, &open));
+            vm.select_row(&ctx, at(&vm, &header));
             for verb in [Verb::Delete { count: 1 }, Verb::Rename, Verb::Secret, Verb::Fields] {
                 assert_eq!(vm.verb_action(&ctx, None, verb), None, "{verb:?} with {open:?} open");
             }
@@ -2949,7 +3185,7 @@ fields = ["user_id", "customer_id"]
         ] {
             let mut vm = VarManager::default();
             render(&mut vm, &ctx);
-            vm.select_row(2);
+            vm.select_row(&ctx, 2);
             let cursor = vm.left_cursor;
             assert_eq!(vm.handle_key(letter, &ctx), None, "{letter:?}");
             assert_eq!(vm.left_cursor, cursor, "{letter:?} moved the cursor");
@@ -2960,8 +3196,8 @@ fields = ["user_id", "customer_id"]
             let (mut a, mut b) = (VarManager::default(), VarManager::default());
             render(&mut a, &ctx);
             render(&mut b, &ctx);
-            a.select_row(2);
-            b.select_row(2);
+            a.select_row(&ctx, 2);
+            b.select_row(&ctx, 2);
             assert_eq!(a.handle_key(alias, &ctx), b.handle_key(canonical, &ctx), "{alias:?}");
             assert_eq!(a.left_cursor, b.left_cursor, "{alias:?}");
             assert_eq!(a.focus, b.focus, "{alias:?}");
@@ -2993,9 +3229,9 @@ fields = ["user_id", "customer_id"]
             render(&mut vm, &ctx);
             select_group(&mut vm, &ctx, "creds");
             vm.focus = VmFocus::Grid;
-            vm.grid.cursor = (1, 1);
+            vm.point_grid(&ctx, 1, 1);
             assert_eq!(vm.handle_key(letter, &ctx), None, "{letter:?}");
-            assert_eq!(vm.grid.cursor, (1, 1), "{letter:?} moved the cursor");
+            assert_eq!(vm.grid_at(&ctx), Some((1, 1)), "{letter:?} moved the cursor");
             assert_eq!(vm.focus, VmFocus::Grid, "{letter:?}");
             assert!(vm.grid.editing.is_none(), "{letter:?} opened a cell");
         }
@@ -3170,7 +3406,7 @@ fields = ["user_id", "customer_id"]
         assert_eq!(vm.verb_action(&ctx, None, Verb::Add), Some(Action::PromptNewVar));
         assert_eq!(vm.verb_action(&ctx, None, Verb::AddAlt), Some(Action::PromptNewSelector));
 
-        vm.select_row(1); // base_url
+        vm.select_row(&ctx, 1); // base_url
         assert_eq!(
             vm.verb_action(&ctx, None, Verb::Rename),
             Some(Action::PromptRenameVar { from: "base_url".into() })
@@ -3193,7 +3429,7 @@ fields = ["user_id", "customer_id"]
         );
 
         let group_row = vm.left_rows.len() - 1;
-        vm.select_row(group_row);
+        vm.select_row(&ctx, group_row);
         assert_eq!(
             vm.verb_action(&ctx, None, Verb::Delete { count: 1 }),
             Some(Action::DeleteVar { name: "creds".into() }),
@@ -3214,7 +3450,7 @@ fields = ["user_id", "customer_id"]
         let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
         render(&mut vm, &ctx);
-        vm.select_row(1); // base_url
+        vm.select_row(&ctx, 1); // base_url
         for c in ['n', 'a', 'A', 'e', 'r', 'd', 's', 'm', 'o'] {
             assert_eq!(vm.handle_key(key(KeyCode::Char(c)), &ctx), None, "list {c}");
             assert!(vm.grid.editing.is_none() && vm.form.editing.is_none(), "list {c}");
@@ -3252,7 +3488,7 @@ fields = ["user_id", "customer_id"]
         let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
         render(&mut vm, &ctx);
-        vm.select_row(1);
+        vm.select_row(&ctx, 1);
         vm.grid.editing =
             Some(GridEdit { row: 0, col: 0, input: LineInput::new(""), original: String::new() });
 
@@ -3325,7 +3561,7 @@ fields = ["user_id", "customer_id"]
         let row_of = |vm: &VarManager, name: &str| {
             vm.left_rows.iter().position(|r| r.name() == Some(name)).expect("row")
         };
-        vm.select_row(row_of(&vm, "beta"));
+        vm.select_row(&ctx, row_of(&vm, "beta"));
         let cursor = vm.left_cursor;
         std::fs::write(
             dir.path().join("variables.toml"),
@@ -3341,7 +3577,7 @@ fields = ["user_id", "customer_id"]
             "the pane opens the row now under the cursor"
         );
 
-        vm.select_row(row_of(&vm, "gamma"));
+        vm.select_row(&ctx, row_of(&vm, "gamma"));
         std::fs::write(dir.path().join("variables.toml"), "[alpha]\ndefault = \"1\"\n").unwrap();
         let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
         vm.sync(&ctx);
@@ -3354,7 +3590,7 @@ fields = ["user_id", "customer_id"]
         let (dir, ctx) = fixture();
         let mut vm = VarManager::default();
         render(&mut vm, &ctx);
-        vm.select_name("api_key");
+        vm.select_name(&ctx, "api_key");
         assert_eq!(vm.detail, VmDetail::Var("api_key".into()));
         std::fs::write(
             dir.path().join("variables.toml"),
@@ -3421,7 +3657,7 @@ fields = ["user_id", "customer_id"]
                 std::fs::write(&path, &text).unwrap();
                 let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
                 render(&mut vm, &ctx);
-                vm.select_row(row);
+                vm.select_row(&ctx, row);
                 std::fs::write(&path, format!("[aaa]\ndefault = \"0\"\n\n{text}")).unwrap();
                 let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
                 render(&mut vm, &ctx);
@@ -3459,7 +3695,7 @@ fields = ["user_id", "customer_id"]
             .unwrap();
         let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
         select_var(&mut vm, &ctx, "b");
-        vm.select_row(vm.left_rows.iter().position(|r| *r == VmRow::SectionGroups).unwrap());
+        vm.select_row(&ctx, vm.left_rows.iter().position(|r| *r == VmRow::SectionGroups).unwrap());
         assert_eq!(vm.detail, VmDetail::Var("b".into()));
         std::fs::write(dir.path().join("variables.toml"), decls(&["a", "c", "d", "e"])).unwrap();
         let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
@@ -3482,7 +3718,7 @@ fields = ["user_id", "customer_id"]
             let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
             let mut vm = VarManager::default();
             select_var(&mut vm, &ctx, "base_url");
-            vm.select_row(vm.left_rows.iter().rposition(|r| *r == label).unwrap());
+            vm.select_row(&ctx, vm.left_rows.iter().rposition(|r| *r == label).unwrap());
             std::fs::write(&path, &without_region).unwrap();
             let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
             render(&mut vm, &ctx);
@@ -3566,7 +3802,7 @@ fields = ["user_id", "customer_id"]
         assert!(!content.contains("v00"), "scrolled past the first row");
 
         // The keyboard snaps the viewport back to its cursor.
-        vm.select_row(1);
+        vm.select_row(&ctx, 1);
         vm.handle_key(key(KeyCode::Down), &ctx);
         let (content, _) = render(&mut vm, &ctx);
         assert!(content.contains("v01"), "cursor row is visible: {content}");
@@ -3595,7 +3831,7 @@ fields = ["user_id", "customer_id"]
     fn select_var(vm: &mut VarManager, ctx: &Project, name: &str) {
         render(vm, ctx); // populates left_rows
         let i = vm.left_rows.iter().position(|r| r == &VmRow::Var(name.into())).unwrap();
-        vm.select_row(i);
+        vm.select_row(ctx, i);
     }
 
     #[test]
@@ -3719,12 +3955,12 @@ fields = ["user_id", "customer_id"]
 
         // Re-selecting the same row must not disturb an in-progress edit.
         let same = vm.left_rows.iter().position(|r| r == &VmRow::Var("base_url".into())).unwrap();
-        vm.select_row(same);
+        vm.select_row(&ctx, same);
         assert!(vm.form.editing.is_some(), "same-row reselect kept the edit");
         assert!(vm.form.revealed, "same-row reselect kept reveal");
 
         let other = vm.left_rows.iter().position(|r| r == &VmRow::Var("api_key".into())).unwrap();
-        vm.select_row(other);
+        vm.select_row(&ctx, other);
         assert!(vm.form.editing.is_none(), "a new selection drops the edit");
         assert!(!vm.form.revealed, "a new selection resets reveal");
     }
@@ -3978,7 +4214,7 @@ fields = ["user_id", "customer_id"]
         select_group(&mut vm, &ctx, "locale");
         render(&mut vm, &ctx);
 
-        vm.grid.cursor = (0, 0);
+        vm.point_grid(&ctx, 0, 0);
         assert_eq!(
             vm.handle_key(key(KeyCode::Char(' ')), &ctx),
             Some(Action::VarEdit(VarEditOp::SelectOption {
@@ -4057,7 +4293,7 @@ fields = ["user_id", "customer_id"]
     fn select_group(vm: &mut VarManager, ctx: &Project, name: &str) {
         render(vm, ctx); // populates left_rows
         let i = vm.left_rows.iter().position(|r| r == &VmRow::Group(name.into())).unwrap();
-        vm.select_row(i);
+        vm.select_row(ctx, i);
     }
 
     /// #35: the legend names the environment as the header does.
@@ -4229,7 +4465,7 @@ fields = ["user_id", "customer_id"]
         render(&mut vm, &ctx);
 
         // `space` selects the option the grid cursor is on.
-        vm.grid.cursor = (1, 0);
+        vm.point_grid(&ctx, 1, 0);
         assert_eq!(
             vm.handle_key(key(KeyCode::Char(' ')), &ctx),
             Some(Action::VarEdit(VarEditOp::SelectOption {
@@ -4257,6 +4493,37 @@ fields = ["user_id", "customer_id"]
         assert_eq!(vm.handle_key(key(KeyCode::Char(' ')), &ctx), None);
     }
 
+    /// #83 N6a: a freshly opened selector's grid is on its first row, so
+    /// space from the left list selects its first option, as it always
+    /// has. A selector with no options there opens on nothing, not on the
+    /// ghost row, so it is on the first option once options come; entering
+    /// the grid settles it.
+    #[test]
+    fn a_freshly_opened_selectors_grid_is_on_its_first_row() {
+        let (_dir, mut ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        assert_eq!(vm.focus, VmFocus::List);
+        assert_eq!(vm.grid_at(&ctx), Some((0, 0)));
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char(' ')), &ctx),
+            Some(Action::VarEdit(VarEditOp::SelectOption {
+                env: "qa".into(),
+                selector: "creds".into(),
+                option: "alice".into(),
+            }))
+        );
+        ctx.set_active_env(None);
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        assert_eq!(vm.grid_at(&ctx), None, "no env, no options: on nothing");
+        ctx.set_active_env(Some("qa".into()));
+        assert_eq!(vm.grid_at(&ctx), None, "still on nothing once qa's options show");
+        assert!(vm.enter_detail(&ctx));
+        assert_eq!(vm.grid_at(&ctx), Some((0, 0)), "entering lands on the first option");
+        assert_eq!(vm.entry_at(&ctx, 0).as_deref(), Some("alice"));
+    }
+
     #[test]
     fn start_cell_edit_seeds_the_cells_current_text() {
         let (_dir, ctx) = fixture();
@@ -4266,7 +4533,7 @@ fields = ["user_id", "customer_id"]
         let edit = vm.grid.editing.as_ref().unwrap();
         assert_eq!(edit.input.text(), "c-77");
         assert_eq!(edit.original, "c-77");
-        assert_eq!(vm.grid.cursor, (0, 2));
+        assert_eq!(vm.grid_at(&ctx), Some((0, 2)));
 
         // A ghost-row click always lands in the name cell: there is no
         // option yet for a value to belong to.
@@ -4345,7 +4612,7 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         render(&mut vm, &ctx);
         let i = vm.left_rows.iter().position(|r| r == &VmRow::Var("base_url".into())).unwrap();
-        vm.select_row(i);
+        vm.select_row(&ctx, i);
         vm.focus = VmFocus::Form;
         vm.start_field_edit(&ctx, VmField::Description);
         let chips = crate::keyroute::spell::spelled(vm.footer_chips(&ctx, None));
@@ -4374,7 +4641,7 @@ fields = ["user_id", "customer_id"]
         vm.grid.editing = None;
         // Form focus.
         let i = vm.left_rows.iter().position(|r| r == &VmRow::Var("base_url".into())).unwrap();
-        vm.select_row(i);
+        vm.select_row(&ctx, i);
         vm.focus = VmFocus::Form;
         assert_eq!(vm.handle_key(key(KeyCode::Char('q')), &ctx), None);
     }
@@ -4387,7 +4654,7 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
         vm.focus = VmFocus::Grid;
-        vm.grid.cursor = (0, 1);
+        vm.point_grid(&ctx, 0, 1);
         let action = vm.handle_key(key(KeyCode::Enter), &ctx);
         assert!(action.is_none());
         assert!(vm.grid.editing.is_some());
@@ -4439,7 +4706,7 @@ fields = ["user_id", "customer_id"]
         // On the ghost row there is no option to edit or copy — both chips
         // drop (a dead chip advertises a key that would do nothing). Paste
         // stays: it lands a row wherever the cursor is.
-        vm.grid.cursor.0 = 2;
+        vm.point_grid(&ctx, 2, 0);
         let chips = crate::keyroute::spell::spelled_on(
             crate::keyroute::Surface::VarGrid,
             vm.footer_chips(&ctx, None),
@@ -4475,7 +4742,7 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
         vm.focus = VmFocus::Grid;
-        vm.grid.cursor.0 = 1;
+        vm.point_grid(&ctx, 1, 0);
         let ctrl_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
         assert_eq!(vm.handle_key(ctrl_d, &ctx), None);
         assert!(matches!(
@@ -4490,7 +4757,7 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
         vm.focus = VmFocus::Grid;
-        vm.grid.cursor.0 = 1;
+        vm.point_grid(&ctx, 1, 0);
         assert_eq!(vm.verb_action(&ctx, None, Verb::Yank), Some(Action::CopyOption { row: 1 }));
         // Put is inert until something is copied — nothing dispatches a
         // paste core would refuse.
@@ -4529,7 +4796,7 @@ fields = ["user_id", "customer_id"]
         assert!(vm.grid.editing.is_none(), "the verb names the edit; the app starts it");
 
         // The ghost row has no name to rename: no chip, and no verb.
-        vm.grid.cursor.0 = 2;
+        vm.point_grid(&ctx, 2, 0);
         let chips = crate::keyroute::spell::spelled_on(
             crate::keyroute::Surface::VarGrid,
             vm.footer_chips(&ctx, None),

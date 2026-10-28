@@ -91,14 +91,22 @@ impl Manage {
     /// Parks the live list under its own tab and brings `tab`'s list
     /// forward, so each list tab keeps its cursor, scroll and pane focus
     /// across a switch. A no-op for the tabs that draw no list and for
-    /// the tab already live. The caller clamps (`ManageList::clamp`):
-    /// only it knows the project.
+    /// the tab already live. The caller settles the list's cursor
+    /// (`ManageList::settle`): only it knows the project.
     pub fn switch_list(&mut self, tab: ManageTab) {
         if !matches!(tab, ManageTab::Environments | ManageTab::Spaces) || tab == self.live {
             return;
         }
         std::mem::swap(&mut self.list, &mut self.parked);
         self.live = tab;
+    }
+
+    /// Both list tabs' state starts over, as at launch: a project switch,
+    /// whose lists name another project's items (task #83: the cursors
+    /// hold slugs). Which tab is up stays.
+    pub fn reset_lists(&mut self) {
+        self.list = Default::default();
+        self.parked = Default::default();
     }
 
     /// `tab`'s own list, live or parked (spec R5: an undo reselects a row
