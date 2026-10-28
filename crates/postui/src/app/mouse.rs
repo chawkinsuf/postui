@@ -148,30 +148,6 @@ impl App {
         changed || ended || noted || regated || asked || disarmed
     }
 
-    /// A vertical wheel notch with no dialog up: the body's own wheel on
-    /// its text, the Manage screen's lists, or the pane under the pointer.
-    fn wheel_notch(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
-        use ratatui::crossterm::event::MouseEventKind;
-        let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
-        if matches!(self.hits.hit_at(m.column, m.row), Some(Hit::BodyEditor))
-            && self.editor.handle_wheel(m)
-        {
-            return self.update(Action::Render);
-        }
-        if self.screen == Screen::Manage {
-            if self.manage.tab == ManageTab::Variables {
-                self.varmanager.handle_scroll_at(m.column, m.row, d);
-            } else {
-                self.manage.list.handle_scroll(d);
-            }
-            return self.update(Action::Render);
-        }
-        if let Some(pane) = self.hits.pane_at(m.column, m.row) {
-            return self.update(Action::ScrollPane(pane, d));
-        }
-        false
-    }
-
     fn handle_mouse_inner(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 
@@ -697,20 +673,25 @@ impl App {
                     let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
                     return self.modals.scroll_top(d);
                 }
-                // A notch on the editor pane, on the body's text or off it,
-                // settles the vim body once it has moved (`wheel_notch` has
-                // the routes). Here, not in `Editor::scroll_body`: the
-                // editor may not name the engine (the vim seam), and the
-                // scrollbar, which also reaches `scroll_body`, is a press
-                // its click settles. A table tab's notch settles nothing:
-                // the body's session is live only while its tab is up and
-                // it has the caret (`App::vim_body_scrolled`).
-                let on_editor = self.hits.pane_at(m.column, m.row) == Some(PaneId::Editor);
-                let redraw = self.wheel_notch(m);
-                if on_editor {
-                    self.vim_body_scrolled();
+                if matches!(self.hits.hit_at(m.column, m.row), Some(Hit::BodyEditor))
+                    && self.editor.handle_wheel(m)
+                {
+                    return self.update(Action::Render);
                 }
-                redraw
+                if self.screen == Screen::Manage {
+                    let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
+                    if self.manage.tab == ManageTab::Variables {
+                        self.varmanager.handle_scroll_at(m.column, m.row, d);
+                    } else {
+                        self.manage.list.handle_scroll(d);
+                    }
+                    return self.update(Action::Render);
+                }
+                if let Some(pane) = self.hits.pane_at(m.column, m.row) {
+                    let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
+                    return self.update(Action::ScrollPane(pane, d));
+                }
+                false
             }
             MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
                 // A sideways wheel notch (shift+wheel in most terminals)
