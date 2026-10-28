@@ -4795,16 +4795,13 @@ impl App {
                     None => false,
                 }
             }
-            // An option row menu's item: the grid's verb now, or nothing
-            // (task #208, `VarManager::entry_context_menu`).
-            Action::OptionMenu { selector, verb } => {
-                match self
-                    .project()
-                    .and_then(|p| self.varmanager.open_grid_verb(p, &selector, verb))
-                {
-                    Some(a) => self.apply(a),
-                    None => false,
+            // An option row menu's item: its action, unless the grid draws
+            // no option row now (task #208, `VarManager::entry_context_menu`).
+            Action::OptionMenu(action) => {
+                if self.project().is_some_and(|p| self.varmanager.no_rows_drawn(p)) {
+                    return false;
                 }
+                self.apply(*action)
             }
             Action::PromptMoveSelectedRequestToSpace => {
                 if let Some(slug) = self.sidebar.selected_slug() {

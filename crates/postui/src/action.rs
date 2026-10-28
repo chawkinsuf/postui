@@ -511,14 +511,10 @@ pub enum Action {
     /// is on.
     OnSelection(Verb),
     /// A Variable Manager option row's menu item (task #208): the grid
-    /// verb, resolved when it is picked through the grid of `selector`
-    /// (`VarManager::open_grid_verb`), on the option its cursor is on.
-    /// Nothing when that selector is no longer the one open, or when no
-    /// option row is drawn.
-    OptionMenu {
-        selector: String,
-        verb: Verb,
-    },
+    /// verb's action for the row, as `VarManager::entry_context_menu` built
+    /// it when the menu opened, run when it is picked only while the grid
+    /// draws an option row (`VarManager::no_rows_drawn`).
+    OptionMenu(Box<Action>),
     /// Row menu "Move to space…": opens the chooser of the other spaces
     /// for the request at `slug`; picking one dispatches
     /// `MoveRequestToSpace`.

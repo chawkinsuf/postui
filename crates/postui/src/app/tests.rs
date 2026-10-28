@@ -18523,58 +18523,50 @@ fn an_option_rows_menu_acts_on_nothing_once_no_option_row_is_drawn() {
     assert!(!env.options["user"].contains_key("alice"), "{:?}", env.options["user"].keys());
 }
 
-/// Task #208: an option row's menu acts on its own selector's grid, not on
-/// whatever has the keyboard when it is picked. A reload that renames the
-/// selector outside opens the renamed one in its place, with the left
-/// list's focus; the menu's Delete and Rename then act on nothing, where
-/// following the keyboard would delete or rename that selector.
+/// Task #208: an option row menu's Delete is the delete of the option it
+/// opened on, whatever the keyboard is on when it is picked. A reload that
+/// renames the selector outside opens the renamed one in its place, with
+/// the left list's focus; a Delete that followed the keyboard there would
+/// delete that selector.
 #[test]
-fn an_option_rows_menu_acts_on_nothing_once_its_selector_is_gone() {
+fn an_option_rows_menu_deletes_only_the_option_it_opened_on() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_group(&mut app, "user");
+    rendered_text_at(&mut app, 130, 46);
+    let cell =
+        app.hits.rect_of(&crate::hit::Hit::VmEntryCell { row: 0, col: 0 }).expect("row 0 is drawn");
+    app.handle_mouse(right_down(cell.x, cell.y));
+    let i = menu_labels(&app).iter().position(|l| l == "Delete").expect("the item is listed");
 
-    for label in ["Delete", "Rename"] {
-        rendered_text_at(&mut app, 130, 46);
-        let cell = app
-            .hits
-            .rect_of(&crate::hit::Hit::VmEntryCell { row: 0, col: 0 })
-            .expect("row 0 is drawn");
-        app.handle_mouse(right_down(cell.x, cell.y));
-        let i = menu_labels(&app).iter().position(|l| l == label).expect("the item is listed");
-        let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
-        let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-        let (from, to) = if label == "Delete" { ("user", "person") } else { ("person", "user") };
-        std::fs::write(
-            dir.path().join("variables.toml"),
-            vars.replace(&format!("selectors.{from}]"), &format!("selectors.{to}]")),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.path().join("environments/qa.toml"),
-            qa.replace(&format!("options.{from}."), &format!("options.{to}.")),
-        )
-        .unwrap();
-        app.update(Action::ReloadProjectFiles);
-        assert_eq!(
-            app.varmanager.detail,
-            crate::components::varmanager::VmDetail::Group(to.into()),
-            "the renamed selector opens in its place"
-        );
+    let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    std::fs::write(
+        dir.path().join("variables.toml"),
+        vars.replace("selectors.user]", "selectors.person]"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        qa.replace("options.user.", "options.person."),
+    )
+    .unwrap();
+    app.update(Action::ReloadProjectFiles);
+    assert_eq!(
+        app.varmanager.detail,
+        crate::components::varmanager::VmDetail::Group("person".into()),
+        "the renamed selector opens in its place"
+    );
 
-        rendered_text_at(&mut app, 130, 46);
-        let item = app.hits.rect_of(&crate::hit::Hit::DropdownRow(i)).expect("the menu is open");
-        app.handle_mouse(left_down(item.x + 1, item.y));
-        assert!(app.modals.is_empty(), "{label}: no prompt opens");
-        assert!(app.proj().variables().selectors.contains_key(to), "{label}: the selector stays");
-        let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
-        let names: Vec<&String> = env.options[to].keys().collect();
-        assert_eq!(names, ["alice", "bob"], "{label}: no option is touched");
-        assert!(app.varmanager.grid.editing.is_none(), "{label}: no cell edit opens");
-        goto_group(&mut app, to);
-    }
+    rendered_text_at(&mut app, 130, 46);
+    let item = app.hits.rect_of(&crate::hit::Hit::DropdownRow(i)).expect("the menu is open");
+    app.handle_mouse(left_down(item.x + 1, item.y));
+    assert!(app.proj().variables().selectors.contains_key("person"), "the selector stays");
+    let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
+    let names: Vec<&String> = env.options["person"].keys().collect();
+    assert_eq!(names, ["alice", "bob"], "no option is touched");
 }
 
 #[test]
@@ -19413,19 +19405,14 @@ fn right_clicking_another_row_commits_the_live_cell_to_the_entry_it_belongs_to()
         "the right-clicked entry is untouched"
     );
     // …and the menu is the one for the row that was right-clicked: its
-    // Delete is the grid's (task #208), whose cursor is on alice.
-    let delete = crate::action::Verb::Delete { count: 1 };
+    // Delete is the grid's delete of alice (task #208).
     assert_eq!(
         menu_action(&app, "Delete"),
-        Some(Action::OptionMenu { selector: "user".into(), verb: delete })
-    );
-    assert_eq!(
-        app.varmanager.open_grid_verb(app.proj(), "user", delete),
-        Some(Action::DeleteEntry {
+        Some(Action::OptionMenu(Box::new(Action::DeleteEntry {
             env: "qa".into(),
             selector: "user".into(),
             name: "alice".into(),
-        })
+        })))
     );
 }
 

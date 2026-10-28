@@ -1083,8 +1083,9 @@ impl VarManager {
     /// acts on a grid nobody can see. [`Self::grid_at`] keeps answering
     /// the cursor's option all the same: an undo step, an op's landing
     /// and the keyboard's way in read where the cursor is, which a pane
-    /// too small to show it doesn't change.
-    fn no_rows_drawn(&self, ctx: &Project) -> bool {
+    /// too small to show it doesn't change. An option row menu's items
+    /// read it too, when picked (`Action::OptionMenu`, task #208).
+    pub fn no_rows_drawn(&self, ctx: &Project) -> bool {
         matches!(self.grid_shape(ctx), Some((_, 0)))
     }
 
@@ -2078,37 +2079,26 @@ impl VarManager {
         Some(vec![rename, duplicate, MenuItem::new("Delete", Action::DeleteVar { name })])
     }
 
-    /// What an option row menu's item for `selector` does when it is
-    /// picked (`Action::OptionMenu`, task #208): `selector`'s grid verb, on
-    /// the option its cursor is on, as the grid's key would do it, whatever
-    /// has the keyboard. Nothing once `selector` is no longer the one open:
-    /// a reload that removed it opens a neighbour in its place, with the
-    /// left list's focus, and an item that followed the keyboard there
-    /// would delete or rename a declaration the menu never offered.
-    pub fn open_grid_verb(&self, ctx: &Project, selector: &str, verb: Verb) -> Option<Action> {
-        (self.detail == VmDetail::Group(selector.to_string()))
-            .then(|| self.grid_verb(ctx, selector, verb))
-            .flatten()
-    }
-
     /// The right-click menu for the option row the grid cursor is on (spec
     /// §3.4): the right click points the cursor at its row before it asks.
     /// `None` for the ghost row (nothing to act on yet) and when no
     /// environment is active (there are no options at all then).
     ///
-    /// Each item is its grid verb (`Action::OptionMenu`), which the app
-    /// resolves when it is picked through [`Self::open_grid_verb`], the
-    /// grid's own verbs that its keys and chips read (task #208). An item
-    /// built as the finished action instead kept acting on the row the
-    /// menu opened on after a shrink left no option row drawn: Paste wrote
-    /// an option no row showed. Resolved at the pick, it acts on nothing
-    /// then, as the key does, with no toast. The menu stays open over the
-    /// shrink, its items painted as they opened, and acts on the row again
-    /// once it is drawn: closing it would need the menu to know which row
-    /// it belongs to, and check that at every draw. An item is disabled
-    /// when its verb has nothing to act on as the menu opens (Paste with
-    /// nothing copied): shown rather than hidden, so the menu keeps its
-    /// shape and the copy and paste read as a pair.
+    /// Each item is what the grid's own verb does on the row now
+    /// ([`Self::grid_verb`], which its keys and chips read), built as the
+    /// menu opens, so it names the environment, selector and option the
+    /// menu opened on (task #208). It is wrapped in `Action::OptionMenu`,
+    /// which runs it when picked only while the grid draws an option row:
+    /// a shrink that leaves none drawn while the menu is open makes each
+    /// item act on nothing, as the grid's keys do then, with no toast.
+    /// Before, the items ran regardless: Paste wrote an option no row
+    /// showed. The menu stays open over the shrink, its items painted as
+    /// they opened, and acts on the row again once it is drawn: closing it
+    /// would need the dropdown to know which grid it belongs to, and check
+    /// that at every draw. An item is disabled when its verb has nothing to
+    /// act on as the menu opens (Paste with nothing copied): shown rather
+    /// than hidden, so the menu keeps its shape and the copy and paste read
+    /// as a pair.
     pub fn entry_context_menu(
         &self,
         ctx: &Project,
@@ -2120,10 +2110,8 @@ impl VarManager {
         op_env(ctx, selector)?;
         let (row, _) = self.grid_at(ctx)?;
         self.entry_at(ctx, row)?;
-        let item = |label: &str, verb: Verb| match self.open_grid_verb(ctx, selector, verb) {
-            Some(_) => {
-                MenuItem::new(label, Action::OptionMenu { selector: selector.clone(), verb })
-            }
+        let item = |label: &str, verb: Verb| match self.grid_verb(ctx, selector, verb) {
+            Some(action) => MenuItem::new(label, Action::OptionMenu(Box::new(action))),
             None => MenuItem::disabled(label),
         };
         Some(vec![
@@ -5434,10 +5422,10 @@ fields = ["user_id", "customer_id"]
         // "Rename" carries no ellipsis: it starts the inline name-cell
         // edit rather than opening a dialog.
         assert_eq!(labels, vec!["Edit\u{2026}", "Copy option", "Paste option", "Rename", "Delete"]);
-        // Each item is its grid verb (task #208), and what it runs is what
-        // that verb resolves to on the row.
+        // Each item runs its grid verb's action on the row, while an option
+        // row is drawn (task #208).
         let runs = |i: usize| match &items[i].action {
-            Some(Action::OptionMenu { selector, verb }) => vm.open_grid_verb(&ctx, selector, *verb),
+            Some(Action::OptionMenu(action)) => Some((**action).clone()),
             other => panic!("{}: {other:?}", items[i].label),
         };
         let Some(Action::OpenEditOptionPrompt { owner, key, values, .. }) = runs(0) else {
