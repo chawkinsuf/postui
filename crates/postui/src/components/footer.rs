@@ -1332,7 +1332,8 @@ mod tests {
             (false, false, Some("add header"), None, false),
             (false, false, Some("add header"), Some((1, true)), false),
             (false, false, None, None, false),
-            (true, true, None, None, true),
+            // The open URL line: focused, not selected.
+            (true, false, None, None, true),
         ];
         for (url_focused, url_selected, add, row, field_open) in stops {
             let labels = |sending| {

@@ -643,6 +643,8 @@ enum EditorStop {
     Method,
     UrlSelected,
     UrlOpen,
+    /// Vim's URL line in Insert; arrows' as `UrlOpen`.
+    UrlInsert,
     TableRow,
     /// Vim's table row with a count half-typed; arrows' as `TableRow`.
     TablePending,
@@ -661,7 +663,7 @@ fn sending_at(profile: KeyProfile, stop: EditorStop) -> App {
     let fixture = match stop {
         S::Body | S::BodyInsert | S::BodyTabUrl => Fixture::Body,
         S::Method => Fixture::Method,
-        S::UrlSelected | S::UrlOpen => Fixture::UrlLine,
+        S::UrlSelected | S::UrlOpen | S::UrlInsert => Fixture::UrlLine,
         _ => Fixture::TableThreeHeaders,
     };
     let mut app = build(fixture);
@@ -674,6 +676,7 @@ fn sending_at(profile: KeyProfile, stop: EditorStop) -> App {
         S::TableAdd => app.editor.table.set_selected(Some(Stop::Add)),
         S::BodyTabUrl => app.editor.sub_focus = SubFocus::Url,
         S::UrlOpen => feed(&mut app, "<CR>"),
+        S::UrlInsert => feed(&mut app, if vim { "i" } else { "<CR>" }),
         S::CellOpen => feed(&mut app, if vim { "i" } else { "<CR>" }),
         S::BodyInsert if vim => feed(&mut app, "i"),
         _ => {}
@@ -683,6 +686,10 @@ fn sending_at(profile: KeyProfile, stop: EditorStop) -> App {
     if matches!(stop, S::TablePending) && vim {
         feed(&mut app, "2");
         assert_eq!(app.key_echo(), "2", "the count is pending");
+    }
+    if matches!(stop, S::UrlInsert) && vim {
+        // `gt` types here, so the tab chip must not show.
+        assert_eq!(app.vim_status().as_deref(), Some("INSERT"), "the URL line is in Insert");
     }
     assert!(!app.session.in_flight.is_empty(), "{stop:?}: the send is in flight");
     app
@@ -704,6 +711,7 @@ async fn the_editors_cancel_and_tab_chips_show_where_their_keys_work() {
         S::Method,
         S::UrlSelected,
         S::UrlOpen,
+        S::UrlInsert,
         S::TableRow,
         S::TablePending,
         S::TableAdd,
