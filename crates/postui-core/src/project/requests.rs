@@ -451,17 +451,18 @@ impl Project {
         // The slug is derived from the name, but a file need not sit at the
         // slug its name derives: a nameless hand-made `ping-.toml` is named
         // `ping-`, which `slugify` makes `ping`, and a file can carry any
-        // name. So a rename that keeps the name as it is, in the same
-        // folder and spelled the same, keeps the slug instead of deriving
-        // one and moving the file (#209). Any other name derives its slug.
+        // name. So the slug moves only when the new name derives another
+        // slug than the current name does: a rename in the same folder to
+        // the same name, or to a spelling that derives the same slug (case,
+        // surrounding spaces), keeps the file where it is (#209), as it
+        // always did for a file at its derived slug.
         let (from_folder, from_leaf) = from_slug.rsplit_once('/').unwrap_or(("", from_slug));
-        let same_name = folder == from_folder
-            && self
-                .listing
-                .iter()
-                .find(|l| l.slug == from_slug)
-                .is_some_and(|l| l.name.as_deref().unwrap_or(from_leaf) == leaf);
-        let to_slug = if same_name {
+        let same_slug = folder == from_folder
+            && self.listing.iter().find(|l| l.slug == from_slug).is_some_and(|l| {
+                let current = l.name.as_deref().unwrap_or(from_leaf);
+                crate::storage::slugify(current) == crate::storage::slugify(&leaf)
+            });
+        let to_slug = if same_slug {
             from_slug.to_string()
         } else {
             self.unique_slug(&folder, &leaf, Some(from_slug))
@@ -1073,7 +1074,10 @@ mod tests {
     /// #209: a rename that leaves the name as it is leaves the file where
     /// it is, even when the file's slug is not the one its name derives: a
     /// nameless hand-made `ping-` (whose name `slugify` turns into `ping`,
-    /// free or taken), and a named file under a slug of its own.
+    /// free or taken), and a named file under a slug of its own. The same
+    /// holds for a new spelling that derives the same slug (case, the
+    /// spaces the prompt trims), as it does for a file at its derived slug;
+    /// a name that derives another slug moves the file as before.
     #[test]
     fn a_rename_to_the_same_name_keeps_the_slug() {
         for ping_taken in [false, true] {
@@ -1093,18 +1097,24 @@ mod tests {
             assert!(dir.path().join("requests/main/ping-.toml").is_file());
             assert!(!dir.path().join("requests/main/ping-2.toml").exists());
             assert_eq!(dir.path().join("requests/main/ping.toml").exists(), ping_taken);
+            let (slug, _) = p.rename_request("main/ping-", "main/Ping-").unwrap();
+            assert_eq!(slug, "main/ping-", "a case change keeps the slug too");
         }
 
         let (dir, mut p) = fixture();
-        std::fs::write(
-            dir.path().join("requests/main/odd.toml"),
-            "name = \"Get User\"\nmethod = \"GET\"\nurl = \"u\"\n",
-        )
-        .unwrap();
-        p.relist();
-        let (slug, _) = p.rename_request("main/odd", "main/Get User").unwrap();
-        assert_eq!(slug, "main/odd");
-        assert!(!dir.path().join("requests/main/get-user.toml").exists());
+        for (name, typed) in [("Get User", "main/Get User"), (" Pong ", "main/ Pong ")] {
+            std::fs::write(
+                dir.path().join("requests/main/odd.toml"),
+                format!("name = {name:?}\nmethod = \"GET\"\nurl = \"u\"\n"),
+            )
+            .unwrap();
+            p.relist();
+            let (slug, _) = p.rename_request("main/odd", typed).unwrap();
+            assert_eq!(slug, "main/odd", "{typed:?}");
+        }
+        assert_eq!(slugs(&p).iter().filter(|s| s.starts_with("main/")).count(), 2);
+        let (slug, _) = p.rename_request("main/odd", "main/Other").unwrap();
+        assert_eq!(slug, "main/other", "a name that derives another slug moves the file");
     }
 
     #[test]
