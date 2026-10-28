@@ -333,25 +333,29 @@ impl App {
 
     /// The display path a paste's `# @name` renames `slug` to (replace spec
     /// §6), read from the request's own folder (N3); `None` when the
-    /// request already answers to it there, ignoring case (N5). What the
-    /// rename would refuse is refused here, before the dirty gate, in its
-    /// own words (N2). A leading `/` is dropped, as the Rename prompt drops
-    /// it: the name is never read from the space's top.
+    /// request already has that name, spelled the same, in that folder
+    /// (N5): a different spelling, case included, is what the comment
+    /// asks for, as the Rename prompt takes a case-only change. Asked
+    /// before the rename's checks, so a name that changes nothing never
+    /// refuses. What the rename would refuse is refused here, before the
+    /// dirty gate, in its own words (N2). A leading `/` is dropped, as the
+    /// Rename prompt drops it: the name is never read from the space's
+    /// top.
     fn curl_rename(&self, slug: &str, named: &str) -> Result<Option<String>, String> {
         let named = named.trim_start_matches('/');
-        let to = match slug.rsplit_once('/') {
-            Some((folder, _)) => format!("{folder}/{named}"),
+        let folder = slug.rsplit_once('/').map(|(f, _)| f);
+        let to = match folder {
+            Some(folder) => format!("{folder}/{named}"),
             None => named.to_string(),
         };
-        let Some(p) = self.project() else {
+        let same = postui_core::storage::split_display_path(&to).is_some_and(|(f, leaf)| {
+            Some(f.as_str()) == folder && leaf == self.request_display(slug)
+        });
+        let Some(p) = self.project().filter(|_| !same) else {
             return Ok(None);
         };
-        let (to_slug, leaf) =
-            p.check_rename_request(slug, &to).map_err(|e| self.rename_refusal(slug, &e))?;
-        let folder = |s: &str| s.rsplit_once('/').map(|(f, _)| f.to_string());
-        let same = folder(&to_slug) == folder(slug)
-            && leaf.to_lowercase() == self.request_display(slug).to_lowercase();
-        Ok((!same).then_some(to))
+        p.check_rename_request(slug, &to).map_err(|e| self.rename_refusal(slug, &e))?;
+        Ok(Some(to))
     }
 
     /// `Action::ForceReplaceWithCurl`, and a clean editor's way there:

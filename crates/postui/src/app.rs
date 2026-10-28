@@ -4896,7 +4896,10 @@ impl App {
                 // The typed name is relative to the active space, same as
                 // a create.
                 let to = format!("{}/{}", self.active_space(), to.trim_start_matches('/'));
-                self.rename_request(&from, &to);
+                if !self.rename_request(&from, &to) {
+                    // The prompt comes back with what was typed.
+                    self.last_action_failed = true;
+                }
                 true
             }
             Action::DeleteRequest(slug) => {
@@ -10775,8 +10778,9 @@ impl App {
     /// included) as one journaled step: `Action::RenameRequest`, and a
     /// replace with curl whose paste carries a `# @name` (replace spec §6).
     /// The editor follows in place, never reloading. A refusal toasts
-    /// (`rename_refusal`) and sets `last_action_failed`, which brings a
-    /// prompt back. `true` when it renamed.
+    /// (`rename_refusal`); whether the action failed is the caller's to
+    /// say, since a replace goes on without its rename. `true` when it
+    /// renamed.
     pub(super) fn rename_request(&mut self, from: &str, to: &str) -> bool {
         let cursor_on = self.sidebar.selected_slug().as_deref() == Some(from);
         let t = self.begin_op();
@@ -10815,7 +10819,6 @@ impl App {
             Err(e) => {
                 let msg = self.rename_refusal(from, &e);
                 self.toasts.push(msg, ToastKind::Error);
-                self.last_action_failed = true;
                 false
             }
         }

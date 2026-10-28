@@ -153,7 +153,7 @@ reset by a rename's undo).
 | N2 | The rename's checks (an empty leaf, a name another request in the target folder answers to) run up front with U7's other refusals, before the dirty gate. A refusal toasts rename's own words after U12's `cannot replace: ` (`cannot replace: a request named "X" already exists here`, first review round) and changes nothing. | mine (approved) |
 | N3 | A `/` in the name reads relative to the request's own folder (`# @name sub/X` on `api/ping` lands at `api/sub/X`), through rename's folder move, inside the request's space. A bare name keeps the folder. | mine (approved) |
 | N4 | A scratch request ignores `# @name`: it has no file to rename, and Save still asks for a name. | mine (approved) |
-| N5 | A `# @name` the request already answers to, ignoring case, in its own folder, renames nothing. | mine |
+| N5 | A `# @name` that is the request's own name, spelled the same, in its own folder, renames nothing, and is asked before the rename's checks, so it never refuses. Another case is a rename (`Kept` to `KEPT` rewrites the name and keeps the file), as the Rename prompt takes a case-only change. (First written as "ignoring case"; two review rounds argued a case-only change asked for in the comment was dropped silently, mine.) | mine |
 | N6 | Toast: `Replaced {old} from curl, renamed to {new}`, then U11's summary parts and undo hint. A rename with no field change still reads `Replaced …` (it changed something). | mine |
 
 Design: core `CurlImport` gains `named: Option<String>`, the `# @name`
@@ -170,7 +170,8 @@ fields, so the name kept is the new one.
 Tests (`curl_tests.rs`): a `# @name` renames the open request and a row
 not yet open; a folder in the name moves it under the request's folder;
 a taken name refuses before the gate with nothing changed; the same name
-in another case renames nothing; a scratch ignores it; a bare curl keeps
+renames nothing and another case renames; a rename refused after the
+gate still replaces; a scratch ignores it; a bare curl keeps
 the name; undo takes back the editor change, then the rename, then the
 declarations; Discard keeps the rename. Core: `named` is set only from
 the comment.

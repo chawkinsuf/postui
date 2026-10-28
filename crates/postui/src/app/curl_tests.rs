@@ -1119,6 +1119,7 @@ fn a_rename_refused_after_the_gate_still_replaces_under_the_old_name() {
     app.update(Action::RefreshSidebar);
     app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
     app.capture_undo();
+    assert!(!app.last_action_failed, "the replace itself landed");
     assert_eq!(app.editor.slug.as_deref(), Some("main/top"));
     assert_eq!(app.editor.url.text(), "https://x/new");
     assert!(app.proj().variables().vars.contains_key("TOKEN"));
@@ -1139,19 +1140,36 @@ fn a_leading_slash_in_the_name_comment_is_dropped() {
     assert_eq!(app.editor.slug.as_deref(), Some("main/api/pong"));
 }
 
-/// N5: the name the request already answers to renames nothing.
+/// N5: the name the request already has renames nothing; another case is
+/// a rename, as the Rename prompt takes one.
 #[test]
-fn the_current_name_in_another_case_renames_nothing() {
-    let mut app = kept_app("# @name KEPT\ncurl https://x/new");
+fn the_current_name_renames_nothing_and_another_case_renames() {
+    let mut app = kept_app("# @name Kept\ncurl https://x/new");
     replace(&mut app, None);
     assert_eq!(app.editor.slug.as_deref(), Some("main/kept"));
     assert_eq!(app.editor.name.as_deref(), Some("Kept"));
-    assert_eq!(on_disk(&app, "main/kept").unwrap().name.as_deref(), Some("Kept"));
     let msg = app.toasts.last_message().unwrap();
     assert!(msg.starts_with("Replaced Kept from curl \u{2014}"), "{msg}");
     app.update(Action::Undo);
     assert_eq!(app.editor.url.text(), "https://x/old", "one step");
     assert!(!app.editor_holds_unsaved());
+
+    let mut app = kept_app("# @name KEPT\ncurl https://x/new");
+    replace(&mut app, None);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/kept"));
+    assert_eq!(on_disk(&app, "main/kept").unwrap().name.as_deref(), Some("KEPT"));
+    let msg = app.toasts.last_message().unwrap();
+    assert!(msg.starts_with("Replaced Kept from curl, renamed to KEPT"), "{msg}");
+}
+
+/// The current name is no rename, so nothing a rename would refuse (the
+/// file gone from under the open request) stops the replace.
+#[test]
+fn the_current_name_never_refuses_for_the_rename_it_does_not_make() {
+    let mut app = kept_app("# @name Kept\ncurl https://x/new");
+    std::fs::remove_file(app.proj().root().join("requests/main/kept.toml")).unwrap();
+    replace(&mut app, None);
+    assert_eq!(app.editor.url.text(), "https://x/new");
 }
 
 /// N4: a scratch has no file to rename.
